@@ -1307,6 +1307,73 @@ describe("agentVersions routes", () => {
       }
     });
 
+    it("rewrites isolation-recovery downloadUrl to the server-relative isolation-recovery route (and proves componentEnum accepts it — an unrecognized value would 400 first)", async () => {
+      const checksum = "d".repeat(64);
+      const canonical =
+        "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-isolation-recovery-windows-amd64.exe";
+      const signed = makeSignedReleaseManifest({
+        component: "isolation-recovery",
+        platform: "windows",
+        arch: "amd64",
+        url: canonical,
+        checksum,
+        size: 1234,
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "windows",
+                architecture: "amd64",
+                component: "isolation-recovery",
+                downloadUrl: canonical,
+                checksum,
+                fileSize: BigInt(1234),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=windows&arch=amd64&component=isolation-recovery",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/isolation-recovery/windows/amd64?version=1.0.0",
+        );
+        expect(body.url).not.toContain("github.com");
+        expect(body.checksum).toBe(checksum);
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+      }
+    });
+
+    it("returns 404 when component=isolation-recovery has no row (agent treats it as non-fatal)", async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(
+        "/agent-versions/1.0.0/download?platform=windows&arch=amd64&component=isolation-recovery",
+      );
+
+      expect(res.status).toBe(404);
+    });
+
     it("maps platform=macos to /darwin in the server-relative URL", async () => {
       const checksum = "b".repeat(64);
       const signed = makeSignedReleaseManifest({
@@ -2613,6 +2680,12 @@ describe("canonicalReleaseAssetName (D1, #3836)", () => {
     ["user-helper", "windows", "arm64", "breeze-user-helper-windows-arm64.exe"],
     ["user-helper", "macos", "amd64", null],
     ["user-helper", "linux", "amd64", null],
+
+    // isolation-recovery — Windows amd64 only (ISOLATION_RECOVERY_TARGETS).
+    ["isolation-recovery", "windows", "amd64", "breeze-isolation-recovery-windows-amd64.exe"],
+    ["isolation-recovery", "windows", "arm64", null],
+    ["isolation-recovery", "macos", "amd64", null],
+    ["isolation-recovery", "linux", "amd64", null],
 
     // helper — HELPER_TARGETS installer names (#11298); the one macOS dmg
     // covers both arches, and targets HELPER_TARGETS does not ship stay null.

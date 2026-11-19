@@ -179,6 +179,16 @@ export function getGithubUserHelperUrl(os: string, arch: string, version?: strin
   return githubAssetDownloadUrl(filename, version);
 }
 
+// breeze-isolation-recovery is the Windows-only network-isolation recovery
+// binary. Signature mirrors the other per-(os,arch) builders so the shared
+// component download route can use it; the route itself rejects any (os, arch)
+// other than windows/amd64 before this is called.
+export function getGithubIsolationRecoveryUrl(os: string, arch: string, version?: string): string {
+  const extension = os === 'windows' ? '.exe' : '';
+  const filename = `breeze-isolation-recovery-${os}-${arch}${extension}`;
+  return githubAssetDownloadUrl(filename, version);
+}
+
 /**
  * The built-in YARA pack release asset (#6263 W03b) — server content built by
  * release.yml for every release kind and covered by its signed manifest.

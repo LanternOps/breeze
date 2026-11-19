@@ -112,7 +112,7 @@ test('every binary/signing job needs classify-release and is gated on release_ki
 });
 
 test('discovery: no other job produces binaries, holds signing secrets or OIDC, or pushes the binaries image', () => {
-  const BINARY_ARTIFACT = /^\s+(?:name|asset_name): (?:breeze-(?:agent|backup|watchdog|user-helper|desktop-helper|viewer|helper|recovery)-|breeze-installer-app\b|viewer-latest-json\b|macos-pkg-attestation\b)/mu;
+  const BINARY_ARTIFACT = /^\s+(?:name|asset_name): (?:breeze-(?:agent|backup|watchdog|user-helper|isolation-recovery|desktop-helper|viewer|helper|recovery)-|breeze-installer-app\b|viewer-latest-json\b|macos-pkg-attestation\b)/mu;
   const SIGNING_SECRET = /\bsecrets\.(?:TAURI_SIGNING_|APPLE_|SSLCOM_)/u;
   const discovered = new Set();
   for (const [name] of releaseJobs) {

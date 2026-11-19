@@ -5,7 +5,7 @@ const h = vi.hoisted(() => ({
   txDepth: 0, seal: vi.fn(), decrypt: vi.fn(), resolvePolicy: vi.fn(), auditRefused: vi.fn(),
   acceptsToken: vi.fn(), acceptsDeadMan: vi.fn(), supportsIsolation: vi.fn(),
 }));
-// The real gates, observed: the version gates are the same sentinel, so a test cannot fail one alone.
+// The real gates, observed, so a test can hold one open and reach the gate behind it.
 vi.mock('@breeze/shared', async original => {
   const real = await original<typeof import('@breeze/shared')>();
   h.acceptsToken.mockImplementation(real.agentAcceptsReleaseToken);
@@ -120,7 +120,7 @@ describe('startNetworkIsolation: dead-man window (#10103)', () => {
   it.each([
     ['no dead-man flag (a v1 agent)', () => { h.device.networkIsolationVersion = 1; h.device.networkIsolationDeadMan = false; }],
     ['flag absent', () => { h.device.networkIsolationVersion = 4; delete h.device.networkIsolationDeadMan; }],
-    // The isolation gate is the same sentinel, so it is held open here to reach the real dead-man gate.
+    // The isolation gate is held open here so only the real dead-man gate decides.
     ['below the dead-man version gate', () => { deadManAgent(); h.device.agentVersion = '998.0.0'; h.supportsIsolation.mockReturnValue(true); }],
   ])('never sends a non-zero window to an agent that cannot run it (%s); isolates with 0 and records why', async (_name, setup) => {
     setup();

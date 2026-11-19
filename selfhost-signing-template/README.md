@@ -139,7 +139,7 @@ matching what that release actually shipped.
 
 Signed by you: `breeze-agent.msi`, `breeze-agent-windows-amd64.exe`,
 `breeze-backup-windows-amd64.exe`, `breeze-watchdog-windows-amd64.exe`,
-`breeze-user-helper-windows-amd64.exe`,
+`breeze-user-helper-windows-amd64.exe`, `breeze-isolation-recovery-windows-amd64.exe`,
 `breeze-{agent,backup,desktop-helper,watchdog}-darwin-{amd64,arm64}`,
 `breeze-agent-darwin-{amd64,arm64}.pkg`, `Breeze Installer.app.zip`.
 

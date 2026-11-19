@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl, getObjectStream, isS3NotFound } from '../../services/s3Storage';
 import { binaryS3Key, binaryStoreDir, type BinaryStore } from '../../services/binaryStores';
-import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, getGithubRecoveryIsoUrl, HELPER_FILENAMES } from '../../services/binarySource';
+import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubUserHelperUrl, getGithubIsolationRecoveryUrl, getGithubWatchdogUrl, getGithubBackupUrl, getGithubRecoveryIsoUrl, HELPER_FILENAMES } from '../../services/binarySource';
 import { getPromotedComponentVersion, getRegisteredComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
 import { fetchVerifiedMacosPkg, fetchVerifiedHelperInstaller } from '../../services/installerBuilder';
 import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
@@ -718,6 +718,24 @@ registerComponentDownloadRoute({
   component: 'user-helper',
   filenameFor: perArchFilename('user-helper'),
   githubUrlFor: getGithubUserHelperUrl,
+  store: 'agent',
+});
+
+// breeze-isolation-recovery: the Windows-only network-isolation recovery
+// binary, fetched by the agent's verified updater (component=isolation-recovery).
+// windows/amd64 is the only build that exists, so every other (os, arch) pair is
+// refused up front rather than 404ing against a file that can never be staged.
+// Same server-relative shape as the user-helper route so the updater's host
+// check passes (see buildServerRelativeAgentDownloadUrl).
+registerComponentDownloadRoute({
+  path: '/download/isolation-recovery/:os/:arch',
+  logTag: 'isolation-recovery-download',
+  entityLabel: 'Isolation-recovery binary',
+  component: 'isolation-recovery',
+  filenameFor: (os, arch) =>
+    os === 'windows' && arch === 'amd64' ? 'breeze-isolation-recovery-windows-amd64.exe' : undefined,
+  invalidOsMessage: () => 'The isolation-recovery binary is only available for windows/amd64.',
+  githubUrlFor: getGithubIsolationRecoveryUrl,
   store: 'agent',
 });
 

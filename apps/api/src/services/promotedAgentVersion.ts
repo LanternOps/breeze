@@ -55,6 +55,7 @@ export type PromotedComponent =
   | 'agent'
   | 'helper'
   | 'user-helper'
+  | 'isolation-recovery'
   | 'watchdog'
   | 'backup'
   // recovery-iso (W04b) is never registered in agent_versions/binarySync —

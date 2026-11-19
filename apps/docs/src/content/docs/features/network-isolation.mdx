@@ -5,7 +5,7 @@ description: Isolate a device while retaining Breeze management access, and reco
 
 Network isolation drops network traffic except the traffic needed to manage the device through Breeze. Each isolation episode is linked to an incident and has a mandatory expiry. The incident's recorded containment status alone does not prove that isolation is enforced: check the live episode state.
 
-The feature is **off by default** behind `NETWORK_ISOLATION_ENABLED`. Merging the console or server code activates nothing. Start also requires an eligible partner, supported agent version, advertised isolation capability, and agent readiness. Windows activation remains disabled: agents advertise capability 0, and the minimum version gate stays at `999.0.0`. No recovery executable is distributed or bundled yet, so Windows readiness also fails closed. The behavior described below is the intended Windows rollout; the feature is **not available in this release**. Linux and macOS support is planned.
+The feature is **off by default** behind `NETWORK_ISOLATION_ENABLED`, and `NETWORK_ISOLATION_ENABLED_PARTNER_IDS` can limit start to listed partners. Upgrading the server or the agents activates nothing on its own. Start also requires an eligible partner, agent version **0.130.0** or later, advertised isolation capability, and agent readiness. Windows is the first supported OS: Windows agents report capability 1 only once the filtering engine, the recovery executable and its scheduled task are all usable (see [Windows recovery](#windows-recovery-uninstall-and-upgrade)). Linux and macOS support is planned.
 
 ## Start and release
 
@@ -39,7 +39,9 @@ Breeze removes only its own isolation rules on release. Other firewall or EDR is
 
 ### Windows recovery, uninstall, and upgrade
 
-The separate `breeze-isolation-recovery.exe` component handles provisional rollback, expiry, and boot recovery even when the main agent cannot run. Its installation path is `<agent install directory>\isolation-recovery\<version>\breeze-isolation-recovery.exe`, alongside the protected agent installation. Versions are installed side by side and are never overwritten in place. An unresolved episode keeps its scheduled tasks pinned to its journaled recovery path. A version must pass trust verification and its self-test before task actions can adopt it.
+The separate `breeze-isolation-recovery.exe` component handles provisional rollback, expiry, and boot recovery even when the main agent cannot run. Its installation path is `<agent install directory>\isolation-recovery\<version>\breeze-isolation-recovery.exe`, alongside the protected agent installation. Versions are installed side by side and are never overwritten in place. An unresolved episode keeps its scheduled tasks pinned to its journaled recovery path. A version must pass trust verification, a journal-schema check and its self-test before task actions can adopt it.
+
+The agent downloads the recovery executable for its own version through its signed-manifest updater, as the `isolation-recovery` component (release asset `breeze-isolation-recovery-windows-amd64.exe`); the MSI does not bundle it. Until that download succeeds the device reports `recovery_unavailable` and is not ready, so a self-host server must have synced a release that includes the asset. Once installed, the agent registers one scheduled task, `\Breeze\IsolationPoll`, which runs `expire-check` as SYSTEM at boot and every 15 minutes; on a device with no isolation episode it does nothing. If a newer version cannot be downloaded while an episode is unresolved, the episode keeps its pinned recovery and readiness is unaffected.
 
 Self-host agents trust the recovery binary through the signed release manifest hash; hosted editions require Authenticode. Public self-host Windows builds ship unsigned, so a self-host agent checks the executable's SHA-256 against the `breeze-isolation-recovery-windows-<arch>.exe` entry in the Ed25519-signed release manifest for that exact version. The manifest is stored as `release-manifest.json` in the same version directory, and its signature is checked against the same keys the agent's updater trusts, on every check. Any of these reports `recovery_untrusted`, and the device is not ready:
 
@@ -48,7 +50,7 @@ Self-host agents trust the recovery binary through the signed release manifest h
 - the manifest has no entry for the recovery executable;
 - the executable's hash does not match the entry.
 
-An unsigned binary is never trusted just because it is present. A device made ready this way reports `self_host_manifest_hash` as its readiness detail. Like the rest of Windows isolation, this path is off by default and inactive in this release.
+An unsigned binary is never trusted just because it is present. A device made ready this way reports `self_host_manifest_hash` as its readiness detail.
 
 The agent's self-uninstall and the Windows MSI uninstall release Breeze-owned isolation rules first. If release cannot be confirmed, uninstall fails before removing the agent files or recovery state. A clean, never-isolated device can still uninstall normally. The detached Windows teardown helper checks the release again before it stops the agent, and once more after the agent has stopped, before anything is removed. If either check fails, the agent service is started again and the uninstall reports failed.
 

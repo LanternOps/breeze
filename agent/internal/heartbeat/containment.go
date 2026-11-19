@@ -357,6 +357,9 @@ func (h *Heartbeat) startContainment() {
 func (h *Heartbeat) initializeContainment(dataDir string) {
 	iso := isolation.NewPlatformIsolator()
 	scheduler := isolation.NewPlatformScheduler(dataDir)
+	// Before readiness is configured: the installer and the scheduler must
+	// share one trust policy (see isolation.ConfigureRecoverySource).
+	h.configureRecoveryDistribution(scheduler)
 	currentContainmentPlatform.Store(&containmentPlatform{isolator: iso})
 	m := isolation.NewManager(isolation.ManagerDeps{
 		DataDir: dataDir, Isolator: iso, Scheduler: scheduler,

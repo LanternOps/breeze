@@ -138,6 +138,7 @@ const EXPECTED: Record<string, Classification> = {
   'GET /download/backup/:os/:arch': 'outside_agent_auth',
   'GET /download/recovery-iso/:os/:arch': 'outside_agent_auth',
   'GET /download/user-helper/:os/:arch': 'outside_agent_auth',
+  'GET /download/isolation-recovery/:os/:arch': 'outside_agent_auth',
   'GET /install.sh': 'outside_agent_auth',
   'GET /install.ps1': 'outside_agent_auth',
   'GET /uninstall.sh': 'outside_agent_auth',

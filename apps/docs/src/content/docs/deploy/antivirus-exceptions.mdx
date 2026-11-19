@@ -15,7 +15,7 @@ Endpoint protection software may flag, quarantine, or block the Breeze agent. Th
 </Aside>
 
 <Aside type="note">
-  **Not every Breeze binary is signed the same way.** macOS agent binaries are codesigned and notarized by Breeze. On Windows, the **Viewer and Helper** installers are Authenticode-signed by LanternOps, but as of v0.105.0 the **Agent** artifacts (`breeze-agent.exe`, `breeze-agent.msi`, and the backup/watchdog/user-helper `.exe`s bundled with it) are published **unsigned** in the public self-host release, as signing inputs for deployments that sign under their own certificate — `Get-AuthenticodeSignature` reporting `NotSigned` on those is expected, not a red flag. See [Code Signing](/deploy/code-signing/) for the full breakdown. If a **signed** binary (macOS agent, or the Windows Viewer/Helper) is being quarantined, exclusions are a workaround rather than the fix — see [Signed Binaries Flagged as Malware](#signed-binaries-flagged-as-malware) below.
+  **Not every Breeze binary is signed the same way.** macOS agent binaries are codesigned and notarized by Breeze. On Windows, the **Viewer and Helper** installers are Authenticode-signed by LanternOps, but as of v0.105.0 the **Agent** artifacts (`breeze-agent.exe`, `breeze-agent.msi`, and the backup/watchdog/user-helper/isolation-recovery `.exe`s that ship with it) are published **unsigned** in the public self-host release, as signing inputs for deployments that sign under their own certificate — `Get-AuthenticodeSignature` reporting `NotSigned` on those is expected, not a red flag. See [Code Signing](/deploy/code-signing/) for the full breakdown. If a **signed** binary (macOS agent, or the Windows Viewer/Helper) is being quarantined, exclusions are a workaround rather than the fix — see [Signed Binaries Flagged as Malware](#signed-binaries-flagged-as-malware) below.
 </Aside>
 
 ## Why Exclusions Are Needed
@@ -99,6 +99,7 @@ The agent installer also stages a watchdog, a per-user helper, and a backup bina
 | `breeze-user-helper.exe` | GUI-subsystem sibling of the agent, spawned into the interactive user session for prompts and remote-desktop UI |
 | `breeze-desktop-helper.exe` | Per-user desktop-session helper process used by remote access |
 | `breeze-backup.exe` | Enterprise backup binary (Hyper-V, MSSQL, system image) — see [Binary Distribution](/deploy/binaries/#backup-binary) |
+| `breeze-isolation-recovery.exe` | Independently runnable network-isolation recovery binary, delivered by the agent updater — see [Binary Distribution](/deploy/binaries/#isolation-recovery-binary) |
 
 ### Configuration Directory
 

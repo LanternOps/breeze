@@ -13,7 +13,7 @@ export const agentVersions = pgTable('agent_versions', {
   fileSize: bigint('file_size', { mode: 'bigint' }),
   releaseNotes: text('release_notes'),
   isLatest: boolean('is_latest').notNull().default(false),
-  component: varchar('component', { length: 20 }).notNull().default('agent'), // agent, helper, viewer
+  component: varchar('component', { length: 20 }).notNull().default('agent'), // agent, helper, viewer, user-helper, isolation-recovery, watchdog, backup
   // Release edition ("self-host" | "hosted"): lets the same version/platform/
   // arch/component coexist as two distinct binaries (the public self-host
   // release build vs a privately-distributed hosted build). Each server only

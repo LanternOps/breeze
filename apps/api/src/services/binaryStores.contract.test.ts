@@ -122,6 +122,7 @@ const COMPONENT_ROUTES = [
   { component: 'watchdog', path: '/download/watchdog/linux/amd64', file: 'breeze-watchdog-linux-amd64', delivery: 'stream' },
   { component: 'backup', path: '/download/backup/linux/amd64', file: 'breeze-backup-linux-amd64', delivery: 'redirect' },
   { component: 'user-helper', path: '/download/user-helper/windows/amd64', file: 'breeze-user-helper-windows-amd64.exe', delivery: 'redirect' },
+  { component: 'isolation-recovery', path: '/download/isolation-recovery/windows/amd64', file: 'breeze-isolation-recovery-windows-amd64.exe', delivery: 'redirect' },
   { component: 'recovery-iso', path: '/download/recovery-iso/linux/amd64', file: 'breeze-recovery-linux-amd64.iso', delivery: 'redirect' },
 ] as const;
 

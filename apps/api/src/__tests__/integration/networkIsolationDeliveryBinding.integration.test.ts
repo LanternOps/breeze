@@ -88,13 +88,13 @@ describe('isolation delivery binding', () => {
     const old = randomUUID().replace(/-/g, '').repeat(2);
     const current = randomUUID().replace(/-/g, '').repeat(2);
     await getTestDb().insert(agentVersions).values([
-      { version: '1.0.0', platform: 'windows', architecture: 'amd64', downloadUrl: 'https://updates.example.test/old.bin', checksum: old, component: 'agent' },
+      { version: '0.1.0', platform: 'windows', architecture: 'amd64', downloadUrl: 'https://updates.example.test/old.bin', checksum: old, component: 'agent' },
       { version: '999.0.0', platform: 'windows', architecture: 'amd64', downloadUrl: 'https://updates.example.test/new.bin', checksum: current, component: 'agent' },
     ]);
     const started = await startNetworkIsolation(auth, device.id, { createIncident: { title: 'Containment investigation', severity: 'p2' }, reason: 'Investigation' }, { requestedByKind: 'system' });
     if ('error' in started) throw new Error(`start refused: ${started.error}`);
     const lying = await queueCommand(device.id, 'dev_update', { version: '999.0.0', downloadUrl: 'https://updates.example.test/old.bin', checksum: old });
-    const honest = await queueCommand(device.id, 'dev_update', { version: '1.0.0', downloadUrl: 'https://updates.example.test/new.bin', checksum: current });
+    const honest = await queueCommand(device.id, 'dev_update', { version: '0.1.0', downloadUrl: 'https://updates.example.test/new.bin', checksum: current });
     const claimed = (await claim()).map((c) => c.id);
     expect(claimed).toContain(honest.id);
     expect(claimed).not.toContain(lying.id);

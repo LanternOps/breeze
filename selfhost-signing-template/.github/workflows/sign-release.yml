@@ -178,7 +178,8 @@ jobs:
             "breeze-agent-windows-amd64-unsigned.exe:breeze-agent-windows-amd64.exe" \
             "breeze-backup-windows-amd64-unsigned.exe:breeze-backup-windows-amd64.exe" \
             "breeze-watchdog-windows-amd64-unsigned.exe:breeze-watchdog-windows-amd64.exe" \
-            "breeze-user-helper-windows-amd64-unsigned.exe:breeze-user-helper-windows-amd64.exe"
+            "breeze-user-helper-windows-amd64-unsigned.exe:breeze-user-helper-windows-amd64.exe" \
+            "breeze-isolation-recovery-windows-amd64-unsigned.exe:breeze-isolation-recovery-windows-amd64.exe"
           do
             src="${pair%%:*}"; dst="${pair##*:}"
             # explicit `bash` prefix: the exec bit is not reliable after a
@@ -287,6 +288,18 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
+      - name: Sign isolation-recovery EXE (Azure Artifact Signing)
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files: ${{ github.workspace }}\dist\breeze-isolation-recovery-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
       - name: Sign EXEs (PFX — legacy/internal PKI)
         if: inputs.signing-mode == 'pfx' && inputs.dry-run == false
         shell: pwsh
@@ -305,7 +318,8 @@ jobs:
             "dist\breeze-agent-windows-amd64.exe",
             "dist\breeze-backup-windows-amd64.exe",
             "dist\breeze-watchdog-windows-amd64.exe",
-            "dist\breeze-user-helper-windows-amd64.exe"
+            "dist\breeze-user-helper-windows-amd64.exe",
+            "dist\breeze-isolation-recovery-windows-amd64.exe"
           )
           foreach ($f in $targets) {
             & $signtool sign /fd SHA256 /f $pfxPath /p $env:WINDOWS_PFX_PASSWORD /tr $env:PFX_TIMESTAMP_URL /td SHA256 $f
@@ -412,6 +426,7 @@ jobs:
             "breeze-backup-windows-amd64.exe",
             "breeze-watchdog-windows-amd64.exe",
             "breeze-user-helper-windows-amd64.exe",
+            "breeze-isolation-recovery-windows-amd64.exe",
             "breeze-agent.msi"
           )
 
@@ -477,6 +492,7 @@ jobs:
             dist/breeze-backup-windows-amd64.exe
             dist/breeze-watchdog-windows-amd64.exe
             dist/breeze-user-helper-windows-amd64.exe
+            dist/breeze-isolation-recovery-windows-amd64.exe
             dist/breeze-agent.msi
           # Default is `warn`: a path that stops matching would upload a short
           # asset set with a green job, and publish would ship the gap.

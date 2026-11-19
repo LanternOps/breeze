@@ -125,10 +125,10 @@ describe('shouldSendAgentUpgrade', () => {
 
 
 describe('isolationAgentUpgradeGate', () => {
-  it.each(['0.66.0', '998.99.99', 'dev-local', '', '999.0'])('refuses unsafe target %s while isolation is unresolved', (target) => {
+  it.each(['0.66.0', '0.129.0', 'dev-local', '', '999.0'])('refuses unsafe target %s while isolation is unresolved', (target) => {
     expect(isolationAgentUpgradeGate(target, true)).toEqual({ allow: false, reason: 'network-isolation-version-floor' });
   });
-  it.each(['999.0.0', '999.0.0-preview', '1000.0.0'])('allows supported target %s while isolation is unresolved', (target) => {
+  it.each(['0.130.0', '999.0.0', '999.0.0-preview', '1000.0.0'])('allows supported target %s while isolation is unresolved', (target) => {
     expect(isolationAgentUpgradeGate(target, true)).toEqual({ allow: true, reason: 'allowed' });
   });
   it('preserves ordinary upgrades when no isolation is unresolved', () => {

@@ -295,7 +295,7 @@ This offloads download bandwidth from your API server to S3/R2/MinIO.
 | `S3_PRESIGN_TTL` | `900` | Presigned URL expiration in seconds (15 min) |
 
 S3 is activated when `S3_BUCKET`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY` are all set. Each binaries directory is uploaded to one prefix, and every download reads from the prefix of the directory its file is staged in:
-- `s3://{bucket}/agent/` — everything in `AGENT_BINARY_DIR`: agent binaries plus the watchdog, backup, user-helper and recovery-media binaries staged alongside them
+- `s3://{bucket}/agent/` — everything in `AGENT_BINARY_DIR`: agent binaries plus the watchdog, backup, user-helper, isolation-recovery and recovery-media binaries staged alongside them
 - `s3://{bucket}/viewer/` — viewer installers
 - `s3://{bucket}/helper/` — Breeze Assist (Helper) installers from `HELPER_BINARY_DIR` (v0.120.0+). When `HELPER_BINARY_DIR` is the same directory as `AGENT_BINARY_DIR`, the files are uploaded once, under `agent/`.
 
@@ -386,6 +386,21 @@ GET /api/v1/agents/download/user-helper/:os/:arch
 | `arch` | `amd64`, `arm64` |
 
 `breeze-user-helper` is a distinct binary from the Helper installers above (`/viewers/download` and the **Helper Binaries** section) — it's the GUI-subsystem sibling of the agent that the agent's session broker spawns into the interactive user session (prompts and remote-desktop UI in headless/service contexts), not the standalone Helper app.
+
+### Isolation-Recovery Binary
+
+```
+GET /api/v1/agents/download/isolation-recovery/:os/:arch
+```
+
+| Parameter | Values |
+|---|---|
+| `os` | `windows` |
+| `arch` | `amd64` |
+
+`breeze-isolation-recovery` is a Windows-only, independently runnable binary used by network isolation recovery. The agent's verified updater fetches it as its own component (`isolation-recovery`), so its version is tracked separately from the agent's. It ships as the release asset `breeze-isolation-recovery-windows-amd64.exe`, is **not** bundled into the Windows MSI, and any other `os`/`arch` value is rejected with `400`.
+
+Like the other Windows executables in the public self-host release, it is published unsigned (alongside a `breeze-isolation-recovery-windows-amd64-unsigned.exe` signing input for deployments that sign under their own certificate). See [Code Signing](/deploy/code-signing/).
 
 ### Backup Binary
 

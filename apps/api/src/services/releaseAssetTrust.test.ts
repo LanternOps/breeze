@@ -15,6 +15,7 @@ describe('releaseAssetTrust', () => {
     ['breeze-agent-windows-amd64-unsigned.exe', true],
     ['breeze-agent-darwin-arm64-unsigned', true],
     ['breeze-user-helper-windows-amd64-unsigned.exe', true],
+    ['breeze-isolation-recovery-windows-amd64-unsigned.exe', true],
     ['breeze-agent-windows-amd64.exe', false],
     ['breeze-agent.msi', false],
     ['breeze-agent-darwin-arm64', false],
@@ -186,6 +187,7 @@ describe('releaseAssetTrust', () => {
       'breeze-backup-windows-amd64.exe',
       'breeze-watchdog-windows-amd64.exe',
       'breeze-user-helper-windows-amd64.exe',
+      'breeze-isolation-recovery-windows-amd64.exe',
     ])('accepts unsigned self-host %s', (assetName) => {
       expect(() =>
         assertDistributableReleaseAsset({
@@ -202,6 +204,7 @@ describe('releaseAssetTrust', () => {
       'breeze-backup-windows-amd64.exe',
       'breeze-watchdog-windows-amd64.exe',
       'breeze-user-helper-windows-amd64.exe',
+      'breeze-isolation-recovery-windows-amd64.exe',
     ])('still accepts a signed self-host %s (BYO-resigned repos)', (assetName) => {
       expect(() =>
         assertDistributableReleaseAsset({
@@ -221,6 +224,7 @@ describe('releaseAssetTrust', () => {
       'breeze-backup-windows-amd64.exe',
       'breeze-watchdog-windows-amd64.exe',
       'breeze-user-helper-windows-amd64.exe',
+      'breeze-isolation-recovery-windows-amd64.exe',
     ])('rejects unsigned %s labeled edition "hosted"', (assetName) => {
       expect(() =>
         assertDistributableReleaseAsset({
@@ -237,6 +241,7 @@ describe('releaseAssetTrust', () => {
       'breeze-backup-windows-amd64.exe',
       'breeze-watchdog-windows-amd64.exe',
       'breeze-user-helper-windows-amd64.exe',
+      'breeze-isolation-recovery-windows-amd64.exe',
     ])('rejects unsigned %s with no edition claim', (assetName) => {
       expect(() =>
         assertDistributableReleaseAsset({
@@ -245,6 +250,17 @@ describe('releaseAssetTrust', () => {
           intendedUse: null,
         }),
       ).toThrow(/windows-authenticode-required/);
+    });
+
+    it('refuses the -unsigned isolation-recovery signing input even for self-host + none', () => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName: 'breeze-isolation-recovery-windows-amd64-unsigned.exe',
+          platformTrust: PLATFORM_TRUST_NONE,
+          intendedUse: null,
+          edition: 'self-host',
+        }),
+      ).toThrow(/signing input/);
     });
 
     // Scoped to the exact four filenames the pipeline produces unsigned, not to

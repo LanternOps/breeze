@@ -10,12 +10,12 @@ import { semverCompare } from './semverCompare';
  */
 
 /**
- * First agent release that can isolate. `'999.0.0'` is a fail-closed sentinel (Gate B decision 6):
- * no real agent satisfies it, so nothing can isolate a device until W1g pins the release that ships
- * the capable Windows agent. The gate never blocks a release.
+ * First agent release that can isolate: the release carrying the activated Windows agent and the
+ * isolation-recovery release asset (W1g, #10095). Older agents report capability 0 regardless, so
+ * this is the server-side second key behind capability + readiness. Start also still needs the
+ * NETWORK_ISOLATION_ENABLED flag (and partner list). The gate never blocks a release.
  */
-// TODO(#10095-activation): pin to the agent release carrying W1g after L1 passes. Todd gate.
-export const NETWORK_ISOLATION_MIN_AGENT_VERSION = '999.0.0';
+export const NETWORK_ISOLATION_MIN_AGENT_VERSION = '0.130.0';
 
 /**
  * `securityCapabilities.networkIsolationVersion` levels. 0 = cannot isolate. The numbers are not a
@@ -25,9 +25,9 @@ export const NETWORK_ISOLATION_MIN_AGENT_VERSION = '999.0.0';
 export const NETWORK_ISOLATION_CAPABILITY = { base: 1, deadMan: 2, policyAllow: 3, releaseToken: 4 } as const;
 
 /**
- * First agent release the server may send release-token fields to (#10102). `'999.0.0'` is
- * the same fail-closed sentinel as NETWORK_ISOLATION_MIN_AGENT_VERSION: no agent satisfies it, so no
- * episode pins a token key until lab gate L4 passes and the activation PR pins the real release.
+ * First agent release the server may send release-token fields to (#10102). `'999.0.0'` is a
+ * fail-closed sentinel: no agent satisfies it, so no episode pins a token key until lab gate L4
+ * passes and the activation PR pins the real release.
  */
 // TODO(#10102-activation): pin to the agent release that passed lab gate L4. Owner sign-off required.
 export const NETWORK_ISOLATION_RELEASE_TOKEN_MIN_AGENT_VERSION = '999.0.0';
@@ -60,10 +60,9 @@ export function agentAcceptsPolicyAllow(capabilityVersion: number | null | undef
 }
 
 /**
- * First agent release the server may send a non-zero `deadManSeconds` to (#10103). `'999.0.0'` is
- * the same fail-closed sentinel as NETWORK_ISOLATION_MIN_AGENT_VERSION: no agent satisfies it, so
- * every episode isolates with the dead-man off until lab gate L5 passes and the activation PR pins
- * the real release.
+ * First agent release the server may send a non-zero `deadManSeconds` to (#10103). `'999.0.0'` is a
+ * fail-closed sentinel: no agent satisfies it, so every episode isolates with the dead-man off until
+ * lab gate L5 passes and the activation PR pins the real release.
  */
 // TODO(#10103-activation): pin to the agent release that passed lab gate L5. Owner sign-off required.
 export const NETWORK_ISOLATION_DEAD_MAN_MIN_AGENT_VERSION = '999.0.0';

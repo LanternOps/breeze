@@ -131,13 +131,21 @@ describe('network isolation closed sets (plan "Closed sets")', () => {
 });
 
 describe('agentSupportsNetworkIsolation (fails closed)', () => {
-  it("is pinned to the '999.0.0' sentinel until W1g ships the capable agent (Gate B decision 6)", () => {
-    expect(NETWORK_ISOLATION_MIN_AGENT_VERSION).toBe('999.0.0');
+  it('is pinned to the release that carries the activated Windows agent (W1g, #10095)', () => {
+    expect(NETWORK_ISOLATION_MIN_AGENT_VERSION).toBe('0.130.0');
   });
 
-  it('refuses every real version while the sentinel holds, even with capability 1', () => {
-    for (const v of ['0.125.0', '0.200.0', '1.0.0', '10.4.2', '998.99.99']) {
+  it('refuses every release below the gate, even with capability 1', () => {
+    for (const v of ['0.125.0', '0.129.0', '0.129.9', '0.129.0-rc.1']) {
       expect(agentSupportsNetworkIsolation(v, 1), v).toBe(false);
+    }
+  });
+
+  // semverCompare ignores the prerelease suffix, so a 0.130.0-rc.N build (the L1 lab leg's
+  // signed release candidate) clears the gate like 0.130.0 itself.
+  it('accepts the gate release, its release candidates and later with capability 1', () => {
+    for (const v of ['0.130.0', '0.130.0-rc.1', '0.130.1', '0.200.0', '1.0.0']) {
+      expect(agentSupportsNetworkIsolation(v, 1), v).toBe(true);
     }
   });
 

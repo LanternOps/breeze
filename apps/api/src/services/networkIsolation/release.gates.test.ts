@@ -79,7 +79,7 @@ describe('release stays live when start gates fail', () => {
     h.row = episode();
     if (condition === 'flag_off') vi.stubEnv('NETWORK_ISOLATION_ENABLED', 'false');
     if (condition === 'partner_missing') vi.stubEnv('NETWORK_ISOLATION_ENABLED_PARTNER_IDS', '77777777-7777-4777-8777-777777777777');
-    if (condition === 'old_agent') h.device.agentVersion = '1.0.0';
+    if (condition === 'old_agent') h.device.agentVersion = '0.1.0';
     if (condition === 'capability_zero') { h.device.networkIsolationVersion = 0; h.device.networkIsolationReady = false; }
     if (condition === 'trust_restricted') h.trust.mockRejectedValue(new TrustDeniedError('TRUST_RESTRICTED', 'Restricted', deviceId, 'execute_containment'));
     if (condition === 'quarantined') h.device.status = 'quarantined';

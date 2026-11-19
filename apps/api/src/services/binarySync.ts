@@ -246,6 +246,19 @@ const USER_HELPER_TARGETS = [
   },
 ] as const;
 
+// breeze-isolation-recovery is the Windows-only network-isolation recovery
+// binary. It ships as its own release asset (unsigned on the public self-host
+// pipeline, like the agent family) and the agent updater fetches it as
+// component "isolation-recovery". windows/amd64 only: there is no linux/darwin
+// or arm64 build.
+const ISOLATION_RECOVERY_TARGETS = [
+  {
+    goos: "windows",
+    goarch: "amd64",
+    assetName: "breeze-isolation-recovery-windows-amd64.exe",
+  },
+] as const;
+
 // breeze-watchdog is the supervisor sibling of breeze-agent, shipped as its own
 // per-arch GitHub release asset on every platform. It was historically only
 // placed by the full installer, so once an agent auto-upgraded its watchdog
@@ -515,6 +528,14 @@ async function scanBinaryDir(
   }
 
   return results;
+}
+
+// breeze-isolation-recovery exists for windows/amd64 only. A stray
+// breeze-isolation-recovery-{linux,darwin}-* or -arm64 file in the volume must
+// not be registered (no such build is ever produced or manifest-signed).
+async function scanIsolationRecoveryBinaries(dir: string): Promise<BinaryInfo[]> {
+  const all = await scanBinaryDir(dir, "isolation-recovery");
+  return all.filter((b) => b.platform === "windows" && b.architecture === "amd64");
 }
 
 // #6872: the Tauri Breeze Assist helper ships as installers
@@ -1275,6 +1296,7 @@ async function syncLocalBinariesReadOnly(args: {
   const scanned: Array<{ component: string; binaries: BinaryInfo[] }> = [
     { component: "agent", binaries: await scanBinaryDir(agentBinaryDir) },
     { component: "user-helper", binaries: await scanBinaryDir(agentBinaryDir, "user-helper") },
+    { component: "isolation-recovery", binaries: await scanIsolationRecoveryBinaries(agentBinaryDir) },
     { component: "watchdog", binaries: await scanBinaryDir(agentBinaryDir, "watchdog") },
     { component: "backup", binaries: await scanBinaryDir(agentBinaryDir, "backup") },
     { component: "helper", binaries: await scanHelperInstallerDir(binaryStoreDir("helper")) },
@@ -1680,6 +1702,7 @@ export async function syncBinaries(): Promise<void> {
   // are served by their matching component download routes.
   const binaries = await scanBinaryDir(agentBinaryDir);
   const userHelperBinaries = await scanBinaryDir(agentBinaryDir, "user-helper");
+  const isolationRecoveryBinaries = await scanIsolationRecoveryBinaries(agentBinaryDir);
   const watchdogBinaries = await scanBinaryDir(agentBinaryDir, "watchdog");
   const backupBinaries = await scanBinaryDir(agentBinaryDir, "backup");
   const helperBinaryDir = binaryStoreDir("helper");
@@ -1787,6 +1810,55 @@ export async function syncBinaries(): Promise<void> {
         rethrowReadOnlyDuringRetry(err);
         console.error(
           `[binarySync] Failed to register local user-helper binaries — interactive-session helper auto-update unavailable: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+
+    // Windows-only network-isolation recovery binary: same two tiers as the
+    // user-helper (official manifest first, then per-deployment re-signing for
+    // whatever the manifest does not cover and did not refuse).
+    if (isolationRecoveryBinaries.length > 0) {
+      try {
+        let coveredFilenames = new Set<string>();
+        let excludedFilenames = new Set<string>();
+        const downloadUrlFor = (osParam: string, arch: string) =>
+          `${serverUrl}/api/v1/agents/download/isolation-recovery/${osParam}/${arch}`;
+        if (officialManifest) {
+          const result = await registerFromOfficialManifest({
+            binaries: isolationRecoveryBinaries,
+            component: "isolation-recovery",
+            version,
+            manifestBytes: officialManifest.manifestBytes,
+            signatureBytes: officialManifest.signatureBytes,
+            downloadUrlFor,
+          });
+          coveredFilenames = result.registeredFilenames;
+          excludedFilenames = result.excludedFilenames;
+          if (coveredFilenames.size > 0) {
+            console.log(
+              `[binarySync] Registered ${coveredFilenames.size} isolation-recovery binaries from the official release manifest (version: ${version})`,
+            );
+          }
+        }
+        const remaining = isolationRecoveryBinaries.filter(
+          (b) => !coveredFilenames.has(b.filename) && !excludedFilenames.has(b.filename),
+        );
+        if (remaining.length > 0) {
+          await registerLocalBinaries({
+            binaries: remaining,
+            component: "isolation-recovery",
+            version,
+            keyId,
+            downloadUrlFor,
+          });
+          console.log(
+            `[binarySync] Registered ${remaining.length} isolation-recovery binaries via per-deployment re-signing (version: ${version})`,
+          );
+        }
+      } catch (err) {
+        rethrowReadOnlyDuringRetry(err);
+        console.error(
+          `[binarySync] Failed to register local isolation-recovery binaries — network-isolation recovery update unavailable: ${err instanceof Error ? err.message : err}`,
         );
       }
     }
@@ -2163,6 +2235,7 @@ async function syncFromGitHubRelease(
     { component: "agent", targets: AGENT_TARGETS },
     { component: "helper", targets: HELPER_TARGETS },
     { component: "user-helper", targets: USER_HELPER_TARGETS },
+    { component: "isolation-recovery", targets: ISOLATION_RECOVERY_TARGETS },
     { component: "watchdog", targets: WATCHDOG_TARGETS },
   ];
 

@@ -1539,40 +1539,34 @@ func (u *Updater) VerifySignedPayload(keyID string, payload, signature []byte) e
 	return u.verifyManifestSignature(payload, signature, keyID)
 }
 
-// downloadBinary fetches download info from the API and then downloads the binary.
-// Supports both legacy redirect responses and JSON info responses.
-// downloadBinary returns the temp path of the downloaded binary, the verified
-// single-asset manifest view, and the raw signature-VERIFIED release manifest
-// payload (info.Manifest). The payload is returned so the macOS update path can
-// look up the .pkg asset's signed checksum from the same trust root without a
-// second round-trip; it is safe to use because verifyUpdateManifest has already
-// checked its Ed25519 signature.
-func (u *Updater) downloadBinary(version string) (string, updateManifest, []byte, error) {
+// verifiedDownloadInfo fetches this component's download info for version and
+// verifies its signed release manifest against the trust set. It never
+// downloads the artifact itself.
+func (u *Updater) verifiedDownloadInfo(version string) (downloadInfo, updateManifest, error) {
 	if err := u.checkClient(); err != nil {
-		return "", updateManifest{}, nil, err
+		return downloadInfo{}, updateManifest{}, err
 	}
 	if u.config.AuthToken == nil {
-		return "", updateManifest{}, nil, fmt.Errorf("auth token not available")
+		return downloadInfo{}, updateManifest{}, fmt.Errorf("auth token not available")
 	}
-	// Step 1: Get download URL + checksum from API.
 	infoURL := fmt.Sprintf("%s/api/v1/agent-versions/%s/download?platform=%s&arch=%s&component=%s",
 		u.serverURL(), version, runtime.GOOS, runtime.GOARCH, url.QueryEscape(u.component()))
 
 	req, err := http.NewRequest("GET", infoURL, nil)
 	if err != nil {
-		return "", updateManifest{}, nil, err
+		return downloadInfo{}, updateManifest{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+u.config.AuthToken.Reveal())
 
 	resp, err := u.requestWithoutRedirect(req)
 	if err != nil {
-		return "", updateManifest{}, nil, err
+		return downloadInfo{}, updateManifest{}, err
 	}
 	defer resp.Body.Close()
 
 	info, err := u.parseDownloadInfo(resp)
 	if err != nil {
-		return "", updateManifest{}, nil, err
+		return downloadInfo{}, updateManifest{}, err
 	}
 
 	manifest, err := u.verifyUpdateManifest(info, version)
@@ -1585,6 +1579,23 @@ func (u *Updater) downloadBinary(version string) (string, updateManifest, []byte
 		if !errors.Is(err, ErrManifestKey) {
 			err = asTrustError(ErrManifestSignature, err)
 		}
+		return downloadInfo{}, updateManifest{}, err
+	}
+	return info, manifest, nil
+}
+
+// downloadBinary fetches download info from the API and then downloads the binary.
+// Supports both legacy redirect responses and JSON info responses.
+// downloadBinary returns the temp path of the downloaded binary, the verified
+// single-asset manifest view, and the raw signature-VERIFIED release manifest
+// payload (info.Manifest). The payload is returned so the macOS update path can
+// look up the .pkg asset's signed checksum from the same trust root without a
+// second round-trip; it is safe to use because verifyUpdateManifest has already
+// checked its Ed25519 signature.
+func (u *Updater) downloadBinary(version string) (string, updateManifest, []byte, error) {
+	// Step 1: Get download URL + checksum from API, signature-verified.
+	info, manifest, err := u.verifiedDownloadInfo(version)
+	if err != nil {
 		return "", updateManifest{}, nil, err
 	}
 	// info.Manifest is now signature-verified; capture it for the macOS .pkg
