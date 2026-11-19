@@ -16,7 +16,7 @@ import {
   policyIdSchema,
 } from './schemas';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
-import { withoutObservedRegistryValues } from '../../services/complianceRuleResults';
+import { withoutObservedStateValues } from '../../services/complianceRuleResults';
 import {
   getPagination,
   ensureOrgAccess,
@@ -590,7 +590,7 @@ complianceRoutes.get(
         configItemName: row.configItemName,
         deviceId: row.deviceId,
         status: row.status,
-        details: withoutObservedRegistryValues(row.details),
+        details: withoutObservedStateValues(row.details),
         lastCheckedAt: row.lastCheckedAt?.toISOString() ?? null,
         remediationAttempts: row.remediationAttempts,
         updatedAt: row.updatedAt?.toISOString() ?? null,
@@ -736,7 +736,7 @@ complianceRoutes.get(
         });
 
       return c.json({
-        data: rows.map((row) => ({ ...row, details: withoutObservedRegistryValues(row.details) })),
+        data: rows.map((row) => ({ ...row, details: withoutObservedStateValues(row.details) })),
         pagination: { page, limit, total },
         overall,
         trend: [],
@@ -962,7 +962,7 @@ complianceRoutes.get(
       });
 
     return c.json({
-      data: configRows.map((row) => ({ ...row, details: withoutObservedRegistryValues(row.details) })),
+      data: configRows.map((row) => ({ ...row, details: withoutObservedStateValues(row.details) })),
       pagination: { page, limit, total: configTotal },
       overall: configOverall,
       trend: [],

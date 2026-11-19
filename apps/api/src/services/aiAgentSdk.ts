@@ -21,7 +21,7 @@ import { actionIntents } from '../db/schema/actionIntents';
 import { aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
 import { randomUUID } from 'node:crypto';
 import { eq, and } from 'drizzle-orm';
-import type { AuthContext } from '../middleware/auth';
+import { withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode, AiApprovalOutcome } from '@breeze/shared/types/ai';
 import { DIAGNOSTIC_STATES } from '@breeze/shared/validators/topology';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements, describeSpecialistRequest, type GuardrailContext } from './aiGuardrails';
@@ -60,6 +60,12 @@ import type { GrantCeiling } from './wisp/grantAuthority';
 import type { WispCeilingRefusal } from './wisp/chatCeiling';
 // Leaf data module (no imports): loading it never pulls in the Wisp graph.
 import { WISP_SELF_STATE_TOOLS } from './wisp/selfStateTools';
+import {
+  NOTE_WRITE_AUTO_MAX_PER_SESSION,
+  noteWriteFitsContentBounds,
+  TIER2_NOTE_WRITE_TOOLS,
+} from './aiNoteWrites';
+import { cardFreeNoteFits, countSessionCardFreeNotes, readCardFreeNoteBudget } from './brainDeviceContext';
 import { classifyWispUnattendedRead } from './wisp/unattendedReads';
 import {
   STANDING_CHECK_UNAVAILABLE_MESSAGE,
@@ -455,6 +461,7 @@ type ApprovalMethod =
   | 'auto_approve_mode' // session runs auto_approve; Tier 2 executes unprompted
   | 'read_only_auto' // #3130 read-only Tier-2 allowlist; auto-executes in any un-paused mode
   | 'wisp_self_state_auto' // #10392 Wisp bookkeeping write under a live grant (wisp/selfStateTools.ts)
+  | 'note_write_auto' // append-only Tier-2 note in a chat (aiNoteWrites.ts); a Wisp chat with unattended reads on records it as wisp_unattended_read
   | 'wisp_unattended_read'; // #10973 one of the four reads under the grant's unattended-reads switch
 
 type ApprovalRecord = { toolName: string; method: ApprovalMethod };
@@ -1412,10 +1419,12 @@ async function wispSelfStateSkipsCard(
     // grant_id), so the only rows it can touch are this grant's own.
     case 'own_thread':
       return true;
-    // W07 (#11496): only a notify check-in is a pure add. A `run` one spends
-    // grant budget unattended when it fires; an unrecognised mode asks too.
-    case 'notify_check_in':
-      return input.mode === undefined || input.mode === 'notify';
+    // A check-in on this grant's own thread. A `run` one admits one capped
+    // assessment when it fires; it no longer asks (bounds and cost:
+    // selfStateTools.ts). Any other mode is refused by input validation
+    // before this; keeping the card here is defense in depth.
+    case 'own_check_in':
+      return input.mode === undefined || input.mode === 'notify' || input.mode === 'run';
     case 'own_memory':
       return input.ownerKind === 'user';
     case 'own_concern': {
@@ -1431,6 +1440,80 @@ async function wispSelfStateSkipsCard(
     }
     default:
       return false;
+  }
+}
+
+/**
+ * Card-free note calls in flight per chat session (keyed by the ai_sessions id,
+ * so a rebuilt session object shares it): reserved before the gate's first
+ * await, released once the call's executing row is written or the call is
+ * refused. Together with the durable count of written rows this keeps calls
+ * the SDK runs in parallel from sharing one session slot.
+ */
+const noteWriteInFlight = new Map<string, number>();
+
+type NoteWriteDecision = { skip: false } | { skip: true; release: () => void };
+const NOTE_WRITE_ASKS: NoteWriteDecision = { skip: false };
+
+/**
+ * Whether this append-only note (aiNoteWrites.ts) may run without the card.
+ * Order matters:
+ *  1. content: details, expiry and device id fit (no DB);
+ *  2. a session slot is reserved synchronously, before any await;
+ *  3. the org/site/device access check, under the session's tool auth. A
+ *     device the caller cannot reach gets NO device count; past step 4 it is
+ *     let through, and the tool dispatch refuses it exactly as it refuses any
+ *     other call for that device, so whether a card appeared says nothing
+ *     about its notes;
+ *  4. the conversation count (for every device, reachable or not): this session's set_device_context rows that ran
+ *     with no recorded approver (`ai_tool_executions`, durable across a
+ *     session rebuild, restart or deploy) plus the calls in flight;
+ *  5. the device counts (active notes and notes in the last 24 h), under the
+ *     session's tool auth (RLS). The handler counts again under a per-device
+ *     lock before it writes (brainDeviceContext.createDeviceContext).
+ * Any failure asks. A `skip: true` result carries `release`, which the gate
+ * calls after the call's executing row is written or the call is refused.
+ */
+async function noteWriteSkipsCard(session: ActiveSession, input: Record<string, unknown>): Promise<NoteWriteDecision> {
+  if (!noteWriteFitsContentBounds(input)) return NOTE_WRITE_ASKS;
+  const key = session.breezeSessionId;
+  // Read with the reservation, before the durable count starts: a call that
+  // finished since then wrote its row before this count reads.
+  const inFlight = (noteWriteInFlight.get(key) ?? 0) + 1;
+  noteWriteInFlight.set(key, inFlight);
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    const left = (noteWriteInFlight.get(key) ?? 1) - 1;
+    if (left > 0) noteWriteInFlight.set(key, left);
+    else noteWriteInFlight.delete(key);
+  };
+  try {
+    const deviceId = input.deviceId as string;
+    const device = await withAuthDbAccessContext(session.toolAuth, () => readCardFreeNoteBudget(deviceId, session.toolAuth));
+    // The conversation bound applies whether or not the device is reachable:
+    // it says nothing about the device.
+    const written = await withDbAccessContext(
+      { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+      () => countSessionCardFreeNotes(session.breezeSessionId),
+    );
+    if (!(written + inFlight <= NOTE_WRITE_AUTO_MAX_PER_SESSION)) {
+      release();
+      return NOTE_WRITE_ASKS;
+    }
+    // Unreachable: no device count ran; the dispatch refuses the call.
+    if (device === null) return { skip: true, release };
+    if (!cardFreeNoteFits(device)) {
+      release();
+      return NOTE_WRITE_ASKS;
+    }
+    return { skip: true, release };
+  } catch (err) {
+    console.error(`[AI-SDK] card-free note bounds could not be read (session ${session.breezeSessionId}); asking for approval`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'aiAgentSdk', orgId: session.orgId });
+    release();
+    return NOTE_WRITE_ASKS;
   }
 }
 
@@ -1531,6 +1614,40 @@ async function closePendingLedgerRowAsRefused(session: ActiveSession, executionI
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)));
     console.error('[AI-SDK] Failed to close a refused pending approval record:', executionId, err instanceof Error ? err.message : err);
+  }
+}
+
+/** #11678 §1: why an intent-backed call that never ran was closed, by its intent's final status. */
+const INTENT_NOT_RUN_LEDGER_TEXT = {
+  rejected: 'Approval denied; the action was not executed.',
+  cancelled: 'Approval request cancelled; the action was not executed.',
+  expired: 'Approval request expired before a decision; the action was not executed.',
+} as const;
+
+/**
+ * #11678 §1: a Tier 3 call whose intent was denied, cancelled or expired while
+ * the chat waited never runs, so postToolUse never closes its `pending`
+ * ledger row. Close it `rejected` here (the status the Tier 2 path uses for
+ * the same outcome). Guarded on `pending`, so a writer that already
+ * terminal-marked the row wins. Best-effort: the verdict never depends on it.
+ */
+async function closePendingLedgerRowAsNotRun(
+  session: ActiveSession,
+  executionId: string,
+  outcome: keyof typeof INTENT_NOT_RUN_LEDGER_TEXT,
+): Promise<void> {
+  try {
+    await withDbAccessContext(
+      { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+      () =>
+        db
+          .update(aiToolExecutions)
+          .set({ status: 'rejected', errorMessage: INTENT_NOT_RUN_LEDGER_TEXT[outcome], completedAt: new Date() })
+          .where(and(eq(aiToolExecutions.id, executionId), eq(aiToolExecutions.status, 'pending'))),
+    );
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    console.error('[AI-SDK] Failed to close a denied pending approval record:', executionId, err instanceof Error ? err.message : err);
   }
 }
 
@@ -2096,13 +2213,14 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         && (effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan');
       const readOnlyAutoExec = guardrailCheck.readOnly === true && !session.isPaused && !planInFlight;
       // #10392: Wisp's own bookkeeping writes (wisp/selfStateTools.ts —
-      // memory, concerns, thread links; never a device) skip the card the
-      // same way, with the same two carve-outs, but only for a call that
-      // passed the live Wisp ceiling gate this turn (`wispCall.current`) and
-      // only within the tool's scope (the grantor's own memory, a concern
-      // this grant raised, or a pure add). Tier 2 only, so a Tier-3
-      // resolution never takes this path. Evaluated last so the own-concern
-      // lookup runs only when nothing else already decided the call.
+      // memory, concerns, thread links, check-ins; never a device) skip the
+      // card the same way, with the same two carve-outs, but only for a call
+      // that passed the live Wisp ceiling gate this turn (`wispCall.current`)
+      // and only within the tool's scope (the grantor's own memory, a concern
+      // this grant raised, a pure add, or a check-in on its own thread).
+      // Tier 2 only, so a Tier-3 resolution never takes this path. Evaluated
+      // after the cheaper checks so the own-concern lookup runs only when
+      // nothing else already decided the call.
       const wispSelfStateAutoExec = guardrailCheck.tier === 2
         && effectiveMode !== 'auto_approve'
         && !readOnlyAutoExec
@@ -2113,49 +2231,87 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         && !session.isPaused
         && !planInFlight
         && await wispSelfStateSkipsCard(session, toolName, input, wispCall.current);
-      // #10428 W06: a standing-instruction warning always reaches a human.
-      if (guardrailCheck.tier === 2 && !standingConflict && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec || unattendedRead)) {
-        const liveDenial = await refreshTier2Authority(
-          'Authorization changed before execution; the action was not executed.',
-        );
-        if (liveDenial) return liveDenial;
-        // #10973: the refresh re-read the ceiling. The switch turned off in
-        // between refuses the call rather than running it on the old answer.
-        if (unattendedRead && wispCall.current?.ceiling.unattendedReads !== true) {
-          return { allowed: false, error: 'Authorization changed before execution; the action was not executed.' };
-        }
-        // #11994: the id is chosen here so postToolUse can close this row by id.
-        const autoExecId = randomUUID();
-        try {
-          await withDbAccessContext(
-            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-            () =>
-              db.insert(aiToolExecutions).values({
-                id: autoExecId,
-                sessionId: session.breezeSessionId,
-                toolName,
-                toolInput: redactSensitiveToolInput(input),
-                status: 'executing',
-              })
+      // Append-only notes (aiNoteWrites.ts) skip the card in any interactive
+      // chat (a helper session returned above, through PAM), with the
+      // read-only path's two carve-outs, and only inside the conversation,
+      // device (active and per-day) and content bounds (`noteWriteSkipsCard`);
+      // past them the note shows the card. A tenant or flow tool that happens
+      // to share the name is someone else's tool and keeps its card. Evaluated
+      // only when no other path already skips the card, so the counts run
+      // only for a call this path decides.
+      //
+      // The same bounds apply when the grant's unattended-reads switch
+      // (#10973) classified the note: in a chat the switch does not lift
+      // them, so a note past a bound shows the card either way.
+      const chatNote = guardrailCheck.tier === 2
+        && TIER2_NOTE_WRITE_TOOLS.has(toolName)
+        && !tenant
+        && !flowTool;
+      const noteDecision = chatNote
+        && effectiveMode !== 'auto_approve'
+        && !readOnlyAutoExec
+        && !wispSelfStateAutoExec
+        && !session.isPaused
+        && !planInFlight
+        && !standingConflict
+        ? await noteWriteSkipsCard(session, input)
+        : NOTE_WRITE_ASKS;
+      const noteWriteAutoExec = noteDecision.skip;
+      const unattendedReadSkip = chatNote && !noteWriteAutoExec && effectiveMode !== 'auto_approve' ? null : unattendedRead;
+      // The in-flight reservation is held until this block has written the
+      // call's executing row (which the durable count then sees) or refused it.
+      try {
+        // #10428 W06: a standing-instruction warning always reaches a human.
+        if (guardrailCheck.tier === 2 && !standingConflict && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec || noteWriteAutoExec || unattendedReadSkip)) {
+          const liveDenial = await refreshTier2Authority(
+            'Authorization changed before execution; the action was not executed.',
           );
-          ledger.rowWritten = true;
-        } catch (err) {
-          console.error('[AI-SDK] Failed to create auto-approve audit record:', toolName, err);
-          return { allowed: false, error: 'Failed to create audit record. Please try again.' };
+          if (liveDenial) return liveDenial;
+          // #10973: the refresh re-read the ceiling. The switch turned off in
+          // between refuses the call rather than running it on the old answer.
+          if (unattendedReadSkip && wispCall.current?.ceiling.unattendedReads !== true) {
+            return { allowed: false, error: 'Authorization changed before execution; the action was not executed.' };
+          }
+          // #11994: the id is chosen here so postToolUse can close this row by id.
+          const autoExecId = randomUUID();
+          try {
+            await withDbAccessContext(
+              { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+              () =>
+                db.insert(aiToolExecutions).values({
+                  id: autoExecId,
+                  sessionId: session.breezeSessionId,
+                  toolName,
+                  toolInput: redactSensitiveToolInput(input),
+                  status: 'executing',
+                })
+            );
+            ledger.rowWritten = true;
+          } catch (err) {
+            console.error('[AI-SDK] Failed to create auto-approve audit record:', toolName, err);
+            return { allowed: false, error: 'Failed to create audit record. Please try again.' };
+          }
+          recordApproval(
+            unattendedReadSkip
+              ? 'wisp_unattended_read'
+              : effectiveMode === 'auto_approve'
+                ? 'auto_approve_mode'
+                : readOnlyAutoExec ? 'read_only_auto'
+                  : wispSelfStateAutoExec ? 'wisp_self_state_auto' : 'note_write_auto',
+          );
+          recordExecutingRow(autoExecId);
+          if (unattendedReadSkip) {
+            unattendedReadInputs.add(input);
+            verifiedToolContext = { ...verifiedToolContext, pinnedWispUnattendedRead: unattendedReadSkip };
+          }
+          // The handler caps the expiry and recounts under a per-device lock.
+          if (noteWriteAutoExec) {
+            verifiedToolContext = { ...verifiedToolContext, noteWriteCardFree: true };
+          }
+          return { allowed: true, ...(verifiedToolContext ? { context: verifiedToolContext } : {}) };
         }
-        recordApproval(
-          unattendedRead
-            ? 'wisp_unattended_read'
-            : effectiveMode === 'auto_approve'
-              ? 'auto_approve_mode'
-              : readOnlyAutoExec ? 'read_only_auto' : 'wisp_self_state_auto',
-        );
-        recordExecutingRow(autoExecId);
-        if (unattendedRead) {
-          unattendedReadInputs.add(input);
-          verifiedToolContext = { ...verifiedToolContext, pinnedWispUnattendedRead: unattendedRead };
-        }
-        return { allowed: true, ...(verifiedToolContext ? { context: verifiedToolContext } : {}) };
+      } finally {
+        if (noteDecision.skip) noteDecision.release();
       }
 
       // Action plan / hybrid plan mode: check if tool matches an approved plan step.
@@ -2834,6 +2990,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             closeOut?.kind === 'expired'
             || (closeOut?.kind === 'decided' && closeOut.status === 'expired')
           ) {
+            await closePendingLedgerRowAsNotRun(session, approvalExec.id, 'expired');
             return await failMatchedPlanStep(
               {
                 allowed: false,
@@ -2913,6 +3070,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           }
 
           if (decisionStatus === 'rejected' || decisionStatus === 'cancelled' || decisionStatus === 'expired') {
+            await closePendingLedgerRowAsNotRun(session, approvalExec.id, decisionStatus);
             return await failMatchedPlanStep({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
           }
 
@@ -3878,6 +4036,60 @@ async function closeTopologyExecutingRow(session: ActiveSession, toolName: strin
   }
 }
 
+/**
+ * #12149: the topology early returns in createSessionPostToolUse still finish
+ * the intent this call's release CASed to `executing` (an approved inline
+ * `diagnose_connectivity`), with the same executing -> completed|failed CAS
+ * the main path uses. Left alone, the stale-execution reaper would later fail
+ * a run that succeeded as `execution_lost`, and /approvals would show it red.
+ *
+ * The result is the withheld marker, never the raw tool output (the topology
+ * paths keep that out of every ledger), plus the `{ runId, state }` that
+ * `approvedTopologyRun` validates, so the intent still names the run it
+ * started. A lost CAS means another writer terminalized it first: reported,
+ * never retried.
+ */
+async function completeTopologyReleasedIntent(
+  toolName: string,
+  releasedIntent: { intentId: string; orgId: string },
+  output: string,
+  isError: boolean,
+): Promise<void> {
+  const { intentId, orgId } = releasedIntent;
+  const run = approvedTopologyRun(toolName, output, isError);
+  const result: Record<string, unknown> = run ? { ...TOPOLOGY_WITHHELD_OUTPUT, ...run } : { ...TOPOLOGY_WITHHELD_OUTPUT };
+  const to = isError ? 'failed' : 'completed';
+  try {
+    const won = await transitionIntentAndPublish(
+      intentId,
+      to,
+      {
+        executedAt: new Date(),
+        // Classified from the parsed output (as the main path does); only the
+        // stable code is stored, never the output itself.
+        ...(isError
+          ? {
+              errorCode: isCallerRefusalResult(safeParseJson(output))
+                ? CALLER_VERIFICATION_REQUIRED_CODE
+                : INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE,
+              result,
+            }
+          : { result }),
+      },
+      orgId,
+      isError ? 'intent_failed' : 'intent_completed',
+    );
+    if (!won) {
+      reportLostTerminalCas({ intentId, orgId, toolName, intendedStatus: to, casLabel: 'ai_sdk_topology_inline_completion', executed: true });
+    }
+  } catch (err) {
+    // As on the main path: the CAS shares a transaction with its outbox
+    // insert, so a failure leaves the intent `executing` — report, don't just log.
+    console.error(`[AI-SDK] Failed to CAS topology action intent to ${to} for ${toolName}:`, intentId, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+}
+
 async function topologyPostToolUse(session: ActiveSession, toolName: string, input: Record<string, unknown>, output: string, isError: boolean, durationMs: number, sdkToolUseId: string | undefined, refusalLedgered: boolean, executingRow: { executionId: string } | undefined): Promise<void> {
   session.pendingTurnToolExecutionCount += 1;
   // No tool row is written here, but the call must stop being pending or the
@@ -3935,10 +4147,17 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       // #12131: and its `executing` row closes now, output withheld, rather
       // than waiting for the stale-execution reaper.
       if (executingRow) await closeTopologyExecutingRow(session, toolName, executingRow.executionId, isError, durationMs);
+      // #12149: and so does the intent its release left `executing`.
+      if (releasedIntent) await completeTopologyReleasedIntent(toolName, releasedIntent, output, isError);
       return;
     }
     if (session.topologyInvestigation) {
-      await topologyPostToolUse(session, toolName, input, output, isError, durationMs, sdkToolUseId, refusalLedgered, executingRow);
+      try {
+        await topologyPostToolUse(session, toolName, input, output, isError, durationMs, sdkToolUseId, refusalLedgered, executingRow);
+      } finally {
+        // The tool ran: its intent terminalizes even if the bookkeeping above threw.
+        if (releasedIntent) await completeTopologyReleasedIntent(toolName, releasedIntent, output, isError);
+      }
       return;
     }
     // Count this tool call toward the turn's tool_execution_count rollup

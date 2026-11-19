@@ -9,3 +9,6 @@ import "os"
 func platformSkippedReparsePoint(string, os.FileInfo) (skippedReparsePoint, bool) {
 	return skippedReparsePoint{}, false
 }
+
+// platformRawWinAttrs: Windows file attributes do not exist here (#7326).
+func platformRawWinAttrs(os.FileInfo) uint32 { return 0 }

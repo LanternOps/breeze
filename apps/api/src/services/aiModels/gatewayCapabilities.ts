@@ -6,15 +6,23 @@
  * bound to the endpoint fingerprint and the fidelity-harness version.
  *
  * Missing, malformed, failed, stale-harness or other-endpoint records all
- * derive to UNVERIFIED (thinking unknown, no tools): W03's `tools_unsupported`
- * rule then keeps the offering off every tool surface, and buildWireParams
- * sends nothing. The RECORD decides tools and thinking; tree leaves that claim
- * more than the record are ignored, so an edited tree alone grants nothing.
- * Pure; no I/O.
+ * derive to UNVERIFIED capabilities (thinking unknown, no tools): W03's
+ * `tools_unsupported` rule then keeps the offering off every tool surface, and
+ * buildWireParams sends nothing. The RECORD decides tools and thinking; tree
+ * leaves that claim more than the record are ignored, so an edited tree alone
+ * grants nothing.
+ *
+ * #12177: the STATE tells "never verified" (`unverified`) apart from "a record
+ * is there but fails the schema" (`invalid`), so the operator is told to verify
+ * again instead of seeing a model that looks untouched. Both grant nothing. The
+ * derivation is pure; the only side effect is a once-per-offering warning and
+ * Sentry event for an `invalid` record, and only when the caller names the
+ * offering.
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { FIDELITY_HARNESS_VERSION } from '../llm/providerFidelityHarness';
+import { captureException } from '../sentry';
 import { deriveCapabilities, type DerivedCapabilities } from './capabilities';
 
 export interface GatewayVerificationRecord {
@@ -29,7 +37,7 @@ export interface GatewayVerificationRecord {
   summary: string | null;
 }
 
-export type GatewayVerificationState = 'unverified' | 'verified' | 'failed' | 'stale';
+export type GatewayVerificationState = 'unverified' | 'invalid' | 'verified' | 'failed' | 'stale';
 
 const recordSchema = z.object({
   harnessVersion: z.string().min(1).max(20),
@@ -74,6 +82,61 @@ export function readVerification(raw: unknown): GatewayVerificationRecord | null
   return parsed.success ? parsed.data : null;
 }
 
+type RecordRead =
+  | { kind: 'absent' }
+  | { kind: 'invalid'; issues: string[] }
+  | { kind: 'ok'; record: GatewayVerificationRecord };
+
+/** `path:code` per schema issue; never the value, the message or an unknown key's name. */
+function issueSummary(issues: readonly { path: readonly PropertyKey[]; code: string }[]): string[] {
+  return issues.map((i) => `${i.path.length > 0 ? i.path.map(String).join('.') : '(record)'}:${i.code}`);
+}
+
+/**
+ * Like readVerification, but says WHY there is no record. A capabilities column
+ * stored double-encoded (a JSON string that holds the tree) is `invalid`, not
+ * absent: it is a record nobody can read. It is never parsed into a grant.
+ */
+function readRecord(raw: unknown): RecordRead {
+  if (typeof raw === 'string') {
+    let decoded: unknown;
+    try { decoded = JSON.parse(raw); } catch { return { kind: 'absent' }; }
+    return isObject(decoded) && Object.hasOwn(decoded, 'breeze_verification')
+      ? { kind: 'invalid', issues: ['(capabilities):double_encoded'] }
+      : { kind: 'absent' };
+  }
+  if (!isObject(raw) || !Object.hasOwn(raw, 'breeze_verification')) return { kind: 'absent' };
+  const parsed = recordSchema.safeParse((raw as { breeze_verification?: unknown }).breeze_verification);
+  return parsed.success ? { kind: 'ok', record: parsed.data } : { kind: 'invalid', issues: issueSummary(parsed.error.issues) };
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * Offerings already reported as invalid by this process. One report per run of
+ * invalid reads: the read runs on every snapshot and every candidate build, and
+ * a readable read of the offering removes it again. Bounded by clearing,
+ * so a huge fleet re-reports at worst once per cap's worth of offerings.
+ */
+const reportedInvalid = new Set<string>();
+const REPORTED_INVALID_CAP = 10_000;
+
+function reportInvalid(offeringId: string, issues: string[]): void {
+  if (reportedInvalid.has(offeringId)) return;
+  if (reportedInvalid.size >= REPORTED_INVALID_CAP) reportedInvalid.clear();
+  reportedInvalid.add(offeringId);
+  const message = `offering ${offeringId}: breeze_verification record fails the schema (${issues.join(', ')}); shown as invalid, no tool capability until verified again`;
+  console.warn(`[aiModels] ${message}`);
+  captureException(
+    new Error(message),
+    undefined,
+    { service: 'aiModels', stage: 'offering_verification_read' },
+    { fingerprint: ['aiModels', 'offering_verification_invalid'] },
+  );
+}
+
 const NO_THINKING = {
   thinking: { types: { adaptive: { supported: false }, enabled: { supported: false } } },
   effort: { supported: false },
@@ -91,13 +154,25 @@ export function verifiedCapabilitiesTree(
   return { ...thinkingPart, tool_use: { supported: v.passed && v.toolUse }, breeze_verification: { ...v } };
 }
 
-export function verifiedGatewayCapabilities(raw: unknown, currentFingerprint: string): {
+/**
+ * `offeringId`: name the offering so an `invalid` record is logged and sent to
+ * Sentry (once per offering per process). Every production caller passes it.
+ */
+export function verifiedGatewayCapabilities(raw: unknown, currentFingerprint: string, opts?: { offeringId?: string }): {
   capabilities: DerivedCapabilities;
   state: GatewayVerificationState;
   record: GatewayVerificationRecord | null;
 } {
-  const record = readVerification(raw);
-  if (!record) return { capabilities: unverified(), state: 'unverified', record: null };
+  const read = readRecord(raw);
+  // A readable read re-arms the report, so an offering that is verified again
+  // and later corrupted again is reported again.
+  if (read.kind !== 'invalid' && opts?.offeringId) reportedInvalid.delete(opts.offeringId);
+  if (read.kind === 'absent') return { capabilities: unverified(), state: 'unverified', record: null };
+  if (read.kind === 'invalid') {
+    if (opts?.offeringId) reportInvalid(opts.offeringId, read.issues);
+    return { capabilities: unverified(), state: 'invalid', record: null };
+  }
+  const { record } = read;
   if (record.harnessVersion !== FIDELITY_HARNESS_VERSION || record.endpointFingerprint !== currentFingerprint) {
     return { capabilities: unverified(), state: 'stale', record };
   }

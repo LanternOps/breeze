@@ -47,12 +47,10 @@ export function expectDefaultPageFits(toolName: string, raw: string): number {
  * name here is never acceptable — give the new tool a page instead.
  */
 export const UNBOUNDED_LIST_READS: ReadonlySet<string> = new Set([
+  // inheritanceChain has one entry per assigned policy (device, every group, site,
+  // org, partner). A chain cap alone cannot land: the features map already takes
+  // ~7 K of the 8 K budget for a device with every feature type assigned (#6734).
   'get_effective_configuration',
+  // Reads executive_summaries, which nothing in the repo writes (#6734).
   'get_executive_summary',
-  'get_user_risk_detail',
-  'get_vulnerability_report',
-  'list_deliverable_templates',
-  'list_org_documents',
-  'query_custom_fields',
-  'search_documentation',
 ]);

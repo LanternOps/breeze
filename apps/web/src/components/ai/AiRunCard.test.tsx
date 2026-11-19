@@ -418,7 +418,10 @@ describe('AiRunCard (spec §5.5)', () => {
     vi.useFakeTimers();
     try {
       let resolveFetch!: (v: unknown) => void;
-      fetchWithAuth.mockReturnValue(new Promise((r) => { resolveFetch = r; }));
+      fetchWithAuth.mockReturnValueOnce(new Promise((r) => { resolveFetch = r; }));
+      // The settling poll reads the run as settled; a stale read would be
+      // retried a bounded number of times (#12137), covered separately.
+      fetchWithAuth.mockResolvedValue(detail({ status: 'completed' }));
       const { rerender } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
       await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       expect(fetchWithAuth).toHaveBeenCalledTimes(1);
@@ -770,6 +773,143 @@ describe('analysis chain surface (W06)', () => {
     expect(queryByTestId('ai-run-card-cost')!.textContent).not.toMatch(/0\.05/);
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+  });
+
+  // #12137: the settled cost comes from the single one-shot poll, so a failed or
+  // stale read of it gets a short, bounded retry instead of leaving no cost.
+  describe('settling poll retry (#12137)', () => {
+    const liveDone = { runId: RUN, status: 'completed', summary: null, artifacts: [], progress: [] } as never;
+    const settled = () => detail({ profile: 'analysis', status: 'completed', costCents: 12, computeCents: 7 });
+
+    it('retries the settling poll after an HTTP error and then shows the settled cost', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
+        fetchWithAuth.mockResolvedValue(settled());
+        const { queryByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={liveDone} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+        expect(queryByTestId('ai-run-card-cost')).toBeNull();
+        await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+        expect(queryByTestId('ai-run-card-cost')!.textContent).toMatch(/0\.19/);
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('retries the settling poll after a network error', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockRejectedValueOnce(new Error('network'));
+        fetchWithAuth.mockResolvedValue(settled());
+        const { queryByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={liveDone} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+        expect(queryByTestId('ai-run-card-cost')!.textContent).toMatch(/0\.19/);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('retries when the settling poll still reads the run as in progress', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockResolvedValueOnce(detail({ profile: 'analysis', status: 'running', costCents: 5, computeCents: 0 }));
+        fetchWithAuth.mockResolvedValue(settled());
+        const { queryByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={liveDone} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(queryByTestId('ai-run-card-cost')).toBeNull();
+        await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+        expect(queryByTestId('ai-run-card-cost')!.textContent).toMatch(/0\.19/);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('retries 2 s apart, not on the 5 s polling cadence', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+        render(<AiRunCard runId={RUN} initialStatus="running" run={liveDone} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_999); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+        await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(3);
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('retries when the settling poll still reads awaiting_approval after a live terminal result', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockResolvedValueOnce(detail({ profile: 'analysis', status: 'awaiting_approval', intents: [] }));
+        fetchWithAuth.mockResolvedValue(settled());
+        const { queryByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={liveDone} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+        await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+        expect(queryByTestId('ai-run-card-cost')!.textContent).toMatch(/0\.19/);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('takes a settling poll when a live terminal result lands after an awaiting_approval poll', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockResolvedValueOnce(detail({ profile: 'analysis', status: 'awaiting_approval', intents: [] }));
+        fetchWithAuth.mockResolvedValue(settled());
+        const { queryByTestId, rerender } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+        // Nothing is the viewer's to decide, so the approval-parked poll stopped.
+        expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+        rerender(<AiRunCard runId={RUN} initialStatus="running" run={liveDone} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+        expect(queryByTestId('ai-run-card-cost')!.textContent).toMatch(/0\.19/);
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('gives up after two retries rather than polling forever', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+        const { queryByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={liveDone} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(3);
+        expect(queryByTestId('ai-run-card-cost')).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not retry after unmount', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+        const { unmount } = render(<AiRunCard runId={RUN} initialStatus="running" run={liveDone} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        unmount();
+        await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('lists no files from the live stream before the first poll lands', () => {

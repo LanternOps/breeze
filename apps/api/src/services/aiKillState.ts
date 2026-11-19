@@ -55,6 +55,7 @@ import {
 } from '../db';
 import { aiKillState as aiKillStateTable } from '../db/schema/aiKillState';
 import { users } from '../db/schema/users';
+import { registerClusterInvalidator } from './clusterInvalidator';
 
 export interface AiKillStateSnapshot {
   killed: boolean;
@@ -69,6 +70,21 @@ const DEFAULT_SNAPSHOT: AiKillStateSnapshot = { killed: false, epoch: 0 };
 
 let cachedSnapshot: AiKillStateSnapshot = DEFAULT_SNAPSHOT;
 let cachedAt = 0;
+
+/**
+ * #8636: a flip through `bumpAiKillState` on one API instance expires every
+ * other instance's TTL through the W05 cluster cache bus, so their next
+ * `readAiKillState()` re-reads the row instead of waiting out the 5 s. The
+ * received drop only expires the TTL: it keeps the last snapshot (the sync
+ * seam keeps answering with it until that re-read lands, exactly as at TTL
+ * expiry) and does no I/O. A flip by direct SQL publishes nothing and stays
+ * bounded by the TTL.
+ */
+let killStateGeneration = 0;
+const killStateInvalidator = registerClusterInvalidator('ai-kill-state', () => {
+  killStateGeneration += 1;
+  cachedAt = 0;
+});
 
 function selectGlobalRow() {
   return db
@@ -118,17 +134,29 @@ export async function readAiKillState(): Promise<AiKillStateSnapshot> {
   const now = Date.now();
   if (now - cachedAt < CACHE_TTL_MS) return cachedSnapshot;
 
+  const generationAtStart = killStateGeneration;
+  let snapshot: AiKillStateSnapshot;
   try {
     const row = await readGlobalRowSystemScoped();
-    cachedSnapshot = row
+    snapshot = row
       ? { killed: row.killed, epoch: row.epoch }
       : { killed: true, epoch: -1 };
   } catch (error) {
     console.error('[aiKillState] failed to read ai_kill_state — failing closed', { error });
-    cachedSnapshot = { killed: true, epoch: -1 };
+    snapshot = { killed: true, epoch: -1 };
   }
-  cachedAt = now;
-  return cachedSnapshot;
+  if (generationAtStart === killStateGeneration) {
+    cachedSnapshot = snapshot;
+    cachedAt = now;
+  } else if (snapshot.epoch === -1) {
+    // Fail-closed always wins, even over a flip that landed mid-read.
+    cachedSnapshot = snapshot;
+  }
+  // Otherwise the flip (local bump or a received drop) landed while this read
+  // ran, so its row may predate the flip: it answers this caller only. The
+  // module snapshot is left alone (no regression of the sync seam), and the
+  // TTL stays as the flip left it, so the next call reads again if it expired.
+  return snapshot;
 }
 
 /**
@@ -248,6 +276,15 @@ export async function bumpAiKillState(
     throw new Error("aiKillState: UPDATE affected no row — the seed row (id='global') is missing");
   }
 
+  // Every other instance re-reads on its next readAiKillState(). Announce it
+  // in the same transaction scope as the write: after the ambient commit when
+  // the write joined a system-scoped ambient transaction; at once when it ran
+  // in its own (already committed) transaction, so a later rollback of the
+  // caller's request transaction cannot swallow the announcement of a flip
+  // that did commit. (Inside a transaction the deferred second local drop
+  // expires this process's TTL once more after commit: one extra re-read.)
+  if (ambientScope === 'system') killStateInvalidator.invalidateAroundCommit();
+  else runOutsideDbContext(() => killStateInvalidator.invalidateAroundCommit());
   cachedSnapshot = { killed: row.killed, epoch: row.epoch };
   cachedAt = Date.now();
   return cachedSnapshot;

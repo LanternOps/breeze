@@ -40,6 +40,9 @@ type WindowsReadings struct {
 	// SkippedAdapters counts wired adapters dropped because their MAC could
 	// not be parsed; they cannot be tracked, but they do exist.
 	SkippedAdapters int
+	// NetAdapterCmdletsUnavailable is set when the host lacks the NetAdapter
+	// cmdlets, so no adapter can be read and the device cannot be assessed.
+	NetAdapterCmdletsUnavailable bool
 }
 
 // AdapterRecord is what the agent remembers about a wired adapter.
@@ -176,6 +179,11 @@ func Compute(in Inputs) Snapshot {
 	case in.Virtual:
 		snap.ReadinessState = StateUnsupportedVM
 		reasons["virtual_machine"] = true
+	case cmdletsUnavailable(in):
+		// No adapter can be read, so remembered readings are not current and
+		// "no wired adapter" would be a claim the agent cannot make.
+		snap.ReadinessState = StateUnproven
+		reasons["nic_cmdlets_unavailable"] = true
 	case len(macs) == 0 && in.Windows != nil && in.Windows.SkippedAdapters > 0:
 		// A wired adapter exists but could not be read; do not claim none.
 		snap.ReadinessState = StateUnproven
@@ -258,5 +266,14 @@ func fingerprint(in Inputs, fast string, macs []string, mem AdapterMemory, state
 		w(mem[mac].EEE)
 	}
 	w(state)
+	// Written only when set, so hosts with the cmdlets keep the fingerprint
+	// their wake proofs were recorded against.
+	if cmdletsUnavailable(in) {
+		w("nic_cmdlets_unavailable")
+	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func cmdletsUnavailable(in Inputs) bool {
+	return in.Windows != nil && in.Windows.NetAdapterCmdletsUnavailable
 }

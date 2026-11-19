@@ -367,7 +367,7 @@ DELETE /api/v1/system-tools/devices/:deviceId/registry/key?hive=HKEY_LOCAL_MACHI
 
 The **Event Log** tab lets you query the Windows Event Log system directly from the dashboard. Use it to investigate errors, audit security events, and troubleshoot service failures.
 
-- **Select a log.** The left panel lists all available event logs (System, Application, Security, etc.) with their record count and last write time. Click a log to select it.
+- **Select a log.** The left panel lists all available event logs (System, Application, Security, etc.) with their record count. Click a log to select it.
 - **Filter events.** Use the filter controls to narrow results by severity level (Information, Warning, Error, Critical), source, event ID, and date range.
 - **Browse results.** Events are displayed in a table with timestamp, level, source, event ID, and message. Severity levels are color-coded for quick scanning.
 - **View event details.** Click an event to see its full details including the raw XML data.
@@ -393,9 +393,9 @@ Each log entry includes:
 | `name`          | string | Log name (e.g. `System`)       |
 | `displayName`   | string | Human-readable name             |
 | `recordCount`   | number | Total number of records; omitted when the agent could not read the count |
-| `maxSize`       | number | Maximum log size in bytes       |
-| `retentionDays` | number | Retention policy in days        |
-| `lastWriteTime` | string | ISO 8601 timestamp of last write |
+| `maxSize`       | number | Maximum log size in bytes (the agent reports it as `maxSizeBytes`); `0` when unknown |
+| `retentionDays` | number | Always `0`: the agent does not report a retention policy |
+| `lastWriteTime` | string | Always empty: the agent does not report a last-write time |
 
 ### Getting log info
 

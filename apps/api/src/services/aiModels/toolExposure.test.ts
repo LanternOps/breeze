@@ -241,7 +241,7 @@ describe('pickAutoProfile', () => {
    * worked-example table (W02) is this table. A re-measured pin moves a threshold and must update it here.
    */
   it.each([
-    ['chat', 7_678, 16_728, 171_067],
+    ['chat', 7_702, 16_728, 171_067],
     ['helper', 7_147, 10_291, 16_920],
     ['script_builder', 7_777, 9_929, 14_730],
     ['ai_agents', 7_353, 15_983, 105_428],

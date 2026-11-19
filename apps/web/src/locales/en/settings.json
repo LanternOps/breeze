@@ -525,7 +525,8 @@
         "unverified": "Not verified",
         "failed": "Verification failed",
         "failedWithSummary": "Verification failed: {{summary}}",
-        "stale": "Re-verify: endpoint changed"
+        "stale": "Re-verify: endpoint changed",
+        "invalid": "Verification record unreadable: verify again"
       },
       "setPriceToEnable": "Set a price to enable",
       "manual": {
@@ -5249,7 +5250,7 @@
     "deviceRevoked": "Device revoked",
     "deviceRenamed": "Device renamed",
     "approvalSecurity": "Approval security",
-    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "These devices can confirm high-risk approvals (privileged access, AI actions) with a biometric. Your phone registers itself automatically when you sign in to the Breeze mobile app; you can also register this browser with Windows Hello or Touch ID. All of this is optional — approvals still work without it.",
+    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "These devices can confirm high-risk approvals (privileged access, AI actions) with a biometric. Your phone registers itself automatically when you sign in to the Breeze mobile app; you can also register this browser with Windows Hello or Touch ID. Approving a high-risk or critical request needs one of these devices unless your partner's approval policy turns that off. Other approvals work without one.",
     "loadingApproverDevices": "Loading approver devices…",
     "tryAgain": "Try again",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "No approver devices registered yet. Sign in to the Breeze mobile app on your phone and it appears here automatically, or register this browser below to approve with a biometric.",

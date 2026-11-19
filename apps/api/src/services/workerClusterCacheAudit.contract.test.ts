@@ -14,7 +14,8 @@ import path from 'node:path';
  *
  * Audit result (the pinned set below): the worker's runtime import closure —
  * worker.ts plus every `global`-placement registry entry, following dynamic
- * imports — DOES reach four cluster-cache modules, so `worker.ts` starts the
+ * imports — DOES reach ten cluster-cache modules (four `cluster: true` HotPathTtlCaches, six
+ * `registerClusterInvalidator` caches from #8636), so `worker.ts` starts the
  * bus (asserted below) and this test pins exactly which cache modules may be
  * reachable. A new cluster cache landing on the worker path fails here until
  * it is reviewed and added with a reason; a worker that stops subscribing
@@ -33,6 +34,7 @@ const ROLE_SAFE_LEAVES = new Set([path.join(SRC_ROOT, 'services', 'agentCommandR
 const MECHANISM = new Set([
   path.join(SRC_ROOT, 'services', 'hotPathCache.ts'),
   path.join(SRC_ROOT, 'services', 'clusterCacheRegistry.ts'),
+  path.join(SRC_ROOT, 'services', 'clusterInvalidator.ts'),
 ]);
 
 /**
@@ -40,6 +42,20 @@ const MECHANISM = new Set([
  * that justifies it. All are safe ONLY because worker.ts subscribes.
  */
 const ALLOWED_WORKER_CACHE_MODULES: Record<string, string> = {
+  // #8636 bus-bound caches (registerClusterInvalidator). All six were already on
+  // the worker closure before #8636; the bus only made remote writes reach them.
+  'services/aiKillState.ts':
+    'jobs/aiAgentRunner.ts: agent tool exposure runs aiGuardrails.checkAgentGuardrails, which reads the kill-switch snapshot',
+  'services/llmProviderCatalog.ts':
+    'jobs/aiAgentRunner.ts + jobs/aiBudgetReservationSweep.ts: aiCostTracker resolves catalog entry names',
+  'services/aiModels/gatewayConnectionState.ts':
+    'jobs/aiAgentRunner.ts: model clients are built through aiModels/connectionFactory',
+  'oauth/partnerScopePolicy.ts':
+    'import-only: oauth/effectiveScopes <- services/mcpPrincipalAuth <- actionIntents/actorContext (AI tool closure); no worker job is known to read it',
+  'services/ipAllowlist.ts':
+    'import-only: middleware/ipAllowlistGuard <- middleware/auth, pulled in by services shared with routes; no worker job reads it',
+  'services/remoteAccessPolicy.ts':
+    'import-only: routes/tunnelWs + aiToolsRemote via the services/index.ts barrel; no worker job is known to read it',
   'services/agentOrgSettingsCache.ts':
     'topology/flags.ts reads org topology flags from jobs/unifiTelemetryWorker.ts',
   'services/entitlements.ts': 'jobs/wispWakeScheduler.ts reads partner entitlements',
@@ -155,7 +171,7 @@ function clusterCacheModules(): string[] {
   return [...sourceFiles(SRC_ROOT)].filter(
     (f) =>
       !MECHANISM.has(f) &&
-      /\bcluster\s*:\s*true\b|registerClusterCache\(/.test(strip(fs.readFileSync(f, 'utf8'))),
+      /\bcluster\s*:\s*true\b|registerClusterCache\(|registerClusterInvalidator\(/.test(strip(fs.readFileSync(f, 'utf8'))),
   );
 }
 

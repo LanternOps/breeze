@@ -82,7 +82,7 @@ export async function buildCatalogSummary(): Promise<AiModelsSnapshotDto['catalo
 function verificationDto(o: Offering, conn: PartnerAiConnection | undefined): AiOfferingVerificationDto | null {
   if (!conn || !isGatewayConnectionKind(conn.kind)) return null;
   const fingerprint = endpointFingerprint({ kind: conn.kind, baseUrl: conn.baseUrl, providerConfig: conn.providerConfig ?? null });
-  const { state, record } = verifiedGatewayCapabilities(o.capabilities, fingerprint);
+  const { state, record } = verifiedGatewayCapabilities(o.capabilities, fingerprint, { offeringId: o.id });
   return {
     state, at: record?.at ?? null, harnessVersion: record?.harnessVersion ?? null, summary: record?.summary ?? null,
     surfaces: surfaceReadinessDto(o, conn, fingerprint),

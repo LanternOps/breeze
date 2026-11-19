@@ -43,7 +43,7 @@ import {
 } from './orgDocumentService';
 
 type MockCalls = { mock: { calls: unknown[][]; invocationCallOrder: number[] } };
-type ChainName = 'select' | 'insert' | 'update' | 'set' | 'values' | 'where' | 'for' | 'transaction';
+type ChainName = 'select' | 'insert' | 'update' | 'set' | 'values' | 'where' | 'orderBy' | 'for' | 'transaction';
 const chain = db as unknown as Record<ChainName, MockCalls>;
 const lastValues = () => chain.values.mock.calls.at(-1)?.[0] as Record<string, unknown>;
 const lastSet = () => chain.set.mock.calls.at(-1)?.[0] as Record<string, unknown>;
@@ -214,6 +214,15 @@ describe('orgDocumentService (service deliverables W03)', () => {
   });
 
   describe('listDocuments', () => {
+    // #6734: the AI tool pages this list in memory, so the order must be total —
+    // created_at is the transaction start time and ties within one transaction.
+    it('orders newest first with id as the tie-break', async () => {
+      queueResult([]);
+      await listDocuments('org1', {}, actor);
+      const order = (chain.orderBy.mock.calls.at(-1) ?? []).map((f: unknown) => new PgDialect().sqlToQuery(f as SQL).sql);
+      expect(order).toEqual(['"org_documents"."created_at" desc', '"org_documents"."id" desc']);
+    });
+
     it('returns chain heads only, never soft-deleted rows, newest first by default', async () => {
       queueResult([{ ...docRow(), supersededByDocumentId: null }]);
       const rows = await listDocuments('org1', {}, actor);

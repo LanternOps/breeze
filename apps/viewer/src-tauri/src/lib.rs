@@ -569,6 +569,44 @@ fn extract_device_id(url: &str) -> Option<String> {
     None
 }
 
+/// Non-empty value of `key` in a deep link's query string. Quiet on a miss,
+/// unlike [`extract_session_id`]: callers here probe links that legitimately
+/// lack the key (VNC links carry no `session=`).
+fn query_param<'a>(url: &'a str, key: &str) -> Option<&'a str> {
+    let (_, query) = url.split_once('?')?;
+    query
+        .split('&')
+        .find_map(|pair| {
+            pair.split_once('=')
+                .filter(|(k, _)| *k == key)
+                .map(|(_, v)| v)
+        })
+        .filter(|v| !v.is_empty())
+}
+
+/// Label of a session window that was created for the same target as `url`
+/// but has not loaded far enough to register in `DeviceMap` / `SessionMap`.
+///
+/// A window is "pending" from `create_session_window` until its frontend
+/// applies the link (`clear_pending_deep_link`). Without this check two links
+/// for one device routed back to back both find empty maps and each build a
+/// window (#11753). Matches the same URL, the same device, or the same
+/// session — the same targets the registered-window dedupe uses.
+fn pending_window_for(url: &str, pending: &HashMap<String, String>) -> Option<String> {
+    let same = |key: &str, other: &str| match (query_param(url, key), query_param(other, key)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    };
+    pending
+        .iter()
+        .filter(|(_, other)| {
+            other.as_str() == url || same("device", other) || same("session", other)
+        })
+        .map(|(label, _)| label.clone())
+        // HashMap order is arbitrary; pick deterministically.
+        .min()
+}
+
 /// Called by the frontend to poll for a pending deep link URL.
 /// Returns the URL for the calling window without consuming it (retries safe).
 #[tauri::command]
@@ -893,6 +931,22 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
                 }
                 return;
             }
+        }
+    }
+
+    // A window created for this device/session moments ago has not registered
+    // yet, so the maps above miss it. Focus it rather than build a second
+    // window for one connect (#11753).
+    let pending_label = app.try_state::<DeepLinkState>().and_then(|state| {
+        let links = lock_or_recover(&state.0, "deep_link_state");
+        pending_window_for(&url, &links)
+    }); // lock released here
+    if let Some(label) = pending_label {
+        if let Some(window) = app.get_webview_window(&label) {
+            if let Err(err) = window.set_focus() {
+                eprintln!("Failed to focus pending session window {}: {}", label, err);
+            }
+            return;
         }
     }
 
@@ -1530,6 +1584,11 @@ pub fn run() {
     // down its cross-thread (async-queued) path, deferring build() to a clean tick.
     // This mirrors the macOS on_open_url handler (search `on_open_url`, in the
     // .setup() closure below), which already does this.
+    //
+    // This callback is the ONLY route for a link reaching a running viewer on
+    // Windows/Linux. The plugin is built without its `deep-link` feature, which
+    // would also forward the argv to on_open_url and route each link twice —
+    // two windows per click (#11753; see Cargo.toml).
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -1620,6 +1679,9 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             // Listen for deep link events when the app is already running.
+            // macOS only in practice: LaunchServices hands a running app the
+            // URL as an Apple event. On Windows/Linux a link arrives as a second
+            // launch, handled by the single-instance callback above (#11753).
             // IMPORTANT: on macOS, on_open_url fires on the main thread.
             // run_on_main_thread may execute synchronously when already on
             // the main thread, which means route_deep_link → build() would
@@ -2112,5 +2174,75 @@ mod tests {
             "breeze://connect?session=s&code={huge_code}&api=https%3A%2F%2Fapi.example.com"
         );
         assert!(validate_deep_link(&url).is_err());
+    }
+
+    /// #11753: with single-instance's `deep-link` feature on, a second launch's
+    /// argv is forwarded to the deep-link plugin (→ `on_open_url` →
+    /// `route_deep_link`) on Windows/Linux *and* passed to our callback, which
+    /// routes it again — one click, two windows. The callback is the one path
+    /// for a running instance, so the feature must stay off.
+    #[test]
+    fn single_instance_does_not_forward_to_deep_link_plugin() {
+        let manifest = include_str!("../Cargo.toml");
+        let dep = manifest
+            .lines()
+            .find(|l| l.trim_start().starts_with("tauri-plugin-single-instance"))
+            .expect("tauri-plugin-single-instance dependency line");
+        assert!(
+            !dep.contains("deep-link"),
+            "single-instance must not enable `deep-link` (routes every link twice): {dep}"
+        );
+    }
+
+    fn pending(entries: &[(&str, &str)]) -> HashMap<String, String> {
+        entries
+            .iter()
+            .map(|(label, url)| (label.to_string(), url.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn pending_window_for_matches_a_window_still_loading_the_same_target() {
+        let map = pending(&[
+            ("session-1", "breeze://connect?session=s1&code=c1&device=d1"),
+            ("session-2", "breeze://vnc?tunnel=t2&device=d2&code=c2"),
+        ]);
+        // The same link delivered twice (the #11753 double route).
+        assert_eq!(
+            pending_window_for("breeze://connect?session=s1&code=c1&device=d1", &map).as_deref(),
+            Some("session-1")
+        );
+        // A second session minted for the same device (a double click).
+        assert_eq!(
+            pending_window_for("breeze://connect?session=s9&code=c9&device=d1", &map).as_deref(),
+            Some("session-1")
+        );
+        // Same session, no device param (older web builds).
+        assert_eq!(
+            pending_window_for("breeze://connect?session=s1&code=other", &map).as_deref(),
+            Some("session-1")
+        );
+        // Same device via the VNC path.
+        assert_eq!(
+            pending_window_for("breeze://vnc?tunnel=t3&device=d2&code=c3", &map).as_deref(),
+            Some("session-2")
+        );
+    }
+
+    #[test]
+    fn pending_window_for_ignores_other_targets() {
+        let map = pending(&[("session-1", "breeze://connect?session=s1&code=c1&device=d1")]);
+        assert_eq!(
+            pending_window_for("breeze://connect?session=s2&code=c2&device=d2", &map),
+            None
+        );
+        assert_eq!(
+            pending_window_for("breeze://connect?session=s2&code=c2", &map),
+            None
+        );
+        assert_eq!(
+            pending_window_for("breeze://connect?session=s1&code=c1", &pending(&[])),
+            None
+        );
     }
 }

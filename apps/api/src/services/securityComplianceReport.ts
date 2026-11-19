@@ -15,6 +15,7 @@ import { and, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { devices } from '../db/schema';
 import { managedDeviceConditions } from './managedDeviceScope';
+import { listLatestPostureScoresByOrgs } from './securityPosture';
 
 const pct = (num: number, denom: number): number =>
   denom === 0 ? 0 : Math.round((num / denom) * 100);
@@ -114,6 +115,28 @@ async function countExcludedBySiteFilter(
     .from(devices)
     .where(and(...managedDeviceConditions(orgId)));
   return Math.max(0, Number(row?.managedDeviceCount ?? 0) - inScopeCount);
+}
+
+/**
+ * The cover's posture score, for the same devices as every other figure
+ * (#12134). An unfiltered org-wide run keeps the org snapshot — the score the
+ * dashboard and earlier runs show. A run narrowed by a site filter or a
+ * site-restricted authority scores its own devices instead: the mean of each
+ * in-scope device's latest score, which is how the org snapshot is built from
+ * the whole org. Null when no in-scope device has been scored.
+ */
+async function scopedPostureScore(
+  orgId: string,
+  deviceIds: string[],
+  siteFilter: string[],
+  authority: OrgReportExecutionAuthority,
+  orgWideScore: number | null,
+): Promise<number | null> {
+  if (authority.scope.kind === 'unrestricted' && siteFilter.length === 0) return orgWideScore;
+  const scores = await listLatestPostureScoresByOrgs([orgId], deviceIds);
+  if (scores.length === 0) return null;
+  const mean = scores.reduce((sum, row) => sum + row.overallScore, 0) / scores.length;
+  return Math.max(0, Math.min(100, Math.round(mean)));
 }
 
 export async function generateSecurityCompliancePostureReport(
@@ -217,6 +240,13 @@ export async function generateSecurityCompliancePostureReport(
   const dnsActive = Boolean(w?.dns) && dnsSyncStatus !== 'error';
 
   const securityProducts = buildSecurityProductInventory(evidence.report.productEvidence);
+  const postureScore = await scopedPostureScore(
+    orgId,
+    evidence.devices.map((d) => d.id),
+    cfg.sites,
+    authority,
+    w?.postureRow?.overallScore ?? null,
+  );
 
   const summary = {
       org: { id: orgRow?.id ?? orgId, name: orgRow?.name ?? 'Unknown' },
@@ -272,7 +302,7 @@ export async function generateSecurityCompliancePostureReport(
         mfaStepUpEnforced: w.mfaStepUpEnforced
       } } : {}),
       securityProducts,
-      ...(w ? { postureScore: w.postureRow?.overallScore ?? null } : {}),
+      postureScore,
   } satisfies PostureSummary;
 
   return { rows, rowCount: rows.length, generatedAt, summary };

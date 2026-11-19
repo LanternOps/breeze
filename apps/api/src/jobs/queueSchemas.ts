@@ -101,6 +101,16 @@ export const backupProcessResultSchema = z.object({
   error: z.string().min(1).optional(),
 }).strict();
 
+// #12061: expired-snapshot cleanup runs on its own queue
+// (backupSnapshotCleanupWorker.ts). The same job shape stays in
+// backupQueueJobDataSchema so a job a previous version queued on the shared
+// backup queue still parses there and completes as a no-op.
+export const backupSnapshotCleanupQueueJobDataSchema = z.object({
+  type: z.literal('cleanup-expired-snapshots'),
+  meta: queueActorMetaSchema.optional(),
+}).strict();
+export type BackupSnapshotCleanupQueueJobData = z.infer<typeof backupSnapshotCleanupQueueJobDataSchema>;
+
 export const backupQueueJobDataSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('check-schedules'),

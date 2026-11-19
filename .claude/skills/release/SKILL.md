@@ -43,6 +43,17 @@ git -C ~/breeze log --oneline $PREV..HEAD                  # everything that wil
 2. Merge it.
 3. Push the tag at exactly that SHA. Once the tag exists, both scripts check the row whenever they read the registry: a tag that peels to a different commit fails with `candidate registry SHA mismatch`. If a candidate is abandoned before tagging, remove its row.
 
+**Agent-version gates.** Server-side `*_AGENT_VERSION` constants gate a feature on the agent release that first carries it, and are written before that release exists. A value that is too low shows the feature to agents that cannot do it; too high hides it from agents that can. List them and check every value above `$PREV`:
+
+```bash
+rg -n "[A-Z_]*AGENT_VERSION[A-Z_]* = '[0-9]" apps/api/src ee packages -g '!*.test.ts' -g '!node_modules'
+```
+
+- A gated feature whose agent code is in `$PREV..HEAD` must carry exactly `$NEW` (bare semver). If the tag is a different number than the constant guessed (a patch or a skipped minor), fix the constant on main first.
+- A value above `$NEW` is only right when the feature's agent code is not in this tag. `999.0.0` means gated off on purpose.
+- A value at or below `$PREV` whose agent code is in `$PREV..HEAD` is wrong; it claims an older agent can do it.
+- Example: `MIN_WAKE_STATUS_AGENT_VERSION` (`apps/api/src/services/wakeAvailability.ts`) is `0.130.0` because the wake readiness collector (#11996) merged after v0.129.0 was tagged.
+
 If migrations are listed, you're committing prod to those migrations the moment the new API boots. Read them; confirm there are no large-table rewrites/backfills before you proceed (call those out in the upgrade notes if present).
 
 **Check UI QA coverage (scheduled sweep).** The QA Mac sweeps `main` nightly (`ui-qa-sweep` Scheduled mode) and keeps a rolling `QA sweep ledger` issue. Before tagging: `gh issue list --label qa-sweep --search 'QA sweep ledger in:title' --json number --jq '.[0].number' | xargs gh issue view` — confirm the "Swept through main@<sha>" line is at or near the HEAD you're tagging, and triage the open `qa-sweep` issues — an open `[QA] Environment change on main needs upgrade notes` lists every runtime pin/env-var change (e.g. a Postgres major bump) that the Self-Hosting / Upgrade Notes must cover; `[QA] Dev stack fails to boot on main` is an automatic blocker — (`gh issue list --label qa-sweep --state open`) as ship/block. Per-PR proof: every merged PR the sweep covered carries `qa-swept` (plus a "Scheduled UI QA: <result>" comment) or `qa-no-ui`. List the gaps in the release range: `gh pr list --state merged --base main --search "merged:>=$(git log -1 --format=%cs $PREV) -label:qa-swept -label:qa-no-ui" --limit 200`. Any PRs merged after the swept SHA are un-QA'd; run `launchctl kickstart gui/$(id -u)/io.lanternops.breeze-qa-sweep` on the QA Mac (or a manual `ui-qa-sweep`) if they touch UI.
@@ -604,6 +615,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] **Advisory-debt pre-flight run** (`gh api ... select(.state=="draft")`) — any draft whose patched version already rolled out is **published before this release proceeds**
 - [ ] `docs/release-notes/next-release-draft.md` read and folded into the body — then cleared
 - [ ] `git diff $PREV..HEAD --stat` + migrations reviewed — blast radius understood
+- [ ] **Agent-version gates** (Step 0): every `*_AGENT_VERSION` constant above `$PREV` equals `$NEW` when its agent code ships in this tag (e.g. `MIN_WAKE_STATUS_AGENT_VERSION`)
 - [ ] **Pre-cut gates** (Step 0.2): newest sweep doc's "Before the release cut" list cleared, sweep fix PR merged, live-agent rows run on the lab rigs (not deferred)
 - [ ] **Dynamic security gates** (Step 0.3) at the tag SHA: private extended fuzz green, Tenant Isolation E2E green, touched-area pentest playbook entries run on the lab and recorded privately
 - [ ] **macOS upgrade-in-place gate** (Step 0.25): previous version → candidate via auto-update on each Mac leg; no TCC prompt, helper loaded within 60 s with no manual bootstrap (#10868), `canCapture=true`, desktop connects, wallpaper back — a leg with no lab host is named in the release body's known gaps

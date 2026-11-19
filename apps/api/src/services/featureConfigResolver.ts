@@ -48,6 +48,8 @@ import {
 } from '@breeze/shared';
 import {
   MAINTENANCE_DATETIME_TIME_PATTERN,
+  MAINTENANCE_DAY_OF_MONTH_MAX,
+  MAINTENANCE_DAYS_OF_WEEK,
   MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN,
   MAINTENANCE_TIME_OF_DAY_PATTERN,
   securityAgentsInlineSettingsSchema,
@@ -2928,8 +2930,9 @@ export function parseRecurringWindowAnchor(
  * Recurrence values (all times in the configured timezone):
  *   - 'once'    — window starts at the `windowStart` datetime
  *   - 'daily'   — window starts every day at the `windowStart` time of day
- *   - 'weekly'  — window starts every Sunday at the `windowStart` time of day
- *   - 'monthly' — window starts on the 1st of each month at the `windowStart` time of day
+ *   - 'weekly'  — window starts every `dayOfWeek` (default Sunday) at the `windowStart` time of day
+ *   - 'monthly' — window starts on day `dayOfMonth` (default the 1st; the last day of a
+ *                 shorter month) of each month at the `windowStart` time of day
  *
  * Recurring cadences fall back to 00:00 when no `windowStart` is stored, which
  * is what every recurring window did before issue #4224.
@@ -3002,8 +3005,61 @@ function onceWindowStartWallClock(rawWindowStart: string, timezone: string | nul
  * or an unknown recurrence). This is THE recurrence arithmetic: the W04
  * projector advances from this value rather than re-deriving the cadence.
  */
+/**
+ * The settings fields the recurrence arithmetic reads. The #9574 day fields
+ * are optional: every stored row carries them (NOT NULL), but settings
+ * assembled from an older inline-settings blob may not, and absent means the
+ * pre-#9574 day (Sunday / the 1st).
+ */
+export type MaintenanceRecurrenceSettings = Pick<
+  typeof configPolicyMaintenanceSettings.$inferSelect,
+  'recurrence' | 'windowStart' | 'timezone'
+> & {
+  dayOfWeek?: string | null;
+  dayOfMonth?: number | null;
+};
+
+/**
+ * The configured weekday as a `getUTCDay()` index (0 = Sunday). Absent — a
+ * settings object assembled before #9574 — is Sunday, the day weekly windows
+ * were pinned to. A present-but-unknown value cannot be written (shared schema
+ * + DB CHECK), so it warns and also falls back to Sunday rather than never
+ * opening.
+ */
+export function maintenanceWeekdayIndex(dayOfWeek: string | null | undefined): number {
+  if (dayOfWeek === null || dayOfWeek === undefined) return 0;
+  const index = (MAINTENANCE_DAYS_OF_WEEK as readonly string[]).indexOf(dayOfWeek);
+  if (index === -1) {
+    console.warn(`[FeatureConfigResolver] Unknown maintenance dayOfWeek "${dayOfWeek}"; opening the weekly window on Sunday`);
+    return 0;
+  }
+  return index;
+}
+
+/** The configured day of month (1–31). Absent or out of range → the 1st, as `maintenanceWeekdayIndex`. */
+export function maintenanceDayOfMonth(dayOfMonth: number | null | undefined): number {
+  if (dayOfMonth === null || dayOfMonth === undefined) return 1;
+  if (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > MAINTENANCE_DAY_OF_MONTH_MAX) {
+    console.warn(`[FeatureConfigResolver] Out-of-range maintenance dayOfMonth "${dayOfMonth}"; opening the monthly window on the 1st`);
+    return 1;
+  }
+  return dayOfMonth;
+}
+
+/**
+ * The monthly occurrence in (`year`, `month`), wall-clock space. `month` may
+ * run past either end of the year (Date.UTC normalizes it). A `dayOfMonth`
+ * beyond the month's length lands on its last day — 31 opens on 28/29
+ * February and 30 April — so no month is skipped and none overflows into the
+ * next one.
+ */
+function monthlyOccurrenceStart(year: number, month: number, dayOfMonth: number, hours: number, minutes: number): Date {
+  const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(year, month, Math.min(dayOfMonth, daysInMonth), hours, minutes, 0, 0));
+}
+
 export function maintenanceOccurrenceStart(
-  settings: Pick<typeof configPolicyMaintenanceSettings.$inferSelect, 'recurrence' | 'windowStart' | 'timezone'>,
+  settings: MaintenanceRecurrenceSettings,
   localNow: Date
 ): Date | null {
   // Lazily resolved so the `once` branch — which reads windowStart as a full
@@ -3040,11 +3096,13 @@ export function maintenanceOccurrenceStart(
       return windowStart;
     }
     case 'weekly': {
-      // Window starts at the configured time of day on Sunday. If this
-      // Sunday's occurrence has not begun yet, last Sunday's may still run.
+      // Window starts at the configured time of day on the configured weekday
+      // (#9574; Sunday before it). If this week's occurrence has not begun
+      // yet, last week's may still run.
       const { hours, minutes } = resolveRecurringAnchor();
+      const weekday = maintenanceWeekdayIndex(settings.dayOfWeek);
       windowStart = new Date(localNow);
-      windowStart.setUTCDate(windowStart.getUTCDate() - windowStart.getUTCDay()); // 0 = Sunday
+      windowStart.setUTCDate(windowStart.getUTCDate() - ((windowStart.getUTCDay() - weekday + 7) % 7));
       windowStart.setUTCHours(hours, minutes, 0, 0);
       if (windowStart > localNow) {
         windowStart.setUTCDate(windowStart.getUTCDate() - 7);
@@ -3052,16 +3110,18 @@ export function maintenanceOccurrenceStart(
       return windowStart;
     }
     case 'monthly': {
-      // Window starts at the configured time of day on the 1st. If this
-      // month's occurrence has not begun yet, last month's may still run.
+      // Window starts at the configured time of day on the configured day of
+      // the month (#9574; the 1st before it), clamped to the month's last day.
+      // If this month's occurrence has not begun yet, last month's may still
+      // run — computed afresh for that month, never by rolling this month's
+      // date back (31 March minus a month overflows to 3 March).
       const { hours, minutes } = resolveRecurringAnchor();
-      windowStart = new Date(localNow);
-      windowStart.setUTCDate(1);
-      windowStart.setUTCHours(hours, minutes, 0, 0);
+      const day = maintenanceDayOfMonth(settings.dayOfMonth);
+      const year = localNow.getUTCFullYear();
+      const month = localNow.getUTCMonth();
+      windowStart = monthlyOccurrenceStart(year, month, day, hours, minutes);
       if (windowStart > localNow) {
-        // Safe to roll the month back: the day is pinned to the 1st, so there
-        // is no short-month overflow.
-        windowStart.setUTCMonth(windowStart.getUTCMonth() - 1);
+        windowStart = monthlyOccurrenceStart(year, month - 1, day, hours, minutes);
       }
       return windowStart;
     }
@@ -3074,12 +3134,17 @@ export function maintenanceOccurrenceStart(
 /**
  * The occurrence after `occurrenceStart` for a recurring window, in the same
  * wall-clock space; `null` for `once` (there is no next) and for unknown
- * recurrences. The day stays pinned (every day / Sunday / the 1st at the
- * same wall time), so a month rollover cannot overflow into a short month.
+ * recurrences. Daily and weekly step a whole day / week at the same wall
+ * time. Monthly re-derives the day from the CONFIGURED `dayOfMonth` rather
+ * than stepping `occurrenceStart`: a day-31 window clamped to 28 February
+ * must next open on 31 March, not 28 March.
  */
-export function maintenanceNextOccurrenceStart(recurrence: string, occurrenceStart: Date): Date | null {
+export function maintenanceNextOccurrenceStart(
+  settings: Pick<MaintenanceRecurrenceSettings, 'recurrence' | 'dayOfMonth'>,
+  occurrenceStart: Date
+): Date | null {
   const next = new Date(occurrenceStart);
-  switch (recurrence) {
+  switch (settings.recurrence) {
     case 'daily':
       next.setUTCDate(next.getUTCDate() + 1);
       return next;
@@ -3087,8 +3152,13 @@ export function maintenanceNextOccurrenceStart(recurrence: string, occurrenceSta
       next.setUTCDate(next.getUTCDate() + 7);
       return next;
     case 'monthly':
-      next.setUTCMonth(next.getUTCMonth() + 1);
-      return next;
+      return monthlyOccurrenceStart(
+        occurrenceStart.getUTCFullYear(),
+        occurrenceStart.getUTCMonth() + 1,
+        maintenanceDayOfMonth(settings.dayOfMonth),
+        occurrenceStart.getUTCHours(),
+        occurrenceStart.getUTCMinutes()
+      );
     default:
       return null;
   }

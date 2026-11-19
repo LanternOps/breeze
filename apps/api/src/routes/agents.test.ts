@@ -76,9 +76,10 @@ const emptyWhere = () => vi.fn(() => Object.assign(Promise.resolve([]), {
 }));
 // `.innerJoin()` chains to itself, so a joined read (the config-policy
 // compliance probe read, #11976) also resolves to [] by default.
-const joinableFrom = (): { where: ReturnType<typeof emptyWhere>; innerJoin: ReturnType<typeof vi.fn> } => ({
+const joinableFrom = (): { where: ReturnType<typeof emptyWhere>; innerJoin: ReturnType<typeof vi.fn>; leftJoin: ReturnType<typeof vi.fn> } => ({
   where: emptyWhere(),
   innerJoin: vi.fn(() => joinableFrom()),
+  leftJoin: vi.fn(() => joinableFrom()),
 });
 const defaultSelectChain = () => ({
   from: vi.fn(() => joinableFrom())
@@ -995,9 +996,9 @@ describe('agent routes', () => {
             return rowsChain(probePolicyRows);
           }
           // #11976: configuration-policy compliance rules feed the same
-          // probe list (joined read: innerJoin → innerJoin → where).
+          // probe list (joined read: innerJoin → innerJoin → leftJoin → where).
           if (table === configPolicyComplianceRulesTable) {
-            const joined = { innerJoin: vi.fn(() => joined), ...rowsChain(complianceRuleRows) };
+            const joined = { innerJoin: vi.fn(() => joined), leftJoin: vi.fn(() => joined), ...rowsChain(complianceRuleRows) };
             return joined;
           }
           // default chain's from() ignores its argument (vi.fn with no params)

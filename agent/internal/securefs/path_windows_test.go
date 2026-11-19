@@ -315,6 +315,29 @@ func TestInstallFileInterruptionLeavesDestinationIntact(t *testing.T) {
 // syscall; a regression that gaps on every publish still fails the transient
 // budget, and a second long absence in one run fails lookupLagBudget.
 //
+// #6176 again (2026-11-18, run 44269892258) failed with "0 inside a rename
+// syscall". Throwaway CI stress runs on the hosted windows-2025 and
+// windows-2022 images (about 1.6M publishes, QueryPerformanceCounter stamps)
+// settled the mechanism. In every one of 36 long absences, a single rename
+// syscall entered before the first miss was still executing at the last one.
+// Some of those syscalls stayed in the kernel for 100ms-2s. While they ran,
+// GetFileAttributesEx, CreateFile and a handle-relative NtCreateFile all
+// answered not-found within microseconds. A directory query blocked until the
+// rename returned, and then listed the name. The window needs a second handle
+// opening the target during the replace: one writer with no other opener gave
+// 0 absences in 70,800 publishes, despite 91 renames that stalled over 100ms.
+// One writer plus a reader that kept opening the file gave 4 in 83,200. The
+// legacy rename class (with retry) and 8.3-safe temporary names did not close
+// the window (4 in 172,000 and 8 in 184,800, against 6 in 176,400 for the
+// current path). It belongs to the kernel's rename. No publisher can remove
+// it, which is what the in-flight excuse already assumed.
+// That excuse missed this occurrence because Go's wall clock on the runner
+// moves in ~0.5ms steps. The rename entered a few hundred microseconds before
+// the first miss and was stamped EQUAL to it, and renamesSpanning requires
+// strictly-before. Every stamp the excuse compares now comes from one
+// orderedClock, so equal stamps cannot happen. The budgets, the ceiling and
+// both controls are unchanged.
+//
 // The budgets keep the assertion discriminating, and two controls prove it
 // (…DetectsAPublicationGap for the budgets, …DoesNotExcuseASustainedGap for the
 // excuses): a real
@@ -334,10 +357,19 @@ type publishFunc = func(handle, parent windows.Handle, name string) error
 // publishLog records every publishTemporary call, and every rename syscall
 // underneath it, made during a test.
 type publishLog struct {
+	// now stamps every record. It is the same orderedClock the reader's
+	// probes are stamped with, so "entered before the first miss" compares
+	// the order the calls ran in, not two readings of a ~0.5ms wall clock.
+	now     func() time.Time
 	mu      sync.Mutex
 	records []publishRecord
 	renames []renameCall
 }
+
+// newPublishLog returns a log stamped by now. There is deliberately no zero
+// value fallback: the concurrency test must pass the reader's own orderedClock,
+// and silently stamping with time.Now instead would reopen #6176.
+func newPublishLog(now func() time.Time) *publishLog { return &publishLog{now: now} }
 
 // ntSetInformationFunc is ntSetRenameInformation's signature.
 type ntSetInformationFunc = func(handle windows.Handle, iosb *windows.IO_STATUS_BLOCK, buf *byte, length uint32, class uint32) error
@@ -351,10 +383,10 @@ func (l *publishLog) wrapRename(call ntSetInformationFunc) ntSetInformationFunc 
 	return func(handle windows.Handle, iosb *windows.IO_STATUS_BLOCK, buf *byte, length uint32, class uint32) error {
 		l.mu.Lock()
 		i := len(l.renames)
-		l.renames = append(l.renames, renameCall{start: time.Now(), class: class})
+		l.renames = append(l.renames, renameCall{start: l.now(), class: class})
 		l.mu.Unlock()
 		err := call(handle, iosb, buf, length, class)
-		end := time.Now()
+		end := l.now()
 		l.mu.Lock()
 		l.renames[i].end, l.renames[i].done, l.renames[i].failed = end, true, err != nil
 		l.mu.Unlock()
@@ -392,9 +424,9 @@ func renameClasses(calls []renameCall) string {
 
 func (l *publishLog) wrap(publish publishFunc) publishFunc {
 	return func(handle, parent windows.Handle, name string) error {
-		start := time.Now()
+		start := l.now()
 		err := publish(handle, parent, name)
-		end := time.Now()
+		end := l.now()
 		l.mu.Lock()
 		l.records = append(l.records, publishRecord{start: start, end: end, err: err})
 		l.mu.Unlock()
@@ -439,15 +471,22 @@ func (l *publishLog) describe(firstMiss, lastMiss time.Time) string {
 	if !lastSuccess.IsZero() {
 		since = fmt.Sprintf("the last successful publish returned %v before it", firstMiss.Sub(lastSuccess))
 	}
-	inKernel := 0
+	inKernel, enteredInside := 0, 0
+	var longestInside time.Duration
 	renames := l.renameSnapshot()
 	for _, c := range renames {
 		if c.start.Before(firstMiss) && (!c.done || c.end.After(firstMiss)) {
 			inKernel++
 		}
+		if c.start.After(firstMiss) && c.start.Before(lastMiss) {
+			enteredInside++
+			if c.done {
+				longestInside = max(longestInside, c.end.Sub(c.start))
+			}
+		}
 	}
-	return fmt.Sprintf("%d publish(es) in flight when the first miss was issued (%d inside a rename syscall), %d returned inside the absence, %s; rename syscalls this run: %s",
-		inFlight, inKernel, publishesCompletedWithin(records, firstMiss, lastMiss), since, renameClasses(renames))
+	return fmt.Sprintf("%d publish(es) in flight when the first miss was issued (%d inside a rename syscall), %d returned inside the absence, %s; %d rename syscall(s) entered inside the absence (longest %v); rename syscalls this run: %s",
+		inFlight, inKernel, publishesCompletedWithin(records, firstMiss, lastMiss), since, enteredInside, longestInside, renameClasses(renames))
 }
 
 // replacementRun is what one concurrent-replacement scenario observed.
@@ -470,7 +509,8 @@ func runConcurrentReplacement(t *testing.T, writers, perWriter int, mutate func(
 	if err := os.WriteFile(dest, []byte("payload-seed"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	run := replacementRun{dest: dest, attempted: int64(writers * perWriter), log: &publishLog{}}
+	clock := newOrderedClock(time.Now)
+	run := replacementRun{dest: dest, attempted: int64(writers * perWriter), log: newPublishLog(clock.now)}
 	orig := publishTemporary
 	t.Cleanup(func() { publishTemporary = orig })
 	publish := orig
@@ -490,7 +530,7 @@ func runConcurrentReplacement(t *testing.T, writers, perWriter int, mutate func(
 		run.watch = watchForAbsenceExcusing(func() error {
 			_, err := os.Stat(dest)
 			return err
-		}, stop, transientMissRecheck, absenceClock{now: time.Now, sleep: time.Sleep}, run.log.excuse)
+		}, stop, transientMissRecheck, absenceClock{now: clock.now, sleep: time.Sleep}, run.log.excuse)
 	}()
 
 	var succeeded atomic.Int64
@@ -867,7 +907,7 @@ func TestEnsurePrivateDirTightensAPermissiveProtectedDACL(t *testing.T) {
 // publish path — otherwise the excuse silently never fires and the flake
 // returns looking exactly like before.
 func TestPublishLogRecordsRenameSyscalls(t *testing.T) {
-	var log publishLog
+	log := newPublishLog(time.Now)
 	entered := make(chan struct{})
 	release := make(chan error)
 	fake := log.wrapRename(func(windows.Handle, *windows.IO_STATUS_BLOCK, *byte, uint32, uint32) error {
@@ -892,7 +932,7 @@ func TestPublishLogRecordsRenameSyscalls(t *testing.T) {
 	}
 
 	// The seam is on the real publish path.
-	var real publishLog
+	real := newPublishLog(time.Now)
 	orig := ntSetRenameInformation
 	t.Cleanup(func() { ntSetRenameInformation = orig })
 	ntSetRenameInformation = real.wrapRename(orig)

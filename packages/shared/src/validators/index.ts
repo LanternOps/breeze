@@ -1357,6 +1357,20 @@ export const MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN = /(?:Z|[+-]\d{2}:?\d{2})$/
 
 export const MAINTENANCE_RECURRENCES = ['once', 'daily', 'weekly', 'monthly'] as const;
 
+/**
+ * #9574: the weekday a `weekly` window opens on, in the window's timezone.
+ * Same vocabulary as `patchInlineSettingsSchema.scheduleDayOfWeek`. Index
+ * order matches `Date#getUTCDay()` (0 = Sunday), which the evaluator relies on.
+ */
+export const MAINTENANCE_DAYS_OF_WEEK = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
+export type MaintenanceDayOfWeek = (typeof MAINTENANCE_DAYS_OF_WEEK)[number];
+/**
+ * #9574: the day a `monthly` window opens on. 1–31; in a month with fewer
+ * days the window opens on that month's last day, so 31 means "the last day
+ * of every month" and no month is skipped.
+ */
+export const MAINTENANCE_DAY_OF_MONTH_MAX = 31;
+
 /** True when `value` is a time-of-day a recurring window can be anchored to. */
 function isRecurringWindowAnchor(value: string): boolean {
   if (MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN.test(value)) return false;
@@ -1387,6 +1401,11 @@ export const maintenanceInlineSettingsSchema = z
     // 30 = the config_policy_maintenance_settings.window_start varchar width;
     // a longer value would otherwise reach Postgres and raise 22001 as a 500.
     windowStart: z.string().max(30).nullish(),
+    // #9574: read only by `weekly` / `monthly` respectively, but stored for
+    // every recurrence so switching cadence back keeps the admin's choice. The
+    // defaults are the days the evaluator pinned before these fields existed.
+    dayOfWeek: z.enum(MAINTENANCE_DAYS_OF_WEEK).default('sun'),
+    dayOfMonth: z.number().int().min(1).max(MAINTENANCE_DAY_OF_MONTH_MAX).default(1),
     // 72h ceiling matches the documented AI-tool contract; the floor is 1
     // because a zero/negative duration yields a window that never opens.
     durationHours: z.number().int().min(1).max(72).default(2),

@@ -4,6 +4,8 @@
  * DB-backed connection check registered for cross-replica staleness.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ClusterCacheBus, __setClusterCacheBusForTests } from '../clusterCacheBus';
+import { getClusterCacheTarget } from '../clusterCacheRegistry';
 
 const h = vi.hoisted(() => ({
   rows: new Map<string, { status: string; configVersion: number } | null>(),
@@ -13,11 +15,15 @@ const h = vi.hoisted(() => ({
   getModelGateway: vi.fn(),
   setGatewayConnectionCheck: vi.fn(),
   captured: [] as unknown[],
+  gate: null as Promise<void> | null,
 }));
 
 vi.mock('../../db', () => ({
   runOutsideDbContext: <T>(fn: () => T) => fn(),
   withSystemDbAccessContext: <T>(fn: () => T) => fn(),
+  // #8636 — revocation invalidates through the cluster invalidator.
+  runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
   db: {
     select: () => ({
       from: () => ({
@@ -26,6 +32,7 @@ vi.mock('../../db', () => ({
             h.reads += 1;
             if (h.readError) throw h.readError;
             const row = h.rows.get(cond.id);
+            if (h.gate) await h.gate;
             return row ? [row] : [];
           },
         }),
@@ -50,6 +57,7 @@ beforeEach(() => {
   h.rows.clear();
   h.reads = 0;
   h.readError = null;
+  h.gate = null;
   h.captured.length = 0;
   h.revokeConnection.mockReset().mockReturnValue(2);
   h.getModelGateway.mockReset().mockResolvedValue({ revokeConnection: h.revokeConnection });
@@ -130,5 +138,80 @@ describe('revokeGatewayConnectionGrants', () => {
     await expect(mod.revokeGatewayConnectionGrants('c1')).resolves.toBeUndefined();
     expect(error).toHaveBeenCalled();
     expect(h.captured).toHaveLength(1);
+  });
+});
+
+describe('cluster cache binding (#8636)', () => {
+  const NAME = 'ai-gateway-connection-state';
+  let published: Array<[string, string | null]>;
+
+  beforeEach(() => {
+    h.gate = null;
+    published = [];
+    const bus = new ClusterCacheBus({ origin: 'unit', getPublisher: () => null, createSubscriber: () => null });
+    vi.spyOn(bus, 'publish').mockImplementation(async (cache: string, key: string | null) => {
+      published.push([cache, key]);
+      return 'published';
+    });
+    __setClusterCacheBusForTests(bus);
+  });
+  afterEach(() => {
+    h.gate = null;
+    __setClusterCacheBusForTests(null);
+  });
+
+  it('a remote drop for one connection makes the next check re-read the row', async () => {
+    h.rows.set('c1', { status: 'active', configVersion: 4 });
+    expect(await mod.gatewayConnectionCheck('c1', 4)).toBe(true);
+    expect(await mod.gatewayConnectionCheck('c1', 4)).toBe(true);
+    expect(h.reads).toBe(1);
+
+    // Another replica changed the key (config version 5) and announced it.
+    h.rows.set('c1', { status: 'active', configVersion: 5 });
+    getClusterCacheTarget(NAME)!.invalidate('c1');
+
+    expect(await mod.gatewayConnectionCheck('c1', 4)).toBe(false);
+    expect(h.reads).toBe(2);
+  });
+
+  it('a remote drop with no key clears every connection', async () => {
+    h.rows.set('c1', { status: 'active', configVersion: 1 });
+    h.rows.set('c2', { status: 'active', configVersion: 1 });
+    await mod.gatewayConnectionCheck('c1', 1);
+    await mod.gatewayConnectionCheck('c2', 1);
+    expect(h.reads).toBe(2);
+
+    getClusterCacheTarget(NAME)!.invalidate();
+
+    await mod.gatewayConnectionCheck('c1', 1);
+    await mod.gatewayConnectionCheck('c2', 1);
+    expect(h.reads).toBe(4);
+  });
+
+  it('revokeGatewayConnectionGrants publishes [name, connectionId], with or without a started gateway', async () => {
+    await mod.revokeGatewayConnectionGrants('c1');
+    expect(published).toEqual([[NAME, 'c1']]);
+    await mod.acquireModelGateway();
+    await mod.revokeGatewayConnectionGrants('c2');
+    expect(published).toEqual([[NAME, 'c1'], [NAME, 'c2']]);
+  });
+
+  it('a check in flight when a remote drop lands answers its caller but is not cached', async () => {
+    let release!: () => void;
+    h.gate = new Promise<void>((resolve) => { release = resolve; });
+    // The parked read has already taken the pre-change row.
+    h.rows.set('c1', { status: 'active', configVersion: 4 });
+    const inFlight = mod.gatewayConnectionCheck('c1', 4);
+    await vi.waitFor(() => expect(h.reads).toBe(1));
+
+    getClusterCacheTarget(NAME)!.invalidate('c1');
+    h.gate = null;
+    h.rows.set('c1', { status: 'active', configVersion: 5 });
+    release();
+    expect(await inFlight).toBe(true);
+
+    // Not cached: the next check reads the new row and refuses the old grant.
+    expect(await mod.gatewayConnectionCheck('c1', 4)).toBe(false);
+    expect(h.reads).toBe(2);
   });
 });

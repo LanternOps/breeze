@@ -521,7 +521,8 @@ describe('waitForApproval expiry detail (#12079)', () => {
       { set: { status: 'rejected', errorMessage: 'Approval timed out' }, where: execPending },
       // A later mobile click then loses its own CAS instead of being told
       // "approved" for an action that will not run.
-      { set: { status: 'expired' }, where: requestPending },
+      // It records when, like every other expiry site (#12136).
+      { set: { status: 'expired', decidedAt: expect.any(Date) }, where: requestPending },
     ]);
     // The request is locked before the execution row (#12084 review).
     expect(lockCalls).toEqual([lockedByExecution]);
@@ -566,7 +567,7 @@ describe('waitForApproval expiry detail (#12079)', () => {
         },
       },
       { set: { status: 'denied', refusalReason: AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE }, where: requestIn('approved') },
-      { set: { status: 'expired' }, where: requestPending },
+      { set: { status: 'expired', decidedAt: expect.any(Date) }, where: requestPending },
     ]);
     expect(auditMock).toHaveBeenCalledTimes(1);
     expect(auditMock.mock.calls[0]![1]).toMatchObject({
@@ -675,7 +676,7 @@ describe('waitForApproval expiry detail (#12079)', () => {
     expect(selectMock).not.toHaveBeenCalled();
     expect(updates).toEqual([
       { set: { status: 'rejected', errorMessage: 'Approval wait ended before a decision was made' }, where: execPending },
-      { set: { status: 'expired' }, where: requestPending },
+      { set: { status: 'expired', decidedAt: expect.any(Date) }, where: requestPending },
     ]);
   });
 

@@ -308,6 +308,8 @@ describe('GET /m365/customer-graph-actions/connections', () => {
       missingGrants: [],
       unexpectedGrants: [],
       grantsVerifiedAt: '2026-07-14T10:00:00.000Z',
+      // A row verified before the column existed reads as exact (#12085).
+      grantReconciliationMode: 'exact',
       lastVerifiedAt: '2026-07-14T10:00:00.000Z',
       lastErrorCode: null,
     });
@@ -333,6 +335,21 @@ describe('GET /m365/customer-graph-actions/connections', () => {
     const body = await (await app().request(`/m365/customer-graph-actions/connections?orgId=${ORG_ID}`)).json();
     expect(body.onboardingEnabled).toBe(false);
     expect(body.connection.id).toBe(CONNECTION_ID);
+  });
+
+  it('exposes graph_token_only mode on an active connection (#12085)', async () => {
+    mocks.list.mockResolvedValue([connection({ grantReconciliationMode: 'graph_token_only' })]);
+    const body = await (await app().request(`/m365/customer-graph-actions/connections?orgId=${ORG_ID}`)).json();
+    expect(body.connection).toMatchObject({ status: 'active', grantHealth: 'active', grantReconciliationMode: 'graph_token_only' });
+  });
+
+  it('reports no reconciliation mode before any grant observation (#12085)', async () => {
+    mocks.list.mockResolvedValue([connection({
+      status: 'degraded', observedGrants: [], grantsVerifiedAt: null, grantReconciliationMode: null,
+      lastErrorCode: 'grant_reconciliation_unavailable', grantHealth: undefined,
+    })]);
+    const body = await (await app().request(`/m365/customer-graph-actions/connections?orgId=${ORG_ID}`)).json();
+    expect(body.connection.grantReconciliationMode).toBeNull();
   });
 
   it('returns no definitive drift when the first verified reconciliation is unavailable', async () => {

@@ -867,7 +867,31 @@ export type BackupGcResult = {
   orphansSwept: number;
   deferredIdentities: number;
   unreachableIdentities: number;
+  // #12061: set only when the run stopped before every storage identity was
+  // visited (time budget or deletion cap). Pass it back as
+  // `BackupGcRunOptions.resumeCursor` and the next run starts there.
+  resumeCursor?: string;
 };
+
+export type BackupGcRunOptions = {
+  // #12061: wall-clock deadline (epoch ms). Checked between storage
+  // identities, never inside one, so a run can overrun it by at most one
+  // identity's sweep. The first identity always runs.
+  deadlineMs?: number;
+  // A `resumeCursor` from an earlier run. The sweep starts at that identity
+  // and wraps around to the ones before it, so a run that keeps stopping early
+  // does not keep starving the identities after the first few. A cursor that
+  // matches no current identity starts from the first one.
+  resumeCursor?: string | null;
+};
+
+/**
+ * Opaque, stable cursor for one sweep unit (#12061). Hashed so the storage
+ * identity (bucket, endpoint, path) is not copied into Redis.
+ */
+export function backupGcResumeCursorFor(groupKey: string): string {
+  return createHash('sha256').update(groupKey).digest('hex').slice(0, 32);
+}
 
 // D15 bare-metal-recovery contract (Option A): a system_image snapshot
 // publishes a SEPARATE manifest under system-state/manifest.json, describing
@@ -2580,7 +2604,7 @@ function fencedObjectKeysUnderRoot(objectKeys: Iterable<string>, root: SnapshotK
  * Name and signature deliberately unchanged from pre-D18 — W01's
  * backupWorker.ts call site depends on this exact export.
  */
-export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> {
+export async function sweepUnreferencedBackupObjects(options: BackupGcRunOptions = {}): Promise<BackupGcResult> {
   const nowMs = Date.now();
   const graceMs = resolveBackupGcGraceMs();
   const orphanWindowMs = Math.max(resolveBackupOrphanManifestMaxAgeMs(), resolveBackupBaseLeaseMs() + graceMs);
@@ -2687,6 +2711,8 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     return {
       deleted: 0, skippedIdentities: identities.size, blockedIdentities: 0,
       retiredSwept: 0, orphansSwept: 0, deferredIdentities: 0, unreachableIdentities,
+      // Nothing was visited: keep the caller's place for the next run.
+      ...(options.resumeCursor ? { resumeCursor: options.resumeCursor } : {}),
     };
   }
 
@@ -2763,12 +2789,35 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     else identityGroupsByKey.set(groupKey, [identity]);
   }
 
-  for (const orgIdentities of identityGroupsByKey.values()) {
+  // #12061: start at the resume cursor (if it still names a unit) and wrap
+  // around, so a run that stops early hands the rest to the next run instead
+  // of revisiting the same first units every time.
+  const groupEntries = [...identityGroupsByKey.entries()];
+  const resumeIndex = options.resumeCursor
+    ? groupEntries.findIndex(([groupKey]) => backupGcResumeCursorFor(groupKey) === options.resumeCursor)
+    : -1;
+  const groupsInRunOrder = resumeIndex > 0
+    ? [...groupEntries.slice(resumeIndex), ...groupEntries.slice(0, resumeIndex)]
+    : groupEntries;
+  let resumeCursor: string | undefined;
+  let groupsStarted = 0;
+
+  for (const [groupKey, orgIdentities] of groupsInRunOrder) {
     const physicalKey = orgIdentities[0]!.key;
     if (deletesRemaining <= 0) {
       console.log('[BackupGC] Deletion cap reached for this run — stopping cleanly; remaining identities resume next run');
+      resumeCursor = backupGcResumeCursorFor(groupKey);
       break;
     }
+    if (groupsStarted > 0 && options.deadlineMs !== undefined && Date.now() >= options.deadlineMs) {
+      console.log(
+        `[BackupGC] Time budget spent after ${groupsStarted} of ${groupsInRunOrder.length} storage identities — ` +
+        'stopping cleanly; the next run resumes at the next identity',
+      );
+      resumeCursor = backupGcResumeCursorFor(groupKey);
+      break;
+    }
+    groupsStarted++;
 
     if (suspiciousIdentityKeys.has(physicalKey)) {
       skippedIdentities += orgIdentities.length;
@@ -3243,5 +3292,8 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     `${unreachableIdentities} unreachable` + (blockedIdentities > 0 ? ` (${blockedIdentities} blocked — sweep failed fail-closed: manifest fetch/parse, listing, or delete; see errors above)` : ''),
   );
 
-  return { deleted, skippedIdentities, blockedIdentities, retiredSwept, orphansSwept, deferredIdentities, unreachableIdentities };
+  return {
+    deleted, skippedIdentities, blockedIdentities, retiredSwept, orphansSwept, deferredIdentities, unreachableIdentities,
+    ...(resumeCursor !== undefined ? { resumeCursor } : {}),
+  };
 }

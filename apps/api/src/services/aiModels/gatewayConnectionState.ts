@@ -8,8 +8,11 @@
  *  - on every OTHER replica: `gatewayConnectionCheck`, registered with the
  *    gateway at boot, is consulted before each upstream dial and refuses a
  *    grant whose connection is no longer active at the grant's config_version
- *    (read through a short per-connection cache, so a change elsewhere takes
- *    effect within GATEWAY_CONNECTION_CHECK_TTL_MS).
+ *    (read through a short per-connection cache). The revoking process also
+ *    drops that cache entry on every other replica through the W05 cluster
+ *    cache bus (#8636), so their next dial re-reads the row within about 1 s;
+ *    with Redis down a change elsewhere takes effect within
+ *    GATEWAY_CONNECTION_CHECK_TTL_MS.
  *
  * The gateway starts lazily; revocation never starts it (a process that never
  * started it holds no grants). Every in-process caller that needs the gateway
@@ -18,6 +21,7 @@
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { partnerAiConnections } from '../../db/schema';
+import { registerClusterInvalidator } from '../clusterInvalidator';
 import { captureException } from '../sentry';
 import { getModelGateway, setGatewayConnectionCheck, type ModelGateway } from './gateway';
 import { safeErrorMessage } from './safeDbError';
@@ -42,6 +46,14 @@ interface CachedConnectionState {
 }
 
 const cache = new Map<string, CachedConnectionState>();
+// Bumped by every invalidation: a read that started before it is not cached.
+let cacheGeneration = 0;
+
+const connectionStateInvalidator = registerClusterInvalidator('ai-gateway-connection-state', (connectionId?: string) => {
+  cacheGeneration += 1;
+  if (connectionId === undefined) cache.clear();
+  else cache.delete(connectionId);
+});
 
 function sweep(now: number): void {
   if (cache.size <= CACHE_SWEEP_SIZE) return;
@@ -57,6 +69,7 @@ export async function gatewayConnectionCheck(connectionId: string, configVersion
   const now = Date.now();
   let entry = cache.get(connectionId);
   if (!entry || entry.expiresAt <= now) {
+    const generationAtStart = cacheGeneration;
     // System scope: the check runs inside the gateway's request handler, with
     // no tenant context. Two columns only; no key material is read.
     const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(
@@ -72,8 +85,10 @@ export async function gatewayConnectionCheck(connectionId: string, configVersion
       configVersion: row?.configVersion ?? null,
       expiresAt: now + GATEWAY_CONNECTION_CHECK_TTL_MS,
     };
-    sweep(now);
-    cache.set(connectionId, entry);
+    if (generationAtStart === cacheGeneration) {
+      sweep(now);
+      cache.set(connectionId, entry);
+    }
   }
   return entry.status === 'active' && entry.configVersion === configVersion;
 }
@@ -85,12 +100,13 @@ export function registerGatewayConnectionCheck(): void {
 
 /**
  * After a COMMITTED disconnect, key change or URL change: revoke this
- * process's live grants for the connection and drop its cached check entry.
+ * process's live grants for the connection, and drop the cached check entry
+ * here and on every other replica (whose next dial then re-checks the row).
  * Best effort: a failure is logged and captured, never thrown — the write has
  * already happened, and the connection check still refuses the stale grant.
  */
 export async function revokeGatewayConnectionGrants(connectionId: string): Promise<void> {
-  cache.delete(connectionId);
+  connectionStateInvalidator.invalidateAroundCommit(connectionId);
   if (!gatewayAcquired) return;
   try {
     const revoked = (await getModelGateway()).revokeConnection(connectionId);

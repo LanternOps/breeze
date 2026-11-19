@@ -99,6 +99,18 @@ function localParts(d: Date, tz: string): { date: string; minutes: number } {
   return { date: `${parts.year}-${parts.month}-${parts.day}`, minutes: Number(parts.hour) * 60 + Number(parts.minute) };
 }
 
+/**
+ * #11678 §8: the brief's greeting for the hour at `now` in `tz` (an unknown
+ * zone reads as UTC). The brief time is the user's choice, so it is not always
+ * morning: 05:00-11:59 morning, 12:00-17:59 afternoon, otherwise evening.
+ */
+export function briefGreeting(now: Date, tz: string | null | undefined): string {
+  const hour = Math.floor(localParts(now, safeTimeZone(tz)).minutes / 60);
+  if (hour >= 5 && hour < 12) return 'Good morning';
+  if (hour >= 12 && hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
 /** A brief time is `HH:MM` (24 h); anything else means no brief. */
 const BRIEF_TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
@@ -270,7 +282,7 @@ function readableOrgIds(ceiling: GrantCeiling): string[] {
 /**
  * The grant's assessment runs since `since`, split into those that ran and
  * those #11423 skipped because nothing had changed. Counted in SQL, so the
- * Overnight line is not capped by the activity feed's page.
+ * "Since your last brief" line is not capped by the activity feed's page.
  */
 async function assessmentCounts(ceiling: GrantCeiling, since: Date): Promise<{ ran: number; skipped: number }> {
   const readable = readableOrgIds(ceiling);
@@ -294,13 +306,14 @@ async function assessmentCounts(ceiling: GrantCeiling, since: Date): Promise<{ r
 
 /**
  * Build the brief under the grant's LIVE ceiling. `opts.since` is the previous
- * brief's time (the "Overnight" window); default the last 24 h. Throws
+ * brief's time (the "Since your last brief" window); default the last 24 h.
+ * `opts.timeZone` is the brief's zone, for the greeting (default UTC). Throws
  * `GrantInactiveError` when the grant cannot be used.
  */
 export async function buildBrief(
   grantId: string,
   now: Date,
-  opts: { since?: Date | null } = {},
+  opts: { since?: Date | null; timeZone?: string | null } = {},
 ): Promise<{ title: string; body: string; sections: BriefSection[] }> {
   const grant = await inSystemContext(async () => {
     const [row] = await db
@@ -330,9 +343,10 @@ export async function buildBrief(
   const needing = sorted.filter((c) => needsYou(c) && (!folded.has(c.id) || Boolean(c.approvalIntentId)));
   const open = sorted.filter((c) => isOpenConcern(c) && !folded.has(c.id));
 
+  const greeting = briefGreeting(now, opts.timeZone);
   const title = needing.length === 0 && open.length === 0
-    ? 'Good morning — nothing needs you'
-    : `Good morning — ${needing.length} need you, ${open.length} open`;
+    ? `${greeting} — nothing needs you`
+    : `${greeting} — ${needing.length} need you, ${open.length} open`;
   const items = open.slice(0, BODY_ITEMS);
   const names = await subjectNames(ceiling, items);
   const bodyItems = items.map((c) => bodyItem(c, names.get(c.id)));
@@ -355,7 +369,8 @@ export async function buildBrief(
   const recent = activity.items.filter((i) => new Date(i.at).getTime() >= since.getTime());
   const specialists = recent.filter((i) => i.kind === 'specialist').length;
   const resolvedCount = resolved.filter((c) => c.resolvedAt && new Date(c.resolvedAt).getTime() >= since.getTime()).length;
-  push('Overnight', [
+  // #11678 §8: the window runs from the last brief, at whatever hour that was.
+  push(opts.since ? 'Since your last brief' : 'Last 24 hours', [
     ...(runs.ran > 0 ? [plural(runs.ran, 'assessment run', 'assessments run')] : []),
     ...(runs.skipped > 0 ? [`${plural(runs.skipped, 'assessment skipped', 'assessments skipped')} — nothing had changed`] : []),
     ...(specialists > 0 ? [plural(specialists, 'specialist launched', 'specialists launched')] : []),
@@ -465,7 +480,7 @@ export async function runMorningBriefs(now: Date = new Date()): Promise<{ due: n
 
       const thread = await getOrCreateThread(grant.id);
       const content = grant.status === 'active'
-        ? await buildBrief(grant.id, now, { since: lastBriefAt })
+        ? await buildBrief(grant.id, now, { since: lastBriefAt, timeZone: zone })
         : {
           title: 'Wisp is paused',
           body: PAUSE_REASON_COPY[grant.pausedReason as SystemPauseReason],

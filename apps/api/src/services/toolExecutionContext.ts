@@ -275,6 +275,13 @@ export type ToolExecutionContext = {
    */
   pinnedWispUnattendedRead?: WispUnattendedRead;
   /**
+   * The chat gate let this `set_device_context` call run without an approval
+   * card (aiNoteWrites.ts). Set ONLY by `createSessionPreToolUse`, never from
+   * model arguments. The handler then caps the note's expiry and recounts the
+   * device's notes under a per-device lock before it writes.
+   */
+  noteWriteCardFree?: true;
+  /**
    * W5 PR C (#5220): the flow tool the chat gate resolved LIVE and gated at
    * its invocation tier, with the validated call. Set ONLY by
    * `createSessionPreToolUse`'s flow branch — never from model arguments —
@@ -292,6 +299,16 @@ export type ToolExecutionContext = {
    * (`flow_tool_changed`).
    */
   runFlowGate?: { flowId: string; publicationSeq: number };
+  /**
+   * #12140 / #12161: set ONLY by a server dispatcher that runs
+   * `set_device_context` at Tier 2 with no person approving it, through
+   * `unattendedNoteWriteContext` (deviceNoteBounds.ts): the MCP server's tool
+   * dispatch (routes/mcpServer.ts) and a flow's core tool step
+   * (flows/stepExecutor.ts). The handler then applies the unattended-note
+   * bounds of deviceNoteBounds.ts (as it does for a `device_context`
+   * unattended-read pin). Never set from tool input.
+   */
+  unattendedNoteWrite?: true;
 };
 
 /** See `ToolExecutionContext.flowToolGate`. */

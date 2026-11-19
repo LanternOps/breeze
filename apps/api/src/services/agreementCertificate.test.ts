@@ -736,6 +736,8 @@ function loaderRow(over: Record<string, unknown> = {}) {
     orgName: 'Example Clinic (live name)',
     partnerName: 'Acme MSP (live name)',
     partnerPageSize: 'letter',
+    partnerBillingCountry: null,
+    partnerSettings: null,
     certificateVersion: 2,
     ...over,
   };
@@ -897,10 +899,16 @@ describe('loadCertifiedAgreementInput', () => {
     });
   });
 
-  it('partner page size A4 / unknown → resolvePageSize', async () => {
-    dbResults.push([loaderRow({ partnerPageSize: 'a4' })]);
+  it('partner page size: an explicit choice wins', async () => {
+    dbResults.push([loaderRow({ partnerPageSize: 'a4', partnerBillingCountry: 'US' })]);
     expect((await loadCertifiedAgreementInput(DOC_ID))!.pageSize).toBe('a4');
-    dbResults.push([loaderRow({ partnerPageSize: null })]);
+  });
+
+  // #12097: a partner that never chose prints on its region default.
+  it('partner page size unset → region default from the billing, then company country', async () => {
+    dbResults.push([loaderRow({ partnerPageSize: null, partnerBillingCountry: 'DE' })]);
     expect((await loadCertifiedAgreementInput(DOC_ID))!.pageSize).toBe('a4');
+    dbResults.push([loaderRow({ partnerPageSize: null, partnerBillingCountry: null, partnerSettings: { address: { country: 'CA' } } })]);
+    expect((await loadCertifiedAgreementInput(DOC_ID))!.pageSize).toBe('letter');
   });
 });

@@ -40,7 +40,7 @@ import {
 } from '@breeze/shared/documents';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { resolveDocumentFooter } from './documentFooter';
-import { pdfPageSize, registerThemeFonts, resolvePageSize, resolveThemeId, type DocumentPageSize } from './documentThemes';
+import { pdfPageSize, registerThemeFonts, resolvePageSize, resolvePartnerPageSize, resolveThemeId, type DocumentPageSize } from './documentThemes';
 import { toCustomerInvoiceHeader } from './invoiceService';
 import { assembleCustomerInvoiceDocument, projectCustomerInvoiceLines, invoiceDisplayStatus, type PreloadedBranding } from './customerDocument';
 import { documentColumnsFor, drawDocumentLineTable, drawDocumentTotals, type DocumentPdfStyle } from './documentPdfTable';
@@ -81,8 +81,9 @@ export interface InvoiceBranding {
    *  and a fallback name/email were resolved. Never set for an issued
    *  invoice, so this is a no-op there. */
   billToEmailFallback?: string | null;
-  /** Partner document page-size default, used only when the invoice carries no
-   *  frozen `document_page_size` (drafts/legacy). Unset → A4. */
+  /** The partner's page size (its choice, else its region default —
+   *  resolvePartnerPageSize, #12097), used only when the invoice carries no
+   *  frozen `document_page_size` (drafts/legacy). Left unset by a caller → A4. */
   pageSize?: DocumentPageSize | null;
 }
 
@@ -492,7 +493,7 @@ export async function loadInvoiceForRender(invoiceId: string, partnerContext?: R
     // must not open its own system-context read under the caller's transaction (#9585).
     preloaded: partner || partnerContext
       ? {
-          partner: partner ? { name: partner.name, billingEmail: partner.billingEmail, documentTheme: partner.documentTheme, documentPageSize: partner.documentPageSize, settings: partner.settings } : null,
+          partner: partner ? { name: partner.name, billingEmail: partner.billingEmail, documentTheme: partner.documentTheme, documentPageSize: partner.documentPageSize, billingAddressCountry: partner.billingAddressCountry, settings: partner.settings } : null,
           brand: branding ? { logoUrl: branding.logoUrl ?? null, primaryColor: branding.primaryColor ?? null } : null,
         }
       : undefined,
@@ -522,7 +523,7 @@ export async function loadInvoiceForRender(invoiceId: string, partnerContext?: R
       locale: invoice.documentLocale ?? resolvePartnerDocumentLocale(partner),
       billToEmailFallback,
       // Draft/legacy fallback only; the renderer prefers invoice.documentPageSize.
-      pageSize: resolvePageSize(partner?.documentPageSize),
+      pageSize: resolvePartnerPageSize(partner),
     },
   };
 }

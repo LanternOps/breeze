@@ -397,6 +397,8 @@ export async function acceptQuote(
       // #6227: fallback for the invoice presentation stamp when the quote
       // carries no presentation snapshot (legacy pre-snapshot quotes).
       documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
+      // #12097: region signal for a partner that never chose a page size.
+      billingAddressCountry: partners.billingAddressCountry,
       // #6229: the quote org's payment-terms override rides on this read (NULL
       // = inherit the partner's), resolved below by resolveInvoiceTermsDays.
       // The join is pinned to the same partner, so a mismatched org can only

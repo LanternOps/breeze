@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { budgetSkipReason, buildReport, decide, goRetryCommand, ledgerPaths, ledgerRunner, noRetryReason, parseFailures } from './retry-shard.mjs';
+import { budgetSkipReason, buildReport, decide, goRetryCommand, lastTestFile, ledgerPaths, ledgerRunner, noRetryReason, parseFailures } from './retry-shard.mjs';
 
 // Whole-shard retry (W1, #10744). The merge queue has no retry, so one flaky
 // test ejects the PR and rebuilds every entry behind it. The wrapper re-runs a
@@ -939,6 +939,8 @@ test('noRetry names why no retry happened', () => {
     [attempt(1, ok, { timedOut: true }), {}, 'go_timeout'],
     [attempt(2, []), {}, 'no_parsed_failures'],
     [attempt(1, ok), { budgetSkipped: true }, 'budget'],
+    // A stall is killed by the wrapper (code null), but says so, not `signal`.
+    [attempt(null, [], { stalled: true }), {}, 'stalled'],
   ];
   for (const [first, opts, want] of rows) assert.equal(noRetryReason(first, opts), want, want);
   // A retry happened (or attempt 1 passed): nothing to explain.
@@ -1040,4 +1042,113 @@ test('ledgerPaths is exported for the shepherd: vitest prefixes and the go modul
   const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
   assert.deepEqual(ledgerPaths('go', { repoRoot, goDir: join(repoRoot, 'agent') }), { goModule: AGENT, goDir: 'agent' });
   assert.equal(ledgerPaths('portal', {}), null);
+});
+
+// ── Stall watchdog (#12113) ──────────────────────────────────────────────
+//
+// vitest's testTimeout/hookTimeout are timers inside the test worker, so they
+// cannot end a run whose worker is not running timers (a synchronous loop, GC
+// thrash, a teardown waiting on a pool). Nothing outside the worker did: a
+// silent run held the job to its limit and named nothing. `--stall-minutes N`
+// kills the whole run after N minutes with no output, names the last test file
+// the output mentioned, and prints a resource heartbeat on the way so a later
+// runner loss leaves a memory/load trail in the log.
+
+test('lastTestFile: the last test file the output names, ANSI stripped', () => {
+  const out = [
+    '\x1b[32m✓\x1b[39m src/__tests__/integration/a.integration.test.ts \x1b[2m(7 tests)\x1b[22m',
+    '\x1b[90mstdout\x1b[2m | src/__tests__/integration/aiAgentNarrative.integration.test.ts\x1b[2m > \x1b[22mnarrative > re-running',
+    '[AiAgentSweepScheduler] schedule occurrence fanned out {',
+    "  occurrenceKey: '2026-08-31T07:00@UTC',",
+  ].join('\n');
+  assert.equal(lastTestFile(out), 'src/__tests__/integration/aiAgentNarrative.integration.test.ts');
+  assert.equal(lastTestFile('services/autopay/charging.integration.test.mts done'), 'services/autopay/charging.integration.test.mts');
+  assert.equal(lastTestFile('no file here'), null);
+  assert.equal(lastTestFile(''), null);
+});
+
+// Prints a vitest-shaped line, starts a grandchild that records its pid (the
+// pnpm → vitest → fork tree), then goes silent forever.
+const SILENT_HANG = `
+const { spawn } = require('child_process');
+const fs = require('fs');
+fs.writeFileSync('runs', String(Number(fs.existsSync('runs') ? fs.readFileSync('runs', 'utf8') : 0) + 1));
+const g = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e6)'], { stdio: 'ignore' });
+fs.writeFileSync('grandchild.pid', String(g.pid));
+console.log('stdout | src/__tests__/integration/stuck.integration.test.ts > suite > the hung one');
+setInterval(() => {}, 1e6);
+`;
+
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+test('CLI --stall-minutes: a silent run is killed with its whole tree, named, not retried, exit 1', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  const started = Date.now();
+  // 0.1 min = 6 s of silence: wide enough that a slow child start on a loaded
+  // host cannot trip it before the child's first line.
+  const r = cli(['--runner', 'vitest', '--label', 'integration-5', '--stall-minutes', '0.1', '--', process.execPath, '-e', SILENT_HANG], { cwd });
+  const pidFile = join(cwd, 'grandchild.pid');
+  const gpid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : null;
+  try {
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.ok(Date.now() - started < 60_000, 'the stall ended the run, not some outer timeout');
+    assert.match(
+      r.stdout,
+      /^::error title=Test stall::integration-5: attempt 1: no test output for 0\.1 min; last test file in the output: src\/__tests__\/integration\/stuck\.integration\.test\.ts; killed the run, not retrying$/m,
+    );
+    // Not retried: a second attempt would only stall again.
+    assert.equal(readFileSync(join(cwd, 'runs'), 'utf8'), '1');
+    const report = JSON.parse(readFileSync(join(cwd, 'flake-report-integration-5.json'), 'utf8'));
+    assert.equal(report.noRetry, 'stalled');
+    assert.equal(report.first.stalled, true);
+    assert.equal(report.attempts, 1);
+    // The grandchild went down with the run, so it cannot hold the job open.
+    assert.ok(gpid, 'the child never started its grandchild');
+    let dead = !alive(gpid);
+    for (let i = 0; i < 50 && !dead; i++) {
+      spawnSync('sleep', ['0.1']);
+      dead = !alive(gpid);
+    }
+    assert.ok(dead, 'grandchild survived the stall kill');
+  } finally {
+    if (gpid && alive(gpid)) process.kill(gpid, 'SIGKILL');
+  }
+});
+
+// Prints at once, then every 100 ms for ~4 s, then passes: output keeps
+// resetting the clock.
+const CHATTY_PASS = `
+let n = 0;
+console.log('stdout | src/a.test.ts > start');
+const t = setInterval(() => {
+  console.log('stdout | src/a.test.ts > tick ' + n);
+  if (++n === 40) { clearInterval(t); process.exit(0); }
+}, 100);
+`;
+
+test('CLI --stall-minutes: steady output never trips it; heartbeat lines carry memory and load', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  // 0.05 min = 3 s: shorter than the run, far longer than any gap in it; the
+  // heartbeat (every 1.5 s) still lands inside the run.
+  const r = cli(['--runner', 'vitest', '--label', 'integration-6', '--stall-minutes', '0.05', '--', process.execPath, '-e', CHATTY_PASS], { cwd });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.doesNotMatch(r.stdout, /Test stall/);
+  assert.match(r.stdout, /^retry-shard: integration-6 heartbeat \+\d+\.\d min, last output \d+ s ago, mem free \d+\/\d+ MiB, load [\d.]+ [\d.]+ [\d.]+$/m);
+  assert.equal(existsSync(join(cwd, 'flake-report-integration-6.json')), false);
+});
+
+test('CLI: rejects a --stall-minutes that is not a positive number', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  for (const v of ['0', '-1', 'abc', '']) {
+    assert.equal(cli(['--runner', 'vitest', '--label', 'x', '--stall-minutes', v, '--', 'true'], { cwd }).status, 2, v);
+  }
+  // The control: a valid value is accepted (an unknown option is also exit 2).
+  assert.equal(cli(['--runner', 'vitest', '--label', 'x', '--stall-minutes', '10', '--', 'true'], { cwd }).status, 0);
 });

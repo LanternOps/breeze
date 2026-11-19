@@ -672,27 +672,31 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
   // Entry point for a connect click. RDS hosts open the session picker first;
   // everything else connects immediately (unchanged behavior).
+  // #11753: a connect already in flight swallows the click. The compact
+  // menuitem only sets aria-disabled (it stays clickable), so without this a
+  // double click created a second session and fired a second breeze:// link.
+  const connectInFlight = status === 'creating' || status === 'launching';
   const handleClick = useCallback(() => {
-    if (disabled) return;
+    if (disabled || connectInFlight) return;
     if (helperLifecycleMode === 'on-demand') {
       setPickerChoice(undefined);
       setPickerOpen(true);
       return;
     }
     void startConnect();
-  }, [disabled, helperLifecycleMode, startConnect]);
+  }, [disabled, connectInFlight, helperLifecycleMode, startConnect]);
 
   // #10922: the split button's menu. A third-party tool opens on its own, so
   // it never needs the RDS session picker; the built-in viewer still does.
   const handleChoose = useCallback((choice: ConnectChoice) => {
-    if (disabled) return;
+    if (disabled || connectInFlight) return;
     if (choice.kind === 'builtin' && helperLifecycleMode === 'on-demand') {
       setPickerChoice(choice);
       setPickerOpen(true);
       return;
     }
     void startConnect(undefined, choice);
-  }, [disabled, helperLifecycleMode, startConnect]);
+  }, [disabled, connectInFlight, helperLifecycleMode, startConnect]);
 
   const handleDismiss = useCallback(() => {
     setVncFallback(null);
@@ -1270,7 +1274,6 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   // with except the one the primary click already launches, plus the built-in
   // viewer. Hidden while the button is disabled (offline): nothing in it could
   // run, and the primary button already carries the reason.
-  const inFlight = status === 'creating' || status === 'launching';
   const toolOptions = remoteAccessProviders ?? [];
   const showToolMenu = toolOptions.length > 0 && !disabled;
   const defaultTool = toolOptions.find((p) => p.id === remoteAccessDefaultProviderId) ?? null;
@@ -1283,7 +1286,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
             label: p.label,
             description: p.kind === 'web' ? t('connectDesktopButton.split.opensInBrowser') : undefined,
             onSelect: () => handleChoose({ kind: 'provider', id: p.id }),
-            disabled: inFlight,
+            disabled: connectInFlight,
             testId: `connect-desktop-tool-${p.id}`,
           })),
         {
@@ -1291,7 +1294,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           label: t('connectDesktopButton.split.builtInViewer'),
           onSelect: () => handleChoose({ kind: 'builtin' }),
           separatorBefore: toolOptions.some((p) => p.id !== defaultTool?.id),
-          disabled: inFlight,
+          disabled: connectInFlight,
           testId: 'connect-desktop-tool-builtin',
         },
       ]
@@ -1311,7 +1314,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         // #9026: `disabled` (offline etc.) keeps the button in the Tab order so
         // its reason is reachable; handleClick already ignores the click. Only
         // the in-flight states use the native attribute.
-        disabled={inFlight}
+        disabled={connectInFlight}
         aria-disabled={disabled || undefined}
         title={error || (disabled ? disabledTitle : undefined) || primaryTitle}
         aria-describedby={disabled && disabledTitle ? reasonId : undefined}

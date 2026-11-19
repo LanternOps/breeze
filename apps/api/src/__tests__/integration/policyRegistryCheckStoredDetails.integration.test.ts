@@ -27,10 +27,12 @@ import {
   configPolicyComplianceRules,
   configPolicyFeatureLinks,
   configurationPolicies,
+  deviceConfigState,
   deviceRegistryState,
   devices,
 } from '../../db/schema';
 import { evaluateDeviceComplianceFromConfigPolicy } from '../../services/policyEvaluationService';
+import { MAX_POLICY_STATE_PROBES_PER_ORG } from '../../services/policyStateProbes';
 import { createOrganization, createPartner, createSite } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -70,7 +72,7 @@ async function seed(rules: unknown[]) {
       deviceId: device!.id, orgId: org.id, registryPath: REGISTRY_PATH, valueName: 'NoLockScreen',
       valueData: OBSERVED, valueType: 'REG_SZ',
     });
-    return { deviceId: device!.id, featureLinkId: link!.id };
+    return { deviceId: device!.id, featureLinkId: link!.id, orgId: org.id };
   });
 }
 
@@ -100,6 +102,66 @@ describe('configuration-policy registry_check stored details (#11976) — real P
       ruleType: 'registry_check',
       passed: false,
       data: { outcome: 'mismatched', expectedValue: '1' },
+    });
+  });
+
+  runDb('#12130: a config_check mismatch stores the outcome and the expected value, never the observed value', async () => {
+    const filePath = '/etc/ssh/sshd_config';
+    const { deviceId, featureLinkId, orgId } = await seed([
+      { type: 'config_check', configFilePath: filePath, configKey: 'PermitRootLogin', configExpectedValue: 'no' },
+    ]);
+    await withSystemDbAccessContext(() => db.insert(deviceConfigState).values({
+      deviceId, orgId, filePath, configKey: 'PermitRootLogin', configValue: OBSERVED,
+    }));
+
+    await withSystemDbAccessContext(() => evaluateDeviceComplianceFromConfigPolicy(deviceId));
+
+    const rows = await storedDetails(featureLinkId);
+    expect(rows[0]!.status).toBe('non_compliant');
+    expect(JSON.stringify(rows[0]!.details)).not.toContain(OBSERVED);
+    const ruleResults = (rows[0]!.details as { ruleResults: Array<Record<string, unknown>> }).ruleResults;
+    expect(ruleResults[0]).toMatchObject({
+      ruleType: 'config_check',
+      passed: false,
+      data: { outcome: 'mismatched', expectedValue: 'no' },
+    });
+  });
+
+  runDb('#12130: a rule pushed past the per-org probe cap is stored as pending / not_collected, not non-compliant', async () => {
+    const { deviceId, featureLinkId, orgId } = await seed([
+      { type: 'registry_check', registryPath: REGISTRY_PATH, registryValueName: 'NoLockScreen', registryExpectedValue: '1' },
+    ]);
+    // An active org policy that is not assigned to the device still feeds the
+    // org's probe list, and its probes sort ahead of REGISTRY_PATH.
+    await withSystemDbAccessContext(async () => {
+      const [filler] = await db.insert(configurationPolicies)
+        .values({ orgId, partnerId: null, name: `rc filler ${randomUUID()}`, status: 'active' })
+        .returning();
+      const [link] = await db.insert(configPolicyFeatureLinks)
+        .values({ configPolicyId: filler!.id, featureType: 'compliance' })
+        .returning();
+      await db.insert(configPolicyComplianceRules).values({
+        featureLinkId: link!.id,
+        name: 'filler',
+        enforcementLevel: 'monitor',
+        rules: Array.from({ length: MAX_POLICY_STATE_PROBES_PER_ORG }, (_, i) => ({
+          type: 'registry_check',
+          registryPath: `HKLM\\SOFTWARE\\AAA\\Key${String(i).padStart(4, '0')}`,
+          registryValueName: 'Enabled',
+        })),
+      });
+    });
+
+    const results = await withSystemDbAccessContext(() => evaluateDeviceComplianceFromConfigPolicy(deviceId));
+
+    expect(results).toEqual([expect.objectContaining({ status: 'pending', remediationTriggered: false })]);
+    const rows = await storedDetails(featureLinkId);
+    expect(rows[0]!.status).toBe('pending');
+    const ruleResults = (rows[0]!.details as { ruleResults: Array<Record<string, unknown>> }).ruleResults;
+    expect(ruleResults[0]).toMatchObject({
+      ruleType: 'registry_check',
+      passed: null,
+      data: { outcome: 'not_collected', expectedValue: '1', reason: 'probe_cap' },
     });
   });
 });

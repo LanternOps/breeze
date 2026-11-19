@@ -99,7 +99,7 @@ function identityOk(tenantId: string) {
 function retestOk(tenantId: string, manifestVersion = 3): RetestResult {
   return {
     success: true, tenantId, applicationId: CLIENT_ID, organizationDisplayName: 'Contoso',
-    manifestVersion, verifiedAt: NOW_ISO, grantReconciliation: 'complete',
+    manifestVersion, verifiedAt: NOW_ISO, grantReconciliation: 'complete', grantReconciliationMode: 'exact',
     observedGrants: [], missingGrants: [], unexpectedGrants: [], grantsVerifiedAt: NOW_ISO,
   };
 }

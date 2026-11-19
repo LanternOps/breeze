@@ -88,7 +88,11 @@ main() {
 
   local missing=() unreachable=0 repo status
   for repo in "${IMAGE_REPOS[@]}"; do
-    status="$(manifest_status "${repo}" "${version}")"
+    # manifest_status returns 1 when the token fetch fails; under `set -e` a bare
+    # assignment would abort the whole script with no output. Capture it.
+    if ! status="$(manifest_status "${repo}" "${version}")"; then
+      status=""
+    fi
     if [[ -z "${status}" ]]; then
       printf '  %-9s %s  (registry unreachable)\n' "${repo}" "${version}"
       unreachable=1
@@ -112,7 +116,8 @@ a tagged release is not necessarily a published one."
   fi
 
   if ((unreachable == 1)); then
-    printf 'WARN: could not reach %s for every repo; pin not fully verified.\n' "${REGISTRY_HOST}" >&2
+    printf 'WARN: could not reach %s/%s for every repo; pin not fully verified.\n' \
+      "${REGISTRY_HOST}" "${IMAGE_NAMESPACE}" >&2
     exit 0
   fi
 

@@ -400,7 +400,7 @@ describe('customer Graph-read upgrade consent integration', () => {
       organizationDisplayName: 'Contoso',
       manifestVersion: manifest.version,
       verifiedAt: '2026-09-08T10:00:00.000Z',
-      grantReconciliation: 'complete',
+      grantReconciliation: 'complete', grantReconciliationMode: 'exact',
       grantsVerifiedAt: '2026-09-08T10:00:01.000Z',
       // The DB CHECK breeze_m365_observed_grants_are_canonical requires
       // (resourceApplicationId, appRoleId) order; the manifest is listed

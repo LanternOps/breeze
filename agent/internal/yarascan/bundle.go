@@ -19,6 +19,7 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/yarascan/yarac"
@@ -57,12 +58,12 @@ var validSeverities = map[string]struct{}{"low": {}, "medium": {}, "high": {}, "
 // ruleSetIDPattern bounds what a payload/bundle id may contain. The id
 // becomes a YARA namespace and part of the cache key, so it is held to the
 // shape of a uuid-ish token rather than trusted as arbitrary text.
-var ruleSetIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+var ruleSetIDPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`) })
 
 // refURLPattern: server-relative, conservative character set. Combined with
 // the explicit ".." and "//" checks in validRefURL this keeps the fetch on
 // the agent's own server and inside the agent API prefix.
-var refURLPattern = regexp.MustCompile(`^/api/v1/agents/[A-Za-z0-9._~/-]+$`)
+var refURLPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^/api/v1/agents/[A-Za-z0-9._~/-]+$`) })
 
 // BundleRule is one rule inside a bundle (C2).
 type BundleRule struct {
@@ -154,7 +155,7 @@ func DecodeBundle(body []byte) (*Bundle, error) {
 	if b.Format != BundleFormat || b.V != BundleFormatVersion {
 		return nil, invalid("unsupported format %q v%d", b.Format, b.V)
 	}
-	if !ruleSetIDPattern.MatchString(b.RuleSetID) || b.Version < 1 {
+	if !ruleSetIDPattern().MatchString(b.RuleSetID) || b.Version < 1 {
 		return nil, invalid("missing or malformed ruleSetId or version")
 	}
 	seen := make(map[string]struct{}, len(b.Rules))
@@ -184,7 +185,7 @@ func ToYaracSet(b *Bundle) yarac.Set {
 }
 
 func validRefURL(u string) bool {
-	if !strings.HasPrefix(u, urlPrefix) || !refURLPattern.MatchString(u) {
+	if !strings.HasPrefix(u, urlPrefix) || !refURLPattern().MatchString(u) {
 		return false
 	}
 	return !strings.Contains(u, "..") && !strings.Contains(u, "//")
@@ -240,7 +241,7 @@ func ParseRuleSetRefs(raw any) ([]RuleSetRef, error) {
 		ver, verOK := wholeNumber(m["version"])
 		sum, _ := m["sha256"].(string)
 		u, _ := m["url"].(string)
-		if !ruleSetIDPattern.MatchString(id) {
+		if !ruleSetIDPattern().MatchString(id) {
 			return nil, fmt.Errorf("ruleSets[%d]: invalid id", i)
 		}
 		if !verOK {

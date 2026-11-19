@@ -3053,7 +3053,7 @@ async function driveSdkLoop(
       const transcriptSessionId = ctx.sessionId ?? null;
       try {
         await runOutsideDbContext(async () => {
-          // #11971: what the run was told, on its session (each hop is sent it afresh).
+          // #11971: what the run was told, on its session (each hop is sent it afresh; the ledger stores it once).
           if (transcriptSessionId) await recordRunTaskPrompt(transcriptSessionId, taskPrompt).catch(transcriptWriteFailed(run, 'task prompt'));
           const sdkQuery = query({
             prompt: taskPrompt,

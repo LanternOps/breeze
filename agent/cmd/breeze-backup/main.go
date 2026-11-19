@@ -733,6 +733,12 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 		if req.QueueAsync {
 			sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{CommandID: req.CommandID, Phase: "starting"})
 		}
+		if isBackupWorkload(req.CommandType) {
+			// Held from here, once the workload has left the queue, until it
+			// returns (#12193).
+			release := holdSystemAwakeForBackup(req.CommandID, req.CommandType)
+			defer release()
+		}
 		if req.QueueAsync && (req.CommandType == "mssql_backup" || req.CommandType == "hyperv_backup") {
 			// Native exports have no progress callback while their subprocess is
 			// running. Keep their liveness/expectation alive until actual return.

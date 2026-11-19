@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -330,11 +329,17 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// Route through IPC helper when running headless (no display access).
 	// ScreenCaptureKit requires a GUI session (Aqua) — root daemons on macOS
 	// cannot capture the screen directly even with TCC permission.
-	// Linux is excluded: there is no IPC helper on Linux in Phase 1, so a booted-
-	// headless Linux box must take the direct path (the X11 capturer resolves the
-	// display itself). Never gate Linux on the latched-at-boot headless flag.
-	if (h.isService || h.isHeadless) && h.sessionBroker != nil && runtime.GOOS != "linux" {
-		result := h.startDesktopViaHelper(sessionID, offer, iceServers, displayIndex, policy, cmd.Payload)
+	// Linux is excluded: an X11 session, and every start with
+	// desktop_wayland_helper off, takes the direct path (the X11 capturer
+	// resolves the display itself). Never gate Linux on the latched-at-boot
+	// headless flag. Only a Wayland seat session with the flag on and the
+	// helper manager running goes to its per-session desktop helper (#12117).
+	linuxRoute := linuxDesktopRouteDecision{kind: routeDirectX11}
+	if linuxDesktopRouteHostOS == "linux" {
+		linuxRoute = h.linuxDesktopRouteForStart()
+	}
+	if ((h.isService || h.isHeadless) && h.sessionBroker != nil && linuxDesktopRouteHostOS != "linux") || linuxRoute.kind == routeHelper {
+		result := h.startDesktopViaHelperFor(sessionID, offer, iceServers, displayIndex, policy, cmd.Payload, linuxRoute.logindSessionID)
 		// A start is admitted long before it streams: consent, helper spawn
 		// and capture setup all happen after the fence decision, and a stop
 		// arriving inside that window finds nothing to stop. Re-check the
@@ -371,7 +376,11 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// broker (h.sessionBroker == nil) no helper can show the prompt, so the
 	// gate above proceeded only if nobody is signed in and the policy allows
 	// it — the console user is never skipped here.
-	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers, displayIndex, policy)
+	directStart := h.desktopMgr.StartSession
+	if h.desktopDirectStart != nil {
+		directStart = h.desktopDirectStart
+	}
+	answer, err := directStart(sessionID, offer, iceServers, displayIndex, policy)
 	if err != nil {
 		// Direct start failed — same reasoning as the helper-start-failed case
 		// above: nothing will disconnect to release the target.
@@ -1018,7 +1027,7 @@ func requireValidatedDesktopSessionID(payload map[string]any) (string, *tools.Co
 }
 
 func validateDesktopSessionID(sessionID string) error {
-	if !desktopSessionIDPattern.MatchString(sessionID) {
+	if !desktopSessionIDPattern().MatchString(sessionID) {
 		return fmt.Errorf("invalid sessionId")
 	}
 	return nil

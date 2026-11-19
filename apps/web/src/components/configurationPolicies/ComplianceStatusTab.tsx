@@ -4,11 +4,13 @@ import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { formatDateTime } from "@/lib/dateTimeFormat";
+import { hasProbeLimitNotCollected } from "@/lib/complianceProbeLimit";
 type ComplianceRow = {
   id: string;
   configItemName: string | null;
   deviceId: string;
   status: "compliant" | "non_compliant" | "pending" | "error" | string;
+  details?: unknown;
   lastCheckedAt: string | null;
   updatedAt: string | null;
   deviceHostname: string | null;
@@ -237,7 +239,9 @@ export default function ComplianceStatusTab({
                   </td>
                 </tr>
               ) : (
-                rows.map((row) => (
+                rows.map((row) => {
+                  const probeLimit = hasProbeLimitNotCollected(row.details);
+                  return (
                   <tr
                     key={row.id}
                     data-testid="compliance-status-row"
@@ -250,11 +254,29 @@ export default function ComplianceStatusTab({
                       {row.configItemName ?? "—"}
                     </td>
                     <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[row.status] ?? "bg-muted text-muted-foreground border-border"}`}
-                      >
-                        {STATUS_LABELS[row.status] ?? row.status}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {/* A probe-limit `pending` is not "not evaluated yet". */}
+                        {probeLimit && row.status === "pending" ? null : (
+                          <span
+                            className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[row.status] ?? "bg-muted text-muted-foreground border-border"}`}
+                          >
+                            {STATUS_LABELS[row.status] ?? row.status}
+                          </span>
+                        )}
+                        {probeLimit ? (
+                          <span
+                            data-testid="compliance-status-probe-limit"
+                            title={i18n.t(
+                              "policies:configurationPolicies.complianceStatusTab.notCollectedProbeLimitHint",
+                            )}
+                            className="inline-flex items-center rounded-full border border-dashed border-warning/50 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning"
+                          >
+                            {i18n.t(
+                              "policies:configurationPolicies.complianceStatusTab.notCollectedProbeLimit",
+                            )}
+                          </span>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
                       {formatTimestamp(
@@ -263,7 +285,8 @@ export default function ComplianceStatusTab({
                       )}
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>

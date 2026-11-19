@@ -98,8 +98,8 @@ func startRunForReprobeTest(t *testing.T, canCaptureAtConnect *atomic.Bool) (*Cl
 	}
 
 	capsCh, drop := serveHandshakeAndCollectCaps(t, ln)
-	client := NewWithOptions(filepath.Join(dir, "h.sock"), ipc.HelperRoleUser,
-		ipc.HelperBinaryDesktopHelper, ipc.DesktopContextUserSession)
+	client := trustTestServer(NewWithOptions(filepath.Join(dir, "h.sock"), ipc.HelperRoleUser,
+		ipc.HelperBinaryDesktopHelper, ipc.DesktopContextUserSession))
 	done := make(chan struct{})
 	go func() {
 		_ = client.Run()

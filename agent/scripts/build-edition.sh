@@ -283,4 +283,4 @@ export GOARCH="$goarch"
 
 echo "build-edition.sh: component=${component} edition=${edition} goos=${goos} goarch=${goarch} cgo_enabled=${CGO_ENABLED} out=${out}" >&2
 
-exec go build -C "$AGENT_DIR" -ldflags="$ldflags" -o "$out" "$pkg_path"
+exec go build -C "$AGENT_DIR" -trimpath -ldflags="$ldflags" -o "$out" "$pkg_path"
