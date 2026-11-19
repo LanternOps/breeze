@@ -64,8 +64,9 @@ func obfuscateHostCandidates(sdp string) (string, int) {
 // A LAN session must still connect: the viewer checks the agent's real-IP host
 // candidates and the agent learns the viewer as a peer-reflexive candidate.
 // This passed before the #12240 change too; it guards the change against a
-// LAN regression on every platform (the desktop helper on macOS, the agent's
-// heartbeat package elsewhere — both build peers from newDesktopSettingEngine).
+// LAN regression on every platform: every desktop peer is built by
+// desktop.SessionManager from newDesktopSettingEngine, whether it runs in the
+// macOS desktop helper or in the agent (via the heartbeat package).
 func TestDesktopPeerConnectsWhenViewerHostCandidatesAreMDNSNames(t *testing.T) {
 	// The "viewer" side. Its own mDNS mode does not matter to what is tested
 	// (it only ever sees the agent's IP candidates); disabled keeps the test
@@ -116,8 +117,8 @@ func TestDesktopPeerConnectsWhenViewerHostCandidatesAreMDNSNames(t *testing.T) {
 	if rewritten == 0 {
 		t.Skip("viewer gathered no host candidates on this host (no non-loopback interface)")
 	}
-	if strings.Contains(sdp, " typ host") && !strings.Contains(sdp, ".local") {
-		t.Fatal("offer rewrite left IP host candidates in place; the test would not exercise .local candidates")
+	if got := strings.Count(sdp, ".local "); got != rewritten || strings.Count(sdp, " typ host") != rewritten {
+		t.Fatalf("offer rewrite incomplete: %d .local names for %d host candidates; the test would not exercise .local-only candidates", got, strings.Count(sdp, " typ host"))
 	}
 
 	if err := agentPC.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sdp}); err != nil {
