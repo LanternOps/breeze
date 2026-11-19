@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"errors"
 	"image"
 	"testing"
 	"time"
@@ -26,10 +27,18 @@ import (
 //
 // pictureQP is the QP the viewer's picture was last coded at: lower is sharper.
 // It implements optionalIdleCatchUp through the same idleCatchUp,
-// qualityRefresh and nextIdleRefeed bookkeeping the MFT uses.
+// qualityRefresh, nextIdleRefeed and noteIdleRefeedResult bookkeeping the MFT
+// uses. hold delays every output by that many inputs (an encoder that holds
+// frames, #11622); faultAt makes that refresh re-submit (1-based) fail with
+// faultErr, or be accepted with no output when faultErr is nil.
 type cbrModelBackend struct {
 	stubEncoder
 	now time.Time
+
+	hold     int
+	queue    [][]byte
+	faultAt  int
+	faultErr error
 
 	qp        int
 	pictureQP int
@@ -42,6 +51,7 @@ type cbrModelBackend struct {
 	realSubmits    int
 	refreshSubmits int
 	idrs           int
+	kinds          []idleRefeedKind // every idle re-submit, in order
 }
 
 const (
@@ -125,11 +135,22 @@ func modelNAL(idr bool, n int) []byte {
 	return out
 }
 
+// submit codes one input and returns the output it pushes out, if any.
+func (b *cbrModelBackend) submit(change modelChange, refeed bool) []byte {
+	b.queue = append(b.queue, b.code(change))
+	b.cu.noteSubmitted(refeed)
+	if len(b.queue) <= b.hold {
+		return nil
+	}
+	out := b.queue[0]
+	b.queue = b.queue[1:]
+	b.cu.noteEmitted()
+	return out
+}
+
 func (b *cbrModelBackend) Encode(frame []byte) ([]byte, error) {
 	b.realSubmits++
-	out := b.code(modelChange(frame[0]))
-	b.cu.noteSubmitted(false)
-	b.cu.noteEmitted()
+	out := b.submit(modelChange(frame[0]), false)
 	b.qr.noteOutput(b.now, out, b.budget(), cbrModelFPS)
 	return out, nil
 }
@@ -139,16 +160,23 @@ func (b *cbrModelBackend) CatchUpIdle() ([]byte, error) {
 	if kind == idleRefeedNone {
 		return nil, nil
 	}
-	out := b.code(0)
-	b.cu.noteSubmitted(true)
-	b.cu.noteEmitted()
+	b.kinds = append(b.kinds, kind)
+	var out []byte
+	var err error
 	if kind == idleRefeedQuality {
 		b.refreshSubmits++
-		b.qr.noteRefreshResult(out, nil, cbrModelFPS)
-	} else {
-		b.qr.noteOutput(b.now, out, b.budget(), cbrModelFPS)
 	}
-	return out, nil
+	switch {
+	case kind == idleRefeedQuality && b.refreshSubmits == b.faultAt && b.faultErr != nil:
+		err = b.faultErr // ProcessInput refused the input
+	case kind == idleRefeedQuality && b.refreshSubmits == b.faultAt:
+		b.code(0) // accepted, but the encoder returned nothing
+		b.cu.noteSubmitted(true)
+	default:
+		out = b.submit(0, true)
+	}
+	noteIdleRefeedResult(&b.qr, kind, b.now, out, err, b.budget(), cbrModelFPS)
+	return out, err
 }
 
 func (b *cbrModelBackend) ForceKeyframe() error { b.forceIDR = true; return nil }
@@ -398,5 +426,83 @@ func TestQualityRefresh_NoRefreshDuringContinuousMotion(t *testing.T) {
 	r.idle(3 * time.Second)
 	if r.b.pictureQP > cbrModelSharpQP {
 		t.Fatalf("picture after the motion stopped is blocky: pictureQP=%d", r.b.pictureQP)
+	}
+}
+
+// A refresh re-submit that fails or returns nothing ends the refresh: no
+// further re-submits, so a failing encoder never turns a static screen into
+// a busy loop or walks toward its stall flush.
+func TestQualityRefresh_FailedResubmitEndsRefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"no output", nil},
+		{"input refused", errors.New("ProcessInput (idle re-submit): 0xC00D36B5")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRefreshRig(t, false)
+			r.settleSharp()
+			refreshBefore := r.b.refreshSubmits
+			r.b.faultAt = refreshBefore + 3
+			r.b.faultErr = tc.err
+			r.burst(7)
+			r.idle(10 * time.Second)
+			if got := r.b.refreshSubmits - refreshBefore; got != 3 {
+				t.Fatalf("refresh re-submits = %d, want 3 (stop at the failed one)", got)
+			}
+		})
+	}
+}
+
+// With an encoder that holds frames, the newest change is pushed out by the
+// catch-up before any refresh re-submit, and the refresh still runs after it.
+func TestQualityRefresh_CatchUpBeforeRefreshOnHoldingEncoder(t *testing.T) {
+	r := newRefreshRig(t, false)
+	r.b.hold = 2
+	r.settleSharp()
+	r.b.kinds = nil
+	r.burst(7)
+	r.idle(3 * time.Second)
+
+	if len(r.b.kinds) < 3 || r.b.kinds[0] != idleRefeedCatchUp || r.b.kinds[1] != idleRefeedCatchUp {
+		t.Fatalf("idle re-submits = %v, want two catch-ups first (hold 2)", r.b.kinds)
+	}
+	sawRefresh := false
+	for i, k := range r.b.kinds {
+		if k == idleRefeedQuality {
+			sawRefresh = true
+		} else if sawRefresh {
+			t.Fatalf("catch-up at %d after the refresh started: %v", i, r.b.kinds)
+		}
+	}
+	if !sawRefresh {
+		t.Fatal("no refresh after the catch-up")
+	}
+	if r.b.cu.owes() {
+		t.Fatal("the newest frame is still owed after the idle period")
+	}
+	if r.b.pictureQP > cbrModelSharpQP {
+		t.Fatalf("picture blocky after catch-up and refresh: pictureQP=%d", r.b.pictureQP)
+	}
+}
+
+// Several keyframes during one refresh extend it once only.
+func TestQualityRefresh_RepeatedIDRsExtendOnce(t *testing.T) {
+	r := newRefreshRig(t, false)
+	r.settleSharp()
+	refreshBefore := r.b.refreshSubmits
+	r.burst(7)
+	for i := 0; i < cbrModelFPS*10; i++ {
+		if n := r.b.refreshSubmits - refreshBefore; n == 3 || n == 20 || n == 40 {
+			_ = r.s.encoder.Load().ForceKeyframe()
+		}
+		r.tick()
+	}
+	frames := qualityRefreshFrames(cbrModelFPS)
+	// 3 before the first IDR, the IDR itself, then a renewed budget; the
+	// keyframe at 20 lands inside the renewal and does not renew it again.
+	if got, want := r.b.refreshSubmits-refreshBefore, 4+frames; got != want {
+		t.Fatalf("refresh re-submits with three keyframes = %d, want %d (one renewal)", got, want)
 	}
 }

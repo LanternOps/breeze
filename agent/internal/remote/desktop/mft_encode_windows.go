@@ -258,11 +258,7 @@ func (m *mftEncoder) CatchUpIdle() ([]byte, error) {
 		}
 	}
 	out, err := m.resubmitRetainedLocked()
-	if kind == idleRefeedQuality {
-		m.refresh.noteRefreshResult(out, err, m.cfg.FPS)
-	} else {
-		m.noteRefreshOutput(out)
-	}
+	noteIdleRefeedResult(&m.refresh, kind, m.now(), out, err, frameBudgetBytes(m.cfg.Bitrate, m.cfg.FPS), m.cfg.FPS)
 	return out, err
 }
 

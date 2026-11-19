@@ -77,8 +77,9 @@ func TestSoftwareMFT_QualityRefreshAfterBurst(t *testing.T) {
 		sizes = append(sizes, len(out))
 	}
 	t.Logf("refresh outputs (bytes, budget %d): %v", frameBudgetBytes(m.cfg.Bitrate, m.cfg.FPS), sizes)
-	if len(sizes) == 0 {
-		t.Fatal("no refresh output after the burst settled")
+	if len(sizes) < qualityRefreshFrames(m.cfg.FPS) {
+		t.Fatalf("refresh outputs = %d, want at least %d (a refresh ended early: the encoder returned nothing or failed)",
+			len(sizes), qualityRefreshFrames(m.cfg.FPS))
 	}
 	if len(sizes) > limit {
 		t.Fatalf("refresh outputs = %d, want at most %d", len(sizes), limit)

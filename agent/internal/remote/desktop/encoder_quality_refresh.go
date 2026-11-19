@@ -161,3 +161,17 @@ func nextIdleRefeed(cu *idleCatchUp, qr *qualityRefresh, now time.Time) idleRefe
 	}
 	return idleRefeedNone
 }
+
+// noteIdleRefeedResult records the result of an idle re-submit that
+// nextIdleRefeed chose: a refresh re-submit's result goes to the refresh
+// (which a nil output or an error ends); a catch-up output is reported like a
+// captured frame's, since it carries the newest screen change and may be
+// expensive enough to arm a refresh.
+func noteIdleRefeedResult(qr *qualityRefresh, kind idleRefeedKind, now time.Time, out []byte, err error, budget, fps int) {
+	switch kind {
+	case idleRefeedQuality:
+		qr.noteRefreshResult(out, err, fps)
+	case idleRefeedCatchUp:
+		qr.noteOutput(now, out, budget, fps)
+	}
+}
