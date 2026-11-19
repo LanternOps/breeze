@@ -510,7 +510,7 @@ export const deviceHardware = pgTable('device_hardware', {
   // different proven EK lands in tpmEkMismatch* for an operator's review and
   // never replaces it. Never set by the inventory writer, never returned by
   // generic reads (DEVICE_HARDWARE_READ_COLUMNS). tpmAvailable is what the
-  // hardware report says. Migration 2027-01-28-100000.
+  // hardware report says. Migration 2027-01-28-190000.
   tpmEkPubSha256: varchar('tpm_ek_pub_sha256', { length: 64 }),
   tpmAttestedAt: timestamp('tpm_attested_at', { withTimezone: true }),
   tpmEkMismatchSha256: varchar('tpm_ek_mismatch_sha256', { length: 64 }),
