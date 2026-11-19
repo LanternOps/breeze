@@ -33,8 +33,9 @@ type VerifyResult struct {
 	// that is knowingly missing data. Non-zero forces Status off `passed`.
 	FilesIncomplete int `json:"filesIncomplete,omitempty"`
 	// FilesUnchecked is the number of files the run never reached a verdict
-	// on because its time budget ran out (#6598). Non-zero means Status is
-	// never `passed` and Error says how far the run got.
+	// on because its time budget ran out (#6598) or its storage session ended
+	// (Code storage_session_lost). Non-zero means Status is never `passed`
+	// and Error says how far the run got and why.
 	FilesUnchecked int      `json:"filesUnchecked,omitempty"`
 	SizeBytes      int64    `json:"sizeBytes"`
 	DurationMs     int64    `json:"durationMs"`

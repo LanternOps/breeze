@@ -24,7 +24,7 @@ func TestStorageSessionWiring_VerifyStopsWhenTheSessionIsRevoked(t *testing.T) {
 
 	const n = 120
 	files := map[string][]byte{}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		files[fmt.Sprintf("f%03d.txt", i)] = []byte(fmt.Sprintf("payload-%d", i))
 	}
 

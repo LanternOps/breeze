@@ -27,7 +27,7 @@ const sessionLostCode = "storage_session_lost"
 
 // sessionGoneFrom answers errTestSessionGone for every object at manifest
 // index >= from (the scripted provider names objects f000.txt, f001.txt, …).
-func sessionGoneFrom(snapshotID string, from int) func(context.Context, string) error {
+func sessionGoneFrom(from int) func(context.Context, string) error {
 	return func(_ context.Context, remotePath string) error {
 		var i int
 		base := path.Base(remotePath)
@@ -72,7 +72,7 @@ func (b *lockedBuffer) String() string {
 // warnLines returns the WARN-level lines containing substr.
 func warnLines(logged, substr string) int {
 	n := 0
-	for _, line := range strings.Split(logged, "\n") {
+	for line := range strings.SplitSeq(logged, "\n") {
 		if strings.Contains(line, "level=WARN") && strings.Contains(line, substr) {
 			n++
 		}
@@ -86,7 +86,7 @@ func TestVerifyIntegrity_SessionLostMidRunStopsEarly(t *testing.T) {
 	logged := captureBackupLogs(t)
 	const n = 50
 	p := newScriptedDownloadProvider(t, "verify-session-lost", n)
-	p.objectErr = sessionGoneFrom("verify-session-lost", 3)
+	p.objectErr = sessionGoneFrom(3)
 
 	var result *VerifyResult
 	var err error
@@ -130,7 +130,7 @@ func TestVerifyIntegrity_SessionLostBeforeAnythingVerifiedIsFailed(t *testing.T)
 	defer setVerifyConcurrencyForTest(1)()
 	defer setDownloadTimeoutFloorForTest(time.Hour)()
 	p := newScriptedDownloadProvider(t, "verify-session-lost-zero", 20)
-	p.objectErr = sessionGoneFrom("verify-session-lost-zero", 0)
+	p.objectErr = sessionGoneFrom(0)
 
 	result, err := VerifyIntegrityWithOptions(context.Background(), p, "verify-session-lost-zero", VerifyOptions{})
 	if err != nil {
@@ -212,7 +212,7 @@ func TestVerifyIntegrity_TimeBudgetBeforeSessionLossKeepsBudgetReason(t *testing
 	p := newScriptedDownloadProvider(t, "verify-budget-then-session", 6, 2)
 	budget := useManualBudgetForTest(t)
 	p.onStall = budget.expire
-	p.objectErr = sessionGoneFrom("verify-budget-then-session", 3)
+	p.objectErr = sessionGoneFrom(3)
 
 	result, err := VerifyIntegrityWithOptions(context.Background(), p, "verify-budget-then-session",
 		VerifyOptions{TimeBudget: time.Minute})
@@ -251,7 +251,7 @@ func TestTestRestore_SessionLostMidRunStopsEarlyAndCleansUp(t *testing.T) {
 	logged := captureBackupLogs(t)
 	const n = 30
 	p := newScriptedDownloadProvider(t, "restore-session-lost", n)
-	p.objectErr = sessionGoneFrom("restore-session-lost", 2)
+	p.objectErr = sessionGoneFrom(2)
 
 	var result *TestRestoreResult
 	var err error
@@ -283,13 +283,16 @@ func TestTestRestore_SessionLostMidRunStopsEarlyAndCleansUp(t *testing.T) {
 	if got := warnLines(logged.String(), "download or content check failed"); got != 0 {
 		t.Fatalf("logged %d per-file WARN lines, want 0", got)
 	}
+	if got := warnLines(logged.String(), "storage session ended"); got != 1 {
+		t.Fatalf("logged %d abort WARN lines, want exactly 1:\n%s", got, logged.String())
+	}
 }
 
 func TestTestRestore_SessionLostBeforeAnythingVerifiedIsFailed(t *testing.T) {
 	defer setVerifyConcurrencyForTest(1)()
 	defer setDownloadTimeoutFloorForTest(time.Hour)()
 	p := newScriptedDownloadProvider(t, "restore-session-lost-zero", 5)
-	p.objectErr = sessionGoneFrom("restore-session-lost-zero", 0)
+	p.objectErr = sessionGoneFrom(0)
 	result, err := TestRestoreWithOptions(context.Background(), p, "restore-session-lost-zero", t.TempDir(), VerifyOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

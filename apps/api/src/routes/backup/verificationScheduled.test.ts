@@ -398,6 +398,69 @@ describe('verification timeout handling', () => {
     }
   });
 
+  // The usual production order: the timeout job fails the row and its
+  // command, which revokes the read session; the agent then answers with a
+  // storage_session_lost result. That answer replaces the timeout marker.
+  it('replaces the timeout marker when a late result reports the session ended', async () => {
+    const orgId = 'org-late-session-lost';
+    const verificationId = 'verify-late-session-lost';
+    const commandId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const startedAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    backupVerifications.push({
+      id: verificationId,
+      orgId,
+      deviceId: 'dev-late-session-lost',
+      backupJobId: 'job-late-session-lost',
+      snapshotId: 'snap-late-session-lost',
+      verificationType: 'integrity',
+      status: 'failed',
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId, reason: verificationTimeoutReason('integrity'), reasonCode: VERIFICATION_TIMEOUT_REASON_CODE },
+      createdAt: startedAt.toISOString(),
+    });
+    verificationOrgById.set(verificationId, orgId);
+    selectMock.mockImplementation(() => { throw new Error('db down'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const agentError = 'verification stopped: the storage session ended before every file was checked; '
+      + 'checked 10 of 40 files (10 ok, 0 failed), the remaining 30 were not verified (storage session: closed)';
+
+    try {
+      await processBackupVerificationResult(commandId, {
+        status: 'completed',
+        stdout: JSON.stringify({
+          snapshotId: 'snap-late-session-lost',
+          status: 'partial',
+          filesVerified: 10,
+          filesFailed: 0,
+          filesUnchecked: 30,
+          error: agentError,
+          code: 'storage_session_lost',
+        }),
+      });
+
+      const persisted = (persistVerificationToDbMock.mock.calls.at(-1) as unknown[] | undefined)?.[0] as
+        | { id: string; status: string; details: Record<string, unknown> }
+        | undefined;
+      expect(persisted?.id).toBe(verificationId);
+      expect(persisted?.status).toBe('partial');
+      expect(persisted?.details.reasonCode).toBe('storage_session_lost');
+      expect(persisted?.details.reason).toBe(agentError);
+      expect(persisted?.details.filesUnchecked).toBe(30);
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+      selectMock.mockReset();
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) backupVerifications.splice(index, 1);
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
   it('keeps only allowlisted agent codes and resets filesUnchecked on every result', async () => {
     const orgId = 'org-other-code';
     const verificationId = 'verify-other-code';
