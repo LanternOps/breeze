@@ -136,7 +136,7 @@ func TestDesktopPeerConnectsWhenViewerHostCandidatesAreMDNSNames(t *testing.T) {
 
 	// The agent's own host candidates must still be gathered, as IPs.
 	agentHosts := 0
-	for _, line := range strings.Split(agentPC.LocalDescription().SDP, "\r\n") {
+	for line := range strings.SplitSeq(agentPC.LocalDescription().SDP, "\r\n") {
 		if strings.HasPrefix(line, "a=candidate:") && strings.Contains(line, " typ host") {
 			agentHosts++
 			if strings.Contains(line, ".local") {
