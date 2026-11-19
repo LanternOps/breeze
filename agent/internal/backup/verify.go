@@ -93,7 +93,7 @@ func VerifyIntegrityWithOptions(ctx context.Context, provider providers.BackupPr
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result, err
 	}
-	runCtx, stopRun := opts.runContext(ctx)
+	runCtx, endRun, stopRun := opts.runContext(ctx)
 	defer stopRun()
 
 	// Download and parse manifest. With an integrity expectation in attested
@@ -125,6 +125,9 @@ func VerifyIntegrityWithOptions(ctx context.Context, provider providers.BackupPr
 	finished := 0
 	runFileChecks(runCtx, len(files), func(i int) {
 		outcomes[i] = verifySnapshotFile(runCtx, provider, files[i], opts.Integrity)
+		if outcomes[i].endsRun != nil {
+			endRun(outcomes[i].endsRun)
+		}
 	}, func(i int) {
 		if outcomes[i].state == fileNotChecked {
 			return // interrupted by the run ending — not a finished entry
@@ -162,11 +165,27 @@ func VerifyIntegrityWithOptions(ctx context.Context, provider providers.BackupPr
 	// Determine status
 	result.FilesIncomplete = snapshot.IncompleteFiles
 	total := result.FilesVerified + result.FilesFailed
+	sessionLost := sessionLostCause(runCtx)
 	switch {
+	case sessionLost != nil:
+		// The storage session ended mid-run; the files it did not reach are
+		// unchecked, not failed. Never `passed`.
+		if result.FilesVerified == 0 {
+			result.Status = "failed"
+		} else {
+			result.Status = "partial"
+		}
+		result.Code = ResultCodeStorageSessionLost
+		result.Error = sessionLostMessage("verification", sessionLost,
+			result.FilesVerified, result.FilesFailed, countContentFiles(files))
+		log.Warn("verification stopped: storage session ended; reporting partial counts",
+			"phase", "verify", "snapshotId", snapshotID,
+			"filesVerified", result.FilesVerified, "filesFailed", result.FilesFailed,
+			"filesUnchecked", result.FilesUnchecked, "error", sessionLost.Error())
 	case result.FilesUnchecked > 0:
-		// Only the run's own time budget leaves files unchecked without an
-		// error (a caller cancel returned above). Never `passed`: part of the
-		// snapshot was not looked at.
+		// Otherwise only the run's own time budget leaves files unchecked
+		// without an error (a caller cancel returned above). Never `passed`:
+		// part of the snapshot was not looked at.
 		if result.FilesVerified == 0 {
 			result.Status = "failed"
 		} else {
@@ -248,10 +267,18 @@ func checkedFileOutcome(ctx context.Context, phase string, provider providers.Ba
 	}
 	check, warnings, err := integrity.DownloadCheckedVia(ctx, dl, provider, file.BackupPath, dest, storedBytes(file), e)
 	if ctx.Err() != nil {
-		// The run ended (caller cancel or time budget) mid-download: no
-		// verdict on this file either way.
+		// The run ended (caller cancel, time budget or a lost session)
+		// mid-download: no verdict on this file either way.
 		logInterruptedDownload(phase, file.BackupPath, err)
 		return fileCheckOutcome{state: fileNotChecked}
+	}
+	if endsVerifyRun(err) {
+		// The storage session ended: no verdict on this file, and none
+		// possible for any later one. The caller ends the run and logs it
+		// once; a per-file WARN here was one line per remaining file.
+		log.Debug("storage session lost; ending the run with this file unchecked", "phase", phase,
+			"backupPath", file.BackupPath, "error", err.Error())
+		return fileCheckOutcome{state: fileNotChecked, endsRun: err}
 	}
 	if err != nil {
 		log.Warn("download or content check failed", "phase", phase, "backupPath", file.BackupPath,
@@ -296,6 +323,9 @@ func downloadVerifyManifest(ctx, runCtx context.Context, provider providers.Back
 	if dlErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, nil, "", "", ctxErr
+		}
+		if endsVerifyRun(dlErr) {
+			return nil, nil, fmt.Sprintf("storage session ended before the snapshot manifest finished downloading: %v", dlErr), ResultCodeStorageSessionLost, nil
 		}
 		if integrity.FailureCode(dlErr) != "" {
 			return nil, nil, fmt.Sprintf("snapshot manifest does not match its attestation: %v", dlErr), integrity.FailureCode(dlErr), nil
@@ -382,7 +412,7 @@ func TestRestoreWithOptions(ctx context.Context, provider providers.BackupProvid
 	if ephemeral {
 		defer func() { _ = os.RemoveAll(operationRoot) }()
 	}
-	runCtx, stopRun := opts.runContext(ctx)
+	runCtx, endRun, stopRun := opts.runContext(ctx)
 	defer stopRun()
 
 	// Download and parse manifest (checked against the snapshot attestation
@@ -437,6 +467,9 @@ func TestRestoreWithOptions(ctx context.Context, provider providers.BackupProvid
 	finished := 0
 	runFileChecks(runCtx, len(files), func(i int) {
 		outcomes[i] = restoreSnapshotFile(runCtx, provider, files[i], destPaths[i], pathErrs[i], opts.Integrity)
+		if outcomes[i].endsRun != nil {
+			endRun(outcomes[i].endsRun)
+		}
 	}, func(i int) {
 		if outcomes[i].state == fileNotChecked {
 			return
@@ -470,10 +503,27 @@ func TestRestoreWithOptions(ctx context.Context, provider providers.BackupProvid
 	result.FilesUnchecked = countUnchecked(files, outcomes)
 
 	// Determine status
+	sessionLost := sessionLostCause(runCtx)
 	switch {
+	case sessionLost != nil:
+		// Same rule as VerifyIntegrityWithOptions: the session ended, the
+		// files it did not reach are unchecked, not failed.
+		if result.FilesVerified == 0 {
+			result.Status = "failed"
+		} else {
+			result.Status = "partial"
+		}
+		result.Code = ResultCodeStorageSessionLost
+		result.Error = sessionLostMessage("test restore", sessionLost,
+			result.FilesVerified, result.FilesFailed, countContentFiles(files))
+		log.Warn("test restore stopped: storage session ended; reporting partial counts",
+			"phase", "restore", "snapshotId", snapshotID,
+			"filesVerified", result.FilesVerified, "filesFailed", result.FilesFailed,
+			"filesUnchecked", result.FilesUnchecked, "error", sessionLost.Error())
 	case result.FilesUnchecked > 0:
-		// Same rule as VerifyIntegrityWithOptions: only the run's own time
-		// budget gets here, and a partly-restored snapshot is never a pass.
+		// Same rule as VerifyIntegrityWithOptions: otherwise only the run's
+		// own time budget gets here, and a partly-restored snapshot is never
+		// a pass.
 		if result.FilesVerified == 0 {
 			result.Status = "failed"
 		} else {
