@@ -282,6 +282,12 @@ RELEASE_IMAGE_VERIFIER_FILE="${WORK_DIR}/scripts/release/verify-release-images.s
 # (#11870); see place_release_manifest_pair_in_binaries_volume.
 RELEASE_MANIFEST_PAIR_DIR="${WORK_DIR}/release-manifest"
 COMPOSE_FILES=("${COMPOSE_FILE}")
+# Postgres data slots declared in docker-compose.yml. POSTGRES_DATA_VOLUME in
+# .env picks the active one (unset = postgres_data); the PostgreSQL
+# major-version runbook restores into the other slot and keeps the old one as
+# its rollback. Storage checks look at both, so a database in either slot is
+# never mistaken for a fresh install.
+POSTGRES_DATA_VOLUME_KEYS=(postgres_data postgres_data_alt)
 
 log() {
   printf '%s\n' "$*"
@@ -753,18 +759,22 @@ sanitize_compose_project_name() {
 }
 
 preserve_existing_compose_project_name() {
-  local configured name volume_name
+  local configured name volume_name key
 
   name="$(sanitize_compose_project_name "$(basename "${WORK_DIR}")")"
   [[ -n "${name}" && "${name}" != "breeze" ]] || return 0
 
-  volume_name="${name}_postgres_data"
   configured="$(get_env_value "COMPOSE_PROJECT_NAME")"
-  if [[ -z "${configured}" || ( "${ENV_FILE_CREATED}" == "true" && "${configured}" == "breeze" ) ]] \
-    && docker volume inspect "${volume_name}" >/dev/null 2>&1; then
-    set_env_value "COMPOSE_PROJECT_NAME" "${name}"
-    warn "Found existing Docker volume ${volume_name}; preserving COMPOSE_PROJECT_NAME=${name} so existing data stays attached."
-  fi
+  [[ -z "${configured}" || ( "${ENV_FILE_CREATED}" == "true" && "${configured}" == "breeze" ) ]] || return 0
+
+  for key in "${POSTGRES_DATA_VOLUME_KEYS[@]}"; do
+    volume_name="${name}_${key}"
+    if docker volume inspect "${volume_name}" >/dev/null 2>&1; then
+      set_env_value "COMPOSE_PROJECT_NAME" "${name}"
+      warn "Found existing Docker volume ${volume_name}; preserving COMPOSE_PROJECT_NAME=${name} so existing data stays attached."
+      return 0
+    fi
+  done
 }
 
 shell_quote() {
@@ -1211,6 +1221,7 @@ assert_local_storage_compose_rewrite() {
   assert_generated_compose_absent_regex "${generated_file}" '^[[:space:]]+- api_data:/data[[:space:]]*$' "the API named-volume mount"
   assert_generated_compose_absent_regex "${generated_file}" '^[[:space:]]+- binaries:/data/binaries:ro[[:space:]]*$' "the API binaries named-volume mount"
   assert_generated_compose_absent_regex "${generated_file}" '^[[:space:]]+- postgres_data:/var/lib/postgresql/data[[:space:]]*$' "the Postgres named-volume mount"
+  assert_generated_compose_absent_regex "${generated_file}" '^[[:space:]]+- [$][{]POSTGRES_DATA_VOLUME' "the Postgres data-volume selector mount"
   assert_generated_compose_absent_regex "${generated_file}" '^[[:space:]]+- redis_data:/data[[:space:]]*$' "the Redis named-volume mount"
 
   assert_generated_compose_contains "${generated_file}" '      - ./data/binaries:/target' "the binaries init bind mount"
@@ -1268,6 +1279,9 @@ write_local_storage_compose_file() {
       gsub("- api_data:/data", "- ./data/api:/data")
       gsub("- binaries:/data/binaries:ro", "- ./data/binaries:/data/binaries:ro")
       gsub("- postgres_data:/var/lib/postgresql/data", "- ./data/postgres:/var/lib/postgresql/data")
+      # The data-volume selector (#11418). Bracket expressions keep the regex
+      # literal in every awk (gawk, mawk, BSD awk).
+      gsub("- [$][{]POSTGRES_DATA_VOLUME:-postgres_data[}]:/var/lib/postgresql/data", "- ./data/postgres:/var/lib/postgresql/data")
       gsub("- redis_data:/data", "- ./data/redis:/data")
       print
     }
@@ -2439,8 +2453,19 @@ compose_project_name() {
   printf '%s' "${name}"
 }
 
-postgres_named_volume() {
-  printf '%s_postgres_data' "$(compose_project_name)"
+# Every existing Postgres slot volume for this project, space-separated.
+postgres_named_volumes() {
+  local project key volume_name found=()
+
+  project="$(compose_project_name)"
+  for key in "${POSTGRES_DATA_VOLUME_KEYS[@]}"; do
+    volume_name="${project}_${key}"
+    if docker volume inspect "${volume_name}" >/dev/null 2>&1; then
+      found+=("${volume_name}")
+    fi
+  done
+  [[ "${#found[@]}" -gt 0 ]] || return 1
+  printf '%s' "${found[*]}"
 }
 
 local_postgres_data_has_files() {
@@ -2460,12 +2485,7 @@ detect_existing_postgres_storage() {
     return 1
   fi
 
-  volume_name="$(postgres_named_volume)"
-  if docker volume inspect "${volume_name}" >/dev/null 2>&1; then
-    printf '%s' "${volume_name}"
-    return 0
-  fi
-  return 1
+  postgres_named_volumes
 }
 
 reset_existing_postgres_storage() {
@@ -2486,8 +2506,12 @@ reset_existing_postgres_storage() {
     return
   fi
 
-  docker volume rm "${storage}" >/dev/null
-  log "Deleted Docker Postgres volume: ${storage}"
+  local volumes=() volume_name
+  read -r -a volumes <<< "${storage}"
+  for volume_name in "${volumes[@]}"; do
+    docker volume rm "${volume_name}" >/dev/null
+    log "Deleted Docker Postgres volume: ${volume_name}"
+  done
 }
 
 check_existing_installation_conflicts() {

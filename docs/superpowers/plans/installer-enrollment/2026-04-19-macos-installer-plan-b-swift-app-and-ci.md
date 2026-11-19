@@ -886,7 +886,7 @@ git commit -m "installer-app: SwiftUI views + state machine"
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2026 Olive Technologies LLC.</string>
+    <string>Copyright © 2026 Example Corp LLC.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>
@@ -1057,7 +1057,7 @@ agent/installer/macos-app/build-app-bundle.sh \
 - [ ] **Step 2: Sign**
 
 ```bash
-SIGNING_IDENTITY="Developer ID Application: Olive Technologies LLC (TEAMID)"
+SIGNING_IDENTITY="Developer ID Application: Example Corp LLC (TEAMID)"
 codesign --force --options runtime \
   --entitlements agent/installer/macos-app/entitlements.plist \
   --sign "$SIGNING_IDENTITY" --timestamp \

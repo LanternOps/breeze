@@ -588,12 +588,10 @@ export class EmailService {
         throw new Error('Mailgun config is not initialized');
       }
 
-      // `cc` is deliberately NOT forwarded: sendViaMailgun supports it, this
-      // call has never passed it, and W01 is byte-identical by construction.
-      // Fixing it is its own issue (plan index amendment 6).
       await sendViaMailgun(this.mailgunConfig, {
         from: sender,
         to,
+        cc,
         subject,
         html,
         text,

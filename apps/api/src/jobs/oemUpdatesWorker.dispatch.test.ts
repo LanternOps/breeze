@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ResolvedOemUpdatesLink } from '../services/oemUpdates/resolver';
 
+// The observe sweep has its own tests (services/oemUpdates/observe.test.ts).
+vi.mock('../services/oemUpdates/observe', () => ({
+  runOemObserveSweep: vi.fn(async () => ({ considered: 0, dispatched: 0 })),
+  observedHpPlatformUnsupported: vi.fn(async () => false),
+}));
+
 vi.mock('../db', () => {
   const chain: Record<string, unknown> = {
     from: () => chain,
@@ -114,6 +120,13 @@ afterEach(() => {
 });
 
 describe('runOemUpdatesTick: scheduled dispatch', () => {
+  it('runs the vendor canary observe sweep every tick (it is inert while the canary list is empty)', async () => {
+    const { runOemObserveSweep } = await import('../services/oemUpdates/observe');
+    vi.mocked(selectDueDevices).mockResolvedValue([]);
+    await runOemUpdatesTick(NOW);
+    expect(runOemObserveSweep).toHaveBeenCalledWith(NOW);
+  });
+
   it('re-resolves the winning link immediately before dispatch', async () => {
     vi.mocked(selectDueDevices).mockResolvedValue([due()]);
     await runOemUpdatesTick(NOW);

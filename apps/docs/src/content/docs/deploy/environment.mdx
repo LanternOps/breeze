@@ -957,9 +957,9 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 </Aside>
 
 <Aside type="caution" title="Enabling AI Workspace requires pgvector">
-  Workspace's migrations run `CREATE EXTENSION vector` when the API boots. On a stock `postgres:16-alpine` the API **refuses to start** with `extension "vector" is not available`, naming the flag and both remedies.
+  Workspace's migrations run `CREATE EXTENSION vector` when the API boots. On a stock `postgres:<major>-alpine` image the API **refuses to start** with `extension "vector" is not available`, naming the flag and both remedies.
 
-  Use a Postgres image that ships the extension — the `POSTGRES_IMAGE_REF` default (`pgvector/pgvector:pg16`) already does, and is the same Postgres major version as stock with the extension baked in. On a managed Postgres, confirm your provider offers `pgvector` before turning the flag on.
+  Use a Postgres image that ships the extension — the `POSTGRES_IMAGE_REF` default (`pgvector/pgvector:pg16`) and its pg17/pg18 variants already do, and each is the same Postgres major version as stock with the extension baked in. On a managed Postgres, confirm your provider offers `pgvector` before turning the flag on.
 
   If you do not want Workspace, leave `BREEZE_WORKSPACE_ENABLED` unset — no extension is needed and nothing else changes.
 </Aside>

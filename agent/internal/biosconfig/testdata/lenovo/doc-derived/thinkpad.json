@@ -1,0 +1,26 @@
+{
+  "_source": "doc-derived: Lenovo Think BIOS Config / WMI BIOS Deployment Guide (Lenovo_BiosSetting.CurrentSetting, Lenovo_BiosPasswordSettings). Not a capture. Replaced by a scrubbed capture in the act PR.",
+  "settings": [
+    "WakeOnLAN,ACOnly;[Optional:Disable,ACOnly,ACandBattery,Enable]",
+    "WakeOnLANDock,Enable;[Optional:Disable,Enable]",
+    "AfterPowerLoss,PowerOff;[Optional:PowerOn,PowerOff,LastState]",
+    "PXEIPV4NetworkStack,Enable",
+    "AssetTag,EXAMPLE-ASSET-0003",
+    "OwnershipTag,Property of Example Corp",
+    "WakeOnLANAssetTag,EXAMPLE-ASSET-0004",
+    "USBPortAccess,Enable",
+    "MACAddressPassThrough,Disable;[Optional:Disable,Enable,Second]",
+    "",
+    "BootMode,Quick"
+  ],
+  "passwordState": 2,
+  "classes": [
+    "Lenovo_BiosSetting",
+    "Lenovo_BiosPasswordSettings",
+    "Lenovo_GetBiosSelections",
+    "Lenovo_PlatformSetting",
+    "Lenovo_BiosCertificate",
+    "Lenovo_DiscardBiosSettings"
+  ],
+  "error": null
+}

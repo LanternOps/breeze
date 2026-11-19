@@ -26,7 +26,7 @@ visually competitive with the reference PDF in all three renderers.**
 
 | # | Decision |
 |---|---|
-| 1 | Per-partner theming — OliveTech's look becomes a configured theme, not a hard-code |
+| 1 | Per-partner theming — our own MSP's look becomes a configured theme, not a hard-code |
 | 2 | New primitives: **table** and **callout**. Pricing tiers → Spec B. **Two-column: deferred** (revisit trigger: a partner asks for side-by-side content the tiers block can't express) |
 | 3 | Curated theme presets + existing accent. No per-element overrides, no font uploads |
 | 4 | Table cells hold **inline runs only** — no nested lists/paragraphs. Extensible later by widening what a cell run may hold; that is additive, not a redesign |
@@ -387,7 +387,7 @@ house style.
   a release before the portal renderer ships. In practice: one release carries
   everything; the release notes flag the block additions for self-hosters.
 - Deploy day: **zero visual change** for every existing partner (`classic` +
-  backfilled `a4`). OliveTech flips to `condensed` + `letter` manually as the
+  backfilled `a4`). Our own tenant flips to `condensed` + `letter` manually as the
   pilot.
 - Sent quotes are pinned by the send-time theme/pageSize snapshot (§1); the
   send-time emailed PDF (`quoteLifecycle.ts:345`) is inherently fixed.

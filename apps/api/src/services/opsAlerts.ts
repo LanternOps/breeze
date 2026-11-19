@@ -18,17 +18,31 @@ export function isOpsAlertingConfigured(): boolean {
 }
 
 /**
- * Neutralises a tenant-controlled string (partner or org name, anything a
- * customer typed) before it is interpolated into an ops alert, which Discord
- * renders as markdown. Flattens newlines, backslash-escapes markdown control
- * characters, breaks URL schemes and @-mentions so nothing autolinks or
- * pings, and caps the length.
+ * Collapses a tenant-controlled string to a single line: control characters
+ * (CR, LF, NUL, ...), U+2028/2029, line/paragraph separators and invisible
+ * format characters (zero-width, bidi overrides) become a space, whitespace
+ * runs collapse, and the result is trimmed and length-capped. No markdown or
+ * HTML escaping — callers add what their medium needs. Without this a value
+ * like "x\nRisk: none" forges a `Field: value` line in newline-delimited text.
  */
-export function opsText(value: string, maxLength = 80): string {
-  const flat = value
-    .replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, ' ')
+export function singleLine(value: string, maxLength = 80): string {
+  const flat = String(value)
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+  if (flat.length <= maxLength) return flat;
+  return `${flat.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+/**
+ * Neutralises a tenant-controlled string (partner or org name, anything a
+ * customer typed) before it is interpolated into an ops alert, which Discord
+ * renders as markdown. Flattens to a single line (see singleLine),
+ * backslash-escapes markdown control characters, breaks URL schemes and
+ * @-mentions so nothing autolinks or pings, and caps the length.
+ */
+export function opsText(value: string, maxLength = 80): string {
+  const flat = singleLine(value, Number.MAX_SAFE_INTEGER);
   const escaped = flat
     .replace(/[\\*_`~|>#[\]()<]/g, '\\$&')
     .replace(/([a-z][a-z0-9+.-]*):\/\//gi, '$1:\u200b//')

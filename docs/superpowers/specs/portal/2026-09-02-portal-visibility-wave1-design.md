@@ -3,7 +3,7 @@
 **Date:** 2026-09-02
 **Status:** Approved for planning (advisor quorum: Fable + Codex `xhigh`; the two disagreements — toggle defaults and sync vs. queued generation — were decided by the user, see §2).
 **Roadmap item:** LanternOps/breeze#4562
-**Audit that produced this scope:** `internal/olivetech/audit.html` (private) — 36 customer-facing "you'll see" claims checked against `apps/portal` and the reports engine: 4 shipped, 16 surface-only, 7 partial, 9 missing.
+**Audit that produced this scope:** an internal audit (private) — 36 customer-facing "you'll see" claims checked against `apps/portal` and the reports engine: 4 shipped, 16 surface-only, 7 partial, 9 missing.
 
 ## 1. Problem & goal
 

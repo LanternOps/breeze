@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "vendor": "hp",
+  "nativeArch": "amd64",
+  "interface": "present",
+  "errorCode": null,
+  "durationMs": 812,
+  "collectedWith": "0.131.0",
+  "hp": {
+    "settings": [
+      {
+        "name": "Wake On LAN",
+        "value": "Boot to Hard Drive",
+        "possibleValues": [
+          "Disable",
+          "Boot to Network",
+          "Follow Boot Order",
+          "Boot to Hard Drive"
+        ]
+      },
+      {
+        "name": "S5 Maximum Power Savings",
+        "value": "Enable",
+        "possibleValues": [
+          "Disable",
+          "Enable"
+        ]
+      },
+      {
+        "name": "S4/S5 Wake on LAN",
+        "value": "Enable",
+        "possibleValues": [
+          "Disable",
+          "Enable"
+        ]
+      },
+      {
+        "name": "Deep Sleep",
+        "value": "Off",
+        "possibleValues": [
+          "Off",
+          "On"
+        ]
+      },
+      {
+        "name": "After Power Loss",
+        "value": "Power Off",
+        "possibleValues": [
+          "Power Off",
+          "Power On",
+          "Previous State"
+        ]
+      },
+      {
+        "name": "Network (PXE) Boot",
+        "value": "Enable",
+        "possibleValues": [
+          "Disable",
+          "Enable"
+        ]
+      }
+    ],
+    "settingCount": 13,
+    "truncated": false,
+    "setupPasswordSet": true,
+    "powerOnPasswordSet": false,
+    "sureAdmin": "Disable",
+    "settingInterface": true
+  }
+}

@@ -4,9 +4,12 @@ import { z } from 'zod';
 import {
   OEM_CATEGORIES,
   OEM_LANES,
+  OEM_OBSERVE_MIN_AGENT_VERSION,
   OEM_UPDATE_MIN_AGENT_VERSION,
   type OemCategory,
   type OemLane,
+  type OemObserveLane,
+  type OemObserveRefusal,
 } from '@breeze/shared';
 import { db } from '../../db';
 import { deviceHardware, deviceOemUpdateStatus, devices, organizations, partners, sites } from '../../db/schema';
@@ -22,7 +25,7 @@ import {
 } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { deliveryTtlMs } from '../../services/commandOfflinePolicy';
-import { resolveApplicability } from '../../services/oemUpdates/applicability';
+import { resolveApplicability, resolveObserveApplicability } from '../../services/oemUpdates/applicability';
 import {
   assertOemRunAllowedForActor,
   dispatchOemUpdateRun,
@@ -32,6 +35,11 @@ import { deriveOemDisplayState } from '../../services/oemUpdates/displayState';
 import { oemUpdatesEnabled } from '../../services/oemUpdates/flags';
 import { effectiveTimezoneFrom } from '../../services/oemUpdates/candidates';
 import { listOemRuns } from '../../services/oemUpdates/history';
+import {
+  assertOemObserveAllowedForActor,
+  dispatchOemObserve,
+  observeLaneForRunNow,
+} from '../../services/oemUpdates/observe';
 import { oemPolicySide } from '../../services/oemUpdates/policySide';
 import { resolveOemUpdatesLinkForDevice } from '../../services/oemUpdates/resolver';
 import { isCategoryOpen, SHIPPED_OEM_LANES, type GateState } from '../../services/oemUpdates/toolManifest';
@@ -39,6 +47,7 @@ import { trustDenyBody } from '../../services/partnerTrust';
 import { TrustDeniedError } from '../../services/partnerTrust.commands';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { isUnassignedPoolOrgType } from '../../services/unassignedPool/orgType';
+import { vendorStage } from '../../services/vendorCanary';
 import { deviceCommandsInCurrentOrg } from './commandOrgScope';
 import {
   canAccessDeviceSite,
@@ -76,7 +85,28 @@ const REFUSAL_MESSAGES: Record<OemDispatchRefusal, string> = {
   cancelled_at_claim: 'The run was cancelled before it reached the device.',
 };
 
-function refusalStatus(refusal: OemDispatchRefusal): 403 | 404 | 409 {
+/**
+ * Observe refusals. Only a vendor canary partner (our own tenant) can reach
+ * these, so they are operator copy and stay out of the console's locale files.
+ */
+const OBSERVE_REFUSAL_MESSAGES: Record<OemObserveRefusal, string> = {
+  device_not_found: 'Device not found',
+  flag_off: 'Vendor updates are not turned on for this organization.',
+  not_canary: 'Vendor observation is not enabled for this partner and manufacturer.',
+  ephemeral: 'Vendor observation does not run on Quick Support devices.',
+  parked: 'Assign this device to an organization before observing it.',
+  decommissioned: 'Cannot send commands to a decommissioned device',
+  not_applicable: 'Vendor observation does not apply to this device.',
+  kill_switch: "Vendor observation is paused for this device's manufacturer.",
+  agent_too_old: `This device's agent is too old for vendor observation. Update the agent to ${OEM_OBSERVE_MIN_AGENT_VERSION} or later.`,
+  no_policy: 'No enabled vendor updates policy turns this manufacturer on for this device.',
+  offline: 'The device is not online. Vendor observation only starts on a device that is online now.',
+  recent_observation: 'This device was observed in the last 24 hours, or an observation is in progress.',
+  trust_denied: "This partner's trust status does not allow running commands on devices.",
+  cancelled_at_claim: 'The observation was cancelled before it reached the device.',
+};
+
+function refusalStatus(refusal: OemDispatchRefusal | OemObserveRefusal): 403 | 404 | 409 {
   if (refusal === 'device_not_found') return 404;
   if (refusal === 'trust_denied') return 403;
   return 409;
@@ -116,6 +146,48 @@ oemUpdatesRoutes.post(
     const deviceId = device.id;
     if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    // Observe-first (#11065): a canary partner's lane at stage `observe` gets the
+    // read-only observation instead of a run. Same human gates as a run.
+    const observeLane = await observeLaneForRunNow(deviceId);
+    if (observeLane) {
+      try {
+        await assertOemObserveAllowedForActor(deviceId, auth.user.id);
+      } catch (error) {
+        if (!(error instanceof TrustDeniedError)) throw error;
+        return c.json(trustDenyBody({
+          allow: false,
+          code: error.code,
+          capability: 'device_execute',
+          reason: error.reason,
+        }, false), 403);
+      }
+      const observed = await dispatchOemObserve({
+        deviceId,
+        expectedOrgId: device.orgId,
+        trigger: 'on_demand',
+        actorUserId: auth.user.id,
+      });
+      writeRouteAudit(c, {
+        orgId: device.orgId,
+        action: 'device.oem_updates.observe',
+        resourceType: 'device',
+        resourceId: deviceId,
+        resourceName: device.hostname,
+        ...(observed.ok
+          ? { details: { commandId: observed.commandId, lane: observeLane } }
+          : { result: 'denied' as const, details: { refusal: observed.refusal, lane: observeLane } }),
+      });
+      if (!observed.ok) {
+        return c.json({
+          error: OBSERVE_REFUSAL_MESSAGES[observed.refusal],
+          code: observed.refusal,
+          ...(observed.refusal === 'agent_too_old' ? { minAgentVersion: OEM_OBSERVE_MIN_AGENT_VERSION } : {}),
+        }, refusalStatus(observed.refusal));
+      }
+      // Nothing installs, so there are no categories; `observe` tells the console why.
+      return c.json({ commandId: observed.commandId, observe: true, categories: [], skippedCategories: [] }, 202);
     }
 
     try {
@@ -194,6 +266,10 @@ const NO_GATES: Record<OemCategory, GateState> = Object.freeze({
  * What the console may offer: the lane this device would run, or null when a run
  * could not reach it whatever the gates say. Null hides the action, so with the
  * flag off the feature shows nowhere. The seam stays the real check.
+ *
+ * `observe` is true when Run Now would send the read-only observation instead
+ * (a vendor canary partner whose lane is at stage `observe`), which is also
+ * offered for a lane whose run code has not shipped (Lenovo).
  */
 async function offeredLane(device: {
   orgId: string;
@@ -203,7 +279,7 @@ async function offeredLane(device: {
   isVirtual: boolean;
   isEphemeral: boolean;
   deviceRole: string;
-}): Promise<OemLane | null> {
+}): Promise<{ lane: OemLane; observe: boolean } | null> {
   if (device.isEphemeral || device.status === 'decommissioned') return null;
 
   const [org] = await db
@@ -219,16 +295,19 @@ async function offeredLane(device: {
     .where(eq(deviceHardware.deviceId, device.id))
     .limit(1);
 
-  const applicability = resolveApplicability({
+  const identity = {
     osType: device.osType,
     isVirtual: device.isVirtual,
     deviceRole: device.deviceRole,
     manufacturer: hardware?.manufacturer ?? null,
     model: hardware?.model ?? null,
-    enabledLanes: OEM_LANES,
-    shippedLanes: SHIPPED_OEM_LANES,
-  });
-  return applicability.state === 'applicable' ? applicability.lane : null;
+  };
+  const observable = resolveObserveApplicability(identity);
+  if (observable.state === 'applicable' && vendorStage('oem_updates', observable.lane, org.partnerId) === 'observe') {
+    return { lane: observable.lane satisfies OemObserveLane, observe: true };
+  }
+  const applicability = resolveApplicability({ ...identity, enabledLanes: OEM_LANES, shippedLanes: SHIPPED_OEM_LANES });
+  return applicability.state === 'applicable' ? { lane: applicability.lane, observe: false } : null;
 }
 
 /**
@@ -306,7 +385,8 @@ oemUpdatesRoutes.get(
       .where(eq(deviceOemUpdateStatus.deviceId, device.id))
       .limit(1);
 
-    const lane = await offeredLane(device);
+    const offered = await offeredLane(device);
+    const lane = offered?.lane ?? null;
     const gates = lane
       ? Object.fromEntries(OEM_CATEGORIES.map((category): [OemCategory, GateState] => [
           category,
@@ -323,7 +403,7 @@ oemUpdatesRoutes.get(
 
     // The occurrence key and the attempt count only feed the state above.
     const { occurrenceKey: _occurrenceKey, attempts: _attempts, ...status } = row ?? { occurrenceKey: null, attempts: 0 };
-    return c.json({ displayState, lane, status: row ? status : null, gates });
+    return c.json({ displayState, lane, observe: offered?.observe ?? false, status: row ? status : null, gates });
   },
 );
 

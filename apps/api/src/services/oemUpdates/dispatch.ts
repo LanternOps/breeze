@@ -29,7 +29,6 @@ import {
   deviceCommands,
   deviceHardware,
   deviceOemUpdateStatus,
-  deviceRecoveryKeys,
   devices,
   organizations,
 } from '../../db/schema';
@@ -38,7 +37,9 @@ import { dispatchDeviceCommand, type DispatchDeviceCommandResult } from '../disp
 import { assertDeviceExecuteAllowed } from '../partnerTrust.commands';
 import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
-import { OEM_FLASH_CATEGORIES, resolveApplicability, stillNotSupported } from './applicability';
+import { laneFor, OEM_FLASH_CATEGORIES, resolveApplicability, stillNotSupported } from './applicability';
+import { escrowedProtectorIds } from './escrowedProtectors';
+import { observedHpPlatformUnsupported } from './observe';
 import { laneDisabledByKillSwitch, oemUpdatesEnabled } from './flags';
 import {
   getLaneManifest,
@@ -91,16 +92,6 @@ export function oemRunCommandFilter(): SQL {
 
 /** A BIOS or firmware run that has not shown the device came back within this raises an alert. */
 export const OEM_RETURN_DEADLINE_MS = 24 * 60 * 60 * 1000;
-
-const MAX_ESCROWED_PROTECTORS = 16;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-/** BitLocker reports a protector id as a braced uppercase GUID; the wire contract is a uuid. */
-function protectorUuid(raw: string | null): string | null {
-  if (!raw) return null;
-  const value = raw.trim().replace(/^\{/, '').replace(/\}$/, '').toLowerCase();
-  return UUID.test(value) ? value : null;
-}
 
 function refusalForEnqueueCode(code: Extract<DispatchDeviceCommandResult, { ok: false }>['code']): OemDispatchRefusal {
   switch (code) {
@@ -169,6 +160,10 @@ async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
     // resolved its link: only the shipped lanes narrow here.
     enabledLanes: OEM_LANES,
     shippedLanes: SHIPPED_OEM_LANES,
+    // Consumer HP (observe-first O4b): a 404 from HP's platform catalog keeps
+    // HPIA off the machine. Read only for an HP, the one lane it narrows.
+    observedHpPlatformUnsupported: laneFor(device.manufacturer ?? null, device.model ?? null) === 'hp'
+      && await observedHpPlatformUnsupported(device.id),
   });
   if (applicability.state !== 'applicable') return { ok: false, refusal: 'not_applicable' };
   const { lane } = applicability;
@@ -221,18 +216,6 @@ async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
     .limit(1);
   if (inFlight.length > 0) return { ok: false, refusal: 'run_in_flight' };
 
-  // Ids only. The key material stays in the vault, and the agent uses these to
-  // confirm a recovery key for the volume's current protector is already escrowed.
-  const keys = await db
-    .select({ protectorId: deviceRecoveryKeys.protectorId })
-    .from(deviceRecoveryKeys)
-    .where(and(
-      eq(deviceRecoveryKeys.deviceId, device.id),
-      eq(deviceRecoveryKeys.status, 'active'),
-      eq(deviceRecoveryKeys.keyType, 'bitlocker_recovery_password'),
-    ))
-    .limit(MAX_ESCROWED_PROTECTORS);
-
   const payload = oemUpdateRunPayloadSchema.parse({
     lane,
     trigger: input.trigger,
@@ -241,7 +224,7 @@ async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
     blockedUpdateIds: input.blockedUpdateIds,
     rebootControlled: input.rebootControlled,
     notAfter: input.notAfter.toISOString(),
-    escrowedProtectorIds: keys.flatMap(({ protectorId }) => protectorUuid(protectorId) ?? []),
+    escrowedProtectorIds: await escrowedProtectorIds(device.id),
     tool: payloadToolFor(getLaneManifest(lane)),
   });
 

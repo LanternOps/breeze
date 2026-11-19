@@ -167,6 +167,10 @@ const LIVE: readonly string[] = [
   // (services/oemUpdates/dispatch.ts) stamps deliver_by from the run's notAfter,
   // so a device that drops offline after dispatch cannot start past its window.
   C.OEM_UPDATE_RUN,
+  // Read-only vendor observation: dispatched only to an online device, with a
+  // short deliver_by (services/oemUpdates/observe.ts). The weekly sweep simply
+  // tries again, so a queued row would only outlive the policy it was sent under.
+  C.OEM_OBSERVE,
   // Non-CommandTypes literals whose only dispatch path is `executeCommand`,
   // which waits for the result synchronously (`waitForCommandResult`) — the one
   // combination the design forbids pairing with `queue` (#5128 §A). The two

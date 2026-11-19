@@ -12,7 +12,7 @@ import (
 )
 
 // A borderless, always-on-top, non-activating, click-through pill pinned
-// top-center showing "● Billy from Olive Technology is connected · 12:04".
+// top-center showing "● Billy from Fabrikam MSP is connected · 12:04".
 // Pure user32/gdi32 syscalls — the user-helper ships CGO_ENABLED=0. Segoe UI
 // text, a green live dot, and an elapsed-session clock (1s repaint timer);
 // the pill is sized to its label and DPI-scaled, with fully rounded ends via

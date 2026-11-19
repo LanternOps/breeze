@@ -1274,7 +1274,8 @@
             "firmware_value_not_allowed": "This model does not allow the BIOS value Breeze needs",
             "firmware_value_unrecognised": "A BIOS setting value Breeze checks was not recognised",
             "firmware_unreadable": "BIOS settings could not be read",
-            "firmware_interface_unavailable": "This model does not expose BIOS settings to Windows"
+            "firmware_interface_unavailable": "This model does not expose BIOS settings to Windows",
+            "vendor_observe_only": "Observing vendor firmware (read only)"
           },
           "attempts": {
             "pending": "Pending",
@@ -1284,6 +1285,14 @@
             "timed_out": "Timed out",
             "unknown": "Unknown",
             "refused": "Refused"
+          },
+          "observing": "Observing {{vendor}}: {{interface}}",
+          "observingWithCode": "Observing {{vendor}}: {{interface}} ({{code}})",
+          "observeInterfaces": {
+            "present": "interface present",
+            "absent": "interface not present",
+            "access_denied": "access denied",
+            "error": "read error"
           }
         }
       },

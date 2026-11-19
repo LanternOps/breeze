@@ -28,7 +28,12 @@ interface WakeRow {
   testWakeAllowed: boolean;
   show: boolean;
   mode: 'none' | 'verified' | 'always' | 'unknown';
+  /** Vendor firmware observation summary (observe-first amendment); absent from older APIs. */
+  observation?: { vendor: string; interface: string; errorCode: string | null } | null;
 }
+
+/** Brand names for the observed vendor lanes; brands are not translated. */
+const OBSERVE_VENDOR_NAMES: Record<string, string> = { hp: 'HP', lenovo: 'Lenovo', microsoft: 'Surface' };
 
 interface WakePage {
   data: WakeRow[];
@@ -107,6 +112,14 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
 
   const stateLabel = (s: string) => t(/* i18n-dynamic */ `${PREFIX}.states.${s}`, { defaultValue: s });
   const reasonLabel = (code: string) => t(/* i18n-dynamic */ `${PREFIX}.reasons.${code}`, { defaultValue: code });
+  const observingLabel = (o: NonNullable<WakeRow['observation']>) => {
+    const vendor = OBSERVE_VENDOR_NAMES[o.vendor] ?? o.vendor;
+    const iface = t(/* i18n-dynamic */ `${PREFIX}.observeInterfaces.${o.interface}`, { defaultValue: o.interface });
+    if (o.errorCode) {
+      return t('configurationPolicies.featureTabs.wakeOnLanTab.panel.observingWithCode', { vendor, interface: iface, code: o.errorCode });
+    }
+    return t('configurationPolicies.featureTabs.wakeOnLanTab.panel.observing', { vendor, interface: iface });
+  };
   const attemptLabel = (a: NonNullable<WakeRow['lastAttempt']>) => {
     const base = t(/* i18n-dynamic */ `${PREFIX}.attempts.${a.outcome}`, { defaultValue: a.outcome });
     const withCode = a.refusalCode ? `${base} (${a.refusalCode})` : base;
@@ -187,6 +200,11 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
                     </td>
                     <td className="py-2 pr-3 text-xs">
                       {[row.vendor, row.model].filter(Boolean).join(' ') || '-'}
+                      {row.observation && (
+                        <span data-testid={`wake-observing-${row.deviceId}`} className="mt-1 block text-muted-foreground">
+                          {observingLabel(row.observation)}
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 pr-3 text-xs">
                       {row.lastAttempt ? attemptLabel(row.lastAttempt) : t('configurationPolicies.featureTabs.wakeOnLanTab.panel.noAttempts')}

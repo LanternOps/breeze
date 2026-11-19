@@ -199,7 +199,7 @@ func TestDellApplyIsUnsupportedAndRunsNothing(t *testing.T) {
 		t.Fatal("Apply must not run a command")
 		return nil, nil
 	}}
-	if err := a.Apply(context.Background(), "WakeOnLan", "LanOnly"); !errors.Is(err, ErrApplyUnsupported) {
+	if err := a.Apply(context.Background(), "WakeOnLan", "LanOnly"); !errors.Is(err, ErrNotEnabled) {
 		t.Fatalf("got %v", err)
 	}
 }

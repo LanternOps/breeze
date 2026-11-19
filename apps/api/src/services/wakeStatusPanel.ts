@@ -5,6 +5,10 @@ import { devices } from '../db/schema/devices';
 import { deviceWakeAttempts, deviceWakeStatus, WAKE_READINESS_STATES } from '../db/schema/deviceWake';
 import { resolveAssignmentDeviceIds, resolveWakeOnLanWinnersForDevices } from './featureConfigResolver';
 import { decideWakeAvailability, type WakeEffectiveState } from './wakeAvailability';
+import {
+  WAKE_OBSERVATION_INTERFACES,
+  WAKE_OBSERVATION_VENDORS,
+} from '@breeze/shared/validators';
 
 /**
  * Per-policy Wake-on-LAN status panel (#10838 W02 Task 11).
@@ -41,6 +45,33 @@ export interface WakeStatusRow {
   testWakeAllowed: boolean;
   show: boolean;
   mode: 'none' | 'verified' | 'always' | 'unknown';
+  /**
+   * Observe-first amendment §2: which vendor interface the agent is observing
+   * and what it found. Summary only: setting values stay in
+   * details.vendorObservation and are read by our own staff's evidence query,
+   * never shown here.
+   */
+  observation: WakeObservationSummary | null;
+}
+
+export interface WakeObservationSummary {
+  vendor: (typeof WAKE_OBSERVATION_VENDORS)[number];
+  interface: (typeof WAKE_OBSERVATION_INTERFACES)[number];
+  errorCode: string | null;
+}
+
+const OBSERVATION_ERROR_CODE = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+/** Re-checks the stored summary fields: only known values leave the service. */
+function observationSummary(vendor: unknown, iface: unknown, errorCode: unknown): WakeObservationSummary | null {
+  const v = WAKE_OBSERVATION_VENDORS.find((x) => x === vendor);
+  const i = WAKE_OBSERVATION_INTERFACES.find((x) => x === iface);
+  if (!v || !i) return null;
+  return {
+    vendor: v,
+    interface: i,
+    errorCode: typeof errorCode === 'string' && OBSERVATION_ERROR_CODE.test(errorCode) ? errorCode : null,
+  };
 }
 
 export interface WakeStatusPage {
@@ -142,6 +173,9 @@ export async function listWakeStatusForPolicy(input: {
     proofFingerprint: string | null;
     lastCameOnlineAt: Date | null;
     consecutiveTimeouts: number;
+    obsVendor: string | null;
+    obsInterface: string | null;
+    obsErrorCode: string | null;
   }>();
   for (const chunk of chunked(governed.map((g) => g.device.id))) {
     const rows = await db
@@ -155,6 +189,10 @@ export async function listWakeStatusForPolicy(input: {
         proofFingerprint: deviceWakeStatus.proofFingerprint,
         lastCameOnlineAt: deviceWakeStatus.lastCameOnlineAt,
         consecutiveTimeouts: deviceWakeStatus.consecutiveTimeouts,
+        // Three summary paths only; the observation's settings are never read here.
+        obsVendor: sql<string | null>`${deviceWakeStatus.details}->'vendorObservation'->>'vendor'`,
+        obsInterface: sql<string | null>`${deviceWakeStatus.details}->'vendorObservation'->>'interface'`,
+        obsErrorCode: sql<string | null>`${deviceWakeStatus.details}->'vendorObservation'->>'errorCode'`,
       })
       .from(deviceWakeStatus)
       .where(inArray(deviceWakeStatus.deviceId, chunk));
@@ -194,6 +232,7 @@ export async function listWakeStatusForPolicy(input: {
       testWakeAllowed: availability.testWakeAllowed,
       show: availability.show,
       mode: availability.mode,
+      observation: status ? observationSummary(status.obsVendor, status.obsInterface, status.obsErrorCode) : null,
     };
   });
 

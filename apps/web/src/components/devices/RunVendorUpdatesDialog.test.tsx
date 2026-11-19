@@ -113,6 +113,18 @@ describe('RunVendorUpdatesDialog', () => {
     expect(toast.message).toMatch(/BIOS/);
   });
 
+  it('a read-only observation (vendor canary) says nothing is installed', async () => {
+    fetchMock.mockResolvedValue(respond(202, { commandId: 'c-1', observe: true, categories: [], skippedCategories: [] }));
+    renderDialog();
+    await userEvent.click(whenFinished());
+    await userEvent.click(confirm());
+    await waitFor(() => expect(toastMock).toHaveBeenCalled());
+    const toast = toastMock.mock.calls[0]![0];
+    expect(toast.type).toBe('success');
+    expect(toast.message).toMatch(/LAPTOP-07/);
+    expect(toast.message).toMatch(/Nothing is installed/);
+  });
+
   it('a plain success does not mention a skip', async () => {
     renderDialog();
     await userEvent.click(whenFinished());

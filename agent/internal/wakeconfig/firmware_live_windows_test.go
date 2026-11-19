@@ -21,7 +21,7 @@ func TestLiveDellFirmwareReadiness(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	a := biosconfig.Detect("Dell Inc.", "")
+	a := biosconfig.Detect("Dell Inc.", "", 0)
 	if a == nil {
 		t.Fatal("Detect returned nil on Windows")
 	}

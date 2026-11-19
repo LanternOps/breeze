@@ -68,6 +68,10 @@ const (
 	// CmdOemUpdateRelease (#11065 W06) hands a vendor tool's own update
 	// schedule back: the agent restores only what its takeover changed.
 	CmdOemUpdateRelease = "oem_update_release"
+	// CmdOemObserve (#11065 observe-first amendment) reports what a Surface, HP
+	// or Lenovo machine has, read-only: its own command and package, so it
+	// cannot reach the runner's fetch, install, marker or reboot paths.
+	CmdOemObserve = "oem_observe"
 	// On-demand re-run of all inventory collectors. Triggers the same set of
 	// send*Inventory submissions the heartbeat fires periodically, so the API
 	// sees fresh hardware/software/network/etc. without waiting for the next

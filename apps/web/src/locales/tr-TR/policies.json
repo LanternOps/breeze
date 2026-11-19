@@ -1274,7 +1274,8 @@
             "firmware_value_not_allowed": "Bu model Breeze'in gerektirdiği BIOS değerine izin vermiyor",
             "firmware_value_unrecognised": "Breeze'in denetlediği bir BIOS değeri tanınmadı",
             "firmware_unreadable": "BIOS ayarları okunamadı",
-            "firmware_interface_unavailable": "Bu model BIOS ayarlarını Windows'a sunmuyor"
+            "firmware_interface_unavailable": "Bu model BIOS ayarlarını Windows'a sunmuyor",
+            "vendor_observe_only": "Üretici yazılımı gözlemleniyor (salt okunur)"
           },
           "attempts": {
             "pending": "Beklemede",
@@ -1284,6 +1285,14 @@
             "timed_out": "Zaman aşımı",
             "unknown": "Bilinmiyor",
             "refused": "Reddedildi"
+          },
+          "observing": "Gözlemleniyor {{vendor}}: {{interface}}",
+          "observingWithCode": "Gözlemleniyor {{vendor}}: {{interface}} ({{code}})",
+          "observeInterfaces": {
+            "present": "arayüz mevcut",
+            "absent": "arayüz mevcut değil",
+            "access_denied": "erişim reddedildi",
+            "error": "okuma hatası"
           }
         }
       },

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Doc-derived (#11065 O4c): the shape of download.lenovo.com/catalog/<MTM>_Win11.xml as
+     read on 2026-11-19. Locations and checksums are made up; structure and category texts
+     follow the real catalog. A real catalog starts with a UTF-8 BOM, which tests prepend. -->
+<packages count="8">
+  <package>
+    <location>https://download.lenovo.com/pccbbs/mobiles/x0000aa01_2_.xml</location>
+    <category>BIOS UEFI</category>
+    <oslangs />
+    <checksum type="sha256">0000000000000000000000000000000000000000000000000000000000000001</checksum>
+  </package>
+  <package>
+    <location>https://download.lenovo.com/pccbbs/mobiles/x0000aa02_2_.xml</location>
+    <category>Software and Utilities</category>
+    <oslangs />
+    <checksum type="sha256">0000000000000000000000000000000000000000000000000000000000000002</checksum>
+  </package>
+  <package>
+    <location>https://download.lenovo.com/pccbbs/mobiles/x0000aa03_2_.xml</location>
+    <category>Software and Utilities</category>
+    <oslangs />
+    <checksum type="sha256">0000000000000000000000000000000000000000000000000000000000000003</checksum>
+  </package>
+  <package>
+    <location>https://download.lenovo.com/pccbbs/mobiles/x0000aa04_2_.xml</location>
+    <category>Camera and Card Reader</category>
+    <oslangs />
+    <checksum type="sha256">0000000000000000000000000000000000000000000000000000000000000004</checksum>
+  </package>
+  <package>
+    <location>https://download.lenovo.com/pccbbs/mobiles/x0000aa05_2_.xml</location>
+    <category>Product Firmware</category>
+    <oslangs />
+    <checksum type="sha256">0000000000000000000000000000000000000000000000000000000000000005</checksum>
+  </package>
+  <package>
+    <location>https://download.lenovo.com/pccbbs/mobiles/x0000aa06_2_.xml</location>
+    <category>Networking: Wireless LAN</category>
+    <oslangs />
+    <checksum type="sha256">0000000000000000000000000000000000000000000000000000000000000006</checksum>
+  </package>
+  <package>
+    <location>https://download.lenovo.com/pccbbs/mobiles/x0000aa07_2_.xml</location>
+    <category>Software and Utilities</category>
+    <oslangs />
+    <checksum type="sha256">0000000000000000000000000000000000000000000000000000000000000007</checksum>
+  </package>
+  <package>
+    <location>https://download.lenovo.com/pccbbs/mobiles/x0000aa08_2_.xml</location>
+    <category>Camera and Card Reader</category>
+    <oslangs />
+    <checksum type="sha256">0000000000000000000000000000000000000000000000000000000000000008</checksum>
+  </package>
+</packages>

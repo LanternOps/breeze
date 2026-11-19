@@ -153,7 +153,7 @@ describe('buildRemoteSessionPromptPayload', () => {
 
   it('feeds the PARTNER (MSP) name into technicianDisplay, not the client org name', async () => {
     rigTechSelect(Promise.resolve([{ name: 'Billy Tech', email: 'billy@example.com' }]));
-    rigPartnerSelect(Promise.resolve([{ name: 'Olive Technology' }]));
+    rigPartnerSelect(Promise.resolve([{ name: 'Fabrikam MSP' }]));
 
     const prompt = await buildRemoteSessionPromptPayload(DEVICE, 'user-1');
 
@@ -165,7 +165,7 @@ describe('buildRemoteSessionPromptPayload', () => {
       // Flat identity fields — the agent and assist app read the top-level keys.
       technicianName: 'Billy Tech',
       technicianEmail: 'billy@example.com',
-      orgName: 'Olive Technology', // partner name — NOT the client org name
+      orgName: 'Fabrikam MSP', // partner name — NOT the client org name
       // #10190 W06: the payload carries the resolved policy; true by default.
       allowUserEndSession: true,
     });

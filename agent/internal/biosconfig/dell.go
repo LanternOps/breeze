@@ -192,5 +192,5 @@ func (d *dellAdapter) Protection(ctx context.Context) (Protection, error) {
 
 // Apply is not implemented in this release (W04) and runs nothing.
 func (d *dellAdapter) Apply(ctx context.Context, name, value string) error {
-	return ErrApplyUnsupported
+	return ErrNotEnabled
 }
