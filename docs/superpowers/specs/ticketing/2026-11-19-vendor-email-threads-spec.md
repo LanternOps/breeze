@@ -1,6 +1,6 @@
 ---
 issue: 12234
-status: draft (Gate A pending)
+status: approved (decisions approved 2026-11-19)
 area: ticketing
 date: 2026-11-19
 ---
@@ -105,7 +105,7 @@ grouped by thread, with the recipients shown.
 `{ to: string[], cc: string[], subject?, body, attachmentIds: uuid[] }`.
 
 1. **Authorize:** access to the ticket's org, a dedicated permission
-   (`tickets.vendor_email`, Open Decision 8), the feature enabled (§4.9), and
+   (`tickets.vendor_email`, Decision 8), the feature enabled (§4.9), and
    the partner passes the sending gate (§4.8).
 2. **Recipients are exactly what the technician chose.** They are never copied
    from an inbound message's Reply-To, From or CC. A follow-up defaults to the
@@ -115,7 +115,7 @@ grouped by thread, with the recipients shown.
    inbound or sending domains. The requester address and portal users of the
    ticket's org are refused with a clear error, because putting the customer on a
    vendor thread makes the internal conversation customer-visible by email (see
-   Open Decision 4). Limits: 10 recipients per message, 25 distinct recipients
+   Decision 4). Limits: 10 recipients per message, 25 distinct recipients
    per thread.
 4. **Write, in one transaction:** an internal `ticket_comments` row
    (`is_public = false`, `author_type = 'internal'`, attributed to the
@@ -153,9 +153,9 @@ grouped by thread, with the recipients shown.
         every partner-lane miss, including the daily cap
         (`emailDomains/senderResolution.ts:163`). This purpose must **hold**
         instead: the message is marked `failed` with the reason shown, never sent
-        from the platform domain (Open Decision 6).
+        from the platform domain (Decision 6).
      3. **Neither available:** the composer is disabled with an explanation. A
-        Google Workspace mailbox has no send path today (Open Decision 6).
+        Google Workspace mailbox has no send path today (Decision 6).
    - **CC on Mailgun:** the plan fixes the dropped `cc` at `email.ts:590` (already
      tracked there as "its own issue") before this ships. Graph drafts take
      `ccRecipients` natively.
@@ -186,7 +186,7 @@ which is why the customer matcher binds them to the requester.
 2. The From address is on the thread's **approved sender list**: every
    address the thread has written to, plus any address a technician approved
    for this thread (§4.6).
-3. **Same-domain senders (Open Decision 2):** vendor case systems often answer
+3. **Same-domain senders (Decision 2):** vendor case systems often answer
    from a different mailbox on the recipient's domain (`cases@` for a message
    sent to `support@`). Recommended rule: a same-domain sender is auto-filed
    only when the **reply token** matched, because the token is a secret that was
@@ -270,7 +270,7 @@ Vendor threads are internal, with no per-thread visibility switch in v1. When th
 customer should learn something from the vendor, the technician writes a public
 reply. The composer offers **Quote into reply**, which copies the selected vendor
 note's text into a public draft for the technician to edit. Nothing vendor-authored
-becomes public without a technician posting it. See Open Decision 4.
+becomes public without a technician posting it. See Decision 4.
 
 ### 4.6 Review queue
 
@@ -282,7 +282,7 @@ the thread's approved sender list, so later replies from it file automatically.
 Filing once never approves the sender. `Convert` (new ticket) stays available but is not the default for
 these rows.
 
-### 4.7 Vendor directory (Open Decision 1)
+### 4.7 Vendor directory (Decision 1)
 
 Recommended as the last wave, and cut if the plan runs long. A small
 partner-wide list of external contacts, so a technician picks "Hardware vendor —
@@ -297,7 +297,7 @@ warranty desk" instead of retyping an address:
   fresh. Keeping vendors in their own table keeps "who is the customer" clean.
 - The composer also suggests addresses this partner has recently written to on
   vendor threads (a query over `ticket_vendor_messages`, no new table).
-- The directory is a convenience, not an allowlist (Open Decision 1).
+- The directory is a convenience, not an allowlist (Decision 1).
 
 ### 4.8 Abuse controls
 
@@ -382,7 +382,7 @@ org_id)` `DEFERRABLE INITIALLY IMMEDIATE`.
 the ticket, both deferrable. `text[]` rather than jsonb so the rows survive tenant
 export.
 
-**`vendor_contacts`** (only if Open Decision 1 keeps the directory): `partner_id` XOR `org_id` with a CHECK, dual-axis read
+**`vendor_contacts`** (per Decision 1): `partner_id` XOR `org_id` with a CHECK, dual-axis read
 policy (partner-wide rows readable by the partner's org-scoped users, SELECT-only;
 writes gated by `canManagePartnerWidePolicies` for partner rows). Follow the
 #2135 playbook in `docs/agents/tenancy-rls.md`.
@@ -424,48 +424,19 @@ migration, keep it idempotent, and add no row writes (so no system scope).
   address".
 - Bounce parsing beyond marking a null-Return-Path reply on a known thread.
 
-## 7. Open Decisions
+## 7. Decisions (approved 2026-11-19)
 
-*(Numbered for Gate A. Each lists options and a recommendation.)*
+Todd approved all nine as recommended. Where Codex dissented, the dissent is noted.
 
-1. **Vendor directory: build one, or recent recipients only?**
-   - A: a partner-wide `vendor_contacts` table (`partner_id` XOR `org_id`), plus recent-recipient suggestions.
-   - B: recent-recipient suggestions only (no new config table) in v1.
-   - C: reuse `contacts` with a `vendor` role. Rejected: inbound requester resolution would treat a vendor as a customer of that org.
-   - **Recommend A, shipped as the last wave (W5) so it can be cut.** MSPs reuse the same handful of warranty desks across every customer. Codex recommended B (defer); the disagreement is on cost, not safety.
-2. **Same-domain vendor senders.** A reply from `cases@vendor` to a message sent to `support@vendor`:
-   - A: exact approved address only; everything else goes to review with one-click approve (Codex's position).
-   - B: same domain auto-files on any vendor signal.
-   - C: same domain auto-files only when the secret reply token matched; header-only matches need the exact address.
-   - **Recommend C.** The token is a secret only that vendor received, so a same-domain sender holding it is very likely the vendor's case system. A would send the first reply of almost every vendor thread to review.
-3. **Reply token transport.** Should the per-thread token ride as a sub-address on Reply-To (`support+v{token}@…`)?
-   - A: yes, with header matching as the fallback.
-   - B: header matching only, with no resolver change.
-   - **Recommend A.** Vendor ticketing systems often drop In-Reply-To/References. It needs a sub-address strip in `resolvePartnerByRecipient`. Three lane assumptions are unchecked (§8 rollout step 3); if a lane cannot carry the token, that lane runs on headers alone.
-4. **Can the customer be on a vendor thread?** The issue suggests an opt-in "include the customer".
-   - A: no in v1. The requester and portal users are refused as recipients, threads are always internal, and a "Quote into reply" action helps the technician tell the customer.
-   - B: allow it with a per-thread public flag, so vendor replies land public.
-   - **Recommend A.** B lets third-party mail become customer-visible with no technician review, and it reopens the customer-thread binding rules. Both advisors agree.
-5. **Does a vendor reply reopen a resolved ticket?**
-   - A: no. Set a "vendor replied" marker and notify the assignee.
-   - B: reopen, the same as a customer reply.
-   - **Recommend A.** A vendor update often arrives after the customer's issue is settled. It also does not touch SLA clocks.
-6. **Sending identity when the partner has neither a verified sending domain nor a connected Microsoft 365 mailbox.**
-   - A: on hosted, refuse (composer disabled with an explanation); self-hosted may use its configured platform From.
-   - B: allow the platform From with the partner's display name everywhere (Codex's position).
-   - **Recommend A.** Arbitrary-recipient mail from the shared platform domain puts every tenant's deliverability behind one partner's choices. The over-cap fallback to the platform lane is also disabled for this purpose.
-7. **Google Workspace mailbox partners.** There is no Gmail send path today.
-   - A: v1 sends their vendor mail on the partner lane (or refuses, under 6A). Gmail send is a follow-up.
-   - B: build Gmail send in v1.
-   - **Recommend A.** Gmail send needs a new OAuth scope and consent step for every connected mailbox.
-8. **Permission.**
-   - A: a dedicated `tickets.vendor_email` permission, granted by default to roles that can write tickets.
-   - B: reuse ticket write.
-   - **Recommend A.** Sending arbitrary-recipient mail is a different risk from editing a ticket. A partner can then withhold it from junior or contractor roles. Both advisors agree.
-9. **Setting level.**
-   - A: partner-only on/off, under Settings → Ticketing → Email.
-   - B: partner default with an org override.
-   - **Recommend A.** The vendor conversation is the MSP's, not the customer's, and B adds a second place the concept is configured.
+1. **Vendor directory:** a partner-wide `vendor_contacts` table (`partner_id` XOR `org_id`) plus recent-recipient suggestions, shipped as the last wave (W5) so it can be cut. *Codex dissent: recent recipients only; the disagreement is on cost, not safety.*
+2. **Same-domain vendor senders:** auto-file only when the secret reply token matched; header-only matches need the exact approved address. *Codex preferred exact-address only.*
+3. **Reply token transport:** per-thread token as a Reply-To sub-address (`support+v{token}@…`), with header matching as the fallback. Lanes that cannot carry the token run on headers alone (§8 rollout step 3).
+4. **Customer on a vendor thread:** no in v1. The requester and portal users are refused as recipients, threads stay internal, and a "Quote into reply" action helps the technician tell the customer.
+5. **Vendor reply on a resolved ticket:** no reopen. Set a "vendor replied" marker and notify the assignee; SLA clocks are untouched.
+6. **Sending identity without a verified sending domain or connected Microsoft 365 mailbox:** on hosted, refuse (composer disabled with an explanation); self-hosted may use its configured platform From. The over-cap fallback to the platform lane is disabled for this purpose. *Codex preferred the platform From with the partner display name.*
+7. **Google Workspace mailbox partners:** vendor mail goes on the partner lane in v1 (or is refused under 6). Gmail send is a follow-up.
+8. **Permission:** a dedicated `tickets.vendor_email` permission, granted by default to roles that can write tickets.
+9. **Setting level:** partner-level on/off under Settings → Ticketing → Email, with no org override.
 
 ## 8. Test and rollout
 
