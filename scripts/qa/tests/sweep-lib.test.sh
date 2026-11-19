@@ -534,6 +534,240 @@ QA_COMMENTABLE=" "; IN_SCOPE=" "
 publish_outbox >/dev/null 2>&1
 check "split gate: a create body with a split key is not published" "! grep -q 'marker-split-body' '$GH_LOG' && ! grep -q 'IOSFODNN7EXAMPLE' '$GH_LOG.bodies'"
 
+# === Strix r12: URL userinfo spellings (the generic, second layer) =============
+new_run gate-userinfo
+userinfo_rejected() { printf '%s\n' "$2" > "$T/ui.md"; check "userinfo: $1" "! body_ok '$T/ui.md'"; }
+userinfo_passes()   { printf '%s\n' "$2" > "$T/ui.md"; check "userinfo: control: $1" "body_ok '$T/ui.md'"; }
+userinfo_rejected "uppercase scheme" "POSTGRES://user:pass@host"
+userinfo_rejected "mixed-case scheme" "see Https://admin:hunter2@db.example.com/x"
+userinfo_rejected "a space inside the password" "postgres://user:pa ss@host"
+userinfo_rejected "a tab inside the password" "postgres://user:pa"$'\t'"ss@host"
+userinfo_rejected "uppercase scheme and a space together" "REDIS://svc:two words@cache.internal:6379"
+userinfo_rejected "no scheme" "user:pass@host"
+userinfo_rejected "no scheme, dotted host and port" "conn admin:hunter2@db.example.com:5432/app"
+userinfo_rejected "no scheme, IPv4 host" "admin:hunter2@10.0.0.5"
+userinfo_rejected "no scheme, Go/MySQL DSN" "user:pass@tcp(host:3306)/db"
+userinfo_rejected "no scheme, unix-socket DSN" "user:pass@unix(/tmp/mysql.sock)/db"
+userinfo_passes "a label, a space, then an email" "Login: admin@example.com"
+userinfo_passes "a label glued to an email" "Login:admin@example.com"
+userinfo_passes "a mailto link" "mailto:ops@example.com"
+userinfo_passes "a stack URL, then an email on the same line" "Open http://localhost:4321 and sign in as admin@example.com"
+userinfo_passes "an uppercase stack URL, then an email" "HTTP://LOCALHOST:4321 admin@example.com"
+userinfo_passes "a URL with a port and a comma before an email" "http://localhost:4321, admin@example.com"
+userinfo_passes "a URL ending in a colon before prose and an email" "https://example.com: the page fails for admin@example.com"
+userinfo_passes "a digest-pinned image" "postgres:16-alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+userinfo_passes "a scoped package task and version" "@breeze/web:build@1.2.3"
+userinfo_passes "a timestamp before an email" "10:30:15 admin@example.com"
+userinfo_passes "a host:port glued to a handle" "localhost:4321@admin"
+
+# Keys the stack mints at runtime cannot be known in advance: they go by prefix.
+userinfo_rejected "a minted API key (brz_ + 48 hex)" "key brz_0123456789abcdef0123456789abcdef0123456789abcdef"
+userinfo_rejected "a minted service-principal key" "key brz_sp_q83vEjRk2LmN7pXw0ZyT5bHc9DfGa1Us"
+userinfo_passes "the 12-character key prefix the UI displays" "Key brz_0123abcd is listed on the API keys page"
+
+# === Strix r12: the known-value gate (primary layer) ==========================
+# Built by the real builder from a realistic stack; every secret the agent could
+# meet is refused however it is spelled, with no help from the generic patterns.
+new_run gate-known
+QA_WORKTREE="$T/kv-wt"; mkdir -p "$QA_WORKTREE/apps/api"
+KV_SHA="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+cat > "$QA_WORKTREE/.env" <<ENV
+POSTGRES_USER=breeze
+POSTGRES_PASSWORD=breeze
+POSTGRES_DB=breeze
+POSTGRES_IMAGE_REF=postgres:16-alpine@sha256:$KV_SHA
+DATABASE_URL=postgresql://breeze:breeze@localhost:5432/breeze
+REDIS_PASSWORD=Qz7-vault_Pass+w0rd/9x
+REDIS_URL=redis://:\${REDIS_PASSWORD}@localhost:6379
+JWT_SECRET=f3A9kQ2mZx7Lp0Vt8Rw4Ny6Bc1Hd5Js3
+export ANTHROPIC_API_KEY="quoted-model-key-value-1"
+S3_SECRET_KEY=minioadmin
+OPAQUE_SETTING=Zk81vQ7xT2
+NODE_ENV=development
+BREEZE_DOMAIN=localhost
+EMAIL_FROM=noreply@breeze.local
+S3_ENDPOINT=http://localhost:9000
+REMOTE_WS_AUTH_MODE=post_upgrade
+M365_GRAPH_READ_EXECUTOR_AUDIENCE=m365-graph-read-executor
+S3_REGION=us-east-1
+AUDIT_ADMIN_DATABASE_URL=postgresql://audit_admin:Url-Only-Pw-7731@db:5432/audit
+CACHE_URL=redis://cache_user:Enc%2FPw%40Only99@cache:6379
+SIGNING_MATERIAL=abc???>>>def
+ENV
+cat > "$QA_WORKTREE/.env.stack" <<'ENV'
+ENROLLMENT_KEY_PEPPER=dev-enrollment-pepper-0000000000000000
+TURN_SECRET=dev-turn-secret
+PUBLIC_APP_URL=http://localhost:54321
+WEBAUTHN_RP_ID=localhost
+REMOTE_WS_REDIS_TOPOLOGY=standalone-single-primary
+BREEZE_PORTAL_IMAGE_REF=breeze-portal:dev
+DOCKER_PLATFORM=linux/arm64
+COMPOSE_PROJECT_NAME=breeze-wt-kvtest01
+ENV
+printf 'SHOULD_BE_IGNORED=example-only-value-77\n' > "$QA_WORKTREE/.env.example"
+cat > "$QA_WORKTREE/.breeze-stack.json" <<'JSON'
+{"project":"breeze-wt-kvtest01","baseUrl":"http://localhost:54321","apiUrl":"http://localhost:54321/api","portalUrl":"http://localhost:54321/portal","webPort":54321,"caddyPortPinned":false,"pgContainer":"breeze-wt-kvtest01-postgres-1","redisContainer":"breeze-wt-kvtest01-redis-1","admin":{"email":"admin@breeze.local","password":"Stack-Admin-Pw-4417"}}
+JSON
+# The containers' real environment, including what only compose derives.
+docker() {
+  case "$1" in
+    ps) [ "${FAKE_DOCKER_FAIL:-}" = ps ] && return 1; echo c1; echo c2 ;;
+    inspect) [ "${FAKE_DOCKER_FAIL:-}" = inspect ] && return 1
+      printf '%s\n' 'DATABASE_URL=postgresql://breeze:breeze@postgres:5432/breeze' 'BREEZE_APP_DB_PASSWORD=app-Role-Pw-5521' \
+        'DOCKER_ONLY_TOKEN=docker-only-token-884422' 'PATH=/usr/local/sbin:/usr/local/bin:/usr/bin' 'HOSTNAME=abc123def456' 'PWD=/usr/src/app' 'HOME=/root' ;;
+  esac
+}
+check "builder: builds the list from env files, descriptor and containers" "build_envvals breeze-wt-kvtest01 && [ -s '$ENVVALS' ]"
+kv_has()  { check "builder: lists $1" "grep -qxF -- '$1' '$ENVVALS'"; }
+kv_lacks() { check "builder: leaves out $1" "! grep -qxF -- '$1' '$ENVVALS'"; }
+for v in 'Qz7-vault_Pass+w0rd/9x' 'f3A9kQ2mZx7Lp0Vt8Rw4Ny6Bc1Hd5Js3' 'quoted-model-key-value-1' 'minioadmin' 'Zk81vQ7xT2' \
+  'dev-enrollment-pepper-0000000000000000' 'dev-turn-secret' 'Stack-Admin-Pw-4417' 'BreezeAdmin123!' 'PortalTest123!' \
+  'app-Role-Pw-5521' 'docker-only-token-884422' 'breeze:breeze' ':breeze@' \
+  'postgresql://breeze:breeze@postgres:5432/breeze' 'postgresql://breeze:breeze@localhost:5432/breeze' \
+  'redis://:Qz7-vault_Pass+w0rd/9x@localhost:6379' 'Url-Only-Pw-7731' ':Url-Only-Pw-7731@' 'audit_admin:Url-Only-Pw-7731' \
+  'audit_admin' 'Enc%2FPw%40Only99' 'Enc/Pw@Only99'; do kv_has "$v"; done
+for v in 'localhost' 'development' 'http://localhost:54321' 'http://localhost:54321/api' 'http://localhost:9000' 'admin@breeze.local' \
+  'noreply@breeze.local' "postgres:16-alpine@sha256:$KV_SHA" 'breeze-portal:dev' 'standalone-single-primary' 'post_upgrade' \
+  'linux/arm64' 'm365-graph-read-executor' 'us-east-1' 'breeze-wt-kvtest01' 'breeze-wt-kvtest01-postgres-1' \
+  '/usr/src/app' 'abc123def456' '/usr/local/sbin:/usr/local/bin:/usr/bin' 'example-only-value-77'; do kv_lacks "$v"; done
+check "builder: the list is private to the runner" "[ \"\$(stat -f '%Lp' '$ENVVALS' 2>/dev/null || stat -c '%a' '$ENVVALS')\" = 600 ]"
+check "builder: no blank line (grep -f would match everything)" "! grep -q '^\$' '$ENVVALS'"
+check "builder: no value under the minimum length" "! awk 'length(\$0) < 8 {f=1} END{exit !f}' '$ENVVALS'"
+cp "$ENVVALS" "$T/kv-good"
+check "builder: docker ps failing fails the build" "! FAKE_DOCKER_FAIL=ps build_envvals breeze-wt-kvtest01"
+check "builder: docker inspect failing fails the build" "! FAKE_DOCKER_FAIL=inspect build_envvals breeze-wt-kvtest01"
+check "builder: a failed build leaves the previous list in place" "cmp -s '$T/kv-good' '$ENVVALS'"
+cp "$QA_WORKTREE/.breeze-stack.json" "$T/kv-desc"; printf 'not json' > "$QA_WORKTREE/.breeze-stack.json"
+check "builder: an unreadable stack descriptor fails the build" "! build_envvals breeze-wt-kvtest01"
+cp "$T/kv-desc" "$QA_WORKTREE/.breeze-stack.json"
+check "builder: before the stack exists, env files alone are enough" "( rm -f '$QA_WORKTREE/.breeze-stack.json'; build_envvals ) && grep -qxF 'f3A9kQ2mZx7Lp0Vt8Rw4Ny6Bc1Hd5Js3' '$ENVVALS'"
+cp "$T/kv-desc" "$QA_WORKTREE/.breeze-stack.json"; build_envvals breeze-wt-kvtest01
+unset -f docker
+
+kv_enc() {   # kv_enc <form> <value>
+  /usr/bin/python3 -I -c '
+import base64, sys
+form, b = sys.argv[1], sys.argv[2].encode()
+print({
+  "b64": base64.b64encode(b).decode(),
+  "b64url": base64.urlsafe_b64encode(b).decode().rstrip("="),
+  "b64mid1": base64.b64encode(b"x" + b + b"tail").decode(),
+  "b64mid2": base64.b64encode(b"xy" + b + b"tail").decode(),
+  "hex": b.hex(),
+  "HEX": b.hex().upper(),
+  "hexcolon": ":".join("%02x" % c for c in b),
+  "hexesc": "".join("\\x%02x" % c for c in b),
+  "pct": "".join("%%%02X" % c for c in b),
+  "pct2": "".join("%%25%02X" % c for c in b),
+}[form])' "$1" "$2"
+}
+known_refused() {   # the known-value scanner ALONE must refuse it
+  printf '%s\n' "$2" > "$T/kv.md"
+  check "known value: $1" "_known_scan '$T/kv.md' '$QA_BODY_MAX' '$ENVVALS' >/dev/null; [ \$? -eq 3 ]"
+}
+KV_PW='Qz7-vault_Pass+w0rd/9x'; KV_JWT='f3A9kQ2mZx7Lp0Vt8Rw4Ny6Bc1Hd5Js3'
+# The three Strix spellings, carrying real stack credentials.
+known_refused "uppercase scheme" "POSTGRES://breeze:breeze@postgres:5432/breeze"
+known_refused "a space inside the password" "redis://:Qz7-vault_Pass +w0rd/9x@localhost:6379"
+known_refused "no scheme" "breeze:breeze@postgres:5432"
+known_refused "plain" "the secret is $KV_PW ok"
+known_refused "seeded admin password" "logged in with BreezeAdmin123!"
+known_refused "stack admin password from the descriptor" "pw Stack-Admin-Pw-4417"
+known_refused "a value only the containers hold" "docker-only-token-884422"
+known_refused "upper-cased" "$(printf '%s' "$KV_JWT" | tr '[:lower:]' '[:upper:]')"
+known_refused "lower-cased" "$(printf '%s' "$KV_JWT" | tr '[:upper:]' '[:lower:]')"
+known_refused "split over lines" "${KV_JWT:0:9}
+${KV_JWT:9:11}
+${KV_JWT:20}"
+known_refused "split over CRLF lines" "${KV_JWT:0:9}"$'\r\n'"${KV_JWT:9}"
+known_refused "interleaved with spaces" "$(printf '%s' "$KV_PW" | sed 's/./& /g')"
+known_refused "interleaved with zero-width characters" "${KV_PW:0:6}$ZW${KV_PW:6:6}$ZWJ${KV_PW:12}"
+known_refused "split by a soft hyphen" "${KV_PW:0:9}$SHY${KV_PW:9}"
+known_refused "wrapped in markdown punctuation" "**${KV_JWT:0:12}**\`${KV_JWT:12:10}\`~~${KV_JWT:22}~~"
+known_refused "split across a code fence" "${KV_JWT:0:16}
+\`\`\`text
+${KV_JWT:16}
+\`\`\`"
+known_refused "halves separated by prose" "first ${KV_JWT:0:16} and then, later on, ${KV_JWT:16} last"
+for form in b64 b64url b64mid1 b64mid2 hex HEX hexcolon hexesc pct pct2; do
+  known_refused "encoded: $form" "value $(kv_enc "$form" "$KV_PW") end"
+done
+kv_b64="$(kv_enc b64 "$KV_JWT")"
+known_refused "base64 split over lines" "${kv_b64:0:20}
+${kv_b64:20}"
+kv_hex="$(kv_enc hex "$KV_JWT")"
+known_refused "hex split over lines" "${kv_hex:0:30}
+${kv_hex:30}"
+kv_pct="$(kv_enc pct "$KV_PW")"
+known_refused "percent-encoding cut inside an escape" "${kv_pct:0:7}
+${kv_pct:7}"
+known_refused "the URL-encoded password in a URL" "redis://:Qz7-vault_Pass%2Bw0rd%2F9x@localhost:6379"
+known_refused "HTML-entity encoded" "Qz7-vault_Pass&#43;w0rd&#47;9x"
+known_refused "a password that exists only inside a URL" "pw Url-Only-Pw-7731"
+known_refused "the decoded form of a percent-encoded URL password" "pw Enc/Pw@Only99"
+kv_urlsafe="$(kv_enc b64url 'abc???>>>def')"
+check "known value: control: the url-safe fixture really differs from standard base64" "[ '$kv_urlsafe' != '$(kv_enc b64 'abc???>>>def' | tr -d =)' ]"
+known_refused "url-safe base64 using - and _" "value $kv_urlsafe end"
+
+printf '%s\n' "POSTGRES://breeze:breeze@postgres:5432/breeze" > "$T/kv-body.md"
+check "known value: body_ok refuses a stack credential" "! body_ok '$T/kv-body.md'"
+check "known value: a scanner that crashes rejects the body" "! ( _known_scan() { return 137; }; printf 'clean text\n' > '$T/kv-c.md'; body_ok '$T/kv-c.md' )"
+check "known value: a scanner that exits 0 without a verdict rejects the body" "! ( _known_scan() { :; }; printf 'clean text\n' > '$T/kv-c.md'; body_ok '$T/kv-c.md' )"
+check "known value: a title carrying a value is refused" "! text_ok '[UI] broken for ${KV_JWT:0:16} ${KV_JWT:16}'"
+
+# What real reports and the runner's own bodies say must still publish.
+cat > "$T/kv-report.md" <<MD
+## Devices page returns 500 on main
+
+**Stack:** http://localhost:54321 (API http://localhost:54321/api, portal http://localhost:54321/portal)
+Signed in as admin@breeze.local on localhost in development mode.
+Mail from noreply@breeze.local; region us-east-1; platform linux/arm64.
+
+1. Open http://localhost:54321/devices and sign in as admin@breeze.local
+2. The console shows \`GET /api/v1/devices 500\`
+
+Breeze redis topology standalone-single-primary, ws auth post_upgrade.
+Audience m365-graph-read-executor. Container breeze-wt-kvtest01-postgres-1 is healthy.
+main@0123456789abcdef0123456789abcdef01234567
+MD
+check "known value: control: a realistic report on the real list passes" "body_ok '$T/kv-report.md'"
+cat > "$T/kv-boot.md" <<MD
+The scheduled QA sweep could not boot the dev stack on \`main@012345678\` (run-1).
+
+### Container status
+\`\`\`
+breeze-wt-kvtest01-postgres-1	Up 2 minutes (healthy)
+breeze-wt-kvtest01-api-1	Exited (1) 10 seconds ago
+\`\`\`
+Full container logs and wt-stack output: \`/Users/qa/.breeze-qa/runs/run-1\` on the QA Mac.
+MD
+check "known value: control: the runner's boot-failure body passes" "body_ok '$T/kv-boot.md'"
+cat > "$T/kv-drift.md" <<MD
+- runtime/toolchain pins changed since the last sweep:
+\`\`\`diff
+-POSTGRES_IMAGE_REF=postgres:15-alpine@sha256:$KV_SHA
++POSTGRES_IMAGE_REF=postgres:16-alpine@sha256:$KV_SHA
++image: breeze-portal:dev
+\`\`\`
+MD
+check "known value: control: the runner's drift body passes" "body_ok '$T/kv-drift.md'"
+printf '# QA sweep ledger\n\n### PR 100: PASS\nVerified on http://localhost:54321 at main@0123456789\n' > "$T/kv-ledger.md"
+check "known value: control: the ledger body passes" "body_ok '$T/kv-ledger.md'"
+check "known value: control: the scanner gives a positive clean verdict" "[ \"\$(_known_scan '$T/kv-report.md' '$QA_BODY_MAX' '$ENVVALS')\" = clean ]"
+
+# Wiring: the list is rebuilt once the stack exists, and every copy of the
+# userinfo shape is the one definition.
+RUNNER="$QA_DIR/scheduled-ui-sweep.sh"
+check "wiring: the runner no longer has its own builder" "! grep -q '^build_envvals()' '$RUNNER'"
+check "wiring: a failed first build stops the run" "grep -qE '^build_envvals \\|\\| ' '$RUNNER'"
+kv_post="$(grep -n 'build_envvals "$STACK_PROJECT"' "$RUNNER" | head -1 | cut -d: -f1)"; kv_first="$(grep -n '^run_agent "$PROMPT"' "$RUNNER" | cut -d: -f1)"
+check "wiring: the list is rebuilt from the running stack before the agent starts" "[ -n '$kv_post' ] && [ -n '$kv_first' ] && [ '$kv_post' -lt '$kv_first' ]"
+check "wiring: the list is rebuilt after the switch to hosted mode" "grep -q 'switch_to_hosted && secure_stack && build_envvals \"\$STACK_PROJECT\"' '$RUNNER'"
+check "wiring: the boot-log filter uses the shared userinfo shape" "grep -q 'URL_CREDS_ERE' '$RUNNER'"
+check "wiring: one userinfo definition in the lib" "[ \"\$(grep -c '://(\\[^/\\[:space:\\]:@\\]' '$QA_DIR/sweep-lib.sh')\" = 1 ]"
+check "wiring: the seeded admin password matches wt-stack" "grep -qF \"password: 'BreezeAdmin123!'\" '$QA_DIR/../dev/wt-stack/cli.ts'"
+check "wiring: the seeded portal password matches the fixtures" "grep -qF 'PortalTest123!' '$QA_DIR/../../e2e-tests/seed-fixtures.sql'"
+
 new_run gate-log
 QA_COMMENTABLE=" "; IN_SCOPE=" "
 outbox 001.json "{\"action\":\"comment\",\"issue\":$(json_str "marker-issue-$FAKE_AKIA"),\"body\":\"clean body\"}"

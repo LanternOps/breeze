@@ -12,7 +12,17 @@
 
 QA_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
-SECRET_RE='sk_live_|sk_test_|rk_live_|sk-ant-|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY|xox[baprs]-'
+# The generic patterns: the SECOND layer. The first is the known-value gate
+# (_known_scan, build_envvals).
+PREFIXED_SECRET_RE='sk_live_|sk_test_|rk_live_|sk-ant-|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY|xox[baprs]-'
+# brz_ keys are minted by the stack at runtime, so they cannot be known in
+# advance. 16+ characters leaves the 12-character prefix the UI displays alone.
+# Not matched with whitespace removed: the words after a displayed prefix would
+# read as the rest of a key, so a minted key interleaved with spaces is a limit.
+SECRET_RE="$PREFIXED_SECRET_RE|brz_[A-Za-z0-9_-]{16,}"
+# scheme://user:pass@ in any letter case: the one definition, shared by the byte
+# grep, the normalised scan (groups: user, password) and the boot-log filter.
+URL_CREDS_ERE='[A-Za-z][A-Za-z0-9+.-]*://([^/[:space:]:@]+):([^/[:space:]@]+)@'
 QA_BODY_MAX=60000
 # _gate_clean <grep args...>: true only when grep positively reports "no match"
 # (exit 1). A match (0), an error (2) or death by a signal (>128) all reject, so
@@ -70,16 +80,23 @@ print("clean")
 #             prefix-less token cut into short pieces or interleaved with
 #             words therefore stays out of a heuristic's reach; known values
 #             and prefixed tokens do not.
+#   lines  -- each normalised line on its own (Strix r12): a password with
+#             whitespace in it after scheme://user: (a port followed by prose
+#             is exempt: "http://localhost:4321 and sign in as a@b.c"), and
+#             user:pass@host with no scheme, DSNs included. Labels before an
+#             email, digest-pinned images, package@version and times are exempt.
+#             A scheme-less password with a space in it reads exactly like
+#             "Login: admin@example.com", so only the known-value gate covers it.
 # Every check runs twice: with fence lines dropped, and with only their fence
 # markers stripped (text after a marker is content GitHub shows). Code points
 # that render blank without being format characters (Hangul fillers, the
 # braille blank, Khmer inherent vowels) are dropped as well. Look-alike letters
 # (Cyrillic s) and visible separators (s.k.-) are an accepted limit: a
 # blocklist cannot close them.
-_norm_scan() {
-  /usr/bin/python3 -I -c '
+# _QA_NORM_PY: the reading and normalising shared by _norm_scan and _known_scan.
+_QA_NORM_PY='
 import re, sys, unicodedata
-path, limit, envvals, secret = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+path, limit, envvals = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 with open(path, "rb") as f:
     data = f.read(limit + 1)
 if not data or len(data) > limit or b"\0" in data:
@@ -110,6 +127,10 @@ def lines_of(b, drop_fences=True):
     return [FENCE.sub("", ln) for ln in BREAKS.split(t)]
 def flat_of(lines):
     return "".join(norm_line(ln, False) for ln in lines)
+'
+_norm_scan() {
+  /usr/bin/python3 -I -c "$_QA_NORM_PY"'
+secret, url_creds, prefixed = sys.argv[4], sys.argv[5], sys.argv[6]
 def joined_of(lines):
     # A line with no space in it (a fragment) joins its neighbours with no
     # separator; two lines of words join with one space.
@@ -139,7 +160,31 @@ def token_chains(lines):
     if cur:
         chains.append(cur)
     return chains
-USERINFO = re.compile(r"[a-z][a-z0-9+.-]*://([^/\s:@]+):([^/\s@]+)@")
+USERINFO = re.compile(url_creds.replace("[:space:]", r"\s"))
+SPACED_PW = re.compile(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:(\S[^/@]{0,127})@", re.I)
+PORT_THEN_PROSE = re.compile(r"\d{1,5}(?:[\s,;.)\]]|\Z)")
+BARE_CREDS = re.compile(r"(?<![\w.+/:@%~-])([a-z0-9._~%+-]{1,64}):([^\s/@]{1,128})@"
+                        r"(tcp\([^)\s]*\)|unix\([^)\s]*\)|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9-]+)*)", re.I)
+LABELS = {"mailto", "email", "e-mail", "mail", "login", "signin", "sign-in", "from", "to", "cc", "bcc",
+          "reply-to", "author", "by", "contact", "owner", "assignee", "reporter", "account", "sent", "tenant"}
+NOT_HOSTS = {"sha1", "sha224", "sha256", "sha384", "sha512", "md5", "latest", "next", "beta", "canary"}
+def spaced_password(line):
+    for m in SPACED_PW.finditer(line):
+        pw = m.group(1)
+        if re.search(r"\s", pw) and not PORT_THEN_PROSE.match(pw):
+            return True
+    return False
+def bare_creds(line):
+    for m in BARE_CREDS.finditer(line):
+        user, pw, host = m.group(1).lower(), m.group(2), m.group(3).lower()
+        if user in LABELS or user.isdigit() or host in NOT_HOSTS:
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+){0,2}", host):   # package@1.2.3; an IPv4 host has four parts
+            continue
+        if pw.isdigit() and len(pw) <= 5 and (user == "localhost" or "." in user):   # host:port@handle
+            continue
+        return True
+    return False
 def tight_of(lines):
     # Lines joined with NO separator (spaces inside a line kept), plus the
     # offsets where two lines meet.
@@ -174,28 +219,229 @@ def tokenlike(s):
         if re.search("[A-Z]", t) and re.search("[a-z]", t) and re.search("[0-9]", t):
             return True
     return False
-with open(envvals, "rb") as f:
-    values = []
-    for v in f.read().splitlines():
-        vl = lines_of(v)
-        values.append((flat_of(vl), joined_of(vl)))
 for drop in (True, False):
     lines = lines_of(data, drop)
     flat, joined = flat_of(lines), joined_of(lines)
     spaced = " ".join(norm_line(ln, True) for ln in lines)
-    if re.search(secret.replace(" ", " ?"), flat) or re.search(secret, joined):
+    if re.search(prefixed.replace(" ", " ?"), flat) or re.search(secret, joined):
         sys.exit(3)
-    if re.search(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@", spaced):
+    if USERINFO.search(spaced):
         sys.exit(3)
+    for ln in lines:
+        n = norm_line(ln, True)
+        if spaced_password(n) or bare_creds(n):
+            sys.exit(3)
     if split_userinfo(*tight_of(lines)):
         sys.exit(3)
     if any(tokenlike(c) for c in token_chains(lines)):
         sys.exit(3)
-    for vf, vj in values:
-        if (len(vf) >= 8 and vf in flat) or (len(vj) >= 8 and vj in joined):
+print("clean")
+' "$1" "$2" "$3" "$SECRET_RE" "$URL_CREDS_ERE" "$PREFIXED_SECRET_RE" 2>/dev/null
+}
+# _known_scan <file> <max> <envvals>: the PRIMARY gate (Strix r12). The agent can
+# only meet secrets that exist on this machine, so build_envvals lists them and
+# this refuses a body holding any of them, whatever its spelling. Body and value
+# are both case-folded and stripped of whitespace, control, zero-width and
+# markdown characters, on both fence readings. The body is also read percent-
+# and entity-decoded (three rounds). Each value is looked for plain, as base64
+# at all three byte alignments in both alphabets, and as hex with or without
+# separators. A value of 24+ opaque characters is refused on any 16-character
+# piece, so halves separated by prose are caught too. The limit: a transform
+# the scan does not undo (reversed, rot13, enciphered) or pieces under 16.
+_known_scan() {
+  /usr/bin/python3 -I -c "$_QA_NORM_PY"'
+import base64, html, urllib.parse
+MIN_VALUE, PIECE = 8, 16
+def canon(s):
+    return norm_line(unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", s).casefold()), False)
+def squeeze(s):
+    # Whitespace and invisible characters go; markdown stays until after decoding
+    # (the # of an entity, the %23 of a #).
+    return "".join(c for c in s if not c.isspace() and c not in BLANK and unicodedata.category(c) not in DROP)
+def decodings(lines):
+    seen = {squeeze("".join(lines)), flat_of(lines)}
+    todo = list(seen)
+    for _ in range(3):
+        found = []
+        for s in todo:
+            for d in (urllib.parse.unquote(s), urllib.parse.unquote_plus(s), html.unescape(s)):
+                d = squeeze(d)
+                if d not in seen:
+                    seen.add(d)
+                    found.append(d)
+        todo = found
+    return {canon(s) for s in seen}
+def b64_forms(raw):
+    # The characters of base64(raw) that do not depend on what surrounds raw.
+    for pad in range(3):
+        e = base64.b64encode(b"\0" * pad + raw).decode().rstrip("=")
+        core = e[(8 * pad + 5) // 6:]
+        if (pad + len(raw)) % 3:
+            core = core[:-1]
+        if len(core) >= MIN_VALUE:
+            yield core.casefold()
+            yield core.translate(str.maketrans("+/", "-_")).casefold()
+plain, b64, hexed, pieces = set(), set(), set(), set()
+with open(envvals, "rb") as f:
+    for raw in f.read().splitlines():
+        c = canon(raw.decode("utf-8", "replace"))
+        if len(c) < MIN_VALUE:
+            continue
+        plain.add(c)
+        b64.update(b64_forms(raw))
+        hexed.add(raw.hex())
+        if re.fullmatch(r"[a-z0-9_+=-]{24,}", c):
+            pieces.update(c[i:i + PIECE] for i in range(len(c) - PIECE + 1))
+for drop in (True, False):
+    for s in decodings(lines_of(data, drop)):
+        if any(v in s for v in plain) or any(v in s for v in b64):
+            sys.exit(3)
+        for sep in (r"0x|[:,;._-]", r"x|[:,;._-]"):   # 0x41,0x42 and \\x41\\x42
+            h = re.sub(sep, "", s)
+            if any(v in h for v in hexed):
+                sys.exit(3)
+        if pieces and any(s[i:i + PIECE] in pieces for i in range(len(s) - PIECE + 1)):
             sys.exit(3)
 print("clean")
-' "$1" "$2" "$3" "$SECRET_RE" 2>/dev/null
+' "$1" "$2" "$3" 2>/dev/null
+}
+# list_env_files <dir>: NUL-separated non-example .env* files/symlinks under <dir>.
+list_env_files() {
+  find "$1" \( -name node_modules -o -name .git \) -prune -o \
+    -name '.env*' ! -name '*.example' \( -type f -o -type l \) -print0
+}
+# _stack_container_env <project>: the environment of every container in the
+# stack, one KEY=value per line. Compose derives values no env file holds.
+_stack_container_env() {
+  local ids
+  ids="$(docker ps -aq --filter "label=com.docker.compose.project=$1")" || return 1
+  [ -n "$ids" ] || return 1
+  # shellcheck disable=SC2086  # one argument per container id
+  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' $ids
+}
+# build_envvals [project]: ENVVALS, every secret value the agent could meet, one
+# per line, 8+ characters: each .env* in the worktree (.env.stack included),
+# the seeded passwords and, given the stack project, its descriptor and the real
+# environment of its containers. URLs also give their userinfo parts. A value is
+# left out only when it is public by shape and its key does not name a secret
+# (URL without credentials, path, email, image ref, number, config word), or when
+# the runner hands it to the agent to quote (stack URLs, container names, the
+# admin email): otherwise every report would be refused. Replaced atomically; a
+# failure leaves the previous list and returns non-zero.
+build_envvals() {
+  local project="${1:-}" f tmp dump="" rc=0 sources=()
+  while IFS= read -r -d '' f; do sources+=("$f"); done < <(list_env_files "$QA_WORKTREE")
+  tmp="$(umask 077; mktemp "$ENVVALS.XXXXXX")" || return 1
+  if [ -n "$project" ]; then
+    dump="$(umask 077; mktemp "$ENVVALS.env.XXXXXX")" || { rm -f "$tmp"; return 1; }
+    _stack_container_env "$project" > "$dump" || rc=1
+    sources+=("$dump")
+  fi
+  if [ "$rc" -eq 0 ]; then
+    /usr/bin/python3 -I -c '
+import json, os, re, sys, urllib.parse
+out, descriptor, need_descriptor, sources = sys.argv[1], sys.argv[2], sys.argv[3] == "1", sys.argv[4:]
+MIN_VALUE = 8
+SEEDED = ["BreezeAdmin123!", "PortalTest123!"]   # wt-stack admin, E2E portal user
+SECRET_WORDS = {"SECRET", "SECRETS", "TOKEN", "TOKENS", "PASSWORD", "PASSWD", "PWD", "PASS", "PASSPHRASE", "KEY", "KEYS",
+                "KEYRING", "APIKEY", "PEPPER", "SALT", "CREDENTIAL", "CREDENTIALS", "PRIVATE", "COOKIE", "DSN", "JWK"}
+METADATA = {"ID", "KID", "TTL", "MINUTES", "HOURS", "HOUR", "DAYS", "SECONDS", "MS", "VERSION", "URL", "ENABLED", "MODE",
+            "LIMIT", "SOURCE", "FILE", "PATH", "REF", "NAME", "PROVIDER", "ENFORCE", "AUDIENCE"}
+PUBLIC_KEYS = {"PATH", "HOME", "PWD", "OLDPWD", "HOSTNAME", "LANG", "LC_ALL", "TERM", "USER", "SHELL", "SHLVL"}
+URL_USERINFO = re.compile(r"[a-z][a-z0-9+.-]*://([^/?#@\s]*)@", re.I)
+values = set()
+def add(v):
+    v = v.strip()
+    if len(v) >= MIN_VALUE and "\n" not in v:
+        values.add(v)
+def secret_key(key):
+    parts = key.upper().split("_")
+    return parts[-1] not in METADATA and any(p in SECRET_WORDS for p in parts)
+def config_word(v):
+    return re.fullmatch(r"[a-z0-9]+(?:[-_./:][a-z0-9]+)*", v) is not None and all(
+        s.isalpha() or len(s) <= 6 for s in re.split(r"[-_./:]", v))
+def public_value(key, v):
+    if key.endswith(("_IMAGE", "_IMAGE_REF")) or re.search(r"@sha256:[0-9a-f]{64}\Z", v):
+        return True
+    if re.fullmatch(r"(?i)true|false|yes|no|on|off|-?\d+(?:\.\d+)?", v):
+        return True
+    if re.fullmatch(r"v?\d+(?:\.\d+)+(?:[-+][\w.]+)?", v):
+        return True
+    if re.fullmatch(r"(?i)[a-z][a-z0-9+.-]*://[^\s@?#]*", v):
+        return True
+    if re.fullmatch(r"/[\w./-]*(?::/[\w./-]*)*", v) or re.fullmatch(r"[^\s@:/]+@[^\s@:/]+", v):
+        return True
+    return config_word(v)
+def add_password(pw, user=""):
+    for p in {pw, urllib.parse.unquote(pw)}:
+        add(p)
+        add(":" + p + "@")
+        if user:
+            add(user + ":" + p)
+def add_url_parts(v):
+    for m in URL_USERINFO.finditer(v):
+        add(v)
+        user, _, pw = m.group(1).partition(":")
+        add(user)
+        add(urllib.parse.unquote(user))
+        if pw:
+            add_password(pw, user)
+entries, env = [], {}
+for src in sources:
+    with open(src, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m = re.match(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line.rstrip("\r\n"))
+            if not m:
+                continue
+            key, v = m.group(1), m.group(2).strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"\x27":
+                v = v[1:-1]
+            else:
+                v = re.sub(r"\s+#.*$", "", v)
+            if v:
+                entries.append((key, v))
+                env[key] = v
+def expand(v):
+    return re.sub(r"\$\{([A-Za-z_]\w*)(?::?-([^}]*))?\}", lambda m: env.get(m.group(1), m.group(2) or ""), v)
+for key, raw in entries:
+    if key in PUBLIC_KEYS:
+        continue
+    v = expand(raw)
+    add_url_parts(v)
+    if secret_key(key):
+        add(v)
+        for part in re.split(r"[,;\s]+", v):
+            add(part)
+            add(part.rsplit(":", 1)[-1])
+        if key.endswith(("_PASSWORD", "_PASS", "_PASSWD")):
+            add_password(v)
+    elif not public_value(key, v):
+        add(v)
+if env.get("POSTGRES_PASSWORD"):
+    add_password(env["POSTGRES_PASSWORD"], env.get("POSTGRES_USER", "breeze"))
+for pw in SEEDED:
+    add(pw)
+keep = set(SEEDED)
+quotable = set()
+if os.path.exists(descriptor):
+    with open(descriptor, encoding="utf-8") as f:
+        d = json.load(f)
+    admin = d["admin"]["password"]
+    add(admin)
+    keep.add(admin)
+    quotable = {str(d.get(k, "")) for k in ("project", "baseUrl", "apiUrl", "portalUrl", "pgContainer", "redisContainer")}
+    quotable.add(str(d["admin"].get("email", "")))
+elif need_descriptor:
+    sys.exit(1)
+final = sorted(v for v in values if v in keep or v not in quotable)
+with open(out, "w", encoding="utf-8") as f:
+    f.write("".join(v + "\n" for v in final))
+' "$tmp" "$QA_WORKTREE/.breeze-stack.json" "$([ -n "$project" ] && echo 1 || echo 0)" ${sources[@]+"${sources[@]}"} 2>/dev/null || rc=1
+  fi
+  [ -z "$dump" ] || rm -f "$dump"
+  if [ "$rc" -eq 0 ]; then mv -f "$tmp" "$ENVVALS" || rc=1; fi
+  rm -f "$tmp"
+  return "$rc"
 }
 # body_ok <file>: gate for anything headed to GitHub (the private QA repo: still
 # a sink other people read, so the gate stays as strict as it was). Fails
@@ -212,7 +458,7 @@ body_ok() {
   # Byte-wise matching (LC_ALL=C, -a): invalid UTF-8 must not turn the file
   # "binary" and hide what follows it (NULs are already refused above).
   _gate_clean -aEq "$SECRET_RE" "$1" || return 1
-  _gate_clean -aEq '[a-z][a-z0-9+.-]*://[^/[:space:]:@]+:[^/[:space:]@]+@' "$1" || return 1   # creds in URLs
+  _gate_clean -aEq "$URL_CREDS_ERE" "$1" || return 1   # creds in URLs
   # Any literal .env value. The runner builds this list before anything is
   # published, so a missing or unreadable list is a failed check, not an empty one.
   [ -f "$ENVVALS" ] && [ -r "$ENVVALS" ] || return 1
@@ -220,6 +466,9 @@ body_ok() {
   # The same checks on normalised copies: a secret split over lines,
   # interleaved or fenced is caught whole (Strix r10).
   verdict="$(_norm_scan "$1" "$QA_BODY_MAX" "$ENVVALS")" || return 1
+  [ "$verdict" = clean ] || return 1
+  # Every secret on this machine, however it is spelled or encoded (Strix r12).
+  verdict="$(_known_scan "$1" "$QA_BODY_MAX" "$ENVVALS")" || return 1
   [ "$verdict" = clean ] || return 1
   return 0
 }

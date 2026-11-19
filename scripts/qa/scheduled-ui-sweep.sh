@@ -64,11 +64,6 @@ ENVVALS="$QA_HOME/.envvals"   # literal .env values; outside RUN_DIR so the agen
 # them at (re)start, so the running stack is unaffected. Every non-example
 # .env* anywhere in the worktree is parked under its relative path.
 STACK_ENV_DIR="$QA_HOME/.stack-env"
-# list_env_files <dir>: NUL-separated non-example .env* files/symlinks under <dir>.
-list_env_files() {
-  find "$1" \( -name node_modules -o -name .git \) -prune -o \
-    -name '.env*' ! -name '*.example' \( -type f -o -type l \) -print0
-}
 hide_stack_env() {
   local f rel
   ( umask 077; mkdir -p "$STACK_ENV_DIR" ) && chmod 0700 "$STACK_ENV_DIR" || return 1
@@ -88,22 +83,6 @@ restore_stack_env() {
   done < <(find "$STACK_ENV_DIR" \( -type f -o -type l \) -print0)
   find "$STACK_ENV_DIR" -mindepth 1 -type d -empty -delete 2>/dev/null
   return 0
-}
-# build_envvals: literal values (>= 8 chars) of every entry in every non-example
-# .env* in the worktree -> redaction list for published text. .env.stack is left
-# out: wt-stack writes dev defaults and the stack's own URL there, which reports
-# legitimately quote.
-build_envvals() {
-  local f files=()
-  while IFS= read -r -d '' f; do
-    case "${f##*/}" in .env.stack|.env.stack.tmp) continue ;; esac
-    files+=("$f")
-  done < <(list_env_files "$QA_WORKTREE")
-  ( umask 077
-    if [ "${#files[@]}" -gt 0 ]; then
-      grep -hE '^(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' -- "${files[@]}" 2>/dev/null
-    fi | cut -d= -f2- | sed -E 's/^["'\'']//; s/["'\'']$//' \
-      | awk 'length($0) >= 8' | sort -u > "$ENVVALS" )
 }
 # runner_issue (sweep-lib.sh) files the runner's own findings into QA_REPO.
 
@@ -233,7 +212,9 @@ for ov in "$SCRIPT_DIR/qa-env.overrides" "$QA_HOME/env.overrides"; do
   done < <(grep -E '^[A-Z][A-Z0-9_]*=' "$ov")
 done
 
-build_envvals   # literal env values -> redaction list for published text
+# The known-value list for published text (sweep-lib.sh). This first build covers
+# the boot-failure path; it is rebuilt from the running stack before the agent starts.
+build_envvals || { notify "QA sweep: could not build the secret list"; log "FATAL build_envvals"; exit 1; }
 
 # Node from .nvmrc (auto-install via nvm if this Mac doesn't have it yet)
 NODE_WANT="$(tr -d 'v \n' < .nvmrc 2>/dev/null)"
@@ -314,8 +295,8 @@ if ! stack_healthy; then
       # anything still secret-shaped dropped. Full logs stay on the QA Mac.
       echo; echo "### \`$c\` error lines"; echo '```'
       grep -E 'CRITICAL|FATAL|Error:|error:|ERROR' "$RUN_DIR/container-$c.log" | tail -8 | cut -c1-240 \
-        | { if [ -s "$ENVVALS" ]; then grep -vF -f "$ENVVALS"; else cat; fi; } \
-        | grep -Ev "$SECRET_RE" | grep -Ev '[A-Za-z0-9+/=_-]{48,}|://[^/[:space:]:@]+:[^/[:space:]@]+@'
+        | { if [ -s "$ENVVALS" ]; then grep -viF -f "$ENVVALS"; else cat; fi; } \
+        | grep -Ev "$SECRET_RE" | grep -Ev "[A-Za-z0-9+/=_-]{48,}|$URL_CREDS_ERE"
       echo '```'
     done
     echo; echo "Full container logs and wt-stack output: \`$RUN_DIR\` on the QA Mac."
@@ -351,6 +332,13 @@ secure_stack() {
 if ! secure_stack; then
   notify "QA sweep: could not cut the QA stack off from the internet; agent not started (see $LOG)"
   log "FATAL stack isolation"; echo "STACK_ISOLATION_FAILED" > "$RUN_DIR/result"; exit 1
+fi
+
+# Every secret the agent could meet now exists: .env.stack, the descriptor and
+# the containers' real environment. No list, no agent.
+if ! build_envvals "$STACK_PROJECT"; then
+  notify "QA sweep: could not build the secret list from the stack; agent not started"
+  log "FATAL build_envvals $STACK_PROJECT"; echo "SECRET_LIST_FAILED" > "$RUN_DIR/result"; exit 1
 fi
 
 # --- the sweep ---------------------------------------------------------------
@@ -582,7 +570,7 @@ HOSTED_OK=1; HOSTED_NOTE=""
 # _agent_io and writes nothing into it (see sweep-lib.sh).
 if [ "$RC" = 0 ] && [ -n "${HOSTED_PRS// /}" ]; then
   HOSTED_OK=0
-  if switch_to_hosted && secure_stack; then   # the recreated containers start on the project network again
+  if switch_to_hosted && secure_stack && build_envvals "$STACK_PROJECT"; then   # the recreated containers start on the project network again
     HPROMPT="Read $QA_WORKTREE/.claude/skills/ui-qa-sweep/SKILL.md and follow its **Scheduled mode** section, **Hosted phase** subsection, exactly (skills and slash commands are disabled in this run; do not try to invoke them).
 Run parameters:
 - RUN_DIR=$RUN_DIR   (append to report.md; add outbox/*.json — nowhere else)
