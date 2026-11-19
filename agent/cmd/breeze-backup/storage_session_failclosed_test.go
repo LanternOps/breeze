@@ -186,7 +186,7 @@ func TestStorageSession_InvalidDescriptorFailsClosed(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := sessionPayloadJSON(t, tc.payload)
-			result := execBackupVerifyContext(context.Background(), "verify-"+tc.name, payload, mgr, nil, nil)
+			result := execBackupVerifyContext(context.Background(), "verify-"+tc.name, payload, mgr, nil, nil, 0)
 			assertStorageSessionFailure(t, result)
 		})
 	}
@@ -283,10 +283,10 @@ func TestStorageSession_CoreCommandsDirectPathNeverFallBack(t *testing.T) {
 			return execBackupRestoreWithProgress(context.Background(), "c1", payload, mgr, nil, nil)
 		},
 		"verify": func() backupipc.BackupCommandResult {
-			return execBackupVerifyContext(context.Background(), "c2", payload, mgr, nil, nil)
+			return execBackupVerifyContext(context.Background(), "c2", payload, mgr, nil, nil, 0)
 		},
 		"test_restore": func() backupipc.BackupCommandResult {
-			return execBackupTestRestoreContext(context.Background(), "c3", payload, mgr, nil, nil)
+			return execBackupTestRestoreContext(context.Background(), "c3", payload, mgr, nil, nil, 0)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
