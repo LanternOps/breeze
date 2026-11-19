@@ -1,4 +1,4 @@
-<!-- Breeze (#11718): copy of Tauri 2.12.5 msi/main.wxs. ONLY the shortcut/Start-folder names are hardcoded to "Breeze Assist"; install dir, DisplayName and registry keys stay {{product_name}} ("Breeze Helper") because the agent matches on them. Re-diff against upstream when bumping @tauri-apps/cli. -->
+<!-- Breeze (#11718): copy of Tauri CLI 2.12.4 msi/main.wxs (the version pnpm-lock.yaml resolves). Two deliberate deviations from stock: (1) the shortcut/Start-folder names are hardcoded to "Breeze Assist"; install dir, DisplayName and registry keys stay {{product_name}} ("Breeze Helper") because the agent matches on them. (2) CMP_LegacyHelperShortcuts deletes the shortcuts earlier MSIs created under the old "Breeze Helper" names, because the old product's nested removal on upgrade skips RemoveShortcuts. Re-diff against upstream when bumping @tauri-apps/cli. -->
 <?if $(sys.BUILDARCH)="x86"?>
     <?define Win64 = "no" ?>
     <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
@@ -124,6 +124,7 @@
             </Directory>
             <Directory Id="ProgramMenuFolder">
                 <Directory Id="ApplicationProgramsFolder" Name="Breeze Assist"/>
+                <Directory Id="LegacyApplicationProgramsFolder" Name="Breeze Helper"/>
             </Directory>
         </Directory>
 
@@ -193,6 +194,14 @@
 							   Value="1"
 							   KeyPath="yes" />
             </Component>
+            <!-- Breeze: MSIs up to v0.129.0 created these under the old "Breeze Helper" names. The old product's nested removal on upgrade skips RemoveShortcuts, so this package deletes them (literal names; never wildcard the Public Desktop). Removal only: nothing is installed under the legacy names. -->
+            <Component Id="CMP_LegacyHelperShortcuts" Guid="*">
+                <RemoveFile Id="LegacyDesktopShortcut" Directory="DesktopFolder" Name="Breeze Helper.lnk" On="both" />
+                <RemoveFile Id="LegacyStartMenuShortcut" Directory="LegacyApplicationProgramsFolder" Name="Breeze Helper.lnk" On="both" />
+                <RemoveFolder Id="LegacyStartMenuFolder" Directory="LegacyApplicationProgramsFolder" On="both" />
+                <RemoveFile Id="LegacyUninstallShortcut" Directory="INSTALLDIR" Name="Uninstall Breeze Helper.lnk" On="both" />
+                <RegistryValue Root="HKCU" Key="Software\\{{manufacturer}}\\{{product_name}}" Name="Legacy Shortcut Cleanup" Type="integer" Value="1" KeyPath="yes" />
+            </Component>
         </DirectoryRef>
 
         <DirectoryRef Id="ApplicationProgramsFolder">
@@ -249,6 +258,7 @@
                 <ComponentRef Id="CMP_UninstallShortcut" />
                 <ComponentRef Id="ApplicationShortcut" />
                 <ComponentRef Id="ApplicationShortcutDesktop" />
+                <ComponentRef Id="CMP_LegacyHelperShortcuts" />
             </Feature>
 
             <Feature
