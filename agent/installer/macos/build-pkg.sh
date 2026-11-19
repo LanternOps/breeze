@@ -5,9 +5,12 @@
 # Usage:
 #   ./build-pkg.sh <agent-binary> <desktop-helper-binary> <backup-binary> <watchdog-binary> <version> <arch> <output-path> <min-macos>
 #
-# <min-macos> is REQUIRED: the minimum macOS this package installs on, e.g.
+# <min-macos> is the minimum macOS this package installs on (#12169), e.g.
 # "$(jq -r .macos agent/platform-floors.json)". It must match
 # ^[0-9]{1,3}(\.[0-9]{1,3}){0,2}$ and is rendered into the shipped preinstall.
+# When omitted or empty, it is read from agent/platform-floors.json in this
+# checkout: a self-hoster's signing repo copied from selfhost-signing-template
+# before this argument existed still passes 7 arguments.
 #
 # Example:
 #   ./build-pkg.sh ./breeze-agent-darwin-amd64 ./breeze-desktop-helper-darwin-amd64 ./breeze-backup-darwin-amd64 ./breeze-watchdog-darwin-amd64 0.13.3 amd64 ./dist/breeze-agent-darwin-amd64.pkg 12.0
@@ -15,9 +18,8 @@
 
 set -euo pipefail
 
-if [ "$#" -ne 8 ]; then
-    echo "usage: build-pkg.sh <agent-binary> <desktop-helper-binary> <backup-binary> <watchdog-binary> <version> <arch> <output-path> <min-macos>" >&2
-    echo "build-pkg.sh: the <min-macos> argument is required (see agent/platform-floors.json)" >&2
+if [ "$#" -lt 7 ] || [ "$#" -gt 8 ]; then
+    echo "usage: build-pkg.sh <agent-binary> <desktop-helper-binary> <backup-binary> <watchdog-binary> <version> <arch> <output-path> [<min-macos>]" >&2
     exit 64
 fi
 
@@ -28,7 +30,18 @@ WATCHDOG_BIN="$4"
 VERSION="$5"
 ARCH="$6"
 OUTPUT="$7"
-MIN_MACOS="$8"
+MIN_MACOS="${8:-}"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLATFORM_FLOORS="$SCRIPT_DIR/../../platform-floors.json"
+if [ -z "$MIN_MACOS" ]; then
+    if [ ! -f "$PLATFORM_FLOORS" ]; then
+        echo "build-pkg.sh: no <min-macos> argument and $PLATFORM_FLOORS is missing" >&2
+        exit 64
+    fi
+    # No jq dependency: the file is a flat, checked-in JSON object.
+    MIN_MACOS="$(sed -n 's/^[[:space:]]*"macos"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PLATFORM_FLOORS" | head -n 1)"
+fi
 
 # Validate before any work: a malformed floor must never reach a shipped pkg.
 if ! [[ "$MIN_MACOS" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){0,2}$ ]]; then
@@ -36,7 +49,6 @@ if ! [[ "$MIN_MACOS" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){0,2}$ ]]; then
     exit 64
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 

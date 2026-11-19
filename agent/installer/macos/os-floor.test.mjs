@@ -57,16 +57,86 @@ test('build-pkg.sh rejects a malformed floor before doing any work', () => {
   assert.doesNotMatch(r.stdout, /Building Breeze Agent/);
 });
 
-test('build-pkg.sh requires the min-macos argument', () => {
+// Runs build-pkg.sh with a stub `pkgbuild` on PATH that snapshots the
+// --scripts dir it is handed (what the shipped pkg would contain) and writes
+// the output file, so the staging is checked on any OS without building a pkg.
+function buildPkg(extraArgs) {
   const dir = mkdtempSync(join(tmpdir(), 'bp-'));
   const bins = ['agent', 'helper', 'backup', 'watchdog'].map((n) => {
     const p = join(dir, n);
     writeFileSync(p, 'x');
     return p;
   });
-  const r = spawnSync('bash', [BUILD_PKG, ...bins, '1.0.0', 'arm64', join(dir, 'out.pkg')], { encoding: 'utf8' });
-  assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /min-macos/i);
+  const stubBin = join(dir, 'bin');
+  const captured = join(dir, 'captured-scripts');
+  spawnSync('mkdir', ['-p', stubBin]);
+  writeFileSync(
+    join(stubBin, 'pkgbuild'),
+    `#!/bin/bash
+set -e
+while [ "$#" -gt 1 ]; do
+  if [ "$1" = "--scripts" ]; then cp -R "$2" "${captured}"; fi
+  shift
+done
+echo stub > "$1"
+`,
+  );
+  chmodSync(join(stubBin, 'pkgbuild'), 0o755);
+  const out = join(dir, 'out.pkg');
+  const r = spawnSync('bash', [BUILD_PKG, ...bins, '1.0.0', 'arm64', out, ...extraArgs], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${stubBin}:${process.env.PATH}` },
+  });
+  return { r, out, captured };
+}
+
+const DECLARED_FLOOR = JSON.parse(readFileSync(join(here, '..', '..', 'platform-floors.json'), 'utf8')).macos;
+
+test('build-pkg.sh renders an explicit floor into the shipped preinstall, with os-floor.sh beside it', () => {
+  const { r, out, captured } = buildPkg(['14.2']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(existsSync(out), true);
+  const shipped = readFileSync(join(captured, 'preinstall'), 'utf8');
+  assert.match(shipped, /^BREEZE_MIN_MACOS="14\.2"$/m);
+  assert.doesNotMatch(shipped, /__BREEZE_MIN_MACOS__/);
+  assert.equal(readFileSync(join(captured, 'os-floor.sh'), 'utf8'), readFileSync(OS_FLOOR, 'utf8'));
+});
+
+// A self-hoster's signing repo is a copy of selfhost-signing-template made
+// before the 8th argument existed; it keeps calling build-pkg.sh with 7. The
+// floor then comes from the same checkout's agent/platform-floors.json.
+test('build-pkg.sh without the 8th argument uses agent/platform-floors.json', () => {
+  const { r, captured } = buildPkg([]);
+  assert.equal(r.status, 0, r.stderr);
+  const shipped = readFileSync(join(captured, 'preinstall'), 'utf8');
+  assert.ok(DECLARED_FLOOR, 'platform-floors.json has no macos floor');
+  assert.ok(shipped.includes(`BREEZE_MIN_MACOS="${DECLARED_FLOOR}"`), 'declared floor not rendered');
+});
+
+test('build-pkg.sh treats an empty 8th argument like an omitted one', () => {
+  const { r, captured } = buildPkg(['']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(readFileSync(join(captured, 'preinstall'), 'utf8').includes(`BREEZE_MIN_MACOS="${DECLARED_FLOOR}"`));
+});
+
+test('the rendered preinstall from a built pkg refuses below its floor', () => {
+  const { r, captured } = buildPkg(['99.0']);
+  assert.equal(r.status, 0, r.stderr);
+  const bin = join(captured, '..', 'fakebin');
+  const log = join(captured, '..', 'launchctl.log');
+  spawnSync('mkdir', ['-p', bin]);
+  writeFileSync(join(bin, 'sw_vers'), '#!/bin/sh\necho 15.0\n');
+  writeFileSync(join(bin, 'launchctl'), `#!/bin/sh\necho "$@" >> "${log}"\n`);
+  chmodSync(join(bin, 'sw_vers'), 0o755);
+  chmodSync(join(bin, 'launchctl'), 0o755);
+  writeFileSync(log, '');
+  const pre = spawnSync('bash', [join(captured, 'preinstall')], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, BREEZE_SW_VERS: join(bin, 'sw_vers') },
+  });
+  assert.equal(pre.status, 1);
+  assert.match(pre.stderr, /requires macOS 99\.0 or later/);
+  assert.equal(readFileSync(log, 'utf8'), '');
 });
 
 // End-to-end: run preinstall as the installer would (rendered, next to
