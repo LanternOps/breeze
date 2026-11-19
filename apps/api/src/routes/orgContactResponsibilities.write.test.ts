@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { authRef, gateState, svc, crudMocks, auditSpy, dbRows } = vi.hoisted(() => ({
+const { authRef, gateState, svc, crudMocks, auditSpy, dbRows, groupSelect } = vi.hoisted(() => ({
   authRef: { current: null as Record<string, unknown> | null },
   gateState: { granted: true, denied: new Set<string>(), mfaSatisfied: true },
   svc: { set: vi.fn(), list: vi.fn() },
   crudMocks: { findContactScope: vi.fn() },
   auditSpy: vi.fn(),
   dbRows: { current: [] as unknown[] },
+  groupSelect: { rows: [] as unknown[], calls: vi.fn() },
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -33,10 +34,10 @@ vi.mock('../middleware/auth', () => ({
   },
 }));
 
-vi.mock('../db', () => ({ db: { select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => dbRows.current) })) })) })) } }));
+vi.mock('../db', () => ({ db: { select: vi.fn((fields?: Record<string, unknown>) => fields && 'id' in fields && 'siteId' in fields && Object.keys(fields).length === 2 ? { from: vi.fn(() => ({ where: vi.fn(async () => { groupSelect.calls(); return groupSelect.rows; }) })) } : ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => dbRows.current) })) })) })) } }));
 vi.mock('../db/schema', () => ({
   organizations: { id: 'id', deletedAt: 'deletedAt' },
-  contacts: {}, devices: {}, sites: {},
+  contacts: {}, devices: {}, sites: {}, deviceGroups: { id: 'id', siteId: 'siteId' },
 }));
 
 vi.mock('../services/contacts/crud', () => ({
@@ -99,6 +100,7 @@ beforeEach(() => {
   crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: null });
   svc.set.mockResolvedValue(undefined);
   svc.list.mockResolvedValue([]);
+  groupSelect.rows = [];
 });
 
 describe('GET /contacts/:contactId/responsibilities', () => {
@@ -130,6 +132,47 @@ describe('GET /contacts/:contactId/responsibilities', () => {
     expect(await res.json()).toEqual({ responsibilities: [
       { role: 'technical', scope: { type: 'site', siteId: SITE }, isPrimary: false },
     ] });
+  });
+
+  describe('Device Group rows for a site-confined caller', () => {
+    const G_OUT = '55555555-5555-4555-8555-555555555555';
+    const G_ORGWIDE = '66666666-6666-4666-8666-666666666666';
+    const OTHER_SITE = '00000000-0000-4000-8000-0000000000a9';
+    const groupRow = (id: string) => ({ role: 'technical', isPrimary: false, siteId: null, deviceGroupId: id });
+    const confined = () => {
+      authRef.current = { ...BASE_AUTH, allowedSiteIds: [SITE], canAccessSite: (s: string | null | undefined) => s === SITE };
+    };
+    const get = () => app().request(`/contacts/${CONTACT}/responsibilities`);
+
+    it('omits a group of a Site outside the allowlist', async () => {
+      confined();
+      svc.list.mockResolvedValue([groupRow(G_OUT)]);
+      groupSelect.rows = [{ id: G_OUT, siteId: OTHER_SITE }];
+      expect(await (await get()).json()).toEqual({ responsibilities: [] });
+    });
+
+    it('omits an org-wide group (siteId null) and an unknown group', async () => {
+      confined();
+      svc.list.mockResolvedValue([groupRow(G_ORGWIDE), groupRow(GROUP)]);
+      groupSelect.rows = [{ id: G_ORGWIDE, siteId: null }];
+      expect(await (await get()).json()).toEqual({ responsibilities: [] });
+    });
+
+    it('returns a group of an allowed Site', async () => {
+      confined();
+      svc.list.mockResolvedValue([groupRow(GROUP), groupRow(G_OUT)]);
+      groupSelect.rows = [{ id: GROUP, siteId: SITE }, { id: G_OUT, siteId: OTHER_SITE }];
+      expect(await (await get()).json()).toEqual({ responsibilities: [
+        { role: 'technical', scope: { type: 'device_group', deviceGroupId: GROUP }, isPrimary: false },
+      ] });
+    });
+
+    it('returns every group to an unrestricted caller without querying groups', async () => {
+      svc.list.mockResolvedValue([groupRow(GROUP), groupRow(G_ORGWIDE)]);
+      const body = await (await get()).json() as any;
+      expect(body.responsibilities).toHaveLength(2);
+      expect(groupSelect.calls).not.toHaveBeenCalled();
+    });
   });
 
   it('403s without organizations:read', async () => {

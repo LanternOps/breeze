@@ -2,7 +2,7 @@ import type { Hono } from 'hono';
 import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
-import { contacts, devices, sites } from '../db/schema';
+import { contacts, deviceGroups, devices, sites } from '../db/schema';
 import { zValidator } from '../lib/validation';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
@@ -76,13 +76,33 @@ export function registerOrgContactResponsibilitiesRoutes(orgRoutes: Hono) {
 
   const currentSet = async (contactId: string, orgId: string, auth: AuthContext) => {
     const rows = await listContactResponsibilities(db, { contactId, orgId });
+    // canReachContactSite lets site_id NULL through, which is every Device Group row.
+    // A site-confined caller sees a group only when the group's own Site is reachable;
+    // an unknown or org-wide group is omitted (fail-closed, as in routes/groups.ts).
+    let groupSite: Map<string, string | null> | null = null;
+    const groupIds = auth.allowedSiteIds
+      ? [...new Set(rows.flatMap((row) => (row.deviceGroupId ? [row.deviceGroupId] : [])))]
+      : [];
+    if (groupIds.length > 0) {
+      const groups = await db
+        .select({ id: deviceGroups.id, siteId: deviceGroups.siteId })
+        .from(deviceGroups)
+        .where(inArray(deviceGroups.id, groupIds));
+      groupSite = new Map(groups.map((g) => [g.id, g.siteId]));
+    }
+    const canSeeGroup = (groupId: string) => {
+      const groupSiteId = groupSite?.get(groupId);
+      return typeof groupSiteId === 'string' && Boolean(auth.canAccessSite?.(groupSiteId));
+    };
     return {
       // A site-confined caller never sees the ids of Sites it cannot reach.
-      responsibilities: rows.filter((row) => canReachContactSite(auth, row.siteId)).map((row) => ({
-        role: row.role,
-        scope: serializeScope(row),
-        isPrimary: row.isPrimary,
-      })),
+      responsibilities: rows
+        .filter((row) => canReachContactSite(auth, row.siteId) && (!groupSite || !row.deviceGroupId || canSeeGroup(row.deviceGroupId)))
+        .map((row) => ({
+          role: row.role,
+          scope: serializeScope(row),
+          isPrimary: row.isPrimary,
+        })),
     };
   };
 
