@@ -39,7 +39,7 @@ import {
   type StorageSnapshotRow,
 } from './backupStorageSessions';
 import { CommandDeliveryDeferredError, CommandDeliveryRefusedError } from './commandDeliveryRefusal';
-import { verificationTimeoutMs } from '../routes/backup/verificationTimeout';
+import { verificationDeadline } from '../routes/backup/verificationTimeout';
 import { BACKUP_HELPER_UPDATE_REQUIRED_MESSAGE } from './backupReadHelperGate';
 import type { IntegrityAttestationInput } from './backupRestoreIntegrity';
 import type { StoredRestoreAuthorization } from './backupRestoreAuthorization';
@@ -637,22 +637,39 @@ describe('brokered read delivery', () => {
   });
 
   // #11813: the verification-timeout job fails the command of a verification
-  // older than verificationTimeoutMs, and a failed command revokes its read
-  // session (`command_failed`, below). That timeout was 30 minutes while this
-  // session lives to the command's two-hour deadline, so every large snapshot
-  // lost its session partway and the rest of its resolves got 410. The timeout
-  // must not land before the deadline of the session it would end.
-  it.each([
+  // past its deadline, and a failed command revokes its read session
+  // (`command_failed`, below). That timeout was 30 minutes while this session
+  // lived to the command's two-hour deadline, so every large snapshot lost its
+  // session partway and the rest of its resolves got 410. The verification
+  // deadline must never land before the deadline of the session it would end —
+  // and both follow the budget the command carries (timeBudgetSeconds), which
+  // scales with the snapshot.
+  describe.each([
     ['backup_verify', 'integrity'],
     ['backup_test_restore', 'test_restore'],
-  ] as const)('a %s session reaches its deadline before the verification timeout can end it', async (type, verificationType) => {
-    const state = makeState();
-    const deps = makeDeps(state);
-    const out = await deliverBrokeredReadCommand(restorePayload(), ctx({ type }), deps);
-    const s = out.storageSession as SessionDescriptor;
-    const sessionLifetimeMs = Date.parse(s.deadline) - NOW.getTime();
-    expect(sessionLifetimeMs).toBeGreaterThan(30 * 60_000);
-    expect(verificationTimeoutMs(verificationType)).toBeGreaterThan(sessionLifetimeMs);
+  ] as const)('a %s session', (type, verificationType) => {
+    it.each([
+      ['no budget (2h base)', undefined, 2 * 60 * 60_000],
+      ['a 6h35m budget', 395 * 60, 395 * 60_000],
+      ['an over-cap budget (12h)', 48 * 3600, 12 * 60 * 60_000],
+    ] as const)('with %s lives to claim + budget and the verification deadline lands after it', async (_label, timeBudgetSeconds, expectedLifetimeMs) => {
+      const state = makeState();
+      const deps = makeDeps(state);
+      const payload = timeBudgetSeconds === undefined ? restorePayload() : { ...restorePayload(), timeBudgetSeconds };
+      const out = await deliverBrokeredReadCommand(payload, ctx({ type }), deps);
+      const s = out.storageSession as SessionDescriptor;
+      const sessionLifetimeMs = Date.parse(s.deadline) - NOW.getTime();
+      expect(sessionLifetimeMs).toBe(expectedLifetimeMs);
+      // The verification was created (and its clock would have started) well
+      // before delivery; its deadline runs from the claim (executed_at).
+      const { deadlineMs } = verificationDeadline({
+        verificationType,
+        startedAt: new Date(NOW.getTime() - 25 * 60_000),
+        details: timeBudgetSeconds === undefined ? {} : { timeBudgetSeconds },
+        command: { executedAt: NOW },
+      });
+      expect(deadlineMs).toBeGreaterThan(Date.parse(s.deadline));
+    });
   });
 });
 
