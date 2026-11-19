@@ -6,7 +6,7 @@ amends:
   - docs/superpowers/plans/device-lifecycle/2026-09-10-hp-warranty-cmsl-w05-cleanup-and-docs.md
 spec: docs/superpowers/specs/device-lifecycle/2026-09-10-hp-warranty-cmsl-design.md
 tracking_issue: LanternOps/breeze#5511
-waves: [W01 #5512 lab probe -> observe, W03 #5514 collector, W04 #5515 CMSL package, W05 #5516 cleanup]
+waves: ["W01 (#5512) lab probe becomes observe", "W03 (#5514) collector", "W04 (#5515) CMSL package", "W05 (#5516) cleanup"]
 companion_amendments:
   - docs/superpowers/plans/vuln-patch/2026-11-05-oem-vendor-updates-observe-first-amendment.md
   - docs/superpowers/plans/devices/2026-10-31-wake-on-lan-management-observe-first-amendment.md
@@ -193,7 +193,7 @@ The **existing agent-log path**, so there is no new table, column or route.
 - **A1, `t0_ingest`.** W03 Tasks 2, 3 and 5. Rewrite the T0 parser against observed schema, and replace the invented fixture at W03:964 with a scrubbed one built from the observation. Tier flip PR.
 - **A2, `t1_refresh`.** W03 Task 4, plus a first-act run on one device. Capture: parameters, the forced-refresh option, the 429 text, and whether the namespace survives an uninstall. Tier flip PR.
 - **A3, `install`.** W04 as planned. Gate 1 is now "§3 `install` evidence plus D-HPW-1". Gate 2 (#5508) is unchanged.
-- **A4, widen.** Remove the `VENDOR_STAGES.hp_warranty` entry. Delivery then depends only on consent, as W02 designed.
+- **A4, widen.** Set `VENDOR_STAGES.hp_warranty.hp` → `general`, so `hp_cmsl_mode` is `act` for every partner with consent, as W02 designed. The entry is never deleted, because a missing entry resolves to `off`.
 - **A5, W05 cleanup.** Unchanged, and runs after A3. It may delete `HP_WARRANTY_ENABLED` and `hpProvider.ts` earlier, because they are dead today. Owner's call.
 
 ---

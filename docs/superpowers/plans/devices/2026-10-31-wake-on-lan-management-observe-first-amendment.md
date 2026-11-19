@@ -1,7 +1,7 @@
 ---
 amends: docs/superpowers/plans/devices/2026-10-31-wake-on-lan-management.md
 tracking_issue: LanternOps/breeze#10838
-waves: [W07 #10845 HP, W08 #10846 Lenovo, W09 #10847 Surface]
+waves: ["W07 (#10845) HP", "W08 (#10846) Lenovo", "W09 (#10847) Surface"]
 companion_amendments:
   - docs/superpowers/plans/vuln-patch/2026-11-05-oem-vendor-updates-observe-first-amendment.md
   - docs/superpowers/plans/device-lifecycle/2026-09-10-hp-warranty-cmsl-w01-lab-probe-and-ingest-hardening-observe-first-amendment.md
@@ -23,7 +23,7 @@ The plan says "No vendor adapter ships before its vendor's machine has been capt
 |---|---|
 | "No vendor adapter ships before its vendor's machine has been captured and tested" | A **read-only** adapter may ship before capture. It runs only at stage `observe` or higher, and only on canary devices. `Apply` still needs captured evidence: the observed data replaces the lab capture in Task 17 Step 1. |
 | Task 17 Step 6, "Run spec §9's checklist on the machine" | Split. Read-side items are answered by observe. The write-side items (§9: apply, read back, reboot, wake from S5, no BitLocker recovery) are answered by the **first act run**, on one canary device that the owner picks. See §3 and §5. |
-| Spec §9 lab gate on a machine nobody relies on | For HP, Lenovo and Surface only, the first act run is on a real device in our own tenant. The owner accepted this risk on 2026-11-19. §5 sets the bounds. |
+| Spec §9 lab gate on a machine nobody relies on | For HP, Lenovo and Surface only, the first act run is on a real device in our own tenant. This acceptance is **pending D-WOL-2**. §5 sets the bounds. |
 
 **Already true on `main` (checked at `190c74a001`), so this amendment builds on it:**
 - W01 and W02 are merged.
@@ -250,7 +250,7 @@ Every bare path follows the plan's convention (`apps/api/src/` for `routes/`, `s
 
 **A4. First act run** (manual, blocking widening) per §3. Results go in the PR.
 
-**A5. Widen** (owner's call, a separate PR): the vendor moves to the global `WOL_FIRMWARE_WRITE_VENDORS` env, and its `VENDOR_STAGES` entry is removed.
+**A5. Widen** (owner's call, a separate PR): `VENDOR_STAGES.wake_on_lan.<vendor>` → `general`, so the read adapter and `observe_vendors` keep working for every partner, and the vendor is added to the global `WOL_FIRMWARE_WRITE_VENDORS` env. The entry is never deleted, because a missing entry resolves to `off`.
 
 Surface skips A2. Its "act" is a change to the classifier (`ready` for listed models with a Microsoft adapter, spec §6). It ships in A3, with the tests from Task 17 Step 2.
 
@@ -262,8 +262,8 @@ Surface skips A2. Its "act" is a change to the classifier (`ready` for listed mo
 |---|---|
 | A read adapter crashes or hangs WMI on an unusual BIOS | It runs only on canary devices that are under a WOL policy; it uses the 2 s timeout per method call and the collector's existing context deadline; it never runs on the heartbeat goroutine (Task 7 queues it); errors become `interface: error` with a code |
 | Collected values leak an asset tag or owner string | Deny-before-allow name filter; values only for allowlisted names; tests on adversarial names; nothing logged above DEBUG; evidence stays in `internal/` |
-| A guessed setting name or value is wrong at act | Act needs every target name and value seen in observed output on ≥ 3 devices; `Apply` refuses a value outside the observed `Allowed` list (existing `TestTargetValueNotInAllowedListIsUnproven`) |
-| BIOS write triggers BitLocker recovery | **Observe cannot detect this.** Bounded by W04's guard (no write when PCR 1 is in the profile or the profile is unreadable), by one-device first act with a key-holder reachable, and by the plan's 1 write per setting per 24 h with a stop after 3 failures. Residual risk is accepted by the owner for our own tenant only |
+| A guessed setting name or value is wrong at act | Act needs every target name and value seen in observed output on ≥ 3 devices; readiness already reports `unproven` for a target value outside the observed `Allowed` list (`TestTargetValueNotInAllowedListIsUnproven`); A2 adds `TestApplyRefusesValueOutsideAllowed` so `Apply` refuses it too |
+| BIOS write triggers BitLocker recovery | **Observe cannot detect this.** Bounded by W04's guard (no write when PCR 1 is in the profile or the profile is unreadable), by one-device first act with a key-holder reachable, and by the plan's 1 write per setting per 24 h with a stop after 3 failures. Residual risk is for our own tenant only, and acceptance is **pending D-WOL-2** |
 | A password-protected BIOS is written | `Protection != None` means no `Apply` call (existing W04 rule); observe confirms the protection read works before act |
 | HPE servers mis-labelled HP | Fixed in O3 |
 | Consumer HP never becomes `ready` | Correct behaviour: the button still shows under `always`, and under `verified` the device is `unproven` with a clear reason |
@@ -276,5 +276,5 @@ Surface skips A2. Its "act" is a change to the classifier (`ready` for listed mo
   - **A. Park HP at `observe`** until a business HP is in a canary tenant or a used unit is bought for the lab.
   - **B. Write HP from documentation alone.**
   - **Recommend A.** A write on unobserved names is exactly what this amendment exists to avoid. HP consumer devices still get a correct `unproven`.
-- **D-WOL-2 (first act on a relied-on device).** Accept that the first Lenovo firmware write happens on a device in our own tenant, under §3's protocol. **Recommend yes, Lenovo only.** The owner's 2026-11-19 instruction implies it, but it is stated here so the acceptance is explicit.
+- **D-WOL-2 (first act on a relied-on device).** Accept that the first Lenovo firmware write happens on a device in our own tenant, under §3's protocol. **Recommend yes, Lenovo only.** The owner's 2026-11-19 instruction points this way, but the acceptance is not recorded until the owner answers.
 - **D-WOL-3 (enable in production).** Setting `BREEZE_VENDOR_CANARY_PARTNER_IDS` in production is a production change and needs the owner's go.

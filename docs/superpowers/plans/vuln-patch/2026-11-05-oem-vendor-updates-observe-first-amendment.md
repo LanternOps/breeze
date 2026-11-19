@@ -1,7 +1,7 @@
 ---
 amends: docs/superpowers/plans/vuln-patch/2026-11-05-oem-vendor-updates.md
 tracking_issue: LanternOps/breeze#11065
-waves: [W12 #11077 Surface, W14 #11079 HP, W15 #11080 Lenovo tool, W16 #11081 Lenovo lane, W17 #11082 Lenovo lab]
+waves: ["W12 (#11077) Surface", "W14 (#11079) HP", "W15 (#11080) Lenovo tool", "W16 (#11081) Lenovo lane", "W17 (#11082) Lenovo lab"]
 companion_amendments:
   - docs/superpowers/plans/devices/2026-10-31-wake-on-lan-management-observe-first-amendment.md
   - docs/superpowers/plans/device-lifecycle/2026-09-10-hp-warranty-cmsl-w01-lab-probe-and-ingest-hardening-observe-first-amendment.md
@@ -65,8 +65,9 @@ We combine it with the code-only gate table in `services/oemUpdates/toolManifest
 ```ts
 type VendorFeature = 'oem_updates' | 'wake_on_lan' | 'hp_warranty';
 type VendorStage = 'off' | 'observe' | 'act';
-// Code table; only a PR carrying observe evidence changes an entry.
-export const VENDOR_STAGES: Readonly<Record<VendorFeature, Partial<Record<string, Exclude<VendorStage,'off'>>>>> = {
+type TableStage = 'observe' | 'act' | 'general'; // 'general' = widened: act for every partner, canary list ignored
+// Code table; only a PR carrying observe evidence (or a widen decision) changes an entry.
+export const VENDOR_STAGES: Readonly<Record<VendorFeature, Partial<Record<string, TableStage>>>> = {
   oem_updates: { surface: 'observe', hp: 'observe', lenovo: 'observe' },
   wake_on_lan: { hp: 'observe', lenovo: 'observe', surface: 'observe' },
   hp_warranty: { hp: 'observe' },
@@ -82,9 +83,12 @@ export function vendorCanaryFingerprint(): string; // partner list + disabled li
   - It goes in both compose files, `.env.example` and `deploy/.env.example`, with a placeholder value.
 - `BREEZE_VENDOR_CANARY_DISABLED`, for example `oem_updates:hp,wake_on_lan:lenovo`, is a kill switch. It needs no code release, but the API and worker containers must be recreated with the new env. It stops new dispatch and delivery. It never recalls a run already claimed, which matches the plan's §4.5 rule.
 
-**`vendorStage` returns `VENDOR_STAGES[feature][vendor]`** only when all three hold: the partner is in the list, the pair is not disabled, and the table has an entry. Otherwise it returns `off`.
+**`vendorStage` resolves the table entry as follows:**
+- An entry of `observe` or `act` is returned only when the partner is in the list and the pair is not disabled. Otherwise the result is `off`.
+- An entry of `general` (widened) returns `act` for **every** partner, unless the pair is disabled.
+- A missing entry means the pair was never part of this rollout, and the result is `off`.
 
-**Widening** past our own tenant is a separate decision for each feature and vendor pair, and it uses that feature's existing switches. For vendor updates, that means the manifest gate moves from `canary` to `open` and the existing partner allowlist applies. Widening removes the `VENDOR_STAGES` entry.
+**Widening** past our own tenant is a separate decision for each feature and vendor pair, and it uses that feature's existing switches. Widening sets the entry to `general`, and never deletes it, because a deleted entry resolves to `off`. For vendor updates, widening also moves the manifest gate from `canary` to `open`, after which the existing partner allowlist applies.
 
 ### 1.2 How the agent learns (vendor updates): per command, no heartbeat field
 
@@ -344,7 +348,7 @@ Branch per wave from fresh `origin/main` as the plan requires. The existing wave
 
 **A6. HP** stays parked under D-OEM-3, and resumes from W14's plan text once a business HP is observed.
 
-**A7. Widen** (owner, per pair): `canary` → `open`, remove the `VENDOR_STAGES` entry, and the existing allowlist governs.
+**A7. Widen** (owner, per pair): `canary` → `open`, and the `VENDOR_STAGES` entry → `general`. The existing allowlist governs from then on.
 
 ---
 
@@ -357,7 +361,7 @@ Branch per wave from fresh `origin/main` as the plan requires. The existing wave
 | Windows Update search misbehaves under ARM64 emulation | Read-only search. The failure is recorded as `errors[]`. The ARM64 result is a required part of the evidence before Surface `driver` opens. |
 | Observation leaks identifying data | No serial, path, MAC, host or user field exists in the schema. The schema is strict, with a size cap. Evidence stays in `internal/`. |
 | Guessed exit codes or report formats wrong at act | Observe cannot confirm these. The first-act protocol on one device does, and the parser treats unmapped codes as `failed` (existing). |
-| BitLocker recovery after firmware | **Not observable.** Firmware stays closed until PCR 7 binding and escrow are observed, driver has run clean, and the owner names the first device. That residual risk is accepted for our own tenant only (D-OEM-5). |
+| BitLocker recovery after firmware | **Not observable.** Firmware stays closed until PCR 7 binding and escrow are observed, driver has run clean, and the owner names the first device. The residual risk applies to our own tenant only, and its acceptance is **pending D-OEM-5**. |
 | Consumer HP gets HPIA fetched once HP opens | Fixed at observe: O4b makes those devices `not_applicable`. |
 | Best-guess code reaches other partners | Only `vendorStage` = `act` for listed partners opens a `canary` gate. Widening is a separate PR per pair. |
 
