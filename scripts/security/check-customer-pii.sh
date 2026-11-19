@@ -38,6 +38,9 @@ ALLOW_RE="$ALLOW_RE"'|(^|\.)breeze\.(io|dev)$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)acme[a-z0-9-]*\.(co|com)$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)theirmsp\.com$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)gserviceaccount\.com$'
+# Remote URLs: scp-style ssh (user@host:org/repo) and https://user@host/...
+# carry userinfo, not a mailbox.
+ALLOW_RE="$ALLOW_RE"'|^github\.com$'
 # Exact known-safe domains: public/example, infra, generic placeholders, and
 # owner-blessed real domains.
 ALLOW_RE="$ALLOW_RE"'|^(anthropic\.com|nist\.gov|google\.com|gmail\.com|mailinator\.com|contoso\.com|lanternops\.io|lantern\.it|a\.com|b\.co|b\.com|x\.com|mail\.x\.com|x\.io|y\.com|foo\.com|bar\.com|test\.com|corp\.com|company\.com|org\.com|msp\.com|yourmsp\.com|customer\.com|cust\.com|partner\.com|evil\.com|notours\.com|nowhere\.com|yourcompany\.com|yourdomain\.com|theirdomain\.com)$'
