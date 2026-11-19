@@ -40,6 +40,13 @@ var (
 	hpSupportAssistRe = regexp.MustCompile(`(?i)^hp support assistant$`)
 )
 
+// IsHPManufacturer is the HP lane's manufacturer rule, for other read-only
+// HP observers (HP warranty, #5511): HP, HP Inc. and Hewlett-Packard are HP;
+// HPE and Hewlett Packard Enterprise are not.
+func IsHPManufacturer(manufacturer string) bool {
+	return hpMaker.MatchString(strings.TrimSpace(manufacturer))
+}
+
 func (c *collector) hp() {
 	b := c.r.HP
 	c.hpTools()

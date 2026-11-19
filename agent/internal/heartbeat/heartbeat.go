@@ -864,6 +864,12 @@ type Heartbeat struct {
 	stopOnce    sync.Once
 	authMon     *authstate.Monitor
 
+	// HP warranty (#5511 observe-first): the in-memory CMSL mode and the
+	// observe schedule (warranty_mode.go, hp_warranty_observe.go). The clock
+	// is a seam for tests; nil means time.Now.
+	hpWarranty    hpWarrantyState
+	hpWarrantyNow func() time.Time
+
 	// verificationPool is the lane for backup_verify and backup_test_restore
 	// (#6106). Each waits up to backupVerificationTimeout on the backup
 	// helper; on the shared pool that wait held a slot, so a few

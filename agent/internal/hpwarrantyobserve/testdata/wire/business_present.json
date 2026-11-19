@@ -121,7 +121,7 @@
     "schannelTls12Client": "absent"
   },
   "winget": {
-    "present": false,
+    "present": null,
     "version": null
   },
   "conflicts": [],
