@@ -785,7 +785,9 @@ It returns the partner lane only when all hold:
    `evaluateCapabilityContinuationForState('custom_sending_domain', …)` — the
    side-effect-free evaluator, so a send never writes a denial audit row;
 3. an identity exists for the stream and its domain is `verified` or `at_risk`;
-4. the partner is under the daily partner-lane cap (§9.1).
+4. the partner is under the daily partner-lane cap (§9.1). Over the cap the
+   send is held rather than moved to the platform lane (§9.1, amended
+   2026-11-19).
 
 Otherwise it returns the platform lane with the purpose's **fallback From**,
 which is whatever that send site produces today:
@@ -864,8 +866,12 @@ none. Tickets keep `{slug}@TICKETS_INBOUND_DOMAIN`; quotes and invoices keep
   Suspension takes effect on the next send because resolution reads the row.
 - **Caps**: `EMAIL_DOMAINS_MAX_PER_PARTNER` (default 3 rows),
   `EMAIL_DOMAINS_DAILY_SEND_CAP` (partner-lane messages per partner per UTC
-  day; Redis counter). Over the cap the message goes out on the platform lane,
-  as it would today, and an abuse signal fires. The send cap defaults to 2,000
+  day; Redis counter). Over the cap the message is **held**: `sendEmail`
+  throws `EmailSendHeldError` and nothing is sent on either lane, and an abuse
+  signal fires (amended 2026-11-19; it previously went out on the platform
+  lane, which let a partner-level limit be exceeded on the platform domain).
+  When Redis cannot answer, the message still goes out on the platform lane
+  (`cap_unavailable`): an outage neither loses mail nor lifts the cap. The send cap defaults to 2,000
   when `isHosted()` and to **unlimited** otherwise: a self-hoster's volume is
   their own business, and a default that silently moved their ticket mail back
   to the old From at message 2,001 would be a bug report, not a protection.

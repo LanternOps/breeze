@@ -67,6 +67,29 @@ export class EmailTransportError extends Error implements EmailTransportErrorFie
   }
 }
 
+/**
+ * A partner-lane send that was refused rather than moved to the platform
+ * sender (senderResolution.ts `HeldReason`). Nothing was sent on either lane.
+ * Queue-backed callers retry per their own policy; the cap resets at 00:00 UTC.
+ */
+export class EmailSendHeldError extends Error {
+  readonly reason: 'over_cap';
+  readonly partnerId: string;
+  readonly purpose: string;
+
+  constructor(fields: { reason: 'over_cap'; partnerId: string; purpose: string }) {
+    super(
+      `Email not sent: partner ${fields.partnerId} reached its daily partner-lane send cap ` +
+      `(purpose ${fields.purpose}). It was held, not sent from the platform sender; ` +
+      'the cap resets at 00:00 UTC.',
+    );
+    this.name = 'EmailSendHeldError';
+    this.reason = fields.reason;
+    this.partnerId = fields.partnerId;
+    this.purpose = fields.purpose;
+  }
+}
+
 export interface SendEmailBase {
   to: string | string[];
   cc?: string | string[];
@@ -463,6 +486,10 @@ export class EmailService {
       partnerName: params.partnerName ?? null,
       defaultFrom: this.defaultFrom,
     });
+
+    if (resolved.lane === 'held') {
+      throw new EmailSendHeldError({ reason: resolved.reason, partnerId: resolved.partnerId, purpose: params.purpose });
+    }
 
     if (resolved.lane === 'partner') {
       // Dynamic so a platform-lane send never loads the provider registry, the

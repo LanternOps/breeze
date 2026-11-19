@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAIL_PURPOSES, mailPurposePolicy, type MailPurpose } from './mailPurposes';
-import { fromWithDisplayName, platformFallbackFrom, resolveSender } from './senderResolution';
+import { fromWithDisplayName, platformFallbackFrom, resolveSender, type ResolvedSender } from './senderResolution';
 import { getEmailDomainsConfig, isPartnerLaneConfigured } from './config';
 import { lookupPartnerLaneIdentity } from './partnerLaneLookup';
-import { tryCountPartnerLaneSend } from './sendCap';
+import { countPartnerLaneSend } from './sendCap';
 
 // W01's property-throwing namespace Proxy, kept as a per-EXPORT tripwire now
 // that W04 has a partner branch that legitimately reads the database. Every
@@ -51,12 +51,18 @@ vi.mock('./config', () => ({
   getEmailDomainsConfig: vi.fn(() => domainsConfigFixture()),
 }));
 vi.mock('./partnerLaneLookup', () => ({ lookupPartnerLaneIdentity: vi.fn() }));
-vi.mock('./sendCap', () => ({ tryCountPartnerLaneSend: vi.fn(async () => true) }));
+vi.mock('./sendCap', () => ({ countPartnerLaneSend: vi.fn(async () => 'allowed' as const) }));
 
 const laneConfigured = vi.mocked(isPartnerLaneConfigured);
 const domainsConfig = vi.mocked(getEmailDomainsConfig);
 const lookup = vi.mocked(lookupPartnerLaneIdentity);
-const cap = vi.mocked(tryCountPartnerLaneSend);
+const cap = vi.mocked(countPartnerLaneSend);
+
+/** The From of a sent (platform or partner) resolution; a held one has none. */
+function fromOf(resolved: ResolvedSender): string {
+  if (resolved.lane === 'held') throw new Error(`expected a From, got a held send (${resolved.reason})`);
+  return resolved.from;
+}
 
 // Bare address, as shipped in .env.example / deploy compose: the case the
 // company name applies to. A named EMAIL_FROM is pinned separately below.
@@ -171,12 +177,12 @@ describe('resolveSender (W01: always the platform lane)', () => {
     const branded = await resolveSender({
       purpose: 'invoice.sent', partnerId: 'partner-1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM,
     });
-    expect(branded.from).toBe('"Acme MSP" <no-reply@2breeze.app>');
+    expect(fromOf(branded)).toBe('"Acme MSP" <no-reply@2breeze.app>');
 
     const ticket = await resolveSender({
       purpose: 'ticket.customer_notification', partnerId: 'partner-1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM,
     });
-    expect(ticket.from).toBe('"Acme MSP" <no-reply@2breeze.app>');
+    expect(fromOf(ticket)).toBe('"Acme MSP" <no-reply@2breeze.app>');
   });
 
   // A purpose outside the registry can only reach here by bypassing TypeScript
@@ -208,7 +214,7 @@ describe('resolveSender — the partner branch (spec §8.3)', () => {
     laneConfigured.mockReturnValue(true);
     domainsConfig.mockReturnValue(domainsConfigFixture());
     lookup.mockResolvedValue(OK_IDENTITY);
-    cap.mockResolvedValue(true);
+    cap.mockResolvedValue('allowed');
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
@@ -269,31 +275,42 @@ describe('resolveSender — the partner branch (spec §8.3)', () => {
     expect(cap).not.toHaveBeenCalled();
   });
 
-  it('returns over_cap when the cap refuses, with the purpose fallback From', async () => {
-    cap.mockResolvedValue(false);
+  // Over the cap the send is HELD, not moved to the platform sender: falling
+  // back would let a partner-level limit be exceeded on the platform domain.
+  it('holds an over-cap send instead of falling back to the platform lane', async () => {
+    cap.mockResolvedValue('over_cap');
     const resolved = await resolveSender({ purpose: 'invoice.sent', partnerId: 'p1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
-    expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP" <no-reply@2breeze.app>', reason: 'over_cap' });
+    expect(resolved).toEqual({ lane: 'held', reason: 'over_cap', partnerId: 'p1' });
+  });
+
+  // A cap check that cannot answer (Redis down) is not an over-cap verdict: the
+  // message still goes out on the platform lane (spec G3) and the cap is never
+  // silently lifted on the partner lane.
+  it('falls back to the platform lane when the cap check cannot answer', async () => {
+    cap.mockResolvedValue('unavailable');
+    const resolved = await resolveSender({ purpose: 'invoice.sent', partnerId: 'p1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
+    expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP" <no-reply@2breeze.app>', reason: 'cap_unavailable' });
   });
 
   it('builds the From from the identity display name, else the partner name', async () => {
     lookup.mockResolvedValue({ ...OK_IDENTITY, displayName: 'Acme Support' });
-    expect((await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })).from)
+    expect(fromOf(await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })))
       .toBe('"Acme Support" <support@mail.acme.test>');
 
     lookup.mockResolvedValue({ ...OK_IDENTITY, displayName: null, partnerName: 'Acme MSP' });
-    expect((await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })).from)
+    expect(fromOf(await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })))
       .toBe('"Acme MSP" <support@mail.acme.test>');
   });
 
   it('strips header-breaking characters from the display name, exactly as fromWithDisplayName does', async () => {
     lookup.mockResolvedValue({ ...OK_IDENTITY, displayName: 'Evil"\r\nBcc: victim <x>' });
-    expect((await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })).from)
+    expect(fromOf(await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })))
       .toBe('"Evil Bcc: victim x" <support@mail.acme.test>');
   });
 
   it('falls back to the bare address when nothing usable survives sanitising', async () => {
     lookup.mockResolvedValue({ ...OK_IDENTITY, displayName: '"<>"', partnerName: '  ' });
-    expect((await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })).from)
+    expect(fromOf(await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })))
       .toBe('support@mail.acme.test');
   });
 

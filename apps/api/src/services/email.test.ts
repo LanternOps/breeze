@@ -645,7 +645,7 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
     getEmailDomainsConfig: () => ({ dailySendCap: 0, partnerAllowlist: [] }),
   }));
   vi.doMock('./emailDomains/partnerLaneLookup', () => ({ lookupPartnerLaneIdentity: lookup }));
-  vi.doMock('./emailDomains/sendCap', () => ({ tryCountPartnerLaneSend: cap }));
+  vi.doMock('./emailDomains/sendCap', () => ({ countPartnerLaneSend: cap }));
   vi.doMock('./emailDomains/providerRegistry', () => ({
     getEmailDomainProvider: () => ({ id: 'resend', verifiesByDns: true, send: laneSend }),
   }));
@@ -669,7 +669,7 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
     resendSendMock.mockResolvedValue({ id: 'resend-1' });
     laneSend.mockResolvedValue({ providerMessageId: 'partner-1' });
     lookup.mockResolvedValue(IDENTITY);
-    cap.mockResolvedValue(true);
+    cap.mockResolvedValue('allowed');
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -765,8 +765,21 @@ describe('email service — the partner lane (spec §8.3, §8.4)', () => {
     expect(resendSendMock.mock.calls[0]![0].from).toBe('no-reply@2breeze.app');
   });
 
-  it('an over-cap send goes out on the platform lane, exactly once', async () => {
-    cap.mockResolvedValue(false);
+  it('an over-cap send is held: nothing goes out on either lane, and the error says why', async () => {
+    cap.mockResolvedValue('over_cap');
+    const { EmailSendHeldError } = await import('./email');
+    const err = await (await service())
+      .sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, partnerName: 'Acme MSP' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(EmailSendHeldError);
+    expect(err).toMatchObject({ reason: 'over_cap', partnerId: PARTNER, purpose: 'invoice.sent' });
+    expect((err as Error).message).toMatch(/daily partner-lane send cap/);
+    expect(laneSend).not.toHaveBeenCalled();
+    expect(resendSendMock).not.toHaveBeenCalled();
+  });
+
+  it('a cap check that cannot answer (Redis down) still sends on the platform lane, exactly once', async () => {
+    cap.mockResolvedValue('unavailable');
     await (await service()).sendEmail({ ...BASE, purpose: 'invoice.sent', partnerId: PARTNER, partnerName: 'Acme MSP' });
     expect(laneSend).not.toHaveBeenCalled();
     expect(resendSendMock).toHaveBeenCalledTimes(1);

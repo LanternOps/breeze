@@ -5,7 +5,7 @@ import {
   type PartnerMailStream,
 } from './mailPurposes';
 import { getEmailDomainsConfig, isPartnerLaneConfigured } from './config';
-import { tryCountPartnerLaneSend } from './sendCap';
+import { countPartnerLaneSend } from './sendCap';
 
 /**
  * Sender resolution (partner sending domains, spec §8.3).
@@ -32,10 +32,21 @@ export type PlatformLaneReason =
   | 'partner_ineligible'
   | 'no_identity'
   | 'domain_not_sendable'
-  | 'over_cap';
+  // The cap check could not answer (Redis down): send on the platform lane
+  // rather than lose the message or lift the cap (sendCap.ts).
+  | 'cap_unavailable';
+
+/**
+ * Why a partner-lane send is held instead of sent. Falling back to the
+ * platform sender here would let a partner exceed a partner-level limit on the
+ * platform domain, so EmailService refuses the send (EmailSendHeldError) and
+ * the caller's own retry policy decides when to try again.
+ */
+export type HeldReason = 'over_cap';
 
 export type ResolvedSender =
   | { lane: 'platform'; from: string; reason: PlatformLaneReason }
+  | { lane: 'held'; reason: HeldReason; partnerId: string }
   | {
       lane: 'partner';
       from: string;
@@ -149,9 +160,11 @@ export async function resolveSender(input: ResolveSenderInput): Promise<Resolved
     return { lane: 'platform', from, reason: identity.reason };
   }
 
-  // Condition 4, LAST so an ineligible partner never burns a counter slot. A
-  // Redis outage also lands here (sendCap.ts): the message still goes out, on
-  // the platform lane, and the cap is never silently lifted.
+  // Condition 4, LAST so an ineligible partner never burns a counter slot.
+  // Over the cap the send is HELD, not moved to the platform sender (see
+  // HeldReason). A Redis outage is not an over-cap verdict (sendCap.ts): the
+  // message still goes out on the platform lane, and the cap is never
+  // silently lifted on the partner lane.
   //
   // DELIBERATE: the slot is consumed HERE, before the send, so a message that
   // then falls back to the platform lane (domain_unusable / lane_unavailable,
@@ -160,8 +173,12 @@ export async function resolveSender(input: ResolveSenderInput): Promise<Resolved
   // is exactly the state in which a runaway loop is most likely. The cost is
   // that the counter slightly over-counts during an outage; the alternative
   // (count on success) would make the cap unbounded precisely when it matters.
-  if (!(await tryCountPartnerLaneSend(input.partnerId))) {
-    return { lane: 'platform', from, reason: 'over_cap' };
+  const capVerdict = await countPartnerLaneSend(input.partnerId);
+  if (capVerdict === 'over_cap') {
+    return { lane: 'held', reason: 'over_cap', partnerId: input.partnerId };
+  }
+  if (capVerdict === 'unavailable') {
+    return { lane: 'platform', from, reason: 'cap_unavailable' };
   }
 
   return {

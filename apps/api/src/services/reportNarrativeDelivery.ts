@@ -133,6 +133,10 @@ async function resolveRecipientEmail(userId: string): Promise<string | null> {
  * idempotency key to make a retry safe.
  */
 export function classifySendError(error: unknown): 'failed' | 'unknown' {
+  // EmailSendHeldError (services/email.ts): the partner's daily partner-lane cap
+  // held the send on BOTH lanes, so it definitely did not go out. Matched by
+  // name, not instanceof, so test doubles of ./email need not export the class.
+  if (error instanceof Error && error.name === 'EmailSendHeldError') return 'failed';
   const message = error instanceof Error ? error.message : String(error);
   if (/timed out|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|ECONNABORTED|network/i.test(message)) return 'unknown';
   if (/transport is not initialized|config is not initialized/i.test(message)) return 'failed';

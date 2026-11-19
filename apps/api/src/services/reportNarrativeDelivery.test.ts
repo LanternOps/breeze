@@ -307,6 +307,19 @@ describe('narrative email authority gate (#4248 W03)', () => {
     expect(row(U1).state).toBe('unknown');
   });
 
+  // A held send (daily partner-lane cap) went out on neither lane: definitely
+  // not sent, so `failed`, never the ambiguous `unknown`.
+  it('treats a held send as failed, not unknown', async () => {
+    seed(U1);
+    fake.authority.set(U1, unrestricted());
+    const held = Object.assign(new Error('Email not sent: partner p1 reached its daily partner-lane send cap'), { name: 'EmailSendHeldError' });
+    emailReportRunMock.mockRejectedValueOnce(held);
+
+    await deliverNarrativeEmails(RUN, ctx);
+
+    expect(row(U1)).toMatchObject({ state: 'failed', lastError: expect.stringContaining('daily partner-lane send cap') });
+  });
+
   it('still treats a definite Mailgun 4xx refusal as failed', async () => {
     seed(U1);
     fake.authority.set(U1, unrestricted());

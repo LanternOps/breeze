@@ -10,7 +10,7 @@ vi.mock('../redis', () => ({ getRedis: getRedisMock }));
 vi.mock('./config', () => ({ getEmailDomainsConfig: getConfigMock }));
 vi.mock('./capHits', () => ({ recordCapHit: recordCapHitMock }));
 
-import { partnerLaneCapKey, tryCountPartnerLaneSend } from './sendCap';
+import { countPartnerLaneSend, partnerLaneCapKey, tryCountPartnerLaneSend } from './sendCap';
 
 const PARTNER = '11111111-1111-1111-1111-111111111111';
 
@@ -104,6 +104,30 @@ describe('tryCountPartnerLaneSend (spec §9.1)', () => {
     getRedisMock.mockReturnValue(null);
     await tryCountPartnerLaneSend(PARTNER);
     expect(warn.mock.calls.flat().join(' ')).not.toContain('daily partner-lane cap');
+  });
+});
+
+describe('countPartnerLaneSend tells an over-cap verdict from an outage', () => {
+  it('allowed under the cap and at 0 (unlimited)', async () => {
+    getRedisMock.mockReturnValue(redisWithCount(1));
+    await expect(countPartnerLaneSend(PARTNER)).resolves.toBe('allowed');
+    getConfigMock.mockReturnValue({ dailySendCap: 0, partnerAllowlist: [] });
+    await expect(countPartnerLaneSend(PARTNER)).resolves.toBe('allowed');
+  });
+
+  it('over_cap only for a genuine count past the cap', async () => {
+    getRedisMock.mockReturnValue(redisWithCount(2001));
+    await expect(countPartnerLaneSend(PARTNER)).resolves.toBe('over_cap');
+  });
+
+  it('unavailable when Redis is missing, throws, or returns an unreadable result', async () => {
+    getRedisMock.mockReturnValue(null);
+    await expect(countPartnerLaneSend(PARTNER)).resolves.toBe('unavailable');
+    getRedisMock.mockReturnValue({ multi: () => { throw new Error('ECONNRESET'); } });
+    await expect(countPartnerLaneSend(PARTNER)).resolves.toBe('unavailable');
+    const chain = { incr: vi.fn(() => chain), expire: vi.fn(() => chain), exec: vi.fn(async () => null) };
+    getRedisMock.mockReturnValue({ multi: vi.fn(() => chain) });
+    await expect(countPartnerLaneSend(PARTNER)).resolves.toBe('unavailable');
   });
 });
 
