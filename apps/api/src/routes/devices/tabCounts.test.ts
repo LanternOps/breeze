@@ -54,8 +54,8 @@ vi.mock('../../services/permissions', () => ({
 
 // The live-rule predicate itself is proven against real RLS in
 // deviceComplianceLiveRules.integration.test.ts; here it is a sentinel.
-const LIVE_RULE = { type: 'configComplianceRuleStillExists' };
-vi.mock('../policyManagement/helpers', () => ({ configComplianceRuleStillExists: () => LIVE_RULE }));
+const LIVE_RULE = { type: 'configComplianceResultNotStale' };
+vi.mock('../policyManagement/helpers', () => ({ configComplianceResultNotStale: () => LIVE_RULE }));
 
 vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol.for('site-access-denied'),

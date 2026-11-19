@@ -1,5 +1,5 @@
 /**
- * Device Compliance tab + badge show only results for rules that still exist (#12187).
+ * Device Compliance tab + badge hide results of removed or renamed rules (#12187).
  *
  * `automation_policy_compliance` config-axis rows are keyed by
  * (config_policy_id = feature link id, config_item_name = rule name, device_id).
@@ -7,18 +7,20 @@
  * removed or renamed rule leaves its old result row behind. Nothing deletes it,
  * and the device views used to show it forever.
  *
- * The read-side fix is an EXISTS check against `config_policy_compliance_rules`
- * evaluated under the caller's own RLS context. The case a mocked unit test
- * cannot reach: an ORG-scoped caller whose device is governed by a
- * PARTNER-WIDE policy (`org_id NULL`). That rule is visible to the org session
- * only through `config_policy_compliance_rules_partner_wide_select`
- * (2026-10-05-110000), which keys on `breeze_current_partner_id()`. If the
- * check ran on a context without the org's partner, every partner-wide result
- * would silently vanish from the tab. This suite proves it does not.
+ * The read-side fix (`configComplianceResultNotStale`) runs under the caller's
+ * own RLS context and fails open: a result is hidden only when its feature link
+ * is readable and has no rule of that name. The cases a mocked unit test cannot
+ * reach are the PARTNER-WIDE ones (`org_id NULL`): an org session reads those
+ * rules only through the `*_partner_wide_select` branches (2026-10-05-110000),
+ * keyed on `breeze_current_partner_id()`. With the partner set, stale
+ * partner-wide results are hidden and live ones kept. Without it (org SSO
+ * sessions), the link is unreadable and every partner-wide result is kept. A
+ * fail-closed check would hide live violations there.
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   automationPolicies,
@@ -109,7 +111,13 @@ async function seed() {
       result(partnerLink!.id, 'Disk encryption'),
       // Stale: a rule removed from the partner-wide policy.
       result(partnerLink!.id, 'Removed rule'),
-      // Stale: the whole feature link is gone (config_policy_id carries no FK).
+      // Stale: these names are live only under the OTHER link, so a check that
+      // matched on name alone would wrongly keep them.
+      result(orgLink!.id, 'Disk encryption'),
+      result(partnerLink!.id, 'Firewall enabled'),
+      // Unknown: the feature link is gone (config_policy_id carries no FK). Under
+      // RLS a deleted link looks the same as an unreadable one, so this row is
+      // KEPT (fail open) — see configComplianceResultNotStale().
       result(randomUUID(), 'Deleted policy rule'),
       // Legacy automation-policy axis: not this fix's concern, still counted.
       {
@@ -123,55 +131,72 @@ async function seed() {
       },
     ]);
 
-    return { partnerId: partner.id, orgId: org.id, deviceId: device.id };
+    return {
+      partnerId: partner.id,
+      orgId: org.id,
+      deviceId: device.id,
+      /** Render a result row as `<org|partner|gone>:<rule name>` for assertions. */
+      label: (row: { configPolicyId: string | null; configItemName: string | null }) =>
+        `${row.configPolicyId === orgLink!.id ? 'org' : row.configPolicyId === partnerLink!.id ? 'partner' : 'gone'}:${row.configItemName}`,
+    };
   });
 }
 
-describe('device compliance shows only live rules (#12187)', () => {
-  it('tab: an org-scoped caller sees live org and partner-wide rule results, not stale ones', async () => {
+/** An org session whose token carries no partner, as org SSO logins issue today. */
+function orgSsoContext(orgId: string): DbAccessContext {
+  return { ...orgContext(orgId, '00000000-0000-0000-0000-000000000000'), currentPartnerId: null };
+}
+
+async function tabLabels(ctx: DbAccessContext, s: Awaited<ReturnType<typeof seed>>): Promise<string[]> {
+  const { rows } = await withDbAccessContext(ctx, () => getConfigPolicyComplianceForDevice(s.deviceId, [s.orgId]));
+  return rows.map(s.label).sort();
+}
+
+describe('device compliance hides results of removed or renamed rules (#12187)', () => {
+  it('org session: hides stale org and partner-wide results, keeps live ones', async () => {
     const s = await seed();
+    const ctx = orgContext(s.orgId, s.partnerId);
 
-    const { rows } = await withDbAccessContext(orgContext(s.orgId, s.partnerId), () =>
-      getConfigPolicyComplianceForDevice(s.deviceId, [s.orgId]),
-    );
-
-    expect(rows.map((r) => r.configItemName).sort()).toEqual(['Disk encryption', 'Firewall enabled']);
+    expect(await tabLabels(ctx, s)).toEqual([
+      'gone:Deleted policy rule',
+      'org:Firewall enabled',
+      'partner:Disk encryption',
+    ]);
+    // The three above + the legacy automation-policy row.
+    expect(await withDbAccessContext(ctx, () => countDeviceComplianceAttention(s.deviceId))).toBe(4);
   });
 
-  it('badge: counts live config-axis results plus the legacy axis, not stale ones', async () => {
+  it('org session without a partner (SSO): live partner-wide results stay visible', async () => {
     const s = await seed();
+    const ctx = orgSsoContext(s.orgId);
 
-    const count = await withDbAccessContext(orgContext(s.orgId, s.partnerId), () =>
-      countDeviceComplianceAttention(s.deviceId),
+    // Non-vacuity: RLS is live and this context cannot read the partner-wide rule.
+    const partnerRules = await withDbAccessContext(ctx, () =>
+      db.select({ id: configPolicyComplianceRules.id }).from(configPolicyComplianceRules)
+        .where(eq(configPolicyComplianceRules.name, 'Disk encryption')),
     );
+    expect(partnerRules).toEqual([]);
 
-    // Firewall enabled + Disk encryption + the legacy row.
-    expect(count).toBe(3);
+    // The partner-wide link is unreadable, so its rows are kept (fail open);
+    // the readable org link is still filtered.
+    expect(await tabLabels(ctx, s)).toEqual([
+      'gone:Deleted policy rule',
+      'org:Firewall enabled',
+      'partner:Disk encryption',
+      'partner:Firewall enabled',
+      'partner:Removed rule',
+    ]);
+    expect(await withDbAccessContext(ctx, () => countDeviceComplianceAttention(s.deviceId))).toBe(6);
   });
 
-  it('control: RLS is live — without the partner GUC the partner-wide rule is not visible', async () => {
-    // Proves the org-scope cases above ran on the RLS-enforced breeze_app
-    // connection: drop currentPartnerId and the partner-wide rule disappears,
-    // so its result no longer passes the existence check.
-    const s = await seed();
-    const noPartnerCtx: DbAccessContext = { ...orgContext(s.orgId, s.partnerId), currentPartnerId: null };
-
-    const { rows } = await withDbAccessContext(noPartnerCtx, () =>
-      getConfigPolicyComplianceForDevice(s.deviceId, [s.orgId]),
-    );
-
-    expect(rows.map((r) => r.configItemName)).toEqual(['Firewall enabled']);
-  });
-
-  it('control: under system scope every rule is visible, so the filter alone drops the stale rows', async () => {
+  it('system scope: same filter as an org session with full visibility', async () => {
     const s = await seed();
 
-    const { rows } = await withDbAccessContext(SYSTEM_CTX, () =>
-      getConfigPolicyComplianceForDevice(s.deviceId, [s.orgId]),
-    );
-    const count = await withDbAccessContext(SYSTEM_CTX, () => countDeviceComplianceAttention(s.deviceId));
-
-    expect(rows.map((r) => r.configItemName).sort()).toEqual(['Disk encryption', 'Firewall enabled']);
-    expect(count).toBe(3);
+    expect(await tabLabels(SYSTEM_CTX, s)).toEqual([
+      'gone:Deleted policy rule',
+      'org:Firewall enabled',
+      'partner:Disk encryption',
+    ]);
+    expect(await withDbAccessContext(SYSTEM_CTX, () => countDeviceComplianceAttention(s.deviceId))).toBe(4);
   });
 });

@@ -15,7 +15,7 @@ import { authMiddleware, requirePermission, requireScope } from '../../middlewar
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { alertTopologySiteGate } from '../alerts/helpers';
-import { configComplianceRuleStillExists } from '../policyManagement/helpers';
+import { configComplianceResultNotStale } from '../policyManagement/helpers';
 import { filterToActiveWatches, loadActiveWatchKeys, watchKey } from '../../services/monitoringActiveWatches';
 
 /**
@@ -34,7 +34,7 @@ import { filterToActiveWatches, loadActiveWatchKeys, watchKey } from '../../serv
  *   tickets       not resolved/closed (and not soft-deleted)
  *   operatorTasks live states (queued/running/waiting/paused)
  *   monitoring    latest result per (watchType, name) that is not `running`
- *   compliance    non_compliant + error, live rules only (#12187)
+ *   compliance    non_compliant + error, minus removed/renamed rules (#12187)
  *
  * Read-only, device-scoped, RLS-backed; the org/site gate is the same helper
  * every other `/devices/:id/*` sub-resource uses.
@@ -61,7 +61,7 @@ async function countRows(query: PromiseLike<Array<{ count: number | string }>>):
 
 /**
  * Compliance-tab badge: non_compliant + error results on the device. A
- * config-policy result counts only while its rule still exists, the same
+ * config-policy result of a removed or renamed rule is not counted, the same
  * filter the tab itself applies (#12187). Legacy automation-policy rows
  * (`policy_id` set) cascade-delete with their policy and are counted as before.
  */
@@ -71,7 +71,7 @@ export async function countDeviceComplianceAttention(deviceId: string): Promise<
       and(
         eq(automationPolicyCompliance.deviceId, deviceId),
         inArray(automationPolicyCompliance.status, ['non_compliant', 'error']),
-        or(isNotNull(automationPolicyCompliance.policyId), configComplianceRuleStillExists()),
+        or(isNotNull(automationPolicyCompliance.policyId), configComplianceResultNotStale()),
       ),
     ),
   );

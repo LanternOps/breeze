@@ -715,29 +715,40 @@ export async function getConfigPolicyNonCompliantDevices(
 }
 
 /**
- * #12187: true when a config-axis `automation_policy_compliance` row's rule
- * still exists. Results are keyed by (feature link id, rule name), and a policy
+ * #12187: false when a config-axis `automation_policy_compliance` row is known
+ * to be stale. Results are keyed by (feature link id, rule name), and a policy
  * save replaces its rule rows, so a removed or renamed rule leaves its old
  * result behind with nothing to delete it. Match on link + name, never rule id:
  * the rule id changes on every save, the name does not.
  *
- * Evaluated under the caller's own RLS context. An org-scoped caller sees its
- * partner's partner-wide rules through
- * `config_policy_compliance_rules_partner_wide_select` (keyed on
- * `breeze_current_partner_id()`), so results for live partner-wide rules stay
- * visible to org users. Rows without a `config_item_name` never match.
+ * Evaluated under the caller's own RLS context, and it FAILS OPEN: a result is
+ * hidden only when the caller can read its feature link and that link has no
+ * rule of that name. When the link is not readable the row is kept, because
+ * under RLS "link deleted" and "link not readable by this session" look the
+ * same. That matters for partner-wide policies: an org session reads them only
+ * through the `*_partner_wide_select` branches, keyed on
+ * `breeze_current_partner_id()`, and org SSO sessions carry no partner. Failing
+ * closed would hide their live partner-wide violations. The cost is that
+ * results for a deleted policy, and stale partner-wide results seen from such a
+ * session, still show (as before).
  */
-export function configComplianceRuleStillExists(): SQL {
-  return sql`EXISTS (
-    SELECT 1 FROM ${configPolicyComplianceRules}
-    WHERE ${configPolicyComplianceRules.featureLinkId} = ${automationPolicyCompliance.configPolicyId}
-      AND ${configPolicyComplianceRules.name} = ${automationPolicyCompliance.configItemName}
+export function configComplianceResultNotStale(): SQL {
+  return sql`(
+    EXISTS (
+      SELECT 1 FROM ${configPolicyComplianceRules}
+      WHERE ${configPolicyComplianceRules.featureLinkId} = ${automationPolicyCompliance.configPolicyId}
+        AND ${configPolicyComplianceRules.name} = ${automationPolicyCompliance.configItemName}
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM ${configPolicyFeatureLinks}
+      WHERE ${configPolicyFeatureLinks.id} = ${automationPolicyCompliance.configPolicyId}
+    )
   )`;
 }
 
 /**
- * Gets config policy compliance results for a specific device. Results whose
- * rule no longer exists are left out (#12187).
+ * Gets config policy compliance results for a specific device. Results of
+ * rules removed or renamed in a readable policy are left out (#12187).
  */
 export async function getConfigPolicyComplianceForDevice(
   deviceId: string,
@@ -770,7 +781,7 @@ export async function getConfigPolicyComplianceForDevice(
         eq(automationPolicyCompliance.deviceId, deviceId),
         isNull(automationPolicyCompliance.policyId),
         isNotNull(automationPolicyCompliance.configPolicyId),
-        configComplianceRuleStillExists()
+        configComplianceResultNotStale()
       )
     );
 
