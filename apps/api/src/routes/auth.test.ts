@@ -5535,7 +5535,7 @@ describe('auth routes', () => {
 		it('mints an ai_partner_mcp_proposal_ceiling grant bound to the partner and the exact ceiling', async () => {
 			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
 			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-mcp-ceiling');
-			const resource = { partnerId: '00000000-0000-4000-8000-000000000040', mcpUnattendedProposalMaxRisk: 'critical' };
+			const resource = { partnerId: '00000000-0000-4000-8000-000000000040', mcpUnattendedProposalMaxRisk: 'medium' };
 			const res = await app.request('/auth/mfa/step-up', {
 				method: 'POST',
 				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },

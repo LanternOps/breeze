@@ -596,7 +596,7 @@ describe('PUT /mcp-proposal-ceiling', () => {
 
   it('raising the ceiling without a grant 403s STEP_UP_REQUIRED and writes nothing', async () => {
     selectQueue = [[partnerPolicyRow()]];
-    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'critical' });
+    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'medium' });
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
     expect(casWrites).toHaveLength(0);
@@ -605,28 +605,28 @@ describe('PUT /mcp-proposal-ceiling', () => {
 
   it('raising consumes a grant bound to this partner and the new value, saves, and audits both values under the partner', async () => {
     selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'low' })]];
-    casQueue = [saved('critical')];
-    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'critical', stepUpGrant: 'grant-1' });
+    casQueue = [saved('medium')];
+    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'medium', stepUpGrant: 'grant-1' });
     expect(res.status).toBe(200);
     const binding = consumeStepUpGrant.mock.calls[0]![1];
     expect(binding.operation).toBe('ai_partner_mcp_proposal_ceiling');
-    expect(binding.resourceDigest).toBe(partnerMcpProposalCeilingResourceDigest({ partnerId: PARTNER, mcpUnattendedProposalMaxRisk: 'critical' }));
-    expect(casWrites).toEqual([{ kind: 'update', values: expect.objectContaining({ mcpUnattendedProposalMaxRisk: 'critical' }) }]);
+    expect(binding.resourceDigest).toBe(partnerMcpProposalCeilingResourceDigest({ partnerId: PARTNER, mcpUnattendedProposalMaxRisk: 'medium' }));
+    expect(casWrites).toEqual([{ kind: 'update', values: expect.objectContaining({ mcpUnattendedProposalMaxRisk: 'medium' }) }]);
     expect(Object.keys(casWrites[0]!.values).sort()).toEqual(['mcpUnattendedProposalMaxRisk', 'updatedAt']);
     expect(auditLog).toHaveLength(1);
     expect(auditLog[0]).toMatchObject({
       orgId: null,
       partnerId: PARTNER,
       action: 'ai.script_policy.mcp_proposal_ceiling_updated',
-      details: { partnerId: PARTNER, previous: 'low', mcpUnattendedProposalMaxRisk: 'critical' },
+      details: { partnerId: PARTNER, previous: 'low', mcpUnattendedProposalMaxRisk: 'medium' },
     });
-    expect((await res.json()).policy.mcpUnattendedProposalMaxRisk).toBe('critical');
+    expect((await res.json()).policy.mcpUnattendedProposalMaxRisk).toBe('medium');
   });
 
   it('409s, without an audit row, when the ceiling moved after this request read it', async () => {
-    selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'critical' })]];
+    selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'medium' })]];
     casQueue = [[]];
-    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'high' });
+    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'low' });
     expect(res.status).toBe(409);
     expect(casWrites).toHaveLength(0);
     expect(auditLog).toHaveLength(0);
@@ -640,7 +640,7 @@ describe('PUT /mcp-proposal-ceiling', () => {
   });
 
   it('rolls the change back when the audit row cannot be written', async () => {
-    selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'high' })]];
+    selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'medium' })]];
     casQueue = [saved('none')];
     auditFails.next = true;
     const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'none' });
@@ -652,18 +652,18 @@ describe('PUT /mcp-proposal-ceiling', () => {
   it('a grant that does not match the value 403s and writes nothing', async () => {
     selectQueue = [[partnerPolicyRow()]];
     consumeStepUpGrant.mockResolvedValue(false);
-    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'high', stepUpGrant: 'grant-for-low' });
+    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'medium', stepUpGrant: 'grant-for-low' });
     expect(res.status).toBe(403);
     expect(casWrites).toHaveLength(0);
   });
 
   it('lowering needs no grant but still audits', async () => {
-    selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'critical' })]];
+    selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'medium' })]];
     casQueue = [saved('none')];
     const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'none' });
     expect(res.status).toBe(200);
     expect(consumeStepUpGrant).not.toHaveBeenCalled();
-    expect(auditLog[0]).toMatchObject({ details: { previous: 'critical', mcpUnattendedProposalMaxRisk: 'none' } });
+    expect(auditLog[0]).toMatchObject({ details: { previous: 'medium', mcpUnattendedProposalMaxRisk: 'none' } });
   });
 
   it('a first save with no partner row counts as a raise from none, and inserts', async () => {
@@ -677,7 +677,7 @@ describe('PUT /mcp-proposal-ceiling', () => {
 
   it('refuses without approvals:decide, even lowering', async () => {
     currentPerms = makePerms([PERMISSIONS.AI_AGENTS_READ, PERMISSIONS.AI_AGENTS_WRITE]);
-    selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'high' })]];
+    selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'medium' })]];
     const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'low' });
     expect(res.status).toBe(403);
     expect(casWrites).toHaveLength(0);
@@ -693,6 +693,9 @@ describe('PUT /mcp-proposal-ceiling', () => {
 
   it('rejects an unknown value, and the lane PUT never accepts the field', async () => {
     expect((await ceilingReq({ mcpUnattendedProposalMaxRisk: 'extreme' })).status).toBe(400);
+    // Capped at medium: high and critical proposals need two-person approval.
+    expect((await ceilingReq({ mcpUnattendedProposalMaxRisk: 'high', stepUpGrant: 'grant-1' })).status).toBe(400);
+    expect((await ceilingReq({ mcpUnattendedProposalMaxRisk: 'critical', stepUpGrant: 'grant-1' })).status).toBe(400);
     expect((await putReq({ mcpUnattendedProposalMaxRisk: 'critical' })).status).toBe(400);
     expect(casWrites).toHaveLength(0);
     expect(writes).toHaveLength(0);

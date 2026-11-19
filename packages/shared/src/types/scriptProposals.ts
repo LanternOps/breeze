@@ -232,8 +232,8 @@ export interface ScriptPolicyDto {
   maxUnattendedPerHour: number;
   protectedResources: { services: string[]; paths: string[]; registryKeys: string[]; deviceTags: string[] };
   unattendedEnabledAt: string | null;
-  /** Partner rows only: the MCP unattended proposal ceiling. */
-  mcpUnattendedProposalMaxRisk?: 'none' | RiskTier;
+  /** Partner rows only: the MCP unattended proposal ceiling (at most medium). */
+  mcpUnattendedProposalMaxRisk?: 'none' | 'low' | 'medium';
 }
 
 export interface ScriptLaneStateDto {

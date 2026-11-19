@@ -41,7 +41,7 @@ import type { CancelOutcome } from './scriptCancellation';
 import type { ToolExecutionContext, VerifiedRunScript } from './toolExecutionContext';
 import { aiDispatchScriptToDevice, aiExecuteCommand } from './aiDispatch';
 import { deliverDeferredDispatch } from './scriptDeferredDelivery';
-import { approvalMethodForRelease, assertProposalRunnable, consumeProposalForUnattendedMcpRun, lockMcpUnattendedProposalCeiling, mcpUnattendedProposalRefusal, proposalDispatchSnapshot, transitionProposal } from './scriptProposals';
+import { approvalMethodForRelease, assertProposalRunnable, consumeProposalForUnattendedMcpRun, lockMcpUnattendedLane, lockMcpUnattendedProposalCeiling, mcpUnattendedProposalRefusal, type McpUnattendedRefusal, proposalDispatchSnapshot, transitionProposal } from './scriptProposals';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './scriptRunRequest';
 import { loadTenantVariableScope } from './tenantVariableResolution';
@@ -315,6 +315,10 @@ async function loadFrozenGroupTargetArguments(
  * The run_script handler, at module scope so the proposal branch is directly
  * testable through `__testOnly.runScriptHandler`. Registered below.
  */
+/** The run_script error for a refused unattended MCP proposal run. */
+const mcpUnattendedRefusalError = (refusal: McpUnattendedRefusal): string =>
+  `proposal_not_runnable: ${refusal === 'mcp_ceiling' ? 'mcp_unattended_ceiling' : `mcp_unattended_${refusal}`}`;
+
 /** Carries a refused dispatch out of its transaction so the unattended claim rolls back. */
 class UnattendedClaimRollback extends Error {
   constructor(readonly result: unknown) {
@@ -417,12 +421,9 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
     const proposalRisk = runnable.proposal.riskTier;
     let unattendedClaimed = false;
     if (unattendedRun) {
-      const refusal = await mcpUnattendedProposalRefusal(proposalId, runnable.proposal.orgId);
+      const refusal = await mcpUnattendedProposalRefusal(proposalId, runnable.proposal.orgId, proposalDeviceIds);
       if (refusal) {
-        return JSON.stringify({
-          error: `proposal_not_runnable: ${refusal === 'risk_above_ceiling' ? 'mcp_unattended_ceiling' : `mcp_unattended_${refusal}`}`,
-          proposalId: input.proposalId,
-        });
+        return JSON.stringify({ error: mcpUnattendedRefusalError(refusal), proposalId: input.proposalId });
       }
       approvalMethod = 'unattended_mcp_principal';
     }
@@ -458,7 +459,7 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
         // `claimedHere` reports a claim taken in THIS transaction; the flag that
         // skips later claims is set only once the transaction has committed.
         let claimedHere = false;
-        let created: 'ceiling' | 'consumed' | Awaited<ReturnType<typeof aiDispatchScriptToDevice>>;
+        let created: 'ceiling' | 'consumed' | { lane: McpUnattendedRefusal } | Awaited<ReturnType<typeof aiDispatchScriptToDevice>>;
         try {
           created = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
           if (unattendedRun) {
@@ -467,6 +468,13 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
             ))) {
               return 'ceiling' as const;
             }
+            // The whole gate again (lane policy, proposal, review, ceiling,
+            // circuit, hourly cap) under the lane's advisory lock, in the
+            // transaction that claims the proposal: a tightening committed since
+            // the early check refuses here, and concurrent unattended runs and
+            // lane admissions for the org serialize on the lock.
+            const laneRefusal = await lockMcpUnattendedLane(proposalId, runnable.proposal.orgId, proposalDeviceIds);
+            if (laneRefusal) return { lane: laneRefusal } as const;
             if (!unattendedClaimed) {
               if (!(await consumeProposalForUnattendedMcpRun(db, proposalId, unattendedRun.claimId))) {
                 return 'consumed' as const;
@@ -503,7 +511,11 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
         }
         if (claimedHere) unattendedClaimed = true;
         if (created === 'ceiling') {
-          proposalResults[deviceId] = { error: 'proposal_not_runnable: mcp_unattended_ceiling' };
+          proposalResults[deviceId] = { error: mcpUnattendedRefusalError('mcp_ceiling') };
+          continue;
+        }
+        if (typeof created === 'object' && 'lane' in created) {
+          proposalResults[deviceId] = { error: mcpUnattendedRefusalError(created.lane) };
           continue;
         }
         if (created === 'consumed') {

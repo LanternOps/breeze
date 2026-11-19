@@ -31,7 +31,7 @@ import { getToolDefinitions, executeTool, getToolTier, getToolDomain, aiTools, t
 import { unattendedNoteWriteContext } from '../services/deviceNoteBounds';
 import { isTopologyAiToolName } from '../services/topology/aiToolGate';
 import { isNetworkIsolationCommand } from '../services/networkIsolation/bypass';
-import { loadProposalGuardrailContextForCaller, mcpUnattendedProposalRefusal } from '../services/scriptProposals';
+import { loadProposalGuardrailContextForCaller, mcpUnattendedProposalDecision } from '../services/scriptProposals';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { type GuardrailContext, checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, isReadOnlyResolution, TIER1_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS, TOOL_ACTION_INPUT_KEYS } from '../services/aiGuardrails';
 import { isTenantToolName } from '@breeze/shared/validators';
@@ -1518,19 +1518,23 @@ async function liveMcpIntentCreation(): Promise<typeof McpIntentCreation> {
 
 /** True when this credential can own an `mcp_api` intent (human API key or OAuth grant). */
 /**
- * Whether a reviewed proposal may run without approval for a principal on
- * MCP_UNATTENDED_TIER3_PRINCIPALS: a positive model review and no STRICT hits,
- * with a reviewed risk at or below the MCP unattended proposal ceiling of the
- * partner that owns the proposal's org (`mcpUnattendedProposalRefusal`).
- * Anything unresolved is false, which leaves the call on the approval gate.
+ * The reviewed risk and the MCP ceiling in force when a reviewed proposal may
+ * run without approval for a principal on MCP_UNATTENDED_TIER3_PRINCIPALS
+ * (`mcpUnattendedProposalDecision`: the reviewer lane's rules plus the
+ * partner's MCP ceiling), for the audit row. Null for anything unresolved or
+ * refused, which leaves the call on the approval gate.
  */
 async function proposalRunsUnattended(
   context: GuardrailContext | undefined,
   proposalId: unknown,
   proposalOrgId: string | null,
-): Promise<boolean> {
-  if (!context?.proposal?.riskTier || !proposalOrgId || typeof proposalId !== 'string') return false;
-  return (await mcpUnattendedProposalRefusal(proposalId, proposalOrgId)) === null;
+  deviceIds: readonly string[],
+): Promise<{ riskTier: string; ceiling: string } | null> {
+  const riskTier = context?.proposal?.riskTier;
+  if (!riskTier || !proposalOrgId || typeof proposalId !== 'string') return null;
+  const decision = await mcpUnattendedProposalDecision(proposalId, proposalOrgId, deviceIds);
+  if (decision.refusal !== null || decision.ceiling === null) return null;
+  return { riskTier, ceiling: decision.ceiling };
 }
 
 function canOwnMcpIntents(auth: AuthContext, apiKey: McpApiKeyContext | undefined): boolean {
@@ -2395,16 +2399,22 @@ async function handleToolsCall(
   // set for the proposal's partner (`mcp_unattended_proposal_max_risk`,
   // default 'none'). Above it, the listed principal gets the normal approval
   // gate like any other caller.
+  // A group target resolves only through an approved intent
+  // (aiToolsScripts `loadFrozenGroupTargetArguments`), so an unattended
+  // proposal run must name its devices; a groupId call keeps the gate.
+  const unattendedProposal = tier === 3 && isProposalRun && isUnattendedTier3PrincipalOverMcp(apiKey)
+    && Array.isArray(toolInput.deviceIds) && toolInput.deviceIds.length > 0
+    && (toolInput.groupId === undefined || toolInput.groupId === null)
+    ? await proposalRunsUnattended(
+      guardrailContext,
+      toolInput.proposalId,
+      proposalLookup?.proposalOrgId ?? null,
+      (toolInput.deviceIds as unknown[]).filter((v): v is string => typeof v === 'string'),
+    )
+    : null;
   const unattendedPrincipal = tier === 3
     && isUnattendedTier3PrincipalOverMcp(apiKey)
-    && (!isProposalRun || (
-      // A group target resolves only through an approved intent
-      // (aiToolsScripts `loadFrozenGroupTargetArguments`), so an unattended
-      // proposal run must name its devices; a groupId call keeps the gate.
-      Array.isArray(toolInput.deviceIds) && toolInput.deviceIds.length > 0
-      && (toolInput.groupId === undefined || toolInput.groupId === null)
-      && await proposalRunsUnattended(guardrailContext, toolInput.proposalId, proposalLookup?.proposalOrgId ?? null)
-    ));
+    && (!isProposalRun || unattendedProposal !== null);
   // #10027: with MCP_TIER3_INTENTS_ENABLED on, a READ-ONLY call whose own
   // classification (checkGuardrails, floored for approval extras) is below
   // Tier 3 is not filed for approval: createActionIntent refuses a read below
@@ -2694,6 +2704,7 @@ async function handleToolsCall(
       tier,
       toolInput,
       approvalBypassPrincipal,
+      unattendedProposal,
     },
     execute,
     tier3LifecycleResponses(id),

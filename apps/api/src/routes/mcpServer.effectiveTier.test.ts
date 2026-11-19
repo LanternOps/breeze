@@ -28,7 +28,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../services/scriptProposals', () => ({
   loadProposalGuardrailContextForCaller: (...args: any[]) => mocks.loadProposalContextInReach(...args),
-  mcpUnattendedProposalRefusal: vi.fn(async () => 'risk_above_ceiling'),
+  mcpUnattendedProposalDecision: vi.fn(async () => ({ refusal: 'mcp_ceiling', ceiling: 'none' })),
 }));
 
 vi.mock('../services/mcpToolExecutionLedger', () => ({

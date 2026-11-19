@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { flagMock, runnableMock, dispatchMock, accessMock, waitMock, transitionMock, claimMock, refusalMock, lockCeilingMock } = vi.hoisted(() => ({
+const { flagMock, runnableMock, dispatchMock, accessMock, waitMock, transitionMock, claimMock, refusalMock, lockCeilingMock, lockLaneMock } = vi.hoisted(() => ({
   claimMock: vi.fn(async (_tx: unknown, _proposalId: string, _claimId: string) => true),
-  refusalMock: vi.fn(async (_proposalId: string, _orgId: string) => null as string | null),
-  lockCeilingMock: vi.fn(async (_orgId: string) => 'critical' as string),
+  refusalMock: vi.fn(async (_proposalId: string, _orgId: string, _deviceIds: readonly string[]) => null as string | null),
+  lockCeilingMock: vi.fn(async (_orgId: string) => 'medium' as string),
+  lockLaneMock: vi.fn(async (_proposalId: string, _orgId: string, _deviceIds: readonly string[]) => null as string | null),
   flagMock: vi.fn(() => true),
   transitionMock: vi.fn(async () => true),
   runnableMock: vi.fn(async () => ({ ok: false, reason: 'not_reviewed' as const })),
@@ -28,6 +29,7 @@ vi.mock('./scriptProposals', async () => ({
   consumeProposalForUnattendedMcpRun: claimMock,
   mcpUnattendedProposalRefusal: refusalMock,
   lockMcpUnattendedProposalCeiling: lockCeilingMock,
+  lockMcpUnattendedLane: lockLaneMock,
 }));
 vi.mock('./scriptDispatch', () => ({ dispatchScriptToDevice: dispatchMock }));
 vi.mock('./commandQueue', () => ({ waitForCommandResult: waitMock, executeCommand: vi.fn() }));
@@ -61,7 +63,7 @@ const auth = {
   aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
 } as never;
 
-beforeEach(() => { runnableMock.mockClear(); dispatchMock.mockClear(); transitionMock.mockClear(); claimMock.mockReset().mockResolvedValue(true); refusalMock.mockReset().mockResolvedValue(null); lockCeilingMock.mockReset().mockResolvedValue('critical'); flagMock.mockReturnValue(true); });
+beforeEach(() => { runnableMock.mockClear(); dispatchMock.mockClear(); transitionMock.mockClear(); claimMock.mockReset().mockResolvedValue(true); refusalMock.mockReset().mockResolvedValue(null); lockCeilingMock.mockReset().mockResolvedValue('medium'); lockLaneMock.mockReset().mockResolvedValue(null); flagMock.mockReturnValue(true); });
 
 describe('run_script proposal branch', () => {
   it('returns feature_disabled without touching the database when the flag is off', async () => {
@@ -227,12 +229,12 @@ describe('run_script proposal branch', () => {
 
     it('refuses before claiming when the ceiling was lowered after the route admitted the run', async () => {
       runnableMock.mockResolvedValueOnce({ ok: true, proposal: { ...proposal, riskTier: 'high' } } as never);
-      refusalMock.mockResolvedValue('risk_above_ceiling');
+      refusalMock.mockResolvedValue('mcp_ceiling');
       const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
         unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
       }));
       expect(out.error).toBe('proposal_not_runnable: mcp_unattended_ceiling');
-      expect(refusalMock).toHaveBeenCalledWith('p1', 'org-1');
+      expect(refusalMock).toHaveBeenCalledWith('p1', 'org-1', ['d1']);
       expect(claimMock).not.toHaveBeenCalled();
       expect(dispatchMock).not.toHaveBeenCalled();
     });
@@ -252,7 +254,7 @@ describe('run_script proposal branch', () => {
       runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
       accessMock.mockResolvedValueOnce([{ id: 'd1', orgId: 'org-1', status: 'online', siteId: null }] as never)
         .mockResolvedValueOnce([{ id: 'd2', orgId: 'org-1', status: 'online', siteId: null }] as never);
-      lockCeilingMock.mockResolvedValueOnce('critical').mockResolvedValue('none');
+      lockCeilingMock.mockResolvedValueOnce('medium').mockResolvedValue('none');
       const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1', 'd2'] }, auth, {
         unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
       }));
@@ -263,7 +265,8 @@ describe('run_script proposal branch', () => {
     it('reads the locked ceiling inside the same system transaction that creates the command', async () => {
       runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
       const order: Array<{ kind: string; open: number }> = [];
-      lockCeilingMock.mockImplementationOnce(async () => { order.push({ kind: 'lock', open: txState.open }); return 'critical'; });
+      lockCeilingMock.mockImplementationOnce(async () => { order.push({ kind: 'lock', open: txState.open }); return 'medium'; });
+      lockLaneMock.mockImplementationOnce(async () => { order.push({ kind: 'lane', open: txState.open }); return null; });
       claimMock.mockImplementationOnce(async () => { order.push({ kind: 'claim', open: txState.open }); return true; });
       dispatchMock.mockImplementationOnce((async () => {
         order.push({ kind: 'create', open: txState.open });
@@ -272,8 +275,9 @@ describe('run_script proposal branch', () => {
       await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
         unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
       });
-      expect(order).toEqual([{ kind: 'lock', open: 1 }, { kind: 'claim', open: 1 }, { kind: 'create', open: 1 }]);
+      expect(order).toEqual([{ kind: 'lock', open: 1 }, { kind: 'lane', open: 1 }, { kind: 'claim', open: 1 }, { kind: 'create', open: 1 }]);
       expect(lockCeilingMock).toHaveBeenCalledWith('org-1');
+      expect(lockLaneMock).toHaveBeenCalledWith('p1', 'org-1', ['d1']);
     });
 
     it('does not claim the proposal when the locked ceiling refuses every device', async () => {
@@ -283,6 +287,17 @@ describe('run_script proposal branch', () => {
         unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
       }));
       expect(out.results.d1).toEqual({ error: 'proposal_not_runnable: mcp_unattended_ceiling' });
+      expect(claimMock).not.toHaveBeenCalled();
+      expect(dispatchMock).not.toHaveBeenCalled();
+    });
+
+    it.each(['lane_open', 'hourly_cap', 'lane_disabled'])('does not claim or dispatch when the lane refuses under its lock: %s', async (laneRefusal) => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal } as never);
+      lockLaneMock.mockResolvedValue(laneRefusal);
+      const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth, {
+        unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'partner_sp:sp-1' },
+      }));
+      expect(out.results.d1).toEqual({ error: `proposal_not_runnable: mcp_unattended_${laneRefusal}` });
       expect(claimMock).not.toHaveBeenCalled();
       expect(dispatchMock).not.toHaveBeenCalled();
     });

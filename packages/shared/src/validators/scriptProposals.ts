@@ -19,15 +19,25 @@ export function riskTierRank(tier: RiskTier): number {
 /**
  * The partner's MCP unattended proposal ceiling: the highest reviewed risk tier
  * a principal on MCP_UNATTENDED_TIER3_PRINCIPALS may run without a human
- * approval. 'none' means every MCP proposal run needs approval.
+ * approval. 'none' means every MCP proposal run needs approval. Capped at
+ * 'medium', like the reviewer lane: high and critical proposals resolve to
+ * two-person approval (aiGuardrails.ts `resolveApprovalScope`), and one
+ * operator's step-up must not stand in for the second person.
  */
-export const MCP_UNATTENDED_PROPOSAL_CEILINGS = ['none', ...RISK_TIERS] as const;
+export const MCP_UNATTENDED_PROPOSAL_CEILINGS = ['none', 'low', 'medium'] as const;
 export type McpUnattendedProposalCeiling = (typeof MCP_UNATTENDED_PROPOSAL_CEILINGS)[number];
 
-/** True when a reviewed `tier` is at or below `ceiling`; always false for 'none'. */
+/**
+ * True when a reviewed `tier` is at or below `ceiling`. Always false for
+ * 'none', and for a tier or ceiling outside the known lists: an unknown value
+ * would rank -1 and pass every comparison, so it is refused explicitly rather
+ * than left to the DB CHECKs.
+ */
 export function riskWithinMcpUnattendedCeiling(tier: RiskTier, ceiling: McpUnattendedProposalCeiling): boolean {
-  if (ceiling === 'none') return false;
-  return riskTierRank(tier) <= riskTierRank(ceiling);
+  if (ceiling === 'none' || !MCP_UNATTENDED_PROPOSAL_CEILINGS.includes(ceiling)) return false;
+  const rank = riskTierRank(tier);
+  if (rank < 0) return false;
+  return rank <= riskTierRank(ceiling);
 }
 
 export const SCRIPT_PROPOSAL_STATUSES = [

@@ -11,8 +11,6 @@ const OPTION_KEYS: Record<McpUnattendedProposalCeiling, string> = {
   none: 'scriptAuthoringPage.mcpCeiling.options.none',
   low: 'scriptAuthoringPage.mcpCeiling.options.low',
   medium: 'scriptAuthoringPage.mcpCeiling.options.medium',
-  high: 'scriptAuthoringPage.mcpCeiling.options.high',
-  critical: 'scriptAuthoringPage.mcpCeiling.options.critical',
 };
 
 /**

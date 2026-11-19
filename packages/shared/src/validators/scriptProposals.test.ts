@@ -159,11 +159,18 @@ describe('riskWithinMcpUnattendedCeiling', () => {
   it('lifts exactly the tiers at or below the ceiling', () => {
     expect(RISK_TIERS.filter((t) => riskWithinMcpUnattendedCeiling(t, 'low'))).toEqual(['low']);
     expect(RISK_TIERS.filter((t) => riskWithinMcpUnattendedCeiling(t, 'medium'))).toEqual(['low', 'medium']);
-    expect(RISK_TIERS.filter((t) => riskWithinMcpUnattendedCeiling(t, 'high'))).toEqual(['low', 'medium', 'high']);
-    expect(RISK_TIERS.filter((t) => riskWithinMcpUnattendedCeiling(t, 'critical'))).toEqual([...RISK_TIERS]);
   });
 
-  it('lists none first, then every risk tier in order', () => {
-    expect(MCP_UNATTENDED_PROPOSAL_CEILINGS).toEqual(['none', 'low', 'medium', 'high', 'critical']);
+  it('stops at medium: high and critical are not ceiling values, and a stray one lifts nothing', () => {
+    expect(MCP_UNATTENDED_PROPOSAL_CEILINGS).toEqual(['none', 'low', 'medium']);
+    for (const stray of ['high', 'critical', 'extreme']) {
+      for (const tier of RISK_TIERS) expect(riskWithinMcpUnattendedCeiling(tier, stray as never)).toBe(false);
+    }
+  });
+
+  it('refuses an unknown risk tier under every ceiling, rather than ranking it below low', () => {
+    for (const ceiling of MCP_UNATTENDED_PROPOSAL_CEILINGS) {
+      expect(riskWithinMcpUnattendedCeiling('unknown' as never, ceiling)).toBe(false);
+    }
   });
 });

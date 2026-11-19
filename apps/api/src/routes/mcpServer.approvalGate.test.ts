@@ -57,11 +57,13 @@ vi.mock('../services/scriptProposals', async () => {
     // The eligibility rules have their own suite (mcpUnattendedCeiling.test.ts);
     // here the reviewed risk comes from the loaded context and the ceiling and
     // verdict from the test.
-    mcpUnattendedProposalRefusal: async (proposalId: string, orgId: string) => {
-      proposalMocks.refusal(proposalId, orgId);
-      if (proposalMocks.verdict.value !== 'approve') return 'verdict_not_approve';
+    mcpUnattendedProposalDecision: async (proposalId: string, orgId: string, deviceIds: readonly string[]) => {
+      proposalMocks.refusal(proposalId, orgId, deviceIds);
+      if (proposalMocks.verdict.value !== 'approve') return { refusal: 'verdict_not_approve', ceiling: null };
       const ctx = (await proposalMocks.loadContextInReach.mock.results.at(-1)?.value)?.context;
-      return riskWithinMcpUnattendedCeiling(ctx.proposal.riskTier, await proposalMocks.loadCeiling(orgId)) ? null : 'risk_above_ceiling';
+      // Read once, like the real gate: the audit records this value.
+      const ceiling = await proposalMocks.loadCeiling(orgId);
+      return { refusal: riskWithinMcpUnattendedCeiling(ctx.proposal.riskTier, ceiling) ? null : 'mcp_ceiling', ceiling };
     },
   };
 });
@@ -1279,14 +1281,14 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
       });
 
       it.each([
-        ['low', 'low'], ['medium', 'high'], ['high', 'high'], ['critical', 'critical'],
+        ['low', 'low'], ['low', 'medium'], ['medium', 'medium'],
       ])('runs a %s-risk proposal unattended under a %s ceiling, claiming it with the ledger id', async (risk, ceiling) => {
         reviewed(risk);
         proposalMocks.loadCeiling.mockResolvedValue(ceiling);
         mocks.ledgerBegin.mockResolvedValue(LEDGER);
         const body = await (await call()).json();
         expect(body.result.isError).toBeFalsy();
-        expect(proposalMocks.refusal).toHaveBeenCalledWith('p-1', 'org-7');
+        expect(proposalMocks.refusal).toHaveBeenCalledWith('p-1', 'org-7', ['dev-1']);
         expect(mocks.executeTool).toHaveBeenCalledTimes(1);
         expect(mocks.executeTool.mock.calls[0]?.[3]).toEqual({
           context: { unattendedMcpProposalRun: { claimId: 'exec-1', principalRef: 'api_key:11111111-1111-4111-8111-111111111111' } },
@@ -1294,11 +1296,15 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
         const audit = mocks.writeAuditEvent.mock.calls
           .map((args: any[]) => args[1])
           .find((event: any) => event?.action === 'mcp.tool.run_script');
-        expect(audit.details).toMatchObject({ approvalBypass: 'unattended_principal' });
+        expect(audit.details).toMatchObject({
+          approvalBypass: 'unattended_principal', proposalRiskTier: risk, mcpUnattendedCeiling: ceiling,
+        });
       });
 
       it.each([
-        ['low', 'none'], ['medium', 'low'], ['high', 'medium'], ['critical', 'high'],
+        ['low', 'none'], ['medium', 'low'], ['high', 'medium'], ['critical', 'medium'],
+        // Above medium is not a ceiling value; a stray one keeps the gate.
+        ['low', 'high'], ['low', 'critical'],
       ])('keeps a %s-risk proposal on the approval gate under a %s ceiling', async (risk, ceiling) => {
         reviewed(risk);
         proposalMocks.loadCeiling.mockResolvedValue(ceiling);
@@ -1312,7 +1318,7 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
         ['the ledger has no execution id', () => mocks.ledgerBegin.mockResolvedValue({ ...LEDGER, executionId: '' })],
       ])('refuses, without dispatch, when %s', async (_label, arrange) => {
         reviewed('low');
-        proposalMocks.loadCeiling.mockResolvedValue('critical');
+        proposalMocks.loadCeiling.mockResolvedValue('medium');
         arrange();
         const body = await (await call()).json();
         expect(body.error ?? body.result?.isError).toBeTruthy();
@@ -1321,7 +1327,7 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
 
       it.each(['changes', 'reject'])('keeps a proposal whose review recommends %s on the approval gate, at any ceiling', async (verdict) => {
         reviewed('low');
-        proposalMocks.loadCeiling.mockResolvedValue('critical');
+        proposalMocks.loadCeiling.mockResolvedValue('medium');
         proposalMocks.verdict.value = verdict;
         const payload = JSON.parse((await (await call()).json()).result.content[0].text);
         expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
@@ -1334,14 +1340,14 @@ describe('MCP_UNATTENDED_TIER3_PRINCIPALS operator opt-in', () => {
         [{ proposalId: 'p-1', deviceIds: ['dev-1'], groupId: 'g-1' }],
       ])('keeps a proposal run with no device list (%j) on the approval gate', async (args) => {
         reviewed('low');
-        proposalMocks.loadCeiling.mockResolvedValue('critical');
+        proposalMocks.loadCeiling.mockResolvedValue('medium');
         const payload = JSON.parse((await (await callTool('run_script', args)).json()).result.content[0].text);
         expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
         expect(mocks.executeTool).not.toHaveBeenCalled();
       });
 
       it('passes no unattended context for a library run_script', async () => {
-        proposalMocks.loadCeiling.mockResolvedValue('critical');
+        proposalMocks.loadCeiling.mockResolvedValue('medium');
         await callTool('run_script', { scriptId: 's-1', deviceIds: ['dev-1'] });
         expect(proposalMocks.loadContextInReach).not.toHaveBeenCalled();
         expect(mocks.executeTool.mock.calls[0]?.[3]).toBeUndefined();

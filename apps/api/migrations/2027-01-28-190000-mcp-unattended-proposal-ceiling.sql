@@ -8,7 +8,8 @@
 -- 'none' (the default) keeps today's behaviour: every proposal run over MCP
 -- needs a human approval, even for a principal on
 -- MCP_UNATTENDED_TIER3_PRINCIPALS. Only the PARTNER ceiling row carries a
--- value; an org grant row stays 'none'.
+-- value; an org grant row stays 'none'. Capped at 'medium' like the reviewer
+-- lane: high and critical proposals need two-person approval.
 ALTER TABLE ai_script_policies
   ADD COLUMN IF NOT EXISTS mcp_unattended_proposal_max_risk TEXT NOT NULL DEFAULT 'none';
 ALTER TABLE ai_script_policies
@@ -16,7 +17,7 @@ ALTER TABLE ai_script_policies
 ALTER TABLE ai_script_policies
   ADD CONSTRAINT ai_script_policies_mcp_unattended_proposal_max_risk_chk
   CHECK (
-    mcp_unattended_proposal_max_risk IN ('none', 'low', 'medium', 'high', 'critical')
+    mcp_unattended_proposal_max_risk IN ('none', 'low', 'medium')
     AND (org_id IS NULL OR mcp_unattended_proposal_max_risk = 'none')
   );
 
@@ -32,4 +33,7 @@ ALTER TABLE script_executions
   ADD CONSTRAINT script_executions_approval_method_chk
   CHECK (approval_method IS NULL OR approval_method IN
     ('supervised_self','four_eyes','unattended_reviewer_gated','direct_ui','automation',
-     'unattended_mcp_principal'));
+     'unattended_mcp_principal')) NOT VALID;
+-- NOT VALID: adding the CHECK skips the full-table scan, so the ACCESS
+-- EXCLUSIVE lock is brief. The scan runs in the next migration file, in its
+-- own transaction, under VALIDATE's SHARE UPDATE EXCLUSIVE lock.

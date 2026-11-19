@@ -109,6 +109,8 @@ export function writeMcpToolAuditEvent(
     error?: unknown;
     /** See Tier3LifecycleContext.approvalBypassPrincipal. */
     approvalBypassPrincipal?: string | null;
+    /** See Tier3LifecycleContext.unattendedProposal. */
+    unattendedProposal?: { riskTier: string; ceiling: string } | null;
   },
 ): void {
   if (!audit || !event.principal) return;
@@ -138,6 +140,9 @@ export function writeMcpToolAuditEvent(
       approvalId: null,
       ...(event.approvalBypassPrincipal
         ? { approvalBypass: 'unattended_principal', approvalBypassPrincipal: event.approvalBypassPrincipal }
+        : {}),
+      ...(event.unattendedProposal
+        ? { proposalRiskTier: event.unattendedProposal.riskTier, mcpUnattendedCeiling: event.unattendedProposal.ceiling }
         : {}),
       oauthGrantId: principal.oauthGrantId ?? null,
       ...(principal.partnerServicePrincipalId
@@ -190,6 +195,11 @@ export interface McpTier3LifecycleContext {
    * MCP_UNATTENDED_TIER3_PRINCIPALS: the principal ref that matched.
    */
   approvalBypassPrincipal?: string | null;
+  /**
+   * Set only for an unattended proposal run: the proposal's reviewed risk
+   * tier and the partner's MCP ceiling in force when the run was admitted.
+   */
+  unattendedProposal?: { riskTier: string; ceiling: string } | null;
 }
 
 export interface McpTier3ExecutionOutcome<R> {
@@ -327,6 +337,7 @@ async function finalizeTier3ToolLifecycle<R>(
     tier: ctx.tier,
     toolInput: ctx.toolInput,
     approvalBypassPrincipal: ctx.approvalBypassPrincipal ?? null,
+    unattendedProposal: ctx.unattendedProposal ?? null,
     durationMs,
     status: outcome.status,
     result: outcome.status === 'success' ? outcome.ledgerResult : undefined,
