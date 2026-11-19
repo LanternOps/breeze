@@ -375,7 +375,7 @@ export async function runBillingFraudFlagSweep(): Promise<FraudFlagSweepResult> 
           await alertStuckOnce(`rejected:${flag.id}`, 'Billing fraud flag left pending: consume refused', [
             `Flag id: ${flag.id}`,
             `Partner id: ${flag.partnerId}`,
-            `Billing answered: ${error instanceof Error ? error.message : String(error)}`,
+            `Billing answered: ${opsText(error instanceof Error ? error.message : String(error), 300)}`,
             'Core has recorded its outcome; the flag stays pending on the billing side until it is consumed there.',
           ]);
         } else {

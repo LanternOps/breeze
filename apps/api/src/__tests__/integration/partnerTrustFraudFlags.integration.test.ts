@@ -237,6 +237,26 @@ describe('billing fraud flag sweep', () => {
     expect(rejectedAlerts).toHaveLength(1);
   });
 
+  it('escapes and caps a hostile billing response in the consume-refused alert', async () => {
+    const partner = await partnerWithTrust('trusted');
+    const stuck = flagFor(partner.id);
+    feed = [stuck];
+    const hostile = `**@everyone** [click](https://evil.example/x) <script>\n${'A'.repeat(2000)}`;
+    billing.consumeFraudFlag.mockImplementation(async () => {
+      throw new BillingError('FRAUD_FLAG_REJECTED', hostile);
+    });
+
+    await runBillingFraudFlagSweep();
+
+    const [msg] = sendOpsAlert.mock.calls.find(([m]) => String(m.title).includes('refused'))!;
+    expect(msg.body).not.toContain('@everyone');
+    expect(msg.body).not.toContain('**@');
+    expect(msg.body).not.toContain('](https://');
+    expect(msg.body).not.toContain('<script>');
+    expect(msg.body).not.toContain('A'.repeat(400));
+    expect(msg.body).toContain(opsText(hostile, 300));
+  });
+
   it.each([
     ['the flag is unset', { PARTNER_TRUST_FRAUD_FLAGS_ENABLED: undefined }, 'disabled'],
     ['trust is in shadow mode', { PARTNER_TRUST_MODE: 'shadow' }, 'not_enforcing'],
