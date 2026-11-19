@@ -588,6 +588,14 @@ userinfo_rejected "class: user and host paragraphs apart" "DB user admin:hunter2
 Lots of ordinary report prose in between, over several lines.
 
 The host is @db.example.invalid"
+# Display order is not byte order: right-to-left characters reorder the text
+# on screen, so "@" first in the bytes can read as user:pass@host. Any
+# right-to-left character or bidi control refuses the body (reports are LTR).
+RLO=$'\xe2\x80\xae'; RLI=$'\xe2\x81\xa7'; RLM=$'\xe2\x80\x8f'; ARABIC_ALEF=$'\xd8\xa7'
+userinfo_rejected "bidi: a right-to-left override reverses the text on screen" "${RLO}tsoh@ssap:nimda"
+userinfo_rejected "bidi: a right-to-left isolate" "see ${RLI}tsoh@ssap:nimda"
+userinfo_rejected "bidi: a right-to-left mark" "tsoh@ssap${RLM}:nimda"
+userinfo_rejected "bidi: a right-to-left letter" "host${ARABIC_ALEF}@pass:admin"
 # Ambiguous shapes are refused on purpose: the agent never writes "@".
 userinfo_rejected "ambiguous: a label, a space, then an email" "Login: admin@example.com"
 userinfo_rejected "ambiguous: a label glued to an email" "Login:admin@example.com"
@@ -616,6 +624,14 @@ outbox 002.json '{"action":"pr_result","pr":101,"result":"FAIL","body":"marker-a
 publish_outbox >/dev/null 2>&1
 check "userinfo: a verdict whose heading puts a colon before its @ is refused alone" "! grep -q 'marker-at-body' '$GH_LOG.bodies' && [ -z \"\$(hosted_verdict 101)\" ] && grep -q 'REJECT 002.json' '$T/runner.log'"
 check "userinfo: the neighbouring verdict is still posted" "grep -qx '### PR 100: PASS' '$GH_LOG.bodies' && [ \"\$(hosted_verdict 100)\" = PASS ]"
+# _post_verdicts trial-appends: a section that passes alone but not inside the
+# shared comment (whose header has a ":") is left out; its neighbour posts.
+new_run gate-userinfo-trial
+printf '\n### PR 100: PASS\nrow saved\n' > "$T/sec-100.md"; printf '\nmarker-trial mail a@b.com\n' > "$T/sec-101.md"
+check "userinfo: the trial section passes on its own" "body_ok '$T/sec-101.md'"
+printf '100=PASS %s\n101=FAIL %s\n' "$T/sec-100.md" "$T/sec-101.md" > "$T/vlist"
+PUBLISH_DIR="$RUN_DIR"; _post_verdicts "$T/vlist" >/dev/null 2>&1
+check "userinfo: a section refused inside the shared comment is left out alone" "! grep -q 'marker-trial' '$GH_LOG.bodies' && grep -q 'row saved' '$GH_LOG.bodies' && [ \"\$PR_VERDICTS\" = ' 100=PASS' ] && grep -q 'PR 101 was refused inside the shared comment' '$T/runner.log'"
 
 # Keys the stack mints at runtime cannot be known in advance: they go by prefix.
 userinfo_rejected "a minted API key (brz_ + 48 hex)" "key brz_0123456789abcdef0123456789abcdef0123456789abcdef"

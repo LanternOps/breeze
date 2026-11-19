@@ -99,6 +99,12 @@ with open(path, "rb") as f:
     data = f.read(limit + 1)
 if not data or len(data) > limit or b"\0" in data:
     sys.exit(3)
+# Display order is not byte order: a right-to-left character or bidi control
+# reorders the text on screen ("@" first in the bytes, user:pass@host on the
+# page; a value reversed). Reports are left-to-right, so any refuses the body.
+RTL = {"R", "AL", "RLE", "RLO", "RLI", "LRE", "LRO", "LRI", "FSI", "PDF", "PDI"}
+if any(unicodedata.bidirectional(c) in RTL for c in data.decode("utf-8", "replace")):
+    sys.exit(3)
 BREAKS = re.compile("[\n\r\v\f\x1c\x1d\x1e\x85  ]")
 FENCE = re.compile(r"\A[\s>]*(`{3,}|~{3,})")   # a fence line, info string and all
 MD = set("`*~>|\\#")
