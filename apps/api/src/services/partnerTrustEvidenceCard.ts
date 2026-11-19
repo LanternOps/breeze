@@ -3,7 +3,7 @@ import { promises as dns } from 'node:dns';
 import { and, asc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { auditLogs, devices, organizations, partnerSendingDomains, partners, users } from '../db/schema';
-import { opsText, sendOpsAlert } from './opsAlerts';
+import { opsText, sendOpsAlert, singleLine } from './opsAlerts';
 import { getRedis } from './redis';
 
 export type TrustAction = 'approve' | 'suspend';
@@ -331,23 +331,53 @@ export async function consumeTrustActionToken(jti: string): Promise<boolean> {
   return result === 1;
 }
 
-function renderCardText(card: EvidenceCard, esc: (value: string) => string = (v) => v): string {
+const MAX_CARD_DEVICES = 50;
+const FIELD_MAX = 120;
+
+type CardRow = [label: string, value: string];
+
+/**
+ * The card as ordered label/value rows. Every tenant-controlled value goes
+ * through `esc`, which MUST return a single line (plain: singleLine, markdown:
+ * opsText); no value can therefore start a new row or forge a field. Plain
+ * text and HTML both render from these rows — HTML puts each value in its own
+ * <td>, never in a newline-delimited block the reader parses line by line.
+ */
+function cardRows(card: EvidenceCard, esc: (value: string) => string): CardRow[] {
   const t = (value: string | null | undefined, fallback = 'unknown') => (value == null ? fallback : esc(value));
-  const devicesText = card.devices.length
-    ? card.devices.map((d) => `- ${esc(d.hostname)}: ${t(d.enrollmentIp)} (${t(d.enrollmentIpClass)}, virtual=${d.isVirtual})`).join('\n')
-    : '- none';
+  const shown = card.devices.slice(0, MAX_CARD_DEVICES);
+  const devices: CardRow[] = shown.map((d, i) => [
+    `Device ${i + 1}`,
+    `${esc(d.hostname)}: ${t(d.enrollmentIp)} (${t(d.enrollmentIpClass)}, virtual=${d.isVirtual})`,
+  ]);
+  if (card.devices.length > shown.length) {
+    devices.push(['Devices (more)', `${card.devices.length - shown.length} not shown`]);
+  }
   return [
-    `Partner: ${esc(card.partner.name)} (${card.partner.id})`,
-    `Plan/status/trust: ${esc(card.partner.plan)} / ${esc(card.partner.status)} / ${esc(card.partner.trustState)}`,
-    `Signup IP: ${t(card.signup.ip)} (${t(card.signup.ipClass)}, ASN ${t(card.signup.asn == null ? null : String(card.signup.asn))}, classified by ${t(card.signup.source, 'not recorded')})`,
-    `Email domain: ${t(card.emailDomain.domain)} (age: unknown; MX: ${card.emailDomain.hasMx ?? 'unknown'})`,
-    `Cardholder/user: ${t(card.identity.cardholderName)} / ${t(card.identity.userName)} (match: ${card.identity.namesMatch ?? 'unknown'})`,
-    `Billing: ${card.billing.distinctPaymentMethods} distinct payment methods; ${card.billing.failedAttempts} failed attempts`,
-    `Capability denials (24h): ${card.denials24h}`,
-    `Matched suspended axes (same region): ${card.matchedSuspendedAxes.map((x) => esc(x)).join(', ') || 'none'}`,
-    `Sending domains: ${card.sendingDomains.map((d) => `${esc(d.domain)} (${esc(d.status)})`).join(', ') || 'none'}`,
-    'Devices:', devicesText,
-  ].join('\n');
+    ['Partner', `${esc(card.partner.name)} (${esc(card.partner.id)})`],
+    ['Plan/status/trust', `${esc(card.partner.plan)} / ${esc(card.partner.status)} / ${esc(card.partner.trustState)}`],
+    ['Signup IP', `${t(card.signup.ip)} (${t(card.signup.ipClass)}, ASN ${t(card.signup.asn == null ? null : String(card.signup.asn))}, classified by ${t(card.signup.source, 'not recorded')})`],
+    ['Email domain', `${t(card.emailDomain.domain)} (age: unknown; MX: ${card.emailDomain.hasMx ?? 'unknown'})`],
+    ['Cardholder/user', `${t(card.identity.cardholderName)} / ${t(card.identity.userName)} (match: ${card.identity.namesMatch ?? 'unknown'})`],
+    ['Billing', `${card.billing.distinctPaymentMethods} distinct payment methods; ${card.billing.failedAttempts} failed attempts`],
+    ['Capability denials (24h)', String(card.denials24h)],
+    ['Matched suspended axes (same region)', card.matchedSuspendedAxes.map((x) => esc(x)).join(', ') || 'none'],
+    ['Sending domains', card.sendingDomains.map((d) => `${esc(d.domain)} (${esc(d.status)})`).join(', ') || 'none'],
+    ...(devices.length ? devices : [['Devices', 'none'] as CardRow]),
+  ];
+}
+
+const plainLine = (value: string) => singleLine(value, FIELD_MAX);
+
+function renderCardText(card: EvidenceCard, esc: (value: string) => string = plainLine): string {
+  return cardRows(card, esc).map(([label, value]) => `${label}: ${value}`).join('\n');
+}
+
+function renderCardHtml(card: EvidenceCard): string {
+  const rows = cardRows(card, plainLine)
+    .map(([label, value]) => `<tr><th align="left">${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`)
+    .join('');
+  return `<table cellpadding="4" cellspacing="0" border="1">${rows}</table>`;
 }
 
 function escapeHtml(value: string): string {
@@ -394,11 +424,10 @@ export async function sendEvidenceCard(
   const base = trustActionWebBaseUrl();
   const approveUrl = `${base}/admin/trust/act?token=${encodeURIComponent(approveToken)}`;
   const suspendUrl = `${base}/admin/trust/act?token=${encodeURIComponent(suspendToken)}`;
-  const summary = renderCardText(card);
-  // The ops body is Discord markdown; the HTML email below escapes `summary`
-  // itself, so only the body gets the markdown-safe rendering.
+  // The ops body is Discord markdown (opsText); the HTML email renders each
+  // value in its own escaped table cell, so only the body gets markdown escaping.
   const body = `${renderCardText(card, (v) => opsText(v))}\n\nApprove: ${approveUrl}\nSuspend: ${suspendUrl}`;
-  const html = `<h2>${escapeHtml(card.partner.name)} trust evidence</h2><pre>${escapeHtml(summary)}</pre>` +
+  const html = `<h2>${escapeHtml(singleLine(card.partner.name, FIELD_MAX))} trust evidence</h2>${renderCardHtml(card)}` +
     `<p><a href="${escapeHtml(approveUrl)}">Approve</a> &nbsp; <a href="${escapeHtml(suspendUrl)}">Suspend</a></p>`;
   await sendOpsAlert({ title: `Partner trust review: ${opsText(card.partner.name)} (${trigger})`, body, html });
 }
