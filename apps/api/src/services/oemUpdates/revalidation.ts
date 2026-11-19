@@ -14,7 +14,9 @@
  * cancels the whole run and the next dispatch sends what is still open.
  */
 import { sql } from 'drizzle-orm';
-import { OEM_CATEGORIES, type OemCategory } from '@breeze/shared';
+import { OEM_CATEGORIES, oemObservePayloadSchema, type OemCategory } from '@breeze/shared';
+import { CommandTypes } from '../commandTypes';
+import { vendorPairDisabled, vendorStage } from '../vendorCanary';
 import {
   registerCommandRevalidation,
   type ClaimCancelReason,
@@ -40,7 +42,7 @@ function readPayload(payload: unknown) {
  * `partners`, and a system-context read would hold a second pooled connection
  * inside the claim (#1105).
  */
-async function partnerOfDevice(reader: CommandRevalidationReader, deviceId: string): Promise<string | null> {
+export async function partnerOfDevice(reader: CommandRevalidationReader, deviceId: string): Promise<string | null> {
   const rows = (await reader.execute(sql`
     SELECT t.partner_id
     FROM devices d
@@ -70,3 +72,36 @@ export async function revalidateOemUpdateRun(
 }
 
 registerCommandRevalidation('oem_update_run', revalidateOemUpdateRun);
+
+/**
+ * Claim-time recheck of a queued `oem_observe` (observe-first amendment 1.3).
+ * Rechecks what can change while the row waits and lives outside the device
+ * row: the master flag and allowlist, the canary stage for the device's
+ * partner, the lane kill switch and the canary pair kill switch. Any of them
+ * gone cancels the unclaimed row. The partner is read every time (not only when
+ * the allowlist is set), because the canary list is per partner.
+ *
+ * The policy opt-in (check 8) is not re-resolved here: resolving a link reads
+ * partner-level policy rows the claim's org-scoped connection cannot see, and a
+ * second connection inside the claim is the #1105 double hold. Instead the row
+ * is dispatched only to an online device and stops being deliverable after
+ * `OEM_OBSERVE_DELIVER_WITHIN_MS` (observe.ts), so a policy removed after
+ * dispatch lets through at most that window's read-only observation.
+ */
+export async function revalidateOemObserve(
+  reader: CommandRevalidationReader,
+  row: CommandRevalidationRow,
+): Promise<ClaimCancelReason | null> {
+  const payload = oemObservePayloadSchema.safeParse(row.payload);
+  if (!payload.success) return 'authority_unavailable';
+  const { lane } = payload.data;
+
+  if (!oemUpdatesFlagOn()) return 'scope_changed';
+  if (laneDisabledByKillSwitch(lane) || vendorPairDisabled('oem_updates', lane)) return 'scope_changed';
+  const partnerId = await partnerOfDevice(reader, row.deviceId);
+  if (!partnerId || !oemUpdatesEnabled(partnerId)) return 'scope_changed';
+  if (vendorStage('oem_updates', lane, partnerId) === 'off') return 'scope_changed';
+  return null;
+}
+
+registerCommandRevalidation(CommandTypes.OEM_OBSERVE, revalidateOemObserve);

@@ -109,6 +109,23 @@ describe('VendorUpdatesTab', () => {
     }
   });
 
+  it('a canary partner can switch on a lane that is only observable, for its read-only check', async () => {
+    serveGates({
+      lanes: [
+        { lane: 'dell', shipped: true, categories: CLOSED },
+        { lane: 'surface', shipped: false, categories: CLOSED },
+        { lane: 'hp', shipped: false, categories: CLOSED },
+        { lane: 'lenovo', shipped: false, observable: true, categories: CLOSED },
+      ],
+    });
+    render(<VendorUpdatesTab {...props} />);
+    await waitFor(() => expect(box('vendor-updates-lenovo-enabled').disabled).toBe(false));
+    expect(box('vendor-updates-hp-enabled').disabled).toBe(true);
+    // Its categories stay closed: observe stores none.
+    fireEvent.click(box('vendor-updates-lenovo-enabled'));
+    await waitFor(() => expect(box('vendor-updates-lenovo-driver').disabled).toBe(true));
+  });
+
   it('a vendor whose lane has not shipped is shown as coming later and cannot be switched on', async () => {
     render(<VendorUpdatesTab {...props} />);
     await waitFor(() => expect(screen.getByTestId('vendor-updates-hp-not-shipped')).toBeTruthy());

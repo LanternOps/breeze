@@ -132,6 +132,9 @@ const MEDIUM_TIMEOUT_TYPES = new Set<string>([
   // the run, which downloads a tool and flashes firmware); listed explicitly so
   // the budget is a decision rather than the unknown-type fallback.
   CommandTypes.OEM_UPDATE_RELEASE,
+  // Read-only vendor observation: a Windows Update driver search (minutes) and at
+  // most two bounded HTTPS reads. Listed so the budget is a decision.
+  CommandTypes.OEM_OBSERVE,
 ]);
 
 /**

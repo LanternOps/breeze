@@ -5016,7 +5016,8 @@
       "noOpenCategories": "Con questa scelta non si può eseguire nulla. Qui sono disponibili solo BIOS e firmware: scegli Riavvia al termine.",
       "decommissioned": "Questo dispositivo è dismesso, quindi non è possibile inviargli nulla.",
       "cancelledAtClaim": "L'esecuzione è stata annullata prima di raggiungere il dispositivo. Riprova."
-    }
+    },
+    "observeQueued": "Controllo in sola lettura avviato su {{hostname}}. Non viene installato nulla."
   },
   "vendorUpdates": {
     "title": "Aggiornamenti del produttore",
@@ -5101,7 +5102,16 @@
       "byUnknown": "Sconosciuto",
       "range": "{{from}}-{{to}} di {{total}}",
       "previousPage": "Precedente",
-      "nextPage": "Successivo"
+      "nextPage": "Successivo",
+      "observed": "Osservato",
+      "observedTools": "Strumenti trovati: {{tools}}",
+      "observedNoTools": "Nessuno strumento del produttore trovato",
+      "observedVerdict": {
+        "observed": "{{vendor}}: controllo in sola lettura completato",
+        "observedWithErrors": "{{vendor}}: controllo in sola lettura completato, alcune letture non sono riuscite",
+        "platformUnsupported": "{{vendor}}: questo modello non è supportato dagli strumenti business del produttore",
+        "invalid": "{{vendor}}: impossibile leggere il risultato del controllo"
+      }
     }
   },
   "reinstalledBadge": {

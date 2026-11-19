@@ -150,6 +150,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_OEM_UPDATES_ENABLED: 'vendor update rollout flag (#11065, dark by default)',
   BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: 'vendor update lab-device gate override (refused in production)',
   BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: 'vendor update rollout allowlist (#11065)',
+  BREEZE_VENDOR_CANARY_DISABLED: 'vendor canary feature:vendor kill switch (#11065 observe-first)',
+  BREEZE_VENDOR_CANARY_PARTNER_IDS: 'vendor canary partner list (#11065 observe-first, empty = off)',
   BREEZE_PLATFORM_ADMINS: 'platform-admin bootstrap list',
   BREEZE_REGION: 'hosted topology label',
   BREEZE_ROLE: 'process role (api/worker)',

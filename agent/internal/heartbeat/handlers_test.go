@@ -28,6 +28,8 @@ var allCommandTypes = []string{
 	// handlers_oem.go init()
 	tools.CmdOemUpdateRun,
 	tools.CmdOemUpdateRelease,
+	// handlers_oem_observe.go init()
+	tools.CmdOemObserve,
 
 	tools.CmdRefreshInventory,
 	tools.CmdCollectSoftware, tools.CmdSoftwareUninstall, tools.CmdSoftwareInstall, tools.CmdSoftwareUpdate,
