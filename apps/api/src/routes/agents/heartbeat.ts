@@ -1,5 +1,6 @@
 import type { HeartbeatEpisodeContext } from '../../services/networkIsolation/reconcile';
 import { topologyHeartbeat, topologyHeartbeatWithoutMaterialization } from '../../services/topology/heartbeat';
+import { hpCmslMode, toWarrantySettingsWire } from '../../services/hpWarrantyGate';
 import { loadAgentTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
 import { Hono } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
@@ -2849,7 +2850,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     pamSettings: { uacInterceptionEnabled: boolean } | null;
     patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null;
     featureUpdateSettings: RingFeatureUpdates | null;
-    warrantySettings: { hpCmslEnabled: boolean } | null;
+    warrantySettings: { hpCmslOptedIn: boolean } | null;
     wakeOnLanSettings: { enabled: boolean; observeVendors?: string[] } | null;
     hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null;
     timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null;
@@ -3227,9 +3228,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
   // Snake_case inside the block as well as outside (contract D6): this
   // assembly is where camelCase resolver output becomes wire keys, and the
-  // agent's inner parse accepts either spelling.
+  // agent's inner parse accepts either spelling. The mode is the vendor canary
+  // stage for the agent's partner (#5511 observe-first §1): env and constants
+  // only, no query, and outside the cached resolver so a canary or kill-switch
+  // change applies on the next beat. Every key is always sent.
   if (warrantySettings) {
-    policyConfigUpdate.warranty_settings = { hp_cmsl_enabled: warrantySettings.hpCmslEnabled };
+    policyConfigUpdate.warranty_settings = toWarrantySettingsWire(
+      hpCmslMode(warrantySettings.hpCmslOptedIn, agent.partnerId),
+    );
   }
   if (wakeOnLanSettings) {
     // observe_vendors is always sent, `[]` when off, so a revoked vendor

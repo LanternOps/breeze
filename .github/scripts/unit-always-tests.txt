@@ -352,6 +352,7 @@ apps/api/src/routes/agentWs.rejectionFrame.test.ts
 apps/api/src/routes/agents/agentRoleCoverage.test.ts
 apps/api/src/routes/agents/download.test.ts
 apps/api/src/routes/agents/isolationVerify.test.ts
+apps/api/src/routes/agents/logs.test.ts
 apps/api/src/routes/agents/schemas.commandResult.test.ts
 apps/api/src/routes/agents/token.conflictCodes.test.ts
 apps/api/src/routes/agents/yaraRuleSets.test.ts
@@ -817,6 +818,7 @@ packages/shared/src/utils/scriptSecurityPatterns.test.ts
 packages/shared/src/utils/yaraBundle.test.ts
 packages/shared/src/utils/yaraIocImport.test.ts
 packages/shared/src/validators/backupDestinationPrefix.test.ts
+packages/shared/src/validators/hpWarrantyObserve.test.ts
 packages/shared/src/validators/oemObserve.test.ts
 packages/shared/src/validators/oemUpdates.test.ts
 packages/shared/src/validators/queryParams.test.ts

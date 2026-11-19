@@ -1058,7 +1058,7 @@ describe('agent routes', () => {
         hardware_monitoring_settings: { enabled: true, poll_interval_minutes: 10, disk_health_interval_minutes: 60 },
         // #5511 W02: a resolved absent warranty policy delivers an explicit
         // false (the revoke-on-unassign contract), exactly like patch_source.
-        warranty_settings: { hp_cmsl_enabled: false },
+        warranty_settings: { hp_cmsl_enabled: false, hp_cmsl_mode: 'off', hp_cmsl_tiers: [] },
         // #10838: no wake_on_lan policy resolves to an explicit enabled false.
         wake_on_lan_settings: { enabled: false, configure_settings: false, firmware_writes: [], observe_vendors: [] },
         // Security remediation Wave 6, Task 9 — always sent (true or false),
@@ -1185,7 +1185,7 @@ describe('agent routes', () => {
         patch_source_settings: { exclusiveWindowsUpdate: false },
         feature_update_settings: { mode: 'block' },
         hardware_monitoring_settings: { enabled: true, poll_interval_minutes: 10, disk_health_interval_minutes: 60 },
-        warranty_settings: { hp_cmsl_enabled: false },
+        warranty_settings: { hp_cmsl_enabled: false, hp_cmsl_mode: 'off', hp_cmsl_tiers: [] },
         wake_on_lan_settings: { enabled: false, configure_settings: false, firmware_writes: [], observe_vendors: [] },
         require_manifest_signing_key_id: false
       });

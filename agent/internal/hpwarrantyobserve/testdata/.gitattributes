@@ -1,0 +1,5 @@
+# The wire goldens are a byte-exact contract between the Go encoder and the
+# shared zod schema. Never convert line endings on checkout (Windows runners
+# default to core.autocrlf=true, which turns LF into CRLF and breaks
+# TestWireGoldensRoundTrip / TestCollectProducesGoldens).
+* -text

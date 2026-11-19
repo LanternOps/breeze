@@ -874,6 +874,12 @@ type Heartbeat struct {
 	stopOnce    sync.Once
 	authMon     *authstate.Monitor
 
+	// HP warranty (#5511 observe-first): the in-memory CMSL mode and the
+	// observe schedule (warranty_mode.go, hp_warranty_observe.go). The clock
+	// is a seam for tests; nil means time.Now.
+	hpWarranty    hpWarrantyState
+	hpWarrantyNow func() time.Time
+
 	// verificationPool is the lane for backup_verify and backup_test_restore
 	// (#6106). Each waits up to backupVerificationForwardTimeout on the backup
 	// helper; on the shared pool that wait held a slot, so a few
@@ -2786,6 +2792,7 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 	h.stopTimeSync()
 	h.stopWorkloads()
 	h.stopWake()
+	h.stopHpWarrantyObserve()
 	log.Info("draining in-flight commands and inventory goroutines")
 	// Both pools share ctx's deadline: their tasks run concurrently, so
 	// draining them in turn still bounds the whole wait by that deadline.
@@ -2818,6 +2825,7 @@ func (h *Heartbeat) Stop() {
 		h.stopTimeSync()
 		h.stopWorkloads()
 		h.stopWake()
+		h.stopHpWarrantyObserve()
 		shutdownTimeout := h.shutdownTimeout
 		if shutdownTimeout <= 0 {
 			shutdownTimeout = 5 * time.Second

@@ -226,7 +226,7 @@ vi.mock('./helpers', () => ({
   // Default OFF, mirroring buildPatchSourceConfigUpdate: every heartbeat test
   // that does not care about warranty still exercises the delivery merge rather
   // than the builder-throws path.
-  buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslEnabled: false })),
+  buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslOptedIn: false })),
   buildWakeOnLanConfigUpdate: vi.fn(async () => ({ enabled: false, configureSettings: false as const, firmwareWrites: [] as string[], observeVendors: [] as string[] })),
   // Null = no onedrive policy for the device. Tests that exercise delivery
   // override this per-test. Omitting it entirely would make every heartbeat
@@ -4823,36 +4823,62 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(configUpdate?.feature_update_settings).toBeUndefined();
   });
 
-  it('includes warranty_settings in configUpdate when HP CMSL collection is enabled (#5511 W02)', async () => {
-    const { buildWarrantyConfigUpdate } = await import('./helpers');
-    vi.mocked(buildWarrantyConfigUpdate).mockResolvedValueOnce({ hpCmslEnabled: true });
+  describe('warranty_settings (#5511 observe-first §1)', () => {
+    // The mocked agent's partner. Test-only; the canary partner is never named.
+    const AGENT_PARTNER = 'partner-1';
+    const OFF = { hp_cmsl_enabled: false, hp_cmsl_mode: 'off', hp_cmsl_tiers: [] };
 
-    const resp = await buildApp().request('/agents/device-1/heartbeat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(minimalHeartbeatBody),
+    afterEach(() => {
+      vi.unstubAllEnvs();
     });
 
-    expect(resp.status).toBe(200);
-    const body = (await resp.json()) as Record<string, unknown>;
-    const configUpdate = body.configUpdate as Record<string, unknown> | null;
-    // Snake_case INSIDE the block too — contract D6 pins the wire shape.
-    expect(configUpdate?.warranty_settings).toEqual({ hp_cmsl_enabled: true });
-  });
+    async function warrantyBlock(optedIn: boolean): Promise<unknown> {
+      const { buildWarrantyConfigUpdate } = await import('./helpers');
+      vi.mocked(buildWarrantyConfigUpdate).mockResolvedValueOnce({ hpCmslOptedIn: optedIn });
+      const resp = await buildApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(minimalHeartbeatBody),
+      });
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as Record<string, unknown>;
+      return (body.configUpdate as Record<string, unknown> | null)?.warranty_settings;
+    }
 
-  it('delivers warranty_settings false when no warranty policy resolves (revoke-on-unassign)', async () => {
-    const { buildWarrantyConfigUpdate } = await import('./helpers');
-    vi.mocked(buildWarrantyConfigUpdate).mockResolvedValueOnce({ hpCmslEnabled: false });
-
-    const resp = await buildApp().request('/agents/device-1/heartbeat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(minimalHeartbeatBody),
+    it('is off for a partner outside the canary list even with current consent', async () => {
+      vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', '00000000-0000-4000-8000-0000000000c2');
+      expect(await warrantyBlock(true)).toEqual(OFF);
     });
 
-    const body = (await resp.json()) as Record<string, unknown>;
-    const configUpdate = body.configUpdate as Record<string, unknown> | null;
-    expect(configUpdate?.warranty_settings).toEqual({ hp_cmsl_enabled: false });
+    it('is observe for the canary partner with current-EULA consent, and never enables CMSL', async () => {
+      vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', AGENT_PARTNER);
+      // Snake_case INSIDE the block too — contract D6 pins the wire shape.
+      expect(await warrantyBlock(true)).toEqual({ hp_cmsl_enabled: false, hp_cmsl_mode: 'observe', hp_cmsl_tiers: [] });
+    });
+
+    it('is off for the canary partner without effective consent (none, or a stale EULA)', async () => {
+      vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', AGENT_PARTNER);
+      expect(await warrantyBlock(false)).toEqual(OFF);
+    });
+
+    it('is off when hp_warranty:hp is disabled', async () => {
+      vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', AGENT_PARTNER);
+      vi.stubEnv('BREEZE_VENDOR_CANARY_DISABLED', 'hp_warranty:hp');
+      expect(await warrantyBlock(true)).toEqual(OFF);
+    });
+
+    it.each([true, false])(
+      'always sends every field, valid against the shared wire schema (opted in: %s)',
+      async (optedIn) => {
+        vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', AGENT_PARTNER);
+        const { warrantySettingsWireSchema } = await import('@breeze/shared/validators');
+        const block = await warrantyBlock(optedIn);
+        expect(Object.keys(block as object).sort()).toEqual(['hp_cmsl_enabled', 'hp_cmsl_mode', 'hp_cmsl_tiers']);
+        expect(warrantySettingsWireSchema.safeParse(block).success).toBe(true);
+        // hp_cmsl_enabled is false unless act: an older agent's persisted true is revoked.
+        expect((block as { hp_cmsl_enabled: boolean }).hp_cmsl_enabled).toBe(false);
+      },
+    );
   });
 
   it('omits warranty_settings entirely when the warranty resolver throws (no unintended revocation)', async () => {

@@ -7,6 +7,9 @@ import {
   warrantyHpCmslCollectionEffective,
   warrantyHpCmslRequested,
   warrantyInlineSettingsSchema,
+  warrantySettingsWireSchema,
+  HP_CMSL_ACT_TIERS,
+  HP_CMSL_MODES,
 } from './warrantyInlineSettings';
 
 const CONSENT = {
@@ -141,5 +144,43 @@ describe('readRecordedWarrantyHpCmslConsent', () => {
     expect(readRecordedWarrantyHpCmslConsent({ enabled: true })).toBeNull();
     expect(readRecordedWarrantyHpCmslConsent({ hpCmsl: { enabled: true, extra: 1 } })).toBeNull();
     expect(readRecordedWarrantyHpCmslConsent(undefined)).toBeNull();
+  });
+});
+
+describe('warrantySettingsWireSchema (heartbeat warranty_settings, #5511 observe-first §1)', () => {
+  const wire = (v: Record<string, unknown>) => warrantySettingsWireSchema.safeParse(v).success;
+
+  it('accepts off and observe with empty tiers and enabled false', () => {
+    for (const mode of ['off', 'observe'] as const) {
+      expect(wire({ hp_cmsl_enabled: false, hp_cmsl_mode: mode, hp_cmsl_tiers: [] })).toBe(true);
+    }
+  });
+
+  it('accepts act with enabled true and known tiers, including none open yet', () => {
+    expect(wire({ hp_cmsl_enabled: true, hp_cmsl_mode: 'act', hp_cmsl_tiers: ['t0_ingest'] })).toBe(true);
+    expect(wire({ hp_cmsl_enabled: true, hp_cmsl_mode: 'act', hp_cmsl_tiers: [] })).toBe(true);
+  });
+
+  it('requires every field: an omitted key would leave an older agent on its persisted flag', () => {
+    expect(wire({ hp_cmsl_mode: 'off', hp_cmsl_tiers: [] })).toBe(false);
+    expect(wire({ hp_cmsl_enabled: false, hp_cmsl_tiers: [] })).toBe(false);
+    expect(wire({ hp_cmsl_enabled: false, hp_cmsl_mode: 'off' })).toBe(false);
+  });
+
+  it('refuses enabled true unless the mode is act, and act without enabled', () => {
+    expect(wire({ hp_cmsl_enabled: true, hp_cmsl_mode: 'observe', hp_cmsl_tiers: [] })).toBe(false);
+    expect(wire({ hp_cmsl_enabled: false, hp_cmsl_mode: 'act', hp_cmsl_tiers: [] })).toBe(false);
+  });
+
+  it('refuses tiers outside act, unknown tiers, duplicates and extra keys', () => {
+    expect(wire({ hp_cmsl_enabled: false, hp_cmsl_mode: 'observe', hp_cmsl_tiers: ['t0_ingest'] })).toBe(false);
+    expect(wire({ hp_cmsl_enabled: true, hp_cmsl_mode: 'act', hp_cmsl_tiers: ['t9'] })).toBe(false);
+    expect(wire({ hp_cmsl_enabled: true, hp_cmsl_mode: 'act', hp_cmsl_tiers: ['t0_ingest', 't0_ingest'] })).toBe(false);
+    expect(wire({ hp_cmsl_enabled: false, hp_cmsl_mode: 'off', hp_cmsl_tiers: [], extra: 1 })).toBe(false);
+  });
+
+  it('lists the modes and the act tiers in opening order', () => {
+    expect(HP_CMSL_MODES).toEqual(['off', 'observe', 'act']);
+    expect(HP_CMSL_ACT_TIERS).toEqual(['t0_ingest', 't1_refresh', 'install']);
   });
 });

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Key constants for structured log fields.
@@ -42,6 +43,19 @@ const (
 // ship these lines.
 func ShipAlways() slog.Attr {
 	return slog.Bool(KeyShipAlways, true)
+}
+
+// EmitShipAlways hands a ShipAlways record straight to logger's handler. Unlike
+// logger.Info(..., ShipAlways()) it ships even when the local log_level is
+// above level: slog asks Enabled before Handle, and Enabled cannot see the
+// marker. The record is still written locally only at the local level. For the
+// few records that are evidence rather than diagnostics (HP warranty observe,
+// #5511), whose loss to a raised log_level would go unnoticed.
+func EmitShipAlways(logger *slog.Logger, level slog.Level, msg string, args ...any) {
+	r := slog.NewRecord(time.Now(), level, msg, 0)
+	r.Add(args...)
+	r.AddAttrs(ShipAlways())
+	_ = logger.Handler().Handle(context.Background(), r)
 }
 
 type contextKey struct{}

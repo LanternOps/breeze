@@ -3652,21 +3652,23 @@ export async function buildPatchSourceConfigUpdate(deviceId: string, opts?: Devi
 
 export interface WarrantySettings {
   /**
-   * When true the (Windows-only) agent may collect HP warranty data on the
-   * device via HP's CMSL. False explicitly tells the agent to stop — so
-   * unassigning the policy, or a nearer policy replacing the link without an
-   * hpCmsl block, cleanly revokes collection.
+   * The device's per-device HP CMSL opt-in: the nearest warranty link has
+   * hpCmsl enabled with consent to the current EULA. It is an input to the
+   * mode, not the mode: the heartbeat combines it with the vendor canary stage
+   * for the agent's partner (services/hpWarrantyGate.ts), and without it the
+   * device is `off`. False — unassigning the policy, or a nearer policy
+   * replacing the link without an hpCmsl block — cleanly revokes.
    */
-  hpCmslEnabled: boolean;
+  hpCmslOptedIn: boolean;
 }
 
 /**
  * Resolves the warranty feature link for the device and surfaces the HP CMSL
- * collection flag for the heartbeat config push. A device with no warranty
- * policy assigned resolves to `false`, which the agent treats as "stop
- * collecting". The caller (heartbeat) omits the block entirely on a resolver
- * error so a transient failure never revokes collection fleet-wide — which is
- * why this function deliberately does NOT catch.
+ * opt-in for the heartbeat config push. A device with no warranty policy
+ * assigned resolves to `false`, which the heartbeat sends as mode `off`. The
+ * caller (heartbeat) omits the block entirely on a resolver error so a
+ * transient failure never revokes fleet-wide — which is why this function
+ * deliberately does NOT catch.
  *
  * `warrantyHpCmslCollectionEffective` additionally requires an acceptance
  * recorded against the CURRENT HP_CMSL_EULA_ID: an enabled block with no
@@ -3675,7 +3677,7 @@ export interface WarrantySettings {
  */
 export async function buildWarrantyConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<WarrantySettings> {
   const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId, opts);
-  return { hpCmslEnabled: warrantyHpCmslCollectionEffective(inlineSettings) };
+  return { hpCmslOptedIn: warrantyHpCmslCollectionEffective(inlineSettings) };
 }
 
 // ============================================

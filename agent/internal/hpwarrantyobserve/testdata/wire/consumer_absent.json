@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "mode": "observe",
+  "model": "HP Laptop 15-dy2xxx",
+  "family": "103C_5335KV HP Notebook",
+  "nativeArch": "amd64",
+  "namespaces": {
+    "rootHp": "absent",
+    "instrumentedServices": "absent",
+    "v1": "absent",
+    "instrumentedBios": "absent"
+  },
+  "classes": null,
+  "hpWarranty": null,
+  "hpEntitlements": null,
+  "cmsl": [],
+  "powershell": {
+    "v51": true,
+    "strongCrypto64": "absent",
+    "strongCrypto32": "absent",
+    "schannelTls12Client": "absent"
+  },
+  "winget": {
+    "present": true,
+    "version": "v1.21.3482.0"
+  },
+  "conflicts": [
+    {
+      "name": "hp_support_assistant",
+      "version": "v9.30.37.0"
+    }
+  ],
+  "errors": []
+}
