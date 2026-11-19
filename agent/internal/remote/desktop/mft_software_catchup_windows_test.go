@@ -85,7 +85,7 @@ func TestSoftwareMFT_QualityRefreshAfterBurst(t *testing.T) {
 		t.Fatalf("refresh outputs = %d, want at most %d", len(sizes), limit)
 	}
 	advanceSoftwareMFTClock(m, time.Minute)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		if out, _ := m.CatchUpIdle(); out != nil {
 			t.Fatal("a static screen after the refresh must cost nothing")
 		}

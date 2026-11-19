@@ -103,7 +103,7 @@ func TestQualityRefresh_ExpensiveOutputRestartsRefresh(t *testing.T) {
 	var r qualityRefresh
 	r.noteOutput(qrT0, qrP(3*qrBudget), qrBudget, 30)
 	at := qrT0.Add(qualityRefreshSettle)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		if !r.start(at) {
 			t.Fatal("refresh did not run")
 		}

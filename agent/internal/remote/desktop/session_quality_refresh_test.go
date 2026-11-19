@@ -274,7 +274,7 @@ func (r *refreshRig) settleSharp() {
 }
 
 func (r *refreshRig) burst(frames int) {
-	for i := 0; i < frames; i++ {
+	for range frames {
 		r.change(changeLarge)
 	}
 }
@@ -327,11 +327,11 @@ func TestQualityRefresh_CheapChangesDoNotRefresh(t *testing.T) {
 	r.settleSharp()
 	real, refresh := r.b.realSubmits, r.b.refreshSubmits
 
-	for i := 0; i < 60; i++ { // a seconds clock for a minute
+	for range 60 { // a seconds clock for a minute
 		r.change(changeSmall)
 		r.idle(time.Second)
 	}
-	for i := 0; i < 60; i++ { // a caret blinking every 530 ms
+	for range 60 { // a caret blinking every 530 ms
 		r.change(changeSmall)
 		r.idle(530 * time.Millisecond)
 	}
@@ -416,7 +416,7 @@ func TestQualityRefresh_NoRefreshDuringContinuousMotion(t *testing.T) {
 	r := newRefreshRig(t, false)
 	r.settleSharp()
 	refresh := r.b.refreshSubmits
-	for i := 0; i < 90; i++ {
+	for range 90 {
 		r.change(changeLarge)
 		r.idle(100 * time.Millisecond)
 	}
@@ -528,7 +528,7 @@ func TestQualityRefresh_RepeatedIDRsExtendOnce(t *testing.T) {
 	r.settleSharp()
 	refreshBefore := r.b.refreshSubmits
 	r.burst(7)
-	for i := 0; i < cbrModelFPS*10; i++ {
+	for range cbrModelFPS * 10 {
 		if n := r.b.refreshSubmits - refreshBefore; n == 3 || n == 20 || n == 40 {
 			_ = r.s.encoder.Load().ForceKeyframe()
 		}
