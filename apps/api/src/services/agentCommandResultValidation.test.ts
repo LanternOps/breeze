@@ -118,6 +118,29 @@ describe('agentCommandResultValidation — restore result details (restricted de
   });
 });
 
+describe('agentCommandResultValidation — verification unchecked count and result code', () => {
+  it('accepts filesUnchecked and the storage_session_lost code', () => {
+    const r = backupVerificationStructuredResultSchema.safeParse({
+      status: 'partial',
+      filesVerified: 120,
+      filesFailed: 0,
+      filesUnchecked: 484_767,
+      code: 'storage_session_lost',
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.filesUnchecked).toBe(484_767);
+      expect(r.data.code).toBe('storage_session_lost');
+    }
+  });
+
+  it('rejects a negative or fractional filesUnchecked and an over-long code', () => {
+    expect(backupVerificationStructuredResultSchema.safeParse({ status: 'partial', filesUnchecked: -1 }).success).toBe(false);
+    expect(backupVerificationStructuredResultSchema.safeParse({ status: 'partial', filesUnchecked: 1.5 }).success).toBe(false);
+    expect(backupVerificationStructuredResultSchema.safeParse({ status: 'failed', code: 'x'.repeat(65) }).success).toBe(false);
+  });
+});
+
 describe('agentCommandResultValidation — bmr_recover command result shape', () => {
   it('accepts the recovery helper result, whose failedFiles is a count', () => {
     const validated = validateCriticalCommandResult('bmr_recover', {
