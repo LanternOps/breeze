@@ -122,6 +122,7 @@ function link(vendors: Record<string, unknown>, extra: Partial<ResolvedOemUpdate
   return {
     linkId: 'l',
     configPolicyId: 'p',
+    armedAt: null,
     assignedPolicyId: 'p',
     settings: { ...OEM_UPDATES_POLICY_DEFAULTS, enabled: true, vendors } as ResolvedOemUpdatesLink['settings'],
     invalidStoredSettings: false,
