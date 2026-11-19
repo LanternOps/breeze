@@ -1,7 +1,7 @@
 package wakeconfig
 
 // readScript is READ-ONLY: it only calls Get-* cmdlets and reads one registry
-// value. Adapters are matched by RegistryKeyword and the WakeOnMagicPacket
+// value. Writes live in apply_script.go. Adapters are matched by RegistryKeyword and the WakeOnMagicPacket
 // enum, never by DisplayName/DisplayValue (those are localised). It lives in an
 // untagged file so its read-only guarantee is tested on every OS.
 //
@@ -28,6 +28,13 @@ $rows=@(foreach ($n in $nics) {
  } catch {
   if ($_.CategoryInfo.Category -ne 'ObjectNotFound') { $eee='error' }
  }
- [pscustomobject]@{ name=[string]$n.Name; mac=[string]$n.MacAddress; magicPacket=$mp; eee=$eee }
+ $s5=$null
+ try {
+  $q=@(Get-NetAdapterAdvancedProperty -Name $n.Name -RegistryKeyword 'S5WakeOnLan')
+  if ($q.Count -gt 0) { $s5=[string]@($q[0].RegistryValue)[0] }
+ } catch {
+  if ($_.CategoryInfo.Category -ne 'ObjectNotFound') { $s5='error' }
+ }
+ [pscustomobject]@{ name=[string]$n.Name; mac=[string]$n.MacAddress; magicPacket=$mp; eee=$eee; s5=$s5 }
 })
 ConvertTo-Json -InputObject ([pscustomobject]@{ hiberboot=$hb; netAdapter=$na; adapters=$rows }) -Depth 4 -Compress`
