@@ -64,6 +64,7 @@ import {
 import { unattendedNoteContentError, unattendedNoteExpiryDays } from './deviceNoteBounds';
 import { noteWriteCardFreeExpiryDays } from './aiNoteWrites';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { DEVICE_HARDWARE_READ_COLUMNS } from './deviceHardwareColumns';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -139,7 +140,7 @@ function projectMemoryModule(row: MemoryModuleRow) {
   };
 }
 
-function summarizeMemory(hardware: typeof deviceHardware.$inferSelect | null, modules: MemoryModuleRow[]) {
+function summarizeMemory(hardware: Omit<typeof deviceHardware.$inferSelect, 'tpmEkPubSha256' | 'tpmEkMismatchSha256'> | null, modules: MemoryModuleRow[]) {
   // No module rows and no applied memory block = the agent never reported
   // slot inventory (needs an agent update) — not "zero slots".
   if (modules.length === 0 && !hardware?.memoryObservedAt) return { reported: false as const };
@@ -319,7 +320,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
 
       // Fetch related data in parallel
       const [hardware, network, disks, recentMetrics, memoryModules, placement] = await Promise.all([
-        db.select().from(deviceHardware).where(eq(deviceHardware.deviceId, deviceId)).limit(1),
+        db.select(DEVICE_HARDWARE_READ_COLUMNS).from(deviceHardware).where(eq(deviceHardware.deviceId, deviceId)).limit(1),
         db.select().from(deviceNetwork).where(eq(deviceNetwork.deviceId, deviceId)),
         db.select().from(deviceDisks).where(eq(deviceDisks.deviceId, deviceId)),
         db.select().from(deviceMetrics)

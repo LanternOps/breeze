@@ -789,11 +789,11 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 	} else if req.CommandType == "backup_verify" {
 		ctx, cleanup := commandCanceller.track(req.CommandID)
 		defer cleanup()
-		result = execBackupVerifyContext(ctx, req.CommandID, req.Payload, mgr, vaultState, conn)
+		result = execBackupVerifyContext(ctx, req.CommandID, req.Payload, mgr, vaultState, conn, verifyRunBudgetFor(req.TimeoutMs))
 	} else if req.CommandType == "backup_test_restore" {
 		ctx, cleanup := commandCanceller.track(req.CommandID)
 		defer cleanup()
-		result = execBackupTestRestoreContext(ctx, req.CommandID, req.Payload, mgr, vaultState, conn)
+		result = execBackupTestRestoreContext(ctx, req.CommandID, req.Payload, mgr, vaultState, conn, verifyRunBudgetFor(req.TimeoutMs))
 	} else {
 		result = run()
 	}
@@ -909,9 +909,9 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 			// payload's providerConfig (restoreProviderForCommand), so they work
 			// even with no agent.yaml manager. Route them here instead of falling
 			// through to "backup not configured".
-			return execBackupVerify(req.Payload, mgr, vaultState)
+			return execBackupVerify(req.Payload, mgr, vaultState, verifyRunBudgetFor(req.TimeoutMs))
 		case "backup_test_restore":
-			return execBackupTestRestore(req.Payload, mgr, vaultState)
+			return execBackupTestRestore(req.Payload, mgr, vaultState, verifyRunBudgetFor(req.TimeoutMs))
 		case "backup_stop":
 			// Server-dispatched backup_runs build ephemeral payload managers
 			// tracked only by the canceller — a device with no agent.yaml
@@ -1016,9 +1016,9 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 	case "backup_restore":
 		return execBackupRestore(req.Payload, mgr, vaultState)
 	case "backup_verify":
-		return execBackupVerify(req.Payload, mgr, vaultState)
+		return execBackupVerify(req.Payload, mgr, vaultState, verifyRunBudgetFor(req.TimeoutMs))
 	case "backup_test_restore":
-		return execBackupTestRestore(req.Payload, mgr, vaultState)
+		return execBackupTestRestore(req.Payload, mgr, vaultState, verifyRunBudgetFor(req.TimeoutMs))
 	case "backup_cleanup":
 		return execBackupCleanup(req.Payload)
 

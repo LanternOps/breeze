@@ -354,10 +354,16 @@ export async function syncDeviceMemoryModules(
   }
 }
 
-/** Base hardware columns an agent may report (everything the route validated, minus `memory`). */
+/**
+ * Base hardware columns an agent may report (everything the route validated,
+ * minus `memory`). Never the TPM EK baseline or a mismatching EK (#8318 T1,
+ * §5.1/§12.2): only the attestation route writes them, after a proof of
+ * possession.
+ */
 export type HardwareReportColumns = Partial<Omit<typeof deviceHardware.$inferInsert,
   'deviceId' | 'orgId' | 'updatedAt' | 'partnerExportUpdatedAt'
-  | 'memorySlotsTotal' | 'memoryMaxCapacityMb' | 'memorySoldered' | 'memoryObservedAt'>>;
+  | 'memorySlotsTotal' | 'memoryMaxCapacityMb' | 'memorySoldered' | 'memoryObservedAt'
+  | 'tpmEkPubSha256' | 'tpmAttestedAt' | 'tpmEkMismatchSha256' | 'tpmEkMismatchAt'>>;
 
 /**
  * Upsert device_hardware and, when a valid memory block came with the report,

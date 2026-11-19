@@ -124,6 +124,7 @@ import { logsNotArriving as checkLogsNotArriving } from '../../services/logsNotA
 import { deriveWatchdogInstallBanner } from '../../services/watchdogInstallHealth';
 import { deriveControlPlaneBlockListView, deriveControlPlaneBlockNotice } from '../../services/controlPlaneBlockHealth';
 import { readPromptHostObservation } from '../../services/promptHostObservation';
+import { DEVICE_HARDWARE_READ_COLUMNS } from '../../services/deviceHardwareColumns';
 
 // The device cascade registration lists (CORE_DEVICE_CASCADE_DELETE_TABLES,
 // DEVICE_DETACH_DEVICE_ID_TABLES, DEVICE_LINKED_DEVICE_ID_TABLES and the
@@ -1435,7 +1436,7 @@ coreRoutes.get(
 
     // Get hardware info
     const [hardware] = await db
-      .select()
+      .select(DEVICE_HARDWARE_READ_COLUMNS)
       .from(deviceHardware)
       .where(eq(deviceHardware.deviceId, deviceId))
       .limit(1);

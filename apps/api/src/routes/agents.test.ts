@@ -1037,6 +1037,7 @@ describe('agent routes', () => {
       expect(body.configUpdate).toEqual({
         backup_server_url: '',
         ech_enabled: true,
+        tpm_attestation_enabled: false,
         event_log_settings: {
           max_events_per_cycle: 100,
           collect_categories: ['security', 'hardware', 'application', 'system'],
@@ -1171,6 +1172,7 @@ describe('agent routes', () => {
       expect(body.configUpdate).toEqual({
         backup_server_url: '',
         ech_enabled: true,
+        tpm_attestation_enabled: false,
         event_log_settings: {
           max_events_per_cycle: 100,
           collect_categories: ['security', 'hardware', 'application', 'system'],
