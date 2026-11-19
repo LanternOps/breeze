@@ -19,13 +19,42 @@ import (
 // processWaitDelay bounds how long Run waits for output pipes after a kill.
 const processWaitDelay = 10 * time.Second
 
+// defaultStdoutLimit bounds the stdout a lane may parse (W10: DCU writes its
+// results only to stdout or to a path outside ProgramData).
+const defaultStdoutLimit = 4 << 20
+
 // procExec is the production Exec. It starts the exact path it was given (no
-// shell, no PATH lookup) through procspawn, discards output (raw tool output is
-// never uploaded), and kills the process when ctx ends.
+// shell, no PATH lookup) through procspawn and kills the process when ctx
+// ends. stdout is kept, bounded, for the lane to parse as untrusted text; it
+// is never uploaded or logged. stderr is discarded.
 type procExec struct {
 	// onExit runs after the process ends and before its result is read; a test
 	// seam for a context that ends just after the process did.
 	onExit func()
+	// stdoutLimit overrides defaultStdoutLimit (tests).
+	stdoutLimit int
+}
+
+// boundedBuffer keeps the first limit bytes and drops the rest, so a chatty
+// tool can neither grow memory nor block on a full pipe.
+type boundedBuffer struct {
+	limit     int
+	buf       []byte
+	truncated bool
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - len(b.buf); room > 0 {
+		if len(p) > room {
+			b.buf = append(b.buf, p[:room]...)
+			b.truncated = true
+		} else {
+			b.buf = append(b.buf, p...)
+		}
+	} else if len(p) > 0 {
+		b.truncated = true
+	}
+	return len(p), nil
 }
 
 func (p procExec) Run(ctx context.Context, spec ExecSpec) (ExecResult, error) {
@@ -33,7 +62,12 @@ func (p procExec) Run(ctx context.Context, spec ExecSpec) (ExecResult, error) {
 		return ExecResult{}, errors.New("no executable path")
 	}
 	cmd := procspawn.CommandContext(ctx, spec.Path, spec.Args...)
-	cmd.Stdout, cmd.Stderr, cmd.Stdin = io.Discard, io.Discard, nil
+	limit := p.stdoutLimit
+	if limit <= 0 {
+		limit = defaultStdoutLimit
+	}
+	stdout := &boundedBuffer{limit: limit}
+	cmd.Stdout, cmd.Stderr, cmd.Stdin = stdout, io.Discard, nil
 	cmd.WaitDelay = processWaitDelay
 	// Record whether the context killed the process. A process that ended on
 	// its own keeps its exit code, even if the context ended a moment later;
@@ -66,7 +100,7 @@ func (p procExec) Run(ctx context.Context, spec ExecSpec) (ExecResult, error) {
 	if cmd.ProcessState == nil {
 		return ExecResult{}, errors.New("process did not run")
 	}
-	return ExecResult{ExitCode: exitCodeOf(cmd.ProcessState)}, nil
+	return ExecResult{ExitCode: exitCodeOf(cmd.ProcessState), Stdout: stdout.buf, StdoutTruncated: stdout.truncated}, nil
 }
 
 type authenticodeVerifier struct{}

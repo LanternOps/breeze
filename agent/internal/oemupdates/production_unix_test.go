@@ -35,6 +35,18 @@ func TestProcExecKeepsAnExitThatBeatTheContext(t *testing.T) {
 	}
 }
 
+// stdout is kept for the lane to parse, bounded; stderr is still discarded.
+func TestProcExecCapturesBoundedStdout(t *testing.T) {
+	res, err := procExec{}.Run(context.Background(), ExecSpec{Path: "/bin/sh", Args: []string{"-c", "printf 'a\\r\\nb'; printf err >&2"}})
+	if err != nil || string(res.Stdout) != "a\r\nb" || res.StdoutTruncated {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	res, err = procExec{stdoutLimit: 8}.Run(context.Background(), ExecSpec{Path: "/bin/sh", Args: []string{"-c", "printf 0123456789abcdef; exit 2"}})
+	if err != nil || string(res.Stdout) != "01234567" || !res.StdoutTruncated || res.ExitCode != 2 {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}
+
 func TestProcExecRefusesAnEmptyPath(t *testing.T) {
 	if _, err := (procExec{}).Run(context.Background(), ExecSpec{}); err == nil {
 		t.Fatal("ran an empty path")

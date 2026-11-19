@@ -640,6 +640,11 @@ type ExecSpec struct {
 // ExecResult is how a process ended.
 type ExecResult struct {
 	ExitCode int64
+	// Stdout is the process's stdout, bounded (production: 4 MiB). It is
+	// untrusted vendor text for the lane to parse; it is never uploaded.
+	Stdout []byte
+	// StdoutTruncated is set when output beyond the bound was dropped.
+	StdoutTruncated bool
 }
 
 // Exec runs vendor processes. It must start Path itself (no shell, no PATH

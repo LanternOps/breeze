@@ -300,8 +300,8 @@ func TestScheduledRunTakesOverBeforeInstalling(t *testing.T) {
 		t.Fatalf("takeover = %q (%s)", r.Takeover, errCode(r))
 	}
 	calls := dcu.Calls()
-	if len(calls) != 4 || calls[3].Args[0] != "/applyUpdates" {
-		t.Fatalf("calls = %+v, want export, configure, export, then the install", calls)
+	if len(calls) != 5 || calls[3].Args[0] != "/scan" || calls[4].Args[0] != "/applyUpdates" {
+		t.Fatalf("calls = %+v, want export, configure, export, then the scan and the install", calls)
 	}
 	// The binary is verified again before the install that follows the takeover.
 	verified := f.ver.Verified()
