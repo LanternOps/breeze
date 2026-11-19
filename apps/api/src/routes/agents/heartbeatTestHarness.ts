@@ -199,7 +199,7 @@ vi.mock('./helpers', () => ({
   // Default OFF, mirroring buildPatchSourceConfigUpdate: every heartbeat test
   // that does not care about warranty still exercises the delivery merge rather
   // than the builder-throws path.
-  buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslEnabled: false })),
+  buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslOptedIn: false })),
   buildWakeOnLanConfigUpdate: vi.fn(async () => ({ enabled: false, configureSettings: false as const, firmwareWrites: [] as string[] })),
   // Null = no onedrive policy for the device. Tests that exercise delivery
   // override this per-test. Omitting it entirely would make every heartbeat

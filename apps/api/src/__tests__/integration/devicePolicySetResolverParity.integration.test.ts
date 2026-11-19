@@ -102,8 +102,8 @@ const RESOLVERS: Array<[string, Resolver, (answer: any) => void, (emptyAnswer: a
     (e) => expect(e).toBeUndefined()],
   // The winning warranty link carries an hpCmsl block with a CURRENT EULA acceptance.
   ['buildWarrantyConfigUpdate', (id, o) => buildWarrantyConfigUpdate(id, o),
-    (a) => expect(a).toEqual({ hpCmslEnabled: true }),
-    (e) => expect(e).toEqual({ hpCmslEnabled: false })],
+    (a) => expect(a).toEqual({ hpCmslOptedIn: true }),
+    (e) => expect(e).toEqual({ hpCmslOptedIn: false })],
   ['buildEventLogConfigUpdate', (id, o) => buildEventLogConfigUpdate(id, o),
     // 321 = partner-wide partner-level winner; 555 (printer) and the bare device-level link are excluded; 999 is forged.
     (a) => expect(a).toMatchObject({ max_events_per_cycle: 321 }),

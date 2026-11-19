@@ -14,6 +14,7 @@ import { db, withDbTransaction } from '../../db';
 import { devices, agentLogs } from '../../db/schema';
 import { updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { redactAgentLogFields, redactAgentLogMessage } from '../../services/logRedaction';
+import { HP_WARRANTY_OBSERVE_COMPONENT, sanitizeHpWarrantyObserveFields } from '@breeze/shared/validators';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
@@ -177,8 +178,14 @@ logsRoutes.post(
     const timestampClamped = reportedTimestamp.getTime()
       > receivedAt.getTime() + MAX_AGENT_LOG_FUTURE_SKEW_MS;
     if (timestampClamped) timestampClampedCount++;
-    const redactedFields = log.fields
-      ? stripClampProvenance(redactAgentLogFields(log.fields))
+    // An HP warranty observe record is kept only in its contract's shape
+    // (#5511 observe-first §2): parsed strictly before redaction, so a record
+    // carrying a filtered value, or anything else, is stored as a marker only.
+    const agentFields = log.component === HP_WARRANTY_OBSERVE_COMPONENT
+      ? sanitizeHpWarrantyObserveFields(log.fields)
+      : log.fields;
+    const redactedFields = agentFields
+      ? stripClampProvenance(redactAgentLogFields(agentFields))
       : null;
 
     return {

@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { gzipSync } from 'node:zlib';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 const AGENT_ID = 'agent-001';
 const DEVICE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -79,6 +81,7 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { logsRoutes } from './logs';
+import { redactAgentLogFields } from '../../services/logRedaction';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -845,6 +848,67 @@ describe('agent logs routes', () => {
         expect.anything(),
         expect.objectContaining({ route: 'agents.logs.lastLogAtUpdate', deviceId: DEVICE_ID }),
       );
+    });
+  });
+
+  describe('HP warranty observe records (#5511 observe-first §2)', () => {
+    // The agent's goldens; the Go test encodes the same files.
+    const WIRE_DIR = path.resolve(__dirname, '../../../../../agent/internal/hpwarrantyobserve/testdata/wire');
+    const golden = (name: string) => JSON.parse(readFileSync(path.join(WIRE_DIR, name), 'utf8'));
+
+    async function ingest(entry: Record<string, unknown>) {
+      mockDeviceLookup(true);
+      const values = mockInsertSuccess();
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs: [makeLogEntry(entry)] }),
+      });
+      expect(res.status).toBe(201);
+      return values.mock.calls[0]![0][0];
+    }
+
+    it.each(['consumer_absent.json', 'business_present.json'])(
+      'stores %s through redaction with every key and value intact',
+      async (name) => {
+        const observation = golden(name);
+        const row = await ingest({
+          component: 'hp_warranty_observe',
+          message: 'vendor_observation',
+          fields: { component: 'hp_warranty_observe', observation },
+        });
+        // Versions like v9.30.37.0 and the dates survive the IPv4/IPv6 value passes.
+        expect(row.fields).toEqual({ component: 'hp_warranty_observe', observation });
+        // Control: without the v prefix the redactor does take a four-part version.
+        expect(redactAgentLogFields({ version: '9.30.37.0' })).not.toEqual({ version: '9.30.37.0' });
+      },
+    );
+
+    it('keeps only a rejection marker for a record that carries a filtered value', async () => {
+      const observation = golden('business_present.json');
+      observation.hpWarranty.rows[0].SerialNumber = '5CD1234XYZ';
+      const row = await ingest({
+        component: 'hp_warranty_observe',
+        message: 'vendor_observation',
+        fields: { component: 'hp_warranty_observe', observation },
+      });
+      expect(row.fields).toEqual({ component: 'hp_warranty_observe', observationRejected: 'contract' });
+      expect(JSON.stringify(row)).not.toContain('5CD1234XYZ');
+    });
+
+    it('drops any other key an observe record carries', async () => {
+      const observation = golden('consumer_absent.json');
+      const row = await ingest({
+        component: 'hp_warranty_observe',
+        message: 'vendor_observation',
+        fields: { component: 'hp_warranty_observe', observation, hostname: 'DESK-01' },
+      });
+      expect(row.fields).not.toHaveProperty('hostname');
+    });
+
+    it('leaves records from other components alone', async () => {
+      const row = await ingest({ component: 'heartbeat', fields: { sequence: 7, observation: { any: 'thing' } } });
+      expect(row.fields).toEqual({ sequence: 7, observation: { any: 'thing' } });
     });
   });
 });

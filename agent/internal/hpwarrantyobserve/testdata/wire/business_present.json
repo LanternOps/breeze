@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "mode": "observe",
+  "model": "HP EliteBook 840 G8 Notebook PC",
+  "family": "103C_5336AN HP EliteBook",
+  "nativeArch": "amd64",
+  "namespaces": {
+    "rootHp": "present",
+    "instrumentedServices": "present",
+    "v1": "present",
+    "instrumentedBios": "present"
+  },
+  "classes": {
+    "total": 2,
+    "names": [
+      "HP_Entitlements",
+      "HP_Warranty"
+    ]
+  },
+  "hpWarranty": {
+    "state": "present",
+    "properties": [
+      {
+        "name": "SerialNumber",
+        "cimType": "String"
+      },
+      {
+        "name": "ProductNumber",
+        "cimType": "String"
+      },
+      {
+        "name": "WarrantyStartDate",
+        "cimType": "String"
+      },
+      {
+        "name": "WarrantyEndDate",
+        "cimType": "String"
+      },
+      {
+        "name": "Status",
+        "cimType": "String"
+      },
+      {
+        "name": "LastUpdated",
+        "cimType": "DateTime"
+      }
+    ],
+    "rowCount": 1,
+    "rows": [
+      {
+        "LastUpdated": "2026-11-02T08:15:00Z",
+        "Status": "Active",
+        "WarrantyEndDate": "2027-01-14",
+        "WarrantyStartDate": "2024-01-15"
+      }
+    ],
+    "dateFormats": {
+      "LastUpdated": "cim_datetime",
+      "WarrantyEndDate": "iso8601",
+      "WarrantyStartDate": "iso8601"
+    }
+  },
+  "hpEntitlements": {
+    "state": "present",
+    "properties": [
+      {
+        "name": "ServiceLevelDescription",
+        "cimType": "String"
+      },
+      {
+        "name": "EntitlementType",
+        "cimType": "String"
+      },
+      {
+        "name": "StartDate",
+        "cimType": "String"
+      },
+      {
+        "name": "EndDate",
+        "cimType": "String"
+      }
+    ],
+    "rowCount": 2,
+    "rows": [
+      {
+        "EndDate": "/Date(1799884800000)/",
+        "EntitlementType": "Base",
+        "ServiceLevelDescription": "HP 3y NBD Onsite",
+        "StartDate": "/Date(1705276800000)/"
+      },
+      {
+        "EndDate": "/Date(1799884800000)/",
+        "EntitlementType": "Care Pack",
+        "ServiceLevelDescription": null,
+        "StartDate": "/Date(1705276800000)/"
+      }
+    ],
+    "dateFormats": {
+      "EndDate": "ms_json_date",
+      "StartDate": "ms_json_date"
+    }
+  },
+  "cmsl": [
+    {
+      "name": "HP.ClientManagement",
+      "versions": [
+        "v1.8.6"
+      ]
+    },
+    {
+      "name": "HPCMSL",
+      "versions": [
+        "v1.8.6"
+      ]
+    }
+  ],
+  "powershell": {
+    "v51": true,
+    "strongCrypto64": "enabled",
+    "strongCrypto32": "enabled",
+    "schannelTls12Client": "absent"
+  },
+  "winget": {
+    "present": false,
+    "version": null
+  },
+  "conflicts": [],
+  "errors": [
+    {
+      "step": "winget",
+      "code": "dir_unreadable"
+    }
+  ]
+}

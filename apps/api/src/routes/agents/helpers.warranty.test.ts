@@ -5,7 +5,7 @@
  * resolveEffectiveWarrantyInlineSettings is mocked directly (its hierarchy
  * resolution is covered by warrantyPolicyResolution.test.ts), so this file pins
  * only the mapping the heartbeat relies on:
- *   - no warranty policy resolved (undefined) → { hpCmslEnabled: false }
+ *   - no warranty policy resolved (undefined) → { hpCmslOptedIn: false }
  *     (the revoke-on-unassign contract)
  *   - resolved but not consented → false (never collect without an acceptance)
  *   - resolver THROWS → rethrow, so the heartbeat omits the block
@@ -101,9 +101,9 @@ const CONSENT = {
 describe('buildWarrantyConfigUpdate (#5511 W02)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('returns hpCmslEnabled:false when no warranty policy resolves (revoke-on-unassign)', async () => {
+  it('returns hpCmslOptedIn:false when no warranty policy resolves (revoke-on-unassign)', async () => {
     resolveEffectiveWarrantyInlineSettingsMock.mockResolvedValue(undefined);
-    await expect(buildWarrantyConfigUpdate(DEVICE_ID)).resolves.toEqual({ hpCmslEnabled: false });
+    await expect(buildWarrantyConfigUpdate(DEVICE_ID)).resolves.toEqual({ hpCmslOptedIn: false });
   });
 
   it('returns true for a link that is enabled and consented against the current EULA id', async () => {
@@ -111,29 +111,29 @@ describe('buildWarrantyConfigUpdate (#5511 W02)', () => {
       enabled: true, warnDays: 90, criticalDays: 30,
       hpCmsl: { enabled: true, consent: CONSENT },
     });
-    await expect(buildWarrantyConfigUpdate(DEVICE_ID)).resolves.toEqual({ hpCmslEnabled: true });
+    await expect(buildWarrantyConfigUpdate(DEVICE_ID)).resolves.toEqual({ hpCmslOptedIn: true });
   });
 
   it('returns false for an alerting-only link (the inheritance drop, contract D5)', async () => {
     resolveEffectiveWarrantyInlineSettingsMock.mockResolvedValue({ enabled: true, warnDays: 14 });
-    await expect(buildWarrantyConfigUpdate(DEVICE_ID)).resolves.toEqual({ hpCmslEnabled: false });
+    await expect(buildWarrantyConfigUpdate(DEVICE_ID)).resolves.toEqual({ hpCmslOptedIn: false });
   });
 
   it('returns false when the block is enabled but carries no acceptance', async () => {
     resolveEffectiveWarrantyInlineSettingsMock.mockResolvedValue({ hpCmsl: { enabled: true } });
-    await expect(buildWarrantyConfigUpdate(DEVICE_ID)).resolves.toEqual({ hpCmslEnabled: false });
+    await expect(buildWarrantyConfigUpdate(DEVICE_ID)).resolves.toEqual({ hpCmslOptedIn: false });
   });
 
   it('returns false when the acceptance names a superseded EULA id (contract D2)', async () => {
     resolveEffectiveWarrantyInlineSettingsMock.mockResolvedValue({
       hpCmsl: { enabled: true, consent: { ...CONSENT, eulaId: 'hp-cmsl-eula-2020-01-01' } },
     });
-    await expect(buildWarrantyConfigUpdate(DEVICE_ID)).resolves.toEqual({ hpCmslEnabled: false });
+    await expect(buildWarrantyConfigUpdate(DEVICE_ID)).resolves.toEqual({ hpCmslOptedIn: false });
   });
 
   it('returns false for a resolved-but-null blob', async () => {
     resolveEffectiveWarrantyInlineSettingsMock.mockResolvedValue(null);
-    await expect(buildWarrantyConfigUpdate(DEVICE_ID)).resolves.toEqual({ hpCmslEnabled: false });
+    await expect(buildWarrantyConfigUpdate(DEVICE_ID)).resolves.toEqual({ hpCmslOptedIn: false });
   });
 
   it('RETHROWS a resolver error rather than reporting false (no unintended revocation)', async () => {
