@@ -584,6 +584,8 @@ func TestPolicyChangeMidCycleStopsRemainingWrites(t *testing.T) {
 	for name, next := range map[string]Settings{
 		"removed":       {Enabled: false},
 		"configure_off": {Enabled: true},
+		// enabled is part of the gate even if configure_settings stays true.
+		"disabled_configure_on": {Enabled: false, ConfigureSettings: true},
 	} {
 		m := badMachine()
 		inner := &fakeWriter{machine: m}

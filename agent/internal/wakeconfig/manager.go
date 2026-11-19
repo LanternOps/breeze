@@ -144,7 +144,7 @@ func (m *Manager) takeFPChanged() bool {
 
 // writesAllowed is the single gate in front of every Writer call.
 func (m *Manager) writesAllowed(s Settings) bool {
-	return s.ConfigureSettings && (writesActivated || m.opts.testAllowWrites) && m.opts.Writer != nil
+	return s.Enabled && s.ConfigureSettings && (writesActivated || m.opts.testAllowWrites) && m.opts.Writer != nil
 }
 
 // Start launches the loop. It returns immediately and is idempotent.
