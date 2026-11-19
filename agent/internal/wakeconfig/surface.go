@@ -108,8 +108,13 @@ func observeSurface(ctx context.Context, run biosconfig.Runner, in Inputs) *bios
 	}
 	if raw.Identity != nil {
 		s.SystemSKU = biosconfig.CleanPtr(raw.Identity.SKU, biosconfig.MaxObservedField)
-		if m := biosconfig.CleanPtr(raw.Identity.Model, biosconfig.MaxObservedField); m != nil {
+		// The recorded model is the classifier's (in.Model); WMI's fills in
+		// only when the collector had none, so model and decidedBy agree.
+		if m := biosconfig.CleanPtr(raw.Identity.Model, biosconfig.MaxObservedField); m != nil && s.Model == nil {
 			s.Model = m
+			if surfaceMatchRe.MatchString(*m) {
+				s.DecidedBy = SurfaceDecidedByModel
+			}
 		}
 	}
 	for _, a := range raw.Adapters {

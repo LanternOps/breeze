@@ -152,6 +152,26 @@ func TestHyperVIsNotSurface(t *testing.T) {
 	}
 }
 
+// The recorded model is the one the classifier decided on (the hardware
+// collector's), so model and decidedBy never disagree; WMI's model fills in
+// only when the collector had none.
+func TestSurfaceModelMatchesDecision(t *testing.T) {
+	f := newFakeScripts()
+	f.out[surfaceReadScript] = mustMarshal(t, map[string]any{
+		"identity": map[string]any{"sku": "X", "model": "OptiPlex 7060"}, "netAdapter": true, "adapters": []any{}, "error": nil,
+	})
+	o := testObserver(f, "amd64")(context.Background(), surfaceInputs(), biosconfig.VendorSurface)
+	if o.Surface.Model == nil || *o.Surface.Model != "Surface Laptop 5" || o.Surface.DecidedBy != SurfaceDecidedByModel {
+		t.Fatalf("model=%v decidedBy=%s", o.Surface.Model, o.Surface.DecidedBy)
+	}
+	in := surfaceInputs()
+	in.Model = ""
+	o2 := testObserver(f, "amd64")(context.Background(), in, biosconfig.VendorSurface)
+	if o2.Surface.Model == nil || *o2.Surface.Model != "OptiPlex 7060" || o2.Surface.DecidedBy != SurfaceDecidedByOtherModel {
+		t.Fatalf("fallback model=%v decidedBy=%s", o2.Surface.Model, o2.Surface.DecidedBy)
+	}
+}
+
 func TestSurfaceNonSurfaceModelRecordsRule(t *testing.T) {
 	f := newFakeScripts()
 	f.out[surfaceReadScript] = surfaceReply(t)
