@@ -11,7 +11,7 @@ import {
   renderLinkRow,
 } from './emailLayout';
 import type { PartnerLaneMailPurpose, PlatformMailPurpose } from './emailDomains/mailPurposes';
-import { platformFallbackFrom, resolveSender } from './emailDomains/senderResolution';
+import { platformFallbackFrom, resolveSender, type HeldReason } from './emailDomains/senderResolution';
 import {
   renderPartnerEmail,
   type PartnerEmailCustom,
@@ -73,11 +73,11 @@ export class EmailTransportError extends Error implements EmailTransportErrorFie
  * Queue-backed callers retry per their own policy; the cap resets at 00:00 UTC.
  */
 export class EmailSendHeldError extends Error {
-  readonly reason: 'over_cap';
+  readonly reason: HeldReason;
   readonly partnerId: string;
   readonly purpose: string;
 
-  constructor(fields: { reason: 'over_cap'; partnerId: string; purpose: string }) {
+  constructor(fields: { reason: HeldReason; partnerId: string; purpose: string }) {
     super(
       `Email not sent: partner ${fields.partnerId} reached its daily partner-lane send cap ` +
       `(purpose ${fields.purpose}). It was held, not sent from the platform sender; ` +
