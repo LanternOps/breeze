@@ -321,7 +321,7 @@ build-macos-installer-app:
         cd agent/installer/macos-app
         xcodebuild -scheme "Breeze Installer" -configuration Release \
           -derivedDataPath build \
-          CODE_SIGN_IDENTITY="Developer ID Application: Olive Technologies LLC (TEAMID)" \
+          CODE_SIGN_IDENTITY="Developer ID Application: Example Corp LLC (TEAMID)" \
           CODE_SIGN_STYLE=Manual \
           DEVELOPMENT_TEAM=$TEAM_ID
 
@@ -412,7 +412,7 @@ export async function buildMacosInstallerAppZip(
 
 ## Appendix — Why we're not mirroring the Windows MSI signing stack
 
-The Windows MSI flow uses server-side byte-patch sentinels + remote signing via a Cloudflare-tunneled Windows VM + Azure Trusted Signing dlib. That works, but carries a real ops tax: a Windows VM on the OliveTech LAN, CF Access service tokens, an Azure subscription with rotating signing certs, a 3-day cert lifetime, and a pile of padded-sentinel code (the v0.62.23 trim bug surfaced precisely because the padded-sentinel path was the one customers actually hit but wasn't in the smoke test). All of that solves "inject per-customer data into a signed binary without re-signing."
+The Windows MSI flow uses server-side byte-patch sentinels + remote signing via a Cloudflare-tunneled Windows VM + Azure Trusted Signing dlib. That works, but carries a real ops tax: a Windows VM on an office LAN, CF Access service tokens, an Azure subscription with rotating signing certs, a 3-day cert lifetime, and a pile of padded-sentinel code (the v0.62.23 trim bug surfaced precisely because the padded-sentinel path was the one customers actually hit but wasn't in the smoke test). All of that solves "inject per-customer data into a signed binary without re-signing."
 
 Authenticode on MSI is actually based on the MSI's internal content hash, not the filename — meaning a generic signed MSI can be renamed `Breeze Agent [TOKEN].msi` and its signature stays valid, identical in principle to this Mac design. A future cleanup could fold the Windows MSI onto the same pattern:
 
