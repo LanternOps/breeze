@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/biosconfig"
 )
@@ -255,6 +256,52 @@ func TestDellCapturesEndToEnd(t *testing.T) {
 	want := []string{"fast_startup_enabled", "firmware_deep_sleep_enabled", "firmware_wake_on_lan_not_lan_only", "nic_eee_enabled"}
 	if s.ReadinessState != "not_configured" || !reflect.DeepEqual(s.ReasonCodes, want) {
 		t.Fatalf("got %s %v, want %v", s.ReadinessState, s.ReasonCodes, want)
+	}
+}
+
+// Review: a remembered (absent) adapter must not prove ready while a present
+// wired adapter is wrong; with nothing present (undocked) the remembered one
+// keeps readiness, per the spec's 30-day memory.
+func TestReadyNeedsAPresentAdapterWhenOneIsPresent(t *testing.T) {
+	in := dellInputs(dellConfigured(), "disabled", AdapterReading{MAC: "aa:bb:cc:dd:ee:01", MagicPacket: "disabled", EEE: "disabled"})
+	in.Memory = AdapterMemory{"aa:bb:cc:dd:ee:09": {LastSeenAt: t0.Add(-20 * 24 * time.Hour), MagicPacket: "enabled", EEE: "disabled"}}
+	if s := Compute(in); s.ReadinessState == "ready" {
+		t.Fatalf("remembered adapter proved ready over a present wrong one: %v", s.ReasonCodes)
+	}
+	undocked := dellInputs(dellConfigured(), "disabled")
+	undocked.Memory = AdapterMemory{"aa:bb:cc:dd:ee:09": {LastSeenAt: t0.Add(-20 * 24 * time.Hour), MagicPacket: "enabled", EEE: "disabled"}}
+	if s := Compute(undocked); s.ReadinessState != "ready" {
+		t.Fatalf("undocked with a remembered good adapter: got %s %v", s.ReadinessState, s.ReasonCodes)
+	}
+}
+
+// Review: a current value that is empty or outside the model's own list was
+// not really read; it is unproven, never "wrong and fixable".
+func TestUnrecognisedCurrentValueIsUnproven(t *testing.T) {
+	for _, v := range []string{"", "SomethingNew"} {
+		fw := dellConfigured()
+		fw.Settings[1].Value = v
+		s := Compute(dellInputs(fw, "disabled", readyNIC("aa:bb:cc:dd:ee:01")))
+		if s.ReadinessState != "unproven" || !reflect.DeepEqual(s.ReasonCodes, []string{"firmware_value_unrecognised"}) {
+			t.Errorf("value %q: got %s %v", v, s.ReadinessState, s.ReasonCodes)
+		}
+	}
+}
+
+// Review: a target name listed twice is ambiguous: unproven.
+func TestDuplicateTargetNameIsUnproven(t *testing.T) {
+	fw := dellConfigured()
+	fw.Settings = append(fw.Settings, biosconfig.Setting{Name: "WakeOnLan", Value: "Disabled", Allowed: fw.Settings[1].Allowed})
+	s := Compute(dellInputs(fw, "disabled", readyNIC("aa:bb:cc:dd:ee:01")))
+	if s.ReadinessState != "unproven" || !hasReason(s, "firmware_setting_unrecognised") {
+		t.Fatalf("got %s %v", s.ReadinessState, s.ReasonCodes)
+	}
+}
+
+func TestProtectionZeroValueIsUnknown(t *testing.T) {
+	var p biosconfig.Protection
+	if p != biosconfig.ProtectionUnknown {
+		t.Fatalf("zero Protection = %v, want unknown", p)
 	}
 }
 

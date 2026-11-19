@@ -203,12 +203,15 @@ func Compute(in Inputs) Snapshot {
 			reasons["fast_startup_unknown"] = true
 		}
 		// good: no adapter setting is known wrong. proven: one adapter is
-		// known right on every reading, which ready requires.
+		// known right on every reading, which ready requires. While any wired
+		// adapter is present, only a present one can prove ready; with none
+		// present (undocked) the remembered ones keep readiness for 30 days.
+		anyPresent := len(present) > 0
 		good, proven := false, false
 		for _, mac := range macs {
 			if rec := mem[mac]; rec.MagicPacket == "enabled" && rec.EEE != "enabled" {
 				good = true
-				if rec.EEE == "disabled" || rec.EEE == "absent" {
+				if (rec.EEE == "disabled" || rec.EEE == "absent") && (present[mac] || !anyPresent) {
 					proven = true
 					break
 				}

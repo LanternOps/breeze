@@ -108,16 +108,20 @@ func (h *Heartbeat) collectWakeInputs(ctx context.Context) (wakeconfig.Inputs, e
 		return wakeconfig.Inputs{}, fmt.Errorf("hardware identity: %w", err)
 	}
 	virt := collectors.ClassifyVirtualization(hw)
-	return wakeconfig.Inputs{
+	in := wakeconfig.Inputs{
 		OS:           runtime.GOOS,
 		Manufacturer: hw.Manufacturer,
 		Model:        hw.Model,
 		Virtual:      virt.IsVirtual,
 		Windows:      readings,
+	}
+	if !virt.IsVirtual {
 		// Read-only. A failed firmware read is reported in the snapshot and
-		// never fails the collection.
-		Firmware: wakeconfig.ReadFirmware(ctx, biosconfig.Detect(hw.Manufacturer, hw.Model)),
-	}, nil
+		// never fails the collection. A VM is unsupported_vm whatever its
+		// firmware says, so it is not read.
+		in.Firmware = wakeconfig.ReadFirmware(ctx, biosconfig.Detect(hw.Manufacturer, hw.Model))
+	}
+	return in, nil
 }
 
 func (h *Heartbeat) startWake() {

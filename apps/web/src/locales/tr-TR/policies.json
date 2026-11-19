@@ -1272,6 +1272,7 @@
             "firmware_deep_sleep_enabled": "BIOS Derin Uyku Denetimi açık",
             "firmware_setting_unrecognised": "Breeze'in denetlediği bir BIOS ayarı bu modelde tanınmadı",
             "firmware_value_not_allowed": "Bu model Breeze'in gerektirdiği BIOS değerine izin vermiyor",
+            "firmware_value_unrecognised": "Breeze'in denetlediği bir BIOS değeri tanınmadı",
             "firmware_unreadable": "BIOS ayarları okunamadı",
             "firmware_interface_unavailable": "Bu model BIOS ayarlarını Windows'a sunmuyor"
           },

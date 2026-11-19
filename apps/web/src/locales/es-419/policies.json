@@ -1272,6 +1272,7 @@
             "firmware_deep_sleep_enabled": "El control de suspensión profunda del BIOS está activado",
             "firmware_setting_unrecognised": "No se reconoció en este modelo una configuración del BIOS que Breeze revisa",
             "firmware_value_not_allowed": "Este modelo no permite el valor del BIOS que Breeze necesita",
+            "firmware_value_unrecognised": "No se reconoció un valor del BIOS que Breeze revisa",
             "firmware_unreadable": "No se pudo leer la configuración del BIOS",
             "firmware_interface_unavailable": "Este modelo no expone la configuración del BIOS a Windows"
           },

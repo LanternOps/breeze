@@ -87,15 +87,18 @@ func evaluateFirmware(fw *FirmwareReadings, reasons map[string]bool) (firmwareVe
 		return firmwareUnproven, nil
 	}
 	byName := make(map[string]biosconfig.Setting, len(fw.Settings))
+	count := make(map[string]int, len(fw.Settings))
 	for _, s := range fw.Settings {
 		byName[s.Name] = s
+		count[s.Name]++
 	}
 	current := make(map[string]string, len(targets))
 	unproven := false
 	var wrong []string
 	for _, t := range targets {
 		s, ok := byName[t.Name]
-		if !ok {
+		if !ok || count[t.Name] > 1 {
+			// Missing, or listed more than once (ambiguous): not guessed.
 			reasons["firmware_setting_unrecognised"] = true
 			unproven = true
 			continue
@@ -103,6 +106,12 @@ func evaluateFirmware(fw *FirmwareReadings, reasons map[string]bool) (firmwareVe
 		current[t.Name] = s.Value
 		if !slices.Contains(s.Allowed, t.Value) {
 			reasons["firmware_value_not_allowed"] = true
+			unproven = true
+			continue
+		}
+		if !slices.Contains(s.Allowed, s.Value) {
+			// Empty or outside the model's own list: not really read.
+			reasons["firmware_value_unrecognised"] = true
 			unproven = true
 			continue
 		}

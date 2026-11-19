@@ -1272,6 +1272,7 @@
             "firmware_deep_sleep_enabled": "BIOS-Deep-Sleep-Steuerung ist aktiviert",
             "firmware_setting_unrecognised": "Eine von Breeze geprüfte BIOS-Einstellung wurde auf diesem Modell nicht erkannt",
             "firmware_value_not_allowed": "Dieses Modell erlaubt den von Breeze benötigten BIOS-Wert nicht",
+            "firmware_value_unrecognised": "Ein von Breeze geprüfter BIOS-Wert wurde nicht erkannt",
             "firmware_unreadable": "BIOS-Einstellungen konnten nicht gelesen werden",
             "firmware_interface_unavailable": "Dieses Modell stellt Windows keine BIOS-Einstellungen bereit"
           },

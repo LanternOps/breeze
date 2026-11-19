@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 )
 
 // dellReadScript is READ-ONLY. It reads Dell's native BIOS WMI (no Dell tool
@@ -125,11 +127,35 @@ func parseDellRead(raw []byte) (dellRead, error) {
 // release.
 type dellAdapter struct {
 	run func(ctx context.Context, script string) ([]byte, error)
+	now func() time.Time // nil means time.Now
+
+	mu     sync.Mutex
+	last   dellRead
+	lastAt time.Time
 }
+
+// dellReadReuse lets Protection reuse the Read just done in the same
+// collection (one PowerShell run, one consistent snapshot). Only a successful
+// read is reused.
+const dellReadReuse = 30 * time.Second
 
 func (d *dellAdapter) Vendor() string { return "dell" }
 
+func (d *dellAdapter) clock() time.Time {
+	if d.now != nil {
+		return d.now()
+	}
+	return time.Now()
+}
+
 func (d *dellAdapter) query(ctx context.Context) (dellRead, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.lastAt.IsZero() {
+		if age := d.clock().Sub(d.lastAt); age >= 0 && age < dellReadReuse {
+			return d.last, nil
+		}
+	}
 	out, err := d.run(ctx, dellReadScript)
 	if err != nil {
 		return dellRead{}, err
@@ -141,6 +167,7 @@ func (d *dellAdapter) query(ctx context.Context) (dellRead, error) {
 	if !r.Interface {
 		return r, ErrInterfaceUnavailable
 	}
+	d.last, d.lastAt = r, d.clock()
 	return r, nil
 }
 

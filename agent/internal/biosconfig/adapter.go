@@ -16,13 +16,14 @@ type Setting struct {
 	Allowed []string
 }
 
-// Protection says whether the firmware is guarded by a setup password.
+// Protection says whether the firmware is guarded by a setup password. The
+// zero value is ProtectionUnknown, so a forgotten field never reads as "none".
 type Protection int
 
 const (
-	ProtectionNone Protection = iota
+	ProtectionUnknown Protection = iota
+	ProtectionNone
 	ProtectionSet
-	ProtectionUnknown
 )
 
 // String names a Protection for logs and snapshot details.

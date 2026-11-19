@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // testdata/dell-optiplex-7060-bios-read.json is dellReadScript's stdout,
@@ -136,8 +137,36 @@ func TestDellAdapterReadAndProtection(t *testing.T) {
 	if err != nil || p != ProtectionNone {
 		t.Fatalf("protection: %v %v", p, err)
 	}
+	// One collection reads settings then protection: one PowerShell run.
+	if calls != 1 {
+		t.Fatalf("calls %d, want 1", calls)
+	}
+}
+
+func TestDellAdapterReusesAReadOnlyBriefly(t *testing.T) {
+	calls := 0
+	now := time.Unix(1_800_000_000, 0)
+	a := &dellAdapter{now: func() time.Time { return now }, run: func(ctx context.Context, script string) ([]byte, error) {
+		calls++
+		return readCapture(t), nil
+	}}
+	_, _ = a.Read(context.Background())
+	_, _ = a.Protection(context.Background())
+	now = now.Add(dellReadReuse + time.Second)
+	_, _ = a.Protection(context.Background())
 	if calls != 2 {
-		t.Fatalf("calls %d", calls)
+		t.Fatalf("calls %d, want 2 (a stale read is not reused)", calls)
+	}
+	// A failed run is never reused.
+	a = &dellAdapter{now: func() time.Time { return now }, run: func(ctx context.Context, script string) ([]byte, error) {
+		calls++
+		return nil, errors.New("boom")
+	}}
+	calls = 0
+	_, _ = a.Read(context.Background())
+	_, _ = a.Protection(context.Background())
+	if calls != 2 {
+		t.Fatalf("calls %d, want 2 after failures", calls)
 	}
 }
 
