@@ -13,6 +13,7 @@ import { aiToolUsageAdminRoutes } from './aiToolUsage';
 import { aiBillingAdminRoutes } from './aiBilling';
 import { trustAdminRoutes } from './trust';
 import { trustActionAdminRoutes } from './trustAct';
+import { trustFraudFlagAdminRoutes } from './trustFraudFlags';
 import { adminMonitorConversionRoutes } from './monitorConversion';
 import { adminSendingDomainsRoutes } from './sendingDomains';
 import { deprecationsAdminRoutes } from './deprecations';
@@ -30,6 +31,7 @@ adminRoutes.route('/', adminAutopayRolloutRoutes);
 adminRoutes.route('/', abuseRoutes);
 adminRoutes.route('/', trustAdminRoutes);
 adminRoutes.route('/', trustActionAdminRoutes);
+adminRoutes.route('/', trustFraudFlagAdminRoutes);
 // Task 30 — GDPR org-wide erasure + export.
 // Mounted UNDER the platformAdminMiddleware above; tenantErasureRoutes
 // adds its own requireMfa() middleware on top.
