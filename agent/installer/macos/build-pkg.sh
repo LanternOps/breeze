@@ -3,13 +3,23 @@
 # Breeze Agent macOS .pkg Builder
 # ============================================
 # Usage:
-#   ./build-pkg.sh <agent-binary> <desktop-helper-binary> <backup-binary> <watchdog-binary> <version> <arch> <output-path>
+#   ./build-pkg.sh <agent-binary> <desktop-helper-binary> <backup-binary> <watchdog-binary> <version> <arch> <output-path> <min-macos>
+#
+# <min-macos> is REQUIRED: the minimum macOS this package installs on, e.g.
+# "$(jq -r .macos agent/platform-floors.json)". It must match
+# ^[0-9]{1,3}(\.[0-9]{1,3}){0,2}$ and is rendered into the shipped preinstall.
 #
 # Example:
-#   ./build-pkg.sh ./breeze-agent-darwin-amd64 ./breeze-desktop-helper-darwin-amd64 ./breeze-backup-darwin-amd64 ./breeze-watchdog-darwin-amd64 0.13.3 amd64 ./dist/breeze-agent-darwin-amd64.pkg
+#   ./build-pkg.sh ./breeze-agent-darwin-amd64 ./breeze-desktop-helper-darwin-amd64 ./breeze-backup-darwin-amd64 ./breeze-watchdog-darwin-amd64 0.13.3 amd64 ./dist/breeze-agent-darwin-amd64.pkg 12.0
 # ============================================
 
 set -euo pipefail
+
+if [ "$#" -ne 8 ]; then
+    echo "usage: build-pkg.sh <agent-binary> <desktop-helper-binary> <backup-binary> <watchdog-binary> <version> <arch> <output-path> <min-macos>" >&2
+    echo "build-pkg.sh: the <min-macos> argument is required (see agent/platform-floors.json)" >&2
+    exit 64
+fi
 
 AGENT_BIN="$1"
 DESKTOP_HELPER_BIN="$2"
@@ -18,6 +28,13 @@ WATCHDOG_BIN="$4"
 VERSION="$5"
 ARCH="$6"
 OUTPUT="$7"
+MIN_MACOS="$8"
+
+# Validate before any work: a malformed floor must never reach a shipped pkg.
+if ! [[ "$MIN_MACOS" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){0,2}$ ]]; then
+    echo "build-pkg.sh: <min-macos> '$MIN_MACOS' is malformed; expected e.g. 12.0 (^[0-9]{1,3}(\\.[0-9]{1,3}){0,2}\$)" >&2
+    exit 64
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORK_DIR="$(mktemp -d)"
@@ -31,6 +48,7 @@ echo "  Watchdog: $WATCHDOG_BIN"
 echo "  Version:  $VERSION"
 echo "  Arch:     $ARCH"
 echo "  Output:   $OUTPUT"
+echo "  Min macOS: $MIN_MACOS"
 echo ""
 
 # ----- Build payload root -----
@@ -77,7 +95,16 @@ cp "$SCRIPT_DIR/com.breeze.watchdog.plist" \
 # ----- Prepare install scripts -----
 SCRIPTS="$WORK_DIR/scripts"
 mkdir -p "$SCRIPTS"
-cp "$SCRIPT_DIR/preinstall" "$SCRIPTS/preinstall"
+# Render the minimum-macOS floor into the shipped copy only (the source file
+# keeps the literal placeholder). Plain s///, so BSD and GNU sed both work; the
+# value is regex-validated above and contains only digits and dots.
+sed "s/__BREEZE_MIN_MACOS__/$MIN_MACOS/g" "$SCRIPT_DIR/preinstall" > "$SCRIPTS/preinstall"
+if grep -q '__BREEZE_MIN_MACOS__' "$SCRIPTS/preinstall"; then
+    echo "build-pkg.sh: failed to render the macOS floor into preinstall" >&2
+    exit 1
+fi
+# Sourced by preinstall from its own directory (the floor comparison).
+cp "$SCRIPT_DIR/os-floor.sh" "$SCRIPTS/os-floor.sh"
 cp "$SCRIPT_DIR/postinstall" "$SCRIPTS/postinstall"
 # Sourced by postinstall from its own directory.
 cp "$SCRIPT_DIR/install-location.sh" "$SCRIPTS/install-location.sh"
@@ -89,7 +116,7 @@ cp "$SCRIPT_DIR/../../internal/sessionbroker/ensure_ipc_group.sh" "$SCRIPTS/ensu
 # every boot. postinstall renders it only when a recovery binary was staged.
 cp "$SCRIPT_DIR/../../service/launchd/com.breeze.isolation.plist" "$SCRIPTS/com.breeze.isolation.plist"
 chmod 755 "$SCRIPTS/preinstall" "$SCRIPTS/postinstall"
-chmod 644 "$SCRIPTS/install-location.sh" "$SCRIPTS/ensure_ipc_group.sh" "$SCRIPTS/com.breeze.isolation.plist"
+chmod 644 "$SCRIPTS/os-floor.sh" "$SCRIPTS/install-location.sh" "$SCRIPTS/ensure_ipc_group.sh" "$SCRIPTS/com.breeze.isolation.plist"
 
 # ----- Build component package -----
 mkdir -p "$(dirname "$OUTPUT")"

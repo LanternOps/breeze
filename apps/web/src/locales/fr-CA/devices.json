@@ -1429,6 +1429,8 @@
   "deviceInfoTab": {
     "updateStuck": "La mise à jour de l'agent vers {{target}} semble bloquée : {{attempts}} tentatives depuis {{since}} et l'appareil est toujours sur son ancienne version. Le programme de mise à jour réessaie à chaque heartbeat; vérifiez les journaux de l'agent, ou l'appareil lui-même s'il n'en envoie aucun.",
     "updateOfferWithheld": "Les offres de mise à jour sont retenues pour cet appareil (depuis {{since}}) : on ne peut pas confirmer que la version de son agent accepte l'édition offerte par ce serveur, il reste donc à sa version actuelle. Récupérez-le avec un programme d'installation de l'édition offerte ou une version de l'agent qui signale son édition.",
+    "updateOfferWithheldOs": "Les mises à jour de l'agent sont suspendues pour cet appareil (depuis le {{since}}) : sa version de macOS est inférieure au minimum requis par la version actuelle de l'agent, il reste donc sur la version d'agent installée. Mettez macOS à niveau pour reprendre les mises à jour de l'agent.",
+    "updateOfferWithheldOsUnknown": "Les mises à jour de l'agent sont suspendues pour cet appareil (depuis le {{since}}) : sa version de macOS n'a pas pu être déterminée et la version actuelle de l'agent exige une version minimale de macOS, il reste donc sur la version d'agent installée jusqu'à ce qu'il signale sa version de macOS.",
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist est activé mais non installé (depuis le {{since}}) : le serveur n’a proposé aucune version de Breeze Assist à installer sur cet appareil, qui reste donc sans installation. Vérifiez qu’une version de Breeze Assist est publiée pour la plateforme de cet appareil.",
       "installAbandoned": "Breeze Assist est activé mais non installé (depuis le {{since}}) : l’installation de la version proposée a échoué à plusieurs reprises, l’agent a donc suspendu les tentatives. Il réessaiera dans quelques heures ou lorsqu’une version plus récente sera proposée; le journal de l’agent contient l’erreur d’installation.",
@@ -1870,6 +1872,8 @@
     "updateStuck": "Mise à jour bloquée",
     "updateStuckTooltip": "Cet appareil réessaie depuis plus d'une heure sa mise à jour de l'agent vers {{target}} sans aboutir.",
     "updateWithheldTooltip": "Le serveur n'offre pas de mises à jour à cet appareil, car on ne peut pas confirmer que la version de son agent accepte l'édition offerte. Il reste à sa version actuelle jusqu'à sa récupération.",
+    "updateWithheldTooltipOs": "Les mises à jour sont suspendues, car la version de macOS de cet appareil est inférieure au minimum requis par la version actuelle de l'agent.",
+    "updateWithheldTooltipOsUnknown": "Les mises à jour sont suspendues, car la version de macOS de cet appareil n'a pas pu être déterminée et la version actuelle de l'agent exige une version minimale de macOS.",
     "helperNotInstalled": "Non installé",
     "helperUnavailable": "Assist non disponible",
     "helperInstallIssueTooltip": {

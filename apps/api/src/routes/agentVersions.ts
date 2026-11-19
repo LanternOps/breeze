@@ -32,6 +32,8 @@ import {
   ReleaseManifestAssetLookupError,
   ReleaseManifestSignatureError,
   verifyManifestSignatureAgainstOfficialKeysOnly,
+  darwinMinOsRequired,
+  readManifestAssetMinOs,
 } from "../services/releaseArtifactManifest";
 import { EDITION_HOSTED, EDITION_SELF_HOST } from "../services/releaseAssetTrust";
 import {
@@ -441,6 +443,24 @@ export function canonicalReleaseAssetName(
   }
 
   return null;
+}
+
+/**
+ * #12169: the minimum OS a registered row's schema-v1 release manifest
+ * records for its asset (resolved the same way validateReleaseManifest
+ * resolves the asset name). Null for any other manifest shape.
+ */
+function manifestMinOsForRow(args: {
+  manifest: string | null | undefined;
+  component: string;
+  platform: string;
+  architecture: string;
+  downloadUrl: string;
+}): string | null {
+  const assetName =
+    canonicalReleaseAssetName(args.component, args.platform, args.architecture) ??
+    assetNameFromDownloadUrl(args.downloadUrl);
+  return assetName ? readManifestAssetMinOs(args.manifest, assetName) : null;
 }
 
 // Server-origin discovery for handing agents a download URL that matches
@@ -1044,6 +1064,15 @@ agentVersionRoutes.post(
         isLatest: data.isLatest ?? false,
         component: data.component,
         edition,
+        // #12169: the floor the (already verified) schema-v1 manifest records
+        // for this asset; null for a per-deployment manifest.
+        minOsVersion: manifestMinOsForRow({
+          manifest: data.releaseManifest,
+          component: data.component,
+          platform: data.platform,
+          architecture: data.architecture,
+          downloadUrl: data.downloadUrl,
+        }),
       })
       .returning();
     if (!newVersion) {
@@ -1252,6 +1281,7 @@ agentVersionRoutes.get("/", platformAdminMiddleware, async (c) => {
       isLatest: agentVersions.isLatest,
       fileSize: agentVersions.fileSize,
       releaseNotes: agentVersions.releaseNotes,
+      minOsVersion: agentVersions.minOsVersion,
       createdAt: agentVersions.createdAt,
     })
     .from(agentVersions)
@@ -1313,6 +1343,7 @@ agentVersionRoutes.post(
         releaseManifest: agentVersions.releaseManifest,
         manifestSignature: agentVersions.manifestSignature,
         signingKeyId: agentVersions.signingKeyId,
+        minOsVersion: agentVersions.minOsVersion,
       })
       .from(agentVersions)
       .where(
@@ -1359,6 +1390,19 @@ agentVersionRoutes.post(
       reason: string;
     }> = [];
     for (const row of targetRows) {
+      // #12169: a darwin row of a release that must record its minimum OS but
+      // does not would point Macs at a build the gate cannot judge. Refuse
+      // (fail closed) — e.g. a hosted build whose manifest was not stamped.
+      const rowAssetName = canonicalReleaseAssetName(row.component, row.platform, row.architecture);
+      if (row.minOsVersion == null && rowAssetName && darwinMinOsRequired(rowAssetName, row.version)) {
+        invalidTargets.push({
+          component: row.component,
+          platform: row.platform,
+          architecture: row.architecture,
+          reason: "min_os_missing",
+        });
+        continue;
+      }
       const check = await validateReleaseManifest({
         manifest: row.releaseManifest,
         signature: row.manifestSignature,

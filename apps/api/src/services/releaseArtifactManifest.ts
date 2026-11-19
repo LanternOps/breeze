@@ -122,6 +122,69 @@ export class ReleaseManifestTooOldError extends ReleaseAssetNotDistributableErro
 // v0.105.0 has `edition`, v0.112.0 is the first with signingIdentity/TeamId.
 export const FIRST_RELEASE_WITH_EDITION = "v0.105.0";
 export const FIRST_RELEASE_WITH_MACOS_PUBLISHER = "v0.112.0";
+// #12169: the first release whose manifest stamps `minOs` on every darwin
+// asset (release.yml, from agent/platform-floors.json). v0.130.0-rc.1 was cut
+// without it, so the threshold is the next minor; rc tags of the threshold
+// itself must carry it (see releasePredates). If this ships after v0.131.0 is
+// cut, raise it to the first release that actually carries `minOs`.
+export const FIRST_RELEASE_WITH_MIN_OS = "v0.131.0";
+
+// The darwin assets the release stamps with `minOs` (agent/backup/watchdog/
+// desktop-helper binaries and the agent pkg) — never `-unsigned` signing
+// inputs or the Tauri apps. Kept in step with release.yml's MIN_OS_ASSET_RE.
+const DARWIN_MIN_OS_ASSET_RE =
+  /^breeze-(?:(?:agent|backup|watchdog|desktop-helper)-darwin-(?:amd64|arm64)|agent-darwin-(?:amd64|arm64)\.pkg)$/;
+const MIN_OS_RE = /^\d{1,3}(\.\d{1,3}){0,2}$/;
+
+/** True for an asset the release stamps with `minOs` (#12169). */
+export function isDarwinMinOsAsset(assetName: string): boolean {
+  return DARWIN_MIN_OS_ASSET_RE.test(assetName);
+}
+
+/**
+ * True when a darwin asset of `release` must carry a `minOs` (#12169): the
+ * asset is in the stamped set and the release is not older than
+ * FIRST_RELEASE_WITH_MIN_OS. `release` may omit the leading "v".
+ */
+export function darwinMinOsRequired(assetName: string, release: string): boolean {
+  const tag = release.startsWith("v") ? release : `v${release}`;
+  return isDarwinMinOsAsset(assetName) && !releasePredates(tag, FIRST_RELEASE_WITH_MIN_OS);
+}
+
+/**
+ * The `minOs` a schema-v1 release manifest records for `assetName`, or null
+ * (other manifest shapes, no entry, or no/invalid floor). Parses only — call
+ * it on a manifest that has already been verified.
+ */
+export function readManifestAssetMinOs(manifest: string | null | undefined, assetName: string): string | null {
+  if (!manifest) return null;
+  let parsed: ReleaseArtifactManifest;
+  try {
+    parsed = JSON.parse(manifest) as ReleaseArtifactManifest;
+  } catch {
+    return null;
+  }
+  if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.assets)) return null;
+  const entry = (parsed.assets as ReleaseArtifactManifestAsset[]).find((a) => a?.name === assetName);
+  return typeof entry?.minOs === "string" && MIN_OS_RE.test(entry.minOs) ? entry.minOs : null;
+}
+
+/**
+ * A darwin asset of a release at or after FIRST_RELEASE_WITH_MIN_OS whose
+ * signed manifest records no `minOs` (#12169). Registering it would leave its
+ * Macs ungated, so registration refuses it instead (fail closed: those Macs
+ * stay on their current version, and the refusal is reported). A policy
+ * refusal, so it subclasses ReleaseAssetNotDistributableError.
+ */
+export class ReleaseManifestMinOsMissingError extends ReleaseAssetNotDistributableError {
+  constructor(assetName: string, release: string) {
+    super(
+      `The signed release manifest for ${release} records no minOs for ${assetName}; every darwin asset since ` +
+        `${FIRST_RELEASE_WITH_MIN_OS} must carry one (agent/platform-floors.json), so it is not registered.`,
+    );
+    this.name = "ReleaseManifestMinOsMissingError";
+  }
+}
 
 function parseReleaseTag(tag: string): [number, number, number] | null {
   const match = /^v(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(tag);
@@ -174,6 +237,8 @@ type ReleaseArtifactManifestAsset = {
   edition?: unknown;
   signingIdentity?: unknown;
   signingTeamId?: unknown;
+  // Minimum OS the asset supports (#12169), e.g. "12.0". Darwin assets only.
+  minOs?: unknown;
 };
 
 type ReleaseArtifactManifest = {
@@ -230,7 +295,35 @@ export type VerifiedReleaseArtifact = {
   edition: string | null;
   signingIdentity: string | null;
   signingTeamId: string | null;
+  /** The asset's minimum OS (#12169); null when the manifest records none. */
+  minOs: string | null;
 };
+
+/**
+ * Read an asset's `minOs`. Absent → null. Present but malformed → refuse:
+ * a manifest that claims a floor must state a usable one (D4 precedent).
+ * With `required`, a darwin asset of a release at or after
+ * FIRST_RELEASE_WITH_MIN_OS must carry one (registration paths only).
+ */
+function readMinOs(
+  entry: ReleaseArtifactManifestAsset,
+  assetName: string,
+  release: string,
+  required: boolean,
+): string | null {
+  if (entry.minOs === undefined) {
+    if (required && darwinMinOsRequired(assetName, release)) {
+      throw new ReleaseManifestMinOsMissingError(assetName, release);
+    }
+    return null;
+  }
+  if (typeof entry.minOs !== "string" || !MIN_OS_RE.test(entry.minOs)) {
+    throw new ReleaseManifestAssetLookupError(
+      `Release artifact manifest has invalid minOs for ${assetName}`,
+    );
+  }
+  return entry.minOs;
+}
 
 function readMacosPublisher(
   entry: ReleaseArtifactManifestAsset,
@@ -543,6 +636,7 @@ export async function verifyReleaseArtifactBuffer(args: {
     intendedUse: readIntendedUse(entry, args.assetName),
     edition: typeof entry.edition === 'string' ? entry.edition : null,
     ...publisher,
+    minOs: readMinOs(entry, args.assetName, manifest.release as string, false),
   };
 }
 
@@ -724,6 +818,12 @@ export async function verifyReleaseArtifactManifestAsset(args: {
   expectedPlatformTrust?: string;
   expectedEdition?: string;
   requireMacosPublisher?: boolean;
+  /**
+   * #12169: refuse a darwin asset of a release at or after
+   * FIRST_RELEASE_WITH_MIN_OS that carries no `minOs`. Only the registration
+   * paths (binarySync) pass this; the serving path never does.
+   */
+  requireDarwinMinOs?: boolean;
 }): Promise<VerifiedReleaseArtifact> {
   verifyManifestSignature(args.manifestBytes, args.signatureBytes);
   const manifest = parseManifest(args.manifestBytes);
@@ -741,6 +841,12 @@ export async function verifyReleaseArtifactManifestAsset(args: {
     args.requireMacosPublisher === true,
     manifest.release as string,
   );
+  const minOs = readMinOs(
+    entry,
+    args.assetName,
+    manifest.release as string,
+    args.requireDarwinMinOs === true,
+  );
   return {
     assetName: args.assetName,
     sha256: entry.sha256,
@@ -752,6 +858,7 @@ export async function verifyReleaseArtifactManifestAsset(args: {
     intendedUse: readIntendedUse(entry, args.assetName),
     edition: typeof entry.edition === 'string' ? entry.edition : null,
     ...publisher,
+    minOs,
   };
 }
 

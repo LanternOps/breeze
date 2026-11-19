@@ -1429,6 +1429,8 @@
   "deviceInfoTab": {
     "updateStuck": "Agent update to {{target}} appears stuck: {{attempts}} attempts since {{since}} and the device is still on its old version. The updater retries on every heartbeat; check the agent logs, or the device itself if it is shipping none.",
     "updateOfferWithheld": "Update offers are withheld from this device (since {{since}}): its agent build cannot be confirmed to accept the edition this server serves, so it stays on its current version. Recover it with an installer of the served edition or an agent release that reports its edition.",
+    "updateOfferWithheldOs": "Agent updates are on hold for this device (since {{since}}): its macOS version is below the minimum the current agent release requires, so it stays on its installed agent version. Upgrade macOS to resume agent updates.",
+    "updateOfferWithheldOsUnknown": "Agent updates are on hold for this device (since {{since}}): its macOS version could not be determined, and the current agent release requires a minimum macOS version, so it stays on its installed agent version until it reports its macOS version.",
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist is enabled but not installed (since {{since}}): the server has not offered a Breeze Assist version for this device to install, so it stays uninstalled. Check that a Breeze Assist build is published for this device's platform.",
       "installAbandoned": "Breeze Assist is enabled but not installed (since {{since}}): installing the offered version failed repeatedly, so the agent paused retries. It tries again after a few hours or when a newer version is offered; the agent log has the install error.",
@@ -1870,6 +1872,8 @@
     "updateStuck": "Update stuck",
     "updateStuckTooltip": "This device has been retrying its agent update to {{target}} for over an hour without converging.",
     "updateWithheldTooltip": "The server is not offering updates to this device because its agent build cannot be confirmed to accept the served edition. It stays on its current version until recovered.",
+    "updateWithheldTooltipOs": "Updates are on hold because this device's macOS version is below the minimum the current agent release requires.",
+    "updateWithheldTooltipOsUnknown": "Updates are on hold because this device's macOS version could not be determined and the current agent release requires a minimum macOS version.",
     "helperNotInstalled": "Not installed",
     "helperUnavailable": "Assist unavailable",
     "helperInstallIssueTooltip": {

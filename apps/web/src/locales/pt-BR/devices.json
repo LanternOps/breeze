@@ -1429,6 +1429,8 @@
   "deviceInfoTab": {
     "updateStuck": "A atualização do agente para {{target}} parece travada: {{attempts}} tentativas desde {{since}} e o dispositivo continua na versão antiga. O atualizador tenta novamente a cada heartbeat; verifique os logs do agente, ou o próprio dispositivo se ele não enviar nenhum.",
     "updateOfferWithheld": "As ofertas de atualização estão retidas para este dispositivo (desde {{since}}): não é possível confirmar que a build do agente aceita a edição servida por este servidor, então ele permanece na versão atual. Recupere-o com um instalador da edição servida ou uma versão do agente que informe sua edição.",
+    "updateOfferWithheldOs": "As atualizações do agente estão suspensas para este dispositivo (desde {{since}}): a versão do macOS está abaixo do mínimo exigido pela versão atual do agente, então ele permanece na versão do agente instalada. Atualize o macOS para retomar as atualizações do agente.",
+    "updateOfferWithheldOsUnknown": "As atualizações do agente estão suspensas para este dispositivo (desde {{since}}): não foi possível determinar a versão do macOS e a versão atual do agente exige uma versão mínima do macOS, então ele permanece na versão do agente instalada até informar a versão do macOS.",
     "helperInstallIssue": {
       "awaitingServerOffer": "O Breeze Assist está ativado, mas não instalado (desde {{since}}): o servidor não ofereceu uma versão do Breeze Assist para instalar neste dispositivo, então ele continua sem instalação. Verifique se há uma build do Breeze Assist publicada para a plataforma deste dispositivo.",
       "installAbandoned": "O Breeze Assist está ativado, mas não instalado (desde {{since}}): a instalação da versão oferecida falhou repetidamente, então o agente pausou as novas tentativas. Ele tentará de novo em algumas horas ou quando uma versão mais recente for oferecida; o log do agente contém o erro de instalação.",
@@ -1870,6 +1872,8 @@
     "updateStuck": "Atualização travada",
     "updateStuckTooltip": "Este dispositivo está há mais de uma hora tentando atualizar o agente para {{target}} sem concluir.",
     "updateWithheldTooltip": "O servidor não está oferecendo atualizações a este dispositivo porque não é possível confirmar que a build do agente aceita a edição servida. Ele permanece na versão atual até ser recuperado.",
+    "updateWithheldTooltipOs": "As atualizações estão suspensas porque a versão do macOS deste dispositivo está abaixo do mínimo exigido pela versão atual do agente.",
+    "updateWithheldTooltipOsUnknown": "As atualizações estão suspensas porque não foi possível determinar a versão do macOS deste dispositivo e a versão atual do agente exige uma versão mínima do macOS.",
     "helperNotInstalled": "Não instalado",
     "helperUnavailable": "Assist indisponível",
     "helperInstallIssueTooltip": {

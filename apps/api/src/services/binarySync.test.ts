@@ -3100,6 +3100,195 @@ describe("binarySync", () => {
       expect(dbMocks.insertValues).not.toHaveBeenCalled();
     });
   });
+
+  describe("minimum OS (#12169)", () => {
+    const bytes = (name: string) => Buffer.from(`${name} bytes`);
+
+    function stubGithubRelease(tag: string, assets: { name: string; minOs?: string }[]) {
+      const signed = makeSignedReleaseManifestMultiFrom({
+        schemaVersion: 1,
+        repository: "LanternOps/breeze",
+        release: tag,
+        assets: assets.map((a) => ({
+          name: a.name,
+          sha256: createHash("sha256").update(bytes(a.name)).digest("hex"),
+          size: bytes(a.name).length,
+          platformTrust: fixturePlatformTrust(a.name),
+          edition: "self-host",
+          ...(a.minOs !== undefined ? { minOs: a.minOs } : {}),
+        })),
+      });
+      process.env.BINARY_SOURCE = "github";
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      const releaseJson = {
+        tag_name: tag,
+        body: "",
+        assets: [
+          ...assets.map((a) => ({
+            name: a.name,
+            browser_download_url: `https://example.com/${a.name}`,
+            size: bytes(a.name).length,
+          })),
+          {
+            name: "release-artifact-manifest.json",
+            browser_download_url: "https://example.com/release-artifact-manifest.json",
+            size: signed.manifest.length,
+          },
+          {
+            name: "release-artifact-manifest.json.ed25519",
+            browser_download_url: "https://example.com/release-artifact-manifest.json.ed25519",
+            size: signed.signature.length,
+          },
+        ],
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (url.includes("/releases/")) return new Response(JSON.stringify(releaseJson));
+          if (url.endsWith("release-artifact-manifest.json")) return new Response(signed.manifest);
+          if (url.endsWith("release-artifact-manifest.json.ed25519")) return new Response(signed.signature);
+          const hit = assets.find((a) => url.endsWith(a.name));
+          if (hit) return new Response(bytes(hit.name));
+          return new Response("not found", { status: 404 });
+        }),
+      );
+    }
+
+    function insertedRow(platform: string, component = "agent") {
+      return (dbMocks.insertValues.mock.calls as unknown[][])
+        .map((c) => c[0] as Record<string, unknown>)
+        .find((row) => row.platform === platform && row.component === component);
+    }
+
+    function sqlText(value: unknown): string {
+      const chunks = (value as { queryChunks?: unknown[] })?.queryChunks ?? [];
+      return chunks
+        .map((chunk) => {
+          const v = (chunk as { value?: unknown }).value;
+          return Array.isArray(v) ? v.join("") : typeof v === "string" ? v : "";
+        })
+        .join("");
+    }
+
+    it("upsertVersion writes min_os_version from the verified darwin asset", async () => {
+      stubGithubRelease("v0.131.0", [
+        { name: "breeze-agent-darwin-arm64", minOs: "12.0" },
+        { name: "breeze-agent-linux-amd64" },
+      ]);
+
+      await syncFromGitHub();
+
+      expect(insertedRow("macos")).toMatchObject({ minOsVersion: "12.0" });
+      expect(insertedRow("linux")).toMatchObject({ minOsVersion: null });
+    });
+
+    it("re-registration updates min_os_version but never erases a known floor (COALESCE)", async () => {
+      stubGithubRelease("v0.131.0", [{ name: "breeze-agent-darwin-arm64", minOs: "13.0" }]);
+
+      await syncFromGitHub();
+
+      const set = (dbMocks.onConflictDoUpdate.mock.calls[0]![0] as { set: Record<string, unknown> }).set;
+      expect(typeof set.minOsVersion).not.toBe("string");
+      expect(sqlText(set.minOsVersion)).toMatch(/^COALESCE\(excluded\.min_os_version, /);
+    });
+
+    it("pre-threshold re-registration of a darwin asset without minOs registers it with a null floor", async () => {
+      stubGithubRelease("v0.130.0", [{ name: "breeze-agent-darwin-arm64" }]);
+
+      await syncFromGitHub();
+
+      expect(insertedRow("macos")).toMatchObject({ minOsVersion: null });
+    });
+
+    it("skips a post-threshold darwin asset missing minOs without stranding the other platforms", async () => {
+      const { captureException } = await import("./sentry");
+      stubGithubRelease("v0.131.0", [
+        { name: "breeze-agent-darwin-arm64" },
+        { name: "breeze-agent-linux-amd64" },
+      ]);
+
+      await syncFromGitHub();
+
+      expect(insertedRow("macos")).toBeUndefined();
+      expect(insertedRow("linux")).toBeDefined();
+      expect(captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "ReleaseManifestMinOsMissingError" }),
+        undefined,
+        expect.objectContaining({ release_asset_name: "breeze-agent-darwin-arm64" }),
+      );
+    });
+
+    it("the backup loop carries minOs too", async () => {
+      stubGithubRelease("v0.131.0", [
+        { name: "breeze-agent-darwin-arm64", minOs: "12.0" },
+        { name: "breeze-backup-darwin-arm64", minOs: "12.0" },
+      ]);
+
+      await syncFromGitHub();
+
+      expect(insertedRow("macos", "backup")).toMatchObject({ minOsVersion: "12.0" });
+    });
+
+    it("registerFromOfficialManifest records minOs and excludes a post-threshold darwin asset missing it", async () => {
+      const { captureException } = await import("./sentry");
+      process.env.BINARY_SOURCE = "local";
+      process.env.AGENT_BINARY_DIR = "/data/binaries/agent";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+      fsMocks.readdir.mockResolvedValue(["breeze-agent-darwin-arm64", "breeze-agent-darwin-amd64"] as any);
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 18 } as any);
+      const localChecksum = createHash("sha256").update("local agent bytes").digest("hex");
+      const official = makeSignedReleaseManifestMultiFrom({
+        schemaVersion: 1,
+        repository: "LanternOps/breeze",
+        release: "v0.131.0",
+        assets: [
+          {
+            name: "breeze-agent-darwin-arm64",
+            sha256: localChecksum,
+            size: 18,
+            platformTrust: fixturePlatformTrust("breeze-agent-darwin-arm64"),
+            edition: "self-host",
+            minOs: "12.0",
+          },
+          {
+            name: "breeze-agent-darwin-amd64",
+            sha256: localChecksum,
+            size: 18,
+            platformTrust: fixturePlatformTrust("breeze-agent-darwin-amd64"),
+            edition: "self-host",
+          },
+        ],
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+      fsMocks.readFile.mockImplementation((path: unknown) => {
+        if (typeof path === "string" && path.endsWith("release-artifact-manifest.json.ed25519")) {
+          return Promise.resolve(official.signature);
+        }
+        if (typeof path === "string" && path.endsWith("release-artifact-manifest.json")) {
+          return Promise.resolve(official.manifest);
+        }
+        return Promise.resolve("0.131.0");
+      });
+
+      await syncBinaries();
+
+      const rows = (dbMocks.insertValues.mock.calls as unknown[][]).map((c) => c[0] as Record<string, unknown>);
+      expect(rows.find((r) => r.architecture === "arm64" && r.component === "agent")).toMatchObject({
+        minOsVersion: "12.0",
+      });
+      // Refused, and NOT re-registered through the per-deployment fallback.
+      expect(rows.find((r) => r.architecture === "amd64" && r.component === "agent")).toBeUndefined();
+      expect(captureException).toHaveBeenCalledWith(
+        expect.any(Error),
+        undefined,
+        expect.objectContaining({
+          release_asset_name: "breeze-agent-darwin-amd64",
+          manifest_refusal_reason: "not-distributable",
+        }),
+      );
+    });
+  });
 });
 
 describe("boot sync is pinned to the server's own release (#3742)", () => {

@@ -31,6 +31,7 @@ import {
   AGENT_BINARY_UPDATE_COMMAND_TYPES,
   agentBinaryUpdateDispatchRefusal,
 } from './agentEditionCompat';
+import { agentOsFloorRefusal } from './agentOsFloorCommands';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { backupReadHelperRefusal } from './backupReadHelperGate';
 import { restoreIntegrityHelperRefusal } from './backupRestoreGate';
@@ -1375,6 +1376,15 @@ async function precheckCommandExecution(
       `[commandQueue] ${type} dispatch refused for device ${deviceId} (#4093): ${editionRefusal}`,
     );
     return { ok: false, result: { status: 'failed', error: editionRefusal } };
+  }
+
+  // #12169 — minimum-OS gate for the same agent-binary updates: never send a
+  // Mac a build its macOS is below. Permanent until the OS is upgraded, so it
+  // also runs before the liveness gates. Inert for every other command type.
+  const osFloorRefusal = await agentOsFloorRefusal(db, { type, deviceId, payload });
+  if (osFloorRefusal) {
+    console.warn(`[commandQueue] ${type} dispatch refused for device ${deviceId} (#12169): ${osFloorRefusal}`);
+    return { ok: false, result: { status: 'failed', error: osFloorRefusal } };
   }
 
   // Same rule as the queue lane (dispatchDeviceCommand.ts): a storage read to

@@ -1,6 +1,33 @@
 #!/bin/bash
 # Breeze Agent macOS .pkg preinstall script
-# Stops the existing agent service before files are replaced.
+# Refuses hosts below the release's minimum macOS, then stops the existing
+# agent service before files are replaced.
+
+# Minimum macOS for this release. build-pkg.sh renders the placeholder in the
+# copy it ships from agent/platform-floors.json; the source file keeps it
+# literal, and an unrendered value is treated as "no floor known".
+BREEZE_MIN_MACOS="__BREEZE_MIN_MACOS__"
+
+# The floor check runs BEFORE anything touches the running agent: a refused
+# install must leave the existing agent and watchdog running.
+if [ -f "$(dirname "$0")/os-floor.sh" ]; then
+    # shellcheck source=os-floor.sh
+    . "$(dirname "$0")/os-floor.sh"
+    # SYSTEM_VERSION_COMPAT=0 so sw_vers does not report 10.16 on macOS 11+.
+    BREEZE_CURRENT_MACOS="$(SYSTEM_VERSION_COMPAT=0 "${BREEZE_SW_VERS:-/usr/bin/sw_vers}" -productVersion 2>/dev/null || true)"
+    breeze_os_floor_check "$BREEZE_CURRENT_MACOS" "$BREEZE_MIN_MACOS"
+    case $? in
+        1)
+            echo "Breeze Agent requires macOS $BREEZE_MIN_MACOS or later. This Mac runs macOS $BREEZE_CURRENT_MACOS." >&2
+            exit 1
+            ;;
+        2)
+            echo "Breeze preinstall: could not evaluate the macOS floor (current='$BREEZE_CURRENT_MACOS' minimum='$BREEZE_MIN_MACOS'); continuing."
+            ;;
+    esac
+else
+    echo "Breeze preinstall: os-floor.sh not found; skipping the macOS floor check."
+fi
 
 # Stop watchdog
 launchctl bootout system/com.breeze.watchdog 2>/dev/null || true

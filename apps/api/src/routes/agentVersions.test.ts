@@ -153,6 +153,7 @@ function makeSignedReleaseArtifactManifest(args: {
   checksum: string;
   size: number;
   release?: string;
+  minOs?: string;
 }) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
@@ -169,6 +170,7 @@ function makeSignedReleaseArtifactManifest(args: {
         platformTrust:
           requiredPlatformTrustFor(args.assetName) ??
           "release-workflow-produced",
+        ...(args.minOs !== undefined ? { minOs: args.minOs } : {}),
       },
     ],
   });
@@ -2123,6 +2125,137 @@ describe("agentVersions routes", () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.signingKeyId ?? null).toBeNull();
+    });
+  });
+
+  describe("minimum OS (#12169)", () => {
+    function makeTx() {
+      const updateSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      const txSelect = vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+        }),
+      });
+      return { update: vi.fn().mockReturnValue({ set: updateSet }), select: txSelect };
+    }
+
+    function promote(version: string) {
+      return app.request("/agent-versions/promote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version }),
+      });
+    }
+
+    it("promote refuses a post-threshold darwin row with NULL min_os_version (nothing demoted)", async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          { ...makeValidatedTargetRow({ component: "agent", platform: "macos", architecture: "arm64", version: "0.131.0" }), minOsVersion: null },
+          { ...makeValidatedTargetRow({ component: "agent", platform: "linux", architecture: "amd64", version: "0.131.0" }), minOsVersion: null },
+        ]) as any,
+      );
+
+      const res = await promote("0.131.0");
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.reason).toBe("min_os_missing");
+      expect(body.invalidTargets).toEqual([
+        expect.objectContaining({ component: "agent", platform: "macos", architecture: "arm64", reason: "min_os_missing" }),
+      ]);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it("promote allows a post-threshold darwin row that records its floor", async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          { ...makeValidatedTargetRow({ component: "agent", platform: "macos", architecture: "arm64", version: "0.131.0" }), minOsVersion: "12.0" },
+        ]) as any,
+      );
+      const tx = makeTx();
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx) as any);
+
+      expect((await promote("0.131.0")).status).toBe(200);
+    });
+
+    it("promote allows a pre-threshold darwin row without a floor (rollback to an older release)", async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          { ...makeValidatedTargetRow({ component: "agent", platform: "macos", architecture: "arm64", version: "0.129.0" }), minOsVersion: null },
+        ]) as any,
+      );
+      const tx = makeTx();
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx) as any);
+
+      expect((await promote("0.129.0")).status).toBe(200);
+    });
+
+    it("GET / lists minOsVersion", async () => {
+      vi.mocked(db.select).mockReturnValue(selectResolving([]) as any);
+
+      const res = await app.request("/agent-versions");
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(db.select).mock.calls[0]![0]).toHaveProperty("minOsVersion");
+    });
+
+    it("POST / records min_os_version from a schema-v1 manifest", async () => {
+      const checksum = "e".repeat(64);
+      const signed = makeSignedReleaseArtifactManifest({
+        assetName: "breeze-agent-darwin-arm64",
+        checksum,
+        size: 1234,
+        release: "v0.131.0",
+        minOs: "12.0",
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "ver-1", version: "0.131.0", platform: "macos" }]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "0.131.0",
+          platform: "macos",
+          architecture: "arm64",
+          downloadUrl: "https://github.com/LanternOps/breeze/releases/download/v0.131.0/breeze-agent-darwin-arm64",
+          checksum,
+          fileSize: 1234,
+          releaseManifest: signed.manifest,
+          manifestSignature: signed.signature,
+          signingKeyId: "release-artifact-manifest-ed25519",
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ minOsVersion: "12.0" }));
+    });
+
+    it("POST / records a null floor for a per-deployment manifest", async () => {
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "ver-1", version: "1.0.0", platform: "linux" }]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          withValidManifest({
+            version: "1.0.0",
+            platform: "linux",
+            architecture: "amd64",
+            downloadUrl: "https://s3.example.com/agent-1.0.0",
+            checksum: "c".repeat(64),
+          }),
+        ),
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ minOsVersion: null }));
     });
   });
 

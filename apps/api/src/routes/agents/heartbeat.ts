@@ -21,6 +21,7 @@ import {
   bareMetalRecoveries,
 } from '../../db/schema';
 import { ownDeviceRowChangedHands, selectOwnDeviceRowForUpdate, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
+import type { OsFloorHoldReason } from '../../services/agentOsFloor';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import type { BatteryStatus, ContainmentDesiredBlock, DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import { ERROR_CODES, isResolvedTerminalIsolationState } from '@breeze/shared';
@@ -69,6 +70,7 @@ import {
   agentAcceptsServedEdition,
   shouldAutoApplyAgentReportedDeviceRole,
   type AgentVersionPins,
+  type UpgradeOsHold,
   type OnedriveConfigPlan,
   type OnedriveConfigUpdate,
   type HelperSettings,
@@ -169,6 +171,29 @@ export function detectWatchdogStateCollapse(
 const warnedEditionWithheldDevices = new Set<string>();
 // Persisted reason code (devices.update_offer_withheld_reason, #6449).
 const EDITION_OFFER_WITHHELD_REASON = 'edition_unconfirmed';
+
+/**
+ * #12169 — the minimum-OS reason (or null) this beat should persist, from the
+ * holds the resolver reported. A hold counts only when the held build is newer
+ * than what the device runs (or the component is missing, i.e. a bootstrap
+ * would have been offered): a Mac already on the held version is not "held".
+ * The agent's own hold wins over a companion's. Dev builds are never offered
+ * an update, so their agent hold does not count.
+ */
+export function osHoldReasonForBeat(
+  holds: readonly UpgradeOsHold[],
+  installed: { agent: string; watchdog: string | null; helper: string | null },
+): OsFloorHoldReason | null {
+  const counts = (hold: UpgradeOsHold): boolean => {
+    if (hold.component === 'agent') {
+      return !installed.agent.startsWith('dev-') && compareAgentVersions(hold.blockedVersion, installed.agent) > 0;
+    }
+    const current = hold.component === 'watchdog' ? installed.watchdog : hold.component === 'helper' ? installed.helper : null;
+    return current === null || compareAgentVersions(hold.blockedVersion, current) > 0;
+  };
+  const counted = holds.filter(counts);
+  return (counted.find((h) => h.component === 'agent') ?? counted[0])?.reason ?? null;
+}
 // Separate dedupe for the far more severe failover-recovery withhold (device
 // stuck OFFLINE, not idling) — its error must not be suppressed by an earlier
 // routine offer-withhold warn for the same device.
@@ -1057,6 +1082,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           architecture: normalizedArch,
           pin: versionPins.watchdog,
           agentId,
+          // #12169: gated, but not persisted from this branch (the main
+          // agent's beat owns the device's withheld reason).
+          deviceOs: { platform: device.osType, reportedOsVersion: data.osVersion ?? null, storedOsVersion: device.osVersion ?? null },
         });
 
         if (targetWatchdog && watchdogAcceptsServedEdition) {
@@ -1133,6 +1161,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           architecture: normalizedArch,
           pin: versionPins.agent,
           agentId,
+          // #12169: a recovery binary the Mac's OS is below is held too.
+          deviceOs: { platform: device.osType, reportedOsVersion: data.osVersion ?? null, storedOsVersion: device.osVersion ?? null },
         });
 
         if (targetAgent && compareAgentVersions(targetAgent, device.agentVersion) > 0) {
@@ -1289,14 +1319,23 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // the row this beat already loaded), so a steady-state beat — withheld or
   // healthy — adds no column write to the hot path; `since` therefore holds
   // when the episode began, not the last beat.
-  const withholdReason =
+  //
+  // #12169: two writers share this column. This one owns ONLY
+  // `edition_unconfirmed`: it sets it (the edition reason wins over a
+  // minimum-OS hold, since no offer resolves at all while it applies) and
+  // clears only its own code, never an `os_*` hold, which the main branch
+  // writes after the targets resolve (see osHoldReasonForBeat).
+  const editionWithheld = Boolean(
     normalizeAgentArchitecture(device.architecture) &&
-    !agentAcceptsServedEdition({ reportedEdition: data.agentEdition, agentVersion: data.agentVersion })
-      ? EDITION_OFFER_WITHHELD_REASON
-      : null;
-  if ((device.updateOfferWithheldReason ?? null) !== withholdReason) {
-    deviceUpdates.updateOfferWithheldReason = withholdReason;
-    deviceUpdates.updateOfferWithheldSince = withholdReason ? new Date() : null;
+    !agentAcceptsServedEdition({ reportedEdition: data.agentEdition, agentVersion: data.agentVersion }),
+  );
+  const storedWithheldReason = device.updateOfferWithheldReason ?? null;
+  if (editionWithheld && storedWithheldReason !== EDITION_OFFER_WITHHELD_REASON) {
+    deviceUpdates.updateOfferWithheldReason = EDITION_OFFER_WITHHELD_REASON;
+    deviceUpdates.updateOfferWithheldSince = new Date();
+  } else if (!editionWithheld && storedWithheldReason === EDITION_OFFER_WITHHELD_REASON) {
+    deviceUpdates.updateOfferWithheldReason = null;
+    deviceUpdates.updateOfferWithheldSince = null;
   }
 
   // #4073 — close the update-attempt record (stamped by the WS update_status
@@ -2126,12 +2165,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // every target null: no offer this beat, the same outcome each per-block
   // catch gave (the first failed read aborted the transaction for the rest).
   let upgradeTargets: Map<string, string | null> | null = null;
+  // #12169 — the device's OS for the minimum-OS gate: this beat's value
+  // first, the stored one when the beat omits it.
+  const deviceOs = { platform: device.osType, reportedOsVersion: data.osVersion ?? null, storedOsVersion: device.osVersion ?? null };
+  const osHolds: UpgradeOsHold[] = [];
   if (normalizedArch && acceptsServedEdition) {
     try {
       upgradeTargets = await resolvePinnedUpgradeTargets({
         platform: device.osType,
         architecture: normalizedArch,
         agentId,
+        deviceOs,
+        onOsHold: (hold) => osHolds.push(hold),
         requests: [
           { component: 'agent', pin: versionPins.agent },
           { component: 'helper', pin: null },
@@ -2141,6 +2186,36 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     } catch (err) {
       console.error(`[agents] failed to resolve upgrade targets for ${agentId}:`, err);
       captureException(err);
+    }
+  }
+
+  // #12169 — persist a minimum-OS hold so the device page says why the Mac
+  // stays on its version. Only after a SUCCESSFUL lookup (a failed one must
+  // not clear an existing hold), only while the edition reason does not
+  // apply (it wins, and its own writer owns it), and only on a transition, so
+  // a steady-state beat — held or healthy — adds no statement.
+  if (upgradeTargets !== null) {
+    const desiredOsReason = osHoldReasonForBeat(osHolds, {
+      agent: data.agentVersion,
+      watchdog: data.watchdogVersion ?? device.watchdogVersion ?? null,
+      helper: data.helperVersion ?? null,
+    });
+    const currentWithheldReason =
+      'updateOfferWithheldReason' in deviceUpdates
+        ? ((deviceUpdates.updateOfferWithheldReason as string | null) ?? null)
+        : (device.updateOfferWithheldReason ?? null);
+    if (currentWithheldReason !== EDITION_OFFER_WITHHELD_REASON && currentWithheldReason !== desiredOsReason) {
+      try {
+        await withDbTransaction(() =>
+          updateOwnDeviceRow(db, agent, {
+            updateOfferWithheldReason: desiredOsReason,
+            updateOfferWithheldSince: desiredOsReason ? new Date() : null,
+          }),
+        );
+      } catch (err) {
+        console.error(`[agents] failed to persist the minimum-OS update hold for ${agentId}:`, err);
+        captureException(err);
+      }
     }
   }
 
@@ -2475,6 +2550,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
               architecture: normalizedArch,
               pin: versionPins.agent,
               agentId,
+              // #12169: never migrate a Mac onto a build its OS is below.
+              deviceOs,
             }),
         }),
         // The service catches everything itself; this catch only exists so a

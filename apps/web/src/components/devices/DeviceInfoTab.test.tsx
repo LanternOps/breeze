@@ -212,6 +212,39 @@ describe('DeviceInfoTab — update offers withheld (#6449)', () => {
     expect(await screen.findByTestId('update-offer-withheld')).toBeInTheDocument();
   });
 
+  it('os_below_minimum renders the OS copy, not the edition copy', async () => {
+    load({
+      updateOfferWithheldReason: 'os_below_minimum',
+      updateOfferWithheldSince: '2026-10-01T00:00:00.000Z',
+    });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const el = await screen.findByTestId('update-offer-withheld');
+    expect(el.textContent).toContain('macOS version is below the minimum');
+    expect(el.textContent).not.toContain('edition');
+  });
+
+  it('os_version_unknown renders the unknown-OS copy', async () => {
+    load({
+      updateOfferWithheldReason: 'os_version_unknown',
+      updateOfferWithheldSince: '2026-10-01T00:00:00.000Z',
+    });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const el = await screen.findByTestId('update-offer-withheld');
+    expect(el.textContent).toContain('macOS version could not be determined');
+    expect(el.textContent).not.toContain('edition');
+  });
+
+  it('edition_unconfirmed keeps the edition copy', async () => {
+    load({
+      updateOfferWithheldReason: 'edition_unconfirmed',
+      updateOfferWithheldSince: '2026-10-01T00:00:00.000Z',
+    });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const el = await screen.findByTestId('update-offer-withheld');
+    expect(el.textContent).toContain('edition');
+    expect(el.textContent).not.toContain('macOS');
+  });
+
   it('shows no notice for a healthy device', async () => {
     load({ updateOfferWithheldReason: null, updateOfferWithheldSince: null });
     render(<DeviceInfoTab deviceId={deviceId} />);

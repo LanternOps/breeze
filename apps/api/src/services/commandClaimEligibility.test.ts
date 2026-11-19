@@ -62,6 +62,16 @@ vi.mock('./sentry', () => ({ captureException: (...a: unknown[]) => captureExcep
 vi.mock('./commandCancelPropagation', () => ({
   propagateCancelledDeviceCommands: (...a: unknown[]) => propagateMock(...(a as [])),
 }));
+// #12169 — the minimum-OS read is its own unit (agentOsFloorCommands.test.ts);
+// here only its verdict is a seam. Which types it covers stays real.
+const { osFloorRefusalMock } = vi.hoisted(() => ({ osFloorRefusalMock: vi.fn() }));
+vi.mock('./agentOsFloorCommands', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agentOsFloorCommands')>()),
+  agentOsFloorRefusal: (...a: unknown[]) => osFloorRefusalMock(...(a as [])),
+}));
+// The isolation upgrade floor (its own suite) reads tables this file does not
+// mock; the update_agent cases below are about the OS floor only.
+vi.mock('./networkIsolation/upgradeFloor', () => ({ isolationUpgradeFloorRefusal: async () => null }));
 
 import {
   POWER_STATE_BARRIER_TYPES,
@@ -125,6 +135,32 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     requesterActiveMock.mockResolvedValue([{ active: true }]);
     __resetTypeHoldsForTests();
     __resetEligibilityFaultThrottleForTests();
+  });
+
+  it('#12169: a queued update_agent / update_watchdog above the Mac\'s minimum OS is cancelled at delivery', async () => {
+    osFloorRefusalMock.mockImplementation(async (_reader: unknown, r: { type: string }) =>
+      r.type === 'update_watchdog' ? 'os_version_unknown' : 'os_below_minimum');
+    const r = await partitionClaimable(tx(), device, [
+      row({ id: 'agent', type: 'update_agent', payload: { version: '9.0.0' } }),
+      row({ id: 'watchdog', type: 'update_watchdog', payload: { version: '9.0.0' } }),
+      row({ id: 'other' }),
+    ]);
+    expect(r.cancelled).toEqual([
+      { id: 'agent', reason: 'os_below_minimum' },
+      { id: 'watchdog', reason: 'os_version_unknown' },
+    ]);
+    expect(r.claimable.map((x) => x.id)).toEqual(['other']);
+    // Only the gated types reach the read.
+    expect(osFloorRefusalMock.mock.calls.map((c) => (c[1] as { type: string }).type)).toEqual([
+      'update_agent', 'update_watchdog',
+    ]);
+  });
+
+  it('#12169: a queued update_agent the Mac can run is delivered', async () => {
+    osFloorRefusalMock.mockResolvedValue(null);
+    const r = await partitionClaimable(tx(), device, [row({ type: 'update_agent', payload: { version: '9.0.0' } })]);
+    expect(r.claimable.map((x) => x.id)).toEqual(['c1']);
+    expect(r.cancelled).toEqual([]);
   });
 
   it('passes an ordinary row through and writes nothing', async () => {

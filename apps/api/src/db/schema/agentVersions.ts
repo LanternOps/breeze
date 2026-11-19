@@ -19,6 +19,11 @@ export const agentVersions = pgTable('agent_versions', {
   // release build vs a privately-distributed hosted build). Each server only
   // serves/promotes rows matching its own BINARY_EDITION (binaryEdition.ts).
   edition: varchar('edition', { length: 20 }).notNull().default('self-host'),
+  // Minimum OS version this binary supports (#12169), from the signed release
+  // manifest's per-asset `minOs`. Only darwin rows carry one today. NULL = no
+  // floor known (allow). Enforced by services/agentOsFloor.ts on every offer,
+  // dispatch and delivery path. CHECK: ^[0-9]{1,3}(\.[0-9]{1,3}){0,2}$
+  minOsVersion: varchar('min_os_version', { length: 16 }),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   // Composite unique constraint on (version, platform, architecture, component, edition)
