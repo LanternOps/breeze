@@ -463,27 +463,62 @@ func TestQualityRefresh_CatchUpBeforeRefreshOnHoldingEncoder(t *testing.T) {
 	r.settleSharp()
 	r.b.kinds = nil
 	r.burst(7)
-	r.idle(3 * time.Second)
-
+	refreshBefore := r.b.refreshSubmits
+	for i := 0; r.b.refreshSubmits-refreshBefore < 5; i++ {
+		if i > cbrModelFPS*5 {
+			t.Fatalf("no refresh within 5 s of the burst: %v", r.b.kinds)
+		}
+		r.tick()
+	}
 	if len(r.b.kinds) < 3 || r.b.kinds[0] != idleRefeedCatchUp || r.b.kinds[1] != idleRefeedCatchUp {
 		t.Fatalf("idle re-submits = %v, want two catch-ups first (hold 2)", r.b.kinds)
 	}
-	sawRefresh := false
-	for i, k := range r.b.kinds {
-		if k == idleRefeedQuality {
-			sawRefresh = true
-		} else if sawRefresh {
-			t.Fatalf("catch-up at %d after the refresh started: %v", i, r.b.kinds)
-		}
-	}
-	if !sawRefresh {
-		t.Fatal("no refresh after the catch-up")
+
+	// A small change mid-refresh is held too: it must be pushed out before
+	// the (still due) refresh re-submits again.
+	mark := len(r.b.kinds)
+	r.change(changeSmall)
+	r.idle(3 * time.Second)
+	after := r.b.kinds[mark:]
+	if len(after) < 3 || after[0] != idleRefeedCatchUp || after[1] != idleRefeedCatchUp {
+		t.Fatalf("idle re-submits after a held change mid-refresh = %v, want two catch-ups first", after)
 	}
 	if r.b.cu.owes() {
 		t.Fatal("the newest frame is still owed after the idle period")
 	}
 	if r.b.pictureQP > cbrModelSharpQP {
 		t.Fatalf("picture blocky after catch-up and refresh: pictureQP=%d", r.b.pictureQP)
+	}
+}
+
+// #11639: the DXGI loop's periodic static-desktop keyframe must not be armed
+// for a software encoder. On the GPU branch (the software MFT fed through the
+// GPU converter) it turns the next change on a near-static screen, however
+// small, into a full-picture IDR at CBR, which is coarse and arms a quality
+// refresh every time. Hardware encoders keep it.
+func TestShouldForceStaticKeyframe(t *testing.T) {
+	sw := &VideoEncoder{backend: &stubEncoder{}}
+	hw := &VideoEncoder{backend: &stubEncoder{hardware: true}}
+	due := staticDesktopKeyframeEvery
+	cases := []struct {
+		name     string
+		enc      *VideoEncoder
+		onSecure bool
+		skips    int
+		since    time.Duration
+		want     bool
+	}{
+		{"hardware, idle, due", hw, false, 30, due, true},
+		{"hardware, not idle long enough", hw, false, 29, due, false},
+		{"hardware, not due", hw, false, 30, due - time.Millisecond, false},
+		{"hardware, secure desktop", hw, true, 30, due, false},
+		{"software, idle, due", sw, false, 30, due, false},
+		{"no encoder", nil, false, 30, due, false},
+	}
+	for _, tc := range cases {
+		if got := shouldForceStaticKeyframe(tc.enc, tc.onSecure, tc.skips, tc.since); got != tc.want {
+			t.Errorf("%s: shouldForceStaticKeyframe = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
