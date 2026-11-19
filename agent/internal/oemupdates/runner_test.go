@@ -83,7 +83,7 @@ func newRunFixture(t *testing.T) *runFixture {
 	now := time.Now().UTC().Truncate(time.Second)
 	f := &runFixture{
 		lane:  l,
-		ver:   &fakeVerifier{publisher: "Dell Inc"},
+		ver:   &fakeVerifier{publisher: "Dell Technologies Inc."},
 		exec:  &fakeExec{},
 		store: newMemStore(),
 		clock: &fixedClock{t: now},
