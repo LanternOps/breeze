@@ -5,7 +5,7 @@ const h = vi.hoisted(() => ({
   txDepth: 0, seal: vi.fn(), decrypt: vi.fn(), resolvePolicy: vi.fn(), auditRefused: vi.fn(),
   acceptsToken: vi.fn(),
 }));
-// The real gate, observed: both version gates are the same sentinel, so a test cannot fail one alone.
+// The real gate, observed, so a test can see what it was asked and override its answer.
 vi.mock('@breeze/shared', async original => {
   const real = await original<typeof import('@breeze/shared')>();
   h.acceptsToken.mockImplementation(real.agentAcceptsReleaseToken);
