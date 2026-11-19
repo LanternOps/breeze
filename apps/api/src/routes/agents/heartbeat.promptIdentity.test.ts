@@ -198,7 +198,7 @@ vi.mock('./helpers', () => ({
   // that does not care about warranty still exercises the delivery merge rather
   // than the builder-throws path.
   buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslEnabled: false })),
-  buildWakeOnLanConfigUpdate: vi.fn(async () => ({ enabled: false, configureSettings: false as const, firmwareWrites: [] as string[] })),
+  buildWakeOnLanConfigUpdate: vi.fn(async () => ({ enabled: false, configureSettings: false as const, firmwareWrites: [] as string[], observeVendors: [] as string[] })),
   // Null = no onedrive policy for the device. Tests that exercise delivery
   // override this per-test. Omitting it entirely would make every heartbeat
   // test silently exercise only the builder-throws path (undefined is not a

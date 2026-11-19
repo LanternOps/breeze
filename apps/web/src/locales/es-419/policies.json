@@ -1266,7 +1266,8 @@
             "nic_unreadable": "Hay un adaptador cableado, pero no se pudo leer",
             "nic_cmdlets_unavailable": "No se pueden leer los ajustes del adaptador de red en este dispositivo",
             "nic_eee_enabled": "Energy-Efficient Ethernet activado",
-            "firmware_adapter_unavailable": "Aún no se puede leer la configuración del firmware"
+            "firmware_adapter_unavailable": "Aún no se puede leer la configuración del firmware",
+            "vendor_observe_only": "Observando el firmware del fabricante (solo lectura)"
           },
           "attempts": {
             "pending": "Pendiente",
@@ -1276,6 +1277,14 @@
             "timed_out": "Tiempo agotado",
             "unknown": "Desconocido",
             "refused": "Rechazado"
+          },
+          "observing": "Observando {{vendor}}: {{interface}}",
+          "observingWithCode": "Observando {{vendor}}: {{interface}} ({{code}})",
+          "observeInterfaces": {
+            "present": "interfaz presente",
+            "absent": "interfaz no presente",
+            "access_denied": "acceso denegado",
+            "error": "error de lectura"
           }
         }
       },

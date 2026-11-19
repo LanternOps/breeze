@@ -818,5 +818,6 @@ packages/shared/src/validators/oemObserve.test.ts
 packages/shared/src/validators/oemUpdates.test.ts
 packages/shared/src/validators/queryParams.test.ts
 packages/shared/src/validators/softwareDownloadPolicy.parity.test.ts
+packages/shared/src/validators/wakeStatus.observation.test.ts
 packages/shared/src/zodJitlessEntry.test.ts
 packages/shared/src/zodJitlessShim.test.ts

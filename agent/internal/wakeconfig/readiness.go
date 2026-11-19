@@ -72,8 +72,14 @@ type Inputs struct {
 	Virtual      bool
 	Windows      *WindowsReadings
 	Firmware     biosconfig.Adapter
-	Memory       AdapterMemory
-	Now          time.Time
+	// VirtualPlatform is the VM rule's platform name when Virtual (the Surface
+	// observation records which rule decided).
+	VirtualPlatform string
+	// Observation is this cycle's vendor observation, or nil. It goes into
+	// details.vendorObservation and never into the state or fingerprint.
+	Observation *biosconfig.Observation
+	Memory      AdapterMemory
+	Now         time.Time
 	// Apply is the apply status from this cycle; nil when nothing was applied
 	// or this OS has no writer.
 	Apply *ApplyStatus
@@ -93,23 +99,21 @@ type Snapshot struct {
 
 	// Memory is the updated adapter memory for the caller to persist.
 	Memory AdapterMemory `json:"-"`
+	// observation is Details["vendorObservation"], kept typed for uploadKey.
+	observation *biosconfig.Observation
 }
 
+// normaliseVendor labels the snapshot's vendor. Dell and HP match the whole
+// make (biosconfig.MakeOf), so HPE servers and other near-misses are "other",
+// never hp or dell; any other make is its own lowercased name.
 func normaliseVendor(manufacturer string) *string {
 	m := strings.ToLower(strings.TrimSpace(manufacturer))
 	if m == "" {
 		return nil
 	}
-	v := m
-	switch {
-	case strings.HasPrefix(m, "dell"):
-		v = "dell"
-	case m == "hp" || strings.HasPrefix(m, "hp ") || strings.HasPrefix(m, "hp.") || strings.HasPrefix(m, "hewlett"):
-		v = "hp"
-	case strings.HasPrefix(m, "lenovo"):
-		v = "lenovo"
-	case strings.HasPrefix(m, "microsoft"):
-		v = "microsoft"
+	v := biosconfig.MakeOf(m)
+	if v == "" {
+		v = m
 	}
 	if len(v) > 32 {
 		v = strings.ToValidUTF8(v[:32], "")
@@ -187,7 +191,12 @@ func Compute(in Inputs) Snapshot {
 	}
 
 	firmware := "adapter_unavailable"
-	if in.Firmware != nil {
+	switch {
+	case in.Observation != nil:
+		// Observe stage: the vendor interface was read and reported, but
+		// nothing it says is trusted for readiness yet.
+		firmware = "observe_only"
+	case in.Firmware != nil:
 		// Unreachable this release: biosconfig.Detect returns nil for every
 		// make. A vendor adapter's firmware read and its reason codes arrive
 		// with that vendor's wave, after its hardware has been captured. Until
@@ -281,7 +290,10 @@ func Compute(in Inputs) Snapshot {
 			reasons["reboot_pending"] = true
 		default:
 			snap.ReadinessState = StateUnproven
-			if in.Firmware == nil {
+			switch {
+			case in.Observation != nil:
+				reasons["vendor_observe_only"] = true
+			case in.Firmware == nil:
 				reasons["firmware_adapter_unavailable"] = true
 			}
 		}
@@ -299,6 +311,10 @@ func Compute(in Inputs) Snapshot {
 	snap.Details = map[string]any{
 		"os": in.OS, "manufacturer": in.Manufacturer, "model": in.Model, "virtual": in.Virtual,
 		"fastStartup": fast, "firmware": firmware, "adapters": adapters,
+	}
+	if in.Observation != nil {
+		snap.Details["vendorObservation"] = in.Observation
+		snap.observation = in.Observation
 	}
 	if ap := in.Apply; ap != nil {
 		snap.Details["apply"] = map[string]any{
