@@ -371,6 +371,9 @@ jobs:
       - name: Guard .env.example version pin is published
         run: bash scripts/security/check-env-example-version-pin.sh
 
+      - name: Self-test .env.example version pin guard
+        run: node --test scripts/security/check-env-example-version-pin.test.mjs
+
       - name: Setup pnpm
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
