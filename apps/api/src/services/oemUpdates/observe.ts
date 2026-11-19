@@ -23,7 +23,7 @@
  * result and scrubs one that fails the contract, and writes nothing else. The
  * status row, reboot accounting and update-type ownership never see observe.
  */
-import { and, desc, eq, gt, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
 import {
   agentSupportsOemObserve,
   oemObservePayloadSchema,
@@ -50,13 +50,18 @@ export type { OemObserveRefusal };
 /**
  * How long a queued observation stays deliverable. Short on purpose: the claim
  * recheck cannot re-resolve the policy, so this bounds how stale the opt-in an
- * observation is delivered under can be. The sweep simply tries again.
+ * observation is delivered under can be. The sweep tries again a day later.
  */
 export const OEM_OBSERVE_DELIVER_WITHIN_MS = 10 * 60 * 1000;
-/** One observation per device per day at most, whoever asks. */
+/**
+ * One completed observation per device per day at most, whoever asks. One that
+ * failed, expired or was cancelled does not count: a person may retry at once.
+ */
 export const OEM_OBSERVE_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
-/** The sweep observes each opted-in canary device about once a week. */
+/** The sweep observes each opted-in canary device about once a week... */
 export const OEM_OBSERVE_SWEEP_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+/** ...and retries one whose last attempt did not complete after a day, not every tick. */
+export const OEM_OBSERVE_SWEEP_RETRY_MS = 24 * 60 * 60 * 1000;
 /** Devices the sweep dispatches to per tick. A canary is one tenant. */
 export const OEM_OBSERVE_SWEEP_LIMIT = 50;
 
@@ -224,7 +229,10 @@ async function prepareObserve(input: OemObserveInput): Promise<PreparedObserve> 
       oemObserveCommandFilter(),
       or(
         inArray(deviceCommands.status, ['pending', 'sent']),
-        gt(deviceCommands.createdAt, new Date(Date.now() - OEM_OBSERVE_MIN_INTERVAL_MS)),
+        and(
+          eq(deviceCommands.status, 'completed'),
+          gt(deviceCommands.createdAt, new Date(Date.now() - OEM_OBSERVE_MIN_INTERVAL_MS)),
+        ),
       ),
     ))
     .limit(1);
@@ -267,10 +275,23 @@ export async function dispatchOemObserve(input: OemObserveInput): Promise<OemObs
 }
 
 /**
- * The weekly sweep: every online Windows device of a canary partner whose maker
- * has an observe lane and that has not been observed in a week. Each candidate
- * goes through `dispatchOemObserve`, which applies every check above, so the
- * query only narrows. With the canary list empty, or no canary partner admitted
+ * Where the next sweep page starts. Devices the seam refuses (no policy, an old
+ * agent) leave no row behind, so without a cursor a page full of them would be
+ * re-read every tick and starve the devices after it. In memory: a restart only
+ * starts the rotation over.
+ */
+let sweepCursor: string | null = null;
+
+export function resetOemObserveSweepCursorForTests(): void {
+  sweepCursor = null;
+}
+
+/**
+ * The weekly sweep: online physical Windows workstations of a canary partner
+ * whose maker has an observe lane, with no completed observation in a week and
+ * no attempt in a day. Each candidate goes through `dispatchOemObserve`, which
+ * applies every check above, so the query only narrows. Pages rotate through the
+ * fleet by device id. With the canary list empty, or no canary partner admitted
  * by the master flag and allowlist, it returns before any query.
  */
 export async function runOemObserveSweep(now: Date): Promise<{ considered: number; dispatched: number }> {
@@ -278,6 +299,8 @@ export async function runOemObserveSweep(now: Date): Promise<{ considered: numbe
   if (partners.length === 0) return { considered: 0, dispatched: 0 };
 
   const since = new Date(now.getTime() - OEM_OBSERVE_SWEEP_INTERVAL_MS);
+  const retryAfter = new Date(now.getTime() - OEM_OBSERVE_SWEEP_RETRY_MS);
+  const after = sweepCursor;
   const candidates = await withSystemDbAccessContext(() => db
     .select({ candidate: devices.id, orgId: devices.orgId })
     .from(devices)
@@ -288,18 +311,24 @@ export async function runOemObserveSweep(now: Date): Promise<{ considered: numbe
       eq(devices.osType, 'windows'),
       eq(devices.status, 'online'),
       eq(devices.isEphemeral, false),
+      eq(devices.isVirtual, false),
+      ne(devices.deviceRole, 'server'),
       notParkedDeviceCondition(),
       // A prefilter only; resolveObserveApplicability decides.
       sql`trim(${deviceHardware.manufacturer}) ~* '^(lenovo|hp( inc\\.?)?|hewlett-packard|microsoft corporation)$'`,
+      sql`(trim(${deviceHardware.manufacturer}) !~* '^microsoft corporation$' OR trim(${deviceHardware.model}) ~* '^surface\\s')`,
       sql`NOT EXISTS (
         SELECT 1 FROM ${deviceCommands} c
         WHERE c.device_id = ${devices.id}
           AND c.type = ${CommandTypes.OEM_OBSERVE}
-          AND c.created_at > ${since}
+          AND (c.created_at > ${retryAfter} OR (c.status = 'completed' AND c.created_at > ${since}))
       )`,
+      ...(after ? [gt(devices.id, after)] : []),
     ))
     .orderBy(devices.id)
     .limit(OEM_OBSERVE_SWEEP_LIMIT));
+  // A short page reached the end: the next tick starts over.
+  sweepCursor = candidates.length < OEM_OBSERVE_SWEEP_LIMIT ? null : candidates.at(-1)!.candidate;
 
   let dispatched = 0;
   for (const { candidate, orgId } of candidates) {
@@ -380,12 +409,19 @@ export async function observedHpPlatformUnsupported(deviceId: string): Promise<b
   return observation?.lane === 'hp' && observation.hp.platformCatalog?.status === 404;
 }
 
+const ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
 /**
  * The agent's observation, already stored on the command row by the result
- * transport, in the same transaction. Strictly validated here; one that fails
- * the contract (or names another lane than the command did) has its stored
- * result replaced, so unvalidated device output does not persist. Writes
- * nothing else. Runs on the transport's context.
+ * transport, in the same transaction. The stored result is always rewritten
+ * here, so what persists is only what was validated:
+ * - a valid observation (for the command's own lane) is stored as its
+ *   re-serialized parse: duplicate keys, padding, stderr and error text are gone;
+ * - an invalid one is replaced by a rejection marker;
+ * - a failed or timed-out envelope keeps its status and, only if it is an
+ *   identifier (the agent sends bare codes), its error code.
+ * Writes nothing else. Runs on the transport's context, and is not caught: a
+ * failed rewrite fails the transaction that stored the raw envelope with it.
  */
 export async function applyOemObserveResult(input: {
   commandId: string;
@@ -393,19 +429,27 @@ export async function applyOemObserveResult(input: {
   command: { type: string; deviceId: string; payload: unknown };
   envelopeStatus: string;
   stdout: string;
+  error?: string | null;
 }): Promise<void> {
   const { commandId, deviceId, command } = input;
   if (command.type !== CommandTypes.OEM_OBSERVE || command.deviceId !== deviceId) return;
-  // A failure's text is the agent's own error string, not device output.
-  if (input.envelopeStatus !== 'completed') return;
 
-  const observation = parseObservation({ stdout: input.stdout });
-  const payload = oemObservePayloadSchema.safeParse(command.payload);
-  if (observation && payload.success && observation.lane === payload.data.lane) return;
-
-  console.warn('[oemUpdates/observe] observation failed the contract; stored result scrubbed', { commandId, deviceId });
+  let result: Record<string, unknown>;
+  if (input.envelopeStatus !== 'completed') {
+    const code = typeof input.error === 'string' && ERROR_CODE.test(input.error) ? input.error : null;
+    result = { status: input.envelopeStatus, ...(code ? { error: code } : {}) };
+  } else {
+    const observation = parseObservation({ stdout: input.stdout });
+    const payload = oemObservePayloadSchema.safeParse(command.payload);
+    if (observation && payload.success && observation.lane === payload.data.lane) {
+      result = { status: 'completed', stdout: JSON.stringify(observation) };
+    } else {
+      console.warn('[oemUpdates/observe] observation failed the contract; stored result scrubbed', { commandId, deviceId });
+      result = { status: 'completed', rejected: 'observation_invalid' };
+    }
+  }
   await db
     .update(deviceCommands)
-    .set({ result: { status: 'completed', rejected: 'observation_invalid' } })
+    .set({ result })
     .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.deviceId, deviceId)));
 }

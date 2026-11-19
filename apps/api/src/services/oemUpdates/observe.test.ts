@@ -91,7 +91,9 @@ import {
   decideObserve,
   dispatchOemObserve,
   OEM_OBSERVE_DELIVER_WITHIN_MS,
+  OEM_OBSERVE_SWEEP_LIMIT,
   observedHpPlatformUnsupported,
+  resetOemObserveSweepCursorForTests,
   observeLinkAllows,
   runOemObserveSweep,
   type ObserveDeviceFacts,
@@ -153,6 +155,7 @@ beforeEach(() => {
   } as never);
   vi.mocked(resolveOemUpdatesLinkForDevice).mockReset();
   vi.mocked(resolveOemUpdatesLinkForDevice).mockResolvedValue(lenovoOn());
+  resetOemObserveSweepCursorForTests();
 });
 
 describe('decideObserve: one refusal per check, in order', () => {
@@ -311,7 +314,8 @@ describe('applyOemObserveResult', () => {
         stdout: JSON.stringify(golden(lane)),
       });
     }
-    expect(state.updates).toEqual([]);
+    // Only the command row's own result is rewritten, never another table.
+    expect(state.updates.map((u) => u.table)).toEqual([deviceCommands, deviceCommands, deviceCommands]);
     expect(state.inserts).toBe(0);
     // Structural: the module imports none of the writers it must not reach.
     const source = readFileSync(path.join(__dirname, 'observe.ts'), 'utf8');
@@ -319,6 +323,26 @@ describe('applyOemObserveResult', () => {
       expect(source.includes(banned), banned).toBe(false);
     }
     expect(deviceOemUpdateStatus).toBeDefined();
+  });
+
+  it('stores only the re-serialized validated observation: no raw stdout, stderr or error survives', async () => {
+    const valid = golden('lenovo');
+    // Duplicate key: JSON.parse keeps the last, so the raw text would keep the first.
+    const raw = `{"smbios":{"model":"PF-SERIAL-123"},${JSON.stringify(valid).slice(1)}${' '.repeat(40_000)}`;
+    await applyOemObserveResult({
+      commandId: COMMAND_ID,
+      deviceId: DEVICE_ID,
+      command: command() as never,
+      envelopeStatus: 'completed',
+      stdout: raw,
+    });
+    expect(state.updates).toHaveLength(1);
+    const stored = state.updates[0]!.set.result as Record<string, unknown>;
+    expect(Object.keys(stored).sort()).toEqual(['status', 'stdout']);
+    expect(stored.status).toBe('completed');
+    expect(JSON.parse(stored.stdout as string)).toEqual(valid);
+    expect(stored.stdout).not.toContain('PF-SERIAL-123');
+    expect((stored.stdout as string).length).toBeLessThan(32 * 1024);
   });
 
   it('scrubs a stored result that fails the contract, so unvalidated output does not persist', async () => {
@@ -337,16 +361,21 @@ describe('applyOemObserveResult', () => {
     expect(JSON.stringify(state.updates[0]!.set)).not.toContain('PF123456');
   });
 
+  it('a failed envelope keeps only an identifier error code, never device text', async () => {
+    await applyOemObserveResult({ commandId: COMMAND_ID, deviceId: DEVICE_ID, command: command() as never, envelopeStatus: 'failed', stdout: 'C:\\Users\\x', error: 'not_elevated' });
+    await applyOemObserveResult({ commandId: COMMAND_ID, deviceId: DEVICE_ID, command: command() as never, envelopeStatus: 'timeout', stdout: '', error: 'C:\\Users\\someone said hi' });
+    expect(state.updates.map((u) => u.set)).toEqual([
+      { result: { status: 'failed', error: 'not_elevated' } },
+      { result: { status: 'timeout' } },
+    ]);
+  });
+
   it('scrubs non-JSON stdout and a lane that does not match the command', async () => {
     await applyOemObserveResult({ commandId: COMMAND_ID, deviceId: DEVICE_ID, command: command() as never, envelopeStatus: 'completed', stdout: 'C:\\Users\\someone' });
     await applyOemObserveResult({ commandId: COMMAND_ID, deviceId: DEVICE_ID, command: command('hp') as never, envelopeStatus: 'completed', stdout: JSON.stringify(golden('lenovo')) });
     expect(state.updates).toHaveLength(2);
   });
 
-  it('leaves a failed command alone: its text is the agent\'s own error', async () => {
-    await applyOemObserveResult({ commandId: COMMAND_ID, deviceId: DEVICE_ID, command: command() as never, envelopeStatus: 'failed', stdout: '' });
-    expect(state.updates).toEqual([]);
-  });
 });
 
 describe('revalidateOemObserve (claim recheck, both transports)', () => {
@@ -414,6 +443,29 @@ describe('runOemObserveSweep', () => {
     expect(rendered.params).not.toContain(OTHER_PARTNER);
     expect(rendered.sql).toContain('"organizations"."partner_id" in');
     expect(vi.mocked(dispatchDeviceCommand).mock.calls[0]![0].type).toBe('oem_observe');
+  });
+
+  it('narrows in SQL to what the seam can accept, so refused devices do not fill the window', async () => {
+    state.sweepRows = [{ candidate: DEVICE_ID, orgId: ORG_ID }];
+    await runOemObserveSweep(new Date());
+    const rendered = new PgDialect().sqlToQuery(state.sweepWhere!).sql;
+    expect(rendered).toContain('"devices"."is_virtual" = $');
+    expect(rendered).toContain('"devices"."device_role" <> $');
+  });
+
+  it('rotates a cursor, so a full page of refused devices cannot starve the rest', async () => {
+    vi.mocked(dispatchDeviceCommand).mockResolvedValue({ ok: false, code: 'device_offline' } as never);
+    const ids = Array.from({ length: OEM_OBSERVE_SWEEP_LIMIT }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    state.sweepRows = ids.map((id) => ({ candidate: id, orgId: ORG_ID }));
+    await runOemObserveSweep(new Date());
+    expect(new PgDialect().sqlToQuery(state.sweepWhere!).params).not.toContain(ids.at(-1));
+    state.sweepRows = [];
+    await runOemObserveSweep(new Date());
+    // The second tick starts after the last id the first one saw.
+    expect(new PgDialect().sqlToQuery(state.sweepWhere!).params).toContain(ids.at(-1));
+    // A short page wraps: the third tick starts from the beginning again.
+    await runOemObserveSweep(new Date());
+    expect(new PgDialect().sqlToQuery(state.sweepWhere!).params).not.toContain(ids.at(-1));
   });
 
   it('only partners the master allowlist also admits are swept', async () => {

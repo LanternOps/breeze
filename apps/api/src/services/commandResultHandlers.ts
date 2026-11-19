@@ -1301,8 +1301,8 @@ async function handleOemUpdateReleaseResult({ commandId, resolvedDeviceId, stdou
 
 /**
  * A read-only vendor observation (#11065 observe-first). The transport has
- * already stored the envelope in this transaction; the handler validates the
- * observation strictly and scrubs it from the row if it fails the contract.
+ * already stored the envelope in this transaction; the handler rewrites it to
+ * the validated observation only (or a rejection), so raw output never persists.
  */
 async function handleOemObserveResult({ command, commandId, resolvedDeviceId, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
   await applyOemObserveResult({
@@ -1311,6 +1311,7 @@ async function handleOemObserveResult({ command, commandId, resolvedDeviceId, re
     command,
     envelopeStatus: result.status,
     stdout: stdout ?? '',
+    error: result.error ?? null,
   });
 }
 

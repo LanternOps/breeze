@@ -323,18 +323,37 @@ describe('GET /oem-updates/gates (#11070)', () => {
     expect(body.data.lanes[0]).toEqual({
       lane: 'dell',
       shipped: true,
+      observable: false,
       categories: { bios: false, firmware: false, driver: true, application: true },
     });
     expect(body.data.lanes[2]).toEqual({
       lane: 'hp',
       shipped: true,
+      observable: false,
       categories: { bios: false, firmware: false, driver: false, application: false },
     });
     expect(body.data.lanes[3]).toEqual({
       lane: 'lenovo',
       shipped: false,
+      observable: false,
       categories: { bios: false, firmware: false, driver: false, application: false },
     });
+  });
+
+  it('a vendor canary partner sees its observe-stage lanes as observable (#11065 observe-first)', async () => {
+    vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', 'aaaaaaaa-0000-4000-8000-000000000001');
+    try {
+      state.auth = { partnerId: 'aaaaaaaa-0000-4000-8000-000000000001' };
+      const body = await (await buildApp().request('/oem-updates/gates')).json();
+      const observable = Object.fromEntries(body.data.lanes.map((l: { lane: string; observable: boolean }) => [l.lane, l.observable]));
+      expect(observable).toEqual({ dell: false, surface: true, hp: true, lenovo: true });
+      state.auth = { partnerId: 'bbbbbbbb-0000-4000-8000-000000000002' };
+      const other = await (await buildApp().request('/oem-updates/gates')).json();
+      expect(other.data.lanes.every((l: { observable: boolean }) => l.observable === false)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      state.auth = {};
+    }
   });
 
   it('is not captured as a policy id by /:id/features', async () => {
