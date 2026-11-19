@@ -46,7 +46,7 @@ concurrency:
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.26.11'
+  GO_VERSION: '1.27.4'
 
 # SR-007: least-privilege default. CI runs on every PR (including forks) and
 # only needs to read the repo. Any job needing more must opt in per-job.
@@ -3606,13 +3606,15 @@ jobs:
       # both wastes time and is the most common source of the transient
       # network failures that redden this job for reasons unrelated to actual
       # lint findings. Cache it keyed on the pinned version so a cache hit
-      # skips the install (and its network calls) entirely.
+      # skips the install (and its network calls) entirely. The key also
+      # carries GO_VERSION: golangci-lint refuses a module newer than the Go
+      # that built it, so a toolchain bump must miss the cache.
       - name: Cache golangci-lint binary
         id: golangci-lint-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/go/bin/golangci-lint
-          key: golangci-lint-v2.12.2-${{ runner.os }}
+          key: golangci-lint-v2.15.0-go${{ env.GO_VERSION }}-${{ runner.os }}
 
       - name: Install golangci-lint
         if: steps.golangci-lint-cache.outputs.cache-hit != 'true'
@@ -3622,7 +3624,7 @@ jobs:
           # with backoff before failing the job outright.
           attempts=3
           for attempt in $(seq 1 "${attempts}"); do
-            if go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2; then
+            if go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0; then
               echo "golangci-lint installed (attempt ${attempt})."
               exit 0
             fi

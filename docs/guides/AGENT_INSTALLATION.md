@@ -35,7 +35,7 @@ The Breeze Agent is a lightweight, cross-platform monitoring and management agen
 | Platform | Architecture | Minimum Version |
 |----------|--------------|-----------------|
 | Windows | x64, ARM64 | Windows 10 / Server 2016+ |
-| macOS | x64 (Intel), ARM64 (Apple Silicon) | macOS 11 (Big Sur)+ |
+| macOS | x64 (Intel), ARM64 (Apple Silicon) | macOS 13 (Ventura)+ |
 | Linux | x64, ARM64 | Kernel 4.15+ (Ubuntu 18.04+, RHEL 8+, Debian 10+) |
 
 ## Building from Source

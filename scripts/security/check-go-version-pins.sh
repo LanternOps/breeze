@@ -24,6 +24,11 @@
 # the agent that ships to customer machines, and the Go Vulnerability Check
 # job is the only thing that would notice.
 #
+# The 1.27 floor is 1.27.4 (#11941): 1.27.0-1.27.1 corrupt the stack on
+# windows/amd64 when runtime.LockOSThread starts the template thread
+# (golang/go#81731), 1.27.2 ships the stdlib CVE flagged on #9903, and 1.27.3
+# lacks the net/http fix (GO-2026-6859) that 1.26.11 and 1.27.4 carry.
+#
 # A stale pin in ONE of these files is invisible: CI stays green on the files
 # that agree, and the disagreeing one either builds a release binary with the
 # wrong toolchain (release.yml) or scans a different stdlib than it ships

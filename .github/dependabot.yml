@@ -354,10 +354,21 @@ updates:
     ignore:
       - dependency-name: "node"
         update-types: ["version-update:semver-major"]
+      # The golang builder stage is a Go toolchain pin; it moves with
+      # agent/go.mod and the workflows (check-go-version-pins.sh), never alone.
+      - dependency-name: "golang"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
+      # Own group, so a golang patch bump (which must wait for the pin guard)
+      # never blocks the other base images.
+      golang-toolchain:
+        patterns:
+          - "golang"
       docker-base-images:
         patterns:
           - "*"
+        exclude-patterns:
+          - "golang"
     labels:
       - "dependencies"
       - "docker"
