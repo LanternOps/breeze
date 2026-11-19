@@ -431,7 +431,7 @@ describe('verification timeout handling', () => {
       restoreTimeSeconds: null,
       filesVerified: 0,
       filesFailed: 0,
-      details: { source: 'test', commandId, reason: verificationTimeoutReason('integrity'), reasonCode: VERIFICATION_TIMEOUT_REASON_CODE },
+      details: { source: 'test', commandId, reason: verificationTimeoutReason(2 * HOUR), reasonCode: VERIFICATION_TIMEOUT_REASON_CODE },
       createdAt: startedAt.toISOString(),
     });
     verificationOrgById.set(verificationId, orgId);

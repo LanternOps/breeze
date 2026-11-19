@@ -43,10 +43,10 @@ func TestStorageSessionWiring_VerifyStopsWhenTheSessionIsRevoked(t *testing.T) {
 		run  func(payload json.RawMessage) backupipc.BackupCommandResult
 	}{
 		{"verify", func(payload json.RawMessage) backupipc.BackupCommandResult {
-			return execBackupVerifyContext(context.Background(), "c-verify", payload, nil, &vaultManagerRef{}, nil)
+			return execBackupVerifyContext(context.Background(), "c-verify", payload, nil, &vaultManagerRef{}, nil, 0)
 		}},
 		{"test restore", func(payload json.RawMessage) backupipc.BackupCommandResult {
-			return execBackupTestRestoreContext(context.Background(), "c-test-restore", payload, nil, &vaultManagerRef{}, nil)
+			return execBackupTestRestoreContext(context.Background(), "c-test-restore", payload, nil, &vaultManagerRef{}, nil, 0)
 		}},
 	}
 	for _, tc := range cases {
