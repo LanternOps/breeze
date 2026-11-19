@@ -54,8 +54,8 @@ type Options struct {
 	Writer Writer
 	// Reread re-reads the Windows layer after writes.
 	Reread func(ctx context.Context) (*WindowsReadings, error)
-	// BootTime clears needs_reboot once the machine has booted after a write.
-	BootTime func() (time.Time, error)
+	// BootID clears needs_reboot once the machine has booted since a write.
+	BootID func() (string, error)
 
 	// testAllowWrites stands in for writesActivated in this package's tests.
 	// It is unexported so no other package can enable writes.
@@ -255,11 +255,17 @@ func (m *Manager) cycle(ctx context.Context) bool {
 		return errors.Is(err, ErrUnsupported)
 	}
 	now := m.opts.Now()
-	st := loadStateAt(m.opts.StatePath, now)
+	st, err := loadStateAt(m.opts.StatePath, now)
+	if err != nil {
+		// Transient (a sharing violation, a permission glitch): skip the cycle
+		// rather than overwrite the good state with an empty one.
+		log.Warn("wake status state unreadable; skipping this cycle", "error", err.Error())
+		return false
+	}
 	settings := m.currentSettings()
 	if m.takeFPChanged() {
 		// The policy moved (perhaps and back) since the last cycle.
-		st.Apply.Limiter.Entries = nil
+		st.Apply.Limiter.resetFailures()
 	}
 	if in.Windows != nil {
 		rep := Apply(ctx, ApplyInputs{
@@ -273,8 +279,9 @@ func (m *Manager) cycle(ctx context.Context) bool {
 			State:             &st.Apply,
 			Persist:           func(ApplyState) error { return saveState(m.opts.StatePath, st) },
 			StillAllowed:      func() bool { return m.writesAllowed(m.currentSettings()) },
-			BootTime:          m.opts.BootTime,
+			BootID:            m.opts.BootID,
 			Now:               now,
+			activated:         writesActivated || m.opts.testAllowWrites,
 		})
 		in.Windows = rep.Readings
 		status := rep.Status

@@ -3,6 +3,7 @@ package wakeconfig
 import (
 	"context"
 	"errors"
+	"maps"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -88,17 +89,17 @@ type applyRig struct {
 	machine *fakeMachine
 	writer  *fakeWriter
 	state   *ApplyState
-	boot    time.Time
+	boot    string
 	saves   int
 	saveErr error
 }
 
 func newRig(m *fakeMachine) *applyRig {
-	return &applyRig{machine: m, writer: &fakeWriter{machine: m}, state: &ApplyState{}, boot: t0.Add(-time.Hour)}
+	return &applyRig{machine: m, writer: &fakeWriter{machine: m}, state: &ApplyState{}, boot: "bootid:1"}
 }
 
 func (r *applyRig) run(configure bool, now time.Time, policyFP string) ApplyReport {
-	return Apply(context.Background(), ApplyInputs{
+	return Apply(context.Background(), ApplyInputs{activated: true,
 		Configure:         configure,
 		PolicyFingerprint: policyFP,
 		Readings:          r.machine.read(),
@@ -109,8 +110,8 @@ func (r *applyRig) run(configure bool, now time.Time, policyFP string) ApplyRepo
 			r.saves++
 			return r.saveErr
 		},
-		BootTime: func() (time.Time, error) { return r.boot, nil },
-		Now:      now,
+		BootID: func() (string, error) { return r.boot, nil },
+		Now:    now,
 	})
 }
 
@@ -155,7 +156,7 @@ func TestNoWriteOnVirtualOrWithoutCmdletsOrWiredAdapter(t *testing.T) {
 	} {
 		r := newRig(badMachine())
 		in := ApplyInputs{
-			Configure: true, PolicyFingerprint: "p1", Readings: r.machine.read(),
+			activated: true, Configure: true, PolicyFingerprint: "p1", Readings: r.machine.read(),
 			Reread: func(ctx context.Context) (*WindowsReadings, error) { return r.machine.read(), nil },
 			Writer: r.writer, State: r.state, Persist: func(ApplyState) error { return nil }, Now: t0,
 		}
@@ -170,7 +171,7 @@ func TestNoWriteOnVirtualOrWithoutCmdletsOrWiredAdapter(t *testing.T) {
 func TestFastStartupWrittenWhenOnlyARememberedAdapterExists(t *testing.T) {
 	m := &fakeMachine{readings: WindowsReadings{FastStartup: "enabled"}}
 	r := newRig(m)
-	Apply(context.Background(), ApplyInputs{
+	Apply(context.Background(), ApplyInputs{activated: true,
 		Configure: true, PolicyFingerprint: "p1", Readings: m.read(),
 		Memory: AdapterMemory{"aa:bb:cc:dd:ee:09": {LastSeenAt: t0.Add(-48 * time.Hour), MagicPacket: "enabled", EEE: "absent"}},
 		Reread: func(ctx context.Context) (*WindowsReadings, error) { return m.read(), nil },
@@ -276,7 +277,7 @@ func TestWriteErrorIsApplyFailed(t *testing.T) {
 
 func TestRereadFailureCountsAttemptsAsFailed(t *testing.T) {
 	r := newRig(badMachine())
-	rep := Apply(context.Background(), ApplyInputs{
+	rep := Apply(context.Background(), ApplyInputs{activated: true,
 		Configure: true, PolicyFingerprint: "p1", Readings: r.machine.read(),
 		Reread: func(ctx context.Context) (*WindowsReadings, error) { return nil, errors.New("powershell exit 1") },
 		Writer: r.writer, State: r.state, Persist: func(ApplyState) error { return nil }, Now: t0,
@@ -303,7 +304,7 @@ func TestNeedsRebootClearsOnlyAfterLaterBoot(t *testing.T) {
 		t.Fatalf("same boot: %s, writes %d->%d", computeWith(rep).ReadinessState, before, r.writer.count())
 	}
 	// A boot later than the write clears it.
-	r.boot = t0.Add(26 * time.Hour)
+	r.boot = "bootid:2"
 	rep = r.run(true, t0.Add(27*time.Hour), "p1")
 	if len(rep.Status.Pending) != 0 || computeWith(rep).ReadinessState != "unproven" {
 		t.Fatalf("after reboot: pending %v state %s", rep.Status.Pending, computeWith(rep).ReadinessState)
@@ -313,12 +314,12 @@ func TestNeedsRebootClearsOnlyAfterLaterBoot(t *testing.T) {
 func TestNeedsRebootStaysWhenBootTimeUnreadable(t *testing.T) {
 	r := newRig(badMachine())
 	r.run(true, t0, "p1")
-	rep := Apply(context.Background(), ApplyInputs{
+	rep := Apply(context.Background(), ApplyInputs{activated: true,
 		Configure: true, PolicyFingerprint: "p1", Readings: r.machine.read(),
 		Reread: func(ctx context.Context) (*WindowsReadings, error) { return r.machine.read(), nil },
 		Writer: r.writer, State: r.state, Persist: func(ApplyState) error { return nil },
-		BootTime: func() (time.Time, error) { return time.Time{}, errors.New("no boot time") },
-		Now:      t0.Add(48 * time.Hour),
+		BootID: func() (string, error) { return "", errors.New("no boot id") },
+		Now:    t0.Add(48 * time.Hour),
 	})
 	if len(rep.Status.Pending) != 3 {
 		t.Fatalf("unknown boot time must keep pending, got %v", rep.Status.Pending)
@@ -329,15 +330,18 @@ func TestPendingStateSurvivesAgentRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), StateFileName)
 	m := badMachine()
 	w := &fakeWriter{machine: m}
-	boot := t0.Add(-time.Hour)
+	boot := "bootid:1"
 	runOnce := func(now time.Time) ApplyReport {
-		st := loadState(path) // a fresh process reads the file
-		rep := Apply(context.Background(), ApplyInputs{
+		st, err := loadStateAt(path, now) // a fresh process reads the file
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep := Apply(context.Background(), ApplyInputs{activated: true,
 			Configure: true, PolicyFingerprint: "p1", Readings: m.read(),
 			Reread: func(ctx context.Context) (*WindowsReadings, error) { return m.read(), nil },
 			Writer: w, State: &st.Apply,
-			Persist:  func(a ApplyState) error { st.Apply = a; return saveState(path, st) },
-			BootTime: func() (time.Time, error) { return boot, nil }, Now: now,
+			Persist: func(a ApplyState) error { st.Apply = a; return saveState(path, st) },
+			BootID:  func() (string, error) { return boot, nil }, Now: now,
 		})
 		return rep
 	}
@@ -347,7 +351,7 @@ func TestPendingStateSurvivesAgentRestart(t *testing.T) {
 	if len(rep.Status.Pending) != 3 || w.count() != writes {
 		t.Fatalf("restart lost pending (%v) or rewrote (%d->%d)", rep.Status.Pending, writes, w.count())
 	}
-	boot = t0.Add(2 * time.Hour)
+	boot = "bootid:2"
 	if rep := runOnce(t0.Add(3 * time.Hour)); len(rep.Status.Pending) != 0 {
 		t.Fatalf("pending survived a later boot: %v", rep.Status.Pending)
 	}
@@ -409,7 +413,7 @@ func TestPolicyFingerprintChangeResetsLimiter(t *testing.T) {
 func TestDriftTriggersReapplyWithinLimits(t *testing.T) {
 	r := newRig(badMachine())
 	r.run(true, t0, "p1")
-	r.boot = t0.Add(time.Hour) // rebooted; settings in effect
+	r.boot = "bootid:2" // rebooted; settings in effect
 	r.run(true, t0.Add(2*time.Hour), "p1")
 	n := r.writer.count()
 	// A driver update resets magic packet.
@@ -455,12 +459,21 @@ func TestAttemptPersistedBeforeWriteAndSaveFailureBlocksWrite(t *testing.T) {
 	// With saving working, the attempt is persisted before the write runs.
 	r.saveErr = nil
 	var persistedBeforeWrite bool
+	var persisted ApplyState
 	r.writer.fail = nil
-	w := &orderingWriter{inner: r.writer, check: func() { persistedBeforeWrite = r.state.Limiter.Entries["fast_startup"].Failures == 1 }}
-	Apply(context.Background(), ApplyInputs{
+	w := &orderingWriter{inner: r.writer, check: func() {
+		persistedBeforeWrite = persisted.Limiter.Entries["fast_startup"].Failures == 1
+	}}
+	Apply(context.Background(), ApplyInputs{activated: true,
 		Configure: true, PolicyFingerprint: "p1", Readings: r.machine.read(),
 		Reread: func(ctx context.Context) (*WindowsReadings, error) { return r.machine.read(), nil },
-		Writer: w, State: r.state, Persist: func(ApplyState) error { return nil }, Now: t0,
+		Writer: w, State: r.state, Now: t0,
+		Persist: func(a ApplyState) error {
+			// A deep-enough copy: the limiter map is the part checked.
+			a.Limiter.Entries = maps.Clone(a.Limiter.Entries)
+			persisted = a
+			return nil
+		},
 	})
 	if !persistedBeforeWrite {
 		t.Fatal("the attempt must be recorded (as a provisional failure) before the write")
@@ -486,11 +499,14 @@ func TestCorruptStateEmbargoesWritesFor24h(t *testing.T) {
 	if err := writeFile(path, "{not json"); err != nil {
 		t.Fatal(err)
 	}
-	st := loadStateAt(path, t0)
+	st, err := loadStateAt(path, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	m := badMachine()
 	w := &fakeWriter{machine: m}
 	run := func(now time.Time) {
-		Apply(context.Background(), ApplyInputs{
+		Apply(context.Background(), ApplyInputs{activated: true,
 			Configure: true, PolicyFingerprint: "p1", Readings: m.read(),
 			Reread: func(ctx context.Context) (*WindowsReadings, error) { return m.read(), nil },
 			Writer: w, State: &st.Apply, Persist: func(ApplyState) error { return nil }, Now: now,
@@ -501,7 +517,7 @@ func TestCorruptStateEmbargoesWritesFor24h(t *testing.T) {
 		t.Fatal("a corrupt limiter must not hand out a fresh write budget")
 	}
 	// A policy change does not lift the embargo either.
-	Apply(context.Background(), ApplyInputs{
+	Apply(context.Background(), ApplyInputs{activated: true,
 		Configure: true, PolicyFingerprint: "p2", Readings: m.read(),
 		Reread: func(ctx context.Context) (*WindowsReadings, error) { return m.read(), nil },
 		Writer: w, State: &st.Apply, Persist: func(ApplyState) error { return nil }, Now: t0.Add(2 * time.Hour),
@@ -527,19 +543,26 @@ func TestPolicyRemovedStopsAndRevertsNothing(t *testing.T) {
 	if n == 0 {
 		t.Fatal("no writes in the first cycle")
 	}
+	collects := h.collects.Load()
+	h.m.ApplySettings(Settings{Enabled: false})
+	// The machine drifts back; a disabled manager must neither collect nor
+	// write, whatever settings traffic follows.
+	m.mu.Lock()
+	m.readings = badMachine().readings
+	m.mu.Unlock()
+	h.m.ApplySettings(Settings{Enabled: false, ConfigureSettings: true})
 	h.m.ApplySettings(Settings{Enabled: false})
 	time.Sleep(150 * time.Millisecond)
-	if w.count() != n {
-		t.Fatalf("writes after the policy was removed: %v", w.ops[n:])
+	if w.count() != n || h.collects.Load() != collects {
+		t.Fatalf("after the policy was removed: writes %v, collects %d->%d", w.ops[n:], collects, h.collects.Load())
 	}
 	for _, op := range w.ops {
 		if op.Kind != OpFastStartupOff && op.Kind != OpMagicPacketOn && op.Kind != OpEEEOff && op.Kind != OpShutdownWakeOn {
 			t.Fatalf("unexpected op %v", op)
 		}
 	}
-	got := m.read()
-	if got.FastStartup != "disabled" || got.Adapters[0].MagicPacket != "enabled" {
-		t.Fatalf("settings were reverted: %+v", got)
+	for _, op := range w.ops[n:] {
+		t.Fatalf("op after removal: %v", op) // nothing may run, revert or otherwise
 	}
 }
 

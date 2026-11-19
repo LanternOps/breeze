@@ -36,7 +36,7 @@ func newApplyHarness(t *testing.T, mach *fakeMachine, w Writer) *applyHarness {
 		},
 		Writer:          w,
 		Reread:          func(ctx context.Context) (*WindowsReadings, error) { return mach.read(), nil },
-		BootTime:        func() (time.Time, error) { return t0.Add(-time.Hour), nil },
+		BootID:          func() (string, error) { return "bootid:1", nil },
 		StatePath:       filepath.Join(t.TempDir(), StateFileName),
 		Interval:        time.Hour,
 		testAllowWrites: true,
@@ -47,6 +47,12 @@ func newApplyHarness(t *testing.T, mach *fakeMachine, w Writer) *applyHarness {
 }
 
 func writeFile(path, s string) error { return os.WriteFile(path, []byte(s), 0o600) }
+
+// loadState reads the state for assertions; read errors read as empty.
+func loadState(path string) State {
+	st, _ := loadStateAt(path, time.Now())
+	return st
+}
 
 func TestParseShutdownWake(t *testing.T) {
 	r, err := ParseWindowsReadings([]byte(`{"hiberboot":0,"adapters":[
@@ -227,14 +233,48 @@ func TestBlockedSettingStaysBlockedWithoutPolicyChange(t *testing.T) {
 	}
 }
 
-func TestUnreadableStateEmbargoesWrites(t *testing.T) {
+func TestStateReadErrorIsReturnedNotEmbargoed(t *testing.T) {
 	dir := t.TempDir() // a directory cannot be read as a file
-	st := loadStateAt(dir, t0)
-	if !st.Apply.Limiter.EmbargoUntil.Equal(t0.Add(24 * time.Hour)) {
-		t.Fatalf("unreadable state must embargo writes, got %v", st.Apply.Limiter.EmbargoUntil)
+	if _, err := loadStateAt(dir, t0); err == nil {
+		t.Fatal("a transient read error must be returned so the caller does not overwrite the file")
 	}
-	if st := loadStateAt(filepath.Join(dir, "missing.json"), t0); !st.Apply.Limiter.EmbargoUntil.IsZero() {
-		t.Fatal("a missing state file is a clean start, not an embargo")
+	st, err := loadStateAt(filepath.Join(dir, "missing.json"), t0)
+	if err != nil || !st.Apply.Limiter.EmbargoUntil.IsZero() {
+		t.Fatalf("a missing state file is a clean start: %v %v", err, st.Apply.Limiter.EmbargoUntil)
+	}
+}
+
+// A transient read error (antivirus holding the file) must not replace the
+// good state with an empty one: the block, pending writes and adapter memory
+// would be lost.
+func TestTransientStateReadErrorKeepsTheFile(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions and a non-root user")
+	}
+	m := badMachine()
+	w := &fakeWriter{machine: m}
+	h := newApplyHarness(t, m, w)
+	on := Settings{Enabled: true, ConfigureSettings: true}
+	path := h.m.opts.StatePath
+	if err := saveState(path, blockedFastStartupState(on)); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	h.m.ApplySettings(on)
+	h.m.Start(context.Background())
+	waitFor(t, "a cycle", func() bool { return h.collects.Load() > 0 })
+	time.Sleep(50 * time.Millisecond)
+	stopAndWait(t, h.m)
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(path)
+	if string(after) != string(before) || w.count() != 0 || h.uploads.Load() != 0 {
+		t.Fatalf("state overwritten (%v) or wrote %d / uploaded %d", string(after) != string(before), w.count(), h.uploads.Load())
 	}
 }
 
@@ -242,7 +282,12 @@ func TestShutdownWakeDisabledMovesFingerprint(t *testing.T) {
 	fp := func(v string) string {
 		return Compute(winInputs("disabled", AdapterReading{MAC: "aa:bb:cc:dd:ee:01", MagicPacket: "enabled", EEE: "absent", ShutdownWake: v})).Fingerprint
 	}
-	if a, b, c := fp("enabled"), fp("disabled"), fp("unknown"); a == b || a == c || b == c {
-		t.Fatal("a shutdown-wake value that can block a wake must move the fingerprint")
+	if fp("enabled") == fp("disabled") {
+		t.Fatal("shutdown wake disabled blocks a wake and must move the fingerprint")
+	}
+	// A one-off read error must not move it: the server resets the timeout
+	// block on any fingerprint change.
+	if fp("unknown") != fp("enabled") {
+		t.Fatal("an unreadable shutdown-wake value moved the fingerprint")
 	}
 }

@@ -12,7 +12,9 @@ import (
 //     and the script refuses unless exactly one adapter matches;
 //   - every Set-NetAdapter* call passes -NoRestart, so the link never drops;
 //   - settings are matched by RegistryKeyword, never a localised display name;
-//   - the only value interpolated is a MAC Go has parsed and re-formatted.
+//   - the only value interpolated is a MAC Go has parsed and re-formatted;
+//   - the adapter name passed to -Name is wildcard-escaped, so a name such as
+//     "Ethernet [2]" cannot match another adapter.
 //
 // `-NoRestart` on Set-NetAdapterPowerManagement and
 // Set-NetAdapterAdvancedProperty was confirmed on Windows 11 26200 (read-only
@@ -22,7 +24,7 @@ import (
 const nicWritePrelude = `$ErrorActionPreference='Stop'
 $n=@(Get-NetAdapter -Physical | Where-Object { $_.NdisPhysicalMedium -eq 14 -and $_.MacAddress -eq '%s' })
 if ($n.Count -ne 1) { throw 'expected exactly one wired adapter with this MAC' }
-$name=[string]$n[0].Name
+$name=[Management.Automation.WildcardPattern]::Escape([string]$n[0].Name)
 `
 
 var nicWriteCommands = map[OpKind]string{

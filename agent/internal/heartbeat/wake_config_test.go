@@ -68,8 +68,8 @@ func (w *countingWakeWriter) Write(context.Context, wakeconfig.Op) error { w.n.A
 func TestProductionWakeWiringNeverWritesBeforeActivation(t *testing.T) {
 	h := &Heartbeat{config: &config.Config{AgentID: "agent-1"}}
 	opts := h.wakeOptions()
-	if opts.Reread == nil || opts.BootTime == nil {
-		t.Fatal("production wiring must supply Reread and BootTime")
+	if opts.Reread == nil || opts.BootID == nil {
+		t.Fatal("production wiring must supply Reread and BootID")
 	}
 	var uploads atomic.Int32
 	w := &countingWakeWriter{}

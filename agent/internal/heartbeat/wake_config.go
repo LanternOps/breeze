@@ -102,7 +102,7 @@ func (h *Heartbeat) wakeOptions() wakeconfig.Options {
 		FirstDelay: wakeFirstDelay(h.config.AgentID),
 		Writer:     wakeconfig.NewWriter(),
 		Reread:     wakeconfig.CollectWindows,
-		BootTime:   wakeconfig.BootTime,
+		BootID:     wakeconfig.BootID,
 	}
 }
 

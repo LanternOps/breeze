@@ -229,17 +229,20 @@ func Compute(in Inputs) Snapshot {
 				}
 			}
 		}
-		// A good adapter has every setting correct and in effect; one with a
-		// write awaiting reboot does not count yet.
-		good := false
+		// A good adapter has every setting correct and in effect; one whose
+		// settings read correct but await a reboot is good after reboot.
+		good, goodAfterReboot := false, false
 		for _, mac := range macs {
-			if rec := mem[mac]; rec.MagicPacket == "enabled" && rec.EEE != "enabled" &&
-				rec.ShutdownWake != "disabled" && !pendingMAC[mac] {
-				good = true
-				break
+			if rec := mem[mac]; rec.MagicPacket == "enabled" && rec.EEE != "enabled" && rec.ShutdownWake != "disabled" {
+				if pendingMAC[mac] {
+					goodAfterReboot = true
+				} else {
+					good = true
+					break
+				}
 			}
 		}
-		if !good {
+		if !good && !goodAfterReboot {
 			for _, mac := range macs {
 				rec := mem[mac]
 				switch rec.MagicPacket {
@@ -273,7 +276,7 @@ func Compute(in Inputs) Snapshot {
 			if configuring && len(ap.Deferred) > 0 {
 				reasons["apply_deferred"] = true
 			}
-		case !good && len(pendingMAC) > 0:
+		case !good && goodAfterReboot:
 			snap.ReadinessState = StateNeedsReboot
 			reasons["reboot_pending"] = true
 		default:
@@ -328,12 +331,12 @@ func fingerprint(in Inputs, fast string, macs []string, mem AdapterMemory, state
 		w(mac)
 		w(mem[mac].MagicPacket)
 		w(mem[mac].EEE)
-		// Shutdown wake is written only when it can block a wake, so every
-		// machine whose readings are unchanged keeps its W02 fingerprint.
-		switch v := orAbsent(mem[mac].ShutdownWake); v {
-		case "absent", "enabled":
-		default:
-			w("s5:" + v)
+		// Shutdown wake is written only when it reads disabled, so every
+		// machine whose readings are unchanged keeps its W02 fingerprint, and a
+		// one-off read error cannot move it (the server resets its timeout
+		// block on a fingerprint change).
+		if mem[mac].ShutdownWake == "disabled" {
+			w("s5:disabled")
 		}
 	}
 	w(state)

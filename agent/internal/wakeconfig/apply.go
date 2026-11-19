@@ -6,8 +6,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/shirou/gopsutil/v3/host"
 )
 
 // writesActivated is the agent-side switch for every wake setting write. It
@@ -67,14 +65,23 @@ type Writer interface {
 	Write(ctx context.Context, op Op) error
 }
 
+// PendingWrite is a stored value not yet in effect.
+type PendingWrite struct {
+	At time.Time `json:"at"`
+	// Boot is the boot identity when it was written. The write is in effect
+	// once the machine reports a different one. Empty: it could not be read,
+	// and the write stays pending.
+	Boot string `json:"boot,omitempty"`
+}
+
 // ApplyState is persisted in the wake status state file.
 type ApplyState struct {
 	Limiter Limiter `json:"limiter"`
-	// Pending maps a setting key to when it was written. It clears only at a
-	// boot later than the write, or when the value drifts.
-	Pending         map[string]time.Time `json:"pending,omitempty"`
-	LastApplyAt     time.Time            `json:"lastApplyAt,omitzero"`
-	LastApplyResult string               `json:"lastApplyResult,omitempty"`
+	// Pending maps a setting key to its write. It clears only once the boot
+	// identity has changed since the write, or when the value drifted.
+	Pending         map[string]PendingWrite `json:"pending,omitempty"`
+	LastApplyAt     time.Time               `json:"lastApplyAt,omitzero"`
+	LastApplyResult string                  `json:"lastApplyResult,omitempty"`
 }
 
 // ApplyStatus is what Compute needs to report needs_reboot / apply_failed.
@@ -106,8 +113,15 @@ type ApplyInputs struct {
 	// StillAllowed is checked before each write; false stops the pass (the
 	// policy was removed or configure turned off mid-cycle). nil means yes.
 	StillAllowed func() bool
-	BootTime     func() (time.Time, error)
-	Now          time.Time
+	// BootID identifies the current boot. It is not derived from the clock,
+	// so a clock step cannot fake a reboot.
+	BootID func() (string, error)
+	Now    time.Time
+
+	// activated must also be true for any write. Only the manager (from
+	// writesActivated) and this package's tests can set it, so an exported
+	// Apply cannot be used to write from elsewhere.
+	activated bool
 }
 
 // ApplyReport is the result of one pass.
@@ -116,18 +130,6 @@ type ApplyReport struct {
 	Attempted []string
 	Failed    map[string]string // key -> write_error | readback_mismatch | readback_unavailable
 	Status    ApplyStatus
-}
-
-// BootTime returns the last boot time of this machine.
-func BootTime() (time.Time, error) {
-	s, err := host.BootTime()
-	if err != nil {
-		return time.Time{}, err
-	}
-	if s == 0 {
-		return time.Time{}, fmt.Errorf("boot time unavailable")
-	}
-	return time.Unix(int64(s), 0).UTC(), nil
 }
 
 // Apply writes the Windows and NIC settings that read positively wrong, in the
@@ -141,12 +143,22 @@ func Apply(ctx context.Context, in ApplyInputs) ApplyReport {
 	}
 	now := in.Now.UTC()
 	rep := ApplyReport{Readings: in.Readings, Failed: map[string]string{}}
+	configure := in.Configure && in.activated
+	boot := ""
+	if in.BootID != nil {
+		if b, err := in.BootID(); err == nil {
+			boot = b
+		} else {
+			log.Debug("boot identity unavailable; pending wake writes stay pending", "error", err.Error())
+		}
+	}
 	st.Limiter.Observe(in.PolicyFingerprint)
 	pruneForAdapters(st, in.Readings, in.Memory)
-	clearPending(st, in.Readings, in.Memory, in.BootTime)
+	clearPending(st, in.Readings, boot)
+	reconcileUnconfirmed(st, in.Readings, boot)
 
 	var attempted []Op
-	if in.Configure && in.Writer != nil {
+	if configure && in.Writer != nil {
 		for _, op := range planOps(in.Virtual, in.Readings, in.Memory, now) {
 			if ctx.Err() != nil || (in.StillAllowed != nil && !in.StillAllowed()) {
 				break
@@ -156,7 +168,7 @@ func Apply(ctx context.Context, in ApplyInputs) ApplyReport {
 				continue
 			}
 			prev, had := st.Limiter.Entries[key]
-			st.Limiter.begin(key, now)
+			st.Limiter.begin(key, now, boot)
 			if err := persist(in, *st); err != nil {
 				// Fail closed: an attempt that cannot be recorded is not made.
 				if had {
@@ -206,10 +218,7 @@ func Apply(ctx context.Context, in ApplyInputs) ApplyReport {
 				}
 				st.Limiter.succeeded(key)
 				if op.Kind.needsReboot() {
-					if st.Pending == nil {
-						st.Pending = map[string]time.Time{}
-					}
-					st.Pending[key] = now
+					setPending(st, key, PendingWrite{At: now, Boot: boot})
 				}
 			}
 		}
@@ -228,8 +237,56 @@ func Apply(ctx context.Context, in ApplyInputs) ApplyReport {
 			log.Warn("wake apply results not persisted", "error", err.Error())
 		}
 	}
-	rep.Status = statusFor(st, rep.Readings, in.Virtual, in.Memory, in.Configure, now)
+	rep.Status = statusFor(st, rep.Readings, in.Virtual, in.Memory, configure, now)
 	return rep
+}
+
+func setPending(st *ApplyState, key string, p PendingWrite) {
+	if st.Pending == nil {
+		st.Pending = map[string]PendingWrite{}
+	}
+	st.Pending[key] = p
+}
+
+// opFromKey is the inverse of Op.Key.
+func opFromKey(key string) (Op, bool) {
+	if key == OpFastStartupOff.String() {
+		return Op{Kind: OpFastStartupOff}, true
+	}
+	mac := keyMAC(key)
+	if mac == "" {
+		return Op{}, false
+	}
+	for _, kind := range []OpKind{OpMagicPacketOn, OpEEEOff, OpShutdownWakeOn} {
+		if op := (Op{Kind: kind, MAC: mac}); op.Key() == key {
+			return op, true
+		}
+	}
+	return Op{}, false
+}
+
+// reconcileUnconfirmed handles an attempt that was never confirmed (the
+// re-read failed, the script stored the value and then errored, the agent
+// died mid-write, or the result was not saved) but whose value now reads
+// correct. With no reboot since the attempt, the value is stored but not in
+// effect, so a reboot-needing setting is marked pending as of the attempt.
+func reconcileUnconfirmed(st *ApplyState, r *WindowsReadings, boot string) {
+	if r == nil {
+		return
+	}
+	for key, e := range st.Limiter.Entries {
+		if e.Failures == 0 {
+			continue
+		}
+		op, ok := opFromKey(key)
+		if !ok || !satisfied(op, r) {
+			continue
+		}
+		if op.Kind.needsReboot() && (boot == "" || e.Boot == "" || boot == e.Boot) {
+			setPending(st, key, PendingWrite{At: e.LastAttemptAt, Boot: e.Boot})
+		}
+		st.Limiter.succeeded(key)
+	}
 }
 
 func persist(in ApplyInputs, st ApplyState) error {
@@ -355,21 +412,17 @@ func pruneForAdapters(st *ApplyState, r *WindowsReadings, mem AdapterMemory) {
 	}
 }
 
-// clearPending drops a pending write once the machine has booted after it, or
-// when its value drifted (the limiter then governs a re-apply). An unreadable
-// boot time keeps every pending write.
-func clearPending(st *ApplyState, r *WindowsReadings, mem AdapterMemory, bootTime func() (time.Time, error)) {
+// clearPending drops a pending write once the boot identity has changed since
+// it (and Fast Startup is not on, so that boot was a full one), or when its
+// value drifted (the limiter then governs a re-apply). An unreadable boot
+// identity, now or at write time, keeps the write pending.
+func clearPending(st *ApplyState, r *WindowsReadings, boot string) {
 	if len(st.Pending) == 0 {
 		return
 	}
-	var boot time.Time
-	if bootTime != nil {
-		if b, err := bootTime(); err == nil {
-			boot = b
-		}
-	}
-	for key, at := range st.Pending {
-		if !boot.IsZero() && boot.After(at) {
+	fullBoots := r != nil && r.FastStartup != "enabled"
+	for key, p := range st.Pending {
+		if boot != "" && p.Boot != "" && boot != p.Boot && fullBoots {
 			delete(st.Pending, key)
 			continue
 		}

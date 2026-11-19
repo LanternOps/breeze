@@ -21,7 +21,24 @@ import (
 const (
 	writeTimeout = 60 * time.Second
 	powerKeyPath = `SYSTEM\CurrentControlSet\Control\Session Manager\Power`
+	// BootId is a counter the kernel increments every boot; unlike a boot
+	// time derived from uptime, a clock step cannot change it.
+	bootIDKeyPath = `SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters`
 )
+
+// BootID identifies the current boot from the kernel's BootId counter.
+func BootID() (string, error) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, bootIDKeyPath, registry.QUERY_VALUE)
+	if err != nil {
+		return "", fmt.Errorf("open boot id key: %w", err)
+	}
+	defer func() { _ = k.Close() }()
+	v, _, err := k.GetIntegerValue("BootId")
+	if err != nil {
+		return "", fmt.Errorf("read BootId: %w", err)
+	}
+	return fmt.Sprintf("bootid:%d", v), nil
+}
 
 // NewWriter returns the Windows writer. Until writesActivated is true the
 // manager never calls it.

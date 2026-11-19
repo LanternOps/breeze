@@ -17,6 +17,8 @@ type LimitEntry struct {
 	// before the write runs and cleared once it reads back correct, so a crash
 	// mid-write still counts against the setting.
 	Failures int `json:"failures"`
+	// Boot is the boot identity at the last attempt.
+	Boot string `json:"boot,omitempty"`
 }
 
 // Limiter is persisted in the wake status state file. It fails closed: an
@@ -28,14 +30,23 @@ type Limiter struct {
 	Entries           map[string]LimitEntry `json:"entries,omitempty"`
 }
 
-// Observe resets the per-setting history when the policy fingerprint changed.
-// The embargo is not lifted by a policy change.
+// Observe clears the failure counts when the policy fingerprint changed. The
+// last attempt times stay, so flapping a policy cannot buy extra attempts
+// inside 24 h, and the embargo is not lifted either.
 func (l *Limiter) Observe(policyFP string) {
 	if l.PolicyFingerprint == policyFP {
 		return
 	}
 	l.PolicyFingerprint = policyFP
-	l.Entries = nil
+	l.resetFailures()
+}
+
+// resetFailures clears every failure count and keeps the attempt times.
+func (l *Limiter) resetFailures() {
+	for k, e := range l.Entries {
+		e.Failures = 0
+		l.Entries[k] = e
+	}
 }
 
 // Blocked reports whether the key has used up its consecutive failures.
@@ -47,6 +58,9 @@ func (l *Limiter) Blocked(key string) bool {
 // future (the clock went backwards) is treated as just now, so the key waits a
 // full interval rather than being retried at once or locked out for years.
 func (l *Limiter) Allow(key string, now time.Time) bool {
+	if limit := now.Add(attemptInterval); l.EmbargoUntil.After(limit) {
+		l.EmbargoUntil = limit // set while the clock ran fast
+	}
 	if now.Before(l.EmbargoUntil) {
 		return false
 	}
@@ -66,12 +80,13 @@ func (l *Limiter) Allow(key string, now time.Time) bool {
 }
 
 // begin records an attempt as a provisional failure.
-func (l *Limiter) begin(key string, now time.Time) {
+func (l *Limiter) begin(key string, now time.Time, boot string) {
 	if l.Entries == nil {
 		l.Entries = map[string]LimitEntry{}
 	}
 	e := l.Entries[key]
 	e.LastAttemptAt = now
+	e.Boot = boot
 	e.Failures++
 	l.Entries[key] = e
 }
