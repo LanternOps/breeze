@@ -30,7 +30,9 @@ export type EmailTemplateOverride = {
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
 const SAMPLE_VARS: Record<string, string> = {
-  ticket_number: 'T-2026-0001',
+  // Customer emails render tickets.ticket_number (10-char code), not the
+  // staff-only internal T-number (#8965, #12200), so the preview matches.
+  ticket_number: 'KQ04YOHZ-N',
   ticket_subject: 'Email not syncing',
   requester_name: 'Sample Requester',
   requester_email: 'user@example.com',

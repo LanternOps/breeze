@@ -144,6 +144,45 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
+  it("threaded autoresponse carries the rendered template subject, not Graph's RE: (#12200)", async () => {
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', ticketNumber: 'KQ04YOHZ-N', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null }]) // getTicket
+      .mockResolvedValueOnce([{ slug: 'acme', name: 'Acme MSP', settings: {} }]) // partner
+      .mockResolvedValueOnce([{ name: 'Jane Co' }]); // org name
+    resolveMailboxMock.mockResolvedValue({ ...MAILBOX, originalMessageId: 'orig-1' });
+
+    await handleTicketEvent({
+      type: 'ticket.autoresponse', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: null, eventId: 'evt-ar-graph',
+      payload: { to: 'jane@x.com', internalNumber: 'T-2026-0001', subject: 'printer down' },
+    } as never);
+
+    expect(sendThreadedMock).toHaveBeenCalledTimes(1);
+    const call = sendThreadedMock.mock.calls[0]! as unknown as unknown[];
+    expect(call[0]).toEqual(MAILBOX);
+    expect(call[1]).toBe('orig-1');
+    const opts = call[3] as { subject?: string } | undefined;
+    expect(opts?.subject).toBe('[KQ04YOHZ-N] We received your request: printer down');
+    expect(sendNewMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('threaded technician reply does NOT override the subject (keeps RE:)', async () => {
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-1', ticketNumber: 'KQ-1', subject: 'Printer', submitterEmail: 'cust@x.com' }])
+      .mockResolvedValueOnce([{ slug: 'acme', settings: {} }]);
+    resolveMailboxMock.mockResolvedValue({ ...MAILBOX, originalMessageId: 'orig-1' });
+
+    await handleTicketEvent({
+      type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', eventId: 'evt-tech-subj', payload: { commentId: 'c-1', isPublic: true },
+    });
+
+    expect(sendThreadedMock).toHaveBeenCalledTimes(1);
+    const call = sendThreadedMock.mock.calls[0]! as unknown as unknown[];
+    expect(call[3]).toBeUndefined();
+  });
+
   it('uses sendNewMail when the mailbox is connected but there is no original message id', async () => {
     selectMock
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-1', ticketNumber: 'KQ-1', subject: 'Printer', submitterEmail: 'cust@x.com' }])

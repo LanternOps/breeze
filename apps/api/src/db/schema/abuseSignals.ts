@@ -1,6 +1,7 @@
-import { pgTable, uuid, varchar, timestamp, jsonb, pgEnum, real, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, jsonb, pgEnum, real, index, uniqueIndex, check } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { partners } from './orgs';
+import { users } from './users';
 import { scripts } from './scripts';
 import { devices } from './devices';
 
@@ -85,3 +86,36 @@ export const abuseSweepState = pgTable('abuse_sweep_state', {
   value: jsonb('value').notNull().default({}),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+// Core's ledger of billing fraud flags it acted on (billing#51), one row per
+// billing flag id. See migrations/2027-01-28-180000-partner-billing-fraud-flags.sql
+// and services/partnerTrustFraudFlags.ts. System-only RLS, same as
+// partner_abuse_signals above: partners must never read why they were
+// restricted.
+export const partnerBillingFraudFlags = pgTable('partner_billing_fraud_flags', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
+  billingFlagId: uuid('billing_flag_id').notNull(),
+  flagKind: varchar('flag_kind', { length: 64 }).notNull(),
+  restrictReason: varchar('restrict_reason', { length: 64 }).notNull(),
+  stripeObjectId: varchar('stripe_object_id', { length: 255 }).notNull(),
+  stripeChargeId: varchar('stripe_charge_id', { length: 255 }),
+  billingFlaggedAt: timestamp('billing_flagged_at', { withTimezone: true }),
+  outcome: varchar('outcome', { length: 32 }).notNull().$type<'restricted' | 'already_restricted' | 'suppressed'>(),
+  previousTrustState: varchar('previous_trust_state', { length: 16 }).$type<'probation' | 'trusted'>(),
+  restrictedTrustChangedAt: timestamp('restricted_trust_changed_at', { withTimezone: true }),
+  effectsDoneAt: timestamp('effects_done_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  restoredAt: timestamp('restored_at', { withTimezone: true }),
+  restoredBy: uuid('restored_by').references(() => users.id, { onDelete: 'set null' }),
+  restoreReason: varchar('restore_reason', { length: 500 }),
+}, (t) => [
+  uniqueIndex('partner_billing_fraud_flags_billing_flag_uq').on(t.billingFlagId),
+  index('partner_billing_fraud_flags_partner_object_idx').on(t.partnerId, t.stripeObjectId),
+  index('partner_billing_fraud_flags_partner_created_idx').on(t.partnerId, t.createdAt),
+  check('partner_billing_fraud_flags_outcome_chk', sql`${t.outcome} IN ('restricted', 'already_restricted', 'suppressed')`),
+  check(
+    'partner_billing_fraud_flags_restricted_shape_chk',
+    sql`(${t.outcome} = 'restricted') = (${t.previousTrustState} IS NOT NULL) AND (${t.outcome} = 'restricted') = (${t.restrictedTrustChangedAt} IS NOT NULL) AND (${t.previousTrustState} IS NULL OR ${t.previousTrustState} IN ('probation', 'trusted'))`,
+  ),
+]);

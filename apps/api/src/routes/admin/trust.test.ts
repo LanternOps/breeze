@@ -38,6 +38,10 @@ vi.mock('../../services/partnerTrustBlockers', () => ({ readPromotionBlockers })
 const closeOpenCheckoutsAfterRestrict = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../../services/partnerTrustPromotion', () => ({ closeOpenCheckoutsAfterRestrict }));
 
+// billing#51: restricted rows carry their restorable fraud-flag restriction.
+const loadFraudRestoreEpisodes = vi.hoisted(() => vi.fn(async () => new Map()));
+vi.mock('../../services/partnerTrustFraudFlags', () => ({ loadFraudRestoreEpisodes }));
+
 vi.mock('../../services/partnerTrustPartnerMail', () => ({
   sendTrustApprovedEmail: vi.fn(async () => 0),
 }));
@@ -337,6 +341,33 @@ describe('admin partner trust routes', () => {
       trustChangedAt: changedAt.toISOString(),
       id: '22222222-2222-4222-8222-222222222222',
     });
+  });
+
+  it('attaches the restorable billing fraud flag restriction to restricted rows only', async () => {
+    const base = {
+      plan: 'pro', status: 'active', trustReason: 'x', trustChangedAt: null, trustReviewRequestedAt: null,
+      createdAt: new Date('2026-08-30T12:00:00.000Z'), signupIp: null, signupIpClass: 'unknown', signupIpAsn: null, deviceCount: 0,
+    };
+    state.queueRows = [
+      { ...base, id: '44444444-4444-4444-8444-444444444444', name: 'Flagged MSP', slug: 'flagged', trustState: 'restricted' },
+      { ...base, id: '55555555-5555-4555-8555-555555555555', name: 'Probation MSP', slug: 'probation', trustState: 'probation' },
+    ];
+    const episode = {
+      partnerId: '44444444-4444-4444-8444-444444444444',
+      restrictingFlagId: '66666666-6666-4666-8666-666666666666',
+      previousTrustState: 'trusted',
+      restrictedAt: '2026-11-18T10:00:00.000Z',
+      flags: [{ id: '66666666-6666-4666-8666-666666666666', kind: 'test_kind', stripeObjectId: 'obj_test_1', outcome: 'restricted', flaggedAt: null }],
+    };
+    loadFraudRestoreEpisodes.mockResolvedValueOnce(new Map([[episode.partnerId, episode]]));
+
+    const response = await buildApp().request('/admin/trust/queue?limit=10');
+    const body = await response.json() as { partners: Array<Record<string, unknown>> };
+
+    expect(response.status).toBe(200);
+    expect(loadFraudRestoreEpisodes).toHaveBeenCalledWith(['44444444-4444-4444-8444-444444444444']);
+    expect(body.partners[0]!.fraudFlagRestore).toEqual(episode);
+    expect(body.partners[1]!.fraudFlagRestore).toBeNull();
   });
 
   describe('classifier and blockers (#11698)', () => {

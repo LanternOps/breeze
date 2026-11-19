@@ -423,3 +423,64 @@ describe('IP classifier and promotion blockers (#11698)', () => {
     expect((await screen.findByTestId('trust-queue-blockers-partner-1')).textContent).toContain('Not evaluated yet');
   });
 });
+
+describe('billing fraud flag restore (billing#51)', () => {
+  const restore = {
+    partnerId: 'partner-1',
+    restrictingFlagId: 'flag-row-1',
+    previousTrustState: 'trusted',
+    restrictedAt: '2026-11-18T10:00:00.000Z',
+    flags: [
+      { id: 'flag-row-1', kind: 'test_kind', stripeObjectId: 'obj_test_1', outcome: 'restricted', flaggedAt: null },
+      { id: 'flag-row-2', kind: 'test_kind', stripeObjectId: 'obj_test_2', outcome: 'already_restricted', flaggedAt: null },
+    ],
+  };
+  const restrictedRow = { ...row, trustState: 'restricted', trustReason: 'auto:test_reason', fraudFlagRestore: restore };
+  const endpoint = '/admin/partners/partner-1/trust/fraud-flag-restore';
+
+  it('restores with one confirmation, sending exactly the restriction\'s flag rows, and drops a row restored to trusted', async () => {
+    fetchWithAuth.mockImplementation((url: string, options?: RequestInit) => {
+      if (!options) return Promise.resolve(queueResponse([restrictedRow]));
+      if (url === endpoint && options.method === 'POST') {
+        return Promise.resolve(jsonResponse({ success: true, trustState: 'trusted', restoredFlagIds: ['flag-row-1', 'flag-row-2'] }));
+      }
+      throw new Error(`Unexpected request: ${options.method} ${url}`);
+    });
+    const prompt = vi.spyOn(window, 'prompt');
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<TrustQueue />);
+    await screen.findByText('Acme MSP');
+    expect(screen.getByTestId('trust-queue-fraud-restore-partner-1').textContent).toContain('trusted');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+
+    await waitFor(() => {
+      const mutation = fetchWithAuth.mock.calls.find(([url]) => url === endpoint);
+      expect(mutation).toBeTruthy();
+      expect(JSON.parse((mutation![1] as RequestInit).body as string)).toEqual({ flagIds: ['flag-row-1', 'flag-row-2'] });
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith({ message: 'Partner restored', type: 'success' });
+    await waitFor(() => expect(screen.queryByText('Acme MSP')).toBeNull());
+  });
+
+  it('does nothing when the confirmation is declined', async () => {
+    fetchWithAuth.mockResolvedValue(queueResponse([restrictedRow]));
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(<TrustQueue />);
+    await screen.findByText('Acme MSP');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+
+    expect(fetchWithAuth.mock.calls.some(([url]) => url === endpoint)).toBe(false);
+  });
+
+  it('offers no Restore for a restriction that did not come from a billing fraud flag', async () => {
+    const otherRestriction = { ...row, trustState: 'restricted', fraudFlagRestore: null };
+    fetchWithAuth.mockResolvedValue(queueResponse([otherRestriction]));
+    render(<TrustQueue />);
+    await screen.findByText('Acme MSP');
+
+    expect(screen.queryByRole('button', { name: 'Restore' })).toBeNull();
+  });
+});
