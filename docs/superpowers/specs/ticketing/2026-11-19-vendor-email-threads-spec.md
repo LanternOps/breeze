@@ -107,6 +107,13 @@ grouped by thread, with the recipients shown.
 1. **Authorize:** access to the ticket's org, a dedicated permission
    (`tickets.vendor_email`, Decision 8), the feature enabled (§4.9), and
    the partner passes the sending gate (§4.8).
+   **Thread binding:** every route that takes a thread id (follow-up, close,
+   and the §4.6 file and approve-sender actions) loads the thread by
+   `(thread.id, thread.ticket_id = path ticket, thread.org_id = ticket org)`
+   and applies the full ticket authorization to the path ticket, including
+   the application-layer site scope that org RLS does not enforce. A thread
+   that belongs to another ticket, including one the caller cannot see, is a
+   404. The composite FK in §5 makes the same pairing structural for messages.
 2. **Recipients are exactly what the technician chose.** They are never copied
    from an inbound message's Reply-To, From or CC. A follow-up defaults to the
    thread's stored recipient set. The technician may add a verified vendor
@@ -209,15 +216,42 @@ the hash and the token is only ever in outbound mail.
 - `findTicketIdsByMessageIds` (`ticketEmailLinks.ts:133`) ignores `visibility` and
   `origin` today. The customer matcher must exclude `vendor_*` origins, or a
   vendor Message-ID becomes a customer-thread header match.
-- `senderIsThreadParticipant` reads every `matched` / `created`
-  `ticket_email_inbound` row on the ticket. Vendor inbound rows are recorded with
-  a new parse status `vendor_matched`, which that query does not include, so a
-  vendor never becomes a customer-thread participant.
-- `resolveOutboundMailbox` must exclude `vendor_matched` rows. Otherwise the next
-  customer reply is sent as a Graph `createReply` to the vendor's message.
-- The claimed-link fast path (step 2b) already treats a claimed Message-ID as
-  handled. A vendor message that was CC'd to both the platform inbound address and
-  a connected mailbox is filed once.
+- **Invariant (vendor-origin status):** every path that writes a
+  `ticket_email_inbound` row for a vendor-origin message records it as
+  `vendor_matched` (attributed to the ticket) or as a review status with
+  `ticket_id = null`. It never records `matched` or `created` against the
+  ticket. A message is vendor-origin when it carried a vendor signal, or when its
+  Message-ID is claimed by a `ticket_email_links` row with a `vendor_*` origin.
+  The paths, each named so none is missed:
+  1. **Vendor matcher** (this section): `vendor_matched`.
+  2. **Claimed-link fast path (step 2b,
+     `inboundEmailService.ts:401`):** it runs before the sender-auth gate and
+     before this matcher, and today writes `matched` for any claim. The claim's
+     `origin` decides the status: a `vendor_*` claim is recorded as
+     `vendor_matched`, any other claim as `matched` (unchanged). This path is how
+     a vendor message CC'd to both the platform inbound address and a connected
+     mailbox is filed once, so without this rule the second copy, in either
+     delivery order, would become a customer-thread row.
+  3. **Automatic replies and bounces** (§4.4): `vendor_matched`.
+  4. **Review queue** (§4.6): rows with a `vendor thread:` reason are written
+     with `ticket_id = null` (as quarantine rows are today). **File to vendor
+     thread** moves the row to `vendor_matched`. `Convert` mints a new ticket
+     (`created` on that new ticket only) and is unchanged.
+  5. **Outlook add-in fast paths** (`routes/officeAddin/tickets.ts:608`, `:821`)
+     write no inbound row. On a `vendor_*` claim they return the existing link
+     and never link the message as a customer comment.
+- **Readers key on the vendor state, not on status alone.** Both readers below
+  use an allowlist of customer statuses (`matched` / `created`) **and** exclude
+  any row whose Message-ID has a `vendor_*` link row, so the arrival order of two
+  copies, or a row written before this feature, cannot change the outcome:
+  - `senderIsThreadParticipant` (`threadMatcher.ts:178`): a vendor never becomes
+    a customer-thread participant.
+  - `resolveOutboundMailbox` (`ticketMailbox/resolveOutboundMailbox.ts`): today
+    it takes the latest `m365` row on the ticket with no status filter. It gains
+    the same allowlist and exclusion, so the next customer reply is never a Graph
+    `createReply` to a vendor's message.
+  - `markIngestedGmailHandled` treats `vendor_matched` as handled (added to
+    `TICKETED_STATUSES`), so a filed vendor message is not re-ingested.
 
 **Sub-address parsing:** `resolvePartnerByRecipient` strips a `+…` suffix before
 the local-part match on the platform domain. Custom inbound domains already
@@ -372,15 +406,22 @@ rows like `ticket_comments`.
 `reply_token_hash` (unique), `recipient_addresses text[]`,
 `approved_sender_addresses text[]`, `created_by`,
 `created_at`, `closed_at`. Composite FK `(ticket_id, org_id) → tickets(id,
-org_id)` `DEFERRABLE INITIALLY IMMEDIATE`.
+org_id)` `DEFERRABLE INITIALLY IMMEDIATE`. `UNIQUE (id, ticket_id, org_id)`, the
+target of the message FK below.
 
 **`ticket_vendor_messages`**: `id`, `thread_id`, `ticket_id`, `org_id`,
 `partner_id`, `comment_id`, `direction`, `message_id`, `from_address`,
 `to_addresses text[]`, `cc_addresses text[]`, `transport` (`graph` |
 `partner_lane` | `inbound`), `delivery_state`, `delivery_error`, `matched_signal`,
-`auto_submitted bool`, `created_by`, `created_at`. Composite FKs to the thread and
-the ticket, both deferrable. `text[]` rather than jsonb so the rows survive tenant
-export.
+`auto_submitted bool`, `created_by`, `created_at`. One composite FK
+`(thread_id, ticket_id, org_id) → ticket_vendor_threads(id, ticket_id, org_id)`
+`DEFERRABLE INITIALLY IMMEDIATE`: every message is paired with its thread, and a
+message that names a different ticket than its thread cannot exist. Plus the
+composite FK `(ticket_id, org_id) → tickets(id, org_id)`, also `DEFERRABLE
+INITIALLY IMMEDIATE`. Because of the triple FK, ticket merge, ticket move and org
+move re-point `ticket_id` / `org_id` on the thread **and** its messages in one
+transaction with the constraints deferred. `text[]` rather than jsonb so the rows
+survive tenant export.
 
 **`vendor_contacts`** (per Decision 1): `partner_id` XOR `org_id` with a CHECK, dual-axis read
 policy (partner-wide rows readable by the partner's org-scoped users, SELECT-only;
@@ -395,7 +436,7 @@ Registration (grep, don't judge):
 | `orgMergeRegistry.ts` | repoint | repoint | repoint |
 | `CORE_TENANT_EXPORT_POLICY` | classify every column | classify every column | classify every column |
 | `TICKET_ORG_DENORMALIZED_TABLES` + `CUSTOM_ORG_REWRITE_TABLES` (same relative order; runtime-only check) | yes | yes | n/a |
-| Ticket merge re-point | yes | yes (via thread) | n/a |
+| Ticket merge re-point | yes | yes (own `ticket_id`, same transaction as the thread, constraints deferred) | n/a |
 | Partner-axis allowlist (`partner_id` rows) | n/a | n/a | yes |
 
 Changes to existing tables:
@@ -449,7 +490,19 @@ Todd approved all nine as recommended. Where Codex dissented, the dissent is not
   carries the customer anchor.
 - The customer matcher ignores `vendor_*` link rows.
 - `senderIsThreadParticipant` and `resolveOutboundMailbox` ignore
-  `vendor_matched` rows.
+  `vendor_matched` rows, and ignore a `matched` row whose Message-ID has a
+  `vendor_*` link row.
+- Vendor-origin status invariant, one case per §4.3 path: the vendor matcher,
+  the step-2b fast path on a `vendor_*` claim, an automatic reply, a bounce and
+  **File to vendor thread** each leave a `vendor_matched` row and no `matched` /
+  `created` row on the ticket.
+- The dual-delivery pair (webhook copy, then the same Message-ID through the
+  connected mailbox, and the reverse order) leaves no `matched` row and no `m365`
+  row that `resolveOutboundMailbox` can select, and the vendor is not a
+  `senderIsThreadParticipant` match afterwards.
+- Thread binding: a follow-up, close, file or approve-sender call with a thread
+  id from another ticket returns 404, including a thread on a ticket outside the
+  caller's site scope.
 - `insertVendorEmailComment` is always `is_public = false`. The event payload
   never reaches the requester branch of `handleTicketEvent`.
 - Automatic replies with a vendor signal are filed. Without a vendor signal the
@@ -462,8 +515,11 @@ Todd approved all nine as recommended. Where Codex dissented, the dissent is not
 **Integration (real Postgres; runs only under the Integration Tests job):**
 
 - RLS: a cross-org thread insert fails as `breeze_app`.
+- A `ticket_vendor_messages` insert whose `ticket_id` differs from its thread's
+  `ticket_id` fails the `(thread_id, ticket_id, org_id)` FK.
 - Cascade, merge and export suites with the three tables registered.
-- Org move and ticket move re-stamp both ticket child tables.
+- Org move, ticket move and ticket merge re-stamp the thread and its messages
+  together, and the deferred triple FK holds at commit.
 - End to end: send → inbound reply with token → internal note, no requester email,
   audit rows present.
 
