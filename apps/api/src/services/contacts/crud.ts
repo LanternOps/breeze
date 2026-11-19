@@ -564,6 +564,12 @@ export async function createContact(
       siteId: createdContact.siteId,
       roles: createdContact.roles,
     });
+    // Ticket import copies updated_at onto the external link right after this
+    // call and `edited` compares the two, so the row is stamped after the insert.
+    await exec
+      .update(contacts)
+      .set({ updatedAt: new Date() })
+      .where(and(eq(contacts.id, createdContact.id), eq(contacts.orgId, input.orgId)));
     for (const kind of ['email', 'mobile'] as const) {
       await recordDestinationChangeWithExecutor(exec, {
         orgId: input.orgId, contactId: createdContact.id, kind,
