@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DeviceStatus, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PortalHourBlockResponse, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField, TicketType } from '@breeze/shared';
+import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DeviceStatus, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSiteHealthDto, NetworkSitesDto, PortalHourBlockResponse, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField, TicketType } from '@breeze/shared';
 import { lineWorkedVsBilled } from '@breeze/shared';
 import type { TrustPagePublicPayloadAny } from '@breeze/shared';
 import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
@@ -1761,6 +1761,12 @@ export const portalApi = {
     config: ApiRequestConfig = {}
   ): Promise<ApiResponse<NetworkSitesDto>> =>
     apiGet<NetworkSitesDto>('/portal/network/sites', config),
+
+  // CPEV-W2 — per-site health summary for the Network page.
+  getNetworkSiteHealth: (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<NetworkSiteHealthDto>> =>
+    apiGet<NetworkSiteHealthDto>('/portal/network/sites/health', config),
 
   // #6641 — per-asset list.
   getNetworkAssets: (

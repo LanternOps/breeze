@@ -53,6 +53,9 @@ interface FilterState {
 
 const EMPTY_FILTERS: FilterState = { assetType: '', status: '', siteId: '', page: 1 };
 
+const sameFilters = (a: FilterState, b: FilterState) =>
+  a.assetType === b.assetType && a.status === b.status && a.siteId === b.siteId && a.page === b.page;
+
 function readHash(sites: ReadonlyArray<NetworkSiteDto>): FilterState {
   const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
   const type = params.get('type') ?? '';
@@ -131,6 +134,10 @@ export function NetworkAssetTable({
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [busy, setBusy] = useState(false);
   const requestSeq = useRef(0);
+  // Mirror of the applied filters for the hashchange listener, which is bound
+  // once on mount and would otherwise read a stale `filters`.
+  const filtersRef = useRef<FilterState>(EMPTY_FILTERS);
+  const headingRef = useRef<HTMLHeadingElement>(null);
   // The Location column exists only once the API has sent a placement (flag on).
   // Sticky, so it does not blink away on a page or filter with no placement.
   const [showLocation, setShowLocation] = useState(() => hasPlacement(initial?.data ?? []));
@@ -138,6 +145,7 @@ export function NetworkAssetTable({
   async function load(next: FilterState) {
     const seq = ++requestSeq.current;
     setFilters(next);
+    filtersRef.current = next;
     writeHash(next);
     setBusy(true);
     const response = await portalApi.getNetworkAssets({
@@ -181,6 +189,22 @@ export function NetworkAssetTable({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // A link elsewhere on the page (the per-site summary, `#site=<id>`) changes
+  // the hash after mount. Our own writeHash uses replaceState, which never
+  // fires `hashchange`, so this only reacts to outside navigation (links, back/
+  // forward) and cannot loop. The same load() keeps the request supersession.
+  useEffect(() => {
+    function onHashChange() {
+      const fromHash = readHash(sites);
+      if (sameFilters(fromHash, filtersRef.current)) return;
+      void load(fromHash);
+      headingRef.current?.scrollIntoView?.();
+    }
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const filtered = Boolean(filters.assetType || filters.status || filters.siteId);
   const rows = result?.data ?? [];
   const total = result?.pagination.total ?? 0;
@@ -212,7 +236,7 @@ export function NetworkAssetTable({
 
   return (
     <div className="mt-10">
-      <h2 className="mb-4 font-display text-lg font-semibold text-foreground">Network assets</h2>
+      <h2 ref={headingRef} className="mb-4 font-display text-lg font-semibold text-foreground">Network assets</h2>
 
       <div className="mb-4 flex flex-wrap items-end gap-4" data-testid="portal-network-filters">
         <label className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
