@@ -13,13 +13,16 @@ import (
 	"github.com/breeze-rmm/agent/internal/wakeconfig"
 )
 
-// Wake-on-LAN readiness is READ-ONLY in this release. Of the
-// wake_on_lan_settings block only `enabled` is used; configure_settings and
-// firmware_writes are ignored on purpose so a setting name in the payload can
-// never cause a write.
+// Of the wake_on_lan_settings block only `enabled` and the boolean
+// `configure_settings` are read. firmware_writes is ignored on purpose (it
+// arrives with the Dell write wave), and no field can name a setting or value:
+// the writable settings are a compile-time list in wakeconfig. Writes stay
+// inactive until wakeconfig's activation switch is flipped, so in this release
+// configure_settings true is carried but never reaches a writer.
 
 // parseWakeSettings reads wake_on_lan_settings in snake_case or camelCase. A
-// non-object, or a missing or non-boolean `enabled`, is rejected.
+// non-object, or a missing or non-boolean `enabled`, is rejected. Anything but
+// a boolean true for configure_settings reads as false.
 func parseWakeSettings(raw any) (wakeconfig.Settings, bool) {
 	m, ok := raw.(map[string]any)
 	if !ok {
@@ -29,7 +32,12 @@ func parseWakeSettings(raw any) (wakeconfig.Settings, bool) {
 	if !ok {
 		return wakeconfig.Settings{}, false
 	}
-	return wakeconfig.Settings{Enabled: enabled}, true
+	cfg, present := m["configure_settings"]
+	if !present {
+		cfg = m["configureSettings"]
+	}
+	configure, _ := cfg.(bool)
+	return wakeconfig.Settings{Enabled: enabled, ConfigureSettings: configure}, true
 }
 
 // applyWakeOnLanSettings hands a parsed block to the manager. An invalid
@@ -79,14 +87,23 @@ func wakeFirstDelay(id string) time.Duration {
 }
 
 func (h *Heartbeat) initWake() {
-	h.wake = wakeconfig.New(wakeconfig.Options{
+	h.wake = wakeconfig.New(h.wakeOptions())
+}
+
+// wakeOptions is the production wiring. Writer is nil off Windows; on Windows
+// it is only ever called once wakeconfig's activation switch is on.
+func (h *Heartbeat) wakeOptions() wakeconfig.Options {
+	return wakeconfig.Options{
 		Collect: h.collectWakeInputs,
 		Upload: func(ctx context.Context, s wakeconfig.Snapshot) error {
 			return h.sendInventoryData("wake-status", wakeUpload{ctx: ctx, snap: s}, "wake status")
 		},
 		StatePath:  wakeconfig.DefaultStatePath(),
 		FirstDelay: wakeFirstDelay(h.config.AgentID),
-	})
+		Writer:     wakeconfig.NewWriter(),
+		Reread:     wakeconfig.CollectWindows,
+		BootTime:   wakeconfig.BootTime,
+	}
 }
 
 // collectWakeInputs gathers the Windows readings first (unsupported OSes stop
