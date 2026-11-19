@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
 import { POLICY_FILES, isPolicyPath } from './ci-policy.mjs';
+import { CORE, loadSuiteMap, suiteOfTest, suitesForChange } from './integration-suites.mjs';
+import { RELATED_JOBS, relatedPlan } from './related-tests.mjs';
 
 // W4: advisory only. These selections must never replace the classifier outputs.
 // The policy manifest lives in ci-policy.mjs (W02); re-exported for W4's callers.
@@ -151,7 +153,49 @@ function areas(paths, flags) {
   return new Set([...AREAS.filter(key => truth(flags[key])), ...Object.entries(PATH_AREAS)
     .filter(([, prefix]) => paths.some(p => p.startsWith(prefix))).map(([key]) => key)]);
 }
-export function computeSelection({ P, delta, full, workflow, classify, floor, integrationConfig, playwrightConfigs }) {
+// ── W07b3 / W07c (#10751): shadow fields beside the selection ─────────────
+//
+// Both are logged only. The job-level selection never reads them, and neither
+// throws: anything doubtful is 'all' (suites) or 'full:<why>' (related).
+
+// The integration suites a thin entry would run, from the suite map at the
+// queue base: S(O) ∪ (S(P) ∩ S(Δ)) ∪ the suites of P's own integration tests,
+// where S is suitesForChange. A floor path anywhere, or 'all' on any side, is
+// every suite.
+export function integrationSuites({ suiteMap, P, delta, overlap, floor, ownTests }) {
+  try {
+    if (typeof suiteMap !== 'string' || !suiteMap.trim()) return { suites: 'all', reason: 'map_missing' };
+    const map = loadSuiteMap(suiteMap);
+    const floorPath = unique([...P, ...delta]).find(path => onFloor(floor, path));
+    if (floorPath) return { suites: 'all', reason: `floor:${floorPath}` };
+    const side = {};
+    for (const [label, paths] of [['o', overlap], ['p', P], ['delta', delta]]) {
+      const selected = suitesForChange(map, paths, { floor });
+      if (selected.suites === 'all') return { suites: 'all', reason: `${label}:${selected.reason}` };
+      side[label] = selected.suites;
+    }
+    const chosen = new Set([CORE, ...side.o, ...side.p.filter(suite => side.delta.includes(suite)), ...ownTests.map(test => suiteOfTest(map, test))]);
+    return { suites: [CORE, ...map.suites.filter(suite => suite !== CORE)].filter(suite => chosen.has(suite)), reason: 'mapped' };
+  } catch (error) {
+    return { suites: 'all', reason: `map_error:${String(error?.message ?? error).split('\n')[0].slice(0, 200)}` };
+  }
+}
+
+// Per related-capable unit job the entry runs, what a `vitest related` run over
+// P ∪ Δ would be: 'related', or 'full:<why>' (related-tests.mjs relatedPlan).
+export function unitRelated(thinJobs, changed, floor) {
+  const jobs = thinJobs.filter(job => Object.hasOwn(RELATED_JOBS, job));
+  if (!jobs.length) return null;
+  return Object.fromEntries(jobs.map(job => {
+    try { return [job, relatedPlan(job, changed, { floor }).reason]; } catch { return [job, 'full:error']; }
+  }));
+}
+
+// integration-floor-paths.txt: `#` starts a comment; a trailing `/` is a prefix.
+const floorRules = text => text.split('\n').map(l => l.split('#')[0].trim()).filter(Boolean);
+const onFloor = (rules, path) => rules.some(rule => rule.endsWith('/') ? path.startsWith(rule) : path === rule);
+
+export function computeSelection({ P, delta, full, workflow, classify, floor, integrationConfig, playwrightConfigs, suiteMap }) {
   const jobs = workflowJobs(workflow);
   const full_jobs = Object.entries(jobs).filter(([, j]) => j.condition?.includes('needs.changes.outputs.') && evaluateIf(j.condition, full)).map(([n]) => n);
   if (!P.length) return { mode: 'full', reason: 'empty_change_set', full_jobs, thin_jobs: full_jobs,
@@ -162,15 +206,16 @@ export function computeSelection({ P, delta, full, workflow, classify, floor, in
   const overlap = P.filter(p => delta.includes(p));
   const pAreas = areas(P, pFlags), dAreas = areas(delta, dFlags), allAreas = areas(union, combined);
   const unitAreas = new Set([...pAreas].filter(a => dAreas.has(a)).concat([...areas(overlap, overlap.length ? classify(overlap) : {})]));
-  const ownJobs = new Set(), unrun_own_tests = [];
+  const ownJobs = new Set(), unrun_own_tests = [], ownIntegrationTests = [];
   for (const path of P.filter(ownTest)) {
     const routed = routeOwnTest(path, { workflow, integrationConfig, playwrightConfigs });
     if (routed.unrun) unrun_own_tests.push(path);
     else if (!routed.jobs.length) return { mode: 'full', reason: 'unrouted_own_test', full_jobs, thin_jobs: full_jobs, overlap, unrun_own_tests };
     routed.jobs.forEach(job => ownJobs.add(job));
+    if (routed.jobs.includes('integration-test')) ownIntegrationTests.push(path);
   }
-  const floorHit = floor.split('\n').map(l => l.split('#')[0].trim()).filter(Boolean)
-    .some(rule => union.some(p => rule.endsWith('/') ? p.startsWith(rule) : p === rule));
+  const floorList = floorRules(floor);
+  const floorHit = union.some(p => onFloor(floorList, p));
   const integration = ownJobs.has('integration-test') || floorHit ||
     (unitAreas.has('api') && truth(classifyPaths(P, true).integration) && truth(classifyPaths(delta, true).integration));
   const never = nonGatingJobs(workflow);
@@ -191,7 +236,9 @@ export function computeSelection({ P, delta, full, workflow, classify, floor, in
   return { mode: 'shadow', reason: '', overlap, thin_jobs, full_jobs, unrun_own_tests,
     flags: { ...combined, integration: String(integration), path_readers: dFlags.path_readers, reader_tests: dFlags.reader_tests },
     reader_tests: dFlags.reader_tests ?? '', would_skip: full_jobs.filter(j => !thin_jobs.includes(j)),
-    would_add: thin_jobs.filter(j => !full_jobs.includes(j)) };
+    would_add: thin_jobs.filter(j => !full_jobs.includes(j)),
+    integration_suites: integration ? integrationSuites({ suiteMap, P, delta, overlap, floor: floorList, ownTests: ownIntegrationTests }) : null,
+    unit_related: unitRelated(thin_jobs, union, floorList) };
 }
 
 const policyPath = isPolicyPath;
@@ -238,7 +285,10 @@ function policyAtBase(io, tree) {
 }
 export function selectionContext(io, workflow) {
   const configs = unique([...workflow.matchAll(/--config=([\w.-]+)/g)].map(m => m[1]));
-  return { workflow, floor: io.read('.github/scripts/integration-floor-paths.txt'),
+  // The suite map only feeds a shadow field: unreadable means every suite, never an error.
+  let suiteMap;
+  try { suiteMap = io.read('.github/scripts/integration-suites.txt'); } catch { suiteMap = undefined; }
+  return { workflow, floor: io.read('.github/scripts/integration-floor-paths.txt'), suiteMap,
     integrationConfig: io.read('apps/api/vitest.integration.config.ts'),
     playwrightConfigs: Object.fromEntries(configs.map(name => [name, io.read(`e2e-tests/${name}`)])),
     classify: (paths, pr = false) => Object.fromEntries(lines(io.exec('bash',
@@ -417,7 +467,9 @@ export function readRecords(io, { repository, head, pr }) {
   return { records, stats };
 }
 export const SHADOW_FIELDS = ['pr', 'head', 'B', 'parent', 'age_h', 'merges', 'p', 'delta', 'overlap', 'thin_jobs', 'full_jobs',
-  'would_skip', 'would_add', 'invalid_records', 'unrun_own_tests', 'policy_digest', 'reader_tests', 'error', 'record_stats'];
+  'would_skip', 'would_add', 'invalid_records', 'unrun_own_tests', 'policy_digest', 'reader_tests', 'error', 'record_stats',
+  // W07b3 / W07c (#10751), shadow only: never read by any selection.
+  'integration_suites', 'unit_related'];
 export function shadow(io, input, { output, summary } = {}) {
   const out = shadowCore(io, input);
   const log = `queue-selection: mode=${out.mode} reason=${out.reason} ` +
