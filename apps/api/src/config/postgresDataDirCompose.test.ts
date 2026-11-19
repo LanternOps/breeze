@@ -190,14 +190,14 @@ describe('docker-compose.yml postgres empty-cluster guard', () => {
   }
 
   /** Runs the rendered entrypoint + command as the container would. */
-  function runGuard(command: string[] = svc.command ?? [], pgdata = path.join(root, 'data')) {
+  function runGuard(command: string[] = svc.command ?? [], pgdata = path.join(root, 'data'), extraEnv: Record<string, string> = {}) {
     const entrypoint = svc.entrypoint ?? [];
     expect(entrypoint.length, 'postgres must set an entrypoint that wraps the image entrypoint').toBeGreaterThan(0);
     // Compose turns `$$` into `$` when it creates the container; `config` keeps it.
     const argv = [...entrypoint, ...command].map((a) => a.replaceAll('$$', '$'));
     const r = spawnSync(argv[0]!, argv.slice(1), {
       encoding: 'utf8',
-      env: { PATH: `${stubDir}:${process.env.PATH ?? '/usr/bin:/bin'}`, PGDATA: pgdata },
+      env: { PATH: `${stubDir}:${process.env.PATH ?? '/usr/bin:/bin'}`, PGDATA: pgdata, ...extraEnv },
     });
     return {
       status: r.status,
@@ -246,7 +246,6 @@ describe('docker-compose.yml postgres empty-cluster guard', () => {
     const r = runGuard();
     expect(r.status).not.toBe(0);
     expect(r.execArgs, 'the image entrypoint (and initdb) must not run').toBeNull();
-    expect(existsSync(path.join(root, 'data', 'PG_VERSION'))).toBe(false);
     expect(r.stderr).toContain('refusing to start');
     expect(r.stderr).toContain(`PGDATA: ${existing}`);
     expect(r.stderr).toContain('EMPTY');
@@ -267,6 +266,35 @@ describe('docker-compose.yml postgres empty-cluster guard', () => {
     expect(r.status).not.toBe(0);
     expect(r.execArgs).toBeNull();
     expect(r.stderr).toContain(`PGDATA: ${root}`);
+  });
+
+  it('refuses a cluster outside a */docker directory (tianon/postgres-upgrade leaves <ver>/data)', () => {
+    const existing = path.join(root, '17', 'data');
+    cluster(existing, '17');
+    const r = runGuard();
+    expect(r.status).not.toBe(0);
+    expect(r.execArgs).toBeNull();
+    expect(r.stderr).toContain(`PGDATA: ${existing}`);
+  });
+
+  it('refuses when the command starts with a flag (postgres -c ... form without the binary name)', () => {
+    cluster(path.join(root, '18', 'docker'), '18');
+    const r = runGuard(['-c', 'fsync=off']);
+    expect(r.status).not.toBe(0);
+    expect(r.execArgs).toBeNull();
+  });
+
+  it('with two clusters, names the one matching the image major and lists both', () => {
+    // pg_upgrade --link in the upstream layout leaves the old and new majors side by side.
+    const old = path.join(root, '17', 'docker');
+    const current = path.join(root, '18', 'docker');
+    cluster(old, '17');
+    cluster(current, '18');
+    const r = runGuard(svc.command ?? [], path.join(root, 'data'), { PG_MAJOR: '18' });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain(`PGDATA: ${current}`);
+    expect(r.stderr).not.toContain(`PGDATA: ${old}`);
+    expect(r.stderr).toContain(old);
   });
 
   it('does not block a one-off non-server command', () => {

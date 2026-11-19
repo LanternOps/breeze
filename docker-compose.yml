@@ -1234,15 +1234,29 @@ services:
           pgdata="$${PGDATA:-}"
           if [ -n "$$pgdata" ] && [ ! -s "$$pgdata/PG_VERSION" ]; then
             parent="$$(dirname "$$pgdata")"
-            for found in "$$parent/PG_VERSION" "$$parent"/*/docker/PG_VERSION "$$pgdata"/*/docker/PG_VERSION; do
+            pick=""
+            others=""
+            # The parent itself, one or two levels below it (upstream
+            # <major>/docker, tianon/postgres-upgrade <major>/data), and the
+            # same below PGDATA (a whole-file upgrade over such a volume).
+            for found in "$$parent/PG_VERSION" "$$parent"/*/PG_VERSION "$$parent"/*/*/PG_VERSION "$$pgdata"/*/PG_VERSION "$$pgdata"/*/*/PG_VERSION; do
               [ -s "$$found" ] || continue
-              existing="$$(dirname "$$found")"
-              echo "postgres: refusing to start. PGDATA=$$pgdata holds no database, but a PostgreSQL $$(cat "$$found") database exists at $$existing." >&2
+              dir="$$(dirname "$$found")"
+              if [ -z "$$pick" ] || { [ "$$(cat "$$found")" = "$${PG_MAJOR:-}" ] && [ "$$(cat "$$pick/PG_VERSION")" != "$${PG_MAJOR:-}" ]; }; then
+                [ -n "$$pick" ] && others="$$others $$pick"
+                pick="$$dir"
+              else
+                others="$$others $$dir"
+              fi
+            done
+            if [ -n "$$pick" ]; then
+              echo "postgres: refusing to start. PGDATA=$$pgdata holds no database, but a PostgreSQL $$(cat "$$pick/PG_VERSION") database exists at $$pick." >&2
+              [ -z "$$others" ] || echo "postgres: other databases found:$$others" >&2
               echo "postgres: starting now would create a new, EMPTY database and Breeze would come up as a fresh install. Nothing has been changed." >&2
-              echo "postgres: to start on the existing data, set PGDATA: $$existing on the postgres service in docker-compose.yml (keep your volume mount), or move that data into $$pgdata." >&2
+              echo "postgres: to start on the existing data, set PGDATA: $$pick on the postgres service in docker-compose.yml (keep your volume mount), or move that data into $$pgdata." >&2
               echo "postgres: see https://docs.breezermm.com/deploy/upgrades/#already-running-18-with-the-upstream-volume-layout" >&2
               exit 1
-            done
+            fi
           fi
         esac
         exec docker-entrypoint.sh "$$@"
