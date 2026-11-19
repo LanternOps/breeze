@@ -119,3 +119,37 @@ describe('CommandPalette — settings come from the catalogue (#8365)', () => {
     expect(settingsTitles()).toContain('My profile');
   });
 });
+
+describe('CommandPalette — pages and Partner Settings sections (#12210, #12216)', () => {
+  function titlesIn(section: string): string[] {
+    const el = screen.queryByTestId(`palette-section-${section}`);
+    return el ? within(el).getAllByTestId('palette-item-title').map((e) => e.textContent ?? '') : [];
+  }
+
+  it('finds nav pages by synonym and navigates to them', () => {
+    open();
+    search('helpdesk');
+    expect(titlesIn('pages')).toContain('Tickets');
+    fireEvent.click(screen.getByRole('button', { name: /Tickets/ }));
+    expect(navigateToMock).toHaveBeenCalledWith('/tickets');
+  });
+
+  it('finds Partner Settings sections and deep-links to the hash', () => {
+    open();
+    search('email templates');
+    expect(titlesIn('settings')).toContain('Email templates');
+    fireEvent.click(screen.getByRole('button', { name: /Email templates/ }));
+    expect(navigateToMock).toHaveBeenCalledWith('/settings/partner#email-templates');
+  });
+
+  it('hides pages and sections the user cannot open', () => {
+    setPermissions([]);
+    claimsMock.mockReturnValue({ scope: 'organization' });
+    open();
+    search('patches');
+    expect(titlesIn('pages')).not.toContain('Patches');
+    search('branding');
+    expect(titlesIn('settings')).not.toContain('Branding');
+    claimsMock.mockReturnValue({ scope: 'partner' });
+  });
+});
