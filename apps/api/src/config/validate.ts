@@ -868,6 +868,9 @@ const envObjectSchema = z
     // at runtime by toolSourcesEnabled() in env.ts. Validated here for
     // boolean format only, same class as AGENT_AUTO_PROMOTE above.
     TOOL_SOURCES_ENABLED: z.string().optional(),
+    // billing#51: restrict a partner on a billing fraud flag. Read at runtime
+    // by billingFraudFlagsEnabled() in env.ts; boolean format only here.
+    PARTNER_TRUST_FRAUD_FLAGS_ENABLED: z.string().optional(),
 
     // Tool Catalog W3 (#5218). Platform kill switch for Flows, read at runtime
     // by flowsEnabled() in env.ts. Boolean-format validation only.
@@ -2507,6 +2510,19 @@ const envSchema = envObjectSchema
         path: ['BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED'],
         message:
           'BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (unattended policy-decided authorization is dark).',
+      });
+    }
+
+    // PARTNER_TRUST_FRAUD_FLAGS_ENABLED (billing#51). A typo must fail boot
+    // rather than silently leave the consumer off. Mirrors
+    // billingFraudFlagsEnabled() in env.ts.
+    const fraudFlagsRaw = (data.PARTNER_TRUST_FRAUD_FLAGS_ENABLED ?? '').trim().toLowerCase();
+    if (fraudFlagsRaw && !boolValues.has(fraudFlagsRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['PARTNER_TRUST_FRAUD_FLAGS_ENABLED'],
+        message:
+          'PARTNER_TRUST_FRAUD_FLAGS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (billing fraud flags restrict no partner).',
       });
     }
 
