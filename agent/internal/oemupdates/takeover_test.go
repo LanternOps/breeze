@@ -321,7 +321,7 @@ func TestTakeoverRefusesAnUnverifiedBinary(t *testing.T) {
 	f.deps.Verifier = verifierFunc(func(string) (string, error) {
 		calls++
 		if calls == 1 {
-			return "Dell Inc", nil
+			return "Dell Technologies Inc.", nil
 		}
 		return "Someone Else", nil
 	})
