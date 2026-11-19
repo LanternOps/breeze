@@ -227,11 +227,9 @@ describe('golden: every purpose renders today\'s envelope on EMAIL_PROVIDER=mail
       expect(body.getAll('h:Reply-To')).toEqual([MESSAGE.replyTo]);
       expect(body.get('h:Message-ID')).toBe('<ticket-t1@tickets.example.test>');
       expect(body.get('h:Auto-Submitted')).toBe('auto-replied');
-      // PINNED AS-IS, not fixed (plan index amendment 6): sendEmail's Mailgun
-      // branch has never passed `cc` through to sendViaMailgun, which does
-      // support it. Fixing that changes what recipients see, so it is a
-      // separate issue, not part of a byte-identical wave.
-      expect(body.getAll('cc')).toEqual([]);
+      // Mailgun carries cc like Resend and SMTP do (the W01 pin that kept it
+      // dropped, plan index amendment 6, is retired).
+      expect(body.getAll('cc')).toEqual(MESSAGE.cc);
     });
   }
 });
