@@ -17,6 +17,14 @@
  * parseable version.
  */
 
+/**
+ * The macOS floor this source tree declares in `agent/platform-floors.json`
+ * (a unit test keeps the two equal). Used only where no signed manifest
+ * records a floor: binaries registered from a local directory through the
+ * per-deployment fallback were built from this source, so they carry its floor.
+ */
+export const DECLARED_MACOS_FLOOR = '12.0';
+
 export const OS_BELOW_MINIMUM_REASON = 'os_below_minimum';
 export const OS_VERSION_UNKNOWN_REASON = 'os_version_unknown';
 export type OsFloorHoldReason = typeof OS_BELOW_MINIMUM_REASON | typeof OS_VERSION_UNKNOWN_REASON;
@@ -81,6 +89,9 @@ export function compareOsVersions(a: readonly number[], b: readonly number[]): n
 
 export function evaluateOsFloor(device: DeviceOsFacts, minOs: string | null | undefined): OsFloorDecision {
   if (minOs === null || minOs === undefined) return { kind: 'allow' };
+  // Only macOS floors are declared and parsed (plan Open Decision 6). A stray
+  // floor on a Windows or Linux row must not hold that fleet as "unknown".
+  if (device.platform !== 'macos') return { kind: 'allow' };
   const floor = parseOsFloor(minOs);
   const parsed =
     parseDeviceOsVersion(device.platform, device.reportedOsVersion) ??

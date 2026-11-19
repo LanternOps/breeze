@@ -1029,6 +1029,31 @@ agentVersionRoutes.post(
       );
     }
 
+    // #12169: the floor the (already verified) schema-v1 manifest records for
+    // this asset; null for a per-deployment manifest. A darwin row of a
+    // release that must record one but does not is refused, as the
+    // registration paths and POST /promote refuse it: written as-is, it
+    // would offer the build to every Mac, pinned or promoted, ungated.
+    const createMinOs = manifestMinOsForRow({
+      manifest: data.releaseManifest,
+      component: data.component,
+      platform: data.platform,
+      architecture: data.architecture,
+      downloadUrl: data.downloadUrl,
+    });
+    const createAssetName =
+      canonicalReleaseAssetName(data.component, data.platform, data.architecture) ??
+      assetNameFromDownloadUrl(data.downloadUrl);
+    if (createMinOs === null && createAssetName && darwinMinOsRequired(createAssetName, data.version)) {
+      return c.json(
+        {
+          error: "This darwin release must record its minimum macOS version (minOs) in a signed release manifest",
+          reason: "min_os_missing",
+        },
+        422,
+      );
+    }
+
     // If this version is marked as latest, unset isLatest for other versions
     // with the same platform/architecture/component/edition. Scoped by
     // edition too — otherwise promoting a "self-host" row could demote a
@@ -1064,15 +1089,7 @@ agentVersionRoutes.post(
         isLatest: data.isLatest ?? false,
         component: data.component,
         edition,
-        // #12169: the floor the (already verified) schema-v1 manifest records
-        // for this asset; null for a per-deployment manifest.
-        minOsVersion: manifestMinOsForRow({
-          manifest: data.releaseManifest,
-          component: data.component,
-          platform: data.platform,
-          architecture: data.architecture,
-          downloadUrl: data.downloadUrl,
-        }),
+        minOsVersion: createMinOs,
       })
       .returning();
     if (!newVersion) {

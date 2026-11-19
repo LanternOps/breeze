@@ -2234,6 +2234,55 @@ describe("agentVersions routes", () => {
       expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ minOsVersion: "12.0" }));
     });
 
+    it("POST / refuses a post-threshold darwin row whose manifest records no floor (nothing written)", async () => {
+      const insertValues = vi.fn();
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          withValidManifest({
+            version: "0.131.0",
+            platform: "macos",
+            architecture: "arm64",
+            downloadUrl: "https://s3.example.com/breeze-agent-darwin-arm64",
+            checksum: "c".repeat(64),
+            isLatest: true,
+          }),
+        ),
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).reason).toBe("min_os_missing");
+      expect(insertValues).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it("POST / still accepts a pre-threshold darwin row without a floor", async () => {
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "ver-1", version: "0.129.0", platform: "macos" }]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          withValidManifest({
+            version: "0.129.0",
+            platform: "macos",
+            architecture: "arm64",
+            downloadUrl: "https://s3.example.com/breeze-agent-darwin-arm64",
+            checksum: "c".repeat(64),
+          }),
+        ),
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ minOsVersion: null }));
+    });
+
     it("POST / records a null floor for a per-deployment manifest", async () => {
       const insertValues = vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([{ id: "ver-1", version: "1.0.0", platform: "linux" }]),

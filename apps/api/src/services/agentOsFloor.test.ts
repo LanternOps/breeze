@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   __resetUnknownDeviceOsWarnings,
   compareOsVersions,
+  DECLARED_MACOS_FLOOR,
   evaluateOsFloor,
   noteOsFloorHold,
   OS_BELOW_MINIMUM_REASON,
@@ -104,10 +108,22 @@ describe('evaluateOsFloor', () => {
     expect(evaluateOsFloor(mac(null, null), '12.0')).toMatchObject({ kind: 'hold', reason: OS_VERSION_UNKNOWN_REASON });
   });
 
-  it('non-macos platform with a floor is held as unknown', () => {
+  // Only macOS floors are declared (plan Open Decision 6). A stray floor on a
+  // Windows or Linux row must not hold that whole fleet as "unknown".
+  it('non-macos platforms are never held, even under a floor', () => {
     expect(
       evaluateOsFloor({ platform: 'windows', reportedOsVersion: '10.0.19045', storedOsVersion: null }, '13.0'),
-    ).toMatchObject({ kind: 'hold', reason: OS_VERSION_UNKNOWN_REASON });
+    ).toEqual({ kind: 'allow' });
+    expect(evaluateOsFloor({ platform: 'linux', reportedOsVersion: null, storedOsVersion: null }, '13.0')).toEqual({
+      kind: 'allow',
+    });
+  });
+
+  it('DECLARED_MACOS_FLOOR mirrors agent/platform-floors.json', () => {
+    const floors = JSON.parse(
+      readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../../../agent/platform-floors.json'), 'utf8'),
+    );
+    expect(DECLARED_MACOS_FLOOR).toBe(floors.macos);
   });
 
   it('a malformed floor fails closed', () => {

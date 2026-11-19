@@ -2207,10 +2207,16 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     if (currentWithheldReason !== EDITION_OFFER_WITHHELD_REASON && currentWithheldReason !== desiredOsReason) {
       try {
         await withDbTransaction(() =>
-          updateOwnDeviceRow(db, agent, {
-            updateOfferWithheldReason: desiredOsReason,
-            updateOfferWithheldSince: desiredOsReason ? new Date() : null,
-          }),
+          updateOwnDeviceRow(
+            db,
+            agent,
+            {
+              updateOfferWithheldReason: desiredOsReason,
+              updateOfferWithheldSince: desiredOsReason ? new Date() : null,
+            },
+            // Same terminal-status guard as the main device flush above.
+            { where: notInArray(devices.status, ['decommissioned', 'quarantined']) },
+          ),
         );
       } catch (err) {
         console.error(`[agents] failed to persist the minimum-OS update hold for ${agentId}:`, err);

@@ -1,5 +1,6 @@
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DECLARED_MACOS_FLOOR } from "./agentOsFloor";
 
 const dbMocks = vi.hoisted(() => {
   const updateWhere = vi.fn().mockResolvedValue(undefined);
@@ -3103,6 +3104,52 @@ describe("binarySync", () => {
 
   describe("minimum OS (#12169)", () => {
     const bytes = (name: string) => Buffer.from(`${name} bytes`);
+
+    // The per-deployment fallback (no staged official manifest) has no signed
+    // floor to read. A locally built darwin binary is built from this source,
+    // so it is stamped with the floor this source declares; otherwise a
+    // post-threshold local build would be registered ungated.
+    describe("local per-deployment fallback", () => {
+      function setLocal(version: string) {
+        process.env.BINARY_SOURCE = "local";
+        process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+        process.env.BINARY_VERSION_FILE = "/fake/version";
+        delete process.env.BREEZE_VERSION;
+        fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
+        mockReadFileVersionOnly(version);
+        fsMocks.readdir.mockResolvedValue([
+          "breeze-agent-darwin-arm64",
+          "breeze-agent-linux-amd64",
+          "breeze-watchdog-darwin-arm64",
+        ] as any);
+      }
+      const inserts = () =>
+        dbMocks.insertValues.mock.calls.map((call: any[]) => call[0] as Record<string, unknown>);
+
+      it("stamps the declared floor on post-threshold darwin rows only", async () => {
+        setLocal("0.131.0");
+
+        await syncBinaries();
+
+        const rows = inserts();
+        const darwinAgent = rows.find((v) => v.component === "agent" && v.platform === "macos");
+        const darwinWatchdog = rows.find((v) => v.component === "watchdog" && v.platform === "macos");
+        const linuxAgent = rows.find((v) => v.component === "agent" && v.platform === "linux");
+        expect(darwinAgent).toMatchObject({ minOsVersion: DECLARED_MACOS_FLOOR });
+        expect(darwinWatchdog).toMatchObject({ minOsVersion: DECLARED_MACOS_FLOOR });
+        expect(linuxAgent?.minOsVersion ?? null).toBeNull();
+      });
+
+      it("leaves pre-threshold darwin rows without a floor", async () => {
+        setLocal("0.129.0");
+
+        await syncBinaries();
+
+        const darwinAgent = inserts().find((v) => v.component === "agent" && v.platform === "macos");
+        expect(darwinAgent).toBeDefined();
+        expect(darwinAgent!.minOsVersion ?? null).toBeNull();
+      });
+    });
 
     function stubGithubRelease(tag: string, assets: { name: string; minOs?: string }[]) {
       const signed = makeSignedReleaseManifestMultiFrom({

@@ -17,10 +17,12 @@ import {
   getPairedBinariesVersion,
 } from "./binarySource";
 import { getBinaryEdition } from "./binaryEdition";
+import { DECLARED_MACOS_FLOOR } from "./agentOsFloor";
 import {
   MAX_MANIFEST_BYTES,
   isReleaseArtifactManifestVerificationConfigured,
   ReleaseAssetNotDistributableError,
+  darwinMinOsRequired,
   ReleaseManifestAssetAbsentError,
   ReleaseManifestAssetLookupError,
   ReleaseManifestMinOsMissingError,
@@ -648,6 +650,11 @@ async function registerLocalBinaries(args: {
       };
       const releaseManifest = JSON.stringify(manifestObj);
       const manifestSignature = await signManifest(releaseManifest);
+      // #12169: no signed floor exists on this path. A post-threshold darwin
+      // binary staged here was built from this source, so it carries the
+      // floor this source declares; anything else stays NULL (no floor).
+      const localMinOs =
+        bin.platform === "macos" && darwinMinOsRequired(bin.filename, version) ? DECLARED_MACOS_FLOOR : null;
 
       // Demote existing "isLatest" entries for this platform/arch/component/edition.
       if (autoPromote) {
@@ -681,6 +688,7 @@ async function registerLocalBinaries(args: {
           manifestSignature,
           signingKeyId: keyId,
           edition,
+          minOsVersion: localMinOs,
         })
         .onConflictDoUpdate({
           // Match the actual unique constraint
@@ -699,6 +707,7 @@ async function registerLocalBinaries(args: {
             releaseManifest,
             manifestSignature,
             signingKeyId: keyId,
+            minOsVersion: KEEP_KNOWN_MIN_OS,
             ...(autoPromote ? { isLatest: true } : {}),
           },
         });
