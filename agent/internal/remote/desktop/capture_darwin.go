@@ -179,25 +179,34 @@ static int sckQueryDisplay(int displayIndex, CGDirectDisplayID preferID, id *out
 }
 
 // The display source is a seam (#11754): a darwin test substitutes a stand-in
-// so the init and rebuild paths run without a real SCShareableContent query,
-// which can raise the Screen Recording consent dialog on a developer's Mac.
+// display, with its mode, so the init and rebuild paths run without a real
+// SCShareableContent query, which can raise the Screen Recording consent
+// dialog on a developer's Mac.
 typedef int (*sckDisplaySourceFn)(int, CGDirectDisplayID, id *, CGDirectDisplayID *, double *, double *);
 static sckDisplaySourceFn g_displaySource = sckQueryDisplay;
 
+// The stand-in display's ID: not a display CoreGraphics or NSScreen knows.
+#define BREEZE_SCK_FAKE_DISPLAY_ID ((CGDirectDisplayID)0x0B4EE2E0)
 static double g_fakePointWidth = 0;
 static double g_fakePointHeight = 0;
+static size_t g_fakeModePixelWidth = 0;  // 0 = the display has no mode
+static size_t g_fakeModePixelHeight = 0;
+static size_t g_fakeModePointWidth = 0;
 
 static int sckFakeDisplaySource(int displayIndex, CGDirectDisplayID preferID, id *outFilter, CGDirectDisplayID *outID, double *outPointWidth, double *outPointHeight) {
     *outFilter = [NSObject new];
-    *outID = kCGNullDirectDisplay;
+    *outID = BREEZE_SCK_FAKE_DISPLAY_ID;
     *outPointWidth = g_fakePointWidth;
     *outPointHeight = g_fakePointHeight;
     return 0;
 }
 
-void sckUseFakeDisplaySource(double pointWidth, double pointHeight) {
+void sckUseFakeDisplaySource(double pointWidth, double pointHeight, size_t modePixelWidth, size_t modePixelHeight, size_t modePointWidth) {
     g_fakePointWidth = pointWidth;
     g_fakePointHeight = pointHeight;
+    g_fakeModePixelWidth = modePixelWidth;
+    g_fakeModePixelHeight = modePixelHeight;
+    g_fakeModePointWidth = modePointWidth;
     g_displaySource = sckFakeDisplaySource;
 }
 
@@ -205,6 +214,15 @@ void sckUseRealDisplaySource(void) {
     g_displaySource = sckQueryDisplay;
     g_fakePointWidth = 0;
     g_fakePointHeight = 0;
+    g_fakeModePixelWidth = 0;
+    g_fakeModePixelHeight = 0;
+    g_fakeModePointWidth = 0;
+}
+
+// sckModeBaseline reports the display mode the output was last sized for.
+void sckModeBaseline(long *outWidth, long *outHeight) {
+    *outWidth = (long)g_modePixelWidth;
+    *outHeight = (long)g_modePixelHeight;
 }
 
 // sckOutputConfigSize reports the cached stream configuration's output size,
@@ -264,9 +282,9 @@ static id sckNewOutputConfig(size_t pixelWidth, size_t pixelHeight) {
 }
 
 // sckScaleFromMode is a display mode's backing scale: pixels per point (2.0
-// for a HiDPI mode). The input handler derives its scale the same way
-// (getMainDisplayScaleFactor), so the video and the pointer mapping agree.
-// fallback is used when the mode is unknown.
+// for a HiDPI mode). The input handler derives its scale the same way, from
+// the main display's mode (getMainDisplayScaleFactor). fallback is used when
+// the mode is unknown.
 double sckScaleFromMode(size_t modePixelWidth, size_t modePointWidth, double fallback) {
     if (modePixelWidth > 0 && modePointWidth > 0) {
         return (double)modePixelWidth / (double)modePointWidth;
@@ -281,6 +299,13 @@ static int sckReadDisplayMode(CGDirectDisplayID displayID, size_t *pixelWidth, s
     *pixelHeight = 0;
     *pointWidth = 0;
     if (displayID == 0) return 0;
+    if (g_displaySource == sckFakeDisplaySource) {
+        if (displayID != BREEZE_SCK_FAKE_DISPLAY_ID || g_fakeModePixelWidth == 0) return 0;
+        *pixelWidth = g_fakeModePixelWidth;
+        *pixelHeight = g_fakeModePixelHeight;
+        *pointWidth = g_fakeModePointWidth;
+        return 1;
+    }
     CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
     if (mode == NULL) return 0;
     *pixelWidth = CGDisplayModeGetPixelWidth(mode);
@@ -306,7 +331,7 @@ static int sckBuildFilter(int displayIndex, CGDirectDisplayID preferID) {
     // change racing the query then leaves the recorded mode behind the
     // display's, and the next display poll (sckDisplayChanged) rebuilds again.
     size_t pixelW = 0, pixelH = 0, pointModeW = 0;
-    sckReadDisplayMode(preferID, &pixelW, &pixelH, &pointModeW);
+    int haveMode = sckReadDisplayMode(preferID, &pixelW, &pixelH, &pointModeW);
 
     id filter = nil;
     CGDirectDisplayID targetID = 0;
@@ -316,26 +341,31 @@ static int sckBuildFilter(int displayIndex, CGDirectDisplayID preferID) {
     if (filter == nil) return 2;
     if (targetID != preferID) {
         // A first build, or the preferred display is gone.
-        sckReadDisplayMode(targetID, &pixelW, &pixelH, &pointModeW);
+        haveMode = sckReadDisplayMode(targetID, &pixelW, &pixelH, &pointModeW);
     }
 
+    if (g_config != nil && (!haveMode || pointWidth <= 0 || pointHeight <= 0)) {
+        // A rebuild that cannot read the display's size or mode (a display
+        // caught mid-change or waking) keeps the output and the recorded
+        // mode. Sizing from NSScreen's scale here could resize the output
+        // with no mode change. If the mode did change, the recorded mode
+        // still differs from it and the next display poll rebuilds again.
+        g_filter = filter;
+        g_displayID = targetID;
+        return 0;
+    }
+
+    // NSScreen's backing scale is only the fallback for a first build that
+    // finds no mode.
     double scale = sckScaleFromMode(pixelW, pointModeW, sckScreenBackingScale(targetID));
     size_t outW = (size_t)llround(pointWidth * scale);
     size_t outH = (size_t)llround(pointHeight * scale);
-    if (outW > 0 && outH > 0) {
-        id config = sckNewOutputConfig(outW, outH);
-        if (config == nil) return 8;
-        g_config = config;
-        g_modePixelWidth = pixelW;
-        g_modePixelHeight = pixelH;
-    } else if (g_config != nil) {
-        // The display reported no size. Keep streaming at the previous size,
-        // and clear the recorded mode so the next display poll retries.
-        g_modePixelWidth = 0;
-        g_modePixelHeight = 0;
-    } else {
-        return 2;
-    }
+    if (outW == 0 || outH == 0) return 2;
+    id config = sckNewOutputConfig(outW, outH);
+    if (config == nil) return 8;
+    g_config = config;
+    g_modePixelWidth = pixelW;
+    g_modePixelHeight = pixelH;
 
     g_filter = filter;
     g_displayID = targetID;
@@ -968,10 +998,24 @@ func (s sckStreamShim) displayChanged() bool { return C.sckDisplayChanged() != 0
 // Hooks for capture_darwin_sckconfig_test.go (#11754): _test.go files cannot
 // use cgo. The caller holds darwinCaptureMu.
 
-// sckUseFakeDisplaySourceForTest makes the filter builds report a display of
-// pointW x pointH points, without querying ScreenCaptureKit.
-func sckUseFakeDisplaySourceForTest(pointW, pointH float64) {
-	C.sckUseFakeDisplaySource(C.double(pointW), C.double(pointH))
+// sckFakeDisplay is the stand-in display a test's filter builds see: its size
+// in points and its current mode (ModePixelWidth 0 = no mode).
+type sckFakeDisplay struct {
+	PointW, PointH                  float64
+	ModePixelW, ModePixelH, ModePtW uint
+}
+
+// sckUseFakeDisplaySourceForTest makes the filter builds see d, without
+// querying ScreenCaptureKit or CoreGraphics.
+func sckUseFakeDisplaySourceForTest(d sckFakeDisplay) {
+	C.sckUseFakeDisplaySource(C.double(d.PointW), C.double(d.PointH),
+		C.size_t(d.ModePixelW), C.size_t(d.ModePixelH), C.size_t(d.ModePtW))
+}
+
+func sckModeBaselineForTest() (width, height int) {
+	var w, h C.long
+	C.sckModeBaseline(&w, &h)
+	return int(w), int(h)
 }
 
 func sckUseRealDisplaySourceForTest() { C.sckUseRealDisplaySource() }
