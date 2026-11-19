@@ -12,10 +12,12 @@
 //
 // docker-compose.test.yml (tmpfs) has the same contract, checked by
 // scripts/dev/test-stack/composePostgres.test.ts.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 // apps/api/src/config -> repo root is 4 levels up.
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -32,6 +34,8 @@ beforeAll(() => {
 type Mount = { type: string; source?: string; target: string };
 type RenderedService = {
   image: string;
+  entrypoint?: string[] | null;
+  command?: string[] | null;
   environment?: Record<string, string | null>;
   volumes?: Mount[] | null;
   tmpfs?: string[] | null;
@@ -148,4 +152,127 @@ describe('docker-compose.dev.yml postgres data directory', () => {
     expect(pgdata).toBe('/var/lib/postgresql/data');
     expect(namedVolumeTargets(svc)).toContain(pgdata);
   }, DOCKER_SPAWN_TIMEOUT_MS);
+});
+
+// The PGDATA pin above is right for every install that takes the whole
+// postgres service block. One population it would hurt: an install already on
+// Postgres 18 with the upstream layout (volume mounted at /var/lib/postgresql,
+// cluster in /var/lib/postgresql/18/docker) that takes the pin but keeps its
+// mount. PGDATA then names an empty directory and the image's entrypoint
+// initdb's a new, EMPTY cluster; the API migrates it and Breeze looks freshly
+// installed (lab-verified on pgvector:pg18, 18.6). The service's entrypoint
+// wraps the image's to refuse that start. These cases run the rendered wrapper
+// under sh against a temp directory standing in for /var/lib/postgresql, with
+// a stub docker-entrypoint.sh on PATH.
+describe('docker-compose.yml postgres empty-cluster guard', () => {
+  let svc: RenderedService;
+  beforeAll(() => {
+    svc = renderPostgres(['docker-compose.yml'], { POSTGRES_IMAGE_REF: 'pgvector/pgvector:pg18' });
+  }, DOCKER_SPAWN_TIMEOUT_MS);
+
+  let root: string;
+  let stubDir: string;
+  let marker: string;
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'pgdata-guard-'));
+    stubDir = path.join(root, 'bin');
+    marker = path.join(root, 'exec-args');
+    mkdirSync(stubDir);
+    const stub = path.join(stubDir, 'docker-entrypoint.sh');
+    writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' "$@" > '${marker}'\n`);
+    chmodSync(stub, 0o755);
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  function cluster(dir: string, version: string) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, 'PG_VERSION'), `${version}\n`);
+  }
+
+  /** Runs the rendered entrypoint + command as the container would. */
+  function runGuard(command: string[] = svc.command ?? [], pgdata = path.join(root, 'data')) {
+    const entrypoint = svc.entrypoint ?? [];
+    expect(entrypoint.length, 'postgres must set an entrypoint that wraps the image entrypoint').toBeGreaterThan(0);
+    // Compose turns `$$` into `$` when it creates the container; `config` keeps it.
+    const argv = [...entrypoint, ...command].map((a) => a.replaceAll('$$', '$'));
+    const r = spawnSync(argv[0]!, argv.slice(1), {
+      encoding: 'utf8',
+      env: { PATH: `${stubDir}:${process.env.PATH ?? '/usr/bin:/bin'}`, PGDATA: pgdata },
+    });
+    return {
+      status: r.status,
+      stderr: r.stderr,
+      execArgs: existsSync(marker) ? readFileSync(marker, 'utf8').trim().split('\n') : null,
+    };
+  }
+
+  it('keeps the image default command, so an overlay command still reaches postgres', () => {
+    expect(svc.command).toEqual(['postgres']);
+    const worktree = renderPostgres(
+      ['docker-compose.yml', 'docker-compose.override.yml.dev', 'docker-compose.override.yml.worktree'],
+      { POSTGRES_IMAGE_REF: 'pgvector/pgvector:pg18' },
+    );
+    expect(worktree.entrypoint).toEqual(svc.entrypoint);
+    expect(worktree.command?.[0]).toBe('postgres');
+  }, DOCKER_SPAWN_TIMEOUT_MS);
+
+  it('hands a fresh install (empty PGDATA) to the image entrypoint', () => {
+    mkdirSync(path.join(root, 'data'));
+    // What a fresh 18 image leaves behind: its default data dir, with no cluster.
+    mkdirSync(path.join(root, '18', 'docker'), { recursive: true });
+    const r = runGuard();
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    expect(r.execArgs).toEqual(['postgres']);
+  });
+
+  it('hands a PGDATA that does not exist yet to the image entrypoint', () => {
+    const r = runGuard();
+    expect(r.status).toBe(0);
+    expect(r.execArgs).toEqual(['postgres']);
+  });
+
+  it('starts an existing cluster in PGDATA, passing the command through', () => {
+    cluster(path.join(root, 'data'), '16');
+    const r = runGuard(['postgres', '-c', 'fsync=off']);
+    expect(r.status).toBe(0);
+    expect(r.execArgs).toEqual(['postgres', '-c', 'fsync=off']);
+  });
+
+  it('refuses the upstream 18 layout (cluster in 18/docker beside an empty PGDATA)', () => {
+    mkdirSync(path.join(root, 'data'));
+    const existing = path.join(root, '18', 'docker');
+    cluster(existing, '18');
+    const r = runGuard();
+    expect(r.status).not.toBe(0);
+    expect(r.execArgs, 'the image entrypoint (and initdb) must not run').toBeNull();
+    expect(existsSync(path.join(root, 'data', 'PG_VERSION'))).toBe(false);
+    expect(r.stderr).toContain('refusing to start');
+    expect(r.stderr).toContain(`PGDATA: ${existing}`);
+    expect(r.stderr).toContain('EMPTY');
+  });
+
+  it('refuses a whole-file upgrade over an upstream-layout volume (cluster in PGDATA/18/docker)', () => {
+    const existing = path.join(root, 'data', '18', 'docker');
+    cluster(existing, '18');
+    const r = runGuard();
+    expect(r.status).not.toBe(0);
+    expect(r.execArgs).toBeNull();
+    expect(r.stderr).toContain(`PGDATA: ${existing}`);
+  });
+
+  it('refuses a cluster at the parent of PGDATA (a 16-style volume mounted one level up)', () => {
+    cluster(root, '16');
+    const r = runGuard();
+    expect(r.status).not.toBe(0);
+    expect(r.execArgs).toBeNull();
+    expect(r.stderr).toContain(`PGDATA: ${root}`);
+  });
+
+  it('does not block a one-off non-server command', () => {
+    cluster(path.join(root, '18', 'docker'), '18');
+    const r = runGuard(['psql', '--version']);
+    expect(r.status).toBe(0);
+    expect(r.execArgs).toEqual(['psql', '--version']);
+  });
 });
