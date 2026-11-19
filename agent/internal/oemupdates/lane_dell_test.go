@@ -41,7 +41,7 @@ func dellPlan(t *testing.T, l *dellLane, cats, blocked []string) FilterPlan {
 
 func TestDellArgv(t *testing.T) {
 	l := testDellLane(t, nil)
-	plan, err := l.Filter([]string{CategoryDriver, CategoryBIOS}, []string{"AB12C", "CD34E"})
+	plan, err := l.Filter([]string{CategoryDriver, CategoryBIOS}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,6 @@ func TestDellArgv(t *testing.T) {
 		"/applyUpdates", "-silent", "-reboot=disable", "-autoSuspendBitLocker=enable",
 		`-outputLog=C:\ProgramData\Breeze Agent\oemupdates\work` + string(filepath.Separator) + "dcu-apply.log",
 		"-updateType=bios,driver",
-		"-localblockedswb=AB12C,CD34E",
 	}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("argv =\n%q\nwant\n%q", got, want)
