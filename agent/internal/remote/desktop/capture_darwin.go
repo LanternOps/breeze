@@ -15,6 +15,7 @@ package desktop
 #include <CoreVideo/CoreVideo.h>
 #include <Accelerate/Accelerate.h>
 #include <os/lock.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -47,6 +48,10 @@ int darwinMajorVersion(void) {
 static id g_filter = nil;
 static id g_config = nil;
 static CGDirectDisplayID g_displayID = 0;
+// The display mode g_config was sized for, in pixels. sckDisplayChanged
+// compares the display's current mode with it.
+static size_t g_modePixelWidth = 0;
+static size_t g_modePixelHeight = 0;
 
 static int loadDisplayFromShareableContent(id content, int displayIndex, CGDirectDisplayID preferID, id *outDisplay) {
     if (content == nil || outDisplay == nil) return 2;
@@ -129,14 +134,10 @@ static int isSCKAvailable(void) {
     return NSClassFromString(@"SCShareableContent") != nil;
 }
 
-// sckBuildFilter queries SCShareableContent and builds the content filter for
-// the target display. configureOutput also builds the stream configuration;
-// a rebuild (#5928) passes 0 and keeps the original configuration, so the
-// output size the encoder was initialised with never changes mid-session —
-// SCK scales the display into it, as the per-frame screenshot path did.
-static int sckBuildFilter(int displayIndex, CGDirectDisplayID preferID, int configureOutput) {
-    if (!isSCKAvailable()) return 8; // SCK not available on this macOS version
-
+// sckQueryDisplay is the production display source: it queries
+// SCShareableContent for the target display and builds its content filter,
+// and reports the display's ID and its size in points.
+static int sckQueryDisplay(int displayIndex, CGDirectDisplayID preferID, id *outFilter, CGDirectDisplayID *outID, double *outPointWidth, double *outPointHeight) {
     Class SCShareableContentClass = NSClassFromString(@"SCShareableContent");
     id targetDisplay = nil;
     int error = 2;
@@ -159,8 +160,6 @@ static int sckBuildFilter(int displayIndex, CGDirectDisplayID preferID, int conf
     if (error != 0 || targetDisplay == nil) return error != 0 ? error : 2;
 
     NSNumber *displayIDNum = [targetDisplay valueForKey:@"displayID"];
-    CGDirectDisplayID targetID = [displayIDNum unsignedIntValue];
-
     Class SCContentFilterClass = NSClassFromString(@"SCContentFilter");
 
     // [[SCContentFilter alloc] initWithDisplay:excludingWindows:]
@@ -172,53 +171,181 @@ static int sckBuildFilter(int displayIndex, CGDirectDisplayID preferID, int conf
     #pragma clang diagnostic pop
     if (filter == nil) return 2;
 
-    if (configureOutput || g_config == nil) {
-        CGFloat scaleFactor = 1.0;
-        for (NSScreen *screen in [NSScreen screens]) {
-            NSNumber *screenNum = screen.deviceDescription[@"NSScreenNumber"];
-            if (screenNum && [screenNum unsignedIntValue] == targetID) {
-                scaleFactor = [screen backingScaleFactor];
-                break;
-            }
-        }
+    *outFilter = filter;
+    *outID = [displayIDNum unsignedIntValue];
+    *outPointWidth = [[targetDisplay valueForKey:@"width"] doubleValue];
+    *outPointHeight = [[targetDisplay valueForKey:@"height"] doubleValue];
+    return 0;
+}
 
-        Class SCStreamConfigClass = NSClassFromString(@"SCStreamConfiguration");
-        id config = [[SCStreamConfigClass alloc] init];
+// The display source is a seam (#11754): a darwin test substitutes a stand-in
+// so the init and rebuild paths run without a real SCShareableContent query,
+// which can raise the Screen Recording consent dialog on a developer's Mac.
+typedef int (*sckDisplaySourceFn)(int, CGDirectDisplayID, id *, CGDirectDisplayID *, double *, double *);
+static sckDisplaySourceFn g_displaySource = sckQueryDisplay;
+
+static double g_fakePointWidth = 0;
+static double g_fakePointHeight = 0;
+
+static int sckFakeDisplaySource(int displayIndex, CGDirectDisplayID preferID, id *outFilter, CGDirectDisplayID *outID, double *outPointWidth, double *outPointHeight) {
+    *outFilter = [NSObject new];
+    *outID = kCGNullDirectDisplay;
+    *outPointWidth = g_fakePointWidth;
+    *outPointHeight = g_fakePointHeight;
+    return 0;
+}
+
+void sckUseFakeDisplaySource(double pointWidth, double pointHeight) {
+    g_fakePointWidth = pointWidth;
+    g_fakePointHeight = pointHeight;
+    g_displaySource = sckFakeDisplaySource;
+}
+
+void sckUseRealDisplaySource(void) {
+    g_displaySource = sckQueryDisplay;
+    g_fakePointWidth = 0;
+    g_fakePointHeight = 0;
+}
+
+// sckOutputConfigSize reports the cached stream configuration's output size,
+// or 0x0 when there is none.
+void sckOutputConfigSize(long *outWidth, long *outHeight) {
+    *outWidth = 0;
+    *outHeight = 0;
+    if (g_config == nil) return;
+    *outWidth = [[g_config valueForKey:@"width"] longValue];
+    *outHeight = [[g_config valueForKey:@"height"] longValue];
+}
+
+// sckScreenBackingScale is NSScreen's backing scale for the display, or 1.0.
+static double sckScreenBackingScale(CGDirectDisplayID targetID) {
+    for (NSScreen *screen in [NSScreen screens]) {
+        NSNumber *screenNum = screen.deviceDescription[@"NSScreenNumber"];
+        if (screenNum && [screenNum unsignedIntValue] == targetID) {
+            return [screen backingScaleFactor];
+        }
+    }
+    return 1.0;
+}
+
+// sckNewOutputConfig builds a stream configuration whose output is
+// pixelWidth x pixelHeight.
+static id sckNewOutputConfig(size_t pixelWidth, size_t pixelHeight) {
+    Class SCStreamConfigClass = NSClassFromString(@"SCStreamConfiguration");
+    id config = [[SCStreamConfigClass alloc] init];
+    if (config == nil) return nil;
+
+    [config setValue:@(pixelWidth) forKey:@"width"];
+    [config setValue:@(pixelHeight) forKey:@"height"];
+    [config setValue:@YES forKey:@"showsCursor"];
+    // Stream settings (#5928). BGRA is converted to the RGBA the encoder
+    // expects in sckCopyFrameRGBA. sRGB matches what the old
+    // CGBitmapContext (DeviceRGB) path produced instead of passing the
+    // display's native (e.g. P3) values through as if they were sRGB.
+    [config setValue:@((unsigned int)kCVPixelFormatType_32BGRA) forKey:@"pixelFormat"];
+    // colorSpaceName is a CFStringRef property, which KVC cannot set:
+    // setValue:forKey: throws NSUnknownKeyException on every OS and the
+    // uncaught exception aborts the process. Call the setter directly.
+    SEL csnSel = NSSelectorFromString(@"setColorSpaceName:");
+    if ([config respondsToSelector:csnSel]) {
+        void (*setCSN)(id, SEL, CFStringRef) = (void*)objc_msgSend;
+        setCSN(config, csnSel, kCGColorSpaceSRGB);
+    }
+    // Cap delivery at the session's maximum frame rate (maxFrameRate=60).
+    SEL mfiSel = NSSelectorFromString(@"setMinimumFrameInterval:");
+    if ([config respondsToSelector:mfiSel]) {
+        void (*setMFI)(id, SEL, CMTime) = (void*)objc_msgSend;
+        setMFI(config, mfiSel, CMTimeMake(1, 60));
+    }
+    // Surfaces SCK may have in flight. We hold at most two (the slot and
+    // the one being copied), so 5 leaves SCK three to render into.
+    [config setValue:@5 forKey:@"queueDepth"];
+    return config;
+}
+
+// sckScaleFromMode is a display mode's backing scale: pixels per point (2.0
+// for a HiDPI mode). The input handler derives its scale the same way
+// (getMainDisplayScaleFactor), so the video and the pointer mapping agree.
+// fallback is used when the mode is unknown.
+double sckScaleFromMode(size_t modePixelWidth, size_t modePointWidth, double fallback) {
+    if (modePixelWidth > 0 && modePointWidth > 0) {
+        return (double)modePixelWidth / (double)modePointWidth;
+    }
+    return fallback >= 1.0 ? fallback : 1.0;
+}
+
+// sckReadDisplayMode reads a display's current mode. It returns 0, with the
+// outputs zeroed, when the display has none (offline, or the null display).
+static int sckReadDisplayMode(CGDirectDisplayID displayID, size_t *pixelWidth, size_t *pixelHeight, size_t *pointWidth) {
+    *pixelWidth = 0;
+    *pixelHeight = 0;
+    *pointWidth = 0;
+    if (displayID == 0) return 0;
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
+    if (mode == NULL) return 0;
+    *pixelWidth = CGDisplayModeGetPixelWidth(mode);
+    *pixelHeight = CGDisplayModeGetPixelHeight(mode);
+    *pointWidth = CGDisplayModeGetWidth(mode);
+    CGDisplayModeRelease(mode);
+    return 1;
+}
+
+// sckBuildFilter builds the content filter and the stream configuration for
+// the target display, at its current size. The first build and every rebuild
+// (a stream restart after a stop, a display change, or wake) size the output
+// the same way: from the display's current size in points times its current
+// backing scale. The output follows a mode change mid-session (#11754), so
+// frames arrive at the new size and the session runs its geometry transition
+// (session_geometry.go). Before #11754 a rebuild kept the starting
+// configuration, and SCK scaled the new mode into the old size, so input kept
+// mapping against the old geometry.
+static int sckBuildFilter(int displayIndex, CGDirectDisplayID preferID) {
+    if (!isSCKAvailable()) return 8; // SCK not available on this macOS version
+
+    // Read the preferred display's mode before the content query. A mode
+    // change racing the query then leaves the recorded mode behind the
+    // display's, and the next display poll (sckDisplayChanged) rebuilds again.
+    size_t pixelW = 0, pixelH = 0, pointModeW = 0;
+    sckReadDisplayMode(preferID, &pixelW, &pixelH, &pointModeW);
+
+    id filter = nil;
+    CGDirectDisplayID targetID = 0;
+    double pointWidth = 0, pointHeight = 0;
+    int rc = g_displaySource(displayIndex, preferID, &filter, &targetID, &pointWidth, &pointHeight);
+    if (rc != 0) return rc;
+    if (filter == nil) return 2;
+    if (targetID != preferID) {
+        // A first build, or the preferred display is gone.
+        sckReadDisplayMode(targetID, &pixelW, &pixelH, &pointModeW);
+    }
+
+    double scale = sckScaleFromMode(pixelW, pointModeW, sckScreenBackingScale(targetID));
+    size_t outW = (size_t)llround(pointWidth * scale);
+    size_t outH = (size_t)llround(pointHeight * scale);
+    if (outW > 0 && outH > 0) {
+        id config = sckNewOutputConfig(outW, outH);
         if (config == nil) return 8;
-
-        NSNumber *widthNum = [targetDisplay valueForKey:@"width"];
-        NSNumber *heightNum = [targetDisplay valueForKey:@"height"];
-        [config setValue:@((size_t)([widthNum doubleValue] * scaleFactor)) forKey:@"width"];
-        [config setValue:@((size_t)([heightNum doubleValue] * scaleFactor)) forKey:@"height"];
-        [config setValue:@YES forKey:@"showsCursor"];
-        // Stream settings (#5928). BGRA is converted to the RGBA the encoder
-        // expects in sckCopyFrameRGBA. sRGB matches what the old
-        // CGBitmapContext (DeviceRGB) path produced instead of passing the
-        // display's native (e.g. P3) values through as if they were sRGB.
-        [config setValue:@((unsigned int)kCVPixelFormatType_32BGRA) forKey:@"pixelFormat"];
-        // colorSpaceName is a CFStringRef property, which KVC cannot set:
-        // setValue:forKey: throws NSUnknownKeyException on every OS and the
-        // uncaught exception aborts the process. Call the setter directly.
-        SEL csnSel = NSSelectorFromString(@"setColorSpaceName:");
-        if ([config respondsToSelector:csnSel]) {
-            void (*setCSN)(id, SEL, CFStringRef) = (void*)objc_msgSend;
-            setCSN(config, csnSel, kCGColorSpaceSRGB);
-        }
-        // Cap delivery at the session's maximum frame rate (maxFrameRate=60).
-        SEL mfiSel = NSSelectorFromString(@"setMinimumFrameInterval:");
-        if ([config respondsToSelector:mfiSel]) {
-            void (*setMFI)(id, SEL, CMTime) = (void*)objc_msgSend;
-            setMFI(config, mfiSel, CMTimeMake(1, 60));
-        }
-        // Surfaces SCK may have in flight. We hold at most two (the slot and
-        // the one being copied), so 5 leaves SCK three to render into.
-        [config setValue:@5 forKey:@"queueDepth"];
         g_config = config;
+        g_modePixelWidth = pixelW;
+        g_modePixelHeight = pixelH;
+    } else if (g_config != nil) {
+        // The display reported no size. Keep streaming at the previous size,
+        // and clear the recorded mode so the next display poll retries.
+        g_modePixelWidth = 0;
+        g_modePixelHeight = 0;
+    } else {
+        return 2;
     }
 
     g_filter = filter;
     g_displayID = targetID;
     return 0;
+}
+
+// sckRefreshFilter rebuilds the filter and the output configuration for a
+// stream restart, preferring the display already being captured.
+int sckRefreshFilter(int displayIndex) {
+    return sckBuildFilter(displayIndex, g_displayID);
 }
 
 // ---- SCStream latest-frame slot (#5928) ----
@@ -237,8 +364,6 @@ static long g_streamStopCode = 0;             // guarded
 static id g_stream = nil;        // SCStream
 static id g_streamOutput = nil;  // BreezeSCKStreamOutput
 static dispatch_queue_t g_sampleQueue = NULL;
-static size_t g_modePixelWidth = 0;
-static size_t g_modePixelHeight = 0;
 
 // SCFrameStatusComplete. Other statuses (idle, blank, suspended, started,
 // stopped) carry no new screen content.
@@ -312,17 +437,6 @@ static void sckDeclareProtocols(void) {
     });
 }
 
-static void sckRecordDisplayMode(void) {
-    g_modePixelWidth = 0;
-    g_modePixelHeight = 0;
-    if (g_displayID == 0) return;
-    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(g_displayID);
-    if (mode == NULL) return;
-    g_modePixelWidth = CGDisplayModeGetPixelWidth(mode);
-    g_modePixelHeight = CGDisplayModeGetPixelHeight(mode);
-    CGDisplayModeRelease(mode);
-}
-
 // sckStopStream stops and releases the current stream and empties the slot.
 // Safe to call when nothing is running.
 void sckStopStream(void) {
@@ -361,15 +475,16 @@ void sckStopStream(void) {
 }
 
 // sckStartStream creates and starts an SCStream for the capturer's display.
-// refreshFilter re-queries SCShareableContent first (a rebuild after a stop,
-// a display change, or wake); the first start reuses the filter initCapture
+// refreshFilter re-queries SCShareableContent first and re-sizes the output
+// to the display's current mode (a rebuild after a stop, a display change, or
+// wake); the first start reuses the filter and configuration initCapture
 // built. On failure *outNSErrorCode carries the SCStreamError code, if any.
 int sckStartStream(int displayIndex, int refreshFilter, long *outNSErrorCode) {
     *outNSErrorCode = 0;
     sckStopStream();
 
     if (refreshFilter || g_filter == nil) {
-        int rc = sckBuildFilter(displayIndex, g_displayID, 0);
+        int rc = sckRefreshFilter(displayIndex);
         if (rc != 0) return rc;
     }
     if (g_filter == nil || g_config == nil) return 6;
@@ -434,7 +549,6 @@ int sckStartStream(int displayIndex, int refreshFilter, long *outNSErrorCode) {
         return startErr == BREEZE_SC_ERROR_USER_DECLINED ? 3 : 12;
     }
 
-    sckRecordDisplayMode();
     return 0;
 }
 
@@ -499,7 +613,8 @@ int sckCopyFrameRGBA(uintptr_t frameRef, void *dst, int width, int height, int d
 }
 
 // sckDisplayChanged reports whether the captured display went offline or
-// changed pixel mode since the stream started. Display sleep is deliberately
+// changed pixel mode since the output configuration was sized for it (the
+// last filter build). Display sleep is deliberately
 // not a change (the display stays online in its mode); SCK reports a stream
 // it cannot continue through stream:didStopWithError:.
 int sckDisplayChanged(void) {
@@ -523,7 +638,9 @@ int initCapture(int displayIndex) {
     g_filter = nil;
     g_config = nil;
     g_displayID = 0;
-    return sckBuildFilter(displayIndex, 0, 1);
+    g_modePixelWidth = 0;
+    g_modePixelHeight = 0;
+    return sckBuildFilter(displayIndex, 0);
 }
 
 // releaseCapture stops the stream and frees cached ScreenCaptureKit state.
@@ -532,6 +649,8 @@ void releaseCapture(void) {
     g_filter = nil;
     g_config = nil;
     g_displayID = 0;
+    g_modePixelWidth = 0;
+    g_modePixelHeight = 0;
 }
 
 // screenCapturePreflight reports whether TCC says this process holds the
@@ -845,6 +964,36 @@ func (s sckStreamShim) stopError() error {
 }
 
 func (s sckStreamShim) displayChanged() bool { return C.sckDisplayChanged() != 0 }
+
+// Hooks for capture_darwin_sckconfig_test.go (#11754): _test.go files cannot
+// use cgo. The caller holds darwinCaptureMu.
+
+// sckUseFakeDisplaySourceForTest makes the filter builds report a display of
+// pointW x pointH points, without querying ScreenCaptureKit.
+func sckUseFakeDisplaySourceForTest(pointW, pointH float64) {
+	C.sckUseFakeDisplaySource(C.double(pointW), C.double(pointH))
+}
+
+func sckUseRealDisplaySourceForTest() { C.sckUseRealDisplaySource() }
+
+func sckInitCaptureForTest(displayIndex int) int { return int(C.initCapture(C.int(displayIndex))) }
+
+// sckRefreshFilterForTest runs the filter rebuild a stream restart runs.
+func sckRefreshFilterForTest(displayIndex int) int {
+	return int(C.sckRefreshFilter(C.int(displayIndex)))
+}
+
+func sckOutputConfigSizeForTest() (width, height int) {
+	var w, h C.long
+	C.sckOutputConfigSize(&w, &h)
+	return int(w), int(h)
+}
+
+func sckReleaseCaptureForTest() { C.releaseCapture() }
+
+func sckScaleFromModeForTest(modePixelWidth, modePointWidth uint, fallback float64) float64 {
+	return float64(C.sckScaleFromMode(C.size_t(modePixelWidth), C.size_t(modePointWidth), C.double(fallback)))
+}
 
 // ---- Shared helpers ----
 
