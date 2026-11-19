@@ -952,6 +952,17 @@ func (s sckStreamShim) start(refreshFilter bool) error {
 	var nsCode C.long
 	code := int(C.sckStartStream(C.int(s.displayIndex), refresh, &nsCode))
 	if code == 0 {
+		if refreshFilter {
+			// The rebuild sized the output from SCDisplay's size and the
+			// display's mode (#11754). If they ever disagree in the field
+			// (SCDisplay lagging a mode change), this line shows it.
+			var ow, oh, mw, mh C.long
+			C.sckOutputConfigSize(&ow, &oh)
+			C.sckModeBaseline(&mw, &mh)
+			slog.Info("ScreenCaptureKit stream rebuilt",
+				"output", fmt.Sprintf("%dx%d", int64(ow), int64(oh)),
+				"displayMode", fmt.Sprintf("%dx%d", int64(mw), int64(mh)))
+		}
 		return nil
 	}
 	err := describeCurrentDisplayState(displayPower, translateDarwinError(code))
