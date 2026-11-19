@@ -197,8 +197,12 @@ Appends the current email to an existing ticket.
   the technician comment service (which marks the author as internal, stamps SLA,
   and notifies).
 - **Internal link:** a technician-authored internal note quoting the email.
-- Either way, a `ticket_email_links` row records the association — thread
-  association is independent of comment visibility.
+- Either way, a `ticket_email_links` row records the association and holds the
+  idempotency claim, whatever the comment's visibility. **Amended 2026-11-19:**
+  only a `public` link (from a live channel: `inbound`, `addin_create`,
+  `addin_link`) threads a later inbound reply by its In-Reply-To/References
+  headers. A reply to an email linked as an internal note does not post onto the
+  ticket through that link (`findTicketIdsByMessageIds`).
 - Idempotent: same message → same ticket returns the existing link. Same message
   → a **different** ticket returns 409 with the current association (the pane
   offers to open that ticket).

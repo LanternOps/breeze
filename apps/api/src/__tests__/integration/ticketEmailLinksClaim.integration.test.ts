@@ -23,7 +23,7 @@ import { buildDbAccessContext } from '../../middleware/auth';
 import { ticketEmailLinks, tickets, ticketComments, organizations, partners } from '../../db/schema';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
-import { claimMessageLink, findLinkByMessageId } from '../../services/ticketEmailLinks';
+import { claimMessageLink, findLinkByMessageId, findTicketIdsByMessageIds } from '../../services/ticketEmailLinks';
 import { findTicketInPartner, findClosedTicketInPartner } from '../../services/inboundEmail/threadMatcher';
 import { processInboundEmail } from '../../services/inboundEmail/inboundEmailService';
 import type { NormalizedInboundEmail } from '../../services/inboundEmail/types';
@@ -240,6 +240,97 @@ describe('ticket_email_links claim', () => {
     expect(link!.origin).toBe('inbound');
     expect(link!.visibility).toBe('public');
     expect(link!.commentId).not.toBeNull();
+  });
+
+  it('header threading only matches public links from a live channel', async () => {
+    const suffix = uniqueSuffix();
+    const ticketId = await seedTicket('open');
+    const ids = {
+      inbound: `<elig-inbound-${suffix}@customer.test>`,
+      addinCreate: `<elig-create-${suffix}@customer.test>`,
+      addinLinkPublic: `<elig-public-${suffix}@customer.test>`,
+      addinLinkInternal: `<elig-internal-${suffix}@customer.test>`,
+      backfill: `<elig-backfill-${suffix}@customer.test>`,
+    };
+    // Inserted directly: 'backfill' is DB-legal but has no writer yet.
+    await admin().insert(ticketEmailLinks).values([
+      { ticketId, orgId: fx.orgId, partnerId: fx.partnerId, messageId: ids.inbound, origin: 'inbound', visibility: 'public' },
+      { ticketId, orgId: fx.orgId, partnerId: fx.partnerId, messageId: ids.addinCreate, origin: 'addin_create', visibility: 'public' },
+      { ticketId, orgId: fx.orgId, partnerId: fx.partnerId, messageId: ids.addinLinkPublic, origin: 'addin_link', visibility: 'public' },
+      { ticketId, orgId: fx.orgId, partnerId: fx.partnerId, messageId: ids.addinLinkInternal, origin: 'addin_link', visibility: 'internal' },
+      { ticketId, orgId: fx.orgId, partnerId: fx.partnerId, messageId: ids.backfill, origin: 'backfill', visibility: 'public' },
+    ]);
+
+    const match = (id: string) =>
+      withSystemDbAccessContext(() => findTicketIdsByMessageIds(fx.partnerId, [id]));
+    expect(await match(ids.inbound)).toEqual([ticketId]);
+    expect(await match(ids.addinCreate)).toEqual([ticketId]);
+    expect(await match(ids.addinLinkPublic)).toEqual([ticketId]);
+    expect(await match(ids.addinLinkInternal)).toEqual([]);
+    expect(await match(ids.backfill)).toEqual([]);
+
+    // The idempotency ledger itself is visibility-independent.
+    const internalLink = await withSystemDbAccessContext(() => findLinkByMessageId(fx.partnerId, ids.addinLinkInternal));
+    expect(internalLink?.ticketId).toBe(ticketId);
+  });
+
+  async function replyToLinkedMessage(visibility: 'public' | 'internal') {
+    const suffix = uniqueSuffix();
+    const domain = `vis-${suffix}.tickets.test`;
+    await admin()
+      .insert(partnerInboundDomains)
+      .values({ partnerId: fx.partnerId, domain, provider: 'mailgun', verificationStatus: 'verified' });
+    const janeEmail = `jane-${suffix}@known.test`;
+    const [jane] = await admin()
+      .insert(portalUsers)
+      .values({ orgId: fx.orgId, email: janeEmail, name: 'Jane Known' })
+      .returning({ id: portalUsers.id });
+    // Jane is the requester, so the sender binding passes; the ticket carries
+    // no thread key or Message-ID the reply could match, so the link row is
+    // the ONLY header signal.
+    const ticketId = await seedTicket('open', { submittedBy: jane!.id });
+    const linkedMessageId = `<linked-${visibility}-${suffix}@customer.test>`;
+    await withSystemDbAccessContext(() =>
+      claimMessageLink({
+        ticketId,
+        orgId: fx.orgId,
+        partnerId: fx.partnerId,
+        messageId: linkedMessageId,
+        origin: 'addin_link',
+        visibility,
+      })
+    );
+
+    const email = {
+      provider: 'mailgun',
+      providerMessageId: `<provider-vis-${suffix}@customer.test>`,
+      to: `support@${domain}`,
+      from: janeEmail,
+      fromName: 'Jane Known',
+      subject: 'Re: following up', // no ticket token
+      text: 'Any update?',
+      inReplyTo: linkedMessageId,
+      references: [linkedMessageId],
+      messageId: `<reply-vis-${suffix}@customer.test>`,
+      senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, authenticatedDomain: 'known.test' },
+      attachments: [],
+      raw: {},
+    } as unknown as NormalizedInboundEmail;
+    await withSystemDbAccessContext(() => processInboundEmail(email));
+
+    const comments = await admin().select().from(ticketComments).where(eq(ticketComments.ticketId, ticketId));
+    return { ticketId, comments };
+  }
+
+  it('a reply to an internally linked message does not thread onto the ticket', async () => {
+    const { comments } = await replyToLinkedMessage('internal');
+    expect(comments).toHaveLength(0);
+  });
+
+  it('a reply to a publicly linked message still threads onto the ticket', async () => {
+    const { comments } = await replyToLinkedMessage('public');
+    expect(comments).toHaveLength(1);
+    expect(comments[0].content).toContain('Any update?');
   });
 
   it('link rows never re-enable closed tickets in the live matcher', async () => {
