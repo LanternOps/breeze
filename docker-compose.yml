@@ -1210,6 +1210,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-breeze}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-breeze}
+      # Pinned to the volume mount below. Postgres 18 images moved the default
+      # data directory to /var/lib/postgresql/18/docker, outside that mount, and
+      # without this line they refuse to start on this file. This is the
+      # Postgres 16/17 default, so existing volumes stay exactly where they are.
+      # Already running 18 with your volume mounted at /var/lib/postgresql?
+      # Read the PostgreSQL section of the upgrade guide before taking this line.
+      PGDATA: /var/lib/postgresql/data
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
