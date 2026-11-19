@@ -569,6 +569,8 @@ apps/api/src/services/networkIsolation/lifecycleRefusals.test.ts
 apps/api/src/services/networkIsolation/networkIsolation.issuers.contract.test.ts
 apps/api/src/services/networkIsolation/releaseToken.test.ts
 apps/api/src/services/networkIsolation/stateMachine.test.ts
+apps/api/src/services/oemUpdates/history.test.ts
+apps/api/src/services/oemUpdates/observe.test.ts
 apps/api/src/services/oemUpdates/toolManifest.test.ts
 apps/api/src/services/offlineAlertEffects.test.ts
 apps/api/src/services/orgMergeCustomExecutors.test.ts
@@ -811,6 +813,7 @@ packages/shared/src/utils/scriptSecurityPatterns.test.ts
 packages/shared/src/utils/yaraBundle.test.ts
 packages/shared/src/utils/yaraIocImport.test.ts
 packages/shared/src/validators/backupDestinationPrefix.test.ts
+packages/shared/src/validators/oemObserve.test.ts
 packages/shared/src/validators/oemUpdates.test.ts
 packages/shared/src/validators/queryParams.test.ts
 packages/shared/src/validators/softwareDownloadPolicy.parity.test.ts
