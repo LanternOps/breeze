@@ -11,7 +11,7 @@ import { createAuditLogAsync } from './auditService';
 import { isOfflineBaselineClear, type IpClassifier } from './ipClassifyOfflineData';
 import { recordPromotionBlockers } from './partnerTrustBlockers';
 import { getBreezeBillingClient, type CloseOpenCheckoutsResult } from './breezeBillingClient';
-import { sendOpsAlert } from './opsAlerts';
+import { opsText, sendOpsAlert } from './opsAlerts';
 import { readTrust } from './partnerTrust.repo';
 import { setTrustState } from './partnerTrust';
 import { sendEvidenceCard } from './partnerTrustEvidenceCard';
@@ -585,8 +585,8 @@ export async function closeOpenCheckoutsAfterRestrict(partnerId: string, reason:
       title: 'Restricted partner: open checkouts not closed',
       body: [
         `Partner id: ${partnerId}`,
-        `Restriction: ${reason}`,
-        `Billing outcome: ${outcome.status} (${outcome.detail})`,
+        `Restriction: ${opsText(reason)}`,
+        `Billing outcome: ${outcome.status} (${opsText(outcome.detail, 300)})`,
         'The partner is restricted, but its open checkout sessions and any incomplete subscription were NOT closed and nothing will retry. Close them by hand.',
       ].join('\n'),
     });
