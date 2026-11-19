@@ -56,7 +56,7 @@ rg -n "[A-Z_]*AGENT_VERSION[A-Z_]* = '[0-9]" apps/api/src ee packages -g '!*.tes
 
 If migrations are listed, you're committing prod to those migrations the moment the new API boots. Read them; confirm there are no large-table rewrites/backfills before you proceed (call those out in the upgrade notes if present).
 
-**Check UI QA coverage (scheduled sweep).** The QA Mac sweeps `main` nightly (`ui-qa-sweep` Scheduled mode). Everything it records lives in the **private** repo `LanternOps/breeze-qa`, never on the public repo or its PRs: findings are `qa-sweep` issues there, and the runner keeps a `QA sweep ledger` issue whose body has a "Coverage: swept through main@<sha>" line, the last 20 runs and one `pr=<n> result=<r> main=<sha9> run=<id>` line per PR (latest verdict per PR, the newest 400), with per-PR detail in one comment per run. Before tagging:
+**Check UI QA coverage (scheduled sweep).** The QA Mac sweeps `main` nightly (`ui-qa-sweep` Scheduled mode). Everything it records lives in the **private** repo `LanternOps/breeze-qa`, never on the public repo or its PRs: findings are `qa-sweep` issues there, and the runner keeps a `QA sweep ledger` issue whose body has a "Coverage: swept through main <sha9>" line, the last 20 runs and one `pr=<n> result=<r> main=<sha9> run=<id>` line per PR (latest verdict per PR, the newest 400), with per-PR detail in one comment per run. Before tagging:
 ```bash
 QA=LanternOps/breeze-qa
 LEDGER=$(gh issue list -R $QA --label qa-sweep --state open --json number,title --jq '.[] | select(.title=="QA sweep ledger") | .number')

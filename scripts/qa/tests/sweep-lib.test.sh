@@ -474,7 +474,7 @@ cat > "$T/report-clean.md" <<'MD'
 ## Devices page 500s on save
 
 Steps:
-1. Sign in at http://localhost:4321 as admin@example.com (seeded Admin).
+1. Sign in at http://localhost:4321 as the seeded admin.
 2. Open Settings > Users and click **Save** on row 2.
 
 | Page | Result | Commit |
@@ -496,15 +496,15 @@ fedcba9876543210fedcba9876543210fedcba98
 ## Repro
 Notes
 Stack: http://localhost:4321
-Login: admin@example.com
+Login: the seeded partner admin
 MD
 check "split gate: control: a realistic multi-line report passes" "body_ok '$T/report-clean.md'"
 # Review r10: shapes ordinary reports have that the joined copies must not trip.
 cat > "$T/report-shapes.md" <<'MD'
 Open the stack at
 http://localhost:3000
-admin@example.com
-@breeze/web build failed
+the seeded admin
+breeze/web build failed
 
 ```
 /settings/Organizations
@@ -522,9 +522,12 @@ Chromium131
 **Viewport**
 1440x900
 MD
-check "split gate: control: URL then email lines, route lists and key/value lines pass" "body_ok '$T/report-shapes.md'"
+check "split gate: control: URL then account lines, route lists and key/value lines pass" "body_ok '$T/report-shapes.md'"
+# Strix r13 class rule: a host:port URL line followed by an email line reads as
+# user "localhost", password "4321", host "example.com" once the line break is
+# gone. It used to be exempt; it is now refused (the agent writes no "@").
 printf 'Stack: http://localhost:4321\nadmin@example.com logged in\nOpen http://127.0.0.1:8080\nops@example.com\nhttps://localhost:443\n- qa@example.com\n' > "$T/report-urlport.md"
-check "split gate: control: a host:port URL at a line end followed by an email line passes" "body_ok '$T/report-urlport.md'"
+check "split gate: a host:port URL at a line end followed by an email line is refused" "! body_ok '$T/report-urlport.md'"
 check "split gate: control: the log-sized clean body still passes" "body_ok '$T/logsized-clean.md'"
 check "split gate: a normaliser that crashes rejects the body" "! ( _norm_scan() { return 137; }; body_ok '$T/report-clean.md' )"
 check "split gate: a normaliser that exits 0 without a verdict rejects the body" "! ( _norm_scan() { :; }; body_ok '$T/report-clean.md' )"
@@ -534,31 +537,85 @@ QA_COMMENTABLE=" "; IN_SCOPE=" "
 publish_outbox >/dev/null 2>&1
 check "split gate: a create body with a split key is not published" "! grep -q 'marker-split-body' '$GH_LOG' && ! grep -q 'IOSFODNN7EXAMPLE' '$GH_LOG.bodies'"
 
-# === Strix r12: URL userinfo spellings (the generic, second layer) =============
+# === Strix r10-r13: user:pass@host as a CLASS (the generic, second layer) =====
+# One rule, no spellings: a ":" anywhere before an "@" (at least one character
+# between) refuses the body, on the raw text and on every normalised reading
+# (whitespace, invisibles and markdown gone, percent/entity-decoded, both fence
+# readings). Whatever a reader would put back together, the rule sees whole.
 new_run gate-userinfo
 userinfo_rejected() { printf '%s\n' "$2" > "$T/ui.md"; check "userinfo: $1" "! body_ok '$T/ui.md'"; }
 userinfo_passes()   { printf '%s\n' "$2" > "$T/ui.md"; check "userinfo: control: $1" "body_ok '$T/ui.md'"; }
-userinfo_rejected "uppercase scheme" "POSTGRES://user:pass@host"
-userinfo_rejected "mixed-case scheme" "see Https://admin:hunter2@db.example.com/x"
-userinfo_rejected "a space inside the password" "postgres://user:pa ss@host"
-userinfo_rejected "a tab inside the password" "postgres://user:pa"$'\t'"ss@host"
-userinfo_rejected "uppercase scheme and a space together" "REDIS://svc:two words@cache.internal:6379"
-userinfo_rejected "no scheme" "user:pass@host"
-userinfo_rejected "no scheme, dotted host and port" "conn admin:hunter2@db.example.com:5432/app"
-userinfo_rejected "no scheme, IPv4 host" "admin:hunter2@10.0.0.5"
-userinfo_rejected "no scheme, Go/MySQL DSN" "user:pass@tcp(host:3306)/db"
-userinfo_rejected "no scheme, unix-socket DSN" "user:pass@unix(/tmp/mysql.sock)/db"
-userinfo_passes "a label, a space, then an email" "Login: admin@example.com"
-userinfo_passes "a label glued to an email" "Login:admin@example.com"
-userinfo_passes "a mailto link" "mailto:ops@example.com"
-userinfo_passes "a stack URL, then an email on the same line" "Open http://localhost:4321 and sign in as admin@example.com"
-userinfo_passes "an uppercase stack URL, then an email" "HTTP://LOCALHOST:4321 admin@example.com"
-userinfo_passes "a URL with a port and a comma before an email" "http://localhost:4321, admin@example.com"
-userinfo_passes "a URL ending in a colon before prose and an email" "https://example.com: the page fails for admin@example.com"
-userinfo_passes "a digest-pinned image" "postgres:16-alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-userinfo_passes "a scoped package task and version" "@breeze/web:build@1.2.3"
-userinfo_passes "a timestamp before an email" "10:30:15 admin@example.com"
-userinfo_passes "a host:port glued to a handle" "localhost:4321@admin"
+# Strix r12 spellings.
+userinfo_rejected "r12: uppercase scheme" "POSTGRES://user:pass@host"
+userinfo_rejected "r12: mixed-case scheme" "see Https://admin:hunter2@db.example.com/x"
+userinfo_rejected "r12: a space inside the password" "postgres://user:pa ss@host"
+userinfo_rejected "r12: a tab inside the password" "postgres://user:pa"$'\t'"ss@host"
+userinfo_rejected "r12: uppercase scheme and a space together" "REDIS://svc:two words@cache.internal:6379"
+userinfo_rejected "r12: no scheme" "user:pass@host"
+userinfo_rejected "r12: no scheme, dotted host and port" "conn admin:hunter2@db.example.com:5432/app"
+userinfo_rejected "r12: no scheme, IPv4 host" "admin:hunter2@10.0.0.5"
+userinfo_rejected "r12: no scheme, Go/MySQL DSN" "user:pass@tcp(host:3306)/db"
+userinfo_rejected "r12: no scheme, unix-socket DSN" "user:pass@unix(/tmp/mysql.sock)/db"
+# Strix r13 spellings: //user:pass@host, behind a label, a space before ://.
+userinfo_rejected "r13: //user:pass@host" "//user:pass@host"
+userinfo_rejected "r13: //user:pass@host inside prose" "see //admin:hunter2@db.example.invalid/app"
+userinfo_rejected "r13: behind a label" "label: user:pass@host"
+userinfo_rejected "r13: glued to a label" "Login:admin:hunter2@db.example.invalid"
+userinfo_rejected "r13: a space before ://" "postgres ://admin:hunter2@db.example.invalid"
+userinfo_rejected "r13: spaces around ://" "scheme :// user:pass@host"
+userinfo_rejected "r13: uppercase scheme, a space before ://" "POSTGRES ://admin:hunter2@db"
+# The rest of the class, so round 14 is not another spelling.
+userinfo_rejected "class: a space in a scheme-less password" "user:pa ss@host"
+userinfo_rejected "class: a space in a dotted scheme-less password" "admin:hun ter2@db.example.invalid"
+userinfo_rejected "class: a space right after the colon" "admin: hunter2@db.example.invalid"
+userinfo_rejected "class: spaces around the @" "admin:hunter2 @ db.example.invalid"
+userinfo_rejected "class: spaces around every separator" "admin : hunter2 @ db"
+userinfo_rejected "class: an empty user" "redis://:hunter2@cache"
+userinfo_rejected "class: a single-label host and a path" "admin:pw@db/app"
+userinfo_rejected "class: a percent-encoded @" "admin:hunter2%40db.example.invalid"
+userinfo_rejected "class: a percent-encoded colon" "admin%3Ahunter2@db.example.invalid"
+userinfo_rejected "class: an entity-encoded @" "admin:hunter2&#64;db.example.invalid"
+userinfo_rejected "class: full-width colon and @" "admin：hunter2＠db.example.invalid"
+userinfo_rejected "class: zero-width characters around the separators" "admin${ZW}:${ZW}hunter2${ZW}@${ZW}db"
+userinfo_rejected "class: markdown around the separators" 'admin`:`**hunter2**`@`db'
+userinfo_rejected "class: a scheme-less credential split over a line break" "admin:hun
+ter2@db"
+userinfo_rejected "class: a scheme-less credential split across a fence" "admin:hun
+\`\`\`
+ter2@db"
+userinfo_rejected "class: user and host paragraphs apart" "DB user admin:hunter2
+
+Lots of ordinary report prose in between, over several lines.
+
+The host is @db.example.invalid"
+# Ambiguous shapes are refused on purpose: the agent never writes "@".
+userinfo_rejected "ambiguous: a label, a space, then an email" "Login: admin@example.com"
+userinfo_rejected "ambiguous: a label glued to an email" "Login:admin@example.com"
+userinfo_rejected "ambiguous: a mailto link" "mailto:ops@example.com"
+userinfo_rejected "ambiguous: a stack URL, then an email on the same line" "Open http://localhost:4321 and sign in as admin@example.com"
+userinfo_rejected "ambiguous: a timestamp before an email" "10:30:15 admin@example.com"
+userinfo_rejected "ambiguous: a time before an at-sign and a word" "time 10:30 @ standup"
+userinfo_rejected "ambiguous: a digest-pinned image" "postgres:16-alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+userinfo_rejected "ambiguous: a host:port glued to a handle" "localhost:4321@admin"
+userinfo_rejected "ambiguous: a trailing @ after a colon" "pw: hunter2@"
+check "userinfo: a title in the class is refused" "! text_ok '[UI] see //user:pass@host'"
+check "userinfo: a title with a space before :// is refused" "! text_ok '[UI] scheme :// user:pass@host'"
+# What still passes: an "@" with no ":" anywhere before it.
+userinfo_passes "a plain email, no colon anywhere" "Mail a@b.com about it"
+userinfo_passes "an email before the first colon" "Contact a@b.com first. Steps: open Devices, then Save."
+userinfo_passes "a URL with a port and no @" "Stack: http://localhost:4321/devices (port 4321), API at http://localhost:4321/api"
+check "userinfo: a scanner that crashes rejects the body" "! ( _userinfo_scan() { return 137; }; printf 'clean\n' > '$T/ui.md'; body_ok '$T/ui.md' )"
+check "userinfo: a scanner that exits 0 without a verdict rejects the body" "! ( _userinfo_scan() { :; }; printf 'clean\n' > '$T/ui.md'; body_ok '$T/ui.md' )"
+check "userinfo: the scanner gives a positive clean verdict" "printf 'clean\n' > '$T/ui.md'; [ \"\$(_userinfo_scan '$T/ui.md' '$QA_BODY_MAX')\" = clean ]"
+# Concatenation: a verdict body with an "@" passes on its own but sits under the
+# runner's "### PR N: RESULT" heading. It is refused alone; its neighbour posts.
+new_run gate-userinfo-chunk
+QA_COMMENTABLE=" "; IN_SCOPE=" 100 101 "
+outbox 001.json '{"action":"pr_result","pr":100,"result":"PASS","body":"clicked Devices, row saved"}'
+outbox 002.json '{"action":"pr_result","pr":101,"result":"FAIL","body":"marker-at-body mail ops@example.com"}'
+publish_outbox >/dev/null 2>&1
+check "userinfo: a verdict whose heading puts a colon before its @ is refused alone" "! grep -q 'marker-at-body' '$GH_LOG.bodies' && [ -z \"\$(hosted_verdict 101)\" ] && grep -q 'REJECT 002.json' '$T/runner.log'"
+check "userinfo: the neighbouring verdict is still posted" "grep -qx '### PR 100: PASS' '$GH_LOG.bodies' && [ \"\$(hosted_verdict 100)\" = PASS ]"
 
 # Keys the stack mints at runtime cannot be known in advance: they go by prefix.
 userinfo_rejected "a minted API key (brz_ + 48 hex)" "key brz_0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -738,21 +795,25 @@ cat > "$T/kv-report.md" <<MD
 ## Devices page returns 500 on main
 
 **Stack:** http://localhost:54321 (API http://localhost:54321/api, portal http://localhost:54321/portal)
-Signed in as admin@breeze.local on localhost in development mode.
-Mail from noreply@breeze.local; region us-east-1; platform linux/arm64.
+Signed in as the seeded admin on localhost in development mode.
+Mail from the stack's noreply sender; region us-east-1; platform linux/arm64.
 
-1. Open http://localhost:54321/devices and sign in as admin@breeze.local
+1. Open http://localhost:54321/devices and sign in as the seeded admin
 2. The console shows \`GET /api/v1/devices 500\`
 
 Breeze redis topology standalone-single-primary, ws auth post_upgrade.
 Breeze RMM Dev, issuer breeze-issuer, docs https://docs.example.com/guides/install
 The postgres container restarted once.
 Audience m365-graph-read-executor. Container breeze-wt-kvtest01-postgres-1 is healthy.
-main@0123456789abcdef0123456789abcdef01234567
+main 0123456789abcdef0123456789abcdef01234567
 MD
 check "known value: control: a realistic report on the real list passes" "body_ok '$T/kv-report.md'"
+# The public values the list leaves out (stack URL, admin and sender emails,
+# image digest) are not known values; the class rule refuses the "@" forms.
+printf 'Stack http://localhost:54321 as admin@breeze.local, mail noreply@breeze.local\npostgres:16-alpine@sha256:%s\n' "$KV_SHA" > "$T/kv-public.md"
+check "known value: control: public emails and image refs are not known values" "[ \"\$(_known_scan '$T/kv-public.md' '$QA_BODY_MAX' '$ENVVALS')\" = clean ]"
 cat > "$T/kv-boot.md" <<MD
-The scheduled QA sweep could not boot the dev stack on \`main@012345678\` (run-1).
+The scheduled QA sweep could not boot the dev stack on \`main 012345678\` (run-1).
 
 ### Container status
 \`\`\`
@@ -762,17 +823,23 @@ breeze-wt-kvtest01-api-1	Exited (1) 10 seconds ago
 Full container logs and wt-stack output: \`/Users/qa/.breeze-qa/runs/run-1\` on the QA Mac.
 MD
 check "known value: control: the runner's boot-failure body passes" "body_ok '$T/kv-boot.md'"
-cat > "$T/kv-drift.md" <<MD
-- runtime/toolchain pins changed since the last sweep:
-\`\`\`diff
--POSTGRES_IMAGE_REF=postgres:15-alpine@sha256:$KV_SHA
-+POSTGRES_IMAGE_REF=postgres:16-alpine@sha256:$KV_SHA
-+image: breeze-portal:dev
-\`\`\`
-MD
+# The runner's drift section, built by the real helper from fingerprints that
+# carry digest pins and a packageManager pin: it must publish.
+printf '%s\n' "POSTGRES_IMAGE_REF=postgres:15-alpine@sha256:$KV_SHA" 'image: breeze-portal:dev' '"packageManager":"pnpm@10.11.0"' > "$T/fp-prev.txt"
+printf '%s\n' "POSTGRES_IMAGE_REF=postgres:16-alpine@sha256:$KV_SHA" 'image: breeze-portal:dev' "FROM node:22.23.4-alpine@sha256:$KV_SHA" '"packageManager":"pnpm@10.12.1+sha512.0123abcd"' > "$T/fp-cur.txt"
+{ echo "- runtime/toolchain pins changed since the last sweep:"; echo '```diff'; fingerprint_diff "$(cat "$T/fp-prev.txt")" "$T/fp-cur.txt"; echo '```'; } > "$T/kv-drift.md"
+check "drift: the diff names each change" "grep -q '^- POSTGRES_IMAGE_REF=postgres:15-alpine digest sha256:$KV_SHA\$' '$T/kv-drift.md' && grep -q '^+ POSTGRES_IMAGE_REF=postgres:16-alpine digest sha256:$KV_SHA\$' '$T/kv-drift.md' && grep -q 'pnpm 10.12.1' '$T/kv-drift.md'"
+check "drift: the fingerprint itself keeps its digests (no spurious drift next run)" "grep -q '@sha256:' '$T/fp-cur.txt'"
 check "known value: control: the runner's drift body passes" "body_ok '$T/kv-drift.md'"
-printf '# QA sweep ledger\n\n### PR 100: PASS\nVerified on http://localhost:54321 at main@0123456789\n' > "$T/kv-ledger.md"
-check "known value: control: the ledger body passes" "body_ok '$T/kv-ledger.md'"
+printf '%s\n' 'image: registry.example/x:1@weird' > "$T/fp-odd.txt"
+check "drift: an @ the helper does not rewrite still refuses the body (fails closed)" "{ echo 'drift:'; fingerprint_diff '' '$T/fp-odd.txt'; } > '$T/kv-drift-odd.md'; ! body_ok '$T/kv-drift-odd.md'"
+# Boot-failure log excerpts: no line with an "@" is published.
+printf '%s\n' 'ERROR: cannot reach postgres' 'Error: npm ERR! pkg@1.2.3 failed' 'FATAL: password authentication failed for user "breeze"' 'error: connect admin@db.local' > "$T/boot-container.log"
+boot_log_excerpt "$T/boot-container.log" > "$T/boot-excerpt.txt"
+check "boot log: error lines without an @ are kept" "grep -q 'cannot reach postgres' '$T/boot-excerpt.txt' && grep -q 'password authentication failed' '$T/boot-excerpt.txt'"
+check "boot log: every line with an @ is dropped" "! grep -q '@' '$T/boot-excerpt.txt'"
+{ echo 'The scheduled QA sweep could not boot the dev stack on `main 012345678` (run-1).'; cat "$T/kv-drift.md"; echo '```'; cat "$T/boot-excerpt.txt"; echo '```'; } > "$T/kv-boot-real.md"
+check "boot log: the boot-failure body with drift and log excerpts passes" "body_ok '$T/kv-boot-real.md'"
 check "known value: control: the scanner gives a positive clean verdict" "[ \"\$(_known_scan '$T/kv-report.md' '$QA_BODY_MAX' '$ENVVALS')\" = clean ]"
 
 # Wiring: the list is rebuilt once the stack exists, and every copy of the
@@ -783,8 +850,11 @@ check "wiring: a failed first build stops the run" "grep -qE '^build_envvals \\|
 kv_post="$(grep -n 'build_envvals "$STACK_PROJECT"' "$RUNNER" | head -1 | cut -d: -f1)"; kv_first="$(grep -n '^run_agent "$PROMPT"' "$RUNNER" | cut -d: -f1)"
 check "wiring: the list is rebuilt from the running stack before the agent starts" "[ -n '$kv_post' ] && [ -n '$kv_first' ] && [ '$kv_post' -lt '$kv_first' ]"
 check "wiring: the list is rebuilt after the switch to hosted mode" "grep -q 'switch_to_hosted && secure_stack && build_envvals \"\$STACK_PROJECT\"' '$RUNNER'"
-check "wiring: the boot-log filter uses the shared userinfo shape" "grep -q 'URL_CREDS_ERE' '$RUNNER'"
-check "wiring: one userinfo definition in the lib" "[ \"\$(grep -c '://(\\[^/\\[:space:\\]:@\\]' '$QA_DIR/sweep-lib.sh')\" = 1 ]"
+check "wiring: the boot-log excerpt and drift diff come from the lib helpers" "grep -q 'boot_log_excerpt ' '$RUNNER' && grep -q 'fingerprint_diff ' '$RUNNER'"
+check "wiring: the spelling-by-spelling userinfo layer is gone" "! grep -qE 'URL_CREDS_ERE|BARE_CREDS|SPACED_PW|split_userinfo|NOT_HOSTS' '$QA_DIR/sweep-lib.sh' '$RUNNER'"
+check "wiring: runner-written GitHub text says 'main <sha>', never main@" "! grep -E 'main@' '$RUNNER' '$QA_DIR/sweep-lib.sh' | grep -vE '^[^:]*:[[:space:]]*(#|notify |log )|[[:space:]](notify|log) ' | grep -q ."
+check "wiring: the skill tells the agent never to write @ or credentials" "grep -q 'Never write the character' '$QA_DIR/../../.claude/skills/ui-qa-sweep/SKILL.md' && ! grep -q 'main@<sha9>' '$QA_DIR/../../.claude/skills/ui-qa-sweep/SKILL.md'"
+check "wiring: one raw class definition, used by body_ok with the normalised scan" "[ \"\$(grep -c '^USERINFO_ERE=' '$QA_DIR/sweep-lib.sh')\" = 1 ] && grep -qF '_gate_clean -aEq \"\$USERINFO_ERE\"' '$QA_DIR/sweep-lib.sh' && grep -qF '_userinfo_scan \"\$1\"' '$QA_DIR/sweep-lib.sh'"
 check "wiring: the seeded admin password matches wt-stack" "grep -qF \"password: 'BreezeAdmin123!'\" '$QA_DIR/../dev/wt-stack/cli.ts'"
 check "wiring: the cleanup removes a killed build's temp files" "grep -qF 'rm -f \"\$ENVVALS\" \"\$ENVVALS\".*' '$RUNNER'"
 check "static: the skill tells the agent not to write secrets" "printf '%s' \"\$SCHED_SKILL\" | grep -q 'Never write a password'"
@@ -1389,7 +1459,8 @@ new_run fenced
 QA_COMMENTABLE=" 555 "; IN_SCOPE=" 100 "
 outbox 001.json '{"action":"create","title":"[UI] marker-n1 cc @title-user","body":"cc @body-user see https://github%2ecom/evil/private and [x](/octo/private)"}'
 outbox 002.json "{\"action\":\"comment\",\"issue\":555,\"body\":$(json_str 'ping.@comment-user and &#64;entity-user, octo/private#1')}"
-outbox 003.json '{"action":"pr_result","pr":100,"result":"PASS","body":"x-@pr-user, regressed by #77"}'
+# (no "@" here: under the "### PR 100: PASS" heading it would be refused, see gate-userinfo-chunk)
+outbox 003.json '{"action":"pr_result","pr":100,"result":"PASS","body":"x-pr-user, regressed by #77"}'
 publish_outbox >/dev/null 2>&1
 check "outbox: links, mentions and cross-repo text no longer block a report" "grep -q 'marker-n1' '$GH_LOG' && grep -q 'issue comment 555' '$GH_LOG' && grep -q 'issue comment 556' '$GH_LOG'"
 check "outbox: the title reaches gh without the @" "grep -qF 'issue create --title [UI] marker-n1 cc title-user ' '$GH_LOG'"

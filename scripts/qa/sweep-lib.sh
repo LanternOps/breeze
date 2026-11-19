@@ -20,9 +20,21 @@ PREFIXED_SECRET_RE='sk_live_|sk_test_|rk_live_|sk-ant-|gh[pousr]_[A-Za-z0-9]{20,
 # Not matched with whitespace removed: the words after a displayed prefix would
 # read as the rest of a key, so a minted key interleaved with spaces is a limit.
 SECRET_RE="$PREFIXED_SECRET_RE|brz_[A-Za-z0-9_-]{16,}"
-# scheme://user:pass@ in any letter case: the one definition, shared by the byte
-# grep, the normalised scan (groups: user, password) and the boot-log filter.
-URL_CREDS_ERE='[A-Za-z][A-Za-z0-9+.-]*://([^/[:space:]:@]+):([^/[:space:]@]+)@'
+# Credentials written as user:pass@host: ONE rule for the whole class (Strix
+# r10-r13 found a new spelling every round: a line break, an upper-case scheme,
+# no scheme, //user:pass@host, a label in front, a space before ://). A body or
+# title is refused when a ":" comes before an "@" with at least one character
+# between them. That is checked on the raw bytes (USERINFO_ERE, per line: tokens
+# of non-space characters) and on every normalised reading (_userinfo_scan:
+# whitespace, invisibles and markdown removed, case-folded, percent- and
+# entity-decoded, both fence readings), where it means: any ":" anywhere before
+# any later "@". No scheme, label, host shape, port or distance exemptions.
+# Deliberately broad: "Login: admin@example.com", "mailto:a@b.c", "10:30 @
+# standup", image@sha256:digest and a host:port URL followed (anywhere) by an
+# email are all refused. The agent is told never to write "@" (SKILL.md), and
+# the runner's own bodies carry none (fingerprint_diff, boot_log_excerpt, the
+# "main <sha>" wording). What passes: an "@" with no ":" anywhere before it.
+USERINFO_ERE=':[^[:space:]]+@'
 QA_BODY_MAX=60000
 # _gate_clean <grep args...>: true only when grep positively reports "no match"
 # (exit 1). A match (0), an error (2) or death by a signal (>128) all reject, so
@@ -61,16 +73,7 @@ print("clean")
 #             it made optional) and each literal .env value, normalised the
 #             same way (when still >= 8 chars), must not occur.
 #   joined -- lines joined, a line with no space in it with no separator, two
-#             lines of words with one space. SECRET_RE, credentials in a URL
-#             and each .env value must not occur.
-#   spaced -- lines joined with one space: no credentials in a URL.
-#   tight  -- lines joined with no separator at all (Strix r11): no
-#             user:pass@ that a line break cut apart, as "https://admin:hun"
-#             then "ter2@host". One shape is exempt, because every report has
-#             it: a line ending in scheme://host:PORT followed by a line
-#             starting with name@ (a URL line, then an email line). The limit
-#             that leaves: a password that begins with 1-5 digits, cut right
-#             after them with scheme://user:digits whole on one line.
+#             lines of words with one space. SECRET_RE must not occur.
 #   chains -- consecutive lines that are nothing but 12+ token characters
 #             ([A-Za-z0-9_-]), joined, must not hold _body_scan's long
 #             token-like run. The heuristic is not run on the flat or joined
@@ -80,20 +83,15 @@ print("clean")
 #             prefix-less token cut into short pieces or interleaved with
 #             words therefore stays out of a heuristic's reach; known values
 #             and prefixed tokens do not.
-#   lines  -- each normalised line on its own (Strix r12): a password with
-#             whitespace in it after scheme://user: (a port followed by prose
-#             is exempt: "http://localhost:4321 and sign in as a@b.c"), and
-#             user:pass@host with no scheme, DSNs included. Labels before an
-#             email, digest-pinned images, package@version and times are exempt.
-#             A scheme-less password with a space in it reads exactly like
-#             "Login: admin@example.com", so only the known-value gate covers it.
+# Credentials written as user:pass@host are not checked here: _userinfo_scan
+# holds the one class rule (see USERINFO_ERE).
 # Every check runs twice: with fence lines dropped, and with only their fence
 # markers stripped (text after a marker is content GitHub shows). Code points
 # that render blank without being format characters (Hangul fillers, the
 # braille blank, Khmer inherent vowels) are dropped as well. Look-alike letters
 # (Cyrillic s) and visible separators (s.k.-) are an accepted limit: a
 # blocklist cannot close them.
-# _QA_NORM_PY: the reading and normalising shared by _norm_scan and _known_scan.
+# _QA_NORM_PY: the reading and normalising shared by _norm_scan, _userinfo_scan and _known_scan.
 _QA_NORM_PY='
 import re, sys, unicodedata
 path, limit, envvals = sys.argv[1], int(sys.argv[2]), sys.argv[3]
@@ -127,10 +125,32 @@ def lines_of(b, drop_fences=True):
     return [FENCE.sub("", ln) for ln in BREAKS.split(t)]
 def flat_of(lines):
     return "".join(norm_line(ln, False) for ln in lines)
+def canon(s):
+    return norm_line(unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", s).casefold()), False)
+def squeeze(s):
+    # Whitespace and invisible characters go; markdown stays until after decoding
+    # (the # of an entity, the %23 of a #).
+    return "".join(c for c in s if not c.isspace() and c not in BLANK and unicodedata.category(c) not in DROP)
+def decodings(lines):
+    # The body flattened (whitespace, invisibles, markdown gone, case-folded),
+    # and again percent-, plus- and entity-decoded, three rounds.
+    import html, urllib.parse
+    seen = {squeeze("".join(lines)), flat_of(lines)}
+    todo = list(seen)
+    for _ in range(3):
+        found = []
+        for s in todo:
+            for d in (urllib.parse.unquote(s), urllib.parse.unquote_plus(s), html.unescape(s)):
+                d = squeeze(d)
+                if d not in seen:
+                    seen.add(d)
+                    found.append(d)
+        todo = found
+    return {canon(s) for s in seen}
 '
 _norm_scan() {
   /usr/bin/python3 -I -c "$_QA_NORM_PY"'
-secret, url_creds, prefixed = sys.argv[4], sys.argv[5], sys.argv[6]
+secret, prefixed = sys.argv[4], sys.argv[5]
 def joined_of(lines):
     # A line with no space in it (a fragment) joins its neighbours with no
     # separator; two lines of words join with one space.
@@ -160,59 +180,6 @@ def token_chains(lines):
     if cur:
         chains.append(cur)
     return chains
-USERINFO = re.compile(url_creds.replace("[:space:]", r"\s"))
-SPACED_PW = re.compile(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:(\S[^/@]{0,127})@", re.I)
-PORT_THEN_PROSE = re.compile(r"\d{1,5}(?:[\s,;.)\]]|\Z)")
-BARE_CREDS = re.compile(r"(?<![\w.+/:@%~-])([a-z0-9._~%+-]{1,64}):([^\s/@]{1,128})@"
-                        r"(tcp\([^)\s]*\)|unix\([^)\s]*\)|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9-]+)*)", re.I)
-LABELS = {"mailto", "email", "e-mail", "mail", "login", "signin", "sign-in", "from", "to", "cc", "bcc",
-          "reply-to", "author", "by", "contact", "owner", "assignee", "reporter", "account", "sent", "tenant"}
-NOT_HOSTS = {"sha1", "sha224", "sha256", "sha384", "sha512", "md5", "latest", "next", "beta", "canary"}
-def spaced_password(line):
-    for m in SPACED_PW.finditer(line):
-        pw = m.group(1)
-        if re.search(r"\s", pw) and not PORT_THEN_PROSE.match(pw):
-            return True
-    return False
-def bare_creds(line):
-    for m in BARE_CREDS.finditer(line):
-        user, pw, host = m.group(1).lower(), m.group(2), m.group(3).lower()
-        if user in LABELS or user.isdigit() or host in NOT_HOSTS:
-            continue
-        if re.fullmatch(r"\d+(?:\.\d+){0,2}", host):   # package@1.2.3; an IPv4 host has four parts
-            continue
-        if pw.isdigit() and len(pw) <= 5 and (user == "localhost" or "." in user):   # host:port@handle
-            continue
-        return True
-    return False
-def tight_of(lines):
-    # Lines joined with NO separator (spaces inside a line kept), plus the
-    # offsets where two lines meet.
-    out, cuts = "", []
-    for ln in lines:
-        cur = norm_line(ln, True)
-        if not cur:
-            continue
-        if out:
-            cuts.append(len(out))
-        out += cur
-    return out, cuts
-def split_userinfo(text, cuts):
-    # A user:pass@ that a line break cut apart. One shape is exempt: a line
-    # that ends in scheme://host:PORT (1-5 digits) followed by a line that
-    # starts with name@ -- a URL line then an email line, in every report.
-    for m in USERINFO.finditer(text):
-        # From the "://" on: the scheme letters may be glued to the end of
-        # the line before ("...stack at" + "http://..."), which is no split.
-        sep = text.index("://", m.start())
-        inside = [c for c in cuts if sep <= c < m.end()]
-        if not inside:
-            continue
-        p0 = m.start(2)
-        if len(inside) == 1 and inside[0] > p0 and text[p0:inside[0]].isdigit() and inside[0] - p0 <= 5:
-            continue
-        return True
-    return False
 def tokenlike(s):
     for m in re.finditer(r"[A-Za-z0-9+/=_-]{40,}", s):
         t = m.group()
@@ -222,21 +189,29 @@ def tokenlike(s):
 for drop in (True, False):
     lines = lines_of(data, drop)
     flat, joined = flat_of(lines), joined_of(lines)
-    spaced = " ".join(norm_line(ln, True) for ln in lines)
     if re.search(prefixed.replace(" ", " ?"), flat) or re.search(secret, joined):
-        sys.exit(3)
-    if USERINFO.search(spaced):
-        sys.exit(3)
-    for ln in lines:
-        n = norm_line(ln, True)
-        if spaced_password(n) or bare_creds(n):
-            sys.exit(3)
-    if split_userinfo(*tight_of(lines)):
         sys.exit(3)
     if any(tokenlike(c) for c in token_chains(lines)):
         sys.exit(3)
 print("clean")
-' "$1" "$2" "$3" "$SECRET_RE" "$URL_CREDS_ERE" "$PREFIXED_SECRET_RE" 2>/dev/null
+' "$1" "$2" "$3" "$SECRET_RE" "$PREFIXED_SECRET_RE" 2>/dev/null
+}
+# _userinfo_scan <file> <max>: the user:pass@host class rule (see USERINFO_ERE)
+# on every normalised reading of the body: flattened (whitespace, invisibles and
+# markdown removed, NFKC case-folded) and percent-/entity-decoded, with fence
+# lines dropped and with only their markers stripped. Refused when any ":" comes
+# before any later "@" with at least one character between. Prints "clean" only
+# when no reading has one; anything else (oversize, NUL, a crash) refuses.
+_userinfo_scan() {
+  /usr/bin/python3 -I -c "$_QA_NORM_PY"'
+def userinfo(s):
+    i = s.find(":")
+    return i != -1 and s.rfind("@") >= i + 2
+for drop in (True, False):
+    if any(userinfo(s) for s in decodings(lines_of(data, drop))):
+        sys.exit(3)
+print("clean")
+' "$1" "$2" "" 2>/dev/null
 }
 # _known_scan <file> <max> <envvals>: the PRIMARY gate (Strix r12). The agent can
 # only meet secrets that exist on this machine, so build_envvals lists them and
@@ -250,27 +225,8 @@ print("clean")
 # the scan does not undo (reversed, rot13, enciphered) or pieces under 16.
 _known_scan() {
   /usr/bin/python3 -I -c "$_QA_NORM_PY"'
-import base64, html, urllib.parse
+import base64
 MIN_VALUE, PIECE = 8, 16
-def canon(s):
-    return norm_line(unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", s).casefold()), False)
-def squeeze(s):
-    # Whitespace and invisible characters go; markdown stays until after decoding
-    # (the # of an entity, the %23 of a #).
-    return "".join(c for c in s if not c.isspace() and c not in BLANK and unicodedata.category(c) not in DROP)
-def decodings(lines):
-    seen = {squeeze("".join(lines)), flat_of(lines)}
-    todo = list(seen)
-    for _ in range(3):
-        found = []
-        for s in todo:
-            for d in (urllib.parse.unquote(s), urllib.parse.unquote_plus(s), html.unescape(s)):
-                d = squeeze(d)
-                if d not in seen:
-                    seen.add(d)
-                    found.append(d)
-        todo = found
-    return {canon(s) for s in seen}
 def b64_forms(raw):
     # The characters of base64(raw) that do not depend on what surrounds raw.
     for pad in range(3):
@@ -477,7 +433,7 @@ body_ok() {
   # Byte-wise matching (LC_ALL=C, -a): invalid UTF-8 must not turn the file
   # "binary" and hide what follows it (NULs are already refused above).
   _gate_clean -aEq "$SECRET_RE" "$1" || return 1
-  _gate_clean -aEq "$URL_CREDS_ERE" "$1" || return 1   # creds in URLs
+  _gate_clean -aEq "$USERINFO_ERE" "$1" || return 1   # user:pass@host, raw
   # Any literal .env value. The runner builds this list before anything is
   # published, so a missing or unreadable list is a failed check, not an empty one.
   [ -f "$ENVVALS" ] && [ -r "$ENVVALS" ] || return 1
@@ -485,6 +441,9 @@ body_ok() {
   # The same checks on normalised copies: a secret split over lines,
   # interleaved or fenced is caught whole (Strix r10).
   verdict="$(_norm_scan "$1" "$QA_BODY_MAX" "$ENVVALS")" || return 1
+  [ "$verdict" = clean ] || return 1
+  # user:pass@host in any spelling: one class rule on every normalised reading.
+  verdict="$(_userinfo_scan "$1" "$QA_BODY_MAX")" || return 1
   [ "$verdict" = clean ] || return 1
   # Every secret on this machine, however it is spelled or encoded (Strix r12).
   verdict="$(_known_scan "$1" "$QA_BODY_MAX" "$ENVVALS")" || return 1
@@ -497,6 +456,27 @@ text_ok() {
   tf="$(mktemp "${PUBLISH_DIR:-$QA_HOME}/.field.XXXXXX")" || return 1
   printf '%s' "$1" > "$tf"; body_ok "$tf"; rc=$?
   rm -f "$tf"; return "$rc"
+}
+# fingerprint_diff <previous-fingerprint-text> <fingerprint-file>: the drift
+# section's diff lines (- old, + new). Its "@"s are the two runner-known shapes,
+# reworded so the class rule (USERINFO_ERE) does not refuse the issue:
+# name:tag@sha256:<hex> -> "name:tag digest sha256:<hex>" and the packageManager
+# pin's "pnpm@1.2.3" -> "pnpm 1.2.3". Only the published text is reworded, never
+# the fingerprint (that would read as a change next run). Any other "@" is left
+# alone, so the issue is refused rather than published with it.
+fingerprint_diff() {
+  diff <(printf '%s\n' "$1") "$2" | grep -E '^[<>]' \
+    | sed -E 's/^</-/; s/^>/+/; s/@(sha(256|384|512):[0-9a-f]{64,128})/ digest \1/g; s/("packageManager":"[A-Za-z0-9._-]+)@/\1 /'
+}
+# boot_log_excerpt <container-log>: the published excerpt of a failed
+# container's log. Error-signature lines only, the last 8, each cut to 240
+# characters; lines holding a literal .env value, a SECRET_RE match, a long
+# token-like run or any "@" (the class rule refuses the issue on one) dropped.
+# The full log stays on the QA Mac.
+boot_log_excerpt() {
+  grep -E 'CRITICAL|FATAL|Error:|error:|ERROR' "$1" | tail -8 | cut -c1-240 \
+    | { if [ -s "$ENVVALS" ]; then grep -viF -f "$ENVVALS"; else cat; fi; } \
+    | grep -Ev "$SECRET_RE" | grep -Ev '[A-Za-z0-9+/=_-]{48,}|@'
 }
 # fence_text <file>: rewrite agent-written text in place into the only form the
 # publisher posts: the text verbatim inside a fenced code block it cannot close.
@@ -1502,7 +1482,7 @@ _post_verdicts() {
     prs=""; size=0
   }
   _start_chunk() {
-    printf 'Run %s on main@%s: per-PR verdicts from the scheduled UI QA sweep. The agent'"'"'s text is shown verbatim in code blocks.\n' \
+    printf 'Run %s on main %s: per-PR verdicts from the scheduled UI QA sweep. The agent'"'"'s text is shown verbatim in code blocks.\n' \
       "$RUN_ID" "${NEW_SHA:0:9}" > "$chunk"
     size="$(wc -c < "$chunk" | tr -d ' ')"
   }
@@ -1510,8 +1490,14 @@ _post_verdicts() {
   while read -r kv sec; do
     ssize="$(wc -c < "$sec" | tr -d ' ')"
     if [ -n "$prs" ] && [ $((size + ssize)) -gt "$QA_LEDGER_CHUNK" ]; then _flush_chunk; _start_chunk; fi
-    cat "$sec" >> "$chunk"; size=$((size + ssize)); prs="$prs $kv"
+    # Trial-append: a section that would sink the comment it shares is left
+    # out on its own (its PR stays unrecorded); the others still post.
+    if ! { cat "$chunk" "$sec" > "$chunk.try" && body_ok "$chunk.try"; }; then
+      log "ledger: the verdict for PR ${kv%%=*} was refused inside the shared comment; not recorded"; continue
+    fi
+    mv -f "$chunk.try" "$chunk"; size=$((size + ssize)); prs="$prs $kv"
   done < "$list"
+  rm -f "$chunk.try"
   _flush_chunk
 }
 
@@ -1593,13 +1579,17 @@ publish_outbox() {
         [ "$(wc -c < "$bodyf" | tr -d ' ')" -le "$QA_VERDICT_MAX" ] || { log "outbox REJECT $(basename "$f"): verdict body over $QA_VERDICT_MAX bytes"; continue; }
         # One record per PR per main SHA (a re-run of the same range doesn't double-post).
         if _verdict_recorded "$pr" "$result"; then
-          log "outbox SKIP $(basename "$f"): PR $pr already recorded for main@${NEW_SHA:0:9}"; PR_VERDICTS="$PR_VERDICTS $pr=$result"; continue
+          log "outbox SKIP $(basename "$f"): PR $pr already recorded for main ${NEW_SHA:0:9}"; PR_VERDICTS="$PR_VERDICTS $pr=$result"; continue
         fi
         # "PR N", never "#N": in the QA repo a #N would point at its own issue N.
         sec="$f.section.md"
         { printf '\n### PR %s: %s\n' "$pr" "$result"
           [ "$result" = NO_UI ] || { echo; cat "$bodyf"; }
         } > "$sec"
+        # Gated again with the runner's heading: "### PR N: RESULT" puts a ":"
+        # before any "@" in the body. Refused here, alone, so it cannot sink the
+        # verdict comment its neighbours share.
+        body_ok "$sec" || { log "outbox REJECT $(basename "$f"): verdict refused under its heading (secret gate)"; continue; }
         printf '%s=%s %s\n' "$pr" "$result" "$sec" >> "$vlist" ;;
       *) log "outbox REJECT $(basename "$f"): unknown action" ;;
     esac
@@ -1645,7 +1635,7 @@ record_run_ledger() {
       "per-PR detail is in the run comments below. Findings stay in this private repo:",
       "promoting one to the public repo is a human step.",
       "",
-      (if $last then "Coverage: swept through main@\($last.sha | s9) (\($last.run)) | open qa-sweep issues at run start: \($last.open)"
+      (if $last then "Coverage: swept through main \($last.sha | s9) (\($last.run)) | open qa-sweep issues at run start: \($last.open)"
        else "Coverage: no completed sweep yet" end),
       "",
       "## Recent runs (newest first)",

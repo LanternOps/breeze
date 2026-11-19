@@ -243,7 +243,7 @@ ENV_CHANGED=0
 if [ -n "$PREV_FP" ] && [ "$PREV_FP" != "$(cat "$FP_FILE")" ]; then
   ENV_CHANGED=1
   { echo "- runtime/toolchain pins changed since the last sweep:"; echo '```diff'
-    diff <(printf '%s\n' "$PREV_FP") "$FP_FILE" | grep -E '^[<>]' | sed 's/^</-/; s/^>/+/'
+    fingerprint_diff "$PREV_FP" "$FP_FILE"   # digest/version "@"s reworded for the secret gate
     echo '```'; } >> "$DRIFT"
   log "environment fingerprint changed"
 fi
@@ -283,7 +283,7 @@ if ! stack_healthy; then
   # Boot failure on main is the most important finding a sweep can make.
   PROJECT="$(sed -nE 's/^\[wt-stack\] project=([^ ]+).*/\1/p' "$RUN_DIR/stack-up.log" | head -1)"
   BODY="$RUN_DIR/boot-failure.md"
-  { echo "The scheduled QA sweep could not boot the dev stack on \`main@${NEW_SHA:0:9}\` ($RUN_ID)."
+  { echo "The scheduled QA sweep could not boot the dev stack on \`main ${NEW_SHA:0:9}\` ($RUN_ID)."
     [ -s "$DRIFT" ] && { echo; echo "### Environment changes detected this run"; cat "$DRIFT"; }
     echo; echo "### Container status"; echo '```'
     docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}\t{{.Status}}' 2>/dev/null
@@ -291,12 +291,10 @@ if ! stack_healthy; then
     for c in $(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}} {{.Status}}' 2>/dev/null \
                | grep -iE 'unhealthy|exited|restarting' | cut -d' ' -f1); do
       docker logs --tail 200 "$c" > "$RUN_DIR/container-$c.log" 2>&1
-      # Published excerpt: only error-signature lines, literal .env values stripped,
-      # anything still secret-shaped dropped. Full logs stay on the QA Mac.
+      # Published excerpt (boot_log_excerpt): error-signature lines only, any
+      # line with a literal .env value, a secret shape or an "@" dropped.
       echo; echo "### \`$c\` error lines"; echo '```'
-      grep -E 'CRITICAL|FATAL|Error:|error:|ERROR' "$RUN_DIR/container-$c.log" | tail -8 | cut -c1-240 \
-        | { if [ -s "$ENVVALS" ]; then grep -viF -f "$ENVVALS"; else cat; fi; } \
-        | grep -Ev "$SECRET_RE" | grep -Ev "[A-Za-z0-9+/=_-]{48,}|$URL_CREDS_ERE"
+      boot_log_excerpt "$RUN_DIR/container-$c.log"
       echo '```'
     done
     echo; echo "Full container logs and wt-stack output: \`$RUN_DIR\` on the QA Mac."
@@ -307,7 +305,7 @@ if ! stack_healthy; then
   echo "STACK_BOOT_FAILED" > "$RUN_DIR/result"; exit 1
 fi
 if [ -s "$DRIFT" ]; then
-  { echo "The scheduled QA sweep detected environment changes on \`main@${NEW_SHA:0:9}\` since the last sweep (\`${PREV_SHA:0:9}\`). The stack booted with them; check the release's **Self-Hosting / Upgrade Notes** cover each one (e.g. a Postgres major-version bump needs a \`pg_upgrade\`/dump-restore path for self-hosters; a new required env var must be mapped in compose)."
+  { echo "The scheduled QA sweep detected environment changes on \`main ${NEW_SHA:0:9}\` since the last sweep (\`${PREV_SHA:0:9}\`). The stack booted with them; check the release's **Self-Hosting / Upgrade Notes** cover each one (e.g. a Postgres major-version bump needs a \`pg_upgrade\`/dump-restore path for self-hosters; a new required env var must be mapped in compose)."
     echo; cat "$DRIFT"; echo; echo "_Filed by the scheduled UI QA sweep. Close once the release notes cover it._"
   } > "$RUN_DIR/drift-issue.md"
   [ -n "$PREV_SHA" ] && runner_issue "[QA] Environment change on main needs upgrade notes" "$RUN_DIR/drift-issue.md"
