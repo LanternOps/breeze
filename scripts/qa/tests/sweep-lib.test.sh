@@ -413,6 +413,33 @@ check "gate: a body one byte over the limit is rejected" "! body_ok '$T/over-lim
 check "gate: an oversize body never reaches the scanner" "! ( _body_scan() { echo scanned > '$T/scanned'; echo clean; }; body_ok '$T/over-limit.md' ) && [ ! -e '$T/scanned' ]"
 check "gate: a directory or missing path is rejected" "! body_ok '$T' && ! body_ok '$T/no-such-file'"
 
+# === Strix r15: printable-ASCII allow-list (closes the Unicode-hiding class) ===
+# Published output is an English machine report: 0x20-0x7E, \n and \t only. Any
+# other byte refuses the body before any other scan, so no code point list is
+# needed (blank-rendering symbols, zero-width, bidi, homoglyph, fullwidth, NBSP).
+new_run gate-ascii
+: > "$ENVVALS"
+ascii_rejected() {  # ascii_rejected <name> <chars>
+  printf 'see AKIA%sIOSFODNN7EXAMPLE and %s\n' "$2" "$2" > "$T/ascii.md"
+  check "ascii gate: $1 (secret interleaved)" "! body_ok '$T/ascii.md'"
+  printf 'Devices page shows %s here\n' "$2" > "$T/ascii.md"
+  check "ascii gate: $1 (benign body)" "! body_ok '$T/ascii.md'"
+}
+ascii_rejected "U+FFFC object replacement" $'\xef\xbf\xbc'
+ascii_rejected "U+1D159 musical null notehead" $'\xf0\x9d\x85\x99'
+ascii_rejected "zero-width joiner" $'\xe2\x80\x8d'
+ascii_rejected "bidi override" $'\xe2\x80\xae'
+ascii_rejected "fullwidth letters" $'\xef\xbc\xa1\xef\xbc\xa2'
+ascii_rejected "no-break space" $'\xc2\xa0'
+ascii_rejected "carriage return" $'\r'
+ascii_rejected "DEL" $'\x7f'
+ascii_rejected "invalid UTF-8 byte" $'\xff'
+printf '# QA report\n\n- Devices page 500s on Save (see /devices)\n\tindented with a tab; code U+00E9 shown as ascii\n' > "$T/ascii.md"
+check "ascii gate: a plain ASCII report is allowed" "body_ok '$T/ascii.md'"
+check "ascii gate: a title with non-ASCII is refused by text_ok" "! text_ok \"[UI] caf\$(printf '\\xc3\\xa9')\""
+printf 'a\xc2\xa0b\n' > "$T/ascii2.md"
+check "ascii gate: runs before the other scans" "! ( _body_scan() { echo scanned > '$T/ascii-scanned'; echo clean; }; body_ok '$T/ascii2.md' ) && [ ! -e '$T/ascii-scanned' ]"
+
 # === Strix r10: a credential split, interleaved or fenced is still caught =====
 # The raw checks match per line; the body is published with its layout intact,
 # so the same checks also run on normalised copies (whitespace, zero-width,

@@ -89,8 +89,9 @@ print("clean")
 # markers stripped (text after a marker is content GitHub shows). Code points
 # that render blank without being format characters (Hangul fillers, the
 # braille blank, Khmer inherent vowels) are dropped as well. Look-alike letters
-# (Cyrillic s) and visible separators (s.k.-) are an accepted limit: a
-# blocklist cannot close them.
+# (Cyrillic s) and visible separators (s.k.-) are an accepted limit of the
+# normalisation; body_ok's printable-ASCII allow-list (Strix r15) refuses
+# non-ASCII bytes before these scans run, so the stripping here is a second layer.
 # _QA_NORM_PY: the reading and normalising shared by _norm_scan, _userinfo_scan and _known_scan.
 _QA_NORM_PY='
 import re, sys, unicodedata
@@ -434,6 +435,13 @@ body_ok() {
   size="$(wc -c < "$1" | tr -d ' ')" || return 1
   case "$size" in ''|*[!0-9]*) return 1 ;; esac
   [ "$size" -gt 0 ] && [ "$size" -le "$QA_BODY_MAX" ] || return 1   # bounded before anything scans it
+  # Printable-ASCII allow-list (Strix r15), before every other scan: published
+  # output is an English machine report, so only 0x20-0x7E, \n and \t may
+  # appear. Any other byte (zero-width, bidi, blank-rendering symbols,
+  # homoglyphs, fullwidth, NBSP, CR, DEL, invalid UTF-8) refuses the body, so
+  # the Unicode-hiding class is closed without listing code points. Non-ASCII
+  # UI text found by the agent is reported as code points (U+00E9).
+  _gate_clean -aq "[^ -~$(printf '\t')]" "$1" || return 1
   verdict="$(_body_scan "$1" "$QA_BODY_MAX")" || return 1
   [ "$verdict" = clean ] || return 1
   # Byte-wise matching (LC_ALL=C, -a): invalid UTF-8 must not turn the file

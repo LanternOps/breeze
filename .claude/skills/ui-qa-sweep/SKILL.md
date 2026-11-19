@@ -217,6 +217,12 @@ already been swept and its defects are recorded. In this mode the rules below
   a public PR as `PR 12345` and a QA-repo issue as `QA issue 45`; neither is
   linked. Issue titles keep letters, digits and ordinary punctuation only
   (`@ # & < > \` and backticks are dropped).
+  **Outbox text is printable ASCII only**: bytes 0x20-0x7E plus newline and
+  tab. The runner refuses any title, body or ledger row holding anything else
+  (curly quotes, emoji, accented letters, zero-width or invisible characters,
+  non-breaking spaces, carriage returns), before any other check. To report
+  non-ASCII UI text you found (a mojibake bug, a stray symbol), describe it in
+  ASCII: write the code points, e.g. `U+00E9`, never the character.
   **Never write the character `@` in outbox text** (titles and bodies), and
   never write a credential, password or token. The runner refuses any title
   or body in which a `:` appears anywhere before an `@`, with whitespace and
