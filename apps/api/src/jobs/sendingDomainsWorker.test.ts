@@ -84,7 +84,7 @@ vi.mock('../services/emailDomains/config', () => ({
   findStaticAllowedEntry: () => null,
 }));
 
-const { opsAlertMock } = vi.hoisted(() => ({ opsAlertMock: vi.fn(async () => true) }));
+const { opsAlertMock } = vi.hoisted(() => ({ opsAlertMock: vi.fn(async (_alert: { title: string; body: string }) => true) }));
 vi.mock('../services/opsAlerts', async (orig) => ({ ...(await orig<typeof import('../services/opsAlerts')>()), sendOpsAlert: opsAlertMock, isOpsAlertingConfigured: () => true }));
 
 const { hostedFlag } = vi.hoisted(() => ({ hostedFlag: { value: false } }));

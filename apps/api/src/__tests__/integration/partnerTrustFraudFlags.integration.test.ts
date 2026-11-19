@@ -38,6 +38,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { auditLogs, partnerBillingFraudFlags, partners } from '../../db/schema';
 import type { PartnerTrustState } from '../../db/schema/orgs';
 import { BillingError, type BillingFraudFlag } from '../../services/breezeBillingClient';
+import { opsText } from '../../services/opsAlerts';
 import { setTrustState } from '../../services/partnerTrust';
 import {
   loadFraudRestoreEpisodes,
@@ -156,7 +157,7 @@ describe('billing fraud flag sweep', () => {
       expect(rows[0]!.effectsDoneAt).not.toBeNull();
       expect(billing.closeOpenCheckouts).toHaveBeenCalledWith({ partnerId: partner.id, reason: 'auto:test_reason_a' });
       expect(sendOpsAlert).toHaveBeenCalledTimes(1);
-      expect(sendOpsAlert.mock.calls[0]![0].body).toContain('test_kind_a');
+      expect(sendOpsAlert.mock.calls[0]![0].body).toContain(opsText('test_kind_a'));
     },
   );
 
