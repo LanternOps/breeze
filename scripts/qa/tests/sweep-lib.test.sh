@@ -37,7 +37,7 @@ case "$*" in
   *"issue comment"*) [ -n "${FAKE_COMMENT_RC:-}" ] && exit "$FAKE_COMMENT_RC" ;;
   *"issue create"*) echo "https://github.com/LanternOps/breeze-qa/issues/600" ;;
   *"QA sweep ledger"*) [ "${FAKE_NO_LEDGER:-0}" = 1 ] || echo 556 ;;
-  *"issue list"*"--json number,title"*) printf '555\t[UI] Devices page 500s\n556\tQA sweep ledger\n557\t[UI] caf\xc3\xa9 \xe2\x80\x8bzero <b>x</b>\nnot-a-number\tjunk\n' ;;
+  *"issue list"*"--json number,title"*) printf '555\t[UI] Devices page 500s\n556\tQA sweep ledger\n557\t[UI] caf\xc3\xa9 \xe2\x80\x8bzero <b>x</b>\n558\t[QA] Dev stack fails to boot on main\nnot-a-number\tjunk\n' ;;
   *"issue view"*"--json labels,state"*) echo "qa-sweep" ;;   # every issue "looks" open + qa-sweep live
   *"issue list"*"--label qa-sweep"*"--json number"*) printf '555\n556\n' ;;
 esac
@@ -168,7 +168,7 @@ check "no-prose: a first run (no previous SHA) scopes the last 3 days, same colu
 new_run open-issues
 snapshot_open_issues
 check "dedupe: the snapshot is open qa-sweep issues of the private repo only" "grep -q '^-R LanternOps/breeze-qa issue list --label qa-sweep --state open' '$GH_LOG' && ! grep -q 'search' '$GH_LOG'"
-check "dedupe: the snapshot is number<TAB>title, printable ASCII only, markup characters dropped" "[ \"\$(cat '$RUN_DIR/open-issues.tsv')\" = \"\$(printf '555\t[UI] Devices page 500s\n556\tQA sweep ledger\n557\t[UI] caf zero bx/b')\" ]"
+check "dedupe: the snapshot is number<TAB>title, printable ASCII only, markup characters dropped" "[ \"\$(cat '$RUN_DIR/open-issues.tsv')\" = \"\$(printf '555\t[UI] Devices page 500s\n556\tQA sweep ledger\n557\t[UI] caf zero bx/b\n558\t[QA] Dev stack fails to boot on main')\" ]"
 check "dedupe: the snapshot is read-only" "[ ! -w '$RUN_DIR/open-issues.tsv' ] || [ \"\$(id -u)\" = 0 ]"
 check "static: the gh broker and its client are gone" "[ ! -e '$QA_DIR/gh-broker.py' ] && [ ! -e '$QA_DIR/qa-gh' ] && ! grep -qE 'qa-gh|gh-broker|GH_BROKER|QA_GH' '$QA_DIR/scheduled-ui-sweep.sh' '$QA_DIR/sweep-lib.sh'"
 check "static: the installer removes stale broker copies and ships none" "grep -q 'rm -f .*gh-broker.py.*qa-gh' '$QA_DIR/install-schedule.sh' && ! grep -q 'install .*gh-broker\|install .*qa-gh' '$QA_DIR/install-schedule.sh'"
@@ -240,14 +240,25 @@ unset FAKE_VIS FAKE_VIS_RC FAKE_COMMENT_RC FAKE_NO_LEDGER
 new_run comment
 IN_SCOPE=" "
 snapshot_commentable_issues
-check "F4: snapshot holds the open qa-sweep issues at run start" "[ \"\$QA_COMMENTABLE\" = ' 555 556 ' ]"
+check "F4: snapshot holds the open qa-sweep issues at run start" "[ \"\$QA_COMMENTABLE\" = ' 555 557 ' ] && [ \"\$QA_LEDGER_ISSUE\" = 556 ]"
 outbox 001-url.json '{"action":"comment","issue":"https://github.com/attacker/repo/issues/1","body":"hello there"}'
 outbox 002-new.json '{"action":"comment","issue":777,"body":"hello there"}'
 outbox 003-ok.json '{"action":"comment","issue":555,"body":"Verified fixed on main"}'
+outbox 004-ledger.json '{"action":"comment","issue":556,"body":"poison the ledger"}'
+outbox 005-qa.json '{"action":"comment","issue":558,"body":"comment on a runner issue"}'
 publish_outbox >/dev/null 2>&1
+check "F4: a comment on the runner-owned ledger issue is refused" "! grep -q 'issue comment 556' '$GH_LOG'"
+check "F4: a comment on a runner-reserved [QA] issue is refused" "! grep -q 'issue comment 558' '$GH_LOG'"
 check "F4: fully qualified issue URL is rejected" "! grep -q 'attacker' '$GH_LOG'"
 check "F4: issue not in the pre-run snapshot is rejected even if it is open+qa-sweep now" "! grep -q 'issue comment 777' '$GH_LOG'"
 check "F4: snapshot issue gets the comment, pinned to the private repo" "grep -q '^-R LanternOps/breeze-qa issue comment 555 ' '$GH_LOG'"
+
+new_run comment-denied
+QA_COMMENTABLE=" 555 556 558 "; QA_LEDGER_ISSUE=556; IN_SCOPE=" "   # even if a bad snapshot listed them
+outbox 001.json '{"action":"comment","issue":556,"body":"poison the ledger"}'
+publish_outbox >/dev/null 2>&1
+check "F4: the ledger number is denied explicitly even when listed" "! grep -q 'issue comment 556' '$GH_LOG'"
+QA_LEDGER_ISSUE=""
 
 new_run comment-empty
 QA_COMMENTABLE=""   # snapshot failed -> fail closed

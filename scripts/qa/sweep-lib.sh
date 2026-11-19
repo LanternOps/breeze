@@ -1245,11 +1245,24 @@ runner_issue() {
 }
 
 # snapshot_commentable_issues: the issues an outbox `comment` may target, fixed
-# before the agent starts = open qa-sweep issues in QA_REPO right now. Empty on
-# failure, which rejects every comment.
+# before the agent starts = open qa-sweep issues in QA_REPO right now whose title
+# starts with the exact ASCII "[UI] " (the agent's own namespace). Runner-owned
+# issues ("[QA] ...", the ledger title) are never commentable, and the ledger
+# issue's number is denied explicitly too (QA_LEDGER_ISSUE, resolved here and
+# never created here). Empty on failure, which rejects every comment.
+QA_COMMENTABLE=""; QA_LEDGER_ISSUE=""
 snapshot_commentable_issues() {
-  QA_COMMENTABLE=" $(qa_gh issue list --label qa-sweep --state open --limit 1000 --json number --jq '.[].number' 2>/dev/null \
-                     | grep -E '^[0-9]{1,7}$' | tr '\n' ' ')"
+  local n t list
+  QA_LEDGER_ISSUE="$(_issue_number "$LEDGER_TITLE")"
+  list="$(qa_gh issue list --label qa-sweep --state open --limit 1000 --json number,title \
+            --jq '.[] | "\(.number)\t\(.title)"' 2>/dev/null)"
+  QA_COMMENTABLE=" "
+  while IFS=$'\t' read -r n t; do
+    [[ "$n" =~ ^[0-9]{1,7}$ ]] || continue
+    printf '%s' "$t" | LC_ALL=C grep -Eq '^\[UI\] ' || continue
+    [ "$n" = "$QA_LEDGER_ISSUE" ] && continue
+    QA_COMMENTABLE="$QA_COMMENTABLE$n "
+  done <<< "$list"
   [ "$QA_COMMENTABLE" = " " ] && QA_COMMENTABLE=""
   return 0
 }
@@ -1570,6 +1583,8 @@ publish_outbox() {
         issue="$(jq -r '.issue // empty' "$f")"
         [[ "$issue" =~ ^[0-9]{1,7}$ ]] || { log "outbox REJECT $(basename "$f"): bad issue"; continue; }
         # Target must be in the snapshot taken before the agent ran ...
+        # The ledger and runner-reserved issues are denied even if listed.
+        [ -n "${QA_LEDGER_ISSUE:-}" ] && [ "$issue" = "$QA_LEDGER_ISSUE" ] && { log "outbox REJECT $(basename "$f"): #$issue is the runner-owned ledger"; continue; }
         case "$QA_COMMENTABLE" in *" $issue "*) ;; *) log "outbox REJECT $(basename "$f"): #$issue was not an open qa-sweep issue at run start"; continue ;; esac
         [ "$comments" -lt "$max_comments" ] || { log "outbox REJECT $(basename "$f"): comment cap ($max_comments) reached"; continue; }
         # ... and still open + labelled now.
