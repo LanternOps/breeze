@@ -14,6 +14,7 @@ export type AlertCircuitOmitReason =
   | 'no_provenance'
   | 'interface_missing'
   | 'interface_retired'
+  | 'interface_mismatch'
   | 'epoch_mismatch'
   | 'owner_unbound'
   | 'no_termination'
@@ -60,7 +61,11 @@ export function resolveAlertCircuitContext(input: AlertCircuitContextInput): Ale
   const gone = interfaceGone(currentInterface);
   if (gone) return omit(gone);
   // interfaceGone() guarantees a non-null row here.
-  if (!currentInterface || currentInterface.id !== stored.interfaceId || currentInterface.epoch !== stored.interfaceEpoch) return omit('epoch_mismatch');
+  if (!currentInterface) return omit('interface_missing');
+  // A different id is a loader bug, not an interface lifecycle event: keep it
+  // apart from an epoch change so it does not read like one.
+  if (currentInterface.id !== stored.interfaceId) return omit('interface_mismatch');
+  if (currentInterface.epoch !== stored.interfaceEpoch) return omit('epoch_mismatch');
   if (!input.ownerBound) return omit('owner_unbound');
 
   if (input.terminations.length === 0) return omit('no_termination');
