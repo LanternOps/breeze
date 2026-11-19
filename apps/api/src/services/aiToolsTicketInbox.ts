@@ -6,7 +6,7 @@
  * The queue holds mail the router could not place (quarantined or failed
  * parses), so its subject, sender and error text are attacker-authored by
  * construction: they are fenced in `RAW_TEXT_FIELDS_BY_TOOL`. The route is
- * admin-only (`adminMiddleware`); the handler applies the same predicate.
+ * gated on `tickets:email_review` (#10951); the handler applies the same predicate.
  *
  * Classes (aiGuardrails.ts, plan W06 / quorum QW1+QW3): `list` is plain tier 2
  * (a read-only resolution would skip the agent allowlist); `convert` and
@@ -26,7 +26,7 @@ import {
   partnerIdOrError,
   partnerScopeRequiredError,
   serviceErrorJson,
-  ticketConfigAdminDenied,
+  ticketEmailReviewDenied,
 } from './aiToolsTicketOpsShared';
 import { convertEmailInbound, dismissEmailInbound, listEmailInboundQueue } from './ticketConfigService';
 import { approverReleaseMismatch } from './aiToolReleaseGuards';
@@ -62,10 +62,10 @@ export function registerTicketInboxTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth, context?: ToolExecutionContext) => {
       const action = input.action as InboxAction;
       if (!TICKET_INBOX_ACTIONS.includes(action)) return jsonError(`Unknown action: ${String(action)}`);
-      // routes/ticketConfig.ts: requireScope('partner','system') + writePerm + adminMiddleware on all three.
+      // routes/ticketConfig.ts: requireScope('partner','system') + emailReviewPerm + requirePartnerGlobalAccess on all three (tickets:email_review, #10951).
       if (!isPartnerOrSystem(auth)) return partnerScopeRequiredError();
       if (action !== 'list' && isAgentPrincipal(auth)) return agentRefusal(action);
-      const denied = await ticketConfigAdminDenied(auth);
+      const denied = await ticketEmailReviewDenied(auth);
       if (denied) return denied;
       const p = partnerIdOrError(auth);
       if ('error' in p) return p.error;

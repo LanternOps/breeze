@@ -102,7 +102,7 @@ func TestRestoreFiles_ZeroWinAttrsProducesNoWarning(t *testing.T) {
 
 func seedWinAttrsManifest(t *testing.T, attrs uint32) (*providers.LocalProvider, *snapshotManifest) {
 	t.Helper()
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	snapshotID := "bmr-winattrs"
 	backupPath := filepath.ToSlash(path.Join("snapshots", snapshotID, "files", "x.gz"))
 

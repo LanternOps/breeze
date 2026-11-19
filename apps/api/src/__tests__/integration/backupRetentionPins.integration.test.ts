@@ -1,6 +1,6 @@
 import './setup';
 
-import { expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -633,5 +633,149 @@ runDb('never retires an expired snapshot written in an unsupported key layout; l
     }
     const retirements = await db.select().from(backupSnapshotRetirements).where(eq(backupSnapshotRetirements.storageIdentity, identity));
     expect(retirements.map((r) => r.snapshotId)).toEqual([`plain-${unique}`]);
+  });
+});
+
+// #11027: the reason a run has no incremental base used to live only in a log
+// line. These drive the real dispatch stamp against Postgres.
+describe('full_backup_reason (#11027)', () => {
+  async function stampedReason(
+    ctx: { deviceId: string; configId: string; dispatchJobId: string },
+    providerConfig: Record<string, unknown>,
+    provider = 'local',
+  ) {
+    const outcome = await withSystemDbAccessContext(() => __testOnly.stampDispatchPinAndIdentity({
+      deviceId: ctx.deviceId, configId: ctx.configId, jobId: ctx.dispatchJobId,
+      mode: 'file', provider, providerConfig,
+    }));
+    const row = await withSystemDbAccessContext(async () => {
+      const [r] = await db.select().from(backupJobs).where(eq(backupJobs.id, ctx.dispatchJobId));
+      return r!;
+    });
+    return { outcome, row };
+  }
+
+  runDb('first dispatch stamps no_prior_snapshot', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ctx = await withSystemDbAccessContext(async () => {
+      const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+      const [dispatchJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'pending' }).returning({ id: backupJobs.id });
+      return { deviceId, configId, dispatchJobId: dispatchJob!.id };
+    });
+
+    const { outcome, row } = await stampedReason(ctx, { path: `/tmp/gc-test-${unique}` });
+
+    expect(outcome.baseSnapshotId).toBe('');
+    expect(row.fullBackupReason).toBe('no_prior_snapshot');
+  });
+
+  runDb('an invalid destination prefix stamps invalid_destination_prefix', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ctx = await withSystemDbAccessContext(async () => {
+      const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+      const [dispatchJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'pending' }).returning({ id: backupJobs.id });
+      return { deviceId, configId, dispatchJobId: dispatchJob!.id };
+    });
+
+    const { outcome, row } = await stampedReason(ctx, { bucket: `b-${unique}`, region: 'us-east-1', prefix: 'msp//acme' }, 's3');
+
+    expect(outcome.baseSnapshotId).toBe('');
+    expect(row.fullBackupReason).toBe('invalid_destination_prefix');
+  });
+
+  runDb('dispatch with an eligible base leaves it NULL', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const identity = `local::/tmp/gc-test-${unique}`;
+    const ctx = await withSystemDbAccessContext(async () => {
+      const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+      const [baseJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+      await db.insert(backupSnapshots).values({
+        orgId, jobId: baseJob!.id, deviceId, configId,
+        snapshotId: `reason-base-${unique}`, backupType: 'file', storageIdentity: identity,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      });
+      // A reason left by an earlier dispatch of the same job must not survive
+      // a later dispatch that found a base.
+      const [dispatchJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'pending', fullBackupReason: 'no_prior_snapshot' }).returning({ id: backupJobs.id });
+      return { deviceId, configId, dispatchJobId: dispatchJob!.id };
+    });
+
+    const { outcome, row } = await stampedReason(ctx, { path: `/tmp/gc-test-${unique}` });
+
+    expect(outcome.baseSnapshotId).toBe(`reason-base-${unique}`);
+    expect(row.baseSnapshotId).toBe(`reason-base-${unique}`);
+    expect(row.fullBackupReason).toBeNull();
+  });
+
+  runDb('key-root change stamps key_root_changed', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const identity = `local::/tmp/gc-test-${unique}`;
+    const ctx = await withSystemDbAccessContext(async () => {
+      const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+      const [baseJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+      // Same device, config and destination, recorded under another prefix.
+      await db.insert(backupSnapshots).values({
+        orgId, jobId: baseJob!.id, deviceId, configId,
+        snapshotId: `reason-root-${unique}`, backupType: 'file', storageIdentity: identity,
+        keyLayout: 'prefixed_flat', keyPrefix: 'msp/old',
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      });
+      const [dispatchJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'pending' }).returning({ id: backupJobs.id });
+      return { deviceId, configId, dispatchJobId: dispatchJob!.id };
+    });
+
+    const { outcome, row } = await stampedReason(ctx, { path: `/tmp/gc-test-${unique}` });
+
+    expect(outcome.baseSnapshotId).toBe('');
+    expect(row.fullBackupReason).toBe('key_root_changed');
+  });
+
+  // A helper that verifies its base is only handed an attested one. The
+  // transaction stamps no_verified_base; the probe after commit then says why
+  // more precisely when it can.
+  async function seedAttestedHelper(unique: string, snapshot?: Record<string, unknown>) {
+    return withSystemDbAccessContext(async () => {
+      const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+      await db.update(devices).set({ backupIntegrityProtocolVersion: 1 }).where(eq(devices.id, deviceId));
+      if (snapshot) {
+        const [baseJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+        await db.insert(backupSnapshots).values({
+          orgId, jobId: baseJob!.id, deviceId, configId,
+          snapshotId: `reason-attest-${unique}`, backupType: 'file', storageIdentity: `local::/tmp/gc-test-${unique}`,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          ...snapshot,
+        });
+      }
+      const [dispatchJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'pending' }).returning({ id: backupJobs.id });
+      return { deviceId, configId, dispatchJobId: dispatchJob!.id };
+    });
+  }
+
+  runDb('a verifying helper with no earlier backup at all stamps no_prior_snapshot', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ctx = await seedAttestedHelper(unique);
+
+    const { row } = await stampedReason(ctx, { path: `/tmp/gc-test-${unique}` });
+
+    expect(row.fullBackupReason).toBe('no_prior_snapshot');
+  });
+
+  runDb('a verifying helper whose only candidate is unattested stamps no_verified_base', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ctx = await seedAttestedHelper(unique, {});
+
+    const { outcome, row } = await stampedReason(ctx, { path: `/tmp/gc-test-${unique}` });
+
+    expect(outcome.baseSnapshotId).toBe('');
+    expect(row.fullBackupReason).toBe('no_verified_base');
+  });
+
+  runDb('a verifying helper after a prefix change stamps key_root_changed', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ctx = await seedAttestedHelper(unique, { keyLayout: 'prefixed_flat', keyPrefix: 'msp/old' });
+
+    const { row } = await stampedReason(ctx, { path: `/tmp/gc-test-${unique}` });
+
+    expect(row.fullBackupReason).toBe('key_root_changed');
   });
 });

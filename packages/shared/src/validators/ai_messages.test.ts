@@ -17,6 +17,11 @@ const VALID_UUID = '550e8400-e29b-41d4-a716-446655440000';
 // ============================================
 
 describe('aiPageContextSchema', () => {
+  it("#11673: a device context's web-only displayName is accepted and stripped, never reaching the API", () => {
+    const parsed = aiPageContextSchema.parse({ type: 'device', id: VALID_UUID, hostname: 'nw-42eccf-00001', displayName: 'NW-XRAY-WS' });
+    expect(parsed).toEqual({ type: 'device', id: VALID_UUID, hostname: 'nw-42eccf-00001' });
+  });
+
   it('accepts a ticket record', () => {
     const context = {
       type: 'record', kind: 'ticket', id: VALID_UUID,
@@ -296,6 +301,15 @@ describe('sendAiMessageSchema', () => {
       },
     });
     expect(result.success).toBe(true);
+  });
+
+  it('accepts a boolean retry flag (#9428)', () => {
+    expect(sendAiMessageSchema.parse({ content: 'x', retry: true })).toMatchObject({ retry: true });
+    expect(sendAiMessageSchema.parse({ content: 'x' }).retry).toBeUndefined();
+  });
+
+  it('rejects a non-boolean retry flag (#9428)', () => {
+    expect(sendAiMessageSchema.safeParse({ content: 'x', retry: 'yes' }).success).toBe(false);
   });
 
   it('should reject empty content', () => {

@@ -41,7 +41,8 @@ type ReportType =
   | GeneratableReportType
   | 'threat_detection_review'
   | 'vulnerability_management'
-  | 'identity_access_review';
+  | 'identity_access_review'
+  | 'ticket_sla_performance';
 
 /**
  * Types that must never render in a customer's portal even if a row for one

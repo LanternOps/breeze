@@ -66,7 +66,7 @@ BREEZE_WORKSPACE_ENABLED=true
 
 Workspace's migrations run `CREATE EXTENSION vector` on boot, so the database
 must be a `pgvector`-capable Postgres. The `POSTGRES_IMAGE_REF` that Breeze
-ships by default (`pgvector/pgvector:pg16`) already includes it; if you supply
+ships by default (`pgvector/pgvector:pg16`) and its pg17/pg18 variants already include it; if you supply
 your own Postgres image, provide `pgvector` before setting the flag or the API
 will fail to start with `extension "vector" is not available`. See
 [Production deployment](/deploy/production/) for the database details,

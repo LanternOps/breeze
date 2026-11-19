@@ -5,6 +5,40 @@ export interface CancelSubscriptionResult {
   immediate: boolean;
 }
 
+/**
+ * Outcome of asking breeze-billing to close a restricted partner's open
+ * checkouts: expire every open Checkout Session for the partner's customer,
+ * then cancel any `incomplete` subscription. Sessions first: deleting a
+ * subscription is refused while a session for it is still open (seen in the
+ * manual abuse sweeps that did this by hand; see #11307).
+ *
+ * - `closed` — the billing service answered; the lists say what it closed and
+ *   are empty when nothing was open (the call is idempotent).
+ * - `unavailable` — 404: the billing service does not expose the endpoint
+ *   (not deployed yet, or an older billing build). Nothing was closed. The
+ *   endpoint's own `unknown_partner` 404 is `failed`, not this.
+ * - `failed` — any other error, including a timeout or a malformed body.
+ *   Nothing is known to have been closed.
+ *
+ * The closeOpenCheckouts method never throws: the caller records the outcome
+ * on the restriction's audit trail, and a billing problem must never undo or
+ * block a restriction.
+ */
+export type CloseOpenCheckoutsResult =
+  | { status: 'closed'; expiredCheckoutSessionIds: string[]; canceledSubscriptionIds: string[] }
+  | { status: 'unavailable' | 'failed'; detail: string };
+
+/**
+ * Bound on the close-checkouts call. It runs synchronously inside
+ * restrictOnHardDeny, whose callers (the trust promote loop, the ip-classify
+ * job, the abuse sweep) process partners one at a time, so a hung billing
+ * service would otherwise stall a whole batch.
+ */
+const CLOSE_CHECKOUTS_TIMEOUT_MS = 10_000;
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((v) => typeof v === 'string');
+
 export interface SettledCardCharge {
   chargeId: string;
   settledAt: Date;
@@ -70,6 +104,79 @@ export function deriveSignupRiskHoldStatus(holds: SignupRiskHoldRow[]): SignupRi
   return 'none';
 }
 
+/**
+ * A billing fraud flag (breeze-billing `GET /internal/fraud-flags/pending`):
+ * billing's verdict that a partner must be restricted. Core does not interpret
+ * it; `kind` and `restrictReason` are opaque tokens recorded on the ledger and
+ * the trust audit row.
+ */
+export interface BillingFraudFlag {
+  id: string;
+  partnerId: string;
+  kind: string;
+  restrictReason: string;
+  stripeObjectId: string;
+  stripeChargeId: string | null;
+  flaggedAt: Date | null;
+}
+
+/** A pending flag core could not parse. It is left pending (never consumed). */
+export interface MalformedBillingFraudFlag {
+  id: string | null;
+  problem: string;
+}
+
+export type ConsumeFraudFlagResult = 'consumed' | 'already_consumed';
+
+/** Bound on each fraud-flag feed call: the sweep must never hang its queue. */
+const FRAUD_FLAG_TIMEOUT_MS = 10_000;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const FLAG_KIND_RE = /^[a-z][a-z0-9_]{0,63}$/;
+const RESTRICT_REASON_RE = /^auto:[a-z0-9_]{1,59}$/;
+
+function billingAuthHeaders(json: boolean): Record<string, string> {
+  const headers: Record<string, string> = json ? { 'content-type': 'application/json' } : {};
+  const billingKey = process.env.BREEZE_BILLING_API_KEY;
+  if (billingKey) headers.Authorization = `Bearer ${billingKey}`;
+  return headers;
+}
+
+/**
+ * Validates one feed entry. Returns the parsed flag, or the first field that
+ * failed. Every field is untrusted JSON from another service.
+ */
+export function parseBillingFraudFlag(raw: unknown): BillingFraudFlag | MalformedBillingFraudFlag {
+  if (!raw || typeof raw !== 'object') return { id: null, problem: 'not_an_object' };
+  const r = raw as Record<string, unknown>;
+  const id = typeof r.id === 'string' && UUID_RE.test(r.id) ? r.id.toLowerCase() : null;
+  if (!id) return { id: null, problem: 'id' };
+  if (typeof r.partnerId !== 'string' || !UUID_RE.test(r.partnerId)) return { id, problem: 'partnerId' };
+  if (typeof r.kind !== 'string' || !FLAG_KIND_RE.test(r.kind)) return { id, problem: 'kind' };
+  if (typeof r.restrictReason !== 'string' || !RESTRICT_REASON_RE.test(r.restrictReason)) {
+    return { id, problem: 'restrictReason' };
+  }
+  if (typeof r.stripeObjectId !== 'string' || r.stripeObjectId.trim() === '' || r.stripeObjectId.length > 255) {
+    return { id, problem: 'stripeObjectId' };
+  }
+  const chargeId = typeof r.stripeChargeId === 'string' && r.stripeChargeId.length > 0 && r.stripeChargeId.length <= 255
+    ? r.stripeChargeId
+    : null;
+  const flaggedAt = typeof r.flaggedAt === 'string' ? new Date(r.flaggedAt) : null;
+  return {
+    id,
+    partnerId: r.partnerId.toLowerCase(),
+    kind: r.kind,
+    restrictReason: r.restrictReason,
+    stripeObjectId: r.stripeObjectId,
+    stripeChargeId: chargeId,
+    flaggedAt: flaggedAt && !Number.isNaN(flaggedAt.getTime()) ? flaggedAt : null,
+  };
+}
+
+function isMalformed(v: BillingFraudFlag | MalformedBillingFraudFlag): v is MalformedBillingFraudFlag {
+  return 'problem' in v;
+}
+
 export interface BreezeBillingClient {
   createSetupIntent(input: {
     partnerId: string;
@@ -90,6 +197,30 @@ export interface BreezeBillingClient {
   getSettledCardCharge(partnerId: string): Promise<SettledCardCharge | null>;
   getSignupRiskHold(partnerId: string): Promise<SignupRiskHold | null>;
   hasFraudulentRefundMatch(partnerId: string): Promise<boolean>;
+
+  /**
+   * Expire a restricted partner's open Checkout Sessions and cancel its
+   * `incomplete` subscriptions, via breeze-billing's service-to-service
+   * `POST /internal/partners/:partnerId/close-open-checkouts`. Never throws;
+   * see CloseOpenCheckoutsResult.
+   */
+  closeOpenCheckouts(input: { partnerId: string; reason: string }): Promise<CloseOpenCheckoutsResult>;
+
+  /**
+   * Unconsumed billing fraud flags, oldest first. THROWS (BillingError
+   * BILLING_UNAVAILABLE) on any failure, including a 404 and a body without a
+   * `flags` array: an unreadable feed must never read as "nothing to restrict".
+   * Entries that fail validation come back in `malformed`, not in `flags`.
+   */
+  listPendingFraudFlags(limit: number): Promise<{ flags: BillingFraudFlag[]; malformed: MalformedBillingFraudFlag[] }>;
+
+  /**
+   * Marks a flag consumed with a terminal outcome. Once-only on the billing
+   * side: a second consume answers `already_consumed`. Throws on anything
+   * else: FRAUD_FLAG_REJECTED for a 4xx (this flag only), otherwise
+   * BILLING_UNAVAILABLE.
+   */
+  consumeFraudFlag(id: string, outcome: string): Promise<ConsumeFraudFlagResult>;
 }
 
 export class BillingError extends Error {
@@ -237,6 +368,111 @@ export function createBreezeBillingClient(opts: {
         );
         return null;
       }
+    },
+
+    async closeOpenCheckouts({ partnerId, reason }) {
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      const billingKey = process.env.BREEZE_BILLING_API_KEY;
+      if (billingKey) headers.Authorization = `Bearer ${billingKey}`;
+      const url = `${opts.baseUrl}/internal/partners/${encodeURIComponent(partnerId)}/close-open-checkouts`;
+      try {
+        const res = await doFetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ reason }),
+          signal: AbortSignal.timeout(CLOSE_CHECKOUTS_TIMEOUT_MS),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          const detail = `Billing service returned ${res.status}: ${body.slice(0, 200)}`;
+          // The endpoint's own 404 (`unknown_partner`: billing has no record of
+          // this partner) is a fault, not a missing deployment (#11952).
+          if (res.status === 404 && !/"error"\s*:\s*"unknown_partner"/.test(body)) {
+            console.warn(`[breezeBillingClient] close-open-checkouts unavailable for partner ${partnerId}: 404`);
+            return { status: 'unavailable', detail };
+          }
+          return { status: 'failed', detail };
+        }
+        const body = await res.json().catch(() => null) as
+          { expiredCheckoutSessionIds?: unknown; canceledSubscriptionIds?: unknown } | null;
+        if (
+          !body || typeof body !== 'object'
+          || !isStringArray(body.expiredCheckoutSessionIds)
+          || !isStringArray(body.canceledSubscriptionIds)
+        ) {
+          return { status: 'failed', detail: 'malformed response from billing service' };
+        }
+        return {
+          status: 'closed',
+          expiredCheckoutSessionIds: body.expiredCheckoutSessionIds,
+          canceledSubscriptionIds: body.canceledSubscriptionIds,
+        };
+      } catch (error) {
+        console.warn(`[breezeBillingClient] close-open-checkouts request failed for partner ${partnerId}`, error);
+        return { status: 'failed', detail: error instanceof Error ? error.message : String(error) };
+      }
+    },
+
+    async listPendingFraudFlags(limit) {
+      const url = `${opts.baseUrl}/internal/fraud-flags/pending?limit=${encodeURIComponent(String(limit))}`;
+      let res: Response;
+      try {
+        res = await doFetch(url, {
+          method: 'GET',
+          headers: billingAuthHeaders(false),
+          signal: AbortSignal.timeout(FRAUD_FLAG_TIMEOUT_MS),
+        });
+      } catch (error) {
+        throw new BillingError(
+          'BILLING_UNAVAILABLE',
+          `fraud-flag feed request failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new BillingError('BILLING_UNAVAILABLE', `Billing service returned ${res.status}: ${body.slice(0, 200)}`);
+      }
+      const body = await res.json().catch(() => null) as { flags?: unknown } | null;
+      if (!body || typeof body !== 'object' || !Array.isArray(body.flags)) {
+        throw new BillingError('BILLING_UNAVAILABLE', 'malformed fraud-flag feed from billing service');
+      }
+      const flags: BillingFraudFlag[] = [];
+      const malformed: MalformedBillingFraudFlag[] = [];
+      for (const raw of body.flags) {
+        const parsed = parseBillingFraudFlag(raw);
+        if (isMalformed(parsed)) malformed.push(parsed);
+        else flags.push(parsed);
+      }
+      return { flags, malformed };
+    },
+
+    async consumeFraudFlag(id, outcome) {
+      const url = `${opts.baseUrl}/internal/fraud-flags/${encodeURIComponent(id)}/consume`;
+      let res: Response;
+      try {
+        res = await doFetch(url, {
+          method: 'POST',
+          headers: billingAuthHeaders(true),
+          body: JSON.stringify({ outcome }),
+          signal: AbortSignal.timeout(FRAUD_FLAG_TIMEOUT_MS),
+        });
+      } catch (error) {
+        throw new BillingError(
+          'BILLING_UNAVAILABLE',
+          `fraud-flag consume request failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        // A 4xx is billing refusing THIS flag (unknown id, bad outcome) while
+        // up; the caller skips just this flag. 5xx means billing is down.
+        const code = res.status >= 400 && res.status < 500 ? 'FRAUD_FLAG_REJECTED' : 'BILLING_UNAVAILABLE';
+        throw new BillingError(code, `Billing service returned ${res.status}: ${body.slice(0, 200)}`);
+      }
+      const body = await res.json().catch(() => null) as { consumed?: unknown; alreadyConsumed?: unknown } | null;
+      if (body?.consumed === true) return 'consumed';
+      if (body?.consumed === false && body.alreadyConsumed === true) return 'already_consumed';
+      throw new BillingError('BILLING_UNAVAILABLE', 'malformed fraud-flag consume response from billing service');
     },
 
     async hasFraudulentRefundMatch(partnerId) {

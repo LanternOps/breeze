@@ -6,6 +6,13 @@
 import type { GrantCeiling } from './grantAuthority';
 
 /**
+ * w00 A33: onboarding assesses at most this many orgs at once; the rest reach
+ * the floor tick. Lives here (pure) so the chat seed (#10391) can state it
+ * without importing the wake queue; wake.ts re-exports it.
+ */
+export const ONBOARDING_ORG_LIMIT = 10;
+
+/**
  * The ceiling orgs an assessment may run in: those the grant reaches WHOLE.
  * The digest reads are org-wide (alerts, tickets, incidents, runs, intents of
  * the org), so an org the grantor reaches only through a site restriction —

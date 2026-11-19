@@ -56,7 +56,7 @@ export interface BilledUsage {
 }
 
 export interface TurnOutcome {
-  stopReason: string;              // 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' | 'error' | provider value
+  stopReason: string;              // 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' | 'error' | 'context_window_exceeded' | 'refused_tool_batch' | provider value
   refused: boolean;                // the FINAL answer is a refusal (after any fallback)
   refusalCategory: string | null;
   fallbackUsed: boolean;           // the main loop ended on a model other than binding.wireModel
@@ -86,10 +86,25 @@ export interface SdkTurnObservation {
   providerFailure: { cause: ProviderFailureCause; status: number | null; retries: number; terminal: boolean } | null;
   /** W09: assistant content (text / thinking / tool_use) was produced this turn: never fail over after it. */
   sawOutput: boolean;
+  /** #10577: the model gateway refused a request of this turn because its prompt does not fit the model's context window. */
+  contextWindowExceeded: boolean;
+  /**
+   * W04 (#11397): the model gateway refused a tool-call batch of this turn it
+   * could not verify (the model saw a fixed note instead). The log-safe
+   * description (names only, never arguments) is logged by the session
+   * manager; settlement reads only whether it is set. null = none refused.
+   * Set only on StreamingSessionManager turns (agent runs do not read the
+   * gateway's notes yet), and lost if a later uncoded gateway failure note
+   * of the same turn replaces it.
+   */
+  refusedToolBatch: string | null;
 }
 
 export function newSdkTurnObservation(): SdkTurnObservation {
-  return { refusalFallback: null, refusalNoFallback: null, fastNotOnSeen: false, providerFailure: null, sawOutput: false };
+  return {
+    refusalFallback: null, refusalNoFallback: null, fastNotOnSeen: false, providerFailure: null, sawOutput: false,
+    contextWindowExceeded: false, refusedToolBatch: null,
+  };
 }
 
 const OUTPUT_BLOCKS = new Set(['text', 'thinking', 'redacted_thinking', 'tool_use', 'server_tool_use']);
@@ -216,7 +231,8 @@ export type SdkUsageNote =
   | 'first_result'        // no snapshot: result.usage billed, capped by modelUsage
   | 'snapshot_regressed'  // a component decreased (counters restarted): snapshot re-baselined to the current reading, this turn's result.usage billed capped by modelUsage, unconfirmed (Sentry: ai_usage_snapshot_regressed)
   | 'no_result'           // aborted / untrustworthy result: billed ZERO, snapshot unchanged
-  | 'empty_usage';        // the turn made no model call: nothing billed, snapshot unchanged
+  | 'empty_usage'         // the turn made no model call: nothing billed, snapshot unchanged
+  | 'context_window_exceeded'; // #10577: the prompt did not fit the model and no call was served: nothing billed, snapshot unchanged, confirmed
 
 export interface SdkTurnUsageResult {
   usage: BilledUsage[];
@@ -352,7 +368,15 @@ function sdkOutcome(binding: TurnBinding, obs: SdkTurnObservation, result: SdkRe
   // row in the ledger).
   const nothingServed = errored && !obs.sawOutput && obs.refusalFallback === null;
   const servedModel = nothingServed ? binding.wireModel : observedServed;
-  const stopReason = refused ? 'refusal' : errored ? 'error' : sdkStop ?? 'end_turn';
+  // A context-window refusal names a failed turn first (it is terminal and the
+  // more specific reason); a refused tool batch names the turn whether or not
+  // it then completed, so the quality view can count it (W04 #11397). A turn
+  // that refused a batch and then errored for another reason is therefore
+  // labelled refused_tool_batch, not error.
+  const stopReason = refused ? 'refusal'
+    : errored && obs.contextWindowExceeded ? 'context_window_exceeded'
+      : obs.refusedToolBatch !== null ? 'refused_tool_batch'
+        : errored ? 'error' : sdkStop ?? 'end_turn';
   const category = obs.refusalNoFallback?.category ?? obs.refusalFallback?.category ?? null;
   const fallbackUsed = obs.refusalFallback !== null || servedModel !== binding.wireModel;
   const cost = result?.total_cost_usd;
@@ -421,8 +445,23 @@ export function sdkTurnUsage(input: {
     usageNote: 'no_result',
   });
 
+  // #10577: the gateway knows why this turn failed and that the refused call
+  // was served by nobody. With no output seen from any other call either, an
+  // empty reading is a confirmed zero, not a gap. Output means an earlier call
+  // was served, so an empty reading stays untrusted.
+  const windowRefused = errored && obs.contextWindowExceeded && !obs.sawOutput;
+  const stoppedAtWindow = (): SdkTurnUsageResult => ({
+    usage: [],
+    outcome: sdkOutcome(binding, obs, result, binding.wireModel),
+    nextSnapshot: snapshot,
+    usageConfirmed: true,
+    usageNote: 'context_window_exceeded',
+  });
+
+  if (!result && windowRefused) return stoppedAtWindow();
   if (!result || result.startup_failure_reason !== undefined) return untrusted();
   const current = readModelUsage(result.modelUsage);
+  if (current === null && windowRefused) return stoppedAtWindow();
   if (current === null || current === 'invalid') return untrusted();
 
   const entries = Object.entries(current.models);
@@ -430,6 +469,7 @@ export function sdkTurnUsage(input: {
     // No model call recorded. An error result here is the SDK's zeroed crash
     // result; a success is a turn that never reached the model. Either way
     // nothing to bill and the snapshot must not be reset to zero.
+    if (windowRefused) return stoppedAtWindow();
     if (errored) return untrusted();
     return {
       usage: [],
@@ -470,6 +510,7 @@ export function sdkTurnUsage(input: {
         usageNote: 'snapshot_regressed',
       };
     }
+    if (windowRefused && deltas.length === 0) return stoppedAtWindow();
     // From zero every key is "new", so newness says nothing about a swap: the
     // served model is read the way a first result reads it (no newKeys).
     const newKeys = fromZero ? null : new Set(entries.map(([k]) => k).filter((k) => !Object.hasOwn(prev.models, k)));

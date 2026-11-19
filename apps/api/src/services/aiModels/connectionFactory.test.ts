@@ -53,6 +53,7 @@ import {
   dispatchCause,
   describeDispatch,
   grantCatalogSdkEgress,
+  openGatewayGrant,
   messagesModelParams,
   sdkModelOptions,
 } from './connectionFactory';
@@ -492,5 +493,44 @@ describe('gateway connections (W06 Task 9)', () => {
     await expect(grantCatalogSdkEgress(makeResolvedModel('openai_compatible'), { key: 'k', orgId: 'org-1', aiSessionId: null }))
       .resolves.toBeNull();
     expect(egress.grant).not.toHaveBeenCalled();
+  });
+
+  describe('known windows and observation targets on the grant (#11396)', () => {
+    const fallback = {
+      offeringId: 'off-fb', displayName: 'Qwen fallback', wireModel: 'qwen-fb',
+      wireParams: { betas: [], applied: {} }, options: {},
+      rateSnapshot: { source: 'offering' as const, standard: FIXTURE_STD_RATES },
+    };
+
+    it('each bound wire model carries its own known window and its own offering as the observer', async () => {
+      const grantSpy = vi.spyOn(await getModelGateway(), 'grant');
+      const resolved = makeResolvedModel('openai_compatible', {
+        contextWindow: { window: 8_192, source: 'observed' },
+        refusalFallback: { ...fallback, contextWindow: { window: 32_768, source: 'discovered' } },
+      });
+      const grant = await openGatewayGrant(resolved, { orgId: 'org-1', aiSessionId: null, purpose: 'dispatch' });
+      const input = grantSpy.mock.calls.at(-1)![0];
+      expect([...input.knownWindows!]).toEqual([
+        ['qwen2.5-coder:7b', { window: 8_192, source: 'observed' }],
+        ['qwen-fb', { window: 32_768, source: 'discovered' }],
+      ]);
+      expect([...input.observers!]).toEqual([
+        ['qwen2.5-coder:7b', { offeringId: 'off-oai', partnerId: 'partner-1' }],
+        ['qwen-fb', { offeringId: 'off-fb', partnerId: 'partner-1' }],
+      ]);
+      grant.revoke();
+    });
+
+    it('an unknown window seeds nothing; a model with no offering or partner observes nothing', async () => {
+      const grantSpy = vi.spyOn(await getModelGateway(), 'grant');
+      const resolved = makeResolvedModel('openai_compatible', {
+        partnerId: null, offering: { id: null, displayName: 'x' }, refusalFallback: fallback,
+      });
+      const grant = await openGatewayGrant(resolved, { orgId: 'org-1', aiSessionId: null, purpose: 'dispatch' });
+      const input = grantSpy.mock.calls.at(-1)![0];
+      expect([...input.knownWindows!]).toEqual([]);
+      expect([...input.observers!]).toEqual([]);
+      grant.revoke();
+    });
   });
 });

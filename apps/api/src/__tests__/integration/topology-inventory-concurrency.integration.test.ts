@@ -2,7 +2,7 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterAll, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
-import { pgErrorCode } from '@breeze/shared/pgErrors';
+import { isPgForeignKeyViolationCode, pgErrorCode } from '@breeze/shared/pgErrors';
 import { closeDb, db, withDbAccessContext } from '../../db';
 import { topologyNodes, topologyNodeBindings, topologySiteState } from '../../db/schema';
 import { publishTopologyBuild, type PublicationInput } from '../../services/topology/publish';
@@ -90,7 +90,7 @@ async function overlap(table: typeof sources[number][0], field: typeof sources[n
     // No binding existed before this first publication, so there was nothing
     // for the lifecycle hook to detach/fence. Even that stale retry cannot
     // bind the now-missing or moved inventory source under the old scope.
-    await expect(scoped(() => publishTopologyBuild(scope, input))).rejects.toSatisfy(error => pgErrorCode(error) === '23503');
+    await expect(scoped(() => publishTopologyBuild(scope, input))).rejects.toSatisfy(error => isPgForeignKeyViolationCode(pgErrorCode(error)));
     expect(await getTestDb().select().from(topologyNodes)).toHaveLength(0);
   } finally {
     allowPublish();

@@ -8,7 +8,6 @@ import {
   deviceCommands,
   deviceDisks,
   deviceFilesystemSnapshots,
-  automationPolicies,
   cisBaselines,
   cisBaselineResults,
   cisRemediationActions,
@@ -65,6 +64,7 @@ import {
   matchesRoleOsFilter,
 } from '../../services/featureConfigResolver';
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
+import { resolveWakeOnLanSettingsForDevice } from '../../services/featureConfigResolver';
 import { hierarchyFor, type DeviceHierarchyOpts } from '../../services/deviceHierarchy';
 import { applicableCandidates, candidatesWithLink, policySetFor, type ApplicabilityRule, type DevicePolicySetOpts } from '../../services/devicePolicySet';
 import { devicePolicyCacheOrg, readDevicePolicyCache, writeDevicePolicyCache, type DevicePolicyCacheOpts } from '../../services/devicePolicyCache';
@@ -91,7 +91,6 @@ import { isUpgradeTargetServable } from '../../services/localBinaryBuild';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
 import { recordIssuedCertificateForDevice, revokeInlineAfterContextExit } from '../../services/deviceMtlsCertificateIssuance';
-import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
 import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolver';
 import { MONITOR_KIND_SPECS, applyOverrides } from '../../services/monitors/kinds';
 import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
@@ -110,9 +109,6 @@ import {
 import {
   type SecurityProviderValue,
   type SecurityStatusPayload,
-  type PolicyRegistryProbeUpdate,
-  type PolicyConfigProbeUpdate,
-  type PolicyProbeConfigUpdate,
   commandResultSchema,
   securityStatusIngestSchema,
   securityCommandTypes,
@@ -290,6 +286,11 @@ export function normalizeProvider(raw: unknown): SecurityProviderValue {
     // CylancePROTECT, rebranded Aurora Endpoint Defense (#9178).
     case 'cylance':
       return 'cylance';
+    // Trend Micro Apex One / Worry-Free / Vision One (#8171).
+    case 'trend_micro':
+    case 'trendmicro':
+    case 'trend-micro':
+      return 'trend_micro';
     case 'unknown':
       return 'unknown';
     default:
@@ -366,143 +367,18 @@ export {
 // ============================================
 // Policy Probe Processing
 // ============================================
-
-export function sortPolicyRegistryProbes(probes: PolicyRegistryProbeUpdate[]): PolicyRegistryProbeUpdate[] {
-  return [...probes].sort((left, right) => {
-    const pathCompare = left.registry_path.localeCompare(right.registry_path);
-    if (pathCompare !== 0) return pathCompare;
-    return left.value_name.localeCompare(right.value_name);
-  });
-}
-
-export function sortPolicyConfigProbes(probes: PolicyConfigProbeUpdate[]): PolicyConfigProbeUpdate[] {
-  return [...probes].sort((left, right) => {
-    const pathCompare = left.file_path.localeCompare(right.file_path);
-    if (pathCompare !== 0) return pathCompare;
-    return left.config_key.localeCompare(right.config_key);
-  });
-}
-
-export function derivePolicyStateProbesFromRules(rules: unknown): {
-  registry: PolicyRegistryProbeUpdate[];
-  config: PolicyConfigProbeUpdate[];
-} {
-  if (!Array.isArray(rules)) {
-    return { registry: [], config: [] };
-  }
-
-  const registryProbes = new Map<string, PolicyRegistryProbeUpdate>();
-  const configProbes = new Map<string, PolicyConfigProbeUpdate>();
-
-  for (const rawRule of rules) {
-    if (!isObject(rawRule)) {
-      continue;
-    }
-
-    const type = readTrimmedString(rawRule.type ?? rawRule.name)?.toLowerCase();
-    if (type === 'registry_check') {
-      const registryPath = readTrimmedString(rawRule.registryPath ?? rawRule.registry_path);
-      const valueName = readTrimmedString(rawRule.registryValueName ?? rawRule.registry_value_name);
-      if (!registryPath || !valueName) {
-        continue;
-      }
-
-      const dedupeKey = `${registryPath.toLowerCase()}::${valueName.toLowerCase()}`;
-      if (!registryProbes.has(dedupeKey)) {
-        registryProbes.set(dedupeKey, {
-          registry_path: registryPath,
-          value_name: valueName
-        });
-      }
-      continue;
-    }
-
-    if (type === 'config_check') {
-      const filePath = readTrimmedString(rawRule.configFilePath ?? rawRule.config_file_path);
-      const configKey = readTrimmedString(rawRule.configKey ?? rawRule.config_key);
-      if (!filePath || !configKey || !isAllowedPolicyConfigProbe(filePath, configKey)) {
-        continue;
-      }
-
-      const dedupeKey = `${filePath.toLowerCase()}::${configKey.toLowerCase()}`;
-      if (!configProbes.has(dedupeKey)) {
-        configProbes.set(dedupeKey, {
-          file_path: filePath,
-          config_key: configKey
-        });
-      }
-    }
-  }
-
-  return {
-    registry: sortPolicyRegistryProbes(Array.from(registryProbes.values())),
-    config: sortPolicyConfigProbes(Array.from(configProbes.values()))
-  };
-}
-
-export async function buildPolicyProbeConfigUpdate(
-  orgId: string | null | undefined,
-  // #8053 W1a-1: the heartbeat passes the org's partner from the hierarchy it
-  // loaded. `undefined` = read it here, as before; `null` = no partner.
-  opts?: { partnerId?: string | null },
-): Promise<PolicyProbeConfigUpdate | null> {
-  if (!orgId) {
-    return null;
-  }
-
-  // Dual-ownership (#2129): the device's probe list must also cover
-  // partner-wide compliance policies (org_id NULL) owned by this org's
-  // partner — the evaluation worker fans those out to this device, so the
-  // agent has to collect their registry/config state too.
-  const partnerId = opts?.partnerId !== undefined
-    ? opts.partnerId
-    : (await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, orgId))
-      .limit(1))[0]?.partnerId ?? null;
-
-  const ownershipCondition = partnerId
-    ? or(
-        eq(automationPolicies.orgId, orgId),
-        and(isNull(automationPolicies.orgId), eq(automationPolicies.partnerId, partnerId))
-      )
-    : eq(automationPolicies.orgId, orgId);
-
-  const policyRows = await db
-    .select({ rules: automationPolicies.rules })
-    .from(automationPolicies)
-    .where(
-      and(
-        ownershipCondition,
-        eq(automationPolicies.enabled, true)
-      )
-    );
-
-  const registryByKey = new Map<string, PolicyRegistryProbeUpdate>();
-  const configByKey = new Map<string, PolicyConfigProbeUpdate>();
-
-  for (const row of policyRows) {
-    const probes = derivePolicyStateProbesFromRules(row.rules);
-    for (const probe of probes.registry) {
-      const key = `${probe.registry_path.toLowerCase()}::${probe.value_name.toLowerCase()}`;
-      if (!registryByKey.has(key)) {
-        registryByKey.set(key, probe);
-      }
-    }
-    for (const probe of probes.config) {
-      const key = `${probe.file_path.toLowerCase()}::${probe.config_key.toLowerCase()}`;
-      if (!configByKey.has(key)) {
-        configByKey.set(key, probe);
-      }
-    }
-  }
-
-  return {
-    policy_registry_state_probes: sortPolicyRegistryProbes(Array.from(registryByKey.values())),
-    policy_config_state_probes: sortPolicyConfigProbes(Array.from(configByKey.values()))
-  };
-}
+//
+// Moved to services/policyStateProbes.ts (#12130) so compliance evaluation can
+// ask whether a rule's value is collected without importing this module.
+// Re-exported here: every existing import site (and the suites that mock
+// `./helpers`) keeps working.
+export {
+  sortPolicyRegistryProbes,
+  sortPolicyConfigProbes,
+  derivePolicyStateProbesFromRules,
+  buildPolicyProbeConfigUpdate,
+  MAX_POLICY_STATE_PROBES_PER_ORG,
+} from '../../services/policyStateProbes';
 
 // ============================================
 // Security Operations
@@ -3799,6 +3675,28 @@ export interface WarrantySettings {
 export async function buildWarrantyConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<WarrantySettings> {
   const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId, opts);
   return { hpCmslEnabled: warrantyHpCmslCollectionEffective(inlineSettings) };
+}
+
+// ============================================
+// Wake-on-LAN readiness collection config (#10838 W02)
+// ============================================
+
+export interface WakeOnLanConfigUpdate {
+  enabled: boolean;
+  configureSettings: false;
+  firmwareWrites: string[];
+}
+
+/**
+ * `enabled` = a wake_on_lan link resolves for the device, which tells the
+ * agent to collect and upload its read-only readiness snapshot. Writes are off
+ * until W06, so configureSettings is always false and firmwareWrites is empty.
+ * Deliberately does NOT catch: the heartbeat omits the block on a resolver
+ * error so a transient failure never stops collection.
+ */
+export async function buildWakeOnLanConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<WakeOnLanConfigUpdate> {
+  const settings = await resolveWakeOnLanSettingsForDevice(deviceId, opts);
+  return { enabled: settings !== null, configureSettings: false, firmwareWrites: [] };
 }
 
 // ============================================

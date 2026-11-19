@@ -3,6 +3,7 @@
 package systemstate
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -28,20 +29,16 @@ func newCollector(_ CollectOptions) Collector {
 }
 
 // CollectState gathers all Linux system state artifacts into stagingDir.
-func (c *LinuxCollector) CollectState(stagingDir string) (*SystemStateManifest, error) {
+func (c *LinuxCollector) CollectState(ctx context.Context, stagingDir string) (*SystemStateManifest, error) {
 	hostname, _ := os.Hostname()
 	manifest := &SystemStateManifest{
 		Platform:    runtime.GOOS,
-		OSVersion:   linuxVersion(),
+		OSVersion:   osVersion(ctx, "linux", linuxVersion),
 		Hostname:    hostname,
 		CollectedAt: time.Now().UTC(),
 	}
 
-	type step struct {
-		name string
-		fn   func(string) ([]Artifact, error)
-	}
-	steps := []step{
+	steps := []collectionStep{
 		{"etc", c.collectEtc},
 		{"boot", c.collectBootConfig},
 		{"packages", c.collectPackages},
@@ -50,25 +47,11 @@ func (c *LinuxCollector) CollectState(stagingDir string) (*SystemStateManifest, 
 		{"crontabs", c.collectCrontabs},
 	}
 
-	for _, s := range steps {
-		arts, err := s.fn(stagingDir)
-		if err != nil {
-			slog.Warn("systemstate: step failed", "step", s.name, "error", err.Error())
-			continue
-		}
-		manifest.Artifacts = append(manifest.Artifacts, arts...)
+	if err := runBestEffortSteps(ctx, manifest, steps, stagingDir); err != nil {
+		return manifest, err
 	}
 
-	if len(manifest.Artifacts) == 0 {
-		return manifest, fmt.Errorf("system state collection produced no artifacts - all %d steps failed", len(steps))
-	}
-
-	hw, err := c.CollectHardwareProfile()
-	if err != nil {
-		slog.Warn("systemstate: hardware profile failed", "error", err.Error())
-	} else {
-		manifest.HardwareProfile = hw
-	}
+	attachHardwareProfile(ctx, manifest, c.CollectHardwareProfile)
 
 	return manifest, nil
 }
@@ -77,19 +60,19 @@ func (c *LinuxCollector) CollectState(stagingDir string) (*SystemStateManifest, 
 // /etc/ tree
 // ---------------------------------------------------------------------------
 
-func (c *LinuxCollector) collectEtc(stagingDir string) ([]Artifact, error) {
+func (c *LinuxCollector) collectEtc(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	dst := filepath.Join(stagingDir, "etc")
-	if err := copyTree("/etc", dst); err != nil {
+	if err := copyTree(ctx, "/etc", dst); err != nil {
 		return nil, fmt.Errorf("copy /etc: %w", err)
 	}
-	return collectArtifactsInDir("etc_tree", dst, stagingDir)
+	return collectArtifactsInDir(ctx, "etc_tree", dst, stagingDir)
 }
 
 // ---------------------------------------------------------------------------
 // Boot config (GRUB)
 // ---------------------------------------------------------------------------
 
-func (c *LinuxCollector) collectBootConfig(stagingDir string) ([]Artifact, error) {
+func (c *LinuxCollector) collectBootConfig(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	dir := filepath.Join(stagingDir, "boot")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -106,7 +89,7 @@ func (c *LinuxCollector) collectBootConfig(stagingDir string) ([]Artifact, error
 			continue
 		}
 		dst := filepath.Join(dir, filepath.Base(src))
-		if err := copyFile(src, dst); err != nil {
+		if err := copyFile(ctx, src, dst); err != nil {
 			slog.Warn("systemstate: copy boot config failed", "src", src, "error", err.Error())
 			continue
 		}
@@ -120,7 +103,7 @@ func (c *LinuxCollector) collectBootConfig(stagingDir string) ([]Artifact, error
 // Package list (dpkg or rpm)
 // ---------------------------------------------------------------------------
 
-func (c *LinuxCollector) collectPackages(stagingDir string) ([]Artifact, error) {
+func (c *LinuxCollector) collectPackages(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	dir := filepath.Join(stagingDir, "packages")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -131,7 +114,7 @@ func (c *LinuxCollector) collectPackages(stagingDir string) ([]Artifact, error) 
 	// Try dpkg first (Debian/Ubuntu).
 	if _, err := exec.LookPath("dpkg"); err == nil {
 		outPath := filepath.Join(dir, "dpkg.txt")
-		cmd := exec.Command("dpkg", "--get-selections")
+		cmd := collectorCommand(ctx, "dpkg", "--get-selections")
 		data, err := cmd.Output()
 		if err == nil {
 			if wErr := os.WriteFile(outPath, data, 0o600); wErr == nil {
@@ -143,7 +126,7 @@ func (c *LinuxCollector) collectPackages(stagingDir string) ([]Artifact, error) 
 	// Try rpm (RHEL/CentOS/Fedora).
 	if _, err := exec.LookPath("rpm"); err == nil {
 		outPath := filepath.Join(dir, "rpm.txt")
-		cmd := exec.Command("rpm", "-qa")
+		cmd := collectorCommand(ctx, "rpm", "-qa")
 		data, err := cmd.Output()
 		if err == nil {
 			if wErr := os.WriteFile(outPath, data, 0o600); wErr == nil {
@@ -159,14 +142,14 @@ func (c *LinuxCollector) collectPackages(stagingDir string) ([]Artifact, error) 
 // Systemd services
 // ---------------------------------------------------------------------------
 
-func (c *LinuxCollector) collectServices(stagingDir string) ([]Artifact, error) {
+func (c *LinuxCollector) collectServices(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	dir := filepath.Join(stagingDir, "services")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 
 	outPath := filepath.Join(dir, "systemd.txt")
-	cmd := exec.Command("systemctl", "list-unit-files", "--type=service")
+	cmd := collectorCommand(ctx, "systemctl", "list-unit-files", "--type=service")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("systemctl list-unit-files: %w", err)
@@ -181,7 +164,7 @@ func (c *LinuxCollector) collectServices(stagingDir string) ([]Artifact, error) 
 // Firewall rules (iptables)
 // ---------------------------------------------------------------------------
 
-func (c *LinuxCollector) collectFirewall(stagingDir string) ([]Artifact, error) {
+func (c *LinuxCollector) collectFirewall(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	if _, err := exec.LookPath("iptables-save"); err != nil {
 		slog.Info("systemstate: iptables-save not found, skipping firewall")
 		return nil, nil
@@ -193,7 +176,7 @@ func (c *LinuxCollector) collectFirewall(stagingDir string) ([]Artifact, error) 
 	}
 
 	outPath := filepath.Join(dir, "iptables.rules")
-	cmd := exec.Command("iptables-save")
+	cmd := collectorCommand(ctx, "iptables-save")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("iptables-save: %w", err)
@@ -208,7 +191,7 @@ func (c *LinuxCollector) collectFirewall(stagingDir string) ([]Artifact, error) 
 // Crontabs
 // ---------------------------------------------------------------------------
 
-func (c *LinuxCollector) collectCrontabs(stagingDir string) ([]Artifact, error) {
+func (c *LinuxCollector) collectCrontabs(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	dir := filepath.Join(stagingDir, "crontabs")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -220,7 +203,7 @@ func (c *LinuxCollector) collectCrontabs(stagingDir string) ([]Artifact, error) 
 	src := "/etc/crontab"
 	if _, err := os.Stat(src); err == nil {
 		dst := filepath.Join(dir, "crontab")
-		if err := copyFile(src, dst); err == nil {
+		if err := copyFile(ctx, src, dst); err == nil {
 			artifacts = append(artifacts, artifactFromFile("etc_crontab", "config", dst, stagingDir))
 		}
 	}
@@ -229,8 +212,8 @@ func (c *LinuxCollector) collectCrontabs(stagingDir string) ([]Artifact, error) 
 	spoolDir := "/var/spool/cron"
 	if _, err := os.Stat(spoolDir); err == nil {
 		dst := filepath.Join(dir, "spool")
-		if err := copyTree(spoolDir, dst); err == nil {
-			arts, _ := collectArtifactsInDir("cron_spool", dst, stagingDir)
+		if err := copyTree(ctx, spoolDir, dst); err == nil {
+			arts, _ := collectArtifactsInDir(ctx, "cron_spool", dst, stagingDir)
 			artifacts = append(artifacts, arts...)
 		}
 	}
@@ -242,7 +225,7 @@ func (c *LinuxCollector) collectCrontabs(stagingDir string) ([]Artifact, error) 
 // Linux version helper
 // ---------------------------------------------------------------------------
 
-func linuxVersion() string {
+func linuxVersion(ctx context.Context) string {
 	// Try /etc/os-release first.
 	data, err := os.ReadFile("/etc/os-release")
 	if err == nil {
@@ -254,7 +237,7 @@ func linuxVersion() string {
 		}
 	}
 	// Fallback to kernel version.
-	out, err := exec.Command("uname", "-r").Output()
+	out, err := collectorCommand(ctx, "uname", "-r").Output()
 	if err != nil {
 		return "linux"
 	}

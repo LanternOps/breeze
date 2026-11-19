@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ExternalBackupCard from './ExternalBackupCard';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
@@ -14,14 +15,19 @@ const toastMock = vi.mocked(showToast);
 const res = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({ ok, status, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
+const RECENT = new Date(Date.now() - 3_600_000).toISOString();
+
 const providerRow = (o: Record<string, unknown> = {}) => ({
   id: 'row-1', provider: 'cove', orgId: 'org-1',
   vendorDeviceName: 'ACME-SRV01', computerName: 'srv01', customerName: 'Acme North',
   status: 'completed', health: 'healthy',
-  lastSuccessAt: '2026-09-15T01:00:00.000Z', lastSessionAt: '2026-09-15T01:00:00.000Z',
+  // Relative to the wall clock: the card judges recency against "now", and a
+  // fixed old date would read as overdue (#12025).
+  lastSuccessAt: RECENT, lastSessionAt: RECENT,
   selectedBytes: 2048, usedBytes: 4096, errorsCount: 0, dataSources: ['files', 'mssql'],
   breezeDeviceId: 'device-1',
   history28d: [{ day: '2026-09-15', status: 'completed' }],
+  verifiedBootableAt: null, verifiedBootable: null, verifiedBootableFailedChecks: null,
   ...o,
 });
 
@@ -48,6 +54,16 @@ describe('ExternalBackupCard', () => {
     expect(screen.getByTestId('external-backup-selected').textContent).toContain('2.00 KB');
     expect(screen.getByTestId('external-backup-used').textContent).toContain('4.00 KB');
     expect(screen.getByTestId('external-backup-health-dot')).toBeInTheDocument();
+  });
+
+  it('badges a completed device with no recent success as "No recent backup", not "Completed" (#12025)', async () => {
+    fetchMock.mockResolvedValue(res({ data: [providerRow({
+      health: 'critical', lastSuccessAt: '2026-03-23T02:00:00.000Z', lastSessionAt: '2026-03-23T02:00:00.000Z',
+    })] }));
+    render(<ExternalBackupCard deviceId="device-1" />);
+    const badge = await screen.findByTestId('external-backup-status');
+    expect(badge).toHaveTextContent('No recent backup');
+    expect(badge).not.toHaveTextContent('Completed');
   });
 
   it('renders the 28-day bar when the API supplies history', async () => {
@@ -109,5 +125,63 @@ describe('ExternalBackupCard', () => {
     fetchMock.mockResolvedValue(res({ error: 'nope' }, false, 500));
     render(<ExternalBackupCard deviceId="device-1" />);
     expect(await screen.findByTestId('external-backup-error')).toBeInTheDocument();
+  });
+
+  describe('last boot check', () => {
+    const AT = '2026-11-05T03:12:00Z';
+    const load = (o: Record<string, unknown>) => {
+      fetchMock.mockResolvedValue(res({ data: [providerRow(o)] }));
+      render(<ExternalBackupCard deviceId="device-1" />);
+    };
+
+    it('shows a passed boot check with its date', async () => {
+      load({ provider: 'axcient', verifiedBootable: true, verifiedBootableAt: AT, verifiedBootableFailedChecks: [] });
+      const line = await screen.findByTestId('external-backup-boot-check');
+      expect(line.textContent).toContain('Last boot check');
+      expect(line.textContent).toContain('Passed');
+      expect(line.textContent).toContain(
+        formatDateTime(AT, { fallback: '--', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      );
+      expect(line.textContent).not.toContain('()');
+    });
+
+    it('shows a failed boot check with the failed checks', async () => {
+      load({ provider: 'axcient', verifiedBootable: false, verifiedBootableAt: AT, verifiedBootableFailedChecks: ['system_boot', 'check_disk'] });
+      const line = await screen.findByTestId('external-backup-boot-check');
+      expect(line.textContent).toContain('Failed');
+      expect(line.textContent).toContain('(system_boot, check_disk)');
+    });
+
+    it('shows a failed boot check without parentheses when no check is named', async () => {
+      load({ provider: 'axcient', verifiedBootable: false, verifiedBootableAt: null, verifiedBootableFailedChecks: [] });
+      const line = await screen.findByTestId('external-backup-boot-check');
+      expect(line.textContent).toContain('Failed');
+      expect(line.textContent).not.toContain('(');
+    });
+
+    it('shows Never run for an Axcient row without evidence', async () => {
+      load({ provider: 'axcient' });
+      const line = await screen.findByTestId('external-backup-boot-check');
+      expect(line.querySelector('dd')?.textContent).toBe('Never run');
+    });
+
+    it('names failed checks only on a failed result', async () => {
+      load({ provider: 'axcient', verifiedBootable: true, verifiedBootableAt: AT, verifiedBootableFailedChecks: ['system_boot'] });
+      const line = await screen.findByTestId('external-backup-boot-check');
+      expect(line.textContent).toContain('Passed');
+      expect(line.textContent).not.toContain('system_boot');
+    });
+
+    it('omits the boot-check row for a Cove device', async () => {
+      load({ provider: 'cove' });
+      await screen.findByTestId('external-backup-card');
+      expect(screen.queryByTestId('external-backup-boot-check')).toBeNull();
+    });
+
+    it('labels the image data source', async () => {
+      load({ provider: 'axcient', dataSources: ['image'] });
+      const card = await screen.findByTestId('external-backup-card');
+      expect(card.textContent).toContain('Disk image');
+    });
   });
 });

@@ -205,7 +205,9 @@ let cachedEnforcementMoment: Date | null = null;
 /**
  * When this release's migrations ran — the moment backup commands stopped
  * carrying storage keys. Read from the migration ledger (the time the history
- * table was created). Null if the ledger cannot be read.
+ * table was created). Null if the ledger cannot be read. Deliberately no savepoint
+ * (#11225): a failed read fails the commit, so a key change retries rather than
+ * recording a guessed exposure window for a credential.
  */
 export async function loadEnforcementMoment(): Promise<Date | null> {
   if (cachedEnforcementMoment) return cachedEnforcementMoment;

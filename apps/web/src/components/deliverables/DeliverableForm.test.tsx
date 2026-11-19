@@ -221,6 +221,31 @@ describe('DeliverableForm auto-evidence report picker', () => {
   });
 });
 
+describe('DeliverableForm SLA performance evidence (#11018 W2)', () => {
+  it('deliverable form offers SLA performance as an evidence report', async () => {
+    const fetcher = vi.fn(async (path: string) => {
+      if (path.startsWith('/reports')) {
+        return new Response(JSON.stringify({
+          data: [
+            { id: 'r-sla', name: 'Service evidence — SLA performance', type: 'ticket_sla_performance', portalSelfService: true },
+            // A technician's own saved report of the type is not the managed definition.
+            { id: 'r-own', name: 'My SLA report', type: 'ticket_sla_performance', portalSelfService: false },
+            // The MSP-internal sibling must never be offered as customer evidence.
+            { id: 'r-staff', name: 'Ticket SLA attainment', type: 'ticket_sla_attainment', portalSelfService: true },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    render(<DeliverableForm fetcher={fetcher as never} orgId="org-1" contractOptions={[]} onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    await screen.findByRole('option', { name: 'Service evidence — SLA performance' });
+    const picker = screen.getByTestId('deliverable-auto-evidence-report') as HTMLSelectElement;
+    expect([...picker.options].map((o) => o.value)).toEqual(['', 'r-sla']);
+    expect(screen.queryByTestId('deliverable-auto-evidence-empty')).toBeNull();
+  });
+});
+
 describe('DeliverableForm checklist fields (#5808 W03)', () => {
   const templates: ChecklistTemplate[] = [
     {

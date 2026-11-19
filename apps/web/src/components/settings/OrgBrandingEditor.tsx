@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { Image, Palette, Save } from 'lucide-react';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
 import { MAX_LOGO_BYTES, LOGO_ACCEPT, resizeToDataUrl } from '@/lib/logoDataUrl';
+import { useLowResLogo } from '@/lib/useLowResLogo';
 import { sanitizeHexColor } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -111,6 +112,8 @@ export default function OrgBrandingEditor({ organizationName, orgId, legacyLogoU
     && Boolean(legacyLogoUrl && isPortalLogoUrl(legacyLogoUrl));
   const orgLogoUrl = logoEdit ?? (legacyLogoOffered ? legacyLogoUrl! : storedLogoUrl);
   const safeLogoPreview = sanitizeImageSrc(orgLogoUrl || partnerLogoUrl);
+  // Only the org's own override is this tab's to fix; the inherited partner logo is warned about on the partner tab.
+  const lowRes = useLowResLogo(orgLogoUrl ? sanitizeImageSrc(orgLogoUrl) : null);
   const logoInheritanceKey = orgLogoUrl
     ? 'common:inheritedField.overriding'
     : partnerLogoUrl
@@ -328,6 +331,11 @@ export default function OrgBrandingEditor({ organizationName, orgId, legacyLogoU
                   <p className="text-xs text-muted-foreground">
                     {t('partnerBranding.imageHelp')}
                   </p>
+                  {lowRes ? (
+                    <p data-testid="logo-low-res-warning" className="text-xs text-amber-700 dark:text-amber-400">
+                      {t('partnerBranding.logoLowRes', { width: lowRes.width, height: lowRes.height })}
+                    </p>
+                  ) : null}
                   {logoName ? (
                     <p className="text-xs text-muted-foreground">{t('orgBrandingEditor.logo.selected', { name: logoName })}</p>
                   ) : null}

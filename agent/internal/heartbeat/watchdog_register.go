@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // watchdogRegisterTimeout bounds the verified watchdog's own `service install`.
@@ -44,7 +46,7 @@ func watchdogInstallTransientArgs(pid int, nonce int64, stagedPath string) []str
 func runWatchdogInstallCommand(timeout time.Duration, name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	out, err := procspawn.CommandContext(ctx, name, args...).CombinedOutput()
 	if err == nil {
 		return nil
 	}

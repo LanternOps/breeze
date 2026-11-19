@@ -400,6 +400,30 @@ describe('Graph-read executor client — sync-action', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://executor.internal.example.test/v1/sync-action');
   });
 
+  // Version skew (W8): the executor sends `malformedItems` only when > 0. The
+  // API must parse a users result in both shapes; absent means 0 downstream
+  // (persistUsers), never a schema_mismatch.
+  it.each([
+    ['without malformedItems (clean listing, or an executor that predates it)', {}],
+    ['with malformedItems > 0', { malformedItems: 2 }],
+  ])('parses a users sync result %s', async (_label, extra) => {
+    const usersResult = {
+      success: true as const,
+      kind: 'sync' as const,
+      items: [{ id: TENANT_ID }],
+      truncated: false,
+      ...extra,
+      fetchedAt: '2026-09-08T00:00:00.000Z',
+      sources: { users: 'ok' as const, mfaRegistration: 'ok' as const, roleAssignments: 'ok' as const },
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(usersResult), {
+      headers: { 'content-type': 'application/json' },
+    }));
+    const client = await syncClient(fetchMock as unknown as typeof globalThis.fetch);
+    await expect(client.syncAction({ ...syncInput(), action: { type: 'm365.sync.users' as const } }))
+      .resolves.toEqual(usersResult);
+  });
+
   it('returns a typed sync_capacity failure on 503 rather than executor_unavailable', async () => {
     const fetchMock = vi.fn(async () => new Response(
       JSON.stringify({ error: 'sync_capacity', code: 'sync_capacity', retryAfterSeconds: 30 }),

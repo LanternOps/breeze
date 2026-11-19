@@ -97,6 +97,12 @@ const EXPECTED_OUTCOME: Record<AgentRunSkipReason, 'succeeded' | 'failed'> = {
   compute_budget_exceeded: 'succeeded',
   compute_credits_exhausted: 'succeeded',
   too_many_input_devices: 'succeeded',
+  frame_too_large: 'succeeded',
+  site_not_in_scope: 'succeeded',
+  frame_empty: 'succeeded',
+  analysis_continuation_not_found: 'succeeded',
+  analysis_chain_too_long: 'succeeded',
+  analysis_chain_budget_exceeded: 'succeeded',
   workspace_unavailable: 'succeeded',
   // AI model registry W03: a configuration gate, not an integrity failure.
   model_unavailable: 'succeeded',
@@ -109,6 +115,10 @@ const EXPECTED_OUTCOME: Record<AgentRunSkipReason, 'succeeded' | 'failed'> = {
   max_concurrent_assessment_runs: 'succeeded',
   assessment_rate: 'succeeded',
   assessment_requires_grant: 'succeeded',
+  // Wisp delegation W1 (#11084): device_troubleshooting volume guards and grant precondition.
+  max_concurrent_troubleshoot_runs: 'succeeded',
+  troubleshoot_rate: 'succeeded',
+  troubleshoot_requires_grant: 'succeeded',
   ownership_mismatch: 'failed',
   device_not_in_org: 'failed',
 };

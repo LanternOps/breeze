@@ -62,6 +62,16 @@ describe('business report card gate (#3198)', () => {
     expect(held.current('quote_win_rate')).toBe(true);
   });
 
+  it('gates ticket_sla_performance on tickets:read though it is not a business type (#11018)', () => {
+    granted = new Set(['invoices:read']);
+    const { result: without } = renderHook(() => useCanUseBusinessReportType());
+    expect(without.current('ticket_sla_performance')).toBe(false);
+
+    granted = new Set(['tickets:read']);
+    const { result: held } = renderHook(() => useCanUseBusinessReportType());
+    expect(held.current('ticket_sla_performance')).toBe(true);
+  });
+
   it('gates client_profitability on BOTH invoices:read and time_entries:read', () => {
     granted = new Set(['invoices:read']);
     const { result: invoicesOnly } = renderHook(() => useCanUseBusinessReportType());

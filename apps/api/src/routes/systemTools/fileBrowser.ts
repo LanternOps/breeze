@@ -14,18 +14,19 @@ import {
   isCommandFailure,
   mapCommandFailure,
   buildBulkItemFailure,
+  buildCommandFailureResponse,
   buildSingleItemUploadBody,
   auditErrorMessage,
 } from './fileBrowserHelpers';
-import { deviceIdParamSchema, fileListQuerySchema, fileDownloadQuerySchema, fileCopyBodySchema, fileMoveBodySchema, fileDeleteBodySchema, fileTrashRestoreBodySchema, fileTrashPurgeBodySchema, fileUploadBodySchema } from './schemas';
+import { deviceIdParamSchema, fileListQuerySchema, fileDownloadQuerySchema, fileCopyBodySchema, fileMoveBodySchema, fileMkdirBodySchema, fileDeleteBodySchema, fileTrashRestoreBodySchema, fileTrashPurgeBodySchema, fileUploadBodySchema } from './schemas';
 
 export const fileBrowserRoutes = new Hono();
 
-// Upload, copy and move write files with the agent's own privileges, so they
-// need the grant script execution needs (scripts:execute) on top of the
-// router-wide devices:execute (index.ts). Trash restore returns an item to the
-// path it was deleted from and stays at devices:execute. aiGuardrails.ts holds
-// file_operations write/rename to the same grant.
+// Upload, copy, move and mkdir write to the device with the agent's own
+// privileges, so they need the grant script execution needs (scripts:execute)
+// on top of the router-wide devices:execute (index.ts). Trash restore returns
+// an item to the path it was deleted from and stays at devices:execute.
+// aiGuardrails.ts holds file_operations write/rename/mkdir to the same grant.
 const requireScriptsExecute = requirePermission(
   PERMISSIONS.SCRIPTS_EXECUTE.resource,
   PERMISSIONS.SCRIPTS_EXECUTE.action,
@@ -461,6 +462,77 @@ fileBrowserRoutes.post(
     // Cloudflare replace this body with its branded error page, so the caller
     // lost the per-item reasons entirely and could only say "Copy failed".
     return c.json({ results }, 200);
+  }
+);
+
+// POST /devices/:deviceId/files/mkdir - Create a folder and any missing parents.
+// The agent runs MkdirAll, so a folder that already exists also answers success.
+fileBrowserRoutes.post(
+  '/devices/:deviceId/files/mkdir',
+  authMiddleware,
+  requireScope('system', 'partner', 'organization'),
+  requireScriptsExecute,
+  zValidator('param', deviceIdParamSchema),
+  zValidator('json', fileMkdirBodySchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const { path } = c.req.valid('json');
+    const auth = c.get('auth');
+
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
+      return c.json({ error: 'Device not found or access denied' }, 404);
+    }
+
+    // Deny the agent's own config/secrets directory outright, regardless of the
+    // caller's permission.
+    if (isAgentConfigPath(path)) {
+      return c.json({ error: 'Access to this path is not permitted', code: 'sensitive_path_denied' }, 403);
+    }
+
+    const result = await executeCommand(deviceId, CommandTypes.FILE_MKDIR, { path }, {
+      userId: auth.user?.id,
+      timeoutMs: 30000,
+    });
+    const failed = isCommandFailure(result);
+
+    // Caught, not awaited bare: the command has already run on the device, so an
+    // audit outage must not replace its real outcome with a generic 500.
+    try {
+      await createAuditLog({
+        orgId: device.orgId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+        action: 'file_mkdir',
+        resourceType: 'device',
+        resourceId: deviceId,
+        resourceName: device.hostname ?? device.id,
+        details: { path },
+        ipAddress: getTrustedClientIpOrUndefined(c),
+        result: failed ? 'failure' : 'success',
+        errorMessage: failed ? auditErrorMessage(result) : undefined,
+      });
+    } catch (auditErr) {
+      console.error(`[fileBrowser] audit log failed for device ${deviceId}:`, auditErr instanceof Error ? auditErr.message : auditErr);
+    }
+
+    if (failed) {
+      const { body, status } = buildCommandFailureResponse(result, 'Failed to create folder.', { mutating: true });
+      return c.json(body, status);
+    }
+
+    // The agent answers with the path it normalized (filepath.Clean).
+    let createdPath = path;
+    try {
+      const data = JSON.parse(result.stdout || '{}');
+      if (typeof data.path === 'string' && data.path) createdPath = data.path;
+    } catch {
+      // A completed command with unreadable output still created the folder.
+    }
+    return c.json({ success: true, data: { path: createdPath } });
   }
 );
 

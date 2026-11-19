@@ -12,6 +12,7 @@ const {
   decryptMock,
   captureExceptionMock,
   inFlightMock,
+  dispatchMock,
 } = vi.hoisted(() => ({
   queueCommandMock: vi.fn(),
   claimMock: vi.fn(),
@@ -23,6 +24,7 @@ const {
   decryptMock: vi.fn(),
   captureExceptionMock: vi.fn(),
   inFlightMock: vi.fn(),
+  dispatchMock: vi.fn(),
 }));
 
 // Devices parked in a holding org, by id. The helper's query is proven against
@@ -39,6 +41,7 @@ vi.mock('../db', () => ({
   db: { select: (...a: unknown[]) => selectMock(...(a as [])) },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContextIsolated: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   getCurrentDbAccessContext: vi.fn(),
 }));
 vi.mock('../db/schema', () => ({ devices: { id: 'devices.id' } }));
@@ -57,7 +60,17 @@ vi.mock('./sensitiveCommandPayload', () => ({
   decryptCommandForDelivery: (...a: unknown[]) => decryptMock(...(a as [])),
   toAgentCommandFrame: (c: unknown) => c,
 }));
-vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: (...a: unknown[]) => sendMock(...(a as [])) }));
+// #4142: the push goes through the relay facade. `dispatchMock` defaults (in
+// beforeEach) to a bridge over `sendMock`'s boolean, so the transport tests
+// below read as "the push succeeded / failed"; the outcome tests override it.
+// dispatchDisposition mirrors the real mapping (pinned in agentCommandRelay.test.ts);
+// importing the real module here would load the relay's whole dependency graph.
+vi.mock('./agentCommandRelay', () => ({
+  dispatchCommandToAgent: (...a: unknown[]) => dispatchMock(...(a as [])),
+  dispatchDisposition: (o: { status: string }) => (
+    o.status === 'sent' ? 'delivered' : o.status === 'indeterminate' ? 'uncertain' : 'not_delivered'
+  ),
+}));
 vi.mock('./sentry', () => ({
   captureException: (...a: unknown[]) => captureExceptionMock(...(a as [])),
 }));
@@ -99,6 +112,9 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     assertAllowedMock.mockResolvedValue(undefined);
     refreshMock.mockImplementation(async (_t: string, p: unknown) => p);
     inFlightMock.mockResolvedValue(0);
+    dispatchMock.mockImplementation(async (agentId: string, frame: unknown) => (
+      sendMock(agentId, frame) ? { status: 'sent', via: 'local' } : { status: 'offline' }
+    ));
     decryptMock.mockImplementation((c: unknown) => c);
     queueCommandMock.mockImplementation(async (_d, type, _p, _u, opts) => ({
       id: 'cmd-1',
@@ -283,6 +299,18 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
       expect(captureExceptionMock).toHaveBeenCalled();
     });
 
+    it('a deliver() whose relay is unconfirmed resolves indeterminate and keeps the claim (#4142)', async () => {
+      selectReturning(deviceRow('online'));
+      claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date(), agentId: 'agent-1' });
+      dispatchMock.mockResolvedValue({ status: 'indeterminate' });
+
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory', deferDelivery: true });
+      const delivered = await (res.ok ? res.deliver! : async () => { throw new Error('no deliver'); })();
+
+      expect(delivered.ok && delivered.delivery).toBe('indeterminate');
+      expect(releaseMock).not.toHaveBeenCalled();
+    });
+
     it('without deferDelivery the immediate push is unchanged and carries no continuation', async () => {
       selectReturning(deviceRow('online'));
       claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
@@ -301,6 +329,54 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
     expect(res.ok && res.delivery).toBe('queued_live');
     expect(releaseMock).toHaveBeenCalledWith('cmd-1', executedAt);
+  });
+
+  describe('facade outcomes (#4142 W1.T2)', () => {
+    const executedAt = new Date('2026-11-08T12:00:00Z');
+    beforeEach(() => {
+      selectReturning(deviceRow('online'));
+      claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt, agentId: 'agent-1' });
+    });
+
+    it('sent → delivery delivered, claim kept', async () => {
+      dispatchMock.mockResolvedValue({ status: 'sent', via: 'relay' });
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
+      expect(res.ok && res.delivery).toBe('delivered');
+      expect(releaseMock).not.toHaveBeenCalled();
+    });
+
+    it('indeterminate → delivery indeterminate, command.status sent, releaseClaimedCommandDelivery not called', async () => {
+      dispatchMock.mockResolvedValue({ status: 'indeterminate' });
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
+      expect(res.ok && res.delivery).toBe('indeterminate');
+      expect(res.ok && res.command.status).toBe('sent');
+      expect(res.ok && res.command.executedAt).toBe(executedAt);
+      expect(releaseMock).not.toHaveBeenCalled();
+    });
+
+    it('offline → release called, delivery queued_live', async () => {
+      dispatchMock.mockResolvedValue({ status: 'offline' });
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
+      expect(res.ok && res.delivery).toBe('queued_live');
+      expect(releaseMock).toHaveBeenCalledWith('cmd-1', executedAt);
+    });
+
+    it('infrastructure_error (e.g. relay refused inside a held DB context) → release called, delivery queued_live', async () => {
+      dispatchMock.mockResolvedValue({ status: 'infrastructure_error', message: 'relay refused inside a held DB context' });
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
+      expect(res.ok && res.delivery).toBe('queued_live');
+      expect(releaseMock).toHaveBeenCalledWith('cmd-1', executedAt);
+    });
+
+    // A throw must never strand the claim AND must never release it: the frame
+    // may have reached the agent, so a release could deliver it twice.
+    it('a rejected dispatch → claim kept, no throw to the caller, delivery indeterminate', async () => {
+      dispatchMock.mockRejectedValue(new Error('facade contract violated'));
+      const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
+      expect(res.ok && res.delivery).toBe('indeterminate');
+      expect(releaseMock).not.toHaveBeenCalled();
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('online device with no agent socket → queued_live, never pushed', async () => {

@@ -320,6 +320,22 @@ describe('creatableKinds / freeKinds and the provisioned research kind (W2, Code
   });
 });
 
+describe('troubleshoot kind (system-provisioned)', () => {
+  it('is never creatable at either owner scope, even with a partner baseline', () => {
+    expect(creatableKinds([], 'partner')).not.toContain('troubleshoot');
+    expect(creatableKinds([row('troubleshoot', 'partner')], 'organization')).not.toContain('troubleshoot');
+    expect(freeKinds([], 'organization', 'o-1')).not.toContain('troubleshoot');
+  });
+
+  it('a troubleshoot PATCH carries only name and enabled', () => {
+    const body = buildAgentSaveBody(
+      baseDraft({ kind: 'troubleshoot', ownerScope: 'partner', mode: 'shadow', name: ' Device troubleshooting (built-in) ', enabled: false }),
+      { isCreate: false, orgId: null },
+    );
+    expect(body).toEqual({ name: 'Device troubleshooting (built-in)', enabled: false });
+  });
+});
+
 describe('research save-body projection (W2)', () => {
   const research = (over: Partial<Draft> = {}) => baseDraft({
     kind: 'research', ownerScope: 'partner', mode: 'act', name: 'Fix research (built-in)', enabled: true,

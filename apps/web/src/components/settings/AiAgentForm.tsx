@@ -315,6 +315,7 @@ export default function AiAgentForm({
     : authorizedScriptCountFor(draft, ceiling);
 
   const isResearch = draft.kind === 'research';
+  const isTroubleshoot = draft.kind === 'troubleshoot';
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="ai-agent-editor">
@@ -331,7 +332,7 @@ export default function AiAgentForm({
         )}
 
         <div className="grid gap-3 md:grid-cols-2">
-          {!isResearch && modeChoice}
+          {!isResearch && !isTroubleshoot && modeChoice}
 
           {/* `kind` and `ownerScope` are create-only (see the module doc) —
               this form only ever edits, so both render as fixed rather than
@@ -406,14 +407,16 @@ export default function AiAgentForm({
               <span className="font-medium">{t('aiAgentsPage.fields.enabled')}</span>
             </label>
             <p className="pl-6 text-xs text-muted-foreground" data-testid="ai-agent-enabled-hint">
-              {t('aiAgentsPage.fields.enabledHint')}
+              {isResearch || isTroubleshoot
+                ? t('aiAgentsPage.fields.enabledHintNoMode')
+                : t('aiAgentsPage.fields.enabledHint')}
             </p>
           </div>
 
           {/* AI Suggested Fixes W2: the built-in research agent is name, the
               enabled switch and its spending caps — nothing else is editable
               (server: assertResearchAgentEdit), so nothing else renders. */}
-          {isResearch ? (
+          {isTroubleshoot ? null : isResearch ? (
             <ResearchAgentFields draft={draft} patch={patch} />
           ) : (<>
           {/* Graduation evidence (P2-5, #4192). NOT gated on `draft.mode ===

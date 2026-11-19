@@ -64,6 +64,32 @@ describe('deviceCsvExport (#9726)', () => {
     ]);
   });
 
+  it('exports the product number for agent rows only (#9593)', () => {
+    const agent = dev({ hardware: { productSku: '5S3F8EA#ABB' } });
+    const manual = dev({ deviceClass: 'manual', hardware: { productSku: 'leak' } });
+    const network = dev({ deviceClass: 'network', hardware: { productSku: 'leak' } });
+    const csv = build([agent, manual, network], ['productSku']);
+    expect(rows(csv)).toEqual([
+      csvRow(['Device', 'Product Number']),
+      csvRow(['web-01', '5S3F8EA#ABB']),
+      csvRow(['web-01', '']),
+      csvRow(['web-01', '']),
+    ]);
+  });
+
+  it('exports the hardware model for agent rows only (#11332)', () => {
+    const agent = dev({ hardware: { model: 'VMware20,1' } });
+    const manual = dev({ deviceClass: 'manual', hardware: { model: 'leak' } });
+    const network = dev({ deviceClass: 'network', hardware: { model: 'leak' } });
+    const csv = build([agent, manual, network], ['hardwareModel']);
+    expect(rows(csv)).toEqual([
+      csvRow(['Device', 'Model']),
+      csvRow(['web-01', 'VMware20,1']),
+      csvRow(['web-01', '']),
+      csvRow(['web-01', '']),
+    ]);
+  });
+
   it('exports dates as ISO and blanks missing or unparsable ones', () => {
     const csv = build(
       [dev({ lastSeen: '2026-10-01T12:00:00Z', enrolledAt: undefined }), dev({ lastSeen: 'garbage', enrolledAt: '2026-01-02T03:04:05Z' })],
@@ -136,4 +162,23 @@ describe('deviceCsvExport (#9726)', () => {
   it('names the file by date', () => {
     expect(devicesCsvFilename(new Date('2026-10-22T23:59:00Z'))).toBe('devices-2026-10-22.csv');
   });
+});
+
+
+it('exports the displayed disk percentages for the selected scope and leaves non-agent assets blank', () => {
+  const disks = [
+    { mountPoint: 'C:\\', totalGb: 100, usedGb: 40, freeGb: 60, usedPercent: 40.123, isOsVolume: false },
+    { mountPoint: 'D:\\', totalGb: 100, usedGb: 100, freeGb: 0, usedPercent: 105, isOsVolume: true },
+  ];
+  const input = {
+    devices: [dev({ disks }), dev({ disks, deviceClass: 'manual' })],
+    columns: ['diskUsage'] as ColumnId[],
+    customFieldDefs: [],
+    statusLabel: (d: Device) => d.status,
+  };
+  expect(buildDevicesCsv(input)).toContain('C:\\: 40.1%; D:\\: 100%');
+  const osCsv = buildDevicesCsv({ ...input, diskUsageScope: 'os' });
+  expect(osCsv).toContain('D:\\: 100%');
+  expect(osCsv).not.toContain('C:\\');
+  expect(rows(osCsv).at(-1)).toBe(csvRow(['web-01', '']));
 });

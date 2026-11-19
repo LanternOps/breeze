@@ -159,7 +159,8 @@
       "missing": "Permisos faltantes",
       "unexpectedAlert": "Se detectaron permisos inesperados",
       "unknownPermission": "Permiso desconocido (rol {{appRoleId}})",
-      "grantsVerifiedAt": "Permisos verificados"
+      "grantsVerifiedAt": "Permisos verificados",
+      "graphTokenOnly": "Permisos de Graph verificados. No se revisaron los permisos de otros recursos de Microsoft; otorga Application.Read.All para una revisión completa."
     },
     "actions": {
       "connect": "Conectar",
@@ -170,6 +171,7 @@
       "consentFailed": "No se pudo iniciar el consentimiento.",
       "retestFailed": "No se pudo volver a probar la conexión.",
       "retestSucceeded": "La nueva prueba de conexión finalizó.",
+      "retestNeedsAttention": "La nueva prueba finalizó, pero la conexión todavía requiere atención.",
       "disconnectWarning": "Al desconectar, Breeze dejará de usar esta conexión. El consentimiento de todo el inquilino de Microsoft permanecerá hasta que un administrador del cliente lo quite en Microsoft Entra.",
       "disconnectFailed": "No se pudo desconectar la conexión.",
       "disconnectSucceeded": "La conexión de Breeze se desconectó.",
@@ -192,6 +194,7 @@
       "grant_unexpected": "Microsoft informa permisos fuera del manifiesto aprobado.",
       "manifest_stale": "Los permisos otorgados usan un manifiesto anterior. Vuelve a otorgar el consentimiento.",
       "organization_probe_failed": "Falló la comprobación de la organización de Microsoft. Vuelve a probar la conexión.",
+      "grant_reconciliation_unavailable": "Microsoft aceptó la conexión, pero Breeze no puede leer qué permisos otorgó este inquilino a la app de acciones de administración, así que no se pueden verificar. Las acciones de administración permanecen en pausa hasta que se verifiquen.",
       "executor_unavailable": "El servicio de verificación no está disponible. Vuelve a intentarlo más tarde.",
       "executor_unavailablePending": "No se pudo completar la conexión. Vuelve a intentar con Conectar; si sigue fallando, comunícate con soporte.",
       "unknown": "La verificación requiere atención. Vuelve a probar la conexión o inicia el consentimiento nuevamente."
@@ -289,11 +292,9 @@
     "unableToSendTestNotification": "No se puede enviar la notificación de prueba.",
     "failedToLoadCommunicationSettings": "No se pudo cargar la configuración de comunicación",
     "slackSettingsSaved": "Configuración de Slack guardada.",
-    "slackTestNotificationQueued": "Notificación de prueba Slack en cola.",
     "teamsSettingsSaved": "Se guardó la configuración de Teams.",
-    "teamsTestNotificationQueued": "Notificación de prueba de Teams en cola.",
     "discordSettingsSaved": "Configuración de Discord guardada.",
-    "discordTestNotificationQueued": "Notificación de prueba de Discord en cola.",
+    "discordTestNotificationSent": "Notificación de prueba de Discord enviada.",
     "loadingCommunicationIntegrations": "Cargando integraciones de comunicación...",
     "communicationIntegrations": "Integraciones de comunicación",
     "connectChatToolsRouteAlertsBySeverityAnd": "Conecte herramientas de chat, enrute alertas por gravedad y personalice plantillas de mensajería.",
@@ -374,6 +375,9 @@
       "delivery_failed": "Las entregas fallan",
       "sync_stale": "Sincronización detenida",
       "verification_failed": "Falló la verificación",
+      "destination_access_denied": "El destino rechazó el acceso",
+      "destination_not_found": "No se encontró el destino",
+      "destination_failing": "El destino está fallando",
       "unknown": "Requiere atención"
     }
   },
@@ -596,7 +600,7 @@
   },
   "backupProviders": {
     "title": "Proveedores de copia de seguridad",
-    "subtitle": "Consulta en Breeze el estado de los respaldos de Cove Data Protection y NinjaOne SaaS Backup (Dropsuite).",
+    "subtitle": "Consulta en Breeze el estado de los respaldos de Cove Data Protection, NinjaOne SaaS Backup (Dropsuite) y Axcient x360Recover.",
     "partnerOnly": "Las conexiones con proveedores de copia de seguridad solo están disponibles para cuentas de partner.",
     "addConnection": "Agregar conexión",
     "providerLabel": "Proveedor",
@@ -604,6 +608,7 @@
     "nameLabel": "Nombre de la conexión",
     "namePlaceholder": "Cuenta principal de Cove",
     "namePlaceholderDropsuite": "Cuenta principal de NinjaOne SaaS Backup",
+    "namePlaceholderAxcient": "Cuenta principal de Axcient",
     "partnerNameLabel": "Nombre de partner en Cove",
     "usernameLabel": "Nombre de inicio de sesión del usuario de API",
     "passwordLabel": "Token del usuario de API",
@@ -651,6 +656,10 @@
     "errorDelete": "No se pudo eliminar la conexión de copia de seguridad",
     "errorMap": "No se pudo actualizar la asignación",
     "dropsuite": "NinjaOne SaaS Backup (Dropsuite)",
+    "axcient": "Axcient x360Recover",
+    "apiKeyLabel": "Clave API",
+    "axcientCredentialsHelp": "Crea una clave API en x360Portal → Settings → API Keys con x360Recover y Billing marcados. Breeze solo lee el estado; nunca modifica nada en Axcient.",
+    "axcientReentryHelp": "Deja la clave API en blanco para conservar la clave almacenada, o ingresa una nueva para reemplazarla.",
     "resellerTokenLabel": "Token de distribuidor",
     "authTokenLabel": "Token de autenticación",
     "baseUrlLabel": "URL de la API",
@@ -953,6 +962,8 @@
     "integrationUpdated": "Integración Pax8 actualizada",
     "integrationConnected": "Integración Pax8 conectada",
     "companyMapped": "Empresa Pax8 mapeada",
+    "companiesRefreshFailed": "No se pudo actualizar la lista de empresas y puede estar desactualizada. Vuelve a cargar para ver lo más reciente.",
+    "syncStillRunning": "La sincronización sigue en curso o su estado no está disponible. Vuelve a revisar en unos minutos.",
     "companyUnmapped": "Compañía Pax8 no asignada",
     "observationsPaused": "Observaciones de cantidad de Pax8 en pausa",
     "observationsResumed": "Observaciones de cantidad de Pax8 reanudadas",
@@ -1067,7 +1078,7 @@
   "unifiIntegration": {
     "failedToSaveSiteMappings": "No se pudieron guardar las asignaciones del sitio.",
     "siteMappingsSaved": "Mapeos del sitio guardados",
-    "pickTheSiteThisControllerServesACollector": "Elija el sitio al que sirve este controlador, un agente recopilador, e ingrese el controlador URL y la clave local API.",
+    "pickTheSiteThisControllerServesACollector": "Elija la ubicación del agente recolector y un agente recolector, e ingrese la URL del controlador y la clave API local.",
     "failedToRegisterTheController": "No se pudo registrar el controlador.",
     "controllerRegistered": "Controlador registrado",
     "pickABreezeSiteACollectorAgentAnd": "Elija un sitio Breeze, un agente recopilador e ingrese el controlador URL y la clave local API.",
@@ -1110,7 +1121,8 @@
     "controllers": "Controladores",
     "registerEachSelfHostedUniFiNetworkControllerA": "Registre cada controlador de red UniFi autohospedado. Un agente Breeze en la red del controlador sondea su integración local API (firmware ≥ 9.3) directamente, por lo que no se necesita una cuenta en la nube de UniFi. Breeze almacena la clave API local cifrada y la envía al agente que elija.",
     "controllerURL": "URL del controlador",
-    "siteThisControllerServes": "Sitio al que sirve este controlador",
+    "collectorAgentLocation": "Ubicación del agente recolector",
+    "collectorAgentLocationHelp": "Dónde reside el agente que consulta este controlador, a menudo su propia organización interna. Usted asocia los sitios del controlador con los clientes después de registrarlo.",
     "selectSite": "— Seleccionar sitio —",
     "collectorAgent": "Agente coleccionista",
     "localAPIKey": "Clave local API",
@@ -1149,6 +1161,7 @@
     "started": "Iniciado",
     "trigger": "Desencadenador",
     "hostsSeen": "Anfitriones vistos",
+    "sitesUnmapped": "Sitios sin asignar",
     "hosts": "Hosts",
     "devicesCreated": "Los dispositivos agregaron esta sincronización",
     "new": "Agregado",
@@ -1473,7 +1486,8 @@
     "status": {
       "connected": "Conectado",
       "error": "Error",
-      "reauth_required": "Se requiere volver a autenticarse"
+      "reauth_required": "Se requiere volver a autenticarse",
+      "inactive": "Inactiva"
     },
     "syncStatus": {
       "running": "En ejecución",
@@ -1517,6 +1531,16 @@
       "manual": "Manual",
       "auto_external_code": "Automática",
       "manual_unmapped": "Sin asignar a propósito"
+    },
+    "installer": {
+      "ready": "Instalador: listo (obtenido {{time}})",
+      "packagesApiDisabled": "Instalador: la API de Packages no está habilitada en la clave de API",
+      "noPackage": "Instalador: esta empresa no tiene un paquete de instalación",
+      "multiplePackages": "Instalador: esta empresa tiene más de un paquete de instalación. Conserva uno en la consola del proveedor",
+      "malformedResponse": "Instalador: el proveedor devolvió un enlace que Breeze no puede usar",
+      "urlRejected": "Instalador: el enlace del proveedor apunta a un host que Breeze no permite",
+      "vendorError": "Instalador: falló la última actualización del enlace. Breeze reintentará en la próxima sincronización",
+      "unavailable": "Enlace del instalador no disponible"
     },
     "endpointsTitle": "Endpoints sin vincular",
     "endpointsHelp": "Vincule los endpoints de EDR que no se pudieron asociar automáticamente a un dispositivo de Breeze.",
@@ -1565,5 +1589,28 @@
     "pushTestNote": "El evento de prueba puede tardar unos minutos en llegar.",
     "pushLast": "Último evento push: {{relative}}",
     "pushNone": "Aún no se han recibido eventos push"
+  },
+  "externalMatch": {
+    "suggested": "Sugerencia: {{target}}",
+    "matchedOn": "coincide en “{{key}}”",
+    "accept": "Aceptar",
+    "possibleMatches_one": "{{count}} posible coincidencia",
+    "possibleMatches_other": "{{count}} posibles coincidencias",
+    "alsoMatches": "También coincide con {{names}}",
+    "pickSite": "Elige un sitio en {{org}}",
+    "reviewButton_one": "Revisar {{count}} coincidencia sugerida",
+    "reviewButton_other": "Revisar {{count}} coincidencias sugeridas",
+    "reviewTitle": "Revisar coincidencias sugeridas",
+    "confirm_one": "Asignar {{count}} seleccionada",
+    "confirm_other": "Asignar {{count}} seleccionadas",
+    "resolveInTable": "Resuélvelas en la tabla",
+    "tierExact": "Mismo nombre",
+    "tierNormalized": "Mismo nombre, sin considerar sufijos",
+    "summary": "{{unmapped}} sin asignar · {{suggested}} sugeridas",
+    "staleReview": "Algunas filas cambiaron desde que abriste esta revisión. Se recargó la lista.",
+    "newSinceSync_one": "{{count}} nuevo desde la última sincronización",
+    "newSinceSync_other": "{{count}} nuevos desde la última sincronización",
+    "bulkMapped_one": "{{count}} empresa mapeada",
+    "bulkMapped_other": "{{count}} empresas mapeadas"
   }
 }

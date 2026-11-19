@@ -8,8 +8,6 @@ import { aiAgentRuns } from '../../db/schema';
 import {
   ALERT_CHILD_ORG_REWRITE_TABLES,
   CUSTOM_ORG_REWRITE_TABLES,
-  getDeviceCascadeDeleteTables,
-  DEVICE_DETACH_DEVICE_ID_TABLES,
   getDeviceOrgDenormalizedTables,
   getDeviceOrgMoveDeleteTables,
   CORE_DEVICE_ORG_MOVE_DELETE_TABLES,
@@ -17,6 +15,7 @@ import {
   DEVICE_ORG_FK_CASCADE_TABLES,
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
+import { getDeviceCascadeDeleteTables, DEVICE_DETACH_DEVICE_ID_TABLES } from '../../services/deviceCascadeTables';
 import { TICKET_ORG_DENORMALIZED_TABLES } from '../../services/ticketOrgMoveLockOrder';
 
 /**
@@ -211,6 +210,10 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
       // #4755: composite (device_id, org_id) FK ON UPDATE CASCADE restamps it.
       'device_restore_point_attempts',
       'security_agent_device_status',
+      'device_oem_update_status',
+      'device_oem_policy_side',
+      'device_wake_attempts',
+      'device_wake_status',
     ]);
     expect(deviceOrgDenormalizedTables).toEqual(
       expect.arrayContaining([...DEVICE_ORG_FK_CASCADE_TABLES]),

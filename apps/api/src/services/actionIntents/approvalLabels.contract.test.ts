@@ -25,6 +25,28 @@ describe('approval card labels (#9657)', () => {
     },
   );
 
+  // W17 (#6788): what the approver is signing, and where it goes. Copied from the plan's approval copy.
+  it('W17 backup verification and C2C config writes state what they do', () => {
+    const device = '0123456789abcdef';
+    expect(buildApprovalDescription('manage_backup_verification', 'run', { deviceId: device, verificationType: 'integrity' }))
+      .toBe('Run a backup integrity check on device 01234567.... Queues a command on the machine.');
+    expect(buildApprovalDescription('manage_backup_verification', 'run', { deviceId: device, verificationType: 'test_restore' }))
+      .toBe('Run a backup test restore check on device 01234567.... Queues a command on the machine.');
+    expect(buildApprovalDescription('manage_backup_verification', 'run', { deviceId: device }))
+      .toBe('Run a backup integrity check on device 01234567.... Queues a command on the machine.');
+    expect(buildApprovalDescription('manage_c2c_configs', 'create', {
+      name: 'Finance', backupScope: 'mail', targetUsers: ['a@example.test', 'b@example.test'], schedule: { frequency: 'daily' },
+    })).toBe('Create cloud-to-cloud backup config Finance: mail for 2 users, schedule daily.');
+    expect(buildApprovalDescription('manage_c2c_configs', 'create', { name: 'All', backupScope: 'files' }))
+      .toBe('Create cloud-to-cloud backup config All: files for 0 users, schedule none.');
+    expect(buildApprovalDescription('manage_c2c_configs', 'update', { configId: device, targetUsers: ['a@example.test'], isActive: true, action: 'update', orgId: device }))
+      .toBe('Update cloud-to-cloud backup config 01234567...: targetUsers, isActive.');
+    expect(buildApprovalDescription('manage_c2c_configs', 'update', { configId: device, name: 'Renamed' }))
+      .toBe('Update cloud-to-cloud backup config 01234567...: name.');
+    expect(buildApprovalDescription('manage_c2c_configs', 'delete', { configId: device }))
+      .toBe('Delete cloud-to-cloud backup config 01234567.... Refused if it has backup history.');
+  });
+
   it('names the specific action for the finance and M365 write tools', () => {
     expect(buildApprovalDescription('manage_invoices', 'void', {})).toBe('Void invoice');
     expect(buildApprovalDescription('manage_invoices', 'record_payment', {})).toBe('Record invoice payment');

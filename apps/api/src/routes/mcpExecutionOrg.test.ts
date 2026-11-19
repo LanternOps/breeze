@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AuthContext } from '../middleware/auth';
 import {
   McpExecutionOrgError,
+  mcpExecutionOrgRpcError,
   resolveMcpExecutionContext,
   resolveMcpExecutionOrgId,
 } from './mcpExecutionOrg';
@@ -225,6 +226,39 @@ describe('resolveMcpExecutionContext — authoritative device-org resolution', (
         resolveDeviceOrg: deviceOrgMap({ [DEV_A]: OWN_ORG, [DEV_B]: SECOND_ORG }),
       }),
     ).rejects.toBeInstanceOf(McpExecutionOrgError);
+  });
+
+  // #11287: the split_by_org answer (#11255) never reaches an MCP client because
+  // this gate refuses first, so the refusal itself tells the client to split.
+  it('a mixed-org refusal tells the MCP client to call once per organization', async () => {
+    const err = await resolveMcpExecutionContext({
+      auth: partnerAuth([OWN_ORG, SECOND_ORG]),
+      apiKey: { orgId: null },
+      toolName: 'propose_script',
+      toolInput: { deviceIds: [DEV_A, DEV_B] },
+      deviceArgsForTool: deviceArgsFor({ propose_script: ['deviceIds'] }),
+      resolveDeviceOrg: deviceOrgMap({ [DEV_A]: OWN_ORG, [DEV_B]: SECOND_ORG }),
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(McpExecutionOrgError);
+    expect((err as McpExecutionOrgError).reason).toBe('split_by_org');
+    const rpc = mcpExecutionOrgRpcError(err as McpExecutionOrgError);
+    expect(rpc.message).toMatch(/^Invalid params: /);
+    expect(rpc.message).toContain('once per organization');
+    expect(rpc.data).toEqual({ reason: 'split_by_org' });
+  });
+
+  it('every other refusal stays the generic invalid params (no reason, no hint)', async () => {
+    const err = await resolveMcpExecutionContext({
+      auth: partnerAuth([OWN_ORG]),
+      apiKey: { orgId: null },
+      toolName: 'run_script_bulk',
+      toolInput: { deviceIds: [DEV_A] },
+      deviceArgsForTool: deviceArgsFor({ run_script_bulk: ['deviceIds'] }),
+      resolveDeviceOrg: async () => ({ error: 'not found' }),
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(McpExecutionOrgError);
+    expect((err as McpExecutionOrgError).reason).toBeUndefined();
+    expect(mcpExecutionOrgRpcError(err as McpExecutionOrgError)).toEqual({ message: 'Invalid params' });
   });
 
   it('REJECTS an explicit orgId that differs from the device org', async () => {

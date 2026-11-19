@@ -60,7 +60,8 @@ func TestSnapshotProgress_ReportsBytesWithinSingleFileUpload(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, err := createSnapshotWithProgress(context.Background(), provider, files,
-			func(fd, ft int, bd, bt int64, _ string) {
+			func(p RunProgress) {
+				fd, bd := p.FilesDone, p.BytesDone
 				mu.Lock()
 				seen = append(seen, bd)
 				mu.Unlock()
@@ -170,7 +171,8 @@ func testInFileBytesNeverGoBackwards(t *testing.T, partialSeen func(int64) bool)
 	observed := make(chan struct{})
 	var observedOnce sync.Once
 	_, _ = createSnapshotWithProgress(context.Background(), &failAfterPartialProvider{failPath: bad, observed: observed}, files,
-		func(_, _ int, bd, bt int64, _ string) {
+		func(p RunProgress) {
+			bd := p.BytesDone
 			mu.Lock()
 			seen = append(seen, bd)
 			mu.Unlock()

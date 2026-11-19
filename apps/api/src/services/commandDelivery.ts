@@ -1,8 +1,11 @@
 import { BACKUP_WRITE_GATED_COMMAND_TYPES } from './backupWriteHelperGate';
 import { deliverBackupWriteCommand } from './backupStorageWriteDelivery';
-import { eq } from 'drizzle-orm';
+import { materializeBackupStorageCredentials } from './backupCommandCredentials';
+import { CommandTypes } from './commandTypes';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, hasDbAccessContext, withDbTransaction } from '../db';
-import { devices } from '../db/schema';
+import { devices, scriptExecutions } from '../db/schema';
+import { PG_UUID_REGEX } from '../utils/uuid';
 import { BROKERED_READ_COMMAND_TYPES, deliverBrokeredReadCommand } from './backupStorageSessions';
 import { RECOVERY_INTEGRITY_COMMAND_TYPES, deliverRecoveryCommandIntegrity } from './backupRecoveryCommandIntegrity';
 import { expireRefusedClaimedCommandDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
@@ -168,6 +171,10 @@ for (const type of RECOVERY_INTEGRITY_COMMAND_TYPES) {
 for (const type of BACKUP_WRITE_GATED_COMMAND_TYPES) {
   registerDeliveryRefresher(type, deliverBackupWriteCommand);
 }
+// A local-vault sync names the destination its snapshot was written to by
+// reference (#11858, services/vaultDeviceCommands.ts). Only a local
+// destination is resolved; a reference to anything else is refused.
+registerDeliveryRefresher(CommandTypes.VAULT_SYNC, materializeBackupStorageCredentials);
 
 /**
  * The refresher to run for one claimed command: the type's registered
@@ -281,10 +288,6 @@ export async function prepareClaimedCommandsForDelivery(
       payload: cmd.payload,
     })),
   );
-  if (delivered.length === deliverable.length) {
-    return delivered;
-  }
-
   const deliveredIds = new Set(delivered.map((cmd) => cmd.id));
   for (const cmd of deliverable) {
     if (deliveredIds.has(cmd.id)) continue;
@@ -310,7 +313,61 @@ export async function prepareClaimedCommandsForDelivery(
     }
   }
 
+  await markDeliveredScriptExecutionsStarted(deliverable.filter((cmd) => deliveredIds.has(cmd.id)));
   return delivered;
+}
+
+/**
+ * #7279 — the HTTP claim's half of the `running` write the WebSocket push
+ * makes (scriptDispatch.ts): an execution whose `script` command is in this
+ * delivery batch is marked `running`, started at the claim timestamp (the same
+ * value the push uses). Before this, a command handed out in a heartbeat or
+ * poll response — every queued run, whatever the agent's transport — never got
+ * a `started_at`, so the fix-outcome watcher dated "cleared before the fix
+ * started" from dispatch time instead.
+ *
+ * Only commands that survived the gate, the refreshers and decryption reach
+ * here, so a row released back to `pending` is never marked running (the
+ * reaper would otherwise time it out on the execution clock while the
+ * delivery clock still owns it).
+ *
+ * The CAS is `status IN ('pending','queued')`: it never resurrects a row an
+ * agent result, a cancel or a reaper already drove terminal (READ COMMITTED
+ * re-checks it after waiting on that writer's row lock), and a second delivery
+ * of the same execution keeps the first start time. Bookkeeping, not delivery:
+ * each write runs in its own savepoint when a transaction is open, and a
+ * failure is reported, never thrown — the agent's result closes the row either
+ * way (handleScriptResult's CAS accepts `pending` too).
+ */
+async function markDeliveredScriptExecutionsStarted(commands: ClaimedCommand[]): Promise<void> {
+  for (const cmd of commands) {
+    if (cmd.type !== 'script' || !cmd.executedAt) continue;
+    const payload = cmd.payload && typeof cmd.payload === 'object' && !Array.isArray(cmd.payload)
+      ? (cmd.payload as Record<string, unknown>)
+      : null;
+    const executionId = typeof payload?.executionId === 'string' ? payload.executionId : null;
+    // A legacy non-uuid id would raise 22P02; handleScriptResult reports those.
+    if (!executionId || !PG_UUID_REGEX.test(executionId)) continue;
+    const startedAt = cmd.executedAt;
+    const write = () => db
+      .update(scriptExecutions)
+      .set({ status: 'running', startedAt })
+      .where(and(
+        eq(scriptExecutions.id, executionId),
+        eq(scriptExecutions.deviceId, cmd.deviceId),
+        inArray(scriptExecutions.status, ['pending', 'queued']),
+      ));
+    try {
+      await (hasDbAccessContext() ? withDbTransaction(write) : write());
+    } catch (err) {
+      console.error('[commandDelivery] failed to mark a delivered script execution running', {
+        commandId: cmd.id,
+        executionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      captureException(err, undefined, { component: 'commandDelivery.scriptStart', commandId: cmd.id, executionId });
+    }
+  }
 }
 
 /**

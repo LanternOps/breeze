@@ -277,6 +277,52 @@ describe('interpretReviewerResponse', () => {
     expect(r.reason).toMatch(/^Malformed reviewer verdict: /);
   });
 
+  // #10954: an over-long summary is the reviewer being wordy, not a bad verdict.
+  it('clamps an over-long summary to the schema limit with an ellipsis instead of failing', () => {
+    const long = JSON.stringify({ ...JSON.parse(verdictJson), summary: 'x'.repeat(900) });
+    const r = interpretReviewerResponse({ stopReason: 'end_turn', text: long });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(Array.from(r.verdict.summary)).toHaveLength(600);
+    expect(r.verdict.summary.endsWith('…')).toBe(true);
+  });
+
+  it('clamps by code points and never splits a surrogate pair (zod 4.6 counts code points)', () => {
+    const long = JSON.stringify({ ...JSON.parse(verdictJson), summary: '🔒'.repeat(700) });
+    const r = interpretReviewerResponse({ stopReason: 'end_turn', text: long });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(Array.from(r.verdict.summary)).toHaveLength(600);
+    expect(r.verdict.summary).toBe(`${'🔒'.repeat(599)}…`);
+  });
+
+  it('leaves a summary at exactly the limit untouched', () => {
+    const exact = 'y'.repeat(600);
+    const r = interpretReviewerResponse({ stopReason: 'end_turn', text: JSON.stringify({ ...JSON.parse(verdictJson), summary: exact }) });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.verdict.summary).toBe(exact);
+  });
+
+  it('keeps structural fields strict: a long summary does not rescue an invalid enum', () => {
+    const bad = JSON.stringify({ ...JSON.parse(verdictJson), summary: 'x'.repeat(900), riskTier: 'catastrophic' });
+    const r = interpretReviewerResponse({ stopReason: 'end_turn', text: bad });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/^Malformed reviewer verdict: riskTier/);
+    expect(r.retryable).toBe(false);
+  });
+
+  it('marks only an unparseable response on a normal stop as retryable', () => {
+    const results = [
+      interpretReviewerResponse({ stopReason: 'end_turn', text: 'not json' }),
+      interpretReviewerResponse({ stopReason: 'end_turn', text: undefined }),
+      interpretReviewerResponse({ stopReason: 'max_tokens', text: '{"summary": "cut' }),
+      interpretReviewerResponse({ stopReason: 'end_turn', text: '{"summary": "x"}' }),
+    ];
+    expect(results.map((r) => (r.ok ? 'ok' : r.retryable))).toEqual([true, true, false, false]);
+  });
+
   it('parses a fenced verdict', () => {
     const r = interpretReviewerResponse({ stopReason: 'end_turn', text: '```json\n' + verdictJson + '\n```' });
     expect(r.ok).toBe(true);

@@ -112,7 +112,7 @@ function row(over: Partial<Record<string, unknown>> = {}) {
     id: ART, orgId: ORG, runId: RUN, sessionId: null, kind: 'input_capture',
     name: 'search_logs.json', contentType: 'application/json', bytes: 20, sha256: 'a'.repeat(64),
     blobKey: 'us/2026/10/abc', headPreview: '{"rows"', tailPreview: ']}',
-    sourceDeviceId: null, createdByTool: 'search_logs',
+    sourceDeviceId: null, createdByTool: 'search_logs', dataset: null,
     expiresAt: new Date('2026-11-15T00:00:00Z'), createdAt: new Date('2026-10-16T00:00:00Z'),
     ...over,
   };
@@ -175,6 +175,19 @@ describe('createArtifact', () => {
     expect(written.bytes).toBe(20);
     expect(String(written.sha256)).toMatch(/^[0-9a-f]{64}$/);
     expect(String(written.blobKey)).toMatch(/^us\/\d{4}\/\d{2}\//);
+  });
+
+  it('stores dataset when given and NULL otherwise', async () => {
+    mocks.insertRows.push([row()], [row()]);
+    const base = {
+      orgId: ORG, runId: RUN, kind: 'input_capture' as const, name: 'x.csv',
+      contentType: 'text/csv', body: Buffer.from('a'), maxBytes: 1024,
+      createdByTool: 'export_dataset', region: 'us' as const,
+    };
+    await createArtifact({ ...base, dataset: 'event_logs' });
+    await createArtifact({ ...base });
+    expect(mocks.insertValues[0]).toMatchObject({ dataset: 'event_logs' });
+    expect(mocks.insertValues[1]).toMatchObject({ dataset: null });
   });
 
   it.each([
@@ -424,6 +437,16 @@ describe('findArtifactForCaller (A-W05 D13a/Q4) — input validation short-circu
   it('returns null without querying when the anchor carries neither a run nor a session — "no anchor" is never "any artifact of this org"', async () => {
     expect(await findArtifactForCaller(ART, { orgId: ORG })).toBeNull();
     expect(mocks.calls).toEqual([]);
+  });
+
+  it('#11845: returns null without querying when an analysisOutputs id is not a uuid', async () => {
+    const GRANT = '00000000-0000-4000-8000-0000000000b1';
+    // A queued row would come back if the query ran.
+    mocks.selectRows.push([row({ runId: null, sessionId: SESSION })], [row({ runId: null, sessionId: SESSION })]);
+    expect(await findArtifactForCaller(ART, { orgId: ORG, sessionId: SESSION, analysisOutputs: { grantId: 'not-a-uuid', orgIds: [ORG] } })).toBeNull();
+    expect(await findArtifactForCaller(ART, { orgId: ORG, sessionId: SESSION, analysisOutputs: { grantId: GRANT, orgIds: [ORG, 'x'] } })).toBeNull();
+    expect(mocks.selectRows).toHaveLength(2);
+    mocks.selectRows.length = 0;
   });
 
   it('returns the record when the anchor matches (run-anchored)', async () => {

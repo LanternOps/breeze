@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"sync/atomic"
 	"time"
 )
 
@@ -190,6 +191,42 @@ func recheckAbsence(probe func() error, window time.Duration, clock absenceClock
 type publishRecord struct {
 	start, end time.Time
 	err        error
+}
+
+// orderedClock stamps events recorded from several goroutines (rename
+// syscalls, the reader's probes) so that comparing two stamps gives the order
+// in which the stamping calls actually ran, however coarse base is.
+//
+// #6176: Go's wall clock on the hosted Windows runners advances in ~0.5ms
+// steps, so a rename entered a few hundred microseconds before the reader's
+// first miss was stamped EQUAL to it, and the strict "entered before the first
+// miss" test in renamesSpanning refused to excuse exactly the absence it was
+// written for. Each stamp is base's reading, or 1ns past the previous stamp
+// when base has not moved on; the compare-and-swap makes the stamps a single
+// strictly increasing sequence, so a stamp handed out before another call
+// starts is always the smaller. Durations still come from base: the nudges add
+// at most 1ns per stamp taken within one tick.
+type orderedClock struct {
+	base   func() time.Time
+	origin time.Time
+	last   atomic.Int64 // nanoseconds after origin of the latest stamp
+}
+
+func newOrderedClock(base func() time.Time) *orderedClock {
+	return &orderedClock{base: base, origin: base()}
+}
+
+func (c *orderedClock) now() time.Time {
+	for {
+		last := c.last.Load()
+		next := int64(c.base().Sub(c.origin))
+		if next <= last {
+			next = last + 1
+		}
+		if c.last.CompareAndSwap(last, next) {
+			return c.origin.Add(time.Duration(next))
+		}
+	}
 }
 
 // renameCall is one rename syscall (NtSetInformationFile with a rename

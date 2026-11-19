@@ -12,7 +12,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq, and, desc, sql, type SQL } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import {
   backupProfiles,
   configPolicyBackupSettings,
@@ -23,7 +23,7 @@ import { requireMfa, requirePermission } from '../../middleware/auth';
 import type { AuthContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { pgErrorCode, isPgForeignKeyViolationCode } from '../../utils/pgErrors';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   canManagePartnerWidePolicies,
@@ -285,14 +285,18 @@ profilesRoutes.delete(
     // silent no-op, not an error — reporting success would be a lie.
     let deleted: { id: string }[];
     try {
-      deleted = await db
-        .delete(backupProfiles)
-        .where(eq(backupProfiles.id, id))
-        .returning({ id: backupProfiles.id });
+      // Savepoint so the caught FK violation cannot poison the request
+      // transaction (#11203): the re-read below and the commit both need it.
+      deleted = await withDbTransaction(async () =>
+        db
+          .delete(backupProfiles)
+          .where(eq(backupProfiles.id, id))
+          .returning({ id: backupProfiles.id })
+      );
     } catch (err) {
       // A policy can link this profile between the check above and here; the
       // RESTRICT FK then fires. Re-read and return the same friendly 409.
-      if (pgErrorCode(err) === '23503') {
+      if (isPgForeignKeyViolationCode(pgErrorCode(err))) {
         const stillReferencing = await referencingPolicies(id);
         return c.json(
           {

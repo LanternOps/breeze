@@ -148,6 +148,7 @@ func TestWinSystem_VHDXProvisionRoundTrip(t *testing.T) {
 	requireElevatedForTest(t)
 	ctx := context.Background()
 	sys := NewWinSystem()
+	mntRoot := newMountTestRoot(t) // before the attach: its cleanup must run after the detach (#11211)
 	path, disk, detach := attachTestVHDX(t, sys, 128*MiB, 512)
 
 	diskGUID, _ := wingpt.NewGUID()
@@ -205,7 +206,7 @@ func TestWinSystem_VHDXProvisionRoundTrip(t *testing.T) {
 		}
 	}
 
-	mnt := filepath.Join(t.TempDir(), "mnt", "root") // does not exist yet
+	mnt := filepath.Join(mntRoot, "mnt", "root") // does not exist yet
 	if err := sys.MountVolume(v1.GUIDPath, mnt); err != nil {
 		t.Fatalf("MountVolume: %v", err)
 	}

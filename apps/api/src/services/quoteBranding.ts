@@ -15,7 +15,7 @@ import { db } from '../db';
 import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { buildSellerSnapshot, type SellerSnapshot } from './sellerSnapshot';
-import { resolveThemeId, resolvePageSize, type DocumentThemeId, type DocumentPageSize } from './documentThemes';
+import { resolveThemeId, resolvePageSize, resolvePartnerPageSize, type DocumentThemeId, type DocumentPageSize } from './documentThemes';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { resolveDocumentFooter, resolveInheritedDocumentFooter, type DocumentFooterSource } from './documentFooter';
 import { resolveInvoicePresentation, type InvoicePresentationSource } from './invoicePresentation';
@@ -47,7 +47,7 @@ export interface QuoteBranding {
   seller: SellerSnapshot | null;
   /** Document theme. Quotes: presentationSnapshot → partner.documentTheme → 'classic'. Invoices: resolveInvoicePresentation (frozen column → partner → 'classic'). */
   theme: DocumentThemeId;
-  /** Document page size. Quotes: presentationSnapshot → partner.documentPageSize → 'a4'. Invoices: resolveInvoicePresentation (frozen column → partner → 'a4'). */
+  /** Document page size. Quotes: presentationSnapshot → the partner's page size (its choice, else its region default — resolvePartnerPageSize, #12097). Invoices: resolveInvoicePresentation (frozen column → the same partner resolver). */
   pageSize: DocumentPageSize;
 }
 
@@ -77,7 +77,7 @@ export async function resolveQuoteBranding(quote: QuoteBrandingSource): Promise<
   const snap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
   return resolveDocumentBranding(quote, (partner) => ({
     theme: resolveThemeId(snap?.theme ?? partner?.documentTheme),
-    pageSize: resolvePageSize(snap?.pageSize ?? partner?.documentPageSize),
+    pageSize: resolvePageSize(snap?.pageSize ?? resolvePartnerPageSize(partner)),
   }), { partnerBrandFallback: true });
 }
 

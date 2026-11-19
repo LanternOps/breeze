@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   WISP_NUDGE_PREFERENCE_DEFAULTS,
+  resolveBriefTimezone,
   resolveWispNudgePrefs,
+  updateWispBrowserTimezoneSchema,
   updateWispNudgePreferencesSchema,
   updateWispNudgeSettingsSchema,
   wispActivityQuerySchema,
@@ -11,6 +13,32 @@ import {
 import { concernFeedbackBodySchema } from './wispConcerns';
 
 const GRANT = '11111111-1111-4111-8111-111111111111';
+
+describe('resolveBriefTimezone (#10402)', () => {
+  const all = { preference: 'Asia/Tokyo', phone: 'Europe/Berlin', browser: 'America/Denver', partner: 'America/New_York' };
+
+  it('resolves preference → phone → browser → partner → UTC', () => {
+    expect(resolveBriefTimezone(all)).toBe('Asia/Tokyo');
+    expect(resolveBriefTimezone({ ...all, preference: null })).toBe('Europe/Berlin');
+    expect(resolveBriefTimezone({ ...all, preference: null, phone: null })).toBe('America/Denver');
+    expect(resolveBriefTimezone({ ...all, preference: null, phone: null, browser: null })).toBe('America/New_York');
+    expect(resolveBriefTimezone({})).toBe('UTC');
+  });
+
+  it('skips a stored value that is not a real zone instead of falling all the way to UTC', () => {
+    expect(resolveBriefTimezone({ preference: 'Mars/Olympus', phone: '', browser: 'America/Denver' })).toBe('America/Denver');
+    expect(resolveBriefTimezone({ partner: 'not a zone' })).toBe('UTC');
+  });
+});
+
+describe('updateWispBrowserTimezoneSchema (#10402)', () => {
+  it('takes one real zone and nothing else', () => {
+    expect(updateWispBrowserTimezoneSchema.safeParse({ timezone: 'America/Denver' }).success).toBe(true);
+    expect(updateWispBrowserTimezoneSchema.safeParse({ timezone: 'Mars/Olympus' }).success).toBe(false);
+    expect(updateWispBrowserTimezoneSchema.safeParse({ timezone: null }).success).toBe(false);
+    expect(updateWispBrowserTimezoneSchema.safeParse({ timezone: 'UTC', userId: 'x' }).success).toBe(false);
+  });
+});
 
 describe('resolveWispNudgePrefs', () => {
   it('a missing row resolves to the defaults', () => {

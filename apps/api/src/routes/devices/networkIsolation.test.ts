@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   twoFactor: { enabled: true },
   start: vi.fn(), release: vi.fn(), extend: vi.fn(), acknowledge: vi.fn(),
-  codes: vi.fn(), list: vi.fn(),
+  codes: vi.fn(), list: vi.fn(), releaseToken: vi.fn(),
 }));
 
 vi.mock('../../routes/auth/schemas', async (importOriginal) => ({
@@ -60,6 +60,7 @@ vi.mock('../../services/networkIsolation/service', () => ({
   extendNetworkIsolation: h.extend,
   acknowledgeNetworkIsolation: h.acknowledge,
   getBreakGlassCodes: h.codes,
+  getReleaseToken: h.releaseToken,
   listDeviceIsolations: h.list,
 }));
 
@@ -85,6 +86,7 @@ const endpoints = [
   { name: 'acknowledge', method: 'POST', suffix: `/${EPISODE}/acknowledge`, body: {}, service: h.acknowledge, status: 200 },
   { name: 'codes', method: 'GET', suffix: `/${EPISODE}/break-glass-code`, body: undefined, service: h.codes, status: 200 },
   { name: 'list', method: 'GET', suffix: '', body: undefined, service: h.list, status: 200 },
+  { name: 'releaseToken', method: 'POST', suffix: `/${EPISODE}/release-token`, body: {}, service: h.releaseToken, status: 200 },
 ] as const;
 
 describe('human network-isolation routes', () => {
@@ -112,6 +114,7 @@ describe('human network-isolation routes', () => {
     h.acknowledge.mockReset().mockResolvedValue({ episode: { ...episode, state: 'released' } });
     h.codes.mockReset().mockResolvedValue({ generation: 1, current: 'ABCDEFG2', next: 'HIJKLMN3', currentValidUntil: new Date('2026-10-31T13:00:00Z') });
     h.list.mockReset().mockResolvedValue({ episodes: [episode], startEligibility: { allowed: false, reason: 'feature_disabled' } });
+    h.releaseToken.mockReset().mockResolvedValue({ generation: 1, token: 'payload.signature', notBefore: new Date('2026-10-31T12:00:00Z'), expiresAt: new Date('2026-10-31T14:00:00Z'), qrCodeDataUrl: 'data:image/png;base64,AA==' });
     app = new Hono();
     app.route('/devices', networkIsolationRoutes);
   });
@@ -220,6 +223,13 @@ describe('human network-isolation routes', () => {
     expect((await request(endpoints[0])).status).toBe(status);
   });
 
+  it('passes the allowlistReason through in the invalid_allowlist body', async () => {
+    h.start.mockResolvedValue({ error: 'invalid_allowlist', allowlistReason: 'server_url_missing' });
+    const res = await request(endpoints[0]);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_allowlist', code: 'invalid_allowlist', allowlistReason: 'server_url_missing' });
+  });
+
   it.each([
     ['site_forbidden', { 'x-deny-site': 'true' }, 403],
     ['device_not_found', {}, 404],
@@ -227,6 +237,21 @@ describe('human network-isolation routes', () => {
     if (code === 'device_not_found') vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(null);
     expect((await request(endpoints[0], headers)).status).toBe(status);
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'device.isolation.refused', details: { code } }));
+  });
+
+  it('serves a release token uncached', async () => {
+    const res = await request(endpoints.find(e => e.name === 'releaseToken')!);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.json()).toMatchObject({ token: 'payload.signature', generation: 1 });
+  });
+
+  it.each([['release_token_unavailable', 'releaseToken'], ['break_glass_code_disabled', 'codes']] as const)('maps %s to 409', async (code, name) => {
+    const endpoint = endpoints.find(e => e.name === name)!;
+    endpoint.service.mockResolvedValue({ error: code });
+    const res = await request(endpoint);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: code, code });
   });
 
 });

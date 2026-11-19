@@ -55,8 +55,8 @@ export function partnerWideDeniedError(): string {
 /**
  * `adminMiddleware` of routes/ticketConfig.ts, as a predicate: full partner
  * access AND (platform admin OR a wildcard `*:*` grant). `tickets:write` alone
- * is not enough for statuses, priorities, inbound domains or the email-inbound
- * queue. `TOOL_PERMISSIONS` cannot express this, so the handler applies it.
+ * is not enough for statuses, priorities or inbound domains (the email-inbound
+ * queue has its own `tickets:email_review` gate, see `ticketEmailReviewDenied`). `TOOL_PERMISSIONS` cannot express this, so the handler applies it.
  * Returns an error JSON string to return, or null when the caller passes.
  */
 export async function ticketConfigAdminDenied(auth: AuthContext): Promise<string | null> {
@@ -69,6 +69,23 @@ export async function ticketConfigAdminDenied(auth: AuthContext): Promise<string
   });
   if (perms && hasPermission(perms, '*', '*')) return null;
   return jsonError('Managing ticket configuration requires an admin role', 'ACCESS_DENIED');
+}
+
+/**
+ * Gate of the inbound-email review queue routes: full partner access AND
+ * `tickets:email_review` (a platform admin or `*:*` grant satisfies it too).
+ * Mirrors `requirePartnerGlobalAccess` + `requirePermission` in routes/ticketConfig.ts (#10951).
+ */
+export async function ticketEmailReviewDenied(auth: AuthContext): Promise<string | null> {
+  if (!canManagePartnerWidePolicies(auth)) return partnerWideDeniedError();
+  if (auth.user.isPlatformAdmin) return null;
+  const perms = await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId ?? undefined,
+    orgId: auth.orgId ?? undefined,
+    scope: auth.scope,
+  });
+  if (perms && hasPermission(perms, 'tickets', 'email_review')) return null;
+  return jsonError('Reviewing the inbound email queue requires the tickets:email_review permission', 'ACCESS_DENIED');
 }
 
 /** A partner id is required for every partner-keyed table; system callers must carry one too. */

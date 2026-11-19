@@ -45,11 +45,13 @@ import { sql } from 'drizzle-orm';
 import { db } from '../db';
 import type { configPolicyMaintenanceSettings } from '../db/schema';
 import {
+  maintenanceDayOfMonth,
   maintenanceNextOccurrenceStart,
   maintenanceOccurrenceStart,
   maintenanceWallClock,
   parseRecurringWindowAnchor,
   resolveMaintenanceConfigForDevice,
+  type MaintenanceRecurrenceSettings,
 } from './featureConfigResolver';
 import { dateFromSqlValue } from './portal/sqlTimestamp';
 
@@ -69,7 +71,7 @@ type MaintenanceSettingsRow = typeof configPolicyMaintenanceSettings.$inferSelec
 type ProjectableMaintenanceSettings = Pick<
   MaintenanceSettingsRow,
   'id' | 'recurrence' | 'windowStart' | 'timezone' | 'durationHours' | 'rebootIfPending'
->;
+> & Pick<MaintenanceRecurrenceSettings, 'dayOfWeek' | 'dayOfMonth'>;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -132,7 +134,7 @@ export function projectNextConfigPolicyWindow(
   // Already closed? Advance ONE step (the governing occurrence is by
   // construction the most recent one, so its successor is the next).
   if (localFrom.getTime() >= start.getTime() + durationMs) {
-    const next = maintenanceNextOccurrenceStart(settings.recurrence, start);
+    const next = maintenanceNextOccurrenceStart(settings, start);
     if (next === null) return null; // `once`, in the past
     start = next;
   }
@@ -156,7 +158,11 @@ const DESCRIBE_HORIZON_DAYS = 366;
 
 export interface MaintenanceScheduleDescription {
   recurrence: string;
-  /** "Sunday" (weekly), "day 1 of each month", "every day", or the `once` date. null = never opens. */
+  /**
+   * "Sunday" (weekly), "day 1 of each month" (monthly; a day past 28 adds
+   * "(the last day in shorter months)"), "every day", or the `once` date.
+   * null = never opens.
+   */
   opensOn: string | null;
   /** HH:MM wall-clock start in `timezone`. null = never opens. */
   startTime: string | null;
@@ -182,9 +188,8 @@ function isValidTimeZone(tz: string): boolean {
 
 /**
  * #10397: the schedule a maintenance settings blob actually runs on, for the
- * AI tools. The stored settings cannot answer "which day" (there is no day
- * field, see #9574), and a blank `windowStart` reads as "never opens" when it
- * means midnight. Every value here is read back from the evaluator's own
+ * AI tools. A blank `windowStart` reads as "never opens" when it means
+ * midnight, and an absent day field (#9574) means Sunday / the 1st. Every value here is read back from the evaluator's own
  * arithmetic (`maintenanceOccurrenceStart`, `projectNextConfigPolicyWindow`)
  * rather than restating its rules, so the description cannot disagree with
  * what `isInMaintenanceWindow` suppresses.
@@ -211,6 +216,10 @@ export function describeMaintenanceSchedule(
     id: 'effective',
     recurrence: s.recurrence as MaintenanceSettingsRow['recurrence'],
     windowStart: typeof s.windowStart === 'string' ? s.windowStart : null,
+    // Passed through as stored: the evaluator owns the absent/invalid fallback
+    // (Sunday / the 1st), so the description cannot name a different day.
+    dayOfWeek: typeof s.dayOfWeek === 'string' ? s.dayOfWeek : null,
+    dayOfMonth: typeof s.dayOfMonth === 'number' ? s.dayOfMonth : null,
     timezone: zoneValid ? storedZone : 'UTC',
     durationHours: s.durationHours,
     rebootIfPending: s.rebootIfPending === true,
@@ -245,10 +254,15 @@ export function describeMaintenanceSchedule(
       opensOn = WEEKDAY_NAMES[occurrence.getUTCDay()]!;
       lead = `Every ${opensOn}`;
       break;
-    case 'monthly':
-      opensOn = `day ${occurrence.getUTCDate()} of each month`;
-      lead = `Day ${occurrence.getUTCDate()} of each month`;
+    case 'monthly': {
+      // The CONFIGURED day, not the governing occurrence's: a day-31 window
+      // whose last occurrence was 30 September still opens on the 31st.
+      const day = maintenanceDayOfMonth(row.dayOfMonth);
+      const clampNote = day > 28 ? ' (the last day in shorter months)' : '';
+      opensOn = `day ${day} of each month${clampNote}`;
+      lead = `Day ${day} of each month${clampNote}`;
       break;
+    }
     case 'daily':
       opensOn = 'every day';
       lead = 'Every day';

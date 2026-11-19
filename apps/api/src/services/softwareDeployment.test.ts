@@ -74,6 +74,8 @@ vi.mock('../db', () => ({
   // routes/scripts.test.ts and tenantVariableResolution.test.ts.
   runOutsideDbContext: <T>(fn: () => T): T => fn(),
   withSystemDbAccessContext: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  withDbTransaction: <T>(fn: () => T): T => fn(),
+  withDbTransactionIfHeld: <T>(fn: () => T): T => fn(),
 }));
 
 // Wrap drizzle's condition builders in spies (behavior preserved) so tests can
@@ -1054,6 +1056,87 @@ describe('createSoftwareDeployment', () => {
     const payload = dispatchDeviceCommandMock.mock.calls[0]![0].payload;
     expect(payload.downloadUrl).toBe('https://edr.example/agent.exe');
     expect(payload.silentInstallArgs).toBe('/SILENT /TOKEN=abc');
+  });
+
+  describe('framework EDR providers (#8170)', () => {
+    const LINK = 'https://download.example.test/setupdownloader_synthetic.exe';
+    const version = {
+      id: 'ver-fw',
+      catalogId: 'cat-1',
+      s3Key: null,
+      downloadUrl: '{edr_installer_url}',
+      checksum: 'a'.repeat(64),
+      originalFileName: 'GravityZoneInstaller.exe',
+      fileType: 'msi',
+      silentInstallArgs: '{edr_installer_args}',
+      version: 'latest',
+    };
+    const deploy = () => createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-fw',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+    const arrange = (integrationProvider: string, resolves = true) => {
+      selectMock.mockReturnValueOnce(sel([version])).mockReturnValueOnce(sel([{ id: 'cat-1', orgId: null, name: 'Agent', integrationProvider }]));
+      if (resolves) selectMock.mockReturnValueOnce(sel([{ id: 'dev-1', agentId: 'agent-1' }]));
+      insertMock.mockReturnValueOnce(insWithReturning([{ id: 'dep-fw', orgId: 'org-1' }])).mockReturnValueOnce(ins());
+    };
+
+    it('the resolver overrides the file name, file type and checksum, and the payload names the provider', async () => {
+      resolveEdrMock.mockResolvedValueOnce({
+        downloadUrl: LINK,
+        silentInstallArgs: '/bdparams /silent',
+        fileName: 'setupdownloader_synthetic.exe',
+        fileType: 'exe',
+        checksum: null,
+      });
+      arrange('bitdefender');
+      const result = await deploy();
+      expect(result.status).toBe('pending');
+      expect(resolveEdrMock).toHaveBeenLastCalledWith(expect.objectContaining({ provider: 'bitdefender', orgId: 'org-1' }));
+      expect(dispatchDeviceCommandMock.mock.calls[0]![0].payload).toMatchObject({
+        downloadUrl: LINK,
+        silentInstallArgs: '/bdparams /silent',
+        fileName: 'setupdownloader_synthetic.exe',
+        fileType: 'exe',
+        checksum: null,
+        integrationProvider: 'bitdefender',
+      });
+    });
+
+    it.each(['emsisoft', 'not-a-provider'])('%s has no installer path: every result fails closed, nothing is dispatched', async (provider) => {
+      resolveEdrMock.mockClear();
+      arrange(provider, false);
+      const failWhere = vi.fn().mockResolvedValue(undefined);
+      const failSet = vi.fn().mockReturnValue({ where: failWhere });
+      updateMock.mockReturnValue({ set: failSet });
+      const result = await deploy();
+      expect(result.status).toBe('failed');
+      expect(result.message).toBe(`Unsupported integration provider: ${provider}`);
+      expect(failSet).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed', errorMessage: `Unsupported integration provider: ${provider}`,
+      }));
+      expect(resolveEdrMock).not.toHaveBeenCalled();
+      expect(dispatchDeviceCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('a Huntress payload keeps the version file name, type and checksum, and gains no key', async () => {
+      resolveEdrMock.mockResolvedValueOnce({ downloadUrl: LINK, silentInstallArgs: '/S' });
+      selectMock
+        .mockReturnValueOnce(sel([{ ...version, fileType: 'exe', originalFileName: 'HuntressInstaller.exe' }]))
+        .mockReturnValueOnce(sel([{ id: 'cat-1', orgId: null, name: 'Huntress', integrationProvider: 'huntress' }]))
+        .mockReturnValueOnce(sel([{ id: 'dev-1', agentId: 'agent-1' }]));
+      insertMock.mockReturnValueOnce(insWithReturning([{ id: 'dep-fw', orgId: 'org-1' }])).mockReturnValueOnce(ins());
+      await deploy();
+      const payload = dispatchDeviceCommandMock.mock.calls[0]![0].payload;
+      expect(payload).toMatchObject({
+        fileName: 'HuntressInstaller.exe', fileType: 'exe', checksum: 'a'.repeat(64),
+      });
+      expect(payload).not.toHaveProperty('integrationProvider');
+    });
   });
 
   it('fails the whole EDR deployment (no dispatch) when the resolver returns an error', async () => {

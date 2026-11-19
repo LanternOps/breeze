@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -101,14 +102,18 @@ func journalVacuumEstimate(currentUsage, target int64) int64 {
 	return 0
 }
 
-var aptRemvPattern = regexp.MustCompile(`(?m)^Remv\s+(\S+)`)
-var aptPlanPattern = regexp.MustCompile(`(?m)^\d+ upgraded, \d+ newly installed, (\d+) to remove`)
+var aptRemvPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`(?m)^Remv\s+(\S+)`) })
+var aptPlanPattern = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`(?m)^\d+ upgraded, \d+ newly installed, (\d+) to remove`)
+})
 
 // Debian policy §5.6.1. The captured name is handed straight back to
 // dpkg-query as an argv token, so anything else is dropped rather than quoted.
-var debianPackageNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{1,127}$`)
-var dnfFreedPattern = regexp.MustCompile(`(?m)^Freed space:\s*([0-9.,]+\s*[KkMGTP]?i?B?)\s*$`)
-var journalUsagePattern = regexp.MustCompile(`[Jj]ournals take up ([0-9.,]+\s*[KkMGTP]?i?B?) in the file system`)
+var debianPackageNamePattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{1,127}$`) })
+var dnfFreedPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`(?m)^Freed space:\s*([0-9.,]+\s*[KkMGTP]?i?B?)\s*$`) })
+var journalUsagePattern = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`[Jj]ournals take up ([0-9.,]+\s*[KkMGTP]?i?B?) in the file system`)
+})
 
 // parseAptAutoremovePackages reads the package names from
 // `apt-get -s autoremove`.
@@ -125,16 +130,16 @@ var journalUsagePattern = regexp.MustCompile(`[Jj]ournals take up ([0-9.,]+\s*[K
 //   - a plan that removes 0 packages -> ([], true): a KNOWN empty plan
 //   - anything else (a lock error, a future format) -> (nil, false)
 func parseAptAutoremovePackages(stdout string) ([]string, bool) {
-	matches := aptRemvPattern.FindAllStringSubmatch(stdout, -1)
+	matches := aptRemvPattern().FindAllStringSubmatch(stdout, -1)
 	if len(matches) == 0 {
-		if plan := aptPlanPattern.FindStringSubmatch(stdout); plan != nil && plan[1] == "0" {
+		if plan := aptPlanPattern().FindStringSubmatch(stdout); plan != nil && plan[1] == "0" {
 			return []string{}, true
 		}
 		return nil, false
 	}
 	names := make([]string, 0, len(matches))
 	for _, match := range matches {
-		if debianPackageNamePattern.MatchString(match[1]) {
+		if debianPackageNamePattern().MatchString(match[1]) {
 			names = append(names, match[1])
 		}
 	}
@@ -186,7 +191,7 @@ func parseDnfAutoremoveFreed(stdout string, exitCode int) (int64, bool) {
 	if exitCode != 0 && exitCode != 1 {
 		return 0, false
 	}
-	match := dnfFreedPattern.FindStringSubmatch(stdout)
+	match := dnfFreedPattern().FindStringSubmatch(stdout)
 	if match == nil {
 		if strings.Contains(stdout, "Nothing to do") {
 			return 0, true
@@ -197,7 +202,7 @@ func parseDnfAutoremoveFreed(stdout string, exitCode int) (int64, bool) {
 }
 
 func parseJournalDiskUsage(stdout string) (int64, bool) {
-	match := journalUsagePattern.FindStringSubmatch(stdout)
+	match := journalUsagePattern().FindStringSubmatch(stdout)
 	if match == nil {
 		return 0, false
 	}

@@ -186,6 +186,7 @@ export type BindCandidateUser = {
   status: BoundUserStatus;
   partnerId: string | null;
   passwordHash: string | null;
+  isPlatformAdmin: boolean;
   mfaEnabled: boolean;
   mfaMethod: string | null;
   mfaSecret: string | null;
@@ -208,6 +209,7 @@ export async function findUserForBind(email: string): Promise<BindCandidateUser 
       status: users.status,
       partnerId: users.partnerId,
       passwordHash: users.passwordHash,
+      isPlatformAdmin: users.isPlatformAdmin,
       mfaEnabled: users.mfaEnabled,
       mfaMethod: users.mfaMethod,
       mfaSecret: users.mfaSecret,

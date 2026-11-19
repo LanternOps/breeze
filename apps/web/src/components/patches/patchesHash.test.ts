@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { encodePatchesHash, mergePatchesHash, orgAgnosticPatchesHash, parsePatchesHash } from './patchesHash';
+import {
+  encodePatchesHash,
+  mergePatchesHash,
+  mergeVendorUpdatesHash,
+  orgAgnosticPatchesHash,
+  parsePatchesHash,
+} from './patchesHash';
 
 describe('parsePatchesHash', () => {
   it('reads the compliance status with or without the tab token', () => {
@@ -87,5 +93,43 @@ describe('orgAgnosticPatchesHash', () => {
     expect(orgAgnosticPatchesHash('')).toBeNull();
     expect(orgAgnosticPatchesHash('#')).toBeNull();
     expect(orgAgnosticPatchesHash('#dev-1')).toBeNull();
+  });
+});
+
+describe('the Vendor updates tab (#11074)', () => {
+  it('reads the tab, its state filter and its vendor filter', () => {
+    expect(parsePatchesHash('#vendor-updates')).toMatchObject({ tab: 'vendor-updates', vendorState: null, vendorLane: null });
+    expect(parsePatchesHash('#vendor-updates&state=reboot_overdue&lane=hp')).toMatchObject({
+      tab: 'vendor-updates',
+      vendorState: 'reboot_overdue',
+      vendorLane: 'hp',
+    });
+  });
+
+  it('ignores a value outside the vocabulary', () => {
+    expect(parsePatchesHash('#vendor-updates&state=bogus&lane=acer')).toMatchObject({ vendorState: null, vendorLane: null });
+  });
+
+  it('writes its own keys and keeps the rest', () => {
+    expect(mergeVendorUpdatesHash('#vendor-updates', { state: 'overdue' })).toBe('#vendor-updates&state=overdue');
+    expect(mergeVendorUpdatesHash('#vendor-updates&state=overdue', { lane: 'dell' })).toBe('#vendor-updates&state=overdue&lane=dell');
+    expect(mergeVendorUpdatesHash('#vendor-updates&state=overdue&lane=dell', { state: 'all' })).toBe('#vendor-updates&lane=dell');
+    expect(mergeVendorUpdatesHash('#vendor-updates&lane=dell', { lane: 'all' })).toBe('#vendor-updates');
+    expect(mergeVendorUpdatesHash('#vendor-updates&foo=1', { state: 'failing' })).toBe('#vendor-updates&foo=1&state=failing');
+  });
+
+  it('keeps the tab and its filters across an org switch: a fixed vocabulary means the same in every org', () => {
+    expect(orgAgnosticPatchesHash('#vendor-updates&state=overdue&lane=dell')).toBe('vendor-updates&state=overdue&lane=dell');
+    expect(orgAgnosticPatchesHash('#vendor-updates')).toBe('vendor-updates');
+    expect(orgAgnosticPatchesHash('#vendor-updates&foo=1')).toBe('vendor-updates');
+  });
+
+  it('its filters mean nothing on another tab', () => {
+    expect(orgAgnosticPatchesHash('#compliance&state=overdue')).toBe('compliance');
+  });
+
+  it('leaves the compliance status alone', () => {
+    expect(parsePatchesHash('#compliance&status=failed').vendorState).toBeNull();
+    expect(mergePatchesHash('#compliance', { status: 'failed' })).toBe('#compliance&status=failed');
   });
 });

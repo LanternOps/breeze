@@ -146,7 +146,9 @@ export type AiPageContext =
   // tell that an open chat session belongs to a different tenant than the page
   // it is now sitting on (#5684). It is a client-side hint only: the API never
   // authorizes on it — the session org is derived from the device row (#5593).
-  | { type: 'device'; id: string; hostname: string; orgId?: string; os?: string; status?: string; ip?: string }
+  // `displayName` is the web badge's label only (#11673): aiPageContextSchema
+  // does not carry it, so the API strips it on parse and no prompt sees it.
+  | { type: 'device'; id: string; hostname: string; displayName?: string; orgId?: string; os?: string; status?: string; ip?: string }
   | { type: 'alert'; id: string; title: string; severity?: string; deviceHostname?: string }
   | { type: 'dashboard'; orgName?: string; deviceCount?: number; alertCount?: number }
   | { type: 'custom'; label: string; data: Record<string, unknown> }
@@ -233,12 +235,46 @@ export type AiTopologyProgressPhase = 'gathering_evidence' | 'analyzing' | 'vali
 
 /**
  * #9431: how an approval card's wait ended, as far as the session knows.
- * `not_approved` covers a denial and a timeout alike (the legacy wait cannot
- * tell them apart); `ended` means the wait stopped without a decision here
- * (settled by a new message or interrupt, or a durable intent that can still
- * be decided in Approvals).
+ * `not_approved` is a denial; `expired` (#12079) means the request ran out of
+ * time before anyone decided it; `ended` means the wait stopped without a
+ * decision here (settled by a new message or interrupt, or a durable intent
+ * that can still be decided in Approvals). Only `approved` means the action
+ * may run: a client must treat every other value, including one it does not
+ * know, as not approved.
  */
-export type AiApprovalOutcome = 'approved' | 'not_approved' | 'ended';
+export type AiApprovalOutcome = 'approved' | 'not_approved' | 'expired' | 'ended';
+
+/**
+ * #10416: who an `approval_required` card is waiting on. `'you'` means the
+ * requester can decide it (a Tier-2 card, or an intent that fanned an approval
+ * row out to them); `'other_approvers'` means someone else must decide: any
+ * intent where the requester holds no approval row (e.g. four-eyes in a
+ * multi-approver org), or a helper card decided by PAM policy or an admin.
+ */
+export type AiApprovalWaitingOn = 'you' | 'other_approvers';
+
+/**
+ * #9428: machine codes the server puts on an `error` stream event. A client
+ * decides from the code, never the message text, whether "Try again" can help.
+ * Only `timeout`, `provider_error` and `stream_error` are retryable server
+ * codes; the rest need a new session, a different model, an administrator or
+ * waiting (rate limit). Kept in step with the web classifier (lib/aiErrors.ts).
+ */
+export type AiStreamErrorCode =
+  | 'timeout'
+  | 'provider_error'
+  | 'stream_error'
+  | 'rate_limited'
+  | 'provider_auth'
+  | 'provider_quota'
+  | 'context_window_exceeded'
+  | 'budget_exceeded'
+  | 'turn_limit_reached'
+  | 'config_changed'
+  | 'session_expired'
+  | 'session_evicted'
+  | 'topology_limit'
+  | 'topology_failed';
 
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
@@ -316,8 +352,13 @@ export type AiStreamEvent =
    * leaving the value buried in the collapsed parameter JSON. Letting an
    * assistant choose SYSTEM for a user-context script is a privilege
    * decision, and the human deciding it has to be told.
+   *
+   * #10416: `pushedToPhone` (Tier-2 only; absent means unknown, not "no push")
+   * is true when a push provider accepted at least one push for the
+   * requester's phone; `waitingOn` says who must decide.
+   * The thinking indicator shows the wait from these while the card is open.
    */
-  | { type: 'approval_required'; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
+  | { type: 'approval_required'; pushedToPhone?: boolean; waitingOn?: AiApprovalWaitingOn; executionId: string; approvalRequestId?: string; selfApprovalRequestId?: string; approvalScope?: AiApprovalScope; intentExpiresAt?: string; approvalWindowMs?: number; approvalExpiresAt?: string; toolName: string; input: Record<string, unknown>; description: string; requiresAdminApproval?: boolean; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string; activeSessions?: Array<{ username: string; activityState?: string; idleMinutes?: number; sessionType: string }> }; intentBacked?: boolean; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary; standingInstructionConflict?: AiStandingInstructionConflict; ticketContext?: AiApprovalTicketContext }
   /**
    * W03 (#5612): a proposal outcome delivered into the author's chat session —
    * request-changes findings + note, or a verification result. The durable
@@ -347,8 +388,14 @@ export type AiStreamEvent =
   | { type: 'title_updated'; title: string }
   | { type: 'message_end'; inputTokens: number; outputTokens: number }
   | { type: 'warning'; message: string; context?: string }
-  /** `code` names a failure the client can act on; `turn_limit_reached` = the session's turn budget is spent (start a new session). */
-  | { type: 'error'; message: string; code?: 'turn_limit_reached' }
+  /**
+   * `code` names a failure the client can act on (see AiStreamErrorCode);
+   * `turn_limit_reached` = the session's turn budget is spent (start a new
+   * session). Absent on older servers: a client treats a missing or unknown
+   * code as not retryable. `detail` is an optional secondary line (#9428:
+   * the model gateway's reason behind a timeout).
+   */
+  | { type: 'error'; message: string; code?: AiStreamErrorCode; detail?: string }
   // ── Generic client-declared session tools (e.g. Helper chat) — published by
   //    services/clientSessionTools.ts when the model calls a client-declared tool.
   | { type: 'client_tool_request'; toolUseId: string; toolName: string; input: Record<string, unknown> }
@@ -374,14 +421,36 @@ export type AiStreamEvent =
   | {
       type: 'run_result';
       runId: string;
-      status: 'completed' | 'failed';
+      /**
+       * `awaiting_approval` (#11084): a device-troubleshooting run settled with
+       * steps a person must approve. Not terminal for the card's status copy,
+       * but the run will not move again on its own, so polling may stop.
+       */
+      status: 'completed' | 'failed' | 'awaiting_approval';
       /** `ai_agent_runs.summary` — narrative text, never a tool payload. */
       summary: string | null;
       artifacts: AiRunResultArtifactRef[];
+      /** Set with `awaiting_approval` only: how many of the run's intents are still pending. */
+      pendingIntentCount?: number;
     }
   // `usage` is set by the streaming manager's result case so client surfaces
   // can render turn cost (turn_complete). Technician UI ignores it.
-  | { type: 'done'; usage?: { inputTokens: number; outputTokens: number; costCents: number } }
+  | {
+    type: 'done';
+    usage?: { inputTokens: number; outputTokens: number; costCents: number };
+    /**
+     * #11676: the technician pressed Stop and this turn ended because of it.
+     * Not a failure: no `error` precedes it, and the partial reply so far is
+     * kept and marked stopped.
+     */
+    stopped?: true;
+    /**
+     * #10428 (Wisp only): the turn's message held a standing instruction, and
+     * its capture runs after `done`. The chip polls
+     * `GET /wisp/memory/captures/status/:captureId` until it is terminal.
+     */
+    wispInstructionCapture?: { captureId: string };
+  }
   /**
    * #9427: the first data frame of `GET /ai/sessions/:id/stream` (attach). A
    * snapshot of the session's CURRENT turn on this API instance — never sent
@@ -391,6 +460,27 @@ export type AiStreamEvent =
   | ({ type: 'attach_state' } & AiAttachState);
 
 /** The cards a turn can be blocked on, verbatim as they were published. */
+/**
+ * #10428 (W06): a Wisp card whose call matches a remembered standing
+ * instruction that does not refuse it (unconfirmed, conditional, or a
+ * `possible` match). The card shows a red banner; the description carries
+ * the same text so every channel shows it.
+ */
+export type AiStandingInstructionConflict = { text: string };
+
+/**
+ * #11674: the ticket a `manage_tickets` approval acts on, resolved server-side
+ * (org-pinned) so the chat card can name it by number and say who a public
+ * reply emails. The requester fields mirror `tickets.submitter_*`, which is
+ * where the notify worker sends customer-visible replies.
+ */
+export type AiApprovalTicketContext = {
+  ticketNumber: string;
+  subject: string;
+  requesterName?: string;
+  requesterEmail?: string;
+};
+
 export type AiPendingCardEvent = Extract<AiStreamEvent, { type: 'approval_required' | 'plan_approval_required' }>;
 
 /**

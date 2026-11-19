@@ -100,6 +100,10 @@ vi.mock('../../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
+vi.mock('./commandOrgScope', () => ({
+  deviceCommandsInCurrentOrg: vi.fn(async () => ({ op: 'commandOrgScope' })),
+}));
+
 vi.mock('./helpers', async () => {
   const actual = await vi.importActual<typeof import('./helpers')>('./helpers');
   return {

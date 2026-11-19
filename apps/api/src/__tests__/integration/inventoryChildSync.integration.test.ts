@@ -80,6 +80,21 @@ describe('inventory disk/network sync (#6698)', () => {
     expect(root).toMatchObject({ mountPoint: '/', usedGb: 25, freeGb: 75, usedPercent: 25 });
   });
 
+  runDb('stores the Windows OS volume marker and clears it on a legacy report', async () => {
+    const device = await seedDevice();
+    const legacy = disks(10).map((disk, index) => ({ ...disk, mountPoint: index === 0 ? 'C:' : 'D:' }));
+    const reported = legacy.map((disk) => ({ ...disk, isOsVolume: disk.mountPoint === 'D:' }));
+    const markers = () => getTestDb().select({ mountPoint: deviceDisks.mountPoint, isOsVolume: deviceDisks.isOsVolume })
+      .from(deviceDisks).where(eq(deviceDisks.deviceId, device.id)).orderBy(asc(deviceDisks.mountPoint));
+    await getTestDb().transaction((tx) => syncDeviceDisks(tx, device, reported, new Date()));
+    const initialIds = await diskIds(device.id);
+    expect(await markers()).toEqual([{ mountPoint: 'C:', isOsVolume: false }, { mountPoint: 'D:', isOsVolume: true }]);
+
+    await getTestDb().transaction((tx) => syncDeviceDisks(tx, device, legacy, new Date()));
+    expect(await markers()).toEqual([{ mountPoint: 'C:', isOsVolume: null }, { mountPoint: 'D:', isOsVolume: null }]);
+    expect(await diskIds(device.id)).toEqual(initialIds);
+  });
+
   runDb('added and removed disks advance the inventory watermark; survivors keep their ids', async () => {
     const device = await seedDevice();
     await getTestDb().transaction((tx) => syncDeviceDisks(tx, device, disks(10), new Date()));
@@ -170,6 +185,25 @@ const hardwareRow = async (deviceId: string) => (await getTestDb().select().from
   .where(eq(deviceHardware.deviceId, deviceId)))[0];
 const report = (device: { id: string; orgId: string }, memory: MemoryInventoryReport | null, hardware = HARDWARE) =>
   (tx: Tx) => writeHardwareReport(tx, device, hardware, memory, new Date());
+
+describe('hardware report product number (#9593)', () => {
+  runDb('stores, replaces, and keeps the value when a later report omits it', async () => {
+    const device = await seedDevice();
+    const write = (hardware: Record<string, unknown>) =>
+      getTestDb().transaction((tx) => writeHardwareReport(tx, device, hardware, null, new Date()));
+
+    await write({ ...HARDWARE, productSku: '5S3F8EA#ABB' });
+    expect((await hardwareRow(device.id))?.productSku).toBe('5S3F8EA#ABB');
+
+    await write({ ...HARDWARE, productSku: '9X9X9XX#ABB' });
+    expect((await hardwareRow(device.id))?.productSku).toBe('9X9X9XX#ABB');
+
+    // An agent omits the field when it has no value, as it does for the serial:
+    // absent cannot be told apart from a collection gap, so it never clears.
+    await write(HARDWARE);
+    expect((await hardwareRow(device.id))?.productSku).toBe('9X9X9XX#ABB');
+  });
+});
 
 describe('inventory memory module sync (#5351)', () => {
   runDb('stores every slot in report order with the hardware memory summary', async () => {

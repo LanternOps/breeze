@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // loginctlTimeout bounds each loginctl invocation. logind can wedge; the reboot
@@ -161,7 +163,7 @@ func listSessionIDs(ctx context.Context, loginctl string) ([]string, error) {
 func runLoginctl(ctx context.Context, loginctl string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, loginctlTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, loginctl, args...)
+	cmd := procspawn.CommandContext(ctx, loginctl, args...)
 	// A fixed environment for the same reason CommandEnv builds one: loginctl
 	// reads $XDG_SESSION_ID and friends, and the daemon's copies are not the
 	// ones we are asking about.
@@ -223,7 +225,7 @@ func (s GraphicalSession) Command(ctx context.Context, name string, args ...stri
 		return nil, err
 	}
 
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := procspawn.CommandContext(ctx, path, args...)
 	cmd.Env = s.CommandEnv()
 	// Never the user's home, and never the daemon's cwd. This path writes no
 	// files at all; "/" is simply the least interesting place to stand.
@@ -238,6 +240,7 @@ func (s GraphicalSession) Command(ctx context.Context, name string, args ...stri
 			return nil, err
 		}
 		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
+		procspawn.Prepare(cmd)
 	case uint64(euid) == uid:
 		// Already the session user — a user-mode agent, or a developer run.
 		// Nothing to drop.

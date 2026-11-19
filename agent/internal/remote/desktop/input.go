@@ -45,6 +45,15 @@ type InputEvent struct {
 }
 
 // InputHandler processes input events
+// ScreenGeometryRefresher is implemented by input handlers that cache screen
+// metrics (the Windows virtual-screen size, the macOS backing scale factor).
+// The session calls it after the display resolution changes mid-session so
+// injected coordinates use the new geometry at once, not after the next
+// mouse-down (#11754).
+type ScreenGeometryRefresher interface {
+	RefreshScreenGeometry()
+}
+
 type InputHandler interface {
 	// SetDisplayOffset sets the virtual screen offset of the captured monitor.
 	// All mouse coordinates from the viewer are relative to the captured monitor;

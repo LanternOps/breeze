@@ -261,10 +261,9 @@ export async function hasUnfinishedPolicyOwnedInstall(
  * no ambient context. It never rejects. A command that is never pushed stays
  * queued for the heartbeat claim.
  *
- * Nothing here touches the EDR secret-resolution branch
- * (softwareDeployment.ts:554-584): that fires only when the resolved catalog
- * item's integrationProvider is 'huntress' or 'sentinelone', and this path adds
- * no special handling for it either way.
+ * Nothing here touches the EDR secret-resolution branch in softwareDeployment.ts:
+ * that fires only when the resolved catalog item has an integrationProvider, and
+ * this path adds no special handling for it either way.
  */
 export async function createPolicyOwnedInstallDeployment(input: {
   policyId: string;

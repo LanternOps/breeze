@@ -71,6 +71,7 @@ function runGate({ osvReport, exceptions, scannerExit, scannerStderr, lockfile, 
   mkdirSync(bin, { recursive: true });
 
   copyFileSync(GATE, join(sec, 'check-npm-audit.sh'));
+  copyFileSync(join(REPO_ROOT, 'scripts', 'security', 'lockfile-scope.mjs'), join(sec, 'lockfile-scope.mjs'));
   writeFileSync(
     join(root, 'pnpm-lock.yaml'),
     lockfile ??
@@ -449,10 +450,71 @@ test('--findings-json writes every finding with its gate classification; the exi
   assert.equal(doc.scannedPackages, 3);
   assert.equal(doc.lockfilePackages, 3);
   const byPkg = Object.fromEntries(doc.findings.map((x) => [x.package, x]));
-  assert.deepEqual(byPkg['node-forge'], { package: 'node-forge', version: '1.4.0', ecosystem: 'npm', id: FORGE_ID, severity: 'HIGH', excepted: true, blocking: false });
+  assert.deepEqual(byPkg['node-forge'], { package: 'node-forge', version: '1.4.0', ecosystem: 'npm', id: FORGE_ID, severity: 'HIGH', excepted: true, blocking: false, scope: 'unknown' });
   assert.equal(byPkg.lodash.blocking, true);
   assert.equal(byPkg.qs.blocking, false);
   assert.deepEqual(doc.exceptionProblems, [{ id: 'GHSA-9999-8888-7777', package: 'old', expires: day(-1), status: 'EXPIRED' }]);
+});
+
+// #11137: each finding carries its dependency scope from a production-closure
+// walk of the scanned lockfile; a package the walk cannot place is "unknown".
+test('--findings-json records dependency scope; an unplaceable package is unknown', () => {
+  const lock = `lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    dependencies:
+      prod-root:
+        specifier: ^1.0.0
+        version: 1.0.0
+    devDependencies:
+      dev-root:
+        specifier: ^1.0.0
+        version: 1.0.0
+
+packages:
+
+  prod-root@1.0.0:
+    resolution: {integrity: sha512-x}
+
+  dev-root@1.0.0:
+    resolution: {integrity: sha512-x}
+
+  stray@1.0.0:
+    resolution: {integrity: sha512-x}
+
+snapshots:
+
+  prod-root@1.0.0: {}
+
+  dev-root@1.0.0: {}
+
+  stray@1.0.0: {}
+`;
+  const res = runGate({
+    osvReport: report(finding('prod-root', 'GHSA-1111-2222-3333', 'HIGH', '1.0.0'), finding('dev-root', 'GHSA-4444-5555-6666', 'HIGH', '1.0.0'), finding('stray', 'GHSA-7777-8888-9999', 'HIGH', '1.0.0')),
+    exceptions: { exceptions: [] },
+    lockfile: lock,
+    args: ['--findings-json', 'out/findings.json'],
+    setup: (root) => mkdirSync(join(root, 'out')),
+  });
+  const doc = JSON.parse(readFileSync(join(res.root, 'out', 'findings.json'), 'utf8'));
+  const scopes = Object.fromEntries(doc.findings.map((x) => [x.package, x.scope]));
+  assert.deepEqual(scopes, { 'prod-root': 'production', 'dev-root': 'dev', stray: 'unknown' }, out(res));
+});
+
+test('--findings-json: a lockfile the scope walk cannot read yields scope unknown with a warning, never a pass', () => {
+  const res = runGate({
+    osvReport: report(finding('lodash', 'GHSA-1111-2222-3333')),
+    exceptions: { exceptions: [] },
+    args: ['--findings-json', 'out/findings.json'],
+    setup: (root) => mkdirSync(join(root, 'out')),
+  });
+  assert.equal(res.status, 1, out(res));
+  assert.match(res.stdout, /::warning title=Dependency scope walk failed::/, out(res));
+  const doc = JSON.parse(readFileSync(join(res.root, 'out', 'findings.json'), 'utf8'));
+  assert.deepEqual(doc.findings.map((x) => x.scope), ['unknown']);
 });
 
 test('--findings-json is not written when scan integrity fails, and a stale one is removed', () => {

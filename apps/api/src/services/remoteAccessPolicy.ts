@@ -13,7 +13,8 @@ import { resolveEffectiveConfig } from './configurationPolicy';
 import { remoteAccessInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { getRemoteAccessBaseline } from './policyBaselineDefaults';
-import { db, runAfterDbContextExit, withDbTransaction } from '../db';
+import { db, withDbTransaction } from '../db';
+import { registerClusterInvalidator } from './clusterInvalidator';
 import { isParkedDevice, PARKED_DEVICE_COMMAND_REFUSAL_CODE } from './unassignedPool/deliveryEligibility';
 
 // ---------------------------------------------------------------------------
@@ -168,11 +169,11 @@ const DEFAULT_CACHE_MAX_AGE_MS = 30_000;
  * default could never hit and every beat re-ran the full effective-config
  * resolution inside the org transaction. Three minutes lets two beats in three
  * reuse it. The policy CRUD, assignment and remote_access feature-link routes
- * call `invalidateRemoteAccessCache()`, so on this process those changes land
- * on the next beat. Everything else that can change a device's effective
- * policy (device-group membership, a device moving site/org, writes on another
- * API instance) is bounded by this max age instead. Never pass it from a
- * capability gate.
+ * call `invalidateRemoteAccessCache()`, so on every API instance (W05 cluster
+ * cache bus, #8636) those changes land on the next beat. Everything else that
+ * can change a device's effective policy (device-group membership, a device
+ * moving site/org, and other instances while Redis is down) is bounded by this
+ * max age instead. Never pass it from a capability gate.
  */
 export const HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS = 180_000;
 
@@ -201,15 +202,17 @@ function dropCached(deviceId?: string): void {
   }
 }
 
+const remoteAccessInvalidator = registerClusterInvalidator('device-remote-access-policy', dropCached);
+
 /**
  * Drop cached resolutions now AND again once the caller's DB transaction has
  * settled. Policy routes call this from inside their request transaction,
  * before COMMIT; without the second drop, a heartbeat resolving in that window
  * would re-cache the pre-change policy for the heartbeat's whole max age.
+ * After COMMIT the drop is also announced to every other API instance (#8636).
  */
 export function invalidateRemoteAccessCache(deviceId?: string): void {
-  dropCached(deviceId);
-  runAfterDbContextExit('remoteAccessPolicy.invalidateCache', () => dropCached(deviceId));
+  remoteAccessInvalidator.invalidateAroundCommit(deviceId);
 }
 
 // ---------------------------------------------------------------------------

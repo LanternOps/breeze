@@ -116,6 +116,7 @@ describe('device_inventory manual-asset union (#4622)', () => {
       ramTotalMb: null,
       diskTotalGb: null,
       serialNumber: 'MANUAL-SN',
+      productSku: null,
     });
     // The agent row keeps exactly the shape it always had.
     expect(report.rows.find((r) => r.serialNumber === 'AGENT-SN')).toEqual(AGENT_ROW);

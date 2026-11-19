@@ -1,0 +1,18 @@
+-- Axcient x360Recover PARKED -> canonical `paused` (#11270). Enum add only.
+--
+-- A parked device is one an operator deliberately stopped protecting. It is
+-- not `not_started`, which Cove and Dropsuite use for a backup that never ran
+-- and which must keep alerting when it persists.
+--
+-- In its own file because a label added by ALTER TYPE cannot be used in the
+-- transaction that adds it, and autoMigrate wraps each file in one
+-- transaction. The first file that may use the label
+-- (2027-01-22-210000-backup-provider-devices-verified-bootable.sql) sorts
+-- after this one. No `-- @no-transaction` directive: ADD VALUE is legal inside
+-- a transaction since PostgreSQL 12 (precedent:
+-- 2026-10-26-170000-ticket-checklist-operator-task-source.sql).
+--
+-- ADD VALUE without BEFORE/AFTER appends, which keeps the label order equal to
+-- EXTERNAL_BACKUP_STATUSES (asserted by backupProviderRls.integration.test.ts).
+-- Writes no rows, so no breeze.scope election. Idempotent.
+ALTER TYPE public.external_backup_status ADD VALUE IF NOT EXISTS 'paused';

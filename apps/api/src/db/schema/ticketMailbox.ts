@@ -66,6 +66,11 @@ export const ticketMailboxConnections = pgTable('ticket_mailbox_connections', {
   baselineSkippedCount: integer('baseline_skipped_count').notNull().default(0),
   baselineCompletedAt: timestamp('baseline_completed_at', { withTimezone: true }),
   strictSenderAuth: boolean('strict_sender_auth').notNull().default(false),
+  // Microsoft 365 only (#10862): the ARC sealing domains (the d= of an ARC-Seal) of
+  // the inline mail gateways this mailbox's mail is relayed through. A seal that
+  // verifies from one of them supplies the sender-auth verdict in place of Exchange's,
+  // which judges relayed mail against the gateway. Empty = none, the default.
+  trustedArcSealers: text('trusted_arc_sealers').array().notNull().default(sql`'{}'::text[]`),
   lastPolledAt: timestamp('last_polled_at', { withTimezone: true }),
   lastMessageAt: timestamp('last_message_at', { withTimezone: true }),
   lastError: text('last_error'),
@@ -139,6 +144,11 @@ export const ticketMailboxConnections = pgTable('ticket_mailbox_connections', {
   baselineSkippedCountCheck: check(
     'ticket_mailbox_connections_baseline_skipped_count_check',
     sql`${table.baselineSkippedCount} >= 0`,
+  ),
+  trustedArcSealersCheck: check(
+    'ticket_mailbox_connections_trusted_arc_sealers_check',
+    sql`cardinality(${table.trustedArcSealers}) <= 10
+      AND (${table.provider} = 'm365' OR cardinality(${table.trustedArcSealers}) = 0)`,
   ),
   gmailHandledLabelCheck: check(
     'ticket_mailbox_connections_gmail_handled_label_check',

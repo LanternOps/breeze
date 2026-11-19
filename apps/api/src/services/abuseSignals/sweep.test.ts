@@ -22,7 +22,11 @@ const {
   markDelivered,
   sendOpsAlert,
   recordAbuseSignalFired,
+  restrictOnHardDeny,
+  partnerTrustMode,
+  captureException,
 } = vi.hoisted(() => ({
+  captureException: vi.fn(),
   computeInvariantSignals: vi.fn(),
   loadPartnerAggregates: vi.fn(),
   computeHeuristicSignals: vi.fn(),
@@ -42,6 +46,8 @@ const {
   markDelivered: vi.fn(),
   sendOpsAlert: vi.fn(),
   recordAbuseSignalFired: vi.fn(),
+  restrictOnHardDeny: vi.fn(),
+  partnerTrustMode: vi.fn(),
 }));
 
 // Context helpers as pass-through fns — the sweep's own runSystemDbCompute
@@ -73,10 +79,23 @@ vi.mock('./originIp', async (importOriginal) => ({
 }));
 vi.mock('./sendingDomains', () => ({ loadSendingDomainAggregates, computeSendingDomainSignals }));
 vi.mock('./persistence', () => ({ persistSignals, markDelivered }));
-vi.mock('../opsAlerts', () => ({ sendOpsAlert, isOpsAlertingConfigured: vi.fn(() => true) }));
+vi.mock('../opsAlerts', async (orig) => ({
+  ...(await orig<typeof import('../opsAlerts')>()),
+  sendOpsAlert,
+  isOpsAlertingConfigured: vi.fn(() => true),
+}));
 vi.mock('../abuseMetrics', () => ({ recordAbuseSignalFired, recordAbuseSweepRun: vi.fn() }));
+vi.mock('../partnerTrustPromotion', () => ({
+  restrictOnHardDeny,
+  AUTO_RESTRICT_SIGNAL_KEYS: ['billing.card_testing', 'rmm.recidivist_endpoint'],
+}));
+vi.mock('../../config/partnerTrustMode', () => ({ partnerTrustMode }));
+vi.mock('../sentry', () => ({ captureException }));
 
 import { runAbuseSweep } from './index';
+import { opsText } from '../opsAlerts';
+
+const HOSTILE = '[click](http://evil.example) `x`\n@everyone';
 
 function agg(overrides: Partial<PartnerAggregates>): PartnerAggregates {
   return {
@@ -138,6 +157,9 @@ beforeEach(() => {
   computeSendingDomainSignals.mockReturnValue([]);
   persistSignals.mockResolvedValue({ toNotify: [] });
   markDelivered.mockResolvedValue(undefined);
+  restrictOnHardDeny.mockResolvedValue(true);
+  partnerTrustMode.mockReturnValue('enforce');
+  delete process.env.ABUSE_SIGNAL_OVERRIDES;
 });
 
 describe('runAbuseSweep', () => {
@@ -150,6 +172,17 @@ describe('runAbuseSweep', () => {
     expect(markDelivered).toHaveBeenCalledTimes(1);
     expect(markDelivered.mock.calls[0]![0]).toEqual(['r1', 'r2']);
     expect(result.notified).toBe(2);
+  });
+
+  it('escapes the partner name and evidence in the signal alert', async () => {
+    persistSignals.mockResolvedValue({ toNotify: [{ ...notifiable('r1'), evidence: { partnerName: HOSTILE, note: HOSTILE } }] });
+    sendOpsAlert.mockResolvedValue(true);
+    await runAbuseSweep();
+    const { body } = sendOpsAlert.mock.calls[0]![0] as { body: string };
+    expect(body).toContain(opsText(HOSTILE));
+    expect(body).not.toContain('](http');
+    expect(body).not.toContain('`x`');
+    expect(body).not.toContain('\n@everyone');
   });
 
   it('does not call markDelivered when sendOpsAlert returns false for everything', async () => {
@@ -439,5 +472,102 @@ describe('sending-domain signals are wired into the sweep', () => {
     const [computed, , evaluated] = persistSignals.mock.calls[0]!;
     expect((computed as ComputedSignal[]).map((s) => s.signalKey)).toContain('email.partner_lane_cap_hit');
     expect((evaluated as ReadonlySet<string>).has('p-sending')).toBe(true);
+  });
+});
+
+describe('runAbuseSweep — immediate hard-deny evaluation for auto-restrict signals', () => {
+  const signal = (partnerId: string, signalKey: string, score: number): ComputedSignal => ({
+    partnerId,
+    signalKey,
+    score,
+    severity: score >= 70 ? 'alert' : score >= 40 ? 'watch' : 'info',
+    evidence: {},
+  });
+
+  it('evaluates hard denies right after persisting an alert-score card_testing or recidivist signal', async () => {
+    computeBillingIdentitySignals.mockReturnValue([
+      signal('p-card', 'billing.card_testing', 100),
+      signal('p-name', 'billing.cardholder_name_mismatch', 90),
+    ]);
+    computeRecidivistSignals.mockReturnValue([signal('p-recid', 'rmm.recidivist_endpoint', 100)]);
+
+    await runAbuseSweep();
+
+    expect(restrictOnHardDeny.mock.calls.map((c) => c[0]).sort()).toEqual(['p-card', 'p-recid']);
+    // Signals are persisted first, so the hard-deny SQL sees the open row.
+    expect(persistSignals.mock.invocationCallOrder[0]!).toBeLessThan(restrictOnHardDeny.mock.invocationCallOrder[0]!);
+  });
+
+  it('skips a card_testing signal below the configured alert score', async () => {
+    computeBillingIdentitySignals.mockReturnValue([signal('p-card', 'billing.card_testing', 65)]);
+
+    await runAbuseSweep();
+
+    expect(restrictOnHardDeny).not.toHaveBeenCalled();
+  });
+
+  it('honours an overridden alert score', async () => {
+    process.env.ABUSE_SIGNAL_OVERRIDES = JSON.stringify({ 'severity.alert_score': 101 });
+    computeBillingIdentitySignals.mockReturnValue([signal('p-card', 'billing.card_testing', 100)]);
+
+    await runAbuseSweep();
+
+    expect(restrictOnHardDeny).not.toHaveBeenCalled();
+    delete process.env.ABUSE_SIGNAL_OVERRIDES;
+  });
+
+  it('evaluates each partner once even when both signals fire for it', async () => {
+    computeBillingIdentitySignals.mockReturnValue([signal('p1', 'billing.card_testing', 100)]);
+    computeRecidivistSignals.mockReturnValue([signal('p1', 'rmm.recidivist_endpoint', 100)]);
+
+    await runAbuseSweep();
+
+    expect(restrictOnHardDeny).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing when partner trust is off (self-hosted)', async () => {
+    partnerTrustMode.mockReturnValue('off');
+    computeBillingIdentitySignals.mockReturnValue([signal('p-card', 'billing.card_testing', 100)]);
+
+    await runAbuseSweep();
+
+    expect(restrictOnHardDeny).not.toHaveBeenCalled();
+  });
+
+  it('keeps going (and still delivers alerts) when one evaluation throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    computeBillingIdentitySignals.mockReturnValue([
+      signal('p-a', 'billing.card_testing', 100),
+      signal('p-b', 'billing.card_testing', 100),
+    ]);
+    restrictOnHardDeny.mockRejectedValueOnce(new Error('db exploded'));
+    persistSignals.mockResolvedValue({ toNotify: [notifiable('r1')] });
+    sendOpsAlert.mockResolvedValue(true);
+
+    const result = await runAbuseSweep();
+
+    expect(restrictOnHardDeny).toHaveBeenCalledTimes(2);
+    expect(result.notified).toBe(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('p-a'), expect.any(Error));
+    expect(captureException).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('restricts before delivering ops alerts', async () => {
+    computeBillingIdentitySignals.mockReturnValue([signal('p-card', 'billing.card_testing', 100)]);
+    persistSignals.mockResolvedValue({ toNotify: [notifiable('r1', 'p-card')] });
+    sendOpsAlert.mockResolvedValue(true);
+
+    await runAbuseSweep();
+
+    expect(restrictOnHardDeny.mock.invocationCallOrder[0]!).toBeLessThan(sendOpsAlert.mock.invocationCallOrder[0]!);
+  });
+
+  it('evaluates a signal exactly at the alert score', async () => {
+    computeBillingIdentitySignals.mockReturnValue([signal('p-card', 'billing.card_testing', 70)]);
+
+    await runAbuseSweep();
+
+    expect(restrictOnHardDeny).toHaveBeenCalledWith('p-card');
   });
 });

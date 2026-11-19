@@ -320,6 +320,55 @@ describe('GET /monitor-definitions/kinds', () => {
   });
 });
 
+describe('#10935: autoResolveConditions without logic never reaches the service', () => {
+  const noLogic = { conditions: [{ type: 'event_log', category: 'application', level: 'info', countThreshold: 1, windowMinutes: 60 }] };
+  const eventLog = { kind: 'event_log', condition: { category: 'application', level: 'warning', countThreshold: 1, windowMinutes: 60 } };
+
+  it('POST returns 400 at autoResolveConditions, not 201', async () => {
+    const res = await jsonRequest(buildApp(), 'POST', '', validCreateBody({ ...eventLog, autoResolveConditions: noLogic }));
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain('autoResolveConditions');
+    expect(createMonitorDefinitionMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH returns 400 at autoResolveConditions, with or without the kind', async () => {
+    for (const body of [{ autoResolveConditions: noLogic }, { kind: 'event_log', autoResolveConditions: noLogic }]) {
+      const res = await jsonRequest(buildApp(), 'PATCH', `/${MONITOR_ID}`, body);
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toContain('autoResolveConditions');
+    }
+    expect(updateMonitorDefinitionMock).not.toHaveBeenCalled();
+  });
+
+  it('POST accepts the event_log shape', async () => {
+    createMonitorDefinitionMock.mockResolvedValue(monitorRow());
+    const res = await jsonRequest(buildApp(), 'POST', '', validCreateBody({
+      ...eventLog,
+      autoResolveConditions: { category: 'application', level: 'info', messagePattern: 'Power Restored' },
+    }));
+
+    expect(res.status).toBe(201);
+    expect(createMonitorDefinitionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the warning for a recovery event that is not collected', async () => {
+    createMonitorDefinitionMock.mockResolvedValue(monitorRow({
+      ...eventLog,
+      autoResolveConditions: { category: 'application', level: 'info', sourcePattern: 'Nothing-Collects-This', countThreshold: 1, windowMinutes: 60 },
+    }));
+    const res = await jsonRequest(buildApp(), 'POST', '', validCreateBody({
+      ...eventLog,
+      autoResolveConditions: { category: 'application', level: 'info', sourcePattern: 'Nothing-Collects-This' },
+    }));
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { warnings?: string[] };
+    expect(body.warnings).toEqual(expect.arrayContaining([expect.stringContaining('Recovery condition')]));
+  });
+});
+
 describe('POST /monitor-definitions', () => {
   it('creates and returns 201 { data }', async () => {
     const created = monitorRow();

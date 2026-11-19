@@ -1355,8 +1355,8 @@ describe('listConfigPolicies feature links', () => {
 
   it('attaches each policy its own feature links, and an empty array when it has none', async () => {
     const rows = [
-      { id: 'policy-a', name: 'Workstations', orgId: ORG_ID, orgName: 'OliveTech' },
-      { id: 'policy-b', name: 'Servers', orgId: ORG_ID, orgName: 'OliveTech' },
+      { id: 'policy-a', name: 'Workstations', orgId: ORG_ID, orgName: 'Fabrikam MSP' },
+      { id: 'policy-b', name: 'Servers', orgId: ORG_ID, orgName: 'Fabrikam MSP' },
     ];
     const links = linksChain([
       { id: 'link-1', configPolicyId: 'policy-a', featureType: 'patch' },
@@ -1382,7 +1382,7 @@ describe('listConfigPolicies feature links', () => {
     // undefined (the UI renders the em-dash only for a genuinely empty array).
     expect(result.data[1]).toMatchObject({ id: 'policy-b', featureLinks: [] });
     // Pre-existing fields are untouched: the change is purely additive.
-    expect(result.data[0]).toMatchObject({ name: 'Workstations', orgName: 'OliveTech' });
+    expect(result.data[0]).toMatchObject({ name: 'Workstations', orgName: 'Fabrikam MSP' });
     expect(result.pagination).toEqual({ page: 1, limit: 25, total: 2 });
   });
 
@@ -1444,7 +1444,7 @@ describe('listConfigPolicies feature links', () => {
     // covers a partner-wide row (orgId null) carrying its own links.
     const rows = [
       { id: 'policy-partnerwide', name: 'All orgs', orgId: null, orgName: null },
-      { id: 'policy-org', name: 'OliveTech only', orgId: ORG_ID, orgName: 'OliveTech' },
+      { id: 'policy-org', name: 'Fabrikam MSP only', orgId: ORG_ID, orgName: 'Fabrikam MSP' },
     ];
 
     vi.mocked(db.select)
@@ -1486,7 +1486,7 @@ describe('listConfigPolicies feature links', () => {
     const rows = [
       { id: 'policy-assigned', name: 'Assigned to all orgs', orgId: null, partnerId: 'partner-1' },
       { id: 'policy-unassigned', name: 'Not assigned yet', orgId: null, partnerId: 'partner-1' },
-      { id: 'policy-org', name: 'OliveTech only', orgId: ORG_ID },
+      { id: 'policy-org', name: 'Fabrikam MSP only', orgId: ORG_ID },
     ];
     const assignments = assignmentsChain([{ configPolicyId: 'policy-assigned' }]);
 

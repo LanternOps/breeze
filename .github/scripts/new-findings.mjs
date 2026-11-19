@@ -17,8 +17,14 @@
 // missing document as a hard failure. A document this script cannot read or
 // validate exits 2 — never a pass.
 //
-// Finding: { id, pkg, version, ecosystem }; key `ecosystem|pkg|version|id`, so
-// the same advisory on the same package at a different version is new.
+// Finding: { id, pkg, version, ecosystem, scope }; key
+// `ecosystem|pkg|version|id|scope`, so the same advisory on the same package at
+// a different version is new, and so is the same version moving from dev-only
+// into the production closure (#11137: an advisory already blocking on base as
+// dev-only used to hide that move). scope is "production" or "dev"; a finding
+// with no scope, or scope "unknown" (the lockfile walk could not place it), is
+// production — a scope that cannot be determined fails closed. A move from
+// production to dev-only is a demotion, not a new finding.
 //
 // CLI:
 //   node new-findings.mjs --base <file> --head <file> [--exceptions-touched]
@@ -29,6 +35,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCHEMA = 1;
+const SCOPES = new Set(['production', 'dev', 'unknown']);
+const SCOPE_RANK = { dev: 0, unknown: 1, production: 2 };
 const PROBLEM_STATUSES = new Set(['EXPIRED', 'TOO_FAR']);
 
 class UsageError extends Error {}
@@ -48,6 +56,7 @@ function assertDoc(json) {
     for (const k of ['excepted', 'blocking']) {
       if (typeof x[k] !== 'boolean') throw new Error(`findings[${i}].${k} must be a boolean`);
     }
+    if (x.scope !== undefined && !SCOPES.has(x.scope)) throw new Error(`findings[${i}].scope must be production, dev or unknown`);
   });
   json.exceptionProblems.forEach((x, i) => {
     if (x === null || typeof x !== 'object') throw new Error(`exceptionProblems[${i}] must be an object`);
@@ -59,7 +68,8 @@ function assertDoc(json) {
   return json;
 }
 
-export const findingKey = (f) => `${f.ecosystem}|${f.pkg}|${f.version}|${f.id}`;
+export const findingKey = (f) => `${f.ecosystem}|${f.pkg}|${f.version}|${f.id}|${f.scope}`;
+const identityKey = (f) => `${f.ecosystem}|${f.pkg}|${f.version}|${f.id}`;
 
 // The blocking findings of a check-npm-audit.sh --findings-json document,
 // deduplicated and sorted by key. Excepted and below-threshold findings never
@@ -70,16 +80,34 @@ export function normalize(tool, json) {
   const byKey = new Map();
   for (const x of doc.findings) {
     if (!x.blocking) continue;
-    const f = { id: x.id, pkg: x.package, version: x.version, ecosystem: x.ecosystem };
-    byKey.set(findingKey(f), f);
+    // No scope field → production. An explicit "unknown" stays distinct: as a
+    // head finding it blocks like production, and as a BASE entry it covers no
+    // production head finding (a failed base walk must not wave a dev→production
+    // move through).
+    const scope = x.scope === undefined ? 'production' : x.scope;
+    const f = { id: x.id, pkg: x.package, version: x.version, ecosystem: x.ecosystem, scope };
+    // The same package@version can sit in several scopes; the widest wins.
+    const prior = byKey.get(identityKey(f));
+    if (prior && SCOPE_RANK[prior.scope] >= SCOPE_RANK[scope]) continue;
+    byKey.set(identityKey(f), f);
   }
   return [...byKey.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, f]) => f);
 }
 
-// Head findings whose key is not among the base findings.
+// Head findings the base does not already carry at the same or a wider scope:
+// a dev-only head finding is covered by any base entry of the same advisory; a
+// production head finding only by a production base entry; an unknown head
+// finding (blocks like production) by a production entry or an unknown one
+// (neither side's walk placed it, so nothing got worse).
 export function newFindings(base, head) {
   const seen = new Set(base.map(findingKey));
-  return head.filter((f) => !seen.has(findingKey(f)));
+  const anyScope = new Set(base.map(identityKey));
+  const covered = (f) => {
+    if (f.scope === 'dev') return anyScope.has(identityKey(f));
+    if (seen.has(`${identityKey(f)}|production`)) return true;
+    return f.scope === 'unknown' && seen.has(findingKey(f));
+  };
+  return head.filter((f) => !covered(f));
 }
 
 // Expired / out-of-policy exception entries of a document.
@@ -110,7 +138,7 @@ export function findingsTable(json) {
 // --- CLI ---------------------------------------------------------------------
 
 const escapeData = (s) => String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
-const label = (f) => `${f.pkg}@${f.version} ${f.id} (${f.ecosystem})`;
+const label = (f) => `${f.pkg}@${f.version} ${f.id} (${f.ecosystem}, ${f.scope})`;
 
 function parseCli(argv) {
   const opts = { exceptionsTouched: false };
@@ -165,13 +193,13 @@ function main(argv) {
   const base = normalize('osv', baseDoc);
   const head = normalize('osv', headDoc);
   const added = newFindings(base, head);
-  const baseKeys = new Set(base.map(findingKey));
-  const existing = head.filter((f) => baseKeys.has(findingKey(f)));
+  const baseIds = new Set(base.map(identityKey));
+  const existing = head.filter((f) => !added.includes(f) && baseIds.has(identityKey(f)));
   const problems = exceptionProblems(headDoc);
   const problemsBlock = opts.exceptionsTouched && problems.length > 0;
 
   for (const f of added) {
-    process.stdout.write(`::error title=New advisory::${escapeData(`${label(f)} is introduced by this change — upgrade it, or add a reviewed entry to scripts/security/npm-audit-exceptions.json`)}\n`);
+    process.stdout.write(`::error title=New advisory::${escapeData(`${label(f)} is introduced by this change (or moved into the production closure from dev-only) — upgrade it, or add a reviewed entry to scripts/security/npm-audit-exceptions.json`)}\n`);
   }
   for (const f of existing) {
     process.stdout.write(`::warning title=Advisory already on base::${escapeData(`${label(f)} is also on the base commit, so it does not block this change; main's daily audit tracks it`)}\n`);

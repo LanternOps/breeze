@@ -13,6 +13,7 @@ import {
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
+  FolderPlus,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
@@ -21,7 +22,7 @@ import '@/lib/i18n';
 export type FileActivity = {
   id: string;
   timestamp: string;
-  action: 'copy' | 'move' | 'delete' | 'restore' | 'upload' | 'download' | 'purge';
+  action: 'copy' | 'move' | 'delete' | 'restore' | 'upload' | 'download' | 'purge' | 'mkdir';
   paths: string[];
   result: 'success' | 'failure' | 'unverified';
   error?: string;
@@ -46,6 +47,7 @@ const actionConfig: Record<
   upload: { labelKey: 'fileActivityPanel.actions.upload', icon: Upload, color: 'text-cyan-400' },
   download: { labelKey: 'fileActivityPanel.actions.download', icon: Download, color: 'text-green-400' },
   purge: { labelKey: 'fileActivityPanel.actions.purge', icon: Trash2, color: 'text-red-500' },
+  mkdir: { labelKey: 'fileActivityPanel.actions.mkdir', icon: FolderPlus, color: 'text-blue-400' },
 };
 
 function truncatePath(path: string, maxLength = 40): string {

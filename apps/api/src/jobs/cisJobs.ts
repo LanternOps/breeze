@@ -11,6 +11,8 @@ import {
 import { queueCommand } from '../services/commandQueue';
 import { normalizeCisSchedule } from '../services/cisHardening';
 import { seedDefaultCisCheckCatalog } from '../services/cisCatalog';
+import { deferUntilDatabaseWritable } from '../db/deferUntilWritable';
+import { isReadOnlySqlError } from '../db/readOnlyDatabase';
 import { publishEvent } from '../services/eventBus';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
@@ -708,10 +710,23 @@ async function scheduleRecurringCisJobs(): Promise<void> {
   );
 }
 
-export async function initializeCisJobs(): Promise<void> {
+async function seedCisCatalog(): Promise<void> {
   const seeded = await seedDefaultCisCheckCatalog();
   if (seeded > 0) {
     console.log(`[CisJobs] Seeded ${seeded} CIS check catalog entries`);
+  }
+}
+
+export async function initializeCisJobs(): Promise<void> {
+  try {
+    await seedCisCatalog();
+  } catch (error) {
+    // #11741: the seed is an INSERT on every boot. On a read-only database
+    // the catalog the last writable boot seeded is still there; seed again
+    // once writes are accepted instead of failing the consumer for the life
+    // of the process.
+    if (!isReadOnlySqlError(error)) throw error;
+    deferUntilDatabaseWritable('CisJobs catalog seed', seedCisCatalog);
   }
 
   cisWorker = createCisWorker();

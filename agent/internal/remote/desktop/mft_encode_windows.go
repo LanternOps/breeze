@@ -11,13 +11,6 @@ import (
 	"unsafe"
 )
 
-// mftStallThreshold is the maximum consecutive nil outputs from the MFT before
-// the pipeline is flushed and restarted. Hardware MFTs (Intel Quick Sync, etc.)
-// can stall permanently on certain GPUs. Flushing at 8 frames (~133ms at 60fps)
-// must trigger before the screen goes idle, otherwise the stall counter freezes.
-// breaks the stall with acceptable quality loss (one IDR keyframe).
-const mftStallThreshold = 8
-
 // Async-MFT input pacing. When an async MFT has not yet posted a
 // METransformNeedInput token, encodeAsync yield-spins up to mftAsyncInputWait
 // for one before skipping the captured frame. The wait is strictly bounded so
@@ -40,6 +33,7 @@ const mftAsyncInputWait = 3 * time.Millisecond
 func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastSubmitOK = false
 
 	if len(frame) == 0 {
 		return nil, fmt.Errorf("empty frame")
@@ -82,7 +76,7 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 		nv12 = rgbaToNV12(frame, m.width, m.height, m.stride)
 	}
 	m.record(time.Since(convertStart))
-	defer putNV12Buffer(nv12)
+	defer m.releaseOrRetainNV12(nv12)
 
 	// Create MF sample with NV12 data
 	sample, err := m.createSample(nv12)
@@ -97,7 +91,7 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 	}
 
 	// If the MFT is mid-stall, skip feeding to avoid a blocking ProcessInput.
-	if m.consecutiveNilOutputs >= mftStallThreshold {
+	if _, refuseAt := m.stallThresholds(); m.consecutiveNilOutputs >= refuseAt {
 		m.permanentlyStalled = true
 		slog.Warn("MFT stall detected before ProcessInput (CPU path), marking permanently stalled",
 			"consecutiveNil", m.consecutiveNilOutputs, "frameIdx", m.frameIdx, "isHW", m.isHW)
@@ -115,7 +109,16 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 		return out, nil
 	}
 
-	// Feed to encoder
+	out, err := m.submitSync(sample, false, "ProcessInput failed")
+	m.noteRefreshOutput(out)
+	return out, err
+}
+
+// submitSync feeds one sample to a synchronous MFT, drains the output it
+// produced (if any) and runs the stall tracking. refeed marks an idle
+// re-submit from CatchUpIdle. Inputs and outputs are counted for the idle
+// catch-up. Caller holds m.mu.
+func (m *mftEncoder) submitSync(sample uintptr, refeed bool, failPrefix string) ([]byte, error) {
 	ret, _, _ := syscall.SyscallN(
 		m.vtblFn(vtblProcessInput),
 		m.transform,
@@ -130,6 +133,7 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		m.noteSyncOutput(out)
 		ret, _, _ = syscall.SyscallN(
 			m.vtblFn(vtblProcessInput),
 			m.transform,
@@ -141,21 +145,153 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 			m.trackNilOutput(out)
 			return out, nil // Return what we drained
 		}
+		m.catchUp.noteSubmitted(refeed)
+		m.lastSubmitOK = true
 		if out != nil {
 			m.trackNilOutput(out)
 			return out, nil
 		}
 	} else if int32(ret) < 0 {
-		return nil, fmt.Errorf("ProcessInput failed: 0x%08X", uint32(ret))
+		return nil, fmt.Errorf("%s: 0x%08X", failPrefix, uint32(ret))
+	} else {
+		m.catchUp.noteSubmitted(refeed)
+		m.lastSubmitOK = true
 	}
 
 	// Try to get output
 	out, err := m.drainOutput()
+	m.noteSyncOutput(out)
 	if err != nil {
 		return out, err
 	}
 	m.trackNilOutput(out)
 	return out, nil
+}
+
+// noteSyncOutput counts one synchronous output for the idle catch-up.
+func (m *mftEncoder) noteSyncOutput(out []byte) {
+	if out != nil {
+		m.catchUp.noteEmitted()
+	}
+}
+
+// releaseOrRetainNV12 disposes of the NV12 buffer of a frame Encode or
+// EncodeTexture converted. A synchronous MFT that accepted the frame keeps it
+// as the retained frame for CatchUpIdle (returning the previous one to the
+// pool), so the retained pixels are always those of the newest submitted
+// frame. Otherwise (async MFT, encoder torn down, input refused or failed) the
+// buffer goes back to the pool as before. Caller holds m.mu.
+func (m *mftEncoder) releaseOrRetainNV12(nv12 []byte) {
+	if m.asyncMode || !m.inited || !m.lastSubmitOK {
+		putNV12Buffer(nv12)
+		return
+	}
+	if m.retainedNV12 != nil {
+		putNV12Buffer(m.retainedNV12)
+	}
+	m.retainedNV12 = nv12
+}
+
+// dropRetainedNV12 releases the retained frame and forgets the catch-up state
+// (encoder torn down or re-initialized). Caller holds m.mu.
+func (m *mftEncoder) dropRetainedNV12() {
+	if m.retainedNV12 != nil {
+		putNV12Buffer(m.retainedNV12)
+		m.retainedNV12 = nil
+	}
+	m.catchUp.clear()
+	m.refresh.cancel()
+}
+
+// stallThresholds returns the stall flush and refuse-input limits for this
+// MFT (mftNilStallThresholds). Caller holds m.mu.
+func (m *mftEncoder) stallThresholds() (flushAt, refuseAt int) {
+	recent := m.lastStallFlush != (time.Time{}) && time.Since(m.lastStallFlush) < 10*time.Second
+	return mftNilStallThresholds(m.isHW, recent)
+}
+
+// CatchUpIdle implements optionalIdleCatchUp. On a capture iteration with no
+// new frame, a synchronous software MFT re-submits its retained last frame
+// for one of two reasons (nextIdleRefeed):
+//   - catch-up (#11622): the newest submitted frame is still inside the
+//     encoder; the re-submit pushes one held frame out;
+//   - quality refresh (#11639): an expensive output has settled; the
+//     re-submit lets CBR rate control drain and refine the coarse picture.
+//
+// The output is returned for the capture loop to send. It is a no-op for
+// hardware MFTs (async or not: their stall thresholds are below the
+// re-submit budgets, and the lab has not shown them holding frames or losing
+// quality this way), when nothing is owed and no refresh is due, and once the
+// budgets are spent.
+func (m *mftEncoder) CatchUpIdle() ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.inited || m.isHW || m.asyncMode || m.permanentlyStalled || m.transform == 0 {
+		return nil, nil
+	}
+	if len(m.retainedNV12) == 0 {
+		return nil, nil
+	}
+	if len(m.retainedNV12) != m.width*m.height*3/2 {
+		// Dimensions changed without a re-init; the frame no longer fits.
+		m.dropRetainedNV12()
+		return nil, nil
+	}
+	if _, refuseAt := m.stallThresholds(); m.consecutiveNilOutputs >= refuseAt {
+		return nil, nil
+	}
+	kind := nextIdleRefeed(&m.catchUp, &m.refresh, m.now())
+	switch kind {
+	case idleRefeedNone:
+		return nil, nil
+	case idleRefeedCatchUp:
+		if !m.catchUpLogged {
+			m.catchUpLogged = true
+			slog.Info("MFT encoder is holding frames on a static screen; re-submitting the last frame so the viewer catches up",
+				"held", m.catchUp.held(), "isHW", m.isHW, "frameIdx", m.frameIdx)
+		}
+	case idleRefeedQuality:
+		if !m.refreshLogged {
+			m.refreshLogged = true
+			slog.Info("MFT encoder quality refresh: re-submitting the last frame after a burst of change on a static screen",
+				"frames", qualityRefreshFrames(m.cfg.FPS), "bitrate", m.cfg.Bitrate, "fps", m.cfg.FPS, "frameIdx", m.frameIdx)
+		}
+	}
+	out, err := m.resubmitRetainedLocked()
+	noteIdleRefeedResult(&m.refresh, kind, m.now(), out, err, frameBudgetBytes(m.cfg.Bitrate, m.cfg.FPS), m.cfg.FPS)
+	return out, err
+}
+
+// resubmitRetainedLocked feeds the retained frame to the synchronous MFT
+// again and returns what it produced. Caller holds m.mu.
+func (m *mftEncoder) resubmitRetainedLocked() ([]byte, error) {
+	sample, err := m.createSample(m.retainedNV12)
+	if err != nil {
+		return nil, fmt.Errorf("create idle re-submit sample: %w", err)
+	}
+	defer comRelease(sample)
+	if m.forceKeyframePending {
+		_ = m.forceKeyframeLocked()
+	}
+	return m.submitSync(sample, true, "ProcessInput (idle re-submit)")
+}
+
+// noteRefreshOutput reports an output that is not a refresh re-submit to the
+// quality refresh, which an expensive one arms (#11639). Only the synchronous
+// software MFT refreshes, so other MFTs skip the IDR scan. Caller holds m.mu.
+func (m *mftEncoder) noteRefreshOutput(out []byte) {
+	if out == nil || m.isHW || m.asyncMode {
+		return
+	}
+	m.refresh.noteOutput(m.now(), out, frameBudgetBytes(m.cfg.Bitrate, m.cfg.FPS), m.cfg.FPS)
+}
+
+// now is the refresh's clock (time.Now unless a test set clock).
+func (m *mftEncoder) now() time.Time {
+	if m.clock != nil {
+		return m.clock()
+	}
+	return time.Now()
 }
 
 func (m *mftEncoder) vtblFn(idx int) uintptr {
@@ -573,6 +709,7 @@ func (m *mftEncoder) flushLocked() {
 	}
 	m.needInputCredits = 0
 	m.pendingOutput = nil
+	m.catchUp.noteReset()
 	m.forceKeyframePending = true
 	_ = m.forceKeyframeLocked()
 }
@@ -604,11 +741,9 @@ func (m *mftEncoder) trackNilOutput(out []byte) {
 				"gpuFailed", m.gpuFailed,
 			)
 		}
-		threshold := mftStallThreshold
-		// After a recent flush, use a lower threshold for faster second recovery.
-		if m.lastStallFlush != (time.Time{}) && time.Since(m.lastStallFlush) < 10*time.Second {
-			threshold = mftStallThreshold / 2
-		}
+		// Hardware: a lower threshold after a recent flush for faster second
+		// recovery. Software: one threshold above its warm-up (#11622).
+		threshold, _ := m.stallThresholds()
 		if m.consecutiveNilOutputs >= threshold && time.Since(m.lastStallFlush) >= 2*time.Second {
 			// Track consecutive flush cycles without output. If the encoder
 			// never produces output after multiple flushes, it's permanently
@@ -691,6 +826,7 @@ func (m *mftEncoder) forceKeyframeLocked() error {
 func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastSubmitOK = false
 
 	if bgraTexture == 0 {
 		return nil, fmt.Errorf("nil BGRA texture")
@@ -796,7 +932,7 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("GPU convert: %w", err)
 	}
-	defer putNV12Buffer(nv12)
+	defer m.releaseOrRetainNV12(nv12)
 
 	// Diagnostic: check NV12 Y-plane brightness at multiple positions.
 	// Y=16 is limited-range black; varied values indicate real content.
@@ -871,7 +1007,7 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 	// 3. Feed to encoder. If the MFT is mid-stall (accepting input but not
 	// producing output), skip feeding and mark permanently stalled instead
 	// of risking a blocking ProcessInput call.
-	if m.consecutiveNilOutputs >= mftStallThreshold {
+	if _, refuseAt := m.stallThresholds(); m.consecutiveNilOutputs >= refuseAt {
 		// NOTE: sample is released by the deferred comRelease above — an
 		// explicit release here would double-release (refcount already 1).
 		m.permanentlyStalled = true
@@ -891,42 +1027,7 @@ func (m *mftEncoder) EncodeTexture(bgraTexture uintptr) ([]byte, error) {
 		return out, nil
 	}
 
-	ret, _, _ := syscall.SyscallN(
-		m.vtblFn(vtblProcessInput),
-		m.transform,
-		0, // stream ID
-		sample,
-		0, // flags
-	)
-
-	if uint32(ret) == mfENotAccepting {
-		out, err := m.drainOutput()
-		if err != nil {
-			return nil, err
-		}
-		ret, _, _ = syscall.SyscallN(
-			m.vtblFn(vtblProcessInput),
-			m.transform,
-			0,
-			sample,
-			0,
-		)
-		if int32(ret) < 0 {
-			m.trackNilOutput(out)
-			return out, nil
-		}
-		if out != nil {
-			m.trackNilOutput(out)
-			return out, nil
-		}
-	} else if int32(ret) < 0 {
-		return nil, fmt.Errorf("ProcessInput (GPU): 0x%08X", uint32(ret))
-	}
-
-	out, err := m.drainOutput()
-	if err != nil {
-		return out, err
-	}
-	m.trackNilOutput(out)
-	return out, nil
+	out, err := m.submitSync(sample, false, "ProcessInput (GPU)")
+	m.noteRefreshOutput(out)
+	return out, err
 }

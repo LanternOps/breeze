@@ -141,6 +141,8 @@ runDb('a clean proposal becomes reviewed: static_scan + model rows, classifier f
   expect(ledger).toHaveLength(1);
   expect(ledger[0]).toMatchObject({ surface: 'script_reviewer', sourceRef: `script-review:${proposal.id}`, fundingSource: 'platform' });
   expect(Number(ledger[0]!.costCents)).toBeCloseTo(0.174, 4);
+  // #11972: the review row records the same cents the ledger billed.
+  expect(rows[1]!.costCents).toBe('0.1740');
 
   // The inline wait W01b's propose_script uses returns the MODEL row.
   const awaited = await waitForReviewCompletion(proposal.id, 5_000);
@@ -167,10 +169,56 @@ runDb('a retry of the same job after success is a no-op: same row back, no secon
 runDb('an unparseable verdict fails closed: model row failed, proposal review_failed, reservation still settled', async () => {
   const { org } = await seedOrg();
   const proposal = await seedProposedProposal(org.id);
-  messagesCreateMock.mockResolvedValueOnce({
-    usage: { input_tokens: 300, output_tokens: 40 },
-    content: [{ type: 'text', text: 'I refuse to answer in JSON.' }],
-  });
+  // #10954: an unparseable reply gets one retry, so the model answers twice.
+  messagesCreateMock
+    .mockResolvedValueOnce({
+      usage: { input_tokens: 300, output_tokens: 40 },
+      content: [{ type: 'text', text: 'I refuse to answer in JSON.' }],
+    })
+    .mockResolvedValueOnce({
+      usage: { input_tokens: 310, output_tokens: 45 },
+      content: [{ type: 'text', text: 'Still not JSON.' }],
+    });
+
+  const review = await runScriptReview({ proposalId: proposal.id, orgId: org.id, attempt: 1 });
+
+  expect(messagesCreateMock).toHaveBeenCalledTimes(2);
+  // One review row for the whole review, carrying the tokens of both attempts.
+  expect(review).toMatchObject({ reviewerKind: 'model', status: 'failed', riskTier: null, inputTokens: 610, outputTokens: 85 });
+  const rows = await reviewsFor(proposal.id);
+  expect(rows.map((r) => [r.reviewerKind, r.status])).toEqual([['static_scan', 'completed'], ['model', 'failed']]);
+
+  const after = await proposalById(proposal.id);
+  expect(after.status).toBe('review_failed');
+  expect(after.riskTier).toBeNull();
+  expect(after.decisionNote).toContain('parseable');
+
+  // Each attempt is reserved and settled on its own.
+  const reservations = await reservationsFor(org.id);
+  expect(reservations).toHaveLength(2);
+  expect(reservations.map((r) => r.status)).toEqual(['settled', 'settled']);
+
+  // #11972: the failure row records what both settled attempts billed
+  // (610 in + 85 out at 200/1000 cents per M = 0.122 + 0.085 cents).
+  const ledger = await withSystemDbAccessContext(() =>
+    db.select().from(aiInvocations).where(eq(aiInvocations.orgId, org.id)));
+  expect(ledger.reduce((n, r) => n + Number(r.costCents), 0)).toBeCloseTo(0.207, 4);
+  expect(rows[1]!.costCents).toBe('0.2070');
+
+  // The failed model row is what the inline wait reports — never the scan row.
+  const awaited = await waitForReviewCompletion(proposal.id, 5_000);
+  expect(awaited).toMatchObject({ reviewerKind: 'model', status: 'failed' });
+});
+
+runDb('an unparseable verdict whose retry answers with nothing fails closed: review_failed, both reservations settled, no throw', async () => {
+  const { org } = await seedOrg();
+  const proposal = await seedProposedProposal(org.id);
+  messagesCreateMock
+    .mockResolvedValueOnce({
+      usage: { input_tokens: 300, output_tokens: 40 },
+      content: [{ type: 'text', text: 'I refuse to answer in JSON.' }],
+    })
+    .mockResolvedValueOnce(undefined);
 
   const review = await runScriptReview({ proposalId: proposal.id, orgId: org.id, attempt: 1 });
 
@@ -180,16 +228,10 @@ runDb('an unparseable verdict fails closed: model row failed, proposal review_fa
 
   const after = await proposalById(proposal.id);
   expect(after.status).toBe('review_failed');
-  expect(after.riskTier).toBeNull();
   expect(after.decisionNote).toContain('parseable');
 
   const reservations = await reservationsFor(org.id);
-  expect(reservations).toHaveLength(1);
-  expect(reservations[0]!.status).toBe('settled');
-
-  // The failed model row is what the inline wait reports — never the scan row.
-  const awaited = await waitForReviewCompletion(proposal.id, 5_000);
-  expect(awaited).toMatchObject({ reviewerKind: 'model', status: 'failed' });
+  expect(reservations.map((r) => r.status)).toEqual(['settled', 'settled']);
 });
 
 runDb('a refused attempt whose fallback call then fails is BILLED: reservation settled at its real cost, one ledger row', async () => {

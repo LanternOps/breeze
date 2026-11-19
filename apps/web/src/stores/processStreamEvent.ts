@@ -1,4 +1,4 @@
-import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation, AiTurnModel, AiAttachState, AiPendingCardEvent, AiApprovalOutcome } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation, AiTurnModel, AiAttachState, AiPendingCardEvent, AiApprovalOutcome, AiApprovalWaitingOn, AiStandingInstructionConflict, AiApprovalTicketContext } from '@breeze/shared';
 // Subpath, not the barrel: this module loads on the topology island, whose CSP
 // forbids the barrel's JIT-compiled schemas (see topologyImports.test.ts).
 import { topologyAiExplanationSchema } from '@breeze/shared/validators/topologyAi';
@@ -32,7 +32,25 @@ export interface AiMessage {
    */
   topologyExplanationInvalid?: boolean;
   isStreaming?: boolean;
+  /** #11676: the technician pressed Stop; this is the partial reply so far. Live only (not persisted). */
+  stopped?: boolean;
   createdAt: Date;
+}
+
+/**
+ * #11676: mark this turn's latest assistant reply (the last one after the
+ * turn's user message) as stopped. A turn stopped before any reply text marks
+ * nothing, so an earlier turn's answer is never relabelled.
+ */
+function markTurnReplyStopped(messages: AiMessage[]): AiMessage[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === 'user') return messages;
+    if (m.role === 'assistant') {
+      return messages.map((row, j) => (j === i ? { ...row, stopped: true, isStreaming: false } : row));
+    }
+  }
+  return messages;
 }
 
 /** Plain-text rendering of a validated topology explanation for the chat transcript. */
@@ -62,6 +80,14 @@ export interface PendingApproval {
   deviceContext?: DeviceContext;
   /** Tier-3 durable action-intent (spec §6.1) — see AiApprovalDialog's prop doc. */
   intentBacked?: boolean;
+  /** #10416: Tier-2 only — a push provider accepted a push for the user's phone. Absent means unknown, not "no push". */
+  pushedToPhone?: boolean;
+  /** #10416: who must decide the card; drives the thinking indicator's wait copy. */
+  waitingOn?: AiApprovalWaitingOn;
+  /** W06: the tool call conflicts with a remembered standing instruction — the card shows a red banner. */
+  standingInstructionConflict?: AiStandingInstructionConflict;
+  /** #11674: the ticket a manage_tickets call acts on (number, subject, requester), for the card body. */
+  ticketContext?: AiApprovalTicketContext;
   /** Set when the viewer (requester) holds the fanned-out approval row — enables inline L3 self-approve. */
   selfApprovalRequestId?: string;
   /**
@@ -107,7 +133,7 @@ export function alreadyDecidedOutcome(status: number, body: unknown): AiApproval
   if (status !== 409 || !body || typeof body !== 'object') return null;
   const { code, outcome } = body as { code?: unknown; outcome?: unknown };
   if (code !== 'approval_already_decided') return null;
-  return outcome === 'approved' || outcome === 'not_approved' || outcome === 'ended' ? outcome : null;
+  return outcome === 'approved' || outcome === 'not_approved' || outcome === 'expired' || outcome === 'ended' ? outcome : null;
 }
 
 export interface PendingPlan {
@@ -146,8 +172,10 @@ export interface ChatRunProgressEntry {
  */
 export interface ChatRunState {
   runId: string;
-  status: 'queued' | 'running' | 'completed' | 'failed';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'awaiting_approval';
   progress: ChatRunProgressEntry[];
+  /** Set with `awaiting_approval`: how many of the run's intents are still pending. */
+  pendingIntentCount?: number;
   summary: string | null;
   artifacts: AiRunResultArtifactRef[];
 }
@@ -161,6 +189,10 @@ export interface StreamableState {
   isPaused: boolean;
   isStreaming: boolean;
   error: string | null;
+  /** Machine code of the last stream `error` event (null when it had none). */
+  errorCode?: string | null;
+  /** #9428: secondary line of the last stream `error` event (a timeout's gateway reason). */
+  errorDetail?: string | null;
   sessionId: string | null;
   sessions: Array<{ id: string; title: string | null; status: string; createdAt: string }>;
   /** Analysis runs launched from this conversation, keyed by run id. */
@@ -211,12 +243,16 @@ function pendingApprovalFromCard(card: Extract<AiPendingCardEvent, { type: 'appr
     description: card.description,
     deviceContext: card.deviceContext,
     intentBacked: card.intentBacked,
+    pushedToPhone: card.pushedToPhone,
+    waitingOn: card.waitingOn,
     selfApprovalRequestId: card.selfApprovalRequestId,
     approvalScope: card.approvalScope,
     intentExpiresAt: card.intentExpiresAt,
     approvalWindowMs: card.approvalWindowMs,
     approvalExpiresAt: card.approvalExpiresAt,
     scriptRunContext: card.scriptRunContext ?? null,
+    standingInstructionConflict: card.standingInstructionConflict,
+    ticketContext: card.ticketContext,
   };
 }
 
@@ -364,7 +400,18 @@ export function processStreamEvent(
     }
 
     case 'error':
-      set(() => ({ error: event.message, errorCode: event.code ?? null, isStreaming: false }));
+      // #9428: the code (and detail) drive the banner's headline and "Try
+      // again"; an older server sends neither. A reply that was mid-stream
+      // stops spinning: no `done` may follow (the route's own stream failure).
+      set((s) => ({
+        error: event.message,
+        errorCode: event.code ?? null,
+        errorDetail: event.detail ?? null,
+        isStreaming: false,
+        ...(currentAssistantId
+          ? { messages: s.messages.map((m) => (m.id === currentAssistantId && m.isStreaming ? { ...m, isStreaming: false } : m)) }
+          : {}),
+      }));
       return currentAssistantId;
 
     case 'plan_approval_required':
@@ -464,10 +511,11 @@ export function processStreamEvent(
               runId: event.runId,
               // Never downgrade a run that already reported terminal: a late
               // progress event must not resurrect a finished card.
-              status: existing?.status === 'completed' || existing?.status === 'failed'
+              status: existing?.status === 'completed' || existing?.status === 'failed' || existing?.status === 'awaiting_approval'
                 ? existing.status
                 : 'running',
               progress,
+              ...(existing?.pendingIntentCount !== undefined ? { pendingIntentCount: existing.pendingIntentCount } : {}),
               summary: existing?.summary ?? null,
               artifacts: existing?.artifacts ?? [],
             },
@@ -489,6 +537,7 @@ export function processStreamEvent(
               progress: existing?.progress ?? [],
               summary: event.summary,
               artifacts: event.artifacts,
+              ...(event.pendingIntentCount !== undefined ? { pendingIntentCount: event.pendingIntentCount } : {}),
             },
           },
         };
@@ -502,7 +551,21 @@ export function processStreamEvent(
       set((s) => ({
         isStreaming: false, thinking: false, joinedMidResponse: false,
         ...(s.pendingApproval?.resolution ? { pendingApproval: null } : {}),
+        // #11676: a stopped turn keeps its partial reply, marked as stopped.
+        ...(event.stopped ? { messages: markTurnReplyStopped(s.messages) } : {}),
       }));
+      // #10428: the API extracts a standing instruction after `done`; follow it
+      // so the chip can show under the reply. Loaded lazily: only a Wisp turn
+      // carries a capture, and this module also loads on the topology island.
+      if (event.wispInstructionCapture) {
+        const sid = get().sessionId;
+        const { captureId } = event.wispInstructionCapture;
+        if (typeof sid === 'string') {
+          void import('./wispInstructionCaptureStore')
+            .then(({ useWispInstructionCaptureStore }) => useWispInstructionCaptureStore.getState().trackCapture(sid, captureId))
+            .catch((err: unknown) => console.warn('[processStreamEvent] instruction capture not tracked', err));
+        }
+      }
       return null;
 
     // #9427: the first frame of an attach. Applies the snapshot of the

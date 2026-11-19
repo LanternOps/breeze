@@ -356,6 +356,7 @@
     "tabs": {
       "compliance": "Uyumluluk",
       "patches": "Yamalar",
+      "vendorUpdates": "Üretici güncellemeleri",
       "jobs": "İşler",
       "updateRings": "Zilleri Güncelle"
     },
@@ -486,9 +487,11 @@
     "rebootDone": "Tamamlandı",
     "rebootNotRequired": "—",
     "skipReasons": {
+      "no_approved_patches": "Atlandı: bu cihazdaki bekleyen güncellemelerin hiçbiri onaylanmadı.",
       "ring_deleted": "Gönderimden önce iptal edildi: güncelleme halkası silindi.",
       "ring_disabled": "Gönderimden önce iptal edildi: güncelleme halkası devre dışı bırakıldı.",
-      "ring_unavailable": "Atlandı: güncelleme halkası bu cihaza gönderilmeden önce silindi veya devre dışı bırakıldı."
+      "ring_unavailable": "Atlandı: güncelleme halkası bu cihaza gönderilmeden önce silindi veya devre dışı bırakıldı.",
+      "all_managed_by_vendor_updates": "Atlandı: bu cihazdaki bekleyen tüm güncellemeler Üretici güncellemeleri tarafından yönetiliyor, onay gerekmiyor."
     },
     "errors": {
       "load": "Yama işi yüklenemedi"
@@ -673,5 +676,38 @@
       "hold_one": "{{count}} gün erteleme",
       "hold_other": "{{count}} gün erteleme"
     }
+  },
+  "vendorUpdates": {
+    "description": "Her üreticinin kendi güncelleme aracı, bir Yapılandırma Politikası ile zamanlanmış şekilde çalışır durumda tutulur. Böyle bir politikanın ulaşmadığı cihazlar Yönetilmiyor olarak görünür.",
+    "loadError": "Üretici güncellemeleri yüklenemedi.",
+    "retry": "Tekrar dene",
+    "pickOrganization": "Üretici güncellemelerini görmek için bir kuruluş seçin.",
+    "loading": "Üretici güncellemeleri yükleniyor",
+    "empty": "Bu filtreyle eşleşen cihaz yok.",
+    "vendorFilter": "Üretici",
+    "allVendors": "Tüm üreticiler",
+    "state": {
+      "upToDate": "Güncel",
+      "overdue": "Gecikmiş",
+      "failing": "Başarısız",
+      "notSupported": "Desteklenmiyor",
+      "notManaged": "Yönetilmiyor",
+      "waitingForReboot": "Yeniden başlatma bekleniyor",
+      "rebootOverdue": "Yeniden başlatma gecikmiş"
+    },
+    "columns": {
+      "device": "Cihaz",
+      "organization": "Kuruluş",
+      "site": "Konum",
+      "vendor": "Üretici",
+      "state": "Durum",
+      "lastRun": "Son çalıştırma",
+      "lastSuccess": "Son başarı"
+    },
+    "never": "Hiçbir zaman",
+    "scheduleNotHandedBack": "Breeze üretici aracının zamanlamasını geri veremedi",
+    "range": "{{from}}–{{to}} / {{total}}",
+    "previous": "Önceki",
+    "next": "Sonraki"
   }
 }

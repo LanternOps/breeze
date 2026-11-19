@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import RestoreWizard from './RestoreWizard';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -1072,6 +1072,81 @@ describe('RestoreWizard', () => {
       fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
       expect(await screen.findByText('1 file selected')).toBeTruthy();
       expect(screen.queryByText('1 files selected')).toBeNull();
+    });
+  });
+
+  describe('#11026 file list states on the select step', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const arrange = (browse: (url: string) => unknown) => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/snapshots') {
+          return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', status: 'Ready', size: '4 GB' }] });
+        }
+        if (url.startsWith('/backup/snapshots/snap-1/browse') || url.endsWith('/file-index/rebuild')) {
+          const body = browse(url);
+          return body instanceof Response ? body : makeJsonResponse(body);
+        }
+        if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+        return makeJsonResponse({}, false, 404);
+      });
+    };
+    const openSelectStep = async () => {
+      render(<RestoreWizard initialSnapshotId="snap-1" />);
+      await screen.findByText('Restore Wizard');
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      fireEvent.click(screen.getByRole('button', { name: /Selective Restore/i }));
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    };
+
+    it('shows building instead of "no files", polls, and lists the folders once ready', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let ready = false;
+      arrange(() => (ready
+        ? { index: { state: 'ready' }, data: [{ name: 'C:', path: '/C:', type: 'directory' }], nextCursor: null }
+        : { index: { state: 'building' }, manifestUnavailable: true, data: [], nextCursor: null }));
+      await openSelectStep();
+
+      expect((await screen.findByTestId('snapshot-index-building')).textContent).toMatch(/Preparing this snapshot's file list/);
+      expect(screen.queryByText('No files available for this snapshot.')).toBeNull();
+
+      ready = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+
+      expect(await screen.findByRole('checkbox', { name: /Select folder C:/i })).toBeTruthy();
+      expect(screen.queryByTestId('snapshot-index-building')).toBeNull();
+    });
+
+    it('an integrity failure says so and offers no retry', async () => {
+      arrange(() => ({ index: { state: 'unavailable', failure: 'manifest_differs_from_attestation', retryable: false, deviceLocal: false }, data: [] }));
+      await openSelectStep();
+      expect((await screen.findByTestId('snapshot-index-unavailable')).textContent).toMatch(/failed its integrity check/);
+      expect(screen.queryByTestId('snapshot-index-retry')).toBeNull();
+    });
+
+    it('a device-local snapshot says the list cannot be read from there', async () => {
+      arrange(() => ({ index: { state: 'unavailable', failure: 'manifest_missing', retryable: true, deviceLocal: true }, data: [] }));
+      await openSelectStep();
+      expect((await screen.findByTestId('snapshot-index-unavailable')).textContent).toMatch(/stored on the device/);
+    });
+
+    it('a retryable failure retries through runAction and shows building', async () => {
+      arrange((url) => (url.endsWith('/file-index/rebuild')
+        ? makeJsonResponse({ index: { state: 'building' } }, true, 202)
+        : { index: { state: 'unavailable', failure: 'provider_error', retryable: true, deviceLocal: false }, data: [] }));
+      await openSelectStep();
+      fireEvent.click(await screen.findByTestId('snapshot-index-retry'));
+      expect(await screen.findByTestId('snapshot-index-building')).toBeTruthy();
+      expect(fetchMock).toHaveBeenCalledWith('/backup/snapshots/snap-1/file-index/rebuild', { method: 'POST' });
+    });
+
+    it('a truly empty snapshot keeps the existing empty message', async () => {
+      arrange(() => ({ index: { state: 'ready' }, data: [], nextCursor: null }));
+      await openSelectStep();
+      expect(await screen.findByText('No files available for this snapshot.')).toBeTruthy();
     });
   });
 

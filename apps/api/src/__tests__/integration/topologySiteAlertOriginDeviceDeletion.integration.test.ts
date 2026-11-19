@@ -141,8 +141,12 @@ describe('site-owned topology alerts of a deleted origin device', () => {
     const token = await orgUserToken(f.partner.id, deviceOrgId);
 
     const app = new Hono().route('/devices', coreRoutes);
+    // `force`: this suite is about alert history, not the #11153 uninstall
+    // confirmation (the seeded origin never queued an uninstall).
     const res = await app.request(`/devices/${f.deviceId}/permanent`, {
-      method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: true }),
     });
     expect(res.status, await res.clone().text()).toBe(200);
 

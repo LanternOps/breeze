@@ -480,7 +480,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     dbResults.push([]); dbResults.push([]); dbResults.push([]);
     const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
-    expect((await res.json()).branding).toEqual({ partnerName: null, contactEmail: null, logoUrl: null, primaryColor: null, theme: 'classic', pageSize: 'a4' });
+    expect((await res.json()).branding).toEqual({ partnerName: null, contactEmail: null, logoUrl: null, primaryColor: null, theme: 'classic', pageSize: 'letter' }); // #12097: no page-size choice and no country → the (US) deployment default, Letter.
   });
 
   it('GET /invoices/:id maps a cross-tenant 404 from the service', async () => {
@@ -593,6 +593,27 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
       stripeObjectId: 'cs_jpy', amount: '1000.00', currency: 'JPY',
     }));
+  });
+
+  // #3803 item 8: a legacy zero-decimal balance with a fraction has no correct
+  // Checkout charge. Half-up turned JPY 1000.50 into a 1001 charge (0.50 more
+  // than owed) and 1000.40 into a 1000 charge (stranding 0.40 no Checkout can
+  // collect). Refused before any Stripe work; the provider settles it manually.
+  it.each([['1000.50'], ['1000.40']])('POST /invoices/:id/pay refuses a JPY balance of %s that the currency cannot express', async (balance) => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
+      balance, depositDue: null, amountPaid: '0.00', currencyCode: 'JPY', invoiceNumber: 'INV-JPY-LEGACY',
+    }]);
+    // The success path is fully wired, so only the representability guard can refuse.
+    getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_jpy_legacy', url: 'https://checkout.stripe.com/c/cs_jpy_legacy', payment_intent: 'pi_jpy_legacy' });
+    dbResults.push([{ id: 'connection' }]);
+
+    const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'BALANCE_NOT_REPRESENTABLE' });
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+    expect(insertValuesMock).not.toHaveBeenCalled();
   });
 
   it('POST /invoices/:id/pay charges the deposit-remaining amount while the deposit is unmet', async () => {

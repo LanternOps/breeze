@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backupipc"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // backupVersionPrefix is the line prefix `breeze-backup --version` prints the
@@ -161,7 +162,7 @@ func (h *Heartbeat) readInstalledBackupVersion() (string, backupProbeOutcome) {
 	ctx, cancel := context.WithTimeout(context.Background(), backupVersionReadTimeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, path, "--version").Output()
+	out, err := procspawn.CommandContext(ctx, path, "--version").Output()
 	if err != nil {
 		// Installed but unreadable. Per-tick detail at Debug (local-only); the
 		// caller emits the throttled WARN that actually ships. Cached for
@@ -437,7 +438,7 @@ func (h *Heartbeat) readInstalledBackupProtocols() backupProtocolProbe {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, path, "--"+backupipc.ProtocolInfoFlag).Output()
+	out, err := procspawn.CommandContext(ctx, path, "--"+backupipc.ProtocolInfoFlag).Output()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if ctx.Err() == nil && errors.As(err, &exitErr) && strings.Contains(string(exitErr.Stderr), unknownFlagMarker) {

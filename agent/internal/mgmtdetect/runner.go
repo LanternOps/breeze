@@ -23,6 +23,8 @@ func CollectPosture() ManagementPosture {
 	// Take process snapshot once
 	snap, err := newProcessSnapshot()
 	if err != nil {
+		// The API keys on this prefix: a scan that carries it is not used as
+		// the baseline for "new remote access tool" alerts (#11306).
 		posture.Errors = append(posture.Errors, "process snapshot: "+err.Error())
 		snap = &processSnapshot{names: make(map[string]bool)}
 	}

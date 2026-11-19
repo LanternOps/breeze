@@ -27,4 +27,29 @@ describe('boot-time binary sync (#6098)', () => {
       /(runWithSystemDbAccess|withSystemDbAccessContext|withDbAccessContext)\(\s*async\s*\(\s*\)\s*=>\s*\{\s*$/,
     );
   });
+
+  // #11641: a github-mode failure is non-fatal, and a network failure must be
+  // handed to the bounded background retry rather than logged and dropped.
+  // The retry itself is covered by services/binarySync.githubRetry.test.ts.
+  it('hands a non-fatal github-mode failure to the background retry, and stops it on shutdown', () => {
+    const indexSource = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+
+    const nonFatalIdx = indexSource.indexOf("console.error('[startup] Binary sync failed (non-fatal in github mode):'");
+    expect(nonFatalIdx).toBeGreaterThan(-1);
+    const catchTail = indexSource.slice(nonFatalIdx, nonFatalIdx + 600);
+    expect(catchTail).toMatch(/scheduleGithubSyncRetry\(err\)/);
+
+    expect(indexSource).toMatch(/stopDeferredBinarySyncRetry\(\);\s*stopGithubSyncRetry\(\);/);
+  });
+
+  // #11741: the deferred startup writes (db/deferUntilWritable) are cleared on
+  // shutdown in both process roles, like the binary-sync retries above.
+  it('clears deferred startup writes on shutdown in the api and worker processes', () => {
+    for (const file of ['./index.ts', './worker.ts']) {
+      const source = readFileSync(new URL(file, import.meta.url), 'utf8');
+      const shutdownIdx = source.indexOf('stopReadOnlySessionRecovery();');
+      expect(shutdownIdx, file).toBeGreaterThan(-1);
+      expect(source.slice(shutdownIdx, shutdownIdx + 400), file).toMatch(/stopDeferredWrites\(\);/);
+    }
+  });
 });

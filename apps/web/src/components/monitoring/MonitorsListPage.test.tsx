@@ -10,6 +10,8 @@ vi.mock('../../hooks/useMlFeatureFlags', () => ({ useMlFeatureFlags: () => ({ is
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 // #7626: own coverage in BuiltInAlertRules.test.tsx; keeps this suite's fetch fixtures unchanged.
 vi.mock('./BuiltInAlertRules', () => ({ default: () => <div data-testid="builtin-alert-rules-stub" /> }));
+// Own coverage in LifecycleDefaultsCard.test.tsx; keeps this suite's fetch fixtures unchanged.
+vi.mock('./LifecycleDefaultsCard', () => ({ default: () => <div data-testid="lifecycle-defaults-card-stub" /> }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -59,6 +61,18 @@ describe('MonitorsListPage (#5289)', () => {
     expect(fetchMock.mock.calls[0]![0]).toMatch(/^\/monitor-definitions/);
     expect(screen.getByTestId('monitors-list-row-m-org')).toBeInTheDocument();
     expect(screen.getByTestId('monitors-list-row-m-partner')).toBeInTheDocument();
+  });
+
+  it('mounts the lifecycle defaults card at the #lifecycle anchor, above the views', async () => {
+    render(<MonitorsListPage />);
+    await screen.findByTestId('monitors-list-row-m-org');
+
+    const anchor = document.getElementById('lifecycle');
+    expect(anchor).not.toBeNull();
+    expect(within(anchor!).getByTestId('lifecycle-defaults-card-stub')).toBeInTheDocument();
+    expect(
+      anchor!.compareDocumentPosition(screen.getByTestId('monitors-list-view-all')) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it('shows the partner-wide badge only on the partner-owned row', async () => {

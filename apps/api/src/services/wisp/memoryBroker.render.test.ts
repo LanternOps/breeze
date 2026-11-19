@@ -77,4 +77,33 @@ describe('renderMemoryForPrompt', () => {
       '- [standing_instruction/unconfirmed/medium] u.two: {"note":"remembered"}',
     ]);
   });
+
+  describe('lapsed standing instructions (#11630)', () => {
+    const NOW = new Date('2026-11-10T12:00:00Z');
+    const standing = (text: string, until: string | null) =>
+      block({
+        blockType: 'standing_instruction',
+        content: { instructionId: '11111111-1111-4111-8111-111111111111', effect: 'deny', verb: 'reboot', text, until },
+      });
+
+    it('omits a lapsed standing instruction and keeps the live and open-ended ones', () => {
+      const out = renderMemoryForPrompt([
+        standing('LAPSED-ONE', '2026-11-09T00:00:00Z'),
+        standing('LIVE-ONE', '2026-11-20T00:00:00Z'),
+        standing('OPEN-ENDED', null),
+      ], NOW);
+      expect(out).not.toContain('LAPSED-ONE');
+      expect(out).toContain('LIVE-ONE');
+      expect(out).toContain('OPEN-ENDED');
+    });
+
+    it('renders nothing when the only block is a lapsed standing instruction', () => {
+      expect(renderMemoryForPrompt([standing('LAPSED-ONE', '2026-11-10T12:00:00Z')], NOW)).toBe('');
+    });
+
+    it('does not read an `until` field on other block types as an expiry', () => {
+      const out = renderMemoryForPrompt([block({ content: { until: '2020-01-01T00:00:00Z', note: 'KEEP' } })], NOW);
+      expect(out).toContain('KEEP');
+    });
+  });
 });

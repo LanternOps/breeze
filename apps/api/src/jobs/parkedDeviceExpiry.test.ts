@@ -39,6 +39,7 @@ vi.mock('../db', () => ({
   },
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   runOutsideDbContext: (fn: () => unknown) => fn(),
+  runAfterDbContextExit: vi.fn(),
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})), getRedis: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
@@ -110,7 +111,7 @@ vi.mock('../services/deviceReattach/audit', () => ({ writeReattachAudit: vi.fn()
 vi.mock('../services/deviceReattach/sourceMarker', () => ({ clearReattachSourceMarker: vi.fn() }));
 vi.mock('../services/auditService', () => ({ createAuditLog: vi.fn() }));
 vi.mock('../services/agentOrgRateLimit', () => ({ invalidateOrgDeviceCount: vi.fn(async () => undefined) }));
-vi.mock('../routes/agentWs', () => ({ disconnectAgent: vi.fn() }));
+vi.mock('../services/agentCommandRelayEvict', () => ({ evictAgentSockets: vi.fn(async () => new Map()) }));
 
 import { NetworkIsolationUnresolvedError } from '../services/networkIsolation/lifecycle';
 
@@ -178,5 +179,35 @@ describe('parked lifecycle isolation refusals', () => {
       expect(await purgeExpiredParkedDevice(input)).toMatchObject({ purged: true, deviceId });
       expect(h.transactionEvents).toEqual(['rollback', 'commit']);
     } finally { warn.mockRestore(); }
+  });
+
+  it('reports an unconfirmed uninstall as its own skip reason, never as a generic refusal (#11153)', async () => {
+    const { purgeExpiredParkedDevice } = await vi.importActual<typeof import('../services/unassignedPool/parkedExpiry')>('../services/unassignedPool/parkedExpiry');
+    const { DeviceLifecycleError } = await import('../services/deviceLifecycle');
+    h.lockDevice.mockResolvedValue({
+      id: deviceId, orgPartnerId: partnerId, orgType: 'unassigned_pool', status: 'decommissioned',
+      agentId: 'agent-1', hostname: 'host-1', orgId: 'holding-org', createdAt: new Date('2026-01-01'),
+    });
+    h.purgeRemoved.mockRejectedValueOnce(
+      Object.assign(new (DeviceLifecycleError as unknown as new (m: string) => Error)('no ack'), { code: 'UNINSTALL_NOT_CONFIRMED' }),
+    );
+    const outcome = await purgeExpiredParkedDevice({ partnerId, deviceId, cutoff: new Date('2026-03-01') });
+    expect(outcome).toEqual({ purged: false, deviceId, reason: 'UNINSTALL_NOT_CONFIRMED' });
+    expect(h.ledger).not.toHaveBeenCalled();
+  });
+
+  it('passes the purge uninstall state through and never forces (#11153)', async () => {
+    const { purgeExpiredParkedDevice } = await vi.importActual<typeof import('../services/unassignedPool/parkedExpiry')>('../services/unassignedPool/parkedExpiry');
+    h.lockDevice.mockResolvedValue({
+      id: deviceId, orgPartnerId: partnerId, orgType: 'unassigned_pool', status: 'decommissioned',
+      agentId: 'agent-1', hostname: 'host-1', orgId: 'holding-org', createdAt: new Date('2026-01-01'),
+    });
+    h.purgeRemoved.mockResolvedValueOnce({ uninstallState: 'agent_reported_uninstall', forced: false });
+    const outcome = await purgeExpiredParkedDevice({ partnerId, deviceId, cutoff: new Date('2026-03-01') });
+    expect(outcome).toMatchObject({ purged: true, uninstallState: 'agent_reported_uninstall' });
+    expect(h.purgeRemoved.mock.calls).toHaveLength(1);
+    for (const call of h.purgeRemoved.mock.calls) {
+      expect((call[3] as { force?: boolean } | undefined)?.force).not.toBe(true);
+    }
   });
 });

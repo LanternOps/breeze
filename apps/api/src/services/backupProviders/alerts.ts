@@ -20,6 +20,12 @@ export const BACKUP_PROVIDER_ALERT_SOURCE = 'backup_provider';
 /** `publisher` passed to createSourcedAlert (the `alert.triggered` event source). */
 export const BACKUP_PROVIDER_ALERT_PUBLISHER = 'backup-provider-sync';
 export const PROVIDER_ALERT_RESOLUTION_NOTE = 'Condition cleared by provider sync';
+/**
+ * A parked device (`paused`) stopped being protected on purpose. Its alerts
+ * close as `source_retired`, never `condition_cleared`: the fix-memory outcome
+ * watcher reads `condition_cleared` as objective recovery.
+ */
+export const PROVIDER_ALERT_PARKED_NOTE = 'Device parked in the backup provider; protection stopped on purpose';
 export const PROVIDER_ALERT_CONFIG_ITEM = 'backup_provider';
 
 const ADVISORY_LOCK_NAMESPACE = 'backup-provider-sync';
@@ -86,6 +92,10 @@ export function decodeConditionState(value: string | null): ProviderConditionSta
  * their own (`completed`, `in_progress`, `not_started`, `unknown`) but whose
  * last SUCCESS is older than 48 h or absent — independent evidence that does
  * not depend on parsing this session's outcome.
+ *
+ * `paused` raises nothing, not even `stale`: it means an operator parked the
+ * device on purpose (Axcient `PARKED`). It still renders as uncovered; it just
+ * does not page anyone. `not_started` (Cove, Dropsuite) keeps alerting.
  */
 export function computeProviderCondition(
   input: { status: ExternalBackupStatus; lastSuccessAt: Date | null; errorsCount: number },
@@ -98,6 +108,7 @@ export function computeProviderCondition(
     case 'no_backups': return 'no_backups';
     case 'completed_with_errors':
     case 'interrupted': return 'completed_with_errors';
+    case 'paused': return null;
     default: break;
   }
   const { recency } = deriveBackupHealth({
@@ -266,6 +277,8 @@ export async function evaluateProviderAlerts(
     const pendingEvents: Array<{ type: typeof EVENT_TYPES.BACKUP_PROVIDER_DEVICE_UNHEALTHY | typeof EVENT_TYPES.BACKUP_PROVIDER_DEVICE_RECOVERED; orgId: string; payload: Record<string, unknown> }> = [];
     /** "<providerDeviceId>|<orgId>|<condition>" keys that must SURVIVE this pass. */
     const keep = new Set<string>();
+    /** Provider rows parked in the vendor console: their alerts retire, they do not recover. */
+    const parked = new Set<string>();
 
     for (const row of rows) {
       // Even a legacy link cannot turn a SaaS workload into a device subject.
@@ -285,7 +298,10 @@ export async function evaluateProviderAlerts(
         now,
       });
 
-      if (recoveredFrom) {
+      if (row.status === 'paused') parked.add(row.id);
+
+      // Parking is not a recovery, so a parked row announces nothing.
+      if (recoveredFrom && row.status !== 'paused') {
         pendingEvents.push({
           type: EVENT_TYPES.BACKUP_PROVIDER_DEVICE_RECOVERED,
           orgId: row.orgId,
@@ -357,7 +373,10 @@ export async function evaluateProviderAlerts(
 
     let resolved = 0;
     for (const alert of resolvable) {
-      if (await resolveAlert(alert.id, PROVIDER_ALERT_RESOLUTION_NOTE, undefined, false, 'condition_cleared')) resolved += 1;
+      const done = alert.providerDeviceId !== null && parked.has(alert.providerDeviceId)
+        ? await resolveAlert(alert.id, PROVIDER_ALERT_PARKED_NOTE, undefined, false, 'source_retired')
+        : await resolveAlert(alert.id, PROVIDER_ALERT_RESOLUTION_NOTE, undefined, false, 'condition_cleared');
+      if (done) resolved += 1;
     }
     // Losing an individual compare-and-swap is normal (a technician got there
     // first). Losing EVERY candidate is the shape an RLS write-policy divergence

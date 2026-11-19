@@ -27,6 +27,9 @@ services:
       POSTGRES_USER: breeze
       POSTGRES_PASSWORD: breeze
       POSTGRES_DB: breeze
+      # Pinned to the volume mount below: Postgres 18 images default it to
+      # /var/lib/postgresql/18/docker, outside the mount (see docker-compose.yml).
+      PGDATA: /var/lib/postgresql/data
     ports:
       - "${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:5432:5432"
     volumes:
@@ -42,7 +45,7 @@ services:
 
   # Redis for BullMQ job queue
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     container_name: breeze-redis-dev
     restart: unless-stopped
     # #9382: the base stack refuses to start without a real Redis password, but
@@ -142,7 +145,10 @@ services:
       # Mount source code for hot-reloading
       - ./apps/api/src:/app/apps/api/src:cached
       - ./apps/api/migrations:/app/apps/api/migrations:ro
-      - ./packages/shared/src:/app/packages/shared/src:cached
+      # The whole package, not src/ alone: a file at its root (zodJitlessAlias.mjs,
+      # which the astro configs import) otherwise comes from the image and breaks
+      # every image built before it landed (#11623). node_modules stays the image's.
+      - ./packages/shared:/app/packages/shared:cached
       - ./ee/workspace/src:/app/ee/workspace/src:cached
       - ./ee/workspace/migrations:/app/ee/workspace/migrations:ro
       # The manifest is BAKED into the image, so without this mount a local edit
@@ -153,8 +159,6 @@ services:
       - ./apps/api/package.json:/app/apps/api/package.json:ro
       - ./apps/api/tsconfig.json:/app/apps/api/tsconfig.json:ro
       - ./apps/api/drizzle.config.ts:/app/apps/api/drizzle.config.ts:ro
-      - ./packages/shared/package.json:/app/packages/shared/package.json:ro
-      - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
       # Mount agent, viewer, and helper binaries for download endpoints
       - ./agent/bin:/app/apps/api/agent/bin:ro
       - ./viewer/bin:/app/apps/api/viewer/bin:ro
@@ -190,14 +194,15 @@ services:
       # Mount source code for hot-reloading
       - ./apps/web/src:/app/apps/web/src:cached
       - ./apps/web/public:/app/apps/web/public:cached
-      - ./packages/shared/src:/app/packages/shared/src:cached
+      # The whole package, not src/ alone: a file at its root (zodJitlessAlias.mjs,
+      # which the astro configs import) otherwise comes from the image and breaks
+      # every image built before it landed (#11623). node_modules stays the image's.
+      - ./packages/shared:/app/packages/shared:cached
       - ./packages/document-ui/src:/app/packages/document-ui/src:cached
       # Mount config files
       - ./apps/web/package.json:/app/apps/web/package.json:ro
       - ./apps/web/tsconfig.json:/app/apps/web/tsconfig.json:ro
       - ./apps/web/astro.config.mjs:/app/apps/web/astro.config.mjs:ro
-      - ./packages/shared/package.json:/app/packages/shared/package.json:ro
-      - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
       - ./packages/document-ui/package.json:/app/packages/document-ui/package.json:ro
       - ./packages/document-ui/tsconfig.json:/app/packages/document-ui/tsconfig.json:ro
       # Exclude node_modules (use container's)

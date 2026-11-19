@@ -92,12 +92,24 @@ func secureDeletePath(path string) error {
 		return fmt.Errorf("path is not a regular file")
 	}
 
-	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	// Read access as well as write: on Windows the link count is read from
+	// the handle, which needs attribute-read rights a write-only handle lacks.
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}
 
 	defer file.Close()
+
+	if err := requireDiskHandle(file); err != nil {
+		return err
+	}
+
+	// Overwriting in place would also change the content seen through the
+	// file's other names, if it has any.
+	if err := otherHardLinksError("secure delete", path, file); err != nil {
+		return err
+	}
 
 	buffer := make([]byte, 64*1024)
 	remaining := info.Size()
@@ -326,10 +338,32 @@ func EncryptFile(payload map[string]any) CommandResult {
 		return NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
-	plaintext, err := os.ReadFile(sourcePath)
+	afterPathCheck(sourcePath)
+	source, err := os.Open(sourcePath)
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to read file: %w", err), time.Since(start).Milliseconds())
 	}
+	defer func() { _ = source.Close() }()
+	// The file that is read is the file that is checked: the handle's real
+	// location, not only the path, must be outside the protected locations.
+	if err := checkOpenedForContainment("encrypt", sourcePath, source); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	// The source is wiped after encryption, which would also change the
+	// content seen through its other names, if it has any.
+	if err := otherHardLinksError("encrypt", sourcePath, source); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	plaintext, err := io.ReadAll(io.LimitReader(source, maxEncryptFileBytes+1))
+	if err != nil {
+		return NewErrorResult(fmt.Errorf("failed to read file: %w", err), time.Since(start).Milliseconds())
+	}
+	if int64(len(plaintext)) > maxEncryptFileBytes {
+		return NewErrorResult(fmt.Errorf("file too large for encryption (max %d bytes)", maxEncryptFileBytes), time.Since(start).Milliseconds())
+	}
+	// Closed before the wipe below removes the file: Windows will not remove
+	// a file that is still open without delete sharing.
+	_ = source.Close()
 
 	block, err := aes.NewCipher(key)
 	if err != nil {

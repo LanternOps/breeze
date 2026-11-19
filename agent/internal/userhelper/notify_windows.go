@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // notifyAUMID is the AppUserModelID toasts are raised under. It MUST be
@@ -97,7 +98,7 @@ func newToastPowerShellCmd(toastXML string) *exec.Cmd {
   [Console]::Error.WriteLine($_.Exception.Message)
   exit 1
 }`
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd := procspawn.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 	cmd.Env = append(os.Environ(), "BREEZE_TOAST_XML="+toastXML)
 	// The user-helper is a GUI-subsystem binary; without this the kernel gives
 	// powershell.exe a fresh console that flashes on the interactive desktop.

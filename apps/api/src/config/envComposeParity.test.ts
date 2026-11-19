@@ -254,6 +254,25 @@ describe('LLM_PROVIDER_CATALOG_ENABLED regression (#4113/#4116)', () => {
 });
 
 /**
+ * BACKUP_LOCAL_ROOT: validated (refused on hosted) in validate.ts, and only
+ * useful if it reaches both the api and worker containers of both compose
+ * files and is documented for self-hosters.
+ */
+describe('BACKUP_LOCAL_ROOT is wired end to end', () => {
+  it('is declared in the validate.ts schema', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('BACKUP_LOCAL_ROOT');
+  });
+
+  it('is documented in the root .env.example', () => {
+    expect(documentedEnvExampleVars('.env.example')).toContain('BACKUP_LOCAL_ROOT');
+  });
+
+  it.each(['docker-compose.yml', 'deploy/docker-compose.prod.yml'])('is threaded through %s', (file) => {
+    expect(isReferencedInCompose('BACKUP_LOCAL_ROOT', readFileSync(path.join(REPO_ROOT, file), 'utf8'))).toBe(true);
+  });
+});
+
+/**
  * QuickBooks (final-review finding I). The Phase C sandbox walkthrough needed a
  * manual container override for exactly this reason: all five QBO_* vars were
  * validated in `validate.ts` and read by `config/env.ts`, but documented
@@ -446,13 +465,13 @@ describe('E2E_MODE env plumbing (#6447)', () => {
 });
 
 describe('network isolation start gates env plumbing (#10090)', () => {
-  it.each(['NETWORK_ISOLATION_ENABLED', 'NETWORK_ISOLATION_ENABLED_PARTNER_IDS'])('%s is validated, documented and passed to both api deployments', name => {
+  it.each(['NETWORK_ISOLATION_ENABLED', 'NETWORK_ISOLATION_ENABLED_PARTNER_IDS', 'NETWORK_ISOLATION_TOKEN_SIGNING_KEY'])('%s is validated, documented and passed to both api deployments', name => {
     expect(ENV_SCHEMA_KEYS).toContain(name);
     for (const file of ['.env.example', 'deploy/.env.example']) expect(documentedEnvExampleVars(file)).toContain(name);
     for (const file of ['docker-compose.yml', 'deploy/docker-compose.prod.yml']) {
       const text = readFileSync(path.join(REPO_ROOT, file), 'utf8');
       expect(isReferencedInCompose(name, text)).toBe(true);
-      expect(text).toContain(name === 'NETWORK_ISOLATION_ENABLED' ? '${NETWORK_ISOLATION_ENABLED:-false}' : '${NETWORK_ISOLATION_ENABLED_PARTNER_IDS:-}');
+      expect(text).toContain(name === 'NETWORK_ISOLATION_ENABLED' ? '${NETWORK_ISOLATION_ENABLED:-false}' : `\${${name}:-}`);
     }
   });
 });

@@ -16,7 +16,6 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +36,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/etwlua"
 	"github.com/breeze-rmm/agent/internal/executor"
+	"github.com/breeze-rmm/agent/internal/flashguard"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
@@ -69,13 +69,15 @@ import (
 	"github.com/breeze-rmm/agent/internal/terminal"
 	"github.com/breeze-rmm/agent/internal/tunnel"
 	"github.com/breeze-rmm/agent/internal/updater"
+	"github.com/breeze-rmm/agent/internal/wakeconfig"
 	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/internal/workerpool"
 	"github.com/breeze-rmm/agent/pkg/api"
+	"github.com/breeze-rmm/agent/pkg/httpguard"
 )
 
 var log = logging.L("heartbeat")
-var desktopSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+var desktopSessionIDPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`) })
 
 const backupProbeThreshold = 10 // keep in sync with agent/cmd/breeze-watchdog
 
@@ -147,7 +149,14 @@ type HeartbeatPayload struct {
 	// unknown keys.
 	ECHActive             bool   `json:"echActive,omitempty"`
 	FilterSignatureSeenAt string `json:"filterSignatureSeenAt,omitempty"`
-	WatchdogVersion       string `json:"watchdogVersion,omitempty"`
+	// ControlPlaneBlock is the current or undelivered control-plane block
+	// episode (#8868): what answered in place of the server (a network
+	// filter's plaintext reply, a captive portal, an untrusted certificate).
+	// Set by doHeartbeatPost from the persisted tracker, so the primary POST
+	// and the backup probe both carry a fresh snapshot. Omitted when there is
+	// none; an older API strips the key.
+	ControlPlaneBlock *ControlPlaneBlockReport `json:"controlPlaneBlock,omitempty"`
+	WatchdogVersion   string                   `json:"watchdogVersion,omitempty"`
 	// WatchdogInstall describes a watchdog that is NOT installed and is being
 	// (or will not be) repaired (#8619). Omitted on a healthy host. Closed
 	// enums only; an API that predates it strips the unknown key.
@@ -274,7 +283,11 @@ type SecurityCapabilities struct {
 	NetworkIsolationMechanism         string `json:"networkIsolationMechanism,omitempty"`
 	NetworkIsolationUnsupportedReason string `json:"networkIsolationUnsupportedReason,omitempty"`
 	NetworkIsolationReady             bool   `json:"networkIsolationReady"`
-	OutboundNetworkPolicyVersion      int    `json:"outboundNetworkPolicyVersion"`
+	// NetworkIsolationDeadMan: this build runs the containment dead-man and
+	// accepts a non-zero deadManSeconds (#10103). Its own flag, not a level
+	// (decision 28); omitted by a build that cannot isolate.
+	NetworkIsolationDeadMan      bool `json:"networkIsolationDeadMan,omitempty"`
+	OutboundNetworkPolicyVersion int  `json:"outboundNetworkPolicyVersion"`
 	// #3409 PR4b — this build decodes `secretEnv`, injects BREEZE_VAR_*, blocks
 	// user-context runs that would drop the credential, and redacts the values
 	// out of stdout/stderr/error. Declared unconditionally: the behavior is
@@ -337,6 +350,11 @@ type SecurityCapabilities struct {
 	// (emission lands in a later wave): send retainState only to a beat
 	// declaring exactly 1; any other value gets the legacy response shape.
 	RetainStateProtocolVersion int `json:"retainStateProtocolVersion,omitempty"`
+	// RebindProtocolVersion (#8318) declares that this build verifies the
+	// signed `rebind` directive and runs the bounded rebind (rebind_flow.go).
+	// The API records it non-sticky; only exactly 1 makes this device eligible
+	// to be the source of a reattach. Never declared by a Quick Support client.
+	RebindProtocolVersion int `json:"rebindProtocolVersion,omitempty"`
 	// PromptIdentityProtocolVersion (#10190 W03) declares that this build
 	// caches HeartbeatResponse.PromptIdentity and fetches its logo from
 	// /agents/:id/prompt-identity/logo. The API sends the block only to a
@@ -398,6 +416,10 @@ type HeartbeatResponse struct {
 	// RetainState (#8258) lists features the server made no decision about this
 	// beat (keep current state); see retain_state.go. Absent = today's semantics.
 	RetainState RetainState `json:"retainState"`
+	// Rebind (#8318) is the signed reattach directive, present on the main and
+	// the parked beat while this install is the source of an open intent.
+	// Verified before use; see rebind_directive.go and rebind_flow.go.
+	Rebind *RebindDirective `json:"rebind,omitempty"`
 	// PromptHost is the prompt-host kill switch (#10190); absent = nothing enabled.
 	PromptHost *PromptHostSettings `json:"promptHost,omitempty"`
 	// PromptIdentity is the MSP identity block (#10190 W03), kept raw so a
@@ -461,6 +483,8 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
+	// rebind is the reattach rebind flow's state (#8318, rebind_flow.go).
+	rebind      rebindState
 	containment *containmentRuntime
 	// Endpoint messaging (#8293): cards the Assist helper drew and the user has
 	// not yet closed, for replay after a helper restart; and the upstream event
@@ -579,6 +603,10 @@ type Heartbeat struct {
 	hwDisabledSnapshot *hwhealth.Snapshot
 	timeSync           *timeSyncRuntime
 	workloads          *workloadsRuntime
+	// wake runs the Wake-on-LAN readiness collector (writes inactive); wakeApply is a
+	// test seam that replaces wake.ApplySettings.
+	wake      *wakeconfig.Manager
+	wakeApply func(wakeconfig.Settings)
 	// #2728 — a patch submission that fails (e.g. a fleet-wide 429 from the
 	// per-org rate limiter) used to leave posture stale for a full scan
 	// interval, because lastPatchUpdate was stamped at dispatch time whether or
@@ -591,7 +619,24 @@ type Heartbeat struct {
 	helperToken   string // retained copy of the helper-scoped token for connect-time pushes
 	helperTokenMu sync.RWMutex
 	sessionBroker *sessionbroker.Broker
-	promptHost    *prompthost.Host // on-device prompts (#10190); W04 registers notice.info (live only where the server enables it)
+	// linuxDesktopHelpers runs the Linux per-session desktop helpers
+	// (#12117); nil unless on Linux with desktop_wayland_helper on. Set once
+	// in Start, read by Stop.
+	linuxDesktopHelpers atomic.Pointer[sessionbroker.LinuxDesktopHelperManager]
+	// linuxHosted maps a desktop session id to its live mark on the Linux
+	// desktop helper of a logind session (#12117 W3), released exactly once
+	// when its owner is forgotten. linuxHostedMu also orders that release
+	// with the owner's removal (forgetDesktopOwner).
+	linuxHostedMu  sync.Mutex
+	linuxHosted    map[string]linuxHostedMark
+	linuxHostedSeq uint64
+	// Test seams for Linux desktop routing; production leaves them nil.
+	linuxDesktopHelperOverride linuxDesktopHelperController
+	linuxActiveSeatSession     func(context.Context) (*sessionbroker.DetectedSession, error)
+	// desktopDirectStart replaces h.desktopMgr.StartSession on the direct
+	// in-root start path; tests only.
+	desktopDirectStart func(sessionID, offer string, iceServers []desktop.ICEServerConfig, displayIndex int, policy desktop.SessionPolicy) (string, error)
+	promptHost         *prompthost.Host // on-device prompts (#10190); W04 registers notice.info (live only where the server enables it)
 	// MSP identity cache and the prompt list it purges on a scope change
 	// (#10190 W03); see prompt_identity.go.
 	promptIdentity  *promptidentity.Store
@@ -819,6 +864,17 @@ type Heartbeat struct {
 	stopOnce    sync.Once
 	authMon     *authstate.Monitor
 
+	// verificationPool is the lane for backup_verify and backup_test_restore
+	// (#6106). Each waits up to backupVerificationTimeout on the backup
+	// helper; on the shared pool that wait held a slot, so a few
+	// verifications could starve scripts and monitors. It has pool's worker
+	// and queue sizes, so verifications get the concurrency they had, now in
+	// their own queue, and total pooled capacity is twice
+	// MaxConcurrentCommands. Agent-side a verification is only an IPC wait;
+	// the work runs in the helper. Nil in fixtures that never set it: the
+	// dispatch, stop and drain paths then use pool alone.
+	verificationPool *workerpool.Pool
+
 	// Command deduplication: prevents the same commandId from being
 	// executed twice when delivered via both WebSocket and heartbeat.
 	seenCommands   map[string]time.Time
@@ -870,6 +926,9 @@ type Heartbeat struct {
 	// renewCert to resume.
 	pendingMTLSCertOnDisk atomic.Bool
 	upgradeInProgress     atomic.Bool
+	// flashHoldUpgradeLogged keeps a skipped upgrade to one log line per section:
+	// the server re-sends upgradeTo on every heartbeat.
+	flashHoldUpgradeLogged atomic.Bool
 
 	// Set when PinManifestKeys returns ErrManifestTrustRotationRejected.
 	// Suspends auto-update until the rotation conflict is resolved (server
@@ -962,6 +1021,16 @@ type Heartbeat struct {
 	// call). Guarded by mu.
 	lastControlPlaneStatus  health.Status
 	lastControlPlaneMessage string
+	// controlPlaneBlockedWarned latches the noteControlPlaneBlockedLiveness
+	// WARN to once per blocked streak (#8868). Reset on a successful
+	// heartbeat via clearControlPlaneBlockedLatch.
+	controlPlaneBlockedWarned atomic.Bool
+	// controlPlaneBlockedUnrecordedWarned latches the WARN for a streak in
+	// which neither the state file nor IPC recorded the marker.
+	controlPlaneBlockedUnrecordedWarned atomic.Bool
+	// blocks holds control-plane block episodes (#8868). nil in most test
+	// literals; every blockTracker method is nil-receiver safe.
+	blocks *blockTracker
 
 	// Tracks whether the read-only FS error has been logged (prevents log spam)
 	updateReadOnlyLogged bool
@@ -985,6 +1054,21 @@ type Heartbeat struct {
 	// (checksum or manifest) on the agent, backup, user-helper and watchdog
 	// download paths. See artifact_backoff.go. Issue #7516.
 	artifactBackoff updater.TargetBackoff
+
+	// Persisted per-version latch for a self-update that restarted on the
+	// previous binary (the swap did not take). Survives the restart that
+	// every Windows attempt costs. See update_outcome.go. Issue #9751.
+	// updateHelperLogDir is where the Windows helper's failure logs are read
+	// from; "" means os.TempDir(). Both are test seams.
+	updateLatch        *updater.FailureLatch
+	updateLatchOnce    sync.Once
+	updateHelperLogDir string
+	// Episode state for upgrades deferred by an in-progress backup job, so a
+	// deferral that persists is logged above Info (update_outcome.go, #9751).
+	upgradeBackupDeferral backupDeferralState
+	// Last latch notice logged at warn by this process (update_outcome.go).
+	updateLatchNoticeMu  sync.Mutex
+	updateLatchNoticeKey string
 
 	// Path to the agent state file, set by main after startup.
 	statePath                   string
@@ -1250,7 +1334,9 @@ func newHeartbeatHTTPClient(tlsCfg *tls.Config) *http.Client {
 	// ECH dialer (#8869), plain-first. TLS (including the mTLS client cert)
 	// sits above the cache, so hostname verification is unchanged — the cache
 	// alters where we dial, never what we trust. A nil tlsCfg is handled.
-	return &http.Client{Timeout: 30 * time.Second, Transport: ech.NewTransport(tlsCfg)}
+	// Every call on this client carries the device credential, so redirects
+	// follow the shared credentialed-request policy.
+	return httpguard.NewClient(ech.NewTransport(tlsCfg), 30*time.Second)
 }
 
 func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureString, tlsCfg *tls.Config) *Heartbeat {
@@ -1290,6 +1376,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		patchMgr:                       patching.NewDefaultManager(cfg),
 		connectionsCol:                 collectors.NewConnectionsCollector(),
 		eventLogCol:                    collectors.NewPersistentEventLogCollector(filepath.Join(config.GetDataDir(), "eventlog_bookmarks.json")),
+		blocks:                         newBlockTracker(filepath.Join(config.GetDataDir(), controlPlaneBlockFile), time.Now),
 		bootCol:                        collectors.NewBootPerformanceCollector(),
 		reliabilityCol:                 collectors.NewReliabilityCollector(),
 		agentVersion:                   version,
@@ -1300,6 +1387,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		tunnelMgr:                      tunnel.NewManager(false),
 		securityScanner:                &security.SecurityScanner{Config: cfg},
 		pool:                           workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
+		verificationPool:               workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
 		healthMon:                      health.NewMonitor(),
 		retryCfg:                       httputil.DefaultRetryConfig(),
 		seenCommands:                   make(map[string]time.Time),
@@ -1318,9 +1406,13 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// a failed result for every command the previous process died running
 	// (#8296).
 	h.commandJournal.Recover(h.backupOutbox)
+	// After Recover has read the vendor update run marker for its synthetic
+	// result, and before any command can start a new run (#11065).
+	recoverOemRuns()
 	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
 	h.initTimeSync()
 	h.initWorkloads()
+	h.initWake()
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
 	h.isHeadless = cfg.IsHeadless
@@ -1398,11 +1490,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 					}
 				}
 
-				sessionNum, err := strconv.ParseUint(sessionKey, 10, 32)
-				if err != nil {
-					return 0, fmt.Errorf("invalid session key %q: %w", sessionKey, err)
-				}
-				return 0, sessionbroker.SpawnProcessInSessionWithArgs(binaryPath, args, uint32(sessionNum))
+				return spawnAssistDirect(sessionKey, binaryPath, args)
 			}),
 		)
 	} else {
@@ -1465,6 +1553,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			socketPath = ipc.DefaultSocketPath()
 		}
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
+		// Before Listen: a Linux desktop helper keeps a CanCapture claim only
+		// with desktop_wayland_helper on and the Wayland backend in this build
+		// (#12117); always false until that backend ships.
+		h.sessionBroker.SetLinuxWaylandCaptureAuthorized(
+			linuxWaylandCaptureAuthorizer(runtime.GOOS, cfg, desktop.WaylandBackendCompiled))
 		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
 		h.sessionBroker.SetSessionAuthenticatedHandler(h.handleHelperSessionAuthenticated)
 		h.startPromptHost(config.GetDataDir())
@@ -1518,6 +1611,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		),
 		cfg.PatchRebootMaxPerDay,
 	)
+	flashguard.Default().SetCountdownProbe(h.rebootMgr.OSCountdownArmed)
 	// The restart card (#10190 W05): each rung is offered to the prompt host
 	// first; a rung no session can draw goes out as above, unchanged.
 	if card := h.newRestartCard(); card != nil {
@@ -1633,6 +1727,19 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	// hits the disk.
 	h.enqueueDesktopFenceAnswer(msg)
 
+	// Resolve the deadlines ONCE (#11840). A current API sends them as time
+	// remaining, measured here from when this agent asked for the renewal
+	// (LeaseClockAnchor), so neither the device's wall clock nor any delay on
+	// the way can make the lease outlast what the server granted. An older API
+	// sends only absolute timestamps, read against the wall clock as before but
+	// capped at the same ceilings, so a slow clock cannot stretch them.
+	// Everything below, including the copy forwarded to a helper, uses these
+	// resolved values.
+	anchor := msg.LeaseClockAnchor()
+	expiresAt := desktop.LeaseExpiry(anchor, msg.ExpiresInMs, msg.ExpiresAtUnixMs)
+	hardDeadline := desktop.LeaseHardDeadline(anchor, msg.HardDeadlineInMs, msg.HardDeadlineUnixMs)
+	msg = withResolvedLeaseDeadlines(msg, expiresAt, hardDeadline)
+
 	// "I cannot answer right now" is not a renewal and not a revocation. It
 	// ends a session whose FIRST renewal it is (owner decision 2) and is
 	// otherwise the silence the grace window budgets for.
@@ -1658,16 +1765,12 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	go h.forwardRevocationLeaseToHelper(msg)
 
 	if !msg.Revoked {
-		// Deadlines are converted to the monotonic clock at receipt so an NTP
-		// step cannot extend a live lease (desktop.MonotonicDeadline).
-		h.desktopMgr.ApplyRevocationLease(msg.SessionID,
-			desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
-			desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+		// The resolved deadlines are on the monotonic clock, so an NTP step
+		// after receipt cannot extend a live lease either.
+		h.desktopMgr.ApplyRevocationLease(msg.SessionID, expiresAt, hardDeadline)
 		// A WebSocket fallback stream keeps the same lease (desktop/ws_lease.go).
 		if h.wsDesktopMgr != nil {
-			h.wsDesktopMgr.ApplyRevocationLease(msg.SessionID,
-				desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
-				desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+			h.wsDesktopMgr.ApplyRevocationLease(msg.SessionID, expiresAt, hardDeadline)
 		}
 		return
 	}
@@ -1704,10 +1807,34 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	}()
 }
 
+// withResolvedLeaseDeadlines rewrites an answer's absolute deadlines to the
+// resolved ones, in THIS device's wall clock, and drops the remaining-time
+// form that has now been consumed. The helper reads the absolute fields
+// against the same machine clock (desktop.MonotonicDeadline), so they land on
+// the same instants; an older helper that knows nothing of #11840 reads them
+// correctly too. A zero deadline stays absent.
+//
+// UnixMilli takes the deadline's WALL reading, so this is only right because
+// every anchor carries the wall clock as of receipt: ReceivedAt is a plain
+// time.Now(), and RequestedAt is derived from it by the request's monotonic
+// age (websocket.leaseRequestedAt), never from the agent's start time.
+func withResolvedLeaseDeadlines(msg websocket.RevocationLeaseMessage, expiresAt, hardDeadline time.Time) websocket.RevocationLeaseMessage {
+	msg.ExpiresAtUnixMs, msg.HardDeadlineUnixMs = 0, 0
+	if !expiresAt.IsZero() {
+		msg.ExpiresAtUnixMs = expiresAt.UnixMilli()
+	}
+	if !hardDeadline.IsZero() {
+		msg.HardDeadlineUnixMs = hardDeadline.UnixMilli()
+	}
+	msg.ExpiresInMs, msg.HardDeadlineInMs = 0, 0
+	return msg
+}
+
 // forwardRevocationLeaseToHelper relays a lease answer over IPC to the helper
-// that owns the session, if any. A failure is logged, not escalated: the
-// helper's own watchdog is authoritative and stops the session at
-// expiresAt+grace once answers stop arriving.
+// that owns the session, if any. Its deadlines must already be resolved to
+// this device's clock (withResolvedLeaseDeadlines). A failure is logged, not
+// escalated: the helper's own watchdog is authoritative and stops the session
+// at expiresAt+grace once answers stop arriving.
 func (h *Heartbeat) forwardRevocationLeaseToHelper(msg websocket.RevocationLeaseMessage) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1949,6 +2076,20 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			}()
 			h.handleSASFromHelper(session, env)
 		}()
+	case ipc.TypeDesktopClipboardRead:
+		// Waits on the user helper for up to the clipboard proxy's timeout,
+		// so it runs off the dispatch goroutine, like SAS.
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("panic in handleDesktopClipboardRead", "error", fmt.Sprint(r))
+					// Answer anyway, so the helper reports the failure now
+					// instead of waiting out its timeout.
+					sendDesktopClipboardReadResult(session, env, ipc.DesktopClipboardReadResult{Error: "internal error"})
+				}
+			}()
+			h.handleDesktopClipboardRead(session, env)
+		}()
 	case ipc.TypeDesktopLeaseRenew:
 		// A helper-hosted session's lease watchdog lives in the helper, which
 		// holds no command socket. This is the inbound half of the IPC lease
@@ -1960,7 +2101,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			log.Warn("invalid desktop lease renew payload", "error", err.Error())
 			return
 		}
-		if !desktopSessionIDPattern.MatchString(renew.SessionID) {
+		if !desktopSessionIDPattern().MatchString(renew.SessionID) {
 			log.Warn("dropping desktop lease renew with invalid session ID",
 				"sessionId", renew.SessionID, "helperSession", session.SessionID)
 			return
@@ -1983,7 +2124,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			log.Warn("invalid desktop peer disconnect payload", "error", err.Error())
 			return
 		}
-		if !desktopSessionIDPattern.MatchString(notice.SessionID) {
+		if !desktopSessionIDPattern().MatchString(notice.SessionID) {
 			log.Warn("dropping desktop peer disconnect with invalid session ID",
 				"sessionId", notice.SessionID, "helperSession", session.SessionID)
 			return
@@ -2001,7 +2142,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			log.Warn("invalid desktop clipboard summary payload", "error", err.Error())
 			return
 		}
-		if !desktopSessionIDPattern.MatchString(notice.SessionID) {
+		if !desktopSessionIDPattern().MatchString(notice.SessionID) {
 			log.Warn("dropping desktop clipboard summary with invalid session ID",
 				"sessionId", notice.SessionID, "helperSession", session.SessionID)
 			return
@@ -2201,7 +2342,7 @@ func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID, reason string) 
 	if h.wsClient == nil {
 		return
 	}
-	if !desktopSessionIDPattern.MatchString(sessionID) {
+	if !desktopSessionIDPattern().MatchString(sessionID) {
 		log.Warn("refusing to send desktop disconnect notification with invalid session ID", "sessionId", sessionID)
 		return
 	}
@@ -2224,25 +2365,6 @@ func (h *Heartbeat) SCMSessionCh() chan<- sessionbroker.SCMSessionEvent {
 		return nil
 	}
 	return h.scmSessionCh
-}
-
-// checkUpdateMarker looks for the transient .update-restart file written
-// by the updater before restart. If found, deletes it and returns true
-// so the caller can skip the startup jitter and heartbeat immediately.
-func checkUpdateMarker() bool {
-	markerPath := filepath.Join(config.ConfigDir(), ".update-restart")
-	_, err := os.Stat(markerPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Warn("failed to check update marker", "path", markerPath, "error", err.Error())
-		}
-		return false
-	}
-	if removeErr := os.Remove(markerPath); removeErr != nil {
-		log.Warn("failed to remove update marker", "path", markerPath, "error", removeErr.Error())
-	}
-	log.Info("update marker found, skipping startup jitter for immediate heartbeat")
-	return true
 }
 
 func bootstrapThenListen(bootstrap func() error, listen func()) error {
@@ -2294,9 +2416,15 @@ func (h *Heartbeat) Start() {
 	h.startContainment()
 	h.startTimeSync()
 	h.startWorkloads()
+	h.startWake()
 	h.startPamReconciliationRetryLoop()
 	// #8971: deliver the user's PAM declines to the server (outbox drain).
 	go h.runPamWithdrawDrain()
+
+	// #8318 — know whether a staged reattach set is on disk before the
+	// credential and certificate work below starts, so none of it runs on an
+	// unprimed view of the reattach (a new token rotation waits on one).
+	h.primeRebindState()
 
 	// Issue #2621 — before the first heartbeat, finish any credential rotation
 	// that was interrupted between the durable disk write and the server
@@ -2318,6 +2446,14 @@ func (h *Heartbeat) Start() {
 	// receive. Runs after the reconcile above so staged material is finished
 	// first. See maybeSelfInitiateCertRenewal.
 	go h.maybeSelfInitiateCertRenewal()
+
+	// #8318 — resume a reattach a previous process left mid-flight (§6.6);
+	// its state was primed above.
+	h.rebind.running.Go(h.resumeRebind)
+
+	// #11065 — after a firmware update's reboot, report BitLocker and the BIOS
+	// version once. A no-op when nothing is pending.
+	go h.verifyOemUpdates()
 
 	// Proactively spawn helpers into user sessions so remote desktop works
 	// instantly after reboot (Windows service only). The SCM session event
@@ -2344,6 +2480,8 @@ func (h *Heartbeat) Start() {
 	if h.sessionBroker != nil {
 		h.startDarwinDesktopWatcher()
 		h.startSessionBannerSweep()
+		// Linux + desktop_wayland_helper only; a no-op otherwise.
+		h.startLinuxDesktopHelperManager()
 	}
 	if h.promptHost != nil {
 		promptCtx, promptCancel := context.WithCancel(context.Background())
@@ -2358,8 +2496,12 @@ func (h *Heartbeat) Start() {
 	// after mass restart of agents. Skip jitter if restarting after self-update
 	// so the new version is reported immediately.
 	interval := time.Duration(h.config.HeartbeatIntervalSeconds) * time.Second
-	if checkUpdateMarker() {
-		log.Info("post-update restart: sending immediate heartbeat (jitter skipped)")
+	// Before the first heartbeat: that heartbeat re-offers the target, and a
+	// version whose swap did not take must already be latched by then (#9751).
+	marker, restartedForUpdate := h.startupUpdateReconcile(defaultUpdateMarkerPath())
+	if restartedForUpdate {
+		log.Info("post-update restart: sending immediate heartbeat (jitter skipped)",
+			"markerVersion", marker.Version, "runningVersion", h.agentVersion)
 		// On macOS, the agent self-update recreates the IPC socket. The
 		// desktop helpers lose their connection and may be waiting on
 		// backoff. Kickstart them so remote desktop recovers immediately.
@@ -2443,6 +2585,15 @@ func (h *Heartbeat) Start() {
 	for {
 		select {
 		case <-ticker.C:
+			// #8318 — drive a staged reattach before the auth-dead skip: an
+			// agent whose confirm committed with its answer lost is one whose
+			// source credentials are now refused. Once the reattached identity
+			// is on disk this process holds retired credentials; it only waits
+			// for its restart.
+			h.tickRebind()
+			if h.rebindOwnsIdentity() {
+				continue
+			}
 			// Issue #2621 — retry an unfinished credential rotation on every tick
 			// while one is outstanding. This runs BEFORE the auth-dead skip on
 			// purpose: if the server already promoted but the confirmation
@@ -2613,6 +2764,9 @@ func (h *Heartbeat) Start() {
 func (h *Heartbeat) StopAcceptingCommands() {
 	h.accepting.Store(false)
 	h.pool.StopAccepting()
+	if h.verificationPool != nil {
+		h.verificationPool.StopAccepting()
+	}
 }
 
 // DrainAndWait waits for all in-flight commands and inventory goroutines to complete,
@@ -2621,8 +2775,14 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 	h.stopHardwareHealth()
 	h.stopTimeSync()
 	h.stopWorkloads()
+	h.stopWake()
 	log.Info("draining in-flight commands and inventory goroutines")
+	// Both pools share ctx's deadline: their tasks run concurrently, so
+	// draining them in turn still bounds the whole wait by that deadline.
 	h.pool.Drain(ctx)
+	if h.verificationPool != nil {
+		h.verificationPool.Drain(ctx)
+	}
 	h.wg.Wait()
 
 	// Wait for inventory goroutines with deadline
@@ -2647,12 +2807,21 @@ func (h *Heartbeat) Stop() {
 		h.stopHardwareHealth()
 		h.stopTimeSync()
 		h.stopWorkloads()
+		h.stopWake()
 		shutdownTimeout := h.shutdownTimeout
 		if shutdownTimeout <= 0 {
 			shutdownTimeout = 5 * time.Second
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
+
+		// Linux desktop helpers (#12117) are stopped first and synchronously
+		// (bounded to 5 s): every unit is collected and every hosted desktop
+		// session reported ended while the broker and the API link are still
+		// up, and nothing is respawned while the broker closes.
+		if m := h.linuxDesktopHelpers.Load(); m != nil {
+			m.Shutdown()
+		}
 
 		if h.stopBrokerAcceptingAndWait != nil {
 			if err := h.stopBrokerAcceptingAndWait(ctx); err != nil {
@@ -2832,6 +3001,11 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	}
 	if endpoint == "workloads" {
 		if upload, ok := payload.(workloadsUpload); ok && upload.ctx != nil {
+			parent = upload.ctx
+		}
+	}
+	if endpoint == "wake-status" {
+		if upload, ok := payload.(wakeUpload); ok && upload.ctx != nil {
 			parent = upload.ctx
 		}
 	}
@@ -3812,6 +3986,10 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		h.applyWorkloadInventoryConfig(wiRaw)
 	}
 
+	// Apply wake_on_lan_settings (readiness collection; writes inactive). Same rule:
+	// above the policy-probe early return. An absent block changes nothing.
+	h.applyWakeOnLanFromUpdate(update)
+
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]
 	if !hasRegistry {
 		registryRaw, hasRegistry = update["policyRegistryStateProbes"]
@@ -4390,6 +4568,14 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 		// provenance, so the API stores NULL rather than a guess.
 		if p.SeveritySource != "" && severity != "unknown" {
 			item["severitySource"] = p.SeveritySource
+		}
+		// Omitted, never defaulted: an absent type means the API leaves the patch
+		// with Windows Update. An API that predates the field ignores it (#11073).
+		if p.ReportedUpdateType != "" {
+			item["reportedUpdateType"] = p.ReportedUpdateType
+		}
+		if p.ReportedUpdateOwner != "" {
+			item["reportedUpdateOwner"] = p.ReportedUpdateOwner
 		}
 		items[i] = item
 	}
@@ -5084,6 +5270,40 @@ func controlPlaneComponent(st ech.HostStatus) (status health.Status, message str
 	}
 }
 
+// classifiedSendFailure is the heartbeat health component's message for a
+// failed send (#8868): what answered in place of the control plane, when the
+// error is positive evidence of an interceptor, else err.Error() unchanged.
+// st is the dialer's status for the host; its evidence adds the filter's
+// Location host when it is current and of the same class as err.
+func classifiedSendFailure(err error, st ech.HostStatus) string {
+	ev, ok := ech.ErrorEvidence(err, time.Time{})
+	if !ok {
+		return err.Error()
+	}
+	if cur := st.Evidence; !cur.IsZero() && cur.SeenAt.After(st.LastPlainSuccessAt) &&
+		cur.Kind.PlaintextSignature() == ev.Kind.PlaintextSignature() {
+		if ev.Kind == ech.BlockPlaintextUnknown || cur.Kind == ev.Kind {
+			ev = cur
+		}
+	}
+	switch ev.Kind {
+	case ech.BlockCaptivePortal:
+		return "control plane held by a captive portal"
+	case ech.BlockUntrustedCertificate:
+		issuer := ev.CertIssuer
+		if issuer == "" {
+			issuer = "unknown"
+		}
+		return "control plane certificate not trusted (issuer: " + issuer + ")"
+	default:
+		detail := ev.LocationHost
+		if detail == "" {
+			detail = "no detail"
+		}
+		return "control plane blocked by a network security filter (" + detail + ")"
+	}
+}
+
 // serverHost returns raw's hostname (no port), or "" when raw does not parse.
 func serverHost(raw string) string {
 	u, err := neturl.Parse(raw)
@@ -5097,7 +5317,16 @@ func serverHost(raw string) string {
 // control plane and records the control_plane health component, but only when
 // (status, message) changed since the last beat.
 func (h *Heartbeat) observeControlPlane() ech.HostStatus {
-	st := ech.Shared().Status(serverHost(h.serverURL()))
+	primary := serverHost(h.serverURL())
+	st := ech.Shared().Status(primary)
+	// Primary first: the tracker keeps one active episode. An episode for a
+	// host that is neither primary nor backup any more is closed first.
+	backup := serverHost(h.backupServerURL())
+	h.blocks.ForgetOtherHosts(primary, backup)
+	h.blocks.Observe(primary, st)
+	if backup != "" && backup != primary {
+		h.blocks.Observe(backup, ech.Shared().Status(backup))
+	}
 	status, message := controlPlaneComponent(st)
 	h.mu.Lock()
 	changed := status != h.lastControlPlaneStatus || message != h.lastControlPlaneMessage
@@ -5423,6 +5652,11 @@ func (h *Heartbeat) beatSkipReason() string {
 	if h.identityIntakePaused() {
 		return "restarting to apply a server-assigned identity"
 	}
+	// #8318 — the identity on disk is the reattached one; the credentials in
+	// memory are the retired source's.
+	if h.rebindOwnsIdentity() {
+		return "restarting to apply a reattached identity"
+	}
 	return ""
 }
 
@@ -5491,7 +5725,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		// so it always declares version 1. Unconditional (not gated on any
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
-		SecurityCapabilities: compiledSecurityCapabilities(),
+		SecurityCapabilities: h.securityCapabilitiesForBeat(),
 		Containment:          h.containmentReport(),
 		ReportedIdentity:     h.reportIdentityForBeat(),
 		// #8382 — why the last identity assertion was refused, once.
@@ -5649,6 +5883,10 @@ func (h *Heartbeat) postHeartbeat(baseURL string, payload *HeartbeatPayload) boo
 // the control plane that actually issued them.
 func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (*HeartbeatResponse, bool) {
 	payload.ServerURL = baseURL
+	// Fresh per POST: the backup probe reuses the primary's payload and must
+	// carry the episode the primary's failure just started (#8868).
+	sentBlock := h.blocks.Report()
+	payload.ControlPlaneBlock = sentBlock
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Error("failed to marshal heartbeat", "error", err.Error())
@@ -5664,14 +5902,30 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	host := serverHost(baseURL)
 	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
 	if err != nil {
 		log.Error("failed to send heartbeat", "server", baseURL, "error", err.Error())
-		h.healthMon.Update("heartbeat", health.Unhealthy, err.Error())
+		// #8868: the dialer's evidence from this failure first (it carries
+		// the filter's Location host), then the error itself (the proxy path
+		// bypasses the dialer). Both feed one episode.
+		st := ech.Shared().Status(host)
+		h.blocks.Observe(host, st)
+		h.blocks.ObserveRequestError(host, err)
+		h.healthMon.Update("heartbeat", health.Unhealthy, classifiedSendFailure(err, st))
 		// #8934: the server answered, it is just overloaded — the loop is
 		// alive, and the watchdog must not restart it for that.
 		if status, ok := serverOverloadAnswer(err); ok {
 			h.noteServerUnavailableLiveness(status)
+		}
+		// #8868: a network filter is answering for the control plane. The
+		// loop is alive and a restart cannot lift the filter (and would drop
+		// the dialer's ECH mode), so hold the watchdog's restart: on this
+		// failure's own signature, or on another error (an ECH attempt timing
+		// out) while the host's plaintext episode is fresh. An untrusted
+		// certificate never holds.
+		if ech.IsFilterSignature(err) || h.blocks.HoldsRestart(host) {
+			h.noteControlPlaneBlockedLiveness()
 		}
 		return nil, false
 	}
@@ -5684,6 +5938,9 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 			h.authMon.RecordAuthFailure()
 		}
 		h.noteAuthRejectedLiveness()
+		// #8318 — with a staged reattach set on disk, a confirm may have
+		// committed and retired these credentials: replay it and probe.
+		h.noteSourceCredentialsRejected()
 		return nil, false
 	}
 
@@ -5704,6 +5961,16 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	if h.authMon != nil {
 		h.authMon.RecordSuccess()
 	}
+	// #8868: a 200 is acceptance. Without ECH it proves the host is reachable
+	// directly (clears its episode); a cleared episode this beat carried is
+	// now delivered and can go.
+	h.blocks.ObserveReached(host, ech.Shared().Status(host).ECHActive)
+	h.blocks.MarkDelivered(sentBlock)
+	h.clearControlPlaneBlockedLatch()
+	// #8318 — this process's credentials are proven current: a staged
+	// reattach set the server ended can go, and a reattached identity that
+	// has now authenticated no longer needs its staged set.
+	h.noteCredentialsCurrent()
 
 	// Update state file with latest heartbeat timestamp so the watchdog
 	// can detect stale heartbeats.
@@ -6021,6 +6288,17 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	identityRestarting := h.applyIdentityAssertion(identityAssertion)
 
 	rollbackActive := rollbackInResponse || h.rollbackInProgress()
+
+	// #8318 — the signed reattach directive, after the pin above for the same
+	// reason as the identity assertion. Not while a restart for an identity
+	// or a rollback is pending: the directive comes on every beat. While a
+	// reattach is in flight no NEW token rotation starts (see
+	// rebindInProgress); the server re-signals it later.
+	directiveAccepted := h.handleRebindDirective(response.Rebind, identityRestarting || rollbackActive)
+	// A verified directive starts the flow on its own goroutine, so the staged
+	// set may not be on disk yet: hold rotation for this beat too. One this
+	// agent will not act on (unverifiable, ended, support mode) holds nothing.
+	rebindHold := h.rebindInProgress() || directiveAccepted
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
 		if !h.accepting.Load() {
@@ -6035,9 +6313,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 			go h.processCommand(c)
 			continue
 		}
-		if !h.pool.Submit(func() { h.processCommand(c) }) {
-			log.Warn("command rejected, worker pool full", logging.KeyCommandID, cmd.ID)
-		}
+		h.dispatchPolledCommand(c)
 	}
 
 	// Handle upgrade if requested and auto-update is enabled
@@ -6074,8 +6350,8 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	}
 
 	// Handle proactive bearer-token rotation before the token becomes stale.
-	if identityRestarting {
-		// Re-signaled after the restart.
+	if identityRestarting || rebindHold {
+		// Re-signaled after the restart, or once the reattach is resolved.
 	} else if response.RotateToken {
 		go h.handleTokenRotation()
 	} else if !response.ConfirmTokenRotation && h.maybeStartOwedHelperTokenRotation(time.Now()) {
@@ -6587,18 +6863,25 @@ func (h *Heartbeat) promoteLegacyCertImmediately(m *api.MtlsCertData) {
 
 	token := h.secureToken.Reveal()
 	h.mu.Lock()
+	prevCertPEM, prevKeyPEM, prevExpires := h.config.MtlsCertPEM, h.config.MtlsKeyPEM, h.config.MtlsCertExpires
 	h.config.MtlsCertPEM = m.Certificate
 	h.config.MtlsKeyPEM = m.PrivateKey
 	h.config.MtlsCertExpires = m.ExpiresAt
 	h.config.AuthToken = token
-	err = config.SaveTo(h.config, config.ActiveConfigFile())
+	err = h.saveConfigLocked()
 	h.config.AuthToken = ""
-	if err != nil {
+	if errors.Is(err, errRebindOwnsIdentity) {
+		h.config.MtlsCertPEM, h.config.MtlsKeyPEM, h.config.MtlsCertExpires = prevCertPEM, prevKeyPEM, prevExpires
+	} else if err != nil {
 		// Clear expires so the next heartbeat re-triggers renewal.
 		h.config.MtlsCertExpires = ""
 	}
 	h.mu.Unlock()
 
+	if errors.Is(err, errRebindOwnsIdentity) {
+		logSkippedStaleSave("a renewed mTLS certificate (legacy server)")
+		return
+	}
 	if err != nil {
 		log.Error("failed to save renewed mTLS cert -- renewal will be re-attempted", "error", err.Error())
 		return
@@ -6634,7 +6917,7 @@ func (h *Heartbeat) stagePendingMTLSCert(renewResp *api.RenewCertV2Response) {
 	h.config.PendingMTLSCertificateID = renewResp.CertificateID
 	h.config.PendingMTLSExpiresAt = activationExpiresAt
 	h.config.AuthToken = token
-	saveErr := config.SaveTo(h.config, config.ActiveConfigFile())
+	saveErr := h.saveConfigLocked()
 	h.config.AuthToken = ""
 	if saveErr != nil {
 		h.config.PendingMTLSCertificate = ""
@@ -6644,6 +6927,10 @@ func (h *Heartbeat) stagePendingMTLSCert(renewResp *api.RenewCertV2Response) {
 	}
 	h.mu.Unlock()
 
+	if errors.Is(saveErr, errRebindOwnsIdentity) {
+		logSkippedStaleSave("a pending mTLS certificate")
+		return
+	}
 	if saveErr != nil {
 		log.Error("mTLS renewal aborted — pending certificate could not be durably persisted; continuing on the existing certificate",
 			"error", saveErr.Error())
@@ -6849,7 +7136,7 @@ func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
 	h.config.PendingMTLSCertificateID = ""
 	h.config.PendingMTLSExpiresAt = time.Time{}
 	h.config.AuthToken = token
-	saveErr := config.SaveTo(h.config, config.ActiveConfigFile())
+	saveErr := h.saveConfigLocked()
 	h.config.AuthToken = ""
 	if saveErr != nil {
 		h.config.MtlsCertPEM = prevCertPEM
@@ -6862,6 +7149,10 @@ func (h *Heartbeat) promotePendingMTLSCert(certPEM, keyPEM string) {
 	}
 	h.mu.Unlock()
 
+	if errors.Is(saveErr, errRebindOwnsIdentity) {
+		logSkippedStaleSave("a confirmed mTLS certificate")
+		return
+	}
 	if saveErr != nil {
 		// The server has ALREADY confirmed/promoted this certificate — only
 		// our local disk write failed. Both in-memory and on-disk state have
@@ -6905,7 +7196,7 @@ func (h *Heartbeat) clearPendingMTLSCert() {
 	h.config.PendingMTLSCertificateID = ""
 	h.config.PendingMTLSExpiresAt = time.Time{}
 	h.config.AuthToken = token
-	err := config.SaveTo(h.config, config.ActiveConfigFile())
+	err := h.saveConfigLocked()
 	h.config.AuthToken = ""
 	if err != nil {
 		h.config.PendingMTLSCertificate = prevPendingCert
@@ -6915,6 +7206,10 @@ func (h *Heartbeat) clearPendingMTLSCert() {
 	}
 	h.mu.Unlock()
 
+	if errors.Is(err, errRebindOwnsIdentity) {
+		logSkippedStaleSave("a discarded pending mTLS certificate")
+		return
+	}
 	if err != nil {
 		log.Error("failed to clear expired pending mTLS certificate from disk; will retry on the next tick", "error", err.Error())
 		h.pendingMTLSCertOnDisk.Store(true)
@@ -7409,6 +7704,13 @@ func (h *Heartbeat) processCommand(cmd Command) {
 	if result.Status == "duplicate" {
 		return
 	}
+	// #11154: another process reports this result. The journal entry is left
+	// in place on purpose (no End): if that process fails and this agent comes
+	// back, the restart reports the command failed.
+	if result.Status == tools.StatusResultHandedOff {
+		log.Info("command result handed to another process; not submitting it", logging.KeyCommandID, cmd.ID)
+		return
+	}
 
 	// Submit result back to API
 	if err := h.submitCommandResult(cmd.ID, result); err != nil {
@@ -7551,7 +7853,11 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 	}
 
 	result, executed := h.executeCommandViaPoolReportingDelivery(cmd)
-	if executed && result.Status != "duplicate" {
+	// #11154: another process reports a handed-off result. No hand-off is
+	// armed, so the journal entry survives, and nothing is submitted here; the
+	// websocket client drops the marker it is returned.
+	handedOff := result.Status == tools.StatusResultHandedOff
+	if executed && result.Status != "duplicate" && !handedOff {
 		// This delivery ran the command, so its hand-off (the websocket
 		// client's OnResultHandedOff, right after this returns) is the one
 		// that clears the journal entry (#8296).
@@ -7560,7 +7866,7 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 
 	wsResult := toWSCommandResult(cmd.ID, result)
 
-	if result.Status != "duplicate" && !isEphemeralCommand(cmd.Type) && !isWSDirectOnlyCommand(cmd.Type) {
+	if result.Status != "duplicate" && !handedOff && !isEphemeralCommand(cmd.Type) && !isWSDirectOnlyCommand(cmd.Type) {
 		go func() {
 			if err := h.submitCommandResult(cmd.ID, result); err != nil {
 				log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err.Error())
@@ -7598,12 +7904,13 @@ func (h *Heartbeat) executeCommandViaPoolReportingDelivery(cmd Command) (result 
 		return h.runTrackedCommand(cmd), true
 	}
 
-	if h.pool == nil {
+	pool := h.commandPoolFor(cmd.Type)
+	if pool == nil {
 		return h.executeCommand(cmd), true
 	}
 
 	resultCh := make(chan tools.CommandResult, 1)
-	if !h.pool.Submit(func() {
+	if !pool.Submit(func() {
 		resultCh <- h.runTrackedCommand(cmd)
 	}) {
 		return tools.CommandResult{
@@ -7646,7 +7953,7 @@ func (h *Heartbeat) executeCommandViaPoolReportingDelivery(cmd Command) (result 
 				ExitCode: 1, // synthetic: no exit code observed (shutdown)
 				Error:    "agent is shutting down",
 			}, false
-		case <-h.pool.Context().Done():
+		case <-pool.Context().Done():
 			return tools.CommandResult{
 				Status:   "failed",
 				ExitCode: 1, // synthetic: no exit code observed (shutdown)
@@ -7665,9 +7972,10 @@ const defaultCommandInFlightWarnAfter = 2 * time.Hour
 
 // defaultEphemeralCommandInFlightWarnAfter is the short watchdog tier for
 // ephemeral commands (isEphemeralCommand: terminal_data, tunnel_data, desktop
-// input, ...). Those handlers hand off to an interactive session and should
-// return in milliseconds, so one stuck for a minute is a wedged interactive
-// path — worth flagging long before the 2h tier would (issue #2400). Log-only,
+// input, http_request, ...). Those handlers hand off to an interactive session
+// and return in milliseconds, or make one bounded round trip (http_request,
+// capped by httpProxyTimeout), so one stuck for a minute is a wedged path —
+// worth flagging long before the 2h tier would (issue #2400). Log-only,
 // exactly like the default tier: it never fails or kills the command.
 const defaultEphemeralCommandInFlightWarnAfter = 60 * time.Second
 
@@ -7792,12 +8100,24 @@ func isWSDirectOnlyCommand(cmdType string) bool {
 	return cmdType == tools.CmdBackupRun
 }
 
+// isEphemeralCommand reports whether a command is a per-request frame bound to
+// a session or tunnel, whose result travels only on the WebSocket:
+// HandleCommand sends no REST result for it, it gets the short watchdog tier,
+// and it is never journaled.
+//
+// http_request (#11464) is one Network Proxy request, one per asset a proxied
+// device web UI loads. The server's in-memory awaiter (agentCommandAwait)
+// takes its result from the WebSocket reply; there is no device_commands row
+// (id http-req-<tunnelId>-<uuid>) and the REST result route answers it as a
+// no-op, so POSTing it only spent the agent's general rate budget and got its
+// heartbeats refused during an asset-heavy page load.
 func isEphemeralCommand(cmdType string) bool {
 	switch cmdType {
 	case tools.CmdTerminalStart, tools.CmdTerminalData, tools.CmdTerminalResize, tools.CmdTerminalStop,
 		tools.CmdStartDesktop, tools.CmdStopDesktop,
 		tools.CmdDesktopStreamStart, tools.CmdDesktopStreamStop, tools.CmdDesktopInput, tools.CmdDesktopConfig,
-		tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose:
+		tools.CmdTunnelOpen, tools.CmdTunnelData, tools.CmdTunnelClose,
+		tools.CmdHttpRequest:
 		return true
 	}
 	return false
@@ -8843,11 +9163,45 @@ func (h *Heartbeat) noteCodeSignatureFailure(targetVersion string) {
 	h.badSignatureAt = time.Now()
 }
 
+// flashHoldUpgradeLog is logged once per firmware section by a skipped upgrade.
+const flashHoldUpgradeLog = "upgrade skipped: a firmware update is in progress"
+
+// flashSectionBlocksUpgrade reports an open firmware section, logging once per
+// section however many heartbeats re-offer the upgrade during it.
+func (h *Heartbeat) flashSectionBlocksUpgrade(targetVersion string) bool {
+	if _, active := flashguard.Default().Active(); !active {
+		h.flashHoldUpgradeLogged.Store(false)
+		return false
+	}
+	if h.flashHoldUpgradeLogged.CompareAndSwap(false, true) {
+		log.Info(flashHoldUpgradeLog, "targetVersion", targetVersion)
+	}
+	return true
+}
+
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.
 func (h *Heartbeat) doUpgrade(targetVersion string) {
+	if h.upgradeHeldBeforeAttempt(targetVersion) {
+		return
+	}
+
+	log.Info("upgrade requested", "targetVersion", targetVersion)
+	h.doUpgradeAttempt(targetVersion)
+}
+
+// upgradeHeldBeforeAttempt runs every gate that must hold an offer back
+// BEFORE doUpgrade announces the attempt (update_status) or downloads
+// anything. Returns true when the offer is skipped this heartbeat.
+func (h *Heartbeat) upgradeHeldBeforeAttempt(targetVersion string) bool {
 	if h.containmentBlocksUpgrade() {
 		log.Info("upgrade skipped: network isolation is active", "targetVersion", targetVersion)
-		return
+		return true
+	}
+	// Before sendUpdateStatus and any download, for the reason the checks below
+	// give. Admission is taken again around the swap: this one only saves the
+	// work, and a section can open during the prefetch.
+	if h.flashSectionBlocksUpgrade(targetVersion) {
+		return true
 	}
 	// Checked before sendUpdateStatus and before any download work: the server
 	// re-sends the same upgradeTo on every heartbeat, so without this the
@@ -8857,7 +9211,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	if h.untrustedReleaseBackoffActive(targetVersion) {
 		log.Debug("upgrade skipped: server recently refused this version as untrusted; backing off",
 			"targetVersion", targetVersion)
-		return
+		return true
 	}
 	// Same reason as above: the server re-sends the same upgradeTo every
 	// heartbeat, so without this gate a version whose binary cannot pass
@@ -8865,17 +9219,25 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	if h.codeSignatureBackoffActive(targetVersion) {
 		log.Debug("upgrade skipped: this version's binary recently failed macOS code signature verification; backing off",
 			"targetVersion", targetVersion)
-		return
+		return true
 	}
 	// #7516: same reason again, for an agent (or blocking backup) artifact
 	// that failed checksum/manifest verification. Exponential per target, so
 	// an unsatisfiable offer costs a handful of downloads, not one a minute,
 	// while a NEW offer is attempted on the very next heartbeat.
 	if h.upgradeDeferredByArtifactBackoff(targetVersion) {
-		return
+		return true
 	}
+	// #9751: an earlier attempt at this version came back on the previous
+	// binary (on Windows, the detached swap helper failed). That outcome is
+	// only visible after the restart, so in-memory backoffs never see it;
+	// this latch is persisted and doubles per failure up to a daily retry.
+	return h.upgradeDeferredByFailureLatch(targetVersion)
+}
 
-	log.Info("upgrade requested", "targetVersion", targetVersion)
+// doUpgradeAttempt announces and runs one upgrade attempt. Only doUpgrade
+// calls it, after upgradeHeldBeforeAttempt.
+func (h *Heartbeat) doUpgradeAttempt(targetVersion string) {
 
 	h.sendUpdateStatus(targetVersion)
 	// Give the WebSocket write goroutine time to flush the update_status
@@ -8948,12 +9310,26 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// backup job says nothing about whether the artifact itself is fetchable.
 	if backupPair != nil && !h.backupHelperIdle() {
 		removeStagedUpgradeTemps(userHelperPair, backupPair)
-		log.Info("agent upgrade deferred: backup job in progress; retrying next cycle", "targetVersion", targetVersion)
+		// Was a bare Info line every heartbeat, invisible at the default warn
+		// shipping level while the attempt count climbed (#9751).
+		h.noteUpgradeDeferredByBackup(targetVersion, time.Now())
+		return
+	}
+	h.clearUpgradeBackupDeferral()
+
+	done, err := flashguard.Default().AdmitPowerAction("agent_upgrade")
+	if err != nil {
+		removeStagedUpgradeTemps(userHelperPair, backupPair)
+		log.Info("agent upgrade deferred: a firmware update started during the prefetch; retrying next cycle", "targetVersion", targetVersion)
 		return
 	}
 
 	u := updater.New(updaterCfg)
-	if err := u.UpdateToWithOptions(targetVersion, updater.UpdateOptions{UserHelper: userHelperPair, Backup: backupPair}); err != nil {
+	updateErr := u.UpdateToWithOptions(targetVersion, updater.UpdateOptions{UserHelper: userHelperPair, Backup: backupPair})
+	// A successful update has started a restart that may finish after this
+	// returns (on Windows a detached helper does it), so the admission outlives it.
+	flashguard.ReleaseAfterHandoff(done, updateErr == nil)
+	if err := updateErr; err != nil {
 		// If the filesystem is read-only, stop retrying — this is permanent
 		// until the service unit is fixed or the filesystem is remounted.
 		// Intentionally NOT persisted to disk (unlike dev_push in handlers_devupdate.go)
@@ -9055,6 +9431,7 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		IdentitySyncProtocolVersion:           identitySyncProtocolVersion,
 		WorkloadInventoryProtocolVersion:      workloads.ProtocolVersion,
 		RetainStateProtocolVersion:            retainStateProtocolVersion,
+		RebindProtocolVersion:                 rebindProtocolVersion,
 		PromptIdentityProtocolVersion:         promptidentity.ProtocolVersion,
 		PamUserNotifyProtocolVersion:          pamUserNotifyProtocolVersion(),
 	}

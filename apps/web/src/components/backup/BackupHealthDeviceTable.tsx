@@ -1,5 +1,5 @@
 // apps/web/src/components/backup/BackupHealthDeviceTable.tsx
-import type { BackupHealthRow } from '@breeze/shared';
+import { isOverdueBackup, verifiedBootableState, type BackupHealthRow } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
@@ -17,11 +17,34 @@ function HistoryBar({ row }: { row: BackupHealthRow }) {
       {row.history28d.map((cell) => (
         <span
           key={cell.day}
-          title={`${cell.day} — ${cell.status ?? t('backupHealth.noObservation')}`}
+          title={`${cell.day} — ${cell.status
+            ? t(/* i18n-dynamic */ `backupHealth.status.${cell.status}`, { defaultValue: cell.status })
+            : t('backupHealth.noObservation')}`}
           className={cn('h-4 w-1 rounded-[1px]', HISTORY_CELL_CLASS[cell.status ?? 'none'])}
         />
       ))}
     </div>
+  );
+}
+
+/** The last session's status, except that a `completed` row with no success in
+ *  48 hours says "No recent backup" and when the last one was (#12025). */
+function BackupStatusLabel({ row }: { row: BackupHealthRow }) {
+  const { t } = useTranslation('backup');
+  if (!isOverdueBackup(row)) {
+    return <>{t(/* i18n-dynamic */ `backupHealth.status.${row.status}`, { defaultValue: row.status })}</>;
+  }
+  return (
+    <>
+      <span className="font-medium text-destructive">{t('backupHealth.status.overdue')}</span>
+      {row.lastSuccessAt && (
+        <div className="text-xs">
+          {t('backupHealth.overdueLast', {
+            date: formatDateTime(row.lastSuccessAt, { fallback: '--', month: 'short', day: 'numeric' }),
+          })}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -38,7 +61,7 @@ export default function BackupHealthDeviceTable({ rows }: { rows: BackupHealthRo
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[1100px] text-sm">
+      <table className="w-full min-w-[1200px] text-sm">
         <thead>
           <tr className="border-b text-left text-xs font-semibold uppercase text-muted-foreground">
             <th className="pb-2 pr-3">{t('backupHealth.table.device')}</th>
@@ -52,12 +75,14 @@ export default function BackupHealthDeviceTable({ rows }: { rows: BackupHealthRo
             <th className="pb-2 pr-3">{t('backupHealth.table.history')}</th>
             <th className="pb-2 pr-3">{t('common:labels.status')}</th>
             <th className="pb-2 pr-3">{t('backupHealth.table.errors')}</th>
+            <th className="pb-2 pr-3">{t('backupHealth.table.verifiedBootable')}</th>
             <th className="pb-2">{t('backupHealth.table.agent')}</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => {
             const isSaas = row.accountType === 'm365' || row.accountType === 'gws';
+            const verifiedBootable = verifiedBootableState(row);
             const dataSources = row.dataSources
               .map((source) => t(/* i18n-dynamic */ `backupHealth.dataSource.${source}`, { defaultValue: source }))
               .join(', ');
@@ -104,10 +129,18 @@ export default function BackupHealthDeviceTable({ rows }: { rows: BackupHealthRo
                 <td className="py-2 pr-3 text-muted-foreground">{row.selectedBytes == null ? '--' : formatBytes(row.selectedBytes)}</td>
                 <td className="py-2 pr-3 text-muted-foreground">{row.usedBytes == null ? '--' : formatBytes(row.usedBytes)}</td>
                 <td className="py-2 pr-3"><HistoryBar row={row} /></td>
-                <td className="py-2 pr-3 text-muted-foreground">
-                  {t(/* i18n-dynamic */ `backupHealth.status.${row.status}`, { defaultValue: row.status })}
+                <td data-testid={`backup-health-status-${row.key}`} className="py-2 pr-3 text-muted-foreground">
+                  <BackupStatusLabel row={row} />
                 </td>
                 <td className="py-2 pr-3 text-muted-foreground">{row.errorsCount}</td>
+                <td data-testid={`backup-health-verified-${row.key}`} className="py-2 pr-3 text-muted-foreground">
+                  {t(/* i18n-dynamic */ `backupHealth.verifiedBootable.${verifiedBootable}`)}
+                  {(verifiedBootable === 'passed' || verifiedBootable === 'failed') && row.verifiedBootableAt && (
+                    <div className="text-xs">
+                      {formatDateTime(row.verifiedBootableAt, { fallback: '', month: 'short', day: 'numeric', year: 'numeric' })}
+                    </div>
+                  )}
+                </td>
                 <td className="py-2 text-muted-foreground">
                   {row.agentOnline == null
                     ? '--'

@@ -28,6 +28,15 @@
  *
  * Automatic flags (a tool error, AUTO_FLAG_REASON_PREFIXES) are counted apart
  * and do not disqualify a session.
+ *
+ * Refused tool-call batches (W04 #11397): calls whose turn the gateway refused
+ * a tool-call batch in (ai_invocations.stop_reason 'refused_tool_batch'), per
+ * call like refusals. Recorded for StreamingSessionManager sessions (chat,
+ * helper, script builder, Office); AI agent runs do not record it yet, so
+ * they count 0. Grouping by `tool_profile` keys on
+ * ai_invocations.tool_profile; a null (rows settled before tool profiles, or a
+ * path that resolves no tool exposure) is its own 'unrecorded' group, as for
+ * prompt_profile.
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
@@ -88,6 +97,7 @@ function groupKey(g: QualityGroupKey, s: QualitySources): SQL {
     case 'model': return sql`COALESCE((${chosenOffering(s)})::text, 'unattributed')`;
     case 'surface': return sql`i.surface`;
     case 'prompt_profile': return sql`COALESCE(i.prompt_profile, 'unrecorded')`;
+    case 'tool_profile': return sql`COALESCE(i.tool_profile, 'unrecorded')`;
     case 'prompt_variant': return sql`CASE WHEN i.prompt_variant IS NOT NULL THEN i.prompt_variant
       WHEN i.prompt_profile IS NOT NULL THEN i.surface || '/' || i.prompt_profile || '@base'
       ELSE 'unrecorded' END`;
@@ -141,7 +151,9 @@ WITH ledger AS (
     ${sources.failover ? sql`i.failover_hop` : sql`NULL::smallint`} AS failover_hop,
     ${chosenOffering(sources)} AS chosen_offering_id,
     ${groupKey(input.groupBy, sources)} AS gkey,
-    COALESCE('s:' || i.session_id::text, 'r:' || i.agent_run_id::text) AS conv
+    -- An agent run's calls also carry the run's own execution session (#11971):
+    -- the run is the conversation, so it wins.
+    COALESCE('r:' || i.agent_run_id::text, 's:' || i.session_id::text) AS conv
   FROM ai_invocations i
   WHERE ${ledgerWhere(input)} ${surfaceFilter} ${conversationFilter}
 ),
@@ -150,6 +162,7 @@ calls AS (
     COUNT(*) AS invocations,
     SUM(cost_cents) AS cost_cents,
     COUNT(*) FILTER (WHERE stop_reason = 'refusal') AS refusals,
+    COUNT(*) FILTER (WHERE stop_reason = 'refused_tool_batch') AS refused_tool_batches,
     COUNT(*) FILTER (WHERE failover_hop > 0) AS failovers,
     COUNT(DISTINCT conv) AS touched,
     SUM(cost_cents) FILTER (WHERE conv IS NOT NULL) AS conversation_cost
@@ -173,22 +186,24 @@ switched AS (
 ),
 facts AS (
   SELECT f.gkey, f.conv,
-    f.session_id IS NOT NULL AS is_session,
+    (f.session_id IS NOT NULL AND f.agent_run_id IS NULL) AS is_session,
     COALESCE(s.flagged_at IS NOT NULL AND NOT COALESCE(${autoFlag}, false), false) AS flagged,
     COALESCE(s.flagged_at IS NOT NULL AND COALESCE(${autoFlag}, false), false) AS auto_flagged,
-    CASE WHEN f.session_id IS NOT NULL THEN ${continued} END AS continued,
-    CASE WHEN f.session_id IS NOT NULL
+    CASE WHEN f.session_id IS NOT NULL AND f.agent_run_id IS NULL THEN ${continued} END AS continued,
+    CASE WHEN f.session_id IS NOT NULL AND f.agent_run_id IS NULL
       THEN COALESCE(s.status <> 'active'
         OR s.last_activity_at < (now() AT TIME ZONE 'UTC') - make_interval(hours => ${SESSION_IDLE_SETTLE_HOURS}), false)
       ELSE COALESCE(r.status IN (${terminal}), false) END AS settled,
     COALESCE(own.n, 0) + COALESCE(chain.n, 0) AS session_turns,
     r.status AS run_status
   FROM ordered f
-  LEFT JOIN ai_sessions s ON s.id = f.session_id
+  -- A run's execution session is not a chat session: none of its flags or
+  -- activity are session facts (#11971).
+  LEFT JOIN ai_sessions s ON s.id = f.session_id AND f.agent_run_id IS NULL
   LEFT JOIN ai_agent_runs r ON r.id = f.agent_run_id
   LEFT JOIN LATERAL (
     SELECT COUNT(*)::int AS n FROM ai_messages um WHERE um.session_id = f.session_id AND um.role = 'user'
-  ) own ON f.session_id IS NOT NULL
+  ) own ON f.session_id IS NOT NULL AND f.agent_run_id IS NULL
   ${chain}
   WHERE f.rn_desc = 1
 ),
@@ -219,6 +234,7 @@ left_convs AS (
 )
 SELECT c.gkey AS key, ${label.cols},
   c.invocations::text AS invocations, c.cost_cents::text AS cost_cents, c.refusals::text AS refusals,
+  c.refused_tool_batches::text AS refused_tool_batches,
   c.failovers::text AS failovers, c.touched::text AS touched, c.conversation_cost::text AS conversation_cost,
   COALESCE(v.conversations, 0)::text AS conversations, COALESCE(v.sessions, 0)::text AS sessions,
   COALESCE(v.flagged, 0)::text AS flagged, COALESCE(v.auto_flagged, 0)::text AS auto_flagged,
@@ -237,7 +253,7 @@ ORDER BY c.cost_cents DESC NULLS LAST, c.invocations DESC`;
 
 export type RawQualityRow = {
   key: string; label: string | null; connection_name: string | null;
-  invocations: string; cost_cents: string | null; refusals: string; failovers: string;
+  invocations: string; cost_cents: string | null; refusals: string; refused_tool_batches: string; failovers: string;
   touched: string; conversation_cost: string | null;
   conversations: string; sessions: string; flagged: string; auto_flagged: string; continued: string;
   resolved_sessions: string; median_turns: string | null; agent_runs: string; agent_runs_completed: string;
@@ -251,6 +267,7 @@ const round6 = (n: number): number => Math.round(n * 1e6) / 1e6;
 export function toQualityMetrics(r: RawQualityRow, sources: QualitySources): AiQualityMetricsDto {
   const invocations = num(r.invocations);
   const refusals = num(r.refusals);
+  const refusedToolBatches = num(r.refused_tool_batches);
   const failovers = sources.failover ? num(r.failovers) : null;
   const touched = num(r.touched);
   const sessions = num(r.sessions);
@@ -264,6 +281,8 @@ export function toQualityMetrics(r: RawQualityRow, sources: QualitySources): AiQ
     costCents: num(r.cost_cents),
     refusals,
     refusalRate: invocations === 0 ? 0 : refusals / invocations,
+    refusedToolBatches,
+    refusedToolBatchRate: invocations === 0 ? 0 : refusedToolBatches / invocations,
     failovers,
     failoverRate: failovers === null ? null : rate(failovers, invocations),
     conversations: num(r.conversations),
@@ -290,7 +309,7 @@ export function toQualityRow(r: RawQualityRow, sources: QualitySources): AiQuali
 
 /** A group with no rows (the totals of an empty range; a registry variant with no traffic). */
 export const EMPTY_QUALITY_ROW: RawQualityRow = {
-  key: 'total', label: null, connection_name: null, invocations: '0', cost_cents: null, refusals: '0', failovers: '0',
+  key: 'total', label: null, connection_name: null, invocations: '0', cost_cents: null, refusals: '0', refused_tool_batches: '0', failovers: '0',
   touched: '0', conversation_cost: null, conversations: '0', sessions: '0', flagged: '0', auto_flagged: '0', continued: '0',
   resolved_sessions: '0', median_turns: null, agent_runs: '0', agent_runs_completed: '0', switched_away: '0',
   left_conversations: '0',

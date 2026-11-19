@@ -59,8 +59,13 @@ function mockApi(options: {
   contactsStatus?: number;
   sites?: unknown;
   sitesStatus?: number;
+  portalUsers?: unknown;
+  portalUsersStatus?: number;
 } = {}) {
   fetchWithAuthMock.mockImplementation((url: string) => {
+    if (url.includes('/portal-users')) {
+      return jsonResponse(options.portalUsers ?? { data: [] }, options.portalUsersStatus ?? 200);
+    }
     if (url.startsWith('/orgs/sites')) {
       return jsonResponse(
         options.sites ?? { data: SITES, pagination: { page: 1, limit: 50, total: SITES.length } },
@@ -701,7 +706,7 @@ describe('ContactsCard — Offboard a person launcher', () => {
   async function resetFeatures() {
     const { useFeaturesStore } = await import('../../stores/featuresStore');
     useFeaturesStore.setState({
-      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false },
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false, vendorUpdates: false },
       loaded: false,
     });
   }
@@ -766,7 +771,7 @@ describe('ContactsCard — Onboard a person launcher', () => {
   async function resetFeatures() {
     const { useFeaturesStore } = await import('../../stores/featuresStore');
     useFeaturesStore.setState({
-      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false },
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false, vendorUpdates: false },
       loaded: false,
     });
   }

@@ -3,6 +3,8 @@ mod chrome;
 mod ipc;
 mod requirements;
 mod single_instance;
+mod timestamp;
+mod ui_context;
 mod workspace_open;
 
 use crate::ipc::token::HelperToken;
@@ -92,7 +94,7 @@ fn log_helper_error(msg: &str) {
         .append(true)
         .open(&log_path)
     {
-        let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let ts = timestamp::local_log_timestamp();
         let _ = writeln!(f, "[{}] {}", ts, msg);
     }
 }
@@ -275,6 +277,14 @@ struct HelperConfig {
     device_status: Option<String>,
     #[serde(default)]
     last_checkin: Option<String>,
+    /// UI locale of this user session (BRZ-7567). Reserved: the Agent does not
+    /// write it yet, so today the OS UI language applies. Also absent in a
+    /// config from an older Agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    locale: Option<String>,
+    /// Runtime branding (BRZ-7567); absent = Breeze defaults. Validated on load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    branding: Option<ui_context::HelperBranding>,
 }
 
 fn default_true() -> bool {
@@ -291,8 +301,29 @@ impl Default for HelperConfig {
             device_name: None,
             device_status: None,
             last_checkin: None,
+            locale: None,
+            branding: None,
         }
     }
+}
+
+impl HelperConfig {
+    /// Re-validates what the Agent wrote (a field that fails is dropped).
+    fn sanitized(mut self) -> Self {
+        self.branding = self.branding.take().and_then(ui_context::HelperBranding::sanitized);
+        self.locale = self.locale.take().map(|l| chrome::sanitize_locale_tag(&l)).filter(|l| !l.is_empty());
+        self
+    }
+
+    /// The session UI locale (configured, else OS), one of the eight shared locales.
+    fn ui_locale(&self) -> &'static str {
+        ui_context::resolve_locale(self.locale.as_deref(), chrome::os_ui_locale())
+    }
+}
+
+/// A Helper catalog string in the current session's UI locale.
+pub(crate) fn native_string(key: &str) -> String {
+    ui_context::catalog_string(key, load_helper_config().ui_locale())
 }
 
 fn helper_config_path() -> PathBuf {
@@ -354,8 +385,8 @@ fn resolve_helper_config_path() -> PathBuf {
 fn load_helper_config() -> HelperConfig {
     let path = resolve_helper_config_path();
     match std::fs::read_to_string(&path) {
-        Ok(contents) => match serde_norway::from_str(&contents) {
-            Ok(cfg) => cfg,
+        Ok(contents) => match serde_norway::from_str::<HelperConfig>(&contents) {
+            Ok(cfg) => cfg.sanitized(),
             Err(e) => {
                 // A corrupt/partial config silently reverts the tray to the
                 // three default items — the exact #1856 symptom. Log the path
@@ -448,7 +479,7 @@ fn write_status_file(chat_active: bool) {
     let status = HelperStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
         chat_active,
-        last_activity: chrono::Utc::now().to_rfc3339(),
+        last_activity: timestamp::now_rfc3339(),
         pid: std::process::id(),
     };
     let path = helper_status_path();
@@ -873,7 +904,9 @@ fn get_message_view(
     if !crate::ipc::message::label_matches(window.label(), &message_id) {
         return Err("wrong window".into());
     }
-    bridge.view(&message_id).ok_or_else(|| "message unavailable".into())
+    let mut view = bridge.view(&message_id).ok_or_else(|| String::from("message unavailable"))?;
+    view.locale = Some(load_helper_config().ui_locale().to_string());
+    Ok(view)
 }
 
 /// The user clicked Acknowledge. The tracker turns it into at most one
@@ -1246,6 +1279,20 @@ fn os_username() -> String {
 fn get_helper_config(window: tauri::WebviewWindow) -> Result<HelperConfig, String> {
     crate::ipc::message::deny_message_window(window.label())?;
     Ok(load_helper_config())
+}
+
+/// The locale and validated runtime branding of this session, for the main,
+/// consent, banner and caller-verify windows. Refused to the windows that
+/// render technician or agent text (`deny_message_window`); the message card
+/// gets its locale inside its own label-checked view instead.
+#[tauri::command]
+fn get_ui_context(window: tauri::WebviewWindow) -> Result<ui_context::UiContext, String> {
+    crate::ipc::message::deny_message_window(window.label())?;
+    let cfg = load_helper_config();
+    Ok(ui_context::UiContext {
+        locale: cfg.ui_locale().to_string(),
+        branding: ui_context::BrandingView::from(cfg.branding.as_ref()),
+    })
 }
 
 /// Restart the IPC client if it stopped (it gives up after a permanent broker
@@ -1720,13 +1767,36 @@ fn tray_menu_item_ids(config: &HelperConfig) -> Vec<&'static str> {
     ids
 }
 
-fn tray_menu_label(id: &str) -> &'static str {
+/// Native title of the main window: the branded product name, else the
+/// localized Breeze name.
+fn main_window_title() -> String {
+    let cfg = load_helper_config();
+    match cfg.branding.as_ref().and_then(|b| b.display_name.clone()) {
+        Some(name) => name,
+        None => ui_context::catalog_string("native.main.title", cfg.ui_locale()),
+    }
+}
+
+/// A tray entry's text: the session-locale catalog string, with the approved
+/// identity slots (product, support and portal labels) taken from branding.
+/// Entry meaning never changes: only the name on it does.
+fn tray_menu_label(id: &str, config: &HelperConfig) -> String {
+    let locale = config.ui_locale();
+    let branding = config.branding.as_ref();
+    let text = |key: &str| ui_context::catalog_string(key, locale);
     match id {
-        "open_assist" => "Open Breeze Assist",
-        "request_support" => "Request Support",
-        "open_portal" => "Open Breeze Portal",
-        "device_info" => "Device Info",
-        _ => "",
+        "open_assist" => match branding.and_then(|b| b.display_name.as_deref()) {
+            Some(name) => ui_context::catalog_string("tray.openAssistNamed", locale).replace("{name}", name),
+            None => text("tray.openAssist"),
+        },
+        "request_support" => branding
+            .and_then(|b| b.support_label.clone())
+            .unwrap_or_else(|| text("tray.requestSupport")),
+        "open_portal" => branding
+            .and_then(|b| b.portal_label.clone())
+            .unwrap_or_else(|| text("tray.openPortal")),
+        "device_info" => text("tray.deviceInfo"),
+        _ => String::new(),
     }
 }
 
@@ -1743,7 +1813,7 @@ fn chat_menu_label(summary: &crate::ipc::chat::TraySummary) -> Option<String> {
 }
 
 fn chat_tooltip(summary: &crate::ipc::chat::TraySummary) -> String {
-    let base = format!("Breeze Helper v{}", env!("CARGO_PKG_VERSION"));
+    let base = format!("Breeze Assist v{}", env!("CARGO_PKG_VERSION"));
     match summary.total_unread {
         0 => base,
         1 => format!("{base} - 1 unread chat message"),
@@ -1843,7 +1913,7 @@ fn build_tray_menu(
         builder = builder.item(&item);
     }
     for id in tray_menu_item_ids(config) {
-        let item = MenuItemBuilder::with_id(id, tray_menu_label(id)).build(app)?;
+        let item = MenuItemBuilder::with_id(id, tray_menu_label(id, config)).build(app)?;
         builder = builder.item(&item);
     }
     builder.build()
@@ -1894,6 +1964,7 @@ pub fn run() {
             minimize_window,
             get_os_username,
             get_helper_config,
+            get_ui_context,
             update_chat_active,
             helper_token_ready,
             restart_ipc_if_stopped,
@@ -1938,7 +2009,7 @@ pub fn run() {
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
             )
-            .title("Breeze Helper")
+            .title(main_window_title())
             .inner_size(920.0, 640.0)
             .min_inner_size(360.0, 520.0)
             .resizable(true)
@@ -2015,7 +2086,7 @@ pub fn run() {
             if let Some(tray) = app.tray_by_id("main") {
                 // Set tray tooltip with version
                 let _ = tray.set_tooltip(Some(&format!(
-                    "Breeze Helper v{}",
+                    "Breeze Assist v{}",
                     env!("CARGO_PKG_VERSION")
                 )));
 
@@ -2381,6 +2452,69 @@ mod tests {
         assert_eq!(cfg2.portal_url.as_deref(), Some("https://p.example"));
     }
 
+    // BRZ-7567 W3: locale + branding in helper_config.yaml, in the exact keys
+    // agent/internal/helper writes (`branding:` inline section, snake_case).
+    const BRANDED_YAML: &str = "show_open_portal: true\nlocale: pt-BR\nbranding:\n  scope_id: org-1\n  display_name: Example Assist\n  company_name: Example IT\n  welcome_title: Bem-vindo\n  support_label: Get help\n  primary_color: '#336699'\n  accent_color: '#AABBCC'\n";
+
+    #[test]
+    fn helper_config_round_trips_locale_and_branding() {
+        let cfg: HelperConfig = serde_norway::from_str(BRANDED_YAML).expect("parse branded config");
+        assert_eq!(cfg.locale.as_deref(), Some("pt-BR"));
+        let b = cfg.branding.as_ref().expect("branding");
+        assert_eq!(b.display_name.as_deref(), Some("Example Assist"));
+        assert_eq!(b.primary_color.as_deref(), Some("#336699"));
+        let again = serde_norway::to_string(&cfg).expect("serialise");
+        let cfg2: HelperConfig = serde_norway::from_str(&again).expect("re-parse");
+        assert_eq!(serde_norway::to_string(&cfg2).unwrap(), again);
+        assert_eq!(cfg2.branding, cfg.branding);
+    }
+
+    #[test]
+    fn legacy_helper_config_has_no_locale_or_branding() {
+        let cfg: HelperConfig =
+            serde_norway::from_str("portal_url: https://p.example\nshow_device_info: false\n").expect("legacy");
+        assert!(cfg.locale.is_none() && cfg.branding.is_none());
+        let out = serde_norway::to_string(&cfg).unwrap();
+        assert!(!out.contains("locale") && !out.contains("branding"), "unset fields are not written: {out}");
+        // An unbranded session is Breeze: default title and tray labels.
+        let cfg = cfg.sanitized();
+        assert_eq!(tray_menu_label("request_support", &cfg), "Request Support");
+        assert_eq!(tray_menu_label("open_portal", &cfg), "Open Breeze Portal");
+        assert_eq!(tray_menu_label("open_assist", &cfg), "Open Breeze Assist");
+    }
+
+    #[test]
+    fn unknown_branding_keys_and_bad_values_are_tolerated_and_dropped() {
+        let yaml = "branding:\n  display_name: Ok\n  logo_url: https://evil.example/x.png\n  primary_color: red\n  company_name: \"a\\nb\"\nlocale: \"en US;<x>\"\n";
+        let cfg = serde_norway::from_str::<HelperConfig>(yaml).expect("unknown keys are ignored").sanitized();
+        let b = cfg.branding.expect("display_name survives");
+        assert_eq!(b.display_name.as_deref(), Some("Ok"));
+        assert_eq!(b.primary_color, None);
+        assert_eq!(b.company_name, None);
+        assert_eq!(cfg.locale, None, "an unsafe locale tag is dropped");
+    }
+
+    #[test]
+    fn branding_fills_only_identity_slots_in_the_tray() {
+        let cfg: HelperConfig = serde_norway::from_str(BRANDED_YAML).unwrap();
+        let cfg = cfg.sanitized();
+        assert_eq!(tray_menu_label("request_support", &cfg), "Get help");
+        assert_eq!(tray_menu_label("open_assist", &cfg), "Abrir Example Assist");
+        // No portal_label set: localized default, not the Breeze English one.
+        assert_eq!(tray_menu_label("open_portal", &cfg), "Abrir o portal do Breeze");
+        assert_eq!(tray_menu_label("device_info", &cfg), "Informações do dispositivo");
+    }
+
+    #[test]
+    fn get_ui_context_is_refused_to_card_windows() {
+        let prod = include_str!("lib.rs").split("\nmod tests {").next().unwrap();
+        let start = prod.find("fn get_ui_context").unwrap();
+        let body = &prod[start..start + 300];
+        assert!(body.contains("deny_message_window(window.label())"), "{body}");
+        // ...and it must not hand the webview the Agent's opaque scope marker.
+        assert!(!body.contains("scope_id"));
+    }
+
     // #8138: the agent (re)spawns the helper on logon, updates and watcher
     // restarts, always with --config. Those must start in the tray. A launch
     // without --config is a person (Start menu, Dock, double-click) and must
@@ -2733,7 +2867,9 @@ mod tests {
             ("chrome.rs", prod_of(include_str!("chrome.rs"))),
             ("requirements.rs", prod_of(include_str!("requirements.rs"))),
             ("single_instance.rs", prod_of(include_str!("single_instance.rs"))),
+            ("timestamp.rs", prod_of(include_str!("timestamp.rs"))),
             ("workspace_open.rs", prod_of(include_str!("workspace_open.rs"))),
+            ("ui_context.rs", prod_of(include_str!("ui_context.rs"))),
             ("ipc/mod.rs", prod_of(include_str!("ipc/mod.rs"))),
             ("ipc/caller_verify.rs", prod_of(include_str!("ipc/caller_verify.rs"))),
             ("ipc/chat.rs", prod_of(include_str!("ipc/chat.rs"))),
@@ -2744,6 +2880,7 @@ mod tests {
             ("ipc/message.rs", prod_of(include_str!("ipc/message.rs"))),
             ("ipc/notifications.rs", prod_of(include_str!("ipc/notifications.rs"))),
             ("ipc/prompt.rs", prod_of(include_str!("ipc/prompt.rs"))),
+            ("ipc/server_identity_unix.rs", prod_of(include_str!("ipc/server_identity_unix.rs"))),
             ("ipc/token.rs", prod_of(include_str!("ipc/token.rs"))),
             ("ipc/transport.rs", prod_of(include_str!("ipc/transport.rs"))),
         ];
@@ -3144,6 +3281,15 @@ mod tests {
         }
     }
 
+    // BRZ-7567 W3: localizing the card must not widen it -- one harmless read.
+    #[test]
+    fn message_card_capability_stays_exactly_one_read() {
+        let cap: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/message-card.json")).unwrap();
+        assert_eq!(cap["permissions"], serde_json::json!(["core:app:allow-version"]));
+        assert_eq!(cap["windows"], serde_json::json!(["message-*"]));
+    }
+
     // #8741: the card capability carries no tray/menu/window/event permission
     // -- the card only calls its own label-checked app commands.
     #[test]
@@ -3246,6 +3392,8 @@ mod tests {
         assert!(chat_tooltip(&three).contains("3 unread chat messages"));
         assert!(chat_tooltip(&TraySummary { total_unread: 1, ..TraySummary::default() }).contains("1 unread chat message"));
         assert!(!chat_tooltip(&TraySummary::default()).contains("unread"));
+        // #11718: the tooltip names the product "Breeze Assist" (install identity stays "Breeze Helper").
+        assert!(chat_tooltip(&TraySummary::default()).starts_with("Breeze Assist v"));
         // The static menu ids are untouched: the chat entry is added dynamically.
         assert!(!tray_menu_item_ids(&HelperConfig::default()).contains(&"open_chat"));
     }

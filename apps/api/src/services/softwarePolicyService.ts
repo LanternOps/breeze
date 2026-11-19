@@ -714,6 +714,9 @@ export async function recordSoftwarePolicyAudit(input: {
     if (!input.orgId && !input.partnerId) {
       throw new Error('software policy audit requires at least one owner axis (orgId or partnerId)');
     }
+    // Deliberately no savepoint (#11225): most callers fire this without awaiting.
+    // A savepoint would delay the insert by a round trip, past the caller's commit
+    // or into its next statements. A failed insert still fails the caller's commit.
     await db.insert(softwarePolicyAudit).values({
       orgId: input.orgId,
       partnerId: input.partnerId ?? null,

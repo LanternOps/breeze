@@ -2428,10 +2428,14 @@
       "installPending": "Kurulum beklemede",
       "awaitingVendorReport": "Sağlayıcı raporu bekleniyor",
       "awaitingEvaluation": "Değerlendirme bekleniyor",
-      "vendorOrgMismatch": "Sağlayıcı farklı bir kuruluş bildiriyor"
+      "vendorOrgMismatch": "Sağlayıcı farklı bir kuruluş bildiriyor",
+      "tenantAmbiguous": "Kuruluş, birden fazla {{vendor}} şirketiyle eşleşiyor",
+      "installerLinkMissing": "Bitdefender GravityZone yükleyici bağlantısı henüz kullanılabilir değil — Entegrasyonlar'da Eşitle işlemini çalıştırın"
     },
     "setupLink": {
       "installerMissing": "Yükleyiciyi karşıya yükle",
+      "tenantAmbiguous": "Eşlemeyi düzelt",
+      "installerLinkMissing": "Entegrasyonları aç",
       "default": "Kurulumu aç"
     }
   },

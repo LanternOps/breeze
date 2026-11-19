@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   hasEntitlement: vi.fn(async () => true),
   loadNudgePrefs: vi.fn(),
   upsertNudgePrefs: vi.fn(),
+  saveBrowserTimezone: vi.fn(),
   loadUrgentCapableSeverities: vi.fn(),
   upsertUrgentCapableSeverities: vi.fn(),
   writeRouteAudit: vi.fn(),
@@ -43,6 +44,7 @@ vi.mock('../db', () => ({ db: {}, runAfterDbContextCommit: (_l: string, work: ()
 vi.mock('../services/wisp/nudgePreferences', () => ({
   loadNudgePrefs: h.loadNudgePrefs,
   upsertNudgePrefs: h.upsertNudgePrefs,
+  saveBrowserTimezone: h.saveBrowserTimezone,
 }));
 vi.mock('../services/wisp/partnerNudgeSettings', () => ({
   loadUrgentCapableSeverities: h.loadUrgentCapableSeverities,
@@ -90,6 +92,30 @@ beforeEach(() => {
   h.hasEntitlement.mockResolvedValue(true);
   h.loadNudgePrefs.mockResolvedValue(DEFAULTS);
   h.loadUrgentCapableSeverities.mockResolvedValue([]);
+});
+
+describe('PUT /wisp/nudge-preferences/browser-timezone (#10402)', () => {
+  it('stores the zone for the caller, ids from auth, and audits it', async () => {
+    h.saveBrowserTimezone.mockResolvedValue(true);
+    const res = await put(buildApp(), '/wisp/nudge-preferences/browser-timezone', { timezone: 'America/Denver' });
+    expect(res.status).toBe(200);
+    expect(h.saveBrowserTimezone).toHaveBeenCalledWith(USER, PARTNER, 'America/Denver');
+    expect(h.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'wisp.nudge_preferences.browser_timezone', resourceId: USER,
+    }));
+  });
+
+  it('refuses an unknown zone and a smuggled user id', async () => {
+    expect((await put(buildApp(), '/wisp/nudge-preferences/browser-timezone', { timezone: 'Mars/Olympus' })).status).toBe(400);
+    expect((await put(buildApp(), '/wisp/nudge-preferences/browser-timezone', { timezone: 'UTC', userId: 'x' })).status).toBe(400);
+    expect(h.saveBrowserTimezone).not.toHaveBeenCalled();
+  });
+
+  it('inherits the hub gates', async () => {
+    h.wispEnabled.mockReturnValue(false);
+    expect((await put(buildApp(), '/wisp/nudge-preferences/browser-timezone', { timezone: 'UTC' })).status).toBe(404);
+    expect(h.saveBrowserTimezone).not.toHaveBeenCalled();
+  });
 });
 
 describe('GET /wisp/nudge-preferences', () => {

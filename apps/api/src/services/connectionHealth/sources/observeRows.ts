@@ -150,3 +150,20 @@ export function staleArm(opts: {
   const mins = typeof opts.minutes === 'number' ? sql.raw(String(Math.trunc(opts.minutes))) : opts.minutes;
   return sql`(COALESCE(${opts.lastOk}, ${opts.createdAt}) < ${opts.now.toISOString()}::${cast} - make_interval(mins => ${mins}))`;
 }
+
+/**
+ * Exact stale test against a stale-at instant (`timestamp`, UTC wall time), for
+ * org-axis sources whose per-row interval is an expression, not a column.
+ * Under RLS the planner pushes only leakproof quals into an index, and
+ * make_interval / the interval CASE are not, so this test alone is never an
+ * Index Cond: each source also states a plain-column pre-filter (see
+ * `staleCutoff`) that its stale indexes serve, and this runs as a recheck.
+ */
+export function staleAtBefore(staleAt: SQL, now: Date): SQL {
+  return sql`(${staleAt} < ${now.toISOString()}::timestamp)`;
+}
+
+/** The instant before which a connection's last success is old enough to be stale at all (the threshold floor). */
+export function staleCutoff(now: Date, floorMinutes: number): string {
+  return new Date(now.getTime() - floorMinutes * 60_000).toISOString();
+}

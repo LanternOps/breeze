@@ -31,8 +31,7 @@ import { triggerPatchPlanRunSchema } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
-import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
-import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
+import { launchPatchPlanRun } from '../services/aiAgents/patchPlanLaunch';
 import { writeRouteAudit } from '../services/auditEvents';
 
 export const patchPlanRoutes = new Hono();
@@ -56,38 +55,39 @@ patchPlanRoutes.post(
     const auth = c.get('auth');
     const { orgId } = c.req.valid('json');
 
-    // 404, not 403: a cross-tenant probe must read identically to a typo'd
-    // org id — the same posture `routes/fleetDesign.ts` documents.
-    if (!auth.canAccessOrg(orgId)) return c.json({ error: 'not_found' }, 404);
+    // The shared operation (W16 #6786; `run_patch_plan` calls it too). 404,
+    // not 403, for an org outside reach: a cross-tenant probe must read
+    // identically to a typo'd org id, the posture `routes/fleetDesign.ts`
+    // documents. A human pressing "Run now" twice means twice, so each press
+    // gets its own key, the same posture as every other manual-trigger route.
+    const result = await launchPatchPlanRun(auth, orgId, `patch-manual-${randomUUID()}`);
 
-    const resolved = await resolveEffectiveAgent(auth, orgId, 'patch');
-    if (!resolved) return c.json({ error: 'no_patch_agent' }, 404);
-
-    const result = await createAndEnqueueAgentRun({
-      orgId,
-      kind: 'patch',
-      triggerKind: 'manual',
-      deviceId: null,
-      profile: 'patch',
-      // A human pressing "Run now" twice means twice — same posture as every
-      // other manual-trigger route.
-      dedupeKey: `patch-manual-${randomUUID()}`,
-      triggerRef: { requestedByUserId: auth.user.id, agentId: resolved.agentId },
-    });
-
-    // Every outcome is audited: `createAndEnqueueAgentRun` writes no audit row
-    // of its own, so this is the only record of which human asked for a patch
-    // run — including when the answer was "not now".
-    writeRouteAudit(c, {
+    // Every admission outcome is audited: admission writes no audit row of its
+    // own, so this is the only record of which human asked for a patch run —
+    // including when the answer was "not now".
+    const audit = (details: Record<string, unknown>, agentId: string, ok: boolean) => writeRouteAudit(c, {
       orgId,
       action: 'ai_patch_plan.run.manual_trigger',
       resourceType: 'ai_agent',
-      resourceId: resolved.agentId,
-      details: result.created ? { runId: result.run.id } : { skipped: result.skipped },
-      result: result.created ? 'success' : 'failure',
+      resourceId: agentId,
+      details,
+      result: ok ? 'success' : 'failure',
     });
 
-    if (!result.created) return c.json({ success: false, skipped: result.skipped }, 200);
-    return c.json({ runId: result.run.id }, 202);
+    if (!result.ok) {
+      if (result.code === 'NOT_FOUND') return c.json({ error: 'not_found' }, 404);
+      if (result.code === 'NO_PATCH_AGENT') return c.json({ error: 'no_patch_agent' }, 404);
+      audit({ skipped: result.skipped }, result.agentId, false);
+      return c.json({ success: false, skipped: result.skipped }, 200);
+    }
+    // The run row exists but BullMQ never took it (it is already marked
+    // failed/enqueue_failed). Not a 202, and no runId: the queue holds nothing
+    // the caller could poll. Same outcome the `run_patch_plan` tool reports.
+    if (result.enqueueFailed) {
+      audit({ skipped: 'enqueue_failed', runId: result.runId }, result.agentId, false);
+      return c.json({ error: 'The patch run could not be queued. Try again shortly.', code: 'enqueue_failed' }, 503);
+    }
+    audit({ runId: result.runId }, result.agentId, true);
+    return c.json({ runId: result.runId }, 202);
   },
 );

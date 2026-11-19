@@ -166,7 +166,7 @@ monitorDefinitionRoutes.get('/kinds', requireScope('organization', 'partner', 's
  * partial PATCH (no kind/condition in the body) is still checked. Omitted when
  * empty so the response shape is unchanged for every other monitor.
  */
-async function collectionWarnings(row: { kind: unknown; condition: unknown; orgId: string | null; partnerId: string | null }): Promise<{ warnings?: string[] }> {
+async function collectionWarnings(row: { kind: unknown; condition: unknown; autoResolveConditions?: unknown; orgId: string | null; partnerId: string | null }): Promise<{ warnings?: string[] }> {
   const warnings = await policyAwareMonitorEventLogWarnings(row);
   return warnings.length > 0 ? { warnings } : {};
 }

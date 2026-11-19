@@ -22,7 +22,7 @@ import {
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
 import { moveTicketOrg } from '../../services/ticketService';
 import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
-import { assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions, userEpochs } from './db-utils';
+import { assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions, userEpochs, ensurePartnerServicePrincipalOwner } from './db-utils';
 import { getTestDb } from './setup';
 
 vi.mock('../../config/env', async (importOriginal) => {
@@ -461,6 +461,7 @@ async function issueKey(
     updatedBy: userId,
   }).returning();
   if (!principal) throw new Error('service principal seed failed');
+  await ensurePartnerServicePrincipalOwner(userId, partnerId);
   const { rawKey } = await issuePartnerServicePrincipalKey(admin as unknown as Database, {
     partnerServicePrincipalId: principal.id,
     partnerId,

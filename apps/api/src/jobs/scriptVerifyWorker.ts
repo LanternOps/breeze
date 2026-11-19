@@ -10,9 +10,11 @@
 // carried in the job data so the ladder is visible in the payload, the same way
 // ScriptReviewJobData carries it.
 //
-// Placement is `socket-owner`: evaluateVerificationClaim ->
-// executeCommandWithSystemPrecheck -> agentCommandAwait / agentWs, the same
-// dependency that puts alertVerdictScheduler there.
+// Placement is `global` (#4142 W2): the closure no longer reaches
+// routes/agentWs.ts (`pnpm --filter @breeze/api worker:closure`). The
+// live-chat nudge in scriptProposals/authorNotify.ts is process-local and
+// best-effort by contract; the durable message row and the notification carry
+// the outcome wherever this runs.
 import { Worker, type Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';

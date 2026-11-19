@@ -67,6 +67,8 @@ export const PERMISSION_GRANTS = {
   TICKETS_MANAGE: { resource: 'tickets', action: 'manage' },
   // #4617: record a customer's approval/denial of held work on their behalf.
   TICKETS_RECORD_APPROVAL: { resource: 'tickets', action: 'record_approval' },
+  // #10951: triage the inbound-email Review queue (list, convert, assign, dismiss) without a *:* admin grant.
+  TICKETS_EMAIL_REVIEW: { resource: 'tickets', action: 'email_review' },
 
   // Microsoft 365 partner-global ticket mailbox administration
   TICKET_MAILBOX_READ: { resource: 'ticket_mailbox', action: 'read' },

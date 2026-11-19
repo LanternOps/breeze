@@ -1,8 +1,12 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { type ConnectionParams } from '../lib/protocol';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
-import { scaleVideoCoords, isWebRTCSupported, AgentSessionError, RelayRequiredError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import { createSessionHangUp, hangUpThenClose } from '../lib/sessionHangUp';
+import { createNativeSessionEnd } from '../lib/nativeSessionEnd';
+import { scaleVideoCoords, isWebRTCSupported, announceViewerReconnect, AgentSessionError, RelayRequiredError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import { IceFailureBudget, neverConnectedStopStep } from '../lib/iceFailure';
 import { errorCardFor, parseSessionEndingMessage, serverEndReasonText, sessionEndedCardMessage, sessionEndingText, type ErrorCardKind } from '../lib/sessionEnd';
 import {
   startRevocationLeaseRenewal,
@@ -32,6 +36,7 @@ import { sendPasteText, pasteFailureMessage } from '../lib/pasteText';
 import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
 import { InputSequencer } from '../lib/inputSequencer';
 import { ReliableInputRouter } from '../lib/reliableInput';
+import { GeometryHold } from '../lib/geometryHold';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { ClipboardSync, type ClipboardSyncState } from '../lib/clipboardSync';
 import { createTauriClipboardIO } from '../lib/clipboardIO';
@@ -43,9 +48,11 @@ import {
   mouseButtonName,
   shouldForwardKeyRepeat,
   chordRouting,
+  modifiersReleasedByKeyPress,
   viewerShortcut,
   isPasteChord,
   isCopyChord,
+  countsAsOperatorInput,
 } from '../lib/inputSafety';
 import { isServiceModeRefusal, serviceModeRefusalMessage } from '../lib/serviceModeRefusal';
 import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
@@ -228,9 +235,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const inputDestination = params.deviceId ?? (params.mode === 'desktop' ? params.sessionId : params.tunnelId);
   const inputDestinationRef = useRef(inputDestination);
   inputDestinationRef.current = inputDestination;
-  // Input to the remote→local clipboard focus rule (remoteClipboardDecision).
+  // Inputs to the remote→local clipboard rule (remoteClipboardDecision): a
+  // remote change is applied only within 2 s of a key or click sent to the
+  // remote, or of a copy chord (#11310).
   const lastCopyIntentAtRef = useRef<number | null>(null);
+  const lastRemoteInputAtRef = useRef<number | null>(null);
   const wheelAccRef = useRef(DEFAULT_WHEEL_ACCUMULATOR);
+  // #11754: after the agent announces a resolution change, pointer input is
+  // held until the video decodes a frame at the new size. Lifecycle is
+  // unit-tested in lib/geometryHold.test.ts.
+  const [geometryHold] = useState(() => new GeometryHold());
   const pasteCancelRef = useRef(false);
   // What the connected agent said it can do with injected text. An agent that
   // predates the input_capabilities handshake never answers, so this stays
@@ -266,10 +280,29 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }
   const reliableInput = reliableInputRef.current;
   const userDisconnectRef = useRef(false);
+  // #11931: sends End once per session from the viewer's own Disconnect.
+  const hangUpRef = useRef(createSessionHangUp());
+  // #12129: tells the native close hook which session to end when the window
+  // closes. Every assignment to authRef goes through its `track`.
+  const nativeSessionEndRef = useRef(createNativeSessionEnd());
+  // Set while handleDisconnect waits for End, so a second click does nothing.
+  const hangingUpRef = useRef(false);
+  // #12129: bumped by every connect effect run (a new session, or this window
+  // reused for a new deep link), so a hang-up that settles late can tell it no
+  // longer owns the window.
+  const sessionGenerationRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectDeadlineRef = useRef<number | null>(null);
   const reconnectInFlightRef = useRef(false);
   const startReconnectRef = useRef<() => void>(() => {});
+  // #11838: whether this session has connected, and the count of peers in a
+  // row that failed before connecting while it never has. New session on
+  // every connect effect run; failures reset on a transport switch and on a
+  // manual Retry.
+  const iceBudgetRef = useRef(new IceFailureBudget());
+  // handlePeerFailed is defined after connectWebRTC; the ref breaks the TDZ,
+  // like startReconnectRef.
+  const handlePeerFailedRef = useRef<(wrapper: WebRTCSessionWrapper) => void>(() => {});
   const switchTransportRef = useRef<(target: Transport, reason?: 'user' | 'auto') => Promise<void>>(async () => {});
   const lastUserTransportChoiceAtRef = useRef<number>(0);
   const sessionRegisteredRef = useRef(false);
@@ -617,6 +650,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
     const auth = authRef.current;
     if (!auth) return;
+    // #11838: a switch starts a new run of attempts. A leftover never-connected
+    // count would make the next failure stop with no retry. A manual choice
+    // also lets the automatic VNC→WebRTC handoff run again.
+    if (reason === 'user') iceBudgetRef.current.userChoseTransport();
+    else iceBudgetRef.current.resetFailures();
 
     // Stop any pending reconnect so attemptReconnect can't fire mid-switch.
     if (reconnectTimerRef.current) {
@@ -689,7 +727,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           // endpoint instead of reusing a stale (or worse, tunnel-shaped)
           // id. The tunnel id is tracked in activeVncTunnelIdRef below.
           tunnelAuth = { ...auth, sessionId: '', accessToken: body.accessToken };
-          authRef.current = tunnelAuth;
+          authRef.current = nativeSessionEndRef.current.track(tunnelAuth);
         } else {
           tunnel = await createVncTunnel(auth.deviceId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
         }
@@ -714,7 +752,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           }
           const { sessionId, accessToken } = await res.json() as { sessionId: string; accessToken: string };
           webrtcAuth = { ...auth, sessionId, accessToken };
-          authRef.current = webrtcAuth;
+          authRef.current = nativeSessionEndRef.current.track(webrtcAuth);
         }
         const ok = await connectWebRTCRef.current(webrtcAuth);
         if (!ok) throw new Error('WebRTC connect failed');
@@ -769,6 +807,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onConnected: () => {
           // Guard: ignore stale session events after the ref has moved on
           if (webrtcRef.current !== sessionWrapper) return;
+          iceBudgetRef.current.peerConnected();
           setStatus('connected');
           setConnectedAt(new Date());
           setErrorMessage(null);
@@ -783,7 +822,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onFailed: () => {
           if (webrtcRef.current !== sessionWrapper) return;
           if (userDisconnectRef.current) return;
-          startReconnectRef.current();
+          // #11838: an answer is not a connection. A session that has
+          // connected reconnects at once, as before; one that never has stops
+          // after a retry instead of re-offering forever.
+          if (sessionWrapper) handlePeerFailedRef.current(sessionWrapper);
         },
         onClosed: () => {
           if (webrtcRef.current !== sessionWrapper) return;
@@ -804,6 +846,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             channel,
             io: clipboardIO,
             hasFocus: () => document.hasFocus(),
+            lastInputAt: () => lastRemoteInputAtRef.current,
             lastCopyIntentAt: () => lastCopyIntentAtRef.current,
             onChange: (state) => {
               if (clipboardSyncRef.current === sync) setClipboardState(state);
@@ -950,6 +993,47 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     setReconnectSecondsLeft(0);
   }, []);
 
+  // #11838: a WebRTC peer failed. A session that has connected reconnects at
+  // once (synchronously, as before). One that never has reads the candidates
+  // each side offered, then retries once or stops with a reason the operator
+  // can act on, instead of re-offering forever.
+  const handlePeerFailed = useCallback((wrapper: WebRTCSessionWrapper) => {
+    void iceBudgetRef.current.peerFailed(
+      wrapper.pc,
+      // The owner may have moved on during the stats read. A superseded peer's
+      // failure must not spend the current owner's budget.
+      () => webrtcRef.current === wrapper && !userDisconnectRef.current && !cancelledRef.current,
+      {
+        reconnect: () => startReconnectRef.current(),
+        stop: (decision) => {
+          stopReconnect();
+          // Same handoff the reconnect deadline takes: a macOS device may
+          // still be reachable over VNC.
+          const step = neverConnectedStopStep({
+            remoteOs,
+            deviceId: authRef.current?.deviceId,
+            currentTransport: transportRef.current,
+            userJustSwitchedAt: lastUserTransportChoiceAtRef.current,
+          });
+          if (step === 'handoff_to_vnc') {
+            console.warn(`WebRTC never connected; handing off to VNC. ${decision.message}`);
+            // Keeps the VNC poll from switching straight back (that would cycle).
+            iceBudgetRef.current.handedOffToVnc();
+            void switchTransportRef.current('vnc', 'auto');
+            return;
+          }
+          webrtcRef.current = null;
+          wrapper.close();
+          setStatus('error');
+          setConnectedAt(null);
+          setErrorMessage(decision.message);
+          onError(decision.message);
+        },
+      },
+    );
+  }, [stopReconnect, onError, remoteOs]);
+  handlePeerFailedRef.current = handlePeerFailed;
+
   // #10421: the session is over for good — the agent said so on the control
   // channel (idle timeout, max length, revoked lease) or the server 401'd a
   // (re)connect. Stop the reconnect loop, suppress every auto-reconnect
@@ -1015,9 +1099,20 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     wsCleanupRef.current = null;
     const oldRtc = webrtcRef.current;
     webrtcRef.current = null;
-    oldRtc?.close();
 
     reconnectInFlightRef.current = true;
+    if (oldRtc) {
+      // #10542: mark the reconnect with the API before closing the old peer.
+      // The close makes the agent report a peer drop at once; with the mark in
+      // place the API holds that report for this reconnect's offer instead of
+      // ending the session under it. Bounded and best effort.
+      await announceViewerReconnect(auth);
+    }
+    oldRtc?.close();
+    if (cancelledRef.current || userDisconnectRef.current) {
+      reconnectInFlightRef.current = false;
+      return;
+    }
     const recordedTransport = transportRef.current;
     // No transport recorded — the drop beat the first successful connect. Default
     // to WebRTC, except on a WebView that has none: there WebSocket is the only
@@ -1136,9 +1231,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     let cancelled = false;
     cancelledRef.current = false;
     webrtcFallbackAttemptedRef.current = false;
+    // #11838: a new session, or this window reused for a new deep link.
+    iceBudgetRef.current.newSession();
     userDisconnectRef.current = false;
+    // #12129: a hang-up still in flight belongs to the previous session.
+    sessionGenerationRef.current += 1;
+    hangingUpRef.current = false;
     reconnectInFlightRef.current = false;
-    authRef.current = null;
+    authRef.current = nativeSessionEndRef.current.track(null);
     wheelAccRef.current = DEFAULT_WHEEL_ACCUMULATOR;
     setCursorStreamActive(false);
 
@@ -1174,12 +1274,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           onError('Invalid or expired VNC connect code');
           return;
         }
-        authRef.current = {
+        authRef.current = nativeSessionEndRef.current.track({
           sessionId: '',
           apiUrl: params.apiUrl,
           accessToken: exchange.accessToken,
           deviceId: exchange.deviceId,
-        };
+        });
         setRemoteOs('macos'); // VNC is macOS-only for now
         activeVncTunnelIdRef.current = exchange.tunnelId;
         const ok = await connectVncTransport({
@@ -1229,7 +1329,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           accessToken: exchange.accessToken,
           ...(params.deviceId ? { deviceId: params.deviceId } : {}),
         };
-        authRef.current = authParams;
+        authRef.current = nativeSessionEndRef.current.track(authParams);
 
         // Set hostname + OS from exchange response (available for all transports)
         if (exchange.hostname) {
@@ -1531,6 +1631,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             setActiveMonitor(msg.index ?? 0);
             // Carries the new geometry epoch (and reset epoch) for input.
             reliableInput.onControlMessage(msg);
+            // A resolution change holds pointer input until the new size
+            // is on screen (#11754).
+            geometryHold.onControlMessage(msg, performance.now());
             // Request a keyframe so the browser decoder gets a fresh IDR
             // with the new resolution's SPS/PPS immediately.
             ch.send(JSON.stringify({ type: 'request_keyframe' }));
@@ -1698,7 +1801,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       // this saves a stray backstop log per login transition rather than one
       // per 2s tick — but it keeps the decision where the other gates live
       // instead of relying on the backstop to clean up (issue #3410).
-      if (webrtcUsableRef.current && shouldAutoHandoffToWebRTC({
+      // #11838: not after a never-connected WebRTC stop handed off to VNC.
+      if (webrtcUsableRef.current && iceBudgetRef.current.autoWebRTCHandoffAllowed && shouldAutoHandoffToWebRTC({
         remoteOs,
         deviceId,
         currentTransport: transportRef.current,
@@ -1870,6 +1974,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       return false;
     }
     send(event);
+    if (countsAsOperatorInput(event)) lastRemoteInputAtRef.current = Date.now();
     return true;
   }, [getInputSender]);
 
@@ -1929,6 +2034,43 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, [getInputSender, reliableInput]);
   releaseAllKeysRef.current = releaseAllKeys;
 
+  // "Release stuck keys" (toolbar and shortcut). releaseAllKeys only covers
+  // what this viewer believes is held, and its agent-side reset is sequenced
+  // input only; a key the bookkeeping lost stays down (#9595). An agent that
+  // takes release_held_input releases everything it holds and clears OS
+  // modifier state, so the viewer just forgets its own: key_ups sent on
+  // `input` could land after the release on `control` as stray key-ups.
+  const handleReleaseStuckKeys = useCallback(() => {
+    const control = transportRef.current === 'webrtc' ? webrtcRef.current?.controlChannel : undefined;
+    if (viewOnlyRef.current || !inputCapabilitiesRef.current.snapshot().releaseHeldOnRequest
+      || !control || control.readyState !== 'open') {
+      releaseAllKeys();
+      // releaseAllKeys strands its key_ups when the input channel is down;
+      // say so rather than reporting a release that has not happened.
+      setInputNotice(getInputSender()
+        ? 'Released the keys and mouse buttons this viewer was holding on the remote.'
+        : 'Releases queued: they are sent when the input channel reconnects.');
+      return;
+    }
+    // Send first, forget second: a send that throws (the channel closing
+    // between the readyState check and here) must not leave this viewer
+    // believing nothing is held while the remote still holds keys.
+    try {
+      control.send(JSON.stringify({ type: 'release_held_input' }));
+    } catch (err) {
+      console.warn('Release stuck keys request failed:', err);
+      releaseAllKeys();
+      setInputNotice('Could not reach the remote; released the keys this viewer was holding.');
+      return;
+    }
+    pressedKeysRef.current.clear();
+    heldKeyNameByCodeRef.current.clear();
+    heldCodeByKeyRef.current.clear();
+    pressedButtonsRef.current.clear();
+    // Fire-and-forget: the agent sends no ack, so this reports the request.
+    setInputNotice('Asked the remote to release every held key, mouse button and modifier.');
+  }, [releaseAllKeys, getInputSender]);
+
   // A new session's channel may open with releases still stranded from the
   // last one; send them as soon as it can carry them rather than waiting for
   // the next input event. 'connected' can precede the input channel opening.
@@ -1974,6 +2116,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (blockLocalInput.error) setInputNotice(blockLocalInput.error);
   }, [blockLocalInput.error]);
 
+  // #11754: true while the video still shows the size from before an announced
+  // resolution change. Pointer coordinates are mapped from the decoded size, so
+  // a move, press or scroll now would land in the wrong place on the remote.
+  const pointerHeldForGeometry = useCallback(() => {
+    if (transport !== 'webrtc') return false;
+    const videoEl = videoRef.current;
+    return !!videoEl && geometryHold.shouldHold(videoEl.videoWidth, videoEl.videoHeight, performance.now());
+  }, [transport, geometryHold]);
+
   const flushWebRTCMouseMove = useCallback(() => {
     webrtcMouseMoveRafRef.current = null;
     const pending = webrtcMouseMovePendingRef.current;
@@ -1992,8 +2143,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     webrtcMouseMovePendingRef.current = null;
     if (viewOnlyRef.current) return;
+    if (pointerHeldForGeometry()) return;
     reliableInput.send({ type: 'mouse_move', x: pending.x, y: pending.y });
-  }, [getInputSender, reliableInput]);
+  }, [getInputSender, reliableInput, pointerHeldForGeometry]);
 
   // Native wheel handler to enable preventDefault on non-passive listener
   useEffect(() => {
@@ -2017,6 +2169,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         stepsX = rx.steps;
       }
       if (r.steps === 0 && stepsX === 0) return;
+      if (pointerHeldForGeometry()) return;
       const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
       sendInputFn(stepsX !== 0
         ? { type: 'mouse_scroll', x, y, delta: r.steps, deltaX: stepsX }
@@ -2025,7 +2178,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [transport, scaleCoordsFn, sendInputFn, reliableInput]);
+  }, [transport, scaleCoordsFn, sendInputFn, reliableInput, pointerHeldForGeometry]);
 
   // ── Input: mouse handlers ──────────────────────────────────────────
 
@@ -2054,6 +2207,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // are dropped (they used to arrive as a left click).
     const button = mouseButtonName(e.button, { extraButtons: reliableInput.extended().extraButtons });
     if (!button) return;
+    // #11754: a press mapped against the old size would land in the wrong
+    // place. Drop it (and the pending move); its release then finds no pressed
+    // button and is not sent either.
+    if (pointerHeldForGeometry()) {
+      webrtcMouseMovePendingRef.current = null;
+      return;
+    }
     // Flush any pending RAF mouse_move so the cursor is at the correct
     // position when the button press fires (consistent with mouseup).
     if (webrtcMouseMoveRafRef.current !== null) {
@@ -2069,7 +2229,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     lastPointerRef.current = { x, y };
     pressedButtonsRef.current.add(button);
     sendInputFn({ type: 'mouse_down', x, y, button });
-  }, [scaleCoordsFn, sendInputFn, reliableInput, focusKeyboardTarget]);
+  }, [scaleCoordsFn, sendInputFn, reliableInput, focusKeyboardTarget, pointerHeldForGeometry]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
     if (viewOnlyRef.current) return;
@@ -2236,7 +2396,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (!target) return;
     const outcome = await target.sendLocalClipboard();
     if (outcome.result === 'failed') setPasteNotice(clipboardFailureMessage(outcome.reason, 'send'));
-    else if (outcome.result === 'empty') setPasteNotice('Your clipboard is empty — nothing was sent.');
+    else if (outcome.result === 'empty') setPasteNotice('Nothing sent — your clipboard is empty or holds something that can\'t be sent to the remote (such as a file).');
   }, [activeClipboard]);
 
   const clipboardChipInput: ClipboardChipInput =
@@ -2254,12 +2414,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // ── Input: keyboard handlers ───────────────────────────────────────
 
-  // key_press presses its modifiers around the key and then releases them, so
-  // a modifier we had sent as key_down is no longer down on the remote.
-  // Forget it, or the next chord would take the 'held' route and lose it
-  // (Shift+A arriving as a lowercase a).
+  // An older agent's key_press presses its modifiers around the key and then
+  // releases them, so a modifier we had sent as key_down is no longer down on
+  // the remote. Forget it, or the next chord would take the 'held' route and
+  // lose it (Shift+A arriving as a lowercase a). A current agent leaves held
+  // modifiers down, and forgetting them would strand them (#9595).
   const forgetModifiersReleasedByKeyPress = useCallback((modifiers: string[]) => {
-    for (const m of modifiers) pressedKeysRef.current.delete(m);
+    for (const m of modifiersReleasedByKeyPress(modifiers, inputCapabilitiesRef.current.snapshot().releasesHeldInput)) {
+      pressedKeysRef.current.delete(m);
+    }
   }, []);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -2327,11 +2490,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       // The prefix modifiers already went down on the remote as key_downs.
       // Release them first, or paste-as-keystrokes would type into a held
       // Ctrl+Alt+Shift and fire shortcuts there.
+      if (shortcut === 'release-keys') {
+        handleReleaseStuckKeys();
+        return;
+      }
       releaseAllKeys();
       if (shortcut === 'paste-keystrokes') {
         handlePasteAsKeystrokes();
-      } else if (shortcut === 'release-keys') {
-        setInputNotice('Released all keys and mouse buttons on the remote.');
       } else {
         toggleDocumentFullscreen();
       }
@@ -2431,7 +2596,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (ne.code) heldKeyNameByCodeRef.current.set(ne.code, key);
     if (keyFields.code) heldCodeByKeyRef.current.set(key, keyFields.code);
     sendInputFn({ type: 'key_down', key, capsLock, ...keyFields });
-  }, [sendInputFn, handlePasteAsKeystrokes, releaseAllKeys, forgetModifiersReleasedByKeyPress, remapCmdCtrl, keyNameMode, remoteOs, reliableInput]);
+  }, [sendInputFn, handlePasteAsKeystrokes, releaseAllKeys, handleReleaseStuckKeys, forgetModifiersReleasedByKeyPress, remapCmdCtrl, keyNameMode, remoteOs, reliableInput]);
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
@@ -2789,16 +2954,47 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }, BLOCK_LOCAL_INPUT_REPLY_TIMEOUT_MS);
   }, [blockLocalInput.blocked, blockLocalInput.pending]);
 
+  // #11931 / #12129: closing the window (title-bar close, Close Window, and
+  // the close that handleDisconnect ends with) is how a technician usually
+  // hangs up. Rust owns that close (src-tauri/src/session_end.rs): it holds
+  // it, sends End for the session armed through nativeSessionEndRef, then
+  // destroys the window, so this works even when the page is hung. Do NOT add
+  // an onCloseRequested listener here: with one registered, Tauri holds every
+  // close until the page destroys the window itself. Quitting the app does not
+  // come through the close and still ends as `peer_disconnected`.
+  //
+  // While Rust waits for End (at most END_DESKTOP_SESSION_TIMEOUT_MS), the
+  // session may already have ended on the API; stop reconnecting meanwhile.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    getCurrentWebviewWindow().listen('session-window-closing', () => {
+      userDisconnectRef.current = true;
+      stopReconnect();
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    }).catch((err) => {
+      console.warn('Could not listen for the window closing:', err);
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [stopReconnect]);
+
   const handleDisconnect = useCallback(() => {
+    if (hangingUpRef.current) return;
+    hangingUpRef.current = true;
     userDisconnectRef.current = true;
     stopReconnect();
     reconnectInFlightRef.current = false;
-	    if (sessionRegisteredRef.current) {
-	      sessionRegisteredRef.current = false;
-	      invoke('unregister_session').catch((err) => {
-	        console.error('Failed to unregister desktop session on disconnect:', err);
-	      });
-	    }
+    if (sessionRegisteredRef.current) {
+      sessionRegisteredRef.current = false;
+      invoke('unregister_session').catch((err) => {
+        console.error('Failed to unregister desktop session on disconnect:', err);
+      });
+    }
     releaseAllKeys();
 
     if (webrtcMouseMoveRafRef.current !== null) {
@@ -2807,8 +3003,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
     webrtcMouseMovePendingRef.current = null;
 
-    wsCleanupRef.current?.();
-    wsCleanupRef.current = null;
     // Clean up audio element to release MediaStream resources
     const audioEl = audioElRef.current;
     if (audioEl) {
@@ -2816,23 +3010,47 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       audioEl.srcObject = null;
       audioElRef.current = null;
     }
+    // Detach every transport now, so no more input is sent and nothing
+    // reconnects, but close them only after End below.
     webrtcAttemptsRef.current.invalidate();
+    const wsCleanup = wsCleanupRef.current;
+    wsCleanupRef.current = null;
     const rtcSession = webrtcRef.current;
     webrtcRef.current = null;
-    rtcSession?.close();
-    // Close VNC session and tunnel
     const vncSession = vncSessionRef.current;
     vncSessionRef.current = null;
-    vncSession?.close();
-    if (activeVncTunnelIdRef.current) {
-      const tunnelId = activeVncTunnelIdRef.current;
-      activeVncTunnelIdRef.current = null;
-      const auth = authRef.current;
-      if (auth) {
-        void closeTunnel(tunnelId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
-      }
+    const vncTunnelId = activeVncTunnelIdRef.current;
+    activeVncTunnelIdRef.current = null;
+    const auth = authRef.current;
+
+    // #11931: tell the API the technician hung up BEFORE closing the peer, so
+    // the row ends as `operator_ended`, not `peer_disconnected`. A VNC tunnel
+    // has no session to end. #12129: if this window is reused for a newer
+    // session while End is in flight, the late continuation still closes this
+    // session's transports but leaves the window alone.
+    const generation = sessionGenerationRef.current;
+    const closers: Array<readonly [string, () => void]> = [];
+    if (wsCleanup) closers.push(['WebSocket session', wsCleanup]);
+    if (rtcSession) closers.push(['WebRTC session', () => rtcSession.close()]);
+    if (vncSession) closers.push(['VNC session', () => vncSession.close()]);
+    if (vncTunnelId && auth) {
+      closers.push(['VNC tunnel', () => {
+        void closeTunnel(vncTunnelId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+      }]);
     }
-    onDisconnect();
+    void hangUpThenClose({
+      // End sent here; tell Rust not to send it again on the close that
+      // onDisconnect ends with. Disarmed even when End failed: the closers
+      // tear the peer down before that close, so a second End could not
+      // change the record and would only delay the close by up to 2 s.
+      hangUp: async () => {
+        await hangUpRef.current(auth);
+        await nativeSessionEndRef.current.disarm(auth?.sessionId);
+      },
+      closers,
+      isCurrent: () => sessionGenerationRef.current === generation,
+      onDone: onDisconnect,
+    });
   }, [onDisconnect, releaseAllKeys, stopReconnect]);
 
   // ── Render ─────────────────────────────────────────────────────────
@@ -2891,7 +3109,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           setRemapOverride(v);
           rememberDevicePrefs({ remapCmdCtrl: v });
         }}
-        onReleaseAllKeys={releaseAllKeys}
+        onReleaseAllKeys={handleReleaseStuckKeys}
         onShowRemoteCursorChange={setShowRemoteCursor}
         onConfigChange={handleConfigChange}
         onBitrateChange={handleBitrateChange}
@@ -3113,6 +3331,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
                   onClick={() => {
                     setErrorMessage(null);
                     userDisconnectRef.current = false;
+                    iceBudgetRef.current.resetFailures();
                     startReconnectRef.current();
                   }}
                   className="px-4 py-2 bg-accent hover:bg-accent-hover rounded text-white"

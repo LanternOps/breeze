@@ -1,5 +1,5 @@
 import { and, eq, isNotNull, or, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import {
   contracts, contractRenewalNotices, organizations, organizationUsers, partnerUsers, users
 } from '../db/schema';
@@ -55,7 +55,9 @@ async function claimNotice(c: RenewalCandidate, endDate: string, kind: 'advance'
 /** Best-effort dispatch: in-app to MSP users + email to MSP users. Never throws. */
 async function dispatchNotice(c: RenewalCandidate, kind: 'advance' | 'renewed', endDate: string): Promise<void> {
   try {
-    const [org] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, c.orgId)).limit(1);
+    // Savepoints around the reads only, so a failed email cannot undo the in-app
+    // notice: the sweep shares one transaction across contracts (#11225).
+    const [org] = await withDbTransaction(() => db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, c.orgId)).limit(1));
     const orgName = org?.name ?? 'your customer';
     const contractUrl = `${WEB_BASE}/contracts/${c.id}`;
     const summary = kind === 'advance'
@@ -70,7 +72,7 @@ async function dispatchNotice(c: RenewalCandidate, kind: 'advance' | 'renewed', 
 
     const emailService = getEmailService();
     if (emailService) {
-      const recipients = await resolveMspRecipients(c.orgId, c.partnerId);
+      const recipients = await withDbTransaction(() => resolveMspRecipients(c.orgId, c.partnerId));
       if (recipients.length > 0) {
         const tpl = buildContractRenewalEmail({
           kind, contractName: c.name, orgName, endDate, contractUrl,

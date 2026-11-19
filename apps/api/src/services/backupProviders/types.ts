@@ -46,6 +46,22 @@ export interface VendorDevice {
   vendorCreatedAt: Date | null;
   vendorExpiresAt: Date | null;
   raw: Record<string, unknown>;
+  /**
+   * The vendor's last boot check of a recovery point (Axcient AutoVerify).
+   * Undefined for providers that have no such check (Cove, Dropsuite); null
+   * when the provider has the check but this device has no result. Evidence
+   * only: it never changes `status`.
+   */
+  verifiedBootable?: VerifiedBootableEvidence | null;
+}
+
+export interface VerifiedBootableEvidence {
+  /** When the check finished, or null when the vendor did not say. */
+  at: Date | null;
+  /** True only when the check ran to completion and every step passed. */
+  healthy: boolean;
+  /** The step names that failed, in a fixed order. */
+  failedChecks: string[];
 }
 
 /**

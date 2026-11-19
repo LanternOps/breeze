@@ -14,6 +14,8 @@ const h = vi.hoisted(() => ({
   entitlement: { state: 'enabled', failed: false, reload: vi.fn() } as Record<string, unknown>,
   fetchWispHome: vi.fn(),
   fetchWispPartnerEnabled: vi.fn(),
+  saveBrowserTimezone: vi.fn(),
+  detectBrowserTimezone: vi.fn<() => string | null>(() => 'America/Denver'),
   wide: true,
   organizations: [] as Array<{ id: string; name: string }>,
   modalProps: null as null | Record<string, unknown>,
@@ -33,6 +35,11 @@ vi.mock('./wispHome', async (orig) => ({
   ...(await orig<typeof import('./wispHome')>()),
   fetchWispHome: h.fetchWispHome,
   fetchWispPartnerEnabled: h.fetchWispPartnerEnabled,
+  saveBrowserTimezone: h.saveBrowserTimezone,
+}));
+vi.mock('@/lib/wispGrant', async (orig) => ({
+  ...(await orig<typeof import('@/lib/wispGrant')>()),
+  detectBrowserTimezone: h.detectBrowserTimezone,
 }));
 vi.mock('../ai/WispGrantStepUpModal', () => ({
   default: (props: Record<string, unknown>) => {
@@ -68,7 +75,7 @@ import WispHomeContent from './WispHomeContent';
 const payload = (over: Partial<WispHomePayload> = {}): WispHomePayload => ({
   thread: { id: 'th-1', grantId: 'g-1', summary: '', summaryUpdatedAt: null, lastSessionId: 's-9', focusOrgId: null, createdAt: '', updatedAt: '' },
   focusOrgName: null,
-  grant: { id: 'g-1', status: 'active', orgId: null, expiresAt: '2026-12-01T00:00:00Z', currentRevisionId: null, budgetCentsPerDay: 200, floorTickMinutes: 30, spentTodayCents: 0, budgetResetsAt: '2026-10-25T00:00:00Z', pausedReason: null },
+  grant: { id: 'g-1', status: 'active', orgId: null, expiresAt: '2026-12-01T00:00:00Z', currentRevisionId: null, budgetCentsPerDay: 200, floorTickMinutes: 30, spentTodayCents: 0, backgroundCents: 0, chatCents: 0, budgetResetsAt: '2026-10-25T00:00:00Z', pausedReason: null, unattendedReads: false, unattendedReadsPinned: false, summaryRefine: false },
   wideningAvailable: false,
   brief: { sentAt: new Date().toISOString(), sections: [{ heading: 'Overnight', lines: ['Two backups failed at Acme'] }] },
   needsYou: [],
@@ -76,6 +83,10 @@ const payload = (over: Partial<WispHomePayload> = {}): WispHomePayload => ({
   current: null,
   links: [{ id: 'l-1', ref: { kind: 'ticket', id: 't-1', orgId: 'o-1' }, label: '#1 Jam', status: 'open', href: '/tickets/t-1', source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z', createdAt: '' }],
   partner: { enabled: true },
+  briefSchedule: { timeLocal: '08:00', timezone: 'America/Denver', browserTimezone: 'America/Denver' },
+  firstLookAt: null,
+  firstLookState: 'looking',
+  firstLookProgress: null,
   ...over,
 });
 const wisp = { grantId: 'g-1', threadId: 'th-1', scopeOrgId: null, focusOrgId: null, focusOrgName: null, status: 'active', expiresAt: '2026-12-01T00:00:00Z', summary: '', budgetCentsPerDay: 200, floorTickMinutes: 30, wideningAvailable: false };
@@ -112,6 +123,112 @@ describe('WispHomeContent', () => {
     h.store = { wisp: null, updateWisp: vi.fn(), exitWispMode: vi.fn() };
     h.entitlement = { state: 'enabled', failed: false, reload: vi.fn() };
     h.fetchWispPartnerEnabled.mockResolvedValue(true);
+    h.saveBrowserTimezone.mockReset();
+    h.saveBrowserTimezone.mockResolvedValue(undefined);
+    h.detectBrowserTimezone.mockReturnValue('America/Denver');
+  });
+
+  describe('the browser timezone (#10402)', () => {
+    const stale = () => ({ kind: 'ready', payload: payload({ briefSchedule: { timeLocal: '08:00', timezone: 'UTC', browserTimezone: null } }), wisp });
+
+    it('a browser zone the server does not have yet is stored once, then the home re-reads the resolved zone', async () => {
+      h.fetchWispHome.mockResolvedValueOnce(stale()).mockResolvedValue({ kind: 'ready', payload: payload(), wisp });
+      render(<WispHomeContent />);
+      await waitFor(() => expect(h.saveBrowserTimezone).toHaveBeenCalledWith('America/Denver'));
+      await waitFor(() => expect(h.threadProps?.briefSchedule).toMatchObject({ timezone: 'America/Denver' }));
+      expect(h.saveBrowserTimezone).toHaveBeenCalledTimes(1);
+    });
+
+    it('nothing is written when the server already has this zone, or the browser names none', async () => {
+      h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload(), wisp });
+      const { unmount } = render(<WispHomeContent />);
+      await screen.findByTestId('wisp-home-thread');
+      expect(h.saveBrowserTimezone).not.toHaveBeenCalled();
+      unmount();
+
+      h.detectBrowserTimezone.mockReturnValue(null);
+      h.fetchWispHome.mockResolvedValue(stale());
+      render(<WispHomeContent />);
+      await screen.findByTestId('wisp-home-thread');
+      expect(h.saveBrowserTimezone).not.toHaveBeenCalled();
+    });
+
+    it('a failed store keeps the page, says nothing, and is not retried by every poll', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      h.saveBrowserTimezone.mockRejectedValue(new Error('nope'));
+      h.fetchWispHome.mockResolvedValue(stale());
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        render(<WispHomeContent />);
+        await screen.findByTestId('wisp-home-thread');
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(h.saveBrowserTimezone).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('wisp-home-thread')).toBeInTheDocument();
+        expect(warn).toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+        warn.mockRestore();
+      }
+    });
+
+    it('passes the schedule to the thread and the rail', async () => {
+      h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload(), wisp });
+      render(<WispHomeContent />);
+      await screen.findByTestId('wisp-home-thread');
+      expect(h.threadProps?.briefSchedule).toEqual(payload().briefSchedule);
+      expect(h.railProps?.briefSchedule).toEqual(payload().briefSchedule);
+    });
+
+    it('the first-look post appearing re-reads the thread timeline, even with nothing else changing', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const brief = null;
+        h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload({ brief }), wisp });
+        render(<WispHomeContent />);
+        await screen.findByTestId('wisp-home-thread');
+        expect(h.threadProps?.refreshKey).toBe(0);
+        h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload({ brief, firstLookAt: '2026-10-24T08:00:00Z' }), wisp });
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        await waitFor(() => expect(h.threadProps?.refreshKey).toBe(1));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('first look on the poll (#11145, #11146)', () => {
+    it("the couldn't-look post appearing re-reads the timeline, even with nothing else changing", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload({ brief: null }), wisp });
+        render(<WispHomeContent />);
+        await screen.findByTestId('wisp-home-thread');
+        expect(h.threadProps?.refreshKey).toBe(0);
+        h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload({ brief: null, firstLookState: 'couldnt_look' }), wisp: { ...wisp, firstLookState: 'couldnt_look' } });
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        await waitFor(() => expect(h.threadProps?.refreshKey).toBe(1));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('hands the progress to the thread, and the poll refreshes it without re-reading the timeline', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const first = { lookedAtOrgs: 1, queuedOrgs: 2, failedOrgs: 0, totalOrgs: 3 };
+        const next = { lookedAtOrgs: 2, queuedOrgs: 1, failedOrgs: 0, totalOrgs: 3 };
+        h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload({ brief: null, firstLookProgress: first }), wisp });
+        render(<WispHomeContent />);
+        await screen.findByTestId('wisp-home-thread');
+        expect(h.threadProps?.firstLookProgress).toEqual(first);
+        h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload({ brief: null, firstLookProgress: next }), wisp });
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        await waitFor(() => expect(h.threadProps?.firstLookProgress).toEqual(next));
+        expect(h.threadProps?.refreshKey).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('no grant → the start card; Start opens the step-up modal and a grant reloads the home', async () => {

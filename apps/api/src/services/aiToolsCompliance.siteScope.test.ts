@@ -163,6 +163,33 @@ describe('get_compliance_status — site narrowing', () => {
     expect(parsed.breakdown).toEqual({ compliant: 1 });
   });
 
+  it('never returns an observed registry value from stored details (#11976)', async () => {
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (cols === undefined) {
+        return chain([{ id: 'pol-1', orgId: 'org-1', partnerId: null }]);
+      }
+      if (cols && typeof cols === 'object' && 'count' in (cols as object) && 'status' in (cols as object)) {
+        return chain([{ status: 'non_compliant', count: 1 }]);
+      }
+      if (cols && typeof cols === 'object' && 'count' in (cols as object)) {
+        return chain([{ count: 1 }]);
+      }
+      return chain([{
+        policyId: 'pol-1', deviceId: 'd1', status: 'non_compliant', lastCheckedAt: null, remediationAttempts: 0,
+        details: {
+            passed: false,
+            ruleResults: [
+              { ruleType: 'registry_check', passed: false, message: 'Registry value mismatch.', data: { expectedValue: '1', actualValue: 'observed-0xBEEF', valueType: 'REG_SZ' } },
+            ],
+          },
+      }]);
+    });
+    const r = await handlerFor('get_compliance_status')({ policyId: 'pol-1' }, makeAuth(undefined));
+    expect(r).not.toContain('observed-0xBEEF');
+    expect(r).not.toContain('REG_SZ');
+    expect(JSON.parse(r).records[0].details.ruleResults[0].data).toEqual({ expectedValue: '1' });
+  });
+
   it('policyId belonging to an inaccessible org returns "policy not found" without reading compliance rows (mirrors getPolicyWithOrgCheck routes/policyManagement/compliance.ts:624)', async () => {
     let complianceRan = false;
     mockDb.select.mockImplementation((cols?: unknown) => {

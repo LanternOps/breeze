@@ -21,6 +21,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 
 import { createBreezeMcpServer } from './aiAgentSdkTools';
 import { getAllRegisteredToolNames, getToolSearchHint } from './aiTools';
+import { agentDeniedToolNames, ceilingAdmitsTool, ceilingToolTermOf } from './wisp/grantAuthority';
 
 interface CapturedTool { name: string; _meta?: Record<string, unknown> }
 interface CapturedServer { tools: CapturedTool[] }
@@ -61,5 +62,38 @@ describe('createBreezeMcpServer attaches registry search metadata to every decla
       expect(registered.has(t.name)).toBe(true);
       expect(t._meta?.['anthropic/searchHint']).toBe(getToolSearchHint(t.name));
     }
+  });
+});
+
+// #10430: a Wisp chat session registers only the tools its grant ceiling
+// admits, so neither the inline tool list nor the ToolSearch index (built
+// from every registered tool) offers one the ceiling gate would refuse.
+describe('createBreezeMcpServer admitTool (#10430)', () => {
+  const term = ceilingToolTermOf({ deniedTools: ['query_devices'], toolAllowlist: null });
+  const admitTool = (name: string) => ceilingAdmitsTool(term, name);
+
+  it('leaves a tool in deniedTools and every agent-denied tool off the server', () => {
+    const full = (createBreezeMcpServer(fakeAuth as never) as unknown as CapturedServer).tools.map((t) => t.name);
+    const names = (createBreezeMcpServer(fakeAuth as never, undefined, undefined, undefined, [], { admitTool }) as unknown as CapturedServer)
+      .tools.map((t) => t.name);
+
+    expect(full).toContain('query_devices');
+    expect(full).toContain('list_operator_tasks');
+    expect(names).not.toContain('query_devices');
+    for (const denied of agentDeniedToolNames()) expect(names, denied).not.toContain(denied);
+    expect(names).toContain('get_device_details');
+    expect(names.sort()).toEqual(full.filter(admitTool).sort());
+  });
+
+  it('applies to extra tools too', () => {
+    const extra = (name: string) => ({ name, description: name, inputSchema: {}, handler: async () => ({ content: [] }) });
+    const server = createBreezeMcpServer(
+      fakeAuth as never, undefined, undefined, undefined,
+      [extra('tenant_kept'), extra('tenant_dropped')] as never,
+      { admitTool: (name) => name !== 'tenant_dropped' },
+    ) as unknown as CapturedServer;
+    const names = server.tools.map((t) => t.name);
+    expect(names).toContain('tenant_kept');
+    expect(names).not.toContain('tenant_dropped');
   });
 });

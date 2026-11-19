@@ -15,9 +15,11 @@ import { isAutomationPrincipal } from '../middleware/principalKind';
  *
  * `'*'` gates every invocation of the tool, whatever its `action`.
  *
- * Config-policy mutations mirror `requireMfa()` on the HTTP routes
- * (routes/configurationPolicies/featureLinks.ts and siblings), so MCP and the
- * AI assistant are not a weaker path to a fleet-wide config change.
+ * Every entry mirrors `requireMfa()` on the equivalent HTTP route, so MCP and
+ * the AI assistant are not a weaker path to the same mutation. A Tier 2 action
+ * is never approval-gated over MCP, so for those the handler call is the ONLY
+ * gate: enrolling a tool here without calling {@link mfaGatedToolError} from
+ * its handler gates nothing.
  */
 export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly string[]>> = Object.freeze({
   apply_configuration_policy: '*',
@@ -29,7 +31,6 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   manage_access_reviews: Object.freeze(['create', 'decide_item']),
   // routes/policyManagement/actions.ts POST /:id/deactivate.
   manage_compliance_policies: '*',
-  // routes/pam.ts rule, org-config and signer-group writes.
   // Full-control W12 (#6782, W12-D5): every W12 write's REST twin carries requireMfa().
   manage_software_catalog: Object.freeze([
     'create', 'update', 'archive', 'add_version', 'update_version', 'promote_version',
@@ -64,10 +65,62 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   // W15 PR A (#6785): every Pax8 write mirrors requireMfa() at REST, including isMock preflight.
   manage_pax8_subscriptions: Object.freeze(['sync', 'link', 'unlink']),
   manage_pax8_orders: Object.freeze(['create_draft', 'add_line', 'update_line', 'remove_line', 'preflight', 'submit', 'reconcile']),
+  // Full-control W17 (#6788): POST /backup/verify and GET /backup/vss/status/:deviceId carry requireMfa(), the VSS read
+  // included (it runs a command on the machine); C2C config writes carry it too. Their reads carry none.
+  manage_backup_verification: Object.freeze(['run']),
+  get_vss_status: '*',
+  manage_c2c_configs: Object.freeze(['create', 'update', 'delete']),
+  // Full-control W18 PR B (#6789): PATCH /organizations/:id/portal-settings and POST /reports/:id/recipients/convert
+  // carry requireMfa(). Recipient add is gated too (Decision 5: it always needs reports:export + MFA on the tool); a
+  // remove that restores a series delivery is gated inside the shared operation (callerMaySetEmailRecipients).
+  manage_org_portal_settings: Object.freeze(['update', 'set_sensitive_access']),
+  manage_report_recipients: Object.freeze(['add', 'convert']),
+  // Full-control W16 PR A (#6786): POST /ai/patch-plan/runs and POST /ai/operator/tasks carry requireMfa().
+  run_patch_plan: '*',
+  create_operator_task: '*',
+  // Full-control W16 PR B (#6786): every schedule write carries requireMfa(), as do the Fleet Design run, preview, apply
+  // and rollback routes. GET applied and POST document do not.
+  manage_ai_agent_schedules: '*',
+  manage_fleet_designs: Object.freeze(['run', 'preview', 'apply', 'rollback']),
+  // routes/pam.ts rule, org-config and signer-group writes.
   manage_pam_rules: Object.freeze([
     'create_rule', 'update_rule', 'delete_rule', 'set_config',
     'create_signer_group', 'update_signer_group', 'delete_signer_group',
   ]),
+  // Mirrors of requireMfa() routes outside config policies. Each row is pinned
+  // to its route by aiToolMfaGate.routeParity.contract.test.ts.
+  //
+  // One rule for these: only auto-executing actions (effective Tier 1 or 2) are
+  // enrolled. A Tier 2 action is never approval-gated over MCP, so the handler
+  // call is its ONLY MFA check there. A Tier 3 action keeps relying on the
+  // approval gate (in web chat both the chat route and the approve route
+  // require MFA) and is NOT enrolled, even when its route twin requires MFA:
+  // enrolling it would remove its MCP approval-request path. The Tier 3 twins
+  // left out on purpose are pinned in TIER3_APPROVAL_ONLY in the parity test.
+  manage_backup_configs: Object.freeze(['create', 'update']),
+  // update/delete are Tier 3 (approval), so only create is enrolled.
+  manage_backup_profiles: Object.freeze(['create']),
+  // POST /patches/scan, /patches/:id/{approve,decline,defer} and /patches/bulk-approve.
+  manage_patches: Object.freeze(['scan', 'approve', 'decline', 'defer', 'bulk_approve']),
+  revoke_elevation: '*',
+  sync_huntress_data: '*',
+  assign_security_training: '*',
+  // POST/PATCH /backup/sla/configs.
+  configure_backup_sla: Object.freeze(['create', 'update']),
+  // /dr/plans create, update and group add/update. delete_group is Tier 3 (approval), so it is not enrolled.
+  manage_dr_plan: Object.freeze(['create_plan', 'update_plan', 'add_group', 'update_group']),
+  // PUT/PATCH /automations/:id (the enabled flag).
+  manage_automations: Object.freeze(['enable', 'disable']),
+  // POST /deployments/:id/pause and /:id/resume.
+  manage_deployments: Object.freeze(['pause', 'resume']),
+  // PATCH /devices/:id (the tags field).
+  manage_tags: Object.freeze(['add', 'remove']),
+  // POST /filters and DELETE /filters/:id.
+  manage_saved_filters: Object.freeze(['create', 'delete']),
+  // POST /monitor-definitions/:id/devices/:deviceId/reset.
+  reset_monitor_escalation: '*',
+  // POST /flows/runs/:runId/cancel.
+  cancel_flow_run: '*',
 });
 
 export const MFA_REQUIRED_CODE = 'MFA_REQUIRED';
@@ -75,7 +128,7 @@ export const MFA_REQUIRED_CODE = 'MFA_REQUIRED';
 export const MFA_REQUIRED_TOOL_MESSAGE =
   'MFA required: this action needs a signed-in session that has completed multi-factor authentication. '
   + 'API keys and MCP connections cannot satisfy it. Run it from the Breeze web app (the AI assistant or the '
-  + 'configuration policy pages) after signing in with MFA.';
+  + 'equivalent page) after signing in with MFA.';
 
 /** True when `action` of `toolName` is in {@link MFA_GATED_TOOL_ACTIONS}. */
 export function isMfaGatedToolAction(toolName: string, action: string | undefined): boolean {

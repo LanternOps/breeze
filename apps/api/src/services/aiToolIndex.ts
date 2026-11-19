@@ -1,4 +1,4 @@
-import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPrompt';
+import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_COMPACT, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPrompt';
 import { AI_SYSTEM_PROMPT_DIAGNOSIS } from './aiAgentDiagnosisPrompt';
 import { AI_TOOL_DOMAINS, AI_TOOL_DOMAIN_LABELS, type AiPageContext, type AiToolDomain } from '@breeze/shared';
 import { aiTools } from './aiToolNames';
@@ -32,12 +32,12 @@ export const DOMAIN_VOCABULARY: Readonly<Record<AiToolDomain, string>> = {
   monitoring: 'alerts and alert rules, monitors, incidents, logs, fixes and remediation, alert delivery and escalation, SLA and capacity',
   network: 'network assets and discovery, topology, connectivity diagnostics, links, IP and interface history, DNS filtering',
   security: 'security posture, configuration policies, CIS, compliance, audit and change logs, IOC hunts, scans, user risk, peripherals, elevation',
-  backup: 'backups and jobs, snapshots, restores, vaults, Hyper-V, SQL Server, disaster recovery plans, backup SLA',
+  backup: 'backups and jobs, snapshots, restores, vaults, Hyper-V, SQL Server, disaster recovery plans, backup SLA, VSS, verification',
   tickets: 'tickets, checklists, routing rules, time entries and timers, timesheets, business calendars, end-user messages',
   billing: 'invoices, quotes, contracts, catalog items, distributor products, Pax8 orders',
-  accounts: 'organizations and sites, contacts, documents, deliverables, key dates',
+  accounts: 'organizations and sites, contacts, documents, deliverables, key dates, portal',
   integrations: 'EDR (SentinelOne, Huntress), Microsoft 365, Google Workspace, cloud-to-cloud backup, PSA, webhooks, notification channels',
-  admin: 'reports, data export, agent versions and logs, saved filters, invites, tenant deletion',
+  admin: 'reports, data export, agent versions and logs, saved filters, invites, tenant deletion, users and roles',
   ai: 'AI agents and their runs, stored result artifacts, workspace runs',
 };
 
@@ -184,4 +184,31 @@ export function renderPageContextToolBlocks(ctx: AiPageContext, names: readonly 
 export function composeStaticSystemPrompt(toolNames: readonly string[], mode: ToolIndexMode = resolveToolIndexMode()): string {
   const index = mode === 'full' ? renderToolIndexByDomain(toolNames) : renderAlwaysOnIndex(toolNames);
   return [AI_SYSTEM_PROMPT_BASE, index, AI_SYSTEM_PROMPT_TAIL, AI_SYSTEM_PROMPT_DIAGNOSIS].join('\n');
+}
+
+/**
+ * #11395 (W03): the static chat prompt under a CONSTRAINED tool exposure —
+ * the compact rules and the exposure's own tool lines (every schema is
+ * inline: a constrained profile never searches), no diagnosis section and no
+ * domain vocabulary. A function of the exposed names only (sorted, page-free),
+ * so it is a byte-stable prompt-cache prefix across turns and pages.
+ */
+export function composeConstrainedSystemPrompt(toolNames: readonly string[]): string {
+  return [AI_SYSTEM_PROMPT_COMPACT, renderConstrainedToolLines(toolNames)].join('\n');
+}
+
+/**
+ * The constrained prompt's tool lines: each present domain with its tool
+ * names only. No action lists (each schema's `action` enum carries them, and
+ * every schema is inline), no notes and no vocabulary: the prefix stays
+ * small and names nothing the exposure lacks.
+ */
+function renderConstrainedToolLines(toolNames: readonly string[]): string {
+  const entries = listToolIndex(toolNames);
+  const lines = ['## Your Tools'];
+  for (const domain of AI_TOOL_DOMAINS) {
+    const inDomain = entries.filter((e) => e.domain === domain);
+    if (inDomain.length > 0) lines.push(`- **${AI_TOOL_DOMAIN_LABELS[domain]}**: ${inDomain.map((e) => e.name).join(', ')}`);
+  }
+  return lines.join('\n');
 }

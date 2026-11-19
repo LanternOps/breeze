@@ -184,6 +184,33 @@ it('/trust/<p>/<o> is public-cacheable only for a loaded 200; 404s, degraded she
   } finally { vi.unstubAllGlobals(); }
 });
 
+it('W6: /request-access/verify and /accept-invite are served with no-referrer, no-store and noindex headers', async () => {
+  const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+  try {
+    for (const path of ['/request-access/verify', '/accept-invite']) {
+      const out = await run(contextFor(path, { signedIn: false }));
+      expect(out.status, path).toBe(200);
+      expect(out.headers.get('Referrer-Policy'), path).toBe('no-referrer');
+      expect(out.headers.get('Cache-Control'), path).toBe('no-store');
+      expect(out.headers.get('X-Robots-Tag'), path).toBe('noindex, nofollow, noarchive');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it('W6: /request-access is public and redirects a signed-in user to their landing', async () => {
+  const anon = await run(contextFor('/request-access', { signedIn: false }));
+  expect(anon.status).toBe(200);
+  expect(anon.headers.get('Location')).toBeNull();
+
+  vi.stubGlobal('fetch', activeAccountFetch());
+  try {
+    const signedIn = await run(contextFor('/request-access', { signedIn: true }));
+    expect(signedIn.status).toBe(302);
+    expect(signedIn.headers.get('Location')).toBe(withBase('/quotes'));
+  } finally { vi.unstubAllGlobals(); }
+});
+
 it('W2: /trust/access/* token pages are never cached, never indexed and send no referrer, even on a loaded 200', async () => {
   const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
   try {
@@ -265,5 +292,34 @@ describe('W03a: /trust/embed/* framing carve-out', () => {
       expect(frameAncestors(out), path).toBe("'none'");
     }
   });
+});
+
+// W4 (#11381) D3: the Microsoft callback sets the session cookie and lands on
+// /login?sso=signed_in; the login island then applies the `next` path kept in
+// sessionStorage. The signed-in /login bounce must not swallow that landing.
+it('a signed-in /login?sso=signed_in renders the login page so the island can apply next', async () => {
+  vi.stubGlobal('fetch', activeAccountFetch());
+  try {
+    const landing = await run(contextFor('/login?sso=signed_in', { signedIn: true }));
+    expect(landing.status).toBe(200);
+    expect(landing.headers.get('Location')).toBeNull();
+    // Any other signed-in visit to /login still goes to the landing page.
+    for (const path of ['/login', '/login?sso=unavailable']) {
+      const bounced = await run(contextFor(path, { signedIn: true }));
+      expect(bounced.status).toBe(302);
+    }
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it('entra-setup renders per status and is reachable signed out', async () => {
+  const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+  try {
+    for (const path of ['/entra-setup?status=consent_done', '/entra-setup']) {
+      const response = await run(contextFor(path, { signedIn: false }));
+      expect(response.status).toBe(200);
+      expect(response.headers.get('Location')).toBeNull();
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
 });
 

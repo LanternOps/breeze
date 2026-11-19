@@ -4,6 +4,7 @@ import {
   GATEWAY_FAILURE_NOTE_MAX_ENTRIES,
   GATEWAY_FAILURE_NOTE_TTL_MS,
   noteGatewayFailure,
+  takeGatewayFailure,
   takeGatewayFailureNote,
 } from './failureNotes';
 
@@ -18,6 +19,31 @@ describe('gateway failure notes', () => {
     expect(takeGatewayFailureNote('s2')).toBeNull();
     expect(takeGatewayFailureNote('s1')).toBe('reason one');
     expect(takeGatewayFailureNote('s1')).toBeNull();
+  });
+
+  it('a coded note carries its code, and an uncoded one reads as null (#10577)', () => {
+    noteGatewayFailure('s1', 'too big', 'context_window_exceeded');
+    noteGatewayFailure('s2', 'other');
+    expect(takeGatewayFailure('s1')).toEqual({ message: 'too big', code: 'context_window_exceeded' });
+    expect(takeGatewayFailure('s1')).toBeNull();
+    expect(takeGatewayFailure('s2')).toEqual({ message: 'other', code: null });
+  });
+
+  it('a refused tool batch is noted by code (W04 #11397)', () => {
+    noteGatewayFailure('s1', 'refused 1 tool call(s): foo', 'refused_tool_batch');
+    expect(takeGatewayFailure('s1')).toEqual({ message: 'refused 1 tool call(s): foo', code: 'refused_tool_batch' });
+  });
+
+  it('a refused tool batch never replaces a pending context-window refusal, which is the more specific reason', () => {
+    noteGatewayFailure('s1', 'too big', 'context_window_exceeded');
+    noteGatewayFailure('s1', 'refused 1 tool call(s): foo', 'refused_tool_batch');
+    expect(takeGatewayFailure('s1')).toEqual({ message: 'too big', code: 'context_window_exceeded' });
+  });
+
+  it('a later context-window refusal does replace a refused tool batch', () => {
+    noteGatewayFailure('s1', 'refused 1 tool call(s): foo', 'refused_tool_batch');
+    noteGatewayFailure('s1', 'too big', 'context_window_exceeded');
+    expect(takeGatewayFailure('s1')).toEqual({ message: 'too big', code: 'context_window_exceeded' });
   });
 
   it('the latest note for a session wins', () => {

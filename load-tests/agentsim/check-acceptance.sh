@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # load-tests/agentsim/check-acceptance.sh — W0a acceptance checks.
 #   check-acceptance.sh live <expectedAgents>           run DURING the steady window
-#   check-acceptance.sh report <report.json> [expRpm]   run after the simulator exits
+#   check-acceptance.sh report [--allow-non2xx <n>] <report.json> [expRpm]
+#                                                        run after the simulator exits
 # live: distinct device rows for this store's hostnames, and live presence leases
 #       (agent-presence:<agentId>, 90 s TTL, cleared on socket close — so only
 #       while the simulator is running).
 # report: the ±10 % mix against the code-derived model (and against expRpm,
 #         the production figure, when given), zero non-2xx outside crawl-config,
 #         zero transport errors, one WS connect per agent, and ≥ 99 % of
-#         dispatched commands answered.
+#         dispatched commands answered. --allow-non2xx <n> (default 0) relaxes
+#         only the non-2xx check, for the perf self-test's deliberately blocked
+#         event loop; the allowance is printed so a reader sees it.
 set -euo pipefail
 REPO="$(git rev-parse --show-toplevel)"
 DESC="$REPO/.breeze-stack.json"
@@ -38,7 +41,14 @@ SQL
   [ "$LEASES" -ge "$WANT" ] && r=ok || r=bad; check "$r" "live presence leases: $LEASES (want >= $WANT)"
   ;;
 report)
-  R="${2:?usage: check-acceptance.sh report <report.json> [expectedRpm]}"; PROD="${3:-}"
+  shift
+  ALLOW=0; ALLOW_SET=0
+  if [ "${1:-}" = "--allow-non2xx" ]; then
+    ALLOW="${2:-}"; ALLOW_SET=1
+    case "$ALLOW" in ''|*[!0-9]*) echo "check-acceptance: --allow-non2xx needs a non-negative integer, got '${ALLOW}'" >&2; exit 64 ;; esac
+    shift 2
+  fi
+  R="${1:?usage: check-acceptance.sh report [--allow-non2xx <n>] <report.json> [expectedRpm]}"; PROD="${2:-}"
   jq -e '.schema == "breeze.agentsim.report/v1"' "$R" >/dev/null && r=ok || r=bad; check "$r" "schema"
   N="$(jq .config.agents "$R")"
   dev="$(jq '.totals.deviationPct | fabs' "$R")"
@@ -52,7 +62,8 @@ report)
   check "$r" "steady window measured: $(jq -c '{agentMinutes: .window.agentMinutes, online: .agents.onlineAtWindowOpen, enrollFailures: .agents.enrollFailures}' "$R") (want agentMinutes > 0, online == $N, enrollFailures == 0)"
   BAD="$(jq '[.routes[] | select(.route != "GET /workspace/agent/crawl-config" and .route != "GET /agent-ws/:id/ws")
               | (.status // {}) | to_entries[] | select(.key | test("^2") | not) | .value] | add // 0' "$R")"
-  [ "$BAD" -eq 0 ] && r=ok || r=bad; check "$r" "non-2xx outside crawl-config: $BAD"
+  NOTE=""; [ "$ALLOW_SET" -eq 1 ] && NOTE=" (relaxed allowance: $ALLOW)"
+  [ "$BAD" -le "$ALLOW" ] && r=ok || r=bad; check "$r" "non-2xx outside crawl-config: $BAD$NOTE"
   CRAWL="$(jq '[.routes[] | select(.route == "GET /workspace/agent/crawl-config") | (.status // {}) | to_entries[]
                | select(.key | test("^(200|401|404)$") | not) | .value] | add // 0' "$R")"
   [ "$CRAWL" -eq 0 ] && r=ok || r=bad; check "$r" "crawl-config answers only 200/401/404: $CRAWL others"
@@ -63,6 +74,6 @@ report)
          and (.commands.dispatched == 0 or (([.commands.resultsSent[]] | add // 0) >= .commands.dispatched * 0.99))' "$R" >/dev/null && r=ok || r=bad
   check "$r" "command results $(jq '[.commands.resultsSent[]] | add // 0' "$R") for $(jq .commands.dispatched "$R") dispatched"
   ;;
-*) echo "usage: check-acceptance.sh live <n> | report <report.json> [expectedRpm]" >&2; exit 2 ;;
+*) echo "usage: check-acceptance.sh live <n> | report [--allow-non2xx <n>] <report.json> [expectedRpm]" >&2; exit 2 ;;
 esac
 exit "$fail"

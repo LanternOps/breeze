@@ -51,7 +51,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -59,6 +58,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 )
 
@@ -488,7 +488,7 @@ func showTCCDialog(missing []string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), tccHelperCommandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
+	cmd := procspawn.CommandContext(ctx, "osascript", "-e", script)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Debug("TCC dialog dismissed or timed out", "error", err.Error())
@@ -537,7 +537,7 @@ func openSettingsForPermission(permission string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), tccHelperCommandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "open", url)
+	cmd := procspawn.CommandContext(ctx, "open", url)
 	if err := cmd.Run(); err != nil {
 		log.Warn("failed to open System Settings", "permission", permission, "error", err.Error())
 	}

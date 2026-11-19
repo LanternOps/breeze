@@ -7,6 +7,8 @@ import { softwareRoutes } from './software';
 import { commandsRoutes } from './commands';
 import { networkIsolationRoutes } from './networkIsolation';
 import { forceRebootRoutes } from './forceReboot';
+import { reattachRoutes } from './reattach';
+import { oemUpdatesRoutes } from './oemUpdates';
 import { hardwareRoutes } from './hardware';
 import { placementRoutes } from './placement';
 import { deviceCircuitsRoutes } from './circuits';
@@ -104,6 +106,8 @@ deviceRoutes.route('/', filesystemRoutes);
 deviceRoutes.route('/', moveOrgRoutes);
 // #8729: POST /:id/force-reboot, the only (step-up) way to force-reboot a device.
 deviceRoutes.route('/', forceRebootRoutes);
+// #8318 wave 2-2: GET /:id/reinstall-candidates and POST /:id/reattach.
+deviceRoutes.route('/', reattachRoutes);
 deviceRoutes.route('/', networkIsolationRoutes);
 
 // Mount the network arm of the unified Devices list (#1322) BEFORE core
@@ -177,6 +181,8 @@ deviceRoutes.route('/', alertsRoutes);
 deviceRoutes.route('/', deviceMonitorsRoutes);
 deviceRoutes.route('/', anomaliesRoutes);
 deviceRoutes.route('/', patchesRoutes);
+// #11065 W04: POST /:id/oem-updates/run (Run vendor updates), GET status and history.
+deviceRoutes.route('/', oemUpdatesRoutes);
 deviceRoutes.route('/', scriptsRoutes);
 // #5022 W02: GET /:id/ai-origin, GET /:id/ai-activity. :id-prefixed, so
 // mounting order relative to coreRoutes is immaterial (only STATIC paths

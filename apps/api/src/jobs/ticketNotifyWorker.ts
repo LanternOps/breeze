@@ -96,6 +96,11 @@ interface EmailPayloadBase {
   // is sent FROM that mailbox via Graph (native threading) instead of EmailService.
   // Tech/assignee payloads never set this, so they always use EmailService.
   graphMailbox?: { tenantId: string; mailbox: string; originalMessageId: string | null };
+  // Graph threaded replies keep Graph's default `RE: <original subject>` unless this
+  // is set, in which case `subject` is PATCHed onto the draft too. Only the
+  // autoresponse sets it: its template subject carries the ticket token (#12200).
+  // Technician replies deliberately keep `RE:`.
+  threadedReplyUsesSubject?: boolean;
 }
 
 /**
@@ -817,6 +822,7 @@ async function collectAutoresponse(
     headers,
     bestEffort: true,
     graphMailbox,
+    threadedReplyUsesSubject: true,
     purpose: 'ticket.customer_notification',
     partnerId: ticket.partnerId ?? null,
     partnerName: partner.name.trim() || null,
@@ -1131,7 +1137,11 @@ async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<{ attem
       if (payload.graphMailbox) {
         const { tenantId, mailbox, originalMessageId } = payload.graphMailbox;
         if (originalMessageId) {
-          await sendThreadedReply({ tenantId, mailbox }, originalMessageId, payload.html);
+          if (payload.threadedReplyUsesSubject) {
+            await sendThreadedReply({ tenantId, mailbox }, originalMessageId, payload.html, { subject: payload.subject });
+          } else {
+            await sendThreadedReply({ tenantId, mailbox }, originalMessageId, payload.html);
+          }
         } else {
           await sendNewMail({ tenantId, mailbox }, payload.to, payload.subject, payload.html);
         }

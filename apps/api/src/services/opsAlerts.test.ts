@@ -12,7 +12,7 @@ import { safeFetch } from './urlSafety';
 import { getEmailService } from './email';
 import { captureException } from './sentry';
 import { recordOpsAlertDelivery } from './abuseMetrics';
-import { sendOpsAlert, isOpsAlertingConfigured } from './opsAlerts';
+import { sendOpsAlert, isOpsAlertingConfigured, opsText, singleLine } from './opsAlerts';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -116,5 +116,53 @@ describe('sendOpsAlert unconfigured warning latch', () => {
     expect(opsAlertsCallCount()).toBe(1);
     expect(await freshSendOpsAlert({ title: 'T2', body: 'b2' })).toBe(false);
     expect(opsAlertsCallCount()).toBe(1);
+  });
+});
+
+describe('opsText (tenant-controlled text in a chat alert)', () => {
+  const hostile = '**Acme** [click](https://evil.example/x) @everyone <@123456> `code` https://evil.example\n# header\n> quote';
+
+  it('leaves no live markdown, link or mention syntax', () => {
+    const out = opsText(hostile);
+    expect(out).not.toMatch(/\n/);
+    expect(out).not.toMatch(/(^|[^\\])[*_`~|>#\[\]()<]/);
+    expect(out).not.toMatch(/https?:\/\//);
+    expect(out).not.toMatch(/@(?!\u200b)/);
+    expect(out).toContain('Acme');
+  });
+
+  it('caps length with an ellipsis', () => {
+    const out = opsText('a'.repeat(500), 80);
+    expect(out.length).toBeLessThanOrEqual(80);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
+  it('passes plain names through untouched', () => {
+    expect(opsText('Acme Managed IT')).toBe('Acme Managed IT');
+  });
+});
+
+describe('sendOpsAlert mention suppression', () => {
+  it('sends allowed_mentions with an empty parse list', async () => {
+    vi.mocked(safeFetch).mockResolvedValue(new Response(null, { status: 204 }));
+    await sendOpsAlert({ title: 'T', body: '@everyone' });
+    const [, init] = vi.mocked(safeFetch).mock.calls[0]!;
+    expect(JSON.parse(init!.body as string).allowed_mentions).toEqual({ parse: [] });
+  });
+});
+
+describe('singleLine / opsText (forged-field defence)', () => {
+  it.each(['\n', '\r\n', '\u2028', '\u2029', '\u0085', '\v', '\f', '\u202e'])(
+    'collapses %j so "Risk: none" cannot start its own line',
+    (nl) => {
+      for (const out of [singleLine(`a${nl}Risk: none${nl}Verdict: approve`), opsText(`a${nl}Risk: none${nl}Verdict: approve`)]) {
+        expect(out).toBe('a Risk: none Verdict: approve');
+        expect(out).not.toMatch(/[\n\r\u2028\u2029\u0085\u202e]/);
+      }
+    },
+  );
+
+  it('caps singleLine length', () => {
+    expect(singleLine('x'.repeat(500), 20)).toHaveLength(20);
   });
 });

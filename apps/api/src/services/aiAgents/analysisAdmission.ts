@@ -17,7 +17,12 @@
  * so adding a reason without deciding what a technician should be told is a
  * COMPILE ERROR here, not a blank toast in production.
  */
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { resolveArtifact } from '../artifacts/artifactService';
+import { isChainStageableArtifact } from './analysisContinuation';
+import type { ChainHandleDrop } from './analysisProfile';
+import { verifiedAnalysisSiteId } from './analysisRunSite';
+import type { AiAgentRunStagedInputs, AiRunExportGrants, AnalysisScopeKind } from '../../db/schema/aiAgents';
 import {
   createAndEnqueueAgentRun,
   GrantDepthExceededError,
@@ -48,6 +53,19 @@ export type AnalysisAdmissionRefusal =
   | 'analysis_rate'
   | 'too_many_input_devices'
   | 'device_not_in_org'
+  // Wisp analysis sessions W02 — the site/org frame admission resolved is too
+  // large, names a site the org or the grant does not reach, or is empty. Each
+  // has its own technician sentence (`wisp/specialistRefusalMessages.ts`).
+  | 'frame_too_large'
+  | 'site_not_in_scope'
+  | 'frame_empty'
+  // Wisp analysis sessions W03 — a continuation whose prior no longer matches
+  // the lineage the launcher derived, and the two chain bounds. Each has its
+  // own technician sentence; the launcher reports the first as
+  // `continuation_refused`, the chain bounds as `admission_skipped`.
+  | 'analysis_continuation_not_found'
+  | 'analysis_chain_too_long'
+  | 'analysis_chain_budget_exceeded'
   | 'artifact_forbidden'
   | 'enqueue_failed'
   // AI model registry W03: the agents' AI model is unusable here right now.
@@ -60,9 +78,17 @@ export type AnalysisAdmissionRefusal =
 export interface AdmitAnalysisRunInput {
   orgId: string;
   requestedByUserId: string;
-  /** The CHAT session the technician launched from, or null. */
+  /**
+   * The CHAT session the technician launched from, or null. Also written as
+   * `trigger_ref.originSessionId`: next-turn delivery matches that key exactly
+   * (`wisp/specialistResultsTurn.ts`), and `read_artifact`'s analysis-output
+   * arm requires it to be set (a chat-launched run, not one the coordinator
+   * admitted on the run/approval paths, which have no live chat).
+   */
   sessionId: string | null;
   goal: string;
+  /** Wisp analysis sessions W02: what the run covers. Admission expands `site` / `org`. */
+  scope: AnalysisScopeKind;
   deviceIds: string[];
   siteId: string | null;
   stagedHandles: string[];
@@ -73,10 +99,43 @@ export interface AdmitAnalysisRunInput {
    * Never set from a request body.
    */
   grant?: CreateAgentRunInput['grant'];
+  /**
+   * Wisp analysis sessions W02 — TRUSTED INTERNAL INPUT, same posture as
+   * `grant`: the datasets and sensitive gates the coordinator's analysis
+   * launcher evaluated against the live grant ceiling. Frozen verbatim at
+   * admission. Never set from a request body.
+   */
+  exportGrants?: AiRunExportGrants;
+  /**
+   * Wisp analysis sessions W03 — TRUSTED INTERNAL INPUT, same posture as
+   * `grant`: the launcher validated `fromRunId` under the live grant, derived
+   * the chain root and this run's depth, rendered the fenced seed, and lists
+   * the inherited handles it did not carry forward. Written as
+   * `trigger_ref.continuation = { fromRunId, seed, dropped }`; the lineage is
+   * re-validated and bounded by admission. Never set from a request body.
+   */
+  continuation?: {
+    fromRunId: string;
+    chainRootRunId: string;
+    chainDepth: number;
+    seed: string;
+    dropped: ChainHandleDrop[];
+  };
 }
 
 export type AdmitAnalysisRunResult =
-  | { created: true; runId: string; status: string }
+  | {
+    created: true;
+    runId: string;
+    status: string;
+    /**
+     * Wisp analysis sessions W06 — what admission froze: the resolved device
+     * scope (absent only on a run admitted without one) and the chain depth.
+     * The launcher tells the chat model both in its launch message.
+     */
+    scope?: NonNullable<AiAgentRunStagedInputs['scope']> | null;
+    chainDepth?: number;
+  }
   | { created: false; refusal: AnalysisAdmissionRefusal; detail?: string };
 
 /**
@@ -140,6 +199,14 @@ export const SKIP_REASON_REFUSALS = {
   compute_budget_exceeded: 'compute_budget_exceeded',
   compute_credits_exhausted: 'compute_budget_exceeded',
   too_many_input_devices: 'too_many_input_devices',
+  // Wisp analysis sessions W02 — each frame refusal is its own message.
+  frame_too_large: 'frame_too_large',
+  site_not_in_scope: 'site_not_in_scope',
+  frame_empty: 'frame_empty',
+  // Wisp analysis sessions W03 — each its own message.
+  analysis_continuation_not_found: 'analysis_continuation_not_found',
+  analysis_chain_too_long: 'analysis_chain_too_long',
+  analysis_chain_budget_exceeded: 'analysis_chain_budget_exceeded',
   workspace_unavailable: 'analysis_not_available',
   // AI model registry W03 — its own refusal: the setting to change is the AI
   // agents' model, not a budget or the analysis feature.
@@ -156,6 +223,10 @@ export const SKIP_REASON_REFUSALS = {
   max_concurrent_assessment_runs: 'max_concurrent_analysis_runs',
   assessment_rate: 'analysis_rate',
   assessment_requires_grant: 'analysis_not_available',
+  // Wisp delegation W1 (#11084) — device_troubleshooting volume guards; unreachable here.
+  max_concurrent_troubleshoot_runs: 'max_concurrent_analysis_runs',
+  troubleshoot_rate: 'analysis_rate',
+  troubleshoot_requires_grant: 'analysis_not_available',
 } satisfies Record<AgentRunSkipReason, AnalysisAdmissionRefusal>;
 
 /** Extra sentence for the reasons whose refusal alone would mislead. */
@@ -173,10 +244,38 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
   // `runService` because it is the only thing about this input that
   // `createAndEnqueueAgentRun` has no reason to know: the frozen handles are
   // W05's, and a bad one must not consume an admission slot.
-  for (const handle of input.stagedHandles) {
-    const record = await resolveArtifact(handle, { orgId: input.orgId });
-    if (!record) return { created: false, refusal: 'artifact_forbidden' };
-  }
+  // This check is by organization only. A caller that takes handles from a
+  // person must first resolve each one with `findArtifactForAuth`, which also
+  // applies that person's site restriction.
+  //
+  // Wisp analysis sessions W03: the reads run in ONE system DB context. The
+  // launcher calls this outside any request transaction, and a contextless
+  // read under forced RLS sees no rows, so every handle would otherwise come
+  // back `artifact_forbidden`. The resolve itself is pinned to the org. A
+  // handle must also still be stageable (an output or a dataset export, not
+  // expired): a step's stdout or a non-export capture is never an input, and
+  // an expired file would only fail later at `workspace_stage`.
+  const now = new Date();
+  const handlesOk = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    for (const handle of input.stagedHandles) {
+      const record = await resolveArtifact(handle, { orgId: input.orgId });
+      if (!record || !isChainStageableArtifact(record, now)) return false;
+    }
+    return true;
+  }));
+  if (!handlesOk) return { created: false, refusal: 'artifact_forbidden' };
+
+  // The recorded site decides which site-restricted users see this run's
+  // artifacts, so it is kept only when it holds every input device. A `site`
+  // frame lists no devices here; admission records the frame's site on
+  // `trigger_ref.siteId` after it expands the frame (runService step 4d).
+  // A continuation records none: its seed and inherited files come from
+  // earlier runs that may have covered more than one site (admission enforces
+  // the same).
+  const continuation = input.continuation;
+  const siteId = continuation
+    ? null
+    : await verifiedAnalysisSiteId(input.orgId, input.siteId, input.deviceIds);
 
   let result: Awaited<ReturnType<typeof createAndEnqueueAgentRun>>;
   try {
@@ -196,10 +295,35 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
         source: 'chat_analysis',
         goal: input.goal,
         chatSessionId: input.sessionId,
-        siteId: input.siteId,
+        originSessionId: input.sessionId,
+        siteId,
         requestedByUserId: input.requestedByUserId,
+        // W03 (C5): the prior run, the fenced seed and what was not carried forward.
+        ...(continuation
+          ? { continuation: { fromRunId: continuation.fromRunId, seed: continuation.seed, dropped: continuation.dropped } }
+          : {}),
       },
-      analysis: { deviceIds: input.deviceIds, inputHandles: input.stagedHandles },
+      analysis: {
+        scope: input.scope,
+        // The frame's site is the REQUESTED one; admission checks it against
+        // the org and the grant, and for a `site` frame records it as
+        // `trigger_ref.siteId` once the frame resolves. For a `devices` frame
+        // `trigger_ref.siteId` above stays the site verified to hold every
+        // listed device.
+        siteId: input.siteId,
+        deviceIds: input.deviceIds,
+        inputHandles: input.stagedHandles,
+        ...(input.exportGrants ? { exportGrants: input.exportGrants } : {}),
+        ...(continuation
+          ? {
+              continuation: {
+                fromRunId: continuation.fromRunId,
+                chainRootRunId: continuation.chainRootRunId,
+                chainDepth: continuation.chainDepth,
+              },
+            }
+          : {}),
+      },
       ...(input.grant ? { grant: input.grant } : {}),
     });
   } catch (err) {
@@ -223,5 +347,11 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
   if (result.run.status === 'failed' && result.run.errorCode === 'enqueue_failed') {
     return { created: false, refusal: 'enqueue_failed' };
   }
-  return { created: true, runId: result.run.id, status: result.run.status };
+  return {
+    created: true,
+    runId: result.run.id,
+    status: result.run.status,
+    scope: result.run.stagedInputs?.scope ?? null,
+    chainDepth: result.run.chainDepth ?? 0,
+  };
 }

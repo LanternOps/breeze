@@ -1,14 +1,15 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
-import { db, withDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withDbTransaction } from '../../db';
 import { devices, deviceEventLogs } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
-import { recordAgentIngestSubmission } from '../metrics';
+import { recordAgentIngestSubmission, recordEventLogNoiseDropped } from '../metrics';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { eventLogRowSchema, submitEventLogsSchema } from './schemas';
+import { windowsSecurityNoiseEventId } from './eventLogNoiseFilter';
 import { getDeviceEventLogSettings, EVENT_LOG_DEFAULTS, sanitizeTimestamp, type EventLogSettings } from './helpers';
 import { enqueueLogForwarding } from '../../jobs/logForwardingWorker';
 import { getOrgForwardingConfig } from '../../services/logForwarding';
@@ -141,6 +142,28 @@ function validateEventLogRows(submitted: unknown[]) {
   return { events, invalidDropped, emptyMessageCoerced, issues };
 }
 
+/**
+ * #11735 — drop known-noise Windows Security audit records before they spend
+ * the device's rate limit or ingest budget. Counted per event id; the agent
+ * still gets a 200 for them, so its bookmark advances past them.
+ */
+function dropWindowsSecurityNoise<T extends Parameters<typeof windowsSecurityNoiseEventId>[0]>(events: T[]) {
+  const kept: T[] = [];
+  const droppedById = new Map<number, number>();
+  for (const event of events) {
+    const noiseId = windowsSecurityNoiseEventId(event);
+    if (noiseId === null) {
+      kept.push(event);
+    } else {
+      droppedById.set(noiseId, (droppedById.get(noiseId) ?? 0) + 1);
+    }
+  }
+  for (const [eventId, count] of droppedById) {
+    recordEventLogNoiseDropped(eventId, count);
+  }
+  return { kept, noiseDropped: events.length - kept.length };
+}
+
 export const eventLogsRoutes = new Hono();
 // Event-log ingest is the main agent's job; reject watchdog-role tokens so a
 // weaker credential can't falsify operator-facing event-log posture (F8).
@@ -210,7 +233,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
 
     let settings: EventLogSettings | null;
     try {
-      settings = await getDeviceEventLogSettings(device.id, { orgId: device.orgId });
+      settings = await withDbTransaction(() => getDeviceEventLogSettings(device.id, { orgId: device.orgId }));
     } catch (err) {
       console.error(`[EventLogs] Failed to resolve settings for device ${device.id}, using conservative defaults:`, err);
       settings = EVENT_LOG_DEFAULTS;
@@ -236,16 +259,19 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
     );
   }
 
-  // Filter events by minimum level — pure, no DB/Redis, no context needed.
+  // Drop known Windows Security noise, then filter by minimum level — both
+  // pure, no DB/Redis, no context needed.
+  const { kept: signalEvents, noiseDropped } = dropWindowsSecurityNoise(events);
   const minLevel = settings ? LEVEL_ORDER[settings.minimumLevel] ?? 0 : 0;
   const filteredEvents = minLevel > 0
-    ? events.filter((event) => (LEVEL_ORDER[event.level] ?? 0) >= minLevel)
-    : events;
+    ? signalEvents.filter((event) => (LEVEL_ORDER[event.level] ?? 0) >= minLevel)
+    : signalEvents;
 
-  const filteredCount = events.length - filteredEvents.length;
+  const filteredCount = signalEvents.length - filteredEvents.length;
+  const dropCounts = { ...validationCounts, noiseDropped };
 
   if (filteredEvents.length === 0) {
-    return c.json({ success: true, count: 0, filtered: filteredCount, ...validationCounts });
+    return c.json({ success: true, count: 0, filtered: filteredCount, ...dropCounts });
   }
 
   // Rate limit check (after filtering, so we check against actual insert
@@ -263,7 +289,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
     if (!rateCheck.allowed) {
       return c.json({
         error: 'Rate limit exceeded',
-        ...validationCounts,
+        ...dropCounts,
         remaining: rateCheck.remaining,
         resetAt: rateCheck.resetAt.toISOString(),
       }, 429);
@@ -325,7 +351,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
         + `(device bytes=${deviceQuota.bytesUsed}, org rows=${orgQuota.rowsUsed} bytes=${orgQuota.bytesUsed}) `
         + `— dropping ${rows.length} row(s)`,
       );
-      return c.json({ error: 'Daily event-log ingest budget exceeded', count: 0, filtered: filteredCount, dropped: rows.length, ...validationCounts }, 429);
+      return c.json({ error: 'Daily event-log ingest budget exceeded', count: 0, filtered: filteredCount, dropped: rows.length, ...dropCounts }, 429);
     }
   }
 
@@ -353,11 +379,13 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
           // a window after a sub-collector failure (#2390 retry semantics), so
           // duplicates are expected — they must be absorbed here, not
           // re-forwarded to the org's SIEM below.
-          const insertedRows = await db.insert(deviceEventLogs).values(batch).onConflictDoNothing().returning({
+          // A savepoint per batch: a failed batch must keep the batches before it,
+          // which the partial-failure answer below reports (#11225).
+          const insertedRows = await withDbTransaction(() => db.insert(deviceEventLogs).values(batch).onConflictDoNothing().returning({
             source: deviceEventLogs.source,
             eventId: deviceEventLogs.eventId,
             timestamp: deviceEventLogs.timestamp,
-          });
+          }));
           inserted += insertedRows.length;
           for (const r of insertedRows) {
             insertedKeys.add(eventLogRowKey(r.source, r.eventId, r.timestamp));
@@ -365,7 +393,10 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
         }
       } catch (err) {
         insertError = err;
-        console.error(`[EventLogs] Error batch inserting events for device ${deviceId}:`, err);
+        // The SQLSTATE or error name only: a Drizzle query error serializes its
+        // bound parameters, which here are the customer's event messages.
+        const { cause, name } = err as { cause?: { code?: unknown }; name?: unknown };
+        console.error(`[EventLogs] Error batch inserting events for device ${deviceId}: ${String(cause?.code ?? name ?? 'unknown')}`);
         return { inserted, insertError, forwardEvents: null };
       }
 
@@ -376,7 +407,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
       }
 
       try {
-        const fwdConfig = await getOrgForwardingConfig(orgId);
+        const fwdConfig = await withDbTransaction(() => getOrgForwardingConfig(orgId));
         if (!fwdConfig) {
           return { inserted, insertError, forwardEvents: null };
         }
@@ -452,6 +483,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
         ...(timestampClampedCount > 0 ? { timestampClampedCount } : {}),
         ...(invalidDropped > 0 ? { invalidDroppedCount: invalidDropped } : {}),
         ...(emptyMessageCoerced > 0 ? { emptyMessageCoercedCount: emptyMessageCoerced } : {}),
+        ...(noiseDropped > 0 ? { noiseDroppedCount: noiseDropped } : {}),
       },
     });
   }
@@ -463,9 +495,9 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
       count: inserted,
       filtered: filteredCount,
       expectedCount: rows.length,
-      ...validationCounts,
+      ...dropCounts,
     }, 500);
   }
 
-  return c.json({ success: true, count: inserted, filtered: filteredCount, ...validationCounts });
+  return c.json({ success: true, count: inserted, filtered: filteredCount, ...dropCounts });
 });

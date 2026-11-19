@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +49,9 @@ var (
 	ErrBreakGlassRateLimited = errors.New("too many break-glass attempts in the last hour; wait, or use --force")
 	// ErrBreakGlassUnavailable: the active episode has no secret on this device.
 	ErrBreakGlassUnavailable = errors.New("this device has no break-glass secret for the active isolation; use --force")
+	// ErrReleaseTokenRequired: the episode's policy accepts only a signed
+	// release token (or --force); --code is refused before any attempt is used.
+	ErrReleaseTokenRequired = errors.New("this isolation accepts only a signed release token (--token) or --force")
 	// errCrashedOp is returned when a test's crash injection stopped an op.
 	errCrashedOp = errors.New("operation stopped before completing")
 )
@@ -101,6 +105,15 @@ type Manager struct {
 	// expiryUnarmed is true after an ArmExpiry failure on a committed episode;
 	// the next Tick retries it. Guarded by opMu.
 	expiryUnarmed bool
+
+	// policyRejections are the rejections journalled since a policy was last
+	// adopted, for dedupe (bounded by maxPolicyRejections). Guarded by opMu.
+	policyRejections map[string]struct{}
+
+	// contactSeq counts authenticated control-plane contacts (lock-free);
+	// deadMan is the dead-man count over them (deadman.go). Guarded by opMu.
+	contactSeq atomic.Uint64
+	deadMan    deadManCount
 
 	// Test seams.
 	beforeEffect func(Effect) error
@@ -227,6 +240,12 @@ type attemptCtx struct {
 	digest     Digest
 	serverTime time.Time
 	drift      bool
+	// policy is adopted when the attempt commits. Nil keeps the journalled one
+	// (a re-verify or drift refresh reinstalls the same allowlist).
+	policy *policyStamp
+	// notes are event types an isolator reported about an apply that still
+	// succeeded (e.g. conntrack_unavailable); journalled with the commit.
+	notes []string
 }
 
 // op is one locked operation.
@@ -386,6 +405,28 @@ func (o *op) attemptFailed(attemptID, code, detail string) Event {
 	return Event{Kind: EvAttemptFailed, AttemptID: attemptID, Code: code, Err: detail}
 }
 
+// eventTypePattern is isolationJournalEventSchema's `type`: a report carrying
+// any other event type would be rejected by the server as a whole.
+var eventTypePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// takeApplyNotes collects an isolator's notes on its last Apply, if it keeps
+// any (an optional interface; most isolators have none).
+func takeApplyNotes(iso Isolator) []string {
+	noter, ok := iso.(interface{ TakeApplyNotes() []string })
+	if !ok {
+		return nil
+	}
+	var notes []string
+	for _, note := range noter.TakeApplyNotes() {
+		if !eventTypePattern.MatchString(note) {
+			log.Warn("isolation: dropping an apply note that is not a valid event type", "note", truncate(note, 80))
+			continue
+		}
+		notes = append(notes, note)
+	}
+	return notes
+}
+
 func (o *op) noteError(msg string) {
 	log.Warn("isolation: " + msg)
 	if o.j.Episode != nil {
@@ -447,6 +488,7 @@ func (o *op) exec(e Effect) Event {
 			return o.attemptFailed(e.AttemptID, code, "apply: "+err.Error())
 		}
 		a.digest = d
+		a.notes = append(a.notes, takeApplyNotes(iso)...)
 	case EffRunProbes:
 		return o.runProbes(e.AttemptID)
 	case EffCommit:
@@ -484,16 +526,19 @@ func (o *op) exec(e Effect) Event {
 	case EffReleaseRules:
 		if err := iso.Release(o.ctx); err != nil {
 			o.cleanupFailed = true
+			log.Warn("isolation release failed; retried on the next tick", "kind", o.state.Release.Kind, "error", err.Error())
 			return Event{Kind: EvReleaseFailed, Err: err.Error()}
 		}
 	case EffConfirmAbsent:
 		owned, err := iso.Owned(o.ctx)
 		if err != nil {
 			o.cleanupFailed = true
+			log.Warn("isolation release not confirmed; retried on the next tick", "kind", o.state.Release.Kind, "error", err.Error())
 			return Event{Kind: EvReleaseFailed, Err: "confirm absence: " + err.Error()}
 		}
 		if owned {
 			o.cleanupFailed = true
+			log.Warn("isolation rules still installed after release; retried on the next tick", "kind", o.state.Release.Kind)
 			return Event{Kind: EvReleaseFailed, Err: "Breeze-owned rules are still installed"}
 		}
 		o.cleanupFailed = false
@@ -566,6 +611,7 @@ func (m *Manager) probe(ctx context.Context, spec ResolvedSpec) (time.Time, erro
 	if err != nil {
 		return time.Time{}, errPositive("%v", err)
 	}
+	m.NoteControlPlaneContact()
 	return serverTime, nil
 }
 
@@ -762,6 +808,12 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 		if a.kind == AttemptApply {
 			ep.AppliedAt = now
 		}
+		if a.policy != nil {
+			a.policy.adopt(j, now)
+		}
+		for _, note := range a.notes {
+			j.Append(now, note, next.IsolationID, next.Generation, "")
+		}
 	}
 	if terminalSeq > 0 && (next.Phase == journal.PhaseReleased || next.Phase == journal.PhaseRolledBack || (next.Phase == journal.PhaseNone && next.ReleaseKind == ReleaseSystem)) {
 		j.PendingReport = &journal.TerminalReceipt{
@@ -775,6 +827,9 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 	o.j, o.state, o.missing, o.dirty = j, next, false, false
 	if commitOf {
 		o.m.lastReverify = now
+		if a.policy != nil {
+			o.m.policyRejections = nil
+		}
 	}
 	o.m.setSnapshot(j)
 	if o.m.onPersist != nil {
@@ -978,18 +1033,40 @@ func validateSpec(s *Spec, now time.Time) error {
 		return errors.New("expiresAt must be in the future")
 	case s.ExpiresAt.After(now.Add(MaxTTL + expirySlack)):
 		return errors.New("expiresAt is more than 720 h away")
-	case s.DeadManSeconds != 0:
-		// Dead-man needs capability v2 (Gate B decision 4 v); v1 refuses it.
-		return errors.New("deadManSeconds is not supported by this agent")
+	case !validDeadManSeconds(s.DeadManSeconds):
+		return fmt.Errorf("deadManSeconds must be 0 or %d to %d", DeadManMinSeconds, DeadManMaxSeconds)
 	case len(s.Allow) == 0 || len(s.Allow) > maxAllowEntries:
 		return fmt.Errorf("allow must have 1 to %d entries", maxAllowEntries)
 	case s.BreakGlassSecret != nil && len(s.BreakGlassSecret) != breakGlassSecretBytes:
 		return errors.New("breakGlassSecret must be 32 bytes")
 	}
+	if err := validateReleaseTokenFields(s); err != nil {
+		return err
+	}
 	for i := range s.Allow {
 		if err := validateEntry(&s.Allow[i]); err != nil {
 			return fmt.Errorf("allow[%d]: %w", i, err)
 		}
+	}
+	return validatePolicyRevision(s)
+}
+
+// validateReleaseTokenFields: the key and the device id come together, the key
+// is usable, and the requirement never stands without a key (it would leave
+// only --force).
+func validateReleaseTokenFields(s *Spec) error {
+	s.ReleaseTokenDeviceID = strings.ToLower(strings.TrimSpace(s.ReleaseTokenDeviceID))
+	if s.ReleaseTokenPublicKey == nil {
+		if s.ReleaseTokenDeviceID != "" || s.RequireSignedReleaseToken {
+			return errors.New("releaseTokenDeviceId and requireSignedReleaseToken need releaseTokenPublicKey")
+		}
+		return nil
+	}
+	if !ValidReleaseTokenPublicKey(s.ReleaseTokenPublicKey) {
+		return errors.New("releaseTokenPublicKey must be a 32-byte Ed25519 public key")
+	}
+	if !uuidRE.MatchString(s.ReleaseTokenDeviceID) {
+		return errors.New("releaseTokenDeviceId must be a UUID")
 	}
 	return nil
 }
@@ -1226,6 +1303,25 @@ func (o *op) isolateLocked(spec Spec) {
 			o.noteError("store the break-glass secret: " + err.Error())
 		}
 	}
+	// If the held, active episode has no release-token key yet, pin the one this
+	// spec carries. Once pinned it is never replaced, so a later block cannot
+	// change the key offline release trusts.
+	if o.state.IsolationID == spec.IsolationID && o.j.Episode != nil && len(o.j.Episode.ReleaseTokenPublicKey) == 0 &&
+		len(spec.ReleaseTokenPublicKey) > 0 && activePhase(o.state.Phase) {
+		pinReleaseToken(o.j.Episode, spec)
+		o.j.Append(o.now(), "release_token_key_pinned", spec.IsolationID, o.state.Generation, "")
+		if err := o.save(); err != nil {
+			o.noteError("store the release-token key: " + err.Error())
+		}
+	}
+
+	// A block that fails the policy rule changes no rules. Its secret, handled
+	// above, belongs to the episode and is the offline way out, so it is kept.
+	if reason := o.policyRefusal(spec); reason != "" {
+		o.rejectPolicy(spec.IsolationID, spec.Generation, reason)
+		o.report = policyRefusalEffect(reason)
+		return
+	}
 
 	// The desired episode differs from the journalled one: release it first.
 	if o.state.IsolationID != "" && o.state.IsolationID != spec.IsolationID && activePhase(o.state.Phase) {
@@ -1253,11 +1349,24 @@ func (o *op) isolateLocked(spec Spec) {
 		if o.crashed || o.lockLost || o.report == nil || o.report.Refusal != "" {
 			return
 		}
-		if o.j.Episode != nil && !allowEqual(o.j.Episode.Allow, spec.Allow) {
+		if o.j.Episode == nil {
+			return
+		}
+		// Rules change only through a verified refresh, which keeps the episode
+		// and restores the last verified rules if it fails. The policy is adopted
+		// when that refresh commits; with no rule change, it is adopted now.
+		if !allowEqual(o.j.Episode.Allow, spec.Allow) {
 			saved := o.report
-			o.refresh(spec.Allow, false)
+			o.refreshTo(spec.Allow, false, stampOf(spec))
 			if o.report == nil || o.report.Refusal == "" {
 				o.report = saved
+			}
+		} else if ep := o.j.Episode; string(spec.PolicyRevision) != ep.PolicyRevision || spec.Generation > ep.PolicyGeneration {
+			stampOf(spec).adopt(o.j, o.now())
+			if err := o.save(); err != nil {
+				o.noteError("record the containment policy: " + err.Error())
+			} else {
+				o.m.policyRejections = nil
 			}
 		}
 		return
@@ -1282,6 +1391,7 @@ func (o *op) isolateLocked(spec Spec) {
 		return
 	}
 	a.kind = AttemptApply
+	a.policy = stampOf(spec)
 	ev.AttemptID = a.id
 	o.attempt = a
 	o.newEpisode = &journal.EpisodeRecord{
@@ -1296,7 +1406,18 @@ func (o *op) isolateLocked(spec Spec) {
 	if len(spec.BreakGlassSecret) == 0 {
 		o.newEpisode.BreakGlassSecret = nil
 	}
+	pinReleaseToken(o.newEpisode, spec)
 	o.run(ev)
+}
+
+// pinReleaseToken copies a validated spec's release-token fields into ep.
+func pinReleaseToken(ep *journal.EpisodeRecord, spec Spec) {
+	if len(spec.ReleaseTokenPublicKey) == 0 {
+		return
+	}
+	ep.ReleaseTokenPublicKey = append([]byte(nil), spec.ReleaseTokenPublicKey...)
+	ep.ReleaseTokenDeviceID = spec.ReleaseTokenDeviceID
+	ep.RequireSignedReleaseToken = spec.RequireSignedReleaseToken
 }
 
 func (o *op) refuse(failureCode, detail string) {
@@ -1307,6 +1428,11 @@ func (o *op) refuse(failureCode, detail string) {
 // (and, when allow is given, a new allowlist). Failure restores the last
 // verified rules.
 func (o *op) refresh(allow []AllowEntry, drift bool) {
+	o.refreshTo(allow, drift, nil)
+}
+
+// refreshTo is refresh for a desired allowlist: policy is adopted on commit.
+func (o *op) refreshTo(allow []AllowEntry, drift bool, policy *policyStamp) {
 	ep := o.j.Episode
 	if ep == nil || o.state.Phase != journal.PhaseCommitted {
 		return
@@ -1319,7 +1445,7 @@ func (o *op) refresh(allow []AllowEntry, drift bool) {
 		o.noteError("refresh: " + err.Error())
 		return
 	}
-	a.kind, a.drift = AttemptRefresh, drift
+	a.kind, a.drift, a.policy = AttemptRefresh, drift, policy
 	o.attempt = a
 	o.run(Event{Kind: EvRefresh, AttemptID: a.id})
 }
@@ -1415,11 +1541,19 @@ func (m *Manager) Reconcile(ctx context.Context, desired *DesiredBlock) {
 		}
 		if snap := m.snapshot(); snap != nil && snap.Episode != nil && snap.Episode.IsolationID == spec.IsolationID {
 			ep := snap.Episode
-			if spec.Generation < ep.Generation || snap.Phase == journal.PhaseReleased || snap.Phase == journal.PhaseRolledBack {
-				return // older generation, or ended locally: nothing to do
+			if snap.Phase == journal.PhaseReleased || snap.Phase == journal.PhaseRolledBack {
+				return // ended locally: nothing to do
+			}
+			if spec.Generation < ep.Generation {
+				if policyBearing(spec) && string(spec.PolicyRevision) != ep.PolicyRevision {
+					m.NotePolicyRejected(ctx, spec.IsolationID, spec.Generation, PolicyRejectRevisionRegressed)
+				}
+				return // older generation: nothing to do
 			}
 			if snap.Phase == journal.PhaseCommitted && spec.Generation == ep.Generation &&
-				allowEqual(ep.Allow, spec.Allow) && (len(ep.BreakGlassSecret) > 0 || len(spec.BreakGlassSecret) == 0) {
+				allowEqual(ep.Allow, spec.Allow) && string(spec.PolicyRevision) == ep.PolicyRevision &&
+				(len(ep.BreakGlassSecret) > 0 || len(spec.BreakGlassSecret) == 0) &&
+				(len(ep.ReleaseTokenPublicKey) > 0 || len(spec.ReleaseTokenPublicKey) == 0) {
 				return // already applied as desired
 			}
 		}
@@ -1480,6 +1614,10 @@ func (o *op) tick() {
 	force := o.m.forceReverify.Swap(false)
 	if o.state.Phase == journal.PhaseCommitted && (force || !o.now().Before(o.m.lastReverify.Add(o.m.reverifyInterval))) {
 		o.reverify()
+	}
+	// After re-verify: a refresh it ran is a verified round trip, which is contact.
+	if !o.crashed && !o.lockLost && o.deadManDue() {
+		o.deadManRelease()
 	}
 }
 
@@ -1551,6 +1689,9 @@ func (m *Manager) LocalRelease(ctx context.Context, code string, force bool) err
 	}
 	id, gen := o.state.IsolationID, o.state.Generation
 	kind := ReleaseLocalForced
+	if !force && o.j.Episode.RequireSignedReleaseToken {
+		return ErrReleaseTokenRequired
+	}
 	if !force {
 		secret := o.j.Episode.BreakGlassSecret
 		if len(secret) != breakGlassSecretBytes {
@@ -1586,6 +1727,65 @@ func (m *Manager) LocalRelease(ctx context.Context, code string, force bool) err
 		return fmt.Errorf("release did not complete; recovery stays armed (%s)", o.lastError())
 	}
 	return nil
+}
+
+// LocalReleaseToken is `breeze-agent containment release --token <t>`, run by
+// a local administrator. The token must verify under the key pinned for this
+// episode and name this episode, its current generation and this device
+// (VerifyReleaseToken). Tokens are accepted whatever the episode's
+// requireSignedReleaseToken says, and are not rate-limited: a signature
+// cannot be guessed, so a refused token never locks out a valid one. A
+// refusal leaves the rules in place; the first BreakGlassAttemptsPerHour
+// refusals an hour are journalled with their reason, never the token. A
+// release is recorded as released_locally (kind local_code), with a
+// release_token_accepted event before it.
+func (m *Manager) LocalReleaseToken(ctx context.Context, token string) error {
+	o, err := m.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer o.end()
+	o.cap = m.deps.Isolator.Capability()
+	o.cleanupOrphans(false)
+	if !activePhase(o.state.Phase) || o.state.IsolationID == "" || o.j.Episode == nil {
+		return ErrNoActiveIsolation
+	}
+	id, gen, ep := o.state.IsolationID, o.state.Generation, o.j.Episode
+	now := o.now()
+	binding := ReleaseTokenBinding{IsolationID: id, Generation: gen, DeviceID: ep.ReleaseTokenDeviceID}
+	if verr := VerifyReleaseToken(strings.TrimSpace(token), ep.ReleaseTokenPublicKey, binding, now, o.state.HighWaterWall); verr != nil {
+		if o.recentTokenRejections(now) < BreakGlassAttemptsPerHour {
+			o.j.Append(now, "release_token_rejected", id, gen, ReleaseTokenRejectReason(verr))
+			if serr := o.save(); serr != nil {
+				o.noteError("record the refused release token: " + serr.Error())
+			}
+		}
+		return verr
+	}
+	o.j.Append(now, "release_token_accepted", id, gen, "")
+	if err := o.save(); err != nil {
+		return fmt.Errorf("record the release token: %w", err)
+	}
+	o.report = nil
+	o.run(Event{Kind: EvRelease, IsolationID: id, Generation: gen, ReleaseKind: ReleaseLocalCode})
+	if o.crashed {
+		return errCrashedOp
+	}
+	if o.state.Phase != journal.PhaseReleased {
+		return fmt.Errorf("release did not complete; recovery stays armed (%s)", o.lastError())
+	}
+	return nil
+}
+
+// recentTokenRejections counts the journalled token refusals of the last hour.
+func (o *op) recentTokenRejections(now time.Time) int {
+	n := 0
+	for _, e := range o.j.Events {
+		if e.Type == "release_token_rejected" && now.Sub(e.At) < time.Hour && !e.At.After(now.Add(time.Hour)) {
+			n++
+		}
+	}
+	return n
 }
 
 func (o *op) lastError() string {

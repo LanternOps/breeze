@@ -9,6 +9,7 @@
  */
 
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
+import { MFA_REQUIRED_CODE, MFA_REQUIRED_TOOL_MESSAGE } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { FLEET_HEALTH_ACTIONS } from './aiToolSchemasAlertTriage';
 import { listReliabilityDevices, summarizeReliabilityDevices, type ReliabilityListItem } from './reliabilityScoring';
@@ -30,6 +31,9 @@ type AiToolTier = 1 | 2 | 3 | 4;
 // fits the chat budget uncompacted (aiToolsUserRisk.outputShape.test.ts).
 const FLEET_HEALTH_DEFAULT_LIMIT = 15;
 const FLEET_HEALTH_MAX_LIMIT = 100;
+// #6734: getUserRiskDetail loads at most the latest 100 events.
+const USER_RISK_EVENTS_DEFAULT = 10;
+const USER_RISK_EVENTS_MAX = 100;
 
 /**
  * topIssues (a jsonb list per device) is opt-in; its size is always reported.
@@ -263,12 +267,14 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'user risk profile, score factors, trend history and risk events',
     definition: {
       name: 'get_user_risk_detail',
-      description: 'Fetch a single user risk profile including latest score, factors, trend history, and risk-impacting events.',
+      description: 'Fetch a single user risk profile including latest score, factors, trend history, and the most recent risk-impacting events (recentEventCount counts up to the latest 100). Event details only with includeDetails.',
       input_schema: {
         type: 'object' as const,
         properties: {
           userId: { type: 'string', description: 'User UUID' },
-          orgId: { type: 'string', description: 'Organization UUID for disambiguation' }
+          orgId: { type: 'string', description: 'Organization UUID for disambiguation' },
+          limit: { type: 'number', description: `Max recent events (default ${USER_RISK_EVENTS_DEFAULT}, max ${USER_RISK_EVENTS_MAX})` },
+          includeDetails: { type: 'boolean', description: "Include each event's details payload (default false)" }
         },
         required: ['userId']
       }
@@ -293,7 +299,20 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ message: 'No user risk data available for this user' });
       }
 
-      return JSON.stringify({ userRisk: detail });
+      // The service loads up to the latest 100 events, each with a free-form
+      // `details` jsonb; trim to the requested count and keep details opt-in.
+      const requested = Math.trunc(Number(input.limit));
+      const limit = Math.min(Number.isFinite(requested) && requested > 0 ? requested : USER_RISK_EVENTS_DEFAULT, USER_RISK_EVENTS_MAX);
+      const includeDetails = input.includeDetails === true;
+      return JSON.stringify({
+        userRisk: {
+          ...detail,
+          recentEventCount: detail.recentEvents.length,
+          recentEvents: detail.recentEvents
+            .slice(0, limit)
+            .map(({ details, ...event }) => (includeDetails ? { ...event, details } : event)),
+        },
+      });
     }
   });
 
@@ -324,8 +343,11 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
       // requireMfa(); Tier 2 means it auto-executes, so the MFA and site-ceiling
       // proofs have to be re-established here or the AI/MCP path is a bypass.
       // Checked before input validation, matching the HTTP route's ordering.
+      // Deliberately stricter than mfaGatedToolError: an ai_agent / flow
+      // principal (no MFA claim) is refused too, as before — this Tier 2 write
+      // has no upstream approval to stand in for the factor.
       if (!hasSatisfiedMfa(auth)) {
-        return JSON.stringify({ error: 'MFA required' });
+        return JSON.stringify({ error: MFA_REQUIRED_TOOL_MESSAGE, code: MFA_REQUIRED_CODE });
       }
 
       if (typeof input.userId !== 'string' || !input.userId) {

@@ -25,6 +25,7 @@
 import { and, asc, desc, eq, gt, isNull, lt, sql } from 'drizzle-orm';
 import type { AgentRunVerdict, AiAgentMode, AiSweepKind } from '@breeze/shared';
 import { db } from '../../db';
+import { createSourcedAlert } from '../alertService';
 import { inSystemDbContext, readAlertRecovery, windowElapsed } from '../outcomeProbes';
 // Direct module imports, not the schema barrel — same reasoning as
 // agentCircuit.ts/runService.ts: this sits on the run-finish path, and the
@@ -900,7 +901,7 @@ async function sendRecurrenceNotifications(
     // `device_id` so the probe rides `idx_alerts_device_triggered`
     // (2026-05-17-b) instead of scanning jsonb across the table.
     //
-    // Check-then-insert rather than a unique index over a jsonb expression:
+    // Check-then-create rather than a unique index over a jsonb expression:
     // `alerts` is one of the hottest tables in the schema, and such an index
     // would have to be built over every historical row for a guard whose
     // failure mode is cosmetic. Two siblings whose statements interleave
@@ -925,16 +926,15 @@ async function sendRecurrenceNotifications(
       .limit(1);
     if (alreadyRaised) return;
 
-    // Rule-less attention alert — mirrors `actVerify.ts`'s
-    // `recordActVerifyFailureAlert` direct-insert pattern (`ruleId: null`,
-    // `status: 'active'`), with the `configItemName`/`context.source` the
-    // plan specifies for this alert family.
-    await db.insert(alerts).values({
-      ownerKind: 'device',
-      ruleId: null,
+    // Rule-less attention alert, with the `configItemName`/`context.source`
+    // the plan specifies for this alert family. #11328 — through the shared
+    // create path so `alert.triggered` publishes (after COMMIT); the raw
+    // insert this replaced reached the inbox but no notification channel,
+    // routing rule or escalation. The episode guard above keeps a sibling
+    // watch from raising, and so publishing, a second one.
+    await createSourcedAlert({
       deviceId: watch.deviceId,
       orgId: watch.orgId,
-      configPolicyId: null,
       configItemName: FIX_WATCH_ALERT_CONFIG_ITEM,
       severity: 'high',
       title: `Agent fix did not hold: ${agentRow.name}`,
@@ -950,8 +950,8 @@ async function sendRecurrenceNotifications(
         agentId: watch.agentId,
         recurrenceAlertId,
       },
-      status: 'active',
-      triggeredAt: new Date(),
+      publisher: 'ai-agent-fix-watch',
+      eventPayload: { watchId: watch.id, runId: watch.runId, agentId: watch.agentId },
     });
   });
 }

@@ -121,6 +121,8 @@ export interface Device {
   publicIp?: string;
   openAlertCount?: number;
   openTicketCount?: number;
+  /** Server-decided Wake button availability (#10838); absent = show it. */
+  wakeAvailability?: { show: boolean; mode: string; state: string; testWakeAllowed: boolean; flaggedTimeouts: boolean };
 }
 
 export interface User {
@@ -350,6 +352,8 @@ type MobileDeviceRecord = {
   publicIp?: string | null;
   openAlertCount?: number | null;
   openTicketCount?: number | null;
+  /** Sent by the core detail route (`GET /api/v1/devices/:id`, #10838). */
+  wakeAvailability?: Device['wakeAvailability'] | null;
 };
 
 // Token management
@@ -680,7 +684,9 @@ function mapDevice(device: MobileDeviceRecord): Device {
     lanIp: device.lanIp ?? undefined,
     publicIp: device.publicIp ?? undefined,
     openAlertCount: device.openAlertCount ?? undefined,
-    openTicketCount: device.openTicketCount ?? undefined
+    openTicketCount: device.openTicketCount ?? undefined,
+    // Without this the screen's Wake gate never sees the server's decision.
+    wakeAvailability: device.wakeAvailability ?? undefined
   };
 }
 

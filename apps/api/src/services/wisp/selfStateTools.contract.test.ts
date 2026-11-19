@@ -6,7 +6,9 @@
  * device argument, no action multiplexing that could hide a mutating action,
  * no per-action tier escalation, and no read-only classification (which would
  * also change MCP hints and agent allowlists). The tier-3 memory tools and the
- * budget-spending Wisp writes must stay out, and must still require approval.
+ * recurring budget-spending Wisp writes (`create_watch`, specialist launches)
+ * must stay out, and must still require approval. A one-off `run` check-in is
+ * the one budget-spending member, by owner decision (selfStateTools.ts).
  *
  * No vi.mock: the real tool registry and guardrail tables are the subject.
  */
@@ -36,6 +38,10 @@ describe('WISP_SELF_STATE_TOOLS contract (#10392)', () => {
       raise_concern: 'adds_row',
       link_entity: 'adds_row',
       snooze_concern: 'own_concern',
+      // #10991 W03: a check-in on this grant's own thread; cancel is keyed on the grant.
+      // Both modes skip the card: a run check-in spends only inside the grant's budget.
+      schedule_check_in: 'own_check_in',
+      cancel_check_in: 'own_thread',
     });
   });
 
@@ -68,7 +74,7 @@ describe('WISP_SELF_STATE_TOOLS contract (#10392)', () => {
 
   // resolve_concern: resolveConcern always writes a shared (org/partner-owned)
   // concern_outcome memory block — the same reason org/partner remember keeps its card.
-  it.each(['resolve_concern', 'confirm_memory', 'retract_memory', 'create_watch', 'launch_specialist', 'manage_patches', 'execute_command'])(
+  it.each(['resolve_concern', 'confirm_memory', 'retract_memory', 'create_watch', 'launch_specialist', 'manage_patches', 'execute_command', 'list_check_ins'])(
     '%s is not a member',
     (tool) => {
       expect(WISP_SELF_STATE_TOOLS.has(tool)).toBe(false);

@@ -28,6 +28,16 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/flashguard"
+)
+
+const (
+	// flashHoldRetryInterval is how often a reboot held for a firmware update
+	// asks again. Each section ends by itself within flashguard.MaxTTL.
+	flashHoldRetryInterval = time.Minute
+
+	flashHoldResumeTitle = "Restarting Shortly"
+	flashHoldResumeBody  = "A firmware update has finished. Your computer will restart shortly. Save your work now."
 )
 
 // RebootState tracks the current reboot scheduling state. Serialised to the API
@@ -71,6 +81,14 @@ type RebootState struct {
 	// and which renderer carried it. The console audits it once per
 	// decision. Kept across schedules; nil until the first decision.
 	LastUserAction *RebootUserAction `json:"lastUserAction,omitempty"`
+
+	// DeadlineAction is the schedule's deadline action (#11065 W06); empty is
+	// today's force. Held and HeldAt report a hold schedule's restart that was
+	// dropped because it could not begin before the window closed
+	// (LastError starts with RebootHeldReason). Cleared by the next Schedule.
+	DeadlineAction string    `json:"deadlineAction,omitempty"`
+	Held           bool      `json:"held,omitempty"`
+	HeldAt         time.Time `json:"heldAt,omitempty"`
 }
 
 // RebootOptions carries everything about a schedule that is not part of the
@@ -82,6 +100,9 @@ type RebootOptions struct {
 	// zero value keeps the built-in text. Callers pass it already sanitised
 	// (SanitizeRebootPromptText); the manager only renders it.
 	Prompt RebootPromptText
+	// DeadlineAction is what a restart that cannot begin by the deadline does
+	// (reboot_hold.go). The zero value is today's force.
+	DeadlineAction DeadlineAction
 }
 
 // NotifyFunc is called to send a notification to the logged-in user.
@@ -140,6 +161,13 @@ type RebootManager struct {
 	// osInvoking is set, and for the same reason — the manager cannot honour a
 	// promise it is about to contradict.
 	osAborting bool
+	// osCountdownEnds is when the countdown osInvoked describes runs out, plus
+	// flashguard.CountdownSlack. It stops OSCountdownArmed reporting a countdown
+	// someone aborted outside Breeze for ever.
+	osCountdownEnds time.Time
+	// flashHeld is true while this schedule's OS invocation is held for a
+	// firmware update. Cleared by every schedule and cancellation (cancelLocked).
+	flashHeld bool
 	// generation identifies the current schedule. time.Timer.Stop() does not
 	// wait for an AfterFunc callback that has already started — those run on
 	// their own goroutines — so stopping the timers is not enough on its own:
@@ -160,6 +188,11 @@ type RebootManager struct {
 	// re-schedules a user's own Postpone / Restart now trigger — otherwise the
 	// first click would switch the remaining warnings back to English.
 	promptText RebootPromptText
+
+	// deadlineAction is the current schedule's (#11065 W06). Reset by every
+	// Schedule and carried across a postponement and Restart now, like
+	// promptText: a click must never turn a hold restart into a forced one.
+	deadlineAction DeadlineAction
 
 	// surface is the restart card (#10190 W05; nil = today's ladder only).
 	// campaign identifies the operator's restart the card belongs to: set by
@@ -292,6 +325,12 @@ func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, dea
 		return fmt.Errorf("reboot manager is stopped")
 	}
 
+	// Before anything is cancelled: a refused hold schedule leaves the current
+	// one in place.
+	if err := checkHoldSchedule(now, delay, deadline, opts.DeadlineAction); err != nil {
+		return err
+	}
+
 	// The shutdown command is being handed to the OS right now. There is nothing
 	// to abort yet and no way to recall it once it lands, so refuse rather than
 	// arm a new schedule on top of a reboot that is already going to happen.
@@ -338,6 +377,7 @@ func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, dea
 	r.deferral = opts.Deferral
 	r.deferralsUsed = 0
 	r.promptText = opts.Prompt
+	r.deadlineAction = opts.DeadlineAction
 	if opts.Deferral.Allowed {
 		// Resume a count from a previous process lifetime, but only for THIS
 		// campaign (same deadline). Best-effort: a missing ledger means zero,
@@ -358,6 +398,7 @@ func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, dea
 		DeferralsUsed:        r.deferralsUsed,
 		MaxDeferrals:         opts.Deferral.MaxDeferrals,
 		DeferralMinutes:      opts.Deferral.DeferralMinutes,
+		DeadlineAction:       string(opts.DeadlineAction),
 		// LastError intentionally omitted: a fresh schedule clears any previous
 		// failure, so the field describes only the most recent attempt.
 	}
@@ -473,6 +514,7 @@ func (r *RebootManager) deferSchedule(gen *uint64) (time.Duration, error) {
 	used := r.deferralsUsed + 1
 	policy := r.deferral
 	promptText := r.promptText
+	action := r.deadlineAction
 
 	// Re-schedule under the same options: it cancels the in-flight timers, bumps
 	// the generation and emits a fresh lead notification quoting the new time —
@@ -480,7 +522,7 @@ func (r *RebootManager) deferSchedule(gen *uint64) (time.Duration, error) {
 	// warns WITHOUT opening a dialog (#4941): it fires at offset zero, so a
 	// prompt there would hand back the question the user just answered.
 	if err := r.scheduleLockedAt(now, outcome.NewDelay, deadline, reason, source,
-		RebootOptions{Deferral: policy, Prompt: promptText}, leadRungWarnsOnly); err != nil {
+		RebootOptions{Deferral: policy, Prompt: promptText, DeadlineAction: action}, leadRungWarnsOnly); err != nil {
 		return 0, err
 	}
 
@@ -565,6 +607,8 @@ func (r *RebootManager) Cancel() error {
 	r.deferral = DeferralPolicy{}
 	r.deferralsUsed = 0
 	r.promptText = RebootPromptText{}
+	r.deadlineAction = DeadlineActionForce
+	r.state.DeadlineAction = ""
 	r.state.DeferralAllowed = false
 	r.state.DeferralsUsed = 0
 	r.state.MaxDeferrals = 0
@@ -694,6 +738,10 @@ func (r *RebootManager) cancelLocked() {
 		t.Stop()
 	}
 	r.notifyTimers = nil
+	if r.flashHeld {
+		r.flashHeld = false
+		r.state.LastError = ""
+	}
 }
 
 // emitNotification delivers one rung of the warning ladder, as an interactive
@@ -709,6 +757,14 @@ func (r *RebootManager) emitNotification(gen uint64, rung rebootRung) {
 	r.mu.Lock()
 	if r.stopped || gen != r.generation {
 		r.mu.Unlock()
+		return
+	}
+	// A rung firing after a hold schedule's window closed (the machine slept)
+	// would warn of a restart that will not happen. Drop it here instead.
+	if now := r.nowFn(); r.holdOverdueLocked(now) {
+		held := r.dropHeldLocked(now)
+		r.mu.Unlock()
+		held.announce(r)
 		return
 	}
 	notifyFn := r.notifyFn
@@ -840,7 +896,8 @@ func (r *RebootManager) restartNow(gen uint64) error {
 		return fmt.Errorf("the restart was cancelled or rescheduled while the prompt was open")
 	}
 	return r.scheduleLockedAt(r.nowFn(), MinRebootDelay, r.state.Deadline,
-		r.state.Reason, r.state.Source, RebootOptions{Deferral: r.deferral, Prompt: r.promptText}, leadRungPrompts)
+		r.state.Reason, r.state.Source,
+		RebootOptions{Deferral: r.deferral, Prompt: r.promptText, DeadlineAction: r.deadlineAction}, leadRungPrompts)
 }
 
 func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
@@ -850,6 +907,61 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 		// Cancelled, stopped, or superseded while this callback was starting.
 		r.mu.Unlock()
 		return
+	}
+	// A hold schedule past its window close is dropped before the guard is
+	// asked to admit a power action it would not take: a flash that ran past
+	// the close, or a machine that slept through it.
+	if now := r.nowFn(); r.holdOverdueLocked(now.Add(grace)) {
+		held := r.dropHeldLocked(now)
+		r.mu.Unlock()
+		held.announce(r)
+		return
+	}
+	r.mu.Unlock()
+
+	// Admission touches the disk, so it runs outside the lock; the checks above
+	// are repeated once it returns. It is held through the OS invocation below,
+	// so a flash cannot start between this check and the shutdown.
+	done, admitErr := flashguard.Default().AdmitPowerAction("scheduled_reboot")
+
+	r.mu.Lock()
+	if r.stopped || gen != r.generation {
+		r.mu.Unlock()
+		if done != nil {
+			done()
+		}
+		return
+	}
+	// Admission touched the disk; the window may have closed meanwhile.
+	if now := r.nowFn(); r.holdOverdueLocked(now.Add(grace)) {
+		held := r.dropHeldLocked(now)
+		r.mu.Unlock()
+		if done != nil {
+			done()
+		}
+		held.announce(r)
+		return
+	}
+	if admitErr != nil {
+		// Hold, and ask again. The schedule stays live, so Cancel, Defer and a
+		// re-schedule all still work, and a reboot that has not happened does not
+		// count against the circuit breaker below.
+		if !r.flashHeld {
+			log.Info("reboot held until the firmware update finishes", "reason", admitErr.Error())
+		}
+		r.flashHeld = true
+		r.state.LastError = "held: a firmware update is in progress"
+		r.osTimer = r.afterFunc(flashHoldRetryInterval, func() {
+			r.runOSReboot(gen, grace)
+		})
+		r.mu.Unlock()
+		return
+	}
+	defer done()
+	resumingFromHold := r.flashHeld
+	if resumingFromHold {
+		r.flashHeld = false
+		r.state.LastError = ""
 	}
 
 	// Circuit breaker: check reboot frequency
@@ -898,7 +1010,14 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	r.osInvokeDone = make(chan struct{})
 	exec := r.execOSReboot
 	surface, campaign := r.surface, r.campaign
+	resumeNotifyFn := r.notifyFn
 	r.mu.Unlock()
+
+	// The ladder's closing notice may be hours old by now, and no reboot is ever
+	// silent.
+	if resumingFromHold && resumeNotifyFn != nil {
+		resumeNotifyFn(flashHoldResumeTitle, flashHoldResumeBody, "critical")
+	}
 
 	// Persist history before rebooting
 	r.saveRebootHistory()
@@ -933,7 +1052,20 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 		return
 	}
 	r.osInvoked = true
+	r.osCountdownEnds = now.Add(grace + flashguard.CountdownSlack)
 	r.mu.Unlock()
+}
+
+// OSCountdownArmed reports whether the OS has been, or is being, told to go down,
+// or an abort of that is still in the air. A schedule still on this manager's own
+// timers does not count: it would hold for a flash rather than interrupt one.
+func (r *RebootManager) OSCountdownArmed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.osInvoking || r.osAborting {
+		return true
+	}
+	return r.osInvoked && r.nowFn().Before(r.osCountdownEnds)
 }
 
 // finishOSInvokeLocked releases the invocation window: it clears osInvoking and

@@ -1,5 +1,15 @@
 export { buildReportPdf, parseHexColor } from './reportPdf';
 export type { ReportBranding, BuildOpts } from './reportPdf';
+export {
+  REPORT_META_SEPARATOR,
+  formatReportDate,
+  formatReportDateTime,
+  formatReportPeriod,
+  partnerReportConventions,
+  reportPageGeometry,
+  resolveReportLocale,
+} from './reportLocale';
+export type { ReportDateFormat, ReportLocale, ReportPageSize, ReportTimeFormat } from './reportLocale';
 export { renderThreatDetectionReport } from './threatDetectionPdf';
 export type { ThreatDetectionPdfOpts } from './threatDetectionPdf';
 export { renderEndpointManagementReport } from './endpointManagementPdf';
@@ -10,6 +20,8 @@ export { renderIdentityAccessReport } from './identityAccessPdf';
 export type { IdentityAccessPdfOpts } from './identityAccessPdf';
 export { renderTicketSlaReport } from './ticketSlaPdf';
 export type { TicketSlaPdfOpts } from './ticketSlaPdf';
+export { renderTicketSlaPerformanceReport } from './ticketSlaPerformancePdf';
+export type { TicketSlaPerformancePdfOpts } from './ticketSlaPerformancePdf';
 export { renderTechnicianTimeReport } from './technicianTimePdf';
 export type { TechnicianTimePdfOpts } from './technicianTimePdf';
 export { renderArAgingReport } from './arAgingPdf';

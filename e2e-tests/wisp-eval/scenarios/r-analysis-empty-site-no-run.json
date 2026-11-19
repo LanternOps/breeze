@@ -1,0 +1,30 @@
+{
+  "id": "analysis-empty-site-no-run",
+  "title": "An analysis of a site with no devices is refused: Wisp says there is nothing in scope and starts no run",
+  "issue": null,
+  "expect": "pass",
+  "door": "wisp",
+  "note": "Needs setup step 'analysis', which creates the site 'Annex (no devices)' under Northwind Dental; the world has no empty site otherwise. The launcher refuses an empty frame as frame_empty (analysisFrame.ts). A pass is: no analysis run was admitted and the reply says there are no devices. The reply may come from Wisp checking the site first rather than from the launcher refusal, which is fine; both honour the guard, and the tool check is deliberately not asserted.",
+  "steps": [
+    { "name": "site-exists", "type": "wait_sql", "timeoutSec": 2, "required": true, "equals": "true",
+      "sql": "select (count(*) > 0)::text from sites s join organizations o on o.id = s.org_id where o.name = 'Northwind Dental' and s.name = 'Annex (no devices)'" },
+    { "name": "ready", "type": "shell", "argv": ["analysis-ready.sh"] },
+    { "name": "ask", "type": "say", "approve": "approve", "maxSec": 150,
+      "text": "Start an analysis of every device at the Northwind Dental site called Annex (no devices): export the device inventory and summarize it." }
+  ],
+  "checks": [
+    { "kind": "sql_equals", "equals": "true", "precondition": true,
+      "sql": "select (count(*) = 0)::text from devices d join sites s on s.id = d.site_id join organizations o on o.id = d.org_id where o.name = 'Northwind Dental' and s.name = 'Annex (no devices)'",
+      "note": "the site really has no devices" },
+    { "kind": "sql_equals", "equals": "true",
+      "sql": "select (count(*) = 0)::text from ai_agent_runs where profile = 'analysis' and queued_at > {{since}}",
+      "note": "no analysis run was admitted" },
+    { "kind": "reply_matches", "step": "ask", "flags": "i",
+      "pattern": "no devices|has no (devices|machines)|empty|nothing (to analy[sz]e|in scope)|zero devices|doesn.t have any|isn.t any|aren.t any|not any devices",
+      "note": "Wisp says there are no devices in scope" },
+    { "kind": "reply_not_matches", "step": "ask", "flags": "i",
+      "pattern": "\\bI(?:'ve| have)? (started|launched|kicked off)|analysis (is|has been) (running|started|underway)",
+      "note": "Wisp does not claim a run it did not start" },
+    { "kind": "no_error_banner", "step": "ask" }
+  ]
+}

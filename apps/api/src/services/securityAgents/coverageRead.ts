@@ -10,7 +10,7 @@ import {
   type SecurityAgentStatusVendor,
 } from '../../db/schema';
 import { edrOrgCondition, type EdrReadScope } from '../edrProviders/read';
-import { vendorForCatalogPackage } from './securityAgentVendors';
+import { getVendor, vendorForCatalogPackage } from './securityAgentVendors';
 
 /**
  * Read model for security agent coverage (#6960 W03): the rows behind the EDR
@@ -133,12 +133,19 @@ export async function readSecurityAgentCoverage(scope: EdrReadScope, q: Coverage
     summary: Array.from(byVendor.values()).sort((a, b) => a.vendor.localeCompare(b.vendor)),
     rows: rows.map(({ policyId, ...r }) => ({
       ...r,
-      setupPath: (policyId && installerPaths.get(`${policyId}|${r.vendor}`)) || null,
+      setupPath: vendorSetupPath(r) ?? ((policyId && installerPaths.get(`${policyId}|${r.vendor}`)) || null),
       lastEvaluatedAt: r.lastEvaluatedAt.toISOString(),
       stateChangedAt: r.stateChangedAt.toISOString(),
     })),
     total: Number(total),
   };
+}
+
+/** Reasons fixed in the vendor's integration setup, whichever policy reached the device. */
+const VENDOR_SETUP_REASONS: ReadonlySet<string> = new Set(['tenant_ambiguous', 'installer_link_missing']);
+
+function vendorSetupPath(row: { vendor: SecurityAgentStatusVendor; reasonCode: string | null }): string | null {
+  return row.reasonCode && VENDOR_SETUP_REASONS.has(row.reasonCode) ? getVendor(row.vendor).setupPath : null;
 }
 
 /**

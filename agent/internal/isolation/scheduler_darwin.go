@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/isolation/journal"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // The macOS recovery timers are system-domain LaunchDaemons that run the
@@ -89,7 +90,7 @@ func newDarwinScheduler(dataDir string) *darwinScheduler {
 func runBounded(timeout time.Duration, binary string, args ...string) (string, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binary, args...).CombinedOutput()
+	out, err := procspawn.CommandContext(ctx, binary, args...).CombinedOutput()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && ctx.Err() == nil {
 		return string(out), exit.ExitCode(), fmt.Errorf("%s %s exited %d: %s", binary, strings.Join(args, " "), exit.ExitCode(), strings.TrimSpace(string(out)))

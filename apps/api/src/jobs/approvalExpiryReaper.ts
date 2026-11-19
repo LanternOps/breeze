@@ -132,6 +132,8 @@ export async function reapExpiredApprovals(): Promise<number> {
         .set({
           status: 'rejected',
           completedAt: new Date(),
+          // #12079: AI_APPROVAL_REQUEST_EXPIRED_MESSAGE in services/aiAgent.ts —
+          // the chat card reads this exact text as "expired", not "denied".
           errorMessage: 'Approval request expired',
         })
         .where(

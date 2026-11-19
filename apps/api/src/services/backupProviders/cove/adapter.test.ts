@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { coveAdapter, coveCredentialsSchema, __setCoveClientFactoryForTests } from './adapter';
 import { ProviderRequestError } from '../types';
 
-const CREDS = { partnerName: 'OliveTech', username: 'api@olivetech.example', password: 'sup3r-s3cret' };
+const CREDS = { partnerName: 'Fabrikam MSP', username: 'api@fabrikam.example', password: 'sup3r-s3cret' };
 const BASE_URL = 'https://api.backup.management/jsonapi';
 
 function stubClient(overrides: Partial<{
@@ -11,7 +11,7 @@ function stubClient(overrides: Partial<{
   enumerateAccountStatisticsAll: (rootId: string) => Promise<unknown[]>;
 }> = {}) {
   const client = {
-    login: overrides.login ?? vi.fn(async () => ({ visa: 'v', partnerId: '1000', partnerName: 'OliveTech' })),
+    login: overrides.login ?? vi.fn(async () => ({ visa: 'v', partnerId: '1000', partnerName: 'Fabrikam MSP' })),
     enumeratePartners: overrides.enumeratePartners ?? vi.fn(async () => []),
     enumerateAccountStatisticsAll: overrides.enumerateAccountStatisticsAll ?? vi.fn(async () => []),
   };
@@ -41,8 +41,8 @@ describe('coveCredentialsSchema', () => {
     // A pasted username picks up a trailing space; a password may legitimately
     // end in one, and silently trimming it turns a working credential into an
     // unexplained auth failure.
-    const parsed = coveCredentialsSchema.parse({ partnerName: ' OliveTech ', username: ' api@x ', password: ' p ' });
-    expect(parsed).toEqual({ partnerName: 'OliveTech', username: 'api@x', password: ' p ' });
+    const parsed = coveCredentialsSchema.parse({ partnerName: ' Fabrikam MSP ', username: ' api@x ', password: ' p ' });
+    expect(parsed).toEqual({ partnerName: 'Fabrikam MSP', username: 'api@x', password: ' p ' });
   });
 
   it('rejects an oversized field rather than sending it to the vendor', () => {
@@ -63,7 +63,7 @@ describe('coveAdapter.testConnection', () => {
       enumeratePartners: vi.fn(async () => [{ vendorCustomerId: '2001' }, { vendorCustomerId: '2002' }]),
     });
     await expect(coveAdapter.testConnection(CREDS, BASE_URL)).resolves.toEqual({
-      ok: true, rootId: '1000', rootName: 'OliveTech', customerCount: 2,
+      ok: true, rootId: '1000', rootName: 'Fabrikam MSP', customerCount: 2,
     });
   });
 

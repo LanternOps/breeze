@@ -245,6 +245,11 @@ vi.mock('./intentApprovers', () => ({
       .includes(toolName),
 }));
 
+const partnerAxisState = vi.hoisted(() => ({ required: vi.fn(async (): Promise<boolean> => true) }));
+vi.mock('./partnerAxisApprover', () => ({
+  intentRequiresPartnerAxisApprover: partnerAxisState.required,
+}));
+
 vi.mock('../../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
 }));
@@ -639,6 +644,64 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Audit §1.1: org-wide governance fan-out excludes site-restricted approvers
 // ---------------------------------------------------------------------------
+
+describe('createActionIntent: partner-axis approvers for a partner-wide intent', () => {
+  const SCHEDULE_ID = '00000000-0000-4000-8000-0000000000b1';
+  const scheduleDelete = () => baseInput({
+    toolName: 'manage_ai_agent_schedules',
+    input: { action: 'delete', scheduleId: SCHEDULE_ID },
+    idempotencyKey: 'key-schedule-delete',
+  });
+
+  beforeEach(() => {
+    partnerAxisState.required.mockReset();
+    partnerAxisState.required.mockResolvedValue(true);
+    // A schedule delete carries a mandatory digest; without one the raise refuses before the insert.
+    effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'pinned', digest: 'f'.repeat(64) });
+    dbState.insertActionIntentsResults.push([makeIntentRow()]);
+  });
+
+  it('asks the resolver for the partner axis, and the stored summary says so', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-baseline' }]);
+
+    await createActionIntent(makeAuth(), scheduleDelete()).catch(() => undefined);
+
+    expect(partnerAxisState.required).toHaveBeenCalledWith({
+      actionName: 'manage_ai_agent_schedules',
+      arguments: { action: 'delete', scheduleId: SCHEDULE_ID },
+      orgId: ORG_ID,
+    });
+    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
+      ORG_ID, expect.objectContaining({ requirePartnerAxis: true }),
+    );
+    expect(dbState.insertedActionIntentValues.at(-1)?.impactSummary).toContain('This needs a partner-level approver.');
+  });
+
+  it("an override delete keeps today's approver set and summary", async () => {
+    partnerAxisState.required.mockResolvedValue(false);
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-override' }]);
+
+    await createActionIntent(makeAuth(), scheduleDelete()).catch(() => undefined);
+
+    expect(intentApproversState.resolveIntentApprovers.mock.lastCall?.[1]).not.toHaveProperty('requirePartnerAxis');
+    expect(dbState.insertedActionIntentValues.at(-1)?.impactSummary).not.toContain('partner-level');
+  });
+
+  it('never consults the predicate for an action outside the registry', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-ord' }]);
+
+    await createActionIntent(
+      makeAuth(),
+      baseInput({ toolName: 'manage_ai_agents', input: { action: 'list', orgId: ORG_ID }, idempotencyKey: 'key-other' }),
+    ).catch(() => undefined);
+
+    expect(partnerAxisState.required).not.toHaveBeenCalled();
+    expect(intentApproversState.resolveIntentApprovers.mock.lastCall?.[1]).not.toHaveProperty('requirePartnerAxis');
+  });
+});
 
 describe('createActionIntent — org-wide governance fan-out filter', () => {
   const govInput = () => baseInput({
@@ -2346,6 +2409,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       'run_script',
       { scriptId: 'script-1', deviceIds: ['device-1'] },
       db,
+      { intentOrgId: ORG_ID },
     );
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBe('d'.repeat(64));
   });
@@ -2370,6 +2434,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       'run_script',
       { scriptId: 'script-1', deviceIds: ['device-1'] },
       db,
+      { intentOrgId: ORG_ID },
     );
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBe('e'.repeat(64));
   });
@@ -2386,7 +2451,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       baseInput({ toolName: 'm365_send_mail', input: { to: ['a@example.com'] }, idempotencyKey: 'key-fe-unpinnable' }),
     );
 
-    expect(computeEffectDigestOutcome).toHaveBeenCalledWith('m365_send_mail', { to: ['a@example.com'] }, db);
+    expect(computeEffectDigestOutcome).toHaveBeenCalledWith('m365_send_mail', { to: ['a@example.com'] }, db, { intentOrgId: ORG_ID });
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBeNull();
     // `not_applicable` is the expected, correct case — it must NOT pollute the
     // unpinned signal.
@@ -2849,6 +2914,50 @@ describe('waitForIntentDecision', () => {
     dbState.selectActionIntentsResults.push([]);
     const result = await waitForIntentDecision('missing-intent', 5000);
     expect(result).toBe('pending_approval');
+  });
+
+  // #12098: a decision made during the last sleep (after the last poll)
+  // used to come back as pending_approval.
+  it('reads once more when the time runs out, returning a decision made during the last sleep', async () => {
+    vi.useFakeTimers();
+    try {
+      // Polls at t=0 and t=500, then the 750 ms sleep outlasts the 1200 ms
+      // budget: the third read is the closing one.
+      dbState.selectActionIntentsResults.push(
+        [{ status: 'pending_approval' }],
+        [{ status: 'pending_approval' }],
+        [{ status: 'approved' }],
+      );
+      const promise = waitForIntentDecision('intent-1', 1200);
+      await vi.advanceTimersByTimeAsync(2000);
+      await expect(promise).resolves.toBe('approved');
+      expect(dbState.selectActionIntentsResults).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes the one closing read on a zero budget', async () => {
+    dbState.selectActionIntentsResults.push([{ status: 'rejected' }]);
+    await expect(waitForIntentDecision('intent-1', 0)).resolves.toBe('rejected');
+    expect(dbState.selectActionIntentsResults).toHaveLength(0);
+  });
+
+  it('skips the closing read when the wait is settled during a sleep', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      dbState.selectActionIntentsResults.push([{ status: 'pending_approval' }], [{ status: 'approved' }]);
+      const promise = waitForIntentDecision('intent-1', 5000, controller.signal);
+      await vi.advanceTimersByTimeAsync(100);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(promise).resolves.toBe('pending_approval');
+      // The queued second read was never taken.
+      expect(dbState.selectActionIntentsResults).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

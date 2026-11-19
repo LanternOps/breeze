@@ -72,9 +72,12 @@ const scriptReviewFindingSchema = z.object({
   lineRef: z.number().int().min(1).optional(),
 });
 
+/** In code points (zod 4.6's `.max()` unit). The reviewer clamps to this before validating (#10954). */
+export const SCRIPT_REVIEW_SUMMARY_MAX_LENGTH = 600;
+
 /** The reviewer model's structured verdict (spec §4.4). W02 (#5612). */
 export const scriptReviewVerdictSchema = z.object({
-  summary: z.string().min(1).max(600),
+  summary: z.string().min(1).max(SCRIPT_REVIEW_SUMMARY_MAX_LENGTH),
   goalMatch: z.enum(['yes', 'partial', 'no']),
   riskTier: z.enum(RISK_TIERS),
   // Advisory only — spec §4.4: "no enforcement reads it" (D9). Stored and
@@ -109,6 +112,19 @@ export const scriptProposalPromoteSchema = z.object({
   description: z.string().trim().max(2000).optional(),
   ownerScope: z.enum(['organization', 'partner']),
 });
+
+/**
+ * #10954: the human override for a `review_failed` proposal. The literal is the
+ * sign-off itself: a client cannot reach this path by omitting a field.
+ */
+const scriptProposalOverrideSignOff = {
+  confirmNoPassingReview: z.literal(true),
+  acknowledgedPatterns: acknowledgedPatternsSchema,
+};
+
+export const scriptProposalOverrideRunSchema = z.object(scriptProposalOverrideSignOff);
+
+export const scriptProposalOverridePromoteSchema = scriptProposalPromoteSchema.extend(scriptProposalOverrideSignOff);
 
 export type ScriptProposalRequestChangesInput = z.infer<typeof scriptProposalRequestChangesSchema>;
 export type ScriptProposalPromoteInput = z.infer<typeof scriptProposalPromoteSchema>;

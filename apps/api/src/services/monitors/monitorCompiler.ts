@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { NetworkCheckMonitorCondition } from '@breeze/shared';
+import { BUILTIN_ALERT_LIFECYCLE, isLegacyRecoveryCondition, type NetworkCheckMonitorCondition } from '@breeze/shared';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { alertTemplates, alertRules } from '../../db/schema/alerts';
@@ -141,6 +141,22 @@ export function buildCompiledCondition(def: MonitorDefinitionRow): RootCondition
   return spec.toAlertCondition(condition, { monitorId: def.id });
 }
 
+/**
+ * The recovery condition the evaluator will read. A kind-shaped value compiles
+ * through the kind spec, exactly like the trigger. A raw blob (ND3) passes
+ * through unchanged. A stored value that is neither, saved before validation
+ * existed (#10935), also passes through: it behaves as it always did, and
+ * throwing would make the monitor uneditable, including the edit that fixes it.
+ */
+function buildCompiledRecoveryCondition(def: MonitorDefinitionRow): unknown {
+  const stored = def.autoResolveConditions;
+  if (stored === null || stored === undefined || isLegacyRecoveryCondition(stored)) return stored ?? null;
+  const spec = getMonitorKindSpec(def.kind);
+  if (!spec.recoverySupported) return stored;
+  const parsed = spec.conditionSchema.safeParse(stored);
+  return parsed.success ? spec.toAlertCondition(parsed.data, { monitorId: def.id }) : stored;
+}
+
 export function buildCompiledTemplate(
   def: MonitorDefinitionRow,
 ): typeof alertTemplates.$inferInsert {
@@ -159,9 +175,13 @@ export function buildCompiledTemplate(
     titleTemplate: spec.titleTemplate,
     messageTemplate: spec.messageTemplate,
     targets: null,
-    autoResolve: def.autoResolve,
-    autoResolveConditions: def.autoResolveConditions ?? null,
-    cooldownMinutes: def.cooldownMinutes,
+    // W2 (#10765): NOT NULL template columns get the built-in when the monitor
+    // inherits. These copies are never the runtime answer — the lifecycle
+    // loader resolves monitor → device org → partner per alert, because this
+    // template is shared by every org a partner-wide monitor reaches.
+    autoResolve: def.autoResolve ?? BUILTIN_ALERT_LIFECYCLE.autoResolve,
+    autoResolveConditions: buildCompiledRecoveryCondition(def),
+    cooldownMinutes: def.cooldownMinutes ?? BUILTIN_ALERT_LIFECYCLE.cooldownMinutes,
     isBuiltIn: true,
     managedByMonitorId: def.id,
   };

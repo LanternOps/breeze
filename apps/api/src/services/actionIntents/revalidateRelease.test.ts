@@ -98,8 +98,14 @@ vi.mock('./callerTarget', async (orig) => {
 vi.mock('../wisp/releaseCeiling', () => ({
   checkWispCeilingForRelease: vi.fn(async (_intent: unknown, auth: unknown) => ({ ok: true, auth })),
 }));
+// The predicate and membership reads have their own suite (partnerAxisApprover.test.ts).
+vi.mock('./partnerAxisApprover', () => ({
+  intentRequiresPartnerAxisApprover: vi.fn(async () => true),
+  isPartnerAxisApprover: vi.fn(async () => true),
+}));
 
 import { revalidateApprovedIntentForRelease } from './revalidateRelease';
+import { intentRequiresPartnerAxisApprover, isPartnerAxisApprover } from './partnerAxisApprover';
 import { checkWispCeilingForRelease } from '../wisp/releaseCeiling';
 import { checkToolPermission, checkPermissionRequirements } from '../aiGuardrails';
 import { loadTenantToolBindingState, loadTenantToolForExecution } from '../toolSources/resolver';
@@ -767,6 +773,72 @@ describe('revalidateApprovedIntentForRelease invoked-flow branch (W5 PR C, #5220
     expect(await revalidateApprovedIntentForRelease(flowIntent({ invokedFlowId: null, toolRevision: null }), { boundArgumentDigest: digest }))
       .toMatchObject({ ok: false, errorCode: 'flow_tool_changed' });
     expect(getToolTier).not.toHaveBeenCalled();
+  });
+});
+
+describe('revalidateApprovedIntentForRelease partner-axis approver', () => {
+  const args = { action: 'delete', scheduleId: '00000000-0000-4000-8000-0000000000b1' };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+  const scheduleDelete = (overrides: Record<string, unknown> = {}) => intentFixture({
+    actionName: 'manage_ai_agent_schedules',
+    arguments: args,
+    argumentDigest: digest,
+    decidedByUserId: 'approver-1',
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    vi.mocked(intentRequiresPartnerAxisApprover).mockResolvedValue(true);
+    vi.mocked(isPartnerAxisApprover).mockResolvedValue(true);
+  });
+
+  it('refuses when the approver no longer holds the partner axis', async () => {
+    vi.mocked(isPartnerAxisApprover).mockResolvedValue(false);
+    const result = await revalidateApprovedIntentForRelease(scheduleDelete(), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'approver_scope_required' });
+    // No session at a release: the live membership decides.
+    expect(isPartnerAxisApprover).toHaveBeenCalledWith('approver-1', 'org-1');
+    expect(checkToolPermission).not.toHaveBeenCalled();
+  });
+
+  it('refuses an intent with no recorded approver', async () => {
+    const result = await revalidateApprovedIntentForRelease(scheduleDelete({ decidedByUserId: null }), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'approver_scope_required' });
+    expect(isPartnerAxisApprover).not.toHaveBeenCalled();
+  });
+
+  it('refuses under its own code, and does not throw, when the membership read fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(isPartnerAxisApprover).mockRejectedValue(new Error('db down'));
+    const result = await revalidateApprovedIntentForRelease(scheduleDelete(), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'approver_scope_check_failed' });
+    // The raw error goes to the log and Sentry, never into the intent's stored details.
+    expect(JSON.stringify(result)).not.toContain('db down');
+  });
+
+  it('releases for a partner-axis approver', async () => {
+    const result = await revalidateApprovedIntentForRelease(scheduleDelete(), { boundArgumentDigest: digest });
+    expect(result.ok).toBe(true);
+    expect(isPartnerAxisApprover).toHaveBeenCalledWith('approver-1', 'org-1');
+  });
+
+  it("an override delete keeps today's rule: no membership read", async () => {
+    vi.mocked(intentRequiresPartnerAxisApprover).mockResolvedValue(false);
+    const result = await revalidateApprovedIntentForRelease(scheduleDelete(), { boundArgumentDigest: digest });
+    expect(result.ok).toBe(true);
+    expect(isPartnerAxisApprover).not.toHaveBeenCalled();
+  });
+
+  it('never consults the predicate for an action outside the registry', async () => {
+    const update = { action: 'update', scheduleId: 'x' };
+    const updateDigest = computeArgumentDigest(canonicalizeArguments(update));
+    const result = await revalidateApprovedIntentForRelease(intentFixture({
+      actionName: 'manage_ai_agent_schedules',
+      arguments: update,
+      argumentDigest: updateDigest,
+    }), { boundArgumentDigest: updateDigest });
+    expect(result.ok).toBe(true);
+    expect(intentRequiresPartnerAxisApprover).not.toHaveBeenCalled();
   });
 });
 

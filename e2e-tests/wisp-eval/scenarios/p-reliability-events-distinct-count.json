@@ -1,0 +1,29 @@
+{
+  "id": "reliability-events-distinct-count",
+  "title": "A reliability_events analysis counts distinct events, not repeated rows",
+  "issue": null,
+  "expect": "pass",
+  "door": "wisp",
+  "note": "WEAK GUARD, by construction. reliability_events can list one event more than once and carries an eventKey to drop duplicates on (aiToolsExportDatasets/reliability.ts). The simulated agents report no crash or hang history, so the export is most likely empty in this world: a pass proves the run exported the dataset and the answer is framed as a distinct count (or reports none), NOT that duplicate rows were collapsed correctly. Proving the arithmetic needs planted reliability history with a repeated event, which this world does not have. No check reads metrics rows or any row order.",
+  "steps": [
+    { "name": "ready", "type": "shell", "argv": ["analysis-ready.sh"] },
+    { "name": "launch", "type": "say", "approve": "approve", "maxSec": 150,
+      "text": "Start an analysis across the whole Northwind Dental organization. Export the reliability events for the last 30 days and tell me how many distinct events there were, and on which devices." },
+    { "name": "settled", "type": "wait_sql", "timeoutSec": 420, "required": true, "equals": "true",
+      "sql": "select (count(*) > 0)::text from ai_agent_runs where profile = 'analysis' and queued_at > {{since}} and status in ('completed','failed','cancelled')" },
+    { "type": "sleep", "sec": 5 },
+    { "name": "report", "type": "say", "approve": "none", "maxSec": 120,
+      "text": "How many distinct reliability events did the analysis count?" }
+  ],
+  "checks": [
+    { "kind": "tool_called", "tool": "launch_specialist", "step": "launch", "origin": "chat", "precondition": true,
+      "inputMatches": "\"kind\":\"analysis\"" },
+    { "kind": "tool_called", "tool": "export_dataset", "origin": "run", "inputMatches": "reliability_events",
+      "note": "the run exported the dataset" },
+    { "kind": "reply_matches", "step": "report", "flags": "i",
+      "pattern": "distinct|unique|dedup|duplicate|eventKey|\\b(no|zero|0)\\b[^.]{0,40}events",
+      "note": "the answer is a distinct count, or says there were none" },
+    { "kind": "no_error_banner", "step": "launch" },
+    { "kind": "no_error_banner", "step": "report" }
+  ]
+}

@@ -95,7 +95,8 @@ const namespaceDuplicateBaselines = {
     // +2 (#9610): vulnerabilities table.cve/cvss/kev are identical locale-invariant acronyms (CVE, CVSS, KEV).
     // +1 (#10190 W01): deviceInfoTab.assistStatus.label is the product name "Breeze Assist".
     // +1 (#8134 W1-D1): physicalPlacementCard.rack — "Rack" is the standard loanword in this locale.
-    'devices.json': 193, // +2 assetCircuitCard (#8134 W1-D2): "WAN" acronym and "Interfaces" cognate
+    // +3 vendorUpdates.category (#11069): "BIOS" acronym; "Firmware" and "Drivers" are the terms this catalog uses everywhere, including this section's own sentences.
+    'devices.json': 196, // +2 assetCircuitCard (#8134 W1-D2): "WAN" acronym and "Interfaces" cognate
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
     // Wave E2b (DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND, PATH_CONFLICT,
@@ -118,7 +119,8 @@ const namespaceDuplicateBaselines = {
     // match English exactly, as vendor names should.
     // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
     // +1 W02 #10600: backupProviders.dropsuite is a product name.
-    'integrations.json': 36, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
+    // +1 W02 #11271: backupProviders.axcient is a product name.
+    'integrations.json': 37, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name", "Monitor" (list/policy-tab column + label), "Hardware",
     // "System" (event-log categories), "CPU" (resource select) are identical
@@ -139,7 +141,8 @@ const namespaceDuplicateBaselines = {
     // wording — it is intentionally identical in every catalog.
     'quick.json': 1,
     'remote.json': 12,
-    'reports.json': 40, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    'reports.json': 41, // +1 (#11018): reportPreview.slaPerformance.priorities.normal ("Normal" is the Portuguese word).
     'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
@@ -185,13 +188,15 @@ const namespaceDuplicateBaselines = {
     // +1 Sites page (#9794): "Sites" (sites.page.title / siteDetailPage.breadcrumbs.sites) is the pt-BR loanword.
     // +1 Wisp memory: wispMemory.columns.status "Status" is spelled identically in pt-BR (main landed it without bumping this cap).
     // +4 ticketRouting loanwords (Portal/API/Normal/Status) from #9785.
-    'settings.json': 149,
+    'settings.json': 158, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +1 contactsCard.portal.column "Portal" (product name, identical in pt-BR); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); columns.status x2 "Status"; +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
     // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    // #8313 W6 ticket import wizard: Help desk (connect.module, source.module) is the loanword pt-BR uses; Token, Normal and Total are identical.
+    'ticketImport.json': 5,
     'tickets.json': 16,
     // Tool catalog W01 PR C (#5216): one reviewed cognate per locale — see the
     // per-locale note where it is not obvious.
@@ -281,7 +286,8 @@ const namespaceDuplicateBaselines = {
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +1 (#10190 W01): deviceInfoTab.assistStatus.label is the product name "Breeze Assist".
     // +1 (#8134 W1-D1): physicalPlacementCard.rack — "Rack" is the standard loanword in this locale.
-    'devices.json': 137, // +2 assetCircuitCard (#8134 W1-D2): "WAN" acronym and "Interfaces" cognate
+    // +2 vendorUpdates.category (#11069): "BIOS" acronym; "Firmware" is the term this catalog uses everywhere, including this section's own sentences.
+    'devices.json': 139, // +2 assetCircuitCard (#8134 W1-D2): "WAN" acronym and "Interfaces" cognate
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -312,7 +318,8 @@ const namespaceDuplicateBaselines = {
     // +1 (integrations critique 10-20): integrationsPage.tdSYNNEXPricing / tdSYNNEXPriceFile
     // are now the connector product names ("TD SYNNEX EC Express", "TD SYNNEX SFTP").
     // +1 W02 #10600: backupProviders.dropsuite is a product name.
-    'integrations.json': 40, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
+    // +1 W02 #11271: backupProviders.axcient is a product name.
+    'integrations.json': 41, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): +5 on top of the pre-existing +1 —
     // "Monitor" (label), "Hardware" (event-log category), "Error" (event-log
     // level), "CPU" (resource select), "Total" (direction select) are
@@ -332,7 +339,8 @@ const namespaceDuplicateBaselines = {
     // wording — it is intentionally identical in every catalog.
     'quick.json': 1,
     'remote.json': 12,
-    'reports.json': 33, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    'reports.json': 34, // +1 (#11018): reportPreview.slaPerformance.priorities.normal ("Normal" is the Spanish word).
     'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
@@ -370,13 +378,15 @@ const namespaceDuplicateBaselines = {
     // +1: emailTemplates.variables.total — "Total" is spelled identically in es-419.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 146, // +ticketRouting loanwords (Portal/API/Normal/Status)
+    'settings.json': 153, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +1 contactsCard.portal.column "Portal"; +ticketRouting loanwords (Portal/API/Normal/Status); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
     // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    // #8313 W6 ticket import wizard: Token, Normal and Total are identical; windows.tickets "Tickets" is this catalog's term.
+    'ticketImport.json': 4,
     'tickets.json': 16,
     'toolSources.json': 1,
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
@@ -501,7 +511,8 @@ const namespaceDuplicateBaselines = {
     // +1 (integrations critique 10-20): integrationsPage.tdSYNNEXPricing / tdSYNNEXPriceFile
     // are now the connector product names ("TD SYNNEX EC Express", "TD SYNNEX SFTP").
     // +1 W02 #10600: backupProviders.dropsuite is a product name.
-    'integrations.json': 43, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
+    // +1 W02 #11271: backupProviders.axcient is a product name.
+    'integrations.json': 44, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
     // "Application" (event-log category), "CPU" (resource select), "Total"
@@ -514,7 +525,7 @@ const namespaceDuplicateBaselines = {
     // scripts.json made titles.scripts an intentional cognate ("Script" is the
     // standard fr-FR loanword) on top of the pre-existing ones.
     'pages.json': 16, // +2 W01 #10132: titles.wispChat and titles.aiForOffice "Breeze AI" brand names; // +1 W08 #9921 titles.wisp "Wisp" (product name); +1 titles.adminWisp "Wisp" (product name); Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
-    'patches.json': 26, // +3 ring feature-update control: updateRingForm.featureUpdates.productWindows11/productWindows10 are product names and releasePlaceholder "25H2" is a Windows release token — identical in every locale
+    'patches.json': 27, // +1 #11074 vendorUpdates.columns.site "Site" is the fr-CA word; +3 ring feature-update control: updateRingForm.featureUpdates.productWindows11/productWindows10 are product names and releasePlaceholder "25H2" is a Windows release token — identical in every locale
     'peripherals.json': 9,
     'policies.json': 204,
     'portal.json': 4,
@@ -582,7 +593,7 @@ const namespaceDuplicateBaselines = {
     // +3 Wisp memory: wispMemory.tabs.org "Client", columns.type "Type", columns.actions "Actions" are identical in French.
     // +2 ticketRouting loanwords (Portal/API/Normal/Status) from #9785.
     // +2 Sites page (#9794): sites.page.title and siteDetailPage.breadcrumbs.sites "Sites" are the identical French word.
-    'settings.json': 200,
+    'settings.json': 207, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation); +1 #11398 tools.profile.standard "Standard" (cognate profile name)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -590,6 +601,8 @@ const namespaceDuplicateBaselines = {
     // +2 (#7900 W3): ticketType.incident and createTicketPage.type — "Incident"/"Type" are identical in French.
     // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
     // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    // #8313 W6 ticket import wizard: Sources and inactive are identical French words.
+    'ticketImport.json': 2,
     'tickets.json': 26,
     'toolSources.json': 1,
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
@@ -709,7 +722,8 @@ const namespaceDuplicateBaselines = {
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
     // +1 W02 #10600: backupProviders.dropsuite is a product name.
-    'integrations.json': 43, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
+    // +1 W02 #11271: backupProviders.axcient is a product name.
+    'integrations.json': 44, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
     // "Application" (event-log category), "CPU" (resource select), "Total"
@@ -722,14 +736,14 @@ const namespaceDuplicateBaselines = {
     // here) made titles.scripts an intentional cognate ("Script" is the
     // standard loanword) on top of the pre-existing ones.
     'pages.json': 16, // +2 W01 #10132: titles.wispChat and titles.aiForOffice "Breeze AI" brand names; // +1 W08 #9921 titles.wisp "Wisp" (product name); +1 titles.adminWisp "Wisp" (product name); Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
-    'patches.json': 26, // +3 ring feature-update control: updateRingForm.featureUpdates.productWindows11/productWindows10 are product names and releasePlaceholder "25H2" is a Windows release token — identical in every locale
+    'patches.json': 27, // +1 #11074 vendorUpdates.columns.site "Site" is the fr-FR word; +3 ring feature-update control: updateRingForm.featureUpdates.productWindows11/productWindows10 are product names and releasePlaceholder "25H2" is a Windows release token — identical in every locale
     'peripherals.json': 9,
     'policies.json': 204,
     'portal.json': 4,
     // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
     // wording — it is intentionally identical in every catalog.
     'quick.json': 1,
-    'remote.json': 17,
+    'remote.json': 18, // +1: servicesManager.title "Services" is the French word too
     'reports.json': 48, // +5: reports.series ccPlaceholder + drilldown.columns.actions, drilldown.states.active, child.summary.type, child.summary.format (identical French cognates)
     'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
@@ -792,7 +806,7 @@ const namespaceDuplicateBaselines = {
     // +3 Wisp memory: wispMemory.tabs.org "Client", columns.type "Type", columns.actions "Actions" are identical in French.
     // +2 ticketRouting loanwords (Portal/API/Normal/Status) from #9785.
     // +2 Sites page (#9794): sites.page.title and siteDetailPage.breadcrumbs.sites "Sites" are the identical French word.
-    'settings.json': 205,
+    'settings.json': 212, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation); +1 #11398 tools.profile.standard "Standard" (cognate profile name)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -800,6 +814,8 @@ const namespaceDuplicateBaselines = {
     // +2 (#7900 W3): ticketType.incident and createTicketPage.type — "Incident"/"Type" are identical in French.
     // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
     // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    // #8313 W6 ticket import wizard: Sources and inactive are identical French words.
+    'ticketImport.json': 2,
     'tickets.json': 25,
     'toolSources.json': 1,
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
@@ -905,7 +921,8 @@ const namespaceDuplicateBaselines = {
     // +4 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
     // +1 (#10190 W01): deviceInfoTab.assistStatus.label is the product name "Breeze Assist".
     // +1 (#8134 W1-D1): physicalPlacementCard.rack — "Rack" is the standard loanword in this locale.
-    'devices.json': 181, // +1 assetCircuitCard (#8134 W1-D2): "WAN" acronym
+    // +1 vendorUpdates.category (#11069): "BIOS" acronym and "Firmware", the German term; one fit the existing headroom.
+    'devices.json': 182, // +1 assetCircuitCard (#8134 W1-D2): "WAN" acronym
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     // +1 (#5433): tabs.baselines — "Baselines" is the identical loanword in
     // German, matching networkBaselinesPanel.title's existing "Netzwerk-Baselines".
@@ -936,7 +953,8 @@ const namespaceDuplicateBaselines = {
     // byte-identical by localeParity.
     // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
     // +1 W02 #10600: backupProviders.dropsuite is a product name.
-    'integrations.json': 50, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
+    // +1 W02 #11271: backupProviders.axcient is a product name.
+    'integrations.json': 51, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name" (list/legacy column + field label), "Monitor" (policy-tab
     // column), "Hardware"/"System" (event-log categories), "CPU" (resource
@@ -956,7 +974,7 @@ const namespaceDuplicateBaselines = {
     // wording — it is intentionally identical in every catalog.
     'quick.json': 1,
     'remote.json': 14,
-    'reports.json': 53,
+    'reports.json': 55, // +2 (#11018): reportPreview.slaPerformance.median and .priorities.normal ("Median", "Normal" are the German words).
     'restorePoints.json': 0,
     // +1: automationRunHistory.scriptOutput.stderr — a stream name, not
     // wording; intentionally identical in every catalog (#3162).
@@ -1000,12 +1018,14 @@ const namespaceDuplicateBaselines = {
     // W04 Task 12 (#7602) de-DE: aiModels.models.details "Details" and offering.speed.standard "Standard" are spelled identically (+2).
     // +1 customer work approval (#8196): timeTrackingSettingsCard.approval.source.partner — "Partner" is the identical German term.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 216, // +ticketRouting loanwords (Portal/API/Normal/Status), +1 wispMemory.columns.status
+    'settings.json': 225, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +ticketRouting loanwords (Portal/API/Normal/Status), +1 wispMemory.columns.status; +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); columns.status x2 "Status"; +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation); +1 #11398 tools.profile.standard "Standard" (cognate profile name)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     // +1 (#7900 W3): ticketType.problem — "Problem" is the identical German word.
+    // #8313 W6 ticket import wizard: Detail and Name are identical German words.
+    'ticketImport.json': 2,
     'tickets.json': 16,
     'toolSources.json': 1,
     // Topology (#5997): 'Name', 'Revision' and targetFields.hostname/port
@@ -1082,7 +1102,8 @@ const namespaceDuplicateBaselines = {
     // +2 (#9610): vulnerabilities table.cve/cvss/kev are identical locale-invariant acronyms (CVE, CVSS, KEV).
     // +1 (#10190 W01): deviceInfoTab.assistStatus.label is the product name "Breeze Assist".
     // +1 (#8134 W1-D1): physicalPlacementCard.rack — "Rack" is the standard loanword in this locale.
-    'devices.json': 159, // +2 assetCircuitCard (#8134 W1-D2): "WAN" acronym and "Provider" cognate
+    // +2 vendorUpdates.category (#11069): "BIOS" acronym; "Firmware" is the term this catalog uses everywhere, including this section's own sentences.
+    'devices.json': 161, // +2 assetCircuitCard (#8134 W1-D2): "WAN" acronym and "Provider" cognate
     'discovery.json': 22,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -1165,13 +1186,15 @@ const namespaceDuplicateBaselines = {
     // W04 Task 12 (#7602) it-IT: aiModels.offering.prices.input/output ("Input"/"Output") and speed.standard "Standard" are spelled identically (+3).
     // +1 customer work approval (#8196): timeTrackingSettingsCard.approval.source.partner — "Partner" is the identical Italian term.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 188, // +ticketRouting loanwords (Portal/API/Normal/Status)
+    'settings.json': 195, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +ticketRouting loanwords (Portal/API/Normal/Status); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation); +1 #11398 tools.profile.standard "Standard" (cognate profile name)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
     // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    // #8313 W6 ticket import wizard: Help desk (connect.module, source.module) and Email are the loanwords it-IT uses.
+    'ticketImport.json': 3,
     'tickets.json': 9,
     'toolSources.json': 1,
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
@@ -1233,7 +1256,8 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 2,
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 97, // +1 assetCircuitCard (#8134 W1-D2): "WAN" acronym
+    // +1 vendorUpdates.category (#11069): "BIOS" acronym.
+    'devices.json': 99, // +1 assetCircuitCard (#8134 W1-D2): "WAN" acronym; +1 device list hardwareModel header (#11332): "Model" is the standard identical cognate in tr-TR
     'discovery.json': 9,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -1259,7 +1283,8 @@ const namespaceDuplicateBaselines = {
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder
     // are protected proper nouns pinned byte-identical by localeParity.
     // +1 W02 #10600: backupProviders.dropsuite is a product name.
-    'integrations.json': 28, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
+    // +1 W02 #11271: backupProviders.axcient is a product name.
+    'integrations.json': 29, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): "CPU" (resource select) is the identical
     // acronym in tr-TR.
     'monitoring.json': 1,
@@ -1278,7 +1303,8 @@ const namespaceDuplicateBaselines = {
     'portal.json': 2,
     'quick.json': 1,
     'remote.json': 4,
-    'reports.json': 32, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    'reports.json': 33, // +1 (#11018): reportPreview.slaPerformance.priorities.normal ("Normal" is the Turkish word).
     'restorePoints.json': 0,
     'scripts.json': 41, // +3 W01 #10132: script-editor panel title, empty-state title, button "Breeze AI" brand name
     'security.json': 89, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name; +1 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" is placeholders only
@@ -1300,9 +1326,11 @@ const namespaceDuplicateBaselines = {
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // #7609 aiModels.quality.groupBy.model: "Model" is the identical word in Turkish.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 84, // +ticketRouting loanwords (Portal/API/Normal/Status)
+    'settings.json': 92, // +2 W08b #11385 portalDirectory.sources.entra/google "Microsoft"/"Google" (product names); +1 contactsCard.portal.column "Portal"; +ticketRouting loanwords (Portal/API/Normal/Status); +W5 #11382 orgDomains: methodsShort DNS/Microsoft/Google (product names) + add.placeholder contoso.com (example domain); +1 #11398 aiModels.offering.tools.underpoweredSurface "{{surface}}: {{tools}}" (pure interpolation)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
+    // #8313 W6 ticket import wizard: fully translated.
+    'ticketImport.json': 0,
     'tickets.json': 12,
     'toolSources.json': 1,
     // Topology (#5997): 'Site' is the identical tr-TR cognate.
@@ -1465,8 +1493,23 @@ describe('SaaS backup locale labels', () => {
     for (const key of ['resellerTokenLabel', 'authTokenLabel', 'baseUrlLabel', 'baseUrlHelp', 'dropsuiteCredentialsHelp', 'dropsuiteReentryHelp', 'workloads', 'unmappedWorkloads', 'unmappedWorkloadsSummary', 'workloadMappingHelp', 'deleteWorkloadsConfirm']) {
       expect(strings.get(`integrations.json:backupProviders.${key}`), key).toBeTruthy();
     }
-    for (const key of ['saasAccounts', 'saasAccountsSubtitle', 'saas', 'workloadBackup', 'sourceProvider', 'dataSource.m365_mail', 'dataSource.gws_mail', 'dataSource.gws_drive', 'dataSource.gws_shared_drive']) {
+    for (const key of ['saasAccounts', 'saasAccountsSubtitle', 'saas', 'workloadBackup', 'sourceProvider', 'dataSource.m365_mail', 'dataSource.gws_mail', 'dataSource.gws_drive', 'dataSource.gws_shared_drive', 'status.paused']) {
       expect(strings.get(`backup.json:backupHealth.${key}`), key).toBeTruthy();
+    }
+  });
+
+  it.each(['en', ...translatedLocales])('%s includes verified-bootable labels', (locale) => {
+    const strings = readLocale(locale);
+    for (const key of ['dataSource.image', 'external.bootCheck', 'table.verifiedBootable', 'verifiedBootable.passed', 'verifiedBootable.failed', 'verifiedBootable.never_run', 'verifiedBootable.not_applicable']) {
+      expect(strings.get(`backup.json:backupHealth.${key}`), key).toBeTruthy();
+    }
+  });
+
+  it.each(['en', ...translatedLocales])('%s includes Axcient setup labels', (locale) => {
+    const strings = readLocale(locale);
+    expect(strings.get('integrations.json:backupProviders.axcient')).toBe('Axcient x360Recover');
+    for (const key of ['namePlaceholderAxcient', 'apiKeyLabel', 'axcientCredentialsHelp', 'axcientReentryHelp']) {
+      expect(strings.get(`integrations.json:backupProviders.${key}`), key).toBeTruthy();
     }
   });
 });

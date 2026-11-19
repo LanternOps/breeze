@@ -7,8 +7,10 @@
  *   approval    action_intents       requesting_agent_run_id → a run with grant_id = G
  *   memory      ai_memory_blocks     authored_by_grant_id = G
  *   nudge/brief user_notifications   user_id = grantor AND metadata->>'grantId' = G
- *   specialist  — W07 lineage (`ai_agent_runs.requested_by_run_id`) does not
- *                 exist yet; the source is added with that column.
+ *   specialist  ai_agent_runs        grant_id = G, trigger_ref->>'source' = 'wisp_specialist'
+ *                 (#11084; read in the same query as assessments), plus a
+ *                 count of pending_approval action_intents for each one that
+ *                 is awaiting_approval (pendingApprovalsByRun)
  *
  * Every read runs in system context (the caller may be a request, a worker or
  * the brief), pinned to the ceiling's grant / partner / grantor. Isolation is
@@ -24,16 +26,18 @@
  * `limit + 1` past the cursor; the union is merged, sorted and sliced.
  */
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
-import { WISP_ACTIVITY_KINDS, type ActivityItem, type CurrentActivity, type WispActivityKind } from '@breeze/shared';
+import { WISP_ACTIVITY_KINDS, memoryBlockSubjectText, type ActivityItem, type CurrentActivity, type WispActivityKind } from '@breeze/shared';
 import { db } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
+import { devices } from '../../db/schema/devices';
 import { aiMemoryBlocks } from '../../db/schema/aiMemoryBlocks';
 import { userNotifications } from '../../db/schema/notifications';
 import { organizations } from '../../db/schema/orgs';
 import { wispConcernRecipients, wispConcerns } from '../../db/schema/wispConcerns';
 import { assertReadWithinCeiling, CeilingViolationError, inSystemContext, type GrantCeiling } from './grantAuthority';
 import { webDeepLink } from './nudgeLinks';
+import { SPECIALIST_KIND_LABELS, type SpecialistKind } from './specialistPolicy';
 
 export type { ActivityItem, CurrentActivity } from '@breeze/shared';
 
@@ -52,6 +56,8 @@ const MAX_CURSOR_LENGTH = 256;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** The assessment profile literal (`isAssessmentProfile`, aiAgents/assessmentProfile.ts) as SQL needs it. */
 const ASSESSMENT_PROFILE = 'assessment' as const;
+/** `triggerRefFor` (specialistLaunchers.ts) stamps every coordinator-admitted run with this source. */
+const SPECIALIST_SOURCE = 'wisp_specialist' as const;
 
 export type ActivityCursor = { at: Date; kind: WispActivityKind; id: string };
 
@@ -155,8 +161,34 @@ const humanize = (s: string): string => s.replace(/_/g, ' ');
 function row(kind: WispActivityKind, id: string, at: Date, fields: Omit<ActivityItem, 'id' | 'at' | 'kind'>): Row {
   return {
     key: { ms: at.getTime(), kind, id },
-    item: { id, at: at.toISOString(), kind, orgId: fields.orgId, title: fields.title, detail: fields.detail, href: fields.href, costCents: fields.costCents },
+    item: {
+      id, at: at.toISOString(), kind, orgId: fields.orgId, title: fields.title, detail: fields.detail, href: fields.href, costCents: fields.costCents,
+      ...(fields.runStatus ? { runStatus: fields.runStatus } : {}),
+      ...(fields.pendingApprovals !== undefined
+        ? { pendingApprovals: fields.pendingApprovals, pendingIntentId: fields.pendingIntentId ?? null }
+        : {}),
+    },
   };
+}
+
+/** The specialist kind a coordinator-admitted run's profile came from (#11084). */
+const PROFILE_SPECIALIST_KIND: Readonly<Record<string, SpecialistKind>> = Object.freeze({
+  device_troubleshooting: 'device_troubleshooting',
+  remediation_research: 'remediation_research',
+  patch: 'patch_plan',
+  analysis: 'analysis',
+  sweep: 'sweep',
+});
+
+/**
+ * "Device troubleshooting · FRONT-DESK-01" — the label without its article,
+ * then the device (its display name, else its hostname: #11673) or the org.
+ */
+function specialistTitle(profile: string, device: { displayName: string | null; hostname: string | null }, orgName: string): string {
+  const kind = Object.hasOwn(PROFILE_SPECIALIST_KIND, profile) ? PROFILE_SPECIALIST_KIND[profile] : undefined;
+  const label = kind ? SPECIALIST_KIND_LABELS[kind].replace(/^(a|an) /, '') : 'specialist';
+  const target = [device.displayName, device.hostname].find((name) => name && name.trim())?.trim() ?? orgName;
+  return truncate(`${label.charAt(0).toUpperCase()}${label.slice(1)} · ${target}`, 140);
 }
 
 function assessmentTitle(status: string, orgName: string): string {
@@ -176,32 +208,97 @@ const relativeHref = (link: string | null): string | null => (link && link.start
 
 type SourceArgs = { ceiling: GrantCeiling; readable: string[]; cursor: ActivityCursor | null; take: number; threadId: string | null };
 
-async function assessmentRows({ ceiling, readable, cursor, take }: SourceArgs): Promise<Row[]> {
+/**
+ * Assessments and (#11084) specialist runs under the grant, in ONE query: both
+ * are `ai_agent_runs` rows pinned to the grant, told apart by profile / the
+ * launcher's trigger_ref source. `kind` is an SQL expression for the keyset.
+ */
+async function runRows({ ceiling, readable, cursor, take }: SourceArgs): Promise<Row[]> {
   // ai_agent_runs.org_id is NOT NULL: there is no partner-level branch.
   if (readable.length === 0) return [];
   const at = ms(sql`COALESCE(${aiAgentRuns.finishedAt}, ${aiAgentRuns.queuedAt})`);
+  const triggerSource = sql<string | null>`${aiAgentRuns.triggerRef} ->> 'source'`;
+  const isAssessment = sql`${aiAgentRuns.profile} = ${ASSESSMENT_PROFILE}`;
+  const kind = sql<string>`(CASE WHEN ${isAssessment} THEN 'assessment' ELSE 'specialist' END)`;
   const rows = await db
     .select({
       id: aiAgentRuns.id, orgId: aiAgentRuns.orgId, orgName: organizations.name, status: aiAgentRuns.status,
       summary: aiAgentRuns.summary, costCents: aiAgentRuns.costCents, queuedAt: aiAgentRuns.queuedAt, finishedAt: aiAgentRuns.finishedAt,
+      profile: aiAgentRuns.profile, triggerSource, deviceHostname: devices.hostname,
+      deviceDisplayName: devices.displayName,
     })
     .from(aiAgentRuns)
     .innerJoin(organizations, and(eq(organizations.id, aiAgentRuns.orgId), eq(organizations.partnerId, ceiling.partnerId)))
+    .leftJoin(devices, and(eq(devices.id, aiAgentRuns.deviceId), eq(devices.orgId, aiAgentRuns.orgId)))
     .where(and(
       eq(aiAgentRuns.grantId, ceiling.grantId),
-      eq(aiAgentRuns.profile, ASSESSMENT_PROFILE),
+      or(isAssessment, sql`${triggerSource} = ${SPECIALIST_SOURCE}`),
       inArray(aiAgentRuns.orgId, readable),
-      keysetAfter(cursor, at, 'assessment', aiAgentRuns.id),
+      keysetAfter(cursor, at, kind, aiAgentRuns.id),
     ))
-    .orderBy(desc(at), desc(aiAgentRuns.id))
+    .orderBy(desc(at), sql`${kind} COLLATE "C" DESC`, desc(aiAgentRuns.id))
     .limit(take);
-  return rows.map((r) => row('assessment', r.id, r.finishedAt ?? r.queuedAt, {
-    orgId: r.orgId,
-    title: assessmentTitle(r.status, r.orgName),
-    detail: optionalText(r.summary, 200),
-    href: `/ai-agents/runs/${r.id}`,
-    costCents: r.costCents,
-  }));
+  const isSpecialist = (r: (typeof rows)[number]) => r.triggerSource === SPECIALIST_SOURCE && r.profile !== ASSESSMENT_PROFILE;
+  const pending = await pendingApprovalsByRun(
+    rows.filter((r) => isSpecialist(r) && r.status === 'awaiting_approval').map((r) => r.id),
+    readable,
+  );
+  return rows.map((r) => {
+    const at = r.finishedAt ?? r.queuedAt;
+    // Belt: a row is a specialist only when BOTH the source says so and it is
+    // not an assessment (the SQL CASE above, re-derived from the row).
+    if (isSpecialist(r)) {
+      const parked = pending.get(r.id);
+      return row('specialist', r.id, at, {
+        orgId: r.orgId,
+        title: specialistTitle(r.profile, { displayName: r.deviceDisplayName ?? null, hostname: r.deviceHostname ?? null }, r.orgName),
+        detail: optionalText(r.summary, 200),
+        href: `/ai-agents/runs/${r.id}`,
+        costCents: r.costCents,
+        runStatus: r.status,
+        ...(parked ? { pendingApprovals: parked.count, pendingIntentId: parked.oldestIntentId } : {}),
+      });
+    }
+    return row('assessment', r.id, at, {
+      orgId: r.orgId,
+      title: assessmentTitle(r.status, r.orgName),
+      detail: optionalText(r.summary, 200),
+      href: `/ai-agents/runs/${r.id}`,
+      costCents: r.costCents,
+    });
+  });
+}
+
+/**
+ * Steps still waiting on a person, per approval-parked run. A run never leaves
+ * `awaiting_approval` (no transitionRunStatus call site starts there; #11965),
+ * so the status alone cannot say whether anyone is still being waited on. Every run id
+ * passed in gets an entry (count 0 when nothing is pending). Runs come from the
+ * ceiling-filtered run query; the org term is repeated here as a belt.
+ */
+async function pendingApprovalsByRun(
+  runIds: string[],
+  readable: string[],
+): Promise<Map<string, { count: number; oldestIntentId: string | null }>> {
+  const byRun = new Map<string, { count: number; oldestIntentId: string | null }>();
+  if (runIds.length === 0) return byRun;
+  for (const id of runIds) byRun.set(id, { count: 0, oldestIntentId: null });
+  const rows = await db
+    .select({ id: actionIntents.id, runId: actionIntents.requestingAgentRunId, status: actionIntents.status })
+    .from(actionIntents)
+    .where(and(
+      inArray(actionIntents.requestingAgentRunId, runIds),
+      eq(actionIntents.status, 'pending_approval'),
+      inArray(actionIntents.orgId, readable),
+    ))
+    .orderBy(asc(actionIntents.createdAt), asc(actionIntents.id));
+  for (const r of rows) {
+    const entry = r.runId ? byRun.get(r.runId) : undefined;
+    if (!entry || r.status !== 'pending_approval') continue;
+    entry.count += 1;
+    entry.oldestIntentId ??= r.id;
+  }
+  return byRun;
 }
 
 async function concernRows({ ceiling, readable, cursor, take, threadId }: SourceArgs): Promise<Row[]> {
@@ -261,7 +358,8 @@ async function approvalRows({ ceiling, readable, cursor, take }: SourceArgs): Pr
 }
 
 async function memoryRows({ ceiling, readable, cursor, take }: SourceArgs): Promise<Row[]> {
-  // Content may be private: only the block type, subject key and status leave.
+  // Content may be private: only the block type, status and the readable subject leave (the subject
+  // key, or a standing instruction's own text; the rest of `content` stays server-side).
   const owners: SQL[] = [
     and(eq(aiMemoryBlocks.ownerKind, 'user'), eq(aiMemoryBlocks.ownerUserId, ceiling.grantorUserId))!,
     eq(aiMemoryBlocks.ownerKind, 'partner'),
@@ -271,7 +369,8 @@ async function memoryRows({ ceiling, readable, cursor, take }: SourceArgs): Prom
   const rows = await db
     .select({
       id: aiMemoryBlocks.id, ownerKind: aiMemoryBlocks.ownerKind, ownerOrgId: aiMemoryBlocks.ownerOrgId, blockType: aiMemoryBlocks.blockType,
-      subjectKey: aiMemoryBlocks.subjectKey, status: aiMemoryBlocks.status, createdAt: aiMemoryBlocks.createdAt,
+      subjectKey: aiMemoryBlocks.subjectKey, content: aiMemoryBlocks.content, status: aiMemoryBlocks.status,
+      createdAt: aiMemoryBlocks.createdAt,
     })
     .from(aiMemoryBlocks)
     .where(and(
@@ -282,13 +381,18 @@ async function memoryRows({ ceiling, readable, cursor, take }: SourceArgs): Prom
     ))
     .orderBy(desc(at), desc(aiMemoryBlocks.id))
     .limit(take);
-  return rows.map((r) => row('memory', r.id, r.createdAt, {
-    orgId: r.ownerKind === 'org' ? r.ownerOrgId : null,
-    title: `Remembered ${humanize(r.blockType)}: ${truncate(r.subjectKey, 100)}`,
-    detail: humanize(r.status),
-    href: null,
-    costCents: null,
-  }));
+  return rows.map((r) => {
+    // #11612: a standing instruction's key is an internal clause id; its own text is the readable subject.
+    const subject = memoryBlockSubjectText(r);
+    const label = `Remembered ${humanize(r.blockType)}`;
+    return row('memory', r.id, r.createdAt, {
+      orgId: r.ownerKind === 'org' ? r.ownerOrgId : null,
+      title: subject === null ? label : `${label}: ${truncate(subject, 100)}`,
+      detail: humanize(r.status),
+      href: null,
+      costCents: null,
+    });
+  });
 }
 
 async function notificationRows({ ceiling, readable, cursor, take }: SourceArgs): Promise<Row[]> {
@@ -318,7 +422,7 @@ async function notificationRows({ ceiling, readable, cursor, take }: SourceArgs)
   }));
 }
 
-const SOURCES = [assessmentRows, concernRows, approvalRows, memoryRows, notificationRows] as const;
+const SOURCES = [runRows, concernRows, approvalRows, memoryRows, notificationRows] as const;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -361,7 +465,10 @@ export async function listActivity(
   return { items: page.filter((r) => passesCeiling(ceiling, r.item)).map((r) => r.item), nextCursor };
 }
 
-/** The oldest queued/running assessment under the grant, for "Wisp is checking Greenwood…"; null when idle. */
+/**
+ * The oldest queued/running assessment or (#11084) specialist run under the
+ * grant, for "Wisp is checking Greenwood…"; null when idle.
+ */
 export async function currentActivity(grantId: string): Promise<CurrentActivity> {
   const [run] = await inSystemContext(() => db
     .select({ orgId: aiAgentRuns.orgId, orgName: organizations.name, startedAt: aiAgentRuns.startedAt, queuedAt: aiAgentRuns.queuedAt })
@@ -369,7 +476,10 @@ export async function currentActivity(grantId: string): Promise<CurrentActivity>
     .innerJoin(organizations, eq(organizations.id, aiAgentRuns.orgId))
     .where(and(
       eq(aiAgentRuns.grantId, grantId),
-      eq(aiAgentRuns.profile, ASSESSMENT_PROFILE),
+      or(
+        eq(aiAgentRuns.profile, ASSESSMENT_PROFILE),
+        sql`${aiAgentRuns.triggerRef} ->> 'source' = ${SPECIALIST_SOURCE}`,
+      ),
       inArray(aiAgentRuns.status, ['queued', 'running']),
     ))
     .orderBy(asc(aiAgentRuns.queuedAt), asc(aiAgentRuns.id))

@@ -22,6 +22,28 @@ describe('episode snapshot secret erasure', () => {
   });
 });
 
+describe('episode snapshot policy columns (#10100)', () => {
+  const capture = () => {
+    const seen: { fields: Record<string, unknown>; updates: number } = { fields: {}, updates: 0 };
+    const tx = { update: () => ({ set: (value: Record<string, unknown>) => { seen.fields = value; seen.updates++; return { where: () => ({ returning: async () => [{ id: 'episode' }] }) }; } }) } as unknown as EpisodeTx;
+    return { seen, tx };
+  };
+  const snapshot = { state: 'verified', generation: 2, lastJournalSeq: 1 } as EpisodeSnapshot;
+  it('writes the generation and the allow snapshot in one UPDATE', async () => {
+    const { seen, tx } = capture();
+    const allowSnapshot = [{ kind: 'host' as const, host: 'edr.example.test', proto: 'tcp' as const, ports: [443], scope: 'any' as const }];
+    await writeEpisodeSnapshot(tx, 'episode', snapshot, { ...snapshot, generation: 3 }, new Date(), { allowSnapshot, allowSnapshotRevision: 'c1:new' });
+    expect(seen.updates).toBe(1);
+    expect(seen.fields).toMatchObject({ generation: 3, allowSnapshot, allowSnapshotRevision: 'c1:new' });
+  });
+  it('leaves the allow snapshot alone for every other transition', async () => {
+    const { seen, tx } = capture();
+    await writeEpisodeSnapshot(tx, 'episode', snapshot, snapshot);
+    expect(seen.fields).not.toHaveProperty('allowSnapshot');
+    expect(seen.fields).not.toHaveProperty('allowSnapshotRevision');
+  });
+});
+
 describe('heartbeat episode lookup query budget', () => {
   it('uses one indexed device query combining both live episodes and unconfirmed tombstones, tombstones first', async () => {
     let predicate: SQL | undefined;

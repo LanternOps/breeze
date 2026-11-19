@@ -72,7 +72,7 @@ const partnerSettingsPatch = z.object({
   notifyCustomerOnBehalfAcceptance: z.boolean().optional(),
   invoiceFooter: nullableText(5000).optional(),
   documentTheme: z.enum(['classic', 'condensed']).optional(),
-  documentPageSize: z.enum(['letter', 'a4']).optional(),
+  documentPageSize: z.enum(['letter', 'a4']).nullable().optional(),
   billingCompanyName: nullableText(255).optional(),
   billingPhone: nullableText(40).optional(),
   billingWebsite: nullableText(255).optional(),

@@ -8,12 +8,12 @@
 
 import { ERROR_CODES } from '@breeze/shared';
 import { findPartnerGroupRefs } from './groupFilterRefs';
-import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal, PARTNER_GROUP_AI_READ_ONLY_BODY } from './deviceGroupOwnership';
+import { acquireMembershipExportOrgLock, findPartnerOwnedGroupIds, partnerGroupTargetRefusal, PARTNER_GROUP_AI_READ_ONLY_BODY } from './deviceGroupOwnership';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { reportRunOwnerColumns } from './reportRunOwner';
 import type Anthropic from '@anthropic-ai/sdk';
-import { db } from '../db';
-import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
+import { db, hasDbAccessContext, withDbTransaction } from '../db';
+import { pgErrorCode, pgErrorConstraint, isPgForeignKeyViolationCode } from '../utils/pgErrors';
 import {
   automationPolicies,
   automationPolicyCompliance,
@@ -68,6 +68,7 @@ import { eq, and, desc, sql, inArray, gte, lte, isNull, isNotNull, or, SQL } fro
 import { alertSiteScopeByDeviceIds, alertSiteScopeCondition } from '../routes/alerts/helpers';
 import type { AuthContext } from '../middleware/auth';
 import { isAutomationPrincipal } from '../middleware/principalKind';
+import { mfaGatedToolError } from './aiToolMfaGate';
 
 async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly string[]): Promise<void> {
   await Promise.all([...new Set(deviceIds)].map((deviceId) =>
@@ -79,7 +80,9 @@ async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly strin
 import type { AiTool } from './aiTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
-import { getUserPermissions, type UserPermissions } from './permissions';
+import { createDraftDeployment } from './deploymentWrites';
+import { type UserPermissions } from './permissions';
+import { aiCallerPermissions } from './aiToolCallerPermissions';
 import {
   missingReportTypePermission,
   reportAudienceCondition,
@@ -112,6 +115,8 @@ import { deleteDeviceGroup, DeviceGroupDeleteError } from './deviceGroupDelete';
 import { validateManualMembershipDevices } from './groupMembership';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { CommandTypes } from './commandTypes';
+import { captureException } from './sentry';
+import { splitByOrg, type SplitByOrg } from './aiToolSplitByOrg';
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -150,6 +155,9 @@ import type {
   FleetFindingSeverity,
   FleetFindingStatus,
 } from '../db/schema/fleetFindings';
+
+/** `manage_deployments` actions that create or drive a deployment. */
+const DEPLOYMENT_CHANGE_ACTIONS = new Set(['create', 'start', 'pause', 'resume', 'cancel']);
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -300,6 +308,44 @@ function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof sql.raw> | any)
   return auth.orgCondition(orgIdCol) ?? undefined;
 }
 
+/**
+ * #10431: a patch install job has one `org_id`, so a device list spanning orgs
+ * can never be installed in one call. Asked only once install is about to
+ * refuse: when every target device is reachable (org condition + site/device
+ * axis, the scan branch's read) and they span more than one org, the answer is
+ * the per-org split instead of the generic refusal. Null otherwise — the list
+ * fits one org, a device is out of reach (the refusal stands and no org is
+ * disclosed), or the lookup failed (the refusal is still correct).
+ */
+async function patchInstallSplitByOrg(auth: AuthContext, deviceIds: string[]): Promise<SplitByOrg | null> {
+  const ids = [...new Set(deviceIds)];
+  let rows: Array<{ id: string; siteId: string | null; orgId: string }>;
+  try {
+    // Own savepoint, catch outside it, so a failed read cannot poison the call's transaction.
+    rows = await withDbTransaction(() => db.select({ id: devices.id, siteId: devices.siteId, orgId: devices.orgId })
+      .from(devices)
+      .where(and(inArray(devices.id, ids), orgWhere(auth, devices.orgId))));
+  } catch (err) {
+    console.warn('[manage_patches] could not resolve device orgs for split_by_org', err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'manage_patches' });
+    return null;
+  }
+  const orgOf = new Map(rows.filter((d) => !deviceSiteDenied(auth, d.siteId, d.id)).map((d) => [d.id, d.orgId]));
+  // Insertion-ordered by the caller's list: the first device's org is listed first.
+  const byOrg = new Map<string, string[]>();
+  for (const id of ids) {
+    const orgId = orgOf.get(id);
+    if (orgId === undefined) return null;
+    const group = byOrg.get(orgId);
+    if (group) group.push(id); else byOrg.set(orgId, [id]);
+  }
+  if (byOrg.size < 2) return null;
+  return splitByOrg(byOrg, {
+    tool: 'manage_patches',
+    hint: 'A patch install job belongs to one organization. Call manage_patches install once per group, with that group\'s orgId.',
+  });
+}
+
 const aiReportDefinitionMetadataProjection = {
   id: reports.id,
   orgId: reports.orgId,
@@ -368,16 +414,6 @@ export function requireOrgOwnedReportRow<T extends { orgId: string | null; partn
     return null;
   }
   return row as T & { orgId: string };
-}
-
-/** The AI caller's LIVE permission set — what `requirePermission` would
- *  resolve for the same token on an HTTP route. */
-function aiCallerPermissions(auth: AuthContext): Promise<UserPermissions | null> {
-  return getUserPermissions(auth.user.id, {
-    partnerId: auth.partnerId || undefined,
-    orgId: auth.orgId || undefined,
-    scope: auth.scope,
-  });
 }
 
 /**
@@ -710,14 +746,15 @@ async function alertRuleTargetDenied(
 function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
   return async (input, auth, context) => {
     try {
-      return await fn(input, auth, context);
+      // In a savepoint, or the error JSON below is lost to the commit (#11203).
+      return await (hasDbAccessContext() ? withDbTransaction(() => fn(input, auth, context)) : fn(input, auth, context));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Internal error';
       const code = pgErrorCode(err);
       console.error(`[fleet:${toolName}]`, input.action, message, err);
 
       // Surface specific DB constraint errors instead of generic "Operation failed"
-      if (code === '23503') {
+      if (isPgForeignKeyViolationCode(code)) {
         // #6206: a violated FK into `users` is a DIFFERENT failure from a
         // stale template/device/policy id, and the generic message actively
         // misdirects — it sends the reader looking for a deleted record when
@@ -825,6 +862,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_deployments', async (input, auth, context) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_deployments', action, auth);
+      if (mfaError) return mfaError;
+
+      // Creating or driving a deployment is an organization-wide change (the
+      // target resolves against the whole org), matching routes/deployments.ts.
+      // Refused for a site- or device-restricted caller before any read.
+      if (DEPLOYMENT_CHANGE_ACTIONS.has(action) && !canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE, action });
+      }
 
       // Deployments have no siteId column — gate site-restricted callers via
       // their member devices (mirrors routes/deployments.ts:760-766). Control
@@ -993,7 +1039,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const resolvedOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
         if (!resolvedOrg.orgId) return JSON.stringify({ error: resolvedOrg.error ?? 'Organization context required' });
         const orgId = resolvedOrg.orgId;
-        const [dep] = await db.insert(deployments).values({
+        // Same shared writer as POST /deployments: refuses a site- or
+        // device-restricted caller before inserting.
+        const dep = await createDraftDeployment(auth, {
           orgId,
           name: input.name as string,
           type: input.type as string,
@@ -1002,9 +1050,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           targetConfig: input.targetConfig as Record<string, unknown>,
           rolloutConfig: input.rolloutConfig as Record<string, unknown>,
           schedule: (input.schedule as Record<string, unknown>) ?? null,
-          status: 'draft',
           createdBy: auth.user.id,
-        }).returning();
+        });
 
         return JSON.stringify({ success: true, deploymentId: dep?.id, name: dep?.name });
       }
@@ -1191,6 +1238,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_patches', async (input, auth, context) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_patches', action, auth);
+      if (mfaError) return mfaError;
       const orgId = getOrgId(auth);
 
       if (action === 'approve' || action === 'decline' || action === 'defer' || action === 'bulk_approve') {
@@ -1369,8 +1418,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         // Computed live from device_patches for every caller. The precomputed
         // `patch_compliance_snapshots` table this used to read for unrestricted
-        // callers has no writer, so that path always answered "No compliance
-        // data available yet" (#10396).
+        // callers had no writer, so that path always answered "No compliance
+        // data available yet" (#10396); the table is now dropped (#11593).
         //
         // Site AND exact-device axes (app-layer only; RLS does NOT enforce
         // either): a narrowed caller is counted over its in-scope devices only
@@ -1622,7 +1671,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         }
         if (!Array.isArray(input.patchIds) || !Array.isArray(input.deviceIds)) return JSON.stringify({ error: 'patchIds and deviceIds are required' });
         const resolvedInstallOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
-        if (!resolvedInstallOrg.orgId) return JSON.stringify({ error: resolvedInstallOrg.error ?? 'Organization context required' });
+        if (!resolvedInstallOrg.orgId) {
+          const split = await patchInstallSplitByOrg(auth, input.deviceIds as string[]);
+          return JSON.stringify(split ?? { error: resolvedInstallOrg.error ?? 'Organization context required' });
+        }
         const installOrgId = resolvedInstallOrg.orgId;
 
         // Validate devices belong to this org AND the caller's site scope. Site
@@ -1639,7 +1691,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         );
         const unauthorizedIds = (input.deviceIds as string[]).filter((id) => !ownedIds.has(id));
         if (unauthorizedIds.length > 0) {
-          return JSON.stringify({ error: `Access denied: ${unauthorizedIds.length} device(s) not in your organization or site scope` });
+          const split = await patchInstallSplitByOrg(auth, input.deviceIds as string[]);
+          return JSON.stringify(split ?? { error: `Access denied: ${unauthorizedIds.length} device(s) not in your organization or site scope` });
         }
 
         const [job] = await db.insert(patchJobs).values({
@@ -2111,6 +2164,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Access denied: some devices are outside your access', deniedDevices });
         }
 
+        // Export admission before the first membership row, the order every membership
+        // writer uses (services/groupMembership.ts evaluateGroupMembership).
+        await acquireMembershipExportOrgLock(groupOrgId);
         if (action === 'add_devices') {
           const results = await db.insert(deviceGroupMemberships)
             .values(requestedIds.map((deviceId) => ({
@@ -2475,6 +2531,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_automations', async (input, auth) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_automations', action, auth);
+      if (mfaError) return mfaError;
       const orgId = getOrgId(auth);
 
       // Site axis (app-layer only; RLS does NOT enforce it): an automation may

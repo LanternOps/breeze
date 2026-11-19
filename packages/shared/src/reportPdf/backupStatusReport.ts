@@ -6,7 +6,7 @@
  * verbatim — this module never imports reportPdf.ts back.
  */
 import type { jsPDF } from 'jspdf';
-import autoTable, { type CellHookData } from 'jspdf-autotable';
+import { autoTable, type CellHookData } from 'jspdf-autotable';
 import type { PdfChrome } from './hardwareLifecyclePdf';
 import type { BackupStatusReportData } from '../types/backupStatusReport';
 import type {
@@ -14,7 +14,13 @@ import type {
   BackupRecency,
   ExternalBackupStatus,
 } from '../types/backupHealth';
-import { saasWorkloadLabel, type BackupStatusBucketId } from '../utils/backupHealth';
+import {
+  isOverdueBackup,
+  saasWorkloadLabel,
+  verifiedBootableState,
+  type BackupStatusBucketId,
+  type VerifiedBootableState,
+} from '../utils/backupHealth';
 
 type RGB = [number, number, number];
 
@@ -22,7 +28,8 @@ const fill = (doc: jsPDF, c: RGB) => doc.setFillColor(c[0], c[1], c[2]);
 const ink = (doc: jsPDF, c: RGB) => doc.setTextColor(c[0], c[1], c[2]);
 const mix = (a: RGB, b: RGB, t: number): RGB => [0, 1, 2].map((i) => Math.round(a[i]! + (b[i]! - a[i]!) * t)) as RGB;
 
-// Six buckets — the shared W01 `BACKUP_STATUS_BUCKET_IDS` grouping (see
+// The shared W01 `BACKUP_STATUS_BUCKET_IDS` grouping, plus `overdue` (#12025),
+// which like `other` is present only when non-zero (see
 // apps/api/src/services/backupStatusReport.ts's `buildStatusBuckets`, which
 // this renderer's `data.statusBuckets` input already came from). `other` is
 // the catch-all for `not_started`/`unknown` and is simply absent from
@@ -32,6 +39,7 @@ const mix = (a: RGB, b: RGB, t: number): RGB => [0, 1, 2].map((i) => Math.round(
 const STATUS_BUCKET_LABEL: Record<BackupStatusBucketId, string> = {
   no_backups: 'No backups',
   completed: 'Completed',
+  overdue: 'No recent backup',
   completed_with_errors: 'Completed with errors',
   in_progress: 'In process',
   unsuccessful: 'Unsuccessful',
@@ -49,6 +57,7 @@ function statusBucketColor(C: PdfChrome['C'], key: BackupStatusBucketId): RGB {
   switch (key) {
     case 'no_backups': return C.faint;
     case 'completed': return C.success;
+    case 'overdue': return C.danger;
     case 'completed_with_errors': return C.warning;
     case 'in_progress': return C.primary;
     case 'unsuccessful': return C.danger;
@@ -175,6 +184,7 @@ const COLUMNS: Col[] = [
   { key: 'history', label: '28 days', w: 36, halign: 'left' },
   { key: 'status', label: 'Status', w: 24, halign: 'left' },
   { key: 'errors', label: 'Errors', w: 13, halign: 'right' },
+  { key: 'verifiedBootable', label: 'Verified bootable', w: 20, halign: 'left' },
 ];
 const STATUS_COL = COLUMNS.findIndex((c) => c.key === 'status');
 const HISTORY_COL = COLUMNS.findIndex((c) => c.key === 'history');
@@ -202,13 +212,22 @@ const STATUS_LABEL: Record<ExternalBackupStatus, string> = {
   not_started: 'Not started',
   no_backups: 'No backups',
   unknown: 'Unknown',
+  paused: 'Paused',
+};
+
+const VERIFIED_BOOTABLE_LABEL: Record<VerifiedBootableState, string> = {
+  passed: 'Passed',
+  failed: 'Failed',
+  never_run: 'Never run',
+  not_applicable: 'n/a',
 };
 
 function statusColor(C: PdfChrome['C'], status: ExternalBackupStatus): RGB {
   switch (status) {
     case 'completed': return C.success;
     case 'completed_with_errors':
-    case 'interrupted': return C.warning;
+    case 'interrupted':
+    case 'paused': return C.warning;
     case 'failed':
     case 'over_quota':
     case 'no_selection':
@@ -217,7 +236,24 @@ function statusColor(C: PdfChrome['C'], status: ExternalBackupStatus): RGB {
   }
 }
 
-function cellText(row: BackupHealthRow, key: string): string {
+/** An overdue `completed` row says so, with the date of its last success,
+ *  rather than a bare "Completed" (#12025). */
+function statusText(row: BackupHealthRow, timezone: string | undefined): string {
+  if (!isOverdueBackup(row)) return STATUS_LABEL[row.status];
+  return row.lastSuccessAt
+    ? `No recent backup\nLast: ${formatSnapshotDate(row.lastSuccessAt, timezone)}`
+    : 'No recent backup';
+}
+
+/** A result carries its date: an old "Passed" must not read as a current one. */
+function verifiedBootableText(row: BackupHealthRow, timezone: string | undefined): string {
+  const state = verifiedBootableState(row);
+  const label = VERIFIED_BOOTABLE_LABEL[state];
+  if ((state !== 'passed' && state !== 'failed') || !row.verifiedBootableAt) return label;
+  return `${label}\n${formatSnapshotDate(row.verifiedBootableAt, timezone)}`;
+}
+
+function cellText(row: BackupHealthRow, key: string, timezone: string | undefined): string {
   switch (key) {
     case 'device': return row.name;
     case 'computerName': return row.computerName ?? '-';
@@ -230,7 +266,8 @@ function cellText(row: BackupHealthRow, key: string): string {
     case 'selected': return formatBytes(row.selectedBytes);
     case 'used': return formatBytes(row.usedBytes);
     case 'errors': return String(row.errorsCount);
-    case 'status': return STATUS_LABEL[row.status];
+    case 'status': return statusText(row, timezone);
+    case 'verifiedBootable': return verifiedBootableText(row, timezone);
     // Drawn by hand in didDrawCell (a 28-cell colour strip); text stays empty
     // so autoTable never prints a stray label under the drawing.
     case 'history':
@@ -266,6 +303,17 @@ function formatSnapshotTime(iso: string, timezone: string | undefined): string {
   }
 }
 
+/** The date alone, same zone handling as {@link formatSnapshotTime}. */
+function formatSnapshotDate(iso: string, timezone: string | undefined): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: timezone || 'UTC', dateStyle: 'medium' }).format(d);
+  } catch {
+    return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', dateStyle: 'medium' }).format(d);
+  }
+}
+
 export function renderBackupStatusReport(
   doc: jsPDF,
   data: BackupStatusReportData,
@@ -289,7 +337,7 @@ export function renderBackupStatusReport(
     doc,
     'Backup Status Report',
     data.org?.name ?? '',
-    `Prepared ${opts.generatedAt} - ${populationSummary}`,
+    `Prepared ${opts.generatedAt}   ·   ${populationSummary}`,
     PAGE.bandH + 14,
   );
 
@@ -323,7 +371,7 @@ export function renderBackupStatusReport(
     startY: y + 1,
     margin: { top: continuationTop, left: PAGE.mx, right: PAGE.mx, bottom: 16 },
     head: [COLUMNS.map((c) => ({ content: saasCount > 0 && c.key === 'device' ? 'Resource' : c.label, styles: { halign: c.halign } }))],
-    body: rows.map((r) => COLUMNS.map((c) => cellText(r, c.key))),
+    body: rows.map((r) => COLUMNS.map((c) => cellText(r, c.key, opts.timezone))),
     theme: 'grid',
     rowPageBreak: 'avoid',
     styles: { fontSize: BODY_FONT, cellPadding: { top: 1.2, bottom: 1.2, left: 1.6, right: 1.6 }, minCellHeight: ROW_MIN_H, lineColor: C.rule, lineWidth: 0.1, textColor: C.ink, valign: 'middle' },
@@ -335,7 +383,7 @@ export function renderBackupStatusReport(
       const row = rows[cell.row.index];
       if (!row) return;
       if (cell.column.index === STATUS_COL) {
-        cell.cell.styles.textColor = statusColor(C, row.status);
+        cell.cell.styles.textColor = isOverdueBackup(row) ? C.danger : statusColor(C, row.status);
         cell.cell.styles.fontStyle = 'bold';
       }
     },

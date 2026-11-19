@@ -6,9 +6,10 @@ import { eq, sql, desc, and, isNull } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db, runAfterDbContextCommit } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
-import { authMiddleware, requireInteractiveSession, requireMfa, requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
+import { authMiddleware, requireInteractiveSession, requireMfa, requireScope, requirePermission, withAuthDbAccessContext, dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite, projectPublicDevice } from './helpers';
+import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite, projectPublicDeviceForCaller } from './helpers';
+import { deviceCommandsInCurrentOrg } from './commandOrgScope';
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema, bulkMaintenanceSchema } from './schemas';
 import {
   MAINTENANCE_ENTRY_ALLOWED_STATUSES,
@@ -22,7 +23,9 @@ import { lockActorAssurance } from '../../services/stepUpActorAssurance';
 import { ENABLE_2FA } from '../auth/schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
-import { dispatchWake, type WakeFailureCode } from '../../services/wakeOnLan';
+import { runBulkIsolated } from '../../lib/bulkOps';
+import { resolveWakeAvailability, WAKE_LOOKUP_FAILED_AVAILABILITY } from '../../services/wakeAvailability';
+import { dispatchWake, type WakeFailure, type WakeFailureCode, type WakePrepared } from '../../services/wakeOnLan';
 import { dispatchDeviceCommand } from '../../services/dispatchDeviceCommand';
 import type { QueuedCommand } from '../../services/commandQueue';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
@@ -35,6 +38,7 @@ import { applyAutomationActionTerminal } from '../../services/automationActionRe
 import { SERVER_TIMEOUT_RESULT_STATUS } from '../../services/commandResultAcceptance';
 import { captureException } from '../../services/sentry';
 import { isNetworkIsolationCommand, USE_NETWORK_ISOLATION_ROUTES } from '../../services/networkIsolation/bypass';
+import { wakeFailureStatus } from '../../services/wakeFailureStatus';
 
 export const commandsRoutes = new Hono();
 
@@ -103,18 +107,17 @@ commandsRoutes.post(
       const ipAddress = getTrustedClientIpOrUndefined(c);
       const userAgent = c.req.header('user-agent');
 
-      // Inline worker pool. dispatchWake does 5-7 DB selects + 2 inserts +
-      // 1 update + 1 WS write per device (no locks/transactions per
-      // services/wakeOnLan.ts). Concurrency 8 caps overlap on the
-      // breeze_app pool (~10-20 conns) and keeps wall time on a 500-device
-      // bulk well under Cloudflare's ~100s proxy timeout. Avoided a
-      // p-limit dependency by inlining — the loop is trivial.
-      const CONCURRENCY = 8;
-      const queue = [...deviceIds];
-      async function worker(): Promise<void> {
-        for (;;) {
-          const deviceId = queue.shift();
-          if (!deviceId) return;
+      // One availability lookup for the whole batch (fixed statement count),
+      // inside the caller's RLS context. Bulk never honours testWake.
+      const availability = await withAuthDbAccessContext(auth, () => resolveWakeAvailability(deviceIds));
+
+      // Each authorization and preparation commits independently. Delivery runs
+      // in runBulkIsolated's post-commit hook so fast relay results can see both
+      // the command and attempt even while later devices are still preparing.
+      await runBulkIsolated<WakePrepared | WakeFailure | undefined>(
+        dbAccessContextFromAuth(auth),
+        deviceIds,
+        async (deviceId) => {
           // Per-device authorization — org filtering happens in
           // getDeviceWithOrgCheck and site filtering happens immediately
           // below. dispatchWake itself does NOT independently authorize the
@@ -122,28 +125,33 @@ commandsRoutes.post(
           const device = await getDeviceWithOrgCheck(deviceId, auth);
           if (!device) {
             failed.push({ deviceId, code: 'TARGET_NOT_FOUND', message: 'Device not found or access denied.' });
-            continue;
+            return;
           }
           if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
             failed.push({ deviceId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' });
-            continue;
+            return;
           }
           if (device.status === 'decommissioned') {
             failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot wake a decommissioned device.' });
-            continue;
+            return;
           }
           try {
             await assertDeviceExecuteAllowed(deviceId, COMMAND_WAKE_ON_LAN, auth.user.id);
           } catch (error) {
             if (!(error instanceof TrustDeniedError)) throw error;
             failed.push({ deviceId, code: error.code, message: error.reason });
-            continue;
+            return;
           }
-          const result = await dispatchWake(deviceId, auth.user.id, {
+          return dispatchWake(deviceId, auth.user.id, {
             ipAddress,
             userAgent,
             bulkId,
+            availability: availability.get(deviceId) ?? WAKE_LOOKUP_FAILED_AVAILABILITY,
           });
+        },
+        async (deviceId, prepared) => {
+          if (!prepared) return;
+          const result = prepared.ok ? await prepared.deliver() : prepared;
           if (result.ok) {
             succeeded.push({
               deviceId,
@@ -156,27 +164,21 @@ commandsRoutes.post(
           } else {
             failed.push({ deviceId, code: result.code, message: result.message });
           }
+        },
+      );
+      // A transaction or delivery exception must still produce one result for
+      // that device; never report an uncommitted preparation as successful.
+      for (const deviceId of deviceIds) {
+        if (!succeeded.some(item => item.deviceId === deviceId) && !failed.some(item => item.deviceId === deviceId)) {
+          failed.push({ deviceId, code: 'WS_SEND_FAILED', message: 'Failed to dispatch wake command.' });
         }
       }
-      const workers = Array.from(
-        { length: Math.min(CONCURRENCY, deviceIds.length) },
-        () => worker(),
-      );
-      await Promise.all(workers);
 
       return c.json({ bulkId, succeeded, failed }, 202);
     }
 
-    const commandList: Array<{
-      id: string;
-      deviceId: string;
-      type: string;
-      status: string;
-      createdAt: Date;
-    }> = [];
-    // Typed per-device failures so the caller can distinguish "device gone"
-    // from "site denied" from "decommissioned" from "insert failed". Matches
-    // the wake worker shape above so the UI can render one summary toast.
+    // Keep admission and preparation in the existing batch transaction. Only
+    // deliver and audit after the whole batch has committed.
     type BulkFailureCode =
       | 'TARGET_NOT_FOUND'
       | 'SITE_ACCESS_DENIED'
@@ -185,77 +187,106 @@ commandsRoutes.post(
       // Created, then cancelled by the push's claim-time check before delivery.
       | 'CANCELLED'
       | TrustDenyCode;
-    const failed: Array<{ deviceId: string; code: BulkFailureCode; message: string }> = [];
-    // Devices that completed successfully on a prior call and would queue
-    // a duplicate now (currently only the refresh_inventory dedup path).
-    // Surfaced separately from `failed` so the caller can say "N queued,
-    // M already pending" without misreporting deduped devices as failures.
-    const skipped: Array<{ deviceId: string; code: 'ALREADY_PENDING'; commandId: string }> = [];
-    // #5128: devices that were not online, whose command is now waiting for
-    // them to reconnect. Reported separately from `failed` — the work was
-    // accepted, it just has not been delivered yet.
-    const queuedOffline: string[] = [];
+    type BulkFailure = { deviceId: string; code: BulkFailureCode; message: string };
+    const { prepared, skipped } = await withAuthDbAccessContext(auth, async () => {
+      const prepared: Array<
+        | { failure: BulkFailure }
+        | { deviceId: string; orgId: string; res: Awaited<ReturnType<typeof dispatchDeviceCommand>> }
+      > = [];
+      // Devices that completed successfully on a prior call and would queue
+      // a duplicate now (currently only the refresh_inventory dedup path).
+      // Surfaced separately from `failed` so the caller can say "N queued,
+      // M already pending" without misreporting deduped devices as failures.
+      const skipped: Array<{ deviceId: string; code: 'ALREADY_PENDING'; commandId: string }> = [];
 
-    for (const deviceId of deviceIds) {
-      const device = await getDeviceWithOrgCheck(deviceId, auth);
-      if (!device) {
-        failed.push({ deviceId, code: 'TARGET_NOT_FOUND', message: 'Device not found or access denied.' });
-        continue;
-      }
-      // Site denial must win over device-state denials: returning
-      // `DECOMMISSIONED` to a site-restricted caller would confirm the
-      // device exists, is in a reachable org, and is decommissioned.
-      // Keep this in the same order as the wake/single/maintenance paths.
-      if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
-        failed.push({ deviceId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' });
-        continue;
-      }
-      if (device.status === 'decommissioned') {
-        failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot send commands to a decommissioned device.' });
-        continue;
-      }
-
-      try {
-        await assertDeviceExecuteAllowed(deviceId, data.type, auth.user.id);
-      } catch (error) {
-        if (!(error instanceof TrustDeniedError)) throw error;
-        failed.push({ deviceId, code: error.code, message: error.reason });
-        continue;
-      }
-
-      // Same dedup #856 added to /:id/commands. The bulk path was missed
-      // — caught by @xxiaoxiong on #831. Record into `skipped` (not
-      // `failed`) so the caller can show an accurate "N queued, M already
-      // pending" without misreporting it as an error.
-      if (data.type === 'refresh_inventory') {
-        const [existingPending] = await db
-          .select({ id: deviceCommands.id })
-          .from(deviceCommands)
-          .where(
-            and(
-              eq(deviceCommands.deviceId, deviceId),
-              eq(deviceCommands.type, 'refresh_inventory'),
-              eq(deviceCommands.status, 'pending'),
-            ),
-          )
-          .limit(1);
-        if (existingPending) {
-          skipped.push({ deviceId, code: 'ALREADY_PENDING', commandId: existingPending.id });
+      for (const deviceId of deviceIds) {
+        const device = await getDeviceWithOrgCheck(deviceId, auth);
+        if (!device) {
+          prepared.push({ failure: { deviceId, code: 'TARGET_NOT_FOUND', message: 'Device not found or access denied.' } });
           continue;
         }
-      }
+        // Site denial must win over device-state denials: returning
+        // `DECOMMISSIONED` to a site-restricted caller would confirm the
+        // device exists, is in a reachable org, and is decommissioned.
+        // Keep this in the same order as the wake/single/maintenance paths.
+        if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+          prepared.push({ failure: { deviceId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' } });
+          continue;
+        }
+        if (device.status === 'decommissioned') {
+          prepared.push({ failure: { deviceId, code: 'DECOMMISSIONED', message: 'Cannot send commands to a decommissioned device.' } });
+          continue;
+        }
 
-      // #5128: through the one enqueue seam rather than a raw insert, so the
-      // row carries a delivery deadline and its submitting org, and an online
-      // device gets the socket push instead of waiting for the next heartbeat.
-      // Still wrapped: a constraint violation or pool exhaustion on one device
-      // records as INSERT_FAILED for that device rather than 500-ing the whole
-      // batch and losing every prior success.
+        try {
+          await assertDeviceExecuteAllowed(deviceId, data.type, auth.user.id);
+        } catch (error) {
+          if (!(error instanceof TrustDeniedError)) throw error;
+          prepared.push({ failure: { deviceId, code: error.code, message: error.reason } });
+          continue;
+        }
+
+        // Same dedup #856 added to /:id/commands. The bulk path was missed
+        // — caught by @xxiaoxiong on #831. Record into `skipped` (not
+        // `failed`) so the caller can show an accurate "N queued, M already
+        // pending" without misreporting it as an error.
+        if (data.type === 'refresh_inventory') {
+          const [existingPending] = await db
+            .select({ id: deviceCommands.id })
+            .from(deviceCommands)
+            .where(
+              and(
+                eq(deviceCommands.deviceId, deviceId),
+                eq(deviceCommands.type, 'refresh_inventory'),
+                eq(deviceCommands.status, 'pending'),
+              ),
+            )
+            .limit(1);
+          if (existingPending) {
+            skipped.push({ deviceId, code: 'ALREADY_PENDING', commandId: existingPending.id });
+            continue;
+          }
+        }
+
+        // Persist through the shared enqueue seam, leaving the claim and push
+        // for after commit. Keep failures in selection order with preparations.
+        try {
+          const res = await dispatchDeviceCommand({
+            deviceId, type: data.type, payload: data.payload || {}, userId: auth.user.id, deferDelivery: true,
+          });
+          prepared.push({ deviceId, orgId: device.orgId, res });
+        } catch (err) {
+          prepared.push({ failure: {
+            deviceId,
+            code: 'INSERT_FAILED',
+            message: err instanceof Error ? err.message : 'Failed to queue command.',
+          } });
+        }
+      }
+      return { prepared, skipped };
+    });
+
+    const commandList: Array<{
+      id: string;
+      deviceId: string;
+      type: string;
+      status: string;
+      createdAt: Date;
+    }> = [];
+    const failed: BulkFailure[] = [];
+    // Accepted offline work remains separate from failures.
+    const queuedOffline: string[] = [];
+    for (const entry of prepared) {
+      if ('failure' in entry) {
+        failed.push(entry.failure);
+        continue;
+      }
+      const { deviceId } = entry;
       let command: QueuedCommand | undefined;
-      let delivery: 'delivered' | 'queued_offline' | 'queued_live' | 'cancelled' | undefined;
+      let delivery: 'delivered' | 'indeterminate' | 'queued_offline' | 'queued_live' | 'cancelled' | undefined;
       try {
         // `wake` never reaches here — it returns from its own relay path above.
-        const res = await dispatchDeviceCommand({ deviceId, type: data.type, payload: data.payload || {}, userId: auth.user.id });
+        const res = entry.res.ok && entry.res.deliver ? await entry.res.deliver() : entry.res;
         if (!res.ok) {
           if (res.code === 'trust_denied' && res.trust) {
             failed.push({ deviceId, code: res.error as TrustDenyCode, message: res.trust.reason });
@@ -295,7 +326,7 @@ commandsRoutes.post(
       if (delivery === 'queued_offline') queuedOffline.push(deviceId);
 
       writeRouteAudit(c, {
-        orgId: device.orgId,
+        orgId: entry.orgId,
         action: 'device.command.queue',
         resourceType: 'device_command',
         resourceId: command.id,
@@ -303,7 +334,8 @@ commandsRoutes.post(
         details: {
           deviceId,
           ...commandAuditDetails(command.id, data.type, data.payload || {}),
-          bulk: true
+          bulk: true,
+          delivery,
         }
       });
     }
@@ -505,144 +537,166 @@ commandsRoutes.post(
       return c.json({ error: 'Script commands must be executed through the scripts endpoint' }, 400);
     }
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
-    }
-    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
-      return c.json({ error: 'Access to this site denied' }, 403);
-    }
-
-    // Don't allow commands to decommissioned devices
-    if (device.status === 'decommissioned') {
-      return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
-    }
-
-    try {
-      await assertDeviceExecuteAllowed(
-        deviceId,
-        data.type === 'wake' ? COMMAND_WAKE_ON_LAN : data.type,
-        auth.user.id,
-      );
-    } catch (error) {
-      if (!(error instanceof TrustDeniedError)) throw error;
-      return c.json(trustDenyBody({
-        allow: false,
-        code: error.code,
-        capability: 'device_execute',
-        reason: error.reason,
-      }, false), 403);
-    }
-
-    // Dedup refresh_inventory: each click fans out ~12 collectors on the
-    // agent, and the API returns 201 as soon as the row is inserted, so a
-    // fast clicker could queue an unbounded backlog. Reject when a pending
-    // refresh_inventory already exists for this device. Other commands
-    // are self-limiting (reboot/shutdown — the device goes away) or rare
-    // (containment, evidence collection) so this guard is scoped narrowly.
-    // (#830)
-    if (data.type === 'refresh_inventory') {
-      const [existingPending] = await db
-        .select({ id: deviceCommands.id })
-        .from(deviceCommands)
-        .where(
-          and(
-            eq(deviceCommands.deviceId, deviceId),
-            eq(deviceCommands.type, 'refresh_inventory'),
-            eq(deviceCommands.status, 'pending'),
-          ),
-        )
-        .limit(1);
-      if (existingPending) {
-        return c.json(
-          {
-            error: 'An inventory refresh is already pending for this device',
-            code: 'ALREADY_PENDING',
-            commandId: existingPending.id,
-          },
-          409,
-        );
-      }
-    }
-
-    // Wake-on-LAN takes a separate path: the command row must be addressed to
-    // an online relay agent on the target's LAN, not the offline target.
-    if (data.type === 'wake') {
-      const wake = await dispatchWake(deviceId, auth.user.id, {
-        ipAddress: getTrustedClientIpOrUndefined(c),
-        userAgent: c.req.header('user-agent'),
-      });
-      if (!wake.ok) {
-        return c.json({ error: wake.message, code: wake.code }, 412);
-      }
-      return c.json({
-        id: wake.commandId,
-        deviceId,
-        type: 'wake_on_lan',
-        status: 'sent',
-        wakeAttemptId: wake.wakeAttemptId,
-        relay: { deviceId: wake.relayDeviceId, hostname: wake.relayHostname },
-        network: wake.network,
-        broadcast: wake.broadcast,
-        macs: wake.macs,
-      }, 202);
-    }
-
-    // #5128: through the one enqueue seam. The row now carries a delivery
-    // deadline and its submitting org, and an online device gets the socket
-    // push here instead of waiting for its next heartbeat.
-    const res = await dispatchDeviceCommand({
-      deviceId,
-      type: data.type,
-      payload: data.payload || {},
-      userId: auth.user.id,
-    });
-    if (!res.ok) {
-      if (res.code === 'device_decommissioned') {
-        return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
-      }
-      if (res.code === 'device_not_found') {
+    // This route is registered in middleware/selfManagedDbContextRoutes.ts: wake
+    // must commit its attempt and command before the relay can answer. Other
+    // commands also commit their row before delivery, response and audit.
+    const outcome = await withAuthDbAccessContext(auth, async () => {
+      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      if (!device) {
         return c.json({ error: 'Device not found' }, 404);
       }
-      if (res.code === 'trust_denied' && res.trust) {
+      if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+
+      // Don't allow commands to decommissioned devices
+      if (device.status === 'decommissioned') {
+        return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+      }
+
+      try {
+        await assertDeviceExecuteAllowed(
+          deviceId,
+          data.type === 'wake' ? COMMAND_WAKE_ON_LAN : data.type,
+          auth.user.id,
+        );
+      } catch (error) {
+        if (!(error instanceof TrustDeniedError)) throw error;
         return c.json(trustDenyBody({
           allow: false,
-          code: res.error as TrustDenyCode,
+          code: error.code,
           capability: 'device_execute',
-          reason: res.trust.reason,
+          reason: error.reason,
         }, false), 403);
       }
-      return c.json({ error: res.error }, 500);
-    }
-    const command = res.command;
 
-    writeRouteAudit(c, {
-      orgId: device.orgId,
-      action: 'device.command.queue',
-      resourceType: 'device_command',
-      resourceId: command.id,
-      resourceName: data.type,
-      details: {
-        deviceId,
-        ...commandAuditDetails(command.id, data.type, data.payload || {}),
-        delivery: res.delivery,
+      // Dedup refresh_inventory: each click fans out ~12 collectors on the
+      // agent, and the API returns 201 as soon as the row is inserted, so a
+      // fast clicker could queue an unbounded backlog. Reject when a pending
+      // refresh_inventory already exists for this device. Other commands
+      // are self-limiting (reboot/shutdown — the device goes away) or rare
+      // (containment, evidence collection) so this guard is scoped narrowly.
+      // (#830)
+      if (data.type === 'refresh_inventory') {
+        const [existingPending] = await db
+          .select({ id: deviceCommands.id })
+          .from(deviceCommands)
+          .where(
+            and(
+              eq(deviceCommands.deviceId, deviceId),
+              eq(deviceCommands.type, 'refresh_inventory'),
+              eq(deviceCommands.status, 'pending'),
+            ),
+          )
+          .limit(1);
+        if (existingPending) {
+          return c.json(
+            {
+              error: 'An inventory refresh is already pending for this device',
+              code: 'ALREADY_PENDING',
+              commandId: existingPending.id,
+            },
+            409,
+          );
+        }
       }
-    });
 
+      // Wake-on-LAN takes a separate path: the command row must be addressed to
+      // an online relay agent on the target's LAN, not the offline target.
+      if (data.type === 'wake') {
+        const wake = await dispatchWake(deviceId, auth.user.id, {
+          ipAddress: getTrustedClientIpOrUndefined(c),
+          userAgent: c.req.header('user-agent'),
+          testWake: data.payload?.testWake === true,
+        });
+        if (!wake.ok) {
+          return c.json({ error: wake.message, code: wake.code }, wakeFailureStatus(wake.code));
+        }
+        return wake;
+      }
+
+      // #5128: through the one enqueue seam. The row now carries a delivery
+      // deadline and its submitting org, and an online device gets the socket
+      // push after commit instead of waiting for its next heartbeat.
+      const res = await dispatchDeviceCommand({
+        deviceId,
+        type: data.type,
+        payload: data.payload || {},
+        userId: auth.user.id,
+        deferDelivery: true,
+      });
+      return { res, orgId: device.orgId };
+    });
+    if (outcome instanceof Response) return outcome;
+
+    if ('res' in outcome) {
+      // Await the committed claim so the client and audit see its real outcome,
+      // including a refusal that happened between admission and delivery.
+      const res = outcome.res.ok && outcome.res.deliver ? await outcome.res.deliver() : outcome.res;
+      if (!res.ok) {
+        if (res.code === 'device_decommissioned') {
+          return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+        }
+        if (res.code === 'device_not_found') {
+          return c.json({ error: 'Device not found' }, 404);
+        }
+        if (res.code === 'trust_denied' && res.trust) {
+          return c.json(trustDenyBody({
+            allow: false,
+            code: res.error as TrustDenyCode,
+            capability: 'device_execute',
+            reason: res.trust.reason,
+          }, false), 403);
+        }
+        return c.json({ error: res.error }, 500);
+      }
+      const command = res.command;
+
+      writeRouteAudit(c, {
+        orgId: outcome.orgId,
+        action: 'device.command.queue',
+        resourceType: 'device_command',
+        resourceId: command.id,
+        resourceName: data.type,
+        details: {
+          deviceId,
+          ...commandAuditDetails(command.id, data.type, data.payload || {}),
+          delivery: res.delivery,
+          ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
+        }
+      });
+
+      return c.json({
+        id: command.id,
+        deviceId: command.deviceId,
+        type: command.type,
+        status: command.status,
+        createdAt: command.createdAt,
+        // #5128: how the command was handed over, and when it expires if the
+        // device never comes back. 'queued_offline' is what the UI renders as
+        // "Runs when the device is online — expires <date>". 'cancelled' means
+        // the push's claim-time check refused it; `cancelReason` says why.
+        delivery: res.delivery,
+        deliverBy: res.deliverBy,
+        ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
+      }, 201);
+    }
+
+    const delivered = await outcome.deliver();
+    if (!delivered.ok) {
+      return c.json({ error: delivered.message, code: delivered.code }, wakeFailureStatus(delivered.code));
+    }
     return c.json({
-      id: command.id,
-      deviceId: command.deviceId,
-      type: command.type,
-      status: command.status,
-      createdAt: command.createdAt,
-      // #5128: how the command was handed over, and when it expires if the
-      // device never comes back. 'queued_offline' is what the UI renders as
-      // "Runs when the device is online — expires <date>". 'cancelled' means
-      // the push's claim-time check refused it; `cancelReason` says why.
-      delivery: res.delivery,
-      deliverBy: res.deliverBy,
-      ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
-    }, 201);
+      id: delivered.commandId,
+      deviceId,
+      type: 'wake_on_lan',
+      status: 'sent',
+      wakeAttemptId: delivered.wakeAttemptId,
+      relay: { deviceId: delivered.relayDeviceId, hostname: delivered.relayHostname },
+      network: delivered.network,
+      broadcast: delivered.broadcast,
+      macs: delivered.macs,
+    }, 202);
   }
 );
 
@@ -730,7 +784,7 @@ commandsRoutes.post(
           },
         });
       }
-      return c.json({ success: true, changed: result.changed, device: projectPublicDevice(result.device) });
+      return c.json({ success: true, changed: result.changed, device: await projectPublicDeviceForCaller(result.device, auth) });
     }
 
     // Advisory pre-check so a state denial costs no lock and no write; the
@@ -817,7 +871,7 @@ commandsRoutes.post(
           startedAt: result.startedAt.toISOString(),
           reason: data.reason,
         },
-        device: projectPublicDevice(result.device),
+        device: await projectPublicDeviceForCaller(result.device, auth),
       });
     } catch (err) {
       if (err instanceof MaintenanceStepUpConsumedError) {
@@ -843,38 +897,47 @@ commandsRoutes.post(
     const deviceId = c.req.param('id')!;
     const data = c.req.valid('json');
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
-    }
-    // Site denial must win over device-state denials — see bulk-generic
-    // for rationale.
-    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
-      return c.json({ error: 'Access to this site denied' }, 403);
-    }
-    if (device.status === 'decommissioned') {
-      return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
-    }
+    // Persist under the caller scope, then release the transaction before
+    // claiming or pushing the command to the agent.
+    const outcome = await withAuthDbAccessContext(auth, async () => {
+      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      if (!device) {
+        return c.json({ error: 'Device not found' }, 404);
+      }
+      // Site denial must win over device-state denials — see bulk-generic
+      // for rationale.
+      if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+      if (device.status === 'decommissioned') {
+        return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+      }
 
-    try {
-      await assertDeviceExecuteAllowed(deviceId, COMMAND_SET_AUTO_UPDATE, auth.user.id);
-    } catch (error) {
-      if (!(error instanceof TrustDeniedError)) throw error;
-      return c.json(trustDenyBody({
-        allow: false,
-        code: error.code,
-        capability: 'device_execute',
-        reason: error.reason,
-      }, false), 403);
-    }
+      try {
+        await assertDeviceExecuteAllowed(deviceId, COMMAND_SET_AUTO_UPDATE, auth.user.id);
+      } catch (error) {
+        if (!(error instanceof TrustDeniedError)) throw error;
+        return c.json(trustDenyBody({
+          allow: false,
+          code: error.code,
+          capability: 'device_execute',
+          reason: error.reason,
+        }, false), 403);
+      }
 
-    // #5128: through the one enqueue seam (see the single-command route).
-    const res = await dispatchDeviceCommand({
-      deviceId,
-      type: COMMAND_SET_AUTO_UPDATE,
-      payload: { enabled: data.enabled },
-      userId: auth.user.id,
+      // #5128: through the one enqueue seam (see the single-command route).
+      const res = await dispatchDeviceCommand({
+        deviceId,
+        type: COMMAND_SET_AUTO_UPDATE,
+        payload: { enabled: data.enabled },
+        userId: auth.user.id,
+        deferDelivery: true,
+      });
+      return { res, orgId: device.orgId };
     });
+    if (outcome instanceof Response) return outcome;
+
+    const res = outcome.res.ok && outcome.res.deliver ? await outcome.res.deliver() : outcome.res;
     if (!res.ok) {
       if (res.code === 'device_decommissioned') {
         return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
@@ -895,7 +958,7 @@ commandsRoutes.post(
     const command = res.command;
 
     writeRouteAudit(c, {
-      orgId: device.orgId,
+      orgId: outcome.orgId,
       action: 'device.auto_update.set',
       resourceType: 'device_command',
       resourceId: command.id,
@@ -903,7 +966,9 @@ commandsRoutes.post(
       details: {
         deviceId,
         enabled: data.enabled,
-        ...commandAuditDetails(command.id, 'set_auto_update', { enabled: data.enabled })
+        ...commandAuditDetails(command.id, 'set_auto_update', { enabled: data.enabled }),
+        delivery: res.delivery,
+        ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
       }
     });
 
@@ -949,9 +1014,8 @@ commandsRoutes.get(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    const listFilter = status
-      ? and(eq(deviceCommands.deviceId, deviceId), eq(deviceCommands.status, status))
-      : eq(deviceCommands.deviceId, deviceId);
+    const inScope = and(eq(deviceCommands.deviceId, deviceId), await deviceCommandsInCurrentOrg(device));
+    const listFilter = status ? and(inScope, eq(deviceCommands.status, status)) : inScope;
 
     const countResult = await db
       .select({ count: sql<number>`count(*)` })
@@ -1002,7 +1066,8 @@ commandsRoutes.get(
       .where(
         and(
           eq(deviceCommands.id, commandId),
-          eq(deviceCommands.deviceId, deviceId)
+          eq(deviceCommands.deviceId, deviceId),
+          await deviceCommandsInCurrentOrg(device)
         )
       )
       .limit(1);
@@ -1044,6 +1109,7 @@ commandsRoutes.post(
     // owning a `script_executions` / `deployment_results` row that is still
     // `pending` — and nothing revisits it, because the reaper only scans
     // pending/sent COMMANDS. The HTTP response is chosen after the commit.
+    const inCurrentOrg = await deviceCommandsInCurrentOrg(device);
     const outcome = await db.transaction(async (tx) => {
       // Read the payload BEFORE the update: `terminalPayloadErasureSet()` strips
       // it, and `returning()` reflects post-update values, so a propagator that
@@ -1056,7 +1122,7 @@ commandsRoutes.post(
           status: deviceCommands.status,
         })
         .from(deviceCommands)
-        .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.deviceId, deviceId)))
+        .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.deviceId, deviceId), inCurrentOrg))
         .limit(1);
 
       if (!existing) return { kind: 'not_found' } as const;
@@ -1157,6 +1223,7 @@ commandsRoutes.post(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
+    const inCurrentOrg = await deviceCommandsInCurrentOrg(device);
     const outcome = await db.transaction(async (tx) => {
       // Payload is read BEFORE the update: terminalPayloadErasureSet() strips
       // it, and the propagation keys on payload.executionId / patchJobId / ….
@@ -1170,7 +1237,7 @@ commandsRoutes.post(
           createdAt: deviceCommands.createdAt,
         })
         .from(deviceCommands)
-        .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.deviceId, deviceId)))
+        .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.deviceId, deviceId), inCurrentOrg))
         .limit(1);
 
       if (!existing) return { kind: 'not_found' } as const;

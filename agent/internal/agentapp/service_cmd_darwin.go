@@ -5,7 +5,6 @@ package agentapp
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
@@ -15,6 +14,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/launchdplist"
 	"github.com/breeze-rmm/agent/internal/macosuninstall"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/securefs"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/spf13/cobra"
@@ -152,7 +152,7 @@ var serviceInstallCmd = &cobra.Command{
 		wasRunning := false
 		if _, err := os.Stat(darwinPlistDst); err == nil {
 			wasRunning = isSystemServiceRunning()
-			if stopErr := exec.Command("launchctl", "unload", darwinPlistDst).Run(); stopErr != nil {
+			if stopErr := procspawn.Command("launchctl", "unload", darwinPlistDst).Run(); stopErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to stop existing service: %v\n", stopErr)
 			} else {
 				fmt.Println("Stopped existing Breeze Agent service.")
@@ -339,7 +339,7 @@ var serviceUninstallCmd = &cobra.Command{
 			return fmt.Errorf("must run as root (sudo breeze-agent service uninstall)")
 		}
 		if err := uninstallDarwinService(func(name string, args ...string) ([]byte, error) {
-			return exec.Command(name, args...).CombinedOutput()
+			return procspawn.Command(name, args...).CombinedOutput()
 		}); err != nil {
 			return err
 		}
@@ -373,15 +373,15 @@ var serviceStartCmd = &cobra.Command{
 		// Use bootstrap (modern) with fallback to load (legacy)
 		if isLaunchdLoaded(darwinLabel) {
 			// Already loaded, just kick it
-			out, err := exec.Command("launchctl", "kickstart", "system/"+darwinLabel).CombinedOutput()
+			out, err := procspawn.Command("launchctl", "kickstart", "system/"+darwinLabel).CombinedOutput()
 			if err != nil {
 				return fmt.Errorf("failed to start service: %s", strings.TrimSpace(string(out)))
 			}
 		} else {
-			out, err := exec.Command("launchctl", "bootstrap", "system", darwinPlistDst).CombinedOutput()
+			out, err := procspawn.Command("launchctl", "bootstrap", "system", darwinPlistDst).CombinedOutput()
 			if err != nil {
 				// Fallback to legacy load
-				out2, err2 := exec.Command("launchctl", "load", darwinPlistDst).CombinedOutput()
+				out2, err2 := procspawn.Command("launchctl", "load", darwinPlistDst).CombinedOutput()
 				if err2 != nil {
 					return fmt.Errorf("failed to load service: %s / %s",
 						strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
@@ -413,10 +413,10 @@ var serviceStopCmd = &cobra.Command{
 			return nil
 		}
 
-		out, err := exec.Command("launchctl", "bootout", "system/"+darwinLabel).CombinedOutput()
+		out, err := procspawn.Command("launchctl", "bootout", "system/"+darwinLabel).CombinedOutput()
 		if err != nil {
 			// Fallback to legacy unload
-			out2, err2 := exec.Command("launchctl", "unload", darwinPlistDst).CombinedOutput()
+			out2, err2 := procspawn.Command("launchctl", "unload", darwinPlistDst).CombinedOutput()
 			if err2 != nil {
 				return fmt.Errorf("failed to stop service: %s / %s",
 					strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
@@ -443,7 +443,7 @@ var serviceStatusCmd = &cobra.Command{
 		}
 
 		// Get detailed info from launchctl print
-		out, err := exec.Command("launchctl", "print", "system/"+darwinLabel).CombinedOutput()
+		out, err := procspawn.Command("launchctl", "print", "system/"+darwinLabel).CombinedOutput()
 		if err != nil {
 			// Fallback: can't get details but the job is loaded
 			fmt.Println("Service: loaded (unable to retrieve details)")
@@ -505,7 +505,7 @@ func healLaunchdPlists() {
 
 // isLaunchdLoaded checks if the given label is loaded in launchd.
 func isLaunchdLoaded(label string) bool {
-	err := exec.Command("launchctl", "print", "system/"+label).Run()
+	err := procspawn.Command("launchctl", "print", "system/"+label).Run()
 	return err == nil
 }
 
@@ -522,8 +522,8 @@ func ensureDesktopHelpersLoaded() {
 		if uid := consoleUserUID(); uid != "" {
 			domain := "gui/" + uid
 			label := domain + "/com.breeze.desktop-helper-user"
-			if exec.Command("launchctl", "print", label).Run() != nil {
-				out, err := exec.Command("launchctl", "bootstrap", domain, darwinDesktopUserPlistDst).CombinedOutput()
+			if procspawn.Command("launchctl", "print", label).Run() != nil {
+				out, err := procspawn.Command("launchctl", "bootstrap", domain, darwinDesktopUserPlistDst).CombinedOutput()
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Note: could not bootstrap desktop helper for console user %s: %s\n",
 						uid, strings.TrimSpace(string(out)))
@@ -536,8 +536,8 @@ func ensureDesktopHelpersLoaded() {
 
 	if fileExists(darwinDesktopLoginWindowPlistDst) {
 		lwLabel := "loginwindow/com.breeze.desktop-helper-loginwindow"
-		if exec.Command("launchctl", "print", lwLabel).Run() != nil {
-			out, err := exec.Command("launchctl", "bootstrap", "loginwindow", darwinDesktopLoginWindowPlistDst).CombinedOutput()
+		if procspawn.Command("launchctl", "print", lwLabel).Run() != nil {
+			out, err := procspawn.Command("launchctl", "bootstrap", "loginwindow", darwinDesktopLoginWindowPlistDst).CombinedOutput()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Note: could not bootstrap login-window desktop helper: %s\n",
 					strings.TrimSpace(string(out)))
@@ -552,7 +552,7 @@ func ensureDesktopHelpersLoaded() {
 // or empty string if no one is logged in (e.g., the login window is showing,
 // where /dev/console is owned by root).
 func consoleUserUID() string {
-	out, err := exec.Command("stat", "-f", "%u", "/dev/console").Output()
+	out, err := procspawn.Command("stat", "-f", "%u", "/dev/console").Output()
 	if err != nil {
 		return ""
 	}
@@ -577,7 +577,7 @@ func bootstrapDesktopHelperPlists() {
 	// into that user's GUI session so it can access the display immediately.
 	if uid := os.Getenv("SUDO_UID"); uid != "" {
 		domain := "gui/" + uid
-		out, err := exec.Command("launchctl", "bootstrap", domain, darwinDesktopUserPlistDst).CombinedOutput()
+		out, err := procspawn.Command("launchctl", "bootstrap", domain, darwinDesktopUserPlistDst).CombinedOutput()
 		if err != nil {
 			// Not fatal — kickstart will retry on next heartbeat.
 			fmt.Fprintf(os.Stderr, "Note: could not bootstrap desktop helper for user %s (will retry on heartbeat): %s\n",
@@ -592,10 +592,10 @@ func bootstrapDesktopHelperPlists() {
 	// Bootstrap the login-window helper (covers login screen remote access).
 	// Use kickstart first (stable interface), fall back to bootstrap.
 	const loginWindowLabel = "loginwindow/com.breeze.desktop-helper-loginwindow"
-	if err := exec.Command("launchctl", "kickstart", "-k", loginWindowLabel).Run(); err == nil {
+	if err := procspawn.Command("launchctl", "kickstart", "-k", loginWindowLabel).Run(); err == nil {
 		fmt.Println("Login-window desktop helper kickstarted.")
 	} else {
-		out, err2 := exec.Command("launchctl", "bootstrap", "loginwindow", darwinDesktopLoginWindowPlistDst).CombinedOutput()
+		out, err2 := procspawn.Command("launchctl", "bootstrap", "loginwindow", darwinDesktopLoginWindowPlistDst).CombinedOutput()
 		if err2 != nil {
 			fmt.Fprintf(os.Stderr, "Note: could not start login-window desktop helper: %s\n",
 				strings.TrimSpace(string(out)))
@@ -638,7 +638,7 @@ func ensureDarwinBreezeGroupConsoleMembers() {
 // darwinConsoleUsernames lists the usernames with a GUI (loginwindow) session,
 // excluding root and system/service accounts.
 func darwinConsoleUsernames() []string {
-	out, err := exec.Command("ps", "-axo", "uid=,comm=").Output()
+	out, err := procspawn.Command("ps", "-axo", "uid=,comm=").Output()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not enumerate GUI sessions for %s group membership: %v\n",
 			sessionbroker.IPCGroupName, err)

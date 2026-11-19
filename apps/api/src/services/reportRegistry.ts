@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { BUSINESS_REPORT_REQUIRED_PERMISSIONS, type ReportType } from '@breeze/shared';
+import { BUSINESS_REPORT_REQUIRED_PERMISSIONS, REPORT_TYPE_REQUIRED_PERMISSIONS, type ReportType } from '@breeze/shared';
 // TYPE-ONLY imports below must stay type-only. `./permissions` and
 // `./reportGenerationService` both import `db`; a value import of either would
 // put the pool in this module's graph (and, for the service, reinstate the
@@ -15,7 +15,7 @@ import type {
   OrgReportGenerationAuthority,
   ReportGenerationAuthority,
 } from './siteScope';
-import type { EvidenceRunContext, ReportResult } from './reportGenerationService';
+import type { EvidenceRunContext, ReportResult, ReportRunOptions } from './reportGenerationService';
 import {
   StoredArtifactOnlyReportError,
   UnexecutableReportScopeError,
@@ -36,6 +36,7 @@ import {
   technicianTimeConfigSchema,
   threatDetectionConfigSchema,
   ticketSlaConfigSchema,
+  ticketSlaPerformanceConfigSchema,
   vulnerabilityManagementConfigSchema,
 } from './reportConfigSchemas';
 
@@ -78,6 +79,7 @@ export interface ReportTypeDef {
     config: Record<string, unknown>,
     authority: ReportGenerationAuthority,
     evidence?: EvidenceRunContext,
+    options?: ReportRunOptions,
   ): Promise<ReportResult>;
 }
 
@@ -295,11 +297,11 @@ const generators = {
     type: 'vulnerability_management', label: 'Vulnerability management',
     configSchema: vulnerabilityManagementConfigSchema, supportedScopes: ORG_ONLY,
     execution: 'managed_evidence', audience: 'any', requiredPermissions: NO_EXTRA_PERMISSIONS, detailRowCap: UNCAPPED,
-    generate: async (scope, config, authority, evidence) => {
+    generate: async (scope, config, authority, evidence, options) => {
       const orgId = orgOf(scope);
       const orgAuthority = orgAxisAuthority(authority, 'vulnerability_management');
       const { generateVulnerabilityManagementReport } = await import('./vulnerabilityManagementReport');
-      return generateVulnerabilityManagementReport(orgId, config, orgAuthority, evidence);
+      return generateVulnerabilityManagementReport(orgId, config, orgAuthority, evidence, options);
     },
   },
   // The generator itself decides what a RESTRICTED authority gets (nothing —
@@ -399,6 +401,22 @@ const generators = {
     generate: async (scope, config, authority) => {
       const { generateClientProfitabilityReport } = await import('./businessReports/clientProfitabilityReport');
       return generateClientProfitabilityReport(scope, config, authority);
+    },
+  },
+  // #11018: the customer-facing sibling of ticket_sla_attainment. Org-only and
+  // audience 'any', with the same ticket read gate. It takes the authority
+  // untouched and refuses a restricted one itself: tickets have no site axis.
+  ticket_sla_performance: {
+    type: 'ticket_sla_performance', label: 'SLA performance',
+    configSchema: ticketSlaPerformanceConfigSchema, supportedScopes: ORG_ONLY,
+    execution: 'managed_evidence', audience: 'any',
+    requiredPermissions: REPORT_TYPE_REQUIRED_PERMISSIONS.ticket_sla_performance!,
+    detailRowCap: UNCAPPED,
+    generate: async (scope, config, authority, evidence) => {
+      orgOf(scope);
+      const orgAuthority = orgAxisAuthority(authority, 'ticket_sla_performance');
+      const { generateTicketSlaPerformanceReport } = await import('./businessReports/ticketSlaPerformanceReport');
+      return generateTicketSlaPerformanceReport(scope, config, orgAuthority, evidence);
     },
   },
 } satisfies { readonly [K in ReportType]: ReportTypeDef & { type: K } };

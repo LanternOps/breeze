@@ -26,6 +26,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const testState = vi.hoisted(() => ({
   scopes: ['ai:read'] as string[],
+  // A partner-scoped key, for a tool whose handler refuses every org-scoped caller (#11287).
+  partnerKey: false,
 }));
 
 const mocks = vi.hoisted(() => ({
@@ -72,7 +74,7 @@ vi.mock('../middleware/apiKeyAuth', () => ({
   apiKeyAuthMiddleware: async (c: any, next: any) => {
     c.set('apiKey', {
       id: 'key-1',
-      orgId: 'org-1',
+      orgId: testState.partnerKey ? null : 'org-1',
       partnerId: 'partner-1',
       name: 'test',
       keyPrefix: 'brz_test',
@@ -81,7 +83,7 @@ vi.mock('../middleware/apiKeyAuth', () => ({
       rateLimit: 1000,
       createdBy: 'user-1',
     });
-    c.set('apiKeyOrgId', 'org-1');
+    c.set('apiKeyOrgId', testState.partnerKey ? null : 'org-1');
     await next();
   },
   requireApiKeyScope: () => async (_c: any, next: any) => next(),
@@ -158,10 +160,10 @@ vi.mock('../services/permissions', async (importOriginal) => {
         { resource: 'automations', action: 'read' },
         { resource: 'automations', action: 'write' },
       ],
-      partnerId: null,
-      orgId: 'org-1',
+      ...(testState.partnerKey
+        ? { partnerId: 'partner-1', orgId: null, scope: 'partner' as const, orgAccess: 'all' as const }
+        : { partnerId: null, orgId: 'org-1', scope: 'organization' as const }),
       roleId: 'role-1',
-      scope: 'organization' as const,
       allowedSiteIds: undefined,
     })),
   };
@@ -172,6 +174,7 @@ import { mcpServerRoutes } from './mcpServer';
 beforeEach(() => {
   vi.clearAllMocks();
   testState.scopes = ['ai:read'];
+  testState.partnerKey = false;
   mocks.executeTool.mockReset().mockResolvedValue(JSON.stringify({ ok: true }));
   mocks.getToolDefinitions.mockReset().mockReturnValue([]);
   // get_invite_funnel is the ONLY registered tool for this suite; it is base
@@ -264,6 +267,8 @@ describe('MCP tools/call deprecated alias dispatch (#5362)', () => {
   describe('manage_catalog -> manage_billing_catalog (W02 D3, #6756)', () => {
     beforeEach(() => {
       testState.scopes = ['ai:read', 'ai:write'];
+      // The billing price book is partner-scope only: an org-scoped key is refused before dispatch (#11287).
+      testState.partnerKey = true;
     });
 
     it('dispatches a call for "manage_catalog" as "manage_billing_catalog"', async () => {
@@ -284,6 +289,17 @@ describe('MCP tools/call deprecated alias dispatch (#5362)', () => {
       expect(event.details.toolName).toBe('manage_billing_catalog');
       expect(event.details.requestedToolName).toBe('manage_catalog');
       expect(event.details.deprecatedToolAlias).toBe(true);
+    });
+
+    it('an org-scoped key calling the alias is refused before dispatch, like the canonical name (#11287)', async () => {
+      testState.partnerKey = false;
+      for (const name of ['manage_catalog', 'manage_billing_catalog']) {
+        mocks.executeTool.mockClear();
+        const body = await (await callTool(name, { action: 'create_item', name: 'Managed Workstation', itemType: 'service' })).json();
+        expect(body.result?.isError, name).toBe(true);
+        expect(JSON.parse(body.result.content[0].text).code, name).toBe('PARTNER_SCOPE_REQUIRED');
+        expect(mocks.executeTool).not.toHaveBeenCalled();
+      }
     });
 
     it('an aliased supervised action is still MCP-denied, exactly like the canonical name', async () => {

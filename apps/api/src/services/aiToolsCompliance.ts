@@ -44,6 +44,7 @@ import {
 import { managedSoftwarePolicyRefusal } from './securityAgents/managedSoftwarePolicyGuard';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { getPolicyWithOrgCheck } from '../routes/policyManagement/helpers';
+import { withoutObservedStateValues } from './complianceRuleResults';
 import {
   deviceScopeCondition,
   resolveSiteAllowedDeviceIds,
@@ -986,7 +987,7 @@ registerTool({
     }
 
     return JSON.stringify({
-      records,
+      records: records.map((record) => ({ ...record, details: withoutObservedStateValues(record.details) })),
       total: Number(countResult[0]?.count ?? 0),
       showing: records.length,
       breakdown,

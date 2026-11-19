@@ -9,9 +9,10 @@ package patching
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // osRebootCommandTimeout bounds every shutdown invocation.
@@ -38,7 +39,7 @@ func runRebootCommand(name string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), osRebootCommandTimeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	out, err := procspawn.CommandContext(ctx, name, args...).CombinedOutput()
 	if err == nil {
 		return nil
 	}

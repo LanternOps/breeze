@@ -116,6 +116,9 @@ vi.mock('./clientIp', async (orig) => ({
   getTrustedClientIpOrUndefined: () => undefined,
 }));
 
+// Not reached here (the custom mcpServerFactory skips flow resolution); mocked for the flowToolsMock contract (#11011).
+vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
+
 import { StreamingSessionManager, type ActiveSession } from './streamingSessionManager';
 import type { createSessionPostToolUse } from './aiAgentSdk';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';

@@ -273,6 +273,8 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       'baseCandidateSelect@depth1',
       'update@depth1',
       'baseFallbackProbeSelect@depth1',
+      // #11027: the diagnosed fallback reason, still in this short context.
+      'update@depth1',
       'recordExpectation@depth1',
       'ctx:exit',
       // Phase 4: the actual send, NO context held. This is the #1105 fix —
@@ -340,6 +342,43 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
     ]);
   });
 
+  // #11027: the reason is explanatory. Dispatch has committed by the time it is
+  // stored, so losing it must not turn an accepted full copy into a failed job.
+  it('stores the diagnosed fallback reason, and only over a NULL', async () => {
+    const realUpdate = mockDb.update.getMockImplementation()!;
+    const payloads: Array<Record<string, unknown>> = [];
+    mockDb.update.mockImplementation(((...args: unknown[]) => {
+      const chain = (realUpdate as (...a: unknown[]) => { set: (p: Record<string, unknown>) => unknown })(...args);
+      return { set: (payload: Record<string, unknown>) => { payloads.push(payload); return chain.set(payload); } };
+    }) as never);
+
+    await __testOnly.processDispatchBackup(DATA as any);
+
+    // In the dispatch transaction: no base, so no reason yet (an older helper).
+    expect(payloads[0]).toMatchObject({ baseSnapshotId: null, fullBackupReason: null });
+    // After commit: the probe found no snapshot at all.
+    expect(payloads[1]).toEqual({ fullBackupReason: 'no_prior_snapshot' });
+  });
+
+  it('still dispatches when storing the diagnosed fallback reason fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const realUpdate = mockDb.update.getMockImplementation()!;
+    let updates = 0;
+    mockDb.update.mockImplementation(((...args: unknown[]) => {
+      updates += 1;
+      // The second UPDATE is the post-commit reason stamp (see the order above).
+      if (updates === 2) throw new Error('reason stamp failed');
+      return (realUpdate as (...a: unknown[]) => unknown)(...args);
+    }) as never);
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: true });
+    expect(agentRelayMock.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('diagnosing or recording the reason failed: reason stamp failed'));
+    warn.mockRestore();
+  });
+
   it('marks the job failed in Phase 5 (its own short context) when the outcome is offline', async () => {
     agentRelayMock.dispatchCommandToAgent.mockImplementation(async () => {
       ctxState.events.push(`wsDispatch@depth${ctxState.depth}`);
@@ -370,6 +409,8 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
       'baseCandidateSelect@depth1',
       'update@depth1',
       'baseFallbackProbeSelect@depth1',
+      // #11027: the diagnosed fallback reason, still in this short context.
+      'update@depth1',
       'recordExpectation@depth1',
       'ctx:exit',
       'ctx:enter',

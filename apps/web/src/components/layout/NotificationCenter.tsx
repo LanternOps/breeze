@@ -12,12 +12,15 @@ import {
   ShieldCheck,
   Ticket,
   UserRound,
+  Volume2,
+  VolumeX,
   Workflow
 } from 'lucide-react';
 import { NOTIFICATION_TYPES, type NotificationType } from '@breeze/shared';
 import { cn, formatRelativeTime } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 import { hashForConcern } from '@/components/wisp/wispThreadHash';
+import { playNotificationChime } from '@/lib/notificationChime';
 import { fetchWithAuth } from '../../stores/auth';
 import { useEventStream } from '../../hooks/useEventStream';
 import { useTranslation } from 'react-i18next';
@@ -25,6 +28,19 @@ import { useTranslation } from 'react-i18next';
 const POLL_INTERVAL_MS = 30000;
 const LIVE_REFETCH_DEBOUNCE_MS = 750;
 const NOTIFICATION_EVENTS = ['notification.created'];
+// = the bell-ring animation in globals.css (0.8s × 2).
+const RING_DURATION_MS = 1600;
+// Per-browser on purpose, unlike the theme (a synced user preference): muting
+// the office PC must not silence the same user's laptop.
+const SOUND_STORAGE_KEY = 'breeze-notification-sound';
+
+const readSoundEnabled = (): boolean => {
+  try {
+    return window.localStorage.getItem(SOUND_STORAGE_KEY) !== 'off';
+  } catch {
+    return true;
+  }
+};
 
 type NotificationDisplayType = NotificationType | 'unknown';
 
@@ -36,6 +52,10 @@ type NotificationItem = {
   createdAt: string;
   read: boolean;
   href?: string;
+  // An approval-type row that reports what happened to a request ("granted",
+  // "denied", "expired", a script proposal's result) rather than asking for a
+  // decision. The API marks those with `metadata.outcome`.
+  isOutcome?: boolean;
   // True when the payload carried no usable timestamp and createdAt fell back to
   // the SSR reference date — so the UI can avoid rendering a misleading
   // "2 years ago" relative time.
@@ -237,6 +257,9 @@ const normalizeNotification = (raw: RawNotification, index: number): Notificatio
     getString(raw.url) ||
     getString(raw.targetUrl) ||
     buildHref(type, raw);
+  const metadata = raw.metadata;
+  const isOutcome =
+    !!metadata && typeof metadata === 'object' && typeof (metadata as Record<string, unknown>).outcome === 'string';
 
   return {
     id,
@@ -246,6 +269,7 @@ const normalizeNotification = (raw: RawNotification, index: number): Notificatio
     createdAt,
     read,
     href,
+    ...(isOutcome ? { isOutcome } : {}),
     timeUnknown
   };
 };
@@ -263,6 +287,52 @@ export default function NotificationCenter() {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const notificationsRef = useRef<NotificationItem[]>([]);
   const liveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isRinging, setIsRinging] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const soundEnabledRef = useRef(true);
+  const ringTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Ids seen so far. Null until the first successful load, so the backlog that
+  // was already waiting never rings. Only ever grows: a row that scrolls out of
+  // the list and back must not ring twice.
+  const seenIdsRef = useRef<Set<string> | null>(null);
+
+  useEffect(() => {
+    const enabled = readSoundEnabled();
+    soundEnabledRef.current = enabled;
+    setSoundEnabled(enabled);
+    return () => {
+      if (ringTimerRef.current) clearTimeout(ringTimerRef.current);
+    };
+  }, []);
+
+  const toggleSound = useCallback(() => {
+    const next = !soundEnabledRef.current;
+    soundEnabledRef.current = next;
+    setSoundEnabled(next);
+    try {
+      window.localStorage.setItem(SOUND_STORAGE_KEY, next ? 'on' : 'off');
+    } catch {
+      // Storage blocked: the choice lasts for this page only.
+    }
+  }, []);
+
+  const ringForArrivals = useCallback((items: NotificationItem[]) => {
+    const seen = seenIdsRef.current;
+    const arrivals = seen ? items.filter((item) => !item.read && !seen.has(item.id)) : [];
+    const nextSeen = seen ?? new Set<string>();
+    for (const item of items) nextSeen.add(item.id);
+    seenIdsRef.current = nextSeen;
+    if (arrivals.length === 0) return;
+
+    setIsRinging(true);
+    if (ringTimerRef.current) clearTimeout(ringTimerRef.current);
+    ringTimerRef.current = setTimeout(() => setIsRinging(false), RING_DURATION_MS);
+
+    // Sound is reserved for approval REQUESTS: something is blocked on this
+    // person. An outcome notice shares the type but asks for nothing.
+    const approval = arrivals.find((item) => item.type === 'approval' && !item.isOutcome);
+    if (approval && soundEnabledRef.current) playNotificationChime(approval.id);
+  }, []);
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -290,12 +360,13 @@ export default function NotificationCenter() {
         (a: NotificationItem, b: NotificationItem) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
       setNotifications(normalized);
+      ringForArrivals(normalized);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load notifications');
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [ringForArrivals]);
 
   const { subscribe, unsubscribe } = useEventStream({
     onEvent: (event) => {
@@ -363,6 +434,8 @@ export default function NotificationCenter() {
     [notifications]
   );
   const unreadDisplay = unreadCount > 99 ? '99+' : unreadCount.toString();
+  // Two literal calls, not one with a ternary key: the key-usage check reads literals.
+  const soundLabel = soundEnabled ? t('layout.notifications.muteSound') : t('layout.notifications.unmuteSound');
 
   const persistNotificationRead = useCallback(
     async (payload: { ids?: string[]; all?: boolean; read?: boolean }) => {
@@ -464,8 +537,9 @@ export default function NotificationCenter() {
         aria-label={unreadCount > 0 ? t('layout.notifications.ariaUnread', { count: unreadCount }) : t('layout.notifications.title')}
         aria-haspopup="dialog"
         aria-expanded={isOpen}
+        data-ringing={isRinging ? 'true' : undefined}
       >
-        <Bell className="h-5 w-5" />
+        <Bell className={cn('h-5 w-5', isRinging && 'bell-ring')} />
         {unreadCount > 0 && (
           <span className="absolute right-1 top-1 flex u-min-h-px-18 min-w-[18px] items-center justify-center rounded-full bg-destructive px-1 text-xs font-semibold text-destructive-foreground">
             {unreadDisplay}
@@ -483,6 +557,16 @@ export default function NotificationCenter() {
               </p>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={toggleSound}
+                aria-pressed={!soundEnabled}
+                aria-label={soundLabel}
+                title={soundLabel}
+                className="rounded-md border p-1 transition hover:bg-muted"
+              >
+                {soundEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -605,7 +689,8 @@ export default function NotificationCenter() {
                           )}
                         </div>
                         {notification.message && (
-                          <p className="text-xs text-muted-foreground">
+                          // Clamped: a Wisp run report's body is the whole report (#11673); the thread shows it in full.
+                          <p className="line-clamp-3 break-words text-xs text-muted-foreground">
                             {notification.message}
                           </p>
                         )}

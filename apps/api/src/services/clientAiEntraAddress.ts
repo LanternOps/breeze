@@ -58,7 +58,9 @@ function domainOf(address: string): string | null {
 export async function resolveLinkableEntraAddress(
   orgId: string,
   partnerId: string,
-  claims: ClientAiEntraClaims,
+  // Only the three provenance fields it reads, so the portal sign-in's
+  // PortalOidcVerifiedIdentity (services/portalOidc/types.ts) fits as well.
+  claims: Pick<ClientAiEntraClaims, 'upn' | 'emailClaim' | 'emailDomainOwnerVerified'>,
 ): Promise<EntraAddressDecision> {
   // (a) Pick the address by PROVENANCE, not merely by preference order. The UPN
   // wins whenever present because it is the stronger claim.

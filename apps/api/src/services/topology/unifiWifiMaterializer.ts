@@ -1,7 +1,7 @@
 import { and, eq, sql, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { TopologyScope, UnifiResourceV2, WirelessRadioOverview, WirelessRadioStatistics } from '@breeze/shared';
-import { assertInTransaction, db } from '../../db';
+import { assertInTransaction, db, withDbTransaction } from '../../db';
 import { unifiDeviceTelemetry } from '../../db/schema';
 import { canonicalMac } from '../unifi/unifiMac';
 import { loadTopologyFlags } from './flags';
@@ -160,7 +160,7 @@ export async function materializeUnifiWifiCurrentState(input: {
   const t = unifiDeviceTelemetry;
   const now = new Date();
   let statements = 0;
-  await db.transaction(async () => {
+  await withDbTransaction(async () => {
     for (let start = 0; start < rows.length; start += UNIFI_WIFI_UPSERT_CHUNK) {
       const chunk = rows.slice(start, start + UNIFI_WIFI_UPSERT_CHUNK);
       await db.insert(t).values(chunk.map(row => ({

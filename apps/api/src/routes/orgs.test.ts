@@ -271,6 +271,9 @@ vi.mock('../db', () => ({
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  // The audit org resolver (#11225) wraps its caught lookup in a savepoint
+  // when a request transaction is held; with none here it is a pass-through.
+  withDbTransactionIfHeld: vi.fn(async (fn: () => any) => fn()),
   // PATCH /orgs/organizations/:id calls assertNotLocked, whose partner-axis
   // read now goes through readWithPartnerAxisVisibility (#2822). That helper
   // probes the ambient scope, so the factory must export it — `undefined`
@@ -9799,6 +9802,27 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.settings.security).toEqual({ sessionTimeout: 720, requireMfa: true });
+    });
+
+    // #12097: the wire carries the printed size (choice, else region default) plus the raw choice.
+    it('GET /partners/me resolves a never-chosen page size from the partner country', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.stubEnv('BREEZE_REGION', 'us');
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'partner-123', name: 'P', documentPageSize: null, billingAddressCountry: null,
+              settings: { address: { country: 'DE' } },
+            }]),
+          }),
+        }),
+      } as any);
+      const res = await app.request('/orgs/partners/me');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({ documentPageSize: 'a4', documentPageSizeChoice: null, documentPageSizeFallback: 'letter' });
+      vi.unstubAllEnvs();
     });
   });
 

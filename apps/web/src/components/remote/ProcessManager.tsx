@@ -11,6 +11,7 @@ import {
   HardDrive,
   Activity,
   Loader2,
+  BellPlus,
   ChevronRight
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
@@ -487,6 +488,17 @@ export default function ProcessManager({
                         </span>
                       </td>
                       <td className="px-4 py-3">
+                        <div className="flex items-center gap-1">
+                        <a
+                          href={`/alerts/monitors/new#kind=process&processName=${encodeURIComponent(proc.name)}`}
+                          onClick={e => e.stopPropagation()}
+                          data-testid="monitor-this-process"
+                          title={t('processManager.monitorThis')}
+                          aria-label={t('processManager.monitorThis')}
+                          className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
+                        >
+                          <BellPlus className="h-4 w-4" />
+                        </a>
                         <button
                           type="button"
                           onClick={e => {
@@ -499,6 +511,7 @@ export default function ProcessManager({
                         >
                           <X className="h-4 w-4" />
                         </button>
+                        </div>
                       </td>
                     </tr>
                     {/* Expanded Details Row */}

@@ -1,6 +1,7 @@
 import '@/lib/i18n';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DR_STEP_TYPES, normalizeDrStepType } from '@breeze/shared';
 import DRPlanEditor from './DRPlanEditor';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -192,7 +193,8 @@ describe('DRPlanEditor step type', () => {
 
     render(<DRPlanEditor open planId="plan-1" onClose={vi.fn()} onSaved={onSaved} />);
     const select = (await screen.findByTestId('dr-group-step-type')) as HTMLSelectElement;
-    expect(select.value).toBe('MSSQL_RESTORE');
+    // The stored upper-case spelling (#11856) loads as the canonical step type.
+    expect(select.value).toBe('mssql_restore');
 
     const save = screen.getByText('Save plan').closest('button')!;
     await waitFor(() => expect(save).not.toBeDisabled());
@@ -203,7 +205,42 @@ describe('DRPlanEditor step type', () => {
       ([url, init]) => String(url) === '/dr/plans/plan-1/groups/group-1' && (init as RequestInit | undefined)?.method === 'PATCH'
     );
     const body = JSON.parse(String((groupCall![1] as RequestInit).body));
-    expect(body.restoreConfig).toEqual({ commandType: 'MSSQL_RESTORE', payload: { databaseName: 'erp' } });
+    // ...and is re-saved in the canonical spelling dispatch accepts.
+    expect(body.restoreConfig).toEqual({ commandType: 'mssql_restore', payload: { databaseName: 'erp' } });
+  });
+
+  // #11856: the editor saved step types that execution refused. Every step type
+  // the selector offers must be saved in a spelling the shared normaliser (the
+  // one dispatch uses) maps to itself.
+  it.each(DR_STEP_TYPES)('saves step type %s in the canonical spelling dispatch accepts (#11856)', async (stepType) => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url.startsWith('/devices/options')) return makeJsonResponse(deviceOptionsPayload);
+      if (url === '/dr/plans' && method === 'POST') return makeJsonResponse({ data: { id: 'plan-1' } });
+      if (url === '/dr/plans/plan-1/groups' && method === 'POST') return makeJsonResponse({ data: { id: 'group-1' } });
+      return makeJsonResponse({}, false, 404);
+    });
+    const onSaved = vi.fn();
+
+    render(<DRPlanEditor open planId={null} onClose={vi.fn()} onSaved={onSaved} />);
+    fireEvent.change(screen.getByLabelText('Plan name'), { target: { value: 'Plan A' } });
+    fireEvent.change(screen.getByPlaceholderText('Core services'), { target: { value: 'Tier 1' } });
+    fireEvent.change(screen.getByTestId('dr-group-step-type'), { target: { value: stepType } });
+    const deviceRows = await screen.findAllByText('zzz-dr-device');
+    fireEvent.click(deviceRows[0]!.closest('label')!.querySelector('input')!);
+
+    const save = screen.getByText('Save plan').closest('button')!;
+    await waitFor(() => expect(save).not.toBeDisabled());
+    fireEvent.click(save);
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+
+    const groupCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url) === '/dr/plans/plan-1/groups' && (init as RequestInit | undefined)?.method === 'POST'
+    );
+    const { commandType } = JSON.parse(String((groupCall![1] as RequestInit).body)).restoreConfig;
+    expect(commandType).toBe(stepType);
+    expect(normalizeDrStepType(commandType)).toBe(commandType);
   });
 });
 

@@ -9,6 +9,8 @@ import { getBinarySource, getGithubReleaseVersion, getGithubAgentUrl, getGithubU
 import { getPromotedComponentVersion, getRegisteredComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
 import { fetchVerifiedMacosPkg, fetchVerifiedHelperInstaller } from '../../services/installerBuilder';
 import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
+import { onboardingServerUrl } from '../../services/onboardingServerUrl';
+import { generateWindowsInstallScript } from '../../services/windowsInstallScript';
 
 export const downloadRoutes = new Hono();
 
@@ -760,6 +762,38 @@ downloadRoutes.get('/install.sh', async (c) => {
   });
 });
 
+downloadRoutes.get('/install.ps1', async (c) => {
+  const rateLimited = await enforcePublicAgentDownloadRateLimit(c, 'windows-install-script-download');
+  if (rateLimited) {
+    const headers = new Headers(rateLimited.headers);
+    headers.set('Cache-Control', 'no-store');
+    return new Response(rateLimited.body, {
+      status: rateLimited.status,
+      statusText: rateLimited.statusText,
+      headers,
+    });
+  }
+
+  const serverUrl = onboardingServerUrl() ?? resolveInstallScriptServerUrl(c.req.url);
+  if (!serverUrl) {
+    return new Response('Installer script unavailable: server URL is not configured', {
+      status: 503,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store',
+      },
+    });
+  }
+
+  return new Response(generateWindowsInstallScript(serverUrl), {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store, no-transform',
+    },
+  });
+});
+
 downloadRoutes.get('/uninstall.sh', async (c) => {
   const rateLimited = await enforcePublicAgentDownloadRateLimit(c, 'uninstall-script-download');
   if (rateLimited) return rateLimited;
@@ -781,6 +815,8 @@ AGENT_BINARY="/usr/local/bin/breeze-agent"
 AGENT_BINARY_TRUSTED="/Library/Breeze/bin/breeze-agent"
 WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
 BACKUP_BINARY="/usr/local/bin/breeze-backup"
+ISOLATION_RECOVERY_ROOT="/usr/local/lib/breeze"
+ISOLATION_DATA_DIR="/var/lib/breeze"
 
 fatal() {
   echo "Error: $*" >&2
@@ -886,6 +922,54 @@ uninstall_macos() {
   echo "Logs at /Library/Logs/Breeze/ were kept. To remove them: sudo rm -rf /Library/Logs/Breeze"
 }
 
+# Network isolation is released before anything it depends on is touched:
+# removing the agent or the recovery timers first would leave this host cut off
+# with nothing left to undo it. Returns non-zero when the release cannot be
+# confirmed. A host that was never isolated has no journal and no table.
+release_isolation_linux() {
+  local data_dir="$ISOLATION_DATA_DIR"
+  local journal=0 rules="absent" tables
+  if [[ -e "$data_dir/isolation.json" ]]; then
+    journal=1
+  fi
+  # A failed listing is "unknown", never "absent": only a listing that ran and
+  # lacks our table proves the rules are gone.
+  if command -v nft >/dev/null 2>&1; then
+    if tables="$(nft list tables 2>/dev/null)"; then
+      # Not grep -q: it can SIGPIPE printf under pipefail.
+      if printf '%s\\n' "$tables" | grep -Fx 'table inet breeze_isolation' >/dev/null; then
+        rules="present"
+      fi
+    else
+      rules="unknown"
+    fi
+  fi
+  # No journal: no build that isolates has run here, so nothing is ours to
+  # release, even when the engine cannot be asked (a kernel without nf_tables).
+  if [[ "$journal" -eq 0 && "$rules" != "present" ]]; then
+    return 0
+  fi
+  if [[ -x "$AGENT_BINARY" ]] && "$AGENT_BINARY" containment release-all --reason uninstall; then
+    return 0
+  fi
+  # A broken agent must not block this: the recovery binary is installed
+  # separately for exactly that case.
+  local recovery
+  for recovery in "$ISOLATION_RECOVERY_ROOT"/isolation-recovery/*/breeze-isolation-recovery; do
+    if [[ -x "$recovery" ]] && "$recovery" release-all --data-dir "$data_dir" --reason uninstall; then
+      return 0
+    fi
+  done
+  # Nothing could run. A journal alone is harmless once the rules are observably
+  # gone (a half-removed install); rules still in place, or an engine that cannot
+  # be asked, are not.
+  if [[ "$rules" == "absent" ]] && command -v nft >/dev/null 2>&1; then
+    warn "no agent or recovery binary to record the release; no isolation rules are installed"
+    return 0
+  fi
+  return 1
+}
+
 uninstall_linux() {
   local agent_service="/etc/systemd/system/breeze-agent.service"
   local watchdog_service="/etc/systemd/system/breeze-watchdog.service"
@@ -895,7 +979,11 @@ uninstall_linux() {
 
   echo "Uninstalling Breeze Agent for Linux..."
 
+  release_isolation_linux || fatal "network isolation could not be released; nothing was removed. Release it from the console or with: sudo breeze-agent containment release --force"
+
   if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop breeze-isolation-poll.timer 2>/dev/null || true
+    systemctl disable breeze-isolation-poll.timer breeze-isolation.service 2>/dev/null || true
     if systemctl is-active --quiet breeze-agent 2>/dev/null; then
       systemctl stop breeze-agent
       echo "Service stopped."
@@ -921,6 +1009,11 @@ uninstall_linux() {
   rm -f "$AGENT_BINARY"
   rm -f "$WATCHDOG_BINARY"
   rm -f "$BACKUP_BINARY"
+  rm -f /etc/systemd/system/breeze-isolation.service \\
+    /etc/systemd/system/breeze-isolation-poll.service \\
+    /etc/systemd/system/breeze-isolation-poll.timer
+  rm -rf "$ISOLATION_RECOVERY_ROOT/isolation-recovery"
+  rmdir "$ISOLATION_RECOVERY_ROOT" 2>/dev/null || true
   rmdir "$ipc_dir" 2>/dev/null || true
 
   if command -v systemctl >/dev/null 2>&1; then

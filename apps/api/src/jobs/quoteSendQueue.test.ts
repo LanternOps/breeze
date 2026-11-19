@@ -67,9 +67,14 @@ vi.mock('../db', () => ({
   db: { update: updateMock, select: selectMock },
   withSystemDbAccessContext: withSystemDbAccessContextMock,
 }));
+const { assertBillingMock } = vi.hoisted(() => ({ assertBillingMock: vi.fn() }));
+vi.mock('../services/billingEnabled', () => ({
+  assertBillingEnabledForOrg: assertBillingMock,
+  isBillingDisabledError: (e: unknown) => (e as { code?: unknown })?.code === 'BILLING_DISABLED',
+}));
 vi.mock('../services/quoteLifecycle', () => ({ sendQuote: sendQuoteMock }));
 vi.mock('../db/schema/quotes', () => ({
-  quotes: { id: 'id', status: 'status', sendScheduledAt: 'sendScheduledAt', sendJobId: 'sendJobId', sendEmailReason: 'sendEmailReason' },
+  quotes: { id: 'id', status: 'status', sendScheduledAt: 'sendScheduledAt', sendJobId: 'sendJobId', sendEmailReason: 'sendEmailReason', orgId: 'orgId' },
 }));
 // Inspectable predicate shapes so where() payloads can be asserted exactly.
 vi.mock('drizzle-orm', () => ({
@@ -112,6 +117,7 @@ describe('quoteSendQueue', () => {
     addMock.mockResolvedValue(undefined);
     removeMock.mockResolvedValue(1);
     updateCalls.length = 0;
+    assertBillingMock.mockReset().mockResolvedValue(undefined);
     dbState.selectRows = [];
     dbState.returningQueue.length = 0;
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -285,6 +291,29 @@ describe('quoteSendQueue', () => {
       // Delivered → no outcome write needed: sendQuote's draft→sent flip
       // already cleared the marker atomically. Only the claim ran.
       expect(updateCalls).toHaveLength(1);
+    });
+
+    it('BRZ-8807: billing off at fire time -> no send, schedule_failed via the existing path, no Sentry', async () => {
+      dbState.returningQueue.push([{ id: 'q-1', orgId: 'org-1' }]);
+      assertBillingMock.mockImplementationOnce(async (_orgId: string, make: (m: string, s: 404, c: 'BILLING_DISABLED') => Error) => {
+        throw make('Not found', 404, 'BILLING_DISABLED');
+      });
+
+      await expect(processQuoteSendJob(jobData)).resolves.toBeUndefined();
+
+      expect(assertBillingMock).toHaveBeenCalledWith('org-1', expect.any(Function));
+      expect(sendQuoteMock).not.toHaveBeenCalled();
+      expect(updateCalls).toHaveLength(2);
+      expect(updateCalls[1]!.set).toEqual({ sendScheduledAt: null, sendJobId: null, sendEmailReason: 'schedule_failed' });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+    });
+
+    it('BRZ-8807: billing on is unchanged (gate checked with the claimed org, send proceeds)', async () => {
+      dbState.returningQueue.push([{ id: 'q-1', orgId: 'org-1' }]);
+      sendQuoteMock.mockResolvedValueOnce(sendResult());
+      await processQuoteSendJob(jobData);
+      expect(assertBillingMock).toHaveBeenCalledWith('org-1', expect.any(Function));
+      expect(sendQuoteMock).toHaveBeenCalledTimes(1);
     });
 
     // #3905 — the failure marker is no longer written by this worker: the

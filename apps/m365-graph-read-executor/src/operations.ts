@@ -103,6 +103,8 @@ function verifiedResult(observation: Awaited<ReturnType<MicrosoftGraphClient['pr
   return {
     ...common,
     grantReconciliation: 'complete' as const,
+    // Read holds Application.Read.All, so its inventory is always exact.
+    grantReconciliationMode: 'exact' as const,
     observedGrants: reconciled.observedGrants,
     missingGrants: reconciled.missingGrants,
     unexpectedGrants: reconciled.unexpectedGrants,

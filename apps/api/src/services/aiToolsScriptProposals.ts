@@ -21,6 +21,7 @@ import {
   getCurrentDbAccessContext, hasDbAccessContext, runOutsideDbContext, withDbAccessContext,
 } from '../db';
 import { captureException } from './sentry';
+import { splitByOrg, type SplitByOrg } from './aiToolSplitByOrg';
 import {
   createScriptProposal, enqueueScriptReview, getScriptProposalForPrincipal, selectLatestModelReview,
   selectProposalExecutions, waitForReviewCompletion,
@@ -46,19 +47,24 @@ const INLINE_REVIEW_WAIT_MS = 45_000;
 async function resolveProposalOrgId(
   deviceIds: string[],
   auth: AuthContext,
-): Promise<{ orgId: string } | { error: string }> {
-  const orgIds = new Set<string>();
+): Promise<{ orgId: string } | { error: string } | SplitByOrg> {
+  // Insertion-ordered: the first device's org is listed first.
+  const byOrg = new Map<string, string[]>();
   for (const deviceId of deviceIds) {
     const access = await verifyDeviceAccess(deviceId, auth);
     if ('error' in access) return { error: access.error };
-    orgIds.add(access.device.orgId);
+    const group = byOrg.get(access.device.orgId);
+    if (group) group.push(deviceId); else byOrg.set(access.device.orgId, [deviceId]);
   }
-  if (orgIds.size > 1) {
-    return { error: 'invalid_input: all target devices must belong to one organization' };
+  if (byOrg.size > 1) {
+    return splitByOrg(byOrg, {
+      tool: 'propose_script',
+      hint: 'A proposal belongs to one organization. Call propose_script once per group.',
+    });
   }
   // Fall back to the caller's own org only if a device somehow resolved
   // without one — the page-context org, exactly as routes/ai.ts resolves it.
-  const [orgId] = [...orgIds];
+  const [orgId] = [...byOrg.keys()];
   const resolved = orgId ?? auth.orgId;
   if (!resolved) return { error: 'invalid_input: could not resolve the organization for these devices' };
   return { orgId: resolved };
@@ -180,7 +186,9 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
         if ('error' in resolvedOrg) return resolvedOrg;
         return createScriptProposal(auth, parsed.data, author, resolvedOrg.orgId);
       });
-      if ('error' in created) return JSON.stringify({ error: created.error });
+      if ('error' in created) {
+        return JSON.stringify(created.error === 'split_by_org' ? created : { error: created.error });
+      }
       const { proposal, scan } = created;
       const staticScan = {
         basicHits: scan.basicHits, strictHits: scan.strictHits, touchClasses: scan.touchClasses,

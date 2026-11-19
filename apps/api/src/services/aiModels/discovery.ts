@@ -11,7 +11,7 @@ import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { isGatewayConnectionKind, type GatewayConnectionKind, type ModelLifecycle } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiPlatformModels, partnerAiConnections, partnerAiModels } from '../../db/schema';
-import { sendOpsAlert } from '../opsAlerts';
+import { opsText, sendOpsAlert } from '../opsAlerts';
 import { captureException } from '../sentry';
 import { createAnthropicClient, type AnthropicClientTarget } from './connectionFactory';
 import { CONNECTION_MODEL_DISCOVERERS, type ConnectionModelDiscoverer } from './connectionDiscovery';
@@ -123,14 +123,14 @@ function formatSyncAlert(write: SyncWrite): { title: string; body: string } {
   const lines: string[] = [];
   if (write.toNotify.length > 0) {
     lines.push(
-      `New Anthropic model(s) discovered: ${write.toNotify.map((m) => m.modelId).join(', ')}.`,
+      `New Anthropic model(s) discovered: ${write.toNotify.map((m) => opsText(m.modelId)).join(', ')}.`,
       'They are unpriced and not offered to anyone until a platform admin sets a price and offers them on /admin/ai-models.',
     );
   }
-  if (write.markedMissing.length > 0) lines.push(`No longer listed by the Models API (missing): ${write.markedMissing.join(', ')}.`);
-  if (write.retired.length > 0) lines.push(`Retired after 14 days unlisted: ${write.retired.join(', ')}.`);
+  if (write.markedMissing.length > 0) lines.push(`No longer listed by the Models API (missing): ${write.markedMissing.map((m) => opsText(m)).join(', ')}.`);
+  if (write.retired.length > 0) lines.push(`Retired after 14 days unlisted: ${write.retired.map((m) => opsText(m)).join(', ')}.`);
   if (write.defaultProblem) {
-    lines.push(`The platform default model ${write.defaultProblem.modelId} is ${write.defaultProblem.lifecycle}; choose another default on /admin/ai-models.`);
+    lines.push(`The platform default model ${opsText(write.defaultProblem.modelId)} is ${opsText(write.defaultProblem.lifecycle)}; choose another default on /admin/ai-models.`);
   }
   const title = write.toNotify.length > 0
     ? `${write.toNotify.length} new Anthropic model(s) awaiting pricing`
@@ -280,7 +280,13 @@ export interface SyncConnectionModelsDeps {
 }
 
 /** displayName is only taken from gateway listings, and only on insert (an admin's name is never overwritten). */
-interface FoundModel { modelId: string; capabilities: unknown; displayName: string | null }
+interface FoundModel {
+  modelId: string;
+  capabilities: unknown;
+  displayName: string | null;
+  /** #11396: the window a GATEWAY listing states (null = not stated, or not a gateway listing). */
+  contextLength: number | null;
+}
 
 /** Everything a gateway listing needs, read before the network call. */
 interface GatewayListing {
@@ -320,7 +326,7 @@ async function listConnectionModels(
     // offering (only the verifier does), and the upsert's COALESCE keeps a
     // verification record already on the row.
     return withoutKeyMaterial(models, gateway.credential.secret)
-      .map((model) => ({ modelId: model.modelId, capabilities: null, displayName: model.displayName }));
+      .map((model) => ({ modelId: model.modelId, capabilities: null, displayName: model.displayName, contextLength: model.contextLength ?? null }));
   }
   if (conn.kind === 'anthropic_byok') {
     const material = await sysTx(() => getConnectionKeyMaterial(conn.id), 'aiModels.syncConnection.key');
@@ -331,7 +337,7 @@ async function listConnectionModels(
     const models = await deps.discoverAnthropicModels(keyRef.key, { kind: 'anthropic' });
     // W01 rule: an empty listing is a failure, never a mass "missing".
     if (models.length === 0) throw new Error('the Models API returned no models');
-    return models.map((model) => ({ modelId: model.id, capabilities: model.capabilities ?? null, displayName: null }));
+    return models.map((model) => ({ modelId: model.id, capabilities: model.capabilities ?? null, displayName: null, contextLength: null }));
   }
   // Catalog: mirror the entry's CURRENT listed revision, only models both
   // mapped and verified. The revision is the platform's vetted listing, so the
@@ -345,7 +351,7 @@ async function listConnectionModels(
   if (!provider) throw new Error('The catalog provider for this connection is not listed.');
   return [...new Set(provider.verifiedModels)]
     .filter((id) => Object.hasOwn(provider.modelMap, id))
-    .map((id) => ({ modelId: id, capabilities: null, displayName: null }));
+    .map((id) => ({ modelId: id, capabilities: null, displayName: null, contextLength: null }));
 }
 
 /** Shortest run of the key that is treated as the key itself when it appears in endpoint-supplied text. */
@@ -535,9 +541,10 @@ export async function syncConnectionModels(
       const capabilities = f.capabilities === null ? null : JSON.stringify(f.capabilities);
       const rows = await db.execute<{ inserted: boolean }>(sql`
         INSERT INTO partner_ai_models (partner_id, connection_id, platform_model_id, model_id, source, display_name,
-          capabilities, enabled, lifecycle, last_seen_at, missed_sync_count)
+          capabilities, enabled, lifecycle, last_seen_at, missed_sync_count, context_window_discovered)
         VALUES (${conn.partnerId}::uuid, ${conn.id}::uuid, ${platformIds.get(f.modelId) ?? null}::uuid, ${f.modelId}, ${source},
-          ${f.displayName}, ${capabilities}::jsonb, false, 'available', ${now.toISOString()}::timestamptz, 0)
+          ${f.displayName}, ${capabilities}::jsonb, false, 'available', ${now.toISOString()}::timestamptz, 0,
+          ${f.contextLength}::integer)
         ON CONFLICT (connection_id, model_id) WHERE connection_id IS NOT NULL DO UPDATE SET
           lifecycle = 'available',
           last_seen_at = EXCLUDED.last_seen_at,
@@ -546,10 +553,17 @@ export async function syncConnectionModels(
           capabilities = CASE WHEN partner_ai_models.source = 'discovered'
                               THEN COALESCE(EXCLUDED.capabilities, partner_ai_models.capabilities)
                               ELSE partner_ai_models.capabilities END,
+          context_window_discovered = CASE WHEN ${gatewayKind}::boolean
+                                           THEN EXCLUDED.context_window_discovered
+                                           ELSE partner_ai_models.context_window_discovered END,
           updated_at = now()
         RETURNING (xmax = 0) AS inserted`);
       // enabled, prices and display_name are deliberately never written on
-      // conflict: discovery never enables or re-prices (spec §6).
+      // conflict: discovery never enables or re-prices (spec §6). #11396: a
+      // gateway listing's stated window is the current truth, so it is
+      // overwritten for every model it lists (cleared when no longer stated;
+      // a model missing from the listing keeps its value); BYOK/catalog listings
+      // never set it. The override and the observation are never touched.
       if (rows[0]?.inserted) added += 1;
     }
 

@@ -318,6 +318,10 @@
     "generatingToken": "Token wird generiert...",
     "multiFactorAuthenticationIsRequiredTo3": "Zum Generieren von Installationstokens ist eine Multi-Faktor-Authentifizierung erforderlich.",
     "generateNewToken": "Neues Token generieren",
+    "generateNewLink": "Neuen Link generieren",
+    "cliTokenReuse": "Zuvor generiert. Gültig bis {{date}}, sofern nicht alle Geräteregistrierungen bereits verwendet wurden.",
+    "cliTokenReuseVerified": "Zuvor generiert. Gültig bis {{date}}.",
+    "linkReuse": "Zuvor für {{platform}} generiert. Gültig bis {{date}}.",
     "generateToken": "Token generieren",
     "cliTokenNotGenerated": "Noch kein Token. Wählen Sie Standort, Anzahl der Geräte und Ablauf aus und generieren Sie dann ein Token. Jedes Token ist ein aktiver Registrierungsschlüssel.",
     "cliCommandNeedsToken": "Generieren Sie zuerst ein Token. Der Installationsbefehl erscheint hier, sobald ein Token vorhanden ist – bis dahin gibt es nichts auszuführen.",
@@ -430,6 +434,18 @@
         "message": "{{hostname}} entfernen? Das Gerät wird aus Ihrer aktiven Flotte genommen und nicht mehr überwacht. Der Verlauf bleibt erhalten, und Sie können es später wiederherstellen.",
         "confirm": "Entfernen"
       },
+      "forcePermanentDelete": {
+        "confirm": "Trotzdem löschen",
+        "reason": {
+          "agentReturned": "Eine Deinstallation wurde zuvor abgeschlossen, aber der Agent hat sich seitdem wieder gemeldet (er wurde neu installiert).",
+          "cancelled": "Die Agent-Deinstallation wurde abgebrochen, bevor sie ausgeführt wurde.",
+          "expired": "Der Agent hat die Deinstallation vor Ablauf der Frist nie abgeholt.",
+          "failed": "Der Deinstallationsbefehl wurde auf dem Gerät ausgeführt, meldete aber einen Fehler.",
+          "none": "Für dieses Gerät wurde keine Agent-Deinstallation eingeplant (es wurde entfernt und der Agent blieb installiert)."
+        },
+        "risk": "Wenn Sie {{hostname}} jetzt löschen, kann der Agent installiert und aktiv bleiben, ohne dass ihn jemand verwaltet. Dies kann nicht rückgängig gemacht werden.",
+        "title": "Der Agent hat die Entfernung nicht bestätigt"
+      },
       "permanentDelete": {
         "title": "{{hostname}} endgültig löschen?",
         "message": "Damit wird der gesamte Verlauf dieses Geräts gelöscht — Tickets, Alarme, Patch- und Backup-Datensätze. Dies kann nicht rückgängig gemacht werden.",
@@ -505,7 +521,10 @@
     "shutdown": "Herunterfahren",
     "deviceSettings": "Geräteeinstellungen",
     "installHomebrew": "Homebrew installieren",
-    "restartAgent": "Agent neu starten"
+    "restartAgent": "Agent neu starten",
+    "runVendorUpdates": "Herstellerupdates ausführen",
+    "runVendorUpdatesHint": "Führt das Update-Tool des Herstellers auf diesem Gerät aus.",
+    "runVendorUpdatesAgentUpgradeRequired": "Agent-Upgrade erforderlich: Herstellerupdates benötigen Agent {{version}} oder neuer"
   },
   "deviceActivityFeed": {
     "activity": "Aktivität",
@@ -861,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "Es wurden keine Compliance-Ergebnisse gemeldet. Weisen Sie diesem Gerät eine Konfigurationsrichtlinie mit Compliance-Regeln zu oder warten Sie auf die nächste Auswertung.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Konfigurationsrichtlinie zuweisen"
+    "assignPolicy": "Konfigurationsrichtlinie zuweisen",
+    "notCollectedProbeLimit": "Nicht erfasst (Abfragelimit)",
+    "notCollectedProbeLimitHint": "Die Compliance-Abfrageliste dieser Organisation ist voll, daher wird mindestens eine Prüfung hier nicht erfasst. Sie wird erst ausgewertet, gemeldet oder behoben, wenn die Liste wieder Platz hat."
   },
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} wurde nach {{orgName}} verschoben",
@@ -942,6 +963,8 @@
     "backupStatusJobsSnapshotsAndVerification": "Sicherungsstatus, Jobs, Snapshots und Überprüfung",
     "theOsReportsAPendingReboot": "Das Betriebssystem meldet einen ausstehenden Neustart (Markierungen für Windows-Registrierung/Linux-Neustart erforderlich).",
     "rebootPending": "Neustart steht aus",
+    "backupRunning": "Sicherung läuft",
+    "backupRunningTooltip": "Auf diesem Gerät läuft eine Sicherung. Den Fortschritt sehen Sie auf der Registerkarte „Sicherung“.",
     "restartScheduled": "Neustart geplant",
     "restartInProgress": "Wird neu gestartet",
     "restartScheduledFor": "Neustart geplant für {{time}}",
@@ -952,6 +975,7 @@
     "restartCannotBePostponed": "Kann nicht verschoben werden",
     "restartSourcePatchJob": "Angefordert durch eine Patch-Installation",
     "restartSourceMaintenanceWindow": "Angefordert durch ein Wartungsfenster",
+    "restartSourceOemUpdates": "Angefordert durch einen Herstellerupdate-Lauf",
     "restartSourceManual": "Angefordert durch einen Techniker",
     "restartSourceUnknown": "Geplanter Neustart",
     "agentV": "Agent v",
@@ -1035,6 +1059,10 @@
       "label": "Genehmigung",
       "byRing": "durch den verknüpften Update-Ring festgelegt",
       "manualOnly": "nur manuelle Genehmigungen (kein Update-Ring verknüpft)"
+    },
+    "containment": {
+      "extraDestinations": "Zusätzliche Ziele während der Isolierung",
+      "invalid": "Die Eindämmungseinstellungen dieser Richtlinie sind ungültig. Bei der Isolierung gelten daher die festen Standardwerte ohne zusätzliche Ziele."
     },
     "chainResolutionRule": "Zuerst entscheidet die Ebene: Gerät vor Gerätegruppe, dann Standort, Organisation und Partner. Die Priorität (niedrigere Zahl gewinnt) entscheidet nur zwischen Richtlinien auf derselben Ebene. Durchgestrichene Funktionen wurden von einer näheren Richtlinie überschrieben.",
     "featureOverriddenBy": "Überschrieben von {{policy}}"
@@ -1439,6 +1467,19 @@
         "unknown": "ein unbekannter Fehler ist aufgetreten"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Von einem Netzwerkfilter blockiert",
+      "titleUntrustedCertificate": "Serverzertifikat nicht vertrauenswürdig",
+      "webFilter": "Ein Netzwerk-Sicherheitsfilter im Netzwerk dieses Geräts antwortet anstelle des Breeze-Servers ({{locationHost}}). Meist ist das eine Sicherheitsfunktion des Routers des Internetanbieters, ein Webfilter der Firewall oder eine Anmeldeseite des Netzwerks.",
+      "captivePortal": "Das Netzwerk dieses Geräts hält Verbindungen auf einer Anmeldeseite (Captive Portal) fest.",
+      "plaintextUnknown": "Etwas im Netzwerk dieses Geräts hat die Breeze-Verbindung mit unverschlüsseltem HTTP statt TLS beantwortet.",
+      "untrustedCertificate": "Die Verbindung zum Breeze-Server hat ein Zertifikat vorgelegt, dem dieses Gerät nicht vertraut (ausgestellt von {{certIssuer}}). Meist ist das eine TLS-Prüfung durch eine Firewall oder einen Proxy, ein Zertifikatsproblem auf einem selbst gehosteten Server oder ein veralteter Speicher vertrauenswürdiger Stammzertifikate auf diesem Gerät. Breeze umgeht dies nicht.",
+      "viaEch": "Derzeit über Encrypted Client Hello erreichbar.",
+      "cleared": "War von {{from}} bis {{to}} blockiert.",
+      "lastKnown": "Zuletzt gemeldet: {{time}}. Das Gerät hat sich seitdem nicht gemeldet, daher trifft dies möglicherweise nicht mehr zu.",
+      "howToFix": "So beheben Sie das Problem",
+      "noDetail": "keine Angabe"
+    },
     "logShipping": {
       "label": "Log-Übertragung",
       "state": {
@@ -1485,6 +1526,7 @@
     "cancel": "Abbrechen",
     "editDisplayName": "Anzeigenamen bearbeiten",
     "serialNumber": "Seriennummer",
+    "productSku": "Produktnummer",
     "manufacturer": "Hersteller",
     "model": "Modell",
     "deviceRole": "Geräterolle",
@@ -1634,6 +1676,12 @@
     }
   },
   "deviceList": {
+    "diskUsage": "Festplattenbelegung",
+    "diskUsageScope": "Angezeigte Datenträger",
+    "allDisks": "Alle Datenträger",
+    "osDiskOnly": "Nur OS-Disk",
+    "sortByDiskUsage": "Nach Festplattenbelegung sortieren (höchste angezeigte Belegung)",
+    "osDiskUsageUnavailable": "Der Agent hat das Systemlaufwerk noch nicht erkannt.",
     "selectedComposition": "{{agent}} Agent, {{network}} Netzwerk",
     "agentOnlyBulkAction": "Gilt nur für Agent-Geräte",
     "eligibleOfSelected": "{{count}} von {{total}}",
@@ -1654,6 +1702,8 @@
       "ram": "RAM %",
       "lastSeen": "Zuletzt gesehen",
       "serial": "Seriennummer",
+      "productSku": "Produktnummer",
+      "hardwareModel": "Modell",
       "assetTag": "Asset-Tag",
       "location": "Standort",
       "source": "Quelle"
@@ -1671,6 +1721,8 @@
       "ram": "Nach RAM-Auslastung sortieren",
       "lastSeen": "Sortieren nach der zuletzt gesehenen Zeit",
       "serial": "Nach Seriennummer sortieren",
+      "productSku": "Nach Produktnummer sortieren",
+      "hardwareModel": "Nach Modell sortieren",
       "assetTag": "Nach Asset-Tag sortieren",
       "location": "Nach Standort sortieren",
       "source": "Nach Quelle sortieren"
@@ -1828,6 +1880,9 @@
       "unmanagedInstall": "Breeze Assist wurde nicht von Breeze installiert und die Bereitstellung ist aus, daher lässt der Agent es unverändert.",
       "unknown": "Breeze Assist ist aktiviert, aber nicht installiert."
     },
+    "controlPlaneBlockBadge": "Netzwerkfilter",
+    "controlPlaneBlockBadgeCertificate": "Zertifikat nicht vertrauenswürdig",
+    "controlPlaneBlockLastKnownTooltip": "Zuletzt gemeldet: {{time}}; das Gerät hat sich seitdem nicht gemeldet.",
     "agentVersionRelation": {
       "equalTooltip": "Entspricht der effektiven Version {{version}}",
       "aheadTooltip": "Vor dem Pin {{version}}",
@@ -2116,6 +2171,8 @@
       "deferredUntil": "Automatische Genehmigung am {{date}}",
       "deferredUntilTitle": "Der Update-Ring {{ring}} hält neue Patches für sein Zurückstellungsfenster zurück. Dieser wird am {{date}} genehmigt und mit dem nächsten geplanten Patch-Lauf danach installiert.",
       "excluded": "Durch Richtlinie ausgeschlossen",
+      "managedByVendorUpdates": "Von Hersteller-Updates verwaltet",
+      "managedByVendorUpdatesTitle": "Das Update-Tool des Herstellers liefert dies auf diesem Gerät, daher überspringen geplante Patch-Läufe es.",
       "excludedSourceTitle": "Die Quellen der Patch-Richtlinie umfassen diesen Patch nicht, daher überspringen geplante Patch-Läufe ihn.",
       "excludedCategoryTitle": "Der Update-Ring {{ring}} schließt die Kategorie dieses Patches aus, daher überspringen geplante Patch-Läufe ihn.",
       "excludedAppRuleTitle": "Eine App-Sperr- oder Pin-Regel des verknüpften Update-Rings hält diesen Patch zurück, daher überspringen geplante Patch-Läufe ihn.",
@@ -2500,9 +2557,9 @@
       "couldNotQueue": "{{action}} konnte nicht in die Warteschlange gestellt werden",
       "updateVersionQueued": "Update auf {{version}} steht in der Warteschlange für „{{name}}“"
     },
-    "uninstallTitle": "Titel deinstallieren",
+    "uninstallTitle": "Dieses Paket deinstallieren",
     "unknownSoftware": "Unbekannte Software",
-    "updateTitle": "Titel aktualisieren",
+    "updateTitle": "Update für dieses Paket in die Warteschlange stellen",
     "updatesAvailable": "{{count}} Updates verfügbar",
     "updatesAvailable_one": "{{count}} Update verfügbar",
     "updatesAvailable_other": "{{count}} Updates verfügbar"
@@ -2534,7 +2591,7 @@
       "load": "Laden",
       "mitigate": "Abmildern",
       "reopen": "Wieder öffnen",
-      "scheduleRemediation": "Planen Sie die Behebung"
+      "scheduleRemediation": "Behebung konnte nicht geplant werden"
     },
     "groupSummary": "{{cves}} CVEs · {{findings}} Befunde · {{patchReady}} Patch-bereit",
     "hideFindings": "Befunde ausblenden",
@@ -2676,13 +2733,17 @@
       "advancedFilterFailed": "Erweiterter Filter konnte nicht geladen werden – es werden keine Geräte angezeigt. Bearbeiten oder löschen Sie den Filter, um es erneut zu versuchen.",
       "agentOnlyAction": "Diese Aktion gilt nur für Agent-Geräte. Netzwerkgeräte haben keinen Agenten und wurden übersprungen.",
       "agentOnlyActionManual": "Diese Aktion gilt nur für Agent-Geräte. Manuelle Assets haben keinen Agenten.",
-      "alreadyPendingTail": "Tail ist bereits ausstehend",
-      "bulkActionFailed": "Massenaktion fehlgeschlagen",
+      "alreadyPendingTail": ", {{count}} bereits ausstehend",
+      "bulkActionFailed": "Massenaktion {{action}} fehlgeschlagen",
       "bulkMaintenanceSuccess": "Wartungsmodus für {{count}} Geräte {{verb}}",
       "bulkMaintenanceSuccess_one": "Wartungsmodus für {{count}} Gerät {{verb}}",
       "bulkMaintenanceSuccess_other": "Wartungsmodus für {{count}} Geräte {{verb}}",
       "bulkPurgeFailed": "Endgültiges Löschen fehlgeschlagen: {{reason}}",
-      "bulkPurgeNoneDeleted": "Kein Gerät wurde gelöscht: {{reasons}}",
+      "bulkPurgeNoneDeleted": "Kein Gerät wurde gelöscht. {{reasons}}",
+      "bulkPurgeSkipOther_one": "{{count}} übersprungen, Grund: {{code}}.",
+      "bulkPurgeSkipOther_other": "{{count}} übersprungen, Grund: {{code}}.",
+      "bulkPurgeSkipUninstallNotConfirmed_one": "{{count}} übersprungen, weil der Agent die Deinstallation nie bestätigt hat. Löschen Sie es einzeln über die Geräteseite.",
+      "bulkPurgeSkipUninstallNotConfirmed_other": "{{count}} übersprungen, weil die Agents die Deinstallation nie bestätigt haben. Löschen Sie sie einzeln über die Geräteseite.",
       "bulkWakeAllFailed": "Aufwecken aller Geräte fehlgeschlagen",
       "bulkWakeSent": "Aufweckbefehle gesendet",
       "bulkWakeSomeFailed": "Aufwecken einiger Geräte fehlgeschlagen",
@@ -2694,14 +2755,14 @@
       "decommissionFailed": "Entfernen fehlgeschlagen",
       "decommissioned": "Entfernt",
       "decommissioning": "Wird entfernt",
-      "deleteFailed": "Löschen fehlgeschlagen",
+      "deleteFailed": "{{hostname}} konnte nicht gelöscht werden",
       "deviceError": "Gerätefehler",
-      "deviceOnline": "Gerät online",
-      "inventoryRefreshRequested": "Bestandsaktualisierung angefordert",
+      "deviceOnline": "{{hostname}} ist jetzt online.",
+      "inventoryRefreshRequested": "Inventaraktualisierung für {{hostname}} angefordert. Aktuelle Daten in 1–2 Minuten.",
       "listTruncated": "Liste abgeschnitten",
       "maintenanceOff": "Wartung aus",
       "maintenanceOn": "Wartung eingeschaltet",
-      "multibootLinked": "Multiboot-verknüpft",
+      "multibootLinked": "{{count}} Geräte als Multi-Boot-Profile verknüpft.",
       "networkSkipped_one": "1 Netzwerkgerät übersprungen — diese Aktion gilt nur für Agent-Geräte.",
       "networkSkipped_other": "{{count}} Netzwerkgeräte übersprungen — diese Aktion gilt nur für Agent-Geräte.",
       "networkSkipped": "{{count}} Netzwerkgeräte übersprungen — diese Aktion gilt nur für Agent-Geräte.",
@@ -2710,15 +2771,15 @@
       "permanentlyDeleted": "{{hostname}} endgültig gelöscht",
       "refreshFailed": "Geräte konnten nicht aktualisiert werden. Die angezeigte Liste ist möglicherweise veraltet.",
       "restored": "Wiederhergestellt",
-      "scriptQueueFailed": "Skriptwarteschlange fehlgeschlagen",
-      "scriptQueuedMany": "Skriptausführungen in die Warteschlange gestellt",
-      "scriptQueuedOne": "Skriptausführung in die Warteschlange gestellt",
-      "selectDeviceForScript": "Wählen Sie Gerät für Skript aus",
-      "selectTwoForMultiboot": "Zwei Geräte für Multiboot auswählen",
-      "unknownAction": "Unbekannte Aktion",
-      "unknownBulkAction": "Unbekannte Massenaktion",
-      "wakeSentWatching": "Aufweckbefehl gesendet; Status wird überwacht",
-      "wakeTimeout": "Zeitüberschreitung beim Aufwecken",
+      "scriptQueueFailed": "Skript konnte nicht in die Warteschlange gestellt werden",
+      "scriptQueuedMany": "Skript \"{{script}}\" für {{count}} Geräte in die Warteschlange gestellt",
+      "scriptQueuedOne": "Skript \"{{script}}\" für {{hostname}} in die Warteschlange gestellt",
+      "selectDeviceForScript": "Wählen Sie mindestens ein Gerät aus, um ein Skript auszuführen",
+      "selectTwoForMultiboot": "Wählen Sie mindestens zwei Geräte aus, um sie als Multi-Boot-Profile zu verknüpfen.",
+      "unknownAction": "Unbekannte Aktion: {{action}}",
+      "unknownBulkAction": "Unbekannte Massenaktion: {{action}}",
+      "wakeSentWatching": "Wake-on-LAN an {{hostname}} über {{relay}} gesendet ({{broadcast}}). Warte darauf, dass das Gerät online geht …",
+      "wakeTimeout": "{{hostname}} ist innerhalb von 4 Minuten nicht online gegangen. Prüfen Sie Ethernet + BIOS WoL.",
       "queuedOfflineTail": ", {{count}} für Offline-Geräte in die Warteschlange gestellt",
       "runsWhenOnline": "Wird ausgeführt, sobald das Gerät online ist — läuft ab am {{date}}",
       "runsWhenOnlineNoExpiry": "Wird ausgeführt, sobald das Gerät online ist",
@@ -2749,8 +2810,8 @@
       "bulkMaintenanceSomeFailed_other": "Wartungsmodus für {{count}} Geräte {{verb}}; bei {{failed}} fehlgeschlagen: {{devices}}",
       "bulkPurgeDone_one": "{{count}} Gerät endgültig gelöscht",
       "bulkPurgeDone_other": "{{count}} Geräte endgültig gelöscht",
-      "bulkPurgeDoneWithSkips_one": "{{count}} Gerät endgültig gelöscht; {{skipped}} übersprungen ({{reasons}})",
-      "bulkPurgeDoneWithSkips_other": "{{count}} Geräte endgültig gelöscht; {{skipped}} übersprungen ({{reasons}})",
+      "bulkPurgeDoneWithSkips_one": "{{count}} Gerät endgültig gelöscht; {{reasons}}",
+      "bulkPurgeDoneWithSkips_other": "{{count}} Geräte endgültig gelöscht; {{reasons}}",
       "bulkPurgeStarted_one": "{{count}} Gerät wird endgültig gelöscht …",
       "bulkPurgeStarted_other": "{{count}} Geräte werden endgültig gelöscht …",
       "bulkRestoreAllFailed_one": "Wiederherstellung von {{count}} Gerät fehlgeschlagen",
@@ -2770,7 +2831,13 @@
       "bulkMoveSiteNotMovedForbidden": "{{devices}} (kein Zugriff auf den aktuellen Standort oder den Zielstandort)",
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (nicht mehr gefunden; das Gerät wurde möglicherweise gelöscht)",
       "bulkMoveSiteNotMovedError": "{{devices}} (ein unerwarteter Fehler ist aufgetreten; bitte erneut versuchen)",
-      "deviceMovedToSite": "{{hostname}} an einen neuen Standort verschoben"
+      "deviceMovedToSite": "{{hostname}} an einen neuen Standort verschoben",
+      "bulkWakeResult": "An {{sent}} gesendet, {{skipped}} übersprungen",
+      "bulkWakePolicySkipped": "{{count}} wegen der Wake-on-LAN-Richtlinie übersprungen",
+      "bulkWakeAllBlockedByPolicy": "Kein Wake gesendet: {{count}} durch die Wake-on-LAN-Richtlinie blockiert",
+      "bulkWakeLookupFailedSkipped": "{{count}} konnten nicht geprüft werden, bitte erneut versuchen",
+      "bulkWakeAllLookupFailed": "Kein Wake gesendet: {{count}} konnten nicht geprüft werden, bitte erneut versuchen",
+      "scriptQueuedOneOffline": "Skript „{{script}}“ für {{hostname}} eingereiht – wird ausgeführt, sobald das Gerät wieder verbunden ist"
     },
     "tryAgain": "Versuchen Sie es erneut",
     "unknownDevice": "Unbekannt",
@@ -2813,7 +2880,20 @@
     "emptyOrgTitleUnnamed": "Noch keine Geräte in dieser Organisation",
     "emptyOrgDescription": "Installieren Sie den Agent auf einem Rechner dieser Organisation, um ihn zu überwachen, oder wechseln Sie zu allen Organisationen, um den Rest Ihrer Flotte zu sehen.",
     "viewAllOrganizations": "Alle Organisationen anzeigen",
-    "importFromRmmShort": "Importieren"
+    "importFromRmmShort": "Importieren",
+    "wakeSkipReasons": {
+      "online": "bereits online",
+      "relayUnavailable": "ohne erreichbaren Agenten am Standort",
+      "missingMac": "ohne gespeicherte MAC-Adresse (Agent hat sich noch nicht gemeldet)",
+      "missingSubnet": "ohne nutzbare IPv4-Daten",
+      "ipv6": "nur mit IPv6-Daten",
+      "relayDisconnected": "Relay-Verbindung beim Senden getrennt — erneut versuchen",
+      "missingTarget": "nicht gefunden oder Zugriff verweigert",
+      "removed": "entfernt",
+      "invalidRelay": "mit ungültiger Relay-Auswahl",
+      "policyNotReady": "durch ihre Wake-on-LAN-Richtlinie blockiert (nicht bereit)",
+      "policyLookupFailed": "deren Wake-on-LAN-Richtlinie nicht geprüft werden konnte — erneut versuchen"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Filter hinzufügen",
@@ -2894,6 +2974,13 @@
       "logShippingFailing": "Log-Übertragung fehlerhaft",
       "networkIsolation": {
         "active": "Isoliert"
+      },
+      "helperVersion": "Helper-Version",
+      "deviceFunction": "Gerätefunktion",
+      "hostsWorkloads": "Hostet Workloads",
+      "workloadRuntimes": "Workload-Laufzeiten",
+      "warranty": {
+        "status": "Garantiestatus"
       }
     }
   },
@@ -3682,9 +3769,9 @@
       "noneRecorded": "Für dieses Gerät wurden noch keine Prozessproben erfasst. Der Agent sammelt sie regelmäßig – schauen Sie noch einmal nach, sobald er sie gemeldet hat."
     },
     "errors": {
-      "liveProcesses": "Live-Prozesse",
-      "loadProcesses": "Prozesse laden",
-      "processSample": "Prozessprobe"
+      "liveProcesses": "Live-Prozesse konnten nicht abgerufen werden",
+      "loadProcesses": "Prozesse konnten nicht geladen werden",
+      "processSample": "Prozessprobe konnte nicht abgerufen werden"
     },
     "live": "Lebe",
     "subtitle": {
@@ -3725,6 +3812,7 @@
     "deleteTitle": "„{{name}}“ löschen",
     "empty": "Noch keine gespeicherten Ansichten. Erstellen Sie einen Filter und speichern Sie ihn dann als Ansicht.",
     "manageAll": "Alle Ansichten verwalten",
+    "ownerOrgHint": "Ansichten gehören zu genau einer Organisation. Wählen Sie, welcher Organisation diese Ansicht gehört.",
     "saveCurrent": "Aktuelle Ansicht speichern…",
     "saveCurrentTitle": "Speichern Sie den aktuellen Filter als Ansicht",
     "setDefaultTitle": "Als Standardansicht festlegen",
@@ -3783,7 +3871,11 @@
     "oldDeviceUnavailable": "Der alte Geräteeintrag ist nicht mehr verfügbar.",
     "title": "Mögliche doppelte Registrierung",
     "unknownDevice": "das vorherige Gerät",
-    "viewOldDevice": "Altes Gerät anzeigen"
+    "viewOldDevice": "Altes Gerät anzeigen",
+    "reattach": "Neu verknüpfen",
+    "reattachPending": "Eine Neuverknüpfung mit dem alten Eintrag steht aus: Die neue Installation schließt sie ab, sobald sich ihr Agent meldet. Die Anfrage läuft am {{expiresAt}} ab.",
+    "reviewPending": "Eine mögliche Neuinstallation wartet auf die Prüfung durch den Partner.",
+    "reattachPendingOther": "Eine Neuverknüpfung dieses Geräts steht aus. Die Anfrage läuft am {{expiresAt}} ab."
   },
   "fleetPosture": {
     "securityUnavailable": "Sicherheitsbefunde zum Fernzugriff konnten für diese Ansicht nicht geladen werden.",
@@ -4216,7 +4308,12 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Gerätelimit erreicht",
       "STEP_UP_REQUIRED": "Bestätigung erforderlich",
       "ASSIGNMENT_FAILED": "Fehlgeschlagen"
-    }
+    },
+    "modeLegend": "Was mit diesem Gerät geschehen soll",
+    "modeAssign": "Als neues Gerät zuweisen",
+    "modeReattach": "Mit {{hostname}} neu verknüpfen (Neuinstallation eines vorhandenen Eintrags)",
+    "reattachPending": "Eine Neuverknüpfung dieses Geräts steht aus: Die neue Installation schließt sie ab, sobald sich ihr Agent meldet. Die Anfrage läuft am {{expiresAt}} ab.",
+    "cancelReattachConfirm": "Wenn dieses Gerät als neues Gerät zugewiesen wird, wird seine ausstehende Neuverknüpfung abgebrochen. Ich habe verstanden."
   },
   "timeFleet": {
     "title": "Zeitsynchronisierung",
@@ -4805,6 +4902,7 @@
     "startDescription": "Netzwerkverkehr außer der Breeze-Verwaltung blockieren.",
     "releaseDescription": "Entfernung der Breeze-Isolierungsregeln anfordern. Ein Offline-Gerät erhält die Freigabe beim erneuten Verbinden.",
     "serverWarning": "Dies ist ein Serverbetriebssystem. Die Isolierung kann Dienste für andere Geräte unterbrechen.",
+    "deadManUnsupported": "Die Eindämmungsrichtlinie dieses Geräts legt eine Dead-Man-Freigabe fest, aber die Agent-Version des Geräts unterstützt sie nicht. Das Gerät wird ohne Dead-Man-Freigabe isoliert.",
     "reason": "Begründung",
     "ttlHours": "Dauer (Stunden)",
     "incidentId": "Bestehende Vorfall-ID (optional)",
@@ -4828,6 +4926,20 @@
     "codeNext": "Code für die nächste Stunde",
     "codeValidUntil": "Aktueller Code gültig bis {{date}}",
     "codeError": "Notfallcodes konnten nicht geladen werden. Versuchen Sie es erneut.",
+    "tabCode": "Notfallcode",
+    "tabToken": "Freigabe-Token",
+    "issueToken": "Freigabe-Token ausstellen",
+    "hideToken": "Token ausblenden",
+    "tokenLabel": "Freigabe-Token",
+    "copyToken": "Token kopieren",
+    "tokenCopied": "Kopiert",
+    "tokenCopyError": "Das Token konnte nicht kopiert werden. Markieren und manuell kopieren.",
+    "tokenQrAlt": "QR-Code mit dem Freigabe-Token",
+    "tokenValidUntil": "Token gültig bis {{date}}",
+    "tokenCommandHint": "Führen Sie auf dem isolierten Gerät diesen Befehl als Administrator oder root aus und ersetzen Sie <token> durch das Token:",
+    "tokenError": "Es konnte kein Freigabe-Token ausgestellt werden. Versuchen Sie es erneut.",
+    "tokenUnavailable": "Für diese Isolierung ist kein Freigabe-Token verfügbar.",
+    "codesDisabledNote": "Notfallcodes sind für dieses Gerät deaktiviert. Verwenden Sie stattdessen ein signiertes Freigabe-Token.",
     "incidentHeading": "Netzwerkisolierung",
     "retry": "Isolierungsstatus erneut laden",
     "filterLabel": "Isoliert",
@@ -4861,6 +4973,11 @@
       "isolation_not_found": "Diese Isolierung wurde nicht gefunden.",
       "relay_unavailable": "Kein Remotedesktop-Relay verfügbar. Deaktivieren Sie die Relay-Option oder konfigurieren Sie TURN.",
       "invalid_allowlist": "Die Isolierungsfreigabeliste des Servers ist ungültig. Wenden Sie sich an Ihre Administration.",
+      "invalid_allowlist_server_url_missing": "Dieses Gerät hat keine Agent-Server-URL und AGENT_SERVER_URL ist auf dem Server nicht gesetzt. Setzen Sie AGENT_SERVER_URL und versuchen Sie es erneut.",
+      "invalid_allowlist_server_url_invalid": "Die Agent-Server-URL dieses Geräts ist keine gültige http(s)-URL. Prüfen Sie die Server-URL des Geräts oder AGENT_SERVER_URL.",
+      "invalid_allowlist_backup_url_invalid": "AGENT_BACKUP_SERVER_URL ist keine gültige http(s)-URL. Korrigieren Sie sie und versuchen Sie es erneut.",
+      "invalid_allowlist_relay_config_invalid": "Die TURN-Relay-Einstellungen (TURN_HOST, TURN_TLS_HOST, TURN_PORT, TURN_TLS_PORT) sind ungültig. Korrigieren Sie sie oder deaktivieren Sie die Relay-Option.",
+      "invalid_allowlist_policy_invalid": "Die gespeicherte Eindämmungsrichtlinie enthält einen ungültigen oder zu großen Allowlist-Eintrag. Prüfen Sie die erlaubten Ziele der Richtlinie.",
       "isolation_conflict": "Die Isolierung hat sich geändert. Aktualisieren Sie den Status und versuchen Sie es erneut.",
       "isolation_secret_unavailable": "Wiederherstellungscodes sind vorübergehend nicht verfügbar. Wenden Sie sich an Ihre Administration.",
       "approval_mismatch": "Die Genehmigung passt nicht zu dieser Isolierungsanfrage.",
@@ -4869,5 +4986,213 @@
       "device_pending_assignment": "Weisen Sie dieses Gerät vor der Isolierung einer Organisation zu.",
       "backup_helper_update_required": "Aktualisieren Sie den Backup-Helfer, bevor Sie die Isolierung starten."
     }
+  },
+  "runVendorUpdatesDialog": {
+    "title": "Herstellerupdates ausführen",
+    "description": "Führt das Update-Tool von {{vendor}} jetzt auf {{hostname}} aus. Es kann Treiber und Anwendungen installieren sowie BIOS und Firmware flashen.",
+    "rebootLegend": "Wenn die Updates einen Neustart benötigen",
+    "whenFinishedLabel": "Nach Abschluss neu starten",
+    "whenFinishedDescription": "Breeze startet das Gerät nach dem Lauf neu, mit der Warnung, die seine Patch-Richtlinie festlegt. BIOS- und Firmware-Updates sind eingeschlossen.",
+    "leaveToMeLabel": "Neustart mir überlassen",
+    "leaveToMeDescription": "Breeze startet das Gerät nicht neu. Jemand startet es später neu, um die Updates abzuschließen.",
+    "skippedNote": "BIOS- und Firmware-Updates werden bei dieser Auswahl übersprungen, weil sie einen Neustart benötigen, den Breeze steuert. Treiber und Anwendungen werden weiterhin ausgeführt.",
+    "confirm": "Updates ausführen",
+    "submitting": "Wird gestartet...",
+    "cancel": "Abbrechen",
+    "genericError": "Herstellerupdates konnten auf diesem Gerät nicht gestartet werden.",
+    "queued": "Herstellerupdates auf {{hostname}} gestartet.",
+    "queuedSkipped": "Herstellerupdates auf {{hostname}} gestartet. BIOS und Firmware wurden übersprungen.",
+    "refusal": {
+      "flagOff": "Herstellerupdates sind für diese Organisation nicht aktiviert.",
+      "laneClosed": "Herstellerupdates sind für den Hersteller dieses Geräts noch nicht verfügbar.",
+      "killSwitch": "Herstellerupdates sind für den Hersteller dieses Geräts pausiert.",
+      "agentTooOld": "Der Agent dieses Geräts ist für Herstellerupdates zu alt. Aktualisieren Sie den Agent auf {{version}} oder neuer.",
+      "notApplicable": "Herstellerupdates gelten nicht für dieses Gerät.",
+      "notSupported": "Das Tool des Herstellers unterstützt dieses Modell nicht.",
+      "ephemeral": "Herstellerupdates laufen nicht auf Quick-Support-Geräten.",
+      "parked": "Weisen Sie dieses Gerät einer Organisation zu, bevor Sie Herstellerupdates ausführen.",
+      "offline": "Das Gerät ist nicht online. Herstellerupdates starten nur auf einem Gerät, das gerade online ist.",
+      "runInFlight": "Auf diesem Gerät läuft bereits ein Herstellerupdate-Lauf.",
+      "noOpenCategories": "Mit dieser Auswahl kann nichts ausgeführt werden. Hier sind nur BIOS und Firmware verfügbar: Wählen Sie „Nach Abschluss neu starten“.",
+      "decommissioned": "Dieses Gerät ist außer Betrieb genommen, daher kann nichts an es gesendet werden.",
+      "cancelledAtClaim": "Der Lauf wurde abgebrochen, bevor er das Gerät erreichte. Versuchen Sie es erneut."
+    },
+    "observeQueued": "Prüfung ohne Änderungen auf {{hostname}} gestartet. Es wird nichts installiert."
+  },
+  "vendorUpdates": {
+    "title": "Herstellerupdates",
+    "refreshState": "Aktualisieren",
+    "loadError": "Herstellerupdates für dieses Gerät konnten nicht geladen werden.",
+    "retryLoad": "Erneut versuchen",
+    "empty": "Auf diesem Gerät wurde noch kein Herstellerupdate ausgeführt.",
+    "state": {
+      "upToDate": "Auf dem neuesten Stand",
+      "overdue": "Überfällig",
+      "failing": "Fehlgeschlagen",
+      "notSupported": "Nicht unterstützt",
+      "notManaged": "Nicht verwaltet",
+      "waitingForReboot": "Wartet auf Neustart",
+      "rebootOverdue": "Neustart überfällig"
+    },
+    "stateDescription": {
+      "upToDate": "Der letzte geplante Lauf wurde abgeschlossen.",
+      "overdue": "Seit Fälligkeit des Zeitplans wurde kein Lauf abgeschlossen.",
+      "failing": "Der letzte Lauf wurde nicht abgeschlossen. Unten steht, was zu tun ist.",
+      "notSupported": "Das Tool des Herstellers unterstützt dieses Modell nicht.",
+      "notManaged": "Keine Richtlinie plant hier Herstellerupdates. Sie können sie weiterhin bei Bedarf ausführen.",
+      "notOffered": "Herstellerupdates sind auf diesem Gerät derzeit nicht verfügbar.",
+      "waitingForReboot": "Die Updates sind installiert und werden nach dem nächsten Neustart wirksam.",
+      "rebootOverdue": "Ein Neustart steht seit mehr als drei Tagen aus."
+    },
+    "lastRunHeading": "Letzter Lauf",
+    "outcomeLabel": "Ergebnis",
+    "noOutcomeYet": "Warten auf Rückmeldung des Geräts",
+    "errorCodeLabel": "Fehlercode",
+    "toolVersionLabel": "Tool-Version",
+    "lastAttemptLabel": "Gestartet",
+    "installedLabel": "Installiert",
+    "failedLabel": "Fehlgeschlagen",
+    "rebootLabel": "Neustart",
+    "rebootPendingSince": "Neustart erforderlich seit {{date}}",
+    "rebootNotNeeded": "Kein Neustart erforderlich",
+    "outcome": {
+      "success": "Erfolgreich",
+      "successRebootRequired": "Erfolgreich, Neustart erforderlich",
+      "noUpdates": "Keine Updates gefunden",
+      "partial": "Teilweise installiert",
+      "failed": "Nicht abgeschlossen",
+      "notSupported": "Modell nicht unterstützt",
+      "toolUnavailable": "Tool nicht verfügbar",
+      "blockedOnBattery": "Blockiert: im Akkubetrieb",
+      "blockedRebootPending": "Blockiert: Neustart ausstehend",
+      "blockedNoRecoveryKey": "Blockiert: kein Wiederherstellungsschlüssel",
+      "retryLater": "Wird erneut versucht",
+      "interrupted": "Unterbrochen"
+    },
+    "outcomeHelp": {
+      "partial": "Einige Updates wurden installiert, andere nicht. Prüfen Sie die fehlgeschlagenen Einträge unten und führen Sie die Herstellerupdates dann erneut aus.",
+      "failed": "Das Tool des Herstellers wurde nicht abgeschlossen. Prüfen Sie den Fehlercode und führen Sie die Herstellerupdates dann erneut aus.",
+      "notSupported": "Das Tool des Herstellers unterstützt dieses Modell nicht, daher fragt Breeze nicht mehr an, bis sich die Tool-Version oder das Modell ändert.",
+      "toolUnavailable": "Das Update-Tool des Herstellers ist nicht installiert und konnte nicht abgerufen werden. Prüfen Sie, ob das Gerät die Download-Seite des Herstellers erreichen kann.",
+      "blockedOnBattery": "BIOS und Firmware laufen nur am Netzteil mit ausreichendem Akkustand. Schließen Sie das Gerät an und führen Sie die Herstellerupdates dann erneut aus.",
+      "blockedRebootPending": "Auf dem Gerät steht bereits ein Neustart aus. Führen Sie die Herstellerupdates erneut aus, sobald es neu gestartet wurde.",
+      "blockedNoRecoveryKey": "BIOS und Firmware bleiben blockiert, bis Breeze den aktuellen BitLocker-Wiederherstellungsschlüssel dieses Geräts besitzt. Sichern Sie den Schlüssel in Breeze und führen Sie die Herstellerupdates dann erneut aus.",
+      "retryLater": "Das Tool des Herstellers hat darum gebeten, es später erneut zu versuchen. Breeze hat nichts auf dem Gerät geändert.",
+      "interrupted": "Der Lauf wurde vor dem Abschluss gestoppt, meist weil das Gerät neu gestartet wurde oder der Agent angehalten wurde. Führen Sie die Herstellerupdates erneut aus."
+    },
+    "categoriesHeading": "Was auf diesem Gerät ausgeführt werden kann",
+    "category": {
+      "bios": "BIOS",
+      "firmware": "Firmware",
+      "driver": "Treiber",
+      "application": "Anwendungen"
+    },
+    "gateOpen": "Verfügbar",
+    "gateClosed": "Bei {{vendor}} noch nicht verfügbar. Breeze aktiviert jeden Update-Typ erst, nachdem er auf echter Hardware getestet wurde.",
+    "itemResult": {
+      "installed": "installiert",
+      "failed": "fehlgeschlagen",
+      "skipped": "übersprungen"
+    },
+    "history": {
+      "heading": "Lauf-Verlauf",
+      "loadError": "Der Lauf-Verlauf konnte nicht geladen werden.",
+      "noResult": "Kein lesbares Ergebnis",
+      "bySchedule": "Zeitplan",
+      "byUnknown": "Unbekannt",
+      "range": "{{from}}-{{to}} von {{total}}",
+      "previousPage": "Zurück",
+      "nextPage": "Weiter",
+      "observed": "Beobachtet",
+      "observedTools": "Gefundene Tools: {{tools}}",
+      "observedNoTools": "Keine Hersteller-Tools gefunden",
+      "observedVerdict": {
+        "observed": "{{vendor}}: Prüfung ohne Änderungen abgeschlossen",
+        "observedWithErrors": "{{vendor}}: Prüfung ohne Änderungen abgeschlossen, einige Abfragen sind fehlgeschlagen",
+        "platformUnsupported": "{{vendor}}: Dieses Modell wird von den Business-Tools des Herstellers nicht unterstützt",
+        "invalid": "{{vendor}}: Das Prüfergebnis konnte nicht gelesen werden"
+      }
+    }
+  },
+  "reinstalledBadge": {
+    "label": "Neu installiert am {{date}}",
+    "title": "Dieser Eintrag hat am {{at}} eine neu installierte Maschine übernommen. Die neue Installation hat das Inventar neu aufgebaut."
+  },
+  "reattachDialog": {
+    "title": "Mit {{target}} neu verknüpfen",
+    "description": "Den vorhandenen Eintrag {{target}} für die neue Installation {{source}} verwenden und dabei Verlauf, Richtlinien und Konfiguration behalten.",
+    "newInstall": "Neue Installation",
+    "existingRecord": "Vorhandener Eintrag",
+    "holdingArea": "Wartebereich",
+    "fields": {
+      "hostname": "Rechnername",
+      "os": "Betriebssystem",
+      "model": "Hersteller und Modell",
+      "serial": "Seriennummer",
+      "systemUuid": "System-UUID",
+      "agentVersion": "Agent-Version",
+      "place": "Organisation / Standort",
+      "enrolledAt": "Registriert",
+      "lastSeenAt": "Zuletzt gesehen"
+    },
+    "matchedOn": "Übereinstimmung bei: {{evidence}}",
+    "evidence": {
+      "systemUuid": "System-UUID",
+      "serial": "Seriennummer und Hersteller",
+      "hostname": "nur Rechnername",
+      "other": "gemeldete Kennungen"
+    },
+    "evidenceNoticeHint": "Vom Gerät gemeldete Hardwarekennungen. Nicht überprüft.",
+    "evidenceNoticeTpm": "Derselbe TPM-Endorsement-Key, dessen Besitz die alte Installation nachgewiesen hat. Das belegt die Kontinuität des Schlüssels, nicht dasselbe physische TPM; geklonte virtuelle TPMs teilen Schlüssel.",
+    "consequences": "Die neue Installation baut das Inventar von {{target}} neu auf. Ausstehende Aufgaben, Berechtigungen und Sitzungen der alten Installation werden abgebrochen, und der Eintrag {{source}} wird stillgelegt.",
+    "possession": "Ich habe außerhalb von Breeze bestätigt, dass die neue Installation auf der von {{target}} beschriebenen Maschine läuft.",
+    "acknowledgeOsChange": "Die neue Installation meldet {{sourceOs}}, der vorhandene Eintrag {{targetOs}}. Ich bestätige, dass sich das Betriebssystem geändert hat.",
+    "restoreDecommissioned": "{{target}} wurde entfernt. Im Rahmen dieser Neuverknüpfung wiederherstellen.",
+    "confirmNameLabel": "Zur Bestätigung {{hostname}} eingeben",
+    "stepUpHeading": "Bestätigen Sie Ihre Identität",
+    "stepUpIntro": "Eine Neuverknüpfung legt einen Geräteeintrag still. Bestätigen Sie mit Ihrem zweiten Faktor, um fortzufahren.",
+    "stepUpPasskeyNote": "Ihr Browser fragt nach Ihrem Passkey, wenn Sie fortfahren.",
+    "stepUpCodeLabel": "Authenticator-Code",
+    "stepUpRetry": "Diese Bestätigung ist abgelaufen oder passt nicht mehr. Geben Sie einen neuen Code ein.",
+    "noStepUpFactor": "Für eine Neuverknüpfung brauchen Sie einen Passkey oder eine Authenticator-App. Richten Sie eines davon in Ihrem Profil ein und versuchen Sie es erneut.",
+    "genericError": "Die Neuverknüpfung konnte nicht angefordert werden. Versuchen Sie es erneut.",
+    "cancel": "Abbrechen",
+    "close": "Schließen",
+    "submit": "Mit {{hostname}} neu verknüpfen",
+    "submitting": "Wird angefordert…",
+    "submitStepUp": "Bestätigen und neu verknüpfen",
+    "requestedToast": "Neuverknüpfung mit {{hostname}} angefordert",
+    "pendingTitle": "Neuverknüpfung angefordert",
+    "pendingMessage": "{{source}} übernimmt {{target}}, sobald sich ihr Agent das nächste Mal meldet; hier ist nichts weiter zu tun. Die Anfrage läuft am {{expiresAt}} ab.",
+    "refusals": {
+      "device_not_found": "Eines der Geräte existiert nicht mehr oder liegt außerhalb Ihres Zugriffs.",
+      "not_partner_user": "Nur Partnerbenutzer können Geräte neu verknüpfen.",
+      "user_inactive": "Ihr Konto ist nicht aktiv.",
+      "permission_denied": "Sie benötigen die Berechtigung, Geräte in den Organisationen beider Geräte zu bearbeiten und zu entfernen.",
+      "org_access_denied": "Sie haben keinen Zugriff auf die Organisationen beider Geräte.",
+      "full_admin_required": "Die Neuverknüpfung eines Geräts aus dem Wartebereich anhand gemeldeter Kennungen erfordert einen vollständigen Partneradministrator.",
+      "partner_mismatch": "Die Geräte gehören nicht mehr zu Ihrem Partner.",
+      "MFA_REQUIRED": "Für eine Neuverknüpfung ist eine mit Zwei-Faktor-Authentifizierung angemeldete Sitzung nötig. Melden Sie sich erneut mit Ihrem zweiten Faktor an.",
+      "target_alive": "{{hostname}} wird noch verwendet: Die Installation hat sich kürzlich authentifiziert. Eine Neuverknüpfung setzt voraus, dass die alte Installation inaktiv ist.",
+      "liveness_unknown": "Ob {{hostname}} noch verwendet wird, konnte nicht geprüft werden. Versuchen Sie es gleich noch einmal.",
+      "os_changed": "Die Betriebssysteme unterscheiden sich. Bestätigen Sie den Betriebssystemwechsel und versuchen Sie es erneut.",
+      "target_changed": "{{hostname}} hat sich seit der Anzeige geändert (neu registriert oder neu verknüpft). Öffnen Sie die Neuverknüpfung erneut, um den aktuellen Stand zu sehen.",
+      "rebind_unsupported": "Der Agent der neuen Installation ist zu alt für eine Neuverknüpfung. Aktualisieren Sie zuerst den Agent.",
+      "source_decommissioned": "Der Eintrag der neuen Installation wurde entfernt.",
+      "source_ineligible": "Dieses Gerät kann nicht neu verknüpft werden: Quick-Support-Geräte sind ausgeschlossen.",
+      "target_ephemeral": "{{hostname}} ist ein temporäres Gerät und kann nicht Ziel einer Neuverknüpfung sein.",
+      "target_decommissioned": "{{hostname}} wurde entfernt. Wählen Sie die Wiederherstellung, um damit neu zu verknüpfen.",
+      "target_ineligible": "{{hostname}} ist kein verwalteter Eintrag.",
+      "target_retired": "{{hostname}} wurde bereits durch eine frühere Neuverknüpfung stillgelegt.",
+      "device_quarantined": "Eines der Geräte ist in Quarantäne.",
+      "device_suspended": "Bei einem der Geräte sind die Agent-Anmeldedaten gesperrt.",
+      "org_draining": "Die Organisation eines der Geräte ist nicht aktiv.",
+      "device_in_open_intent": "Eines der Geräte ist bereits Teil einer ausstehenden Neuverknüpfung.",
+      "confirm_target_name_required": "Geben Sie zur Bestätigung den Namen des vorhandenen Geräts ein.",
+      "confirm_target_name_mismatch": "Der eingegebene Name stimmt nicht mit {{hostname}} überein.",
+      "same_device": "Ein Gerät kann nicht mit sich selbst neu verknüpft werden.",
+      "invalid_target_version": "Die Version des vorhandenen Eintrags fehlt. Öffnen Sie die Neuverknüpfung erneut."
+    },
+    "stepUpHeld": "Ihre Bestätigung gilt weiterhin für diese Neuverknüpfung."
   }
 }

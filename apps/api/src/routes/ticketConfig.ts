@@ -17,6 +17,7 @@ import {
   listEmailInboundQueue, convertEmailInbound, dismissEmailInbound,
   listCustomerEmailDomains, createCustomerEmailDomain, updateCustomerEmailDomain, deleteCustomerEmailDomain,
 } from '../services/ticketConfigService';
+import { requireCustomerDomainGovernance as adminMiddleware } from '../middleware/customerDomainGovernance';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { writeRouteAudit } from '../services/auditEvents';
 
@@ -31,6 +32,7 @@ const idParam = z.object({ id: z.string().guid() });
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action);
 const writePerm = requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action);
+const emailReviewPerm = requirePermission(PERMISSIONS.TICKETS_EMAIL_REVIEW.resource, PERMISSIONS.TICKETS_EMAIL_REVIEW.action);
 const partnerGlobalDeniedMessage = 'Full partner organization access is required to manage partner-wide ticket configuration';
 
 const requirePartnerGlobalAccess = async (c: Context, next: Next) => {
@@ -58,22 +60,6 @@ function requirePartnerId(c: { get: (k: 'auth') => unknown; json: (b: unknown, s
   return auth.partnerId;
 }
 
-// Middleware version of the admin check — runs after writePerm (which populates
-// c.get('permissions')) and gates mutating routes so a non-admin gets a clear
-// admin-403 rather than a generic permission-denied message. Full-partner
-// capability is checked first so wildcard/platform-admin status cannot bypass
-// selected/none organization access.
-const adminMiddleware = async (c: Context, next: Next) => {
-  const auth = c.get('auth') as AuthContext;
-  if (!canManagePartnerWidePolicies(auth)) {
-    return c.json({ error: partnerGlobalDeniedMessage, code: ERROR_CODES.ACCESS_DENIED }, 403);
-  }
-  const perms = c.get('permissions') as UserPermissions | undefined;
-  const isAdmin = auth.user.isPlatformAdmin || (perms ? hasPermission(perms, '*', '*') : false);
-  if (!isAdmin) return c.json({ error: 'Managing ticket configuration requires an admin role', code: ERROR_CODES.ACCESS_DENIED }, 403);
-  return next();
-};
-
 // GET / — full partner ticketing config (statuses + priority settings).
 ticketConfigRoutes.get('/', scopes, readPerm, requirePartnerGlobalAccess, async (c) => {
   const partnerId = requirePartnerId(c);
@@ -89,11 +75,13 @@ const emailInboundQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 
-// GET /email-inbound — review queue (quarantined + failed). Admin-only surface,
-// so it carries writePerm + adminMiddleware like the mutations beside it. The
+// GET /email-inbound — review queue (quarantined + failed). Gated on the
+// dedicated tickets:email_review permission (#10951) — a *:* wildcard grant or
+// platform admin satisfies it too, so full admins are unaffected — plus
+// requirePartnerGlobalAccess (the queue is partner-wide). The
 // list query runs under the request partner context (RLS auto-scopes the rows)
 // and is additionally filtered by the resolved partnerId in the service.
-ticketConfigRoutes.get('/email-inbound', scopes, writePerm, adminMiddleware, zValidator('query', emailInboundQuerySchema), async (c) => {
+ticketConfigRoutes.get('/email-inbound', scopes, emailReviewPerm, requirePartnerGlobalAccess, zValidator('query', emailInboundQuerySchema), async (c) => {
   const partnerId = requirePartnerId(c);
   if (partnerId instanceof Response) return partnerId;
   const { page, limit } = c.req.valid('query');
@@ -107,7 +95,7 @@ const convertEmailInboundSchema = z.object({ orgId: z.string().guid() });
 // org and link the inbound row. The actor is the REAL authenticated admin (built
 // from c.get('auth').user), so convert is correctly attributed in the audit/event
 // trail — no synthetic sentinel.
-ticketConfigRoutes.post('/email-inbound/:id/convert', scopes, writePerm, adminMiddleware, zValidator('param', idParam), zValidator('json', convertEmailInboundSchema), async (c) => {
+ticketConfigRoutes.post('/email-inbound/:id/convert', scopes, emailReviewPerm, requirePartnerGlobalAccess, zValidator('param', idParam), zValidator('json', convertEmailInboundSchema), async (c) => {
   const partnerId = requirePartnerId(c);
   if (partnerId instanceof Response) return partnerId;
   const auth = c.get('auth') as AuthContext;
@@ -135,7 +123,7 @@ ticketConfigRoutes.post('/email-inbound/:id/convert', scopes, writePerm, adminMi
 
 // PATCH /email-inbound/:id/dismiss — drop a quarantined/failed row out of the
 // review queue (parse_status='ignored'). No ticket created.
-ticketConfigRoutes.patch('/email-inbound/:id/dismiss', scopes, writePerm, adminMiddleware, zValidator('param', idParam), async (c) => {
+ticketConfigRoutes.patch('/email-inbound/:id/dismiss', scopes, emailReviewPerm, requirePartnerGlobalAccess, zValidator('param', idParam), async (c) => {
   const partnerId = requirePartnerId(c);
   if (partnerId instanceof Response) return partnerId;
   try {

@@ -30,6 +30,7 @@ export const COLUMN_IDS = [
   'cores',
   'ramTotal',
   'diskTotal',
+  'diskUsage',
   'lastSeen',
   'agentVersion',
   'watchdogVersion',
@@ -48,6 +49,11 @@ export const COLUMN_IDS = [
   // Manual-asset inventory fields (#4622 W04). `serial` is opt-in for agent
   // rows too (via device_hardware); `assetTag`/`location` are manual-only.
   'serial',
+  // #9593 — SMBIOS system SKU (the HP product number). Opt-in, agent rows only:
+  // manual assets and discovered devices have no such field.
+  'productSku',
+  // #11332 - SMBIOS model exactly as the device reports it. Opt-in, agent rows only.
+  'hardwareModel',
   // #9863 — warranty end date + status from device_warranty. Opt-in: most
   // fleets have no warranty data for part of their devices.
   'warranty',
@@ -83,6 +89,7 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   cores: 'Cores',
   ramTotal: 'RAM',
   diskTotal: 'Disk',
+  diskUsage: 'Disk Usage',
   lastSeen: 'Last Seen',
   agentVersion: 'Agent Version',
   watchdogVersion: 'Watchdog Version',
@@ -99,6 +106,8 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   hardwareHealth: 'Hardware',
   vpn: 'VPN',
   serial: 'Serial',
+  productSku: 'Product Number',
+  hardwareModel: 'Model',
   warranty: 'Warranty Ends',
   assetTag: 'Asset Tag',
   location: 'Location',
@@ -158,7 +167,10 @@ export const COLUMN_GROUPS: Record<ColumnId, ColumnGroup> = {
   cores: 'inventory',
   ramTotal: 'inventory',
   diskTotal: 'inventory',
+  diskUsage: 'health',
   serial: 'inventory',
+  productSku: 'inventory',
+  hardwareModel: 'inventory',
   warranty: 'inventory',
   assetTag: 'inventory',
   location: 'inventory',

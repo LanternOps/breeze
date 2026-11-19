@@ -286,6 +286,9 @@ export function tabSnapshots(state: PartnersMeState): Record<PartnersMeTab, stri
   const raw = state.aiBudgetsThresholdsRaw;
   // Unparseable threshold text is an edit even though `aiBudgets` is unchanged.
   const thresholdsDraft = raw !== null && !parseThresholds(raw).ok ? raw : undefined;
+  // Approval mode is stored in `aiBudgets` but edited on the AI Approvals tab,
+  // so it counts toward that tab's dirty state, not AI Budgets'.
+  const { approvalMode, ...budgets } = state.aiBudgets;
   return {
     company: JSON.stringify({ n: state.companyName, a: state.address, c: state.contact, s: state.emailSignature }),
     regional: JSON.stringify([state.timezone, state.dateFormat, state.timeFormat, state.language]),
@@ -294,8 +297,8 @@ export function tabSnapshots(state: PartnersMeState): Record<PartnersMeTab, stri
     eventLogs: JSON.stringify(state.eventLogs),
     defaults: JSON.stringify(state.defaults),
     branding: JSON.stringify(state.branding),
-    aiBudgets: JSON.stringify({ b: state.aiBudgets, t: thresholdsDraft }),
-    aiApprovals: JSON.stringify(state.aiApprovals),
+    aiBudgets: JSON.stringify({ b: budgets, t: thresholdsDraft }),
+    aiApprovals: JSON.stringify({ a: state.aiApprovals, m: approvalMode }),
     remoteAccess: JSON.stringify({ r: state.remoteAccess, p: state.networkProxy }),
   };
 }

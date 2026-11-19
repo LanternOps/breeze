@@ -2,10 +2,12 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/backup/layout"
+	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
 // TestMain keeps StagingDir-less test managers hermetic. Without this, any
@@ -28,6 +30,12 @@ import (
 // LayoutManifest/BareMetal) — the same hermetic no-op darwin already gets
 // for free. Tests that care about layout collection use stubCollectLayout
 // (save/restore), same convention as journalHomeDirFn/journalDataDirFn.
+//
+// collectSystemState gets the same treatment (#11201): the real collector
+// copies the runner's whole /etc, 854 MB on the CI image and more than the
+// package's 10-minute timeout allows when its disk is slow. A test that wants
+// system state stubs it (stubCollectSystemState); one that forgets gets a
+// "not collected" warning instead of a poisoned merge queue.
 func TestMain(m *testing.M) {
 	tmp, err := os.MkdirTemp("", "backup-test-journal-*")
 	if err == nil {
@@ -36,6 +44,9 @@ func TestMain(m *testing.M) {
 	}
 	collectLayout = func(context.Context) (*layout.Manifest, error) {
 		return nil, layout.ErrUnsupportedPlatform
+	}
+	collectSystemState = func(context.Context, systemstate.CollectOptions) (*systemstate.SystemStateManifest, string, error) {
+		return nil, "", errors.New("the real system-state collector is off in tests: use stubCollectSystemState")
 	}
 	code := m.Run()
 	if tmp != "" {

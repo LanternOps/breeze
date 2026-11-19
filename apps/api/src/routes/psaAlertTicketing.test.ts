@@ -24,6 +24,9 @@ const h = vi.hoisted(() => {
     decryptCredentialsMock: vi.fn(),
     writeRouteAuditMock: vi.fn(),
     wakeMock: vi.fn(async () => {}),
+    // Work the routes hand to runAfterDbContextCommit: held here until the test
+    // "commits" the request context with flushDeferred() (#10933).
+    deferred: [] as Array<{ label: string; work: () => unknown }>,
   };
 });
 
@@ -31,6 +34,7 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runAfterDbContextCommit: vi.fn((label: string, work: () => unknown) => { h.deferred.push({ label, work }); }),
   db: {
     select: (...args: unknown[]) => h.selectMock(...(args as [])),
     update: (...args: unknown[]) => h.updateMock(...(args as [])),
@@ -159,7 +163,13 @@ beforeEach(() => {
   if (psaTicketMappingActionRoutes) app.route('/psa', psaTicketMappingActionRoutes);
   h.wakeMock.mockReset();
   h.wakeMock.mockResolvedValue(undefined);
+  h.deferred.length = 0;
 });
+
+/** Simulate the request's DB context committing: run what the route deferred. */
+async function flushDeferred() {
+  for (const task of h.deferred.splice(0)) await task.work();
+}
 
 const url = `/psa/connections/${CONNECTION_ID}/alert-ticketing`;
 
@@ -490,6 +500,7 @@ describe('human alert-ticket actions', () => {
     expect(q.params).toContain(CONNECTION_ID);
     expect(q.sql).toContain('lease_until');
     expect(update.set).toHaveBeenCalledWith(expect.objectContaining({ createState: 'never_attempted', deadlineAt: expect.any(Date) }));
+    await flushDeferred();
     expect(h.wakeMock).toHaveBeenCalledWith(MAPPING_ID, 'create');
     expect(h.writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'psa.alert_ticketing.redrive' }));
   });
@@ -510,6 +521,7 @@ describe('human alert-ticket actions', () => {
     expect(new PgDialect().sqlToQuery(values.createSnapshot).sql).toContain('createAnywayUsed');
     loadMapping(); h.updateMock.mockReturnValueOnce(h.chain([]));
     expect((await post(`${actionUrl}/create-anyway`)).status).toBe(409);
+    await flushDeferred();
     expect(h.wakeMock).toHaveBeenCalledTimes(1);
   });
   it('allows only one additional remote create across repeated unknown outcomes', async () => {
@@ -620,6 +632,8 @@ describe('human alert-ticket actions', () => {
     h.wakeMock.mockReturnValueOnce(new Promise(() => {}));
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect((await post(`${url}/redrive`, { states: ['failed'] })).status).toBe(200);
+    // The deferred wake is still time-boxed once it runs after the commit.
+    await flushDeferred();
     expect(warning).toHaveBeenCalled(); warning.mockRestore();
   }, 10_000);
   it('keeps a durable re-drive successful when Redis is unavailable', async () => {
@@ -627,6 +641,32 @@ describe('human alert-ticket actions', () => {
     h.wakeMock.mockRejectedValueOnce(new Error('offline'));
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect((await post(`${url}/redrive`, { states: ['failed', 'skipped_no_company'] })).status).toBe(200);
+    await flushDeferred();
     expect(warning).toHaveBeenCalled(); warning.mockRestore();
+  });
+  // #10933: the wake must not reach BullMQ while the request transaction that
+  // re-armed the row is still open — a worker that ran early would read the
+  // pre-commit state, see nothing due and drop the wake.
+  it('redrive enqueues its wakes only after the request DB context commits', async () => {
+    mockLoad(row()); h.updateMock.mockReturnValueOnce(h.chain([{ id: MAPPING_ID }]));
+    expect((await post(`${url}/redrive`, { states: ['failed'] })).status).toBe(200);
+    expect(h.wakeMock).not.toHaveBeenCalled();
+    expect(h.deferred).toHaveLength(1);
+    await flushDeferred();
+    expect(h.wakeMock).toHaveBeenCalledWith(MAPPING_ID, 'create');
+  });
+  it('create anyway enqueues its wake only after the request DB context commits', async () => {
+    loadMapping(); h.updateMock.mockReturnValueOnce(h.chain([{ id: MAPPING_ID, createState: 'never_attempted' }]));
+    expect((await post(`${actionUrl}/create-anyway`)).status).toBe(200);
+    expect(h.wakeMock).not.toHaveBeenCalled();
+    expect(h.deferred).toHaveLength(1);
+    await flushDeferred();
+    expect(h.wakeMock).toHaveBeenCalledWith(MAPPING_ID, 'create');
+  });
+  it('mark-handled defers no wake', async () => {
+    loadMapping('failed'); h.updateMock.mockReturnValueOnce(h.chain([{ id: MAPPING_ID, createState: 'handled' }]));
+    expect((await post(`${actionUrl}/mark-handled`, { expectedState: 'failed' })).status).toBe(200);
+    expect(h.deferred).toHaveLength(0);
+    expect(h.wakeMock).not.toHaveBeenCalled();
   });
 });

@@ -61,6 +61,17 @@ const (
 	// type fails it visibly as "unknown command type" instead of rebooting unforced.
 	CmdForceReboot = "force_reboot"
 	CmdWakeOnLan   = "wake_on_lan"
+	// CmdOemUpdateRun (#11065) runs one hardware vendor's own update tool
+	// (Dell Command Update first). The API is its only sender, through one gated
+	// dispatch seam; the agent decides alone which tools and hosts it trusts.
+	CmdOemUpdateRun = "oem_update_run"
+	// CmdOemUpdateRelease (#11065 W06) hands a vendor tool's own update
+	// schedule back: the agent restores only what its takeover changed.
+	CmdOemUpdateRelease = "oem_update_release"
+	// CmdOemObserve (#11065 observe-first amendment) reports what a Surface, HP
+	// or Lenovo machine has, read-only: its own command and package, so it
+	// cannot reach the runner's fetch, install, marker or reboot paths.
+	CmdOemObserve = "oem_observe"
 	// On-demand re-run of all inventory collectors. Triggers the same set of
 	// send*Inventory submissions the heartbeat fires periodically, so the API
 	// sees fresh hardware/software/network/etc. without waiting for the next
@@ -300,6 +311,10 @@ const (
 	CmdPamRequestNotify = "pam_request_notify"
 )
 
+// StatusResultHandedOff is the internal marker for a result another process
+// will report; see wire.ResultStatusHandedOff. Delivery paths drop it.
+const StatusResultHandedOff = wire.ResultStatusHandedOff
+
 // CommandResult represents the result of a command execution
 type CommandResult struct {
 	Status string `json:"status"` // completed, failed, timeout
@@ -459,9 +474,11 @@ type ServiceListResponse struct {
 
 // Event log types
 type EventLog struct {
-	Name         string `json:"name"`
-	DisplayName  string `json:"displayName"`
-	RecordCount  int64  `json:"recordCount"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+	// RecordCount is nil, and omitted on the wire, when the count was not
+	// read; 0 means the log is empty (#11975).
+	RecordCount  *int64 `json:"recordCount,omitempty"`
 	MaxSizeBytes int64  `json:"maxSizeBytes,omitempty"`
 	Retention    string `json:"retention,omitempty"`
 }

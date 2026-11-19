@@ -56,7 +56,11 @@ const { dbMock } = vi.hoisted(() => {
   return { dbMock };
 });
 
-vi.mock('../db', () => ({ db: dbMock }));
+vi.mock('../db', () => ({
+  db: dbMock,
+  withDbTransaction: (fn: () => unknown) => fn(),
+  withDbTransactionIfHeld: (fn: () => unknown) => fn(),
+}));
 
 vi.mock('./sentry', () => ({
   captureException: vi.fn(),

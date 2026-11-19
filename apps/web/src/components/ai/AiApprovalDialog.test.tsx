@@ -47,6 +47,21 @@ beforeEach(() => {
   decideIntentApproval.mockReset();
 });
 
+describe('AiApprovalDialog — standing instruction conflict banner (W06)', () => {
+  it('renders the banner with the interpolated instruction text when present', () => {
+    render(<AiApprovalDialog {...baseProps} standingInstructionConflict={{ text: "don't reboot PC-01" }} />);
+
+    const banner = screen.getByTestId('approval-standing-instruction-banner');
+    expect(banner).toHaveTextContent("Conflicts with a remembered instruction: “don't reboot PC-01”");
+  });
+
+  it('renders no banner when there is no conflict', () => {
+    render(<AiApprovalDialog {...baseProps} />);
+
+    expect(screen.queryByTestId('approval-standing-instruction-banner')).toBeNull();
+  });
+});
+
 describe('AiApprovalDialog', () => {
   it('renders Approve/Deny buttons for a non-intent-backed (legacy Tier-2) execution', () => {
     render(<AiApprovalDialog {...baseProps} />);

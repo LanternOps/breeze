@@ -7,6 +7,7 @@ import {
   organizations,
 } from '../db/schema';
 import { captureException } from './sentry';
+import { acquireMembershipExportOrgLock } from './deviceGroupOwnership';
 
 type Tx = Pick<typeof db, 'select' | 'insert' | 'transaction'>;
 
@@ -65,6 +66,9 @@ export async function applyOrgDefaultDeviceGroup(
         return 'skipped' as const;
       }
 
+      // Export admission before the first membership row, the order every membership
+      // writer uses (services/groupMembership.ts evaluateGroupMembership).
+      await acquireMembershipExportOrgLock(orgId, sp);
       await sp
         .insert(deviceGroupMemberships)
         .values({ deviceId, groupId: group.id, orgId, addedBy: 'manual' })

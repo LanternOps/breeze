@@ -22,7 +22,8 @@ vi.mock('../../db/lockTimeout', async (importOriginal) => {
 
 import { db, withSystemDbAccessContext } from '../../db';
 import { settleAndDebitAiReservations } from '../../jobs/aiBudgetReservationSweep';
-import { aiAgentRuns, aiAgents } from '../../db/schema';
+import { aiAgentRuns, aiAgents, wispGrants } from '../../db/schema';
+import { spentUnderGrant, summaryRefineSourceRef } from '../../services/wisp/budget';
 import { settleComputeCents } from '../../services/aiCostTracker';
 import {
   listFailedPlatformCreditDebits,
@@ -237,6 +238,23 @@ describe.skipIf(!RUN)('ai_invocations is the source of truth for every rollup', 
     expect(usage.map((u) => u.period).sort()).toEqual(['daily', 'monthly']);
     for (const u of usage) expect(Number(u.c)).toBeCloseTo(Number(sums!.c), 6);
     expect(await reservationState(id)).toMatchObject({ status: 'settled' });
+  });
+
+  it('#10390: a session summary settled the way threadSummaryRefine settles it lands in its grant\'s daily spend', async () => {
+    const [grant] = await sys(() => db.insert(wispGrants).values({
+      partnerId: s.partnerId, orgId: null, grantorUserId: s.userId, status: 'active',
+      expiresAt: new Date(Date.now() + 30 * 86_400_000),
+    }).returning({ id: wispGrants.id }));
+    expect(await spentUnderGrant(grant!.id)).toBe(0);
+
+    const id = await reserve(s, binding, { session: false });
+    const out = await settleInvocation(settleInput(s, binding, id, {
+      sessionId: null, sourceRef: summaryRefineSourceRef(grant!.id),
+    }));
+
+    expect(out.costCents).toBeGreaterThan(0);
+    expect(out.deferred).toBe(false);
+    expect(await spentUnderGrant(grant!.id)).toBe(Math.ceil(out.costCents));
   });
 
   it('a $0 SDK cost on a model added by today\'s discovery bills its platform rate', async () => {

@@ -73,6 +73,24 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('BACKUP_LOCAL_ROOT', () => {
+    it('refuses to start a hosted deployment with API-side local backup storage configured', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'true', BACKUP_LOCAL_ROOT: '/srv/breeze-local' }, () => {
+        expect(() => validateConfig()).toThrow(/BACKUP_LOCAL_ROOT is not supported on a hosted deployment/);
+      });
+    });
+    it('accepts it on a self-hosted deployment', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'false', BACKUP_LOCAL_ROOT: '/srv/breeze-local' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+    it('treats an empty value as unset on a hosted deployment', () => {
+      withEnv({ ...validEnv, IS_HOSTED: 'true', BACKUP_LOCAL_ROOT: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
   describe('BREEZE_AI_ARTIFACT_CAPTURE_ENABLED (#6732)', () => {
     const blob = { ARTIFACT_S3_ACCESS_KEY: 'k', ARTIFACT_S3_SECRET_KEY: 's', S3_BUCKET: 'b' };
     it('is off/valid when unset', () => {
@@ -348,6 +366,72 @@ describe('validateConfig', () => {
       }, () => {
         expect(() => validateConfig()).not.toThrow();
       });
+    });
+  });
+
+  describe('Portal Entra app (portal registration W4)', () => {
+    const portalEntra = {
+      PORTAL_ENTRA_CLIENT_ID: '44444444-4444-4444-8444-444444444444',
+      PORTAL_ENTRA_CLIENT_SECRET: 'portal-entra-secret',
+    };
+
+    it('refuses boot when the app is configured with a malformed callback base', () => {
+      withEnv({ ...validEnv, ...portalEntra, PORTAL_ENTRA_CALLBACK_BASE_URL: 'https://portal.example.test/sub/path' }, () => {
+        expect(() => validateConfig()).toThrow(/PORTAL_ENTRA_CALLBACK_BASE_URL/);
+      });
+    });
+
+    it('boots with a valid base, and ignores the base entirely when the app is not configured', () => {
+      withEnv({ ...validEnv, ...portalEntra, PORTAL_ENTRA_CALLBACK_BASE_URL: 'https://portal.example.test' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+      withEnv({ ...validEnv, PORTAL_ENTRA_CLIENT_ID: '', PORTAL_ENTRA_CALLBACK_BASE_URL: 'not a url' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  describe('Portal Google client (portal registration W7)', () => {
+    const portalGoogle = {
+      PORTAL_GOOGLE_CLIENT_ID: '123456789012-abcdefghijklmnop.apps.googleusercontent.com',
+      PORTAL_GOOGLE_CLIENT_SECRET: 'portal-google-secret',
+    };
+
+    it('refuses boot when the client is configured with a malformed callback base or client id', () => {
+      withEnv({ ...validEnv, ...portalGoogle, PORTAL_GOOGLE_CALLBACK_BASE_URL: 'https://portal.example.test/sub/path' }, () => {
+        expect(() => validateConfig()).toThrow(/PORTAL_GOOGLE_CALLBACK_BASE_URL/);
+      });
+      withEnv({ ...validEnv, ...portalGoogle, PORTAL_GOOGLE_CLIENT_ID: 'not-a-google-client' }, () => {
+        expect(() => validateConfig()).toThrow(/PORTAL_GOOGLE_CLIENT_ID/);
+      });
+    });
+
+    it('boots with a valid base, and ignores the base entirely when the client is not configured', () => {
+      withEnv({ ...validEnv, ...portalGoogle, PORTAL_GOOGLE_CALLBACK_BASE_URL: 'https://portal.example.test' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+      withEnv({ ...validEnv, PORTAL_GOOGLE_CLIENT_ID: '', PORTAL_GOOGLE_CALLBACK_BASE_URL: 'not a url' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  describe('PORTAL_SELF_REGISTRATION_ENABLED (portal registration W6)', () => {
+    it('boots when unset, empty, true, 1, false or 0', () => {
+      // Unset is the base validEnv case every other test boots with.
+      for (const value of ['', 'true', '1', 'false', '0', 'TRUE', ' false ']) {
+        withEnv({ ...validEnv, PORTAL_SELF_REGISTRATION_ENABLED: value }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      }
+    });
+
+    it('refuses boot on any other value', () => {
+      for (const value of ['yes', 'off', '2']) {
+        withEnv({ ...validEnv, PORTAL_SELF_REGISTRATION_ENABLED: value }, () => {
+          expect(() => validateConfig()).toThrow(/PORTAL_SELF_REGISTRATION_ENABLED/);
+        });
+      }
     });
   });
 
@@ -1329,6 +1413,30 @@ describe('validateConfig', () => {
     },
   );
 
+  // Portal registration W8 (#11385, plan D7): an unrecognised value reports only; say so at boot.
+  it.each(['yes', 'on', 'enforce', '2'])(
+    'warns at boot, naming the variable, when PORTAL_DIRECTORY_DEPROVISION_ENFORCE=%j is not true/1/false/0',
+    (value) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({ ...validEnv, PORTAL_DIRECTORY_DEPROVISION_ENFORCE: value }, () => {
+        validateConfig();
+        const lines = warnSpy.mock.calls.map((args) => String(args[0])).filter((line) => line.includes('PORTAL_DIRECTORY_DEPROVISION_ENFORCE'));
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain('report-only');
+      });
+      warnSpy.mockRestore();
+    },
+  );
+
+  it.each(['true', '1', 'false', '0', '', ' TRUE '])('does not warn about PORTAL_DIRECTORY_DEPROVISION_ENFORCE=%j', (value) => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({ ...validEnv, PORTAL_DIRECTORY_DEPROVISION_ENFORCE: value }, () => {
+      validateConfig();
+      expect(warnSpy.mock.calls.some((args) => String(args[0]).includes('PORTAL_DIRECTORY_DEPROVISION_ENFORCE'))).toBe(false);
+    });
+    warnSpy.mockRestore();
+  });
+
   it.each(['2147483648', '52428800', ''])('does not warn about TICKET_IMPORT_MAX_BYTES_PER_HOUR=%j', (value) => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     withEnv({ ...validEnv, TICKET_IMPORT_MAX_BYTES_PER_HOUR: value }, () => {
@@ -1343,6 +1451,8 @@ describe('validateConfig', () => {
     ['TICKET_IMPORT_SLICE_MS', '5min'],
     ['TICKET_IMPORT_LEASE_MS', '-1'],
     ['TICKET_IMPORT_MAX_TICKET_BYTES', '256MiB'],
+    ['TICKET_IMPORT_MAX_TICKET_ARTICLES', '10k'],
+    ['TICKET_IMPORT_MAX_TICKET_READ_BYTES', '256MiB'],
   ])('warns at boot when %s=%j is not a plain positive integer', (key, value) => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     withEnv({ ...validEnv, [key]: value }, () => {
@@ -3115,6 +3225,88 @@ describe('validateConfig', () => {
   it('rejects a non-boolean BREEZE_WISP_ENABLED', () => {
     withEnv({ ...validEnv, BREEZE_WISP_ENABLED: 'maybe' }, () => {
       expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED must be a boolean/);
+    });
+  });
+
+  // Vendor updates (#11065): the lab override opens closed firmware gates, so it
+  // never reaches production. A typo in the kill switch would silently not stop a lane.
+  it('refuses BREEZE_OEM_UPDATES_LAB_DEVICE_IDS under NODE_ENV=production', () => {
+    withEnv({ ...workspaceProdEnv, BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: '11111111-1111-4111-8111-111111111111' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_LAB_DEVICE_IDS must not be set in production/);
+    });
+  });
+
+  it('allows BREEZE_OEM_UPDATES_LAB_DEVICE_IDS outside production', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: '11111111-1111-4111-8111-111111111111' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('rejects a non-boolean BREEZE_OEM_UPDATES_ENABLED', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_ENABLED: 'maybe' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_ENABLED must be a boolean/);
+    });
+  });
+
+  it('rejects a partner allowlist that parses to nothing: empty means every partner', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: ' , ,' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST/);
+    });
+  });
+
+  it('rejects an unknown lane in BREEZE_OEM_UPDATES_DISABLED_LANES', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_DISABLED_LANES: 'dell,dels' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_DISABLED_LANES.*dels/);
+    });
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_DISABLED_LANES: 'dell, HP' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  // Vendor canary (#11065 observe-first): who may run best-guess vendor code.
+  describe('BREEZE_VENDOR_CANARY_PARTNER_IDS', () => {
+    const a = 'aaaaaaaa-0000-4000-8000-000000000001';
+    const b = 'bbbbbbbb-0000-4000-8000-000000000002';
+    const c = 'cccccccc-0000-4000-8000-000000000003';
+    const d = 'dddddddd-0000-4000-8000-000000000004';
+
+    it('malformed UUID fails validate', () => {
+      withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: `${a},not-a-uuid` }, () => {
+        expect(() => validateConfig()).toThrow(/BREEZE_VENDOR_CANARY_PARTNER_IDS/);
+      });
+    });
+
+    it('a value that parses to nothing fails validate', () => {
+      withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: ' , ' }, () => {
+        expect(() => validateConfig()).toThrow(/BREEZE_VENDOR_CANARY_PARTNER_IDS/);
+      });
+    });
+
+    it('more than 3 ids fails validate', () => {
+      withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: [a, b, c, d].join(',') }, () => {
+        expect(() => validateConfig()).toThrow(/BREEZE_VENDOR_CANARY_PARTNER_IDS.*at most 3/);
+      });
+    });
+
+    it('allowed under NODE_ENV=production', () => {
+      withEnv({ ...workspaceProdEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: `${a}, ${b}` }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('empty is allowed: every stage is off', () => {
+      withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_PARTNER_IDS: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  it('rejects an unknown pair in BREEZE_VENDOR_CANARY_DISABLED: a typo would stop nothing', () => {
+    withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_DISABLED: 'oem_updates:hp,oem_update:lenovo' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_VENDOR_CANARY_DISABLED.*oem_update:lenovo/);
+    });
+    withEnv({ ...validEnv, BREEZE_VENDOR_CANARY_DISABLED: 'oem_updates:HP, wake_on_lan:lenovo' }, () => {
+      expect(() => validateConfig()).not.toThrow();
     });
   });
 

@@ -37,7 +37,7 @@ import {
   tickets,
   users,
 } from '../../db/schema';
-import { portalUsers } from '../../db/schema/portal';
+import { portalUserIdentities, portalUsers } from '../../db/schema/portal';
 import { clientAiOrgPolicies, clientAiTenantMappings } from '../../db/schema/clientAi';
 import { resolveAndMintClientSession } from '../../services/clientAiExchange';
 import { resolveConfirmedContact } from '../../services/officeAddin/addinContacts';
@@ -116,6 +116,18 @@ const claims = (over: Record<string, unknown> = {}) => {
     ...over,
   } as never;
 };
+
+/** An Entra login's identity row (portal registration W2/W3: the exchange reads these). */
+const seedEntraIdentity = (orgId: string, portalUserId: string, tid: string, oid: string) =>
+  admin().insert(portalUserIdentities).values({
+    orgId,
+    portalUserId,
+    provider: 'entra',
+    issuer: `https://login.microsoftonline.com/${tid}/v2.0`,
+    subject: oid,
+    entraTenantId: tid,
+    linkedVia: 'migrated',
+  });
 
 const contactsFor = (orgId: string, email: string) =>
   admin()
@@ -208,7 +220,7 @@ describe('Entra SSO provisioning links a contact (#3258)', () => {
       .insert(contacts)
       .values({ orgId: fx.orgId, email, name: 'Jane From Email', roles: [] })
       .returning({ id: contacts.id });
-    await admin().insert(portalUsers).values({
+    const [prior] = await admin().insert(portalUsers).values({
       orgId: fx.orgId,
       email,
       name: 'Jane Client',
@@ -218,7 +230,10 @@ describe('Entra SSO provisioning links a contact (#3258)', () => {
       authMethod: 'entra',
       status: 'active',
       contactId: null,
-    });
+    }).returning({ id: portalUsers.id });
+    // Its identity, as the deploy backfill leaves every Entra login (the
+    // exchange finds logins through portal_user_identities since W3).
+    await seedEntraIdentity(fx.orgId, prior!.id, fx.tid, (c as { oid: string }).oid);
 
     const outcome = await resolveAndMintClientSession(c, fakeRedis);
     expect(outcome.kind).toBe('resolved');
@@ -306,7 +321,7 @@ describe('Entra SSO provisioning links a contact (#3258)', () => {
     const otherOrg = await createOrganization({ partnerId: fx.partnerId, name: `Stale ${randomUUID().slice(0, 8)}` });
     seeded.orgIds.push(otherOrg.id);
     const c = claims();
-    await admin().insert(portalUsers).values({
+    const [stale] = await admin().insert(portalUsers).values({
       orgId: otherOrg.id,
       email: (c as { email: string }).email,
       passwordHash: null,
@@ -315,7 +330,9 @@ describe('Entra SSO provisioning links a contact (#3258)', () => {
       authMethod: 'entra',
       status: 'active',
       contactId: null,
-    });
+    }).returning({ id: portalUsers.id });
+    // The identity moves with its login (same-org composite FK).
+    await seedEntraIdentity(otherOrg.id, stale!.id, fx.tid, (c as { oid: string }).oid);
 
     const outcome = await resolveAndMintClientSession(c, fakeRedis);
 

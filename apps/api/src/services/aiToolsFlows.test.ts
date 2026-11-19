@@ -25,7 +25,8 @@ import { isToolEnvGatedOff } from './aiToolEnvGates';
 import { captureException } from './sentry';
 
 const FLOW_ID = '33333333-3333-4333-8333-333333333333';
-const auth = { scope: 'organization', orgId: 'o', user: { id: 'u' } } as unknown as AuthContext;
+// Sessions that cleared MFA: cancel_flow_run is MFA-gated (aiToolMfaGate.ts).
+const auth = { scope: 'organization', orgId: 'o', user: { id: 'u' }, token: { mfa: true } } as unknown as AuthContext;
 
 function tools(): Map<string, AiTool> {
   const m = new Map<string, AiTool>();
@@ -130,7 +131,7 @@ describe('isToolEnvGatedOff', () => {
 
 // Tool Catalog W04 (#5219, Task A11): run / list / get / cancel flow runs.
 const RUN_ID = '44444444-4444-4444-8444-444444444444';
-const userAuth = { scope: 'organization', orgId: 'o', user: { id: 'u' }, principal: { kind: 'user_session' } } as unknown as AuthContext;
+const userAuth = { scope: 'organization', orgId: 'o', user: { id: 'u' }, principal: { kind: 'user_session' }, token: { mfa: true } } as unknown as AuthContext;
 const apiKeyAuth = { scope: 'organization', orgId: 'o', user: { id: 'u' }, principal: { kind: 'api_key', apiKeyId: 'k' } } as unknown as AuthContext;
 const chatCtx = { captureAnchor: { orgId: 'o', sessionId: '55555555-5555-4555-8555-555555555555' } };
 const callAs = (a: AuthContext, name: string, input: Record<string, unknown>, ctx?: Record<string, unknown>) =>

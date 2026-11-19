@@ -8,11 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/breeze-rmm/agent/internal/backup/bmr"
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
 )
 
@@ -93,8 +93,8 @@ func (r *run) guestBuild() (build uint32, ok bool, err error) {
 	if r.stateStaging == "" {
 		return 0, false, errors.New("guest build check: no system-state staging directory")
 	}
-	hivePath := filepath.Join(r.stateStaging, "registry", "SOFTWARE")
-	if _, err := os.Stat(hivePath); err != nil {
+	hivePath, err := bmr.TreeHivePath(r.stateStaging, filepath.Join("registry", "SOFTWARE"))
+	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return 0, false, nil
 		}

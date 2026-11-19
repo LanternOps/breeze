@@ -101,7 +101,7 @@ All in one migration `apps/api/migrations/<date>-<time>-backup-provider-integrat
 id                              uuid PK default gen_random_uuid()
 partner_id                      uuid NOT NULL REFERENCES partners(id)
 provider                        varchar(30) NOT NULL              -- 'cove' (open string; the adapter registry validates)
-name                            varchar(200) NOT NULL             -- human label, e.g. "OliveTech Cove"
+name                            varchar(200) NOT NULL             -- human label, e.g. "Fabrikam MSP Cove"
 base_url                        varchar(300) NOT NULL DEFAULT 'https://api.backup.management/jsonapi'
 credentials_encrypted           text NOT NULL                     -- encryptSecret(JSON), aadBinding 'row'
 vendor_root_id                  varchar(120)                      -- Cove root PartnerId learned at test/login

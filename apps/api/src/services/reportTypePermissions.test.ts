@@ -81,11 +81,20 @@ describe('reportTypeHiddenByPermission / reportTypePermissionCondition (ruling P
     expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, all))).toEqual([]);
   });
 
-  it('an unresolved permission set hides every business type and no legacy type', () => {
+  it('an unresolved permission set hides every permission-gated type and no legacy type', () => {
     for (const granted of [null, undefined, { permissions: [] }]) {
       const hidden = REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, granted));
-      expect([...hidden].sort()).toEqual([...BUSINESS_REPORT_TYPES].sort());
+      expect([...hidden].sort()).toEqual([...BUSINESS_REPORT_TYPES, 'ticket_sla_performance'].sort());
     }
+  });
+
+  it('ticket_sla_performance is hidden without tickets:read, on any scope, and only then (#11018)', () => {
+    const reportsOnly = { permissions: [{ resource: 'reports', action: '*' }] };
+    const withTickets = { permissions: [{ resource: 'reports', action: '*' }, { resource: 'tickets', action: 'read' }] };
+    expect(reportTypeHiddenByPermission('ticket_sla_performance', reportsOnly)).toBe(true);
+    expect(reportTypeHiddenByPermission('ticket_sla_performance', withTickets)).toBe(false);
+    // audience 'any': the audience gate never hides it from an org-scope caller.
+    expect(reportTypeHiddenFromCaller('ticket_sla_performance', { scope: 'organization' })).toBe(false);
   });
 
   it('ai_usage_by_client needs BOTH invoices:read and ai_sessions:read_all', () => {
@@ -126,6 +135,21 @@ describe('reportTypeHiddenByPermission / reportTypePermissionCondition (ruling P
     expect(reportTypeHiddenByPermission('client_profitability', {
       permissions: [...invoicesOnly.permissions, { resource: 'time_entries', action: 'read' }],
     })).toBe(false);
+  });
+
+  // #11018 W2. A portal customer has no permission set, so `granted: null` hides
+  // every gated type. Delivering a managed evidence run is what publishes it, so
+  // the customer reader exempts exactly that execution class and nothing else.
+  it('exceptManagedEvidence lifts the gate for managed evidence types only', () => {
+    const condition = reportTypePermissionCondition(null, reports.type, { exceptManagedEvidence: true });
+    const { params } = dialect.sqlToQuery(condition as SQL);
+    expect(params).not.toContain('ticket_sla_performance');
+    expect([...params].sort()).toEqual([...BUSINESS_REPORT_TYPES].sort());
+  });
+
+  it('without the option, a caller with no permission set still loses ticket_sla_performance', () => {
+    const { params } = dialect.sqlToQuery(reportTypePermissionCondition(null, reports.type) as SQL);
+    expect(params).toContain('ticket_sla_performance');
   });
 
   it('an unknown type is not hidden and never throws', () => {

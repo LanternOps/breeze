@@ -101,7 +101,7 @@ import {
   commitDesktopStreamStartIntent,
   formatDesktopGeneration,
 } from '../../services/remoteDesktopStartIntent';
-import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
+import { originalRemoteSessionStart, remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
 import { getRedis } from '../../services/redis';
 import {
   desktopStartInFlightRedisKey,
@@ -191,7 +191,7 @@ async function storeAnswerDirectly(sessionId: string): Promise<void> {
   await getTestDb().update(remoteSessions).set({
     webrtcAnswer: 'v=0\r\nanswer\r\n',
     status: 'active',
-    startedAt: new Date(),
+    startedAt: originalRemoteSessionStart(),
   }).where(eq(remoteSessions.id, sessionId));
 }
 
@@ -441,11 +441,11 @@ describe('desktop start-intent generation fence', () => {
   it('does not expire a WS-fallback start waiting on its answer as stale, however old the session row', async () => {
     const { sessionId } = await seed('pending');
     await getTestDb().execute(sql`
-      UPDATE remote_sessions SET created_at = now() - interval '10 minutes' WHERE id = ${sessionId}::uuid
+      UPDATE remote_sessions SET created_at = now() - interval '10 minutes', last_start_attempt_at = now() - interval '10 minutes' WHERE id = ${sessionId}::uuid
     `);
     const { sessionId: plainOld } = await seed('connecting');
     await getTestDb().execute(sql`
-      UPDATE remote_sessions SET created_at = now() - interval '10 minutes' WHERE id = ${plainOld}::uuid
+      UPDATE remote_sessions SET created_at = now() - interval '10 minutes', last_start_attempt_at = now() - interval '10 minutes' WHERE id = ${plainOld}::uuid
     `);
 
     const started = await withSystemDbAccessContext(() => commitDesktopStreamStartIntent({

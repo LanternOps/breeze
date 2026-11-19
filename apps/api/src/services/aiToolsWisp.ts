@@ -6,13 +6,14 @@
  * a coordinator code path, and `workspace_launch_analysis` stays denied.
  *
  *   launch_specialist        Tier 2 chat tool, inside a Wisp session only
- *                            (`auth.wispGrant`, stamped by W04). The auto-admit
- *                            kinds (sweep, analysis) run on the call; every
- *                            asks-first kind escalates to a supervised Tier-3
- *                            approval in chat (`TIER3_ACTIONS`, keyed on
- *                            `kind`), so the person sees the exact request —
- *                            the ticket list and message for a bulk reply —
- *                            before it runs. Agent principals are denied
+ *                            (`auth.wispGrant`, stamped by W04). The
+ *                            chatLaunchTier-2 kinds (sweep, analysis,
+ *                            device_troubleshooting, assessment) run on the
+ *                            call after one ordinary card; the Tier-3 kinds
+ *                            escalate to a supervised approval in chat
+ *                            (`TIER3_ACTIONS`, keyed on `kind`), so the person
+ *                            sees the exact request — the ticket list and
+ *                            message for a bulk reply — before it runs. Agent principals are denied
  *                            (AGENT_HUMAN_ONLY_TOOLS).
  *   wisp_specialist_request  the approval card an assessment raises for an
  *                            asks-first kind. Human-only (never declared);
@@ -22,7 +23,8 @@
 import { randomUUID } from 'node:crypto';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { launchSpecialistInputSchema, launchSpecialistShape, wispSpecialistRequestSchema } from './aiToolSchemas';
+import { launchSpecialistInputSchema, launchSpecialistShapeFor, wispSpecialistRequestSchema } from './aiToolSchemas';
+import { aiWorkspaceEnabled } from '../config/env';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { RequestSpecialistResult } from './wisp/coordinator';
 import { WISP_SPECIALIST_REQUEST_TOOL } from './wisp/specialistPolicy';
@@ -134,18 +136,37 @@ function jsonSchema(shape: z.ZodRawShape): AiTool['definition']['input_schema'] 
   return schema as AiTool['definition']['input_schema'];
 }
 
+/**
+ * #10406 item 1: the text follows the server's workspace flag, so a model is
+ * never told it can launch `analysis` on a server that refuses it
+ * (`analysis_not_available`). The kind enum is unchanged. Capped at 300 chars
+ * (aiTools.descriptionBudget.contract.test.ts), so the assessment's scope
+ * values ride on the kind field; the long kinds' param keys are verbatim (the
+ * params schemas are strict).
+ */
+export function launchSpecialistDescription(workspaceEnabled: boolean): string {
+  const runs = workspaceEnabled
+    ? 'device_troubleshooting {deviceId, goal, continueFromRunId?}, assessment {scope?}, analysis, sweep if scheduled.'
+    : 'device_troubleshooting {deviceId, goal, continueFromRunId?}, assessment {scope?}, sweep if scheduled. analysis is off on this server.';
+  return `After one card: ${runs} Others ask: bulk_ticket_reply {concernId, ticketIds, message, holdTickets?}; `
+    + 'operator_recipe {workflowKey, workflowVersion, objective, recipeInput}';
+}
+
 export function registerWispTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('launch_specialist', {
     tier: 2,
     domain: 'ai',
     deviceArgs: [],
-    searchHint: 'hand work to a specialist agent: sweep, sandbox analysis, Operator task, patch plan, research, bulk ticket reply',
+    searchHint: 'hand work to a specialist: sweep, analysis, Operator task, patch plan, research, bulk reply, device troubleshooting',
     definition: {
       name: 'launch_specialist',
-      // #10144: the params of the two long kinds live here (the params field's
-      // description is capped at 160 chars and lists the rest).
-      description: 'Hand bounded work to a specialist agent under your Wisp grant. Sweeps and analysis start at once; other kinds need approval first. params for bulk_ticket_reply {concernId, ticketIds, message, holdTickets?}; operator_recipe {workflowKey, workflowVersion, objective, recipeInput}.',
-      input_schema: jsonSchema(launchSpecialistShape),
+      // #10144: the params of the long kinds live here (the params field's
+      // description is capped at 160 chars and lists the rest; evaluated once
+      // here because the workspace flag is process-constant). #11084:
+      // device_troubleshooting is a chat Tier-2 launch like sweep/analysis.
+      // #11085: continueFromRunId seeds a run from a settled prior one.
+      description: launchSpecialistDescription(aiWorkspaceEnabled()),
+      input_schema: jsonSchema(launchSpecialistShapeFor(aiWorkspaceEnabled())),
     },
     handler: (input, auth) => launchSpecialistHandler(input, auth),
   });

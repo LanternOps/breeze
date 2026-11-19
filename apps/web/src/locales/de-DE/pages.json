@@ -192,7 +192,8 @@
     "aiTasks": "KI-Aufgaben",
     "aiTask": "KI-Aufgabe",
     "settingsAi": "KI-Einstellungen",
-    "settingsFlowLimits": "Ablauflimits"
+    "settingsFlowLimits": "Ablauflimits",
+    "ticketsImport": "Tickets importieren"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",

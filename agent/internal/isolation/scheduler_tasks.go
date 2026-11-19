@@ -10,11 +10,15 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/breeze-rmm/agent/internal/isolation/recoveryinstall"
 )
 
 const recoveryTaskFolder = `\Breeze\`
@@ -287,32 +291,55 @@ type windowsScheduler struct {
 	dataDir string
 	// tempDir holds the transient task XML before schtasks reads it. Production
 	// uses the SYSTEM-only agent data directory rather than a shared temp dir.
-	tempDir         string
-	recoveryPath    func() (string, error)
-	run             func(...string) ([]byte, error)
-	exists          func(string) bool
+	tempDir      string
+	recoveryPath func() (string, error)
+	run          func(...string) ([]byte, error)
+	exists       func(string) bool
+	// verifySignature is trust Path A (Authenticode). manifestTrust, when set
+	// by ConfigureRecoveryManifestTrust, adds the self-host Path B.
 	verifySignature func(string) error
+	manifestTrust   atomic.Pointer[recoveryinstall.ManifestTrust]
 	selfTest        func(string) error
 	now             func() time.Time
 }
 
 var _ RecoveryScheduler = (*windowsScheduler)(nil)
 
-func (s *windowsScheduler) checkedRecoveryPath() (string, error) {
+// trustPolicy is the one policy both this scheduler and the recovery installer
+// apply, so Ready() and EnsureRecovery accept exactly the same executables.
+func (s *windowsScheduler) trustPolicy() recoveryinstall.TrustPolicy {
+	p := recoveryinstall.TrustPolicy{CodeSignature: s.verifySignature}
+	if m := s.manifestTrust.Load(); m != nil {
+		p.ManifestTrust = *m
+	}
+	return p
+}
+
+func (s *windowsScheduler) configureManifestTrust(m recoveryinstall.ManifestTrust) {
+	if m.AssetName == "" {
+		m.AssetName = recoveryinstall.ReleaseAssetName("windows", runtime.GOARCH)
+	}
+	s.manifestTrust.Store(&m)
+}
+
+// checkedRecoveryPath re-verifies trust on every use, so an executable
+// rewritten after install (hash drift) is refused before any task points at it.
+func (s *windowsScheduler) checkedRecoveryPath() (string, recoveryinstall.TrustPath, error) {
 	path, err := s.recoveryPath()
 	if err != nil {
-		return "", fmt.Errorf("load recovery path: %w", err)
+		return "", "", fmt.Errorf("load recovery path: %w", err)
 	}
 	if strings.TrimSpace(path) == "" {
-		return "", errors.New("journal has no recovery path")
+		return "", "", errors.New("journal has no recovery path")
 	}
 	if !s.exists(path) {
-		return "", fmt.Errorf("recovery executable does not exist: %s", path)
+		return "", "", fmt.Errorf("recovery executable does not exist: %s", path)
 	}
-	if err := s.verifySignature(path); err != nil {
-		return "", fmt.Errorf("verify recovery executable: %w", err)
+	trust, err := s.trustPolicy().Verify(path)
+	if err != nil {
+		return "", "", fmt.Errorf("verify recovery executable: %w", err)
 	}
-	return path, nil
+	return path, trust, nil
 }
 
 // ArmProvisional registers and reads back the independent rollback deadline.
@@ -320,7 +347,7 @@ func (s *windowsScheduler) ArmProvisional(attemptID string, deadline time.Time) 
 	if !recoveryAttemptPattern.MatchString(attemptID) {
 		return fmt.Errorf("invalid isolation rollback attempt ID %q", attemptID)
 	}
-	path, err := s.checkedRecoveryPath()
+	path, _, err := s.checkedRecoveryPath()
 	if err != nil {
 		return err
 	}
@@ -333,7 +360,7 @@ func (s *windowsScheduler) ArmProvisional(attemptID string, deadline time.Time) 
 
 // ArmExpiry replaces the one-shot expiry task and verifies its recovery action.
 func (s *windowsScheduler) ArmExpiry(_ string, _ int, at time.Time) error {
-	path, err := s.checkedRecoveryPath()
+	path, _, err := s.checkedRecoveryPath()
 	if err != nil {
 		return err
 	}
@@ -344,7 +371,7 @@ func (s *windowsScheduler) ArmExpiry(_ string, _ int, at time.Time) error {
 
 // EnsurePoll installs the boot and fifteen-minute backstop, then reads it back.
 func (s *windowsScheduler) EnsurePoll() error {
-	path, err := s.checkedRecoveryPath()
+	path, _, err := s.checkedRecoveryPath()
 	if err != nil {
 		return err
 	}
@@ -398,17 +425,26 @@ func (s *windowsScheduler) readback(expected recoveryTask) error {
 // Ready checks the journal artifact, poll action, and recovery self-test without
 // registering a task or relying on the running agent for future recovery.
 func (s *windowsScheduler) Ready() (bool, string) {
-	path, err := s.checkedRecoveryPath()
-	if err != nil {
+	if _, err := s.recoveryReadiness(); err != nil {
 		return false, err.Error()
-	}
-	if err := s.readback(buildPollTask(path, s.dataDir, s.now())); err != nil {
-		return false, err.Error()
-	}
-	if err := s.selfTest(path); err != nil {
-		return false, fmt.Sprintf("recovery self-test: %v", err)
 	}
 	return true, ""
+}
+
+// recoveryReadiness is Ready plus the trust path that accepted the executable.
+// A trust refusal wraps recoveryinstall.ErrUntrusted.
+func (s *windowsScheduler) recoveryReadiness() (recoveryinstall.TrustPath, error) {
+	path, trust, err := s.checkedRecoveryPath()
+	if err != nil {
+		return "", err
+	}
+	if err := s.readback(buildPollTask(path, s.dataDir, s.now())); err != nil {
+		return "", err
+	}
+	if err := s.selfTest(path); err != nil {
+		return "", fmt.Errorf("recovery self-test: %w", err)
+	}
+	return trust, nil
 }
 
 func isOwnedRecoveryTask(name string) bool {

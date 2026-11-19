@@ -184,6 +184,10 @@ export function combineMfaPolicyFacts(facts: {
  *   org/partner-required MFA. On a read error under `failClosed`, `required`
  *   is forced true (the role-force axis is unaffected — its join is outside
  *   the settings try/catch and already enforces regardless).
+ *   The no-factor policy arm of a session mint (accept-invite, the SSO
+ *   callback, SSO link completion) also passes it: there a closed failure
+ *   only mints an unassured `mfa:false` session held to enrollment, never a
+ *   lockout, so it cannot cost availability.
  * @param opts.failClosedMethods Factor enrollment/use gates pass this option.
  *   If settings cannot be read, tenant-disableable TOTP and SMS are denied;
  *   passkeys remain allowed because policy cannot disable them.

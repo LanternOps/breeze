@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the remote-session consent dialog and active-session banner work on devices that do NOT have the Tauri Breeze Assist app installed, by rendering native OS surfaces from the Go user-helper — and fix the prompt to show the technician's MSP (partner) name instead of the client org's name ("Billy from Olive Technology connected").
+**Goal:** Make the remote-session consent dialog and active-session banner work on devices that do NOT have the Tauri Breeze Assist app installed, by rendering native OS surfaces from the Go user-helper — and fix the prompt to show the technician's MSP (partner) name instead of the client org's name ("Billy from Fabrikam MSP connected").
 
 **Architecture:** The consent gate (`agent/internal/heartbeat/consent_gate.go`) already routes consent/banner IPC messages to whichever helper session holds the `consent_ui` scope — today only the Tauri assist helper. We add a new `consent_ui_fallback` scope that the session broker grants to user-role helpers that advertise native consent support at auth time; the gate tries `consent_ui` first (rich Tauri dialog wins when present) then falls back. The Go user-helper gains handlers for `consent_request` / `banner_show` / `banner_hide` that mimic the Tauri helper's exact wire format: native dialogs via `MessageBoxTimeoutW` (Windows), `osascript display dialog` (macOS), `zenity` (Linux); a native Win32 topmost pill window for the banner (Windows only — macOS/Linux fallback has no persistent banner; documented limitation, the Assist app provides it there). Separately, the API's prompt block is fixed to resolve `partners.name` (the MSP) instead of `organizations.name` (the client).
 
@@ -15,7 +15,7 @@
 - **Timeout semantics mirror the Tauri dialog** (`apps/helper/src/windows/ConsentDialog.tsx:25`): when the countdown expires the helper SENDS a decision — `allow` if `onTimeout == "proceed"` else `deny`. It does not go silent.
 - **Never edit shipped migrations; no DB changes are needed in this plan.**
 - **Go tests:** `cd agent && go test -race ./internal/...`; always also cross-compile check: `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...` from `agent/`.
-- **Copy rules:** technician line format is `<Name> from <Partner>` (e.g. "Billy from Olive Technology"); generic identity level renders "A technician from <Partner>"; no logos/branding.
+- **Copy rules:** technician line format is `<Name> from <Partner>` (e.g. "Billy from Fabrikam MSP"); generic identity level renders "A technician from <Partner>"; no logos/branding.
 - Commit after every task. Branch: `ToddHebebrand/issue-2229-remote-session-end` (current).
 
 ---
@@ -52,7 +52,7 @@ it('feeds the PARTNER (MSP) name into technicianDisplay, not the client org name
     expect.anything(),        // identityLevel
     expect.anything(),        // tech name
     expect.anything(),        // tech email
-    'Olive Technology',       // partner name — NOT the org name
+    'Fabrikam MSP',       // partner name — NOT the org name
   );
 });
 ```
@@ -121,7 +121,7 @@ own company. Refs #2229"
 
 ---
 
-### Task 2: Agent — "Billy from Olive Technology" wording in notify body and banner label
+### Task 2: Agent — "Billy from Fabrikam MSP" wording in notify body and banner label
 
 **Files:**
 - Modify: `agent/internal/heartbeat/consent_gate.go:246-258` (`connectedNotifyBody`, `bannerLabel`)
@@ -142,9 +142,9 @@ func TestConnectedNotifyBody(t *testing.T) {
 		prompt *ipc.DesktopPrompt
 		want   string
 	}{
-		{"name and partner", &ipc.DesktopPrompt{TechnicianName: strPtr("Billy"), OrgName: strPtr("Olive Technology")}, "Billy from Olive Technology connected to your computer"},
+		{"name and partner", &ipc.DesktopPrompt{TechnicianName: strPtr("Billy"), OrgName: strPtr("Fabrikam MSP")}, "Billy from Fabrikam MSP connected to your computer"},
 		{"name only", &ipc.DesktopPrompt{TechnicianName: strPtr("Billy")}, "Billy connected to your computer"},
-		{"partner only (generic identity)", &ipc.DesktopPrompt{OrgName: strPtr("Olive Technology")}, "A technician from Olive Technology connected to your computer"},
+		{"partner only (generic identity)", &ipc.DesktopPrompt{OrgName: strPtr("Fabrikam MSP")}, "A technician from Fabrikam MSP connected to your computer"},
 		{"neither", &ipc.DesktopPrompt{}, "A technician connected to your computer"},
 	}
 	for _, tt := range tests {
@@ -163,9 +163,9 @@ func TestBannerLabel(t *testing.T) {
 		prompt *ipc.DesktopPrompt
 		want   string
 	}{
-		{"name and partner", &ipc.DesktopPrompt{TechnicianName: strPtr("Billy"), OrgName: strPtr("Olive Technology")}, "Billy from Olive Technology is connected"},
+		{"name and partner", &ipc.DesktopPrompt{TechnicianName: strPtr("Billy"), OrgName: strPtr("Fabrikam MSP")}, "Billy from Fabrikam MSP is connected"},
 		{"name only", &ipc.DesktopPrompt{TechnicianName: strPtr("Billy")}, "Billy is connected"},
-		{"partner only", &ipc.DesktopPrompt{OrgName: strPtr("Olive Technology")}, "A technician from Olive Technology is connected"},
+		{"partner only", &ipc.DesktopPrompt{OrgName: strPtr("Fabrikam MSP")}, "A technician from Fabrikam MSP is connected"},
 		{"neither", &ipc.DesktopPrompt{}, "A technician is connected"},
 	}
 	for _, tt := range tests {
@@ -198,8 +198,8 @@ func bannerLabel(prompt *ipc.DesktopPrompt) string {
 	return technicianLine(prompt) + " is connected"
 }
 
-// technicianLine renders the who-is-this prefix: "Billy from Olive Technology",
-// "Billy", "A technician from Olive Technology", or "A technician". The partner
+// technicianLine renders the who-is-this prefix: "Billy from Fabrikam MSP",
+// "Billy", "A technician from Fabrikam MSP", or "A technician". The partner
 // name is the trust anchor for the end user, so it is kept even when the
 // identity level redacts the technician's name.
 func technicianLine(prompt *ipc.DesktopPrompt) string {
@@ -622,8 +622,8 @@ func TestBuildConsentDialogText(t *testing.T) {
 	}{
 		{
 			"full identity",
-			ipc.ConsentRequest{TechnicianName: "Billy", TechnicianEmail: "billy@example.com", OrgName: "Olive Technology"},
-			[]string{"Billy (billy@example.com) from Olive Technology", "requesting remote access"},
+			ipc.ConsentRequest{TechnicianName: "Billy", TechnicianEmail: "billy@example.com", OrgName: "Fabrikam MSP"},
+			[]string{"Billy (billy@example.com) from Fabrikam MSP", "requesting remote access"},
 			nil,
 		},
 		{
@@ -634,8 +634,8 @@ func TestBuildConsentDialogText(t *testing.T) {
 		},
 		{
 			"generic with partner",
-			ipc.ConsentRequest{OrgName: "Olive Technology"},
-			[]string{"A technician from Olive Technology is requesting remote access"},
+			ipc.ConsentRequest{OrgName: "Fabrikam MSP"},
+			[]string{"A technician from Fabrikam MSP is requesting remote access"},
 			nil,
 		},
 		{
@@ -800,7 +800,7 @@ func stripControl(s string) string {
 }
 
 // buildConsentDialogText renders the platform-neutral dialog copy.
-// Examples: "Billy (billy@example.com) from Olive Technology is requesting
+// Examples: "Billy (billy@example.com) from Fabrikam MSP is requesting
 // remote access to view and control this computer."
 func buildConsentDialogText(req ipc.ConsentRequest) (title, body string) {
 	who := "A technician"
@@ -1091,8 +1091,8 @@ func TestBannerSessionTracking(t *testing.T) {
 	showBannerFn = func(label string) bool { shown = append(shown, label); return true }
 	hideBannerFn = func() { hidden++ }
 
-	handleBannerShow(ipc.BannerShowRequest{SessionID: "s1", Label: "Billy from Olive Technology is connected"})
-	handleBannerShow(ipc.BannerShowRequest{SessionID: "s2", Label: "Sue from Olive Technology is connected"})
+	handleBannerShow(ipc.BannerShowRequest{SessionID: "s1", Label: "Billy from Fabrikam MSP is connected"})
+	handleBannerShow(ipc.BannerShowRequest{SessionID: "s2", Label: "Sue from Fabrikam MSP is connected"})
 
 	handleBannerHide("s1") // stale — s2 owns the banner now
 	if hidden != 0 {
@@ -1102,7 +1102,7 @@ func TestBannerSessionTracking(t *testing.T) {
 	if hidden != 1 {
 		t.Fatalf("owner hide must hide, hides=%d", hidden)
 	}
-	if len(shown) != 2 || shown[1] != "Sue from Olive Technology is connected" {
+	if len(shown) != 2 || shown[1] != "Sue from Fabrikam MSP is connected" {
 		t.Fatalf("labels: %v", shown)
 	}
 	// hide with empty session id always hides (defensive daemon-side payloads)
@@ -1234,7 +1234,7 @@ import (
 )
 
 // A borderless, always-on-top, non-activating pill window pinned top-center
-// showing "Billy from Olive Technology is connected". Pure user32/gdi32
+// showing "Billy from Fabrikam MSP is connected". Pure user32/gdi32
 // syscalls — the user-helper ships CGO_ENABLED=0.
 
 var (
@@ -1517,7 +1517,7 @@ gh pr create --repo LanternOps/breeze --title "feat(agent): native remote-sessio
 - New `consent_ui_fallback` IPC scope, advertise-gated for mixed-fleet safety
 - Native surfaces: MessageBoxTimeoutW (Win), osascript (macOS), zenity (Linux); Win32 topmost pill banner (Windows)
 - Fix: prompt shows the PARTNER (MSP) name, not the client org name
-- Wording: "Billy from Olive Technology connected"
+- Wording: "Billy from Fabrikam MSP connected"
 
 Refs #2229
 

@@ -1,4 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import {
+  createExtensionHostApiV1,
+  type ExtensionHostApiV1,
+  type ExtensionHostTransport,
+} from '@breeze/extension-web-sdk';
 import {
   MAX_RESPONSE_LENGTH,
   WORKSPACE_API_BASE,
@@ -84,24 +89,33 @@ describe('buildWorkspaceUrl', () => {
 });
 
 describe('createWorkspaceApi', () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
+  // `fetchMock` is the host API's TRANSPORT: what the web host's authenticated
+  // fetch receives after the SDK's namespace checks. The global fetch is a
+  // separate spy that must never be called (#11922: an unauthenticated global
+  // fetch is exactly the 401 bug).
+  let fetchMock: Mock<ExtensionHostTransport>;
+  let globalFetch: ReturnType<typeof vi.fn>;
+  let hostApi: ExtensionHostApiV1;
+  const createWorkspaceApiUnderTest = () => createWorkspaceApi(() => hostApi);
 
   beforeEach(() => {
-    fetchMock = vi.fn(async () => jsonResponse({ sources: [] }));
-    vi.stubGlobal('fetch', fetchMock);
+    fetchMock = vi.fn<ExtensionHostTransport>(async () => jsonResponse({ sources: [] }));
+    hostApi = createExtensionHostApiV1({ extensionName: 'workspace', transport: fetchMock });
+    globalFetch = vi.fn(async () => jsonResponse({ error: 'unauthenticated global fetch' }, 401));
+    vi.stubGlobal('fetch', globalFetch);
   });
 
   afterEach(() => {
+    expect(globalFetch).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 
-  it('lists sources with the orgId query param and same-origin credentials', async () => {
+  it('lists sources with the orgId query param through the host API', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ sources: [sourceRow()] }));
-    const sources = await createWorkspaceApi().listSources(ORG_ID);
+    const sources = await createWorkspaceApiUnderTest().listSources(ORG_ID);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`${WORKSPACE_API_BASE}sources?orgId=org-1`);
-    expect(init.credentials).toBe('same-origin');
     expect(init.method ?? 'GET').toBe('GET');
     expect(sources).toHaveLength(1);
     expect(sources[0]?.displayName).toBe('Finance Share');
@@ -109,7 +123,7 @@ describe('createWorkspaceApi', () => {
 
   it('creates a source with a JSON POST', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(sourceRow(), 201));
-    const created = await createWorkspaceApi().createSource(ORG_ID, sourceInput());
+    const created = await createWorkspaceApiUnderTest().createSource(ORG_ID, sourceInput());
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`${WORKSPACE_API_BASE}sources?orgId=org-1`);
     expect(init.method).toBe('POST');
@@ -119,7 +133,7 @@ describe('createWorkspaceApi', () => {
   });
 
   it('fetches, patches, and deletes a single source', async () => {
-    const api = createWorkspaceApi();
+    const api = createWorkspaceApiUnderTest();
     fetchMock.mockResolvedValueOnce(jsonResponse(sourceRow()));
     await api.getSource(ORG_ID, SOURCE_ID);
     fetchMock.mockResolvedValueOnce(jsonResponse(sourceRow({ displayName: 'Renamed' })));
@@ -132,13 +146,10 @@ describe('createWorkspaceApi', () => {
     expect(calls[1]?.[1]?.method).toBe('PATCH');
     expect(JSON.parse(calls[1]?.[1]?.body as string)).toEqual({ displayName: 'Renamed' });
     expect(calls[2]?.[1]?.method).toBe('DELETE');
-    for (const [, init] of calls) {
-      expect(init.credentials).toBe('same-origin');
-    }
   });
 
   it('sets and clears credentials against the credential subresource', async () => {
-    const api = createWorkspaceApi();
+    const api = createWorkspaceApiUnderTest();
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true }));
     await api.setCredential(ORG_ID, SOURCE_ID, { username: 'svc', password: 'p', domain: 'CORP' });
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true }));
@@ -155,8 +166,8 @@ describe('createWorkspaceApi', () => {
 
   it('lists crawl runs with a limit', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ runs: [] }));
-    await createWorkspaceApi().listRuns(ORG_ID, SOURCE_ID);
-    const [url] = fetchMock.mock.calls[0] as [string];
+    await createWorkspaceApiUnderTest().listRuns(ORG_ID, SOURCE_ID);
+    const [url] = fetchMock.mock.calls[0]!;
     expect(url).toBe(`${WORKSPACE_API_BASE}sources/src-1/runs?orgId=org-1&limit=20`);
   });
 
@@ -170,8 +181,8 @@ describe('createWorkspaceApi', () => {
       sampleFileNames: ['secret.docx'],
       indexedPaths: ['\\\\fs01\\finance\\secret.docx'],
     }));
-    const summary = await createWorkspaceApi().getDeviceSummary(ORG_ID, DEVICE_ID);
-    const [url] = fetchMock.mock.calls[0] as [string];
+    const summary = await createWorkspaceApiUnderTest().getDeviceSummary(ORG_ID, DEVICE_ID);
+    const [url] = fetchMock.mock.calls[0]!;
     expect(url).toBe(`${WORKSPACE_API_BASE}devices/dev-1/summary?orgId=org-1`);
     expect(Object.keys(summary).sort()).toEqual([
       'deviceId',
@@ -184,7 +195,7 @@ describe('createWorkspaceApi', () => {
   });
 
   it('refuses hostile path segments without calling fetch', async () => {
-    const api = createWorkspaceApi();
+    const api = createWorkspaceApiUnderTest();
     await expect(api.getSource(ORG_ID, '../../admin')).rejects.toMatchObject({ kind: 'protocol' });
     await expect(api.getDeviceSummary(ORG_ID, 'dev/../../x')).rejects.toMatchObject({ kind: 'protocol' });
     // Query/fragment smuggling through an id must die in the segment check.
@@ -197,14 +208,14 @@ describe('createWorkspaceApi', () => {
   it('passes the caller AbortSignal through to fetch', async () => {
     const controller = new AbortController();
     fetchMock.mockResolvedValueOnce(jsonResponse({ sources: [] }));
-    await createWorkspaceApi().listSources(ORG_ID, { signal: controller.signal });
+    await createWorkspaceApiUnderTest().listSources(ORG_ID, { signal: controller.signal });
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.signal).toBe(controller.signal);
   });
 
   it('normalizes 400 responses and never adopts the server string as its own message', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: '<b>nope</b>' }, 400));
-    const error = await createWorkspaceApi().listSources(ORG_ID).catch((e: unknown) => e);
+    const error = await createWorkspaceApiUnderTest().listSources(ORG_ID).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(WorkspaceApiError);
     const apiError = error as WorkspaceApiError;
     expect(apiError.kind).toBe('invalid-request');
@@ -220,24 +231,24 @@ describe('createWorkspaceApi', () => {
     [500, 'server'],
   ])('maps HTTP %d to kind %s', async (status, kind) => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'x' }, status));
-    await expect(createWorkspaceApi().listSources(ORG_ID)).rejects.toMatchObject({ kind, status });
+    await expect(createWorkspaceApiUnderTest().listSources(ORG_ID)).rejects.toMatchObject({ kind, status });
   });
 
   it('caps oversized response bodies', async () => {
     fetchMock.mockResolvedValueOnce(new Response('x'.repeat(MAX_RESPONSE_LENGTH + 1), { status: 200 }));
-    await expect(createWorkspaceApi().listSources(ORG_ID)).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(createWorkspaceApiUnderTest().listSources(ORG_ID)).rejects.toMatchObject({ kind: 'protocol' });
   });
 
   it('rejects non-JSON and wrong-shape success bodies as protocol errors', async () => {
     fetchMock.mockResolvedValueOnce(new Response('<html>hi</html>', { status: 200 }));
-    await expect(createWorkspaceApi().listSources(ORG_ID)).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(createWorkspaceApiUnderTest().listSources(ORG_ID)).rejects.toMatchObject({ kind: 'protocol' });
     fetchMock.mockResolvedValueOnce(jsonResponse({ unexpected: true }));
-    await expect(createWorkspaceApi().listSources(ORG_ID)).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(createWorkspaceApiUnderTest().listSources(ORG_ID)).rejects.toMatchObject({ kind: 'protocol' });
   });
 
   it('normalizes network failures without echoing the underlying message', async () => {
     fetchMock.mockRejectedValueOnce(new TypeError('ECONNREFUSED secret-host'));
-    const error = await createWorkspaceApi().listSources(ORG_ID).catch((e: unknown) => e);
+    const error = await createWorkspaceApiUnderTest().listSources(ORG_ID).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(WorkspaceApiError);
     expect((error as WorkspaceApiError).kind).toBe('network');
     expect((error as WorkspaceApiError).message).not.toContain('secret-host');
@@ -245,12 +256,45 @@ describe('createWorkspaceApi', () => {
 
   it('maps aborts to the aborted kind', async () => {
     fetchMock.mockRejectedValueOnce(new DOMException('The operation was aborted.', 'AbortError'));
-    await expect(createWorkspaceApi().listSources(ORG_ID)).rejects.toMatchObject({ kind: 'aborted' });
+    await expect(createWorkspaceApiUnderTest().listSources(ORG_ID)).rejects.toMatchObject({ kind: 'aborted' });
+  });
+
+  it('fails as host-unavailable, with no request at all, when the host gave no host API', async () => {
+    const error = await createWorkspaceApi(() => null).listSources(ORG_ID).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(WorkspaceApiError);
+    expect((error as WorkspaceApiError).kind).toBe('host-unavailable');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reads the host API at request time, so a host API assigned after construction is used', async () => {
+    let late: ExtensionHostApiV1 | null = null;
+    const api = createWorkspaceApi(() => late);
+    late = hostApi;
+    await api.listSources(ORG_ID);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps a host-API path refusal to protocol, even from the host bundle\'s own copy of the SDK', async () => {
+    // The extension bundles the SDK and the web app bundles its own copy, so
+    // the host's ExtensionApiPathError is a different class at runtime: the
+    // client must recognise it by name, not instanceof.
+    class ForeignExtensionApiPathError extends Error {
+      constructor() {
+        super('extension API request refused: path must start with /api/v1/ext/workspace/');
+        this.name = 'ExtensionApiPathError';
+      }
+    }
+    const refusingHost: ExtensionHostApiV1 = {
+      ...hostApi,
+      fetch: async () => { throw new ForeignExtensionApiPathError(); },
+    };
+    await expect(createWorkspaceApi(() => refusingHost).listSources(ORG_ID))
+      .rejects.toMatchObject({ kind: 'protocol' });
   });
 });
 
 describe('WorkspaceApiError user-visible copy', () => {
-  it.each(['protocol', 'unauthorized', 'not-found', 'server', 'network'] as const)(
+  it.each(['protocol', 'unauthorized', 'not-found', 'server', 'network', 'host-unavailable'] as const)(
     'labels the %s failure as Knowledge, never Workspace',
     (kind) => {
       const { message } = new WorkspaceApiError(kind);

@@ -68,6 +68,7 @@
     "noApproverDevice": "Enregistrez un appareil d’approbation dans votre profil, puis réessayez.",
     "notSoleApprover": "Une autre personne autorisée doit décider de cette demande.",
     "siteCeiling": "Cette approbation accorde une autorité à l'échelle de l'organisation. Votre accès est limité à des sites spécifiques, donc une autre personne autorisée doit décider de cette demande.",
+    "approverScopeRequired": "Cette approbation touche toutes les organisations du partenaire : elle exige donc un approbateur au niveau du partenaire ayant accès à toutes les organisations.",
     "verificationFailed": "La vérification a été annulée ou a échoué. Réessayez.",
     "alreadyDecided": "Cette demande a déjà été traitée.",
     "expired": "Cette demande a expiré avant qu’une décision soit prise.",

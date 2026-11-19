@@ -11,7 +11,7 @@ import '@/lib/i18n';
 // is strict ({ version: 1, agents: [...] }) and `featurePolicyId` is always
 // null; keys/tokens never live here (they come from the vendor integration).
 
-type Vendor = 'huntress' | 'sentinelone' | 'controld' | 'nextdns';
+type Vendor = 'huntress' | 'sentinelone' | 'controld' | 'nextdns' | 'bitdefender';
 type Platform = 'windows' | 'macos' | 'linux';
 type AgentEntry = { vendor: Vendor; enabled: boolean; platforms?: Platform[] };
 
@@ -19,7 +19,8 @@ type AgentEntry = { vendor: Vendor; enabled: boolean; platforms?: Platform[] };
 // (securityAgentVendors.ts): Huntress and SentinelOne can be armed. The DNS
 // vendors are wired end to end (#6960 W05) but stay off until the #6958 owner
 // lab gates are recorded; flipping them is these two lines plus the
-// registry's. Whether this partner can actually arm one (integration
+// registry's. Bitdefender stays off until the W06.3 owner lab (#8170) is
+// recorded. Whether this partner can actually arm one (integration
 // connected, SentinelOne MSI uploaded, DNS client added from Built-in
 // packages) is decided by the API on save.
 const VENDORS: ReadonlyArray<{ vendor: Vendor; name: string; enableable: boolean }> = [
@@ -27,7 +28,11 @@ const VENDORS: ReadonlyArray<{ vendor: Vendor; name: string; enableable: boolean
   { vendor: 'sentinelone', name: 'SentinelOne', enableable: true },
   { vendor: 'controld', name: 'Control D', enableable: false },
   { vendor: 'nextdns', name: 'NextDNS', enableable: false },
+  { vendor: 'bitdefender', name: 'Bitdefender GravityZone', enableable: false },
 ];
+
+// Integrations sub-tab hash per vendor, when it differs from the vendor id.
+const INTEGRATION_HASH: Partial<Record<Vendor, string>> = { bitdefender: 'edr' };
 const VENDOR_IDS = new Set<string>(VENDORS.map((v) => v.vendor));
 const VENDOR_NAMES = new Map<string, string>(VENDORS.map((v) => [v.vendor, v.name]));
 const ENABLEABLE = new Set<Vendor>(VENDORS.filter((v) => v.enableable).map((v) => v.vendor));
@@ -187,7 +192,7 @@ export default function SecurityAgentsTab({
               data-testid="security-agents-catalog-missing-link"
               href={safeSetupPath(
                 errorDetail?.body,
-                catalogMissingBuiltin ? BUILTIN_PACKAGES_PATH : `/integrations#${catalogMissingVendor}`,
+                catalogMissingBuiltin ? BUILTIN_PACKAGES_PATH : `/integrations#${INTEGRATION_HASH[catalogMissingVendor] ?? catalogMissingVendor}`,
               )}
               className="font-medium underline"
             >
@@ -228,7 +233,7 @@ export default function SecurityAgentsTab({
 
       <fieldset disabled={inherited || saving} className="space-y-3">
         {VENDORS.map(({ vendor, name, enableable }) => (
-          <div key={vendor} className="rounded-md border p-3">
+          <div key={vendor} data-testid={`security-agent-vendor-${vendor}`} className="rounded-md border p-3">
             <label className="flex items-center gap-2 text-sm font-medium">
               <input
                 data-testid={`security-agents-${vendor}-toggle`}
@@ -250,6 +255,13 @@ export default function SecurityAgentsTab({
                 <li data-testid="security-agents-platform-windows">{k('platformWindows')}</li>
                 <li data-testid="security-agents-platform-macos">{k('platformMacos')}</li>
                 <li data-testid="security-agents-platform-linux">{k('platformLinux')}</li>
+              </ul>
+            )}
+            {vendor === 'bitdefender' && (
+              <ul className="mt-2 space-y-1 pl-6 text-xs text-muted-foreground">
+                <li data-testid="security-agents-bitdefender-platform-windows">{k('platformWindows')}</li>
+                <li data-testid="security-agents-bitdefender-platform-macos">{k('platformMacos')}</li>
+                <li data-testid="security-agents-bitdefender-platform-linux">{k('platformLinux')}</li>
               </ul>
             )}
             {vendor === 'sentinelone' && (
@@ -322,5 +334,6 @@ function enabledFrom(agents: Map<Vendor, AgentEntry>): Record<Vendor, boolean> {
     sentinelone: on('sentinelone'),
     controld: on('controld'),
     nextdns: on('nextdns'),
+    bitdefender: on('bitdefender'),
   };
 }

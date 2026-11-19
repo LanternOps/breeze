@@ -68,6 +68,9 @@ vi.mock('./aiAgentSdk', () => ({
 vi.mock('./aiToolOutput', () => ({ redactAiToolOutputText: (s: string) => s }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
 
+// Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of whichever test reaches it first (#11011).
+vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
+
 import { StreamingSessionManager } from './streamingSessionManager';
 import type { AuthContext } from '../middleware/auth';
 import type { AiStreamEvent } from '@breeze/shared/types/ai';
@@ -263,7 +266,7 @@ describe('getOrCreate — live-query key (spec §9.2)', () => {
     expect(first.abortController.signal.aborted).toBe(true);
     expect(first.query.close).toHaveBeenCalledOnce();
     expect(first.eventBus.getReplayEvents()).toEqual(expect.arrayContaining([
-      { type: 'error', message: 'AI provider configuration changed — please resend your message' },
+      { type: 'error', message: 'AI provider configuration changed — please resend your message', code: 'config_changed' },
       { type: 'done' },
     ]));
     expect(infoSpy).toHaveBeenCalledWith(

@@ -119,6 +119,19 @@ vi.mock('../../services/devicePolicySet', async (importOriginal) => {
   };
 });
 
+const reinstallDetections = new Set<Promise<unknown>>();
+vi.mock('../../services/reinstallCandidates', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/reinstallCandidates')>();
+  return {
+    ...actual,
+    detectReinstallCandidates: (...args: Parameters<typeof actual.detectReinstallCandidates>) => {
+      const run = actual.detectReinstallCandidates(...args);
+      reinstallDetections.add(run);
+      return run;
+    },
+  };
+});
+
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   auditLogs,
@@ -184,9 +197,16 @@ const COLD_TX = 7;
 // a cache miss only (so a failed read cannot abort the org transaction); warm
 // and steady-state beats hit the cache and are unchanged.
 // #4618: each heartbeat adds exactly one indexed containment episode lookup, no savepoint.
-const COLD_STATEMENTS = 52;
-const CACHES_MISS_STATEMENTS = 22;
-const CONFIGURED_STEADY_STATEMENTS = 23;
+// #7268: each heartbeat claim adds exactly one revalidation prepare read (bucket
+// revalidationPrepare), no savepoint while no prepared-type row is pending:
+// cold 52 -> 53, caches-miss 22 -> 23, configured 23 -> 24.
+// #11976: the per-org policy-probe fill also reads configuration-policy
+// compliance rules (bucket compliancePolicyProbe), one statement inside the
+// probe's existing savepoint, on a probe cache miss only: cold 53 -> 54,
+// caches-miss 23 -> 24; warm, steady and configured unchanged.
+const COLD_STATEMENTS = 54;
+const CACHES_MISS_STATEMENTS = 24;
+const CONFIGURED_STEADY_STATEMENTS = 24;
 
 // Statement buckets (#8053 W1a-1). Each later lever asserts on its own bucket,
 // so a regression names itself instead of showing up as "statements 31 > 26".
@@ -208,6 +228,9 @@ const BUCKET_MATCHERS = {
   orgHelperSettings: (s: string) => s.startsWith('select "settings" from "organizations"'),
   pamOrgConfig: (s: string) => s.includes('from "pam_org_config"'),
   automationPolicies: (s: string) => s.includes('from "automation_policies"'),
+  // #11976: the probe fill's config-policy compliance read (same savepoint and
+  // cache as automationPolicies; zero on a probe cache hit).
+  compliancePolicyProbe: (s: string) => s.includes('from "config_policy_compliance_rules"'),
   // #8190: the workload-inventory resolver's single policy read. It rides the
   // passed hierarchy (no device/org/group reads of its own) and runs only on a
   // workload settings-cache miss. Not yet folded into the #8142 policy set, so
@@ -227,6 +250,10 @@ const BUCKET_MATCHERS = {
     s.includes('from "config_policy_onedrive_libraries"') || s.includes('from "onedrive_device_state"') || s.includes('from "m365_connections"'),
   peripheralCapabilityWrites: (s: string) =>
     s.startsWith('update "device_commands"') || s.startsWith('update "peripheral_policy_device_states"'),
+  // #7268: prepareCommandRevalidations' pending-row read, issued before the
+  // claim takes its first device_commands row lock. One per claim, on every beat.
+  revalidationPrepare: (s: string) =>
+    s.startsWith('select "id", "type", "device_id", "payload", "created_by" from "device_commands"'),
 } as const;
 
 type Bucket = keyof typeof BUCKET_MATCHERS;
@@ -366,6 +393,16 @@ async function waitForEnrollAuditCommitted(deviceId: string): Promise<void> {
   throw new Error(`agent.enroll audit row for device ${deviceId} never became visible (10s)`);
 }
 
+/**
+ * #8318 wave 2-1: `/agents/enroll` also runs its reinstall-candidate detection
+ * fire-and-forget, on the same instrumented pool, for the same reason as the
+ * audit row above: it must finish before `measure()` arms the recorder.
+ */
+async function waitForReinstallDetections(): Promise<void> {
+  await Promise.allSettled(reinstallDetections);
+  reinstallDetections.clear();
+}
+
 async function enrollDevice(org: SeededOrg, hostname: string) {
   const app = new Hono();
   app.route('/agents', enrollmentRoutes);
@@ -384,6 +421,7 @@ async function enrollDevice(org: SeededOrg, hostname: string) {
   expect(response.status).toBe(201);
   const body = await response.json() as { deviceId: string; agentId: string; authToken: string };
   await waitForEnrollAuditCommitted(body.deviceId);
+  await waitForReinstallDetections();
   return {
     deviceId: body.deviceId,
     agentId: body.agentId,
@@ -503,7 +541,8 @@ const HOT_ROUTE_BUDGETS: Record<string, Budget> = {
   // context. Was 4 tx / 31 statements. 19 -> 20: #8190's workload-inventory
   // policy read (bucket workloadInventoryPolicy) on a workload cache miss.
   // #4618: 20 -> 21 for the single containment episode lookup.
-  'POST /agents/:id/heartbeat': { transactions: 3, statements: 21 },
+  // #7268: 21 -> 22 for the claim's revalidation prepare read (bucket revalidationPrepare).
+  'POST /agents/:id/heartbeat': { transactions: 3, statements: 22 },
   'GET /agents/:id/unifi-collectors': { transactions: 1, statements: 4 },
   'POST /agents/:id/process-sample': { transactions: 2, statements: 8 },
   'PUT /agents/:id/security/status': { transactions: 2, statements: 10 },
@@ -518,7 +557,9 @@ const HOT_ROUTE_BUDGETS: Record<string, Budget> = {
   // Self-managed. getDeviceEventLogSettings is Redis-cached for 120 s, but the
   // agent sends every ~15 min, so steady state is the cache miss: device,
   // org-partner and group reads outside the heartbeat's hierarchy pass-through.
-  'PUT /agents/:id/eventlogs': { transactions: 4, statements: 20 },
+  // #11225: 20 -> 22 for the savepoints around the settings read and the insert
+  // batch, whose catches could not otherwise survive a statement failure.
+  'PUT /agents/:id/eventlogs': { transactions: 4, statements: 22 },
   [COMMAND_RESULT_KEY]: { transactions: 4, statements: 18 },
   [WS_COMMAND_RESULT_KEY]: { transactions: 4, statements: 17 },
   // The per-frame credential re-check (one system-context device read): a pong
@@ -827,12 +868,16 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // runs on a workload settings-cache miss; warm is a Redis hit and stays 14.
     expect(steady.transactions).toBe(ROUTE_ONLY_STEADY_HEARTBEAT_TX);
     // #4618: 15 -> 16 for the containment episode lookup.
-    expect(steady.statements).toBeLessThanOrEqual(16);
+    // #7268: 16 -> 17 for the claim's revalidation prepare read.
+    expect(steady.statements).toBeLessThanOrEqual(17);
     expect(steady.buckets.workloadInventoryPolicy).toBe(1);
     expect(warm.buckets.workloadInventoryPolicy).toBe(0);
     expect(warm.transactions).toBe(2);
     // #4618: 14 -> 15 for the containment episode lookup.
-    expect(warm.statements).toBeLessThanOrEqual(15);
+    // #7268: 15 -> 16 for the claim's revalidation prepare read.
+    expect(warm.statements).toBeLessThanOrEqual(16);
+    // #7268: exactly one prepare read per claim, on every beat shape.
+    for (const beat of [cold, warm, steady]) expect(beat.buckets.revalidationPrepare).toBe(1);
     expect(cold.transactions).toBeLessThanOrEqual(COLD_TX);
     expect(cold.statements).toBeLessThanOrEqual(COLD_STATEMENTS);
     expect(cold.buckets.hierarchyLoad).toBe(1);
@@ -860,6 +905,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     // The sibling's beat warmed the org's probe, helper-legacy and PAM caches,
     // so this beat reads none of them.
     expect(steady.buckets.automationPolicies).toBe(0);
+    expect(steady.buckets.compliancePolicyProbe).toBe(0);
     expect(steady.buckets.orgHelperSettings).toBe(0);
     expect(steady.buckets.pamOrgConfig).toBe(0);
     expect(steady.buckets.agentVersions).toBe(1);
@@ -896,6 +942,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(missed.status).toBe(200);
     expect(missed.transactions).toBe(2);
     expect(missed.buckets.automationPolicies).toBe(1);
+    expect(missed.buckets.compliancePolicyProbe).toBe(1);
     expect(missed.buckets.orgHelperSettings).toBe(1);
     expect(missed.buckets.pamOrgConfig).toBe(1);
     expect(missed.buckets.policySetLoad).toBe(1);
@@ -1011,7 +1058,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(steady.buckets.perFeatureAssignmentRead).toBe(0);
     // 16 -> 17: #8190's workload-inventory policy read (workload cache miss).
     // #4618: 17 -> 18 for the containment episode lookup.
-    expect(steady.statements).toBeLessThanOrEqual(18);
+    // #7268: 18 -> 19 for the claim's revalidation prepare read.
+    expect(steady.statements).toBeLessThanOrEqual(19);
   });
 
   // Both guards assert the same invariant from two directions: a REAL SQL error
@@ -1260,6 +1308,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     { featureType: 'hardware_monitoring', pollIntervalMinutes: 15 },
     { featureType: 'patch', exclusiveWindowsUpdate: true },
     { featureType: 'time_sync', ntpServers: ['time.budget.example'] },
+    { featureType: 'wake_on_lan', inlineSettings: { configureSettings: false, buttonMode: 'always' } },
     { featureType: 'monitors', serviceName: 'BudgetService', checkIntervalSeconds: 90 },
     { featureType: 'onedrive_helper', orgId, filesOnDemand: true, libraryName: 'Budget Docs' },
   ];
@@ -1290,6 +1339,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(body.configUpdate.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
     expect(body.configUpdate.monitoring_settings).toMatchObject({ check_interval_seconds: 90, watches: [expect.objectContaining({ name: 'BudgetService' })] });
     expect(body.configUpdate.onedrive_helper_settings.libraries).toHaveLength(1);
+    expect(body.configUpdate.wake_on_lan_settings).toEqual({ enabled: true, configure_settings: false, firmware_writes: [] });
 
     expect(steady.transactions).toBe(2);
     expect(steady.buckets.policySetLoad).toBe(1);
@@ -1321,7 +1371,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(steady.transactions).toBe(2);
     // 14 -> 15: #8190's workload-inventory policy read (workload cache miss).
     // #4618: 15 -> 16 for the containment episode lookup.
-    expect(steady.statements).toBeLessThanOrEqual(16);
+    // #7268: 16 -> 17 for the claim's revalidation prepare read.
+    expect(steady.statements).toBeLessThanOrEqual(17);
   });
 
   runDb('cross-tenant assignments forged onto this device never reach its heartbeat (#8142)', async () => {

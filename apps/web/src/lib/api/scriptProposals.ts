@@ -46,6 +46,65 @@ export async function promoteScriptProposal(
         body: JSON.stringify(input),
       }),
     errorFallback: i18n.t('ai:scriptProposal.saveToLibrary'),
-    successMessage: i18n.t('ai:scriptProposal.saveToLibrary'),
+    successMessage: i18n.t('ai:scriptProposal.savedToLibrary'),
+  });
+}
+
+/** #10954: API refusals of a review override, in the viewer's language. */
+function overrideErrorMessage(code: string): string | undefined {
+  const key: Record<string, string> = {
+    proposal_expired: 'ai:scriptProposal.overrideErrorExpired',
+    proposal_not_review_failed: 'ai:scriptProposal.overrideErrorState',
+    not_sole_approver: 'ai:scriptProposal.overrideErrorNotSoleApprover',
+    step_up_required: 'ai:scriptProposal.overrideErrorStepUp',
+    no_device_dispatched: 'ai:scriptProposal.overrideErrorNoDevice',
+    policy_denied: 'ai:scriptProposal.overrideErrorPolicy',
+    strict_acknowledgement_incomplete: 'ai:scriptProposal.overrideErrorStrict',
+    strict_acknowledgement_not_permitted: 'ai:scriptProposal.overrideErrorStrict',
+  };
+  return key[code] ? i18n.t(/* i18n-dynamic */ key[code]) : undefined;
+}
+
+export interface ScriptProposalOverrideRunResult {
+  status: 'executed';
+  results: Array<
+    | { deviceId: string; ok: true; executionId?: string; commandId?: string }
+    | { deviceId: string; ok: false; error: string }
+  >;
+}
+
+/** #10954: a person signs a `review_failed` proposal and runs it on its target devices. */
+export async function overrideRunScriptProposal(
+  id: string,
+  acknowledgedPatterns: string[],
+): Promise<ScriptProposalOverrideRunResult> {
+  return runAction<ScriptProposalOverrideRunResult>({
+    request: () =>
+      fetchWithAuth(`/ai/script-proposals/${id}/override-run`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ confirmNoPassingReview: true, acknowledgedPatterns }),
+      }),
+    errorFallback: i18n.t('ai:scriptProposal.overrideRun'),
+    successMessage: i18n.t('ai:scriptProposal.overrideRunSuccess'),
+    friendly: overrideErrorMessage,
+  });
+}
+
+/** #10954: a person signs a `review_failed` proposal into the script library. */
+export async function overrideSaveScriptProposal(
+  id: string,
+  input: { name: string; description?: string; ownerScope: 'organization' | 'partner'; acknowledgedPatterns: string[] },
+): Promise<{ scriptId: string; versionId: string }> {
+  return runAction<{ scriptId: string; versionId: string }>({
+    request: () =>
+      fetchWithAuth(`/ai/script-proposals/${id}/override-promote`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ ...input, confirmNoPassingReview: true }),
+      }),
+    errorFallback: i18n.t('ai:scriptProposal.overrideSave'),
+    successMessage: i18n.t('ai:scriptProposal.savedToLibrary'),
+    friendly: overrideErrorMessage,
   });
 }

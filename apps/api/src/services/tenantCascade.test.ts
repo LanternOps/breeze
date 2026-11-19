@@ -941,6 +941,23 @@ describe('m365 tenant sync cascade registration', () => {
   });
 });
 
+describe('portal directory deprovisioning cascade registration (W8 #11385, plan D12)', () => {
+  it('CORE_ORG_CASCADE_DELETE_ORDER lists portal_directory_actions, then portal_directory_runs, before portal_user_identities', () => {
+    // Children before parents: actions carry composite FKs to runs, identities
+    // and portal_users; runs and identities are both parents of actions.
+    const order = [...getOrgCascadeDeleteOrder()];
+    const actions = order.indexOf('portal_directory_actions');
+    const runs = order.indexOf('portal_directory_runs');
+    const identities = order.indexOf('portal_user_identities');
+    const accounts = order.indexOf('portal_users');
+    expect(actions, 'portal_directory_actions missing').toBeGreaterThanOrEqual(0);
+    expect(runs, 'portal_directory_runs missing').toBeGreaterThanOrEqual(0);
+    expect(actions).toBeLessThan(runs);
+    expect(runs).toBeLessThan(identities);
+    expect(identities).toBeLessThan(accounts);
+  });
+});
+
 describe('cascadeDeleteOrg — artifact blob pre-clear (execution-plane W01, spec §8)', () => {
   const ORG = '00000000-0000-0000-0000-000000000021';
   const BY = '00000000-0000-0000-0000-000000000022';

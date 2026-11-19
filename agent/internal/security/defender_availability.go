@@ -6,11 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // Microsoft Defender availability gate (#10908).
@@ -57,7 +58,7 @@ var errDefenderStatusTimeout = errors.New("defender status timed out")
 var runDefenderPowerShell = func(timeout time.Duration, script string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	output, err := procspawn.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return string(output), errDefenderStatusTimeout
 	}

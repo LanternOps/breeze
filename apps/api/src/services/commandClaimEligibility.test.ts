@@ -42,6 +42,12 @@ vi.mock('./partnerTrust.commands', () => ({
 vi.mock('../db/schema', () => ({
   deviceCommands: {
     id: 'dc.id',
+    type: 'dc.type',
+    deviceId: 'dc.deviceId',
+    targetRole: 'dc.targetRole',
+    createdBy: 'dc.createdBy',
+    createdAt: 'dc.createdAt',
+    deliverBy: 'dc.deliverBy',
     status: 'dc.status',
     completedAt: 'dc.completedAt',
     result: 'dc.result',
@@ -61,6 +67,7 @@ import {
   POWER_STATE_BARRIER_TYPES,
   TEARDOWN_CLAIM_EXEMPT_TYPES,
   partitionClaimable,
+  prepareCommandRevalidations,
   registerCommandRevalidation,
   registerTypeHold,
   typeHolds,
@@ -648,7 +655,9 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     expect(r.cancelled).toEqual([{ id: 'other', reason: 'requester_inactive' }]);
   });
 
-  it.each([...TEARDOWN_CLAIM_EXEMPT_TYPES])(
+  // release_containment is also bound to its episode at delivery (#10919), so its
+  // exemption is proven with a bound row in commandClaimEligibility.release.test.ts.
+  it.each([...TEARDOWN_CLAIM_EXEMPT_TYPES].filter((type) => type !== 'release_containment'))(
     '%s survives inactive requester + org drift + erased submitter org + lifecycle + trust denial',
     async (type) => {
       const { TrustDeniedError } = await import('./partnerTrust.commands');
@@ -711,5 +720,141 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+});
+
+/**
+ * #7268 — a revalidation whose input lives outside Postgres (Redis) registers
+ * a lock-free PREPARE half. The claim runs it before its transaction locks any
+ * `device_commands` row and hands the result to `partitionClaimable`, which
+ * passes it to the in-lock half. A row the preparation did not cover is HELD.
+ */
+describe('revalidation preparation (#7268)', () => {
+  type PrepareReader = Parameters<typeof prepareCommandRevalidations>[0];
+
+  function prepareReader(rows: unknown[]) {
+    const where = vi.fn((_condition: unknown) => ({ orderBy: vi.fn(() => ({ limit: vi.fn(async () => rows) })) }));
+    const select = vi.fn(() => ({ from: vi.fn(() => ({ where })) }));
+    const savepoint = { select: vi.fn() };
+    const transaction = vi.fn(async (fn: (sp: unknown) => Promise<unknown>) => fn(savepoint));
+    return { reader: { select, transaction } as unknown as PrepareReader, select, where, transaction, savepoint };
+  }
+
+  const poll = (id: string) => ({ id, type: 'topology_interface_poll', deviceId: 'd1', payload: { n: id }, createdBy: null });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    __resetCommandRevalidationsForTests();
+    __resetEligibilityFaultThrottleForTests();
+  });
+
+  it('reads nothing when no registered revalidation needs preparing', async () => {
+    registerCommandRevalidation('script', async () => null);
+    const { reader, select } = prepareReader([poll('c1')]);
+    expect((await prepareCommandRevalidations(reader, { deviceId: 'd1', targetRole: 'agent' })).size).toBe(0);
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it('reads nothing when the drain allowlist excludes every prepared type', async () => {
+    registerCommandRevalidation('topology_interface_poll', async () => null, async () => 'prepared');
+    const { reader, select } = prepareReader([poll('c1')]);
+    expect((await prepareCommandRevalidations(reader, { deviceId: 'd1', targetRole: 'agent', typeAllowlist: ['self_uninstall'] })).size).toBe(0);
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it('hands each preparer the pending rows of its type, in a savepoint, and keys the result by type', async () => {
+    const prepare = vi.fn(async (_reader: unknown, rows: ReadonlyArray<{ id: string }>) => rows.map((r) => r.id).join(','));
+    registerCommandRevalidation('topology_interface_poll', async () => null, prepare);
+    const { reader, transaction, savepoint } = prepareReader([poll('c1'), poll('c2')]);
+
+    const prepared = await prepareCommandRevalidations(reader, { deviceId: 'd1', targetRole: 'agent' });
+
+    expect(prepared.get('topology_interface_poll')).toBe('c1,c2');
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledWith(savepoint, [poll('c1'), poll('c2')]);
+  });
+
+  it('skips the preparer when no row of its type is pending', async () => {
+    const prepare = vi.fn(async () => 'prepared');
+    registerCommandRevalidation('topology_interface_poll', async () => null, prepare);
+    const { reader, transaction } = prepareReader([]);
+
+    expect((await prepareCommandRevalidations(reader, { deviceId: 'd1', targetRole: 'agent' })).size).toBe(0);
+    expect(transaction).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it('scopes the read to the one command for a push claim and to the device + role for a heartbeat claim', async () => {
+    registerCommandRevalidation('topology_interface_poll', async () => null, async () => 'prepared');
+    const dialect = new PgDialect();
+
+    const push = prepareReader([]);
+    await prepareCommandRevalidations(push.reader, { commandId: 'cmd-9' });
+    const pushQuery = dialect.sqlToQuery(push.where.mock.calls[0]![0] as never);
+    expect(pushQuery.params).toEqual(expect.arrayContaining(['cmd-9', 'pending', 'topology_interface_poll']));
+
+    const beat = prepareReader([]);
+    await prepareCommandRevalidations(beat.reader, { deviceId: 'd1', targetRole: 'watchdog' });
+    const beatQuery = dialect.sqlToQuery(beat.where.mock.calls[0]![0] as never);
+    expect(beatQuery.params).toEqual(expect.arrayContaining(['d1', 'watchdog', 'pending', 'topology_interface_poll']));
+
+    // Same deadline predicate as the claim scan: a row past deliver_by is the
+    // reaper's, and must not crowd live rows out of the prepare window.
+    for (const query of [pushQuery, beatQuery]) {
+      expect(query.sql).toMatch(/is null or /i);
+      expect(query.params).toEqual(expect.arrayContaining(['dc.deliverBy', expect.any(Date)]));
+    }
+  });
+
+  it('a failed preparer leaves its type unprepared (its rows are held) instead of failing the claim', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      registerCommandRevalidation('topology_interface_poll', async () => null, async () => {
+        throw new Error('relation "topology_telemetry_arms" does not exist');
+      });
+      const { reader } = prepareReader([poll('c1')]);
+      const prepared = await prepareCommandRevalidations(reader, { deviceId: 'd1', targetRole: 'agent' });
+      expect(prepared.has('topology_interface_poll')).toBe(false);
+      expect(errorSpy).toHaveBeenCalled();
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('partitionClaimable passes the type\'s preparation to the in-lock half, which may hold the row', async () => {
+    gateFactoryMock.mockImplementation(() => async () => undefined);
+    const seen: unknown[] = [];
+    registerCommandRevalidation('topology_interface_poll', async (_reader, r, prepared) => {
+      seen.push(prepared);
+      return r.id === 'covered' ? null : { hold: 'revalidation_unprepared' as const };
+    }, async () => 'unused');
+    const prepared = new Map<string, unknown>([['topology_interface_poll', 'versions']]);
+
+    const r = await partitionClaimable(tx(), device, [
+      row({ id: 'covered', type: 'topology_interface_poll' }),
+      row({ id: 'late', type: 'topology_interface_poll' }),
+    ], { prepared });
+
+    expect(seen).toEqual(['versions', 'versions']);
+    expect(r.claimable.map((x) => x.id)).toEqual(['covered']);
+    expect(r.held).toEqual([{ id: 'late', reason: 'revalidation_unprepared' }]);
+    expect(r.cancelled).toEqual([]);
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
+  it('partitionClaimable with no preparation hands the in-lock half undefined', async () => {
+    gateFactoryMock.mockImplementation(() => async () => undefined);
+    const seen: unknown[] = [];
+    registerCommandRevalidation('topology_interface_poll', async (_reader, _r, prepared) => {
+      seen.push(prepared);
+      return { hold: 'revalidation_unprepared' as const };
+    }, async () => 'unused');
+
+    const r = await partitionClaimable(tx(), device, [row({ type: 'topology_interface_poll' })]);
+
+    expect(seen).toEqual([undefined]);
+    expect(r.held).toEqual([{ id: 'c1', reason: 'revalidation_unprepared' }]);
   });
 });

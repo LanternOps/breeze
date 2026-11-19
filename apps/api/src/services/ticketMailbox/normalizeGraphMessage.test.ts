@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { normalizeGraphMessage } from './normalizeGraphMessage';
 import { MAX_BODY_BYTES } from './normalizeGmailMessage';
 import type { GraphMessage } from './graphMailClient';
+import type { ArcEvaluation } from './arcSeal';
 
 const msg: GraphMessage = {
   id: 'AAA-graph-id',
@@ -97,7 +98,28 @@ describe('normalizeGraphMessage', () => {
 
   it('extracts a full sender-auth verdict (dmarc=pass -> verified)', () => {
     const n = normalizeGraphMessage(msg, 'partner-9', 'support@a.com');
-    expect(n.senderAuth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true });
+    expect(n.senderAuth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, authenticatedDomain: 'x.com' });
+  });
+
+  it.each([
+    [[{ name: 'From', value: '"other@y.example" <cust@x.com>' }]],
+    [[{ name: 'From', value: 'cust@x.com' }, { name: 'From', value: 'other@y.example' }]],
+    [[{ name: 'From', value: 'cust@x.com' }, { name: 'From', value: 'Cust <cust@x.com>' }]],
+  ])('records no authenticated domain on the mailbox-domain path when the From header disagrees (%j)', (fromHeaders) => {
+    const n = normalizeGraphMessage({
+      ...msg,
+      internetMessageHeaders: [...fromHeaders, { name: 'Authentication-Results', value: 'a.com; dmarc=pass' }],
+    }, 'partner-9', 'support@a.com');
+    expect(n.senderAuth?.verified).toBe(true);
+    expect(n.senderAuth?.authenticatedDomain).toBeNull();
+  });
+
+  it('records no authenticated domain when the mailbox-domain DMARC pass names another header.from', () => {
+    const n = normalizeGraphMessage({
+      ...msg,
+      internetMessageHeaders: [{ name: 'Authentication-Results', value: 'a.com; dmarc=pass header.from=other.example' }],
+    }, 'partner-9', 'support@a.com');
+    expect(n.senderAuth?.authenticatedDomain).toBeNull();
   });
 
   it('fails closed when Authentication-Results is missing (full object, verified=false)', () => {
@@ -172,10 +194,16 @@ describe('normalizeGraphMessage', () => {
     it('verifies intra-tenant mail when AuthAs=Internal and MessageDirectionality=Originating', () => {
       const n = normalizeGraphMessage(internal(INTERNAL_HEADERS), 'partner-9', 'support@a.com');
       expect(n.senderAuth).toEqual({
-        spf: 'unknown', dkim: 'unknown', dmarc: 'unknown', verified: true, source: 'exchange-internal',
+        spf: 'unknown', dkim: 'unknown', dmarc: 'unknown', verified: true, source: 'exchange-internal', authenticatedDomain: 'a.com',
       });
       // Recorded on the inbound audit row so this path is distinguishable from DMARC.
       expect(n.raw.senderAuthSource).toBe('exchange-internal');
+    });
+
+    it('records no authenticated domain for intra-tenant mail with an unusable From address', () => {
+      const n = normalizeGraphMessage({ ...internal(INTERNAL_HEADERS), from: { emailAddress: { address: 'staff' } } }, 'partner-9', 'support@a.com');
+      expect(n.senderAuth?.verified).toBe(true);
+      expect(n.senderAuth?.authenticatedDomain).toBeNull();
     });
 
     it('does not mark DMARC-verified or unverified mail with an audit source', () => {
@@ -198,7 +226,7 @@ describe('normalizeGraphMessage', () => {
         { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: 'Originating' },
       ]), 'partner-9', 'support@a.com');
       expect(n.senderAuth).toEqual({
-        spf: 'none', dkim: 'none', dmarc: 'none', verified: true, source: 'exchange-internal',
+        spf: 'none', dkim: 'none', dmarc: 'none', verified: true, source: 'exchange-internal', authenticatedDomain: 'a.com',
       });
     });
 
@@ -287,7 +315,378 @@ describe('normalizeGraphMessage', () => {
         { name: 'X-MS-Exchange-Organization-AuthAs', value: 'Internal' },
         { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: 'Originating' },
       ]), 'partner-9', 'support@a.com');
-      expect(n.senderAuth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true });
+      expect(n.senderAuth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, authenticatedDomain: 'a.com' });
+    });
+  });
+
+  describe('external sender auth: Exchange stamp and trusted ARC sealers (#10862)', () => {
+    const AUTH_AS = 'X-MS-Exchange-Organization-AuthAs';
+    const DIRECTION = 'X-MS-Exchange-Organization-MessageDirectionality';
+    const external = [
+      { name: AUTH_AS, value: 'Anonymous' },
+      { name: DIRECTION, value: 'Incoming' },
+    ];
+    const partnerConnector = [
+      { name: AUTH_AS, value: 'Partner' },
+      { name: DIRECTION, value: 'Incoming' },
+    ];
+    const stamp = (value: string) => ({ name: 'Authentication-Results', value });
+    const eopPass = stamp('mx.microsoft.com 1; spf=pass (sender IP is 192.0.2.1) smtp.mailfrom=x.com; dkim=pass (signature was verified) header.d=x.com; dmarc=pass action=none header.from=x.com; compauth=pass reason=100');
+    // The issue's real shape: Exchange judging mail relayed by an inline gateway.
+    const eopFail = stamp('mx.microsoft.com 1; spf=softfail (sender IP is 192.0.2.1) smtp.mailfrom=mg.x.com; dkim=fail (body hash did not verify) header.d=mg.x.com; dmarc=fail action=none header.from=x.com');
+    const avananResults = 'mx.avanan.net; arc=none; dkim=pass header.d=mg.x.com; spf=pass smtp.mailfrom=mg.x.com';
+    const originalResults = { name: 'Authentication-Results-Original', value: avananResults };
+    const verifiedArc = (authResults = avananResults): ArcEvaluation => ({ status: 'verified', sealer: 'avanan.net', instance: 1, authResults });
+
+    const run = (headers: { name: string; value: string }[], arc?: ArcEvaluation, from = 'Cust@X.com') =>
+      normalizeGraphMessage(
+        { ...msg, from: { emailAddress: { address: from } }, internetMessageHeaders: headers },
+        'partner-9', 'support@a.com', arc ? { arc } : undefined,
+      );
+
+    describe('Exchange Online stamp', () => {
+      it('verifies external mail on the tenant-proven mx.microsoft.com stamp', () => {
+        const n = run([...external, eopPass]);
+        expect(n.senderAuth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true, source: 'exchange-online', authenticatedDomain: 'x.com' });
+        expect(n.raw).toMatchObject({ senderAuthSource: 'exchange-online' });
+        expect(n.senderAuthConsulted).toBeUndefined();
+      });
+
+      it('accepts the tenant *.mail.protection.outlook.com authserv-id', () => {
+        const n = run([...external, stamp('contoso-com.mail.protection.outlook.com; dmarc=pass action=none header.from=x.com')]);
+        expect(n.senderAuth?.verified).toBe(true);
+      });
+
+      it('does not accept a look-alike of the protection host', () => {
+        for (const id of ['a.b.mail.protection.outlook.com', 'mail.protection.outlook.com', 'contoso.mail.protection.outlook.com.evil.test', 'mx.microsoft.com.evil.test']) {
+          expect(run([...external, stamp(`${id}; dmarc=pass header.from=x.com`)]).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('keeps the issue fixture quarantined: softfail/fail stays unverified and names the source', () => {
+        const n = run([...external, eopFail]);
+        expect(n.senderAuth).toEqual({ spf: 'fail', dkim: 'fail', dmarc: 'fail', verified: false });
+        expect(n.senderAuthConsulted).toBe('Exchange Online stamp: dmarc=fail');
+      });
+
+      it('does not verify dmarc=none or a stamp with no DMARC verdict (compauth alone is not enough)', () => {
+        expect(run([...external, stamp('mx.microsoft.com 1; spf=pass smtp.mailfrom=x.com; dmarc=none action=none header.from=x.com; compauth=pass reason=109')]).senderAuth?.verified).toBe(false);
+        expect(run([...external, stamp('mx.microsoft.com 1; spf=pass smtp.mailfrom=x.com; compauth=pass reason=100')]).senderAuth?.verified).toBe(false);
+      });
+
+      it('FORGED: mx.microsoft.com dmarc=pass with no tenant org headers stays unverified', () => {
+        const n = run([eopPass]);
+        expect(n.senderAuth?.verified).toBe(false);
+        expect(n.senderAuth?.source).toBeUndefined();
+        expect(n.senderAuthConsulted).toBe('no Exchange tenant proof on this message');
+      });
+
+      it('FORGED: org headers that conflict or are partial are not proof', () => {
+        expect(run([...external, { name: AUTH_AS, value: 'Internal' }, eopPass]).senderAuth?.verified).toBe(false);
+        expect(run([{ name: AUTH_AS, value: 'Anonymous' }, eopPass]).senderAuth?.verified).toBe(false);
+        expect(run([{ name: DIRECTION, value: 'Incoming' }, eopPass]).senderAuth?.verified).toBe(false);
+      });
+
+      it('FORGED: a sender line beside the genuine stamp makes it ambiguous, in either order', () => {
+        const forged = stamp('mx.microsoft.com 1; dmarc=pass header.from=x.com');
+        for (const headers of [[...external, forged, eopFail], [...external, eopFail, forged]]) {
+          const n = run(headers);
+          expect(n.senderAuth?.verified).toBe(false);
+          // Neither line is echoed as the verdict: we cannot tell which is genuine.
+          expect(n.senderAuth?.dmarc).toBe('unknown');
+          expect(n.senderAuthConsulted).toBe('Exchange Online stamp ambiguous: 2 Authentication-Results headers');
+        }
+      });
+
+      it('does not read a dmarc=pass clause opened inside a quoted smtp.mailfrom', () => {
+        const n = run([...external, stamp('mx.microsoft.com 1; spf=pass smtp.mailfrom="a; dmarc=pass header.from=x.com; ("@other.test; dmarc=fail action=none header.from=x.com')]);
+        expect(n.senderAuth?.verified).toBe(false);
+      });
+
+      it('reads no stamp when the Return-Path cannot be read unambiguously', () => {
+        const n = run([...external, { name: 'Return-Path', value: '<a;b@x.com>' }, eopPass]);
+        expect(n.senderAuth?.verified).toBe(false);
+        expect(n.senderAuthConsulted).toBe('envelope sender cannot be read unambiguously');
+      });
+
+      it('V3: does not verify a HELO echo rebalanced into a DMARC clause', () => {
+        const n = run([...external, stamp('mx.microsoft.com 1; spf=pass (sender IP is 192.0.2.1; helo=a) smtp.helo=x;dmarc=pass header.from=x.com;y=z (b) smtp.mailfrom=other.test; '
+          + 'dkim=none (message not signed) header.d=none;compauth=softpass reason=201')]);
+        expect(n.senderAuth?.verified).toBe(false);
+      });
+
+      it('reads no stamp when a DKIM-Signature identity cannot be read unambiguously', () => {
+        const n = run([...external, { name: 'DKIM-Signature', value: 'v=1; d=other.test; i=a=3Bb@other.test; b=y' }, eopPass]);
+        expect(n.senderAuth?.verified).toBe(false);
+        expect(n.senderAuthConsulted).toBe('signature identity cannot be read unambiguously');
+      });
+
+      it('verifies an Exchange stamp in its usual format', () => {
+        const n = run([...external, stamp('mx.microsoft.com 1; spf=pass (sender IP is 209.85.220.41) smtp.mailfrom=x.com; dkim=pass (signature was verified) header.d=x.com;dmarc=pass action=none header.from=x.com;compauth=pass reason=100')]);
+        expect(n.senderAuth).toMatchObject({ verified: true, source: 'exchange-online' });
+      });
+
+      it('does not verify an Exchange stamp whose comment cannot be read unambiguously', () => {
+        const n = run([...external, stamp('mx.microsoft.com 1; spf=pass (sender IP is "192.0.2.7") smtp.mailfrom=x.com;dmarc=pass action=none header.from=x.com')]);
+        expect(n.senderAuth?.verified).toBe(false);
+      });
+
+      it('FORGED: a pass for another domain does not verify this From (header.from binding)', () => {
+        const n = run([...external, stamp('mx.microsoft.com 1; dmarc=pass action=none header.from=attacker.test')]);
+        expect(n.senderAuth?.verified).toBe(false);
+        expect(n.senderAuthConsulted).toBe('Exchange Online stamp: DMARC verdict is not for the From domain');
+      });
+
+      it('FORGED: a conflicting duplicate header.from never matches, in either order', () => {
+        for (const props of ['header.from=x.com header.from=attacker.test', 'header.from=attacker.test header.from=x.com']) {
+          expect(run([...external, stamp(`mx.microsoft.com 1; dmarc=pass ${props}`)]).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('needs every DMARC clause to pass', () => {
+        expect(run([...external, stamp('mx.microsoft.com 1; dmarc=pass header.from=x.com; dmarc=fail header.from=x.com')]).senderAuth?.verified).toBe(false);
+      });
+
+      it('does not read an authserv-id hidden in a comment', () => {
+        expect(run([...external, stamp('evil.test (mx.microsoft.com); dmarc=pass header.from=x.com')]).senderAuth?.verified).toBe(false);
+      });
+
+      it('fails closed on an unparseable From address', () => {
+        for (const from of ['nobody', 'a@b@x.com']) {
+          expect(run([...external, stamp('mx.microsoft.com 1; dmarc=pass header.from=x.com')], undefined, from).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('FORGED: a conflicting duplicate header.from never matches, in either order', () => {
+        for (const props of ['header.from=x.com header.from=attacker.test', 'header.from=attacker.test header.from=x.com']) {
+          expect(run([...external, stamp(`mx.microsoft.com 1; dmarc=pass ${props}`)]).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('needs every DMARC clause to pass', () => {
+        expect(run([...external, stamp('mx.microsoft.com 1; dmarc=pass header.from=x.com; dmarc=fail header.from=x.com')]).senderAuth?.verified).toBe(false);
+      });
+
+      it('does not read an authserv-id hidden in a comment', () => {
+        expect(run([...external, stamp('evil.test (mx.microsoft.com); dmarc=pass header.from=x.com')]).senderAuth?.verified).toBe(false);
+      });
+
+      it('fails closed on an unparseable From address', () => {
+        for (const from of ['nobody', 'a@b@x.com']) {
+          expect(run([...external, stamp('mx.microsoft.com 1; dmarc=pass header.from=x.com')], undefined, from).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('requires header.from on the DMARC clause', () => {
+        expect(run([...external, stamp('mx.microsoft.com 1; dmarc=pass action=none')]).senderAuth?.verified).toBe(false);
+      });
+
+      it('ignores header.from inside a comment', () => {
+        expect(run([...external, stamp('mx.microsoft.com 1; dmarc=pass (header.from=x.com) header.from=attacker.test')]).senderAuth?.verified).toBe(false);
+      });
+
+      it('does not read the stamp on connector mail (the documented external shape is Anonymous)', () => {
+        expect(run([...partnerConnector, eopPass]).senderAuth?.verified).toBe(false);
+      });
+
+      it('leaves intra-tenant mail on the #8299 path', () => {
+        const internal = [{ name: AUTH_AS, value: 'Internal' }, { name: DIRECTION, value: 'Originating' }];
+        const n = run([...internal, stamp('mx.microsoft.com 1; dmarc=pass header.from=x.com')]);
+        expect(n.senderAuth?.source).toBe('exchange-internal');
+      });
+    });
+
+    describe('mailbox-domain stamp on mail Exchange marks as external', () => {
+      it('is not read: a mailbox-domain pass stays unverified', () => {
+        const n = run([...external, stamp('a.com; spf=pass; dkim=pass; dmarc=pass')]);
+        expect(n.senderAuth?.verified).toBe(false);
+        expect(n.senderAuth?.dmarc).toBe('unknown');
+        expect(n.senderAuthConsulted).toBe('Authentication-Results from an untrusted authserv-id ignored');
+      });
+
+      it('cannot override a genuine Exchange fail', () => {
+        expect(run([...external, stamp('a.com; dmarc=pass'), eopFail]).senderAuth?.verified).toBe(false);
+      });
+    });
+
+    describe('trusted ARC sealer', () => {
+      it('verifies gateway-relayed mail on the sealed result even though Exchange failed it', () => {
+        const n = run([...external, eopFail, originalResults], verifiedArc());
+        expect(n.senderAuth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'unknown', verified: true, source: 'trusted-arc-sealer', authenticatedDomain: 'x.com' });
+        expect(n.raw).toMatchObject({ senderAuthSource: 'trusted-arc-sealer' });
+      });
+
+      it('does not align a sealed DKIM pass on the signature\'s header.i', () => {
+        const n = run([...external, eopFail], verifiedArc('mx.gw.test; dkim=pass header.i=@x.com header.s=sel'));
+        expect(n.senderAuth?.verified).toBe(false);
+      });
+
+      it('aligns a sealed DKIM pass on header.d even when header.i names another domain', () => {
+        const n = run([...external, eopFail], verifiedArc('mx.gw.test; dkim=pass header.d=x.com header.i=@other.test'));
+        expect(n.senderAuth).toMatchObject({ verified: true, source: 'trusted-arc-sealer' });
+      });
+
+      it('reads a sealed dmarc=fail past a quoted smtp.mailfrom holding ; and (', () => {
+        const n = run([...external, eopPass], verifiedArc(
+          'mx.gw.test; spf=pass smtp.mailfrom="a; dmarc=pass header.from=x.com; ("@other.test; dmarc=fail header.from=x.com',
+        ));
+        expect(n.senderAuth?.verified).toBe(false);
+        // The sealer's smtp.mailfrom fails the envelope check, so nothing is read.
+        expect(n.senderAuthConsulted).toContain('could not be read');
+      });
+
+      it('does not take header.d from inside a quoted header.i', () => {
+        const n = run([...external, eopFail], verifiedArc('mx.gw.test; dkim=pass header.i="a\\" header.d=x.com \\""@other.test'));
+        expect(n.senderAuth?.verified).toBe(false);
+      });
+
+      it('does not fall back to Exchange\'s stamp when the sealed results cannot be read', () => {
+        const n = run([...external, eopPass], verifiedArc('mx.gw.test; spf=pass (domain of a)b@other.test) smtp.mailfrom=other.test; dmarc=fail header.from=x.com'));
+        expect(n.senderAuth?.verified).toBe(false);
+        expect(n.senderAuthConsulted).toContain('could not be read');
+      });
+
+      it('V4: does not verify a sealed comment echo that ends in the DMARC clause', () => {
+        const n = run([...external, eopFail], verifiedArc(
+          'mx.gw.test; dkim=none; spf=pass (gw.test: domain of a);x=y;dmarc=pass header.from=x.com (b@other.test designates 192.0.2.1 as permitted sender) smtp.mailfrom=other.test',
+        ));
+        expect(n.senderAuth?.verified).toBe(false);
+      });
+
+      it('does not verify on sealed results whose smtp.mailfrom cannot be read unambiguously', () => {
+        const n = run([...external, eopFail], verifiedArc('mx.gw.test; spf=pass smtp.mailfrom="a(b"@other.test; dmarc=pass header.from=x.com'));
+        expect(n.senderAuth?.verified).toBe(false);
+        expect(n.senderAuthConsulted).toContain('could not be read');
+      });
+
+      it('works on connector-attributed mail too, since the seal is the proof', () => {
+        expect(run([...partnerConnector, eopFail], verifiedArc()).senderAuth?.verified).toBe(true);
+      });
+
+      it('verifies a sealed dmarc=pass bound to the From domain', () => {
+        const n = run([...external, eopFail], verifiedArc('mx.gw.test; dmarc=pass header.from=x.com'));
+        expect(n.senderAuth).toMatchObject({ dmarc: 'pass', verified: true, source: 'trusted-arc-sealer' });
+      });
+
+      it('a sealed dmarc=fail vetoes, even with aligned DKIM and a passing Exchange stamp', () => {
+        const n = run([...external, eopPass], verifiedArc('mx.gw.test; dkim=pass header.d=x.com; dmarc=fail header.from=x.com'));
+        expect(n.senderAuth?.verified).toBe(false);
+        expect(n.senderAuthConsulted).toBe('trusted ARC sealer avanan.net: dmarc=fail');
+      });
+
+      it('REPLAY: a genuine sealed verdict for another domain does not verify this From', () => {
+        for (const results of [
+          'mx.gw.test; dmarc=pass header.from=attacker.test',
+          'mx.gw.test; dkim=pass header.d=attacker.test; spf=pass smtp.mailfrom=attacker.test',
+          'mx.gw.test; dkim=pass header.d=com',
+        ]) {
+          const n = run([...external, eopFail], verifiedArc(results));
+          expect(n.senderAuth?.verified).toBe(false);
+          expect(n.senderAuthConsulted).toContain('trusted ARC sealer avanan.net: verdict is not for the From domain');
+        }
+      });
+
+      it('a bare sealed dmarc=pass, with no domain to bind, does not verify', () => {
+        for (const [results, reason] of [
+          ['mx.gw.test; dmarc=pass', 'verdict is not for the From domain'],
+          // DMARC is not the last clause, so the sealed results are not read at all.
+          ['mx.gw.test; dmarc=pass; dkim=pass header.d=other.test', 'results could not be read'],
+        ] as const) {
+          const n = run([...external, eopFail], verifiedArc(results));
+          expect(n.senderAuth?.verified).toBe(false);
+          expect(n.senderAuthConsulted).toContain(`trusted ARC sealer avanan.net: ${reason}`);
+        }
+      });
+
+      it('FORGED: a conflicting duplicate header.from in the sealed verdict never matches', () => {
+        for (const props of ['header.from=x.com header.from=attacker.test', 'header.from=attacker.test header.from=x.com']) {
+          expect(run([...external, eopFail], verifiedArc(`mx.gw.test; dmarc=pass ${props}`)).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('does not align anything when the From address is unparseable', () => {
+        for (const from of ['nobody', 'a@b@x.com']) {
+          expect(run([...external], verifiedArc('mx.gw.test; dkim=pass header.d=localhost; spf=pass smtp.mailfrom=b@x.com'), from).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('a bare sealed dmarc=pass, with no domain to bind, does not verify', () => {
+        for (const [results, reason] of [
+          ['mx.gw.test; dmarc=pass', 'verdict is not for the From domain'],
+          // DMARC is not the last clause, so the sealed results are not read at all.
+          ['mx.gw.test; dmarc=pass; dkim=pass header.d=other.test', 'results could not be read'],
+        ] as const) {
+          const n = run([...external, eopFail], verifiedArc(results));
+          expect(n.senderAuth?.verified).toBe(false);
+          expect(n.senderAuthConsulted).toContain(`trusted ARC sealer avanan.net: ${reason}`);
+        }
+      });
+
+      it('FORGED: a conflicting duplicate header.from in the sealed verdict never matches', () => {
+        for (const props of ['header.from=x.com header.from=attacker.test', 'header.from=attacker.test header.from=x.com']) {
+          expect(run([...external, eopFail], verifiedArc(`mx.gw.test; dmarc=pass ${props}`)).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('does not align anything when the From address is unparseable', () => {
+        for (const from of ['nobody', 'a@b@x.com']) {
+          expect(run([...external], verifiedArc('mx.gw.test; dkim=pass header.d=localhost; spf=pass smtp.mailfrom=b@x.com'), from).senderAuth?.verified).toBe(false);
+        }
+      });
+
+      it('a sealed dmarc=pass naming another domain is not rescued by aligned DKIM', () => {
+        expect(run([...external, eopFail], verifiedArc('mx.gw.test; dkim=pass header.d=x.com; dmarc=pass header.from=attacker.test')).senderAuth?.verified).toBe(false);
+      });
+
+      it('aligns on the organizational domain, so a different name under a public suffix does not count', () => {
+        const at = (domain: string) => `a@${domain}`;
+        expect(run([...external], verifiedArc('mx.gw.test; dkim=pass header.d=mail.x.co.uk'), at('y.x.co.uk')).senderAuth?.verified).toBe(true);
+        expect(run([...external], verifiedArc('mx.gw.test; dkim=pass header.d=attacker.co.uk'), at('x.co.uk')).senderAuth?.verified).toBe(false);
+      });
+
+      it('reads spf smtp.mailfrom in address form', () => {
+        expect(run([...external], verifiedArc('mx.gw.test; spf=pass smtp.mailfrom=bounce@mail.x.com')).senderAuth?.verified).toBe(true);
+      });
+
+      it('ignores a verified seal when the message has no tenant proof', () => {
+        expect(run([eopFail], verifiedArc()).senderAuth?.verified).toBe(false);
+      });
+
+      it('falls back to a passing Exchange stamp when the sealed result is inconclusive', () => {
+        const n = run([...external, eopPass], verifiedArc('mx.gw.test; arc=none'));
+        expect(n.senderAuth).toMatchObject({ verified: true, source: 'exchange-online' });
+      });
+
+      it('FORGED: an invalid seal is not a pass and the reason names the sealer', () => {
+        const n = run([...external, eopFail], { status: 'invalid', sealer: 'avanan.net', reason: 'signature' });
+        expect(n.senderAuth?.verified).toBe(false);
+        expect(n.senderAuthConsulted).toBe('trusted ARC sealer avanan.net: seal did not verify (signature); Exchange Online stamp: dmarc=fail');
+      });
+
+      it('names a DNS outage and the no-trusted-seal case', () => {
+        expect(run([...external, eopFail], { status: 'dns-unavailable', sealer: 'avanan.net', retryable: true }).senderAuthConsulted)
+          .toBe('trusted ARC sealer avanan.net: key lookup failed; Exchange Online stamp: dmarc=fail');
+        expect(run([...external, eopFail], { status: 'no-trusted-seal' }).senderAuthConsulted)
+          .toBe('no seal from a trusted ARC sealer; Exchange Online stamp: dmarc=fail');
+      });
+    });
+
+    describe('Authentication-Results-Original', () => {
+      it('is never a pass by itself, because a sender can write it', () => {
+        expect(run([...external, originalResults]).senderAuth?.verified).toBe(false);
+        expect(run([...partnerConnector, originalResults]).senderAuth?.verified).toBe(false);
+        expect(run([...external, { name: 'Authentication-Results-Original', value: 'mx.avanan.net; dmarc=pass header.from=x.com' }]).senderAuth?.verified).toBe(false);
+      });
+    });
+
+    it('with no sealer configured a gateway-relayed message stays quarantined on the Exchange verdict', () => {
+      const n = run([...external, eopFail, originalResults]);
+      expect(n.senderAuth?.verified).toBe(false);
+      expect(n.senderAuthConsulted).toBe('Exchange Online stamp: dmarc=fail');
+    });
+
+    it('names a missing stamp', () => {
+      expect(run([...external]).senderAuthConsulted).toBe('no Exchange Online stamp');
     });
   });
 

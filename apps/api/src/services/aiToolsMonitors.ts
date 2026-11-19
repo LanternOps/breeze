@@ -24,6 +24,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { configPolicyMonitors, configPolicyFeatureLinks, configurationPolicies } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { isMonitorAttachableToPolicy } from './monitors/monitorAttachability';
 import { monitorsLinkSettings, readMonitorsLink, shouldRemoveEmptiedLink } from './monitors/monitorAttachments';
@@ -433,6 +434,8 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('reset_monitor_escalation', async (input, auth) => {
+      const mfaError = mfaGatedToolError('reset_monitor_escalation', undefined, auth);
+      if (mfaError) return mfaError;
       if (!input.monitorId) return JSON.stringify({ error: 'monitorId is required' });
       if (!input.deviceId) return JSON.stringify({ error: 'deviceId is required' });
 

@@ -80,6 +80,9 @@ vi.mock('./aiToolOutput', () => ({
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
 
+// Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of whichever test reaches it first (#11011).
+vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
+
 import { StreamingSessionManager } from './streamingSessionManager';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import type { TopologyTurnRuntime } from './topology/aiInvestigation';
@@ -236,7 +239,7 @@ describe('topology investigation output (M4 Task 3)', () => {
     expect(rt.complete).not.toHaveBeenCalled();
     expect(replay.some((e) => e.type === 'topology_explanation')).toBe(false);
     expect(JSON.stringify(replay)).not.toContain('FOREIGN-SITE-SECRET');
-    expect(replay).toContainEqual({ type: 'error', message: 'The topology explanation could not be completed.' });
+    expect(replay).toContainEqual({ type: 'error', message: 'The topology explanation could not be completed.', code: 'topology_failed' });
     expect(insertedRows.filter((r) => r.role === 'assistant')).toHaveLength(0);
   });
 
@@ -256,7 +259,7 @@ describe('topology investigation output (M4 Task 3)', () => {
     expect(rt.abort).toHaveBeenCalled();
     expect(rt.complete).not.toHaveBeenCalled();
     expect(JSON.stringify(replay)).not.toContain('FOREIGN-SITE-SECRET');
-    expect(replay.filter((e) => e.type === 'error')).toEqual([{ type: 'error', message: 'The topology explanation could not be completed.' }]);
+    expect(replay.filter((e) => e.type === 'error')).toEqual([{ type: 'error', message: 'The topology explanation could not be completed.', code: 'topology_failed' }]);
     expect(insertedRows.filter((r) => r.role === 'assistant')).toHaveLength(0);
   });
 
@@ -268,7 +271,7 @@ describe('topology investigation output (M4 Task 3)', () => {
     const replay = session.eventBus.getReplayEvents();
     expect(rt.abort).toHaveBeenCalled();
     expect(replay.some((e) => e.type === 'topology_explanation')).toBe(false);
-    expect(replay).toContainEqual({ type: 'error', message: 'This investigation reached its limit. Start a new investigation to continue.' });
+    expect(replay).toContainEqual({ type: 'error', message: 'This investigation reached its limit. Start a new investigation to continue.', code: 'topology_limit' });
   });
 
   it('a scope change at the final flush publishes the fixed evidence_changed state, not a current answer', async () => {
@@ -361,7 +364,7 @@ describe('topology investigation output (M4 Task 3)', () => {
       releaseLate();
       await session.processorPromise;
       const replay = session.eventBus.getReplayEvents();
-      expect(replay).toContainEqual({ type: 'error', message: 'AI request timed out. Please try again.' });
+      expect(replay).toContainEqual({ type: 'error', message: 'AI request timed out. Please try again.', code: 'timeout' });
       expect(replay.some((e) => e.type === 'content_delta')).toBe(false);
       expect(JSON.stringify(replay)).not.toContain('LATE-UNCITED');
       expect(JSON.stringify(insertedRows)).not.toContain('LATE-UNCITED');

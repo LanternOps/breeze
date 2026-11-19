@@ -24,6 +24,7 @@ export type EventType =
   | 'device.isolation_failed'
   | 'device.isolation_self_released'
   | 'device.isolation_expiring'
+  | 'device.reinstall_suspected' // #8318 §7.3: a new device looks like a reinstall of this (silent) record
   // Alert events
   | 'alert.triggered'
   // `acknowledgedByPrincipalId` (uuid) is present only when a Partner API
@@ -101,6 +102,9 @@ export type EventType =
   | 'policy.violation'
   | 'policy.compliant'
   | 'policy.remediation.triggered'
+  // Strix (PR #12184): at least one rule was not assessed because the device
+  // org's compliance probe list is full. Never a violation; the owner is told.
+  | 'policy.not_assessed'
   // Audit baseline compliance events
   | 'compliance.audit_deviation'
   | 'compliance.audit_remediated'
@@ -694,6 +698,8 @@ export const EVENT_TYPES = {
   DEVICE_ISOLATION_FAILED: 'device.isolation_failed' as const,
   DEVICE_ISOLATION_SELF_RELEASED: 'device.isolation_self_released' as const,
   DEVICE_ISOLATION_EXPIRING: 'device.isolation_expiring' as const,
+  // #8318 §7.3: hardware or hostname hints flagged a newer device as a probable reinstall of this one
+  DEVICE_REINSTALL_SUSPECTED: 'device.reinstall_suspected' as const,
   // Alert
   ALERT_TRIGGERED: 'alert.triggered' as const,
   ALERT_ACKNOWLEDGED: 'alert.acknowledged' as const,
@@ -724,6 +730,7 @@ export const EVENT_TYPES = {
   POLICY_VIOLATION: 'policy.violation' as const,
   POLICY_COMPLIANT: 'policy.compliant' as const,
   POLICY_REMEDIATION_TRIGGERED: 'policy.remediation.triggered' as const,
+  POLICY_NOT_ASSESSED: 'policy.not_assessed' as const,
   // Patch
   PATCH_AVAILABLE: 'patch.available' as const,
   PATCH_APPROVED: 'patch.approved' as const,

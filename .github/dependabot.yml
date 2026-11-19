@@ -363,3 +363,18 @@ updates:
       - "docker"
     commit-message:
       prefix: "chore(deps):"
+
+  # Compose files at the repo root (incl. docker-compose.monitoring.yml). The
+  # `docker` ecosystem above only reads Dockerfiles. Best effort: Dependabot may
+  # not parse the digest default inside `${X_IMAGE_REF:-image:tag@sha256:...}`,
+  # in which case the monitoring pins are refreshed by hand (#7812).
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(deps):"

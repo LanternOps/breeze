@@ -1,0 +1,46 @@
+{
+  "id": "back-online-uses-event-check-in",
+  "title": "\"Tell me the moment it's back online\" schedules a device-online check-in, not a 15-minute watch",
+  "issue": 11685,
+  "expect": "pass",
+  "door": "wisp",
+  "note": "a rate, not a constant: before #11699, 5 of 11 runs chose create_watch and told the technician Wisp cannot notify in real time; with the fix, 10 of 10 runs passed on 2026-11-11. Re-run a single failure before filing it",
+  "steps": [
+    {
+      "name": "ask",
+      "type": "say",
+      "approve": "approve",
+      "maxSec": 120,
+      "text": "One of the partners at Harbor Legal says her MacBook has been off the network all afternoon. Which one is it, and tell me the moment it's back online."
+    }
+  ],
+  "checks": [
+    {
+      "kind": "reply_matches",
+      "step": "ask",
+      "pattern": "HL-PARTNER-MBP",
+      "precondition": true,
+      "note": "it found the device"
+    },
+    {
+      "kind": "tool_called",
+      "tool": "schedule_check_in",
+      "step": "ask",
+      "inputMatches": "device_online",
+      "note": "the event check-in fires within seconds of the reconnect"
+    },
+    {
+      "kind": "tool_not_called",
+      "tool": "create_watch",
+      "step": "ask",
+      "note": "a watch polls every 15 minutes at best and raises a concern instead of telling the technician"
+    },
+    {
+      "kind": "reply_not_matches",
+      "step": "ask",
+      "flags": "i",
+      "pattern": "(fastest cadence|can(no|.)t (tell|notify|alert) you (the|in) (instant|moment|real[- ]time)|(moment|instant|real[- ]time)[^.]{0,60}(isn.t|is not|not) possible|not (able|possible) to (tell|notify) you (the|in) (instant|moment|real[- ]time))",
+      "note": "Wisp says real-time notice is impossible (\"'The moment it's back' isn't possible with this\") although schedule_check_in does exactly that"
+    }
+  ]
+}

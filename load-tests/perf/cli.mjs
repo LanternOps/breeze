@@ -136,7 +136,9 @@ function cmdCompare(argv) {
   if (v.expect !== undefined && v.expect !== 'regression') throw new UsageError(`--expect accepts only "regression", got ${JSON.stringify(v.expect)}`);
 
   const baseline = readJson(v.baseline);
-  const first = compare(baseline, readJson(v.candidate));
+  const candidateRec = readJson(v.candidate);
+  const first = compare(baseline, candidateRec);
+  const candNotes = Array.isArray(candidateRec.notes) ? candidateRec.notes : [];
   let finalVerdict = first.verdict;
   let regressedKpis = first.rows.filter((r) => r.regressed).map((r) => r.kpi);
   let note = '';
@@ -152,10 +154,11 @@ function cmdCompare(argv) {
       : `(confirmed on ${c.kpis.join(', ')})`;
   }
 
-  const summary = `${textTable(first.rows)}\n${confirmText}\nResult: ${finalVerdict}${regressedKpis.length ? ` (${regressedKpis.join(', ')})` : ''}${note ? ` ${note}` : ''}\n`;
+  const noteText = candNotes.length ? `\nCandidate notes: ${candNotes.join('; ')}\n` : '';
+  const summary = `${textTable(first.rows)}\n${noteText}${confirmText}\nResult: ${finalVerdict}${regressedKpis.length ? ` (${regressedKpis.join(', ')})` : ''}${note ? ` ${note}` : ''}\n`;
   process.stdout.write(summary);
   if (process.env.GITHUB_STEP_SUMMARY) {
-    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${markdownTable(first.rows, finalVerdict, note)}\n`);
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${markdownTable(first.rows, finalVerdict, note)}${candNotes.length ? `\n_Candidate notes: ${candNotes.join('; ')}_\n` : ''}\n`);
   }
 
   if (v.expect === 'regression') {

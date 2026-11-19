@@ -1,0 +1,72 @@
+{
+  "name": "osv-504-1",
+  "source": {
+    "run": 42463664512,
+    "pr": 11353,
+    "recordedAt": "2026-11-08"
+  },
+  "prFiles": [
+    "apps/web/src/components/psa/PsaConnectionsPage.test.tsx",
+    "apps/web/src/components/settings/M365MailboxCard.test.tsx",
+    "apps/web/src/components/settings/M365MailboxCard.tsx"
+  ],
+  "facts": {
+    "run": {
+      "id": 42463664512,
+      "attempt": 1,
+      "headSha": "f8aeac1019da2ed713f3d1e507b9e274f6ab28c1",
+      "headBranch": "gh-readonly-queue/main/pr-11353-4d09768bf15152309ae4dde3c2211439d9a07010",
+      "headRepo": "LanternOps/breeze",
+      "event": "merge_group",
+      "status": "completed",
+      "conclusion": "failure",
+      "createdAt": "2026-11-08T08:36:35Z",
+      "updatedAt": "2026-11-08T09:18:35Z",
+      "pr": 11353
+    },
+    "jobs": [
+      {
+        "id": 128678543072,
+        "name": "Security Audit",
+        "jobId": "security-audit",
+        "conclusion": "failure",
+        "startedAt": "2026-11-08T08:47:50Z",
+        "completedAt": "2026-11-08T08:48:47Z",
+        "timeoutMinutes": null,
+        "label": null,
+        "runner": null,
+        "failedStep": "Install osv-scanner",
+        "annotations": [
+          "Process completed with exit code 22."
+        ],
+        "logStatus": 200,
+        "logTail": "##[group]Run for attempt in 1 2 3; do\nfor attempt in 1 2 3; do\n  if git fetch --no-tags --depth=1 origin \"${CI_BASE_SHA}\"; then\n    exit 0\n  fi\n  echo \"git fetch of the base commit failed (attempt ${attempt}/3)\" >&2\n  # No sleep after the final attempt — there is no fourth.\n  if [ \"${attempt}\" -lt 3 ]; then\n    sleep $(( attempt * 5 ))\n  fi\ndone\necho \"::warning title=Audit comparison disabled::Could not fetch base ${CI_BASE_SHA}; every blocking advisory blocks this run.\"\nshell: /usr/bin/bash -e {0}\nenv:\n  PNPM_VERSION: 10.34.5\n  GO_VERSION: 1.26.10\n  CI_BASE_SHA: 4d09768bf15152309ae4dde3c2211439d9a07010\n##[endgroup]\nFrom https://github.com/LanternOps/breeze\n * branch              4d09768bf15152309ae4dde3c2211439d9a07010 -> FETCH_HEAD\n##[group]Run pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413\nwith:\n  version: 10.34.5\n  dest: ~/setup-pnpm\n  run_install: null\n  cache: false\n  cache_dependency_path: pnpm-lock.yaml\n  package_json_file: package.json\n  standalone: false\nenv:\n  PNPM_VERSION: 10.34.5\n  GO_VERSION: 1.26.10\n  CI_BASE_SHA: 4d09768bf15152309ae4dde3c2211439d9a07010\n##[endgroup]\n##[group]Running self-installer...\n\nadded 1 package, and audited 2 packages in 1s\n\n1 package is looking for funding\n  run `npm fund` for details\n\nfound 0 vulnerabilities\nChecking for updates...\nSwitching pnpm from v11.25.0 to v10.34.5...\n.../v11/9fc-1a1ba580312-4f45b2fe82d1c3a6 | Progress: resolved 1, reused 0, downloaded 0, added 0\n.../v11/9fc-1a1ba580312-4f45b2fe82d1c3a6 |   +1 +\n.../v11/9fc-1a1ba580312-4f45b2fe82d1c3a6 | Progress: resolved 1, reused 0, downloaded 1, added 1, done\n[WARN] Detected a pnpm v10 installation layout at PNPM_HOME. The pnpm shims at PNPM_HOME have been refreshed so the new version is active, but pnpm v11 expects bins in PNPM_HOME/bin. Run \"pnpm setup\" to migrate your PATH to the v11 layout.\nSuccessfully updated pnpm to v10.34.5\n##[endgroup]\nInstallation Completed!\n##[group]Run actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1\nwith:\n  node-version-file: .node-version\n  check-latest: false\n  token: ***\n  package-manager-cache: true\nenv:\n  PNPM_VERSION: 10.34.5\n  GO_VERSION: 1.26.10\n  CI_BASE_SHA: 4d09768bf15152309ae4dde3c2211439d9a07010\n  PNPM_HOME: /home/runner/setup-pnpm/node_modules/.bin\n##[endgroup]\nNode version file is not JSON file\nNode version file is not TOML file\nResolved .node-version as 22.23.4\nFound in cache @ /opt/hostedtoolcache/node/22.23.4/x64\n##[group]Environment details\nnode: v22.23.4\nnpm: 10.9.9\nyarn: 1.22.22\n##[endgroup]\nPrepare all required actions\nGetting action download info\nDownload action repository 'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9' (SHA:55cc8345863c7cc4c66a329aec7e433d2d1c52a9)\n##[group]Run ./.github/actions/restore-pnpm-cache\nenv:\n  PNPM_VERSION: 10.34.5\n  GO_VERSION: 1.26.10\n  CI_BASE_SHA: 4d09768bf15152309ae4dde3c2211439d9a07010\n  PNPM_HOME: /home/runner/setup-pnpm/node_modules/.bin\n##[endgroup]\n##[start-action display=Resolve pnpm store path;id=__self.pnpm]\n##[group]Run echo \"store=$(pnpm store path --silent)\" >> \"$GITHUB_OUTPUT\"\necho \"store=$(pnpm store path --silent)\" >> \"$GITHUB_OUTPUT\"\nshell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}\nenv:\n  PNPM_VERSION: 10.34.5\n  GO_VERSION: 1.26.10\n  CI_BASE_SHA: 4d09768bf15152309ae4dde3c2211439d9a07010\n  PNPM_HOME: /home/runner/setup-pnpm/node_modules/.bin\n##[endgroup]\n##[end-action id=__self.pnpm;outcome=success;conclusion=success;duration_ms=490]\n##[start-action display=Restore pnpm cache;id=__self.__actions_cache]\n##[group]Run actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9\nwith:\n  path: /home/runner/setup-pnpm/node_modules/.bin/store/v10\n  key: pnpm-Linux-9ced121064c1b2fa43504afebb36e37459d845fdf12e15dd1b0d168e85bf1e3c\n  restore-keys: pnpm-Linux-\n\n  enableCrossOsArchive: false\n  fail-on-cache-miss: false\n  lookup-only: false\nenv:\n  PNPM_VERSION: 10.34.5\n  GO_VERSION: 1.26.10\n  CI_BASE_SHA: 4d09768bf15152309ae4dde3c2211439d9a07010\n  PNPM_HOME: /home/runner/setup-pnpm/node_modules/.bin\n##[endgroup]\nCache not found for input keys: pnpm-Linux-9ced121064c1b2fa43504afebb36e37459d845fdf12e15dd1b0d168e85bf1e3c, pnpm-Linux-\n##[end-action id=__self.__actions_cache;outcome=success;conclusion=success;duration_ms=266]\n##[group]Run pnpm install --frozen-lockfile\npnpm install --frozen-lockfile\nshell: /usr/bin/bash -e {0}\nenv:\n  PNPM_VERSION: 10.34.5\n  GO_VERSION: 1.26.10\n  CI_BASE_SHA: 4d09768bf15152309ae4dde3c2211439d9a07010\n  PNPM_HOME: /home/runner/setup-pnpm/node_modules/.bin\n##[endgroup]\nScope: all 22 workspace projects\nLockfile is up to date, resolution step is skipped\nProgress: resolved 1, reused 0, downloaded 0, added 0\nPackages: +2160\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\nProgress: resolved 2160, reused 0, downloaded 56, added 13\nProgress: resolved 2160, reused 0, downloaded 143, added 46\nProgress: resolved 2160, reused 0, downloaded 239, added 84\nProgress: resolved 2160, reused 0, downloaded 404, added 146\nProgress: resolved 2160, reused 0, downloaded 543, added 202\nProgress: resolved 2160, reused 0, downloaded 685, added 260\nProgress: resolved 2160, reused 0, downloaded 836, added 319\nProgress: resolved 2160, reused 0, downloaded 1050, added 407\nProgress: resolved 2160, reused 0, downloaded 1264, added 511\nProgress: resolved 2160, reused 0, downloaded 1481, added 609\nProgress: resolved 2160, reused 0, downloaded 1668, added 706\nProgress: resolved 2160, reused 0, downloaded 1706, added 719\nProgress: resolved 2160, reused 0, downloaded 1759, added 736\nProgress: resolved 2160, reused 0, downloaded 1797, added 750\nProgress: resolved 2160, reused 0, downloaded 1901, added 794\nProgress: resolved 2160, reused 0, downloaded 2095, added 877\nProgress: resolved 2160, reused 0, downloaded 2151, added 1579\nProgress: resolved 2160, reused 0, downloaded 2151, added 1882\nProgress: resolved 2160, reused 0, downloaded 2151, added 2160, done\n.../esbuild@0.28.2/node_modules/esbuild postinstall$ node install.js\n.../esbuild@0.28.2/node_modules/esbuild postinstall: Done\n\ndevDependencies:\n+ @typescript-eslint/parser 8.65.0\n+ eslint 10.14.0\n+ tsx 4.23.15\n+ turbo 2.11.8\n+ typescript 5.9.3\n\n. prepare$ git config core.hooksPath .githooks 2>/dev/null || true\n. prepare: Done\n╭ Warning ─────────────────────────────────────────────────────────────────────╮\n│                                                                              │\n│   Ignored build scripts: @firebase/util@1.15.3, @sentry/cli@2.58.6,          │\n│   @sentry/cli@3.7.0, @sentry/cli@3.8.0, argon2@0.45.1, core-js@3.49.0,       │\n│   cpu-features@0.0.10, msgpackr-extract@3.0.4, ssh2@1.17.0.                  │\n│   Run \"pnpm approve-builds\" to pick which dependencies should be allowed     │\n│   to run scripts.                                                            │\n│                                                                              │\n╰──────────────────────────────────────────────────────────────────────────────╯\nDone in 20.6s using pnpm v10.34.5\n##[group]Run bash scripts/security/install-osv-scanner.sh\nbash scripts/security/install-osv-scanner.sh\nshell: /usr/bin/bash -e {0}\nenv:\n  PNPM_VERSION: 10.34.5\n  GO_VERSION: 1.26.10\n  CI_BASE_SHA: 4d09768bf15152309ae4dde3c2211439d9a07010\n  PNPM_HOME: /home/runner/setup-pnpm/node_modules/.bin\n##[endgroup]\ncurl: (22) The requested URL returned error: 504\ncurl: (22) The requested URL returned error: 504\ncurl: (22) The requested URL returned error: 504\ncurl: (22) The requested URL returned error: 504\ncurl: (22) The requested URL returned error: 504\ncurl: (22) The requested URL returned error: 504\n##[error]Process completed with exit code 22.\nPost job cleanup.\nPruning is unnecessary.\nPost job cleanup.\n[command]/usr/bin/git version\ngit version 2.56.0\nTemporarily overriding HOME='/home/runner/work/_temp/7e5562e2-290f-4e5f-b2aa-0345141a2a74' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/work/breeze/breeze\nRemoving SSH command configuration\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\nRemoving HTTP extra header\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.https\\:\\/\\/github\\.com\\/\\.extraheader\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.https\\:\\/\\/github\\.com\\/\\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\"\nRemoving includeIf entries pointing to credentials config files\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\nCleaning up orphan processes",
+        "logAttempts": null,
+        "report": null,
+        "reportError": null,
+        "errors": []
+      },
+      {
+        "id": 128687512282,
+        "name": "CI Success",
+        "jobId": "ci-success",
+        "conclusion": "failure",
+        "startedAt": "2026-11-08T09:18:29Z",
+        "completedAt": "2026-11-08T09:18:35Z",
+        "timeoutMinutes": null,
+        "label": null,
+        "runner": null,
+        "failedStep": "Check all jobs passed",
+        "annotations": [],
+        "logStatus": null,
+        "logTail": null,
+        "logAttempts": null,
+        "report": null,
+        "reportError": null,
+        "errors": []
+      }
+    ],
+    "ciSuccess": "present",
+    "gate": null
+  }
+}

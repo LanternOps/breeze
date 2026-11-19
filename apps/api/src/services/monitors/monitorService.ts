@@ -17,10 +17,15 @@ import { getMonitorKindSpec, MonitorValidationError } from './kinds';
 import { compileMonitorInTx, type CompileOptions, type DbExecutor } from './monitorCompiler';
 import { assertNetworkCheckAssetOwner, NetworkCheckAssetError } from './networkCheckAsset';
 import { isPgForeignKeyViolation, pgErrorConstraint } from '../../utils/pgErrors';
-import type {
-  CreateMonitorDefinitionInput,
-  MonitorKind,
-  UpdateMonitorDefinitionInput,
+import { validateConditions } from '../alertConditions';
+import {
+  isLegacyRecoveryCondition,
+  isValidRearmPair,
+  REARM_PAIR_MESSAGE,
+  recoveryConditionProblem,
+  type CreateMonitorDefinitionInput,
+  type MonitorKind,
+  type UpdateMonitorDefinitionInput,
 } from '@breeze/shared';
 
 export { MonitorValidationError };
@@ -223,6 +228,21 @@ function normalizeList(actions: unknown): AutomationAction[] {
   return normalizeAutomationActions(actions);
 }
 
+function assertRecoveryCondition(kind: MonitorKind, value: unknown, options: { allowLegacy: boolean }): void {
+  const problem = recoveryConditionProblem(kind, value, options);
+  if (problem) throw new MonitorValidationError(`autoResolveConditions ${problem}`);
+}
+
+/**
+ * The shared schema checks a raw blob's shape; only the API knows which handler
+ * types exist. An unknown `type` would otherwise save and then never resolve.
+ */
+function assertLegacyRecoveryHandlers(value: unknown): void {
+  if (!isLegacyRecoveryCondition(value)) return;
+  const errors = validateConditions(value);
+  if (errors.length > 0) throw new MonitorValidationError(`autoResolveConditions is invalid: ${errors.join('; ')}`);
+}
+
 function validateDefinitionShape(args: {
   kind: MonitorKind;
   condition: Record<string, unknown>;
@@ -369,6 +389,7 @@ export async function createMonitorDefinition(
     recurrenceActions: input.recurrenceActions,
     aiAgentId: input.aiAgentId ?? null,
   });
+  assertRecoveryCondition(input.kind, input.autoResolveConditions, { allowLegacy: false });
 
   try {
     await assertNetworkCheckAssetOwner(input.kind, shape.condition, owner, executor);
@@ -397,8 +418,11 @@ async function createValidatedMonitorInTx(
         enabled: input.enabled,
         condition: shape.condition,
         severity: input.severity,
-        cooldownMinutes: input.cooldownMinutes,
-        autoResolve: input.autoResolve,
+        // Omitted or null = inherit (#10765). Never `||`: 0 and false are real overrides.
+        cooldownMinutes: input.cooldownMinutes ?? null,
+        autoResolve: input.autoResolve ?? null,
+        rearmMode: input.rearmMode ?? null,
+        rearmDelayMinutes: input.rearmDelayMinutes ?? null,
         autoResolveConditions: input.autoResolveConditions ?? null,
         responses: shape.responses as unknown as Array<Record<string, unknown>>,
         deliveryMode: input.deliveryMode,
@@ -447,6 +471,16 @@ export async function updateMonitorDefinition(
     aiAgentId: input.aiAgentId !== undefined ? input.aiAgentId : existing.aiAgentId,
   };
   const shape = validateDefinitionShape(merged);
+  // The schema cannot see the stored kind on a recovery-only patch, nor the
+  // stored recovery condition on a kind-only one. A patch touching neither leaves
+  // the stored value alone, so a row that could not be saved today can still be
+  // renamed or disabled (#10935).
+  if (input.autoResolveConditions !== undefined) {
+    assertRecoveryCondition(merged.kind, input.autoResolveConditions, { allowLegacy: true });
+    assertLegacyRecoveryHandlers(input.autoResolveConditions);
+  } else if (merged.kind !== existing.kind) {
+    assertRecoveryCondition(merged.kind, existing.autoResolveConditions, { allowLegacy: true });
+  }
   try {
     await assertNetworkCheckAssetOwner(merged.kind, shape.condition, existing, executor);
   } catch (error) {
@@ -481,6 +515,17 @@ export async function updateMonitorDefinition(
     throw new MonitorValidationError('deliveryChannelIds required when deliveryMode is channels');
   }
 
+  // The re-arm pair is one setting: moving off after_delay clears the delay, and
+  // the MERGED pair is what must satisfy the rule (the schema cannot see the
+  // stored mode on a delay-only patch; the DB CHECK is the backstop).
+  const rearmMode = input.rearmMode !== undefined ? input.rearmMode : existing.rearmMode;
+  const rearmDelayMinutes = input.rearmDelayMinutes !== undefined
+    ? input.rearmDelayMinutes
+    : rearmMode === 'after_delay' ? existing.rearmDelayMinutes : null;
+  if (!isValidRearmPair({ rearmMode, rearmDelayMinutes })) {
+    throw new MonitorValidationError(REARM_PAIR_MESSAGE);
+  }
+
   return executor.transaction(async (tx) => {
     const [updated] = await tx
       .update(monitorDefinitions)
@@ -491,8 +536,11 @@ export async function updateMonitorDefinition(
         enabled: input.enabled !== undefined ? input.enabled : existing.enabled,
         condition: shape.condition,
         severity: input.severity ?? existing.severity,
-        cooldownMinutes: input.cooldownMinutes ?? existing.cooldownMinutes,
+        // Omitted keeps the stored override; null saves inherit (#10765).
+        cooldownMinutes: input.cooldownMinutes !== undefined ? input.cooldownMinutes : existing.cooldownMinutes,
         autoResolve: input.autoResolve !== undefined ? input.autoResolve : existing.autoResolve,
+        rearmMode,
+        rearmDelayMinutes,
         autoResolveConditions:
           input.autoResolveConditions !== undefined
             ? (input.autoResolveConditions ?? null)

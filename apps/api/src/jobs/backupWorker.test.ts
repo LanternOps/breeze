@@ -46,6 +46,13 @@ vi.mock('./backupRetention', () => ({
 const captureExceptionMock = vi.fn();
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
 
+// #11013: a catch-up dispatch re-resolves the device's backup policy.
+const resolveBackupConfigForDeviceMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/featureConfigResolver', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/featureConfigResolver')>()),
+  resolveBackupConfigForDevice: resolveBackupConfigForDeviceMock,
+}));
+
 const applyBackupCommandResultToJobMock = vi.fn(async () => ({
   applied: true,
   snapshotDbId: null,
@@ -693,6 +700,103 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
     expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
   });
 
+  describe('time budget and resume cursors (#12061)', () => {
+    const okRetention = {
+      deleted: 0, skippedLegalHold: 0, skippedImmutable: 0, prunedByMaxVersions: 0, failed: 0,
+    };
+    const okSweep = {
+      deleted: 0, skippedIdentities: 0, blockedIdentities: 0,
+      retiredSwept: 0, orphansSwept: 0, deferredIdentities: 0, unreachableIdentities: 0,
+    };
+
+    it('walks orgs in id order starting at the retention cursor, wrapping around to the ones before it', async () => {
+      mockDb.selectDistinct.mockReturnValue({
+        from: vi.fn().mockResolvedValue([{ orgId: 'org-c' }, { orgId: 'org-a' }, { orgId: 'org-b' }]),
+      });
+      cleanupExpiredSnapshotsMock.mockResolvedValue(okRetention);
+      sweepUnreferencedBackupObjectsMock.mockResolvedValue(okSweep);
+      const saveCursors = vi.fn();
+
+      await processCleanupExpiredSnapshots({ retentionCursor: 'org-b', saveCursors });
+
+      expect(cleanupExpiredSnapshotsMock.mock.calls.map(([orgId]) => orgId)).toEqual(['org-b', 'org-c', 'org-a']);
+      // Every org ran: the next run starts from the beginning again.
+      expect(saveCursors).toHaveBeenCalledWith({ retention: null, gc: null });
+    });
+
+    it('stops retention between orgs once its deadline passes, records where to resume, and still runs the sweep', async () => {
+      mockDb.selectDistinct.mockReturnValue({
+        from: vi.fn().mockResolvedValue([{ orgId: 'org-a' }, { orgId: 'org-b' }, { orgId: 'org-c' }]),
+      });
+      cleanupExpiredSnapshotsMock.mockResolvedValue(okRetention);
+      sweepUnreferencedBackupObjectsMock.mockResolvedValue({ ...okSweep, resumeCursor: 'gc-next' });
+      const saveCursors = vi.fn();
+      const gcDeadlineMs = Date.now() + 60_000;
+
+      const result = await processCleanupExpiredSnapshots({
+        retentionDeadlineMs: Date.now() - 1,
+        gcDeadlineMs,
+        gcCursor: 'gc-prev',
+        saveCursors,
+      });
+
+      // At least one org always runs, so retention makes progress however small the budget.
+      expect(cleanupExpiredSnapshotsMock.mock.calls.map(([orgId]) => orgId)).toEqual(['org-a']);
+      expect(result.retentionDeferredOrgs).toBe(2);
+      expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledWith({ deadlineMs: gcDeadlineMs, resumeCursor: 'gc-prev' });
+      expect(saveCursors).toHaveBeenCalledWith({ retention: 'org-b', gc: 'gc-next' });
+    });
+
+    it('an org whose retention pass throws does not hold back the orgs after it or the sweep, and fails the run at the end', async () => {
+      mockDb.selectDistinct.mockReturnValue({
+        from: vi.fn().mockResolvedValue([{ orgId: 'org-a' }, { orgId: 'org-b' }]),
+      });
+      cleanupExpiredSnapshotsMock
+        .mockRejectedValueOnce(new Error('candidate query failed'))
+        .mockResolvedValueOnce(okRetention);
+      sweepUnreferencedBackupObjectsMock.mockResolvedValue(okSweep);
+      const saveCursors = vi.fn();
+
+      await expect(processCleanupExpiredSnapshots({ saveCursors })).rejects.toThrow(/retention failed for 1 org/);
+
+      expect(cleanupExpiredSnapshotsMock.mock.calls.map(([orgId]) => orgId)).toEqual(['org-a', 'org-b']);
+      expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
+      expect(saveCursors).toHaveBeenCalledWith({ retention: null, gc: null });
+    });
+
+    it('keeps the previous sweep cursor when the sweep throws', async () => {
+      mockDb.selectDistinct.mockReturnValue({ from: vi.fn().mockResolvedValue([]) });
+      sweepUnreferencedBackupObjectsMock.mockRejectedValue(new Error('listing failed'));
+      const saveCursors = vi.fn();
+
+      await processCleanupExpiredSnapshots({ gcCursor: 'gc-prev', saveCursors });
+
+      expect(saveCursors).toHaveBeenCalledWith({ retention: null, gc: 'gc-prev' });
+    });
+
+    it('saves cursors before failing the job for a per-row delete failure', async () => {
+      mockDb.selectDistinct.mockReturnValue({ from: vi.fn().mockResolvedValue([{ orgId: 'org-a' }]) });
+      cleanupExpiredSnapshotsMock.mockResolvedValue({ ...okRetention, failed: 1 });
+      sweepUnreferencedBackupObjectsMock.mockResolvedValue({ ...okSweep, resumeCursor: 'gc-next' });
+      const saveCursors = vi.fn();
+
+      await expect(processCleanupExpiredSnapshots({ saveCursors })).rejects.toThrow(/1 snapshot row delete/);
+      expect(saveCursors).toHaveBeenCalledWith({ retention: null, gc: 'gc-next' });
+    });
+  });
+
+  it('#12061: a cleanup job left on the shared backup queue completes without running cleanup there', async () => {
+    const result = await __testOnly.processBackupQueueJob({
+      name: 'cleanup-expired-snapshots',
+      data: { type: 'cleanup-expired-snapshots' },
+    } as never);
+
+    expect(result).toEqual({ skipped: 'moved-to-backup-snapshot-cleanup-queue' });
+    expect(mockDb.selectDistinct).not.toHaveBeenCalled();
+    expect(cleanupExpiredSnapshotsMock).not.toHaveBeenCalled();
+    expect(sweepUnreferencedBackupObjectsMock).not.toHaveBeenCalled();
+  });
+
   it('handles cleanup-expired-snapshots OUTSIDE the blanket runWithSystemDbAccess wrap (D18 W01 §3.7)', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
@@ -824,6 +928,8 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
   const updateLog: Array<{ table: unknown; payload: Record<string, unknown> }> = [];
   let helperProtocols: { backupWriteProtocolVersion: number | null; backupIntegrityProtocolVersion: number | null } = REPORTED_OLD_HELPER;
   let jobStatusRows: Array<{ status: string }> = [];
+  let catchUpJobRows: Array<Record<string, unknown>> = [];
+  let catchUpClaimRows: Array<{ id: string }> = [{ id: 'job-1' }];
 
   // Route every db.select() call by the shape of its column-selector argument
   // (all these queries hit different tables/columns, real schema refs — not
@@ -840,6 +946,8 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
         rows = [{ orgId: currentOrgId }];
       } else if (keys[0] === 'agentId') {
         rows = [{ agentId: 'agent-1', ...helperProtocols }]; // device -> agent lookup + reported helper protocols
+      } else if (keys.includes('catchUpUntil')) {
+        rows = catchUpJobRows; // #11013: the row a catch-up dispatch re-validates
       } else if (keys.includes('featureLinkId')) {
         // job mode lookup
         rows = jobRowVisible ? [{ featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } }] : [];
@@ -865,6 +973,11 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
               }),
             }),
           }),
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(rows),
+            }),
+          }),
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue(rows),
             for: vi.fn().mockResolvedValue(rows),
@@ -877,8 +990,12 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
   function wireUpdates() {
     mockDb.update.mockImplementation(((table: unknown) => ({
       set: (payload: Record<string, unknown>) => ({
-        where: async () => {
+        where: () => {
           updateLog.push({ table, payload });
+          // Awaitable as-is, and `.returning()`-able for the conditional writes.
+          const settled = Promise.resolve([]) as Promise<unknown[]> & { returning?: () => Promise<unknown[]> };
+          settled.returning = async () => catchUpClaimRows;
+          return settled;
         },
       }),
     })) as never);
@@ -890,10 +1007,202 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
     helperProtocols = REPORTED_OLD_HELPER;
     configRow = CONFIG_ROW;
     jobStatusRows = [];
+    catchUpJobRows = [];
+    catchUpClaimRows = [{ id: 'job-1' }];
     wireSelects();
     wireUpdates();
+    agentRelayMock.isAgentConnectedAnywhere.mockReset();
     agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
     agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
+  });
+
+  describe('missed-schedule catch-up (#11013)', () => {
+    const hoursFromNow = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString();
+    const pendingCatchUpRow = (overrides: Record<string, unknown> = {}) => ({
+      status: 'pending',
+      catchUpUntil: new Date(Date.now() + 3_600_000),
+      featureLinkId: 'link-1',
+      configId: 'config-1',
+      deviceId: 'device-1',
+      ...overrides,
+    });
+    const currentPolicy = (overrides: Record<string, unknown> = {}) => ({
+      settings: { schedule: { frequency: 'daily', time: '05:00' } },
+      featureLinkId: 'link-1',
+      configId: 'config-1',
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      resolveBackupConfigForDeviceMock.mockReset();
+      resolveBackupConfigForDeviceMock.mockResolvedValue(currentPolicy());
+    });
+
+    describe('a scheduled dispatch that finds the device offline', () => {
+      it('leaves the job pending with catch_up_until instead of failing it', async () => {
+        agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(false);
+        const catchUpUntil = hoursFromNow(20);
+
+        const result = await __testOnly.processDispatchBackup({ ...DATA, catchUpUntil } as any);
+
+        expect(result).toEqual({ dispatched: false });
+        expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+        expect(updateLog.some((u) => u.payload.status === 'failed')).toBe(false);
+        expect(updateLog).toEqual([
+          expect.objectContaining({ payload: expect.objectContaining({ catchUpUntil: new Date(catchUpUntil) }) }),
+        ]);
+      });
+
+      it('stamps the config generation it was queued against, so an edit while waiting still fails closed', async () => {
+        agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(false);
+        configRow = { ...CONFIG_ROW, approvalGeneration: 7 };
+
+        await __testOnly.processDispatchBackup({ ...DATA, configGeneration: 7, catchUpUntil: hoursFromNow(20) } as any);
+
+        expect(updateLog[0]?.payload.catchUpConfigGeneration).toBe(7);
+      });
+
+      it('defers the same way when the device has no agent id at all', async () => {
+        mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
+          const keys = cols ? Object.keys(cols) : [];
+          const rows = keys.length === 0 ? [configRow]
+            : keys[0] === 'agentId' ? [{ agentId: null, ...helperProtocols }]
+            : [];
+          return { from: () => ({ where: () => ({ limit: async () => rows }) }) };
+        }) as never);
+        const catchUpUntil = hoursFromNow(20);
+
+        const result = await __testOnly.processDispatchBackup({ ...DATA, catchUpUntil } as any);
+
+        expect(result).toEqual({ dispatched: false });
+        expect(updateLog.some((u) => u.payload.status === 'failed')).toBe(false);
+        expect(updateLog[0]?.payload.catchUpUntil).toEqual(new Date(catchUpUntil));
+      });
+
+      it('fails with the Missed reason when the window has already closed', async () => {
+        agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(false);
+
+        await __testOnly.processDispatchBackup({ ...DATA, catchUpUntil: hoursFromNow(-1) } as any);
+
+        expect(updateLog.some((u) => u.payload.status === 'failed'
+          && u.payload.errorLog === 'Missed: device was offline for the whole catch-up window')).toBe(true);
+      });
+
+      it('keeps failing immediately when the job carries no window (toggle off, manual)', async () => {
+        agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(false);
+
+        await __testOnly.processDispatchBackup(DATA as any);
+
+        expect(updateLog.some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'Agent not connected')).toBe(true);
+        expect(updateLog.some((u) => 'catchUpUntil' in u.payload)).toBe(false);
+      });
+
+      it('dispatches at once when the agent connected while the row was being stamped', async () => {
+        // A connect whose sweep ran before the stamp committed saw nothing to run.
+        agentRelayMock.isAgentConnectedAnywhere
+          .mockResolvedValueOnce(false)
+          .mockResolvedValueOnce(true);
+
+        const result = await __testOnly.processDispatchBackup({ ...DATA, catchUpUntil: hoursFromNow(20) } as any);
+
+        expect(result).toEqual({ dispatched: true });
+        expect(agentRelayMock.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+        // Claimed like any catch-up run, so neither reaper nor sweep can act on it.
+        expect(updateLog.some((u) => u.payload.catchUpUntil === null)).toBe(true);
+      });
+    });
+
+    describe('a catch-up dispatch queued by the reconnect sweep', () => {
+      const CATCH_UP = { ...DATA, catchUpDispatch: true as const, catchUpUntil: hoursFromNow(3) };
+
+      it('claims the row and sends the backup once the agent is connected', async () => {
+        catchUpJobRows = [pendingCatchUpRow()];
+
+        const result = await __testOnly.processDispatchBackup(CATCH_UP as any);
+
+        expect(result).toEqual({ dispatched: true });
+        expect(agentRelayMock.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+        const claim = updateLog.find((u) => u.payload.catchUpUntil === null);
+        expect(claim?.payload.startedAt).toBeInstanceOf(Date);
+      });
+
+      it('stays deferred when the agent dropped again before the delayed dispatch ran', async () => {
+        catchUpJobRows = [pendingCatchUpRow()];
+        agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(false);
+
+        const result = await __testOnly.processDispatchBackup(CATCH_UP as any);
+
+        expect(result).toEqual({ dispatched: false });
+        expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+        expect(updateLog.some((u) => u.payload.status === 'failed')).toBe(false);
+        expect(updateLog.some((u) => u.payload.catchUpUntil === null)).toBe(false);
+      });
+
+      it('does not send when a second dispatch lost the claim', async () => {
+        catchUpJobRows = [pendingCatchUpRow()];
+        catchUpClaimRows = [];
+
+        const result = await __testOnly.processDispatchBackup(CATCH_UP as any);
+
+        expect(result).toEqual({ dispatched: false });
+        expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['already settled', pendingCatchUpRow({ status: 'failed' })],
+        ['no longer deferred', pendingCatchUpRow({ catchUpUntil: null })],
+      ])('does nothing when the row is %s', async (_label, row) => {
+        catchUpJobRows = [row];
+
+        const result = await __testOnly.processDispatchBackup(CATCH_UP as any);
+
+        expect(result).toEqual({ dispatched: false });
+        expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+        expect(updateLog).toEqual([]);
+      });
+
+      it('honours the toggle being switched off while the job waited', async () => {
+        catchUpJobRows = [pendingCatchUpRow()];
+        resolveBackupConfigForDeviceMock.mockResolvedValue(currentPolicy({
+          settings: { schedule: { frequency: 'daily', time: '05:00', runMissedBackupsOnConnect: false } },
+        }));
+
+        const result = await __testOnly.processDispatchBackup(CATCH_UP as any);
+
+        expect(result).toEqual({ dispatched: false });
+        expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+        expect(updateLog.some((u) => u.payload.status === 'failed'
+          && String(u.payload.errorLog).startsWith('Catch-up cancelled:'))).toBe(true);
+      });
+
+      it.each([
+        ['the link was removed', { featureLinkId: null }, currentPolicy()],
+        ['no policy covers the device any more (deactivated, unassigned)', {}, null],
+        ['another policy now wins for the device', {}, currentPolicy({ featureLinkId: 'link-2' })],
+        ['the policy now points at another destination', {}, currentPolicy({ configId: 'config-2' })],
+        ['the settings row is gone', {}, currentPolicy({ settings: null })],
+      ])('never runs a job whose policy no longer applies: %s', async (_label, rowOverrides, policy) => {
+        catchUpJobRows = [pendingCatchUpRow(rowOverrides)];
+        resolveBackupConfigForDeviceMock.mockResolvedValue(policy);
+
+        await __testOnly.processDispatchBackup(CATCH_UP as any);
+
+        expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+        expect(updateLog.some((u) => u.payload.status === 'failed'
+          && String(u.payload.errorLog).startsWith('Catch-up cancelled:'))).toBe(true);
+      });
+
+      it('waits for the next sweep, not a second queue, while the helper has not reported', async () => {
+        catchUpJobRows = [pendingCatchUpRow()];
+        helperProtocols = UNREPORTED_HELPER;
+
+        const result = await __testOnly.processDispatchBackup(CATCH_UP as any);
+
+        expect(result).toEqual({ dispatched: false });
+        expect(enqueueCapabilityWaitMock).not.toHaveBeenCalled();
+        expect(updateLog).toEqual([]);
+      });
+    });
   });
 
   describe('a device that has not reported its backup helper protocols yet', () => {
@@ -1067,6 +1376,34 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
       expect(result).toEqual({ dispatched: false });
       expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
       expect(enqueueCapabilityWaitMock).toHaveBeenCalledTimes(1);
+      expect(updateLog.some((u) => u.payload.status === 'failed')).toBe(false);
+    });
+
+    it('leaves a catch-up waiting for the sweep, not a second queue, when issuing a session fails transiently (#11013)', async () => {
+      configRow = S3_CONFIG_ROW;
+      helperProtocols = CAPABLE_HELPER;
+      catchUpJobRows = [{
+        status: 'pending',
+        catchUpUntil: new Date(Date.now() + 3_600_000),
+        featureLinkId: 'link-1',
+        configId: 'config-1',
+        deviceId: 'device-1',
+      }];
+      resolveBackupConfigForDeviceMock.mockResolvedValue({
+        settings: { schedule: { frequency: 'daily', time: '05:00' } },
+        featureLinkId: 'link-1',
+        configId: 'config-1',
+      });
+      writeDeliveryMock.broker.mockResolvedValueOnce({ mode: 'retry', reason: 'mint_failed' } as never);
+
+      const result = await __testOnly.processDispatchBackup({
+        ...DATA, catchUpDispatch: true, catchUpUntil: new Date(Date.now() + 3_600_000).toISOString(),
+      } as any);
+
+      expect(result).toEqual({ dispatched: false });
+      expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+      // A queued wait beside the sweep could dispatch the job twice.
+      expect(enqueueCapabilityWaitMock).not.toHaveBeenCalled();
       expect(updateLog.some((u) => u.payload.status === 'failed')).toBe(false);
     });
 

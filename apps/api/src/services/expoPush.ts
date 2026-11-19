@@ -322,7 +322,7 @@ export function buildWispNudgePush(args: {
   deepLink: string;
   approvalIntentId?: string | null;
   /** Non-concern nudges collapse per kind, so a brief and a digest never replace each other. */
-  kind?: 'concern' | 'digest' | 'brief';
+  kind?: 'concern' | 'digest' | 'brief' | 'check_in';
 }): PushSpec {
   const clip = (s: string, n: number) => Array.from(s).slice(0, n).join('');
   const data: Record<string, unknown> = {
@@ -340,10 +340,11 @@ export function buildWispNudgePush(args: {
     ttl: WISP_NUDGE_PUSH_TTL_SECONDS,
     channelId: 'wisp',
     // KEEP THESE SHORT (APNs 64-byte apns-collapse-id cap): uuid inputs give
-    // 41 bytes (`wisp:` + 36), 48 (`wisp:digest:` + 36), 47 (`wisp:brief:` + 36).
+    // 41 bytes (`wisp:` + 36), 48 (`wisp:digest:` + 36), 47 (`wisp:brief:` + 36),
+    // 50 (`wisp:check_in:` + 36).
     collapseId: args.concernId
       ? `wisp:${args.concernId}`
-      : `wisp:${args.kind === 'brief' ? 'brief' : 'digest'}:${args.threadId}`,
+      : `wisp:${args.kind === 'brief' || args.kind === 'check_in' ? args.kind : 'digest'}:${args.threadId}`,
     threadId: `wisp:${args.threadId}`,
     category: 'BREEZE_WISP_NUDGE',
     sound: 'default',

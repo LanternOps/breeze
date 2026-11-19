@@ -3,6 +3,7 @@ import { CheckCircle2, ChevronDown, Loader2, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "../../stores/auth";
 import { i18n } from "@/lib/i18n";
+import { formatTimeAgo } from "@/lib/formatTime";
 import {
   KINDS_BY_PLATFORM,
   platformForKind,
@@ -37,6 +38,16 @@ interface SearchResult extends SelectedPackageMethod {
 const DEBOUNCE_MS = 300;
 const MIN_QUERY = 2;
 
+/** The winget index syncs once a day (wingetIndexSyncWorker, daily cron), so
+ *  anything older than two days means at least one run was missed (e.g. the
+ *  GitHub rate limit made it skip) and results may lag the real winget repo. */
+const INDEX_STALE_MS = 48 * 60 * 60 * 1000;
+
+function isIndexStale(indexUpdatedAt: string): boolean {
+  const t = new Date(indexUpdatedAt).getTime();
+  return Number.isFinite(t) && Date.now() - t > INDEX_STALE_MS;
+}
+
 const KIND_LABEL_KEYS: Record<InstallMethodKind, string> = {
   winget: "policies:software.addPackageModal.kindWinget",
   homebrew_cask: "policies:software.addPackageModal.kindHomebrewCask",
@@ -66,6 +77,7 @@ export default function PackageManagerPicker({
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [degraded, setDegraded] = useState(false);
+  const [indexUpdatedAt, setIndexUpdatedAt] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualKind, setManualKind] = useState<InstallMethodKind>("winget");
@@ -89,6 +101,7 @@ export default function PackageManagerPicker({
     if (q.length < MIN_QUERY) {
       setResults([]);
       setDegraded(false);
+      setIndexUpdatedAt(null);
       setSearchError(null);
       setLoading(false);
       return;
@@ -105,6 +118,7 @@ export default function PackageManagerPicker({
           if (!res.ok) {
             setResults([]);
             setDegraded(false);
+            setIndexUpdatedAt(null);
             setSearchError(
               i18n.t("policies:software.addPackageModal.searchFailed"),
             );
@@ -113,14 +127,19 @@ export default function PackageManagerPicker({
           const body = (await res.json()) as {
             results?: SearchResult[];
             degraded?: boolean;
+            indexUpdatedAt?: string | null;
           } | null;
           if (cancelled) return;
           setResults(Array.isArray(body?.results) ? body!.results! : []);
           setDegraded(body?.degraded === true);
+          setIndexUpdatedAt(
+            typeof body?.indexUpdatedAt === "string" ? body.indexUpdatedAt : null,
+          );
           setSearchError(null);
         } catch {
           if (!cancelled) {
             setResults([]);
+            setIndexUpdatedAt(null);
             setSearchError(
               i18n.t("policies:software.addPackageModal.searchFailed"),
             );
@@ -227,6 +246,24 @@ export default function PackageManagerPicker({
 
         {searchError && (
           <p className="mt-2 text-xs text-destructive">{searchError}</p>
+        )}
+        {platform === "windows" && indexUpdatedAt !== null && !degraded && (
+          <p
+            data-testid="index-freshness"
+            className="mt-2 text-xs text-muted-foreground"
+          >
+            {i18n.t("policies:software.addPackageModal.indexLastUpdated", {
+              when: formatTimeAgo(indexUpdatedAt),
+            })}
+            {isIndexStale(indexUpdatedAt) && (
+              <span
+                data-testid="index-stale"
+                className="ml-1 text-amber-600 dark:text-amber-400"
+              >
+                {i18n.t("policies:software.addPackageModal.indexStale")}
+              </span>
+            )}
+          </p>
         )}
         {degraded && (
           <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">

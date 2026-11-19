@@ -1,0 +1,5 @@
+[
+  { "id": 101, "name": "Synthetic Client A", "client_code": "SYNA", "active": true, "health_status": "TROUBLED", "devices_counters": { "appliance_based": 3, "d2c": 1, "cloud_archive": 0 } },
+  { "id": 102, "name": "Synthetic Client B", "client_code": "SYNB", "active": false, "health_status": "PARKED", "devices_counters": { "appliance_based": 4, "d2c": 1, "cloud_archive": 0 } },
+  { "id": 103, "name": "Synthetic Client C", "client_code": "SYNC", "active": true, "health_status": "NORMAL", "devices_counters": { "appliance_based": 0, "d2c": 0, "cloud_archive": 0 } }
+]

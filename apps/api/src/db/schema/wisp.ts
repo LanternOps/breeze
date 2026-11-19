@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  boolean,
   check,
   foreignKey,
   index,
@@ -65,6 +66,12 @@ export type WispCeilingSnapshot = {
    * later still needs a refresh (Wisp design §4.4). Absent = false.
    */
   partnerWide?: boolean;
+  /**
+   * #10973: the grantor authorized unattended reads on this revision, through a
+   * step-up refresh. Effective only with the live `wisp_grants.unattended_reads`,
+   * so work pinned to an older revision never gains it. Absent = false.
+   */
+  unattendedReads?: boolean;
 };
 
 export type WispFactorProof = { method: string; verifiedAt: string };
@@ -89,6 +96,18 @@ export const wispGrants = pgTable('wisp_grants', {
   floorTickMinutes: integer('floor_tick_minutes').notNull().default(30),
   /** W05 (2027-01-04-110300): the floor-tick cursor the wake scheduler advances (W05b). */
   lastFloorTickAt: timestamp('last_floor_tick_at', { withTimezone: true }),
+  /**
+   * #10973 (2027-01-21-180000): the live half of the unattended-reads switch.
+   * Grantor-only, and true only while the current revision pins it; both enforced
+   * by wisp_grants_update_guard. Read it with the revision flag, never alone.
+   */
+  unattendedReads: boolean('unattended_reads').notNull().default(false),
+  /**
+   * #10390 (2027-01-22-190000): a closed session's summary is also written by the
+   * model. One call per close, charged to this grant's daily budget. Off: the
+   * deterministic digest is the summary. Spend, not authority: no revision pin.
+   */
+  summaryRefine: boolean('summary_refine').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({

@@ -24,6 +24,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import type { OSType } from './DeviceList';
 import PatchInstallHistory from '../patches/PatchInstallHistory';
+import DeviceVendorUpdatesSection from './DeviceVendorUpdatesSection';
 import { widthPercentClass } from '@/lib/utils';
 import { isDateOnly, parseDateOnly } from '@/lib/dateOnly';
 import { formatDateTime as formatDateTimeCentral } from '@/lib/dateTimeFormat';
@@ -396,6 +397,14 @@ function getEffectiveApprovalBadge(
       return { label: t('devicePatchStatusTab.approval.deferredUntil', { date }), className: APPROVAL_BADGE_CLASS.info, title: t('devicePatchStatusTab.approval.deferredUntilTitle', { ring, date }) };
     }
     case 'excluded': {
+      // A vendor lane owns this class here (spec 4.6): no policy blocked it.
+      if (effective.reason === 'managed_by_vendor_updates') {
+        return {
+          label: t('devicePatchStatusTab.approval.managedByVendorUpdates'),
+          className: APPROVAL_BADGE_CLASS.muted,
+          title: t('devicePatchStatusTab.approval.managedByVendorUpdatesTitle'),
+        };
+      }
       const title = effective.reason === 'blocked_by_source'
         ? t('devicePatchStatusTab.approval.excludedSourceTitle')
         : effective.reason === 'blocked_by_app_rule'
@@ -2065,6 +2074,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           </div>
         </div>
       )}
+
+      {/* #11065: the maker's own update tool. Windows only in v1. */}
+      {osType === 'windows' && <DeviceVendorUpdatesSection deviceId={deviceId} />}
 
       <PatchInstallHistory deviceId={deviceId} />
 

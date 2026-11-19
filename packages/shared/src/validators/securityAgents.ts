@@ -10,7 +10,7 @@ import { z } from 'zod';
 // STRICT at both levels, so an `apiKey`/`orgKey` sent by a client or an
 // assistant is rejected instead of persisted into the JSONB mirror.
 
-export const SECURITY_AGENT_VENDOR_KEYS = ['huntress', 'sentinelone', 'controld', 'nextdns'] as const;
+export const SECURITY_AGENT_VENDOR_KEYS = ['huntress', 'sentinelone', 'controld', 'nextdns', 'bitdefender'] as const;
 export type SecurityAgentVendorKey = (typeof SECURITY_AGENT_VENDOR_KEYS)[number];
 
 export const SECURITY_AGENT_PLATFORMS = ['windows', 'macos', 'linux'] as const;

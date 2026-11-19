@@ -6,13 +6,23 @@ import { partnerTrustMode } from '../config/partnerTrustMode';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, partners } from '../db/schema';
 import { classifyIp, type IpClassifyTarget } from '../services/ipClassify';
+import { offlineDataRefreshedAt } from '../services/ipClassifyOffline';
+import { classifierFor, isOfflineBaselineClear } from '../services/ipClassifyOfflineData';
 import { partnerForDevice } from '../services/partnerTrust.repo';
 import { restrictOnHardDeny, tryAutoPromote } from '../services/partnerTrustPromotion';
+import { runBillingFraudFlagSweep } from '../services/partnerTrustFraudFlags';
+import { billingFraudFlagsEnabled } from '../config/env';
+import { IP_CLASSIFY_BACKFILL_JOB, runIpClassifyBackfill, scheduleIpClassifyBackfill } from './ipClassifyBackfill';
 import { jobSchedule } from './scheduleRegistry';
 
 export const IP_CLASSIFY_JOB = 'ip-classify';
 export const PARTNER_TRUST_PROMOTE_JOB = 'partner-trust-promote';
 const PROMOTE_REPEAT_ID = 'partner-trust-promote-repeat';
+/** billing#51: pulls billing fraud flags and restricts the flagged partners. */
+export const PARTNER_TRUST_FRAUD_FLAGS_JOB = 'partner-trust-fraud-flags';
+const FRAUD_FLAGS_REPEAT_ID = 'partner-trust-fraud-flags-repeat';
+// Sub-hourly tick, so `every` rather than a scheduleRegistry cron slot.
+const FRAUD_FLAGS_EVERY_MS = 2 * 60 * 1_000;
 
 /**
  * Minimum gap between signup-IP classification attempts for one partner. The
@@ -26,6 +36,7 @@ type ProbationPartner = {
   signupIp: string | null;
   signupIpClass: string;
   signupIpClassifiedAt: Date | null;
+  signupIpClassSource: string | null;
 };
 
 /**
@@ -37,10 +48,23 @@ type ProbationPartner = {
  * IP_BACKFILL_RETRY_MS. A failed lookup yields `unknown` again (preserved, not
  * upgraded); partners with no recorded signup IP stay blocked for manual
  * review.
+ *
+ * With no keyed provider the offline baseline (#11698) classifies instead.
+ * Its "checked, nothing found" (`unknown` + source `offline`) is left alone
+ * while it is still valid: younger than OFFLINE_CLEAR_MAX_AGE_MS and newer
+ * than the last refresh of the offline data. Otherwise it is re-checked, as
+ * is a partial (Tor-only/stale-data) result or a row classified before the
+ * source was recorded.
  */
 async function backfillSignupIpClass(partner: ProbationPartner): Promise<void> {
-  if (ipClassifyProvider() === 'none') return;
   if (!partner.signupIp || partner.signupIpClass !== 'unknown') return;
+  const classifier = classifierFor(ipClassifyProvider());
+  const classifiedAt = partner.signupIpClassifiedAt;
+  if (isOfflineBaselineClear(partner.signupIpClass, partner.signupIpClassSource, classifier, classifiedAt, new Date())) {
+    const refreshedAt = offlineDataRefreshedAt();
+    const superseded = refreshedAt !== null && classifiedAt !== null && classifiedAt < refreshedAt;
+    if (!superseded) return;
+  }
   const lastAttempt = partner.signupIpClassifiedAt?.getTime();
   if (lastAttempt !== undefined && Date.now() - lastAttempt < IP_BACKFILL_RETRY_MS) return;
 
@@ -51,7 +75,10 @@ async function backfillSignupIpClass(partner: ProbationPartner): Promise<void> {
     // Stamped even when the result is still `unknown`: this column is what
     // bounds the retry cadence above.
     signupIpClassifiedAt: new Date(),
-  }).where(eq(partners.id, partner.id)), 'partnerTrustJobs.backfillSignupIpClass'));
+    signupIpClassSource: classification.provider,
+  // Only while still unknown: the ip-classify job may have written a real
+  // class while this lookup waited on the offline data.
+  }).where(and(eq(partners.id, partner.id), eq(partners.signupIpClass, 'unknown'))), 'partnerTrustJobs.backfillSignupIpClass'));
 }
 
 export async function runPartnerTrustPromote(): Promise<{ processed: number; promoted: number }> {
@@ -65,6 +92,7 @@ export async function runPartnerTrustPromote(): Promise<{ processed: number; pro
         signupIp: partners.signupIp,
         signupIpClass: partners.signupIpClass,
         signupIpClassifiedAt: partners.signupIpClassifiedAt,
+        signupIpClassSource: partners.signupIpClassSource,
       })
       .from(partners)
       .where(cursor
@@ -103,9 +131,18 @@ export async function runPartnerTrustPromote(): Promise<{ processed: number; pro
 export async function processPartnerTrustJob(
   job: { name: string; data: unknown },
 ): Promise<unknown | undefined> {
+  if (job.name === PARTNER_TRUST_FRAUD_FLAGS_JOB) {
+    // The sweep checks its own gates (flag, enforce mode, billing URL) so a
+    // repeatable left over from an earlier configuration is a no-op.
+    return runBillingFraudFlagSweep();
+  }
   if (job.name === PARTNER_TRUST_PROMOTE_JOB) {
     if (partnerTrustMode() === 'off') return { skipped: true };
     return runPartnerTrustPromote();
+  }
+  if (job.name === IP_CLASSIFY_BACKFILL_JOB) {
+    if (partnerTrustMode() === 'off') return { skipped: true };
+    return runIpClassifyBackfill();
   }
   if (job.name !== IP_CLASSIFY_JOB) return undefined;
   if (partnerTrustMode() === 'off') return { skipped: true };
@@ -120,6 +157,7 @@ export async function processPartnerTrustJob(
         signupIpClass: classification.ipClass,
         signupIpAsn: classification.asn,
         signupIpClassifiedAt: classifiedAt,
+        signupIpClassSource: classification.provider,
       }).where(eq(partners.id, target.partnerId));
       return;
     }
@@ -146,8 +184,21 @@ export async function processPartnerTrustJob(
 }
 
 export async function schedulePartnerTrustJobs(queue: Queue): Promise<void> {
-  if (partnerTrustMode() === 'off') return;
   const existing = await queue.getRepeatableJobs();
+  // Billing fraud flags (billing#51): always clear an earlier repeatable so a
+  // region that turns the flag off stops pulling; add it back only when on.
+  for (const job of existing) {
+    if (job.name === PARTNER_TRUST_FRAUD_FLAGS_JOB) await queue.removeRepeatableByKey(job.key);
+  }
+  if (billingFraudFlagsEnabled() && partnerTrustMode() === 'enforce') {
+    await queue.add(PARTNER_TRUST_FRAUD_FLAGS_JOB, {}, {
+      jobId: FRAUD_FLAGS_REPEAT_ID,
+      repeat: { every: FRAUD_FLAGS_EVERY_MS },
+      removeOnComplete: { count: 10 },
+      removeOnFail: { count: 25 },
+    });
+  }
+  if (partnerTrustMode() === 'off') return;
   for (const job of existing) {
     if (job.name === PARTNER_TRUST_PROMOTE_JOB) await queue.removeRepeatableByKey(job.key);
   }
@@ -157,4 +208,11 @@ export async function schedulePartnerTrustJobs(queue: Queue): Promise<void> {
     removeOnComplete: { count: 10 },
     removeOnFail: { count: 25 },
   });
+  try {
+    await scheduleIpClassifyBackfill(queue);
+  } catch (error) {
+    // The backfill is a one-off catch-up; failing to enqueue it must not stop
+    // the worker from booting. The next boot tries again.
+    console.warn('[partnerTrustJobs] could not enqueue the IP-classification backfill', error);
+  }
 }

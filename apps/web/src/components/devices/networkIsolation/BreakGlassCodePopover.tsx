@@ -2,13 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../../stores/auth';
 import { formatDateTime } from '../../../lib/dateTimeFormat';
+import ReleaseTokenTab from './ReleaseTokenTab';
 import '../../../lib/i18n';
 
 interface Codes { current: string; next: string; currentValidUntil: string }
+interface Props { deviceId: string; isolationId: string; generation?: number; releaseTokenAvailable?: boolean; codesDisabled?: boolean }
 
 /** Codes are deliberately fetched only by the explicit, audited view action. */
-export default function BreakGlassCodePopover({ deviceId, isolationId, generation }: { deviceId: string; isolationId: string; generation?: number }) {
+export default function BreakGlassCodePopover({ deviceId, isolationId, generation, releaseTokenAvailable, codesDisabled }: Props) {
   const { t } = useTranslation('devices');
+  const [tab, setTab] = useState<'code' | 'token'>('code');
   const [codes, setCodes] = useState<Codes | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -41,7 +44,14 @@ export default function BreakGlassCodePopover({ deviceId, isolationId, generatio
       if (request.current === currentRequest) setBusy(false);
     }
   }
-  return <div className="relative text-sm">
+  const tokenTab = <ReleaseTokenTab deviceId={deviceId} isolationId={isolationId} generation={generation} />;
+  if (codesDisabled) {
+    return <div className="relative space-y-2 text-sm">
+      <p data-testid="isolation-codes-disabled-note" className="text-xs text-muted-foreground">{t('networkIsolation.codesDisabledNote')}</p>
+      {tokenTab}
+    </div>;
+  }
+  const codeView = <>
     <button type="button" data-testid="isolation-show-code" disabled={busy} aria-expanded={Boolean(codes)} onClick={() => void toggle()} className="rounded-md border px-3 py-1.5 hover:bg-muted disabled:opacity-50">
       {busy ? t('common:states.loading') : t(/* i18n-dynamic */ codes ? 'networkIsolation.hideCode' : 'networkIsolation.showCode')}
     </button>
@@ -53,5 +63,13 @@ export default function BreakGlassCodePopover({ deviceId, isolationId, generatio
       </dl>
       <p className="text-xs text-muted-foreground">{t('networkIsolation.codeValidUntil', { date: formatDateTime(codes.currentValidUntil) })}</p>
     </div>}
+  </>;
+  if (!releaseTokenAvailable) return <div className="relative text-sm">{codeView}</div>;
+  return <div className="relative space-y-2 text-sm">
+    <div role="tablist" className="flex gap-1">
+      <button type="button" role="tab" data-testid="isolation-tab-code" aria-selected={tab === 'code'} onClick={() => setTab('code')} className={`rounded-md border px-3 py-1 text-xs ${tab === 'code' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}>{t('networkIsolation.tabCode')}</button>
+      <button type="button" role="tab" data-testid="isolation-tab-token" aria-selected={tab === 'token'} onClick={() => setTab('token')} className={`rounded-md border px-3 py-1 text-xs ${tab === 'token' ? 'bg-muted font-medium' : 'hover:bg-muted'}`}>{t('networkIsolation.tabToken')}</button>
+    </div>
+    {tab === 'code' ? <div>{codeView}</div> : tokenTab}
   </div>;
 }

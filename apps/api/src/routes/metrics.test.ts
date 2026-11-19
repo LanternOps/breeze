@@ -106,6 +106,7 @@ import {
   metricsRoutes,
   recordAgentHeartbeat,
   recordAgentIngestSubmission,
+  recordEventLogNoiseDropped,
   recordBackupCommandTimeout,
   recordBackupDispatchFailure,
   recordBackupVerificationResult,
@@ -730,6 +731,26 @@ describe('metrics routes', () => {
       { timestamp: '2026-06-18T00:00:00.000Z', cpu: 21, memory: 76 },
     ]);
     expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('normalises the raw fallback bucket to ISO UTC, matching the rollup path (#11284)', async () => {
+    const { db } = await import('../db');
+    const selectMock = vi.mocked(db.select);
+    mockRollupTrendRows(selectMock, []);
+    mockRawTrendRows(selectMock, [
+      { bucket: '2026-06-18 00:00:00', cpu: 21.2, memory: 75.8 },
+      { bucket: '2026-06-19 00:00:00+00', cpu: 30, memory: 40 },
+    ]);
+
+    const res = await app.request('/trends?range=7d', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      { timestamp: '2026-06-18T00:00:00.000Z', cpu: 21, memory: 76 },
+      { timestamp: '2026-06-19T00:00:00.000Z', cpu: 30, memory: 40 },
+    ]);
   });
 
   it('requires scrape token for /scrape endpoint', async () => {
@@ -1417,6 +1438,26 @@ describe('metrics routes', () => {
     ).toBe('breeze_agent_ingest_submissions_total{kind="security_status",outcome="failed"} 1');
   });
 
+  // #11735 — Windows Security noise dropped at event-log ingest is counted by
+  // event id so the effect of the ingest filter stays observable.
+  it('renders event-log noise drops by Windows event id', async () => {
+    recordEventLogNoiseDropped(5038, 40);
+    recordEventLogNoiseDropped(5038, 2);
+    recordEventLogNoiseDropped(5157, 1);
+
+    const body = await (
+      await app.request('/metrics', { headers: { Authorization: 'Bearer token' } })
+    ).text();
+
+    expect(body).toContain('# HELP breeze_agent_eventlog_noise_dropped_total');
+    expect(
+      getMetricLine(body, 'breeze_agent_eventlog_noise_dropped_total', { event_id: '5038' })
+    ).toBe('breeze_agent_eventlog_noise_dropped_total{event_id="5038"} 42');
+    expect(
+      getMetricLine(body, 'breeze_agent_eventlog_noise_dropped_total', { event_id: '5157' })
+    ).toBe('breeze_agent_eventlog_noise_dropped_total{event_id="5157"} 1');
+  });
+
   it('keeps the agent-heartbeat counter usable after a metrics reset', async () => {
     resetMetricsForTesting();
     recordAgentHeartbeat('failed');
@@ -1981,6 +2022,22 @@ describe('backup storage-session and helper-capability metrics', () => {
       { labels: { outcome: 'mismatch' }, value: 1 },
     ]));
     for (const s of series) expect(Object.keys(s.labels)).toEqual(['outcome']);
+  });
+
+  it('counts snapshot file index events by event and outcome (#11026)', async () => {
+    const { recordSnapshotFileIndex } = await import('../services/backupMetrics');
+    recordSnapshotFileIndex('inline_dropped', 'dropped');
+    recordSnapshotFileIndex('hydration', 'complete');
+    recordSnapshotFileIndex('hydration', 'complete');
+    recordSnapshotFileIndex('hydration', 'manifest_missing');
+
+    const series = await seriesOf('breeze_backup_snapshot_file_index_total');
+    expect(series).toEqual(expect.arrayContaining([
+      { labels: { event: 'inline_dropped', outcome: 'dropped' }, value: 1 },
+      { labels: { event: 'hydration', outcome: 'complete' }, value: 2 },
+      { labels: { event: 'hydration', outcome: 'manifest_missing' }, value: 1 },
+    ]));
+    for (const s of series) expect(Object.keys(s.labels).sort()).toEqual(['event', 'outcome']);
   });
 
   it('counts restore integrity expectations by command type, status and reason', async () => {

@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import * as dbModule from '../../db';
+import { db, withDbTransactionIfHeld, withSystemDbAccessContextIsolated } from '../../db';
+import { reportBackupDbFallback } from './dbFallbackReport';
 import { backupJobs as backupJobsTable, devices, recoveryReadiness as recoveryReadinessTable, RESTORABLE_BACKUP_JOB_STATUSES } from '../../db/schema';
 import { publishEvent } from '../../services/eventBus';
 import {
@@ -10,7 +11,8 @@ import {
   upsertRecoveryReadiness
 } from './store';
 import { resolveAllBackupAssignedDevices, type BackupAssignedDevice } from '../../services/featureConfigResolver';
-import { VERIFICATION_TIMEOUT_MS, type BackupVerification, type RecoveryReadiness, type RecoveryRiskFactor } from './types';
+import { type BackupVerification, type RecoveryReadiness, type RecoveryRiskFactor } from './types';
+import { verificationTimeoutMs } from './verificationTimeout';
 // NOTE: Circular import with verificationService is intentional and safe.
 // listBackupVerifications is only called at function invocation time, not at module evaluation.
 import {
@@ -28,11 +30,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MISSING_RESTORE_PROOF_PENALTY = 20;
 
-const { db } = dbModule;
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
-};
 
 const BARE_METAL_FAILED_PENALTY = 10;
 
@@ -54,7 +51,7 @@ async function loadBareMetalEvidenceSafe(
 ): Promise<{ summary: BareMetalEvidenceSummary | null; unavailable: boolean }> {
   if (!isUuid(orgId) || !isUuid(deviceId)) return { summary: null, unavailable: false };
   try {
-    const summary = await loadBareMetalEvidence(orgId, deviceId, now);
+    const summary = await withDbTransactionIfHeld(() => loadBareMetalEvidence(orgId, deviceId, now));
     return { summary: summary.hasEvidence ? summary : null, unavailable: false };
   } catch (error) {
     console.warn(
@@ -121,13 +118,15 @@ async function addMissingAssignedDevicesToReadiness(
   orgId: string,
   rows: RecoveryReadiness[],
   allowedSiteIds?: readonly string[],
+  onDbReadFailure?: () => void,
 ): Promise<RecoveryReadiness[]> {
   let assignedDevices: BackupAssignedDevice[] = [];
 
   try {
-    assignedDevices = await resolveAllBackupAssignedDevices(orgId);
+    assignedDevices = await withDbTransactionIfHeld(() => resolveAllBackupAssignedDevices(orgId));
   } catch (error) {
-    console.error(`[BackupReadiness] Failed to resolve assigned devices for readiness listing:`, error instanceof Error ? error.message : error);
+    reportBackupDbFallback('[BackupReadiness] Failed to resolve assigned devices for readiness listing', error);
+    onDbReadFailure?.();
     return rows;
   }
 
@@ -138,7 +137,7 @@ async function addMissingAssignedDevicesToReadiness(
   if (allowedSiteIds) {
     if (allowedSiteIds.length === 0) return [];
     try {
-      const visible = await runWithSystemDbAccess(() => db
+      const visible = await withSystemDbAccessContextIsolated(() => db
         .select({ id: devices.id })
         .from(devices)
         .where(and(
@@ -152,7 +151,8 @@ async function addMissingAssignedDevicesToReadiness(
       // `rows` is already site-scoped by listRecoveryReadinessFromDb. Returning
       // it unaugmented drops the synthetic assigned-device rows rather than
       // adding ones we could not confirm are visible — no unscoped row escapes.
-      console.warn('[backupVerification] Site-scoped assigned-device lookup failed; skipping synthetic readiness rows:', error);
+      reportBackupDbFallback('[backupVerification] Site-scoped assigned-device lookup failed; skipping synthetic readiness rows', error);
+      onDbReadFailure?.();
       return rows;
     }
   }
@@ -241,7 +241,7 @@ async function getLatestCompletedBackup(
 ): Promise<{ completedAt: Date | string | null } | null> {
   if (supportsDbOrg(orgId) && isUuid(deviceId)) {
     try {
-      const [row] = await runWithSystemDbAccess(() => db
+      const [row] = await withSystemDbAccessContextIsolated(() => db
         .select({ completedAt: backupJobsTable.completedAt })
         .from(backupJobsTable)
         .where(and(
@@ -253,7 +253,7 @@ async function getLatestCompletedBackup(
         .limit(1));
       if (row) return row;
     } catch (error) {
-      console.warn('[backupVerification] DB latest backup lookup failed; falling back to memory:', error);
+      reportBackupDbFallback('[backupVerification] DB latest backup lookup failed; falling back to memory', error);
     }
   }
 
@@ -265,12 +265,16 @@ async function getLatestCompletedBackup(
   return latestBackup ? { completedAt: latestBackup.completedAt ?? null } : null;
 }
 
-async function listRecoveryReadinessFromDb(orgId: string, allowedSiteIds?: readonly string[]): Promise<RecoveryReadiness[] | null> {
+async function listRecoveryReadinessFromDb(
+  orgId: string,
+  allowedSiteIds?: readonly string[],
+  onDbReadFailure?: () => void,
+): Promise<RecoveryReadiness[] | null> {
   if (!supportsDbOrg(orgId)) return null;
   if (allowedSiteIds?.length === 0) return [];
 
   try {
-    const rows = await runWithSystemDbAccess(() => db
+    const rows = await withSystemDbAccessContextIsolated(() => db
       .select()
       .from(recoveryReadinessTable)
       .where(and(
@@ -289,7 +293,8 @@ async function listRecoveryReadinessFromDb(orgId: string, allowedSiteIds?: reado
       riskFactors: row.riskFactors as unknown,
     }));
   } catch (error) {
-    console.warn('[backupVerification] DB readiness read failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB readiness read failed; falling back to memory', error);
+    onDbReadFailure?.();
     if (allowedSiteIds) return [];
     return null;
   }
@@ -301,7 +306,7 @@ export async function getRecoveryReadinessForDevice(
 ): Promise<RecoveryReadiness | null> {
   if (supportsDbOrg(orgId) && isUuid(deviceId)) {
     try {
-      const [row] = await runWithSystemDbAccess(() => db
+      const [row] = await withSystemDbAccessContextIsolated(() => db
         .select()
         .from(recoveryReadinessTable)
         .where(and(
@@ -316,7 +321,7 @@ export async function getRecoveryReadinessForDevice(
         });
       }
     } catch (error) {
-      console.warn('[backupVerification] DB readiness lookup failed; falling back to memory:', error);
+      reportBackupDbFallback('[backupVerification] DB readiness lookup failed; falling back to memory', error);
     }
   }
 
@@ -327,7 +332,7 @@ export async function persistRecoveryReadinessToDb(row: RecoveryReadiness): Prom
   if (!isUuid(row.orgId) || !isUuid(row.deviceId)) return;
 
   try {
-    await runWithSystemDbAccess(() => db.insert(recoveryReadinessTable).values({
+    await withSystemDbAccessContextIsolated(() => db.insert(recoveryReadinessTable).values({
       id: row.id,
       orgId: row.orgId,
       deviceId: row.deviceId,
@@ -347,7 +352,7 @@ export async function persistRecoveryReadinessToDb(row: RecoveryReadiness): Prom
       }
     }));
   } catch (error) {
-    console.warn('[backupVerification] DB readiness write failed; keeping memory record only:', error);
+    reportBackupDbFallback('[backupVerification] DB readiness write failed; keeping memory record only', error);
   }
 }
 
@@ -375,11 +380,15 @@ async function safePublish(
 
 // ---- Public readiness listing ----
 
-export async function listRecoveryReadiness(orgId: string, allowedSiteIds?: readonly string[]): Promise<RecoveryReadiness[]> {
+export async function listRecoveryReadiness(
+  orgId: string,
+  allowedSiteIds?: readonly string[],
+  onDbReadFailure?: () => void,
+): Promise<RecoveryReadiness[]> {
   if (allowedSiteIds?.length === 0) return [];
-  const dbRows = await listRecoveryReadinessFromDb(orgId, allowedSiteIds);
+  const dbRows = await listRecoveryReadinessFromDb(orgId, allowedSiteIds, onDbReadFailure);
   const rows = dbRows ?? (allowedSiteIds ? [] : listRecoveryReadinessFromMemory(orgId));
-  return addMissingAssignedDevicesToReadiness(orgId, rows, allowedSiteIds);
+  return addMissingAssignedDevicesToReadiness(orgId, rows, allowedSiteIds, onDbReadFailure);
 }
 
 // ---- Main readiness computation ----
@@ -388,19 +397,20 @@ export async function recomputeRecoveryReadinessForDevice(
   orgId: string,
   deviceId: string
 ): Promise<RecoveryReadiness> {
-  const [listed, previous] = await Promise.all([
-    listBackupVerifications(orgId, { deviceId, limit: BACKUP_MAX_RECENT_VERIFICATIONS, excludeSimulated: true }),
-    getRecoveryReadinessForDevice(orgId, deviceId)
-  ]);
+  // In sequence: each read is its own savepoint when a context is held, and
+  // savepoints beside each other on one connection fail together (#11203).
+  const listed = await listBackupVerifications(orgId, { deviceId, limit: BACKUP_MAX_RECENT_VERIFICATIONS, excludeSimulated: true });
+  const previous = await getRecoveryReadinessForDevice(orgId, deviceId);
   const previousScore = previous?.readinessScore ?? null;
   const now = Date.now();
   // #7495: a verification that has not finished yet (pending/running) is
   // neutral — it is excluded from the score instead of counting as a failure.
-  // One stuck past VERIFICATION_TIMEOUT_MS is a real failure (the timeout job
-  // will mark it failed; count it here too so a lagging reaper can't hide it).
+  // One stuck past its verificationTimeoutMs (#11813: its command's budget plus
+  // grace) is a real failure (the timeout job will mark it failed; count it
+  // here too so a lagging reaper can't hide it).
   const recent = listed.map((row): BackupVerification => {
     if (row.status !== 'pending' && row.status !== 'running') return row;
-    const stuck = (now - toEpoch(row.startedAt)) > VERIFICATION_TIMEOUT_MS;
+    const stuck = (now - toEpoch(row.startedAt)) > verificationTimeoutMs(row.verificationType);
     return stuck ? { ...row, status: 'failed' } : row;
   }).filter((row) => row.status !== 'pending' && row.status !== 'running');
 
@@ -554,6 +564,8 @@ export async function recomputeRecoveryReadinessForDevice(
 // ---- Health summary ----
 
 export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: readonly string[]): Promise<{
+  /** A database read failed, so the figures below may understate the real state. */
+  readFailed: boolean;
   verification: {
     total: number;
     passedLast24h: number;
@@ -571,16 +583,22 @@ export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: rea
     criticalVerificationFailures: number;
   };
 }> {
-  const [rows, readiness, assignedResult] = await Promise.all([
-    listBackupVerifications(orgId, { excludeSimulated: true, allowedSiteIds }),
-    listRecoveryReadiness(orgId, allowedSiteIds),
-    resolveAllBackupAssignedDevices(orgId)
-      .then((assigned) => ({ assigned, failed: false as const }))
-      .catch((err) => {
-        console.error(`[BackupReadiness] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
-        return { assigned: [] as BackupAssignedDevice[], failed: true as const };
-      })
-  ]);
+  // In sequence: each read is its own savepoint when a context is held, and
+  // savepoints beside each other on one connection fail together (#11203).
+  // Every read below can fall back to an empty list or "not critical", which
+  // would otherwise read as a healthy fleet. The flag lets the verdict say it
+  // does not know, so any fallback that feeds the summary must set it.
+  let readFailed = false;
+  const onDbReadFailure = () => { readFailed = true; };
+  const rows = await listBackupVerifications(orgId, { excludeSimulated: true, allowedSiteIds, onDbReadFailure });
+  const readiness = await listRecoveryReadiness(orgId, allowedSiteIds, onDbReadFailure);
+  const assignedResult = await withDbTransactionIfHeld(() => resolveAllBackupAssignedDevices(orgId))
+    .then((assigned) => ({ assigned, failed: false as const }))
+    .catch((err) => {
+      reportBackupDbFallback('[BackupReadiness] Failed to resolve assigned devices', err);
+      onDbReadFailure();
+      return { assigned: [] as BackupAssignedDevice[], failed: true as const };
+    });
   const now = Date.now();
   const dayAgo = now - DAY_MS;
 
@@ -590,7 +608,7 @@ export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: rea
     if (allowedSiteIds.length === 0) assigned = [];
     else {
       try {
-        const visible = await runWithSystemDbAccess(() => db
+        const visible = await withSystemDbAccessContextIsolated(() => db
           .select({ id: devices.id })
           .from(devices)
           .where(and(
@@ -601,7 +619,8 @@ export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: rea
         const visibleIds = new Set(visible.map((row) => row.id));
         assigned = assigned.filter((device) => visibleIds.has(device.deviceId));
       } catch (error) {
-        console.warn('[BackupReadiness] Site-scoped assigned-device lookup failed closed:', error);
+        reportBackupDbFallback('[BackupReadiness] Site-scoped assigned-device lookup failed closed', error);
+        onDbReadFailure();
         assigned = [];
       }
     }
@@ -617,12 +636,14 @@ export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: rea
   );
   const failedLast24h = last24h.filter((row) => row.status === 'failed');
   const lowReadiness = readiness.filter((row) => row.readinessScore < BACKUP_LOW_READINESS_THRESHOLD);
-  const [criticalFailureFlags, criticalReadinessFlags] = await Promise.all([
-    Promise.all(failedLast24h.map((row) => isCriticalBackupDevice(orgId, row.deviceId))),
-    Promise.all(lowReadiness.map((row) => isCriticalBackupDevice(orgId, row.deviceId))),
-  ]);
-  const criticalFailures = failedLast24h.filter((_row, index) => criticalFailureFlags[index]);
-  const criticalReadinessRisk = lowReadiness.filter((_row, index) => criticalReadinessFlags[index]);
+  const criticalFailures: typeof failedLast24h = [];
+  for (const row of failedLast24h) {
+    if (await isCriticalBackupDevice(orgId, row.deviceId, onDbReadFailure)) criticalFailures.push(row);
+  }
+  const criticalReadinessRisk: typeof lowReadiness = [];
+  for (const row of lowReadiness) {
+    if (await isCriticalBackupDevice(orgId, row.deviceId, onDbReadFailure)) criticalReadinessRisk.push(row);
+  }
 
   const averageScore = readiness.length > 0
     ? Math.round((readiness.reduce((sum, row) => sum + row.readinessScore, 0) / readiness.length) * 10) / 10
@@ -634,6 +655,7 @@ export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: rea
     : 100;
 
   return {
+    readFailed,
     verification: {
       total: rows.length,
       passedLast24h: last24h.filter((row) => row.status === 'passed').length,

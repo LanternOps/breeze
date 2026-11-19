@@ -36,6 +36,7 @@ import {
 import { deviceRestorePointAttempts } from '../../db/schema/deviceRestorePointAttempts';
 import { createAgentWsHandlers } from '../../routes/agentWs';
 import { commandsRoutes } from '../../routes/agents/commands';
+import { ingestRestorePointOutcome } from '../../services/restorePointIngest';
 import { dispatchScriptToDevice } from '../../services/scriptDispatch';
 import { createOrganization, createPartner, createSite } from './db-utils';
 
@@ -289,6 +290,60 @@ describe('restore-point outcome ingest against real Postgres', () => {
       durationMs: 0,
       deviceCommandId: commandId,
     });
+  });
+
+  runDb('HTTP: interrupted (agent restarted before reporting, #9163) terminalises the row and stays terminal', async () => {
+    const t = await seedTenant();
+    const { commandId, requestId } = await stamp(t);
+
+    // The shape the agent's journal recovery synthesizes: the command failed
+    // because the agent restarted; Windows listed a point with this request's
+    // description, so the sequence number is attached.
+    const res = await postHttpResult(t, commandId, {
+      status: 'failed', exitCode: -1, error: 'agent restarted while the command was running',
+      restorePoint: {
+        status: 'interrupted',
+        requestId,
+        sequenceNumber: '42',
+        description: `Breeze: run command [${requestId}]`,
+        message: "the agent restarted before it reported this checkpoint's outcome",
+        attemptedAt: '2026-10-18T00:00:00Z',
+        durationMs: 0,
+      },
+    });
+    expect(res.status).toBe(200);
+    const row = await ledgerRow(requestId);
+    expect(row).toMatchObject({
+      status: 'interrupted',
+      sequenceNumber: 42n,
+      acceptedExistingPoint: false,
+      durationMs: 0,
+      deviceCommandId: commandId,
+    });
+
+    // Terminal and absorbing: a later outcome for the same request (a
+    // duplicate delivery that skipped the command CAS) is discarded.
+    const again = await ingestRestorePointOutcome(
+      { status: 'created', requestId, attemptedAt: '2026-10-18T00:01:00Z', durationMs: 10 },
+      { orgId: t.orgId, deviceId: t.device.id, deviceCommandId: commandId },
+    );
+    expect(again).toEqual({ outcome: 'discarded', reason: 'already_terminal' });
+    expect(await ledgerRow(requestId)).toEqual(row);
+  });
+
+  runDb('the status CHECK accepts interrupted and still rejects an unknown status', async () => {
+    const t = await seedTenant();
+    const { requestId } = await stamp(t);
+    const setStatus = (status: string) =>
+      withSystemDbAccessContext(() =>
+        db.execute(sql`UPDATE device_restore_point_attempts SET status = ${status} WHERE request_id = ${requestId}`),
+      );
+
+    await setStatus('interrupted');
+    expect((await ledgerRow(requestId))?.status).toBe('interrupted');
+    await expect(setStatus('lost'))
+      .rejects.toMatchObject({ cause: { code: '23514', constraint_name: 'device_restore_point_attempts_status_chk' } });
+    expect((await ledgerRow(requestId))?.status).toBe('interrupted');
   });
 
   runDb('HTTP: a legacy unstamped outcome (empty requestId) never fails the command result', async () => {

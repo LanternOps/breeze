@@ -6,7 +6,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, gte, inArray, or, type SQL } from 'drizzle-orm';
 
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { alertCorrelationGroups, alertCorrelationMembers, alertCorrelations, alerts, devices, mlFeedbackEvents } from '../../db/schema';
 import { requirePermission, requireScope, type AuthContext as FullAuthContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -635,10 +635,11 @@ async function reportUnwrittenAlerts(action: 'acknowledge' | 'resolve', unwritte
 
   let visible: Array<{ id: string; status: string }> = [];
   try {
-    visible = await db
+    // Savepoint so a failed re-read rolls back and the request transaction survives (#11203).
+    visible = await withDbTransaction(async () => db
       .select({ id: alerts.id, status: alerts.status })
       .from(alerts)
-      .where(inArray(alerts.id, unwrittenIds));
+      .where(inArray(alerts.id, unwrittenIds)));
   } catch (error) {
     captureException(error instanceof Error ? error : new Error(String(error)));
     return;

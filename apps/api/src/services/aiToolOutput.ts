@@ -37,7 +37,32 @@ type CompactConfig = {
    * cut structured listings mid-JSON at ~2KB with no way to recover (#3093).
    */
   maxStdoutChars: number;
+  /**
+   * #11673: string leaves under these keys get the stdout budget, never less
+   * than LONG_TEXT_MIN_CHARS — set per tool from LONG_TEXT_KEYS_BY_TOOL,
+   * never on a tier itself.
+   */
+  longTextKeys?: ReadonlySet<string>;
 };
+
+/**
+ * #11673: per tool, the keys whose text the model reads to answer and that
+ * end with the conclusion, so the generic 1,500-char leaf cap cuts the part
+ * it needs. `get_ai_agent_run`'s `summary` is a run's report (up to 2,000
+ * chars, runLoop's RUN_SUMMARY_MAX_CHARS) with its next step last.
+ */
+const LONG_TEXT_KEYS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  // #11966: `resultSummary` is a step's result, already compacted and bounded
+  // (STEP_RESULT_MAX_CHARS, mcpActionStatus.ts) under the step's own tool. A
+  // second cut here would drop the part the chat was asked about.
+  get_ai_agent_run: new Set(['summary', 'resultSummary']),
+};
+/**
+ * A long-text key never drops below this, even in the tighter tiers (where
+ * stdout falls to 2,000 / 1,000): a whole run report is the point of reading
+ * the run, so the tiers shrink the trace around it instead.
+ */
+const LONG_TEXT_MIN_CHARS = 2_000;
 
 const DEFAULT_CONFIG: CompactConfig = {
   maxStringChars: 1_500,
@@ -295,8 +320,13 @@ function compactValue(
 
   if (typeof value === 'string') {
     // stdout carries the command output the model asked for — give it the
-    // dedicated (larger) budget instead of the generic leaf cap (#3093).
-    const maxChars = keyHint === 'stdout' ? config.maxStdoutChars : config.maxStringChars;
+    // dedicated (larger) budget instead of the generic leaf cap (#3093), and
+    // so does a tool's registered long-text key (#11673).
+    const maxChars = keyHint === 'stdout'
+      ? config.maxStdoutChars
+      : config.longTextKeys?.has(keyHint) === true
+        ? Math.max(config.maxStdoutChars, LONG_TEXT_MIN_CHARS)
+        : config.maxStringChars;
     return truncateText(value, maxChars, stats);
   }
 
@@ -1070,6 +1100,24 @@ function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>;
  * external vendor feed, or portal/email submission.
  */
 export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  // Full-control W18 PR B (#6789): portal text is typed by MSP staff and shown to customers; recipient names and
+  // emails are contacts. None becomes instructions.
+  manage_org_portal_settings: new Set(['welcomeMessage', 'footerText', 'customCss', 'supportEmail', 'supportPhone', 'logoUrl', 'partnerInvoiceFooter', 'partnerLogoUrl']),
+  manage_report_recipients: new Set(['name', 'email']),
+  // Full-control W16 PR A (#6786): the service name is the model's (and so a prompt's) text, echoed back; an
+  // admission refusal's sentence, returned as `error`, can quote it.
+  create_operator_task: new Set(['serviceName', 'error']),
+  // Full-control W16 PR B (#6786): a design's labels, names and refs were written by a model from device evidence, and
+  // hostnames by devices; none becomes instructions, and neither does a stored ledger error.
+  manage_fleet_designs: new Set(['label', 'groupName', 'policyName', 'name', 'itemName', 'hostname', 'itemRef', 'functionKey', 'error']),
+  // Full-control W18 PR A (#6789): names and emails are typed by people (contacts, portal invitees, staff), role
+  // names and descriptions by tenant admins, external-link labels by integrations. None becomes instructions.
+  get_org_summary: new Set(['name', 'email', 'phone', 'siteName']),
+  get_account_readiness: new Set(['name', 'email', 'phone', 'mobile', 'label', 'provider']),
+  list_portal_users: new Set(['name', 'email']),
+  list_users: new Set(['name', 'email', 'roleName']),
+  get_user: new Set(['name', 'email', 'roleName']),
+  list_roles: new Set(['name', 'description', 'roleName', 'parentRoleName', 'sourceRoleName', 'email']),
   // W15: vendor/person text never becomes instructions (including provisioned field values).
   get_pax8_status: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'name', 'pax8CompanyName', 'mappedOrgName', 'lastSyncError', 'error']),
   search_pax8_products: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'productName', 'vendorName', 'catalogName', 'catalogDescription', 'label', 'description', 'possibleValues', 'error']),
@@ -1112,6 +1160,17 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_fleet_health: new Set(['label', 'detail']),
   // Anomaly rows carry metric names and free-form baseline/evidence JSON from the agent's collectors.
   manage_device_anomalies: new Set(['metricName', 'evidence', 'baselineSummary']),
+  // Full-control W17 (#6788): a verification reason and a VSS writer's name, state and error come from the machine;
+  // an unparseable agent reply is shown raw, and `error` can carry a hostname or a failed command's text. All are
+  // fenced as data, never instructions.
+  manage_backup_verification: new Set(['deviceName', 'reason', 'message', 'error']),
+  get_vss_status: new Set(['name', 'state', 'lastError', 'raw', 'error']),
+  // A C2C config's name and target addresses are typed by a person or filled from a mailbox directory.
+  manage_c2c_configs: new Set(['name', 'targetUsers']),
+  // A recovery console reports these, and the columns accept any JSON (`bmrProgressSchema`).
+  list_bmr_recoveries: new Set(['failureReason', 'warnings', 'error']),
+  // Device, computer and customer names, and a provider's label, come from agents and vendors.
+  get_backup_health: new Set(['name', 'computerName', 'orgName', 'providerLabel']),
   // Full-control W08 (#6778). Node labels, roles, vendor / model / OS strings and frontier labels are collected
   // from the network (LLDP / CDP / SNMP / controller strings) or typed by an operator; manual notes and
   // template / policy / target names are operator-authored. They pass sanitizeTopologyAiText where projected and
@@ -1254,7 +1313,9 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_script_execution_history: new Set(['stdout', 'stderr', 'errorMessage']),
   // A captured large result is read back window by window: without this the
   // artifact handle would be an unfenced route to the same device bytes.
-  read_artifact: new Set(['text']),
+  // #11845: `name` too, since an analysis run's output file is named by the
+  // model in the sandbox.
+  read_artifact: new Set(['text', 'name']),
   // ── Other device-reported text (#8852 W04) ─────────────────────────────
   // Every remaining tool in a command-dispatching aiTools*.ts file that
   // returns endpoint-authored strings (paths, names, OS error text, raw OS
@@ -1291,6 +1352,9 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   browse_snapshots: new Set(['label', 'metadata']),
   restore_snapshot: new Set(['selectedPaths']),
   trigger_backup: new Set(['errorLog']),
+  // #11768: the terminal line of a failed job's errorLog, written by the agent.
+  query_backups: new Set(['failureSummary']),
+  get_backup_status: new Set(['failureSummary']),
   list_network_assets: new Set(['hostname', 'label', 'manufacturer', 'model']),
   get_network_asset: new Set(['hostname', 'label', 'manufacturer', 'model']),
   get_ip_history: new Set(['hostname', 'interfaceName']),
@@ -1485,8 +1549,10 @@ export function compactToolResultForChat(
   // gone) and leave `stdoutTruncation` stale. Recomputing from the sanitized
   // payload keeps the marker and counters accurate for whichever tier ships.
   const baseStats: CompactStats = { ...stats };
+  const longTextKeys = Object.hasOwn(LONG_TEXT_KEYS_BY_TOOL, toolName) ? LONG_TEXT_KEYS_BY_TOOL[toolName] : undefined;
   let serialized = '';
-  for (const tier of COMPACTION_TIERS) {
+  for (const baseTier of COMPACTION_TIERS) {
+    const tier: CompactConfig = longTextKeys ? { ...baseTier, longTextKeys } : baseTier;
     const tierStats: CompactStats = { ...baseStats };
     const toolSpecific = applyToolSpecificCompaction(toolName, sanitized, tierStats, tier);
     const compacted = compactValue(toolSpecific, tierStats, tier);

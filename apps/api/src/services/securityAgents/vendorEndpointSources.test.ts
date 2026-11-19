@@ -22,6 +22,7 @@ vi.mock('../../db', () => ({
 }));
 
 import { classifyOrgCoverage, type DeviceCoverageInput, type VendorEndpointView } from './coverageReconciler';
+import { listVendors } from './securityAgentVendors';
 import {
   getVendorEndpointSource,
   sentinelOneEndpointSource,
@@ -48,6 +49,84 @@ function queueS1(opts: {
 beforeEach(() => {
   queued.length = 0;
   selectCalls.length = 0;
+});
+
+describe('edr_endpoints source for framework vendors (#8170)', () => {
+  const TENANT = '00000000-0000-4000-8000-0000000000f1';
+  const OTHER_TENANT = '00000000-0000-4000-8000-0000000000f2';
+  const live = (over: Record<string, unknown> = {}) => ({ id: TENANT, lastInventorySyncAt: fresh(), connectionActive: true, connectionStatus: 'connected', ...over });
+  const endpoint = (over: Record<string, unknown> = {}) => ({ id: 'ep-1', orgId: ORG, deviceId: null, hostname: 'PC-1', online: true, ...over });
+  const source = () => getVendorEndpointSource('bitdefender')!;
+  const queueEdr = (opts: { org?: Array<{ partnerId: string | null }>; tenants?: unknown[]; endpoints?: unknown[] }) => {
+    queued.push(opts.org ?? [{ partnerId: PARTNER }]);
+    queued.push(opts.tenants ?? [live()]);
+    queued.push(opts.endpoints ?? []);
+  };
+
+  it('every framework vendor has a source; it claims no vendor-side org, so mismatched_org is never produced', () => {
+    for (const vendor of listVendors().filter((entry) => entry.orgSource === 'edr_framework')) {
+      const entry = getVendorEndpointSource(vendor.key);
+      expect(entry?.vendor).toBe(vendor.key);
+      expect(entry?.reportsVendorOrg).toBe(false);
+    }
+  });
+
+  it('maps rows: linked, unlinked and offline', async () => {
+    queueEdr({ endpoints: [endpoint({ deviceId: 'dev-1' }), endpoint({ id: 'ep-2', hostname: 'PC-2', online: false }), endpoint({ id: 'ep-3', online: null })] });
+    await expect(source().listForOrg(ORG)).resolves.toEqual([
+      { endpointId: 'ep-1', orgId: ORG, deviceId: 'dev-1', hostname: 'PC-1', online: true },
+      { endpointId: 'ep-2', orgId: ORG, deviceId: null, hostname: 'PC-2', online: false },
+      { endpointId: 'ep-3', orgId: ORG, deviceId: null, hostname: 'PC-1', online: null },
+    ]);
+  });
+
+  it('a fresh sync with no endpoints is an empty view, not unavailable', async () => {
+    queueEdr({ endpoints: [] });
+    await expect(source().listForOrg(ORG)).resolves.toEqual([]);
+  });
+
+  it.each([
+    ['the org has no partner', { org: [{ partnerId: null }] }],
+    ['the org has no mapped tenant', { tenants: [] }],
+    ['a tenant was never synced', { tenants: [live({ lastInventorySyncAt: null })] }],
+    ['a tenant is stale', { tenants: [live({ lastInventorySyncAt: new Date(Date.now() - VENDOR_VIEW_STALE_MS - 1000) })] }],
+    ['the connection is inactive', { tenants: [live({ connectionActive: false })] }],
+    ['the connection needs reauth', { tenants: [live({ connectionStatus: 'reauth_required' })] }],
+    ['one of two tenants is stale', { tenants: [live(), live({ id: OTHER_TENANT, lastInventorySyncAt: null })] }],
+  ])('unavailable (null), never empty, when %s', async (_name, opts) => {
+    queueEdr({ ...opts, endpoints: [endpoint()] });
+    await expect(source().listForOrg(ORG)).resolves.toBeNull();
+    // Stops at the failed check: no endpoint read.
+    expect(selectCalls.length).toBeLessThanOrEqual(2);
+  });
+
+  it("reads only: three selects and nothing else, in the caller's context", async () => {
+    queueEdr({});
+    await source().listForOrg(ORG);
+    expect(selectCalls).toHaveLength(3);
+  });
+
+  it('through the reconciler: linked is covered, offline is vendor_offline, unlinked is vendor_only', async () => {
+    queueEdr({ endpoints: [
+      endpoint({ id: 'ep-linked', deviceId: 'dev-1', hostname: 'one' }),
+      endpoint({ id: 'ep-off', deviceId: 'dev-2', hostname: 'two', online: false }),
+      endpoint({ id: 'ep-free', hostname: 'stranger' }),
+    ] });
+    const endpoints = (await source().listForOrg(ORG))!;
+    const device = (deviceId: string, hostname: string): DeviceCoverageInput => ({
+      deviceId, orgId: ORG, hostnames: [hostname], install: 'installed', installRemediationStatus: null, installArmed: true,
+    });
+    const result = classifyOrgCoverage({
+      orgId: ORG,
+      reportsVendorOrg: source().reportsVendorOrg,
+      devices: [device('dev-1', 'one'), device('dev-2', 'two')],
+      endpoints,
+      knownDeviceHostnames: new Set(),
+    });
+    expect(result.decisions.get('dev-1')?.state).toBe('covered');
+    expect(result.decisions.get('dev-2')?.state).toBe('vendor_offline');
+    expect(result.vendorOnly.map((entry) => entry.endpointId)).toEqual(['ep-free']);
+  });
 });
 
 describe('vendor endpoint source registry (#6960 W04)', () => {

@@ -13,6 +13,10 @@
  * The `/common/adminconsent` endpoint is deliberately gone: it stops on the
  * AADSTS50097 device-authentication interrupt and returns an unauthenticated
  * tenant hint.
+ *
+ * The customer portal's "Sign in with Microsoft" (portal registration W4)
+ * reuses buildMicrosoftIdentityAuthorizationUrl through
+ * services/portalOidc/entraClient.ts, passing its own `scope`.
  */
 
 /** Canonical lower-case GUID only — Entra tenant/client ids as Breeze stores them. */
@@ -35,6 +39,12 @@ export interface IdentityAuthorizationUrlInput extends CallbackTarget {
   authority: MicrosoftIdentityAuthority;
   nonce: string;
   codeChallenge: string;
+  /**
+   * Space-delimited scopes. Default `'openid profile'` (the M365 consent
+   * profiles). The customer portal's Entra sign-in passes its own
+   * (`services/portalOidc/entraClient.ts`).
+   */
+  scope?: string;
 }
 
 export interface TenantAdminConsentUrlInput extends CallbackTarget {
@@ -53,6 +63,13 @@ function requireAuthority(value: string): string {
 
 function requireOpaque(value: string): string {
   if (!value || value.length > 256 || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error('m365_authorization_invalid');
+  }
+  return value;
+}
+
+function requireScope(value: string): string {
+  if (!value.trim() || value.length > 512 || /[\u0000-\u001f\u007f]/.test(value)) {
     throw new Error('m365_authorization_invalid');
   }
   return value;
@@ -86,7 +103,7 @@ export function buildMicrosoftIdentityAuthorizationUrl(
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('redirect_uri', requireRedirectUri(input.redirectUri, input.expectedCallbackPath));
   url.searchParams.set('response_mode', 'query');
-  url.searchParams.set('scope', 'openid profile');
+  url.searchParams.set('scope', requireScope(input.scope ?? 'openid profile'));
   url.searchParams.set('state', requireOpaque(input.state));
   url.searchParams.set('nonce', requireOpaque(input.nonce));
   url.searchParams.set('code_challenge', requireOpaque(input.codeChallenge));

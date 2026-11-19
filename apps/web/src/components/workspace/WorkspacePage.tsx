@@ -4,6 +4,7 @@ import { usePermissions } from '@/lib/permissions';
 import { useHashState } from '@/lib/useHashState';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useAiStore } from '@/stores/aiStore';
+import { useOrgStore } from '@/stores/orgStore';
 import { abortHandoff, completeHandoff, takeHandoff } from '@/stores/aiConversationHandoff';
 import AccessDenied from '../shared/AccessDenied';
 import { showToast } from '../shared/Toast';
@@ -150,7 +151,10 @@ export default function WorkspacePage() {
     renameTab,
     restoreWorkspace,
     cleanupAllStreams,
+    checkWispGrant,
+    wispGrantAvailable,
   } = useWorkspaceStore();
+  const selectedOrgId = useOrgStore((s) => s.currentOrgId);
 
   // #6498: every /ai/sessions route this page drives requires ai_sessions:use
   // (#6396). Without it the composer rendered fine and only failed on send with
@@ -178,6 +182,14 @@ export default function WorkspacePage() {
     void restoreWorkspace();
     return () => cleanupAllStreams();
   }, [canUseAi, restoreWorkspace, cleanupAllStreams]);
+
+  // #10289: the "+" menu offers a plain chat only beside an active grant. Tabs
+  // that already have a session never look, so ask here, and again on an org
+  // switch (grants are per org, then partner-wide).
+  useEffect(() => {
+    if (!canUseAi) return;
+    void checkWispGrant();
+  }, [canUseAi, checkWispGrant, selectedOrgId]);
 
   // Keyboard shortcuts — not bound without the permission, so Cmd+Shift+N
   // cannot open a tab that would 403 on the first request.
@@ -236,6 +248,8 @@ export default function WorkspacePage() {
             onCloseTab={closeTab}
             onRenameTab={(tabId, title) => void renameTab(tabId, title)}
             onNewTab={() => createTab()}
+            onNewPlainTab={() => createTab(undefined, undefined, { plain: true })}
+            wispGrantActive={wispGrantAvailable}
             onOpenPast={openPicker}
             onContinueInPanel={continueInPanel}
           />

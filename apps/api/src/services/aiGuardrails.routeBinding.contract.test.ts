@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { PERMISSION_GRANTS } from '@breeze/shared';
-import { requiredPermissionsForTool } from './aiGuardrails';
+import { checkGuardrails, requiredPermissionsForTool } from './aiGuardrails';
+import { isMfaGatedToolAction } from './aiToolMfaGate';
+import './aiTools'; // populates the registry checkGuardrails reads tiers from
 import { SERVICES_DIR, blankComments, matchClose } from './__testutils__/aiToolScopeScan';
 
 /**
@@ -275,6 +277,102 @@ const BINDINGS: readonly Binding[] = [
     tool: 'get_fleet_design', routeFile: 'fleetDesign.ts', method: 'get', path: '/:reportRunId',
     toolOnly: { extra: [], reason: 'Refuses site- and device-restricted sessions, and returns counts plus the design markdown, not the stored outcome with script bodies.' },
   },
+  // Full-control W18 PR A (#6789): org admin and identity reads bind to the route a technician uses for the same read.
+  // The router-level gates (full partner membership for users.ts, canManagePartnerWidePolicies for roles.ts) are not
+  // permissions; they moved into the shared operations both doors call.
+  {
+    tool: 'get_org_summary', routeFile: 'orgSummary.ts', method: 'get', path: '/organizations/:id/summary',
+    toolOnly: { extra: [], reason: 'Same per-section grants from the live permission set; additionally refuses device-bound sessions, and organization scope as the route does.' },
+  },
+  {
+    tool: 'get_account_readiness', routeFile: 'orgAccountReadiness.ts', method: 'get', path: '/account-readiness',
+    toolOnly: { extra: [], reason: 'Caps a call at 50 orgs (route: 200) with a first-50-by-name default; refuses device-bound sessions and a foreign partnerId instead of ignoring it.' },
+  },
+  { tool: 'get_audit_retention', routeFile: 'orgAuditRetentionSettings.ts', method: 'get', path: '/organizations/:id/audit-retention' },
+  {
+    tool: 'list_portal_users', routeFile: 'orgPortalUsers.ts', method: 'get', path: '/organizations/:id/portal-users',
+    toolOnly: { extra: [], reason: 'Capped at 100 rows with truncated; refuses device-bound sessions.' },
+  },
+  {
+    tool: 'list_users', routeFile: 'users.ts', method: 'get', path: '/',
+    toolOnly: { extra: [], reason: 'Same full-partner-membership gate as the router; capped at 200 rows and refused to device-bound sessions.' },
+  },
+  {
+    tool: 'get_user', routeFile: 'users.ts', method: 'get', path: '/:id',
+    toolOnly: { extra: [], reason: 'Same full-partner-membership gate as the router; refused to device-bound sessions.' },
+  },
+  { tool: 'list_roles', action: 'list', routeFile: 'roles.ts', method: 'get', path: '/' },
+  { tool: 'list_roles', action: 'get', routeFile: 'roles.ts', method: 'get', path: '/:id' },
+  { tool: 'list_roles', action: 'users', routeFile: 'roles.ts', method: 'get', path: '/:id/users' },
+  { tool: 'list_roles', action: 'effective_permissions', routeFile: 'roles.ts', method: 'get', path: '/:id/effective-permissions' },
+  // Full-control W18 PR B (#6789): both portal writes bind to the one PATCH; the recipient writers to their routes, with
+  // Decision 5's export grant declared on add and convert.
+  { tool: 'manage_org_portal_settings', action: 'get', routeFile: 'orgPortalSettings.ts', method: 'get', path: '/organizations/:id/portal-settings' },
+  {
+    tool: 'manage_org_portal_settings', action: 'update', routeFile: 'orgPortalSettings.ts', method: 'patch', path: '/organizations/:id/portal-settings',
+    toolOnly: { extra: [], reason: 'Never writes customCss or a sensitive or permission flag, and refuses a parent enable that would activate a dormant sensitive child (row-locked).' },
+  },
+  {
+    tool: 'manage_org_portal_settings', action: 'set_sensitive_access', routeFile: 'orgPortalSettings.ts', method: 'patch', path: '/organizations/:id/portal-settings',
+    toolOnly: { extra: [], reason: 'Only the sensitive, permission and parent flags; four-eyes with a mandatory effect digest over the current flag values.' },
+  },
+  { tool: 'manage_report_recipients', action: 'list', routeFile: 'reports/recipients.ts', method: 'get', path: '/:id/recipients' },
+  {
+    tool: 'manage_report_recipients', action: 'add', routeFile: 'reports/recipients.ts', method: 'post', path: '/:id/recipients',
+    toolOnly: { extra: ['reports:export'], reason: 'Decision 5: every add is a scheduled delivery of report data by email, so the export grant and MFA apply to all of them (REST: series children only).' },
+  },
+  { tool: 'manage_report_recipients', action: 'remove', routeFile: 'reports/recipients.ts', method: 'delete', path: '/:id/recipients/:contactId' },
+  {
+    tool: 'manage_report_recipients', action: 'convert', routeFile: 'reports/recipients.ts', method: 'post', path: '/:id/recipients/convert',
+    toolOnly: { extra: ['reports:export'], reason: "Decision 5: export grant always, and only an address already in the report's emailRecipients converts, so convert never adds a delivery." },
+  },
+  // Full-control W16 PR A (#6786): each launch binds to its "Run now" route (same permission and MFA).
+  {
+    tool: 'run_patch_plan', routeFile: 'patchPlan.ts', method: 'post', path: '/runs',
+    toolOnly: { extra: [], reason: 'Decision 6: refuses site- and device-restricted sessions, which could not read a device-less run; a release keys the run on its action intent.' },
+  },
+  // Full-control W16 PR B (#6786): each action binds to the route a technician uses for the same act. scripts:write and
+  // contracts:write are conditional on the input, on REST as well, so the handler enforces them.
+  {
+    tool: 'manage_ai_agent_schedules', action: 'create', routeFile: 'aiAgentSchedules.ts', method: 'post', path: '/',
+    toolOnly: { extra: [], reason: 'Decision 3: takes no actMode, so it can never arm. Restricted sessions are refused on any scope.' },
+  },
+  {
+    tool: 'manage_ai_agent_schedules', action: 'update', routeFile: 'aiAgentSchedules.ts', method: 'patch', path: '/:id',
+    toolOnly: { extra: [], reason: 'Decision 3: actMode may only be false, and on an armed schedule a change that widens it or moves its cadence is refused.' },
+  },
+  {
+    tool: 'manage_ai_agent_schedules', action: 'delete', routeFile: 'aiAgentSchedules.ts', method: 'delete', path: '/:id',
+    toolOnly: { extra: [], reason: 'Four-eyes with a digest over the row and its overrides; deleting an override that narrows an armed baseline is refused (Decision 3).' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'run', routeFile: 'fleetDesign.ts', method: 'post', path: '/runs',
+    toolOnly: { extra: [], reason: 'Decision 6: refuses site- and device-restricted sessions; a release keys the run on its action intent.' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'preview', routeFile: 'fleetDesign.ts', method: 'post', path: '/:reportRunId/apply/preview',
+    toolOnly: { extra: [], reason: 'Same gates as the route: scripts:write when automation is non-empty, and a restricted session is refused.' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'applied', routeFile: 'fleetDesign.ts', method: 'get', path: '/:reportRunId/applied',
+    toolOnly: { extra: [], reason: 'Decision 6: refuses site- and device-restricted sessions (stricter than REST).' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'apply', routeFile: 'fleetDesign.ts', method: 'post', path: '/:reportRunId/apply',
+    toolOnly: { extra: [], reason: 'Four-eyes: runs only as a release carrying the verified digest, re-derived under the report-run lock. scripts:write when automation is non-empty, as the route.' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'rollback', routeFile: 'fleetDesign.ts', method: 'post', path: '/:reportRunId/rollback',
+    toolOnly: { extra: [], reason: 'Four-eyes (Decision 5): runs only as a release carrying the verified digest, re-derived under the report-run lock. Passes the live scripts:write, as the route.' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'document', routeFile: 'fleetDesign.ts', method: 'post', path: '/:reportRunId/document',
+    toolOnly: { extra: [], reason: 'Decision 6: refuses restricted sessions. Links deliverable evidence only with contracts:write, passed explicitly, as the route.' },
+  },
+  {
+    tool: 'create_operator_task', routeFile: 'aiOperatorTasks.ts', method: 'post', path: '/tasks',
+    toolOnly: { extra: [], reason: 'Decision 4: service_recovery only (no recipeKey input, so no identity recipe); runs only as the release of its own approved intent, which is the idempotency key; a named alert must be on the device.' },
+  },
   // Full-control W11 (#6781): the security policy tools bind to the route a technician uses for the same act.
   {
     tool: 'get_security_compliance', routeFile: 'security/dashboard.ts', method: 'get', path: '/dashboard',
@@ -464,7 +562,7 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'manage_billing_settings', action: 'get_org', routeFile: 'orgs.ts', method: 'get', path: '/organizations/:id', toolOnly: { extra: [], reason: 'An explicit billing-settings projection of the same org row; refused to device-bound sessions.' } },
   { tool: 'manage_billing_settings', action: 'currency_impact', routeFile: 'invoices/settings.ts', method: 'get', path: '/orgs/:orgId/billing-settings/currency-impact' },
   { tool: 'manage_billing_settings', action: 'update_partner', routeFile: 'invoices/settings.ts', method: 'patch', path: '/partner/billing-settings', toolOnly: { extra: [], reason: 'Never carries the agreement-reminder keys (W14-D4), so the conditional agreements:send gate never applies.' } },
-  { tool: 'manage_billing_settings', action: 'update_org', routeFile: 'invoices/settings.ts', method: 'patch', path: '/orgs/:orgId/billing-settings', toolOnly: { extra: [], reason: 'Never carries billingProfileId or a currency change (W14-D4); refused to device-bound sessions.' } },
+  { tool: 'manage_billing_settings', action: 'update_org', routeFile: 'invoices/settings.ts', method: 'patch', path: '/orgs/:orgId/billing-settings', toolOnly: { extra: [], reason: 'Never carries billingProfileId or a currency change (W14-D4); refused to device-bound sessions. The route\'s conditional billing:manage gate on a contact field is mirrored by inputConditionalExtraPermissions and pinned in aiGuardrails.test.ts.' } },
   { tool: 'manage_contract_templates', action: 'list', routeFile: 'contracts/templates.ts', method: 'get', path: '/', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'No version body; refused to device-bound sessions (W14-D6/D8).' } },
   { tool: 'manage_contract_templates', action: 'get', routeFile: 'contracts/templates.ts', method: 'get', path: '/:id', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Versions without body or bytes (W14-D6).' } },
   { tool: 'manage_contract_templates', action: 'get_version', routeFile: 'contracts/templates.ts', method: 'get', path: '/:id/versions/:versionId', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Body clipped; never the uploaded bytes (W14-D6).' } },
@@ -536,7 +634,7 @@ const BINDINGS: readonly Binding[] = [
   // §2.5 — the vault cluster: reads are organizations:read, configure WRITES.
   { tool: 'query_vaults', routeFile: 'backup/vault.ts', method: 'get', path: '/' },
   { tool: 'get_vault_status', routeFile: 'backup/vault.ts', method: 'get', path: '/:id/status' },
-  { tool: 'configure_vault', routeFile: 'backup/vault.ts', method: 'post', path: '/' },
+  { tool: 'configure_vault', action: 'create', routeFile: 'backup/vault.ts', method: 'post', path: '/' },
 
   // Restore tools and DR plan management/execution.
   { tool: 'restore_snapshot', routeFile: 'backup/restore.ts', method: 'post', path: '/restore' },
@@ -623,9 +721,10 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'manage_scheduled_tasks', action: 'list', routeFile: 'systemTools/scheduledTasks.ts', method: 'get', path: '/devices/:deviceId/tasks', parents: ['systemTools/index.ts'] },
   { tool: 'manage_services', action: 'list', routeFile: 'systemTools/services.ts', method: 'get', path: '/devices/:deviceId/services', parents: ['systemTools/index.ts'] },
   { tool: 'file_operations', action: 'list', routeFile: 'systemTools/fileBrowser.ts', method: 'get', path: '/devices/:deviceId/files', parents: ['systemTools/index.ts'] },
-  // Upload and move also carry scripts:execute (fileBrowser.ts requireScriptsExecute).
+  // Upload, move and mkdir also carry scripts:execute (fileBrowser.ts requireScriptsExecute).
   { tool: 'file_operations', action: 'write', routeFile: 'systemTools/fileBrowser.ts', method: 'post', path: '/devices/:deviceId/files/upload', parents: ['systemTools/index.ts'] },
   { tool: 'file_operations', action: 'rename', routeFile: 'systemTools/fileBrowser.ts', method: 'post', path: '/devices/:deviceId/files/move', parents: ['systemTools/index.ts'] },
+  { tool: 'file_operations', action: 'mkdir', routeFile: 'systemTools/fileBrowser.ts', method: 'post', path: '/devices/:deviceId/files/mkdir', parents: ['systemTools/index.ts'] },
   { tool: 'registry_operations', action: 'get_value', routeFile: 'systemTools/registry.ts', method: 'get', path: '/devices/:deviceId/registry/value', parents: ['systemTools/index.ts'] },
   // Live device reads outside /system-tools. The live request is bound to the
   // route that sends the same command; the stored-data read to the route that
@@ -845,7 +944,7 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'manage_ticket_config', action: 'create_domain', routeFile: 'ticketConfig.ts', method: 'post', path: '/inbound-domains' },
   { tool: 'manage_ticket_config', action: 'update_domain', routeFile: 'ticketConfig.ts', method: 'patch', path: '/inbound-domains/:id' },
   { tool: 'manage_ticket_config', action: 'delete_domain', routeFile: 'ticketConfig.ts', method: 'delete', path: '/inbound-domains/:id' },
-  // The email-inbound LIST is gated on tickets:write (writePerm) like its mutations; the admin predicate is applied in the handler.
+  // All three email-inbound routes are gated on tickets:email_review (#10951); the handler applies the same predicate.
   { tool: 'manage_ticket_inbox', action: 'list', routeFile: 'ticketConfig.ts', method: 'get', path: '/email-inbound' },
   { tool: 'manage_ticket_inbox', action: 'convert', routeFile: 'ticketConfig.ts', method: 'post', path: '/email-inbound/:id/convert' },
   { tool: 'manage_ticket_inbox', action: 'dismiss', routeFile: 'ticketConfig.ts', method: 'patch', path: '/email-inbound/:id/dismiss' },
@@ -877,6 +976,19 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'manage_time_suggestions', action: 'dismiss', routeFile: 'timeEntries/suggestions.ts', method: 'post', path: '/dismiss' },
   { tool: 'manage_time_suggestions', action: 'undo', routeFile: 'timeEntries/suggestions.ts', method: 'delete', path: '/dismiss' },
   { tool: 'manage_tickets', action: 'bulk_update', routeFile: 'tickets/bulk.ts', method: 'post', path: '/bulk' },
+  // Full-control W17 (#6788): the tool never asks for less than its route.
+  { tool: 'manage_backup_verification', action: 'health', routeFile: 'backup/verification.ts', method: 'get', path: '/health' },
+  { tool: 'manage_backup_verification', action: 'list', routeFile: 'backup/verification.ts', method: 'get', path: '/verifications' },
+  { tool: 'manage_backup_verification', action: 'readiness', routeFile: 'backup/verification.ts', method: 'get', path: '/recovery-readiness' },
+  { tool: 'manage_backup_verification', action: 'run', routeFile: 'backup/verification.ts', method: 'post', path: '/verify' },
+  { tool: 'get_vss_status', routeFile: 'backup/vss.ts', method: 'get', path: '/status/:deviceId' },
+  { tool: 'list_bmr_recoveries', action: 'list', routeFile: 'backup/bmrRecoveries.ts', method: 'get', path: '/bmr/recoveries' },
+  { tool: 'list_bmr_recoveries', action: 'get', routeFile: 'backup/bmrRecoveries.ts', method: 'get', path: '/bmr/recoveries/:id' },
+  { tool: 'get_backup_health', routeFile: 'backup/health.ts', method: 'get', path: '/health/devices' },
+  { tool: 'manage_c2c_configs', action: 'list', routeFile: 'c2c/configs.ts', method: 'get', path: '/configs' },
+  { tool: 'manage_c2c_configs', action: 'create', routeFile: 'c2c/configs.ts', method: 'post', path: '/configs' },
+  { tool: 'manage_c2c_configs', action: 'update', routeFile: 'c2c/configs.ts', method: 'patch', path: '/configs/:id' },
+  { tool: 'manage_c2c_configs', action: 'delete', routeFile: 'c2c/configs.ts', method: 'delete', path: '/configs/:id' },
   // Full-control W07 (#6777): alert correlation + signal triage. Each action binds to the route a technician uses for the same act.
   { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/correlations' },
   { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/correlations/evaluation' },
@@ -1055,6 +1167,175 @@ describe('contract: every remapped AI tool requires what its HTTP route requires
   });
 });
 
+// ------------------------------------------------- MFA parity (derived guard)
+//
+// The same BINDINGS, read a second way. An AI tool action that auto-executes
+// (effective Tier 1 or 2, so no approval step anywhere) and whose bound route
+// carries `requireMfa()` lets an API key or OAuth client do through MCP what
+// the route refuses without MFA. The only gate for such an action is the
+// handler-side `mfaGatedToolError`, enabled by enrolling it in
+// `MFA_GATED_TOOL_ACTIONS` (aiToolMfaGate.ts).
+//
+// This guard derives that set from the table above instead of from a
+// hand-written list: every binding whose route (own chain, a same-file
+// `requireMfa()` alias, or a router-level `.use('*', …)` in the file or a
+// declared parent) requires MFA and whose `checkGuardrails` tier is 1 or 2
+// must be enrolled, or be listed in MFA_GATE_REVIEWED_EXCEPTIONS with a reason.
+//
+// What it catches: a new or re-tiered binding, or a route that gains
+// `requireMfa()`. What it does NOT catch: a tool action with no BINDINGS row
+// (the table covers the remapped tools, not every tool), and route MFA applied
+// in any other shape (a path-scoped `.use('/x/*', requireMfa())`, a gate
+// called inside the handler). aiToolMfaGate.routeParity.contract.test.ts pins
+// hand-written rows outside this table.
+//
+// Tier 3 actions are out of scope on purpose: they rely on the approval gate
+// (in web chat both the chat route and the approve route require MFA).
+
+/** True when a middleware slice applies `requireMfa()` directly or by a same-file alias. */
+function sliceRequiresMfa(slice: string, mfaAliases: readonly string[]): boolean {
+  if (/\brequireMfa\s*\(\s*\)/.test(slice)) return true;
+  return mfaAliases.some((name) => new RegExp(`\\b${name}\\b`).test(slice));
+}
+
+/**
+ * Same-file aliases that carry `requireMfa()`: `const requireXMfa = requireMfa();`
+ * and array aliases spread into a chain, `const requireWrite = [requirePermission(…), requireMfa()] as const;`
+ * (routes/flows.ts). One statement, at any depth in the file.
+ */
+export function mfaAliases(src: string): string[] {
+  return [...src.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*[^;]*?\brequireMfa\s*\(\s*\)[^;]*;/g)].map((m) => m[1]!);
+}
+
+/** Whether a `<router>.use('*', …)` in the file applies `requireMfa()`. */
+export function routerLevelRequiresMfa(rawSrc: string): boolean {
+  const src = blankComments(rawSrc);
+  const aliases = mfaAliases(src);
+  const re = /\.use\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    const open = src.indexOf('(', m.index);
+    const close = matchClose(src, open, '(', ')');
+    const inner = src.slice(open + 1, close);
+    if (leadingStringLiteral(inner, 0) !== '*') continue;
+    if (sliceRequiresMfa(inner, aliases)) return true;
+  }
+  return false;
+}
+
+/** Whether ONE route registration's own middleware chain applies `requireMfa()`. Null when not found. */
+export function routeRegistrationRequiresMfa(rawSrc: string, method: Method, path: string): boolean | null {
+  const src = blankComments(rawSrc);
+  const aliases = mfaAliases(src);
+  const found: boolean[] = [];
+  const re = new RegExp(`\\.${method}\\s*\\(`, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    const open = src.indexOf('(', m.index);
+    const close = matchClose(src, open, '(', ')');
+    const inner = src.slice(open + 1, close);
+    if (leadingStringLiteral(inner, 0) !== path) continue;
+    found.push(sliceRequiresMfa(middlewareSlice(inner), aliases));
+  }
+  if (found.length === 0) return null;
+  if (found.length > 1) {
+    throw new Error(`${method.toUpperCase()} ${path} is registered ${found.length} times — ambiguous`);
+  }
+  return found[0]!;
+}
+
+function routeRequiresMfaFor(binding: Binding): boolean {
+  const read = (rel: string) => readFileSync(join(ROUTES_DIR, rel), 'utf8');
+  const own = routeRegistrationRequiresMfa(read(binding.routeFile), binding.method, binding.path);
+  if (own === null) {
+    throw new Error(`${binding.method.toUpperCase()} ${binding.path} not found in routes/${binding.routeFile}`);
+  }
+  return own
+    || routerLevelRequiresMfa(read(binding.routeFile))
+    || (binding.parents ?? []).some((p) => routerLevelRequiresMfa(read(p)));
+}
+
+function effectiveTierFor(binding: Binding): number {
+  return checkGuardrails(
+    binding.tool,
+    { ...(binding.input ?? {}), ...(binding.action ? { action: binding.action } : {}) },
+  ).tier;
+}
+
+/**
+ * Reviewed exceptions: auto-executing tool actions whose bound route requires
+ * MFA but which are deliberately NOT enrolled. Every entry needs a reason a
+ * reviewer can check, and an entry that no longer matches (enrolled since,
+ * re-tiered, or the route lost its gate) fails the suite so the list cannot
+ * rot. Keyed `tool` or `tool.action`, with ` {input}` when the binding has one.
+ */
+const HANDLER_LOCAL_MFA = 'Gated in the handler by mfaDenied() (aiToolsNetworkMonitoringShared.ts), a stricter twin of the shared gate that refuses agent principals too; not in MFA_GATED_TOOL_ACTIONS.';
+const LIVE_READ_OWNER_DECISION = 'OWNER DECISION, reported not fixed: live device read whose route requires MFA on GET; reachable over MCP for an API key without MFA. Gating it would remove a read MCP users rely on.';
+const ROUTER_MFA_READ_OWNER_DECISION = 'OWNER DECISION, reported not fixed: read of support-session records behind routes/remote, whose router requires MFA on every method; reachable over MCP for an API key without MFA.';
+const MFA_GATE_REVIEWED_EXCEPTIONS: ReadonlyArray<{ key: string; reason: string }> = [
+  // Already MFA-gated, by a handler-local check rather than the shared table.
+  { key: 'manage_snmp_templates.create', reason: HANDLER_LOCAL_MFA },
+  { key: 'manage_snmp_templates.update', reason: HANDLER_LOCAL_MFA },
+  { key: 'manage_snmp_templates.delete', reason: HANDLER_LOCAL_MFA },
+  { key: 'probe_network_asset', reason: HANDLER_LOCAL_MFA },
+  { key: 'manage_known_guests.add', reason: HANDLER_LOCAL_MFA },
+  { key: 'manage_known_guests.delete', reason: HANDLER_LOCAL_MFA },
+  { key: 'trigger_unifi_sync', reason: HANDLER_LOCAL_MFA },
+  // Live device reads and remote/support-session reads behind routers that require MFA on every
+  // method (routes/systemTools, routes/remote). Not gated; left to the owner.
+  { key: 'registry_operations.read_key', reason: LIVE_READ_OWNER_DECISION },
+  { key: 'registry_operations.get_value', reason: LIVE_READ_OWNER_DECISION },
+  { key: 'manage_processes.list', reason: LIVE_READ_OWNER_DECISION },
+  { key: 'manage_scheduled_tasks.list', reason: LIVE_READ_OWNER_DECISION },
+  { key: 'manage_services.list', reason: LIVE_READ_OWNER_DECISION },
+  { key: 'file_operations.list', reason: LIVE_READ_OWNER_DECISION },
+  { key: 'system_cleanup.list', reason: LIVE_READ_OWNER_DECISION },
+  { key: 'analyze_disk_usage {"refresh":true}', reason: LIVE_READ_OWNER_DECISION },
+  { key: 'analyze_boot_performance {"triggerCollection":true}', reason: LIVE_READ_OWNER_DECISION },
+  { key: 'manage_support_sessions.list', reason: ROUTER_MFA_READ_OWNER_DECISION },
+  { key: 'manage_support_sessions.get', reason: ROUTER_MFA_READ_OWNER_DECISION },
+  { key: 'list_remote_sessions', reason: LIVE_READ_OWNER_DECISION },
+  // Writes left to the owner.
+  {
+    key: 'create_incident',
+    reason: 'OWNER DECISION: step 1 of the documented breeze-incident-kickoff MCP prompt (mcpGuidance.ts), which has no MFA-capable alternative over MCP; enrolling it would also drop the tool from tools/list.',
+  },
+  {
+    key: 'manage_notification_channels.test',
+    reason: 'OWNER DECISION: Tier 2 write (sends a test notification) whose route requires MFA; surfaced when this guard landed and not reviewed for enrolment yet.',
+  },
+];
+
+describe('contract: an auto-executing tool action whose bound route requires MFA is MFA-gated', () => {
+  const mfaBindings = BINDINGS.filter(routeRequiresMfaFor);
+
+  it('the MFA reader finds requireMfa() on the bound routes (not vacuously empty)', () => {
+    expect(mfaBindings.length).toBeGreaterThan(20);
+  });
+
+  const unenrolledAutoExecuting = () => mfaBindings
+    .filter((b) => effectiveTierFor(b) <= 2)
+    .filter((b) => !isMfaGatedToolAction(b.tool, b.action))
+    .map(label);
+
+  it('every Tier 1/2 action bound to a requireMfa() route is enrolled or a reviewed exception', () => {
+    const excepted = new Set(MFA_GATE_REVIEWED_EXCEPTIONS.map((e) => e.key));
+    // A failure names a tool action that runs over MCP for an API key with no
+    // approval and no MFA while its HTTP twin demands MFA. Enrol it in
+    // MFA_GATED_TOOL_ACTIONS (and call mfaGatedToolError from its handler), or
+    // add a reviewed exception with the reason it must stay reachable.
+    expect(unenrolledAutoExecuting().filter((key) => !excepted.has(key))).toEqual([]);
+  });
+
+  it('every reviewed exception still matches a live unenrolled binding and carries a real reason', () => {
+    const live = new Set(unenrolledAutoExecuting());
+    for (const entry of MFA_GATE_REVIEWED_EXCEPTIONS) {
+      expect(entry.reason.length, `${entry.key} needs a real reason`).toBeGreaterThan(40);
+      expect(live.has(entry.key), `${entry.key} no longer needs an exception — delete it`).toBe(true);
+    }
+  });
+});
+
 // --------------------------------------------------------- extractor fixtures
 //
 // String fixtures, not live routes: the extractor is the only thing standing
@@ -1168,5 +1449,48 @@ describe('extractor: route-registration permission parsing', () => {
       ['requireFixtureRead', 'devices:read'],
       ['requireFixtureWrite', 'devices:write'],
     ]);
+  });
+});
+
+describe('extractor: route-registration MFA parsing', () => {
+  const MFA_FIXTURE = `
+export const mfaRoutes = new Hono();
+const requireWriteMfa = requireMfa();
+mfaRoutes.post('/inline', requireScope('organization'), requireMfa(), async (c) => c.json({}));
+mfaRoutes.post('/alias', requireWriteMfa, async (c) => c.json({}));
+mfaRoutes.post('/none', requireScope('organization'), async (c) => {
+  // requireMfa() named only in a comment
+  return c.json({ note: 'requireMfa()' });
+});
+`;
+
+  it('reads an inline requireMfa() and a same-file alias', () => {
+    expect(routeRegistrationRequiresMfa(MFA_FIXTURE, 'post', '/inline')).toBe(true);
+    expect(routeRegistrationRequiresMfa(MFA_FIXTURE, 'post', '/alias')).toBe(true);
+  });
+
+  it('reads an array alias spread into the chain (routes/flows.ts shape)', () => {
+    const src = `
+const requireWrite = [requirePermission('automations', 'write'), requireMfa()] as const;
+const requireRead = [requirePermission('automations', 'read')] as const;
+r.post('/w', ...requireWrite, async (c) => c.json({}));
+r.get('/r', ...requireRead, async (c) => c.json({}));
+`;
+    expect(routeRegistrationRequiresMfa(src, 'post', '/w')).toBe(true);
+    expect(routeRegistrationRequiresMfa(src, 'get', '/r')).toBe(false);
+  });
+
+  it('ignores requireMfa() named in the handler body or a comment', () => {
+    expect(routeRegistrationRequiresMfa(MFA_FIXTURE, 'post', '/none')).toBe(false);
+  });
+
+  it('returns null for an unregistered path', () => {
+    expect(routeRegistrationRequiresMfa(MFA_FIXTURE, 'post', '/missing')).toBeNull();
+  });
+
+  it("picks up a router-level use('*') requireMfa() and nothing narrower", () => {
+    expect(routerLevelRequiresMfa(`r.use('*', authMiddleware, requireMfa());`)).toBe(true);
+    expect(routerLevelRequiresMfa(`r.use('/x/*', requireMfa());`)).toBe(false);
+    expect(routerLevelRequiresMfa(`r.use('*', authMiddleware);`)).toBe(false);
   });
 });

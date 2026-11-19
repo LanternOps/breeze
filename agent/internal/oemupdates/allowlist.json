@@ -1,0 +1,20 @@
+{
+  "dell": {
+    "tool": {
+      "publishers": ["Dell Inc"],
+      "hosts": ["dl.dell.com", "downloads.dell.com"]
+    },
+    "prerequisites": {
+      "dotnet_desktop_runtime": {
+        "publishers": ["Microsoft Corporation"],
+        "hosts": ["builds.dotnet.microsoft.com", "download.visualstudio.microsoft.com"]
+      }
+    }
+  },
+  "hp": {
+    "tool": {
+      "publishers": ["HP Inc."],
+      "hosts": ["hpia.hpcloud.hp.com", "ftp.hp.com", "ftp.ext.hp.com"]
+    }
+  }
+}

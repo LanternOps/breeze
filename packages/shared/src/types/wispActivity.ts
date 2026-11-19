@@ -9,7 +9,9 @@
  * grant's live ceiling before it left the API.
  */
 
-export const WISP_ACTIVITY_KINDS = ['assessment', 'concern', 'specialist', 'approval', 'memory', 'nudge', 'brief'] as const;
+import type { AiAgentRunStatus } from './aiAgents';
+
+export const WISP_ACTIVITY_KINDS =['assessment', 'concern', 'specialist', 'approval', 'memory', 'nudge', 'brief'] as const;
 export type WispActivityKind = (typeof WISP_ACTIVITY_KINDS)[number];
 
 export interface ActivityItem {
@@ -25,6 +27,21 @@ export interface ActivityItem {
   /** Relative same-origin path, when the item has a page. */
   href: string | null;
   costCents: number | null;
+  /**
+   * #11084: set on `specialist` items only — the run's live status, so the
+   * Workers panel knows whether to keep polling (queued/running) or stop.
+   */
+  runStatus?: AiAgentRunStatus;
+  /**
+   * Set on `specialist` items whose run is `awaiting_approval` only: how many
+   * of the run's steps are still waiting on a person. A run never leaves
+   * `awaiting_approval` today (#11965), so 0 means every step has since been
+   * decided (approved or rejected), expired or cancelled, and nothing is
+   * waiting any more.
+   */
+  pendingApprovals?: number;
+  /** With `pendingApprovals`: the oldest still-pending step, for a link to it. */
+  pendingIntentId?: string | null;
 }
 
 /** The live "Wisp is checking Greenwood…" line: the queued/running assessment, or null. */

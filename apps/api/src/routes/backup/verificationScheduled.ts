@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, lte, or, sql } from 'drizzle-orm';
-import * as dbModule from '../../db';
+import { db, withSystemDbAccessContext, withSystemDbAccessContextIsolated } from '../../db';
+import { reportBackupDbFallback } from './dbFallbackReport';
 import {
   backupJobs as backupJobsTable,
   deviceCommands,
@@ -28,18 +29,23 @@ import {
   recordBackupVerificationResult,
   recordBackupVerificationSkip,
 } from '../../services/backupMetrics';
-import { normalizeBackupVerificationType, VERIFICATION_TIMEOUT_MS } from './types';
+import { normalizeBackupVerificationType } from './types';
+import {
+  LEGACY_VERIFICATION_TIMEOUT_REASON,
+  VERIFICATION_TIMEOUT_REASON_CODE,
+  isVerificationTimeoutDetails,
+  shortestVerificationTimeoutMs,
+  verificationCommandType,
+  verificationTimeoutDetails,
+  verificationTimeoutMs,
+  verificationTimeoutReason,
+} from './verificationTimeout';
 import { isCriticalBackupDevice } from './criticality';
 import { backupVerificationStructuredResultSchema } from '../../services/agentCommandResultValidation';
 
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const { db } = dbModule;
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
-};
 
 function toEpoch(value?: string | Date | null): number {
   if (!value) return 0;
@@ -85,7 +91,7 @@ async function listCompletedJobsFromDb(orgId?: string): Promise<Array<BackupJob 
   try {
     const conditions = [inArray(backupJobsTable.status, RESTORABLE_BACKUP_JOB_STATUSES)];
     if (orgId) conditions.push(eq(backupJobsTable.orgId, orgId));
-    const rows = await runWithSystemDbAccess(() => db
+    const rows = await withSystemDbAccessContextIsolated(() => db
       .select()
       .from(backupJobsTable)
       .where(and(...conditions))
@@ -110,14 +116,14 @@ async function listCompletedJobsFromDb(orgId?: string): Promise<Array<BackupJob 
       errorLog: row.errorLog,
     }));
   } catch (error) {
-    console.warn('[backupVerification] DB completed job read failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB completed job read failed; falling back to memory', error);
     return null;
   }
 }
 
 async function listTimedOutVerificationsFromDb(cutoff: Date): Promise<typeof backupVerifications> {
   try {
-    const rows = await runWithSystemDbAccess(() => db
+    const rows = await withSystemDbAccessContextIsolated(() => db
       .select()
       .from(backupVerificationsTable)
       .where(and(
@@ -134,7 +140,7 @@ async function listTimedOutVerificationsFromDb(cutoff: Date): Promise<typeof bac
       return normalized;
     });
   } catch (error) {
-    console.warn('[backupVerification] DB timeout scan failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB timeout scan failed; falling back to memory', error);
     return [];
   }
 }
@@ -143,15 +149,20 @@ async function markVerificationFailedAndRefreshReadiness(params: {
   verification: BackupVerification;
   orgId: string;
   reason: string;
+  /** Stable marker for lookups (#11813); omitted for every non-timeout failure. */
+  reasonCode?: string;
   source: string;
 }): Promise<void> {
-  const { verification, orgId, reason, source } = params;
+  const { verification, orgId, reason, reasonCode, source } = params;
   verification.status = 'failed';
   verification.completedAt = new Date().toISOString();
   const details = (verification.details && typeof verification.details === 'object' && !Array.isArray(verification.details))
     ? verification.details as Record<string, unknown>
     : {};
   details.reason = reason;
+  // A code left by an earlier timeout must not outlive the reason it explained.
+  if (reasonCode) details.reasonCode = reasonCode;
+  else delete details.reasonCode;
   verification.details = details;
   verificationOrgById.set(verification.id, orgId);
 
@@ -172,18 +183,21 @@ async function markVerificationFailedAndRefreshReadiness(params: {
   await recomputeRecoveryReadinessForDevice(orgId, verification.deviceId);
 }
 
-async function markVerificationCommandTimedOut(commandId: string | null | undefined): Promise<boolean> {
+async function markVerificationCommandTimedOut(
+  commandId: string | null | undefined,
+  reason: string,
+): Promise<boolean> {
   if (!commandId || !isUuid(commandId)) return false;
 
   const completedAt = new Date();
-  const updated = await runWithSystemDbAccess(() => db
+  const updated = await withSystemDbAccessContext(() => db
     .update(deviceCommands)
     .set({
       status: 'failed',
       completedAt,
       result: {
         status: 'timeout',
-        error: 'Verification timed out after 30 minutes',
+        error: reason,
         timedOutBy: 'verification-timeout-check',
       },
       ...terminalPayloadErasureSet(),
@@ -201,13 +215,18 @@ async function findTimedOutVerificationByCommandId(commandId: string): Promise<B
   if (!isUuid(commandId)) return null;
 
   try {
-    const [row] = await runWithSystemDbAccess(() => db
+    const [row] = await withSystemDbAccessContextIsolated(() => db
       .select()
       .from(backupVerificationsTable)
       .where(and(
         sql`${backupVerificationsTable.details}->>'commandId' = ${commandId}`,
         eq(backupVerificationsTable.status, 'failed'),
-        sql`coalesce(${backupVerificationsTable.details}->>'reason', '') = 'Verification timed out after 30 minutes'`,
+        // #11813: key on the stable code. Rows failed before it existed carry
+        // only the old literal text, so that still matches.
+        or(
+          sql`${backupVerificationsTable.details}->>'reasonCode' = ${VERIFICATION_TIMEOUT_REASON_CODE}`,
+          sql`${backupVerificationsTable.details}->>'reason' = ${LEGACY_VERIFICATION_TIMEOUT_REASON}`,
+        )!,
       ))
       .orderBy(desc(backupVerificationsTable.startedAt))
       .limit(1));
@@ -224,12 +243,12 @@ async function findTimedOutVerificationByCommandId(commandId: string): Promise<B
     backupVerifications.push(normalized);
     return normalized;
   } catch (error) {
-    console.warn('[backupVerification] DB timed-out command lookup failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB timed-out command lookup failed; falling back to memory', error);
     return backupVerifications.find((item) => (
       item.details
       && (item.details as Record<string, unknown>).commandId === commandId
       && item.status === 'failed'
-      && (item.details as Record<string, unknown>).reason === 'Verification timed out after 30 minutes'
+      && isVerificationTimeoutDetails(item.details)
     )) ?? null;
   }
 }
@@ -238,7 +257,7 @@ async function findPendingVerificationByCommandId(commandId: string): Promise<Ba
   if (!isUuid(commandId)) return null;
 
   try {
-    const [row] = await runWithSystemDbAccess(() => db
+    const [row] = await withSystemDbAccessContextIsolated(() => db
       .select()
       .from(backupVerificationsTable)
       .where(and(
@@ -263,7 +282,7 @@ async function findPendingVerificationByCommandId(commandId: string): Promise<Ba
     backupVerifications.push(normalized);
     return normalized;
   } catch (error) {
-    console.warn('[backupVerification] DB command lookup failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB command lookup failed; falling back to memory', error);
     return null;
   }
 }
@@ -272,22 +291,25 @@ async function collectDevicesToRecompute(orgId?: string, allowedSiteIds?: readon
   if (orgId && !isUuid(orgId)) return null;
   if (allowedSiteIds?.length === 0) return new Map();
   try {
-    const [jobRows, verificationRows] = await Promise.all([
-      runWithSystemDbAccess(() => db
+    // One savepoint with the reads in sequence: one catch covers both, and
+    // savepoints beside each other on one connection fail together (#11203).
+    const [jobRows, verificationRows] = await withSystemDbAccessContextIsolated(async () => {
+      const jobs = await db
         .select({ orgId: backupJobsTable.orgId, deviceId: backupJobsTable.deviceId })
         .from(backupJobsTable)
         .where(and(
           orgId ? eq(backupJobsTable.orgId, orgId) : undefined,
           allowedSiteIds ? sql`exists (select 1 from ${devices} where ${devices.id} = ${backupJobsTable.deviceId} and ${devices.orgId} = ${backupJobsTable.orgId} and ${inArray(devices.siteId, [...allowedSiteIds])})` : undefined,
-        ))),
-      runWithSystemDbAccess(() => db
+        ));
+      const verifications = await db
         .select({ orgId: backupVerificationsTable.orgId, deviceId: backupVerificationsTable.deviceId })
         .from(backupVerificationsTable)
         .where(and(
           orgId ? eq(backupVerificationsTable.orgId, orgId) : undefined,
           allowedSiteIds ? sql`exists (select 1 from ${devices} where ${devices.id} = ${backupVerificationsTable.deviceId} and ${devices.orgId} = ${backupVerificationsTable.orgId} and ${inArray(devices.siteId, [...allowedSiteIds])})` : undefined,
-        ))),
-    ]);
+        ));
+      return [jobs, verifications] as const;
+    });
 
     const map = new Map<string, string>();
     for (const row of [...jobRows, ...verificationRows]) {
@@ -295,7 +317,7 @@ async function collectDevicesToRecompute(orgId?: string, allowedSiteIds?: readon
     }
     return map;
   } catch (error) {
-    console.warn('[backupVerification] DB readiness scan failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB readiness scan failed; falling back to memory', error);
     if (allowedSiteIds) return new Map();
     return null;
   }
@@ -430,6 +452,8 @@ export async function processBackupVerificationResult(
     // an earlier attempt must not outlive it.
     delete details.reason;
   }
+  // Nor may a timeout marker: this row is now answered by the agent (#11813).
+  delete details.reasonCode;
 
   await persistVerificationToDb(pending);
   recordBackupVerificationResult(pending.verificationType, pending.status);
@@ -462,63 +486,55 @@ export async function processBackupVerificationResult(
  * Called by the verification-timeout-check BullMQ job.
  */
 export async function timeoutStaleVerifications(): Promise<number> {
-  const cutoff = Date.now() - VERIFICATION_TIMEOUT_MS;
-  const cutoffDate = new Date(cutoff);
+  // #11813: each verification gets its own command's budget (+ grace). The
+  // SQL pre-filter uses the shortest one; the per-row check below is exact.
+  const now = Date.now();
+  const cutoffDate = new Date(now - shortestVerificationTimeoutMs());
+  const isOverdue = (v: BackupVerification): boolean => {
+    const startedMs = new Date(v.startedAt).getTime();
+    return startedMs <= now - verificationTimeoutMs(v.verificationType);
+  };
   let timedOut = 0;
 
   const dbRows = await listTimedOutVerificationsFromDb(cutoffDate);
   const pendingRows = dbRows.length > 0
     ? dbRows
-    : backupVerifications.filter((v) => {
-      if (v.status !== 'pending' && v.status !== 'running') return false;
-      const startedMs = new Date(v.startedAt).getTime();
-      return startedMs <= cutoff;
-    });
+    : backupVerifications.filter((v) => (v.status === 'pending' || v.status === 'running') && isOverdue(v));
 
   for (const v of pendingRows) {
     if (v.status !== 'pending' && v.status !== 'running') continue;
-    const startedMs = new Date(v.startedAt).getTime();
-    if (startedMs > cutoff) continue;
+    if (!isOverdue(v)) continue;
+
+    const reason = verificationTimeoutReason(v.verificationType);
+    const commandId =
+      v.details && typeof v.details === 'object' && !Array.isArray(v.details)
+        ? typeof (v.details as Record<string, unknown>).commandId === 'string'
+          ? (v.details as Record<string, unknown>).commandId as string
+          : null
+        : null;
+    const commandTimedOut = await markVerificationCommandTimedOut(commandId, reason);
+    if (commandTimedOut) {
+      recordBackupCommandTimeout(verificationCommandType(v.verificationType), 'verification_timeout');
+    }
 
     const orgId = verificationOrgById.get(v.id) ?? v.orgId;
     if (orgId) {
-      const commandId =
-        v.details && typeof v.details === 'object' && !Array.isArray(v.details)
-          ? typeof (v.details as Record<string, unknown>).commandId === 'string'
-            ? (v.details as Record<string, unknown>).commandId as string
-            : null
-          : null;
-      const commandTimedOut = await markVerificationCommandTimedOut(commandId);
-      if (commandTimedOut) {
-        const commandType = v.verificationType === 'test_restore' ? 'backup_test_restore' : 'backup_verify';
-        recordBackupCommandTimeout(commandType, 'verification_timeout');
-      }
       await markVerificationFailedAndRefreshReadiness({
         verification: v,
         orgId,
-        reason: 'Verification timed out after 30 minutes',
+        reason,
+        reasonCode: VERIFICATION_TIMEOUT_REASON_CODE,
         source: 'timeout-check',
       });
     } else {
       // No orgId available — still handle command timeout and persist failure.
       console.warn(`[backupVerification] Verification ${v.id} timed out but has no orgId; persisting failure without readiness recompute`);
-      const commandId =
-        v.details && typeof v.details === 'object' && !Array.isArray(v.details)
-          ? typeof (v.details as Record<string, unknown>).commandId === 'string'
-            ? (v.details as Record<string, unknown>).commandId as string
-            : null
-          : null;
-      const commandTimedOut = await markVerificationCommandTimedOut(commandId);
-      if (commandTimedOut) {
-        const commandType = v.verificationType === 'test_restore' ? 'backup_test_restore' : 'backup_verify';
-        recordBackupCommandTimeout(commandType, 'verification_timeout');
-      }
       v.status = 'failed';
       v.completedAt = new Date().toISOString();
       const details = (v.details && typeof v.details === 'object' && !Array.isArray(v.details))
         ? v.details as Record<string, unknown>
         : {};
-      details.reason = 'Verification timed out after 30 minutes';
+      Object.assign(details, verificationTimeoutDetails(v.verificationType));
       v.details = details;
       await persistVerificationToDb(v);
       recordBackupVerificationResult(v.verificationType, 'failed');

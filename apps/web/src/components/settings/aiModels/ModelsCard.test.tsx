@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { jsonRes, CONN, GW, GATEWAY_CONNECTION } from './testFixtures';
-import { OFF, PM, RATES, offeringRow as row, synthRow, snapWith as snap } from './offeringFixtures';
+import { NO_SURFACE_TURNS, OFF, PM, RATES, offeringRow as row, synthRow, snapWith as snap } from './offeringFixtures';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
@@ -139,8 +139,9 @@ describe('ModelsCard', () => {
       ['unverified', null, /Not verified/],
       ['failed', 'Tool call returned no arguments', /Verification failed: Tool call returned no arguments/],
       ['stale', null, /Re-verify: endpoint changed/],
+      ['invalid', null, /Verification record unreadable: verify again/],
     ] as const)('shows the %s verification badge', (state, summary, expected) => {
-      render(<ModelsCard snapshot={gwSnap([gw({ verification: { state, at: null, harnessVersion: null, summary } })])} onChanged={vi.fn()} />);
+      render(<ModelsCard snapshot={gwSnap([gw({ verification: { state, at: null, harnessVersion: null, summary, surfaces: NO_SURFACE_TURNS } })])} onChanged={vi.fn()} />);
       expect(screen.getByTestId(`ai-model-verification-${OFF}`).textContent).toMatch(expected);
     });
 
@@ -150,7 +151,7 @@ describe('ModelsCard', () => {
     });
 
     it('an unpriced gateway model disables its switch and says to set a price', () => {
-      render(<ModelsCard snapshot={gwSnap([gw({ rates: null, priceSource: null, enableBlocker: 'unpriced', verification: { state: 'unverified', at: null, harnessVersion: null, summary: null } })])} onChanged={vi.fn()} />);
+      render(<ModelsCard snapshot={gwSnap([gw({ rates: null, priceSource: null, enableBlocker: 'unpriced', verification: { state: 'unverified', at: null, harnessVersion: null, summary: null, surfaces: NO_SURFACE_TURNS } })])} onChanged={vi.fn()} />);
       expect((screen.getByTestId(`ai-offering-enable-${OFF}`) as HTMLInputElement).disabled).toBe(true);
       expect(screen.getByTestId(`ai-offering-blocker-${OFF}`).textContent).toBe('Set a price to enable');
     });

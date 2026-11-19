@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
 	"github.com/breeze-rmm/agent/internal/backup/rebuild"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/recoveryconsole"
 	"github.com/spf13/cobra"
 )
@@ -316,7 +316,7 @@ func runRecoveryShell() error {
 	if _, err := os.Stat(shell); err != nil {
 		shell = "/bin/sh"
 	}
-	cmd := exec.Command(shell)
+	cmd := procspawn.Command(shell)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

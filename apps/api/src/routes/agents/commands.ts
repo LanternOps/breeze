@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type MiddlewareHandler } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, eq, getTableColumns } from 'drizzle-orm';
@@ -10,6 +10,7 @@ import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import {
   commandResultSchema,
+  MAX_AGENT_COMMAND_ID_LENGTH,
   securityCommandTypes,
   filesystemAnalysisCommandType,
   sensitiveDataCommandTypes,
@@ -91,6 +92,11 @@ export const commandsRoutes = new Hono();
  * receive — a behaviour change beyond this PR's one intentional one.
  */
 const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
+  'wake_on_lan',
+  // Vendor updates (#11065): both transports reach the same handler.
+  'oem_update_run',
+  'oem_update_release',
+  'oem_observe',
   // Disk Cleanup v2 W04. Listed here because this route has NO inline block
   // for it — the handler is registry-only precisely so both transports run
   // exactly the same code.
@@ -199,7 +205,7 @@ function normalizeCriticalResultIfNeeded(
 
 const commandResultParamSchema = z.object({
   id: z.string().min(1),
-  commandId: z.string().min(1),
+  commandId: z.string().min(1).max(MAX_AGENT_COMMAND_ID_LENGTH),
 });
 
 commandsRoutes.get('/:id/commands', async (c) => {
@@ -241,6 +247,23 @@ commandsRoutes.get('/:id/commands', async (c) => {
   return c.json({ commands: deliverableCommands });
 });
 
+// Results for ids with no device_commands row (non-UUID: WebSocket-direct
+// commands such as Network Proxy `http-req-…`, which older agents also POST
+// here once per proxied request, #11464) are answered from the id alone,
+// BEFORE the body validator, so a no-op never pays for parsing a result body
+// of up to the route's size limit. A draining agent is refused for them (it may
+// only report persisted, allowlist-checkable commands; #2774 / #3986). No
+// database access happens on this path, which agentAuthMiddleware relies on
+// when it skips the request-long transaction for `http-req-…` results.
+const answerRowlessCommandResult: MiddlewareHandler = async (c, next) => {
+  const commandId = c.req.param('commandId') ?? '';
+  if (uuidRegex.test(commandId)) return next();
+  const agent = c.get('agent') as AgentAuthContext | undefined;
+  if (!agent?.deviceId) return c.json({ error: 'Agent context not found' }, 401);
+  if (agent.claimTypeAllowlist) return c.json({ error: 'drain_restricted' }, 403);
+  return c.json({ success: true });
+};
+
 // #2774 / #3986 — drain narrowing for the result endpoint below. This prose
 // lives ABOVE the route declaration on purpose: the site-scope route scanner
 // (apps/api/src/__tests__/helpers/routeScan.ts) reads a fixed
@@ -257,6 +280,7 @@ commandsRoutes.get('/:id/commands', async (c) => {
 commandsRoutes.post(
   '/:id/commands/:commandId/result',
   zValidator('param', commandResultParamSchema),
+  answerRowlessCommandResult,
   zValidator('json', commandResultSchema),
   async (c) => {
     const { id: agentId, commandId } = c.req.valid('param');
@@ -269,16 +293,8 @@ commandsRoutes.post(
 
     const deviceId = agent.deviceId;
 
+    // Non-UUID (rowless) ids were answered by answerRowlessCommandResult.
     const drainClaimAllowlist = agent.claimTypeAllowlist;
-    if (drainClaimAllowlist && !uuidRegex.test(commandId)) {
-      return c.json({ error: 'drain_restricted' }, 403);
-    }
-
-    // Commands dispatched directly over WebSocket can use non-UUID IDs and
-    // intentionally have no device_commands row.
-    if (!uuidRegex.test(commandId)) {
-      return c.json({ success: true });
-    }
 
     // Query device_commands OUTSIDE the agentAuth transaction.
     // device_commands has no RLS; querying via the pool (auto-commit)
@@ -520,7 +536,7 @@ commandsRoutes.post(
     // the terminal pre-read above usually short-circuits first — which is
     // itself a useful signal.
     const terminalCompletedAt = new Date();
-    const storedCommandResult = buildStoredCommandResult(command.type, normalizedData, stdout);
+    const storedCommandResult = buildStoredCommandResult(command.type, normalizedData, stdout, command.payload);
     const commandPayload =
       command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
         ? command.payload as Record<string, unknown>

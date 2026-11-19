@@ -16,6 +16,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { SignJWT } from 'jose';
 import type { TrustPagePublicPayload } from '@breeze/shared';
+import { trustCisFrameworkViewEnabled } from '../../config/env';
 import { getRedis } from '../redis';
 import type { ResolvedTrustPage } from './resolve';
 import {
@@ -79,8 +80,10 @@ export function trustAttestationExpiry(iat: number, lastEvaluatedAt: Date | null
   return Math.min(iat + TRUST_ATTESTATION_MAX_TTL_SECONDS, freshUntil);
 }
 
+// The CIS framework-view bit (#9087): the signed payload is CIS-gated at read time, so a token signed while the
+// switch was on must never be served after it turns off.
 const cacheKey = (kid: string, sub: string, snapshotId: string, lastEvaluatedAt: Date) =>
-  `${trustAttestationCachePrefix(kid)}${createHash('sha256').update(sub).digest('hex')}:${snapshotId}:${lastEvaluatedAt.getTime()}`;
+  `${trustAttestationCachePrefix(kid)}${createHash('sha256').update(sub).digest('hex')}:${snapshotId}:${lastEvaluatedAt.getTime()}:cis${trustCisFrameworkViewEnabled() ? 1 : 0}`;
 
 async function readCached(key: string): Promise<string | null> {
   const redis = getRedis();

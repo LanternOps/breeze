@@ -9,16 +9,69 @@ import {
   ISOLATION_RELEASE_KINDS,
   ISOLATION_STATES,
   NETWORK_ISOLATION_CAPABILITY,
+  NETWORK_ISOLATION_DEAD_MAN,
+  NETWORK_ISOLATION_DEAD_MAN_MIN_AGENT_VERSION,
   NETWORK_ISOLATION_MIN_AGENT_VERSION,
   NETWORK_ISOLATION_TTL,
   RESOLVED_TERMINAL_STATES,
   UNRESOLVED_TERMINAL_STATES,
+  agentAcceptsDeadMan,
+  agentAcceptsPolicyAllow,
   agentSupportsNetworkIsolation,
   isActiveIsolationState,
   isTerminalIsolationState, isUnresolvedTerminalIsolationState, isIsolationFailureCode, failureCodeFromJournalType, ISOLATION_RELEASE_JOURNAL_TYPES,
   isResolvedTerminalIsolationState,
   isUnresolvedIsolationState,
+  isValidDeadManSeconds,
 } from './networkIsolation';
+
+describe('capability predicates (#10100)', () => {
+  it('names policyAllow as level 3', () => {
+    expect(NETWORK_ISOLATION_CAPABILITY.policyAllow).toBe(3);
+  });
+
+  it('accepts policy permits only from an integer level 3 or above', () => {
+    for (const level of [3, 4]) expect(agentAcceptsPolicyAllow(level), String(level)).toBe(true);
+    for (const level of [0, 1, 2, 2.9, 3.5, -3, NaN, Infinity, '3', null, undefined, {}]) {
+      expect(agentAcceptsPolicyAllow(level as never), String(level)).toBe(false);
+    }
+  });
+
+  it('never infers dead-man from the numeric level (decision 28)', () => {
+    for (const level of [0, 1, 2, 3, 4, 999]) {
+      expect(agentAcceptsDeadMan({ networkIsolationVersion: level } as never), String(level)).toBe(false);
+    }
+    expect(agentAcceptsDeadMan(null)).toBe(false);
+    expect(agentAcceptsDeadMan(undefined)).toBe(false);
+    expect(agentAcceptsDeadMan({})).toBe(false);
+  });
+
+  it('reads dead-man only from its own flag, and only a literal true (#10103)', () => {
+    const gated = NETWORK_ISOLATION_DEAD_MAN_MIN_AGENT_VERSION;
+    expect(agentAcceptsDeadMan({ networkIsolationDeadMan: true, agentVersion: gated })).toBe(true);
+    for (const flag of [false, null, undefined, 1, 'true']) {
+      expect(agentAcceptsDeadMan({ networkIsolationDeadMan: flag, agentVersion: gated } as never), String(flag)).toBe(false);
+    }
+  });
+
+  it('needs the dead-man version gate as well as the flag, failing closed (#10103)', () => {
+    expect(agentAcceptsDeadMan({ networkIsolationDeadMan: true })).toBe(false);
+    for (const agentVersion of [null, '', 'dev', 'not-a-version', '0.130.0', '998.99.99']) {
+      expect(agentAcceptsDeadMan({ networkIsolationDeadMan: true, agentVersion }), String(agentVersion)).toBe(false);
+    }
+    expect(agentAcceptsDeadMan({ networkIsolationDeadMan: true, agentVersion: ' 999.0.1 ' })).toBe(true);
+  });
+
+  it('keeps the dead-man gate at the fail-closed sentinel until lab gate L5 (#10103)', () => {
+    expect(NETWORK_ISOLATION_DEAD_MAN_MIN_AGENT_VERSION).toBe('999.0.0');
+  });
+
+  it('bounds a dead-man window to the policy range in seconds (#10103)', () => {
+    expect(NETWORK_ISOLATION_DEAD_MAN).toEqual({ minSeconds: 900, maxSeconds: 86_400 });
+    for (const s of [0, 900, 1800, 86_400]) expect(isValidDeadManSeconds(s), String(s)).toBe(true);
+    for (const s of [-1, 1, 60, 899, 900.5, 86_401, NaN, '900']) expect(isValidDeadManSeconds(s as never), String(s)).toBe(false);
+  });
+});
 
 describe('network isolation closed sets (plan "Closed sets")', () => {
   it('lists exactly the twelve episode states', () => {
@@ -73,7 +126,7 @@ describe('network isolation closed sets (plan "Closed sets")', () => {
 
   it('pins the TTL and capability constants', () => {
     expect(NETWORK_ISOLATION_TTL).toEqual({ defaultHours: 72, maxHours: 720, expiringSoonHours: 12 });
-    expect(NETWORK_ISOLATION_CAPABILITY).toEqual({ base: 1, deadMan: 2 });
+    expect(NETWORK_ISOLATION_CAPABILITY).toEqual({ base: 1, deadMan: 2, policyAllow: 3, releaseToken: 4 });
   });
 });
 

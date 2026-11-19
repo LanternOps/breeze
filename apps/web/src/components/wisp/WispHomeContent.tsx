@@ -10,7 +10,8 @@ import WispGrantStepUpModal from '../ai/WispGrantStepUpModal';
 import WispCompanionShell from './WispCompanionShell';
 import WispHomeThread from './WispHomeThread';
 import WispRail from './WispRail';
-import { fetchWispHome, fetchWispPartnerEnabled, homeSectionFromHash } from './wispHome';
+import { detectBrowserTimezone } from '@/lib/wispGrant';
+import { fetchWispHome, fetchWispPartnerEnabled, homeSectionFromHash, saveBrowserTimezone } from './wispHome';
 
 type Wisp = NonNullable<WispState>;
 type View =
@@ -135,7 +136,7 @@ export default function WispHomeContent() {
   // or finishing, a newer brief, or a change in the concerns is when a new post
   // can exist: re-read the thread's newest page then, not on every poll.
   const postsSignal = view.kind === 'ready'
-    ? `${liveKey}|${view.payload.brief?.sentAt ?? ''}|${view.payload.needsYou.map((c) => c.id).sort().join(',')}`
+    ? `${liveKey}|${view.payload.brief?.sentAt ?? ''}|${view.payload.firstLookAt ?? ''}|${view.payload.firstLookState ?? ''}|${view.payload.needsYou.map((c) => c.id).sort().join(',')}`
     : null;
   const lastPostsSignal = useRef<string | null>(null);
   useEffect(() => {
@@ -143,6 +144,23 @@ export default function WispHomeContent() {
     if (lastPostsSignal.current !== null && lastPostsSignal.current !== postsSignal) setThreadKey((k) => k + 1);
     lastPostsSignal.current = postsSignal;
   }, [postsSignal]);
+
+  // #10402: the morning brief falls back to the browser's zone. Sent when the
+  // server has a different one, at most once per page load (a failure must not
+  // repeat with every poll), then re-read so the zone on screen is the resolved one.
+  const browserTimezoneSent = useRef(false);
+  const serverBrowserTimezone = view.kind === 'ready' ? view.payload.briefSchedule?.browserTimezone ?? null : undefined;
+  useEffect(() => {
+    if (serverBrowserTimezone === undefined || browserTimezoneSent.current) return;
+    const timezone = detectBrowserTimezone();
+    if (!timezone || timezone === serverBrowserTimezone) return;
+    browserTimezoneSent.current = true;
+    saveBrowserTimezone(timezone)
+      .then(() => load(true))
+      .catch((err: unknown) => {
+        console.warn('[WispHomeContent] storing the browser time zone, or re-reading the home after it, failed', err);
+      });
+  }, [serverBrowserTimezone, load]);
 
   // `#needs-you`, `#links`, `#concern=<id>` …: bring the section into view once it exists.
   // Below `lg` the rail sections sit in the closed drawer, so a rail hash has nothing to scroll to there.
@@ -261,6 +279,8 @@ export default function WispHomeContent() {
           links={links}
           onLinksChange={onLinksChange}
           refreshKey={threadKey}
+          briefSchedule={payload.briefSchedule}
+          firstLookProgress={payload.firstLookProgress}
         />
       }
       rail={
@@ -274,6 +294,7 @@ export default function WispHomeContent() {
           onWispChange={onWispChange}
           onRevoked={onRevoked}
           activityKey={activityKey}
+          briefSchedule={payload.briefSchedule}
         />
       }
     />

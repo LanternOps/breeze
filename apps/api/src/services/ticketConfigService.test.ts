@@ -184,12 +184,25 @@ vi.mock('./ticketService', async () => {
   return { ...actual, createTicket: createTicketMock };
 });
 
+// The domain views are built by the verification service (its own suite covers
+// them); here they are a marker so the tests prove WHICH columns the CRUD paths
+// select and that every returned row passes through the view builder.
+const { viewSpy } = vi.hoisted(() => ({ viewSpy: vi.fn() }));
+vi.mock('./portalDomainVerification', () => ({
+  customerDomainRowColumns: () => ({ id: 'id', domain: 'domain', orgId: 'orgId' }),
+  buildCustomerDomainViews: async (rows: Array<Record<string, unknown>>) => {
+    viewSpy(rows);
+    return rows.map((r) => ({ ...r, viewed: true }));
+  },
+}));
+
 import {
   getTicketConfig, createTicketStatus, updateTicketStatus, reorderTicketStatuses,
   upsertPrioritySettings, upsertOrgTicketSettings, getOrgTicketSettings,
   TicketConfigServiceError, findStatusByName, listActiveStatusNames,
   listEmailInboundQueue, convertEmailInbound, dismissEmailInbound,
-  createCustomerEmailDomain,
+  createCustomerEmailDomain, updateCustomerEmailDomain, listCustomerEmailDomains,
+  extractFromName,
 } from './ticketConfigService';
 
 const PARTNER = 'p-1';
@@ -689,6 +702,44 @@ describe('convertEmailInbound', () => {
     expect(row.ticketId).toBe('t-9');
     expect(row.parseStatus).toBe('created');
   });
+  it('reads the From header of a converted row in linear time', async () => {
+    dbMocks.selectResults.push([{ id: 'r-2', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: 'jane@x.com', subject: 's', toAddress: 'acme@tickets.example.com', raw: { 'stripped-text': 'help', from: `${' '.repeat(2000)}x` } }]);
+    dbMocks.selectResults.push([{ id: 'o-1' }]);
+    dbMocks.updateResult = [{ id: 'r-2', fromAddress: 'jane@x.com', toAddress: 'acme@tickets.example.com', subject: 's', parseStatus: 'created', error: null, ticketId: 't-9', createdAt: new Date() }];
+    createTicketMock.mockResolvedValue({ id: 't-9' });
+    const started = performance.now();
+    await convertEmailInbound('p-1', 'r-2', 'o-1', ACTOR);
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(createTicketMock).toHaveBeenCalledWith(expect.objectContaining({ submitterName: undefined }), ACTOR);
+  });
+
+  it('extractFromName reads the display name exactly as the previous pattern did', () => {
+    const reference = (header: string) => {
+      const m = header.match(/^\s*"?([^"<]+?)"?\s*</);
+      return m ? (m[1] ?? '').trim() : '';
+    };
+    const fixed = ['"Jane Doe" <jane@x.com>', 'Jane Doe <jane@x.com>', 'jane@x.com', '<jane@x.com>', '  "<x>', '"" <x>', ' " a " <x>', 'a"b <x>', '"a" "b" <x>', '"a"  \t<x>', 'a\u00a0<x>', ''];
+    for (const header of fixed) expect([header, extractFromName(header)]).toEqual([header, reference(header)]);
+    const alphabet = ['"', '<', '>', ' ', '\t', 'a', 'b', '@', '\u00a0'];
+    const random = (seed: number) => () => {
+      // mulberry32: 32-bit integer steps (Math.imul), so the sequence does not
+      // collapse the way a float LCG does.
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return (t ^ (t >>> 14)) >>> 0;
+    };
+    const next = random(0x1f2e3d);
+    const seen = new Set<string>();
+    for (let i = 0; i < 20_000; i += 1) {
+      let header = '';
+      for (let j = next() % 18; j > 0; j -= 1) header += alphabet[next() % alphabet.length];
+      seen.add(header);
+      expect([header, extractFromName(header)]).toEqual([header, reference(header)]);
+    }
+    expect(seen.size).toBeGreaterThan(15_000);
+  });
+
   it('converts a MICROSOFT 365 row with its body and sender name (#8299)', async () => {
     // Build `raw` with the real Graph normalizer, so the Convert path and the
     // normalizer cannot drift apart again: Convert must read what Graph writes.
@@ -839,7 +890,9 @@ describe('createCustomerEmailDomain', () => {
       { orgId: 'o-1', domain: 'acme.com', autoCreateContact: true },
       DOMAIN_ACTOR,
     );
-    expect(row).toEqual({ id: 'd-1', domain: 'acme.com', orgId: 'o-1' });
+    // returned through the explicit projection + view builder, never the raw row
+    expect(row).toEqual({ id: 'd-1', domain: 'acme.com', orgId: 'o-1', viewed: true });
+    expect(viewSpy).toHaveBeenCalledTimes(1);
   });
 
   it('throws ORG_NOT_ACCESSIBLE when the org is not under the partner', async () => {
@@ -858,5 +911,48 @@ describe('createCustomerEmailDomain', () => {
     await expect(
       createCustomerEmailDomain(PARTNER, { orgId: 'o-1', domain: 'acme.com', autoCreateContact: true }, DOMAIN_ACTOR),
     ).rejects.toMatchObject({ status: 409, code: 'DOMAIN_ALREADY_MAPPED' });
+  });
+});
+
+// ── updateCustomerEmailDomain / listCustomerEmailDomains ──────────────────
+
+describe('updateCustomerEmailDomain', () => {
+  it('writes only orgId / autoCreateContact / isActive, even if the input carries verification columns', async () => {
+    dbMocks.updateResult = [{ id: 'd-1', domain: 'acme.com', orgId: 'o-1' }];
+    const hostile = {
+      isActive: false,
+      verifiedAt: new Date(), verifiedMethod: 'dns_txt', verificationToken: 'x', verifiedEvidence: { via: 'x' },
+    } as unknown as Parameters<typeof updateCustomerEmailDomain>[2];
+    const row = await updateCustomerEmailDomain(PARTNER, 'd-1', hostile);
+    expect(Object.keys(dbMocks.updateSetArgs[0]!).sort()).toEqual(['isActive', 'updatedAt']);
+    expect(row).toMatchObject({ id: 'd-1', viewed: true });
+  });
+
+  it('picks orgId (the repoint) and autoCreateContact when given', async () => {
+    dbMocks.selectResults.push([{ id: 'o-2' }]); // org guard
+    dbMocks.updateResult = [{ id: 'd-1', domain: 'acme.com', orgId: 'o-2' }];
+    await updateCustomerEmailDomain(PARTNER, 'd-1', { orgId: 'o-2', autoCreateContact: false });
+    expect(Object.keys(dbMocks.updateSetArgs[0]!).sort()).toEqual(['autoCreateContact', 'orgId', 'updatedAt']);
+  });
+
+  it('still throws DOMAIN_MAPPING_NOT_FOUND 404 when no row matches', async () => {
+    dbMocks.updateResult = [];
+    await expect(updateCustomerEmailDomain(PARTNER, 'd-x', { isActive: true })).rejects.toMatchObject({ status: 404, code: 'DOMAIN_MAPPING_NOT_FOUND' });
+  });
+});
+
+describe('listCustomerEmailDomains', () => {
+  it('returns viewed rows carrying the org name (additive over the old list shape)', async () => {
+    dbMocks.selectResults.push([{ id: 'd-1', domain: 'acme.com', orgId: 'o-1', orgName: 'ACME' }]);
+    const rows = await listCustomerEmailDomains(PARTNER);
+    expect(rows).toEqual([{ id: 'd-1', domain: 'acme.com', orgId: 'o-1', orgName: 'ACME', viewed: true }]);
+  });
+
+  it('adds an org filter for the org-scoped list', async () => {
+    dbMocks.selectResults.push([]);
+    await listCustomerEmailDomains(PARTNER, { orgId: 'o-1' });
+    const predicate = JSON.stringify(dbMocks.whereArgs.at(-1));
+    expect(predicate).toContain('o-1');
+    expect(predicate).toContain(PARTNER);
   });
 });

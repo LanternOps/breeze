@@ -54,6 +54,13 @@ Pax8 connects with your Pax8 **OAuth client credentials**. Once connected, Breez
 **What syncs from Pax8**
 
 - **Companies** — your Pax8 client companies, with status, shown in the **Company mapping** table. Map each Pax8 company to a Breeze organization (or leave it unmapped).
+- **Suggested matches** — for each unmapped company, Breeze looks for a Breeze organization with the same name and shows a **Suggested** chip on the row. There are two tiers:
+  - **Same name** (exact) — the names are identical, ignoring upper and lower case.
+  - **Same name, ignoring suffixes** (normalized) — the names also match once punctuation, accents, a leading "The" and legal suffixes such as Inc, LLC, Ltd, GmbH and Pty Ltd are ignored.
+
+  An organization that is already mapped to another Pax8 company is not suggested again. When several organizations match one company (**possible matches**), or several companies match the same organization (**also matches**), the row has no Accept button and you pick the organization from the dropdown yourself. For possible matches the dropdown narrows to those organizations. The **Company mapping** header shows how many companies are unmapped and how many have a suggestion. When at least one company has a one-click suggestion, a **Review N suggested matches** button opens a list where you can untick any row before confirming. After a sync, newly seen companies are counted below the header.
+
+  **Nothing maps itself.** A suggestion only takes effect when a person clicks **Accept** on a row or confirms the bulk review. If a row changed while the review was open, Breeze reloads the list and asks you to look again.
 - **License subscriptions** — pulled per company, including product name, vendor, quantity, unit cost, unit price, currency, billing term, and status.
 - **Catalog import** — products imported from the Pax8 catalog (see [Product Catalog → Pax8](/features/product-catalog/#pax8)) store the feed's currency as the item's **Cost currency**; margin is computed only against a sell price in that same currency.
 - **Contract-line linkage** — once a company is mapped to an organization, each subscription can be linked to a manual contract line. Breeze keeps the billing quantity on that contract line and records the Pax8 quantity separately as an observation.

@@ -97,7 +97,7 @@ A delivery whose signed body has an `event_type` of `test.event` (what Huntress'
 </Aside>
 
 <Aside type="caution">
-  Webhook signature verification is mandatory. If no webhook secret is configured for the integration, all incoming webhooks are rejected with a 403 error. Always configure a webhook secret when enabling webhook ingestion.
+  Webhook signature verification is mandatory. If no webhook secret is configured for the integration, all incoming webhooks are rejected with the generic 401 response. Always configure a webhook secret when enabling webhook ingestion.
 </Aside>
 
 #### Webhook Routing
@@ -386,19 +386,23 @@ Huntress deployment is fully built in: no binary upload is required. Breeze uses
 
 ### SentinelOne
 
-SentinelOne deployment requires a one-time setup step: upload the SentinelOne MSI to the deployment catalog before pushing it to devices.
+SentinelOne deployment requires a one-time setup step: upload the SentinelOne MSI to the built-in SentinelOne package before pushing it to devices. A partner admin with all-organization access uploads it **once, for every organization**.
 
 <Steps>
 1. Download the SentinelOne Windows MSI from your SentinelOne management console.
 2. Navigate to **Software → Deployment** in Breeze and open the **SentinelOne** catalog entry.
-3. Upload the MSI using the **Upload package** option.
+3. On its **Versions** tab, upload the MSI using the **Upload package** option. Leave the install arguments blank to use the package's own template, `SITE_TOKEN={s1_site_token} /q /NORESTART`.
 4. Select your target devices and click **Deploy**.
 </Steps>
 
 Once the MSI is uploaded, subsequent deployments to new devices re-use the same package — you only need to re-upload when SentinelOne releases a new installer version.
 
+<Aside type="caution" title="One shared installer for all organizations">
+  The single uploaded file is served to every organization, so never upload a site-specific installer and never put a site token in the file name. The site token is supplied at install time by the `{s1_site_token}` placeholder, from the organization the device belongs to. Partner users limited to selected organizations cannot upload to a partner-wide package; a full-partner admin must do it.
+</Aside>
+
 <Aside type="caution" title="Install arguments must carry the site token placeholder">
-  From v0.124.0 a SentinelOne deployment is refused at dispatch when the package version's install arguments do not include `SITE_TOKEN={s1_site_token}` — blank arguments, a generic `msiexec` line, or a hard-coded literal token all fail with `SentinelOne install arguments must include SITE_TOKEN={s1_site_token} — edit the installer version`. Breeze substitutes the placeholder with the site token of the device's mapped organization at install time; before this check, such a package installed unregistered or enrolled every organization into one site. Fix the arguments on the package's **Versions** tab.
+  From v0.124.0 a SentinelOne deployment is refused at dispatch when the package version's install arguments do not include `SITE_TOKEN={s1_site_token}` — blank arguments, a generic `msiexec` line, or a hard-coded literal token all fail with `SentinelOne install arguments must include SITE_TOKEN={s1_site_token} — edit the installer version`. Breeze substitutes the placeholder with the site token of the device's mapped organization at install time; before this check, such a package installed unregistered or enrolled every organization into one site. A version created with blank install arguments on this package gets the template above automatically; fix any other arguments on the package's **Versions** tab.
 </Aside>
 
 Package uploads are **chunked and resumable** with a live progress bar, so large installers (200 MB+) upload reliably — an interrupted upload resumes where it left off rather than starting over, and long uploads are no longer cut short by session-token expiry.
@@ -545,27 +549,21 @@ Huntress webhooks are verified with Standard Webhooks HMAC-SHA256 signatures (or
 
 Activate the integration by updating it with `isActive: true` before triggering a sync.
 
-### Huntress webhook returns 403 "Webhook secret not configured"
-
-You must configure a webhook secret on the integration before Breeze will accept webhook payloads. Paste the signing secret from Huntress's **View Signing Secret** (it starts with `whsec_`) into **Webhook Secret** and save, or send it as the `webhookSecret` value when updating the integration through the API.
-
 ### Huntress webhook returns 401
 
-The delivery reached Breeze but its signature did not verify. The response body says why:
+Every delivery that Breeze cannot authenticate gets the same response: `401` with the body `"Webhook authentication failed"`. The body is the same for every cause; the reason is in the API log, on a `[huntress] Webhook authentication refused` line:
 
-- **"Invalid Huntress webhook signature"**: the secret in Breeze does not match Huntress's. Copy the value from Huntress's **View Signing Secret** again, including the `whsec_` prefix, paste it into **Webhook Secret**, and save.
-- **"Webhook signature timestamp is outside the replay window"**: the delivery's timestamp is more than 10 minutes from the Breeze server's clock. Check the server's time sync, or redeliver a fresh event rather than replaying an old one.
-- **"Missing Standard Webhooks header(s): ..."** or **"Missing webhook signature header ..."**: the signature headers did not reach Breeze. Check that no proxy in front of Breeze strips `webhook-*` headers.
-
-The API log has a matching `[huntress] Webhook signature rejected` line with the integration ID, the scheme, and whether the stored secret has the `whsec_` prefix. The line never includes the secret.
+- **`secret_absent`**: the integration has no webhook secret. Paste the signing secret from Huntress's **View Signing Secret** (it starts with `whsec_`) into **Webhook Secret** and save, or send it as the `webhookSecret` value when updating the integration through the API.
+- **`signature_invalid`**: the signature did not verify. A matching `[huntress] Webhook signature rejected` line gives the integration ID, the scheme, whether the stored secret has the `whsec_` prefix, and the verifier's reason. The line never includes the secret.
+  - **"Invalid Huntress webhook signature"**: the secret in Breeze does not match Huntress's. Copy the value from Huntress's **View Signing Secret** again, including the `whsec_` prefix, paste it into **Webhook Secret**, and save.
+  - **"Webhook signature timestamp is outside the replay window"**: the delivery's timestamp is more than 10 minutes from the Breeze server's clock. Check the server's time sync, or redeliver a fresh event rather than replaying an old one.
+  - **"Missing Standard Webhooks header(s): ..."** or **"Missing webhook signature header ..."**: the signature headers did not reach Breeze. Check that no proxy in front of Breeze strips `webhook-*` headers.
+- **`integration_unavailable`**: Breeze found no single active integration for the delivery. Either no active integration matches, the account in the payload belongs to a different Huntress account than the selected integration, or several active integrations share the same account ID. In the last case, include the `integrationId` as a query parameter on your webhook URL or in the `x-huntress-integration-id` header.
+- **`invalid_account_id`** or **`secret_unreadable`**: the account ID in the delivery is malformed, or the stored secret could not be decrypted. Save the webhook secret again.
 
 ### Huntress webhook returns 503
 
 Breeze could not reach Redis to record the delivery's `webhook-id`, so it asked Huntress to retry instead of risking double processing. Huntress retries automatically. Check the API's Redis connection if this persists.
-
-### Huntress webhook returns 409 "Multiple active integrations match"
-
-When multiple Huntress integrations share the same account ID, Breeze cannot determine which one to route the webhook to. Include the `integrationId` as a query parameter on your webhook URL or in the `x-huntress-integration-id` header.
 
 ### SentinelOne isolation returns 502
 

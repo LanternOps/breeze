@@ -40,7 +40,7 @@ func setupRestoreTestSnapshotWithSDEntries(t *testing.T, files []sdTestFile, ext
 	t.Helper()
 
 	baseDir := t.TempDir()
-	provider := providers.NewLocalProvider(baseDir)
+	provider := privateTestLocalProvider(t, baseDir)
 
 	snapshotID := "test-snap-sd-001"
 	prefix := filepath.Join("snapshots", snapshotID)

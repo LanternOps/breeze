@@ -80,6 +80,13 @@ vi.mock('../wisp/grantAuthority', async (importOriginal) => {
   return { ...actual, resolveGrantCeiling: grantState.resolveGrantCeiling, assertWithinCeiling: grantState.assertWithinCeiling, assertToolCallWithinCeiling: grantState.assertToolCallWithinCeiling };
 });
 
+// #10428 W06: the standing-instruction release check (rules pinned in
+// wisp/standingInstructionRelease.test.ts). Default: nothing denies.
+const standingState = vi.hoisted(() => ({ check: vi.fn(async (..._args: unknown[]): Promise<unknown> => null) }));
+vi.mock('../wisp/standingInstructionRelease', () => ({
+  checkStandingInstructionsForRelease: (...args: unknown[]) => standingState.check(...args),
+}));
+
 import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentPolicy } from '@breeze/shared';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
@@ -782,6 +789,35 @@ describe('checkAgentReleaseAuthority', () => {
       grantId: 'g1', revisionId: 'r1', partnerId: 'partner-1', grantorUserId: 'u1', scopeOrgId: null, partnerWide: true,
       orgIds: new Set(['org-1']), siteIds: null, permissionKeys: new Set(['*:*']), toolAllowlist: null,
       deniedTools: new Set(['manage_ai_agents']), orgTerms: new Map(), status: 'active', ...o,
+    });
+
+    it('#10428 W06 Review Focus 3 (Tier 3): an instruction confirmed after the intent was raised refuses at release (terminal)', async () => {
+      seedHappyRows({ run: grantRun() });
+      grantState.resolveGrantCeiling.mockResolvedValue(ceiling());
+      const details = { instructionId: 'i-1', text: "don't reboot PC-01", reason: 'Refused: this now conflicts with a standing instruction. Ask the user to lift it, or act from the device page.' };
+      standingState.check.mockResolvedValueOnce({ errorCode: 'standing_instruction_denied', details });
+      await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toEqual({
+        ok: false, errorCode: 'standing_instruction_denied', details: { ...details, grantId: 'g1', grantRevisionId: 'r1' },
+      });
+      expect(standingState.check).toHaveBeenCalledWith(expect.objectContaining({ id: expect.any(String) }), expect.objectContaining({ grantId: 'g1' }));
+    });
+
+    it('#10428 W06: a standing check that cannot run is grant_ceiling_unavailable (pausable, captured)', async () => {
+      seedHappyRows({ run: grantRun() });
+      grantState.resolveGrantCeiling.mockResolvedValue(ceiling());
+      standingState.check.mockRejectedValueOnce(new Error('db down'));
+      await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toMatchObject({
+        ok: false, errorCode: 'grant_ceiling_unavailable', details: { grantId: 'g1', code: 'unavailable' },
+      });
+    });
+
+    it('#10428 W06: a run with no grant never runs the standing check, and a ceiling violation wins over it', async () => {
+      seedHappyRows();
+      await checkAgentReleaseAuthority(intentFixture());
+      seedHappyRows({ run: grantRun() });
+      grantState.resolveGrantCeiling.mockResolvedValue(ceiling({ orgIds: new Set(['another-org']) }));
+      await checkAgentReleaseAuthority(intentFixture());
+      expect(standingState.check).not.toHaveBeenCalled();
     });
 
     it('a run with no grant never calls resolveGrantCeiling', async () => {

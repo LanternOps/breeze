@@ -89,7 +89,7 @@ vi.mock('./invoiceService', () => ({
   requireSiteAccess: requireSiteAccessMock,
 }));
 
-import { createInvoicePayLink, checkoutSessionExpiry } from './invoiceCheckout';
+import { createInvoicePayLink, checkoutSessionExpiry, checkCheckoutPublicationInTx } from './invoiceCheckout';
 import { assertNoPendingRevocation } from './stripeSessionRevocation';
 import { InvoiceServiceError } from './invoiceTypes';
 
@@ -348,6 +348,36 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
     await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({ code: 'NOTHING_TO_PAY' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
+  });
+
+  // #3803 item 8: a legacy zero-decimal balance with a fraction has no correct
+  // Checkout charge — half-up made JPY 1000.50 a 1001 charge (over-charge) and
+  // 1000.40 a 1000 charge (stranded 0.40). Refused before any Stripe work.
+  it.each([['1000.50'], ['1000.40']])('refuses a JPY balance of %s that the currency cannot express', async (balance) => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
+      balance, depositDue: null, amountPaid: '0.00', currencyCode: 'JPY', invoiceNumber: 'INV-JPY-LEGACY',
+    }], [{ id: '44444444-4444-4444-8444-444444444444' }], []);
+    // The success path is fully wired, so only the representability guard can refuse.
+    getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'JPY' });
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_jpy_legacy', url: 'https://checkout.stripe.com/c/cs_jpy_legacy', payment_intent: 'pi_jpy_legacy' });
+
+    await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({ status: 409, code: 'BALANCE_NOT_REPRESENTABLE' });
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+    expect(prepareSaveMock).not.toHaveBeenCalled();
+    expect(insertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it('the publication check treats a locked balance the currency cannot express as raced', async () => {
+    // Session minted for 1001 when the balance read 1001.00; the LOCKED row now
+    // says 1000.50. Rounding the locked balance (1000.50 → 1001) made the two
+    // agree, so a session 0.50 over the balance was published.
+    reservation.lock.mockResolvedValueOnce({ invoice: { status: 'sent', currencyCode: 'JPY', depositDue: null, amountPaid: '0.00', balance: '1000.50' }, reservedAmount: '0.00' });
+    await expect(checkCheckoutPublicationInTx({} as never, { id: INV_ID, currencyCode: 'JPY' }, 1001))
+      .resolves.toEqual({ racedCollection: false, racedBalance: true });
+    reservation.lock.mockResolvedValueOnce({ invoice: { status: 'sent', currencyCode: 'JPY', depositDue: null, amountPaid: '0.00', balance: '1001.00' }, reservedAmount: '0.00' });
+    await expect(checkCheckoutPublicationInTx({} as never, { id: INV_ID, currencyCode: 'JPY' }, 1001))
+      .resolves.toEqual({ racedCollection: false, racedBalance: false });
   });
 
   // ---- multi-currency (#3777): warn-don't-block + friendly currency error ----

@@ -15,6 +15,8 @@ func TestRequiresElevationTrueForElevatedCommands(t *testing.T) {
 	elevated := []string{
 		tools.CmdReboot,
 		tools.CmdForceReboot,
+		tools.CmdOemUpdateRun,
+		tools.CmdOemObserve,
 		tools.CmdShutdown,
 		tools.CmdLock,
 		tools.CmdStartService,

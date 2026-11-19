@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
   fetchOrgContacts: vi.fn(),
-  fetchChildOverrides: vi.fn(),
+  fetchChildRecipients: vi.fn(),
   setChildRecipientOverride: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('./seriesApi', () => api);
@@ -19,11 +19,11 @@ describe('SeriesChildRecipients', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.fetchOrgContacts.mockResolvedValue(CONTACTS);
-    api.fetchChildOverrides.mockResolvedValue([{ contactId: 'c-2', mode: 'add' }]);
+    api.fetchChildRecipients.mockResolvedValue({ overrides: [{ contactId: 'c-2', mode: 'add' }], ruleContactIds: ['c-1'] });
   });
 
   it('shows each contact\'s override and who the rule already includes', async () => {
-    render(<SeriesChildRecipients reportId="rep-1" orgId="org-1" rule={{ primaryContact: true, roles: [] }} />);
+    render(<SeriesChildRecipients reportId="rep-1" orgId="org-1" />);
     expect(await screen.findByTestId('series-child-recipient-c-1')).toHaveValue('default');
     expect(screen.getByTestId('series-child-recipient-c-2')).toHaveValue('add');
     expect(screen.getByTestId('series-child-by-rule-c-1')).toHaveTextContent('Included by rule');
@@ -31,8 +31,23 @@ describe('SeriesChildRecipients', () => {
     expect(api.fetchOrgContacts).toHaveBeenCalledWith('org-1');
   });
 
+  it('shows no rule badge when the server could not resolve the rule (null)', async () => {
+    api.fetchChildRecipients.mockResolvedValue({ overrides: [], ruleContactIds: null });
+    render(<SeriesChildRecipients reportId="rep-1" orgId="org-1" />);
+    await screen.findByTestId('series-child-recipient-c-1');
+    expect(screen.queryByTestId('series-child-by-rule-c-1')).toBeNull();
+  });
+
+  it('shows no rule badge for a contact the server did not resolve (e.g. site-pinned role)', async () => {
+    api.fetchChildRecipients.mockResolvedValue({ overrides: [], ruleContactIds: ['c-2'] });
+    render(<SeriesChildRecipients reportId="rep-1" orgId="org-1" />);
+    await screen.findByTestId('series-child-recipient-c-1');
+    expect(screen.queryByTestId('series-child-by-rule-c-1')).toBeNull();
+    expect(screen.getByTestId('series-child-by-rule-c-2')).toBeInTheDocument();
+  });
+
   it('writes an override and keeps the new choice', async () => {
-    render(<SeriesChildRecipients reportId="rep-1" orgId="org-1" rule={null} />);
+    render(<SeriesChildRecipients reportId="rep-1" orgId="org-1" />);
     const select = await screen.findByTestId('series-child-recipient-c-1');
     fireEvent.change(select, { target: { value: 'remove' } });
     await waitFor(() => expect(api.setChildRecipientOverride).toHaveBeenCalledWith('rep-1', 'c-1', 'default', 'remove', expect.anything()));
@@ -41,9 +56,9 @@ describe('SeriesChildRecipients', () => {
 
   it('reloads the truth when a write fails', async () => {
     api.setChildRecipientOverride.mockRejectedValueOnce(new Error('network'));
-    render(<SeriesChildRecipients reportId="rep-1" orgId="org-1" rule={null} />);
+    render(<SeriesChildRecipients reportId="rep-1" orgId="org-1" />);
     fireEvent.change(await screen.findByTestId('series-child-recipient-c-2'), { target: { value: 'remove' } });
-    await waitFor(() => expect(api.fetchChildOverrides).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.fetchChildRecipients).toHaveBeenCalledTimes(2));
     expect(screen.getByTestId('series-child-recipient-c-2')).toHaveValue('add');
   });
 });

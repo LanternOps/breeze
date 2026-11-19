@@ -17,8 +17,22 @@ async function gfetch(url: string, token: string, init: RequestInit): Promise<Re
   return res;
 }
 
-/** Threaded reply from the support mailbox: createReply -> set body -> send. */
-export async function sendThreadedReply(t: GraphSendTarget, originalMessageId: string, html: string): Promise<void> {
+export interface ThreadedReplyOptions {
+  /**
+   * Replace Graph's default `RE: <original subject>` on the draft. Only the
+   * autoresponse sets this (its rendered template subject carries the ticket
+   * token); technician replies leave it unset and keep `RE:`.
+   */
+  subject?: string;
+}
+
+/** Threaded reply from the support mailbox: createReply -> set body (and optional subject) -> send. */
+export async function sendThreadedReply(
+  t: GraphSendTarget,
+  originalMessageId: string,
+  html: string,
+  opts?: ThreadedReplyOptions,
+): Promise<void> {
   const token = await getMailboxToken(t.tenantId);
   const base = `${GRAPH}/users/${encodeURIComponent(t.mailbox)}/messages`;
 
@@ -30,7 +44,10 @@ export async function sendThreadedReply(t: GraphSendTarget, originalMessageId: s
 
   await gfetch(`${base}/${encodeURIComponent(draft.id)}`, token, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ body: { contentType: 'HTML', content: html } }),
+    body: JSON.stringify({
+      ...(opts?.subject ? { subject: opts.subject } : {}),
+      body: { contentType: 'HTML', content: html },
+    }),
   });
 
   await gfetch(`${base}/${encodeURIComponent(draft.id)}/send`, token, {

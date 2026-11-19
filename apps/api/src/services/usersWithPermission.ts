@@ -12,7 +12,9 @@
  *    role/membership resolution: role ids granting the permission — INCLUDING
  *    wildcard `'*'` grants, which is why both `resource` and `action` are
  *    matched with `inArray([wanted, '*'])` rather than plain equality — via
- *    role_permissions ⋈ permissions, then organization_users direct members
+ *    role_permissions ⋈ permissions PLUS every role that inherits one of those
+ *    grants through `roles.parent_role_id` (roleInheritance, #9600/#11702),
+ *    then organization_users direct members
  *    plus partner_users of the org's owning partner whose org_access is 'all'
  *    or 'selected' ∋ orgId.
  *  - Both candidate queries additionally join `users` and require
@@ -28,26 +30,23 @@
 
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { organizations, organizationUsers, partnerUsers, permissions, rolePermissions, users } from '../db/schema';
+import { getRoleIdsHoldingPermission } from './roleInheritance';
+import { organizations, organizationUsers, partnerUsers, users } from '../db/schema';
 
 export interface PermissionPair {
   resource: string;
   action: string;
 }
 
-/** Role ids granting `permission`, wildcard-aware ('*' resource/action). Caller owns the DB context. */
+/**
+ * Role ids holding `permission` at runtime, wildcard-aware ('*' resource/action):
+ * the roles carrying it in their OWN role_permissions rows plus every role
+ * that inherits it through `parent_role_id` (services/roleInheritance.ts,
+ * #9600/#11702). Global; the membership reads below narrow it to the org or
+ * partner. Caller owns the DB context.
+ */
 async function grantingRoleIdsFor(permission: PermissionPair): Promise<string[]> {
-  const grantingRoles = await db
-    .select({ roleId: rolePermissions.roleId })
-    .from(rolePermissions)
-    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-    .where(
-      and(
-        inArray(permissions.resource, [permission.resource, '*']),
-        inArray(permissions.action, [permission.action, '*']),
-      ),
-    );
-  return [...new Set(grantingRoles.map((r) => r.roleId))];
+  return getRoleIdsHoldingPermission(permission);
 }
 
 /**

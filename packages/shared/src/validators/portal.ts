@@ -42,8 +42,64 @@ const CSS_DANGEROUS_PATTERNS: ReadonlyArray<{ pattern: RegExp; label: string }> 
   { pattern: /behavior\s*:/i, label: 'behavior:' }
 ];
 
-// Matches url(...), with or without quotes, capturing the raw value.
-const CSS_URL_PATTERN = /url\(\s*(['"]?)([^'")]*)\1\s*\)/gi;
+const CSS_WHITESPACE = /\s/;
+
+function isCssUrlStop(ch: string | undefined): boolean {
+  return ch === "'" || ch === '"' || ch === ')';
+}
+
+/**
+ * The raw value of each url(...) in `css`, with or without quotes, in order.
+ * It reports exactly what `/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi` would capture,
+ * in time linear in the length of `css` (this check runs on every portal page
+ * load).
+ */
+function* cssUrlValues(css: string): Generator<string> {
+  const opener = /url\(/gi;
+  // nextStop[k]: index of the first quote or `)` at or after k (css.length if none).
+  let nextStop: Int32Array | null = null;
+  const stopAt = (from: number): number => {
+    if (!nextStop) {
+      nextStop = new Int32Array(css.length + 1);
+      nextStop[css.length] = css.length;
+      for (let k = css.length - 1; k >= 0; k -= 1) nextStop[k] = isCssUrlStop(css[k]) ? k : nextStop[k + 1]!;
+    }
+    return nextStop[from]!;
+  };
+  const skipWhitespace = (from: number): number => {
+    let k = from;
+    while (k < css.length && CSS_WHITESPACE.test(css[k]!)) k += 1;
+    return k;
+  };
+
+  let from = 0;
+  for (;;) {
+    opener.lastIndex = from;
+    const open = opener.exec(css);
+    if (!open) return;
+    const start = skipWhitespace(open.index + 4);
+    const quote = css[start];
+    if (quote === "'" || quote === '"') {
+      const end = stopAt(start + 1);
+      if (css[end] === quote) {
+        const close = skipWhitespace(end + 1);
+        if (css[close] === ')') {
+          yield css.slice(start + 1, end);
+          from = close + 1;
+          continue;
+        }
+      }
+    } else {
+      const end = stopAt(start);
+      if (css[end] === ')') {
+        yield css.slice(start, end);
+        from = end + 1;
+        continue;
+      }
+    }
+    from = open.index + 1;
+  }
+}
 
 // CSS identifiers/at-keywords support backslash escapes (CSS Syntax Module
 // §4.3.7): `\` + 1-6 hex digits (+ one optional trailing whitespace) decodes
@@ -83,10 +139,8 @@ export function findUnsafePortalCssPattern(css: string): string | null {
     if (pattern.test(decoded)) return label;
   }
 
-  CSS_URL_PATTERN.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = CSS_URL_PATTERN.exec(decoded)) !== null) {
-    const value = (match[2] ?? '').trim();
+  for (const raw of cssUrlValues(decoded)) {
+    const value = raw.trim();
     if (!/^(https:|data:)/i.test(value)) {
       return value ? `url(${value})` : 'url()';
     }
@@ -226,12 +280,70 @@ export type UpdatePortalSettingsInput = z.infer<typeof updatePortalSettingsSchem
 // portal users by id; update a portal user's editable fields. `status` here
 // is deliberately limited to active/disabled — 'invited' is a system-set
 // state, not something an MSP can set directly via this endpoint.
+//
+// `contactId` (portal registration W1, #11378): bind the login to THIS contact.
+// The invite email must equal the contact's email (case-insensitive), because
+// binding a contact grants its ticket history; the API refuses a mismatch.
 export const invitePortalUserSchema = z.object({
   email: z.string().email().max(255),
   name: z.string().min(1).max(255).optional(),
-  message: z.string().max(1000).optional()
+  message: z.string().max(1000).optional(),
+  contactId: z.string().guid().optional()
 }).strict();
 export type InvitePortalUserInput = z.infer<typeof invitePortalUserSchema>;
+
+// Batch "Give portal access" from the Contacts tab. Each invite sends one
+// email synchronously inside the request, so the batch is capped.
+export const INVITE_CONTACTS_MAX = 100;
+export const inviteContactsToPortalSchema = z.object({
+  contactIds: z.array(z.string().guid()).min(1).max(INVITE_CONTACTS_MAX)
+}).strict();
+export type InviteContactsToPortalInput = z.infer<typeof inviteContactsToPortalSchema>;
+
+// Per-contact outcome of a batch invite. Exactly these five: any further
+// detail rides in `reason` / `emailSent`, never as a sixth outcome.
+export const CONTACT_PORTAL_INVITE_OUTCOMES = [
+  'invited',
+  'already_has_access',
+  'no_email',
+  'email_bound_to_other_contact',
+  'duplicate_email_in_batch'
+] as const;
+export type ContactPortalInviteOutcome = (typeof CONTACT_PORTAL_INVITE_OUTCOMES)[number];
+
+/** Why a contact counts as `already_has_access` (or why a single invite was refused). */
+export type AlreadyHasAccessReason = 'active' | 'disabled' | 'external_identity' | 'login_email_differs';
+
+/** One contact's result, keyed on `outcome` so impossible combinations do not type-check. */
+export type ContactPortalInviteResult =
+  | {
+      contactId: string;
+      outcome: 'invited';
+      portalUserId: string;
+      /** false: the login exists but the email did not go out (use Resend). */
+      emailSent: boolean;
+    }
+  | { contactId: string; outcome: 'already_has_access'; portalUserId: string; reason: AlreadyHasAccessReason }
+  | { contactId: string; outcome: 'email_bound_to_other_contact'; portalUserId: string }
+  | { contactId: string; outcome: 'no_email' | 'duplicate_email_in_batch' };
+
+/** `POST …/portal-users/invite-contacts` response body. */
+export type ContactPortalInviteResponse = {
+  data: { results: ContactPortalInviteResult[]; counts: Record<ContactPortalInviteOutcome, number> };
+};
+
+/** Stable `code` values on invite refusals (`{ error, code }` bodies). */
+export const PORTAL_INVITE_ERROR_CODES = {
+  PORTAL_INVITE_CONTACT_NOT_FOUND: 'PORTAL_INVITE_CONTACT_NOT_FOUND',
+  PORTAL_INVITE_CONTACT_NO_EMAIL: 'PORTAL_INVITE_CONTACT_NO_EMAIL',
+  PORTAL_INVITE_EMAIL_MISMATCH: 'PORTAL_INVITE_EMAIL_MISMATCH',
+  PORTAL_INVITE_CONTACT_CONFLICT: 'PORTAL_INVITE_CONTACT_CONFLICT',
+  PORTAL_INVITE_LOGIN_EMAIL_DIFFERS: 'PORTAL_INVITE_LOGIN_EMAIL_DIFFERS',
+  PORTAL_INVITE_ALREADY_ACTIVE: 'PORTAL_INVITE_ALREADY_ACTIVE',
+  PORTAL_INVITE_USER_DISABLED: 'PORTAL_INVITE_USER_DISABLED',
+  PORTAL_INVITE_EXTERNAL_IDENTITY: 'PORTAL_INVITE_EXTERNAL_IDENTITY'
+} as const;
+export type PortalInviteErrorCode = keyof typeof PORTAL_INVITE_ERROR_CODES;
 
 export const bulkInvitePortalUsersSchema = z.object({
   userIds: z.array(z.string().guid()).optional()

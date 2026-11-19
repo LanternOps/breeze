@@ -1,0 +1,158 @@
+﻿2026-11-08T20:21:33.6120614Z Current runner version: '2.338.2'
+2026-11-08T20:21:33.6155993Z ##[group]Runner Image Provisioner
+2026-11-08T20:21:33.6157277Z Hosted Compute Agent
+2026-11-08T20:22:25.5823609Z [1m[30m[46m RUN [49m[39m[22m [36mv4.1.12 [39m[90m/home/runner/work/breeze/breeze/apps/api[39m
+2026-11-08T20:22:25.5824356Z 
+2026-11-08T20:22:26.6213211Z [version] APP_VERSION not set, using fallback: 0.2.0
+2026-11-08T20:22:30.2896399Z [database] Request pool configuration source: explicit
+2026-11-08T20:22:31.6753891Z [integration global-setup] Running migrations (once per run)...
+2026-11-08T20:22:31.6870676Z [auto-migrate] Migrations directory: /home/runner/work/breeze/breeze/apps/api/migrations
+2026-11-08T20:22:40.0873665Z [integration global-setup] Database ready for testing
+2026-11-08T20:22:45.0626443Z [90mstdout[2m | src/__tests__/integration/wispGrantsRls.integration.test.ts
+2026-11-08T20:22:47.0738321Z [90mstdout[2m | src/__tests__/integration/wispGrantsRls.integration.test.ts
+2026-11-08T20:23:00.4392588Z [90mstdout[2m | src/__tests__/integration/wispGrantsRls.integration.test.ts
+2026-11-08T20:23:00.4394697Z [90mstdout[2m | src/__tests__/integration/wispGrantsRls.integration.test.ts
+2026-11-08T20:23:22.1850775Z [90mstdout[2m | src/__tests__/integration/wispGrantsRls.integration.test.ts[2m > [22m[2mgrant lifecycle through the service (real step-up in test Redis)[2m > [22m[2mgrantor creates (revision 1), refreshes (revision 2, revision 1 row byte-identical), revokes
+2026-11-08T20:24:09.0723508Z  [32m✓[39m src/__tests__/integration/wispGrantsRls.integration.test.ts [2m([22m[2m54 tests[22m[2m)[22m[33m 68664[2mms[22m[39m
+2026-11-08T20:24:09.0725669Z      [33m[2m✓[22m[39m cross-partner forge: partner B context inserting a grant with partner_id = A → 42501 [33m 1082[2mms[22m[39m
+2026-11-08T20:24:09.0727932Z      [33m[2m✓[22m[39m non-grantor insert: partner A context with userId = admin inserting grantor_user_id = grantor → 42501 [33m 1054[2mms[22m[39m
+2026-11-08T20:24:09.0730246Z      [33m[2m✓[22m[39m the grantor may insert their own grant in their partner context [33m 1029[2mms[22m[39m
+2026-11-08T20:24:09.0731554Z      [33m[2m✓[22m[39m org of another partner: composite (org_id, partner_id) FK rejects → 23503 [33m 1056[2mms[22m[39m
+2026-11-08T20:24:09.0732578Z      [33m[2m✓[22m[39m a grantor of another partner: composite (grantor_user_id, partner_id) FK rejects → 23503 [33m 1083[2mms[22m[39m
+2026-11-08T20:24:09.0734105Z      [33m[2m✓[22m[39m second live grant for the same (grantor, scope) → 23505 on wisp_grants_one_live_per_scope_uq; a revoked one does not block [33m 1306[2mms[22m[39m
+2026-11-08T20:24:09.0735136Z      [33m[2m✓[22m[39m partner admin (userId ≠ grantor) may UPDATE status → revoked [33m 1058[2mms[22m[39m
+2026-11-08T20:24:09.0736563Z      [33m[2m✓[22m[39m partner admin cannot widen: UPDATE expires_at / current_revision_id → 42501 from wisp_grants_update_guard [33m 1047[2mms[22m[39m
+2026-11-08T20:24:09.0738351Z      [33m[2m✓[22m[39m #10390: partner admin MAY update summary_refine, either way, like budget [33m 1090[2mms[22m[39m
+2026-11-08T20:24:09.0739995Z      [33m[2m✓[22m[39m partner admin MAY update budget_cents_per_day and floor_tick_minutes (w00 A6); floor_tick_minutes 10 or 241 → 23514 [33m 1046[2mms[22m[39m
+2026-11-08T20:24:09.0743945Z      [33m[2m✓[22m[39m nobody can substitute the grantor: UPDATE grantor_user_id → 42501 (admin and system alike) [33m 1069[2mms[22m[39m
+2026-11-08T20:24:09.0745782Z      [33m[2m✓[22m[39m partner admin cannot resume: UPDATE status paused → active → 42501 [33m 1180[2mms[22m[39m
+2026-11-08T20:24:09.0747693Z      [33m[2m✓[22m[39m the grantor cannot relabel a system pause as user_paused, nor resume it directly → 42501 [33m 1111[2mms[22m[39m
+2026-11-08T20:24:09.0749318Z      [33m[2m✓[22m[39m a revoked grant cannot change status again → 42501 [33m 1094[2mms[22m[39m
+2026-11-08T20:24:09.0751231Z      [33m[2m✓[22m[39m grants are revoked, never deleted by a user: DELETE in partner context → 42501 [33m 1045[2mms[22m[39m
+2026-11-08T20:24:09.0753324Z      [33m[2m✓[22m[39m revisions are append-only: UPDATE → 42501; DELETE as partner → 42501; system DELETE of the grant cascades the revisions [33m 1056[2mms[22m[39m
+2026-11-08T20:24:09.0755224Z      [33m[2m✓[22m[39m only the grantor appends a revision: partner admin INSERT → 42501 [33m 1042[2mms[22m[39m
+2026-11-08T20:24:09.0756971Z      [33m[2m✓[22m[39m an org-scoped token cannot SELECT a grant of its own partner (partner-axis, no org branch) [33m 1046[2mms[22m[39m
+2026-11-08T20:24:09.0759074Z      [33m[2m✓[22m[39m a run cannot pin a grant of another partner (ai_agent_runs_grant_tenant_guard → 23503) [33m 1194[2mms[22m[39m
+2026-11-08T20:24:09.0761432Z      [33m[2m✓[22m[39m grantor creates (revision 1), refreshes (revision 2, revision 1 row byte-identical), revokes [33m 1131[2mms[22m[39m
+2026-11-08T20:24:09.0763696Z      [33m[2m✓[22m[39m createGrant with a step-up minted for a different requestedCeilingHash → step_up_required and no row [33m 1059[2mms[22m[39m
+2026-11-08T20:24:09.0765707Z      [33m[2m✓[22m[39m resolveGrantCeiling after the grantor role loses tickets:write drops the key from permissionKeys without pausing [33m 1075[2mms[22m[39m
+2026-11-08T20:24:09.0767020Z      [33m[2m✓[22m[39m reconcileGrantsForUser pauses with grantor_suspended after users.status = disabled, and resumes after re-activation [33m 1070[2mms[22m[39m
+2026-11-08T20:24:09.0768276Z      [33m[2m✓[22m[39m reconcileActiveGrants expires a grant whose expires_at passed, and never resumes a user_paused grant [33m 1059[2mms[22m[39m
+2026-11-08T20:24:09.0769522Z      [33m[2m✓[22m[39m a grantor narrowed to selected-with-no-orgs is PAUSED, even though the hidden Quick Support org is still "reachable" [33m 1076[2mms[22m[39m
+2026-11-08T20:24:09.0770841Z      [33m[2m✓[22m[39m a partner-wide preview never pins the Quick Support org [33m 1034[2mms[22m[39m
+2026-11-08T20:24:09.0771899Z      [33m[2m✓[22m[39m two concurrent createGrant calls for the same scope: exactly one succeeds, the other is already_active [33m 1084[2mms[22m[39m
+2026-11-08T20:24:09.0772923Z      [33m[2m✓[22m[39m a *:* partner admin is a valid grantor, and the ceiling honours the wildcard [33m 1092[2mms[22m[39m
+2026-11-08T20:24:09.0774040Z      [33m[2m✓[22m[39m enforces the partner's maxGrants from partner_entitlements: the second live grant → GrantLimitReachedError, no row [33m 1107[2mms[22m[39m
+2026-11-08T20:24:09.0775521Z      [33m[2m✓[22m[39m the plan default applies with no row: a pro partner is enabled and capped at 25, so a create succeeds [33m 1082[2mms[22m[39m
+2026-11-08T20:24:09.0776866Z      [33m[2m✓[22m[39m a disabled wisp entitlement refuses creation (entitlement_required); the existing grant stays active and still refreshes [33m 1131[2mms[22m[39m
+2026-11-08T20:24:09.0777987Z      [33m[2m✓[22m[39m a free-plan partner (wisp default-disabled, no row) cannot create a grant [33m 1074[2mms[22m[39m
+2026-11-08T20:24:09.0780328Z      [33m[2m✓[22m[39m a run admitted under the grant carries grant_id/grant_revision_id and the intersected allowlist; a same-grant child is admitted; another grant throws GrantDepthExceededError [33m 1233[2mms[22m[39m
+2026-11-08T20:24:09.0782884Z      [33m[2m✓[22m[39m a revoked grant skips grant_inactive and writes no run [33m 1107[2mms[22m[39m
+2026-11-08T20:24:09.0784862Z      [33m[2m✓[22m[39m the grant pin is immutable after admission: clearing it → 42501 (ai_agent_runs_grant_tenant_guard) [33m 1157[2mms[22m[39m
+2026-11-08T20:24:09.0787356Z      [33m[2m✓[22m[39m release under the real ceiling: paused → grant_inactive; revoked → grant_ended; org left the ceiling → grant_ceiling_violation(org) [33m 1205[2mms[22m[39m
+2026-11-08T20:24:09.0789586Z      [33m[2m✓[22m[39m cascadeDeleteOrg removes the org's org-scoped grant (and its revisions), keeps the partner-wide grant [33m 2632[2mms[22m[39m
+2026-11-08T20:24:09.0791115Z      [33m[2m✓[22m[39m cascadeDeleteOrg succeeds with a run pinned to the org-scoped grant (runs go before the grant; no FK blocks erasure) [33m 2499[2mms[22m[39m
+2026-11-08T20:24:09.0792241Z      [33m[2m✓[22m[39m cascadeDeletePartner erases grants and revisions without tripping the FK cycle [33m 4597[2mms[22m[39m
+2026-11-08T20:24:09.0792973Z      [33m[2m✓[22m[39m a new grant is off [33m 1054[2mms[22m[39m
+2026-11-08T20:24:09.0793676Z      [33m[2m✓[22m[39m a request-context INSERT cannot be born switched on → 42501 [33m 1050[2mms[22m[39m
+2026-11-08T20:24:09.0794415Z      [33m[2m✓[22m[39m a partner admin cannot turn it on → 42501 [33m 1059[2mms[22m[39m
+2026-11-08T20:24:09.0795112Z      [33m[2m✓[22m[39m a partner admin cannot turn it off either → 42501 [33m 1061[2mms[22m[39m
+2026-11-08T20:24:09.0796115Z      [33m[2m✓[22m[39m a partner admin may still pause, revoke and change the budget of a switched-on grant, and the switch is untouched [33m 1069[2mms[22m[39m
+2026-11-08T20:24:09.0797237Z      [33m[2m✓[22m[39m the grantor cannot turn it on while the current revision lacks the snapshot flag → 42501 [33m 1082[2mms[22m[39m
+2026-11-08T20:24:09.0798152Z      [33m[2m✓[22m[39m a flagged revision of ANOTHER grant does not satisfy the check [33m 1070[2mms[22m[39m
+2026-11-08T20:24:09.0799105Z      [33m[2m✓[22m[39m system scope is held to the same revision rule: nothing turns it on without a flagged revision [33m 1036[2mms[22m[39m
+2026-11-08T20:24:09.0800343Z      [33m[2m✓[22m[39m the grantor can turn it off, and back on while the current revision is still flagged [33m 1055[2mms[22m[39m
+2026-11-08T20:24:09.0801369Z      [33m[2m✓[22m[39m moving a switched-on grant to an unflagged revision without clearing the switch → 42501 [33m 1054[2mms[22m[39m
+2026-11-08T20:24:09.0802397Z      [33m[2m✓[22m[39m erasing the current revision clears the switch and never blocks the erasure (FK SET NULL) [33m 1055[2mms[22m[39m
+2026-11-08T20:24:09.0803366Z      [33m[2m✓[22m[39m erasure of a switched-on grant: cascadeDeletePartner still completes [33m 4319[2mms[22m[39m
+2026-11-08T20:24:09.0804318Z      [33m[2m✓[22m[39m GET /thread/:id reads the pin through its own SQL: live AND pinned, per revision [33m 1196[2mms[22m[39m
+2026-11-08T20:24:09.0805227Z      [33m[2m✓[22m[39m the existing guard rules still hold after the function was replaced [33m 1059[2mms[22m[39m
+2026-11-08T20:24:09.0806495Z      [33m[2m✓[22m[39m enable through the service: a real step-up, the flagged revision, the column, and the ceiling all line up [33m 1200[2mms[22m[39m
+2026-11-08T20:25:05.8436573Z  [32m✓[39m src/__tests__/integration/aiOperatorIdentityOnboardingGate.integration.test.ts [2m([22m[2m28 tests[22m[2m | [22m[33m2 skipped[39m[2m)[22m[33m 49110[2mms[22m[39m
+2026-11-08T20:25:05.8439244Z      [33m[2m✓[22m[39m re-waking and RE-RELEASING the create child never reaches the executor a second time: one operation row, one child, one executor call [33m 2040[2mms[22m[39m
+2026-11-08T20:25:05.8443568Z      [33m[2m✓[22m[39m the create step RE-ENTERED at the same revision (a crash between settle and advance) finds its own operation and re-mints nothing [33m 1767[2mms[22m[39m
+2026-11-08T20:25:05.8446455Z      [33m[2m✓[22m[39m a create re-planned under a FRESH operation key needs a fresh human approval, and a lagging read then meets the provider's UPN uniqueness: one account, ever [33m 1855[2mms[22m[39m
+2026-11-08T20:25:05.8449112Z      [33m[2m✓[22m[39m stage 1, stop after 0 settled create effect(s): no provisioning approval, no provisioning effect, no frozen account [33m 1420[2mms[22m[39m
+2026-11-08T20:25:05.8451516Z      [33m[2m✓[22m[39m stage 1, stop after 1 settled create effect(s): no provisioning approval, no provisioning effect, no frozen account [33m 1694[2mms[22m[39m
+2026-11-08T20:25:05.8454062Z      [33m[2m✓[22m[39m stage 1 with Google in scope: after the create settles, nothing is provisioned until the hand-made Google account is ticked [33m 1732[2mms[22m[39m
+2026-11-08T20:25:05.8456851Z      [33m[2m✓[22m[39m stage 2, stop after 0 settled provisioning effect(s): a plan-order prefix, Google before Microsoft 365, accounts and the create unchanged [33m 1777[2mms[22m[39m
+2026-11-08T20:25:05.8459429Z      [33m[2m✓[22m[39m stage 2, stop after 1 settled provisioning effect(s): a plan-order prefix, Google before Microsoft 365, accounts and the create unchanged [33m 1879[2mms[22m[39m
+2026-11-08T20:25:05.8462882Z      [33m[2m✓[22m[39m stage 2, stop after 2 settled provisioning effect(s): a plan-order prefix, Google before Microsoft 365, accounts and the create unchanged [33m 2055[2mms[22m[39m
+2026-11-08T20:25:05.8465451Z      [33m[2m✓[22m[39m stage 2, stop after 3 settled provisioning effect(s): a plan-order prefix, Google before Microsoft 365, accounts and the create unchanged [33m 2025[2mms[22m[39m
+2026-11-08T20:25:05.8468022Z      [33m[2m✓[22m[39m stage 2, stop after 4 settled provisioning effect(s): a plan-order prefix, Google before Microsoft 365, accounts and the create unchanged [33m 2157[2mms[22m[39m
+2026-11-08T20:25:05.8470918Z      [33m[2m✓[22m[39m stage 2, stop after 5 settled provisioning effect(s): a plan-order prefix, Google before Microsoft 365, accounts and the create unchanged [33m 2236[2mms[22m[39m
+2026-11-08T20:25:05.8474130Z      [33m[2m✓[22m[39m 4-twin. a forced no_account_resolved hand-off BETWEEN the stages leaves a usable account: no bump, nothing provisioned, the hand-off names the account and what remains, and the approver can still reveal its credential [33m 1689[2mms[22m[39m
+2026-11-08T20:25:05.8477161Z      [33m[2m✓[22m[39m the stage transition never runs while the create is IN FLIGHT: no bump, the dispatched create child is not cancelled, its operation untouched (B7) [33m 1535[2mms[22m[39m
+2026-11-08T20:25:05.8480124Z      [33m[2m✓[22m[39m a role-assignable group discovery could not see is refused by the executor at dispatch (unsupported_group_type): the walk hands off naming what remains, no membership is written [33m 2048[2mms[22m[39m
+2026-11-08T20:25:05.8482994Z      [33m[2m✓[22m[39m 5. an in-set effect minted by the coordinator releases — at create_accounts (r) and at provision_effects (r+1) [33m 2309[2mms[22m[39m
+2026-11-08T20:25:05.8485721Z      [33m[2m✓[22m[39m 6. the intent's argument row mutated after mint is refused AT RELEASE (argument_digest_mismatch) — both stages, and the create never reaches the executor [33m 2336[2mms[22m[39m
+2026-11-08T20:25:05.8488122Z      [33m[2m✓[22m[39m 7. an ordinal outside the approved set is refused at mint and at release (effect_not_in_set) — both stages [33m 2322[2mms[22m[39m
+2026-11-08T20:25:05.8490238Z      [33m[2m✓[22m[39m 8. a catalog tool that is NOT in this plan is refused at mint and at release (tool_not_in_set) [33m 1784[2mms[22m[39m
+2026-11-08T20:25:05.8492453Z      [33m[2m✓[22m[39m 9. after the stage bump r → r+1, a child under r is refused, the r approval is superseded with its approver intact, and NOTHING is cancelled (B7) [33m 1649[2mms[22m[39m
+2026-11-08T20:25:05.8495045Z      [33m[2m✓[22m[39m 10a. creation effect ROWS mutated under a PENDING plan: the release recomputes the effect digest and fails before markPlanApproved (content_changed) [33m 1410[2mms[22m[39m
+2026-11-08T20:25:05.8497621Z      [33m[2m✓[22m[39m 10b. provisioning effect ROWS mutated under an APPROVED plan: a child is refused at release by the re-sealed set (effect_set_digest_mismatch) [33m 1813[2mms[22m[39m
+2026-11-08T20:25:05.8500371Z      [33m[2m✓[22m[39m 11. m365_create_user absent from the agent's allowlist is refused at release (live policy) and at mint (frozen snapshot): no account is created [33m 2453[2mms[22m[39m
+2026-11-08T20:25:05.8502690Z      [33m[2m✓[22m[39m 12. four eyes: the requester cannot approve EITHER stage's operator_plan intent [33m 2148[2mms[22m[39m
+2026-11-08T20:25:05.8504704Z      [33m[2m✓[22m[39m 13a. a forged MIXED creation set (re-sealed, so the digest passes) is refused at mint and at release by the secrecy check alone [33m 1465[2mms[22m[39m
+2026-11-08T20:25:05.8507355Z      [33m[2m✓[22m[39m 13b. a forged ALL-secret-bearing creation set holding a tool the recipe never plans passes the secrecy check and is refused by the digest seal alone [33m 1464[2mms[22m[39m
+2026-11-08T20:25:40.0112832Z  [32m✓[39m src/services/autopay/enrollmentService.integration.test.ts [2m([22m[2m31 tests[22m[2m)[22m[33m 29608[2mms[22m[39m
+2026-11-08T20:25:40.0114779Z      [33m[2m✓[22m[39m concurrent stale completions cannot reactivate a stopped enrollment [33m 999[2mms[22m[39m
+2026-11-08T20:25:40.0116955Z      [33m[2m✓[22m[39m a rolled-back stop cannot detach, and committed stop keeps a processing debit intact [33m 967[2mms[22m[39m
+2026-11-08T20:25:40.0118017Z      [33m[2m✓[22m[39m concurrent current completions persist activated exactly once [33m 946[2mms[22m[39m
+2026-11-08T20:25:40.0119192Z      [33m[2m✓[22m[39m concurrent current completions persist pending_verification exactly once [33m 926[2mms[22m[39m
+2026-11-08T20:25:40.0120586Z      [33m[2m✓[22m[39m a completed setup for a suspended partner saves no method and leaves automatic payments off [33m 911[2mms[22m[39m
+2026-11-08T20:25:40.0121689Z      [33m[2m✓[22m[39m a completed setup for a churned partner saves no method and leaves automatic payments off [33m 895[2mms[22m[39m
+2026-11-08T20:25:40.0122732Z      [33m[2m✓[22m[39m a completed setup for a deleted partner saves no method and leaves automatic payments off [33m 938[2mms[22m[39m
+2026-11-08T20:26:36.0094139Z  [32m✓[39m src/__tests__/integration/remoteDesktopTerminalIntent.integration.test.ts [2m([22m[2m48 tests[22m[2m)[22m[33m 52056[2mms[22m[39m
+2026-11-08T20:26:36.0097284Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1114[2mms[22m[39m
+2026-11-08T20:26:36.0098611Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1094[2mms[22m[39m
+2026-11-08T20:26:36.0100799Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1080[2mms[22m[39m
+2026-11-08T20:26:36.0102773Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1092[2mms[22m[39m
+2026-11-08T20:26:36.0104653Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1148[2mms[22m[39m
+2026-11-08T20:26:36.0106364Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1140[2mms[22m[39m
+2026-11-08T20:26:36.0107357Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1078[2mms[22m[39m
+2026-11-08T20:26:36.0108292Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1082[2mms[22m[39m
+2026-11-08T20:26:36.0109208Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1050[2mms[22m[39m
+2026-11-08T20:26:36.0110536Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1065[2mms[22m[39m
+2026-11-08T20:26:36.0111484Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1044[2mms[22m[39m
+2026-11-08T20:26:36.0112437Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1057[2mms[22m[39m
+2026-11-08T20:26:36.0113344Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1056[2mms[22m[39m
+2026-11-08T20:26:36.0114257Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1080[2mms[22m[39m
+2026-11-08T20:26:36.0115145Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1047[2mms[22m[39m
+2026-11-08T20:26:36.0116322Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1056[2mms[22m[39m
+2026-11-08T20:26:36.0117207Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1043[2mms[22m[39m
+2026-11-08T20:26:36.0118263Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1058[2mms[22m[39m
+2026-11-08T20:26:36.0119180Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1055[2mms[22m[39m
+2026-11-08T20:26:36.0120360Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1058[2mms[22m[39m
+2026-11-08T20:26:36.0121264Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1083[2mms[22m[39m
+2026-11-08T20:26:36.0122159Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1119[2mms[22m[39m
+2026-11-08T20:26:36.0123056Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1047[2mms[22m[39m
+2026-11-08T20:26:36.0123963Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1068[2mms[22m[39m
+2026-11-08T20:26:36.0124846Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1124[2mms[22m[39m
+2026-11-08T20:26:36.0125743Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1106[2mms[22m[39m
+2026-11-08T20:26:36.0126627Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1059[2mms[22m[39m
+2026-11-08T20:26:36.0127517Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1085[2mms[22m[39m
+2026-11-08T20:26:36.0128417Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1099[2mms[22m[39m
+2026-11-08T20:26:36.0129313Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1090[2mms[22m[39m
+2026-11-08T20:26:36.0130441Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1114[2mms[22m[39m
+2026-11-08T20:26:36.0131347Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1088[2mms[22m[39m
+2026-11-08T20:26:36.0132237Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1078[2mms[22m[39m
+2026-11-08T20:26:36.0133133Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1061[2mms[22m[39m
+2026-11-08T20:26:36.0134024Z        [33m[2m✓[22m[39m bumps the shared generation, records it as terminal, and sets the phase [33m 1075[2mms[22m[39m
+2026-11-08T20:26:36.0134927Z        [33m[2m✓[22m[39m is a no-op on a row that is already terminal (never rewrites a terminal decision) [33m 1054[2mms[22m[39m
+2026-11-08T20:26:36.0135891Z      [33m[2m✓[22m[39m a session of a non-desktop type is confirmed the moment it commits (no endpoint to ask) [33m 1077[2mms[22m[39m
+2026-11-08T20:26:36.0137037Z      [33m[2m✓[22m[39m terminal-before-publication: a start whose terminal intent committed first is refused and publishes nothing [33m 1089[2mms[22m[39m
+2026-11-08T20:26:36.0138071Z      [33m[2m✓[22m[39m REST End returns 200 (not 202) with the termination phase in the body [33m 1082[2mms[22m[39m
+2026-11-08T20:26:36.0139124Z      [33m[2m✓[22m[39m publication-before-terminal: phase moves pending → confirmed when the agent acknowledges the exact stop [33m 1153[2mms[22m[39m
+2026-11-08T20:26:36.0140409Z      [33m[2m✓[22m[39m a stale or foreign stop result cannot confirm the terminal intent [33m 1219[2mms[22m[39m
+2026-11-08T20:26:36.0141498Z      [33m[2m✓[22m[39m a confirmed row stays confirmed: a second acknowledgement matches nothing [33m 1069[2mms[22m[39m
+2026-11-08T20:26:36.0142670Z      [33m[2m✓[22m[39m rejects a terminal row whose phase and generation disagree at the database boundary [33m 1048[2mms[22m[39m
+2026-11-08T20:26:36.0143726Z      [33m[2m✓[22m[39m holds the drop, then the reconnect offer is accepted and the expired hold leaves the session alone [33m 1087[2mms[22m[39m
+2026-11-08T20:26:36.0144825Z      [33m[2m✓[22m[39m Finding #5 unchanged: a drop with no reconnect in flight ends the session and revokes the token at once [33m 1075[2mms[22m[39m
+2026-11-08T20:26:36.0145914Z      [33m[2m✓[22m[39m a late drop for the old peer, handled after the reconnect committed a newer start, is not held [33m 1119[2mms[22m[39m
+2026-11-08T20:26:36.0146903Z      [33m[2m✓[22m[39m a held drop with no reconnect ends and revokes when the end runs (timer or user end) [33m 1078[2mms[22m[39m
+2026-11-08T20:26:36.0147882Z      [33m[2m✓[22m[39m a hold whose timer was lost is ended by the next viewer-token check after its deadline [33m 1065[2mms[22m[39m
+2026-11-08T20:49:28.6369355Z [2m Test Files [22m [1m[32m4 passed[39m[22m[90m (4)[39m
+2026-11-08T20:49:28.6377865Z [2m      Tests [22m [1m[32m1082 passed[39m[22m[2m | [22m[33m3 skipped[39m[90m (1085)[39m
+2026-11-08T20:49:28.6378826Z [2m   Start at [22m 20:22:25
+2026-11-08T20:49:28.6380296Z [2m   Duration [22m 1622.85s[2m (transform 31.98s, setup 46.85s, import 283.00s, tests 1264.08s, environment 11ms)[22m

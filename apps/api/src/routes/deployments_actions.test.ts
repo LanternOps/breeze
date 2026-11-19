@@ -99,7 +99,7 @@ vi.mock('../middleware/auth', () => ({
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
-import { initializeDeployment, getDeploymentProgress, pauseDeployment, cancelDeployment, incrementRetryCount } from '../services/deploymentEngine';
+import { initializeDeployment, getDeploymentProgress, pauseDeployment, resumeDeployment, cancelDeployment, incrementRetryCount } from '../services/deploymentEngine';
 
 function makeDeployment(overrides: Record<string, unknown> = {}) {
   return {
@@ -149,6 +149,49 @@ describe('deployment routes', () => {
     });
     app = new Hono();
     app.route('/deployments', deploymentRoutes);
+  });
+
+  describe('organization-wide deployment changes for site-restricted users', () => {
+    it.each([
+      ['POST', ''], ['PUT', `/${DEPLOYMENT_ID_1}`], ['DELETE', `/${DEPLOYMENT_ID_1}`],
+      ...['initialize', 'start', 'pause', 'resume', 'cancel'].map((action) => ['POST', `/${DEPLOYMENT_ID_1}/${action}`]),
+    ])('refuses %s %s before reading targets or invoking the engine', async (method, path) => {
+      for (const ceiling of [{ allowedSiteIds: ['site-a'] }, { allowedSiteIds: [] }, { allowedDeviceIds: [DEVICE_ID] }]) {
+        vi.clearAllMocks();
+        vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+          c.set('auth', {
+            user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+            scope: 'organization', orgId: ORG_ID, partnerId: null, accessibleOrgIds: [ORG_ID],
+            canAccessOrg: (orgId: string) => orgId === ORG_ID,
+            ...ceiling,
+          });
+          return next();
+        });
+        const body = method === 'DELETE' ? undefined : JSON.stringify(path === '' ? validCreatePayload : { name: 'Renamed' });
+        const res = await app.request(`/deployments${path}`, { method, headers: { 'Content-Type': 'application/json' }, body });
+        expect(res.status).toBe(403);
+        expect(db.select).not.toHaveBeenCalled();
+        expect(db.insert).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+        expect(db.delete).not.toHaveBeenCalled();
+        expect(initializeDeployment).not.toHaveBeenCalled();
+        expect(pauseDeployment).not.toHaveBeenCalled();
+        expect(resumeDeployment).not.toHaveBeenCalled();
+        expect(cancelDeployment).not.toHaveBeenCalled();
+      }
+    });
+
+    it('still creates a draft deployment for an unrestricted organization user', async () => {
+      const returning = vi.fn().mockResolvedValue([makeDeployment()]);
+      const values = vi.fn(() => ({ returning }));
+      vi.mocked(db.insert).mockReturnValue({ values } as any);
+      vi.mocked(db.select).mockReturnValue({ from: () => ({ where: () => Promise.resolve([]) }) } as any);
+      const res = await app.request('/deployments', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(validCreatePayload),
+      });
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID, status: 'draft', createdBy: 'user-123' }));
+    });
   });
 
   // ----------------------------------------------------------------

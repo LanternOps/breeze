@@ -116,6 +116,13 @@ describe('service backstop: addFeatureLink / updateFeatureLink (#6960)', () => {
       .rejects.toMatchObject({ code: 'security_agents_invalid_settings' });
   });
 
+  it('Bitdefender (#8170) is dormant: refused with arming authority; listing it disabled is fine', () => {
+    const enabled = { version: 1, agents: [{ vendor: 'bitdefender', enabled: true }] };
+    const disabled = { version: 1, agents: [{ vendor: 'bitdefender', enabled: false }] };
+    expect(code({ featurePolicyId: null, inlineSettings: enabled, armAuthorized: true })).toBe('vendor_not_enableable');
+    expect(code({ featurePolicyId: null, inlineSettings: disabled, armAuthorized: false })).toBe('ok');
+  });
+
   it('addFeatureLink refuses a vendor that is not enableable even with arming authority', async () => {
     await expect(addFeatureLink(POLICY_ID, 'security_agents', null, NEXTDNS_ENABLED, undefined, undefined, { securityAgentsArmAuthorized: true }))
       .rejects.toMatchObject({ code: 'vendor_not_enableable' });

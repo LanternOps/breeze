@@ -3,8 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // commandRunner runs an external command and returns its combined output.
@@ -14,7 +15,7 @@ type commandRunner func(name string, args ...string) ([]byte, error)
 
 // execCommandRunner is the production commandRunner.
 func execCommandRunner(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+	return procspawn.Command(name, args...).CombinedOutput()
 }
 
 // installWatchdogUnit runs the systemd tail of `breeze-watchdog service

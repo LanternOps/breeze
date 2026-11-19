@@ -149,17 +149,20 @@ type Options struct {
 	DryRun              bool // preflight only; returns the Plan
 	ForceReprovision    bool
 	AllowPartialRestore bool
-	// RegenerateInitramfs is NOT defaulted by Run() — a bare Options{} leaves
-	// it false (Go's zero value), same as any other bool field. "Default
-	// true" is a CLI-level convention: breeze-backup rebuild always passes
-	// this explicitly (RegenerateInitramfs: !noInitramfs), so an operator
-	// who never touches --no-initramfs gets regeneration without asking for
-	// it — but Run() itself cannot distinguish "caller left it unset,
-	// wants the default" from "caller explicitly wants no regen" (both are
-	// the zero value), so a direct Options caller (tests, a future W04
-	// console) must set it explicitly to get initramfs regeneration.
-	RegenerateInitramfs bool
-	SkipBoot            bool // tests/CI only: synthetic roots have no bootloader
+	// RestoredBootTools opts in to running the restored system's own boot
+	// tools in the Linux boot phase (grub-install, update-grub or
+	// grub2-mkconfig). Off by default: the boot phase keeps the restored
+	// boot configuration and writes the fallback loader and firmware boot
+	// entry with host-side code. RegenerateInitramfs (update-initramfs or
+	// dracut from the restored system) needs the same tools and is the same
+	// request. Run refuses either one before doing anything unless
+	// ConfirmRestoredBootTools is set, the host is Breeze recovery media, and
+	// an isolated runner exists, which this build does not have
+	// (restoredBootToolsRefusal, boot_tools.go).
+	RestoredBootTools        bool
+	RegenerateInitramfs      bool
+	ConfirmRestoredBootTools bool
+	SkipBoot                 bool // tests/CI only: synthetic roots have no bootloader
 	// ExpectSystemState says the snapshot MUST carry system state
 	// (system-state/manifest.json with at least one artifact) and the run
 	// must apply it: preflight refuses when it is missing, and the run is

@@ -34,5 +34,13 @@
   "PARTNER_GROUP_TARGET_UNSUPPORTED": "Grupos de dispositivos de todo o parceiro só podem ser alvos de políticas de configuração do parceiro",
   "PARTNER_GROUP_READ_ONLY": "Este grupo de dispositivos de todo o parceiro não pode ser alterado aqui",
   "PARTNER_GROUP_FILTER_UNSUPPORTED": "Grupos de dispositivos de todo o parceiro não podem ser usados em filtros de grupos, e seus filtros não podem fazer referência a grupos ou organizações",
-  "SCAN_ALREADY_QUEUED": "Já existe uma verificação na fila para este dispositivo."
+  "SCAN_ALREADY_QUEUED": "Já existe uma verificação na fila para este dispositivo.",
+  "PORTAL_INVITE_CONTACT_NOT_FOUND": "Esse contato não existe mais ou não está disponível para você.",
+  "PORTAL_INVITE_CONTACT_NO_EMAIL": "Este contato não tem endereço de e-mail. Adicione um primeiro.",
+  "PORTAL_INVITE_EMAIL_MISMATCH": "O e-mail do convite deve corresponder ao endereço de e-mail do contato.",
+  "PORTAL_INVITE_CONTACT_CONFLICT": "Este endereço de e-mail já tem um login do portal vinculado a outro contato. Desvincule-o primeiro.",
+  "PORTAL_INVITE_LOGIN_EMAIL_DIFFERS": "O login do portal deste contato usa um e-mail diferente. Atualize o e-mail do contato ou desvincule o login primeiro.",
+  "PORTAL_INVITE_ALREADY_ACTIVE": "Esta pessoa já tem um login do portal ativo.",
+  "PORTAL_INVITE_USER_DISABLED": "O login do portal desta pessoa está desativado. Reative-o em vez de convidar de novo.",
+  "PORTAL_INVITE_EXTERNAL_IDENTITY": "Este e-mail pertence apenas a um login do Microsoft Entra. Não é possível enviar um convite do portal web para ele."
 }

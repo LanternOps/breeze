@@ -70,6 +70,7 @@ wispHomeRoutes.get('/', zValidator('query', wispHomeQuerySchema), async (c) => {
       grantId: grant.id,
       grantorUserId: grant.grantorUserId,
       threadId: thread.id,
+      grantCreatedAt: grant.createdAt,
       ceiling: outcome.ok ? outcome.ceiling : null,
     }),
   ]);

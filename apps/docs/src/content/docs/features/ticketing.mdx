@@ -241,6 +241,10 @@ Tickets enter the queue from four directions:
   [Service Management mode](/reference/partner-management/#service-management-mode).
 </Aside>
 
+### Importing tickets from another help desk
+
+Partner administrators with access to all organizations can bring the ticket history of another help desk into Breeze from **Tickets → Import tickets**. Imported tickets carry an **Imported** chip, and **Imported only** above the list shows just them. See [Importing Tickets from Another Help Desk](/features/ticket-import/).
+
 ## Routing rules
 
 Routing rules set who a new ticket goes to, and how it starts, the moment it is created. Manage them in **Settings → Ticketing → Routing**.
@@ -300,7 +304,7 @@ Edit the acknowledgement under **Settings → Partner → Email templates** (Tic
 
 ### Review queue
 
-Emails that Breeze can't automatically turn into a ticket land in a **review queue** instead -- so unsolicited or unprocessable mail doesn't flood the ticket queue. From there you can convert a message into a ticket (assigning it to the right organization) or dismiss it. Two kinds of mail land here:
+Emails that Breeze can't automatically turn into a ticket land in a **review queue** instead -- so unsolicited or unprocessable mail doesn't flood the ticket queue. From there you can convert a message into a ticket (assigning it to the right organization) or dismiss it. Working the queue needs the `tickets:email_review` permission (full admins already have it), so you can give a triage role or service account access to the queue without making it a full admin. The permission alone is enough to read the queue and to convert a message into a ticket in any of the partner's organizations, so grant it deliberately. Two kinds of mail land here:
 
 - Any email that **failed to process** -- for example, one with no usable sender address.
 - Emails from **unknown senders**, if your **Unknown senders** setting is left on its default. See [Unknown sender handling](#unknown-sender-handling) below to change that behavior.
@@ -311,7 +315,7 @@ Emails that Breeze can't automatically turn into a ticket land in a **review que
 
 ### Unknown sender handling
 
-A sender is "unknown" when it isn't a portal user, a mapped customer domain, or a reply to an existing ticket. Choose what happens to that mail under **Settings → Ticketing → Inbound email**, in the **Unknown senders** section:
+A sender is "unknown" when it isn't a portal user, a mapped customer domain, or a reply to an existing ticket. Customer domains are managed under **Settings → Organizations → [organization] → Domains**; **Settings → Ticketing → Inbound email** shows a read-only summary of them (see [Customer domain verification](/features/portal-domain-verification/)). Choose what happens to that mail under **Settings → Ticketing → Inbound email**, in the **Unknown senders** section:
 
 | Option | Behavior |
 |---|---|
@@ -324,6 +328,8 @@ Pick the **Default triage organization** from the dropdown above the Unknown sen
 #### Dropping mail that fails sender authentication
 
 A separate checkbox on the same card, **Drop mail that fails sender authentication (SPF/DKIM/DMARC)**, controls mail that fails those checks -- independently of the Unknown senders setting above. When it's off (the default), unverified mail is quarantined for review. When it's on, unverified mail is dropped silently instead -- no ticket, no review-queue entry, no autoresponse. This applies to **all** unverified senders, including a message from an otherwise-recognized customer that individually fails the check, and takes priority over whatever you've chosen for unknown senders.
+
+Breeze identifies the sender by the message's **From** address, the address its DMARC check covers, and only that address is matched to a portal user, a customer domain or an existing ticket. The SMTP envelope sender (bounce or return-path address) is never used as the sender. A passing verdict counts only when it is for the From address's own domain: mail with more than one From header, an `@` anywhere in the From header that is not followed by the sender's domain (including in the display name, such as `"help@example.com" <jane@customer.com>`), or a passing verdict that names a different domain is handled as unverified, and the review queue shows `unverified sender (SPF/DKIM/DMARC): verdict is not for the From domain`. (On a Microsoft 365 mailbox, mail Exchange marks as sent from inside your own tenant is still verified for the From address it carries; see below.) A message whose envelope sender (return-path) contains `(`, `)`, `"`, `;` or `\` is also handled as unverified, because mail servers copy that address into the authentication results in a way that cannot be read reliably; the review queue shows `unverified sender (SPF/DKIM/DMARC): envelope sender cannot be read unambiguously`. The same applies when Mailgun or Gmail delivers a message with no envelope sender at all, and, with the reason `signature identity cannot be read unambiguously`, when a DKIM signature's identity (`i=`) contains any of those characters or a space.
 
 #### Filing staff forwards under the original sender's customer
 
@@ -393,6 +399,19 @@ If a connection does not complete:
 
 <Aside>
   Connecting or managing a mailbox requires **partner scope and MFA**. The Microsoft 365 mailbox card only appears once your operator has configured the Breeze Ticketing Azure app -- see [Ticket Mailbox environment variables](/deploy/environment/#ticket-mailbox-m365-email-to-ticket).
+</Aside>
+
+#### How external mail is verified on a connected mailbox
+
+Unverified external mail goes to the review queue (or is dropped, if you turned that on), so a forged From address from outside your tenant can't open a ticket under your customer's name. On a Microsoft 365 mailbox Breeze verifies external mail with:
+
+- **Exchange Online's own check.** Mail counts as verified when Exchange marks it as external mail not attributed to a connector, it carries exactly one `Authentication-Results` header with Exchange's authserv-id (`mx.microsoft.com` or a `*.mail.protection.outlook.com` host), and that header says `dmarc=pass` for the From domain. Mail from a domain with no DMARC record (`dmarc=none`) stays in review. A second `Authentication-Results` header also sends a message to review, since Breeze can't tell which one Exchange wrote. Mail Exchange attributes to a partner connector isn't verified from this header.
+- **A trusted mail gateway, if you list one.** With an inline gateway that adds an ARC seal, Exchange checks the gateway instead of the sender and may fail legitimate mail. Under **Mail gateway** on the mailbox, list the gateway's ARC sealing domain: the `d=` value in the gateway's `ARC-Seal` header on a message it delivered (not `microsoft.com`, which is Exchange's own seal). Breeze then verifies the seal and the gateway's signature over the From header, and uses the gateway's verdict, which must be for the From domain. A seal more than 6 hours older than the message's arrival isn't used. The list is empty by default. If the gateway's key can't be fetched, Breeze retries for up to an hour before the message goes to review. A gateway that doesn't add an ARC seal isn't used; Breeze falls back to Exchange's own check, and never reads `Authentication-Results-Original`, because a sender can write that header.
+
+The review queue shows which of these Breeze checked and why the message didn't pass, for example `unverified sender (SPF/DKIM/DMARC): Exchange Online stamp: dmarc=fail`.
+
+<Aside type="caution">
+  Only list a gateway that all of the tenant's inbound mail is forced through: first restrict inbound delivery in Exchange to the gateway with a connector. Without that restriction, Breeze can't tell a message the gateway delivered from one sent directly to Exchange.
 </Aside>
 
 ### Connecting a Google Workspace support mailbox

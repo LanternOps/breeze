@@ -17,7 +17,7 @@
  * a module cycle (same shape as arAgingPdf.ts).
  */
 import type { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import { autoTable } from 'jspdf-autotable';
 import type {
   MrrBilledMonth,
   MrrContractDetailRow,

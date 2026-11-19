@@ -10,6 +10,11 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+// #11621: the button gates on remote:access; these cases are about a caller who holds it.
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [{ resource: 'remote', action: 'access' }], can: () => true }),
+}));
+
 // Platform detection reads navigator, which jsdom fixes to the host machine —
 // stub it so the per-OS download card is exercised deterministically.
 vi.mock('@/lib/viewerDownload', () => ({
@@ -181,6 +186,33 @@ describe('ConnectDesktopButton — disabled prop gating (issue #2013)', () => {
 
       fireEvent.click(screen.getByRole(variant === 'compact' ? 'menuitem' : 'button'));
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+  }
+
+  // #11753: the compact menuitem only sets aria-disabled while a connect is in
+  // flight, so a second click still reached handleClick and started a second
+  // session (a second breeze:// link → a second viewer window).
+  for (const variant of ['compact', 'full', 'iconOnly'] as const) {
+    it(`starts one connect for a double click while the first is in flight (${variant} variant)`, async () => {
+      // The device re-fetch never settles, so the first connect stays in flight.
+      fetchMock.mockReturnValue(new Promise<Response>(() => {}));
+      render(
+        <ConnectDesktopButton
+          deviceId="dev-dbl"
+          {...(variant === 'compact' ? { compact: true } : {})}
+          {...(variant === 'iconOnly' ? { iconOnly: true } : {})}
+        />,
+      );
+      const target =
+        variant === 'compact'
+          ? screen.getByRole('menuitem')
+          : screen.getByRole('button', { name: /connect desktop/i });
+
+      fireEvent.click(target);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      fireEvent.click(target);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   }
 

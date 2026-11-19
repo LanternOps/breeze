@@ -3,7 +3,11 @@
  * §7.4, §7.6; w00 "Nudges (W06)", A18, A20, A28, A29).
  *
  * Callers: the assessment finalizer's `nudge` step, the incident correlator's
- * partner-level nudge, the digest sweep and the morning brief
+ * partner-level nudge, the digest sweep, the morning brief and the check-in
+ * fire path (services/wisp/checkIns.ts, #10991), the specialist post-back
+ * (services/wisp/specialistResult.ts, #11085), the first-look post
+ * (services/wisp/firstLook.ts, #10402) and the resolved-nudge follow-up
+ * (services/wisp/nudgeResolved.ts, #11427)
  * (pinned by notifyUser.callers.contract.test.ts). None is reached while
  * `wispEnabled()` is false.
  *
@@ -42,14 +46,26 @@ import { isInQuietHours, type QuietHoursConfig } from '../quietHours';
 import { userPushTargetsQuery } from '../ticketPush';
 import { recipientState, recordNudge } from './concerns';
 import { deliverInApp, type ThreadPostDraft } from './deliver';
-import { webDeepLink } from './nudgeLinks';
+import { webCheckInLink, webDeepLink } from './nudgeLinks';
 import { loadNudgePrefs } from './nudgePreferences';
 import { loadUrgentCapableSeverities } from './partnerNudgeSettings';
-import { recordThreadPost, type ThreadPostKind } from './threadPosts';
+import { couldntLookDedupeKey, recordThreadPost, type ThreadPostKind } from './threadPosts';
+import { GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 import { incWispNudge } from '../wispMetrics';
 
 /** The post kind of each nudge kind (explicit: a budget notice is never a post). */
-const POST_KIND: Record<WispNudgeKind, ThreadPostKind> = { concern: 'nudge', digest: 'digest', brief: 'brief' };
+const POST_KIND: Record<WispNudgeKind, ThreadPostKind> = {
+  concern: 'nudge', digest: 'digest', brief: 'brief', check_in: 'check_in', specialist_result: 'specialist_result', first_look: 'first_look',
+  nudge_resolved: 'nudge_resolved',
+};
+
+/** Kinds that name one concern (`concernId` set iff the kind is one of these). */
+const CONCERN_KINDS: ReadonlySet<WispNudgeKind> = new Set(['concern', 'nudge_resolved']);
+
+/** `wisp.specialist_result:<runId>:<status>` or `wisp.specialist_step:<intentId>:<status>` (specialistResult.ts). */
+const SPECIALIST_DEDUPE_KEY_RE = /^wisp\.specialist_(result|step):[A-Za-z0-9-]{1,64}:[a-z_]{1,32}$/;
+/** A same-origin relative path: one leading slash, never `//` or a scheme. */
+const RELATIVE_LINK_RE = /^\/(?!\/)[^\s\\]*$/;
 
 export type NudgePayload = {
   userId: string;
@@ -59,7 +75,10 @@ export type NudgePayload = {
   title: string;
   body: string;
   deepLink: string;
-  /** Set iff kind === 'concern'. */
+  /**
+   * Set iff kind is 'concern' or 'nudge_resolved' (#11427: the follow-up that a
+   * nudged concern closed; the concern must already read `resolved`).
+   */
   concernId: string | null;
   threadId: string;
   /** w00 A20: must equal the thread's grant; the thread is a cross-check, not the source. */
@@ -69,7 +88,46 @@ export type NudgePayload = {
   briefLocalDate?: string;
   /** kind 'brief' only: stored in the in-app row's `metadata.brief`. */
   briefSections?: BriefSection[];
+  /**
+   * Set iff kind === 'check_in' (#10991): the fired `wisp_check_ins` row. Its
+   * id is the dedupe key and the link fragment; its org (the thread's) is the
+   * notification's and the post's org. `link` (W07 #11496) replaces the
+   * post's check-in link: a run check-in's result links to its run page
+   * (relative, same origin).
+   */
+  checkIn?: { id: string; orgId: string | null; link?: string };
+  /**
+   * Set iff kind === 'specialist_result' (#11085): a device-troubleshooting
+   * run's report (or one of its approved steps). `orgId` is the run's org: it
+   * is validated against the grant ceiling (the same readable-org rule the
+   * thread timeline applies, pinned revision ∩ live, a paused grant allowed)
+   * and becomes the notification's and the post's org. `dedupeKey` is the
+   * caller's per-run / per-step key; `link` the run page (relative).
+   */
+  specialist?: { orgId: string; grantRevisionId: string; dedupeKey: string; link: string };
+  /**
+   * kind 'first_look' only (#11145): the post that says no org could be looked
+   * at. It has its own dedupe key, so it leaves the real first look still to come.
+   */
+  firstLookVariant?: 'couldnt_look';
+  /**
+   * `false` withholds the push channel for this delivery (the in-app row and
+   * the post are still written per the user's channels). A specialist_result
+   * never pushes whatever this says: its steps already pushed their own
+   * approval cards.
+   */
+  push?: false;
 };
+
+/** One first-look post per grant (#10402). */
+export function firstLookDedupeKey(grantId: string): string {
+  return `wisp.first_look:${grantId}`;
+}
+
+/** One resolved-nudge follow-up per concern (#11427); unique per thread (post) and per user (notification). */
+export function nudgeResolvedDedupeKey(concernId: string): string {
+  return `wisp.nudge_resolved:${concernId}`;
+}
 
 export type NudgeSuppressedReason = 'quiet_hours' | 'prefs' | 'backoff' | null;
 export type NotifyUserResult = { inApp: boolean; pushed: number; suppressed: NudgeSuppressedReason };
@@ -90,6 +148,10 @@ const BACKOFF: NotifyUserResult = { inApp: false, pushed: 0, suppressed: 'backof
  *   concern → wisp.nudge:<concern>:<grant>:<next_eligible_nudge_at | first>
  *   digest  → wisp.digest:<thread>:<now floored to the cadence, UTC>
  *   brief   → wisp.brief:<thread>:<local date>
+ *   check_in → wisp.check_in:<check-in id> (one delivery per check-in, ever)
+ *   first_look → wisp.first_look:<grant> (one per grant, ever)
+ *                wisp.first_look_failed:<grant> for the couldn't-look variant (likewise)
+ *   nudge_resolved → wisp.nudge_resolved:<concern> (one follow-up per concern and thread/user, ever)
  */
 export function nudgeDedupeKey(k: {
   kind?: WispNudgeKind;
@@ -100,8 +162,19 @@ export function nudgeDedupeKey(k: {
   now: Date;
   digestCadenceMinutes: number;
   briefLocalDate?: string;
+  checkInId?: string;
+  firstLookVariant?: 'couldnt_look';
 }): string {
   const kind = k.kind ?? (k.concernId ? 'concern' : 'digest');
+  if (kind === 'check_in') {
+    if (!k.checkInId) throw new Error('nudgeDedupeKey: a check_in key needs checkInId');
+    return `wisp.check_in:${k.checkInId}`;
+  }
+  if (kind === 'first_look') return k.firstLookVariant === 'couldnt_look' ? couldntLookDedupeKey(k.grantId) : firstLookDedupeKey(k.grantId);
+  if (kind === 'nudge_resolved') {
+    if (!k.concernId) throw new Error('nudgeDedupeKey: a nudge_resolved key needs concernId');
+    return nudgeResolvedDedupeKey(k.concernId);
+  }
   if (kind === 'concern') {
     return `wisp.nudge:${k.concernId}:${k.grantId}:${k.nextEligibleNudgeAt?.toISOString() ?? 'first'}`;
   }
@@ -116,7 +189,8 @@ const PROACTIVITY_FLOOR: Record<WispNudgePreferences['proactivity'], number> = {
 /**
  * Who gets what (pure). Order: channels → proactivity floor (w00 A29: quiet ⇒
  * high only, normal ⇒ medium+, chatty ⇒ all; the brief and a nudge carrying
- * an approval card always pass; a digest ranks as medium) → per-device quiet
+ * an approval card always pass, and so does a check-in — the user's own thread
+ * asked for it; a digest ranks as medium) → per-device quiet
  * hours (a device breaks through only for an urgent-capable concern when the
  * user chose `urgent_only`; the brief ignores quiet hours — the user picked
  * its time). `suppressed` is null whenever something was pushed.
@@ -135,7 +209,7 @@ export function decideNudgeDelivery(input: {
   if (!prefs.channels.inApp && !prefs.channels.push) return { inApp: false, pushTokens: [], suppressed: 'prefs' };
   if (!prefs.channels.push) return { inApp, pushTokens: [], suppressed: 'prefs' };
 
-  const alwaysPush = input.kind === 'brief' || (input.kind === 'concern' && input.hasApprovalCard);
+  const alwaysPush = input.kind === 'brief' || input.kind === 'check_in' || (input.kind === 'concern' && input.hasApprovalCard);
   if (!alwaysPush) {
     const rank = input.severity ? SEVERITY_RANK[input.severity] : SEVERITY_RANK.medium;
     if (rank < PROACTIVITY_FLOOR[prefs.proactivity]) return { inApp, pushTokens: [], suppressed: 'prefs' };
@@ -170,9 +244,63 @@ function tagTokens(row: DeviceRow): TaggedPushToken[] {
 }
 
 function assertPayloadShape(p: NudgePayload): void {
-  if (p.kind === 'concern' && !p.concernId) throw new Error('notifyUser: a concern nudge needs a concernId');
-  if (p.kind !== 'concern' && p.concernId !== null) throw new Error(`notifyUser: a ${p.kind} nudge carries no concernId`);
+  if (CONCERN_KINDS.has(p.kind) && !p.concernId) throw new Error(`notifyUser: a ${p.kind} nudge needs a concernId`);
+  if (!CONCERN_KINDS.has(p.kind) && p.concernId !== null) throw new Error(`notifyUser: a ${p.kind} nudge carries no concernId`);
   if (p.kind === 'brief' && !p.briefLocalDate) throw new Error('notifyUser: a brief needs briefLocalDate');
+  if (p.kind === 'check_in' && !p.checkIn?.id) throw new Error('notifyUser: a check_in nudge needs checkIn');
+  if (p.kind !== 'check_in' && p.checkIn !== undefined) throw new Error(`notifyUser: a ${p.kind} nudge carries no checkIn`);
+  if (p.checkIn?.link !== undefined && !RELATIVE_LINK_RE.test(p.checkIn.link)) throw new Error('notifyUser: a check_in link must be a relative path');
+  if (p.kind === 'specialist_result') {
+    if (!p.specialist?.orgId || !p.specialist.grantRevisionId) throw new Error('notifyUser: a specialist_result needs specialist');
+    if (!SPECIALIST_DEDUPE_KEY_RE.test(p.specialist.dedupeKey)) {
+      throw new Error(`notifyUser: a specialist_result dedupe key must be wisp.specialist_(result|step):<id>:<status>`);
+    }
+    if (!RELATIVE_LINK_RE.test(p.specialist.link)) throw new Error('notifyUser: a specialist_result link must be a relative path');
+  } else if (p.specialist !== undefined) {
+    throw new Error(`notifyUser: a ${p.kind} nudge carries no specialist`);
+  }
+}
+
+/**
+ * Could the grant's thread timeline show a post of `orgId`? The timeline's own
+ * rule (threadTimeline.ts `readableOrgIds`): the org is inside the ceiling and
+ * neither the ceiling nor the grantor's membership of that org is
+ * site-restricted. Posting anything the timeline would hide is refused.
+ */
+export function isOrgReadableOnThread(ceiling: Pick<GrantCeiling, 'orgIds' | 'siteIds' | 'orgTerms'>, orgId: string): boolean {
+  if (ceiling.siteIds !== null) return false;
+  if (!ceiling.orgIds.has(orgId)) return false;
+  return (ceiling.orgTerms.get(orgId)?.siteIds ?? null) === null;
+}
+
+/** A specialist report the grant's thread may not carry (now): an expected skip, not a fault. */
+export class SpecialistAudienceRefusedError extends Error {
+  constructor(public readonly reason: 'grant_inactive' | 'org_out_of_ceiling', message: string) {
+    super(message);
+    this.name = 'SpecialistAudienceRefusedError';
+  }
+}
+
+/**
+ * Who a specialist report about `orgId` goes to under (grant, revision), or
+ * why it may not go anywhere. The ONE non-route `allowPaused` read
+ * (allowPaused.contract.test.ts): READ-ONLY — the ceiling only answers "could
+ * the grant's own thread show this org" (`isOrgReadableOnThread`) and names
+ * the grantor; it never authorises an action. Paused is allowed on purpose: a
+ * run stopped by a pause must still say so on the thread (Review Focus 2),
+ * while a grantor who lost the org (or every org) gets nothing.
+ */
+export async function resolveSpecialistPostAudience(grantId: string, grantRevisionId: string, orgId: string):
+  Promise<{ ok: true; grantorUserId: string } | { ok: false; reason: 'grant_inactive' | 'org_out_of_ceiling' }> {
+  let ceiling: GrantCeiling;
+  try {
+    ceiling = await runOutsideDbContext(() => resolveGrantCeiling(grantId, grantRevisionId, { allowPaused: true }));
+  } catch (err) {
+    if (err instanceof GrantInactiveError) return { ok: false, reason: 'grant_inactive' };
+    throw err;
+  }
+  if (!isOrgReadableOnThread(ceiling, orgId)) return { ok: false, reason: 'org_out_of_ceiling' };
+  return { ok: true, grantorUserId: ceiling.grantorUserId };
 }
 
 const sameInstant = (a: Date | null, b: Date | null) => (a?.getTime() ?? null) === (b?.getTime() ?? null);
@@ -186,6 +314,22 @@ export async function notifyUser(p: NudgePayload): Promise<NotifyUserResult> {
 async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
   assertPayloadShape(p);
   const now = new Date();
+
+  // A specialist report carries the run's org: refuse it unless the thread
+  // could show it (an org-less or out-of-ceiling post would bypass the
+  // timeline's org filter). Resolved before any context opens: the ceiling
+  // read opens its own. Throws (nothing written) — the caller decides.
+  if (p.specialist) {
+    const audience = await resolveSpecialistPostAudience(p.grantId, p.specialist.grantRevisionId, p.specialist.orgId);
+    if (!audience.ok) {
+      // Typed: the grant can change between the caller's check and this one.
+      throw new SpecialistAudienceRefusedError(
+        audience.reason,
+        `notifyUser: org ${p.specialist.orgId} is outside what grant ${p.grantId}'s thread may show (${audience.reason})`,
+      );
+    }
+    if (audience.grantorUserId !== p.userId) throw new Error(`notifyUser: user ${p.userId} is not the grantor of grant ${p.grantId}`);
+  }
 
   // Phase 1 — reads, in one system context opened outside any request context.
   const read = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
@@ -208,15 +352,24 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
         .where(eq(wispConcerns.id, p.concernId))
         .limit(1);
       if (!c || c.partnerId !== thread.partnerId) throw new Error(`notifyUser: concern ${p.concernId} not found under the thread's partner`);
-      if (c.status !== 'open' && c.status !== 'snoozed') return { backoff: true as const };
-      state = await recipientState(p.concernId, p.grantId);
-      const future = (d: Date | null) => d !== null && d.getTime() > now.getTime();
-      if (state.dismissedAt || future(state.snoozedUntil) || future(state.nextEligibleNudgeAt)) return { backoff: true as const };
-      concern = { orgId: c.orgId, severity: c.severity };
+      if (p.kind === 'nudge_resolved') {
+        // The follow-up says the concern closed: only a committed resolution
+        // qualifies (a resolve inside a caller's still-open transaction, or
+        // one rolled back, reads live here and writes nothing). Not a nudge:
+        // no recipient backoff applies and nothing is counted.
+        if (c.status !== 'resolved') return { backoff: true as const };
+        concern = { orgId: c.orgId, severity: c.severity };
+      } else {
+        if (c.status !== 'open' && c.status !== 'snoozed') return { backoff: true as const };
+        state = await recipientState(p.concernId, p.grantId);
+        const future = (d: Date | null) => d !== null && d.getTime() > now.getTime();
+        if (state.dismissedAt || future(state.snoozedUntil) || future(state.nextEligibleNudgeAt)) return { backoff: true as const };
+        concern = { orgId: c.orgId, severity: c.severity };
+      }
     }
 
     const prefs = await loadNudgePrefs(p.userId);
-    const urgent = concern ? await loadUrgentCapableSeverities(thread.partnerId) : [];
+    const urgent = concern && p.kind === 'concern' ? await loadUrgentCapableSeverities(thread.partnerId) : [];
     const devices = (await userPushTargetsQuery([p.userId])) as DeviceRow[];
     return { backoff: false as const, partnerId: thread.partnerId, concern, state, prefs, urgent, devices };
   }));
@@ -236,9 +389,11 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
   // Phase 2 — the in-app row and the thread post (one system context, closed
   // on return). The post is written whatever the channels (W02a, quorum B):
   // a push-only or all-off user still keeps the history on the thread.
-  const orgId = concern?.orgId ?? null;
-  const link = webDeepLink(p.threadId, p.concernId);
-  const dedupeKey = nudgeDedupeKey({
+  const orgId = p.specialist ? p.specialist.orgId : p.checkIn ? p.checkIn.orgId : concern?.orgId ?? null;
+  const link = p.specialist
+    ? p.specialist.link
+    : p.checkIn ? p.checkIn.link ?? webCheckInLink(p.threadId, p.checkIn.id) : webDeepLink(p.threadId, p.concernId);
+  const dedupeKey = p.specialist ? p.specialist.dedupeKey : nudgeDedupeKey({
     kind: p.kind,
     concernId: p.concernId,
     grantId: p.grantId,
@@ -247,6 +402,8 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
     now,
     digestCadenceMinutes: prefs.digestCadenceMinutes,
     briefLocalDate: p.briefLocalDate,
+    checkInId: p.checkIn?.id,
+    firstLookVariant: p.firstLookVariant,
   });
   const post: ThreadPostDraft = {
     threadId: p.threadId,
@@ -272,7 +429,7 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
       title: p.title,
       body: p.body,
       link,
-      priority: concern?.severity === 'high' ? 'high' : 'normal',
+      priority: p.kind === 'concern' && concern?.severity === 'high' ? 'high' : 'normal',
       dedupeKey,
       concernId: p.concernId,
       approvalIntentId: p.approvalIntentId ?? null,
@@ -298,12 +455,17 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
   // (a retry would hit the dedupe key and never push), so each step reports
   // and carries on.
 
-  // Phase 3 — count the concern nudge.
-  if (p.concernId) await countNudge(p.concernId, p.grantId, now);
+  // Phase 3 — count the concern nudge (a nudge_resolved follow-up is not one).
+  if (p.kind === 'concern' && p.concernId) await countNudge(p.concernId, p.grantId, now);
 
-  // Phase 4 — push, outside every DB context.
-  let pushTokens = decision.pushTokens;
-  let suppressed = decision.suppressed;
+  // Phase 4 — push, outside every DB context. Withheld entirely (not a
+  // suppression) for `push: false`, every specialist report, the first look
+  // and a resolved-nudge follow-up ("no action needed" never wakes a phone).
+  const pushKind = p.kind === 'specialist_result' || p.kind === 'first_look' || p.kind === 'nudge_resolved' || p.push === false
+    ? null
+    : p.kind;
+  let pushTokens = pushKind ? decision.pushTokens : [];
+  let suppressed = pushKind ? decision.suppressed : null;
   if (pushTokens.length > 0) {
     try {
       const throttle = await checkNotificationThrottle(WISP_NUDGE_THROTTLE_CHANNEL, `user:${p.userId}`, WISP_NUDGE_THROTTLE_MAX, WISP_NUDGE_THROTTLE_WINDOW_S);
@@ -318,7 +480,7 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
     }
   }
   let pushed = 0;
-  if (pushTokens.length > 0) {
+  if (pushKind && pushTokens.length > 0) {
     try {
       const result = await dispatchPushToTokens(
       pushTokens,
@@ -330,7 +492,7 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
         body: p.body,
         deepLink: p.deepLink,
         approvalIntentId: p.approvalIntentId ?? null,
-        kind: p.kind,
+        kind: pushKind,
       }),
       WISP_NUDGE_THROTTLE_CHANNEL,
     );

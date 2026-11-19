@@ -1,23 +1,25 @@
 /**
  * DNS Threat Alert evaluator (#829)
  *
- * Subscribes to `dns.threat.blocked` events on the event bus and inserts
- * a row into `alerts` (severity=high, ruleId=null) when a device hits a
+ * Subscribes to `dns.threat.blocked` events on the event bus and raises a
+ * rule-less alert (severity=high, ruleId=null) when a device hits a
  * threat-categorized domain that DNS blocked, subject to a per-(device,
  * category) cooldown. Content-policy categories and `unknown` are ignored
  * (#6692 — see DNS_THREAT_CATEGORIES in db/schema/dnsSecurity.ts).
  *
- * Mirrors the rule-less alert insert pattern used in
- * `services/warrantyAlertEvaluator.ts` and `services/networkBaseline.ts`
- * — the built-in template lives in `db/seed.ts` for documentation /
- * customer visibility, but the consumer doesn't require a per-org
- * `alertRules` row to fire. This avoids the auto-rule-creation problem
- * the wider alert engine has and ships a working signal today.
+ * Same rule-less pattern as `services/warrantyAlertEvaluator.ts` and
+ * `services/networkBaseline.ts`: the built-in template lives in `db/seed.ts`
+ * for documentation / customer visibility, but the consumer doesn't require a
+ * per-org `alertRules` row to fire. The alert goes through
+ * `createSourcedAlert`, which publishes `alert.triggered` after COMMIT; the
+ * raw insert this used before #11328 never reached notification channels,
+ * routing rules or escalation.
  */
 import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { alerts, devices } from '../db/schema';
 import { isDnsThreatCategory } from '../db/schema/dnsSecurity';
+import { createSourcedAlert } from './alertService';
 import type { BreezeEvent } from './eventBus';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
@@ -26,7 +28,7 @@ const { db } = dbModule;
 // #4085 final-review fix: publish() (eventBus.ts) invokes durable-registry
 // handlers via runOutsideDbContext, i.e. scope 'none' — under forced RLS
 // (queue-mode dispatch) that is a 42501 the moment this handler's `db.select`/
-// `db.insert(alerts)` run without an explicit access context. Mirrors
+// alert create run without an explicit access context. Mirrors
 // policyAlertBridge.ts's local helper exactly.
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -35,6 +37,8 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 const DEFAULT_COOLDOWN_MINUTES = 60;
 const ALERT_SOURCE = 'dns_threat_evaluator';
+/** Event-bus publisher label; matches the subscriber id in eventSubscribers.ts. */
+const ALERT_PUBLISHER = 'dns-threat-alerts';
 
 export interface DnsThreatBlockedPayload {
   deviceId: string | null;
@@ -125,31 +129,30 @@ export async function handleDnsThreatBlocked(
     `Device ${hostname} attempted to reach ${payload.domain} (${payload.category}). ` +
     `Query blocked at the resolver.`;
 
-  const [inserted] = await db
-    .insert(alerts)
-    .values({
-      ownerKind: 'device',
-      ruleId: null,
-      deviceId: payload.deviceId,
-      orgId,
-      configPolicyId: null,
-      configItemName: `dns_threat_${payload.category}`,
-      severity: 'high',
-      title,
-      message,
-      context: {
-        source: ALERT_SOURCE,
-        domain: payload.domain,
-        category: payload.category,
-        integrationId: payload.integrationId,
-        dnsEventTimestamp: payload.timestamp,
-      },
-      status: 'active',
-      triggeredAt: new Date(),
-    })
-    .returning({ id: alerts.id });
+  // #11328 — through the shared create path so `alert.triggered` publishes
+  // (after COMMIT) and channels, routing rules and escalation see the threat.
+  // The cooldown above is this producer's dedupe: a blocked event never
+  // reaches here while an open alert for the device + category exists, so
+  // nothing is published twice for one alert.
+  const alertId = await createSourcedAlert({
+    deviceId: payload.deviceId,
+    orgId,
+    severity: 'high',
+    title,
+    message,
+    configItemName: `dns_threat_${payload.category}`,
+    context: {
+      source: ALERT_SOURCE,
+      domain: payload.domain,
+      category: payload.category,
+      integrationId: payload.integrationId,
+      dnsEventTimestamp: payload.timestamp,
+    },
+    publisher: ALERT_PUBLISHER,
+    eventPayload: { domain: payload.domain, category: payload.category },
+  });
 
-  return { alertId: inserted?.id ?? null, reason: 'created' };
+  return alertId ? { alertId, reason: 'created' } : { alertId: null, reason: 'create_failed' };
 }
 
 /**
@@ -164,7 +167,13 @@ export async function handleDnsThreatBlocked(
 export async function handleDnsThreatBlockedEvent(event: BreezeEvent): Promise<void> {
   const payload = event.payload as unknown as DnsThreatBlockedPayload;
   try {
-    await runWithSystemDbAccess(() => handleDnsThreatBlocked(event.orgId, payload));
+    const result = await runWithSystemDbAccess(() => handleDnsThreatBlocked(event.orgId, payload));
+    // No alert row means nothing was published: fail the delivery so queue
+    // mode retries it. The cooldown only counts rows that exist, so the
+    // retry raises the alert instead of being deduped away.
+    if (result.reason === 'create_failed') {
+      throw new Error('DNS threat alert insert produced no row; nothing was published');
+    }
   } catch (err) {
     // Structured log kept for ops to trace the DNS-alert path specifically,
     // then rethrown so the failure is visible to retry/observability layers

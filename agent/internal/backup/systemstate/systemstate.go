@@ -1,6 +1,7 @@
 package systemstate
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,21 +17,28 @@ const manifestSchemaVersion = 1
 // into a temporary staging directory. The caller is responsible for adding
 // the staging directory contents to the backup archive and cleaning up
 // the staging directory when finished.
-func CollectSystemState() (manifest *SystemStateManifest, stagingDir string, err error) {
-	return CollectSystemStateWithOptions(CollectOptions{})
+func CollectSystemState(ctx context.Context) (manifest *SystemStateManifest, stagingDir string, err error) {
+	return CollectSystemStateWithOptions(ctx, CollectOptions{})
 }
 
 // CollectSystemStateWithOptions is CollectSystemState with per-run context —
 // notably the run's VSS shadow copies, from which the Windows collector copies
 // the registry hive files instead of spawning reg.exe (see CollectOptions).
-func CollectSystemStateWithOptions(opts CollectOptions) (manifest *SystemStateManifest, stagingDir string, err error) {
+//
+// It returns within collectionTimeout, plus up to one abandonGrace for each
+// bounded call (every step, the OS version probe, the hardware profile),
+// however the host behaves: see bounded.go.
+func CollectSystemStateWithOptions(ctx context.Context, opts CollectOptions) (manifest *SystemStateManifest, stagingDir string, err error) {
 	stagingDir, err = os.MkdirTemp("", "breeze-systemstate-*")
 	if err != nil {
 		return nil, "", fmt.Errorf("systemstate: failed to create staging dir: %w", err)
 	}
 
-	collector := newCollector(opts)
-	manifest, err = collector.CollectState(stagingDir)
+	ctx, cancel := context.WithTimeout(ctx, collectionTimeout)
+	defer cancel()
+
+	collector := platformCollector(opts)
+	manifest, err = collector.CollectState(ctx, stagingDir)
 	if manifest != nil {
 		manifest.SchemaVersion = manifestSchemaVersion
 	}
@@ -51,10 +59,15 @@ func CollectSystemStateWithOptions(opts CollectOptions) (manifest *SystemStateMa
 	return manifest, stagingDir, nil
 }
 
-// collectionStep is one named system-state collection step.
+// platformCollector is a seam over newCollector so tests of the staging-dir and
+// manifest contract do not copy the host's real system state.
+var platformCollector = newCollector
+
+// collectionStep is one named system-state collection step. fn runs under a
+// deadline (see runStep) and must pass ctx to whatever it spawns or copies.
 type collectionStep struct {
 	name string
-	fn   func(stagingDir string) ([]Artifact, error)
+	fn   func(ctx context.Context, stagingDir string) ([]Artifact, error)
 }
 
 // runCollectionSteps runs each step into stagingDir, appending artifacts to
@@ -69,10 +82,12 @@ type collectionStep struct {
 // (#7001). This does not soften the pass/fail decision — the step is still in
 // IncompleteSteps, and a required step's failure still returns an error that
 // carries the step's own reason (#6505).
-func runCollectionSteps(manifest *SystemStateManifest, steps []collectionStep, stagingDir string, required map[string]bool) error {
+//
+// A step that outlasts its deadline is a failed step like any other (#11201).
+func runCollectionSteps(ctx context.Context, manifest *SystemStateManifest, steps []collectionStep, stagingDir string, required map[string]bool) error {
 	var requiredErrs []error
 	for _, s := range steps {
-		arts, err := s.fn(stagingDir)
+		arts, err := runStep(ctx, s, stagingDir)
 		manifest.Artifacts = append(manifest.Artifacts, arts...)
 		if err != nil {
 			slog.Warn("systemstate: step failed", "step", s.name, "error", err.Error(), "partialArtifacts", len(arts))
@@ -164,9 +179,9 @@ func sortedRequiredSteps(required map[string]bool) []string {
 
 // CollectHardwareOnly captures hardware information without performing
 // a full system state collection. Useful for inventory and recovery planning.
-func CollectHardwareOnly() (*HardwareProfile, error) {
+func CollectHardwareOnly(ctx context.Context) (*HardwareProfile, error) {
 	collector := NewCollector()
-	profile, err := collector.CollectHardwareProfile()
+	profile, err := runBounded(ctx, hardwareProfileStep, stepTimeout, collector.CollectHardwareProfile)
 	if err != nil {
 		return nil, fmt.Errorf("systemstate: hardware profile failed: %w", err)
 	}

@@ -26,8 +26,10 @@ import {
   fetchBackupObjectBytes,
   isBackupObjectNotFound,
   isBackupObjectTooLarge,
-  MANIFEST_FETCH_MAX_BYTES,
+  MANIFEST_STREAM_MAX_BYTES,
+  openBackupObjectStream,
 } from './backupSnapshotStorage';
+import { createManifestScanner, ManifestScanError } from './backupManifestScanner';
 import { expectedControlKey, type AttestationObjectRole } from './backupAttestation';
 import { attestedKeyLayoutFor, physicalKeyFor, snapshotKeyRootOf } from './backupKeyLayout';
 import { recordBackupAttestation } from './backupMetrics';
@@ -68,6 +70,7 @@ export type AttestationUnderVerification = {
 };
 
 export type SnapshotUnderVerification = {
+  orgId?: string;
   deviceId: string;
   jobId: string;
   snapshotId: string;
@@ -82,7 +85,7 @@ export type AttestationVerifyDeps = {
   load: (snapshotDbId: string) => Promise<{
     attestation: AttestationUnderVerification;
     snapshot: SnapshotUnderVerification | null;
-    provider: { type: string; config: Record<string, unknown> } | null;
+    provider: { configId?: string; type: string; config: Record<string, unknown> } | null;
     /**
      * A brokered write of the snapshot may still change its bytes (its id
      * reservation is sealing, or a completion or delete is in flight): the
@@ -92,7 +95,14 @@ export type AttestationVerifyDeps = {
     /** While the reservation is sealing: its sealed_until. Absent = unknown. */
     sealedUntil?: Date | null;
   } | null>;
-  fetchObject: (args: { provider: string; providerConfig: Record<string, unknown>; key: string; maxBytes: number }) => Promise<Uint8Array>;
+  /** A sidecar (layout, system-state manifest): small enough to hold. */
+  fetchObject: (args: { orgId?: string; configId?: string; provider: string; providerConfig: Record<string, unknown>; key: string; maxBytes: number }) => Promise<Uint8Array>;
+  /**
+   * The manifest, read once as a stream (#11026): it can be hundreds of MB.
+   * Rejects with BackupObjectTooLargeError from a declared length over
+   * `maxBytes`; the stream errors with it once more than that arrives.
+   */
+  openObject: (args: { orgId?: string; configId?: string; provider: string; providerConfig: Record<string, unknown>; key: string; maxBytes: number }) => Promise<NodeJS.ReadableStream>;
   /**
    * Moves a still-pending row to its terminal status, re-checking the
    * snapshot binding at write time: a `verified` whose binding no longer
@@ -120,33 +130,92 @@ export function sealingRetryAt(sealedUntil: Date | null | undefined): Date | nul
   return new Date(sealedUntil.getTime() + RESERVATION_CLEANUP_EVERY_MS);
 }
 
-function maxBytesFor(role: AttestationObjectRole): number {
-  return role === 'manifest' ? MANIFEST_FETCH_MAX_BYTES : ATTESTED_SIDECAR_MAX_BYTES;
+/**
+ * One entry of the manifest of a run attested as full (no parent), which must
+ * reference only objects under its own snapshot. Returns a mismatch reason, or
+ * null.
+ */
+function fullRunReferenceProblem(file: unknown, providerSnapshotId: string): string | null {
+  const backupPath = file && typeof file === 'object' ? (file as { backupPath?: unknown }).backupPath : undefined;
+  if (backupPath === undefined || backupPath === null || backupPath === '') return null;
+  if (typeof backupPath !== 'string') return 'manifest_unparseable';
+  const scope = classifyBackupObjectKey(backupPath, providerSnapshotId);
+  return !scope || scope.kind !== 'own' ? 'unexpected_references' : null;
 }
 
+type ManifestCheck =
+  | { result: 'size_mismatch' | 'digest_mismatch' | 'over_server_limit' | 'missing' | 'fetch_failed' }
+  /** The bytes are the attested ones; `problem` is a full run's reference check. */
+  | { result: 'match'; problem: string | null };
+
 /**
- * The manifest of a run attested as full (no parent) must reference only
- * objects under its own snapshot. Returns a mismatch reason, or null.
+ * Reads the manifest once, hashing, counting and (for a full run) checking
+ * each entry's references as the bytes pass. Nothing is buffered or spooled:
+ * nothing is written until the end. The byte checks are decided before the
+ * reference check, as when the manifest was read whole, so altered bytes are
+ * reported as altered rather than by what they happen to contain.
  */
-function fullRunReferenceProblem(manifestBytes: Uint8Array, providerSnapshotId: string): string | null {
-  let json: unknown;
+async function checkManifestObject(
+  deps: AttestationVerifyDeps,
+  provider: { configId?: string; type: string; config: Record<string, unknown> },
+  orgId: string | undefined,
+  key: string,
+  object: { sha256: string; size: number },
+  fullRunSnapshotId: string | null,
+): Promise<ManifestCheck> {
+  const hash = createHash('sha256');
+  let bytes = 0;
+  let problem: string | null = null;
+  let scanError: ManifestScanError | null = null;
+  let scanner = fullRunSnapshotId === null
+    ? null
+    : createManifestScanner({
+        onEntry: (entry) => {
+          problem ??= fullRunReferenceProblem(entry, fullRunSnapshotId);
+        },
+      });
+
   try {
-    json = JSON.parse(Buffer.from(manifestBytes).toString('utf8'));
-  } catch {
-    return 'manifest_unparseable';
+    // Bounded by the attested size: a larger stored object is a mismatch
+    // without reading it all.
+    const stream = await deps.openObject({ orgId, configId: provider.configId, provider: provider.type, providerConfig: provider.config, key, maxBytes: object.size });
+    for await (const chunk of stream as AsyncIterable<Uint8Array>) {
+      hash.update(chunk);
+      bytes += chunk.byteLength;
+      if (!scanner) continue;
+      try {
+        await scanner.write(chunk);
+      } catch (err) {
+        if (!(err instanceof ManifestScanError)) throw err;
+        // Keep hashing: whether the bytes are the attested ones still decides first.
+        scanError = err;
+        scanner = null;
+      }
+    }
+  } catch (err) {
+    if (isBackupObjectTooLarge(err)) return { result: 'size_mismatch' };
+    if (isBackupObjectNotFound(err)) return { result: 'missing' };
+    return { result: 'fetch_failed' };
   }
-  if (!json || typeof json !== 'object') return 'manifest_unparseable';
-  const files = (json as { files?: unknown }).files;
-  if (files === undefined || files === null) return null;
-  if (!Array.isArray(files)) return 'manifest_unparseable';
-  for (const file of files) {
-    const backupPath = file && typeof file === 'object' ? (file as { backupPath?: unknown }).backupPath : undefined;
-    if (backupPath === undefined || backupPath === null || backupPath === '') continue;
-    if (typeof backupPath !== 'string') return 'manifest_unparseable';
-    const scope = classifyBackupObjectKey(backupPath, providerSnapshotId);
-    if (!scope || scope.kind !== 'own') return 'unexpected_references';
+
+  if (bytes !== object.size) return { result: 'size_mismatch' };
+  if (hash.digest('hex') !== object.sha256) return { result: 'digest_mismatch' };
+  if (fullRunSnapshotId === null) return { result: 'match', problem: null };
+
+  if (scanner) {
+    try {
+      scanner.finish();
+    } catch (err) {
+      if (!(err instanceof ManifestScanError)) throw err;
+      scanError = err;
+    }
   }
-  return null;
+  if (scanError) {
+    // An entry or id this server will not hold is not evidence about the
+    // snapshot (D7): the row waits rather than failing for good.
+    return scanError.kind === 'limit' ? { result: 'over_server_limit' } : { result: 'match', problem: 'manifest_unparseable' };
+  }
+  return { result: 'match', problem };
 }
 
 export async function verifySnapshotAttestation(
@@ -210,12 +279,42 @@ export async function verifySnapshotAttestation(
     return retry('storage_identity_changed');
   }
 
-  let manifestBytes: Uint8Array | null = null;
+  let manifestSeen = false;
+  let manifestProblem: string | null = null;
   for (const object of attestation.objects) {
     if (object.key !== expectedControlKey(attestation.providerSnapshotId, object.role)) {
       return finish('mismatch', `${object.role}_key_mismatch`);
     }
-    if (object.size > maxBytesFor(object.role)) {
+    if (object.role === 'manifest') {
+      // A manifest this server will not read is not evidence of tampering
+      // (#11026, D7): the row stays pending instead of failing for good.
+      if (object.size > MANIFEST_STREAM_MAX_BYTES) return retry('manifest_over_server_limit');
+      const checked = await checkManifestObject(
+        deps,
+        provider,
+        snapshot.orgId,
+        physicalKeyFor(keyRoot, object.key),
+        object,
+        attestation.parentProviderSnapshotId === null ? attestation.providerSnapshotId : null,
+      );
+      switch (checked.result) {
+        case 'size_mismatch':
+          return finish('mismatch', 'manifest_size_mismatch');
+        case 'digest_mismatch':
+          return finish('mismatch', 'manifest_digest_mismatch');
+        case 'over_server_limit':
+          return retry('manifest_over_server_limit');
+        case 'missing':
+          return retry('object_missing:manifest');
+        case 'fetch_failed':
+          return retry('fetch_failed:manifest');
+        case 'match':
+          manifestSeen = true;
+          manifestProblem = checked.problem;
+          continue;
+      }
+    }
+    if (object.size > ATTESTED_SIDECAR_MAX_BYTES) {
       return finish('mismatch', `${object.role}_too_large`);
     }
     let bytes: Uint8Array;
@@ -223,6 +322,8 @@ export async function verifySnapshotAttestation(
       // Bounded by the attested size: a larger stored object is a mismatch
       // without reading it all.
       bytes = await deps.fetchObject({
+        orgId: snapshot.orgId,
+        configId: provider.configId,
         provider: provider.type,
         providerConfig: provider.config,
         key: physicalKeyFor(keyRoot, object.key),
@@ -238,14 +339,10 @@ export async function verifySnapshotAttestation(
     if (bytes.byteLength !== object.size) return finish('mismatch', `${object.role}_size_mismatch`);
     const digest = createHash('sha256').update(bytes).digest('hex');
     if (digest !== object.sha256) return finish('mismatch', `${object.role}_digest_mismatch`);
-    if (object.role === 'manifest') manifestBytes = bytes;
   }
 
-  if (!manifestBytes) return finish('mismatch', 'manifest_not_attested');
-  if (attestation.parentProviderSnapshotId === null) {
-    const problem = fullRunReferenceProblem(manifestBytes, attestation.providerSnapshotId);
-    if (problem) return finish('mismatch', problem);
-  }
+  if (!manifestSeen) return finish('mismatch', 'manifest_not_attested');
+  if (manifestProblem) return finish('mismatch', manifestProblem);
 
   return finish('verified', null);
 }
@@ -283,6 +380,7 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
       if (!row) return null;
       const [snapshot] = await db
         .select({
+          orgId: backupSnapshots.orgId,
           deviceId: backupSnapshots.deviceId,
           jobId: backupSnapshots.jobId,
           snapshotId: backupSnapshots.snapshotId,
@@ -293,13 +391,13 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
         .from(backupSnapshots)
         .where(eq(backupSnapshots.id, snapshotDbId))
         .limit(1);
-      let provider: { type: string; config: Record<string, unknown> } | null = null;
+      let provider: { configId?: string; type: string; config: Record<string, unknown> } | null = null;
       if (snapshot && row.status === 'pending' && row.verificationMode === 'server_fetched') {
         const resolved = await resolveSnapshotProviderConfig(snapshotDbId);
         // Only the destination's own configuration row — never provider
         // details carried in snapshot metadata.
         if (resolved?.config?.provider) {
-          provider = { type: resolved.config.provider, config: asRecord(resolved.config.providerConfig) };
+          provider = { configId: resolved.config.orgId === snapshot.orgId ? resolved.localConfigId : undefined, type: resolved.config.provider, config: asRecord(resolved.config.providerConfig) };
         }
       }
       const write = snapshot ? await readSnapshotWriteState(snapshot.snapshotId) : null;
@@ -324,6 +422,7 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
       };
     }),
   fetchObject: (args) => fetchBackupObjectBytes(args),
+  openObject: (args) => openBackupObjectStream(args),
   finish: ({ attestationId, snapshotDbId, status, verifyError }) =>
     systemContext(async () => {
       // Re-read the binding under a row lock, so a snapshot row rewritten
@@ -331,6 +430,7 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
       const [snapshot] = await db
         .select({
           jobId: backupSnapshots.jobId,
+          orgId: backupSnapshots.orgId,
           deviceId: backupSnapshots.deviceId,
           snapshotId: backupSnapshots.snapshotId,
           storageIdentity: backupSnapshots.storageIdentity,

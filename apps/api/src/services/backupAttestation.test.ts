@@ -12,6 +12,7 @@ import {
   SNAPSHOT_ATTESTATION_MAX_BYTES,
   evaluateSnapshotAttestation,
   expectedControlKey,
+  isAttestationGuardRefusal,
   parseAttestationStatement,
   type RecordSnapshotAttestationInput,
 } from './backupAttestation';
@@ -212,5 +213,17 @@ describe('evaluateSnapshotAttestation', () => {
 
   it('never binds a result that was not tied to a consumed dispatch expectation', () => {
     expect(evaluateSnapshotAttestation(input({ dispatchExpectationVerified: false }))).toEqual({ kind: 'absent', outcome: 'missing_expectation' });
+  });
+});
+
+describe('isAttestationGuardRefusal', () => {
+  // 23001: Postgres 18's code for a RESTRICT foreign-key refusal (#11624).
+  it.each(['42501', '23514', '23503', '23001'])('treats %s as a guard refusal, bare or Drizzle-wrapped', (code) => {
+    expect(isAttestationGuardRefusal(Object.assign(new Error('refused'), { code }))).toBe(true);
+    expect(isAttestationGuardRefusal(Object.assign(new Error('Failed query'), { cause: { code } }))).toBe(true);
+  });
+
+  it.each(['23505', '40P01', undefined])('rethrows anything else (%s)', (code) => {
+    expect(isAttestationGuardRefusal(Object.assign(new Error('other'), { code }))).toBe(false);
   });
 });

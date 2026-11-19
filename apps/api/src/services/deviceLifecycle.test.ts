@@ -82,6 +82,9 @@ interface Script {
   /** The unlocked restore pre-read (device + owning partner). Defaults to lockRow. */
   targetRow?: Record<string, unknown> | null;
   pendingUninstall?: boolean;
+  /** #11153 — what `readPurgeUninstallState` reads under the lock. Defaults to
+   *  `completed` so suites that are not about the gate purge as before. */
+  uninstallState?: string | null;
   protectedBackupSnapshot?: boolean;
   updatedRow?: Record<string, unknown>;
 }
@@ -115,6 +118,12 @@ function makeTx(script: Script) {
           ? (script.lockRow ? { ...script.lockRow, partner_id: PARTNER } : null)
           : script.targetRow;
         return target ? [target] : [];
+      }
+      // Before the generic `self_uninstall` arm: the state read also mentions
+      // that type, and must not be mistaken for the pending check.
+      if (text.includes('uninstall_state')) {
+        calls.push('uninstall-state');
+        return [{ uninstall_state: script.uninstallState === undefined ? 'completed' : script.uninstallState }];
       }
       if (text.includes('self_uninstall')) {
         calls.push('pending-check');
@@ -572,6 +581,91 @@ describe('purgeRemovedDevice', () => {
   });
 });
 
+describe('purgeRemovedDevice — confirmed-uninstall gate (#11153)', () => {
+  const REMOVED = { id: DEV, status: 'decommissioned', org_id: ORG, link_group_id: null };
+
+  it.each(['failed', 'expired', 'cancelled', 'agent_returned', 'none'])(
+    'refuses a %s uninstall with 409 UNINSTALL_NOT_CONFIRMED and the state, before any cascade',
+    async (state) => {
+      const { tx } = makeTx({ lockRow: REMOVED, uninstallState: state });
+      const err = await purgeRemovedDevice(tx, DEV).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(DeviceLifecycleError);
+      expect(err).toMatchObject({
+        code: 'UNINSTALL_NOT_CONFIRMED',
+        status: 409,
+        details: { uninstallState: state },
+      });
+      expect(deleteDeviceCascade).not.toHaveBeenCalled();
+    },
+  );
+
+  it('reads a missing state row as none (refused), never as confirmed', async () => {
+    const { tx } = makeTx({ lockRow: REMOVED, uninstallState: null });
+    await expect(purgeRemovedDevice(tx, DEV)).rejects.toMatchObject({
+      code: 'UNINSTALL_NOT_CONFIRMED',
+      details: { uninstallState: 'none' },
+    });
+  });
+
+  it('reads an unrecognised state value as failed (refused)', async () => {
+    const { tx } = makeTx({ lockRow: REMOVED, uninstallState: 'half_done' });
+    await expect(purgeRemovedDevice(tx, DEV)).rejects.toMatchObject({
+      code: 'UNINSTALL_NOT_CONFIRMED',
+      details: { uninstallState: 'failed' },
+    });
+  });
+
+  it.each(['completed', 'agent_reported_uninstall', 'reattached', 'ephemeral'])(
+    'purges a %s device and reports the state, not forced',
+    async (state) => {
+      const { tx } = makeTx({ lockRow: REMOVED, uninstallState: state });
+      const r = await purgeRemovedDevice(tx, DEV);
+      expect(deleteDeviceCascade).toHaveBeenCalledTimes(1);
+      expect(r).toMatchObject({ uninstallState: state, forced: false });
+    },
+  );
+
+  it('force purges an unconfirmed device and says it was forced', async () => {
+    const { tx } = makeTx({ lockRow: REMOVED, uninstallState: 'expired' });
+    const r = await purgeRemovedDevice(tx, DEV, undefined, { force: true });
+    expect(deleteDeviceCascade).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ uninstallState: 'expired', forced: true });
+  });
+
+  it('force on an already-confirmed device is not reported as forced', async () => {
+    const { tx } = makeTx({ lockRow: REMOVED, uninstallState: 'completed' });
+    const r = await purgeRemovedDevice(tx, DEV, undefined, { force: true });
+    expect(r).toMatchObject({ uninstallState: 'completed', forced: false });
+  });
+
+  it('force does NOT override a still-collectable uninstall (UNINSTALL_PENDING)', async () => {
+    const { tx } = makeTx({ lockRow: REMOVED, pendingUninstall: true, uninstallState: 'none' });
+    await expect(purgeRemovedDevice(tx, DEV, undefined, { force: true })).rejects.toMatchObject({
+      code: 'UNINSTALL_PENDING',
+    });
+    expect(deleteDeviceCascade).not.toHaveBeenCalled();
+  });
+
+  it('force does NOT override a backup legal hold', async () => {
+    const { tx } = makeTx({ lockRow: REMOVED, uninstallState: 'none', protectedBackupSnapshot: true });
+    await expect(purgeRemovedDevice(tx, DEV, undefined, { force: true })).rejects.toMatchObject({
+      code: 'BACKUP_PROTECTED',
+    });
+    expect(deleteDeviceCascade).not.toHaveBeenCalled();
+  });
+
+  it('reads the state under the devices lock, after the pending check and before the cascade', async () => {
+    const { tx, calls } = makeTx({ lockRow: REMOVED, uninstallState: 'completed' });
+    await purgeRemovedDevice(tx, DEV);
+    const lock = calls.indexOf('lock');
+    const pending = calls.indexOf('pending-check');
+    const state = calls.indexOf('uninstall-state');
+    expect(lock).toBeGreaterThanOrEqual(0);
+    expect(state).toBeGreaterThan(pending);
+    expect(pending).toBeGreaterThan(lock);
+  });
+});
+
 describe('DeviceLifecycleError', () => {
   it('maps not-found, site-denied, and state conflicts to their HTTP domains', () => {
     expect(new DeviceLifecycleError('NOT_FOUND', 'x').status).toBe(404);
@@ -579,5 +673,6 @@ describe('DeviceLifecycleError', () => {
     expect(new DeviceLifecycleError('STATE_CHANGED', 'x').status).toBe(409);
     expect(new DeviceLifecycleError('NOT_REMOVED', 'x').status).toBe(409);
     expect(new DeviceLifecycleError('UNINSTALL_PENDING', 'x').status).toBe(409);
+    expect(new DeviceLifecycleError('UNINSTALL_NOT_CONFIRMED', 'x').status).toBe(409);
   });
 });

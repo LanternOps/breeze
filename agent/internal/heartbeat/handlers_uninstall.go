@@ -6,17 +6,21 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/flashguard"
 	"github.com/breeze-rmm/agent/internal/isolation"
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/macosuninstall"
-	"github.com/breeze-rmm/agent/internal/psscript"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/securefs"
+	"github.com/breeze-rmm/agent/internal/selfuninstall"
 )
 
 func init() {
@@ -27,14 +31,15 @@ func init() {
 // before stopping the agent's own service. It must be long enough for the
 // command result (submitted right after this handler returns) to reach the API
 // and for the agent to stop accepting new commands, but short enough that a
-// reboot or watchdog reinstall racing the teardown is unlikely.
+// reboot or watchdog reinstall racing the teardown is unlikely. The Windows
+// helper's selfuninstall.HandoffDelay must match (pinned by a test).
 const uninstallHelperDelaySeconds = 5
 
 // handleSelfUninstall uninstalls the agent from the machine.
 //
 // The teardown is split into two phases (#2878):
 //
-//   - Phase 1 runs in-process BEFORE the result is acked: neutralize the
+//   - Phase 1 runs in-process BEFORE the handler returns: neutralize the
 //     watchdog (so it cannot respawn the agent mid-teardown), remove every
 //     artifact that is safe to remove while the agent is still running, and
 //     hand the self-referential steps — stopping/deleting the agent's OWN
@@ -42,7 +47,13 @@ const uninstallHelperDelaySeconds = 5
 //     survives this process's death.
 //
 //   - Phase 2 is the detached helper, which runs the self-referential steps
-//     after a short delay, by which point the result has been submitted.
+//     after a short delay — on macOS/Linux by which point the ack has been
+//     submitted; on Windows the helper reports the result itself (below).
+//
+// On Windows (#11154) the helper also owns the result: this handler returns
+// the hand-off marker (never delivered), and the helper reports completed only
+// once the teardown — msiexec /x included — is verified, or failed naming the
+// step. macOS and Linux still ack on hand-off.
 //
 // The previous implementation ran the whole sequence in-process and stopped
 // the agent's own service FIRST — on Windows `sc.exe stop BreezeAgent` killed
@@ -70,6 +81,14 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 		)
 	}
 
+	// Refused rather than waited out, before anything is touched: the operator
+	// can send it again. On success the admission is kept through the hand-off,
+	// because this process is on its way out and a flash must not start meanwhile.
+	admissionDone, err := flashguard.Default().AdmitPowerAction("self_uninstall")
+	if err != nil {
+		return tools.NewErrorResult(fmt.Errorf("self_uninstall refused: %w; nothing was removed", err), time.Since(start).Milliseconds())
+	}
+
 	removeConfig := tools.GetPayloadBool(cmd.Payload, "removeConfig", true)
 
 	log.Warn("self_uninstall command received — uninstalling agent",
@@ -77,10 +96,13 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 	)
 
 	if err := releaseIsolationForUninstallFn(h); err != nil {
+		admissionDone()
 		return tools.NewErrorResult(fmt.Errorf("self-uninstall refused: isolation release could not be confirmed; agent service remains installed: %w", err), time.Since(start).Milliseconds())
 	}
 
-	if err := prepareSelfUninstallFn(removeConfig); err != nil {
+	helperReports, err := prepareSelfUninstallFn(selfUninstallRequest{CommandID: cmd.ID, RemoveConfig: removeConfig})
+	if err != nil {
+		admissionDone()
 		log.Error("self-uninstall preparation failed — teardown NOT handed off, agent service remains installed",
 			"error", err.Error(),
 		)
@@ -90,17 +112,33 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 		)
 	}
 
+	flashguard.HoldFor(admissionDone, flashguard.RestartHandoffHold)
 	scheduleSelfUninstallShutdownFn(h)
 
+	if helperReports {
+		// #11154: the detached helper reports this command once the teardown
+		// is verified — completed, or failed naming the step. Acking here
+		// would tell the server "uninstalled" before anything was removed.
+		log.Info("self-uninstall handed off; the detached helper reports the result once the teardown is verified",
+			logging.KeyCommandID, cmd.ID)
+		return tools.CommandResult{Status: tools.StatusResultHandedOff, DurationMs: time.Since(start).Milliseconds()}
+	}
 	return tools.NewSuccessResult(map[string]string{
 		"message": "self-uninstall initiated: detached teardown handed off",
 	}, time.Since(start).Milliseconds())
 }
 
+// selfUninstallRequest is what the platform hand-off needs from the command.
+type selfUninstallRequest struct {
+	CommandID    string
+	RemoveConfig bool
+}
+
 // prepareSelfUninstallFn and scheduleSelfUninstallShutdownFn are seams so the
-// handler's result contract (error result when the handoff fails, success
-// result otherwise, no shutdown scheduled on failure) is unit-testable without
-// touching a real service manager or exiting the test process.
+// handler's result contract (error result when the handoff fails; otherwise
+// the hand-off marker when the helper reports, a success result when it does
+// not; no shutdown scheduled on failure) is unit-testable without touching a
+// real service manager or exiting the test process.
 var (
 	releaseIsolationForUninstallFn  = releaseIsolationForUninstall
 	prepareSelfUninstallFn          = prepareSelfUninstall
@@ -125,10 +163,12 @@ func releaseIsolationForUninstall(h *Heartbeat) error {
 }
 
 // scheduleSelfUninstallShutdown shuts the agent down gracefully once the
-// result has had time to be submitted. The detached helper stops the service
-// after its delay, so on a normal service install the process exits via the
-// service manager's stop control; the explicit Stop/os.Exit below is a
-// backstop for non-service (dev) runs and blocked helpers.
+// ack has had time to go out (macOS/Linux; on Windows the helper reports). The
+// detached helper stops the service after its delay, so on a normal service
+// install the process exits via the service manager's stop control; the
+// explicit Stop/os.Exit below is a backstop for non-service (dev) runs and
+// blocked helpers. On Windows a helper that has already exited is handled
+// differently first (checkUninstallHelperAtDeadline).
 func scheduleSelfUninstallShutdown(h *Heartbeat) {
 	go func() {
 		defer func() {
@@ -137,17 +177,21 @@ func scheduleSelfUninstallShutdown(h *Heartbeat) {
 			}
 		}()
 
-		// Brief delay so the command result can be submitted.
+		// Brief delay so the ack can go out (macOS/Linux; on Windows the
+		// helper reports the result itself).
 		time.Sleep(2 * time.Second)
 		h.StopAcceptingCommands()
 
 		// Give the detached helper time to stop the service (the normal exit
 		// path). If we are still alive well past its delay — e.g. not running
 		// under a service manager, or the helper was blocked (EDR/AV killing a
-		// service-spawned PowerShell is realistic on managed endpoints) — log
+		// service-spawned helper is realistic on managed endpoints) — log
 		// loudly and stop ourselves. The log line is the only in-band evidence
 		// that the handed-off teardown may not have run.
 		time.Sleep(time.Duration(uninstallHelperDelaySeconds+10) * time.Second)
+		if checkUninstallHelperAtDeadline(h) {
+			return
+		}
 		log.Warn("agent still running after detached teardown helper's deadline — helper may have been blocked; stopping self (service registration may survive)",
 			"helperDelaySeconds", uninstallHelperDelaySeconds,
 		)
@@ -157,20 +201,101 @@ func scheduleSelfUninstallShutdown(h *Heartbeat) {
 	}()
 }
 
+// uninstallHelperState is the Windows helper this process spawned: the command
+// it reports and a channel that yields its exit code once it exits.
+type uninstallHelperState struct {
+	commandID string
+	exited    <-chan int
+}
+
+// uninstallHelperWatch is set on Windows once the helper is spawned.
+var uninstallHelperWatch atomic.Pointer[uninstallHelperState]
+
+// Seams for checkUninstallHelperAtDeadline.
+var (
+	restoreWindowsAgentServiceFn = restoreWindowsAgentService
+	submitUninstallFailureFn     = func(h *Heartbeat, commandID string, r tools.CommandResult) error {
+		return h.submitCommandResult(commandID, r)
+	}
+	selfUninstallExitFn = os.Exit
+)
+
+// checkUninstallHelperAtDeadline handles a Windows helper that has exited
+// while this agent is still running (#11154): it never got as far as stopping
+// the agent, so it was killed (EDR) or failed and could not restore it.
+// Exiting quietly would leave the agent stopped, disabled and the command
+// unreported, so this undoes phase 1, reports the command failed (the
+// journal reports it again after the restart if this post does not land),
+// and exits non-zero without a graceful stop: the SCM sees a crash and its
+// restored recovery actions restart the agent. A helper still running is
+// merely slow and is left alone. Returns whether it handled the deadline.
+func checkUninstallHelperAtDeadline(h *Heartbeat) bool {
+	st := uninstallHelperWatch.Load()
+	if st == nil {
+		return false
+	}
+	var code int
+	select {
+	case c, ok := <-st.exited:
+		if !ok {
+			c = -1
+		}
+		code = c
+	default:
+		return false
+	}
+	log.Error("the self-uninstall helper exited before stopping the agent; restoring the agent service",
+		logging.KeyCommandID, st.commandID, "helperExitCode", code)
+	restoreWindowsAgentServiceFn()
+	result := tools.NewErrorResult(fmt.Errorf(
+		"self-uninstall failed: the teardown helper exited (code %d) before it stopped the agent; nothing was removed by it, and the agent service was re-enabled and restarts", code), 0)
+	if h != nil {
+		if err := submitUninstallFailureFn(h, st.commandID, result); err != nil {
+			log.Warn("could not report the failed self-uninstall; the restarted agent reports it from its journal",
+				logging.KeyCommandID, st.commandID, "error", err.Error())
+		}
+	}
+	selfUninstallExitFn(1)
+	return true
+}
+
+// watchExit waits on a started cmd in the background and yields its exit code
+// (-1 when it cannot be read) once it exits.
+func watchExit(cmd *exec.Cmd) <-chan int {
+	ch := make(chan int, 1)
+	go func() {
+		err := cmd.Wait()
+		code := 0
+		var exitErr *exec.ExitError
+		switch {
+		case err == nil:
+		case errors.As(err, &exitErr):
+			code = exitErr.ExitCode()
+		default:
+			code = -1
+		}
+		ch <- code
+		close(ch)
+	}()
+	return ch
+}
+
 // prepareSelfUninstall does the platform-specific phase-1 teardown and hands
 // the self-referential steps to a detached helper. It returns an error only
 // when the handoff itself fails; individual best-effort cleanup failures are
-// logged but do not abort the uninstall.
-func prepareSelfUninstall(removeConfig bool) error {
+// logged but do not abort the uninstall. helperReports is true when the helper
+// reports the command result itself (Windows, #11154); macOS and Linux still
+// ack on hand-off.
+func prepareSelfUninstall(req selfUninstallRequest) (helperReports bool, err error) {
 	switch runtime.GOOS {
 	case "darwin":
-		return prepareSelfUninstallDarwin(removeConfig)
+		return false, prepareSelfUninstallDarwin(req.RemoveConfig)
 	case "linux":
-		return prepareSelfUninstallLinux(removeConfig)
+		return false, prepareSelfUninstallLinux(req.RemoveConfig)
 	case "windows":
-		return prepareSelfUninstallWindows(removeConfig)
+		return true, prepareSelfUninstallWindows(req, defaultWindowsUninstallHandoff())
 	default:
-		return fmt.Errorf("unsupported OS for self-uninstall: %s", runtime.GOOS)
+		return false, fmt.Errorf("unsupported OS for self-uninstall: %s", runtime.GOOS)
 	}
 }
 
@@ -286,15 +411,15 @@ func prepareSelfUninstallDarwin(removeConfig bool) error {
 
 	// Watchdog FIRST — it must be gone before anything stops the agent, or it
 	// may respawn/reinstall the agent mid-teardown.
-	if err := exec.Command("launchctl", "bootout", "system/"+watchdogLabel).Run(); err != nil {
+	if err := procspawn.Command("launchctl", "bootout", "system/"+watchdogLabel).Run(); err != nil {
 		log.Warn("launchctl bootout watchdog failed, trying legacy unload", "error", err.Error())
-		_ = exec.Command("launchctl", "unload", watchdogPlistDst).Run()
+		_ = procspawn.Command("launchctl", "unload", watchdogPlistDst).Run()
 	}
 
 	// Disable our own daemon (safe while running) so that if the detached
 	// helper never runs — blocked, reboot inside the window — the host comes
 	// back with the agent NOT auto-starting into permanent 401s (#2796).
-	if err := exec.Command("launchctl", "disable", "system/"+label).Run(); err != nil {
+	if err := procspawn.Command("launchctl", "disable", "system/"+label).Run(); err != nil {
 		log.Warn("launchctl disable agent failed", "error", err.Error())
 	}
 
@@ -333,24 +458,44 @@ type linuxUninstallScriptOptions struct {
 	WatchdogProcess string // watchdog process name for the pkill re-assert
 	UnitPath        string
 	BinaryPath      string
-	ConfigDir       string // empty = skip config removal regardless of RemoveConfig
-	RemoveConfig    bool
-	DelaySeconds    int
+	// IsolationUnits and RecoveryDir are the network-isolation boot hook, poll
+	// timer and recovery binaries; they go only after a confirmed release.
+	IsolationUnits []string
+	RecoveryDir    string
+	ConfigDir      string // empty = skip config removal regardless of RemoveConfig
+	RemoveConfig   bool
+	DelaySeconds   int
 }
 
 // buildLinuxUninstallScript renders the detached teardown script for Linux.
+// Isolation is released first: if that cannot be confirmed the script stops,
+// because removing the agent or the recovery timers would leave the host cut
+// off with nothing left to undo it. It then re-enables the service phase 1
+// disabled and, once the command result has had time to go out, restarts it:
+// the handler's shutdown goroutine exits the agent cleanly, which
+// Restart=on-failure would not undo.
 // The watchdog re-assert (stop + pkill) comes BEFORE the agent stop so a
 // watchdog that survived phase 1 cannot respawn the agent mid-teardown, and
 // config removal comes after the agent is dead (see the darwin builder).
 func buildLinuxUninstallScript(opts linuxUninstallScriptOptions) string {
 	lines := []string{
+		fmt.Sprintf("%s containment release-all --reason uninstall || { echo 'self-uninstall aborted: isolation release could not be confirmed' >&2; systemctl enable %s; sleep %d; systemctl restart %s; exit 1; }",
+			shQuote(opts.BinaryPath), shQuote(opts.ServiceName), opts.DelaySeconds, shQuote(opts.ServiceName)),
 		fmt.Sprintf("sleep %d", opts.DelaySeconds),
 		fmt.Sprintf("systemctl stop %s", shQuote(opts.WatchdogService)),
 		fmt.Sprintf("pkill -x %s", shQuote(opts.WatchdogProcess)),
 		fmt.Sprintf("systemctl stop %s", shQuote(opts.ServiceName)),
 		fmt.Sprintf("rm -f %s", shQuote(opts.UnitPath)),
+	}
+	for _, unit := range opts.IsolationUnits {
+		lines = append(lines, fmt.Sprintf("rm -f %s", shQuote(unit)))
+	}
+	lines = append(lines,
 		"systemctl daemon-reload",
 		fmt.Sprintf("rm -f %s", shQuote(opts.BinaryPath)),
+	)
+	if opts.RecoveryDir != "" {
+		lines = append(lines, fmt.Sprintf("rm -rf %s", shQuote(opts.RecoveryDir)))
 	}
 	if opts.RemoveConfig && opts.ConfigDir != "" {
 		lines = append(lines, fmt.Sprintf("rm -rf %s", shQuote(opts.ConfigDir)))
@@ -374,15 +519,15 @@ func prepareSelfUninstallLinux(removeConfig bool) error {
 	)
 
 	// Watchdog FIRST (see prepareSelfUninstallDarwin).
-	if err := exec.Command("systemctl", "stop", watchdogService).Run(); err != nil {
+	if err := procspawn.Command("systemctl", "stop", watchdogService).Run(); err != nil {
 		log.Warn("systemctl stop watchdog failed", "error", err.Error())
 	}
-	if err := exec.Command("systemctl", "disable", watchdogService).Run(); err != nil {
+	if err := procspawn.Command("systemctl", "disable", watchdogService).Run(); err != nil {
 		log.Warn("systemctl disable watchdog failed", "error", err.Error())
 	}
 	// Disabling (not stopping!) our own service is safe while running and
 	// prevents an auto-start if the host reboots mid-teardown.
-	if err := exec.Command("systemctl", "disable", serviceName).Run(); err != nil {
+	if err := procspawn.Command("systemctl", "disable", serviceName).Run(); err != nil {
 		log.Warn("systemctl disable agent failed", "error", err.Error())
 	}
 
@@ -410,9 +555,15 @@ func prepareSelfUninstallLinux(removeConfig bool) error {
 		WatchdogProcess: "breeze-watchdog",
 		UnitPath:        unitDst,
 		BinaryPath:      binaryPath,
-		ConfigDir:       configDir,
-		RemoveConfig:    removeConfig,
-		DelaySeconds:    uninstallHelperDelaySeconds,
+		IsolationUnits: []string{
+			"/etc/systemd/system/breeze-isolation.service",
+			"/etc/systemd/system/breeze-isolation-poll.service",
+			"/etc/systemd/system/breeze-isolation-poll.timer",
+		},
+		RecoveryDir:  "/usr/local/lib/breeze/isolation-recovery",
+		ConfigDir:    configDir,
+		RemoveConfig: removeConfig,
+		DelaySeconds: uninstallHelperDelaySeconds,
 	})
 	if err := startDetachedProcess("systemd-run", "--quiet", "--collect", "--", "/bin/sh", "-c", script); err != nil {
 		return fmt.Errorf("spawn detached teardown helper (systemd-run transient unit): %w", err)
@@ -429,160 +580,112 @@ func shQuote(s string) string {
 // Windows
 // ---------------------------------------------------------------------------
 
-// windowsUninstallScriptOptions captures the inputs to the detached PowerShell
-// helper that tears down the agent's own service on Windows. Extracted (like
-// updater.buildRestartScript) so the script text can be unit-tested without
-// spawning PowerShell.
-type windowsUninstallScriptOptions struct {
-	ServiceName         string
-	WatchdogServiceName string
-	AgentBinaryPath     string
-	WatchdogBinaryPath  string
-	ConfigDir           string // empty = skip config removal regardless of RemoveConfig
-	RemoveConfig        bool
-	DelaySeconds        int
+// windowsUninstallHandoff are the side effects of the Windows hand-off, as a
+// struct so the ordering and the undo-on-failure are testable on any host.
+type windowsUninstallHandoff struct {
+	executable func() (string, error)
+	configDir  func() string
+	// stageHelper copies the agent binary into a fresh private directory and
+	// returns the copy's path and a cleanup that removes the directory.
+	stageHelper func(agentExe string) (helperExe string, cleanup func(), err error)
+	// neutralize is phase 1: the watchdog stopped and deleted, the agent's own
+	// service set to start=disabled with its recovery actions cleared.
+	neutralize func()
+	// restore undoes neutralize's changes to the agent's own service.
+	restore func()
+	// spawn starts the detached helper and returns a channel that yields its
+	// exit code once it exits.
+	spawn func(name string, args ...string) (<-chan int, error)
 }
 
-// buildWindowsUninstallScript renders the detached PowerShell teardown script.
-// Ordering is load-bearing:
-//
-//  0. confirm isolation release; if it fails, re-enable the agent service
-//     (undoing phase 1's start=disabled and cleared recovery actions), log
-//     under <ConfigDir>\logs, and abort without teardown,
-//  1. re-assert the watchdog teardown (phase 1 already stopped/deleted
-//     it, but sc.exe stop is asynchronous — a watchdog that survived phase 1
-//     must be dead before the agent stops or it may respawn it),
-//  2. Stop-Service on the agent (waits for Stopped — this is what kills the
-//     agent process, AFTER the command result has been submitted),
-//  3. delete both service registrations,
-//  4. kill lingering sibling processes that could hold file locks (including
-//     any watchdog-respawned agent),
-//  5. remove the binaries (unlocked once the processes are gone),
-//  6. remove config last (the agent's open log handles are released by then),
-//  7. the script deletes itself.
-//
-// Removal steps use -LiteralPath (never -Path: `[`/`]` in an install path
-// would be glob-expanded into a silent no-op) and -ErrorAction
-// SilentlyContinue: by this point the process that could report errors is
-// gone, so best-effort is all there is.
-func buildWindowsUninstallScript(opts windowsUninstallScriptOptions) string {
-	// Phase 1 already disabled the service and cleared its recovery actions.
-	// A failed release must undo that before aborting, or the device is left
-	// stopped and disabled (#2796) while Breeze-owned filters may remain.
-	lines := []string{
-		"try {",
-		fmt.Sprintf("  & '%s' containment release-all --reason uninstall", psQuote(opts.AgentBinaryPath)),
-		"  $breezeReleaseExit = $LASTEXITCODE",
-		"} catch { $breezeReleaseExit = 1 }",
-		"if ($breezeReleaseExit -ne 0) {",
+func defaultWindowsUninstallHandoff() windowsUninstallHandoff {
+	return windowsUninstallHandoff{
+		executable:  os.Executable,
+		configDir:   config.MachineConfigDir,
+		stageHelper: stageWindowsUninstallHelper,
+		neutralize:  neutralizeWindowsServicesForUninstall,
+		restore:     restoreWindowsAgentService,
+		spawn:       startWatchedDetachedProcess,
 	}
-	if opts.ConfigDir != "" {
-		lines = append(lines, fmt.Sprintf("  \"$(Get-Date -Format o) self-uninstall aborted: isolation release could not be confirmed (exit $breezeReleaseExit); agent service re-enabled\" | Out-File -LiteralPath '%s' -Append -Encoding utf8 -ErrorAction SilentlyContinue", psQuote(strings.TrimRight(opts.ConfigDir, `\`)+`\logs\uninstall-isolation-release-error.txt`)))
-	}
-	lines = append(lines,
-		fmt.Sprintf("  sc.exe config '%s' start= auto | Out-Null", psQuote(opts.ServiceName)),
-		fmt.Sprintf("  sc.exe failure '%s' reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null", psQuote(opts.ServiceName)),
-		"  exit 1",
-		"}",
-		fmt.Sprintf("Start-Sleep -Seconds %d", opts.DelaySeconds),
-		fmt.Sprintf("sc.exe stop '%s' | Out-Null", psQuote(opts.WatchdogServiceName)),
-		fmt.Sprintf("sc.exe delete '%s' | Out-Null", psQuote(opts.WatchdogServiceName)),
-		fmt.Sprintf("Stop-Service -Name '%s' -Force -ErrorAction SilentlyContinue", psQuote(opts.ServiceName)),
-		fmt.Sprintf("sc.exe delete '%s' | Out-Null", psQuote(opts.ServiceName)),
-		"Get-Process -Name 'breeze-agent','breeze-user-helper','breeze-desktop-helper','breeze-watchdog' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
-		"Start-Sleep -Seconds 1",
-		fmt.Sprintf("Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", psQuote(opts.WatchdogBinaryPath)),
-		fmt.Sprintf("Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", psQuote(opts.AgentBinaryPath)),
-	)
-	if opts.RemoveConfig && opts.ConfigDir != "" {
-		lines = append(lines,
-			fmt.Sprintf("Remove-Item -LiteralPath '%s' -Recurse -Force -ErrorAction SilentlyContinue", psQuote(opts.ConfigDir)),
-		)
-	}
-	lines = append(lines, "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue")
-	return strings.Join(lines, "\r\n")
 }
 
-// psQuote escapes s for inclusion inside a single-quoted PowerShell string.
-func psQuote(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
-}
-
-// prepareSelfUninstallWindows neutralizes the watchdog in-process, then hands
-// the full self-referential teardown (stop + delete own service, binary and
-// config removal) to a detached PowerShell helper.
+// prepareSelfUninstallWindows hands the teardown to a detached helper that
+// reports the command result itself, once the teardown is verified (#11154).
+// The helper is this binary, run from a private copy (the original is locked
+// while the agent runs and is removed by the teardown) as the hidden
+// `self-uninstall-finish` command; internal/selfuninstall has the steps.
 //
-// The agent binary, the watchdog binary, and the config dir (which holds the
-// agent's open log files) are all locked while their processes run, so ALL
-// file removal happens in the detached helper after the processes are gone —
-// unlike the Unix paths, where in-process removal of non-self files is safe.
-func prepareSelfUninstallWindows(removeConfig bool) error {
-	const (
-		serviceName         = "BreezeAgent"
-		watchdogServiceName = "BreezeWatchdog"
-	)
-
-	// Watchdog FIRST — it must be unable to respawn the agent once the helper
-	// stops the agent service. sc.exe delete on a STOP_PENDING service marks it
-	// delete-pending, which completes when it stops; the helper re-asserts both
-	// steps anyway.
-	if err := exec.Command("sc.exe", "stop", watchdogServiceName).Run(); err != nil {
-		log.Warn("sc.exe stop watchdog failed", "error", err.Error())
-	}
-	if err := exec.Command("sc.exe", "delete", watchdogServiceName).Run(); err != nil {
-		log.Warn("sc.exe delete watchdog failed", "error", err.Error())
-	}
-
-	// Disable our own service's auto-start and clear its SCM recovery actions
-	// (both safe while running) so that if the detached helper never runs —
-	// EDR blocking a service-spawned PowerShell, a temp cleaner, a reboot
-	// inside the window — the backstop os.Exit doesn't get treated as a crash
-	// and restarted, and the host doesn't reboot back into permanent 401
-	// hammering (#2796). Worst case degrades to "stopped + disabled, binary
-	// on disk" instead of "alive and stranded".
-	if err := exec.Command("sc.exe", "config", serviceName, "start=", "disabled").Run(); err != nil {
-		log.Warn("sc.exe config start=disabled failed", "error", err.Error())
-	}
-	if err := exec.Command("sc.exe", "failure", serviceName, "reset=", "0", "actions=", "").Run(); err != nil {
-		log.Warn("sc.exe failure reset failed", "error", err.Error())
-	}
-
-	exePath, err := os.Executable()
+// The copy is staged before phase 1 touches anything, so a staging failure
+// leaves the machine as it was; a spawn failure undoes phase 1's changes to the
+// agent's own service. The watchdog phase 1 deleted is not restored here; the
+// agent reinstalls a missing watchdog (ensureMissingWatchdog). The helper is
+// watched: one that exits while this agent is still running is handled at the
+// shutdown deadline (checkUninstallHelperAtDeadline).
+func prepareSelfUninstallWindows(req selfUninstallRequest, d windowsUninstallHandoff) error {
+	exePath, err := d.executable()
 	if err != nil {
 		return fmt.Errorf("resolve own executable path: %w", err)
 	}
-
-	configDir := ""
-	if programData := os.Getenv("ProgramData"); programData != "" {
-		configDir = filepath.Join(programData, "Breeze")
-	}
-
-	script := buildWindowsUninstallScript(windowsUninstallScriptOptions{
-		ServiceName:         serviceName,
-		WatchdogServiceName: watchdogServiceName,
-		AgentBinaryPath:     exePath,
-		// The watchdog is installed as a sibling of the agent binary (see
-		// serviceinstall.InstallProtectedBinary / sessionbroker allowlist).
-		WatchdogBinaryPath: filepath.Join(filepath.Dir(exePath), "breeze-watchdog.exe"),
-		ConfigDir:          configDir,
-		RemoveConfig:       removeConfig,
-		DelaySeconds:       uninstallHelperDelaySeconds,
-	})
-
-	// psscript stamps the UTF-8 BOM: the script interpolates install paths,
-	// which Windows PowerShell 5.1 would mis-decode as ANSI under a localized
-	// (non-ASCII) install directory (#3581).
-	scriptPath, err := psscript.CreateTemp("breeze-uninstall-*.ps1", script)
+	helperExe, cleanup, err := d.stageHelper(exePath)
 	if err != nil {
-		return fmt.Errorf("write uninstall helper script: %w", err)
+		return fmt.Errorf("stage the detached teardown helper: %w", err)
 	}
 
-	if err := startDetachedProcess("powershell.exe",
-		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-		"-File", scriptPath,
-	); err != nil {
-		_ = os.Remove(scriptPath)
+	d.neutralize()
+
+	args := []string{
+		selfuninstall.FinishCommand,
+		"--command-id", req.CommandID,
+		"--agent-binary", exePath,
+		"--config-dir", d.configDir(),
+		"--remove-config=" + strconv.FormatBool(req.RemoveConfig),
+	}
+	exited, err := d.spawn(helperExe, args...)
+	if err != nil {
+		d.restore()
+		cleanup()
 		return fmt.Errorf("spawn detached teardown helper: %w", err)
 	}
+	uninstallHelperWatch.Store(&uninstallHelperState{commandID: req.CommandID, exited: exited})
 	return nil
+}
+
+// neutralizeWindowsServicesForUninstall is phase 1 on Windows.
+//
+// Watchdog FIRST — it must be unable to respawn the agent once the helper
+// stops the agent service. sc.exe delete on a STOP_PENDING service marks it
+// delete-pending, which completes when it stops; the helper re-asserts the
+// stop and verifies the registration is gone.
+//
+// Then our own service's auto-start is disabled and its SCM recovery actions
+// cleared (both safe while running), so that if the helper never runs — EDR
+// blocking it, a reboot inside the window — the backstop os.Exit is not
+// treated as a crash and restarted, and the host does not reboot back into
+// permanent 401 hammering (#2796). The helper restores both if the teardown
+// fails.
+func neutralizeWindowsServicesForUninstall() {
+	if err := procspawn.Command("sc.exe", "stop", selfuninstall.WatchdogServiceName).Run(); err != nil {
+		log.Warn("sc.exe stop watchdog failed", "error", err.Error())
+	}
+	if err := procspawn.Command("sc.exe", "delete", selfuninstall.WatchdogServiceName).Run(); err != nil {
+		log.Warn("sc.exe delete watchdog failed", "error", err.Error())
+	}
+	if err := procspawn.Command("sc.exe", "config", selfuninstall.AgentServiceName, "start=", "disabled").Run(); err != nil {
+		log.Warn("sc.exe config start=disabled failed", "error", err.Error())
+	}
+	if err := procspawn.Command("sc.exe", "failure", selfuninstall.AgentServiceName, "reset=", "0", "actions=", "").Run(); err != nil {
+		log.Warn("sc.exe failure reset failed", "error", err.Error())
+	}
+}
+
+// restoreWindowsAgentService undoes neutralize's changes to the agent's own
+// service (values match the MSI's ConfigureBreezeFailureActions).
+func restoreWindowsAgentService() {
+	if err := procspawn.Command("sc.exe", "config", selfuninstall.AgentServiceName, "start=", "auto").Run(); err != nil {
+		log.Error("sc.exe config start=auto failed after an aborted self-uninstall hand-off", "error", err.Error())
+	}
+	if err := procspawn.Command("sc.exe", "failure", selfuninstall.AgentServiceName, "reset=", "86400",
+		"actions=", "restart/5000/restart/10000/restart/30000").Run(); err != nil {
+		log.Error("sc.exe failure restore failed after an aborted self-uninstall hand-off", "error", err.Error())
+	}
 }

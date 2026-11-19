@@ -121,3 +121,61 @@ export async function readRunProgress(runId: string): Promise<RunProgressEntry[]
     return [];
   }
 }
+
+/**
+ * Wisp delegation W1 (#11084) — the run card's step label for one tool call
+ * of a device-troubleshooting run. Built from a FIXED map keyed on our own
+ * registered tool name and a closed set of action values: an action the map
+ * does not know (it is model input) falls back to the tool's label and is
+ * never echoed, and no tool input value or tool output ever reaches a label.
+ * Device output is untrusted (rule 6a); a label is shown in the chat.
+ */
+const TOOL_PROGRESS_LABELS: Readonly<Record<string, { label: string; actions?: Readonly<Record<string, string>> }>> = Object.freeze({
+  get_device_details: { label: 'Reading device details' },
+  get_device_context: { label: 'Reading device notes' },
+  get_device_health: { label: 'Checking device health' },
+  get_device_events: { label: 'Reading recent device events' },
+  get_device_software: { label: 'Reading installed software' },
+  analyze_metrics: { label: 'Analyzing performance metrics' },
+  search_logs: { label: 'Searching logs' },
+  find_proven_fixes: { label: 'Looking up proven fixes' },
+  list_scripts: { label: 'Listing scripts' },
+  execute_command: {
+    label: 'Running a device command',
+    actions: {
+      list_processes: 'Listing running processes',
+      event_logs_list: 'Listing event logs',
+      file_list: 'Listing files',
+    },
+  },
+  registry_operations: {
+    label: 'Working with the registry',
+    actions: {
+      read_key: 'Reading a registry key',
+      get_value: 'Reading a registry value',
+      set_value: 'Changing a registry value',
+      create_key: 'Creating a registry key',
+      delete_key: 'Deleting a registry key',
+    },
+  },
+  set_device_context: { label: 'Saving a device note' },
+  run_script: { label: 'Running a script' },
+  file_operations: {
+    label: 'Working with files',
+    actions: {
+      list: 'Listing files',
+      read: 'Reading a file',
+      write: 'Writing a file',
+      delete: 'Deleting a file',
+      mkdir: 'Creating a folder',
+      rename: 'Renaming a file',
+    },
+  },
+});
+
+export function progressLabelFor(toolName: string, action: string | null): string {
+  const entry = Object.hasOwn(TOOL_PROGRESS_LABELS, toolName) ? TOOL_PROGRESS_LABELS[toolName] : undefined;
+  if (!entry) return `Running ${toolName.replace(/[^a-z0-9_]/gi, '_').slice(0, 64)}`;
+  if (action && entry.actions && Object.hasOwn(entry.actions, action)) return entry.actions[action]!;
+  return entry.label;
+}

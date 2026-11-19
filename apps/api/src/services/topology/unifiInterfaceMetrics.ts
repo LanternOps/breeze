@@ -3,7 +3,7 @@ import {
   TOPOLOGY_INTERFACE_MEASURED_FIELDS, TOPOLOGY_INTERFACE_METRICS_MAX_SAMPLES, unifiEndpointKey,
   type TopologyInterfaceMetricEnvelopeV1, type TopologyInterfaceSampleV1, type TopologyScope, type UnifiResource,
 } from '@breeze/shared';
-import { assertInTransaction, db } from '../../db';
+import { assertInTransaction, db, withDbTransaction } from '../../db';
 import { topologyInterfaces } from '../../db/schema';
 import {
   isTopologyTelemetryAuthorityRegistered, registerTopologyTelemetryAuthority, resolveTopologyTelemetryProducer, TOPOLOGY_TELEMETRY_MAX_AUTHORIZED_INTERFACES,
@@ -131,7 +131,7 @@ export async function ingestUnifiInterfaceTelemetry(input: {
   if (!(await loadTopologyFlags({ scope: input.scope })).interfaceHealth) return { ...receipt, skipped: 'interface_health_disabled' };
   ensureUnifiTelemetryAuthority();
   try {
-    return await db.transaction(async () => {
+    return await withDbTransaction(async () => {
       const producer = await resolveTopologyTelemetryProducer({ producerKind: 'unifi', deviceId: input.deviceId, scope: input.scope,
         authorityKey: input.authorityKey, collectorId: input.collector.id });
       const hostKey = unifiHostKey(input.collector);

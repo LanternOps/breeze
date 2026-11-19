@@ -8,9 +8,9 @@
  * - Interpolate template strings
  */
 
-import { DEFAULT_ALERT_COOLDOWN_MINUTES } from '@breeze/shared';
 import { randomUUID } from 'node:crypto';
-import type { MonitorKind, AlertResolutionReason } from '@breeze/shared';
+import { BUILTIN_ALERT_LIFECYCLE } from '@breeze/shared';
+import type { MonitorKind, AlertResolutionReason, ResolvedAlertLifecycle } from '@breeze/shared';
 import { db, withDbTransaction, withSystemDbAccessContext } from '../db';
 import {
   alerts,
@@ -35,6 +35,7 @@ import { alertOwnerKey, isDeviceOwned } from './alertOwner';
 import { resolveDeviceSiteId } from './deviceSiteResolver';
 import { captureException } from './sentry';
 import { scheduleStagedAlertDispatch } from './subjectAlertOutbox';
+import { stagedTriggerDispatch, type SubjectAlertDispatch } from './alertDispatchEnvelope';
 import { resolveMonitorsForDevice } from './monitors/monitorResolver';
 import { applyOverrides, getMonitorKindSpec } from './monitors/kinds';
 import {
@@ -53,6 +54,9 @@ import {
   mergeCursors, freezeRecoveryCursor, resolveSideCursors, contextWithCursorSql,
   type LeafCursors, type ClosedCursorEntry,
 } from './alertLifecycle/cursor';
+import {
+  createLifecycleLoader, lifecycleForAlert, lifecycleSnapshot, loadAlertLifecycle, rearmDelayElapsed,
+} from './alertLifecycle/resolve';
 
 // Types for alert creation
 export interface CreateAlertParams {
@@ -64,6 +68,13 @@ export interface CreateAlertParams {
   message: string;
   context?: Record<string, unknown>;
   lifecycle?: { cursor: LeafCursors };
+  /**
+   * The rule's effective lifecycle, when the caller already resolved it (the
+   * sweep does, once per device). Omitted: createAlert resolves it itself.
+   */
+  resolvedLifecycle?: ResolvedAlertLifecycle;
+  /** Recorded in the snapshot: which monitor definition opened this episode (OD11). */
+  monitorCompiledHash?: string | null;
   /**
    * #5289 — set when the firing rule was COMPILED from a monitor definition,
    * so the alert can link back to the monitor a technician actually authored
@@ -96,40 +107,19 @@ export interface CreateAlertParams {
   allocateSubjectEpisode?: () => Promise<string>;
 }
 
-/**
- * The transactional outbox envelope staged on an alert's own row (W03 for
- * subject alerts; every `createAlert` / `createSourcedAlert` alert since
- * #10926). `alerts.context._subjectDispatch` (or `_subjectResolutionDispatch`
- * for a subject recovery) IS the outbox: no separate table, no in-memory
- * callback list. `subjectAlertOutbox.ts` reads it back only after the writing
- * transaction has committed.
- */
-export interface SubjectAlertDispatch {
-  eventId: string;
-  eventType: 'alert.triggered' | 'alert.resolved';
-  publisher?: string;
-  siteId: string | null | undefined;
-  cooldownMinutes: number;
-  payload: Record<string, unknown>;
-  /** Fixed at staging so a republished event keeps its original time. */
-  occurredAt?: string;
-  /**
-   * #10926 — on a failed publish keep the row and retry later, instead of the
-   * W03 subject compensation (delete the row and let the next sweep re-raise).
-   */
-  retryOnPublishFailure?: boolean;
-  failedAttempts?: number;
-  leaseToken?: string;
-  leaseUntil?: string;
-}
-
 // Rule with template info for evaluation
 export interface RuleWithTemplate {
   rule: typeof alertRules.$inferSelect;
   template: typeof alertTemplates.$inferSelect;
   effectiveConditions: unknown;
   effectiveSeverity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  /** `lifecycle.cooldownMinutes`, kept for the callers that only need the cooldown. */
   effectiveCooldownMinutes: number;
+  /**
+   * W2 (#10765) — the rule's effective lifecycle for THIS device: monitor →
+   * device org → partner for a managed rule, rule/template for a legacy one.
+   */
+  lifecycle: ResolvedAlertLifecycle;
   notificationChannelIds: string[];
   escalationPolicyId?: string;
   /**
@@ -138,39 +128,6 @@ export interface RuleWithTemplate {
    * Null for an ordinary standalone rule.
    */
   monitor: typeof monitorDefinitions.$inferSelect | null;
-}
-
-/**
- * #10926 — the `alert.triggered` outbox envelope for a legacy or sourced alert.
- * The creator writes it in the SAME insert as the row, then calls
- * `scheduleStagedAlertDispatch`; the event goes out only after the outermost
- * transaction commits (`subjectAlertOutbox.ts`).
- *
- * Publishing inline, as these paths used to, ran the `notification-dispatcher`
- * subscriber before COMMIT: `process-alert` read the row on another connection,
- * found nothing and returned without sending, so rule, monitor and sourced
- * alerts never notified anyone. The envelope is durable, so a crash after
- * COMMIT or a failed publish is retried by the next drain instead of leaving an
- * active alert that is never announced (the row every creator's dedupe would
- * skip forever, #5241 / #5325).
- */
-function stagedTriggerDispatch(opts: {
-  alertId: string;
-  payload: Record<string, unknown>;
-  publisher: string;
-  siteId: string | null | undefined;
-  cooldownMinutes: number;
-}): SubjectAlertDispatch {
-  return {
-    eventId: opts.alertId,
-    eventType: 'alert.triggered',
-    publisher: opts.publisher,
-    siteId: opts.siteId,
-    cooldownMinutes: opts.cooldownMinutes,
-    payload: opts.payload,
-    occurredAt: new Date().toISOString(),
-    retryOnPublishFailure: true,
-  };
 }
 
 async function monitorEventFields(monitorId: string | null | undefined, kind?: MonitorKind | null): Promise<{ monitorId: string | null; kind: MonitorKind | null }> {
@@ -229,10 +186,11 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
     .where(eq(alertTemplates.id, rule.templateId))
     .limit(1);
 
-  // Check override or template cooldown
-  const overrides = rule.overrideSettings as Record<string, unknown> | null;
-  const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-    template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
+  // The effective lifecycle (monitor → device org → partner, or the legacy
+  // rule/template values). The sweep resolves it once per device and passes it.
+  const effectiveLifecycle = params.resolvedLifecycle
+    ?? await loadAlertLifecycle({ rule, template: template ?? null, deviceOrgId: orgId });
+  const cooldownMinutes = effectiveLifecycle.cooldownMinutes;
 
   // Check cooldown
   const cooldownActive = await isCooldownActive(ruleId, deviceId, subjectKey);
@@ -281,9 +239,16 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
 
   const monitorFields = await monitorEventFields(monitorId ?? rule.managedByMonitorId, params.kind);
 
-  const insertContext = subjectKey === undefined && lifecycle
-    ? { ...context, lifecycle: { ...(context?.lifecycle as Record<string, unknown> | undefined), cursor: lifecycle.cursor } }
-    : context;
+  // Settings rule 6: the episode keeps the lifecycle it opened with. A subject
+  // alert has no evidence cursor, only the snapshot.
+  const insertContext = {
+    ...context,
+    lifecycle: {
+      ...(context?.lifecycle as Record<string, unknown> | undefined),
+      ...lifecycleSnapshot(effectiveLifecycle, params.monitorCompiledHash ?? null),
+      ...(subjectKey === undefined && lifecycle ? { cursor: lifecycle.cursor } : {}),
+    },
+  };
 
   // Allocated here so the legacy path can stage its outbox envelope (which
   // names the alert) in the same INSERT as the row.
@@ -294,7 +259,7 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       INSERT INTO alerts (owner_kind, rule_id, device_id, org_id, severity, title, message, context,
         monitor_id, episode_id, requires_human, subject_key, status, triggered_at, id)
       VALUES ('device', ${ruleId}, ${deviceId}, ${orgId}, ${severity}, ${title}, ${message},
-        ${JSON.stringify(rowContext ?? {})}::jsonb, ${monitorFields.monitorId}, ${episodeId ?? null},
+        ${JSON.stringify(rowContext)}::jsonb, ${monitorFields.monitorId}, ${episodeId ?? null},
         ${requiresHuman ?? false}, ${subjectKey ?? null}, 'active', now(), ${alertId})
       ON CONFLICT (rule_id, device_id, COALESCE(subject_key, ''))
         WHERE rule_id IS NOT NULL AND status IN ('active', 'acknowledged', 'suppressed')
@@ -323,7 +288,7 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
         },
       };
       await db.update(alerts)
-        .set({ episodeId: subjectEpisodeId, context: { ...context, _subjectDispatch: pending } })
+        .set({ episodeId: subjectEpisodeId, context: { ...insertContext, _subjectDispatch: pending } })
         .where(eq(alerts.id, newAlert.id));
       return newAlert.id;
     });
@@ -532,16 +497,34 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
   return newAlert.id;
 }
 
-async function anchoredTriggerOpts(ruleId: string, deviceId: string, triggerConditions: unknown) {
-  const paths = evidenceLeafPaths(triggerConditions);
-  if (paths.length === 0) return { paths, opts: undefined };
-  const entry = (await readClosedCursors(deviceId, [ruleId])).get(ruleId);
-  const opts: EvaluateOptions = {
+/**
+ * The trigger's evaluation options against the most recently closed episode.
+ * `after_delay` drops the cursor (and the legacy ingestion fence) once the delay
+ * has passed since that close, so consumed evidence may re-open; the rolling
+ * window alone then decides, as it did before W1.
+ */
+function triggerEvaluateOptions(
+  entry: ClosedCursorEntry | undefined,
+  lifecycle: Pick<ResolvedAlertLifecycle, 'rearmMode' | 'rearmDelayMinutes'>,
+): EvaluateOptions {
+  if (entry && rearmDelayElapsed(entry.closedAt, lifecycle)) return { side: 'trigger' };
+  return {
     side: 'trigger',
     cursors: entry?.cursors ?? undefined,
     legacyIngestedBefore: entry?.closedAt, // per-leaf fallback when the closed cursor lacks that leaf
   };
-  return { paths, opts };
+}
+
+async function anchoredTriggerOpts(
+  ruleId: string,
+  deviceId: string,
+  triggerConditions: unknown,
+  lifecycle: Pick<ResolvedAlertLifecycle, 'rearmMode' | 'rearmDelayMinutes'>,
+) {
+  const paths = evidenceLeafPaths(triggerConditions);
+  if (paths.length === 0) return { paths, opts: undefined };
+  const entry = (await readClosedCursors(deviceId, [ruleId])).get(ruleId);
+  return { paths, opts: triggerEvaluateOptions(entry, lifecycle) };
 }
 
 /**
@@ -603,12 +586,12 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
   }
 
   // Check if auto-resolve is enabled
-  const overrides = rule.overrideSettings as Record<string, unknown> | null;
-  const autoResolve = (overrides?.autoResolve as boolean) ?? template.autoResolve;
-
-  if (!autoResolve) {
+  const lifecycle = await lifecycleForAlert(alert, { rule, template });
+  if (!lifecycle?.autoResolve) {
     return false;
   }
+
+  const overrides = rule.overrideSettings as Record<string, unknown> | null;
 
   // Get auto-resolve conditions (inverse conditions)
   const autoResolveConditions = (overrides?.autoResolveConditions as unknown) ??
@@ -618,7 +601,7 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
 
   if (!autoResolveConditions) {
     // If no specific auto-resolve conditions, use inverse of trigger conditions
-    const { paths, opts } = await anchoredTriggerOpts(rule.id, alert.deviceId, triggerConditions);
+    const { paths, opts } = await anchoredTriggerOpts(rule.id, alert.deviceId, triggerConditions, lifecycle);
     const result = paths.length
       ? await evaluateConditions(triggerConditions, alert.deviceId, opts)
       : await evaluateConditions(triggerConditions, alert.deviceId);
@@ -634,7 +617,7 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
     let current = await readOpenCursors(alert.id);
     let triggerPaths: string[];
     try {
-      const { paths, opts } = await anchoredTriggerOpts(rule.id, alert.deviceId, triggerConditions);
+      const { paths, opts } = await anchoredTriggerOpts(rule.id, alert.deviceId, triggerConditions, lifecycle);
       triggerPaths = paths;
       if (paths.length) {
         const trigger = await evaluateConditions(triggerConditions, alert.deviceId, opts);
@@ -1001,18 +984,12 @@ export async function resolveAlert(
   // manual resolution, checkAutoResolve, the config-policy sweep — keeps
   // today's synchronous behaviour unchanged; only Tasks 9 and 12 opt in.
   if (deferSubjectEffects && alert.subjectKey && isDeviceOwned(alert)) {
-    const [rule] = alert.ruleId
-      ? await db.select().from(alertRules).where(eq(alertRules.id, alert.ruleId)).limit(1)
-      : [];
-    const [template] = rule
-      ? await db.select().from(alertTemplates).where(eq(alertTemplates.id, rule.templateId)).limit(1)
-      : [];
-    const overrides = rule?.overrideSettings as Record<string, unknown> | null;
+    const lifecycle = await lifecycleForAlert(alert);
     const pending: SubjectAlertDispatch = {
       eventId: randomUUID(),
       eventType: 'alert.resolved',
       siteId: await resolveDeviceSiteId(alert.deviceId),
-      cooldownMinutes: (overrides?.cooldownMinutes as number) ?? template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES,
+      cooldownMinutes: lifecycle?.cooldownMinutes ?? BUILTIN_ALERT_LIFECYCLE.cooldownMinutes,
       payload: {
         alertId, ruleId: alert.ruleId, deviceId: alert.deviceId, subjectKey: alert.subjectKey, resolutionNote,
         resolvedAt: alert.resolvedAt!.toISOString(), resolvedBy: alert.resolvedBy,
@@ -1043,24 +1020,9 @@ export async function resolveAlert(
   // beyond the cooldown window before a new alert is created.
   // Retired policy alerts are history-only and need no cooldown.
   if (alert.ruleId && isDeviceOwned(alert)) {
-    // Legacy standalone alert rule
-    const [rule] = await db
-      .select()
-      .from(alertRules)
-      .where(eq(alertRules.id, alert.ruleId))
-      .limit(1);
-
-    if (rule) {
-      const [template] = await db
-        .select()
-        .from(alertTemplates)
-        .where(eq(alertTemplates.id, rule.templateId))
-        .limit(1);
-
-      const overrides = rule.overrideSettings as Record<string, unknown> | null;
-      const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-        template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
-      await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
+    const lifecycle = await lifecycleForAlert(alert);
+    if (lifecycle) {
+      await setCooldown(alert.ruleId, alert.deviceId, lifecycle.cooldownMinutes, alert.subjectKey ?? undefined);
     }
   }
 
@@ -1221,6 +1183,9 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
 
   // Build rule-with-template objects
   const result: RuleWithTemplate[] = [];
+  // One loader per device evaluation: the org and partner rows are read once
+  // for all of this device's rules.
+  const loadLifecycle = createLifecycleLoader();
 
   for (const rule of rules) {
     const template = templateMap.get(rule.templateId);
@@ -1266,17 +1231,23 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
       }
     }
 
+    const monitor = rule.managedByMonitorId
+      ? monitorDefinitionsById.get(rule.managedByMonitorId) ?? null
+      : null;
+    // ALWAYS the device's org: a partner-wide monitor's compiled template is
+    // shared by every org, so its lifecycle cannot be resolved at compile time.
+    const lifecycle = await loadLifecycle({ rule, template, monitor, deviceOrgId: device.orgId });
+
     result.push({
       rule,
       template,
       effectiveConditions,
       effectiveSeverity,
-      effectiveCooldownMinutes: (overrides?.cooldownMinutes as number) ?? template.cooldownMinutes,
+      effectiveCooldownMinutes: lifecycle.cooldownMinutes,
+      lifecycle,
       notificationChannelIds: (overrides?.notificationChannelIds as string[]) ?? [],
       escalationPolicyId: overrides?.escalationPolicyId as string | undefined,
-      monitor: rule.managedByMonitorId
-        ? monitorDefinitionsById.get(rule.managedByMonitorId) ?? null
-        : null
+      monitor,
     });
   }
 
@@ -1511,17 +1482,14 @@ async function evaluateRuleForDevice(input: {
   closedCursor?: { entry: ClosedCursorEntry | undefined };
 }): Promise<string[]> {
   const { applicable, deviceId, device, suppressAlerts, evaluatedMonitorIds, closedCursor } = input;
-  const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes, monitor } = applicable;
+  const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes, lifecycle, monitor } = applicable;
   const isEvidenceRule = closedCursor !== undefined;
 
-  // Evaluate conditions
-  const entry = closedCursor?.entry;
+  // Evaluate conditions. The re-arm gate decides whether the NEXT episode may
+  // open, so it reads the current lifecycle, not the closed alert's snapshot:
+  // "a later settings change affects the next episode".
   const result = isEvidenceRule
-    ? await evaluateConditions(effectiveConditions, deviceId, {
-      side: 'trigger',
-      cursors: entry?.cursors ?? undefined,
-      legacyIngestedBefore: entry?.closedAt, // per-leaf fallback when the closed cursor lacks that leaf
-    })
+    ? await evaluateConditions(effectiveConditions, deviceId, triggerEvaluateOptions(closedCursor?.entry, lifecycle))
     : await evaluateConditions(effectiveConditions, deviceId);
 
   // W03 Task 10 — a hardware/RAID leaf reports per-COMPONENT evidence
@@ -1553,7 +1521,7 @@ async function evaluateRuleForDevice(input: {
             cooldownMinutes: effectiveCooldownMinutes,
           },
         },
-        template, device, monitor, evidence: {
+        template, device, monitor, lifecycle, evidence: {
           ...evidence,
           subjects: suppressAlerts
             ? evidence.subjects.filter(subject => subject.status !== 'breaching')
@@ -1673,6 +1641,8 @@ async function evaluateRuleForDevice(input: {
     monitorId: rule.managedByMonitorId ?? null,
     kind: monitor?.kind ?? null,
     episodeId,
+    resolvedLifecycle: lifecycle,
+    monitorCompiledHash: monitor?.compiledHash ?? null,
     ...(isEvidenceRule ? { lifecycle: { cursor: result.evidenceWatermarks } } : {}),
     context: {
       ...result.context,

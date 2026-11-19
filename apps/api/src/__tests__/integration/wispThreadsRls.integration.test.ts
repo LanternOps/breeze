@@ -17,8 +17,9 @@
  * Placement is load-bearing: `src/__tests__/integration/**` +
  * `.integration.test.ts` puts it in the blocking Integration Tests job.
  */
-import './setup';
+import { getTestDb } from './setup';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
@@ -33,9 +34,12 @@ import {
   wispThreads,
   wispThreadSessions,
 } from '../../db/schema';
+import { aiInvocations } from '../../db/schema/aiInvocations';
 import { pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { attachSession } from '../../services/wisp/threads';
+import { buildWispOverview } from '../../services/wisp/adminOverview';
+import { chargeableUnderGrant, spentUnderGrant, summaryRefineSourceRef, utcDayWindow } from '../../services/wisp/budget';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null, userId: null,
@@ -607,7 +611,128 @@ describe('wisp_thread_attachments RLS (shape 1)', () => {
 });
 
 describe('finalizeWispSessionSummary (W04 T5, Review Focus 5)', () => {
-  it("each partner's thread holds only its own session's last assistant paragraph", async () => {
+  async function threadRow(threadId: string) {
+    const [row] = await asSystem(() => db
+      .select({ summary: wispThreads.summary, summarySessionId: wispThreads.summarySessionId, picture: wispThreads.picture })
+      .from(wispThreads)
+      .where(eq(wispThreads.id, threadId)));
+    return row!;
+  }
+
+  async function attach(threadId: string, partnerId: string, orgId: string, sessionId: string, reply: string, attachedAt: string) {
+    await asSystem(async () => {
+      await db.insert(wispThreadSessions).values({ threadId, sessionId, partnerId, orgId, attachedAt: new Date(attachedAt) });
+      await db.insert(aiMessages).values({ sessionId, role: 'assistant', content: reply });
+    });
+  }
+
+  it('#10390 migration: a stored picture moves to its column, a stored last paragraph is cleared, a claimed summary stays; replay is a no-op', async () => {
+    const f = await seed();
+    const pictureThread = await insertThread(f.grantA.grantId, f.partnerA);
+    const paragraphThread = await insertThread(f.grantB.grantId, f.partnerB);
+    const f2 = await seed();
+    const claimedThread = await insertThread(f2.grantA.grantId, f2.partnerA);
+    const stamp = new Date('2026-10-28T03:46:00Z');
+    const claimant = randomUUID();
+    await asSystem(async () => {
+      await db.update(wispThreads).set({ summary: 'Wisp picture · 10/21 orgs · 3 high', summaryUpdatedAt: stamp })
+        .where(eq(wispThreads.id, pictureThread.id));
+      await db.update(wispThreads).set({ summary: 'Ask me to check back in about 5–10 minutes.', summaryUpdatedAt: stamp })
+        .where(eq(wispThreads.id, paragraphThread.id));
+      await db.update(wispThreads).set({ summary: 'Concluded: a real summary.', summaryUpdatedAt: stamp, summarySessionId: claimant })
+        .where(eq(wispThreads.id, claimedThread.id));
+    });
+    const migrationSql = readFileSync(new URL('../../../migrations/2027-01-22-190100-wisp-threads-picture.sql', import.meta.url), 'utf8');
+    const replay = () => getTestDb().transaction(async (tx) => { await tx.execute(sql.raw(migrationSql)); });
+    const rows = async () => asSystem(() => db
+      .select({
+        id: wispThreads.id, summary: wispThreads.summary, summaryUpdatedAt: wispThreads.summaryUpdatedAt,
+        picture: wispThreads.picture, pictureUpdatedAt: wispThreads.pictureUpdatedAt,
+      })
+      .from(wispThreads)
+      .where(inArray(wispThreads.id, [pictureThread.id, paragraphThread.id, claimedThread.id])));
+
+    await replay();
+    const after = new Map((await rows()).map((r) => [r.id, r]));
+
+    expect(after.get(pictureThread.id)).toMatchObject({
+      summary: '', summaryUpdatedAt: null, picture: 'Wisp picture · 10/21 orgs · 3 high', pictureUpdatedAt: stamp,
+    });
+    expect(after.get(paragraphThread.id)).toMatchObject({ summary: '', summaryUpdatedAt: null, picture: '', pictureUpdatedAt: null });
+    expect(after.get(claimedThread.id)).toMatchObject({ summary: 'Concluded: a real summary.', summaryUpdatedAt: stamp, picture: '' });
+
+    await replay();
+    expect(new Map((await rows()).map((r) => [r.id, r]))).toEqual(after);
+  });
+
+  it('#10390: the picture and the session summary never overwrite each other, whichever writes last', async () => {
+    const { finalizeWispSessionSummary } = await import('../../services/wisp/threadSummary');
+    const { updateThreadPicture } = await import('../../services/wisp/threads');
+    const f = await seed();
+    const thread = await insertThread(f.grantA.grantId, f.partnerA);
+    const first = await insertSession(f.orgA1);
+    const second = await insertSession(f.orgA1);
+    await attach(thread.id, f.partnerA, f.orgA1, first, 'The first conclusion.', '2026-11-01T00:00:00Z');
+    await attach(thread.id, f.partnerA, f.orgA1, second, 'The second conclusion.\n\nWant me to check back?', '2026-11-01T01:00:00Z');
+
+    await updateThreadPicture(thread.id, 'Wisp picture · one');
+    await finalizeWispSessionSummary(first);
+    await expect(threadRow(thread.id)).resolves.toMatchObject({
+      picture: 'Wisp picture · one', summary: 'Last answer: The first conclusion.',
+    });
+
+    await updateThreadPicture(thread.id, 'Wisp picture · two');
+    await expect(threadRow(thread.id)).resolves.toMatchObject({
+      picture: 'Wisp picture · two', summary: 'Last answer: The first conclusion.',
+    });
+
+    await finalizeWispSessionSummary(second);
+    await expect(threadRow(thread.id)).resolves.toEqual({
+      picture: 'Wisp picture · two', summary: 'Last answer: The second conclusion.', summarySessionId: second,
+    });
+  });
+
+  it('#10390: an older session closing late does not overwrite a newer conclusion', async () => {
+    const { finalizeWispSessionSummary } = await import('../../services/wisp/threadSummary');
+    const f = await seed();
+    const thread = await insertThread(f.grantA.grantId, f.partnerA);
+    const older = await insertSession(f.orgA1);
+    const newer = await insertSession(f.orgA1);
+    await attach(thread.id, f.partnerA, f.orgA1, older, 'Older conclusion.', '2026-11-01T00:00:00Z');
+    await attach(thread.id, f.partnerA, f.orgA1, newer, 'Newer conclusion.', '2026-11-01T01:00:00Z');
+
+    await expect(finalizeWispSessionSummary(newer)).resolves.toEqual({ updated: true });
+    await expect(finalizeWispSessionSummary(older)).resolves.toEqual({ updated: false });
+
+    await expect(threadRow(thread.id)).resolves.toMatchObject({
+      summary: 'Last answer: Newer conclusion.', summarySessionId: newer,
+    });
+  });
+
+  it('#10390: the model write lands only while its session still holds the summary', async () => {
+    const { finalizeWispSessionSummary } = await import('../../services/wisp/threadSummary');
+    const { replaceClaimedThreadSummary } = await import('../../services/wisp/threads');
+    const f = await seed();
+    const thread = await insertThread(f.grantA.grantId, f.partnerA);
+    const first = await insertSession(f.orgA1);
+    const second = await insertSession(f.orgA1);
+    await attach(thread.id, f.partnerA, f.orgA1, first, 'First.', '2026-11-01T00:00:00Z');
+    await attach(thread.id, f.partnerA, f.orgA1, second, 'Second.', '2026-11-01T01:00:00Z');
+
+    await finalizeWispSessionSummary(first);
+    await expect(replaceClaimedThreadSummary(thread.id, first, 'Concluded: first.')).resolves.toBe(true);
+    await expect(threadRow(thread.id)).resolves.toMatchObject({ summary: 'Concluded: first.' });
+
+    // A repeated close neither puts the digest back nor reaches the model step.
+    await expect(finalizeWispSessionSummary(first)).resolves.toEqual({ updated: false });
+    await expect(threadRow(thread.id)).resolves.toMatchObject({ summary: 'Concluded: first.', summarySessionId: first });
+
+    await finalizeWispSessionSummary(second);
+    await expect(replaceClaimedThreadSummary(thread.id, first, 'Concluded: too late.')).resolves.toBe(false);
+    await expect(threadRow(thread.id)).resolves.toMatchObject({ summary: 'Last answer: Second.', summarySessionId: second });
+  });
+
+  it("each partner's thread holds only its own session's conclusion", async () => {
     const { finalizeWispSessionSummary } = await import('../../services/wisp/threadSummary');
     const f = await seed();
     const threadA = await insertThread(f.grantA.grantId, f.partnerA);
@@ -633,10 +758,85 @@ describe('finalizeWispSessionSummary (W04 T5, Review Focus 5)', () => {
       .from(wispThreads)
       .where(inArray(wispThreads.id, [threadA.id, threadB.id])));
     const byId = new Map(summaries.map((r) => [r.id, r.summary]));
-    expect(byId.get(threadA.id)).toBe('A conclusion: partner A backups are green.');
-    expect(byId.get(threadB.id)).toBe('B conclusion: partner B patching is late.');
+    expect(byId.get(threadA.id)).toBe('Last answer: A intro. A conclusion: partner A backups are green.');
+    expect(byId.get(threadB.id)).toBe('Last answer: B intro. B conclusion: partner B patching is late.');
 
     // Idempotent: a second finalize writes nothing.
     await expect(finalizeWispSessionSummary(sessionA)).resolves.toEqual({ updated: false });
+  });
+});
+
+describe("#10390 a model-written session summary is charged to the grant's daily budget", () => {
+  // Pinned: "today" must not move between the insert and the read (a UTC-midnight flake otherwise).
+  const NOW = new Date();
+  const YESTERDAY = new Date(NOW.getTime() - 86_400_000);
+
+  const insertInvocation = (orgId: string, sourceRef: string, costCents: number, createdAt: Date) =>
+    asSystem(() => db.insert(aiInvocations).values({
+      orgId, surface: 'chat', fundingSource: 'platform', requestedModel: 'm', servedModel: 'm',
+      sourceRef, costCents, rateSnapshot: {}, createdAt,
+    }));
+
+  it('a new grant has the switch off', async () => {
+    const f = await seed();
+    const [row] = await asSystem(() => db.select({ on: wispGrants.summaryRefine }).from(wispGrants).where(eq(wispGrants.id, f.grantA.grantId)));
+    expect(row!.on).toBe(false);
+  });
+
+  it("sums the grant's own settled summaries for the UTC day, rounded up, and refuses once spent", async () => {
+    const f = await seed();
+    await insertInvocation(f.orgA1, summaryRefineSourceRef(f.grantA.grantId), 12.25, NOW);
+    await insertInvocation(f.orgA2, summaryRefineSourceRef(f.grantA.grantId), 0.5, NOW);
+    // None of these are this grant's spend today.
+    await insertInvocation(f.orgA1, summaryRefineSourceRef(f.grantA.grantId), 100, YESTERDAY);
+    await insertInvocation(f.orgB1, summaryRefineSourceRef(f.grantB.grantId), 50, NOW);
+    await insertInvocation(f.orgA1, 'continuation_summary', 70, NOW);
+    // Outside the grant's partner: the read is bounded to its orgs, which is what lets the org index serve it.
+    await insertInvocation(f.orgB1, summaryRefineSourceRef(f.grantA.grantId), 40, NOW);
+
+    expect(await spentUnderGrant(f.grantA.grantId, NOW)).toBe(13);
+    expect(await spentUnderGrant(f.grantB.grantId, NOW)).toBe(50);
+
+    await asSystem(() => db.update(wispGrants).set({ budgetCentsPerDay: 14 }).where(eq(wispGrants.id, f.grantA.grantId)));
+    await expect(chargeableUnderGrant(f.grantA.grantId, 1, NOW)).resolves.toEqual({ ok: true });
+    await expect(chargeableUnderGrant(f.grantA.grantId, 2, NOW)).resolves.toEqual({ ok: false, reason: 'budget_exhausted' });
+  });
+
+  it('the UTC day is [start, end): a row at midnight counts today, a row at the next midnight does not', async () => {
+    const f = await seed();
+    const { start, end } = utcDayWindow(NOW);
+    await insertInvocation(f.orgA1, summaryRefineSourceRef(f.grantA.grantId), 3, start);
+    await insertInvocation(f.orgA1, summaryRefineSourceRef(f.grantA.grantId), 500, end);
+    await insertInvocation(f.orgA1, summaryRefineSourceRef(f.grantA.grantId), 500, new Date(start.getTime() - 1));
+    expect(await spentUnderGrant(f.grantA.grantId, NOW)).toBe(3);
+  });
+
+  it('the admin overview counts a grant exhausted by summaries alone', async () => {
+    const f = await seed();
+    await asSystem(() => db.update(wispGrants).set({ budgetCentsPerDay: 10 }).where(eq(wispGrants.id, f.grantA.grantId)));
+    await insertInvocation(f.orgA1, summaryRefineSourceRef(f.grantA.grantId), 10, NOW);
+
+    const rows = await asSystem(() => buildWispOverview(NOW));
+    expect(rows.find((r) => r.partnerId === f.partnerA)).toMatchObject({ budgetExhaustedGrantsToday: 1 });
+    expect(rows.find((r) => r.partnerId === f.partnerB)).toMatchObject({ budgetExhaustedGrantsToday: 0 });
+  });
+
+  it('#10414: the admin overview counts a grant exhausted by chat alone', async () => {
+    const f = await seed();
+    await asSystem(() => db.update(wispGrants).set({ budgetCentsPerDay: 10 }).where(eq(wispGrants.id, f.grantA.grantId)));
+    const sessionId = await asSystem(async () => {
+      const [row] = await db.insert(aiSessions).values({
+        orgId: f.orgA1, model: 'claude-sonnet-5-5', wispGrantId: f.grantA.grantId, wispGrantRevisionId: f.grantA.revisionId,
+      }).returning({ id: aiSessions.id });
+      return row!.id;
+    });
+    await asSystem(() => db.insert(aiInvocations).values({
+      orgId: f.orgA1, surface: 'chat', fundingSource: 'platform', requestedModel: 'm', servedModel: 'm',
+      sessionId, costCents: 10, rateSnapshot: {}, createdAt: NOW,
+    }));
+
+    const rows = await asSystem(() => buildWispOverview(NOW));
+    expect(rows.find((r) => r.partnerId === f.partnerA)).toMatchObject({ budgetExhaustedGrantsToday: 1 });
+    expect(rows.find((r) => r.partnerId === f.partnerB)).toMatchObject({ budgetExhaustedGrantsToday: 0 });
   });
 });

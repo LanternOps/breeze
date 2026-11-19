@@ -1,5 +1,5 @@
 import type postgres from 'postgres';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ExtensionStateStore,
   type ExtensionStateBackend,
@@ -13,6 +13,7 @@ import {
   type MigratableExtension,
 } from './migrator';
 import { hashSql } from '../db/autoMigrate';
+import { MigrationLockTimeoutError } from '../db/migrationAdvisoryLock';
 
 /**
  * Unit-runner tests (NO database). Only behaviour that decides WHETHER to touch
@@ -175,6 +176,80 @@ describe('reconcileExtensionMigrations — gates and validation (no DB)', () => 
         'replace',
       ),
     ).rejects.toThrow(/not permitted|must not|transaction/i);
+  });
+});
+
+/**
+ * Lock wiring (#4144 item 5): the per-extension advisory lock is a BOUNDED
+ * non-blocking try, so a wedged holder fails the boot with a named holder
+ * instead of hanging it. A fake reserved connection is enough to prove the
+ * wiring — the real-Postgres contention case is in
+ * `__tests__/integration/extensionMigrator.integration.test.ts`.
+ */
+describe('reconcileExtensionMigrations — bounded advisory lock (no DB)', () => {
+  function fakePool(tryResult: boolean) {
+    const calls: string[] = [];
+    const reserved = Object.assign(
+      async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.join('?');
+        calls.push(`${text} | ${JSON.stringify(values)}`);
+        if (text.includes('pg_try_advisory_lock(')) return [{ locked: tryResult }];
+        if (text.includes('pg_locks')) {
+          return [{ pid: 777, application_name: '', client_addr: null, state: 'active', backend_start: null }];
+        }
+        return [];
+      },
+      {
+        unsafe: async (query: string) => {
+          calls.push(query);
+          return [];
+        },
+        release: vi.fn(),
+      },
+    );
+    const sql = { reserve: async () => reserved } as unknown as postgres.Sql;
+    return { sql, calls, reserved };
+  }
+
+  it('times out naming the holder, releases the reserved connection, and applies nothing', async () => {
+    const store = new ExtensionStateStore(new InMemoryBackend());
+    const { sql, calls, reserved } = fakePool(false);
+    const logger = { log: vi.fn(), warn: vi.fn() };
+
+    const error = await reconcileExtensionMigrations(migratable(), sql, store, 'replace', {
+      timeoutMs: 40,
+      pollIntervalMs: 10,
+      logger,
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(MigrationLockTimeoutError);
+    expect((error as MigrationLockTimeoutError).lockKey).toBe('breeze-extension:demo');
+    expect((error as Error).message).toContain('pid 777');
+    expect(reserved.release).toHaveBeenCalledTimes(1);
+    // Never acquired → nothing applied, and no unlock of a lock it never held.
+    expect(calls.some((c) => c === 'BEGIN')).toBe(false);
+    expect(calls.some((c) => c.includes('pg_advisory_unlock('))).toBe(false);
+    expect(calls.some((c) => /\bpg_advisory_lock\(/.test(c))).toBe(false);
+    expect(await store.highestSchemaFloor('demo')).toBeNull();
+  });
+
+  it('takes the lock with a non-blocking try, applies the file, then unlocks', async () => {
+    const store = new ExtensionStateStore(new InMemoryBackend());
+    const { sql, calls, reserved } = fakePool(true);
+
+    await reconcileExtensionMigrations(migratable(), sql, store, 'replace', {
+      timeoutMs: 1_000,
+      logger: { log: vi.fn(), warn: vi.fn() },
+    });
+
+    const tryAt = calls.findIndex((c) => c.includes('pg_try_advisory_lock(') && c.includes('breeze-extension:demo'));
+    const beginAt = calls.indexOf('BEGIN');
+    const unlockAt = calls.findIndex((c) => c.includes('pg_advisory_unlock(') && c.includes('breeze-extension:demo'));
+    expect(tryAt).toBe(0);
+    expect(beginAt).toBeGreaterThan(tryAt);
+    expect(unlockAt).toBeGreaterThan(beginAt);
+    expect(calls.some((c) => /\bpg_advisory_lock\(/.test(c))).toBe(false);
+    expect(reserved.release).toHaveBeenCalledTimes(1);
   });
 });
 

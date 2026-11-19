@@ -1,0 +1,18 @@
+-- #4297 — the watchdog's OWN reported build edition.
+--
+-- Before this column the artifact-edition gate (services/agentEditionCompat.ts)
+-- read devices.agent_edition, written from MAIN-agent beats, as a proxy for
+-- the watchdog's edition on every watchdog-targeted decision: the heartbeat
+-- failover branch and the update_agent / update_watchdog dispatch gate. That
+-- proxy assumes agent and watchdog install and upgrade from the same lane,
+-- which holds today but is not enforced.
+--
+-- watchdog_edition is written together with watchdog_version on every
+-- watchdog beat (routes/agents/heartbeat.ts, heartbeatParked.ts), and cleared
+-- when the main agent reports a different installed watchdog version. NULL
+-- means the watchdog build at watchdog_version has not reported an edition;
+-- readers then fall back to agent_edition (effectiveWatchdogEdition).
+--
+-- Non-sensitive build telemetry, nullable, no backfill: every existing row
+-- starts NULL, which is exactly the pre-column behaviour (the proxy).
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS watchdog_edition varchar(20);

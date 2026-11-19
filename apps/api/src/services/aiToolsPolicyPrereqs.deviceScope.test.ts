@@ -10,6 +10,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),

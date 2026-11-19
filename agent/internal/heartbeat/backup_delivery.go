@@ -3,12 +3,12 @@ package heartbeat
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/updater"
 )
 
@@ -458,7 +458,7 @@ func (h *Heartbeat) installBackupBinary(tempPath, installPath, version string) e
 		// lock (e.g. a helper started out of band) — without it the
 		// subsequent replace can fail with a sharing violation. Exit 128
 		// ("process not found") is the benign no-process-running case.
-		killCmd := exec.Command("taskkill", "/F", "/IM", "breeze-backup.exe")
+		killCmd := procspawn.Command("taskkill", "/F", "/IM", "breeze-backup.exe")
 		killOut, killErr := killCmd.CombinedOutput()
 		switch {
 		case killErr == nil:

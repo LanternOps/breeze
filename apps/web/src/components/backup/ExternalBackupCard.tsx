@@ -2,7 +2,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { HardDrive, Loader2, Unlink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { deriveBackupHealth, type BackupHealth, type ExternalBackupStatus } from '@breeze/shared';
+import {
+  deriveBackupHealth,
+  isOverdueBackup,
+  verifiedBootableState,
+  type BackupHealth,
+  type ExternalBackupStatus,
+} from '@breeze/shared';
 
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -31,6 +37,9 @@ export type ProviderDeviceRow = {
   breezeDeviceId: string | null;
   /** Optional: the bar is skipped rather than faked when the route omits it. */
   history28d?: Array<{ day: string; status: ExternalBackupStatus | null }>;
+  verifiedBootableAt: string | null;
+  verifiedBootable: boolean | null;
+  verifiedBootableFailedChecks: string[] | null;
 };
 
 export default function ExternalBackupCard({
@@ -103,9 +112,12 @@ export default function ExternalBackupCard({
   }
   if (!row) return null;
 
-  const health: BackupHealth =
-    row.health ??
-    deriveBackupHealth({ status: row.status, lastSuccessAt: row.lastSuccessAt, errorsCount: row.errorsCount }).health;
+  const derived = deriveBackupHealth({ status: row.status, lastSuccessAt: row.lastSuccessAt, errorsCount: row.errorsCount });
+  const health: BackupHealth = row.health ?? derived.health;
+  // A `completed` last session with no success in 48 hours is not "Completed" (#12025).
+  const overdue = isOverdueBackup({ status: row.status, recency: derived.recency });
+  const bootCheck = verifiedBootableState({ providerKey: row.provider, verifiedBootable: row.verifiedBootable });
+  const failedChecks = row.verifiedBootableFailedChecks ?? [];
 
   return (
     <div data-testid="external-backup-card" className="rounded-lg border bg-card p-5 shadow-xs">
@@ -124,8 +136,16 @@ export default function ExternalBackupCard({
             <p className="text-sm text-muted-foreground">{row.vendorDeviceName}</p>
           </div>
         </div>
-        <span className="rounded-full border px-2.5 py-0.5 text-xs text-muted-foreground">
-          {t(/* i18n-dynamic */ `backupHealth.status.${row.status}`, { defaultValue: row.status })}
+        <span
+          data-testid="external-backup-status"
+          className={cn(
+            'rounded-full border px-2.5 py-0.5 text-xs',
+            overdue ? 'border-destructive/40 text-destructive' : 'text-muted-foreground',
+          )}
+        >
+          {overdue
+            ? t('backupHealth.status.overdue')
+            : t(/* i18n-dynamic */ `backupHealth.status.${row.status}`, { defaultValue: row.status })}
         </span>
       </div>
 
@@ -166,6 +186,21 @@ export default function ExternalBackupCard({
               .join(', ') || '--'}
           </dd>
         </div>
+        {bootCheck !== 'not_applicable' && (
+          <div data-testid="external-backup-boot-check" className="sm:col-span-3">
+            <dt className="text-xs text-muted-foreground">{t('backupHealth.external.bootCheck')}</dt>
+            <dd className="text-sm text-foreground">
+              {t(/* i18n-dynamic */ `backupHealth.verifiedBootable.${bootCheck}`)}
+              {row.verifiedBootableAt && (
+                <>
+                  {' '}
+                  {formatDateTime(row.verifiedBootableAt, { fallback: '--', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                </>
+              )}
+              {bootCheck === 'failed' && failedChecks.length > 0 && ` (${failedChecks.join(', ')})`}
+            </dd>
+          </div>
+        )}
       </dl>
 
       {row.history28d && row.history28d.length > 0 && (
@@ -175,7 +210,9 @@ export default function ExternalBackupCard({
             {row.history28d.map((cell) => (
               <span
                 key={cell.day}
-                title={`${cell.day} — ${cell.status ?? t('backupHealth.noObservation')}`}
+                title={`${cell.day} — ${cell.status
+                  ? t(/* i18n-dynamic */ `backupHealth.status.${cell.status}`, { defaultValue: cell.status })
+                  : t('backupHealth.noObservation')}`}
                 className={cn('h-4 w-1.5 rounded-[1px]', HISTORY_CELL_CLASS[cell.status ?? 'none'])}
               />
             ))}

@@ -75,6 +75,23 @@ export function projectPayloadDocuments(
   return out.slice(0, TRUST_DOCUMENTS_MAX);
 }
 
+/**
+ * The footer attribution rule: a framework is credited when a shown control cites it, when CIS safeguards render,
+ * when a declared control cites it, or when it is in the framework view. Shared with the read-time CIS gate
+ * (servedPayload.ts), so a served payload credits exactly what it still shows.
+ */
+export function frameworkAttributions(p: {
+  controls: ReadonlyArray<{ frameworkRefs: ReadonlyArray<{ framework: TrustFramework }>; safeguards?: readonly unknown[] }>;
+  declaredControls: ReadonlyArray<{ frameworkRefs: ReadonlyArray<{ framework: TrustFramework }> }>;
+  frameworks: readonly TrustFramework[];
+}): TrustFramework[] {
+  const referenced = (fw: TrustFramework) =>
+    p.controls.some((c) => c.frameworkRefs.some((r) => r.framework === fw) || (fw === 'cis_v8' && (c.safeguards?.length ?? 0) > 0))
+    || p.declaredControls.some((d) => d.frameworkRefs.some((r) => r.framework === fw))
+    || p.frameworks.includes(fw);
+  return TRUST_FRAMEWORKS.filter(referenced);
+}
+
 export function buildTrustPagePayload(input: BuildPayloadInput): TrustPagePublicPayload {
   const { config, sections } = input;
   const catalog = new Set<string>(config.catalogControlIds);
@@ -87,11 +104,11 @@ export function buildTrustPagePayload(input: BuildPayloadInput): TrustPagePublic
   const cisGate = trustCisFrameworkViewEnabled();
   const safeguardsOf = (a: TrustControlAssessment) =>
     cisGate && a.id === 'hardening_baseline' ? (a.safeguards ?? []).slice(0, TRUST_CONTROL_SAFEGUARDS_MAX) : [];
-  const referenced = (fw: TrustFramework) =>
-    shown.some((a) => a.frameworkRefs.some((r) => r.framework === fw) || (fw === 'cis_v8' && safeguardsOf(a).length > 0))
-    || sections.declaredControls.some((d) => d.frameworkRefs.some((r) => r.framework === fw))
-    || sections.frameworks.includes(fw);
-  const attributions = TRUST_FRAMEWORKS.filter(referenced);
+  const attributions = frameworkAttributions({
+    controls: shown.map((a) => ({ frameworkRefs: a.frameworkRefs, safeguards: safeguardsOf(a) })),
+    declaredControls: sections.declaredControls,
+    frameworks: sections.frameworks,
+  });
   const deviceCount = config.showDeviceCount && input.deviceCount > 0 ? input.deviceCount : null;
 
   const payload: TrustPagePublicPayload = {

@@ -68,6 +68,7 @@
     "noApproverDevice": "Profilinizde bir onay cihazı kaydedip yeniden deneyin.",
     "notSoleApprover": "Bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
     "siteCeiling": "Bu onay, organizasyon genelinde yetki verir. Erişiminiz belirli sitelerle sınırlı olduğundan, bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
+    "approverScopeRequired": "Bu onay, iş ortağının tüm organizasyonlarını etkiler; bu nedenle tüm organizasyonlara erişimi olan iş ortağı düzeyinde bir onaylayan gerekir.",
     "verificationFailed": "Doğrulama iptal edildi veya başarısız oldu. Yeniden deneyin.",
     "alreadyDecided": "Bu isteğe zaten karar verildi.",
     "expired": "Bu istek, karar verilmeden önce sona erdi.",

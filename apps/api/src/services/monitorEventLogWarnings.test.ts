@@ -50,6 +50,46 @@ describe('policyAwareMonitorEventLogWarnings', () => {
     expect(withDbTransaction).toHaveBeenCalledTimes(1);
   });
 
+  describe('the recovery condition (alert re-arm W3)', () => {
+    const collected = { category: 'application', level: 'error', countThreshold: 1, windowMinutes: 60 };
+    const row = (autoResolveConditions: unknown) => ({
+      kind: 'event_log', condition: collected, autoResolveConditions, orgId: ORG, partnerId: null,
+    });
+    const uncollected = { category: 'application', level: 'info', sourcePattern: 'Nothing-Collects-This', countThreshold: 1, windowMinutes: 60 };
+
+    beforeEach(() => loadPolicyApplicationProviders.mockResolvedValue([]));
+
+    it('warns, and says it is about the recovery condition, when its events are not collected', async () => {
+      // The trigger is fine, so without this the alert opens and silently never clears.
+      const warnings = await policyAwareMonitorEventLogWarnings(row(uncollected));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('Recovery condition');
+      expect(warnings[0]).toContain('Nothing-Collects-This');
+    });
+
+    it('honours providers a scoped policy lists', async () => {
+      loadPolicyApplicationProviders.mockResolvedValue(['Nothing-Collects-This']);
+      expect(await policyAwareMonitorEventLogWarnings(row(uncollected))).toEqual([]);
+    });
+
+    it('says nothing for a collected source, no condition, or a raw blob the engine can evaluate', async () => {
+      expect(await policyAwareMonitorEventLogWarnings(row({ ...uncollected, sourcePattern: 'APCPBEAgent' }))).toEqual([]);
+      expect(await policyAwareMonitorEventLogWarnings(row(null))).toEqual([]);
+      expect(await policyAwareMonitorEventLogWarnings(row({ logic: 'or', conditions: [{ type: 'event_log' }] }))).toEqual([]);
+    });
+
+    it('#10935: says a stored value can never resolve, on any kind, whenever that monitor is saved', async () => {
+      const [warning, ...rest] = await policyAwareMonitorEventLogWarnings(row({ conditions: [{ type: 'event_log' }] }));
+      expect(rest).toEqual([]);
+      expect(warning).toContain('Recovery condition');
+      expect(warning).toContain('auto-resolve');
+
+      const cpu = { kind: 'cpu', condition: {}, autoResolveConditions: uncollected, orgId: ORG, partnerId: null };
+      expect(await policyAwareMonitorEventLogWarnings(cpu)).toHaveLength(1);
+      expect(loadPolicyApplicationProviders).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('skips the lookup outside a DB access context (built-in check only)', async () => {
     hasDbAccessContext.mockReturnValue(false);
     expect(await policyAwareMonitorEventLogWarnings(dellRule)).toHaveLength(1);

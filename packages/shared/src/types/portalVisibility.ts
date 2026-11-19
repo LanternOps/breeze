@@ -355,7 +355,9 @@ export interface PortalRunDto {
     // #5784 W06 — managed evidence, same rule. `portalRunListPredicate` has no
     // type filter, so an unwidened union here is a type lie the compiler cannot
     // see: the value comes from the database.
-    | 'identity_access_review';
+    | 'identity_access_review'
+    // #11018 W2 — managed evidence, listed once delivered, never generated here.
+    | 'ticket_sla_performance';
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: string | null;
@@ -477,6 +479,29 @@ export interface NetworkSiteDto {
 export interface NetworkSitesDto {
   dataStatus: 'ok' | 'not_enabled';
   data: NetworkSiteDto[];
+}
+
+/**
+ * Per-site Network Visibility health (CPEV-W2). Alert fields are present only
+ * when enableNetworkAlerts is on; omitted otherwise, never null-filled.
+ * highestAlertSeverity is null when activeAlertCount is 0.
+ */
+export interface NetworkSiteHealthRowDto {
+  siteId: string;
+  siteName: string;
+  totalAssets: number;
+  onlineAssets: number;
+  offlineAssets: number;
+  unverifiedAssets: number;
+  snmpDevicesPolling: number;
+  monitorsDown: number;
+  activeAlertCount?: number;
+  highestAlertSeverity?: NetworkAssetAlertSeverity | null;
+}
+
+export interface NetworkSiteHealthDto {
+  dataStatus: 'ok' | 'no_data' | 'not_enabled';
+  data: NetworkSiteHealthRowDto[];
 }
 
 /**

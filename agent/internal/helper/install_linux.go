@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const desktopEntryPath = "/etc/xdg/autostart/breeze-helper.desktop"
@@ -107,7 +108,7 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
 		return 0, fmt.Errorf("lookup uid %s: %w", sessionKey, err)
 	}
 
-	cmd := exec.Command(binaryPath, "--config", configPath)
+	cmd := procspawn.Command(binaryPath, "--config", configPath)
 	cmd.Dir = filepath.Dir(binaryPath)
 	if os.Geteuid() == 0 && uint32(uid) != uint32(os.Geteuid()) {
 		// spawnCredential carries the user's supplementary groups (notably
@@ -117,6 +118,7 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
 			return 0, fmt.Errorf("build credential for uid %s: %w", sessionKey, err)
 		}
 		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
+		procspawn.Prepare(cmd)
 	}
 	cmd.Env = append(os.Environ(),
 		"HOME="+u.HomeDir,

@@ -22,6 +22,7 @@ import { calendar, auth as calendarAuth, type calendar_v3 } from '@googleapis/ca
 import { licensing, auth as licensingAuth, type licensing_v1 } from '@googleapis/licensing';
 import {
   DIRECTORY_SCOPES,
+  DIRECTORY_DOMAIN_SCOPES,
   GMAIL_USER_SCOPES,
   GMAIL_INBOUND_SCOPES,
   GMAIL_INBOUND_MODIFY_SCOPES,
@@ -29,10 +30,14 @@ import {
   LICENSING_SCOPES,
   GOOGLE_DWD_SCOPES_CSV,
 } from '@breeze/shared';
+import type { DirectoryUsersReader } from './portalDirectory/googleSource';
+
+/** The single scope the users reader asks for (a member of DIRECTORY_SCOPES). */
+const DIRECTORY_USERS_READER_SCOPES = ['https://www.googleapis.com/auth/admin.directory.user'] as const;
 
 // Least-privilege DWD scope sets live in @breeze/shared (one list shared with the
 // web integration page). Re-exported here for existing API callers.
-export { DIRECTORY_SCOPES, GMAIL_USER_SCOPES, GMAIL_INBOUND_SCOPES, GMAIL_INBOUND_MODIFY_SCOPES, CALENDAR_SCOPES, LICENSING_SCOPES };
+export { DIRECTORY_SCOPES, DIRECTORY_DOMAIN_SCOPES, GMAIL_USER_SCOPES, GMAIL_INBOUND_SCOPES, GMAIL_INBOUND_MODIFY_SCOPES, CALENDAR_SCOPES, LICENSING_SCOPES };
 export const ALL_DWD_SCOPES_CSV = GOOGLE_DWD_SCOPES_CSV;
 
 // Explicit per-request deadline for every Gmail/UserInfo call. gaxios has no
@@ -90,6 +95,65 @@ export function getDirectoryClient(
     subject: adminEmail, // DWD: impersonate the super-admin
   });
   return admin({ version: 'directory_v1', auth });
+}
+
+/**
+ * Admin SDK Directory client for the domains list ONLY (portal domain
+ * verification). Requests just admin.directory.domain.readonly, so the broad
+ * getDirectoryClient scope set is unchanged. Impersonates the super-admin.
+ */
+export function getDirectoryDomainsClient(
+  decryptedKeyJson: string,
+  adminEmail: string,
+): admin_directory_v1.Admin {
+  const key = parseServiceAccountKey(decryptedKeyJson);
+  const auth = new adminAuth.JWT({
+    email: key.client_email,
+    key: key.private_key,
+    scopes: [...DIRECTORY_DOMAIN_SCOPES],
+    subject: adminEmail, // DWD: impersonate the super-admin
+  });
+  return admin({ version: 'directory_v1', auth });
+}
+
+/**
+ * Read-only view of the Directory users API for the portal directory
+ * deprovisioning pass (W8, D11). It requests ONLY admin.directory.user (already
+ * in DIRECTORY_SCOPES and every connection's delegation grant, so nobody
+ * re-consents) and exposes just two reads. The write-capable Admin client is
+ * closed over here and never leaves the module.
+ */
+export function getDirectoryUsersReader(
+  decryptedKeyJson: string,
+  adminEmail: string,
+): DirectoryUsersReader {
+  const key = parseServiceAccountKey(decryptedKeyJson);
+  const auth = new adminAuth.JWT({
+    email: key.client_email,
+    key: key.private_key,
+    scopes: [...DIRECTORY_USERS_READER_SCOPES],
+    subject: adminEmail, // DWD: impersonate the super-admin
+  });
+  const client = admin({ version: 'directory_v1', auth });
+  return {
+    async getUser(userKey, fields, signal) {
+      const res = await client.users.get({ userKey, fields }, { signal });
+      return res.data;
+    },
+    async listUsersPage(pageToken, signal) {
+      const res = await client.users.list(
+        {
+          customer: 'my_customer',
+          maxResults: 500,
+          projection: 'basic',
+          fields: 'nextPageToken,users(id,customerId,suspended,archived)',
+          ...(pageToken === undefined ? {} : { pageToken }),
+        },
+        { signal },
+      );
+      return res.data;
+    },
+  };
 }
 
 /**

@@ -4,6 +4,7 @@
 import { CONCERN_SEVERITIES, type Concern, type WispHomePayload } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import type { WispState } from '@/stores/aiStore';
+import { runAction } from '@/lib/runAction';
 import { wispStateFromThread } from '@/lib/wispGrant';
 import { concernIdFromHash } from './wispThreadHash';
 
@@ -39,6 +40,23 @@ export async function fetchWispHome(): Promise<HomeLoad> {
     throw new Error('wisp home read: malformed payload');
   }
   return { kind: 'ready', payload: body.data, wisp };
+}
+
+/**
+ * Tell the server the zone this browser reports, for the morning brief (#10402).
+ * The user did not ask for this and can do nothing about a failure, so it never
+ * toasts: the caller logs it and the next visit sends it again.
+ */
+export async function saveBrowserTimezone(timezone: string): Promise<void> {
+  await runAction<unknown>({
+    request: () => fetchWithAuth('/wisp/nudge-preferences/browser-timezone', {
+      method: 'PUT',
+      body: JSON.stringify({ timezone }),
+      skipOrgIdInjection: true,
+    }),
+    errorFallback: 'Could not store the browser time zone.',
+    suppressErrorToast: () => true,
+  });
 }
 
 /** The partner's "Wisp enabled" switch (the home's no-grant branch reads it to pick start vs. disabled). */

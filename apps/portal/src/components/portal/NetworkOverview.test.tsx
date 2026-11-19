@@ -41,6 +41,27 @@ describe('NetworkOverview', () => {
     expect(overview.textContent).toMatch(/unverified/i);
   });
 
+  it('renders zero visible assets as figures, not the empty state, when only monitors have data (#11686)', () => {
+    // After dismissed assets stop counting, an org whose assets are all
+    // dismissed can still have a live monitor result: ok with totalAssets 0.
+    render(
+      <NetworkOverview
+        overview={{
+          dataStatus: 'ok',
+          totalAssets: 0,
+          onlineAssets: 0,
+          offlineAssets: 0,
+          snmpDevicesPolling: 0,
+          monitorsDown: 1,
+        }}
+      />,
+    );
+
+    expect(screen.queryByTestId('portal-network-overview-empty')).not.toBeInTheDocument();
+    expect(screen.getByTestId('portal-network-overview-total').textContent).toContain('0');
+    expect(screen.getByTestId('portal-network-overview-monitors-down').textContent).toContain('1');
+  });
+
   it('shows a discovery empty state, not an error, when there is no data yet', () => {
     render(<NetworkOverview overview={noDataOverview} />);
 

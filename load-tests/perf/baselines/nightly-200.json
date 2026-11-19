@@ -1,0 +1,47 @@
+{
+  "schema": "breeze.perf.kpi/v1",
+  "profile": "nightly-200",
+  "gitSha": "52bf271833fa7f3b78af07d67d50e97a095647c7",
+  "runId": "20261106T042620Z-9344b1",
+  "measuredAt": "2026-11-06T04:50:00Z",
+  "hardware": {
+    "cpuModel": "Intel(R) Xeon(R) Platinum 8358 CPU @ 2.60GHz",
+    "cpus": 4,
+    "memGiB": 7,
+    "kernel": "6.8.0-147-generic",
+    "dockerVersion": "29.9.3",
+    "baselineGrade": true
+  },
+  "stack": {
+    "profile": "wt-stack-dev",
+    "role": "all",
+    "admissionMode": "observe",
+    "e2eMode": true
+  },
+  "window": {
+    "start": "2026-11-06T04:29:40.075Z",
+    "end": "2026-11-06T04:49:40.075Z",
+    "seconds": 1200,
+    "agentMinutes": 4000
+  },
+  "kpis": {
+    "agentCostCpuMsPerAgentMin": 70.303014188125,
+    "heartbeatP95Ms": 89.09614518247747,
+    "dbTxPerAgentMin": 19.3904625,
+    "heartbeatP50Ms": 49.187388075573644,
+    "heartbeatP99Ms": 140.49564578053867,
+    "idleCpuMsPerMin": 1927.9657894736827,
+    "requestsPerAgentMin": 5.21675,
+    "elu": {
+      "mean": 0.19824579204183249,
+      "max": 0.5366993364242588
+    },
+    "lagMaxSeconds": 0.049414143,
+    "poolWaitingMax": 0
+  },
+  "notes": [],
+  "sources": {
+    "agentsimReport": "agentsim.json",
+    "samples": "samples.csv"
+  }
+}

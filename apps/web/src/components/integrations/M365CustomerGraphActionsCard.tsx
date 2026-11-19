@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Clock3,
+  Info,
   Loader2,
   PauseCircle,
   RefreshCw,
@@ -18,7 +19,8 @@ import { useOrgStore } from "../../stores/orgStore";
 import { getJwtClaims } from "../../lib/authScope";
 import { usePermissions } from "../../lib/permissions";
 import { handleActionError, runAction } from "../../lib/runAction";
-import { navigateTo, navigateToMicrosoftLogin } from "@/lib/navigation";
+import { showToast } from "../shared/Toast";
+import { navigateToMicrosoftLogin } from "@/lib/navigation";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import "@/lib/i18n";
 import { M365ConfirmTenantPanel, M365ConsentSteps } from "./M365ConfirmTenantPanel";
@@ -35,11 +37,11 @@ const STATUSES = [
 ] as const;
 type ConnectionStatus = (typeof STATUSES)[number];
 
-// Actions mirrors the read lifecycle-outcome enum minus the read-only
-// reconciliation special case: the read profile needs Application.Read.All to
-// reconcile tenant grants and can surface `grant_reconciliation_unavailable`;
-// the actions profile holds neither Application.Read.All nor any equivalent, so
-// that code never applies here (any unexpected code falls back to `unknown`).
+// Actions mirrors the read lifecycle-outcome enum. Grant reconciliation reads
+// the app's appRoleAssignments, which Microsoft Graph gates on
+// Application.Read.All; the actions manifest does not hold it, so a tenant can
+// report `grant_reconciliation_unavailable` here too (#12085) and it needs
+// its own explanation rather than the generic `unknown` copy.
 const STABLE_ERROR_CODES = [
   "consent_expired",
   "consent_state_mismatch",
@@ -57,6 +59,7 @@ const STABLE_ERROR_CODES = [
   "grant_unexpected",
   "manifest_stale",
   "organization_probe_failed",
+  "grant_reconciliation_unavailable",
   "executor_unavailable",
 ] as const;
 type StableErrorCode = (typeof STABLE_ERROR_CODES)[number];
@@ -100,9 +103,23 @@ interface M365CustomerGraphActionsCardProps {
 
 type Grant = {
   resourceApplicationId: string;
-  appRoleId: string;
+  /**
+   * Null only for a Microsoft Graph role seen in the token's roles claim that
+   * the manifest does not name (graph_token_only drift, #12085); such a grant
+   * always carries its value.
+   */
+  appRoleId: string | null;
   value: string | null;
 };
+
+const GRANT_RECONCILIATION_MODES = ["exact", "graph_token_only"] as const;
+type GrantReconciliationMode = (typeof GRANT_RECONCILIATION_MODES)[number];
+const MICROSOFT_GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000";
+
+/** Stable identity for keys and de-duplication; a null-id grant keys by value. */
+function grantKey(grant: Grant): string {
+  return `${grant.resourceApplicationId}:${grant.appRoleId ?? `value:${grant.value ?? ""}`}`;
+}
 
 type Connection = {
   id: string;
@@ -117,6 +134,7 @@ type Connection = {
   missingGrants: Grant[];
   unexpectedGrants: Grant[];
   grantsVerifiedAt: string | null;
+  grantReconciliationMode: GrantReconciliationMode | null;
   lastVerifiedAt: string | null;
   lastErrorCode: string | null;
 };
@@ -163,11 +181,13 @@ function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
 
 function parseGrant(value: unknown): Grant | null {
   if (!isRecord(value) || !hasExactKeys(value, ["resourceApplicationId", "appRoleId", "value"])) return null;
+  const unresolvedGraphRole = value.appRoleId === null
+    && value.resourceApplicationId === MICROSOFT_GRAPH_APP_ID
+    && typeof value.value === "string";
   if (
     typeof value.resourceApplicationId !== "string"
     || !GUID.test(value.resourceApplicationId)
-    || typeof value.appRoleId !== "string"
-    || !GUID.test(value.appRoleId)
+    || (!unresolvedGraphRole && (typeof value.appRoleId !== "string" || !GUID.test(value.appRoleId)))
     || (value.value !== null && (
       typeof value.value !== "string"
       || value.value.length < 1
@@ -176,8 +196,8 @@ function parseGrant(value: unknown): Grant | null {
   ) return null;
   return {
     resourceApplicationId: value.resourceApplicationId,
-    appRoleId: value.appRoleId,
-    value: value.value,
+    appRoleId: value.appRoleId as string | null,
+    value: value.value as string | null,
   };
 }
 
@@ -186,7 +206,7 @@ function parseGrants(value: unknown): Grant[] | null {
   const grants = value.map(parseGrant);
   if (grants.some((grant) => grant === null)) return null;
   const parsed = grants as Grant[];
-  const unique = new Set(parsed.map((grant) => `${grant.resourceApplicationId}:${grant.appRoleId}`));
+  const unique = new Set(parsed.map(grantKey));
   return unique.size === parsed.length ? parsed : null;
 }
 
@@ -209,7 +229,7 @@ const ROLE_PURPOSE_KEY: Record<string, string> = {
 };
 
 function grantTuple(grant: Grant): string {
-  return `${grant.resourceApplicationId.toLowerCase()}:${grant.appRoleId.toLowerCase()}:${grant.value}`;
+  return `${grant.resourceApplicationId.toLowerCase()}:${(grant.appRoleId ?? "").toLowerCase()}:${grant.value}`;
 }
 
 function matchesTrustedManifest(grants: Grant[]): boolean {
@@ -227,15 +247,29 @@ function parseTimestamp(value: unknown): string | null | undefined {
   return value;
 }
 
-function parseConnection(value: unknown): Connection | null | undefined {
-  if (value === null) return null;
+function parseReconciliationMode(value: unknown): GrantReconciliationMode | null | undefined {
+  // Absent (an API that predates #12085) reads as unknown → null.
+  if (value === undefined || value === null) return null;
+  return typeof value === "string" && (GRANT_RECONCILIATION_MODES as readonly string[]).includes(value)
+    ? value as GrantReconciliationMode
+    : undefined;
+}
+
+function parseConnection(raw: unknown): Connection | null | undefined {
+  if (raw === null) return null;
+  if (!isRecord(raw)) return undefined;
+  // `grantReconciliationMode` is optional on the wire; every other key stays
+  // strictly required.
+  const { grantReconciliationMode: rawMode, ...value } = raw;
+  const grantReconciliationMode = parseReconciliationMode(rawMode);
+  if (grantReconciliationMode === undefined) return undefined;
   const keys = [
     "id", "tenantId", "clientId", "displayName", "status", "grantHealth",
     "manifestVersion", "currentManifestVersion",
     "observedGrants", "missingGrants", "unexpectedGrants", "grantsVerifiedAt",
     "lastVerifiedAt", "lastErrorCode",
   ];
-  if (!isRecord(value) || !hasExactKeys(value, keys)) return undefined;
+  if (!hasExactKeys(value, keys)) return undefined;
   const observedGrants = parseGrants(value.observedGrants);
   const missingGrants = parseGrants(value.missingGrants);
   const unexpectedGrants = parseGrants(value.unexpectedGrants);
@@ -270,6 +304,7 @@ function parseConnection(value: unknown): Connection | null | undefined {
     missingGrants,
     unexpectedGrants,
     grantsVerifiedAt,
+    grantReconciliationMode,
     lastVerifiedAt,
     lastErrorCode: value.lastErrorCode as string | null,
   };
@@ -324,6 +359,33 @@ function isStableErrorCode(value: string | null): value is StableErrorCode {
   return value !== null && (STABLE_ERROR_CODES as readonly string[]).includes(value);
 }
 
+function isRetestable(status: ConnectionStatus): boolean {
+  return status === "active" || status === "degraded";
+}
+
+/**
+ * The `errors.*` key for a stored lifecycle code. "Retest" wording only makes
+ * sense where the Retest button is shown; a connection that cannot be retested
+ * has to be connected again instead.
+ */
+function errorCopyKey(code: string, retestable: boolean): string {
+  if (!isStableErrorCode(code)) return "unknown";
+  return code === "executor_unavailable" && !retestable ? "executor_unavailablePending" : code;
+}
+
+/**
+ * A retest passed only if the connection is active with nothing outstanding:
+ * an active row kept on an older manifest still records `manifest_stale`.
+ */
+function retestPassed(connection: Connection | null): boolean {
+  return connection?.status === "active" && connection.lastErrorCode === null;
+}
+
+/** The retest route answers `{ connection }`; anything else is not a verified result. */
+function parseRetestedConnection(value: unknown): Connection | null {
+  return isRecord(value) ? parseConnection(value.connection) ?? null : null;
+}
+
 function statusIcon(status: ConnectionStatus) {
   if (status === "active") return CheckCircle2;
   if (status === "degraded") return AlertTriangle;
@@ -345,7 +407,7 @@ function GrantList({ grants, testId }: { grants: Grant[]; testId?: string }) {
   return (
     <ul className="space-y-1.5 text-sm">
       {grants.map((grant) => (
-        <li key={`${grant.resourceApplicationId}:${grant.appRoleId}`} data-testid={testId} className="flex min-w-0 items-start gap-2">
+        <li key={grantKey(grant)} data-testid={testId} className="flex min-w-0 items-start gap-2">
           <CheckCircle2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <span className="break-words font-medium text-foreground">
             {grant.value ?? t("m365CustomerGraphActions.grants.unknownPermission", { appRoleId: grant.appRoleId })}
@@ -500,7 +562,9 @@ export default function M365CustomerGraphActionsCard({
           parseSuccess: parseConsentUrl,
           errorFallback: t("m365CustomerGraphActions.actions.consentFailed"),
         });
-        if (isCurrent(target)) navigateTo(url);
+        // Full-page hand-off to Microsoft. `navigateTo` is same-origin only and
+        // would rewrite this URL to "/" — the dashboard (#11572).
+        if (isCurrent(target)) navigateToMicrosoftLogin(url);
       } catch (error) {
         if (isCurrent(target)) {
           handleActionError(error, t("m365CustomerGraphActions.actions.consentFailed"));
@@ -550,17 +614,30 @@ export default function M365CustomerGraphActionsCard({
     const connectionId = data.connection.id;
     void perform(target, "retest", async () => {
       try {
-        await runAction({
+        const retested = await runAction<Connection | null>({
           request: () => scopedRequest(
             target,
             () => fetchWithAuth(`/m365/customer-graph-actions/connections/${connectionId}/retest?orgId=${target.orgId}`, { method: "POST" }),
             {},
           ),
           errorFallback: t("m365CustomerGraphActions.actions.retestFailed"),
-          successMessage: () => isCurrent(target)
+          parseSuccess: parseRetestedConnection,
+          successMessage: (result) => isCurrent(target) && retestPassed(result)
             ? t("m365CustomerGraphActions.actions.retestSucceeded")
             : "",
         });
+        // The request completing is not the connection passing (#12085): a
+        // retest that leaves it needing attention says so, with the stored reason.
+        if (isCurrent(target) && !retestPassed(retested)) {
+          const reason = retested?.lastErrorCode
+            ? t(/* i18n-dynamic */ `m365CustomerGraphActions.errors.${errorCopyKey(retested.lastErrorCode, isRetestable(retested.status))}`)
+            : undefined;
+          showToast({
+            type: "warning",
+            message: t("m365CustomerGraphActions.actions.retestNeedsAttention"),
+            ...(reason ? { detail: reason } : {}),
+          });
+        }
         if (isCurrent(target)) await load(target);
       } catch (error) {
         if (isCurrent(target)) {
@@ -809,7 +886,7 @@ export default function M365CustomerGraphActionsCard({
                 {newRoleGrants.map((grant) => {
                   const purposeKey = ROLE_PURPOSE_KEY[grant.value ?? ""] ?? "unknown";
                   return (
-                    <li key={`${grant.resourceApplicationId}:${grant.appRoleId}`} data-testid="m365-actions-v2-purpose" className="flex items-start gap-2">
+                    <li key={grantKey(grant)} data-testid="m365-actions-v2-purpose" className="flex items-start gap-2">
                       <CheckCircle2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                       {t(/* i18n-dynamic */ `m365CustomerGraphActions.v2.purpose.${purposeKey}`)}
                     </li>
@@ -851,6 +928,15 @@ export default function M365CustomerGraphActionsCard({
                 <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphActions.grants.grantsVerifiedAt")}</dt><dd className="mt-1 text-sm text-foreground">{connection.grantsVerifiedAt ? formatDateTime(connection.grantsVerifiedAt) : t("m365CustomerGraphActions.never")}</dd></div>
                 <div><dt className="text-xs font-medium text-muted-foreground">{t("m365CustomerGraphActions.lastVerifiedAt")}</dt><dd className="mt-1 text-sm text-foreground">{connection.lastVerifiedAt ? formatDateTime(connection.lastVerifiedAt) : t("m365CustomerGraphActions.never")}</dd></div>
               </dl>
+              {connection.grantReconciliationMode === "graph_token_only" && (
+                <p
+                  data-testid="m365-actions-graph-token-only"
+                  className="mt-4 flex items-start gap-2 text-sm text-muted-foreground"
+                >
+                  <Info aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{t("m365CustomerGraphActions.grants.graphTokenOnly")}</span>
+                </p>
+              )}
             </div>
           )}
 

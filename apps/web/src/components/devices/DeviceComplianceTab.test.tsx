@@ -70,6 +70,53 @@ describe('DeviceComplianceTab', () => {
     expect(screen.getAllByTestId('device-compliance-row')[0]).toHaveTextContent('USB storage blocked');
   });
 
+  // Strix (PR #12184): a rule set left uncollected by the per-org probe cap is
+  // stored as `pending`, and must not read as "not evaluated yet".
+  it('shows "Not collected (probe limit)" instead of Pending for a probe-cap rule set', async () => {
+    const probeCapDetails = {
+      ruleResults: [
+        { ruleType: 'registry_check', passed: null, message: 'Not assessed', data: { outcome: 'not_collected', reason: 'probe_cap' } },
+      ],
+    };
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        data: [
+          {
+            id: 'c1', policyId: null, configPolicyId: 'fl-1', configItemName: 'Firewall on', deviceId: 'dev-1',
+            status: 'pending', details: probeCapDetails,
+            lastCheckedAt: '2026-06-24T10:00:00.000Z', remediationAttempts: 0, updatedAt: '2026-06-24T10:00:00.000Z',
+          },
+          {
+            id: 'c2', policyId: null, configPolicyId: 'fl-2', configItemName: 'BitLocker on', deviceId: 'dev-1',
+            status: 'non_compliant', details: probeCapDetails,
+            lastCheckedAt: '2026-06-24T10:00:00.000Z', remediationAttempts: 0, updatedAt: '2026-06-24T10:00:00.000Z',
+          },
+          {
+            id: 'c3', policyId: null, configPolicyId: 'fl-3', configItemName: 'Not run yet', deviceId: 'dev-1',
+            status: 'pending', details: {},
+            lastCheckedAt: null, remediationAttempts: 0, updatedAt: '2026-06-24T10:00:00.000Z',
+          },
+        ],
+        ruleInfo: {},
+      })
+    );
+
+    render(<DeviceComplianceTab deviceId="dev-1" />);
+
+    await screen.findByText('Firewall on');
+    const rows = screen.getAllByTestId('device-compliance-row');
+    const row = (name: string) => rows.find((r) => r.textContent?.includes(name))!;
+    expect(row('Firewall on')).toHaveTextContent('Not collected (probe limit)');
+    expect(row('Firewall on')).not.toHaveTextContent('Pending');
+    // A failing set that also has an uncollected rule keeps its status and says so.
+    expect(row('BitLocker on')).toHaveTextContent('Non-compliant');
+    expect(row('BitLocker on')).toHaveTextContent('Not collected (probe limit)');
+    // A set that simply has not been evaluated yet is still Pending.
+    expect(row('Not run yet')).toHaveTextContent('Pending');
+    expect(row('Not run yet')).not.toHaveTextContent('Not collected');
+    expect(screen.getAllByTestId('device-compliance-probe-limit')).toHaveLength(2);
+  });
+
   it('renders an empty state when no compliance results are reported', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [], ruleInfo: {} }));
 

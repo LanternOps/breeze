@@ -34,5 +34,13 @@
   "PARTNER_GROUP_TARGET_UNSUPPORTED": "Los grupos de dispositivos de todo el socio solo pueden ser destinatarios de políticas de configuración del socio",
   "PARTNER_GROUP_READ_ONLY": "Este grupo de dispositivos de todo el socio no se puede modificar aquí",
   "PARTNER_GROUP_FILTER_UNSUPPORTED": "Los grupos de dispositivos de todo el socio no se pueden usar en filtros de grupos, y sus filtros no pueden hacer referencia a grupos u organizaciones",
-  "SCAN_ALREADY_QUEUED": "Ya hay un análisis en cola para este dispositivo."
+  "SCAN_ALREADY_QUEUED": "Ya hay un análisis en cola para este dispositivo.",
+  "PORTAL_INVITE_CONTACT_NOT_FOUND": "Ese contacto ya no existe o no está disponible para ti.",
+  "PORTAL_INVITE_CONTACT_NO_EMAIL": "Este contacto no tiene correo electrónico. Agrégalo primero.",
+  "PORTAL_INVITE_EMAIL_MISMATCH": "El correo de la invitación debe coincidir con el correo del contacto.",
+  "PORTAL_INVITE_CONTACT_CONFLICT": "Esta dirección de correo ya tiene un acceso al portal vinculado a otro contacto. Desvincúlelo primero.",
+  "PORTAL_INVITE_LOGIN_EMAIL_DIFFERS": "El acceso al portal de este contacto usa un correo distinto. Actualiza el correo del contacto o desvincula primero el acceso.",
+  "PORTAL_INVITE_ALREADY_ACTIVE": "Esta persona ya tiene un acceso al portal activo.",
+  "PORTAL_INVITE_USER_DISABLED": "El acceso al portal de esta persona está deshabilitado. Vuelve a habilitarlo en lugar de invitar de nuevo.",
+  "PORTAL_INVITE_EXTERNAL_IDENTITY": "Este correo pertenece solo a un inicio de sesión de Microsoft Entra. No se puede enviar una invitación al portal web para él."
 }

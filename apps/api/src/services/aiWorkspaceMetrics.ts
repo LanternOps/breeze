@@ -95,6 +95,15 @@ export type WorkspaceCap =
 
 export type ChatRunDeliveryOutcome =
   | 'progress' | 'completed' | 'failed' | 'no_session' | 'run_missing'
+  /** #11084: a device-troubleshooting run settled waiting on approvals. */
+  | 'awaiting_approval'
+  /** #11084: a Wisp hand-off whose chat could not take the delivery (gone, or another org); the card polls. */
+  | 'not_attached'
+  /**
+   * #11671: a Wisp hand-off's card was streamed; its result text reaches the
+   * model from the run row on the next turn (specialistResultsTurn.ts), not here.
+   */
+  | 'card_only'
   /**
    * The watch's org/session did not match the live session found under that
    * session id — a cross-tenant delivery was refused.

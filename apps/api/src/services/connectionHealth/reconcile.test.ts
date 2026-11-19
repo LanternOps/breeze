@@ -20,7 +20,7 @@ vi.mock('../../db', () => ({
   },
 }));
 vi.mock('../../db/lockTimeout', () => ({ tightenStatementTimeout: (...a: [unknown, number]) => tightenMock(...a) }));
-vi.mock('../opsAlerts', () => ({ sendOpsAlert: vi.fn() }));
+vi.mock('../opsAlerts', async (orig) => ({ ...(await orig<typeof import('../opsAlerts')>()), sendOpsAlert: vi.fn() }));
 const captureExceptionMock = vi.hoisted(() => vi.fn());
 vi.mock('../sentry', () => ({ captureException: (...a: unknown[]) => captureExceptionMock(...a) }));
 vi.mock('../redis', () => ({ getRedis: vi.fn(() => null) }));
@@ -38,6 +38,9 @@ vi.mock('./transitions', () => ({ planTransitions: (...a: unknown[]) => planMock
 
 import { runKindInSystemScope, runReconcile } from './reconcile';
 import type { HealthSource } from './types';
+import { opsText } from '../opsAlerts';
+
+const HOSTILE = '[click](http://evil.example) `x`\n@everyone';
 
 // The contract fields the reconciler never reads.
 const CONTRACT_STUB = { tables: [] as string[], fixHrefs: [] as string[], brokenQuery: () => ({ getSQL: () => { throw new Error('unused'); } }) } as Pick<HealthSource, 'tables' | 'fixHrefs' | 'brokenQuery'>;
@@ -219,6 +222,20 @@ describe('runReconcile', () => {
       await runReconcile({ sources: [src('a', 15)], redis, runKind: failing, alert, now: () => plusMin(T0, 75 + 15 * i), ...noopsExceptAlert });
     }
     expect(alert).toHaveBeenCalledTimes(2);
+  });
+
+  it('escapes the failure message in the ops alert', async () => {
+    const alert = vi.fn().mockResolvedValue(true);
+    const failing = vi.fn().mockRejectedValue(new Error(HOSTILE));
+    const redis = fakeRedis();
+    for (let i = 0; i < 3; i += 1) {
+      await runReconcile({ sources: [src('a', 15)], redis, runKind: failing, alert, now: () => plusMin(T0, 15 * i), ...noopsExceptAlert });
+    }
+    const { body } = alert.mock.calls[0]![0] as { body: string };
+    expect(body).toContain(opsText(HOSTILE));
+    expect(body).not.toContain('](http');
+    expect(body).not.toContain('`x`');
+    expect(body).not.toContain('\n@everyone');
   });
 
   it('a throwing ops alert does not abort the run', async () => {

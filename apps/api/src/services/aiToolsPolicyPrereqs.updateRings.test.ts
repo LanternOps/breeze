@@ -7,9 +7,14 @@ const { insertMock, updateMock, selectMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   db: { insert: insertMock, update: updateMock, select: selectMock },
 }));
 
+// Cut middleware/auth's transitive pull on the full schema barrel (via the
+// MFA gate). The gate itself is covered by aiToolMfaGate.routeParity.contract.test.ts.
+vi.mock('../middleware/auth', () => ({ hasSatisfiedMfa: () => true }));
 vi.mock('../db/schema/patches', () => ({
   patchPolicies: {
     id: 'patchPolicies.id',

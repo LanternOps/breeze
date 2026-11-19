@@ -1,5 +1,5 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,7 +32,7 @@ vi.mock('./recoverySigning', () => ({
   signRecoveryArtifact: vi.fn(),
 }));
 
-import { resolveBackupBinary } from './recoveryMediaService';
+import { resolveBackupBinary, uploadRecoveryArtifactFile, downloadRecoveryArtifactFile } from './recoveryMediaService';
 
 function makeSignedBackupManifest(assetName: string, assetBuffer: Buffer) {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -248,5 +248,30 @@ describe('buildLaunchScript / buildBundleReadme (binary signature verification)'
     });
     expect(readme).toMatch(/minisign/i);
     expect(readme).toMatch(/verif/i);
+  });
+});
+
+
+describe('API-host local recovery artifact I/O', () => {
+  it('requires operator approval and permits bounded artifact publication/download', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'breeze-media-local-'));
+    const destination = join(root, 'org-1', 'destination');
+    const input = join(root, 'input');
+    const output = join(root, 'output');
+    await mkdir(destination, { recursive: true });
+    await writeFile(input, 'artifact');
+    const storage = { provider: 'local' as const, orgId: 'org-1', configId: 'destination', rootPath: destination, storageKey: 'recovery/new/artifact', downloadFilename: 'artifact' };
+    try {
+      vi.stubEnv('BACKUP_LOCAL_ROOT', '');
+      await expect(uploadRecoveryArtifactFile(storage, input)).rejects.toThrow('unavailable');
+      await expect(downloadRecoveryArtifactFile(storage, output)).rejects.toThrow('unavailable');
+      vi.stubEnv('BACKUP_LOCAL_ROOT', root);
+      await uploadRecoveryArtifactFile(storage, input);
+      await downloadRecoveryArtifactFile(storage, output);
+      expect(await readFile(output, 'utf8')).toBe('artifact');
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

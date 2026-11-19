@@ -21,6 +21,7 @@ import { generateDueInvoice } from '../services/contractService';
 import { runHourBlockCloseOutSweep } from '../services/contractHourBlockClose';
 import { runHourBlockAlertSweep } from '../services/contractHourBlockAlerts';
 import { buildAutomationEligibleOrgPredicate } from '../services/tenantStatus';
+import { billingEnabledOrgPredicate, isBillingDisabledError } from '../services/billingEnabled';
 import { runContractRenewalSweep } from '../services/contractRenewal';
 import { issueInvoice } from '../services/invoiceService';
 import { sendInvoiceEmail } from '../services/invoicePdf';
@@ -60,7 +61,10 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
           // an archived tenant must not keep generating (and auto-issuing +
           // emailing) invoices from inside its purge countdown. Structurally
           // identical to runContractRenewalSweep, so it is fixed with it.
-          buildAutomationEligibleOrgPredicate(contracts.orgId)
+          buildAutomationEligibleOrgPredicate(contracts.orgId),
+          // BRZ-8807: a partner with billing off moves no new money — never
+          // select (and never fail + Sentry daily on) its contracts.
+          billingEnabledOrgPredicate(contracts.orgId)
         )
       )
     )
@@ -135,6 +139,9 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
         );
       }
     } catch (err) {
+      // Flag flipped off after the selection: not a failure, the rollback already
+      // left the contract untouched and it is simply not selected from now on.
+      if (isBillingDisabledError(err)) continue;
       failed++;
       console.error('[ContractWorker] generation failed', `contractId=${row.id}`, err instanceof Error ? err.message : err);
       captureException(err instanceof Error ? err : new Error(String(err)));
@@ -156,6 +163,8 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
           await sendInvoiceEmail(res.invoiceId!, res.actor!);
         }));
       } catch (err) {
+        // Billing switched off between the commit and the issue: the draft stays a draft.
+        if (isBillingDisabledError(err)) continue;
         console.error('[ContractWorker] post-commit issue/send failed', `contractId=${row.id}`, `invoiceId=${res.invoiceId}`, err instanceof Error ? err.message : err);
         captureException(err instanceof Error ? err : new Error(String(err)));
       }

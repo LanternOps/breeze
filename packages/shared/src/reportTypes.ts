@@ -63,6 +63,10 @@ export const REPORT_TYPES = [
   // invoice lines and time entries. Business type (msp_staff, partner
   // capable); never portal-visible.
   'client_profitability',
+  // Customer SLA performance (#11018): per-priority response and resolution
+  // against SLA for one org and period. Org-only, audience 'any'; deliberately
+  // NOT a business type (those are MSP-internal and partner-only-delivery).
+  'ticket_sla_performance',
 ] as const satisfies readonly string[];
 
 export type ReportType = (typeof REPORT_TYPES)[number];
@@ -100,6 +104,16 @@ export const BUSINESS_REPORT_REQUIRED_PERMISSIONS = {
   // Billed money and cost snapshots AND every technician's hours.
   client_profitability: [PERMISSION_GRANTS.INVOICES_READ, PERMISSION_GRANTS.TIME_ENTRIES_READ],
 } as const satisfies Record<BusinessReportType, readonly PermissionGrant[]>;
+
+/**
+ * Every report type gated on an underlying read grant: the business entries by
+ * reference, plus the non-business types that need one (#11018). The API
+ * registry's `requiredPermissions` and the web gallery's card gate both read it.
+ */
+export const REPORT_TYPE_REQUIRED_PERMISSIONS: Readonly<Partial<Record<ReportType, readonly PermissionGrant[]>>> = {
+  ...BUSINESS_REPORT_REQUIRED_PERMISSIONS,
+  ticket_sla_performance: [PERMISSION_GRANTS.TICKETS_READ],
+};
 
 const REPORT_TYPE_SET: ReadonlySet<string> = new Set(REPORT_TYPES);
 

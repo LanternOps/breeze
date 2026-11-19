@@ -19,6 +19,10 @@ describe('independent isolation eligibility', () => {
   it('maps only isolation refusal codes to refusal copy, leaving auth/validation errors to runAction', () => {
     const t = (key: string) => `t:${key}`;
     expect(isolationRefusalCopy('feature_disabled', t)).toBe('t:networkIsolation.refusal.feature_disabled');
+    expect(isolationRefusalCopy('invalid_allowlist', t, { allowlistReason: 'server_url_missing' })).toBe('t:networkIsolation.refusal.invalid_allowlist_server_url_missing');
+    expect(isolationRefusalCopy('invalid_allowlist', t, { allowlistReason: 'something_new' })).toBe('t:networkIsolation.refusal.invalid_allowlist');
+    expect(isolationRefusalCopy('invalid_allowlist', t)).toBe('t:networkIsolation.refusal.invalid_allowlist');
+    expect(isolationRefusalCopy('relay_unavailable', t, { allowlistReason: 'server_url_missing' })).toBe('t:networkIsolation.refusal.relay_unavailable');
     for (const code of ['MFA_REQUIRED', 'Access to this site denied', 'Device not found', 'VALIDATION_FAILED']) expect(isolationRefusalCopy(code, t)).toBeUndefined();
   });
 });

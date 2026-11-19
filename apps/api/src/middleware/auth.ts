@@ -6,6 +6,7 @@ import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPer
 import { normalizeSiteAllowlist } from '../services/siteAllowlist';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { runPreContextChecks } from './preContextChecks';
+import { chargeUserRateBudget } from './rateLimitBudget';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
 import { users, partnerUsers, organizations } from '../db/schema';
 import { UNASSIGNED_POOL_ORG_TYPE } from '../services/unassignedPool/orgType';
@@ -677,6 +678,11 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     throw new HTTPException(401, { message: 'Invalid or expired token' });
   }
 
+  // #10962: after the revocation check, so a revoked token can't burn its
+  // former owner's budget; before this middleware's Postgres reads, so a runaway
+  // client is refused without the per-request auth queries.
+  await chargeUserRateBudget(c, payload.sub);
+
   // Fetch user to ensure they still exist and are active. Pre-auth lookup —
   // must run under system scope because the request's real scope isn't
   // applied until further down (see the withDbAccessContext call below).
@@ -1031,8 +1037,42 @@ export function requireOrg(c: Context, next: Next) {
   return next();
 }
 
+/**
+ * A readable, machine-coded refusal a gate can opt into instead of the bare
+ * "Permission denied". Used where a denial reaches a user who needs to know
+ * WHICH grant they are missing (e.g. remote desktop, #11621). The status stays
+ * 403 and the response shape stays `{ error, message }` plus `code`.
+ */
+export interface PermissionDenial {
+  message: string;
+  code: string;
+}
+
+/** 403 carrying a {@link PermissionDenial}; the body includes `code` on every error path. */
+export class PermissionDeniedError extends HTTPException {
+  readonly code: string;
+
+  constructor(denial: PermissionDenial) {
+    super(403, { message: denial.message });
+    this.code = denial.code;
+    this.name = 'PermissionDeniedError';
+  }
+
+  // A fresh Response every call: a body may only be read once.
+  override getResponse(): Response {
+    return Response.json(
+      { error: this.message, message: this.message, code: this.code },
+      { status: 403 },
+    );
+  }
+}
+
 // Permission-based middleware
-export function requirePermission(resource: string, action: string) {
+export function requirePermission(
+  resource: string,
+  action: string,
+  options?: { denial?: PermissionDenial },
+) {
   return markPermissionGate(async (c: Context, next: Next) => {
     const auth = c.get('auth');
 
@@ -1057,11 +1097,14 @@ export function requirePermission(resource: string, action: string) {
       scope: auth.scope
     });
 
+    // No resolvable role is a membership/context problem, not a missing
+    // grant, so it never takes the opted-in denial ("add X to your role").
     if (!userPerms) {
       throw new HTTPException(403, { message: 'No permissions found' });
     }
 
     if (!hasPermission(userPerms, resource, action)) {
+      if (options?.denial) throw new PermissionDeniedError(options.denial);
       throw new HTTPException(403, { message: 'Permission denied' });
     }
 

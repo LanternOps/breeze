@@ -2,14 +2,14 @@
  * Wisp W02 — delegation grant routes (Wisp design §4.2; w00 "Routes (final
  * names)" + A29). Mounted at /api/v1/wisp.
  *
- *   GET   /grants/preview?orgId=      → { scope, ceilingSnapshot, ceilingHash } (w00 A4)
+ *   GET   /grants/preview?orgId=&grantId=&unattendedReads=true → { scope, ceilingSnapshot, ceilingHash } (w00 A4)
  *   POST  /grants                     { orgId, stepUpGrantId } → 201 WispGrantDto
  *   GET   /grants?view=mine|partner   → { grants }
- *   POST  /grants/:id/refresh         { stepUpGrantId } → WispGrantDto
+ *   POST  /grants/:id/refresh         { stepUpGrantId, unattendedReads?: true } → WispGrantDto
  *   POST  /grants/:id/revoke          → { success: true }
  *   POST  /grants/:id/pause           → WispGrantDto   (grantor; no step-up — pausing never widens)
  *   POST  /grants/:id/resume          → WispGrantDto | 409 NOT_USER_PAUSED
- *   PATCH /grants/:id/settings        { budgetCentsPerDay?, floorTickMinutes? } → WispGrantDto (w00 A6)
+ *   PATCH /grants/:id/settings        { budgetCentsPerDay?, floorTickMinutes?, unattendedReads?: false, summaryRefine? } → WispGrantDto (w00 A6)
  *
  *   /thread/*                       → W04 thread routes (routes/wispThreads.ts)
  *   /concerns/*, /watches/*         → W05 triage routes (routes/wispConcerns.ts, routes/wispWatches.ts)
@@ -26,7 +26,7 @@
  */
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { ENTITLEMENTS } from '@breeze/shared';
+import { ENTITLEMENTS, WISP_BRIEF_TIMEZONE_MAX } from '@breeze/shared';
 import { wispEnabled } from '../config/env';
 import { runAfterDbContextCommit } from '../db';
 import { zValidator } from '../lib/validation';
@@ -35,6 +35,7 @@ import { requireEntitlement } from '../middleware/entitlement';
 import { EntitlementResolutionError } from '../services/entitlements';
 import { EVENT_TYPES, publishEvent } from '../services/eventBus';
 import { PERMISSIONS } from '../services/permissions';
+import { captureException } from '../services/sentry';
 import { grantSettingsBounds } from '../services/wisp/budget';
 import {
   createGrant,
@@ -49,9 +50,11 @@ import {
   WispGrantError,
   type WispGrant,
 } from '../services/wisp/grants';
+import { saveBrowserTimezone } from '../services/wisp/nudgePreferences';
 import { wispConcernsRoutes } from './wispConcerns';
 import { wispThreadRoutes } from './wispThreads';
 import { wispThreadLinkRoutes } from './wispThreadLinks';
+import { wispCheckInRoutes } from './wispCheckIns';
 import { wispHomeRoutes } from './wispHome';
 import { wispWatchesRoutes } from './wispWatches';
 import { wispNudgePreferenceRoutes, wispNudgeSettingsRoutes } from './wispNudgePreferences';
@@ -70,6 +73,12 @@ export type WispGrantDto = {
   expiresAt: string;
   budgetCentsPerDay: number;
   floorTickMinutes: number;
+  /** #10973: the switch is effective on the current revision (live AND pinned). */
+  unattendedReads: boolean;
+  /** #10973: the current revision pins the switch, whether or not it is on now. */
+  unattendedReadsPinned: boolean;
+  /** #10390: a closed session's summary is also written by the model, charged to this grant's budget. */
+  summaryRefine: boolean;
 };
 
 function toDto(grant: WispGrant): WispGrantDto {
@@ -85,6 +94,9 @@ function toDto(grant: WispGrant): WispGrantDto {
     expiresAt: grant.expiresAt.toISOString(),
     budgetCentsPerDay: grant.budgetCentsPerDay,
     floorTickMinutes: grant.floorTickMinutes,
+    unattendedReads: grant.unattendedReads === true,
+    unattendedReadsPinned: grant.unattendedReadsPinned === true,
+    summaryRefine: grant.summaryRefine === true,
   };
 }
 
@@ -160,17 +172,26 @@ function publishGrantEvent(type: typeof EVENT_TYPES.WISP_GRANT_CREATED | typeof 
   );
 }
 
-const createBody = z.object({ orgId: uuid.nullable(), stepUpGrantId: z.string().min(1).max(200) }).strict();
-const refreshBody = z.object({ stepUpGrantId: z.string().min(1).max(200) }).strict();
-const previewQuery = z.object({ orgId: uuid.optional() });
+const createBody = z.object({
+  orgId: uuid.nullable(),
+  stepUpGrantId: z.string().min(1).max(200),
+  // #10402: the zone the browser reports, for the morning brief. Not validated
+  // as a zone here: one this server's ICU does not know must not cost the grant
+  // (saveBrowserTimezone ignores it).
+  browserTimezone: z.string().max(WISP_BRIEF_TIMEZONE_MAX).optional(),
+}).strict();
+const refreshBody = z.object({ stepUpGrantId: z.string().min(1).max(200), unattendedReads: z.literal(true).optional() }).strict();
+const previewQuery = z.object({ orgId: uuid.optional(), grantId: uuid.optional(), unattendedReads: z.literal('true').optional() });
 const listQuery = z.object({ view: z.enum(['mine', 'partner']).optional() });
 const settingsBody = z
   .strictObject({
     budgetCentsPerDay: z.number().int().min(0).optional(),
     floorTickMinutes: z.number().int().min(15).max(240).optional(),
+    unattendedReads: z.boolean().optional(),
+    summaryRefine: z.boolean().optional(),
   })
-  .refine((v) => v.budgetCentsPerDay !== undefined || v.floorTickMinutes !== undefined, {
-    message: 'Provide budgetCentsPerDay and/or floorTickMinutes',
+  .refine((v) => v.budgetCentsPerDay !== undefined || v.floorTickMinutes !== undefined || v.unattendedReads !== undefined || v.summaryRefine !== undefined, {
+    message: 'Provide budgetCentsPerDay, floorTickMinutes, unattendedReads and/or summaryRefine',
   });
 
 export const wispRoutes = new Hono();
@@ -190,9 +211,14 @@ const authOf = (c: Context): AuthContext => c.get('auth') as AuthContext;
 
 wispRoutes.get('/grants/preview', zValidator('query', previewQuery), async (c) => {
   const auth = authOf(c);
-  const { orgId } = c.req.valid('query');
+  const { orgId, grantId, unattendedReads } = c.req.valid('query');
   try {
-    const preview = await previewGrantCeiling({ auth, scope: { partnerId: auth.partnerId!, orgId: orgId ?? null } });
+    const preview = await previewGrantCeiling({
+      auth,
+      scope: { partnerId: auth.partnerId!, orgId: orgId ?? null },
+      ...(unattendedReads ? { unattendedReads: true as const } : {}),
+      ...(grantId ? { refreshGrantId: grantId } : {}),
+    });
     return c.json(preview);
   } catch (err) {
     return errorResponse(c, err);
@@ -215,6 +241,13 @@ wispRoutes.post('/grants', requireMfa(), zValidator('json', createBody), async (
   try {
     const grant = await createGrant({ auth, scope: { partnerId: auth.partnerId!, orgId: body.orgId }, stepUpGrantId: body.stepUpGrantId });
     publishGrantEvent(EVENT_TYPES.WISP_GRANT_CREATED, grant);
+    if (body.browserTimezone) {
+      // Best effort: the grant exists; the home sends this again on its next load.
+      await saveBrowserTimezone(auth.user.id, auth.partnerId!, body.browserTimezone).catch((err: unknown) => {
+        console.warn('[wisp] could not store the browser time zone', { grantId: grant.id, err });
+        captureException(err, c, { op: 'wisp.grants.browserTimezone', grantId: grant.id });
+      });
+    }
     return c.json(toDto(grant), 201);
   } catch (err) {
     return errorResponse(c, err);
@@ -224,8 +257,14 @@ wispRoutes.post('/grants', requireMfa(), zValidator('json', createBody), async (
 wispRoutes.post('/grants/:id/refresh', requireMfa(), zValidator('json', refreshBody), async (c) => {
   const grantId = grantIdParam(c);
   if (!grantId) return c.json(NOT_FOUND, 404);
+  const body = c.req.valid('json');
   try {
-    const grant = await refreshGrant({ auth: authOf(c), grantId, stepUpGrantId: c.req.valid('json').stepUpGrantId });
+    const grant = await refreshGrant({
+      auth: authOf(c),
+      grantId,
+      stepUpGrantId: body.stepUpGrantId,
+      ...(body.unattendedReads ? { unattendedReads: true as const } : {}),
+    });
     return c.json(toDto(grant));
   } catch (err) {
     return errorResponse(c, err);
@@ -269,13 +308,20 @@ wispRoutes.post('/grants/:id/resume', requireMfa(), async (c) => {
 // Bounds are the partner's plan bounds (W05): ≤ 5× plan default and ≤ the
 // plan ceiling; floor tick ≥ max(15, plan minimum). A grant is only reachable
 // inside the caller's own partner (RLS), so auth.partnerId is its partner.
+// #10973: `unattendedReads: false` is the grantor's off switch, here for the same
+// reason (off never widens). On needs a step-up, so it goes through /refresh; the
+// 400 is a wrong request, not the 403 a stale proof gets there.
 wispRoutes.patch('/grants/:id/settings', requireMfa(), zValidator('json', settingsBody), async (c) => {
   const grantId = grantIdParam(c);
   if (!grantId) return c.json(NOT_FOUND, 404);
   const auth = authOf(c);
+  const patch = c.req.valid('json');
+  if (patch.unattendedReads === true) {
+    return c.json({ error: 'Turning on unattended reads needs a fresh step-up verification.', code: 'STEP_UP_REQUIRED' }, 400);
+  }
   try {
     const bounds = await grantSettingsBounds(auth.partnerId!);
-    return c.json(toDto(await updateGrantSettings({ auth, grantId, patch: c.req.valid('json'), bounds })));
+    return c.json(toDto(await updateGrantSettings({ auth, grantId, patch, bounds })));
   } catch (err) {
     return errorResponse(c, err);
   }
@@ -285,6 +331,8 @@ wispRoutes.patch('/grants/:id/settings', requireMfa(), zValidator('json', settin
 wispRoutes.route('/thread', wispThreadRoutes);
 // W08 (w00 A35): GET/POST/DELETE /thread/:id/links — same gates, same ownership.
 wispRoutes.route('/thread', wispThreadLinkRoutes);
+// Check-in timers W05 (#10996): GET/DELETE /thread/:id/check-ins — same gates, same ownership.
+wispRoutes.route('/thread', wispCheckInRoutes);
 // W08 (spec §17.2): GET /home — one table-only read for the home's first paint.
 wispRoutes.route('/home', wispHomeRoutes);
 // W05: same inheritance.

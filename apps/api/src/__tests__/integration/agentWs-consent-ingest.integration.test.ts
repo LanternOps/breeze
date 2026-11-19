@@ -910,7 +910,7 @@ describe('agentWs consent ingestion (real onMessage, breeze_app)', () => {
     });
     const closed = await withSystemDbAccessContext(() => commitDesktopTerminalIntent({
       sessionId,
-      write: { status: 'failed', endedAt: new Date(), errorMessage: 'setup_failed' },
+      write: { status: 'failed', endedAt: new Date(), errorMessage: 'setup_failed', endReason: 'start_failed' },
       phase: 'confirmed',
     }));
 

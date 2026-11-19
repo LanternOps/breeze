@@ -416,6 +416,7 @@ const createProfileSchema = z.object({
   resolveHostnames: z.boolean().optional(),
   timeout: z.number().int().positive().optional(),
   concurrency: z.number().int().positive().optional(),
+  alertSettings: alertSettingsSchema,
   // #7969: devices.id of the agent that must run this profile's scans; null
   // or absent = automatic selection.
   pinnedDeviceId: z.string().guid().nullable().optional()
@@ -691,6 +692,7 @@ discoveryRoutes.post(
       resolveHostnames: body.resolveHostnames ?? false,
       timeout: body.timeout ?? null,
       concurrency: body.concurrency ?? null,
+      alertSettings: body.alertSettings ?? null,
       pinnedDeviceId: body.pinnedDeviceId ?? null,
       createdBy: auth.user?.id ?? null
     }).returning();
@@ -1123,7 +1125,7 @@ discoveryRoutes.get(
         id: discoveryJobs.id,
         orgId: discoveryJobs.orgId,
         siteId: discoveryJobs.siteId,
-        profileId: discoveryJobs.profileId,
+        profileId: discoveryProfiles.id,
         profileName: discoveryProfiles.name,
         agentId: discoveryJobs.agentId,
         status: discoveryJobs.status,
@@ -1137,7 +1139,12 @@ discoveryRoutes.get(
         createdAt: discoveryJobs.createdAt
       })
       .from(discoveryJobs)
-      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      // Profile details only while the profile is in the job's org and site.
+      .leftJoin(discoveryProfiles, and(
+        eq(discoveryJobs.profileId, discoveryProfiles.id),
+        eq(discoveryProfiles.orgId, discoveryJobs.orgId),
+        eq(discoveryProfiles.siteId, discoveryJobs.siteId),
+      ))
       .where(where)
       .orderBy(desc(discoveryJobs.createdAt));
 
@@ -1423,7 +1430,12 @@ discoveryRoutes.get(
         eq(discoveredAssets.siteId, devices.siteId),
       ))
       .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
-      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      // Profile details only while the profile is in the asset's org and site.
+      .leftJoin(discoveryProfiles, and(
+        eq(discoveryJobs.profileId, discoveryProfiles.id),
+        eq(discoveryProfiles.orgId, discoveredAssets.orgId),
+        eq(discoveryProfiles.siteId, discoveredAssets.siteId),
+      ))
       .where(where)
       .orderBy(desc(discoveredAssets.lastSeenAt));
 
@@ -1544,10 +1556,16 @@ discoveryRoutes.get(
         eq(discoveredAssets.siteId, devices.siteId),
       ))
       .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
-      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      // Profile details only while the profile is in the asset's org and site.
+      .leftJoin(discoveryProfiles, and(
+        eq(discoveryJobs.profileId, discoveryProfiles.id),
+        eq(discoveryProfiles.orgId, discoveredAssets.orgId),
+        eq(discoveryProfiles.siteId, discoveredAssets.siteId),
+      ))
       .leftJoin(bridgeDevices, and(
         eq(discoveryJobs.agentId, bridgeDevices.agentId),
         eq(bridgeDevices.orgId, discoveredAssets.orgId),
+        eq(bridgeDevices.siteId, discoveredAssets.siteId),
       ))
       .leftJoin(sites, eq(discoveredAssets.siteId, sites.id))
       .where(and(...conditions))

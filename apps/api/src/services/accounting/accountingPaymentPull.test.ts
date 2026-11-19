@@ -1437,7 +1437,7 @@ describe('the echo of a Breeze-origin payment (spec decision 5)', () => {
   });
 
   it('does NOT clobber a Stripe partial-refund instruction with "Edited in QuickBooks"', async () => {
-    // stripeReconcile lowers `invoice_payments.amount` on a partial refund and
+    // stripeReversalState lowers `invoice_payments.amount` on a partial refund and
     // stamps the row with the "record the refund in QuickBooks" instruction —
     // deliberately leaving the QuickBooks Payment at its full amount. Any later
     // re-save of that Payment (a memo edit, a deposit) therefore arrives here

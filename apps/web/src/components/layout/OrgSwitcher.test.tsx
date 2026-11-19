@@ -347,6 +347,18 @@ describe('OrgSwitcher (unified control)', () => {
     expect(label.className).toContain('truncate');
   });
 
+  it('trigger shrinks with its wrapper and the name collapses to icon-only on a phone (#11598)', () => {
+    stubLocation('/devices');
+    render(<OrgSwitcher />);
+    // A <button> sizes to its content, not its container: without w-full/max-w-full
+    // it stays at full text width and paints under the AI/docs icons.
+    const trigger = screen.getByTestId('org-switcher-trigger');
+    expect(trigger.className).toContain('w-full');
+    expect(trigger.className).toContain('max-w-full');
+    // Below sm the name stays in the accessible name (sr-only), not removed.
+    expect(screen.getByTestId('org-switcher-label').className).toContain('max-sm:sr-only');
+  });
+
   it('label shows the selection placeholder on a transient null (not fleet view)', () => {
     stubLocation('/devices');
     mockStoreState.currentOrgId = null;

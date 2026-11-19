@@ -1,5 +1,6 @@
 import type { HealthSource } from '../types';
 import { accountingSource } from './accounting';
+import { backupDestinationSource } from './backupDestination';
 import { backupProviderSource } from './backupProvider';
 import { dnsFilterSource } from './dnsFilter';
 import { edrSource } from './edr';
@@ -11,6 +12,7 @@ import { oauthGrantSource } from './oauthGrant';
 import { pax8Source } from './pax8';
 import { sentinelOneSource } from './sentinelOne';
 import { ticketMailboxSource } from './ticketMailbox';
+import { tdSynnexSftpSource } from './tdSynnexSftp';
 import { unifiSource } from './unifi';
 import { psaTicketingSource } from './psaTicketing';
 import { webhookSource } from './webhook';
@@ -36,6 +38,8 @@ export const HEALTH_SOURCES: readonly HealthSource[] = [
   webhookSource,
   psaTicketingSource,
   googleWorkspaceSource,
+  backupDestinationSource,
+  tdSynnexSftpSource,
 ];
 
 /** Connection tables deliberately without a health source, and why. */
@@ -43,7 +47,6 @@ export const SOURCE_COVERAGE_EXEMPTIONS: Readonly<Record<string, string>> = {
   partner_ai_connections: 'AI gateway connection; failures surface in AI chat, and it has no scheduled check.',
   td_synnex_ec_express_integrations: 'Catalog price feed with a manual connection test only; no scheduled sync to go stale.',
   td_synnex_digital_bridge_integrations: 'Catalog price feed synced on demand only; no schedule to go stale.',
-  td_synnex_sftp_integrations: 'Catalog price-file feed (nightly). last_sync_at is stamped on failure too; staleness deferred past W4.',
   delegant_m365_connections: 'No failure column; status is only ever active.',
   c2c_connections: 'No failure column; revoked is a deliberate disconnect.',
   device_connections: 'Per-device network sockets, not an integration.',

@@ -16,10 +16,11 @@ const template = {
 
 function input(statuses: Record<string, string>, autoResolve = true) {
   return {
-    rule: { ...rule, overrideSettings: { autoResolve } },
+    rule,
     template,
     device: { id: 'device', orgId: 'device-org', hostname: 'server' },
     monitor: { id: 'monitor', kind: 'hardware_health' },
+    lifecycle: { autoResolve, cooldownMinutes: 60, rearmMode: 'new_evidence', rearmDelayMinutes: null },
     evidence: {
       dataState: 'ok',
       subjects: Object.entries(statuses).map(([subjectKey, status]) => ({
@@ -56,6 +57,14 @@ it('creates two subjects; acknowledging one never blocks its sibling', async () 
   expect(m.create).toHaveBeenLastCalledWith(expect.objectContaining({ orgId: 'device-org', subjectKey: 'b', allocateSubjectEpisode: expect.any(Function) }));
 });
 
+it('hands the resolved lifecycle to createAlert: no second resolution per subject', async () => {
+  await evaluateSubjectAlerts(input({ a: 'breaching' }));
+  expect(m.create).toHaveBeenCalledWith(expect.objectContaining({
+    resolvedLifecycle: expect.objectContaining({ cooldownMinutes: 60 }),
+    context: expect.objectContaining({ cooldownMinutes: 60 }),
+  }));
+});
+
 it.each(['active', 'acknowledged', 'suppressed'])('recovers only its own %s alert', async status => {
   m.open = [{ id: 'a', subjectKey: 'a', status }, { id: 'b', subjectKey: 'b', status: 'active' }];
   expect(await evaluateSubjectAlerts(input({ a: 'recovered', b: 'unknown' }))).toBe('breach');
@@ -68,6 +77,19 @@ it.each(['unknown', 'absent', 'autoResolveOff', 'requiresHuman'])('%s preserves 
   const arg = input(variant === 'absent' ? {} : { a: variant === 'unknown' ? 'unknown' : 'recovered' }, variant !== 'autoResolveOff');
   expect(await evaluateSubjectAlerts(arg)).toBe('breach');
   expect(m.resolve).not.toHaveBeenCalled();
+});
+
+it.each([
+  { snapshot: false, current: true, resolved: false },
+  { snapshot: true, current: false, resolved: true },
+])('an open alert follows its snapshot autoResolve=$snapshot, not the current $current', async ({ snapshot, current, resolved }) => {
+  const sources = { autoResolve: 'monitor', rearmMode: 'builtin', rearmDelayMinutes: 'builtin', cooldownMinutes: 'builtin' };
+  m.open = [{
+    id: 'a', subjectKey: 'a', status: 'active', requiresHuman: false,
+    context: { lifecycle: { autoResolve: snapshot, rearmMode: 'new_evidence', rearmDelayMinutes: null, cooldownMinutes: 5, sources } },
+  }];
+  await evaluateSubjectAlerts(input({ a: 'recovered' }, current));
+  expect(m.resolve).toHaveBeenCalledTimes(resolved ? 1 : 0);
 });
 
 it('no open alerts means unknown for missing evidence; observed recovery means ok', async () => {

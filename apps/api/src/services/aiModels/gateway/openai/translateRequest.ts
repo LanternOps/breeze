@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { GATEWAY_MAX_TOOLS } from '../limits';
 import { GatewayError } from '../types';
+import { compactInputSchema } from './schemaCompaction';
 import { assignWireNames } from './toolNames';
 import type { OaiChatRequest, OaiContentPart, OaiMessage, OaiTool, OaiToolCall, ToolNameMap } from './types';
 
@@ -94,9 +95,18 @@ function collapse(parts: OaiContentPart[]): string | OaiContentPart[] {
   return parts.every((p) => p.type === 'text') ? parts.map((p) => (p as { text: string }).text).join('\n') : parts;
 }
 
-export interface TranslatedRequest { body: OaiChatRequest; tools: ToolNameMap; requestedModel: string; stream: boolean }
+export interface TranslatedRequest { body: OaiChatRequest; tools: ToolNameMap; requestedModel: string; stream: boolean; maxTokens: number }
 
-export function translateMessagesRequest(input: unknown, wireModel: string): TranslatedRequest {
+export interface TranslateRequestOptions {
+  /**
+   * #11395: strip size/format keywords from the ADVERTISED `parameters`
+   * (schemaCompaction.ts). Set only by a constrained tool profile on a gateway
+   * grant; `ToolNameMap.schemas` always keeps the original for call validation.
+   */
+  compactSchemas?: boolean;
+}
+
+export function translateMessagesRequest(input: unknown, wireModel: string, options: TranslateRequestOptions = {}): TranslatedRequest {
   const parsed = requestSchema.safeParse(input);
   if (!parsed.success) throw bad('Malformed Messages API request.');
   const req = parsed.data;
@@ -120,7 +130,8 @@ export function translateMessagesRequest(input: unknown, wireModel: string): Tra
       toOai.set(t.name, name);
       fromOai.set(name, t.name);
       schemas.set(t.name, t.input_schema);
-      return { type: 'function', function: { name, ...(t.description ? { description: t.description } : {}), parameters: t.input_schema } };
+      const parameters = options.compactSchemas ? compactInputSchema(t.input_schema) : t.input_schema;
+      return { type: 'function', function: { name, ...(t.description ? { description: t.description } : {}), parameters } };
     });
   }
 
@@ -193,5 +204,5 @@ export function translateMessagesRequest(input: unknown, wireModel: string): Tra
     stream,
     ...(stream ? { stream_options: { include_usage: true as const } } : {}),
   };
-  return { body, tools: { toOai, fromOai, schemas }, requestedModel: req.model, stream };
+  return { body, tools: { toOai, fromOai, schemas }, requestedModel: req.model, stream, maxTokens: req.max_tokens };
 }

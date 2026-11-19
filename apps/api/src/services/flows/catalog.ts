@@ -45,13 +45,16 @@ export type FlowCatalog = Map<string, FlowCatalogEntry>;
  *    each refuses without `auth.wispGrant`. Named here before W05a lands so
  *    the exclusion holds whichever PR merges first;
  *  - Wisp W08's thread-link chat tools (`link_entity`, `list_links`) — the
- *    same rule: each refuses without `auth.wispGrant`.
+ *    same rule: each refuses without `auth.wispGrant`;
+ *  - the Wisp check-in chat tools (`schedule_check_in`, `list_check_ins`,
+ *    `cancel_check_in`, #10991 W03) — the same rule.
  */
 export const FLOW_EXCLUDED_CORE_TOOLS: ReadonlySet<string> = new Set<string>([
   ...FLOW_TOOL_NAMES,
   'remember', 'recall',
   'list_concerns', 'raise_concern', 'snooze_concern', 'resolve_concern', 'create_watch',
   'link_entity', 'list_links',
+  'schedule_check_in', 'list_check_ins', 'cancel_check_in',
 ]);
 
 /**

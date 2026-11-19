@@ -96,7 +96,7 @@ export const CONTAINMENT_POLICY_DEFAULTS: Readonly<ContainmentInlineSettings> = 
 );
 Object.freeze(CONTAINMENT_POLICY_DEFAULTS.extraAllow);
 
-/** Pure conversion only; runtime isolation services do not consume containment policy settings yet. */
+/** The policy's permits as wire entries: `scope:"any"`, and the label stays on the server. */
 export function containmentExtraAllowToEntries(extraAllow: ContainmentInlineSettings['extraAllow']): IsolationAllowEntry[] {
   return extraAllow.map((entry) => ({
     ...('host' in entry ? { kind: 'host' as const, host: entry.host } : { kind: 'cidr' as const, cidr: entry.cidr }),

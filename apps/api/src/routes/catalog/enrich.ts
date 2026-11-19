@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { partners } from '../../db/schema/orgs';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
@@ -21,8 +21,9 @@ async function loadPartnerStyle(auth: AuthContext): Promise<string | null> {
   const partnerId = auth.partnerId ?? null;
   if (!partnerId) return null;
   try {
-    const [row] = await db.select({ style: partners.catalogAiStyle }).from(partners)
-      .where(eq(partners.id, partnerId)).limit(1);
+    // Savepoint so a failed read rolls back and the request transaction survives (#11203).
+    const [row] = await withDbTransaction(async () => db.select({ style: partners.catalogAiStyle }).from(partners)
+      .where(eq(partners.id, partnerId)).limit(1));
     return row?.style ?? null;
   } catch (err) {
     // Falling back to the house format is the right behavior, but a swallowed
