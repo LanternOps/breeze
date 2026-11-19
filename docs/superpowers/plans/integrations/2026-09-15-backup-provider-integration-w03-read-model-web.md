@@ -3277,7 +3277,7 @@ EOF
     "providerLabel": "Provider",
     "cove": "Cove Data Protection",
     "nameLabel": "Connection name",
-    "namePlaceholder": "OliveTech Cove",
+    "namePlaceholder": "Fabrikam MSP Cove",
     "partnerNameLabel": "Cove partner name",
     "usernameLabel": "Username",
     "passwordLabel": "Password",
@@ -3338,7 +3338,7 @@ EOF
     "providerLabel": "Anbieter",
     "cove": "Cove Data Protection",
     "nameLabel": "Name der Verbindung",
-    "namePlaceholder": "OliveTech Cove",
+    "namePlaceholder": "Fabrikam MSP Cove",
     "partnerNameLabel": "Cove-Partnername",
     "usernameLabel": "Benutzername",
     "passwordLabel": "Passwort",
@@ -3399,7 +3399,7 @@ EOF
     "providerLabel": "Proveedor",
     "cove": "Cove Data Protection",
     "nameLabel": "Nombre de la conexión",
-    "namePlaceholder": "OliveTech Cove",
+    "namePlaceholder": "Fabrikam MSP Cove",
     "partnerNameLabel": "Nombre de partner en Cove",
     "usernameLabel": "Usuario",
     "passwordLabel": "Contraseña",
@@ -3460,7 +3460,7 @@ EOF
     "providerLabel": "Fournisseur",
     "cove": "Cove Data Protection",
     "nameLabel": "Nom de la connexion",
-    "namePlaceholder": "OliveTech Cove",
+    "namePlaceholder": "Fabrikam MSP Cove",
     "partnerNameLabel": "Nom du partenaire Cove",
     "usernameLabel": "Identifiant",
     "passwordLabel": "Mot de passe",
@@ -3521,7 +3521,7 @@ EOF
     "providerLabel": "Fournisseur",
     "cove": "Cove Data Protection",
     "nameLabel": "Nom de la connexion",
-    "namePlaceholder": "OliveTech Cove",
+    "namePlaceholder": "Fabrikam MSP Cove",
     "partnerNameLabel": "Nom du partenaire Cove",
     "usernameLabel": "Nom d'utilisateur",
     "passwordLabel": "Mot de passe",
@@ -3582,7 +3582,7 @@ EOF
     "providerLabel": "Provider",
     "cove": "Cove Data Protection",
     "nameLabel": "Nome della connessione",
-    "namePlaceholder": "OliveTech Cove",
+    "namePlaceholder": "Fabrikam MSP Cove",
     "partnerNameLabel": "Nome partner Cove",
     "usernameLabel": "Nome utente",
     "passwordLabel": "Password",
@@ -3643,7 +3643,7 @@ EOF
     "providerLabel": "Provedor",
     "cove": "Cove Data Protection",
     "nameLabel": "Nome da conexão",
-    "namePlaceholder": "OliveTech Cove",
+    "namePlaceholder": "Fabrikam MSP Cove",
     "partnerNameLabel": "Nome do parceiro no Cove",
     "usernameLabel": "Usuário",
     "passwordLabel": "Senha",
@@ -3704,7 +3704,7 @@ EOF
     "providerLabel": "Sağlayıcı",
     "cove": "Cove Data Protection",
     "nameLabel": "Bağlantı adı",
-    "namePlaceholder": "OliveTech Cove",
+    "namePlaceholder": "Fabrikam MSP Cove",
     "partnerNameLabel": "Cove iş ortağı adı",
     "usernameLabel": "Kullanıcı adı",
     "passwordLabel": "Parola",
@@ -3980,8 +3980,8 @@ const res = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({ ok, status, statusText: ok ? "OK" : "ERROR", json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
 const connection = (o: Partial<BackupProviderConnection> = {}): BackupProviderConnection => ({
-  id: "conn-1", provider: "cove", name: "OliveTech Cove", baseUrl: "https://api.backup.management/jsonapi",
-  vendorRootName: "OliveTech", isActive: true, status: "connected", syncIntervalMinutes: 30,
+  id: "conn-1", provider: "cove", name: "Fabrikam MSP Cove", baseUrl: "https://api.backup.management/jsonapi",
+  vendorRootName: "Fabrikam MSP", isActive: true, status: "connected", syncIntervalMinutes: 30,
   showProviderNameInPortal: false, lastSyncAt: "2026-09-15T11:50:00.000Z", lastSyncStatus: "success",
   lastSyncError: null, lastSyncCustomers: 12, lastSyncUnmappedCustomers: 2, lastSyncDevices: 340,
   lastSyncUnmappedDevices: 18, lastSyncLinkedDevices: 300, lastSyncAmbiguousDevices: 4,
@@ -4052,14 +4052,14 @@ describe("BackupProviderConnectionCard", () => {
   });
 
   it("POSTs the test endpoint and hands the result up rather than rendering its own modal", async () => {
-    fetchMock.mockResolvedValue(res({ success: true, rootName: "OliveTech", customerCount: 12 }));
+    fetchMock.mockResolvedValue(res({ success: true, rootName: "Fabrikam MSP", customerCount: 12 }));
     render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
 
     fireEvent.click(screen.getByTestId("backup-connection-test"));
 
     await waitFor(() => expect(onTestResult).toHaveBeenCalled());
     expect(fetchMock).toHaveBeenCalledWith("/backup/providers/connections/conn-1/test", { method: "POST" });
-    expect(onTestResult.mock.calls[0]![0]).toMatchObject({ success: true, rootName: "OliveTech" });
+    expect(onTestResult.mock.calls[0]![0]).toMatchObject({ success: true, rootName: "Fabrikam MSP" });
   });
 
   it("treats an HTTP-200 {success:false} test as a failure and still surfaces the provider message", async () => {
@@ -4091,7 +4091,7 @@ describe("BackupProviderConnectionCard", () => {
     expect(url).toBe("/backup/providers/connections/conn-1");
     expect((init as RequestInit).method).toBe("PATCH");
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      name: "OliveTech Cove", isActive: true, showProviderNameInPortal: true,
+      name: "Fabrikam MSP Cove", isActive: true, showProviderNameInPortal: true,
     });
   });
 
@@ -4109,7 +4109,7 @@ describe("BackupProviderConnectionCard", () => {
     render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
     fireEvent.click(screen.getByTestId("backup-connection-delete"));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
-    expect(vi.mocked(window.confirm).mock.calls[0]![0]).toContain("OliveTech Cove");
+    expect(vi.mocked(window.confirm).mock.calls[0]![0]).toContain("Fabrikam MSP Cove");
     expect((fetchMock.mock.calls.at(-1)![1] as RequestInit).method).toBe("DELETE");
   });
 
@@ -4867,8 +4867,8 @@ const res = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({ ok, status, statusText: "OK", json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
 const conn = {
-  id: "conn-1", provider: "cove", name: "OliveTech Cove", baseUrl: "https://api.backup.management/jsonapi",
-  vendorRootName: "OliveTech", isActive: true, status: "connected", syncIntervalMinutes: 30,
+  id: "conn-1", provider: "cove", name: "Fabrikam MSP Cove", baseUrl: "https://api.backup.management/jsonapi",
+  vendorRootName: "Fabrikam MSP", isActive: true, status: "connected", syncIntervalMinutes: 30,
   showProviderNameInPortal: false, lastSyncAt: "2026-09-15T11:50:00.000Z", lastSyncStatus: "success",
   lastSyncError: null, lastSyncCustomers: 3, lastSyncUnmappedCustomers: 1, lastSyncDevices: 40,
   lastSyncUnmappedDevices: 5, lastSyncLinkedDevices: 30, lastSyncAmbiguousDevices: 0, hasCredentials: true,
@@ -4915,7 +4915,7 @@ describe("BackupProvidersIntegration", () => {
 
     fireEvent.click(screen.getByTestId("backup-providers-add"));
     fireEvent.change(screen.getByTestId("backup-add-name"), { target: { value: "Second Cove" } });
-    fireEvent.change(screen.getByTestId("backup-add-partner-name"), { target: { value: "OliveTech" } });
+    fireEvent.change(screen.getByTestId("backup-add-partner-name"), { target: { value: "Fabrikam MSP" } });
     fireEvent.change(screen.getByTestId("backup-add-username"), { target: { value: "breeze-ro" } });
     fireEvent.change(screen.getByTestId("backup-add-password"), { target: { value: "s3cret" } });
     fireEvent.click(screen.getByTestId("backup-add-submit"));
@@ -4933,7 +4933,7 @@ describe("BackupProvidersIntegration", () => {
       provider: "cove",
       name: "Second Cove",
       showProviderNameInPortal: false,
-      credentials: { partnerName: "OliveTech", username: "breeze-ro", password: "s3cret" },
+      credentials: { partnerName: "Fabrikam MSP", username: "breeze-ro", password: "s3cret" },
     });
   });
 

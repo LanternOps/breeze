@@ -13,7 +13,7 @@
 
 Three symptoms of one gap: **Breeze cannot show what its AI did, so it cannot show what its AI is worth.**
 
-**(A) Attribution is missing at the source (#5022).** Todd asked an AI agent to run scripts on device *lab-hyperv-host* (olivetech). Nothing on the device page said an AI had touched the machine. Verified in source:
+**(A) Attribution is missing at the source (#5022).** Todd asked an AI agent to run scripts on device *lab-hyperv-host* (our own tenant). Nothing on the device page said an AI had touched the machine. Verified in source:
 
 - `run_script` dispatches with `triggerType: 'manual', triggeredBy: auth.user.id` in both branches (`apps/api/src/services/aiToolsScripts.ts:274` proposal, `:507` library), so the `script_executions` row is indistinguishable from a human tech's manual run.
 - `execute_command` (`aiToolsScripts.ts:647`) has no trigger concept at all; the `device_commands` row only gets `created_by`.

@@ -234,7 +234,7 @@ The `dev-push` route sends `X-API-Key` header when the token starts with `brz_`,
 ```bash
 # Generate a 1-hour JWT token:
 ./agent/scripts/gen-jwt.sh                    # uses first user in DB
-./agent/scripts/gen-jwt.sh todd@olivetech.co  # specific user
+./agent/scripts/gen-jwt.sh admin@example.com  # specific user
 
 # Use it:
 export TOKEN=$(./agent/scripts/gen-jwt.sh)

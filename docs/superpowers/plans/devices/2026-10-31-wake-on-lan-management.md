@@ -577,7 +577,7 @@ it('verified + linux: still unsupported_os')
 
 ---
 
-## W06: Activation (Dell, OliveTech first)
+## W06: Activation (Dell, our own tenant first)
 
 ### Task 15: Turn it on
 
@@ -620,7 +620,7 @@ it('form states Fast Startup is turned off and warns about CIS when the policy t
 - [ ] **Step 1: Run spec §9's PC checklist on the lab Dell from this branch** on a worktree stack with `WOL_FIRMWARE_WRITE_VENDORS=dell`: names and password state, apply/read back/reboot/wake from S5 and sleep, no network drop, **no BitLocker recovery with BitLocker on**, password machine reports `firmware_protected` with no write, `needs_reboot` across an agent restart.
 - [ ] **Step 2: Record results in the PR.** A BitLocker prompt stops this wave for redesign.
 - [ ] **Step 3: Tear down the stack, and say what's left running.**
-- [ ] **Step 4: After release, follow canary pins:** set `WOL_FIRMWARE_WRITE_VENDORS=dell` in production, enable on OliveTech only, and clear pins at the next promote. Check `apply_failed` and timeout counts before widening.
+- [ ] **Step 4: After release, follow canary pins:** set `WOL_FIRMWARE_WRITE_VENDORS=dell` in production, enable on our own tenant only, and clear pins at the next promote. Check `apply_failed` and timeout counts before widening.
 
 ---
 

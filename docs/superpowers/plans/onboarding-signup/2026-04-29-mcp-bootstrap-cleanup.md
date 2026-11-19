@@ -1050,7 +1050,7 @@ User clicks **Add Connector** in Claude.ai. Claude opens an OAuth tab to Breeze.
 
 ```
 Send install links to my two test machines —
-todd+mac@olivetech.co and todd+win@olivetech.co.
+test+mac@example.com and test+win@example.com.
 Once they're online, give me a quick health summary.
 ```
 
@@ -1059,7 +1059,7 @@ Once they're online, give me a quick health summary.
 ```
 This is a small accounting firm — set sane defaults for security,
 auto-approve patches that aren't critical, route alerts to me.
-Then send install links to todd+mac@olivetech.co and todd+win@olivetech.co.
+Then send install links to test+mac@example.com and test+win@example.com.
 ```
 
 ### C — Live ops (after fleet is up)
