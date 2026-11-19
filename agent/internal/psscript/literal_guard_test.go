@@ -70,6 +70,9 @@ var literalValueExceptions = map[string]map[string]string{
 		"since.UTC().Format(time.RFC3339Nano)": "formatted time",
 		"until.UTC().Format(time.RFC3339Nano)": "formatted time",
 	},
+	"internal/oemupdates/observe/host_windows.go": {
+		"name": "checked against wmiNameRe (letters only); a WQL literal, not PowerShell",
+	},
 	"internal/security/local_admin_group_probe.go": {
 		"localAdminResolveMarker": "constant",
 	},
