@@ -84,7 +84,7 @@ func TestObserveNeverRunsWinget(t *testing.T) {
 	}
 	// winget.exe appears only as a file name to stat, never as a program.
 	for name, src := range sources(t) {
-		for _, line := range strings.Split(src, "\n") {
+		for line := range strings.SplitSeq(src, "\n") {
 			if strings.Contains(strings.ToLower(line), "winget.exe") && !strings.Contains(line, "RegularFile") && !strings.HasPrefix(strings.TrimSpace(line), "//") {
 				t.Errorf("%s: winget.exe used outside a file check: %s", name, strings.TrimSpace(line))
 			}

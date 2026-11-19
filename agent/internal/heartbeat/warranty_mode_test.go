@@ -56,7 +56,7 @@ func TestModeNotPersisted(t *testing.T) {
 	if !reflect.DeepEqual(persisted, []bool{true}) {
 		t.Fatalf("persisted = %v, want only the legacy flag [true]", persisted)
 	}
-	for _, f := range reflect.VisibleFields(reflect.TypeOf(config.Config{})) {
+	for _, f := range reflect.VisibleFields(reflect.TypeFor[config.Config]()) {
 		tag := strings.ToLower(f.Tag.Get("mapstructure"))
 		if strings.Contains(tag, "cmsl_mode") || strings.Contains(tag, "cmsl_tiers") {
 			t.Fatalf("config.Config persists %s; the mode must stay in memory", f.Name)

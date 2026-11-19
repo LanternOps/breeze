@@ -94,9 +94,7 @@ func (h *Heartbeat) maybeStartHpWarrantyObserve() {
 	s.observeRunning, s.observeLastRun, s.observeLastMode = true, now, mode
 	s.mu.Unlock()
 
-	h.inventoryWg.Add(1)
-	go func() {
-		defer h.inventoryWg.Done()
+	h.inventoryWg.Go(func() {
 		defer func() {
 			s.mu.Lock()
 			s.observeRunning = false
@@ -118,5 +116,5 @@ func (h *Heartbeat) maybeStartHpWarrantyObserve() {
 		if o := collect(ctx, mode); o != nil {
 			emit(o)
 		}
-	}()
+	})
 }

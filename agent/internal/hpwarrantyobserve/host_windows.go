@@ -75,7 +75,7 @@ func registryString(path, name string) (string, bool, error) {
 	if err != nil || !ok {
 		return "", false, err
 	}
-	defer k.Close()
+	defer func() { _ = k.Close() }()
 	v, _, err := k.GetStringValue(name)
 	if errors.Is(err, registry.ErrNotExist) {
 		return "", false, nil
@@ -91,7 +91,7 @@ func registryDWORD(path, name string) (uint64, bool, error) {
 	if err != nil || !ok {
 		return 0, false, err
 	}
-	defer k.Close()
+	defer func() { _ = k.Close() }()
 	v, _, err := k.GetIntegerValue(name)
 	if errors.Is(err, registry.ErrNotExist) {
 		return 0, false, nil
