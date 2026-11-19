@@ -55,10 +55,10 @@ import {
 } from './serviceDeliverableService';
 import { listKeyDates, createKeyDate, updateKeyDate, deleteKeyDate } from './orgKeyDateService';
 import {
-  listTemplateSets, applyTemplateSet, TemplateServiceError, type TemplateActor,
+  listTemplateSets, applyTemplateSet, type TemplateSetView, TemplateServiceError, type TemplateActor,
 } from './deliverableTemplateService';
 import { PartnerWideWriteDeniedError } from './partnerWideAccess';
-import { listDocuments, supersedeDocument, updateDocument } from './orgDocumentService';
+import { listDocuments, supersedeDocument, updateDocument, type OrgDocumentView } from './orgDocumentService';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { missingParamsJson, validationErrorJson, zodErrorToJson } from './aiToolValidation';
 
@@ -345,6 +345,31 @@ export const MANAGE_KEY_DATES_TOOL: AiTool = {
   },
 };
 
+const LIST_DELIVERABLE_TEMPLATES_PAGE = { defaultLimit: 4, maxLimit: 50 } as const;
+
+/**
+ * Item fields a model needs to choose a set (apply_template takes only the set id). The long text and the
+ * internal wiring (instructions, description, checklistTemplateId, auto-evidence type, portal flag, item id)
+ * are opt-in: eight items with instructions run ~3 KB, so a default page of full items would be compacted.
+ */
+function projectTemplateSet(set: TemplateSetView, includeDetails: boolean): Record<string, unknown> {
+  return {
+    id: set.id, name: set.name, description: set.description, ownerScope: set.ownerScope, orgId: set.orgId,
+    itemCount: set.items.length,
+    items: set.items.map((item) => ({
+      name: item.name, cadence: item.cadence, leadDays: item.leadDays, graceDays: item.graceDays,
+      artifactRequired: item.artifactRequired, completionMode: item.completionMode,
+      ...(includeDetails
+        ? {
+          id: item.id, instructions: item.instructions, description: item.description,
+          checklistTemplateId: item.checklistTemplateId, autoEvidenceReportType: item.autoEvidenceReportType,
+          portalVisible: item.portalVisible,
+        }
+        : {}),
+    })),
+  };
+}
+
 export const LIST_DELIVERABLE_TEMPLATES_TOOL: AiTool = {
   tier: 2 as AiToolTier,
   domain: 'accounts',
@@ -353,19 +378,28 @@ export const LIST_DELIVERABLE_TEMPLATES_TOOL: AiTool = {
   definition: {
     name: 'list_deliverable_templates',
     description:
-      "List accessible org template sets; partner-wide sets require a partner token. Returns cadence, lead/grace days, artifact requirements, instructions and checklistTemplateId. Instructions and checklistTemplateId are INTERNAL — never repeat to a customer. Read-only.",
+      "List accessible template sets (partner-wide sets need a partner token) with each item's cadence, lead/grace days and artifact requirement. includeDetails adds item instructions and checklistTemplateId — INTERNAL, never repeat to a customer. Paged: follow nextCursor while hasMore. Read-only.",
     input_schema: {
       type: 'object' as const,
-      properties: { orgId: { type: 'string', description: 'Filter to sets owned by one organization (UUID)' } },
+      properties: {
+        orgId: { type: 'string', description: 'Filter to sets owned by one organization (UUID)' },
+        includeDetails: { type: 'boolean', description: "Include each item's id, instructions, description, checklistTemplateId, autoEvidenceReportType and portalVisible (default false)" },
+        ...pageParamSchema(LIST_DELIVERABLE_TEMPLATES_PAGE.defaultLimit, LIST_DELIVERABLE_TEMPLATES_PAGE.maxLimit),
+      },
       required: [],
     },
   },
   handler: async (input, auth) => {
     const refusal = partnerScopeRefusal(auth);
     if (refusal) return refusal;
+    const page = readPageArgs('list_deliverable_templates', input, LIST_DELIVERABLE_TEMPLATES_PAGE);
+    if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
     try {
-      const sets = await listTemplateSets(templateActorFromAuth(auth), { orgId: optionalString(input.orgId) });
-      return JSON.stringify({ sets, showing: sets.length });
+      // The service returns the whole (name-ordered) visible list; page it here.
+      const all = await listTemplateSets(templateActorFromAuth(auth), { orgId: optionalString(input.orgId) });
+      const includeDetails = input.includeDetails === true;
+      const items = all.slice(page.offset, page.offset + page.limit).map((set) => projectTemplateSet(set, includeDetails));
+      return JSON.stringify(pageEnvelope({ key: 'sets', items, limit: page.limit, offset: page.offset, fingerprint: page.fingerprint, total: all.length }));
     } catch (err) { return toToolError(err); }
   },
 };
@@ -385,6 +419,17 @@ const MANAGE_ORG_DOCUMENTS_REQUIRED: Record<string, readonly string[]> = {
 // Wrapped under the param name so ZodError paths read `patch.title: …`.
 const updateDocumentPayload = z.object({ patch: updateDocumentSchema });
 
+const LIST_ORG_DOCUMENTS_PAGE = { defaultLimit: 15, maxLimit: 100 } as const;
+
+function projectOrgDocument(d: OrgDocumentView, includeDetails: boolean): Record<string, unknown> {
+  return {
+    id: d.id, title: d.title, category: d.category, contentType: d.contentType, byteSize: d.byteSize,
+    originalFilename: d.originalFilename, portalVisible: d.portalVisible,
+    supersedesDocumentId: d.supersedesDocumentId, supersededByDocumentId: d.supersededByDocumentId, createdAt: d.createdAt,
+    ...(includeDetails ? { description: d.description, sha256: d.sha256, uploadedByUserId: d.uploadedByUserId } : {}),
+  };
+}
+
 export const LIST_ORG_DOCUMENTS_TOOL: AiTool = {
   tier: 2 as AiToolTier,
   domain: 'accounts',
@@ -393,15 +438,15 @@ export const LIST_ORG_DOCUMENTS_TOOL: AiTool = {
   definition: {
     name: 'list_org_documents',
     description:
-      'List the current version of every document in an organization\'s library (runbooks, baselines, policies, '
-      + 'exports, delivery evidence). Returns metadata only — titles, categories, sizes, versions and portal visibility — '
-      + 'never the file bytes. Set includeSuperseded to also list older versions. Read-only.',
+      "List an organization's library documents (current versions; includeSuperseded adds older ones). Metadata only — title, category, size, version, portal visibility — never the file bytes. description/sha256/uploader only with includeDetails. Paged: follow nextCursor while hasMore. Read-only.",
     input_schema: {
       type: 'object' as const,
       properties: {
         orgId: { type: 'string', description: 'Organization UUID' },
         category: { type: 'string', enum: [...ORG_DOCUMENT_CATEGORIES] },
         includeSuperseded: { type: 'boolean', description: 'Include older versions (default false)' },
+        includeDetails: { type: 'boolean', description: "Include each document's description, sha256 and uploader (default false)" },
+        ...pageParamSchema(LIST_ORG_DOCUMENTS_PAGE.defaultLimit, LIST_ORG_DOCUMENTS_PAGE.maxLimit),
       },
       required: ['orgId'],
     },
@@ -409,12 +454,21 @@ export const LIST_ORG_DOCUMENTS_TOOL: AiTool = {
   handler: async (input, auth) => {
     const missing = missingParamsJson(input, 'list', ['orgId']);
     if (missing) return missing;
+    // `includeSuperseded` changes WHICH rows are listed, but pageFingerprint exempts every
+    // `include*` key as a projection flag — renamed (omitted === false) to stay in the
+    // fingerprint, same as list_deliverables' includeInactive.
+    const { includeSuperseded, ...rest } = input;
+    const page = readPageArgs('list_org_documents', { ...rest, supersededRows: includeSuperseded === true }, LIST_ORG_DOCUMENTS_PAGE);
+    if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
     try {
-      const rows = await listDocuments(String(input.orgId), {
+      // The service returns the whole (newest-first) list; page it here.
+      const all = await listDocuments(String(input.orgId), {
         category: input.category ? (String(input.category) as OrgDocumentCategory) : undefined,
-        includeSuperseded: input.includeSuperseded === true,
+        includeSuperseded: includeSuperseded === true,
       }, actorFromAuth(auth));
-      return JSON.stringify({ documents: rows, showing: rows.length });
+      const includeDetails = input.includeDetails === true;
+      const items = all.slice(page.offset, page.offset + page.limit).map((d) => projectOrgDocument(d, includeDetails));
+      return JSON.stringify(pageEnvelope({ key: 'documents', items, limit: page.limit, offset: page.offset, fingerprint: page.fingerprint, total: all.length }));
     } catch (err) {
       return toToolError(err);
     }

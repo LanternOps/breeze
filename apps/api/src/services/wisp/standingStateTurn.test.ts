@@ -3,7 +3,7 @@
  * per-session hash in Redis so an unchanged snapshot is not re-sent, and a
  * read failure that loses the block, never the turn.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   wispEnabled: vi.fn(() => true),
@@ -32,6 +32,8 @@ vi.mock('./standingLoop', async (importOriginal) => ({
 }));
 
 import type { AuthContext } from '../../middleware/auth';
+import { ClusterCacheBus, __setClusterCacheBusForTests } from '../clusterCacheBus';
+import { getClusterCacheTarget } from '../clusterCacheRegistry';
 import { GrantInactiveError } from './grantAuthority';
 import type { StandingStateFacts } from './standingLoop';
 import {
@@ -315,5 +317,99 @@ describe('standingStateForTurn', () => {
     expect(h.captureException).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledTimes(2);
     warn.mockRestore();
+  });
+});
+
+describe('cluster cache binding (#8636)', () => {
+  const NAME = 'wisp-standing-state-facts';
+  let published: Array<[string, string | null]>;
+
+  beforeEach(() => {
+    published = [];
+    const bus = new ClusterCacheBus({ origin: 'unit', getPublisher: () => null, createSubscriber: () => null });
+    vi.spyOn(bus, 'publish').mockImplementation(async (cache: string, key: string | null) => {
+      published.push([cache, key]);
+      return 'published';
+    });
+    __setClusterCacheBusForTests(bus);
+  });
+  afterEach(() => __setClusterCacheBusForTests(null));
+
+  /** Holds the next fact read open; `release` lets it finish. */
+  function holdNextRead() {
+    let release!: (f: StandingStateFacts) => void;
+    h.loadStandingStateFacts.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    return { release: (f: StandingStateFacts = facts()) => release(f) };
+  }
+
+  it('a remote drop for one grant makes the next turn read the facts again', async () => {
+    await turn(NOW);
+    await turn(later(1_000));
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(1);
+
+    getClusterCacheTarget(NAME)!.invalidate(GRANT);
+
+    await turn(later(2_000));
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(2);
+  });
+
+  it('a remote drop with no key forgets every grant', async () => {
+    const OTHER_GRANT = '66666666-6666-4666-8666-666666666666';
+    await turn(NOW);
+    await standingStateForTurn({ grantId: OTHER_GRANT, revisionId: REV, sessionId: SESSION, auth, now: NOW });
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(2);
+
+    getClusterCacheTarget(NAME)!.invalidate();
+
+    await turn(later(1_000));
+    await standingStateForTurn({ grantId: OTHER_GRANT, revisionId: REV, sessionId: SESSION, auth, now: later(1_000) });
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(4);
+  });
+
+  it('the writer call publishes [name, grantId]', () => {
+    forgetStandingStateFacts(GRANT);
+    expect(published).toEqual([[NAME, GRANT]]);
+  });
+
+  it('a read in flight when a remote drop lands answers its turn but is not cached', async () => {
+    const held = holdNextRead();
+    const inFlight = turn(NOW);
+    await vi.waitFor(() => expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(1));
+
+    getClusterCacheTarget(NAME)!.invalidate(GRANT);
+    held.release();
+    expect((await inFlight)?.block).toContain('Concerns open: 1 high');
+
+    await turn(later(1_000));
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(2);
+  });
+
+  it('a read in flight when a remote drop for EVERY grant lands is not cached', async () => {
+    const held = holdNextRead();
+    const inFlight = turn(NOW);
+    await vi.waitFor(() => expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(1));
+
+    getClusterCacheTarget(NAME)!.invalidate();
+    held.release();
+    await inFlight;
+
+    await turn(later(1_000));
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(2);
+  });
+
+  it('forgetting the same grant twice counts up: a read that began between the two forgets is not cached', async () => {
+    // Regression: the generation used to be deleted before it was read, so every
+    // forget reset it to 1 and a read started after the first forget looked current.
+    forgetStandingStateFacts(GRANT);
+    const held = holdNextRead();
+    const inFlight = turn(NOW);
+    await vi.waitFor(() => expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(1));
+
+    forgetStandingStateFacts(GRANT);
+    held.release();
+    await inFlight;
+
+    await turn(later(1_000));
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(2);
   });
 });

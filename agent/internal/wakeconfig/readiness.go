@@ -1,5 +1,7 @@
-// Package wakeconfig computes and uploads a device's Wake-on-LAN readiness.
-// It is read-only: nothing here writes to the registry, a NIC or firmware.
+// Package wakeconfig computes and uploads a device's Wake-on-LAN readiness and,
+// once activated, applies the fixed list of Windows and NIC settings (apply.go).
+// Writes are inactive until writesActivated is flipped in the activation wave;
+// until then nothing here writes to the registry, a NIC or firmware.
 package wakeconfig
 
 import (
@@ -18,6 +20,8 @@ const (
 	StateNoWired       = "no_wired_adapter"
 	StateNotConfigured = "not_configured"
 	StateUnproven      = "unproven"
+	StateNeedsReboot   = "needs_reboot"
+	StateApplyFailed   = "apply_failed"
 )
 
 // adapterMemoryTTL is how long an adapter that is no longer present (a laptop
@@ -31,6 +35,9 @@ type AdapterReading struct {
 	MAC         string // lowercase, colon separated
 	MagicPacket string // enabled|disabled|unsupported|unknown
 	EEE         string // enabled|disabled|absent|unknown
+	// ShutdownWake is the Realtek S5WakeOnLan keyword: enabled|disabled|absent|unknown.
+	// Empty reads as absent.
+	ShutdownWake string
 }
 
 // WindowsReadings is the Windows layer of one collection.
@@ -40,6 +47,9 @@ type WindowsReadings struct {
 	// SkippedAdapters counts wired adapters dropped because their MAC could
 	// not be parsed; they cannot be tracked, but they do exist.
 	SkippedAdapters int
+	// NetAdapterCmdletsUnavailable is set when the host lacks the NetAdapter
+	// cmdlets, so no adapter can be read and the device cannot be assessed.
+	NetAdapterCmdletsUnavailable bool
 }
 
 // AdapterRecord is what the agent remembers about a wired adapter.
@@ -47,6 +57,8 @@ type AdapterRecord struct {
 	LastSeenAt  time.Time `json:"lastSeenAt"`
 	MagicPacket string    `json:"magicPacket"`
 	EEE         string    `json:"eee"`
+	// ShutdownWake is empty in records written before it was read (absent).
+	ShutdownWake string `json:"shutdownWake,omitempty"`
 }
 
 // AdapterMemory maps MAC to the last record.
@@ -62,6 +74,9 @@ type Inputs struct {
 	Firmware     biosconfig.Adapter
 	Memory       AdapterMemory
 	Now          time.Time
+	// Apply is the apply status from this cycle; nil when nothing was applied
+	// or this OS has no writer.
+	Apply *ApplyStatus
 }
 
 // Snapshot is the PUT /agents/:id/wake-status body (exact camelCase keys).
@@ -102,6 +117,13 @@ func normaliseVendor(manufacturer string) *string {
 	return &v
 }
 
+func orAbsent(v string) string {
+	if v == "" {
+		return "absent"
+	}
+	return v
+}
+
 func orUnknown(v string) string {
 	if v == "" {
 		return "unknown"
@@ -135,7 +157,8 @@ func Compute(in Inputs) Snapshot {
 		for _, a := range in.Windows.Adapters {
 			mac := strings.ToLower(a.MAC)
 			present[mac] = true
-			mem[mac] = AdapterRecord{LastSeenAt: now, MagicPacket: orUnknown(a.MagicPacket), EEE: orUnknown(a.EEE)}
+			mem[mac] = AdapterRecord{LastSeenAt: now, MagicPacket: orUnknown(a.MagicPacket), EEE: orUnknown(a.EEE),
+				ShutdownWake: orAbsent(a.ShutdownWake)}
 		}
 	}
 	snap.Memory = mem
@@ -152,7 +175,7 @@ func Compute(in Inputs) Snapshot {
 		rec := mem[mac]
 		adapters = append(adapters, map[string]any{
 			"mac": mac, "present": present[mac], "lastSeenAt": rec.LastSeenAt.UTC().Format(time.RFC3339),
-			"magicPacket": rec.MagicPacket, "eee": rec.EEE,
+			"magicPacket": rec.MagicPacket, "eee": rec.EEE, "shutdownWake": orAbsent(rec.ShutdownWake),
 		})
 		if rec.LastSeenAt.After(lastSeen) {
 			lastSeen = rec.LastSeenAt
@@ -176,6 +199,11 @@ func Compute(in Inputs) Snapshot {
 	case in.Virtual:
 		snap.ReadinessState = StateUnsupportedVM
 		reasons["virtual_machine"] = true
+	case cmdletsUnavailable(in):
+		// No adapter can be read, so remembered readings are not current and
+		// "no wired adapter" would be a claim the agent cannot make.
+		snap.ReadinessState = StateUnproven
+		reasons["nic_cmdlets_unavailable"] = true
 	case len(macs) == 0 && in.Windows != nil && in.Windows.SkippedAdapters > 0:
 		// A wired adapter exists but could not be read; do not claim none.
 		snap.ReadinessState = StateUnproven
@@ -192,14 +220,29 @@ func Compute(in Inputs) Snapshot {
 		case "unknown":
 			reasons["fast_startup_unknown"] = true
 		}
-		good := false
-		for _, mac := range macs {
-			if rec := mem[mac]; rec.MagicPacket == "enabled" && rec.EEE != "enabled" {
-				good = true
-				break
+		ap := in.Apply
+		pendingMAC := map[string]bool{}
+		if ap != nil {
+			for _, key := range ap.Pending {
+				if mac := keyMAC(key); mac != "" {
+					pendingMAC[mac] = true
+				}
 			}
 		}
-		if !good {
+		// A good adapter has every setting correct and in effect; one whose
+		// settings read correct but await a reboot is good after reboot.
+		good, goodAfterReboot := false, false
+		for _, mac := range macs {
+			if rec := mem[mac]; rec.MagicPacket == "enabled" && rec.EEE != "enabled" && rec.ShutdownWake != "disabled" {
+				if pendingMAC[mac] {
+					goodAfterReboot = true
+				} else {
+					good = true
+					break
+				}
+			}
+		}
+		if !good && !goodAfterReboot {
 			for _, mac := range macs {
 				rec := mem[mac]
 				switch rec.MagicPacket {
@@ -214,11 +257,29 @@ func Compute(in Inputs) Snapshot {
 					reasons["nic_eee_enabled"] = true
 					wrong = true
 				}
+				if rec.ShutdownWake == "disabled" {
+					reasons["nic_shutdown_wake_disabled"] = true
+					wrong = true
+				}
 			}
 		}
-		if wrong {
+		configuring := ap != nil && ap.Configure
+		switch {
+		case wrong && configuring && len(ap.Failed) > 0:
+			snap.ReadinessState = StateApplyFailed
+			reasons["apply_failed"] = true
+			if len(ap.Blocked) > 0 {
+				reasons["apply_blocked"] = true
+			}
+		case wrong:
 			snap.ReadinessState = StateNotConfigured
-		} else {
+			if configuring && len(ap.Deferred) > 0 {
+				reasons["apply_deferred"] = true
+			}
+		case !good && goodAfterReboot:
+			snap.ReadinessState = StateNeedsReboot
+			reasons["reboot_pending"] = true
+		default:
 			snap.ReadinessState = StateUnproven
 			if in.Firmware == nil {
 				reasons["firmware_adapter_unavailable"] = true
@@ -239,6 +300,20 @@ func Compute(in Inputs) Snapshot {
 		"os": in.OS, "manufacturer": in.Manufacturer, "model": in.Model, "virtual": in.Virtual,
 		"fastStartup": fast, "firmware": firmware, "adapters": adapters,
 	}
+	if ap := in.Apply; ap != nil {
+		snap.Details["apply"] = map[string]any{
+			"configure": ap.Configure, "pending": nonNil(ap.Pending), "failed": nonNil(ap.Failed),
+			"blocked": nonNil(ap.Blocked), "deferred": nonNil(ap.Deferred),
+		}
+		if !ap.LastApplyAt.IsZero() {
+			at := ap.LastApplyAt.UTC().Format(time.RFC3339)
+			snap.LastApplyAt = &at
+		}
+		if ap.LastApplyResult != "" {
+			r := ap.LastApplyResult
+			snap.LastApplyResult = &r
+		}
+	}
 	snap.Fingerprint = fingerprint(in, fast, macs, mem, snap.ReadinessState)
 	return snap
 }
@@ -256,7 +331,30 @@ func fingerprint(in Inputs, fast string, macs []string, mem AdapterMemory, state
 		w(mac)
 		w(mem[mac].MagicPacket)
 		w(mem[mac].EEE)
+		// Shutdown wake is written only when it reads disabled, so every
+		// machine whose readings are unchanged keeps its W02 fingerprint, and a
+		// one-off read error cannot move it (the server resets its timeout
+		// block on a fingerprint change).
+		if mem[mac].ShutdownWake == "disabled" {
+			w("s5:disabled")
+		}
 	}
 	w(state)
+	// Written only when set, so hosts with the cmdlets keep the fingerprint
+	// their wake proofs were recorded against.
+	if cmdletsUnavailable(in) {
+		w("nic_cmdlets_unavailable")
+	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func nonNil(xs []string) []string {
+	if xs == nil {
+		return []string{}
+	}
+	return xs
+}
+
+func cmdletsUnavailable(in Inputs) bool {
+	return in.Windows != nil && in.Windows.NetAdapterCmdletsUnavailable
 }

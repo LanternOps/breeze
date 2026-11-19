@@ -251,6 +251,13 @@ export function sweepActEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', false);
 }
 
+// billing#51: the partner-trust-fraud-flags job restricts a partner on a
+// billing fraud flag pulled from this region's BREEZE_BILLING_URL. Default
+// OFF; set per region. It also needs PARTNER_TRUST_MODE=enforce.
+export function billingFraudFlagsEnabled(): boolean {
+  return envFlag('PARTNER_TRUST_FRAUD_FLAGS_ENABLED', false);
+}
+
 export type BreezeRegion = 'eu' | 'us';
 
 // Deployment region. Hosted regions are single-region deployments (one API +

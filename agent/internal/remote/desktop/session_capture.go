@@ -228,6 +228,27 @@ func (s *Session) maybeResendCachedFrameOnIdle(frameDuration time.Duration) bool
 	return false
 }
 
+// shouldForceStaticKeyframe reports whether the DXGI loop arms its periodic
+// keyframe on a static normal desktop: after 30 idle iterations, then every
+// staticDesktopKeyframeEvery. It was added to keep the decoder in step with
+// cached-frame resends; an armed keyframe is applied to the next input, so on
+// a static screen it costs nothing until the next change, which is then coded
+// as an IDR.
+//
+// A software encoder never gets it (#11639). In this loop that is the
+// software MFT fed through the GPU converter (OpenH264 has no GPU input and
+// runs the CPU branch, which never had the periodic keyframe). Under CBR an
+// IDR re-codes the whole picture within a frame's budget, so every change
+// after an idle second (a clock tick) would come out as a coarse full frame
+// and trigger a quality refresh. Viewer PLI/FIR and request_keyframe still
+// force keyframes on demand.
+func shouldForceStaticKeyframe(enc *VideoEncoder, onSecure bool, consecutiveSkips int, sinceLast time.Duration) bool {
+	if enc == nil || onSecure || consecutiveSkips < 30 || !enc.BackendIsHardware() {
+		return false
+	}
+	return sinceLast >= staticDesktopKeyframeEvery
+}
+
 // captureLoop continuously captures and sends encoded H264 frames.
 // Dispatches between DXGI tight-loop and ticker-paced modes. Mode switches
 // return to this function instead of calling each other recursively, avoiding
@@ -424,6 +445,8 @@ func (s *Session) captureLoopDXGI() captureMode {
 			// Update encoder dimensions for the new monitor
 			if enc := s.encoder.Load(); enc != nil {
 				if w, h, err := newCap.GetScreenBounds(); err == nil {
+					aw, ah := AlignEven(w, h)
+					s.adoptCaptureSize(newCap, aw, ah)
 					if dimErr := enc.SetDimensions(w, h); dimErr != nil {
 						slog.Warn("Failed to set encoder dimensions after monitor switch", "session", s.id, "error", dimErr.Error())
 					}
@@ -482,12 +505,10 @@ func (s *Session) captureLoopDXGI() captureMode {
 			}
 		}
 
-		// Periodic keyframe during normal desktop idle — keeps decoder
-		// synchronized when the capture loop is resending cached frames.
-		if !onSecure && consecutiveSkips >= 30 && time.Since(lastIdleKeyframe) >= staticDesktopKeyframeEvery {
-			if enc := s.encoder.Load(); enc != nil {
-				_ = enc.ForceKeyframe()
-			}
+		// Periodic keyframe during normal desktop idle (see
+		// shouldForceStaticKeyframe).
+		if enc := s.encoder.Load(); shouldForceStaticKeyframe(enc, onSecure, consecutiveSkips, time.Since(lastIdleKeyframe)) {
+			_ = enc.ForceKeyframe()
 			lastIdleKeyframe = time.Now()
 		}
 
@@ -546,6 +567,15 @@ func (s *Session) captureLoopDXGI() captureMode {
 		// Prefer the GPU path when it works; fall back to CPU on any GPU error.
 		frameSent := false
 		encForGPU := s.encoder.Load()
+		if hasTP && !gpuDisabled && encForGPU != nil && encForGPU.SupportsGPUInput() &&
+			!s.followBoundsGeometry(currentCap, encForGPU) {
+			// The encoder could not be resized to the new mode yet (#11754):
+			// skip this iteration rather than encode a texture of another size.
+			if elapsed := time.Since(loopStart); elapsed < frameDuration {
+				time.Sleep(frameDuration - elapsed)
+			}
+			continue
+		}
 		if hasTP && !gpuDisabled && encForGPU != nil && encForGPU.SupportsGPUInput() {
 			handled, disable, sent := s.captureAndSendFrameGPU(tp, frameDuration)
 			if disable {
@@ -934,6 +964,18 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 		}
 	}
 
+	// A frame of another size than the stream is a resolution change (#11754):
+	// resize the encoder (and run the geometry transition) before encoding,
+	// never hand the encoder a frame it is not configured for.
+	if !s.followFrameGeometry(cap, enc, img.Rect.Dx(), img.Rect.Dy()) {
+		captureImagePool.Put(img)
+		s.metrics.RecordDrop()
+		// The differ recorded this frame as sent. Forget it, or a static
+		// screen never offers the frame again once the resize can be retried.
+		s.differ.Reset()
+		return
+	}
+
 	// 3. Cursor compositing — skip for DXGI since the viewer renders its own cursor.
 	// This saves a full-frame read+write pass at high resolutions.
 	if !dxgiActive && desiredPF == PixelFormatRGBA {
@@ -1171,6 +1213,11 @@ func (s *Session) handleDesktopSwitch() {
 	// Key-ups for anything held would land on the other desktop, and the
 	// input offset is about to change: a geometry transition. (W2b)
 	s.resetInputGeometry("desktop_switch")
+	// DXGI re-read the display mode when it reinitialised for this switch; a
+	// resolution change arrives here too (#11754). Record the size so the
+	// capture path does not run a second transition for it; the encoder is
+	// resized on the next frame.
+	resized := s.adoptCaptureBounds(cap)
 
 	if dsn.OnSecureDesktop() {
 		// Secure desktop is always at origin — reset offsets
@@ -1178,7 +1225,11 @@ func (s *Session) handleDesktopSwitch() {
 		s.inputHandler.SetDisplayOffset(0, 0)
 		s.cursorOffsetX.Store(0)
 		s.cursorOffsetY.Store(0)
-		s.announceCurrentMonitor()
+		if resized {
+			s.announceMonitor(geometryReasonResolutionChange)
+		} else {
+			s.announceCurrentMonitor()
+		}
 		// Prime secure desktop rendering: some credential/UAC surfaces do not
 		// fully paint until they observe input + invalidation.
 		for i := 0; i < 3; i++ {
@@ -1191,8 +1242,12 @@ func (s *Session) handleDesktopSwitch() {
 	} else {
 		// Returning to normal desktop — restore monitor offsets
 		slog.Info("Desktop switch: returning to default desktop, restoring offsets", "session", s.id)
-		applyDisplayOffset(s.inputHandler, s.currentDisplayIndex(), &s.cursorOffsetX, &s.cursorOffsetY)
-		s.announceCurrentMonitor()
+		s.applyInputOffset(cap, s.currentDisplayIndex())
+		if resized {
+			s.announceMonitor(geometryReasonResolutionChange)
+		} else {
+			s.announceCurrentMonitor()
+		}
 		// Force repaint so DXGI gets dirty rects for the first frame after
 		// reinitializing Desktop Duplication on the Default desktop.
 		forceDesktopRepaint()

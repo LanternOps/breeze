@@ -15,6 +15,7 @@ var elevatedCommandTypes = map[string]bool{
 	tools.CmdForceReboot:              true,
 	tools.CmdOemUpdateRun:             true,
 	tools.CmdOemUpdateRelease:         true,
+	tools.CmdOemObserve:               true,
 	tools.CmdShutdown:                 true,
 	tools.CmdLock:                     true,
 	tools.CmdStartService:             true,

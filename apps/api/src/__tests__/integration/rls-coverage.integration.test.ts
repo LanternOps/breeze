@@ -71,6 +71,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
   'abuse_script_hosts',
   'abuse_sweep_state',
   'abuse_endpoint_fingerprints',
+  'partner_billing_fraud_flags',
   'ai_kill_state',
   'trust_signing_keys',
 ]);
@@ -121,6 +122,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'abuse_script_hosts', // Cross-partner download-host corpus for the script-content abuse detector. Carries partner_id but is deliberately operator-only (mirrors partner_abuse_signals). Forced RLS, system-only policy.
   'abuse_sweep_state', // Abuse-sweep scan state (incremental execution-scan high-water mark). No tenant column. Forced RLS, system-only policy.
   'abuse_endpoint_fingerprints', // Cross-partner endpoint-fingerprint corpus for the recidivist-endpoint abuse detector. Carries partner_id but is deliberately operator-only (mirrors abuse_script_hosts). Forced RLS, system-only policy.
+  'partner_billing_fraud_flags', // Core's ledger of billing fraud flags it acted on (billing#51). Carries partner_id but is operator-only (mirrors partner_abuse_signals): partners must never read why they were restricted. Forced RLS, system-only policy; lockout forged in partnerTrustFraudFlags.integration.test.ts. No org_id, so no org cascade/merge/export registration; partner_id cascades on partner delete.
   'ai_kill_state', // Wave 5 Part A (#3827): system-scoped, single-row (id='global'), epoch'd AI-agent kill switch. Mirrors abuse_sweep_state verbatim — no tenant column, forced RLS, single system-only policy. Flipped only via SQL by ops (or a future admin route); no org/partner/user axis applies.
   'sso_sessions', // Pre-auth SSO CSRF/PKCE transaction store (state/nonce/code_verifier + link binding). No tenant column; written/consumed only by unauthenticated callback + system-context routes. Forced RLS, system-only policy → only system context.
   'auth_browser_transitions', // Browser/native authentication transition state. Forced RLS, one system-only ALL policy; raw bindings are never stored and tenants cannot read browser-to-account correlation.

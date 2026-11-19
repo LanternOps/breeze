@@ -3,7 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { type ConnectionParams } from '../lib/protocol';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
-import { createSessionHangUp } from '../lib/sessionHangUp';
+import { createSessionHangUp, hangUpThenClose } from '../lib/sessionHangUp';
+import { createNativeSessionEnd } from '../lib/nativeSessionEnd';
 import { scaleVideoCoords, isWebRTCSupported, announceViewerReconnect, AgentSessionError, RelayRequiredError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
 import { IceFailureBudget, neverConnectedStopStep } from '../lib/iceFailure';
 import { errorCardFor, parseSessionEndingMessage, serverEndReasonText, sessionEndedCardMessage, sessionEndingText, type ErrorCardKind } from '../lib/sessionEnd';
@@ -35,6 +36,7 @@ import { sendPasteText, pasteFailureMessage } from '../lib/pasteText';
 import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
 import { InputSequencer } from '../lib/inputSequencer';
 import { ReliableInputRouter } from '../lib/reliableInput';
+import { GeometryHold } from '../lib/geometryHold';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { ClipboardSync, type ClipboardSyncState } from '../lib/clipboardSync';
 import { createTauriClipboardIO } from '../lib/clipboardIO';
@@ -239,6 +241,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const lastCopyIntentAtRef = useRef<number | null>(null);
   const lastRemoteInputAtRef = useRef<number | null>(null);
   const wheelAccRef = useRef(DEFAULT_WHEEL_ACCUMULATOR);
+  // #11754: after the agent announces a resolution change, pointer input is
+  // held until the video decodes a frame at the new size. Lifecycle is
+  // unit-tested in lib/geometryHold.test.ts.
+  const [geometryHold] = useState(() => new GeometryHold());
   const pasteCancelRef = useRef(false);
   // What the connected agent said it can do with injected text. An agent that
   // predates the input_capabilities handshake never answers, so this stays
@@ -274,10 +280,17 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }
   const reliableInput = reliableInputRef.current;
   const userDisconnectRef = useRef(false);
-  // #11931: sends End once per session, shared by the hang-up and the window close.
+  // #11931: sends End once per session from the viewer's own Disconnect.
   const hangUpRef = useRef(createSessionHangUp());
+  // #12129: tells the native close hook which session to end when the window
+  // closes. Every assignment to authRef goes through its `track`.
+  const nativeSessionEndRef = useRef(createNativeSessionEnd());
   // Set while handleDisconnect waits for End, so a second click does nothing.
   const hangingUpRef = useRef(false);
+  // #12129: bumped by every connect effect run (a new session, or this window
+  // reused for a new deep link), so a hang-up that settles late can tell it no
+  // longer owns the window.
+  const sessionGenerationRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectDeadlineRef = useRef<number | null>(null);
   const reconnectInFlightRef = useRef(false);
@@ -714,7 +727,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           // endpoint instead of reusing a stale (or worse, tunnel-shaped)
           // id. The tunnel id is tracked in activeVncTunnelIdRef below.
           tunnelAuth = { ...auth, sessionId: '', accessToken: body.accessToken };
-          authRef.current = tunnelAuth;
+          authRef.current = nativeSessionEndRef.current.track(tunnelAuth);
         } else {
           tunnel = await createVncTunnel(auth.deviceId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
         }
@@ -739,7 +752,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           }
           const { sessionId, accessToken } = await res.json() as { sessionId: string; accessToken: string };
           webrtcAuth = { ...auth, sessionId, accessToken };
-          authRef.current = webrtcAuth;
+          authRef.current = nativeSessionEndRef.current.track(webrtcAuth);
         }
         const ok = await connectWebRTCRef.current(webrtcAuth);
         if (!ok) throw new Error('WebRTC connect failed');
@@ -1221,9 +1234,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // #11838: a new session, or this window reused for a new deep link.
     iceBudgetRef.current.newSession();
     userDisconnectRef.current = false;
+    // #12129: a hang-up still in flight belongs to the previous session.
+    sessionGenerationRef.current += 1;
     hangingUpRef.current = false;
     reconnectInFlightRef.current = false;
-    authRef.current = null;
+    authRef.current = nativeSessionEndRef.current.track(null);
     wheelAccRef.current = DEFAULT_WHEEL_ACCUMULATOR;
     setCursorStreamActive(false);
 
@@ -1259,12 +1274,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           onError('Invalid or expired VNC connect code');
           return;
         }
-        authRef.current = {
+        authRef.current = nativeSessionEndRef.current.track({
           sessionId: '',
           apiUrl: params.apiUrl,
           accessToken: exchange.accessToken,
           deviceId: exchange.deviceId,
-        };
+        });
         setRemoteOs('macos'); // VNC is macOS-only for now
         activeVncTunnelIdRef.current = exchange.tunnelId;
         const ok = await connectVncTransport({
@@ -1314,7 +1329,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           accessToken: exchange.accessToken,
           ...(params.deviceId ? { deviceId: params.deviceId } : {}),
         };
-        authRef.current = authParams;
+        authRef.current = nativeSessionEndRef.current.track(authParams);
 
         // Set hostname + OS from exchange response (available for all transports)
         if (exchange.hostname) {
@@ -1616,6 +1631,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             setActiveMonitor(msg.index ?? 0);
             // Carries the new geometry epoch (and reset epoch) for input.
             reliableInput.onControlMessage(msg);
+            // A resolution change holds pointer input until the new size
+            // is on screen (#11754).
+            geometryHold.onControlMessage(msg, performance.now());
             // Request a keyframe so the browser decoder gets a fresh IDR
             // with the new resolution's SPS/PPS immediately.
             ch.send(JSON.stringify({ type: 'request_keyframe' }));
@@ -2098,6 +2116,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (blockLocalInput.error) setInputNotice(blockLocalInput.error);
   }, [blockLocalInput.error]);
 
+  // #11754: true while the video still shows the size from before an announced
+  // resolution change. Pointer coordinates are mapped from the decoded size, so
+  // a move, press or scroll now would land in the wrong place on the remote.
+  const pointerHeldForGeometry = useCallback(() => {
+    if (transport !== 'webrtc') return false;
+    const videoEl = videoRef.current;
+    return !!videoEl && geometryHold.shouldHold(videoEl.videoWidth, videoEl.videoHeight, performance.now());
+  }, [transport, geometryHold]);
+
   const flushWebRTCMouseMove = useCallback(() => {
     webrtcMouseMoveRafRef.current = null;
     const pending = webrtcMouseMovePendingRef.current;
@@ -2116,8 +2143,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     webrtcMouseMovePendingRef.current = null;
     if (viewOnlyRef.current) return;
+    if (pointerHeldForGeometry()) return;
     reliableInput.send({ type: 'mouse_move', x: pending.x, y: pending.y });
-  }, [getInputSender, reliableInput]);
+  }, [getInputSender, reliableInput, pointerHeldForGeometry]);
 
   // Native wheel handler to enable preventDefault on non-passive listener
   useEffect(() => {
@@ -2141,6 +2169,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         stepsX = rx.steps;
       }
       if (r.steps === 0 && stepsX === 0) return;
+      if (pointerHeldForGeometry()) return;
       const { x, y } = scaleCoordsFn(e.clientX, e.clientY);
       sendInputFn(stepsX !== 0
         ? { type: 'mouse_scroll', x, y, delta: r.steps, deltaX: stepsX }
@@ -2149,7 +2178,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [transport, scaleCoordsFn, sendInputFn, reliableInput]);
+  }, [transport, scaleCoordsFn, sendInputFn, reliableInput, pointerHeldForGeometry]);
 
   // ── Input: mouse handlers ──────────────────────────────────────────
 
@@ -2178,6 +2207,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // are dropped (they used to arrive as a left click).
     const button = mouseButtonName(e.button, { extraButtons: reliableInput.extended().extraButtons });
     if (!button) return;
+    // #11754: a press mapped against the old size would land in the wrong
+    // place. Drop it (and the pending move); its release then finds no pressed
+    // button and is not sent either.
+    if (pointerHeldForGeometry()) {
+      webrtcMouseMovePendingRef.current = null;
+      return;
+    }
     // Flush any pending RAF mouse_move so the cursor is at the correct
     // position when the button press fires (consistent with mouseup).
     if (webrtcMouseMoveRafRef.current !== null) {
@@ -2193,7 +2229,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     lastPointerRef.current = { x, y };
     pressedButtonsRef.current.add(button);
     sendInputFn({ type: 'mouse_down', x, y, button });
-  }, [scaleCoordsFn, sendInputFn, reliableInput, focusKeyboardTarget]);
+  }, [scaleCoordsFn, sendInputFn, reliableInput, focusKeyboardTarget, pointerHeldForGeometry]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
     if (viewOnlyRef.current) return;
@@ -2918,30 +2954,34 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }, BLOCK_LOCAL_INPUT_REPLY_TIMEOUT_MS);
   }, [blockLocalInput.blocked, blockLocalInput.pending]);
 
-  // #11931: closing the window (title-bar close, Close Window, and the close
-  // that handleDisconnect ends with) is how a technician usually hangs up.
-  // Send End first so the session history records the hang-up and not a
-  // dropped connection. Tauri destroys the window once this handler resolves;
-  // the hang-up never rejects and gives up after END_DESKTOP_SESSION_TIMEOUT_MS,
-  // so the close is never blocked. Quitting the app does not come through here
-  // and still ends as `peer_disconnected`.
+  // #11931 / #12129: closing the window (title-bar close, Close Window, and
+  // the close that handleDisconnect ends with) is how a technician usually
+  // hangs up. Rust owns that close (src-tauri/src/session_end.rs): it holds
+  // it, sends End for the session armed through nativeSessionEndRef, then
+  // destroys the window, so this works even when the page is hung. Do NOT add
+  // an onCloseRequested listener here: with one registered, Tauri holds every
+  // close until the page destroys the window itself. Quitting the app does not
+  // come through the close and still ends as `peer_disconnected`.
+  //
+  // While Rust waits for End (at most END_DESKTOP_SESSION_TIMEOUT_MS), the
+  // session may already have ended on the API; stop reconnecting meanwhile.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    getCurrentWebviewWindow().onCloseRequested(async () => {
+    getCurrentWebviewWindow().listen('session-window-closing', () => {
       userDisconnectRef.current = true;
-      await hangUpRef.current(authRef.current);
+      stopReconnect();
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
     }).catch((err) => {
-      console.warn('Could not listen for the window closing; closing it will end the session as a dropped connection:', err);
+      console.warn('Could not listen for the window closing:', err);
     });
     return () => {
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [stopReconnect]);
 
   const handleDisconnect = useCallback(() => {
     if (hangingUpRef.current) return;
@@ -2983,31 +3023,33 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     activeVncTunnelIdRef.current = null;
     const auth = authRef.current;
 
-    // #11931: tell the API the technician hung up BEFORE closing the peer.
-    // Otherwise the agent reports the peer drop and the row ends as
-    // `peer_disconnected`, the same as a network drop. Bounded and never
-    // rejects (lib/sessionHangUp.ts); a VNC tunnel has no session to end.
-    void hangUpRef.current(auth).then(() => {
-      // Each close is guarded so one that throws cannot stop the rest, or
-      // leave the window open with hangingUpRef set and no way to retry.
-      const closeQuietly = (what: string, close: () => void) => {
-        try {
-          close();
-        } catch (err) {
-          console.error(`Failed to close the ${what} on disconnect:`, err);
-        }
-      };
-      try {
-        if (wsCleanup) closeQuietly('WebSocket session', wsCleanup);
-        if (rtcSession) closeQuietly('WebRTC session', () => rtcSession.close());
-        // Close VNC session and tunnel
-        if (vncSession) closeQuietly('VNC session', () => vncSession.close());
-        if (vncTunnelId && auth) {
-          void closeTunnel(vncTunnelId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
-        }
-      } finally {
-        onDisconnect();
-      }
+    // #11931: tell the API the technician hung up BEFORE closing the peer, so
+    // the row ends as `operator_ended`, not `peer_disconnected`. A VNC tunnel
+    // has no session to end. #12129: if this window is reused for a newer
+    // session while End is in flight, the late continuation still closes this
+    // session's transports but leaves the window alone.
+    const generation = sessionGenerationRef.current;
+    const closers: Array<readonly [string, () => void]> = [];
+    if (wsCleanup) closers.push(['WebSocket session', wsCleanup]);
+    if (rtcSession) closers.push(['WebRTC session', () => rtcSession.close()]);
+    if (vncSession) closers.push(['VNC session', () => vncSession.close()]);
+    if (vncTunnelId && auth) {
+      closers.push(['VNC tunnel', () => {
+        void closeTunnel(vncTunnelId, { apiUrl: auth.apiUrl, accessToken: auth.accessToken });
+      }]);
+    }
+    void hangUpThenClose({
+      // End sent here; tell Rust not to send it again on the close that
+      // onDisconnect ends with. Disarmed even when End failed: the closers
+      // tear the peer down before that close, so a second End could not
+      // change the record and would only delay the close by up to 2 s.
+      hangUp: async () => {
+        await hangUpRef.current(auth);
+        await nativeSessionEndRef.current.disarm(auth?.sessionId);
+      },
+      closers,
+      isCurrent: () => sessionGenerationRef.current === generation,
+      onDone: onDisconnect,
     });
   }, [onDisconnect, releaseAllKeys, stopReconnect]);
 

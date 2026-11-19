@@ -9,7 +9,7 @@ import { toCustomerLines, sanitizeQuoteBlocksForRead } from './quoteService';
 import { loadContractPdfInputs } from './contractTemplateRender';
 import { safeContentDispositionFilename } from '../utils/httpHeaders';
 import { buildSellerSnapshot } from './sellerSnapshot';
-import { resolveThemeId, resolvePageSize } from './documentThemes';
+import { resolveThemeId, resolvePageSize, resolvePartnerPageSize } from './documentThemes';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { resolveDocumentFooter } from './documentFooter';
 import { resolveDocumentBrand } from './partnerDocumentBrand';
@@ -84,7 +84,7 @@ export async function renderCustomerQuotePdf(quote: QuoteRow): Promise<Buffer> {
     partnerName: partner?.name ?? 'Proposal', ...resolveDocumentBrand(brand, partner?.settings),
     footer: resolveDocumentFooter({ documentTerms: quote.terms, partnerFooter: partner?.invoiceFooter ?? null, brandingFooter: brand?.footerText ?? null }), currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
     theme: resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme),
-    pageSize: resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize),
+    pageSize: resolvePageSize(presentationSnap?.pageSize ?? resolvePartnerPageSize(partner)),
     // Send-time locale snapshot → partner language → 'en' (#3777).
     locale: quote.documentLocale ?? resolvePartnerDocumentLocale(partner),
   };

@@ -68,7 +68,9 @@
       "check": "Überprüfen",
       "lastChecked": "Zuletzt überprüft",
       "noComplianceResultsYetAssignThisPolicy": "Noch keine Compliance-Ergebnisse. Weisen Sie diese Richtlinie Geräten zu und fügen Sie Compliance-Regeln hinzu. Der Status erscheint nach der nächsten Auswertung.",
-      "summary": "Zeigt das Erste {{shown}} von {{total}} Ergebnisse – die folgende Zusammenfassung spiegelt nur diese Seite wider."
+      "summary": "Zeigt das Erste {{shown}} von {{total}} Ergebnisse – die folgende Zusammenfassung spiegelt nur diese Seite wider.",
+      "notCollectedProbeLimit": "Nicht erfasst (Abfragelimit)",
+      "notCollectedProbeLimitHint": "Die Compliance-Abfrageliste dieser Organisation ist voll, daher wird mindestens eine Prüfung hier nicht erfasst. Sie wird erst ausgewertet, gemeldet oder behoben, wenn die Liste wieder Platz hat."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Wählen Sie eine Organisation für diese Richtlinie aus.",
@@ -796,8 +798,10 @@
         "notifyOnEnd": "Am Ende benachrichtigen",
         "sendNotificationWhenWindowCloses": "Benachrichtigung senden, wenn das Fenster geschlossen wird.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Wöchentliche Fenster öffnen jeden Sonntag zur Startzeit in der ausgewählten Zeitzone.",
-        "monthlyOpensOnTheFirst": "Monatliche Fenster öffnen am 1. jedes Monats zur Startzeit in der ausgewählten Zeitzone."
+        "dayOfWeek": "Wochentag",
+        "dayOfWeekHint": "Der Tag, an dem jedes wöchentliche Fenster öffnet, in der ausgewählten Zeitzone.",
+        "dayOfMonth": "Tag des Monats",
+        "dayOfMonthHint": "Der Tag, an dem jedes monatliche Fenster öffnet, in der ausgewählten Zeitzone. Hat ein Monat diesen Tag nicht, öffnet das Fenster am letzten Tag des Monats."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Agent-Erfassung",
@@ -1209,6 +1213,7 @@
           "verified": "Nur wenn als bereit bestätigt",
           "verifiedHelp": "Aufwecken nur für Geräte anzeigen, die „bereit“ melden oder durch ein früheres Aufwecken belegt online gekommen sind. Für andere Geräte kann ein Test-Aufwecken gesendet werden."
         },
+        "verifiedWarning": "In diesem Modus bleibt Aufwecken auf einem Gerät ausgeblendet, bis ein Aufwecken dort belegt ist (ein früheres Aufwecken, nach dem das Gerät online kam) oder das Gerät „bereit“ meldet. Anfangs ist die Schaltfläche auf den meisten Geräten ausgeblendet.",
         "aboutTitle": "Über diese Einstellung",
         "aboutBody": "Diese Richtlinie legt nur fest, wann die Schaltfläche „Aufwecken“ angezeigt wird. Breeze liest die Wake-on-LAN-Bereitschaft jedes Geräts, ändert aber keine BIOS-, Netzwerkadapter- oder Windows-Einstellungen.",
         "panel": {
@@ -1258,6 +1263,8 @@
             "fast_startup_unknown": "Schnellstart-Status unbekannt",
             "nic_magic_packet_disabled": "Magic-Packet-Aufwecken des Adapters ist aus",
             "nic_magic_packet_unknown": "Magic-Packet-Status des Adapters unbekannt",
+            "nic_unreadable": "Ein kabelgebundener Adapter ist vorhanden, konnte aber nicht gelesen werden",
+            "nic_cmdlets_unavailable": "Netzwerkadapter-Einstellungen können auf diesem Gerät nicht gelesen werden",
             "nic_eee_enabled": "Energy-Efficient Ethernet ist aktiviert",
             "firmware_adapter_unavailable": "Firmware-Einstellungen können noch nicht gelesen werden"
           },

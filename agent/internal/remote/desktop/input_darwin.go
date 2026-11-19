@@ -470,6 +470,22 @@ func NewInputHandler(desktopContext string) InputHandler {
 	return h
 }
 
+// RefreshScreenGeometry re-reads the backing scale factor after a display
+// mode change (#11754): a scaled-resolution change alters the pixel-to-point
+// ratio that scaleXY divides by. SafeInput runs it on the input worker, the
+// goroutine every scaleXY call runs on.
+func (h *DarwinInputHandler) RefreshScreenGeometry() {
+	sf := float64(C.getMainDisplayScaleFactor())
+	if sf < 1.0 {
+		sf = 1.0
+	}
+	if sf != h.scaleFactor {
+		slog.Info("Input scale factor changed with the display mode",
+			"from", h.scaleFactor, "to", sf)
+	}
+	h.scaleFactor = sf
+}
+
 func (h *DarwinInputHandler) SetDisplayOffset(x, y int) {
 	// macOS CGEvents use global display coordinates; offset handled by capturer.
 }

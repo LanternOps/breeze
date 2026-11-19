@@ -189,6 +189,33 @@ describe('ConnectDesktopButton — disabled prop gating (issue #2013)', () => {
     });
   }
 
+  // #11753: the compact menuitem only sets aria-disabled while a connect is in
+  // flight, so a second click still reached handleClick and started a second
+  // session (a second breeze:// link → a second viewer window).
+  for (const variant of ['compact', 'full', 'iconOnly'] as const) {
+    it(`starts one connect for a double click while the first is in flight (${variant} variant)`, async () => {
+      // The device re-fetch never settles, so the first connect stays in flight.
+      fetchMock.mockReturnValue(new Promise<Response>(() => {}));
+      render(
+        <ConnectDesktopButton
+          deviceId="dev-dbl"
+          {...(variant === 'compact' ? { compact: true } : {})}
+          {...(variant === 'iconOnly' ? { iconOnly: true } : {})}
+        />,
+      );
+      const target =
+        variant === 'compact'
+          ? screen.getByRole('menuitem')
+          : screen.getByRole('button', { name: /connect desktop/i });
+
+      fireEvent.click(target);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      fireEvent.click(target);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  }
+
   it('stays enabled when not disabled', () => {
     render(<ConnectDesktopButton deviceId="dev-on" disabledTitle="Device is offline" />);
     expect(screen.getByRole('button', { name: /connect desktop/i })).not.toBeDisabled();

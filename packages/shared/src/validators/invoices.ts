@@ -153,7 +153,9 @@ export const partnerBillingSettingsSchema = z.object({
   // to quote PDFs/HTML. Partner-owned — see documentTheme/documentPageSize on
   // the `partners` schema for the full justification.
   documentTheme: z.enum(['classic', 'condensed']).optional(),
-  documentPageSize: z.enum(['letter', 'a4']).optional(),
+  // #12097: null = no choice; documents print on the partner's region default
+  // (Letter for the US and Canada, A4 elsewhere — documents/pageSize.ts).
+  documentPageSize: z.enum(['letter', 'a4']).nullable().optional(),
   // Seller "From" contact profile (snapshotted onto each document at issue).
   billingCompanyName: z.string().max(255).nullable().optional(),
   billingPhone: z.string().max(40).nullable().optional(),

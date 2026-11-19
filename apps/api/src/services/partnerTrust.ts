@@ -4,7 +4,7 @@ import type { PartnerTrustState } from '../db/schema/orgs';
 import { runAfterDbContextExit } from '../db';
 import { ANONYMOUS_ACTOR_ID } from './auditEvents';
 import { createAuditLog } from './auditService';
-import { partnerForDevice, partnerForOrg, readTrust, writeTrust } from './partnerTrust.repo';
+import { partnerForDevice, partnerForOrg, readTrust, writeTrust, type WriteTrustExtra } from './partnerTrust.repo';
 import { getRedis } from './redis';
 import { sendTrustApprovedEmail } from './partnerTrustPartnerMail';
 import { tryAutoPromote } from './partnerTrustPromotion';
@@ -147,6 +147,8 @@ export const GATED_COMMAND_TYPES = [
   'oem_update_run',
   // Vendor updates (#11065): operator-directed; runs the vendor binary as SYSTEM to hand its schedule back.
   'oem_update_release',
+  // Read-only vendor observation (canary only): runs vendor reads as SYSTEM.
+  'oem_observe',
   'pam_apply_v2',
   'pam_reconcile_v2',
   // #8928: carries the technician's deny reason to the end user's screen.
@@ -437,6 +439,10 @@ export interface SetTrustStateOptions {
    * second auto-promote) is detected instead of silently overwritten.
    */
   expectedFrom?: PartnerTrustState;
+  /** See WriteTrustExtra.expectedTrustChangedAt (partnerTrust.repo.ts). */
+  expectedTrustChangedAt?: Date;
+  /** See WriteTrustExtra.withinWrite (partnerTrust.repo.ts). */
+  withinWrite?: WriteTrustExtra['withinWrite'];
 }
 
 /**
@@ -454,9 +460,14 @@ export async function setTrustState(
   options: SetTrustStateOptions = {},
 ): Promise<boolean> {
   const before = await readTrust(partnerId);
-  const affected = options.expectedFrom
-    ? await writeTrust(partnerId, next, reason, actorUserId, options.expectedFrom)
-    : await writeTrust(partnerId, next, reason, actorUserId);
+  const extra: WriteTrustExtra | undefined = options.expectedTrustChangedAt || options.withinWrite
+    ? { expectedTrustChangedAt: options.expectedTrustChangedAt, withinWrite: options.withinWrite }
+    : undefined;
+  const affected = extra
+    ? await writeTrust(partnerId, next, reason, actorUserId, options.expectedFrom, extra)
+    : options.expectedFrom
+      ? await writeTrust(partnerId, next, reason, actorUserId, options.expectedFrom)
+      : await writeTrust(partnerId, next, reason, actorUserId);
   if (affected === 0) return false;
   try {
     await getRedis()?.publish(

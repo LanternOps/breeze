@@ -262,6 +262,21 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
   });
 
   registerEventSubscriber({
+    id: 'policy-not-assessed-notice',
+    // Strix (PR #12184). A compliance rule the per-org probe cap left
+    // uncollected is not assessed: no violation, so no alert. This tells the
+    // rule's owner (partner staff for a partner-wide rule, the org for its
+    // own), once per rule per org per week. Lazy for the worker-closure reason
+    // above: the handler reaches the permission resolver and notifications.
+    eventTypes: ['policy.not_assessed'],
+    handler: async (event: BreezeEvent) => {
+      const { handlePolicyNotAssessedEvent } = await import('./policyNotAssessedNotice');
+      return handlePolicyNotAssessedEvent(event);
+    },
+    retry: { attempts: 3, backoffMs: 30_000 },
+  });
+
+  registerEventSubscriber({
     id: 'dns-threat-alerts',
     eventTypes: ['dns.threat.blocked'],
     handler: handleDnsThreatBlockedEvent,

@@ -173,7 +173,7 @@ export async function gatewayCandidate(input: { offering: Offering; conn: Partne
   const keyUsable = credential !== null;
 
   const fingerprint = endpointFingerprint({ kind: conn.kind, baseUrl: conn.baseUrl, providerConfig: conn.providerConfig ?? null });
-  const verified = verifiedGatewayCapabilities(offering.capabilities, fingerprint).capabilities;
+  const verified = verifiedGatewayCapabilities(offering.capabilities, fingerprint, { offeringId: offering.id }).capabilities;
   const capabilities: DerivedCapabilities = adapterCarriesThinking(conn.kind) || verified.thinkingMode === 'unknown'
     ? verified
     : { ...verified, thinkingMode: 'none', effortLevels: [] };

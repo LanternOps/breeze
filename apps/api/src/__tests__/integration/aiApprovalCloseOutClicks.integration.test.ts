@@ -94,6 +94,19 @@ async function readRequest(requestId: string) {
   return row;
 }
 
+/** Who decided and when, on both rows: what the audit trail reads (#12136). */
+async function readDecision(executionId: string, requestId: string) {
+  const [exec] = await getTestDb()
+    .select({ approvedBy: aiToolExecutions.approvedBy, approvedAt: aiToolExecutions.approvedAt })
+    .from(aiToolExecutions)
+    .where(eq(aiToolExecutions.id, executionId));
+  const [req] = await getTestDb()
+    .select({ userId: approvalRequests.userId, decidedAt: approvalRequests.decidedAt })
+    .from(approvalRequests)
+    .where(eq(approvalRequests.id, requestId));
+  return { exec: exec!, req: req! };
+}
+
 async function stopAuditRows(executionId: string) {
   return getTestDb()
     .select({ orgId: auditLogs.orgId, resourceId: auditLogs.resourceId, details: auditLogs.details })
@@ -306,6 +319,7 @@ describe('the close-out takes locks in the mobile decide order (#12084 review it
     expect(closeOutFailures(warn)).toEqual([]);
     expect(await asUser(() => getDecidedExecutionOutcome(executionId, sessionId))).toBe('expired');
     expect((await readRequest(requestId))!.status).toBe('expired');
+    expect((await readDecision(executionId, requestId)).req.decidedAt).toBeInstanceOf(Date);
   });
 });
 
@@ -314,6 +328,9 @@ describe('a stop that beats an approval is recorded (#12084 review item 3)', () 
     const executionId = await seedExecution();
     const requestId = await seedMobileRequest(executionId);
     expect((await mobileDecide(requestId)).httpStatus).toBe(200);
+    const decidedBefore = await readDecision(executionId, requestId);
+    expect(decidedBefore.req.userId).toBe(userId);
+    expect(decidedBefore.req.decidedAt).toBeInstanceOf(Date);
 
     expect(await waitForApproval(executionId, 0, new AbortController().signal, {})).toBe(false);
 
@@ -321,6 +338,8 @@ describe('a stop that beats an approval is recorded (#12084 review item 3)', () 
       status: 'denied',
       refusalReason: AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE,
     });
+    // #12136: the rewrite to rejected/denied keeps who approved and when.
+    expect(await readDecision(executionId, requestId)).toEqual(decidedBefore);
     const audits = await stopAuditRows(executionId);
     expect(audits).toHaveLength(1);
     expect(audits[0]!.details).toMatchObject({ executionId, approvedBy: userId, approvalRequestIds: [requestId] });
@@ -336,6 +355,8 @@ describe('a stop that beats an approval is recorded (#12084 review item 3)', () 
     expect(await waitForApproval(executionId, 60_000, controller.signal, {})).toBe(false);
 
     expect(await readRequest(requestId)).toEqual({ status: 'expired', refusalReason: null });
+    // #12136: an expired row carries the close-out time, not null.
+    expect((await readDecision(executionId, requestId)).req.decidedAt).toBeInstanceOf(Date);
     // A mobile Approve now loses its CAS instead of being told approved.
     expect((await mobileDecide(requestId)).httpStatus).toBe(409);
   });
@@ -389,6 +410,10 @@ describe('a stop that beats an approval is recorded (#12084 review item 3)', () 
       refusalReason: AI_APPROVAL_STOPPED_AFTER_APPROVAL_MESSAGE,
     });
     expect(await stopAuditRows(executionId)).toHaveLength(1);
+    // #12136: the chat approver and time survive the rewrite on the execution row.
+    const { exec } = await readDecision(executionId, requestId);
+    expect(exec.approvedBy).toBe(userId);
+    expect(exec.approvedAt).toBeInstanceOf(Date);
   });
 
   it('a stop with no approval writes no stop audit row', async () => {

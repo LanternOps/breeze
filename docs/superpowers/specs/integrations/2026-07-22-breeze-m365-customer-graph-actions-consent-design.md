@@ -198,6 +198,38 @@ Reconciliation is **exact** — a granted role beyond the two required is report
 a missing role blocks `active`. Health is surfaced on the management view and drives the
 connection lifecycle state (§10), reusing the profile-agnostic `deriveGrantHealth`.
 
+**Amendment (2026-11-18, #12085): hybrid verification.** The inventory read
+(`/servicePrincipals/{id}/appRoleAssignments`, then each resource service principal's
+`appRoles`) needs `Application.Read.All`, which the actions manifest deliberately does not
+carry, so in practice Graph denies it and every connection stayed `degraded` with
+`grant_reconciliation_unavailable`. Retest now runs in one of two modes, reported on the wire
+(`grantReconciliationMode`), stored on the row (`m365_connections.grant_reconciliation_mode`)
+and shown on the card:
+
+- **`exact`** — the inventory read succeeds (the tenant granted `Application.Read.All`).
+  Reconciliation is unchanged: `(resourceApplicationId, appRoleId)` keys across every
+  resource, extra grants are drift.
+- **`graph_token_only`** — the inventory read is answered with a plain **403** (an
+  authorization denial; not the license 403). The executor then reads the `roles` claim of the
+  app-only token it acquired itself moments earlier (tenant-specific endpoint, certificate
+  assertion, TLS) and reconciles those Graph role values against the manifest by value.
+  Required roles carry the manifest's Graph appRoleIds; any other Graph role is drift with
+  `appRoleId: null` and its value (resolving it would need the Graph service principal read,
+  which needs the same missing permission). The payload is decoded without a signature check,
+  and only after `aud` is Graph, `tid` is the tenant, `appid`/`azp` is our client, `exp` is in
+  the future, `idtyp` (if present) is `app` and no `scp` is present.
+- **Fail closed.** A 401, 404, 429, 5xx, timeout, oversized or malformed inventory response,
+  a denied resource lookup, or any token decode/claim failure stays
+  `grant_reconciliation_unavailable` and keeps writes blocked. A transient error is never
+  read as "denied".
+
+**Limit of `graph_token_only`.** A Graph token lists only Microsoft Graph app roles. An app
+role granted to the actions app on another resource (Exchange Online, SharePoint, …) is not
+detected, so a connection can be `active` while holding such drift. The card says so ("Graph
+permissions verified. Permissions on other Microsoft resources were not checked; grant
+Application.Read.All for a full check."), and granting `Application.Read.All` returns the
+connection to `exact` on the next Retest.
+
 ## 10. Lifecycle, config, and boot validation
 
 - Connection lifecycle reuses the read state machine (pending → verifying → active →

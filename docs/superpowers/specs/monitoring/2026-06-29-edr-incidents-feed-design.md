@@ -11,7 +11,7 @@ table, which is populated solely by manual create, the AI brain, and audit-chain
 Meanwhile Huntress incidents and SentinelOne (S1) threats sync into their **own** tables
 (`huntress_incidents`, `s1_threats`) and are shown only under the integration / EDR pages. The two
 systems were never connected, so the Incidents page looks empty even when EDR integrations are
-syncing healthily (observed on the OliveTech / DO-US tenant).
+syncing healthily (observed on our own tenant on DO-US).
 
 Pillar 4a (PR #1946) shipped a manual **"Promote to Incident"** button on the EDR surfaces, but it
 creates an `incidents` row with **no trace of its origin** — there is no link from the EDR record to

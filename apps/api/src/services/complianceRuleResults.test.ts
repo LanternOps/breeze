@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { withoutObservedRegistryValues } from './complianceRuleResults';
+import { withoutObservedStateValues } from './complianceRuleResults';
 
-describe('withoutObservedRegistryValues (#11976)', () => {
+describe('withoutObservedStateValues (#11976)', () => {
   it.each([
     ['null', null],
     ['undefined', undefined],
@@ -10,10 +10,10 @@ describe('withoutObservedRegistryValues (#11976)', () => {
     ['no ruleResults', { passed: true }],
     ['non-array ruleResults', { ruleResults: 'x' }],
   ])('returns %s unchanged', (_label, details) => {
-    expect(withoutObservedRegistryValues(details)).toBe(details);
+    expect(withoutObservedStateValues(details)).toBe(details);
   });
 
-  it('strips actualValue and valueType from registry_check results only, without mutating the input', () => {
+  it('strips actualValue and valueType from registry_check and config_check results only, without mutating the input', () => {
     const config = { ruleType: 'config_check', passed: false, message: 'm', data: { expectedValue: 'no', actualValue: 'yes' } };
     const noData = { ruleType: 'registry_check', passed: false, message: 'not found' };
     const nullData = { ruleType: 'registry_check', passed: false, message: 'm', data: null };
@@ -28,11 +28,12 @@ describe('withoutObservedRegistryValues (#11976)', () => {
     };
     const snapshot = JSON.parse(JSON.stringify(details));
 
-    const out = withoutObservedRegistryValues(details);
+    const out = withoutObservedStateValues(details);
 
     expect(out.ruleResults[0]).toEqual({ ruleType: 'registry_check', passed: false, message: 'mismatch', data: { expectedValue: '1' } });
     expect(out.ruleResults[1]).toEqual({ ruleType: 'registry_check', passed: false, message: 'mismatch', data: {} });
-    expect(out.ruleResults[2]).toBe(config);
+    // #12130: config_check results follow the registry model too.
+    expect(out.ruleResults[2]).toEqual({ ruleType: 'config_check', passed: false, message: 'm', data: { expectedValue: 'no' } });
     expect(out.ruleResults[3]).toBe(noData);
     expect(out.ruleResults[4]).toBe(nullData);
     expect(out.ruleResults[5]).toBe(outcomeOnly);

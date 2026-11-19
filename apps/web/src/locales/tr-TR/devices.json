@@ -880,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "Uyumluluk sonucu bildirilmedi. Bu cihaza uyumluluk kurallarını içeren bir Yapılandırma Politikası atayın veya bir sonraki değerlendirmeyi bekleyin.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Bir yapılandırma ilkesi atayın"
+    "assignPolicy": "Bir yapılandırma ilkesi atayın",
+    "notCollectedProbeLimit": "Toplanmadı (yoklama sınırı)",
+    "notCollectedProbeLimitHint": "Bu kuruluşun uyumluluk yoklama listesi dolu, bu nedenle buradaki en az bir denetim toplanmıyor. Listede yer açılana kadar değerlendirilmez, uyarı oluşturmaz ve düzeltilmez."
   },
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} {{orgName}} kuruluşuna taşındı",
@@ -5014,7 +5016,8 @@
       "noOpenCategories": "Bu seçimle hiçbir şey çalıştırılamaz. Burada yalnızca BIOS ve donanım yazılımı kullanılabilir: Bittiğinde yeniden başlat seçeneğini seçin.",
       "decommissioned": "Bu cihaz hizmet dışı bırakılmış, bu yüzden ona hiçbir şey gönderilemez.",
       "cancelledAtClaim": "Çalıştırma cihaza ulaşmadan iptal edildi. Yeniden deneyin."
-    }
+    },
+    "observeQueued": "{{hostname}} üzerinde salt okunur üretici denetimi başlatıldı. Hiçbir şey yüklenmez."
   },
   "vendorUpdates": {
     "title": "Üretici güncellemeleri",
@@ -5099,7 +5102,16 @@
       "byUnknown": "Bilinmiyor",
       "range": "{{from}}-{{to}} / {{total}}",
       "previousPage": "Önceki",
-      "nextPage": "Sonraki"
+      "nextPage": "Sonraki",
+      "observed": "Gözlemlendi",
+      "observedTools": "Bulunan araçlar: {{tools}}",
+      "observedNoTools": "Üretici aracı bulunamadı",
+      "observedVerdict": {
+        "observed": "{{vendor}}: salt okunur denetim tamamlandı",
+        "observedWithErrors": "{{vendor}}: salt okunur denetim tamamlandı, bazı okumalar başarısız oldu",
+        "platformUnsupported": "{{vendor}}: bu model üreticinin kurumsal araçları tarafından desteklenmiyor",
+        "invalid": "{{vendor}}: denetim sonucu okunamadı"
+      }
     }
   },
   "reinstalledBadge": {

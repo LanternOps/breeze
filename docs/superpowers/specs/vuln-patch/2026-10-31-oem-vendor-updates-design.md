@@ -339,7 +339,7 @@ Register as a multi-wave feature once the plan is written. Per Todd's standing r
 |---|---|---|
 | W1 | Lane interface, `oem_update_run`, Authenticode check, firmware critical section, Dell lane, status table, command-result handling, not-returned alert, kill switches, Run Now route and button, device section | Dell lab gate on a real Dell laptop and desktop with BitLocker on |
 | W2 | `oem_updates` feature, policy tab, scheduler worker, catch-up, schedule takeover and release, §4.6 exclusions, overnight reboot mode | Scheduled overnight run on a lab device, including a missed night and a policy removal |
-| W3 | Fleet view, overdue alerts, docs and release notes | Prod canary on OliveTech Dells, then the flag turns on more widely |
+| W3 | Fleet view, overdue alerts, docs and release notes | Prod canary on our own tenant's Dells, then the flag turns on more widely |
 | W4 | Surface lane | Surface lab gate |
 | W5 | HP lane | HP lab gate |
 | W6 | Lenovo spike, then lane | Lenovo lab gate |

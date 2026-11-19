@@ -1,5 +1,5 @@
 import { X509Certificate } from 'node:crypto';
-import { ConfidentialClientApplication } from '@azure/msal-node';
+import { ConfidentialClientApplication, type Configuration } from '@azure/msal-node';
 import { getM365PermissionProfile } from '@breeze/shared/m365';
 import {
   DelegatedTokenCache,
@@ -71,7 +71,7 @@ export interface ConfidentialClientPort {
     account: MsalAccountLike; scopes: string[]; authority: string; forceRefresh?: boolean;
   }): Promise<MsalAuthResultLike | null>;
   acquireTokenByCode(request: {
-    code: string; redirectUri: string; codeVerifier: string; scopes: string[]; authority: string;
+    code: string; redirectUri: string; codeVerifier: string; nonce: string; scopes: string[]; authority: string;
   }): Promise<MsalAuthResultLike | null>;
   getTokenCache(): {
     deserialize(blob: string): void;   // hydrate from the durable row
@@ -106,13 +106,20 @@ export interface AcquireInput {
   consentGeneration: number;
 }
 
-interface CertificateCredential {
+export interface CertificateCredential {
   certificatePem: string;
   privateKeyPem: string;
 }
 
-function defaultFactory(credential: CertificateCredential, clientId: string): ConfidentialClientFactory {
-  return ({ authority }) => new ConfidentialClientApplication({
+/** The production MSAL configuration. Exported so the real-MSAL contract
+ *  test (delegatedClient.msal.test.ts) builds its CCA from exactly this and
+ *  only adds a fake network client. */
+export function msalConfidentialClientConfiguration(
+  credential: CertificateCredential,
+  clientId: string,
+  authority: string,
+): Configuration {
+  return {
     auth: {
       clientId,
       authority,
@@ -122,7 +129,17 @@ function defaultFactory(credential: CertificateCredential, clientId: string): Co
         privateKey: credential.privateKeyPem,
       },
     },
-  }) as unknown as ConfidentialClientPort;
+  };
+}
+
+function defaultFactory(credential: CertificateCredential, clientId: string): ConfidentialClientFactory {
+  // The port is deliberately narrower than MSAL's types (MsalAccountLike is
+  // not an AccountInfo), so this cast hides MSAL drift from tsc. The guard is
+  // delegatedClient.msal.test.ts, which drives the REAL MSAL through this
+  // configuration (#9978).
+  return ({ authority }) => new ConfidentialClientApplication(
+    msalConfidentialClientConfiguration(credential, clientId, authority),
+  ) as unknown as ConfidentialClientPort;
 }
 
 /**
@@ -156,7 +173,7 @@ export function createDelegatedCredentialBroker(
 ): {
   acquireForConnection(input: AcquireInput): Promise<DelegatedAcquisition>;
   redeemConsentCode(input: {
-    authorizationCode: string; codeVerifier: string; redirectUri: string;
+    authorizationCode: string; codeVerifier: string; redirectUri: string; nonce: string;
   }): Promise<ConsentRedemption>;
 } {
   async function fetchCertificate(): Promise<CertificateCredential> {
@@ -235,7 +252,7 @@ export function createDelegatedCredentialBroker(
   }
 
   async function redeemConsentCode(input: {
-    authorizationCode: string; codeVerifier: string; redirectUri: string;
+    authorizationCode: string; codeVerifier: string; redirectUri: string; nonce: string;
   }): Promise<ConsentRedemption> {
     // Fresh CCA with NO deserialize call — MSAL's default in-memory cache IS
     // the §4.2 throwaway. The durable store is not touched here at all: the
@@ -252,6 +269,12 @@ export function createDelegatedCredentialBroker(
           code: input.authorizationCode,
           redirectUri: input.redirectUri,
           codeVerifier: input.codeVerifier,
+          // msal-node >= 6.0.1 (msal-common 16.14.1) rejects an ID token that
+          // carries a nonce when the request names none — and our authorize
+          // URL always sends one. Passing it binds the response to this
+          // consent session (nonce_mismatch otherwise); verifyIdentity still
+          // re-checks it on the signature-validated token (#9978).
+          nonce: input.nonce,
           scopes: DELEGATED_REDEMPTION_SCOPES,
           authority: 'https://login.microsoftonline.com/common',
         });

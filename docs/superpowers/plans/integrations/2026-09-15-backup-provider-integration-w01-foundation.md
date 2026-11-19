@@ -2299,7 +2299,7 @@ import { randomUUID } from 'node:crypto';
 import { decryptProviderCredentials, encryptProviderCredentials } from './credentials';
 
 describe('backup provider credential crypto', () => {
-  const creds = { partnerName: 'OliveTech', username: 'api@olivetech.example', password: 'sup3r-s3cret' };
+  const creds = { partnerName: 'Fabrikam MSP', username: 'api@fabrikam.example', password: 'sup3r-s3cret' };
 
   it('round-trips a credential blob through the SAME row id', () => {
     const rowId = randomUUID();
@@ -3272,7 +3272,7 @@ EOF
     "result": {
       "Id": 4242,
       "PartnerId": 1000,
-      "PartnerName": "OliveTech",
+      "PartnerName": "Fabrikam MSP",
       "Flags": ["Login"]
     }
   }
@@ -3308,7 +3308,7 @@ EOF
   "visa": "visa-2",
   "result": {
     "result": [
-      { "Id": 1000, "Name": "OliveTech", "Level": "Distributor", "ParentId": 0, "ExternalCode": "", "State": "InProduction" },
+      { "Id": 1000, "Name": "Fabrikam MSP", "Level": "Distributor", "ParentId": 0, "ExternalCode": "", "State": "InProduction" },
       { "Id": 2001, "Name": "Acme Corp", "Level": "EndCustomer", "ParentId": 1000, "ExternalCode": "3f1d9b2a-0c44-4a1e-9d31-2b6a5f0c7e88", "State": "InProduction" },
       { "Id": 2002, "Name": "Beta Industries", "Level": "EndCustomer", "ParentId": 1000, "ExternalCode": null, "State": "InProduction" },
       { "Id": 2003, "Name": "Gamma Holdings", "Level": "Reseller", "ParentId": 1000, "ExternalCode": "GAMMA-01", "State": "InTrial" }
@@ -3387,7 +3387,7 @@ import statisticsAll from './__fixtures__/statistics-page-all-statuses.json';
 import statisticsM365 from './__fixtures__/statistics-page-m365.json';
 import statisticsMissing from './__fixtures__/statistics-page-missing-status.json';
 
-const CREDS = { partnerName: 'OliveTech', username: 'api@olivetech.example', password: 'sup3r-s3cret' };
+const CREDS = { partnerName: 'Fabrikam MSP', username: 'api@fabrikam.example', password: 'sup3r-s3cret' };
 const BASE_URL = 'https://api.backup.management/jsonapi';
 
 /** A fetch stub that replays the given bodies in order and records every request. */
@@ -3439,7 +3439,7 @@ describe('CoveJsonRpcClient.login', () => {
     const { client, calls } = makeClient([loginSuccess]);
     const result = await client.login(CREDS);
 
-    expect(result).toEqual({ visa: 'visa-after-login', partnerId: '1000', partnerName: 'OliveTech' });
+    expect(result).toEqual({ visa: 'visa-after-login', partnerId: '1000', partnerName: 'Fabrikam MSP' });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(BASE_URL);
     expect(calls[0]!.body).toMatchObject({
@@ -3469,7 +3469,7 @@ describe('CoveJsonRpcClient.login', () => {
 
   it('falls back to the supplied partner name when the vendor omits PartnerName', async () => {
     const { client } = makeClient([{ visa: 'v', result: { result: { PartnerId: 1000 } } }]);
-    await expect(client.login(CREDS)).resolves.toEqual({ visa: 'v', partnerId: '1000', partnerName: 'OliveTech' });
+    await expect(client.login(CREDS)).resolves.toEqual({ visa: 'v', partnerId: '1000', partnerName: 'Fabrikam MSP' });
   });
 
   it('raises malformed_response when the envelope carries neither result nor error', async () => {
@@ -4239,7 +4239,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { coveAdapter, coveCredentialsSchema, __setCoveClientFactoryForTests } from './adapter';
 import { ProviderRequestError } from '../types';
 
-const CREDS = { partnerName: 'OliveTech', username: 'api@olivetech.example', password: 'sup3r-s3cret' };
+const CREDS = { partnerName: 'Fabrikam MSP', username: 'api@fabrikam.example', password: 'sup3r-s3cret' };
 const BASE_URL = 'https://api.backup.management/jsonapi';
 
 function stubClient(overrides: Partial<{
@@ -4248,7 +4248,7 @@ function stubClient(overrides: Partial<{
   enumerateAccountStatisticsAll: (rootId: string) => Promise<unknown[]>;
 }> = {}) {
   const client = {
-    login: overrides.login ?? vi.fn(async () => ({ visa: 'v', partnerId: '1000', partnerName: 'OliveTech' })),
+    login: overrides.login ?? vi.fn(async () => ({ visa: 'v', partnerId: '1000', partnerName: 'Fabrikam MSP' })),
     enumeratePartners: overrides.enumeratePartners ?? vi.fn(async () => []),
     enumerateAccountStatisticsAll: overrides.enumerateAccountStatisticsAll ?? vi.fn(async () => []),
   };
@@ -4278,8 +4278,8 @@ describe('coveCredentialsSchema', () => {
     // A pasted username picks up a trailing space; a password may legitimately
     // end in one, and silently trimming it turns a working credential into an
     // unexplained auth failure.
-    const parsed = coveCredentialsSchema.parse({ partnerName: ' OliveTech ', username: ' api@x ', password: ' p ' });
-    expect(parsed).toEqual({ partnerName: 'OliveTech', username: 'api@x', password: ' p ' });
+    const parsed = coveCredentialsSchema.parse({ partnerName: ' Fabrikam MSP ', username: ' api@x ', password: ' p ' });
+    expect(parsed).toEqual({ partnerName: 'Fabrikam MSP', username: 'api@x', password: ' p ' });
   });
 
   it('rejects an oversized field rather than sending it to the vendor', () => {
@@ -4300,7 +4300,7 @@ describe('coveAdapter.testConnection', () => {
       enumeratePartners: vi.fn(async () => [{ vendorCustomerId: '2001' }, { vendorCustomerId: '2002' }]),
     });
     await expect(coveAdapter.testConnection(CREDS, BASE_URL)).resolves.toEqual({
-      ok: true, rootId: '1000', rootName: 'OliveTech', customerCount: 2,
+      ok: true, rootId: '1000', rootName: 'Fabrikam MSP', customerCount: 2,
     });
   });
 
@@ -5452,7 +5452,7 @@ const { authState, gates, adapterState, dbState } = vi.hoisted(() => ({
   },
   gates: { permission: false, mfa: false },
   adapterState: {
-    test: { ok: true, rootId: '1000', rootName: 'OliveTech', customerCount: 3 } as Record<string, unknown>,
+    test: { ok: true, rootId: '1000', rootName: 'Fabrikam MSP', customerCount: 3 } as Record<string, unknown>,
   },
   dbState: {
     connections: [] as Array<Record<string, unknown>>,
@@ -5609,13 +5609,13 @@ import { backupProviderRoutes } from './providers';
 
 const CONNECTION_ID = '33333333-3333-4333-8333-333333333333';
 const PARTNER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-const CREDS = { partnerName: 'OliveTech', username: 'api@olivetech.example', password: 'sup3r-s3cret' };
+const CREDS = { partnerName: 'Fabrikam MSP', username: 'api@fabrikam.example', password: 'sup3r-s3cret' };
 
 function connectionRow(over: Record<string, unknown> = {}) {
   return {
-    id: CONNECTION_ID, partnerId: PARTNER_ID, provider: 'cove', name: 'OliveTech Cove',
+    id: CONNECTION_ID, partnerId: PARTNER_ID, provider: 'cove', name: 'Fabrikam MSP Cove',
     baseUrl: 'https://api.backup.management/jsonapi', credentialsEncrypted: 'enc:x',
-    vendorRootId: '1000', vendorRootName: 'OliveTech', isActive: true, status: 'connected',
+    vendorRootId: '1000', vendorRootName: 'Fabrikam MSP', isActive: true, status: 'connected',
     syncIntervalMinutes: 30, showProviderNameInPortal: false, lastSyncAt: null,
     lastSyncStatus: null, lastSyncError: null, createdAt: new Date(), updatedAt: new Date(),
     ...over,
@@ -5634,7 +5634,7 @@ describe('backup provider connection routes', () => {
     authState.partnerId = PARTNER_ID;
     authState.partnerOrgAccess = 'all';
     authState.accessibleOrgIds = [];
-    adapterState.test = { ok: true, rootId: '1000', rootName: 'OliveTech', customerCount: 3 };
+    adapterState.test = { ok: true, rootId: '1000', rootName: 'Fabrikam MSP', customerCount: 3 };
     dbState.connections = [];
     dbState.inserted = [];
     dbState.updated = [];
@@ -5673,7 +5673,7 @@ describe('backup provider connection routes', () => {
   });
 
   describe('POST /backup/providers/connections', () => {
-    const body = { provider: 'cove', name: 'OliveTech Cove', credentials: CREDS };
+    const body = { provider: 'cove', name: 'Fabrikam MSP Cove', credentials: CREDS };
 
     it('tests the connection, stores the ciphertext under the PRE-GENERATED row id, and enqueues a sync', async () => {
       const res = await app.request('/backup/providers/connections', {
@@ -5850,7 +5850,7 @@ describe('backup provider connection routes', () => {
       const res = await app.request(`/backup/providers/connections/${CONNECTION_ID}/test`, { method: 'POST' });
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({
-        success: true, rootName: 'OliveTech', customerCount: 3,
+        success: true, rootName: 'Fabrikam MSP', customerCount: 3,
       });
     });
 
@@ -6734,7 +6734,7 @@ describe('backup provider customer routes', () => {
     authState.scope = 'partner';
     authState.partnerId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     authState.partnerOrgAccess = 'all';
-    dbState.connections = [{ id: CONNECTION_ID, partnerId: authState.partnerId, name: 'OliveTech Cove' }];
+    dbState.connections = [{ id: CONNECTION_ID, partnerId: authState.partnerId, name: 'Fabrikam MSP Cove' }];
     dbState.customers = [];
     remapState.error = null;
     remapState.result = {

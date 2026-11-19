@@ -3,6 +3,7 @@ mod chrome;
 mod ipc;
 mod requirements;
 mod single_instance;
+mod timestamp;
 mod ui_context;
 mod workspace_open;
 
@@ -93,7 +94,7 @@ fn log_helper_error(msg: &str) {
         .append(true)
         .open(&log_path)
     {
-        let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let ts = timestamp::local_log_timestamp();
         let _ = writeln!(f, "[{}] {}", ts, msg);
     }
 }
@@ -478,7 +479,7 @@ fn write_status_file(chat_active: bool) {
     let status = HelperStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
         chat_active,
-        last_activity: chrono::Utc::now().to_rfc3339(),
+        last_activity: timestamp::now_rfc3339(),
         pid: std::process::id(),
     };
     let path = helper_status_path();
@@ -2866,6 +2867,7 @@ mod tests {
             ("chrome.rs", prod_of(include_str!("chrome.rs"))),
             ("requirements.rs", prod_of(include_str!("requirements.rs"))),
             ("single_instance.rs", prod_of(include_str!("single_instance.rs"))),
+            ("timestamp.rs", prod_of(include_str!("timestamp.rs"))),
             ("workspace_open.rs", prod_of(include_str!("workspace_open.rs"))),
             ("ui_context.rs", prod_of(include_str!("ui_context.rs"))),
             ("ipc/mod.rs", prod_of(include_str!("ipc/mod.rs"))),
@@ -2878,6 +2880,7 @@ mod tests {
             ("ipc/message.rs", prod_of(include_str!("ipc/message.rs"))),
             ("ipc/notifications.rs", prod_of(include_str!("ipc/notifications.rs"))),
             ("ipc/prompt.rs", prod_of(include_str!("ipc/prompt.rs"))),
+            ("ipc/server_identity_unix.rs", prod_of(include_str!("ipc/server_identity_unix.rs"))),
             ("ipc/token.rs", prod_of(include_str!("ipc/token.rs"))),
             ("ipc/transport.rs", prod_of(include_str!("ipc/transport.rs"))),
         ];

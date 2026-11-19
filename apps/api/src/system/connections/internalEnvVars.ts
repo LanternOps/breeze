@@ -118,6 +118,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BACKUP_LOCAL_ROOT: 'filesystem path (operator root for API-side local backup storage)',
   BACKUP_PUBLISH_MARGIN_MS: 'timing knob',
   BACKUP_RESTORE_PIN_LINGER_MS: 'timing knob',
+  BACKUP_SNAPSHOT_CLEANUP_CRON: 'job schedule override',
+  BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS: 'worker run budget knob',
   // BINARY_*
   BINARY_CHECKSUM_MANIFEST: 'binary checksum manifest override',
   BINARY_VERSION_FILE: 'build metadata path',
@@ -148,6 +150,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_OEM_UPDATES_ENABLED: 'vendor update rollout flag (#11065, dark by default)',
   BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: 'vendor update lab-device gate override (refused in production)',
   BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: 'vendor update rollout allowlist (#11065)',
+  BREEZE_VENDOR_CANARY_DISABLED: 'vendor canary feature:vendor kill switch (#11065 observe-first)',
+  BREEZE_VENDOR_CANARY_PARTNER_IDS: 'vendor canary partner list (#11065 observe-first, empty = off)',
   BREEZE_PLATFORM_ADMINS: 'platform-admin bootstrap list',
   BREEZE_REGION: 'hosted topology label',
   BREEZE_ROLE: 'process role (api/worker)',
@@ -446,6 +450,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR: 'rate limit knob',
   PARTNER_MEETING_URL: 'partner onboarding copy link',
   PARTNER_TRUST_MODE: 'hosted partner trust mode',
+  PARTNER_TRUST_FRAUD_FLAGS_ENABLED: 'hosted billing fraud flag consumer (billing#51)',
   // PATH
   PATH: 'OS env passed to the Agent SDK CLI by a dev spike script',
   // PATCH_*

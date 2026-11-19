@@ -68,7 +68,9 @@
       "check": "Kontrol et",
       "lastChecked": "Son Kontrol Edildi",
       "noComplianceResultsYetAssignThisPolicy": "Henüz uyumluluk sonucu yok. Bu politikayı cihazlara atayın ve uyumluluk kuralları ekleyin; durum bir sonraki değerlendirmeden sonra görünür.",
-      "summary": "{{total}} sonuçlarının ilk {{shown}}'si gösteriliyor — aşağıdaki özet yalnızca bu sayfayı yansıtmaktadır."
+      "summary": "{{total}} sonuçlarının ilk {{shown}}'si gösteriliyor — aşağıdaki özet yalnızca bu sayfayı yansıtmaktadır.",
+      "notCollectedProbeLimit": "Toplanmadı (yoklama sınırı)",
+      "notCollectedProbeLimitHint": "Bu kuruluşun uyumluluk yoklama listesi dolu, bu nedenle buradaki en az bir denetim toplanmıyor. Listede yer açılana kadar değerlendirilmez, uyarı oluşturmaz ve düzeltilmez."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Bu politika için bir kuruluş seçin.",
@@ -796,8 +798,10 @@
         "notifyOnEnd": "Sonunda bildir",
         "sendNotificationWhenWindowCloses": "Pencere kapatıldığında bildirim gönder.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Haftalık pencereler, seçilen saat diliminde her pazar başlangıç saatinde açılır.",
-        "monthlyOpensOnTheFirst": "Aylık pencereler, seçilen saat diliminde her ayın 1'inde başlangıç saatinde açılır."
+        "dayOfWeek": "Haftanın günü",
+        "dayOfWeekHint": "Her haftalık pencerenin açıldığı gün, seçilen saat diliminde.",
+        "dayOfMonth": "Ayın günü",
+        "dayOfMonthHint": "Her aylık pencerenin açıldığı gün, seçilen saat diliminde. O günü olmayan bir ayda pencere ayın son gününde açılır."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Aracı toplama",
@@ -1209,6 +1213,7 @@
           "verified": "Yalnızca hazır olduğu doğrulandığında",
           "verifiedHelp": "Uyandır düğmesini yalnızca hazır bildiren veya önceki bir uyandırmayla çevrimiçi olduğu kanıtlanan cihazlar için göster. Diğer cihazlara bir kez test uyandırması gönderilebilir."
         },
+        "verifiedWarning": "Bu modda Uyandır düğmesi, bir cihazda uyandırma kanıtlanana (önceki bir uyandırmanın çevrimiçi olmasıyla) veya cihaz hazır bildirene kadar gizli kalır. Başlangıçta düğme çoğu cihazda gizli olur.",
         "aboutTitle": "Bu ayar hakkında",
         "aboutBody": "Bu ilke yalnızca Uyandır düğmesinin ne zaman görüneceğine karar verir. Breeze her cihazın Wake-on-LAN hazırlığını okur ancak BIOS, ağ bağdaştırıcısı veya Windows ayarlarını değiştirmez.",
         "panel": {
@@ -1258,6 +1263,8 @@
             "fast_startup_unknown": "Hızlı Başlatma durumu bilinmiyor",
             "nic_magic_packet_disabled": "Bağdaştırıcının magic packet ile uyandırması kapalı",
             "nic_magic_packet_unknown": "Magic packet ile uyandırma durumu bilinmiyor",
+            "nic_unreadable": "Kablolu bir bağdaştırıcı var ancak okunamadı",
+            "nic_cmdlets_unavailable": "Bu cihazda ağ bağdaştırıcısı ayarları okunamıyor",
             "nic_eee_enabled": "Energy-Efficient Ethernet açık",
             "firmware_adapter_unavailable": "Üretici yazılımı ayarları henüz okunamıyor"
           },

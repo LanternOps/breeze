@@ -55,6 +55,7 @@ import type { FlowRunRow, FlowVersionRow } from '../../db/schema/flowRuns';
 import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { aiTools, executeTool, toolManagesDbContext } from '../aiTools';
 import { stripPageResumeJson } from '../aiToolPageResume';
+import { unattendedNoteWriteContext } from '../deviceNoteBounds';
 import { createActionIntent } from '../actionIntents/intentService';
 import { buildRunScriptSnapshot } from '../actionIntents/runScriptSnapshot';
 import { flowPreApprovalBindingSchema, revalidateRenderedStep, type FlowStepPin } from '../flowValidator';
@@ -668,11 +669,17 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
   }
 
   const tool = i.pin.tool;
+  // #12161: a Tier-1/2 step runs with no person approving it, so a device note
+  // it writes takes the unattended-note bounds (deviceNoteBounds.ts), as over
+  // MCP. Every other tool keeps the three-argument call.
+  const noteContext = unattendedNoteWriteContext(tool);
   return runToolCall(i, {
     tier: check.tier,
     meta,
     call: async () => {
-      return callResultOf(tool, parseToolText(await inToolDbContext(tool, rendered, i.auth, () => executeTool(tool, rendered, i.auth))));
+      return callResultOf(tool, parseToolText(await inToolDbContext(tool, rendered, i.auth, () => (noteContext
+        ? executeTool(tool, rendered, i.auth, { context: noteContext })
+        : executeTool(tool, rendered, i.auth)))));
     },
   }, sleep);
 }

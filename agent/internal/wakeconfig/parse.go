@@ -11,8 +11,11 @@ import (
 // are decided only by magicPacket (the WakeOnMagicPacket enum) and eee (the raw
 // RegistryValue of the *EEE keyword). The script emits no localised text.
 type rawReadings struct {
-	Hiberboot any          `json:"hiberboot"`
-	Adapters  []rawAdapter `json:"adapters"`
+	Hiberboot any `json:"hiberboot"`
+	// NetAdapter is false when the NetAdapter cmdlets are missing. Absent is
+	// read as available.
+	NetAdapter *bool        `json:"netAdapter"`
+	Adapters   []rawAdapter `json:"adapters"`
 }
 
 type rawAdapter struct {
@@ -20,6 +23,9 @@ type rawAdapter struct {
 	MAC         string  `json:"mac"`
 	MagicPacket *string `json:"magicPacket"`
 	EEE         *string `json:"eee"`
+	// S5 is the raw RegistryValue of Realtek's S5WakeOnLan keyword; null or
+	// missing means the driver has no such keyword.
+	S5 *string `json:"s5"`
 }
 
 // ParseWindowsReadings turns the collector's JSON into readings. It is pure and
@@ -31,6 +37,9 @@ func ParseWindowsReadings(raw []byte) (*WindowsReadings, error) {
 		return nil, fmt.Errorf("parse wake readings: %w", err)
 	}
 	out := &WindowsReadings{FastStartup: "unknown"}
+	if r.NetAdapter != nil && !*r.NetAdapter {
+		out.NetAdapterCmdletsUnavailable = true
+	}
 	// HiberbootEnabled: 1 -> enabled, 0 -> disabled, anything else unknown.
 	switch v := r.Hiberboot.(type) {
 	case float64:
@@ -73,6 +82,17 @@ func ParseWindowsReadings(raw []byte) (*WindowsReadings, error) {
 				reading.EEE = "enabled"
 			case "0":
 				reading.EEE = "disabled"
+			}
+		}
+		reading.ShutdownWake = "absent"
+		if a.S5 != nil {
+			switch strings.TrimSpace(*a.S5) {
+			case "1":
+				reading.ShutdownWake = "enabled"
+			case "0":
+				reading.ShutdownWake = "disabled"
+			default:
+				reading.ShutdownWake = "unknown"
 			}
 		}
 		out.Adapters = append(out.Adapters, reading)

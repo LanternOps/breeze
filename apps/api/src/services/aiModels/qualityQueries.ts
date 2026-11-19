@@ -203,7 +203,7 @@ facts AS (
   LEFT JOIN ai_agent_runs r ON r.id = f.agent_run_id
   LEFT JOIN LATERAL (
     SELECT COUNT(*)::int AS n FROM ai_messages um WHERE um.session_id = f.session_id AND um.role = 'user'
-  ) own ON f.session_id IS NOT NULL
+  ) own ON f.session_id IS NOT NULL AND f.agent_run_id IS NULL
   ${chain}
   WHERE f.rn_desc = 1
 ),

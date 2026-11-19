@@ -5,6 +5,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { runAction } from "../../lib/runAction";
 import { navigateTo, navigateToMicrosoftLogin } from "@/lib/navigation";
 import { formatDateTime } from "@/lib/dateTimeFormat";
+import { showToast } from "../shared/Toast";
 
 const state = vi.hoisted(() => ({
   currentOrgId: "11111111-1111-4111-8111-111111111111" as string | null,
@@ -83,6 +84,8 @@ vi.mock("../../lib/runAction", () => ({
 
 vi.mock("@/lib/navigation", () => ({ navigateTo: vi.fn(), navigateToMicrosoftLogin: vi.fn() }));
 
+vi.mock("../shared/Toast", () => ({ showToast: vi.fn() }));
+
 vi.mock("@/lib/dateTimeFormat", () => ({
   formatDateTime: vi.fn((value: string) => `formatted ${value}`),
 }));
@@ -92,6 +95,7 @@ const runActionMock = vi.mocked(runAction);
 const navigateToMock = vi.mocked(navigateTo);
 const navigateToMicrosoftLoginMock = vi.mocked(navigateToMicrosoftLogin);
 const formatDateTimeMock = vi.mocked(formatDateTime);
+const showToastMock = vi.mocked(showToast);
 
 const ORG_A = "11111111-1111-4111-8111-111111111111";
 const ORG_B = "22222222-2222-4222-8222-222222222222";
@@ -435,6 +439,143 @@ describe("M365CustomerGraphActionsCard", () => {
       `/m365/customer-graph-actions/connections/${CONNECTION_ID}/retest?orgId=${ORG_A}`,
       { method: "POST" },
     );
+  });
+
+  it("toasts success only when the retest leaves the connection active", async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: connection() })))
+      .mockResolvedValueOnce(makeResponse({ connection: connection() }))
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: connection() })));
+
+    render(<M365CustomerGraphActionsCard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Retest" }));
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(3));
+    expect(state.successMessages).toEqual(["Connection retest completed."]);
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  // #12085: a retest that comes back degraded must not read as success.
+  it("warns with the specific reason when the retest leaves the connection degraded", async () => {
+    const degraded = connection({
+      status: "degraded",
+      grantHealth: "degraded",
+      observedGrants: [],
+      grantsVerifiedAt: null,
+      lastErrorCode: "grant_reconciliation_unavailable",
+    });
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: connection({ status: "degraded" }) })))
+      .mockResolvedValueOnce(makeResponse({ connection: degraded }))
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: degraded })));
+
+    render(<M365CustomerGraphActionsCard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Retest" }));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledTimes(1));
+    expect(state.successMessages).toEqual([]);
+    expect(showToastMock).toHaveBeenCalledWith({
+      type: "warning",
+      message: "Retest finished, but the connection still needs attention.",
+      detail: expect.stringMatching(/can't read which permissions/),
+    });
+  });
+
+  it("warns when the retest keeps an active row on an older manifest", async () => {
+    const stale = connection({ manifestVersion: 2, grantHealth: "manifest-stale", lastErrorCode: "manifest_stale" });
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: stale })))
+      .mockResolvedValueOnce(makeResponse({ connection: stale }))
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: stale })));
+
+    render(<M365CustomerGraphActionsCard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Retest" }));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledTimes(1));
+    expect(state.successMessages).toEqual([]);
+    expect(showToastMock).toHaveBeenCalledWith({
+      type: "warning",
+      message: "Retest finished, but the connection still needs attention.",
+      detail: "The granted permissions use an older manifest. Grant consent again.",
+    });
+  });
+
+  it("explains grant_reconciliation_unavailable instead of the generic attention copy", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({
+        connection: connection({
+          status: "degraded",
+          grantHealth: "degraded",
+          observedGrants: [],
+          grantsVerifiedAt: null,
+          lastErrorCode: "grant_reconciliation_unavailable",
+        }),
+      })),
+    );
+
+    render(<M365CustomerGraphActionsCard />);
+
+    expect(await screen.findByText(/can't read which permissions/)).toBeInTheDocument();
+    expect(screen.queryByText("Verification needs attention. Retest the connection or start consent again.")).not.toBeInTheDocument();
+  });
+
+  // #12085: without Application.Read.All the executor verifies only the
+  // Microsoft Graph roles in its token; the card says so plainly.
+  it("explains graph_token_only verification on an active connection", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ grantReconciliationMode: "graph_token_only" }) })),
+    );
+
+    render(<M365CustomerGraphActionsCard />);
+
+    expect(await screen.findByTestId("m365-actions-graph-token-only")).toHaveTextContent(
+      "Graph permissions verified. Permissions on other Microsoft resources were not checked; grant Application.Read.All for a full check.",
+    );
+  });
+
+  it("shows no partial-verification note in exact mode or when the API omits the mode", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ grantReconciliationMode: "exact" }) })),
+    );
+    const { unmount } = render(<M365CustomerGraphActionsCard />);
+    expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+    expect(screen.queryByTestId("m365-actions-graph-token-only")).not.toBeInTheDocument();
+    unmount();
+
+    fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: connection() })));
+    render(<M365CustomerGraphActionsCard />);
+    expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+    expect(screen.queryByTestId("m365-actions-graph-token-only")).not.toBeInTheDocument();
+  });
+
+  it("fails closed on an unknown reconciliation mode", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ grantReconciliationMode: "partial" }) })),
+    );
+    render(<M365CustomerGraphActionsCard />);
+    expect(await screen.findByRole("heading", { name: /Admin actions/ })).toBeInTheDocument();
+    expect(screen.queryByText("Northwind Tenant")).not.toBeInTheDocument();
+  });
+
+  it("names an unresolved extra Graph role (null appRoleId) by its value in the unexpected list", async () => {
+    const extra = { resourceApplicationId: GRAPH_APP_ID, appRoleId: null, value: "Directory.ReadWrite.All" };
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({
+        connection: connection({
+          status: "degraded",
+          grantHealth: "unexpected",
+          grantReconciliationMode: "graph_token_only",
+          observedGrants: [...REQUIRED_GRANTS, extra],
+          unexpectedGrants: [extra],
+          lastErrorCode: "grant_unexpected",
+        }),
+      })),
+    );
+
+    render(<M365CustomerGraphActionsCard />);
+
+    const alert = await screen.findByRole("alert", { name: /./ });
+    expect(alert).toHaveTextContent("Directory.ReadWrite.All");
   });
 
   it("warns and disconnects through runAction against the actions path", async () => {

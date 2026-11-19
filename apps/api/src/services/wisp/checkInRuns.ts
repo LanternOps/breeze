@@ -1,7 +1,7 @@
 /**
  * Wisp run-mode check-ins (W07 #11496, feature #11489; #10410 wave B, spec
  * 2026-11-06-wisp-chat-grant-followups §6.2 B). A check-in scheduled with
- * `mode: 'run'` (the grantor approved it on a card) checks on its own when it
+ * `mode: 'run'` (no approval card: selfStateTools.ts) checks on its own when it
  * fires: it admits ONE read-only assessment run under the grant, and the
  * run's result is posted to the thread when it settles.
  *
@@ -40,9 +40,9 @@
  * reads the grant, so a revision landing between the two checks runs nothing
  * either.
  *
- * Untrusted text: the instruction is model-written (the grantor approved it)
- * and is sanitised (`sanitizeCheckInInstruction`) before it enters the run's
- * trigger_ref; the run's summary is model output over device data and is
+ * Untrusted text: the instruction is model-written and unreviewed (no approval
+ * card), so it is sanitised (`sanitizeCheckInInstruction`) before it enters the
+ * run's trigger_ref and fenced where the run's prompt renders it; the run's summary is model output over device data and is
  * sanitised and capped (`cleanReport`) before it is posted.
  *
  * DB access: every read and write runs in a FRESH system context; every

@@ -27,6 +27,7 @@ vi.mock('../db/schema', () => ({
     name: 'partners.name',
     settings: 'partners.settings',
     documentPageSize: 'partners.document_page_size',
+    billingAddressCountry: 'partners.billing_address_country',
   },
   portalBranding: {
     orgId: 'portal_branding.org_id',
@@ -141,7 +142,7 @@ describe('loadReportBrandingForOrg', () => {
       { partnerName: 'Olive MSP', partnerSettings: { branding: { logoUrl: png(1, 2) } } },
     ]);
     const branding = await loadReportBrandingForOrg(ORG_ID);
-    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: png(1, 2), logoAspect: 0.5, primaryColor: null, accentColor: null, contactEmail: null, contactName: null, pageSize: null, dateFormat: null, timeFormat: null });
+    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: png(1, 2), logoAspect: 0.5, primaryColor: null, accentColor: null, contactEmail: null, contactName: null, pageSize: 'letter', dateFormat: null, timeFormat: null });
   });
 
   it('external https logo URL: name resolves, logo degrades to null (server cannot format-verify it)', async () => {
@@ -149,7 +150,7 @@ describe('loadReportBrandingForOrg', () => {
       { partnerName: 'Olive MSP', partnerSettings: { branding: { logoUrl: 'https://cdn.example.com/logo.png' } } },
     ]);
     const branding = await loadReportBrandingForOrg(ORG_ID);
-    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: null, logoAspect: null, primaryColor: null, accentColor: null, contactEmail: null, contactName: null, pageSize: null, dateFormat: null, timeFormat: null });
+    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: null, logoAspect: null, primaryColor: null, accentColor: null, contactEmail: null, contactName: null, pageSize: 'letter', dateFormat: null, timeFormat: null });
   });
 
   it('contact name + email ride along from partner settings (the portal closing line, #6078)', async () => {
@@ -212,13 +213,32 @@ describe('loadReportBrandingForOrg', () => {
     expect(selectMock.mock.calls[2]?.[0]).toMatchObject({ documentPageSize: 'partners.document_page_size' });
   });
 
+  // #12097: a partner that never chose a page size prints reports on its region default.
+  it('a partner with no page-size choice gets its region default (billing country, then company country)', async () => {
+    vi.stubEnv('BREEZE_REGION', 'us');
+    stage([{ partnerId: PARTNER_ID }], [{
+      partnerName: 'Olive MSP', documentPageSize: null, billingAddressCountry: 'DE', partnerSettings: {},
+    }]);
+    expect(await loadReportBrandingForOrg(ORG_ID)).toMatchObject({ pageSize: 'a4' });
+    expect(selectMock.mock.calls[2]?.[0]).toMatchObject({ billingAddressCountry: 'partners.billing_address_country' });
+
+    vi.stubEnv('BREEZE_REGION', 'eu');
+    selectMock.mockReturnValueOnce(selectChain([{
+      partnerName: 'Olive MSP', documentPageSize: null, billingAddressCountry: null, partnerSettings: { address: { country: 'CA' } },
+    }]));
+    expect(await loadReportBrandingForPartner(PARTNER_ID)).toMatchObject({ pageSize: 'letter' });
+    vi.unstubAllEnvs();
+  });
+
   it('drops a page size or format the renderer does not know, rather than passing it on', async () => {
     stage([{ partnerId: PARTNER_ID }], [{
       partnerName: 'Olive MSP',
       documentPageSize: 'legal',
+      billingAddressCountry: 'DE',
       partnerSettings: { dateFormat: 'D.M.Y', timeFormat: 'military' },
     }]);
-    expect(await loadReportBrandingForOrg(ORG_ID)).toMatchObject({ pageSize: null, dateFormat: null, timeFormat: null });
+    // An unknown stored size is not a choice: the region default (DE → A4) applies (#12097).
+    expect(await loadReportBrandingForOrg(ORG_ID)).toMatchObject({ pageSize: 'a4', dateFormat: null, timeFormat: null });
   });
 
   it("an org secondary colour becomes the report accent", async () => {
@@ -271,7 +291,8 @@ describe('loadReportBrandingForPartner (#3198 W01)', () => {
       accentColor: null,
       contactEmail: 'dana@olive.example',
       contactName: 'Dana Ops',
-      pageSize: null,
+      // #12097: no choice and no country → the (US) deployment default.
+      pageSize: 'letter',
       dateFormat: null,
       timeFormat: null,
     });

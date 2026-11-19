@@ -700,6 +700,103 @@ describe('processCleanupExpiredSnapshots — GC wiring', () => {
     expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
   });
 
+  describe('time budget and resume cursors (#12061)', () => {
+    const okRetention = {
+      deleted: 0, skippedLegalHold: 0, skippedImmutable: 0, prunedByMaxVersions: 0, failed: 0,
+    };
+    const okSweep = {
+      deleted: 0, skippedIdentities: 0, blockedIdentities: 0,
+      retiredSwept: 0, orphansSwept: 0, deferredIdentities: 0, unreachableIdentities: 0,
+    };
+
+    it('walks orgs in id order starting at the retention cursor, wrapping around to the ones before it', async () => {
+      mockDb.selectDistinct.mockReturnValue({
+        from: vi.fn().mockResolvedValue([{ orgId: 'org-c' }, { orgId: 'org-a' }, { orgId: 'org-b' }]),
+      });
+      cleanupExpiredSnapshotsMock.mockResolvedValue(okRetention);
+      sweepUnreferencedBackupObjectsMock.mockResolvedValue(okSweep);
+      const saveCursors = vi.fn();
+
+      await processCleanupExpiredSnapshots({ retentionCursor: 'org-b', saveCursors });
+
+      expect(cleanupExpiredSnapshotsMock.mock.calls.map(([orgId]) => orgId)).toEqual(['org-b', 'org-c', 'org-a']);
+      // Every org ran: the next run starts from the beginning again.
+      expect(saveCursors).toHaveBeenCalledWith({ retention: null, gc: null });
+    });
+
+    it('stops retention between orgs once its deadline passes, records where to resume, and still runs the sweep', async () => {
+      mockDb.selectDistinct.mockReturnValue({
+        from: vi.fn().mockResolvedValue([{ orgId: 'org-a' }, { orgId: 'org-b' }, { orgId: 'org-c' }]),
+      });
+      cleanupExpiredSnapshotsMock.mockResolvedValue(okRetention);
+      sweepUnreferencedBackupObjectsMock.mockResolvedValue({ ...okSweep, resumeCursor: 'gc-next' });
+      const saveCursors = vi.fn();
+      const gcDeadlineMs = Date.now() + 60_000;
+
+      const result = await processCleanupExpiredSnapshots({
+        retentionDeadlineMs: Date.now() - 1,
+        gcDeadlineMs,
+        gcCursor: 'gc-prev',
+        saveCursors,
+      });
+
+      // At least one org always runs, so retention makes progress however small the budget.
+      expect(cleanupExpiredSnapshotsMock.mock.calls.map(([orgId]) => orgId)).toEqual(['org-a']);
+      expect(result.retentionDeferredOrgs).toBe(2);
+      expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledWith({ deadlineMs: gcDeadlineMs, resumeCursor: 'gc-prev' });
+      expect(saveCursors).toHaveBeenCalledWith({ retention: 'org-b', gc: 'gc-next' });
+    });
+
+    it('an org whose retention pass throws does not hold back the orgs after it or the sweep, and fails the run at the end', async () => {
+      mockDb.selectDistinct.mockReturnValue({
+        from: vi.fn().mockResolvedValue([{ orgId: 'org-a' }, { orgId: 'org-b' }]),
+      });
+      cleanupExpiredSnapshotsMock
+        .mockRejectedValueOnce(new Error('candidate query failed'))
+        .mockResolvedValueOnce(okRetention);
+      sweepUnreferencedBackupObjectsMock.mockResolvedValue(okSweep);
+      const saveCursors = vi.fn();
+
+      await expect(processCleanupExpiredSnapshots({ saveCursors })).rejects.toThrow(/retention failed for 1 org/);
+
+      expect(cleanupExpiredSnapshotsMock.mock.calls.map(([orgId]) => orgId)).toEqual(['org-a', 'org-b']);
+      expect(sweepUnreferencedBackupObjectsMock).toHaveBeenCalledTimes(1);
+      expect(saveCursors).toHaveBeenCalledWith({ retention: null, gc: null });
+    });
+
+    it('keeps the previous sweep cursor when the sweep throws', async () => {
+      mockDb.selectDistinct.mockReturnValue({ from: vi.fn().mockResolvedValue([]) });
+      sweepUnreferencedBackupObjectsMock.mockRejectedValue(new Error('listing failed'));
+      const saveCursors = vi.fn();
+
+      await processCleanupExpiredSnapshots({ gcCursor: 'gc-prev', saveCursors });
+
+      expect(saveCursors).toHaveBeenCalledWith({ retention: null, gc: 'gc-prev' });
+    });
+
+    it('saves cursors before failing the job for a per-row delete failure', async () => {
+      mockDb.selectDistinct.mockReturnValue({ from: vi.fn().mockResolvedValue([{ orgId: 'org-a' }]) });
+      cleanupExpiredSnapshotsMock.mockResolvedValue({ ...okRetention, failed: 1 });
+      sweepUnreferencedBackupObjectsMock.mockResolvedValue({ ...okSweep, resumeCursor: 'gc-next' });
+      const saveCursors = vi.fn();
+
+      await expect(processCleanupExpiredSnapshots({ saveCursors })).rejects.toThrow(/1 snapshot row delete/);
+      expect(saveCursors).toHaveBeenCalledWith({ retention: null, gc: 'gc-next' });
+    });
+  });
+
+  it('#12061: a cleanup job left on the shared backup queue completes without running cleanup there', async () => {
+    const result = await __testOnly.processBackupQueueJob({
+      name: 'cleanup-expired-snapshots',
+      data: { type: 'cleanup-expired-snapshots' },
+    } as never);
+
+    expect(result).toEqual({ skipped: 'moved-to-backup-snapshot-cleanup-queue' });
+    expect(mockDb.selectDistinct).not.toHaveBeenCalled();
+    expect(cleanupExpiredSnapshotsMock).not.toHaveBeenCalled();
+    expect(sweepUnreferencedBackupObjectsMock).not.toHaveBeenCalled();
+  });
+
   it('handles cleanup-expired-snapshots OUTSIDE the blanket runWithSystemDbAccess wrap (D18 W01 §3.7)', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');

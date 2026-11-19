@@ -2786,7 +2786,7 @@ const BASE_ROW = {
   id: CONNECTION_ID,
   partnerId: '11111111-1111-4111-8111-111111111111',
   provider: 'cove',
-  name: 'OliveTech Cove',
+  name: 'Fabrikam MSP Cove',
   baseUrl: 'https://api.backup.management/jsonapi',
   credentialsEncrypted: 'enc',
   vendorRootId: '1234',

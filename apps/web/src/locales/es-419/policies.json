@@ -68,7 +68,9 @@
       "check": "Comprobar",
       "lastChecked": "Última comprobación",
       "noComplianceResultsYetAssignThisPolicy": "Aún no hay resultados de cumplimiento. Asigne esta política a dispositivos y agregue reglas de cumplimiento; El estado aparece después de la siguiente evaluación.",
-      "summary": "Mostrando el primero {{shown}} de {{total}} resultados: el resumen a continuación refleja esta página únicamente."
+      "summary": "Mostrando el primero {{shown}} de {{total}} resultados: el resumen a continuación refleja esta página únicamente.",
+      "notCollectedProbeLimit": "No recopilado (límite de sondeos)",
+      "notCollectedProbeLimitHint": "La lista de sondeos de cumplimiento de esta organización está llena, por lo que al menos una comprobación de aquí no se recopila. No se evalúa, no genera alertas ni se corrige hasta que la lista tenga espacio."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Seleccione una organización para esta política.",
@@ -796,8 +798,10 @@
         "notifyOnEnd": "Notificar al final",
         "sendNotificationWhenWindowCloses": "Enviar notificación cuando se cierre la ventana.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Las ventanas semanales se abren cada domingo a la hora de inicio, en la zona horaria seleccionada.",
-        "monthlyOpensOnTheFirst": "Las ventanas mensuales se abren el día 1 de cada mes a la hora de inicio, en la zona horaria seleccionada."
+        "dayOfWeek": "Día de la semana",
+        "dayOfWeekHint": "El día en que se abre cada ventana semanal, en la zona horaria seleccionada.",
+        "dayOfMonth": "Día del mes",
+        "dayOfMonthHint": "El día en que se abre cada ventana mensual, en la zona horaria seleccionada. En un mes que no tiene ese día, la ventana se abre el último día del mes."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Recolección del agente",
@@ -1209,6 +1213,7 @@
           "verified": "Solo cuando se verifica que está listo",
           "verifiedHelp": "Mostrar Activar solo en dispositivos que informan estar listos o que se comprobaron con una activación anterior que terminó en línea. A los demás se les puede enviar una activación de prueba."
         },
+        "verifiedWarning": "En este modo, Activar permanece oculto en un dispositivo hasta que se compruebe allí una activación (una activación anterior que terminó en línea) o el dispositivo informe estar listo. Al principio estará oculto en la mayoría de los dispositivos.",
         "aboutTitle": "Acerca de esta configuración",
         "aboutBody": "Esta política solo decide cuándo se muestra el botón Activar. Breeze lee la preparación para Wake-on-LAN de cada dispositivo, pero no cambia la configuración del BIOS, del adaptador de red ni de Windows.",
         "panel": {
@@ -1258,6 +1263,8 @@
             "fast_startup_unknown": "Estado de Inicio rápido desconocido",
             "nic_magic_packet_disabled": "La activación por magic packet del adaptador está desactivada",
             "nic_magic_packet_unknown": "Estado de la activación por magic packet desconocido",
+            "nic_unreadable": "Hay un adaptador cableado, pero no se pudo leer",
+            "nic_cmdlets_unavailable": "No se pueden leer los ajustes del adaptador de red en este dispositivo",
             "nic_eee_enabled": "Energy-Efficient Ethernet activado",
             "firmware_adapter_unavailable": "Aún no se puede leer la configuración del firmware"
           },

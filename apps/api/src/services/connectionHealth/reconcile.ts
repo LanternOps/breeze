@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { tightenStatementTimeout } from '../../db/lockTimeout';
-import { sendOpsAlert } from '../opsAlerts';
+import { opsText, sendOpsAlert } from '../opsAlerts';
 import { captureException } from '../sentry';
 import { getRedis } from '../redis';
 import { publishPendingEvents, type EventPublishCounts } from './events';
@@ -189,7 +189,7 @@ async function recordFailure(d: ReconcileDeps, kind: string, message: string) {
   try {
     await d.alert({
       title: `Connection health: ${kind} source failing`,
-      body: `The ${kind} health check failed ${streak} runs in a row. Its incidents are frozen until it recovers. Last error: ${message}`,
+      body: `The ${kind} health check failed ${streak} runs in a row. Its incidents are frozen until it recovers. Last error: ${opsText(message, 300)}`,
     });
   } catch (err) {
     console.error(JSON.stringify({ event: 'connection_health_alert_failed', kind, error: errorMessage(err) }));

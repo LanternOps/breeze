@@ -880,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "Aucun résultat de conformité n’a été rapporté. Attribuez une Politique de Configuration avec des règles de conformité à cet appareil, ou attendez la prochaine évaluation.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Attribuer une politique de configuration"
+    "assignPolicy": "Attribuer une politique de configuration",
+    "notCollectedProbeLimit": "Non collecté (limite de sondes)",
+    "notCollectedProbeLimitHint": "La liste des sondes de conformité de cette organisation est pleine : au moins une vérification ici n'est pas collectée. Elle n'est ni évaluée, ni signalée, ni corrigée tant que la liste n'a pas de place."
   },
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} a été déplacé vers {{orgName}}",
@@ -5014,7 +5016,8 @@
       "noOpenCategories": "Rien ne peut s’exécuter avec ce choix. Seuls le BIOS et le micrologiciel sont disponibles ici : choisissez Redémarrer à la fin.",
       "decommissioned": "Cet appareil est mis hors service, rien ne peut donc lui être envoyé.",
       "cancelledAtClaim": "L’exécution a été annulée avant d’atteindre l’appareil. Réessayez."
-    }
+    },
+    "observeQueued": "Vérification en lecture seule lancée sur {{hostname}}. Rien n’est installé."
   },
   "vendorUpdates": {
     "title": "Mises à jour du constructeur",
@@ -5099,7 +5102,16 @@
       "byUnknown": "Inconnu",
       "range": "{{from}}-{{to}} sur {{total}}",
       "previousPage": "Précédent",
-      "nextPage": "Suivant"
+      "nextPage": "Suivant",
+      "observed": "Observé",
+      "observedTools": "Outils trouvés : {{tools}}",
+      "observedNoTools": "Aucun outil du fabricant trouvé",
+      "observedVerdict": {
+        "observed": "{{vendor}} : vérification en lecture seule terminée",
+        "observedWithErrors": "{{vendor}} : vérification en lecture seule terminée, certaines lectures ont échoué",
+        "platformUnsupported": "{{vendor}} : ce modèle n’est pas pris en charge par les outils professionnels du fabricant",
+        "invalid": "{{vendor}} : le résultat de la vérification est illisible"
+      }
     }
   },
   "reinstalledBadge": {

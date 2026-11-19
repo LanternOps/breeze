@@ -38,6 +38,7 @@ import {
   type DueDevice,
 } from '../services/oemUpdates/candidates';
 import { dispatchOemUpdateRun } from '../services/oemUpdates/dispatch';
+import { runOemObserveSweep } from '../services/oemUpdates/observe';
 import { runOemOverdueSweep } from '../services/oemUpdates/overdueSweep';
 import { refreshOemPolicySide } from '../services/oemUpdates/policySideStore';
 import {
@@ -288,6 +289,9 @@ export async function runOemUpdatesTick(now: Date = new Date()): Promise<void> {
     ['reboot sweep', runOemRebootSweep],
     ['scheduled dispatch', runScheduledDispatch],
     ['overdue alerts', runOemOverdueSweep],
+    // Read-only vendor observation for canary partners only (#11065 observe-first).
+    // Returns before any query while BREEZE_VENDOR_CANARY_PARTNER_IDS is empty.
+    ['observe sweep', async (at: Date) => { await runOemObserveSweep(at); }],
   ];
   for (const [name, stage] of stages) {
     try {

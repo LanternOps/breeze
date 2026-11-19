@@ -23,13 +23,14 @@
  * Billing → Agreements), the org currency cut-over and `billingProfileId`
  * (assignment is `manage_billing_profiles:set_org_profile`).
  */
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { AGREEMENT_DEFAULTS_SETTINGS_KEYS, orgBillingSettingsSchema, partnerBillingSettingsSchema } from '@breeze/shared';
 import { db } from '../db';
 import { organizations, partners } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { mfaGatedToolError } from './aiToolMfaGate';
+import { partnerPageSizeWire } from './documentThemes';
 import { updateOrgBillingSettings, updatePartnerBillingSettings } from './invoiceService';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { getOrgCurrencyImpact } from './orgCurrencyService';
@@ -212,8 +213,13 @@ export function registerBillingSettingsTools(aiTools: Map<string, AiTool>): void
         switch (action) {
           case 'get_partner': {
             if (!auth.partnerId) return jsonError('Partner settings need a partner context', 'PARTNER_SCOPE_REQUIRED');
-            const [row] = await db.select(partnerProjection()).from(partners).where(eq(partners.id, auth.partnerId)).limit(1);
-            return row ? bounded({ settings: row }) : notFound('Partner');
+            // #12097: only the company-details country is read from the settings
+            // jsonb (never the column itself), for the page size's region default.
+            const [row] = await db.select({ ...partnerProjection(), companyCountry: sql<string | null>`${partners}.settings->'address'->>'country'` })
+              .from(partners).where(eq(partners.id, auth.partnerId)).limit(1);
+            if (!row) return notFound('Partner');
+            const { companyCountry, ...projected } = row;
+            return bounded({ settings: { ...projected, ...partnerPageSizeWire({ ...projected, settings: { address: { country: companyCountry } } }) } });
           }
           case 'get_org': {
             const orgId = reachableOrgId(auth, input.orgId);

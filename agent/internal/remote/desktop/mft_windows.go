@@ -118,6 +118,14 @@ type mftEncoder struct {
 	// lastSubmitOK is set when the current Encode/EncodeTexture call's frame
 	// was accepted by ProcessInput; only such a frame is retained.
 	lastSubmitOK bool
+	// Quality refresh (#11639), synchronous software MFT only: after an
+	// expensive output (a burst of change) the retained frame is re-submitted
+	// for one second of stream time once the screen has settled, so CBR rate
+	// control gets the frames it needs to bring the quantiser back down.
+	refresh       qualityRefresh
+	refreshLogged bool
+	// clock is a test hook for the refresh's settle timing; nil means time.Now.
+	clock func() time.Time
 	// lateLowLatency is a test hook: when set, CODECAPI_AVLowLatencyMode is
 	// not applied before media-type negotiation, reproducing the pre-#11622
 	// encoder that holds 5 frames. Production code never sets it.

@@ -74,9 +74,9 @@ func TestConnectedNotifyBody(t *testing.T) {
 		prompt *ipc.DesktopPrompt
 		want   string
 	}{
-		{"name and partner", &ipc.DesktopPrompt{TechnicianName: strPtr("Billy"), OrgName: strPtr("Olive Technology")}, "Billy from Olive Technology connected to your computer"},
+		{"name and partner", &ipc.DesktopPrompt{TechnicianName: strPtr("Billy"), OrgName: strPtr("Fabrikam MSP")}, "Billy from Fabrikam MSP connected to your computer"},
 		{"name only", &ipc.DesktopPrompt{TechnicianName: strPtr("Billy")}, "Billy connected to your computer"},
-		{"partner only (generic identity)", &ipc.DesktopPrompt{OrgName: strPtr("Olive Technology")}, "A technician from Olive Technology connected to your computer"},
+		{"partner only (generic identity)", &ipc.DesktopPrompt{OrgName: strPtr("Fabrikam MSP")}, "A technician from Fabrikam MSP connected to your computer"},
 		{"neither", &ipc.DesktopPrompt{}, "A technician connected to your computer"},
 	}
 	for _, tt := range tests {
@@ -95,9 +95,9 @@ func TestBannerLabel(t *testing.T) {
 		prompt *ipc.DesktopPrompt
 		want   string
 	}{
-		{"name and partner", &ipc.DesktopPrompt{TechnicianName: strPtr("Billy"), OrgName: strPtr("Olive Technology")}, "Billy from Olive Technology is connected"},
+		{"name and partner", &ipc.DesktopPrompt{TechnicianName: strPtr("Billy"), OrgName: strPtr("Fabrikam MSP")}, "Billy from Fabrikam MSP is connected"},
 		{"name only", &ipc.DesktopPrompt{TechnicianName: strPtr("Billy")}, "Billy is connected"},
-		{"partner only", &ipc.DesktopPrompt{OrgName: strPtr("Olive Technology")}, "A technician from Olive Technology is connected"},
+		{"partner only", &ipc.DesktopPrompt{OrgName: strPtr("Fabrikam MSP")}, "A technician from Fabrikam MSP is connected"},
 		{"neither", &ipc.DesktopPrompt{}, "A technician is connected"},
 	}
 	for _, tt := range tests {

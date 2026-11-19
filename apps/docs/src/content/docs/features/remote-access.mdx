@@ -561,7 +561,7 @@ Every remote session that ends records a reason, shown under its status in **Rem
 | Reason | What happened |
 |--------|---------------|
 | Ended by the user | The person at the device ended it from the on-screen indicator. |
-| Ended by a technician | A technician ended it: closed the session window in the Breeze Viewer, cancelled a reconnect, or ended it from the web console, for example with the terminal's **Disconnect** button. |
+| Ended by a technician | A technician ended it: closed the session window in the Breeze Viewer (with a current viewer, also when the window had stopped responding), cancelled a reconnect, or ended it from the web console, for example with the terminal's **Disconnect** button. |
 | Viewer closed | The viewer's connection closed normally (WebSocket desktop or terminal). |
 | Connection to the viewer lost | The viewer's connection failed, stopped answering heartbeats, or the API server holding it went away. |
 | Connection closed | The device reported that the peer connection closed without the viewer ending the session first: a dropped network connection, the Breeze Viewer quit or crashed, or the viewer could not reach the API in time when you closed the window. Older viewer versions show every hang-up this way. When the viewer was reconnecting, Breeze first waits a short grace period. |

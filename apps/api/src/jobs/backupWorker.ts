@@ -33,10 +33,6 @@ import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/ag
 import type { AgentCommand } from '../routes/agentWs';
 import { resolveBackupBaseLeaseMs } from '../services/backupGcKnobs';
 import { normalizeStorageIdentity } from './backupRetention';
-import {
-  cleanupExpiredSnapshots,
-  sweepUnreferencedBackupObjects,
-} from './backupRetention';
 import * as backupEnqueue from './backupEnqueue';
 import { buildBackupWriteCommandDestination } from '../services/backupProviderConfig';
 import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
@@ -79,6 +75,9 @@ import {
 export const getBackupQueue = backupEnqueue.getBackupQueue;
 export const enqueueBackupDispatch = backupEnqueue.enqueueBackupDispatch;
 export const enqueueBackupResults = backupEnqueue.enqueueBackupResults;
+// The cleanup run moved to its own module and queue (#12061); re-exported so
+// existing callers and tests keep importing it from here.
+export { processCleanupExpiredSnapshots } from './backupSnapshotCleanup';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -91,76 +90,79 @@ const BACKUP_QUEUE = 'backup';
 
 type CheckSchedulesJobData = Extract<BackupQueueJobData, { type: 'check-schedules' }>;
 type ExpireRecoveryTokensJobData = Extract<BackupQueueJobData, { type: 'expire-recovery-tokens' }>;
-type CleanupExpiredSnapshotsJobData = Extract<BackupQueueJobData, { type: 'cleanup-expired-snapshots' }>;
 type DispatchBackupJobData = Extract<BackupQueueJobData, { type: 'dispatch-backup' }>;
 type ProcessResultsJobData = Extract<BackupQueueJobData, { type: 'process-results' }>;
 
 // ── Worker ────────────────────────────────────────────────────────────────────
 
+async function processBackupQueueJob(job: Job<BackupQueueJobData>): Promise<unknown> {
+  const data = parseQueueJobData(BACKUP_QUEUE, job, backupQueueJobDataSchema);
+  // dispatch-backup is handled OUTSIDE the blanket context below (#1105):
+  // it does Redis/WS I/O via the agentCommandRelay facade
+  // (isAgentConnectedAnywhere, recordDispatchedExpectation,
+  // dispatchCommandToAgent — the latter's ack wait is a poll loop up to
+  // RELAY_DELIVERY_DEADLINE_MS), and processDispatchBackup manages its own
+  // short-lived system DB contexts around just its reads/writes so no
+  // pooled connection sits idle-in-transaction across that I/O.
+  if (data.type === 'dispatch-backup') {
+    assertQueueJobName(BACKUP_QUEUE, job, 'dispatch-backup');
+    // #4137: BullMQ bumps `attemptsStarted` on EVERY move-to-active. With
+    // `attempts: 1` (backupEnqueue.DISPATCH_JOB_OPTIONS) an ordinary retry
+    // can no longer happen, but a STALLED job — worker process killed
+    // mid-dispatch — is pushed back to `wait` and re-delivered regardless
+    // of `attempts`, up to `maxStalledCount` below. `> 1` is therefore
+    // exactly "some earlier execution already started this dispatch", and
+    // Phase 3 must not run again. (`reprocessJob` clears the counter, so a
+    // deliberate operator retry is NOT suppressed by this.)
+    return await processDispatchBackup(data, { redelivered: job.attemptsStarted > 1 });
+  }
+  // cleanup-expired-snapshots no longer runs on this queue (#12061): a
+  // run can outlast its 6-hour schedule, and on this 5-slot worker it
+  // held the slots backup dispatch, result processing and schedule checks
+  // need, for every org. It runs on its own single-slot queue
+  // (backupSnapshotCleanupWorker.ts), which also removes the schedule a
+  // previous version registered here. A job already queued here by that
+  // schedule completes as a no-op — and, like every cleanup run, must
+  // never execute inside the blanket context below (D18 §3.7).
+  if (data.type === 'cleanup-expired-snapshots') {
+    assertQueueJobName(BACKUP_QUEUE, job, 'cleanup-expired-snapshots');
+    console.warn(
+      `[BackupWorker] Ignoring cleanup-expired-snapshots job ${job.id} on the shared backup queue — ` +
+      'cleanup runs on the backup-snapshot-cleanup queue',
+    );
+    return { skipped: 'moved-to-backup-snapshot-cleanup-queue' };
+  }
+  // check-schedules is ALSO handled outside the blanket context (#6597):
+  // every job it creates is handed to the dispatch worker, which reads the
+  // row on its own connection. Created inside one sweep-long transaction,
+  // those rows were invisible until the whole sweep committed — the
+  // dispatch resolved them as pathless file backups and they sat `pending`
+  // until the stale reaper failed them. processCheckSchedules commits each
+  // org's jobs in their own short context before enqueueing them.
+  if (data.type === 'check-schedules') {
+    assertQueueJobName(BACKUP_QUEUE, job, 'check-schedules');
+    return await processCheckSchedules();
+  }
+  return runWithSystemDbAccess(async () => {
+    switch (data.type) {
+      case 'expire-recovery-tokens':
+        assertQueueJobName(BACKUP_QUEUE, job, 'expire-recovery-tokens');
+        return await processExpireRecoveryTokens();
+      case 'process-results':
+        assertQueueJobName(BACKUP_QUEUE, job, 'process-results');
+        return await processResults(data);
+      default:
+        throw new Error(
+          `Unknown job type: ${(data as { type: string }).type}`
+        );
+    }
+  });
+}
+
 function createBackupWorker(): Worker<BackupQueueJobData> {
   return new Worker<BackupQueueJobData>(
     BACKUP_QUEUE,
-    async (job: Job<BackupQueueJobData>) => {
-      const data = parseQueueJobData(BACKUP_QUEUE, job, backupQueueJobDataSchema);
-      // dispatch-backup is handled OUTSIDE the blanket context below (#1105):
-      // it does Redis/WS I/O via the agentCommandRelay facade
-      // (isAgentConnectedAnywhere, recordDispatchedExpectation,
-      // dispatchCommandToAgent — the latter's ack wait is a poll loop up to
-      // RELAY_DELIVERY_DEADLINE_MS), and processDispatchBackup manages its own
-      // short-lived system DB contexts around just its reads/writes so no
-      // pooled connection sits idle-in-transaction across that I/O.
-      if (data.type === 'dispatch-backup') {
-        assertQueueJobName(BACKUP_QUEUE, job, 'dispatch-backup');
-        // #4137: BullMQ bumps `attemptsStarted` on EVERY move-to-active. With
-        // `attempts: 1` (backupEnqueue.DISPATCH_JOB_OPTIONS) an ordinary retry
-        // can no longer happen, but a STALLED job — worker process killed
-        // mid-dispatch — is pushed back to `wait` and re-delivered regardless
-        // of `attempts`, up to `maxStalledCount` below. `> 1` is therefore
-        // exactly "some earlier execution already started this dispatch", and
-        // Phase 3 must not run again. (`reprocessJob` clears the counter, so a
-        // deliberate operator retry is NOT suppressed by this.)
-        return await processDispatchBackup(data, { redelivered: job.attemptsStarted > 1 });
-      }
-      // cleanup-expired-snapshots is ALSO handled outside the blanket
-      // context (D18 §3.7): its own retention pass must open one real
-      // system-DB transaction PER CANDIDATE ROW so a retirement commits
-      // durably before the next row is even considered, and the GC sweep
-      // that follows must run in its own separate context so a sweep
-      // failure can never roll back a retirement already committed.
-      // processCleanupExpiredSnapshots (below) manages both of those
-      // contexts itself — nesting it inside runWithSystemDbAccess here would
-      // silently collapse every one of those into the single ambient
-      // transaction this task exists to eliminate.
-      if (data.type === 'cleanup-expired-snapshots') {
-        assertQueueJobName(BACKUP_QUEUE, job, 'cleanup-expired-snapshots');
-        return await processCleanupExpiredSnapshots();
-      }
-      // check-schedules is ALSO handled outside the blanket context (#6597):
-      // every job it creates is handed to the dispatch worker, which reads the
-      // row on its own connection. Created inside one sweep-long transaction,
-      // those rows were invisible until the whole sweep committed — the
-      // dispatch resolved them as pathless file backups and they sat `pending`
-      // until the stale reaper failed them. processCheckSchedules commits each
-      // org's jobs in their own short context before enqueueing them.
-      if (data.type === 'check-schedules') {
-        assertQueueJobName(BACKUP_QUEUE, job, 'check-schedules');
-        return await processCheckSchedules();
-      }
-      return runWithSystemDbAccess(async () => {
-        switch (data.type) {
-          case 'expire-recovery-tokens':
-            assertQueueJobName(BACKUP_QUEUE, job, 'expire-recovery-tokens');
-            return await processExpireRecoveryTokens();
-          case 'process-results':
-            assertQueueJobName(BACKUP_QUEUE, job, 'process-results');
-            return await processResults(data);
-          default:
-            throw new Error(
-              `Unknown job type: ${(data as { type: string }).type}`
-            );
-        }
-      });
-    },
+    processBackupQueueJob,
     {
       connection: getBullMQConnection(),
       concurrency: 5,
@@ -459,119 +461,6 @@ async function processExpireRecoveryTokens(): Promise<{ expired: number }> {
     .returning({ id: recoveryTokens.id });
 
   return { expired: expired.length };
-}
-
-export async function processCleanupExpiredSnapshots(): Promise<{
-  deleted: number;
-  skipped: number;
-  prunedByMaxVersions: number;
-  // D17: rows whose DELETE was rejected by the DB (per-row isolated in
-  // cleanupExpiredSnapshots — see backupRetention.ts) across every org this
-  // run. Non-zero triggers the throw at the very end of this function, AFTER
-  // the GC sweep below has already run.
-  failed: number;
-  gcDeleted: number;
-  // GC's unit of work is a storage identity (possibly several backupConfigs
-  // rows sharing one bucket), not a single "destination" row.
-  gcSkippedIdentities: number;
-  // Subset of gcSkippedIdentities that fail-closed on an unfetchable
-  // manifest — the distinct signal of a possible non-self-healing storage leak.
-  gcBlockedIdentities: number;
-  // D18 W02: retirement rows CONFIRMED fully swept from storage this run
-  // (durable, via swept_at).
-  gcRetiredSwept: number;
-  // D18 W02: abandoned orphan-manifest prefixes reclaimed this run
-  // (best-effort observability metric, no DB row to confirm against).
-  gcOrphansSwept: number;
-  // D18 W02: identities that ran today's (pre-D18) algorithm only this run
-  // (legacy helper and/or unresolved NULL-storage_identity rows).
-  gcDeferredIdentities: number;
-  // D18 W02: storage_identity values with rows but no current config
-  // producing them (visibility only).
-  gcUnreachableIdentities: number;
-}> {
-  // D18 §3.7: this whole function now runs with NO ambient DB context (it is
-  // called directly from the worker, no longer inside the blanket wrap) — the
-  // read below and cleanupExpiredSnapshots's own per-row work each open their
-  // OWN context explicitly.
-  const orgRows = await runWithSystemDbAccess(() =>
-    db.selectDistinct({ orgId: backupSnapshots.orgId }).from(backupSnapshots)
-  );
-
-  let deleted = 0;
-  let skipped = 0;
-  let prunedByMaxVersions = 0;
-  let failed = 0;
-
-  for (const { orgId } of orgRows) {
-    // cleanupExpiredSnapshots (backupRetention.ts) opens its OWN per-
-    // candidate-row system context internally — deliberately NOT wrapped
-    // here, so each row's retirement-insert + delete commits independently
-    // of every other row and of the sweep below.
-    const result = await cleanupExpiredSnapshots(orgId);
-    deleted += result.deleted;
-    skipped += result.skippedLegalHold + result.skippedImmutable;
-    prunedByMaxVersions += result.prunedByMaxVersions;
-    failed += result.failed;
-  }
-
-  // Mark-and-sweep GC runs ONCE per retention cycle, after row-level
-  // retention has finished for every org — not per-org, since a
-  // destination's live set spans every retained snapshot regardless of
-  // which org iteration deleted rows (see backupRetention.ts's
-  // deleteSnapshotRow: row deletion no longer touches object storage at
-  // all; GC is the only thing that does). A GC failure must never fail this
-  // job: row-level retention already succeeded, and BullMQ would otherwise
-  // retry/re-log the whole run over an unrelated object-storage problem.
-  //
-  // D18 §3.7 (W02): the call is BARE, at depth 0 — no ambient DB context.
-  // sweepUnreferencedBackupObjects (backupRetention.ts) now opens its own
-  // short per-identity withSystemDbAccessContext calls internally and makes
-  // every storage (list/fetch/delete) call outside any held context; wrapping
-  // the whole call in one context here (the pre-W02 shape) would defeat that
-  // split and pin a pooled connection across every identity's storage I/O.
-  // assertOutsideHeldDbContext inside sweepStorageIdentity is the runtime
-  // tripwire for this invariant.
-  let gcDeleted = 0;
-  let gcSkippedIdentities = 0;
-  let gcBlockedIdentities = 0;
-  let gcRetiredSwept = 0;
-  let gcOrphansSwept = 0;
-  let gcDeferredIdentities = 0;
-  let gcUnreachableIdentities = 0;
-  try {
-    const gcResult = await sweepUnreferencedBackupObjects();
-    gcDeleted = gcResult.deleted;
-    gcSkippedIdentities = gcResult.skippedIdentities;
-    gcBlockedIdentities = gcResult.blockedIdentities;
-    gcRetiredSwept = gcResult.retiredSwept;
-    gcOrphansSwept = gcResult.orphansSwept;
-    gcDeferredIdentities = gcResult.deferredIdentities;
-    gcUnreachableIdentities = gcResult.unreachableIdentities;
-  } catch (err) {
-    console.error('[BackupWorker] Backup object GC sweep failed — retention run still succeeded:', err);
-    captureException(err instanceof Error ? err : new Error(String(err)));
-  }
-
-  // D17: a per-row DELETE failure must not be swallowed — it has to surface
-  // as a failed BullMQ job so it's visible in the worker's failed-job log and
-  // dashboards, not just in the Sentry capture cleanupExpiredSnapshots already
-  // made per org. This throw is deliberately the LAST thing in this function,
-  // after both row-level retention for every org AND the GC sweep above have
-  // already run to completion — a job whose retention had partial failures
-  // must not also block that run's object-storage reclamation.
-  if (failed > 0) {
-    throw new Error(
-      `[BackupWorker] cleanup-expired-snapshots: ${failed} snapshot row delete(s) failed this run — ` +
-      'see prior [BackupRetention] per-row error logs for detail; rows will be retried next run.'
-    );
-  }
-
-  return {
-    deleted, skipped, prunedByMaxVersions, failed,
-    gcDeleted, gcSkippedIdentities, gcBlockedIdentities,
-    gcRetiredSwept, gcOrphansSwept, gcDeferredIdentities, gcUnreachableIdentities,
-  };
 }
 
 // ── Backup target resolution ─────────────────────────────────────────────────
@@ -2392,27 +2281,16 @@ export async function initializeBackupWorker(): Promise<void> {
       }
     );
 
-    const cleanupJob = await queue.add(
-      'cleanup-expired-snapshots',
-      backupQueueJobDataSchema.parse(
-        withQueueMeta({ type: 'cleanup-expired-snapshots' as const }, BACKUP_REPEATABLE_META)
-      ),
-      {
-        // Every 6h at a registry-allocated slot (jobs/scheduleRegistry.ts).
-        repeat: { pattern: jobSchedule('backup-expired-snapshot-cleanup') },
-        attempts: 1,
-        removeOnComplete: { count: 10 },
-        removeOnFail: { count: 20 },
-      }
-    );
+    // cleanup-expired-snapshots is scheduled on its own queue by
+    // backupSnapshotCleanupWorker.ts (#12061), which also removes the
+    // schedule earlier versions registered on this queue.
 
     // Clean up stale repeatable jobs
     const repeatable = await queue.getRepeatableJobs();
     for (const job of repeatable) {
       if (
         (job.name === 'check-schedules' && job.key !== newJob.repeatJobKey) ||
-        (job.name === 'expire-recovery-tokens' && job.key !== expireJob.repeatJobKey) ||
-        (job.name === 'cleanup-expired-snapshots' && job.key !== cleanupJob.repeatJobKey)
+        (job.name === 'expire-recovery-tokens' && job.key !== expireJob.repeatJobKey)
       ) {
         await queue.removeRepeatableByKey(job.key);
       }
@@ -2439,6 +2317,9 @@ export async function shutdownBackupWorker(): Promise<void> {
 // Exported for unit tests of the schedule fan-out (profile expansion + loud
 // skips). Internal helper, not part of the worker's public surface.
 export const __testOnly = {
+  // #12061: the shared backup queue's processor, so tests can prove which job
+  // types it still runs.
+  processBackupQueueJob,
   processCheckSchedules,
   // Exposed so the agentStatus hop can be tested: this function is the only
   // thing carrying a `partial` run from the queue payload into persistence, and

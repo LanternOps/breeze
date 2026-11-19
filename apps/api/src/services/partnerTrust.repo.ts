@@ -30,24 +30,42 @@ export async function readTrust(partnerId: string): Promise<TrustRow | null> {
  * causes this call to affect zero rows instead of clobbering that change.
  * Returns the number of rows the UPDATE affected (0 or 1).
  */
+export interface WriteTrustExtra {
+  /**
+   * Also require the row's trust_changed_at to equal this value, so the write
+   * is bound to one specific earlier transition, not just to a state.
+   */
+  expectedTrustChangedAt?: Date;
+  /**
+   * Runs in the SAME transaction as the UPDATE, only when it affected a row,
+   * with the trust_changed_at the UPDATE stored. Use the ambient `db` inside
+   * it (never a helper that calls runOutsideDbContext, which would run on a
+   * second connection). Throwing rolls the trust write back with it.
+   */
+  withinWrite?: (written: { trustChangedAt: Date }) => Promise<void>;
+}
+
 export async function writeTrust(
   partnerId: string,
   next: PartnerTrustState,
   reason: string,
   actorUserId: string | null,
   expectedFrom?: PartnerTrustState,
+  extra?: WriteTrustExtra,
 ): Promise<number> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const condition = expectedFrom
-      ? and(eq(partners.id, partnerId), eq(partners.trustState, expectedFrom))
-      : eq(partners.id, partnerId);
+    const conditions = [eq(partners.id, partnerId)];
+    if (expectedFrom) conditions.push(eq(partners.trustState, expectedFrom));
+    if (extra?.expectedTrustChangedAt) conditions.push(eq(partners.trustChangedAt, extra.expectedTrustChangedAt));
+    const changedAt = new Date();
     const rows = await db.update(partners).set({
       trustState: next,
       trustReason: reason,
       trustChangedBy: actorUserId,
-      trustChangedAt: new Date(),
-      updatedAt: new Date(),
-    }).where(condition).returning({ id: partners.id });
+      trustChangedAt: changedAt,
+      updatedAt: changedAt,
+    }).where(and(...conditions)).returning({ id: partners.id });
+    if (rows.length > 0 && extra?.withinWrite) await extra.withinWrite({ trustChangedAt: changedAt });
     return rows.length;
   }, 'partnerTrust.writeTrust'));
 }

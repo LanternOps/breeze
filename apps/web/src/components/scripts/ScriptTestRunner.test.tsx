@@ -799,7 +799,7 @@ describe('ScriptTestRunner post-run actions (#4885 / #4886)', () => {
  *
  * Before this the editor's Test Run posted `{deviceIds, parameters,
  * triggerType}` and inherited whatever the form's advanced-settings default
- * was, with nothing on screen naming it. During the OliveTech GCPW debugging
+ * was, with nothing on screen naming it. During the GCPW rollout debugging
  * (#4882) the same script ran alternately as SYSTEM and as the user with no
  * visible control over which, which is a large part of why the failures looked
  * random.
@@ -832,7 +832,7 @@ describe('ScriptTestRunner — run context (#4888)', () => {
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.startsWith('/devices/') && url.endsWith('/sessions/live')) {
         return jsonResponse({ data: { sessions: [
-          { sessionId: 3, username: 'olive\\tech', state: 'active', sessionType: 'console', helperConnected: true, idleMinutes: 0 },
+          { sessionId: 3, username: 'fabrikam\\tech', state: 'active', sessionType: 'console', helperConnected: true, idleMinutes: 0 },
         ] } });
       }
       if (url.startsWith('/devices')) return jsonResponse({ data: [device] });

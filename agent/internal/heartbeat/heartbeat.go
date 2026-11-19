@@ -77,7 +77,7 @@ import (
 )
 
 var log = logging.L("heartbeat")
-var desktopSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+var desktopSessionIDPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`) })
 
 const backupProbeThreshold = 10 // keep in sync with agent/cmd/breeze-watchdog
 
@@ -603,7 +603,7 @@ type Heartbeat struct {
 	hwDisabledSnapshot *hwhealth.Snapshot
 	timeSync           *timeSyncRuntime
 	workloads          *workloadsRuntime
-	// wake runs the read-only Wake-on-LAN readiness collector; wakeApply is a
+	// wake runs the Wake-on-LAN readiness collector (writes inactive); wakeApply is a
 	// test seam that replaces wake.ApplySettings.
 	wake      *wakeconfig.Manager
 	wakeApply func(wakeconfig.Settings)
@@ -619,7 +619,24 @@ type Heartbeat struct {
 	helperToken   string // retained copy of the helper-scoped token for connect-time pushes
 	helperTokenMu sync.RWMutex
 	sessionBroker *sessionbroker.Broker
-	promptHost    *prompthost.Host // on-device prompts (#10190); W04 registers notice.info (live only where the server enables it)
+	// linuxDesktopHelpers runs the Linux per-session desktop helpers
+	// (#12117); nil unless on Linux with desktop_wayland_helper on. Set once
+	// in Start, read by Stop.
+	linuxDesktopHelpers atomic.Pointer[sessionbroker.LinuxDesktopHelperManager]
+	// linuxHosted maps a desktop session id to its live mark on the Linux
+	// desktop helper of a logind session (#12117 W3), released exactly once
+	// when its owner is forgotten. linuxHostedMu also orders that release
+	// with the owner's removal (forgetDesktopOwner).
+	linuxHostedMu  sync.Mutex
+	linuxHosted    map[string]linuxHostedMark
+	linuxHostedSeq uint64
+	// Test seams for Linux desktop routing; production leaves them nil.
+	linuxDesktopHelperOverride linuxDesktopHelperController
+	linuxActiveSeatSession     func(context.Context) (*sessionbroker.DetectedSession, error)
+	// desktopDirectStart replaces h.desktopMgr.StartSession on the direct
+	// in-root start path; tests only.
+	desktopDirectStart func(sessionID, offer string, iceServers []desktop.ICEServerConfig, displayIndex int, policy desktop.SessionPolicy) (string, error)
+	promptHost         *prompthost.Host // on-device prompts (#10190); W04 registers notice.info (live only where the server enables it)
 	// MSP identity cache and the prompt list it purges on a scope change
 	// (#10190 W03); see prompt_identity.go.
 	promptIdentity  *promptidentity.Store
@@ -1536,6 +1553,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			socketPath = ipc.DefaultSocketPath()
 		}
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
+		// Before Listen: a Linux desktop helper keeps a CanCapture claim only
+		// with desktop_wayland_helper on and the Wayland backend in this build
+		// (#12117); always false until that backend ships.
+		h.sessionBroker.SetLinuxWaylandCaptureAuthorized(
+			linuxWaylandCaptureAuthorizer(runtime.GOOS, cfg, desktop.WaylandBackendCompiled))
 		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
 		h.sessionBroker.SetSessionAuthenticatedHandler(h.handleHelperSessionAuthenticated)
 		h.startPromptHost(config.GetDataDir())
@@ -2079,7 +2101,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			log.Warn("invalid desktop lease renew payload", "error", err.Error())
 			return
 		}
-		if !desktopSessionIDPattern.MatchString(renew.SessionID) {
+		if !desktopSessionIDPattern().MatchString(renew.SessionID) {
 			log.Warn("dropping desktop lease renew with invalid session ID",
 				"sessionId", renew.SessionID, "helperSession", session.SessionID)
 			return
@@ -2102,7 +2124,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			log.Warn("invalid desktop peer disconnect payload", "error", err.Error())
 			return
 		}
-		if !desktopSessionIDPattern.MatchString(notice.SessionID) {
+		if !desktopSessionIDPattern().MatchString(notice.SessionID) {
 			log.Warn("dropping desktop peer disconnect with invalid session ID",
 				"sessionId", notice.SessionID, "helperSession", session.SessionID)
 			return
@@ -2120,7 +2142,7 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			log.Warn("invalid desktop clipboard summary payload", "error", err.Error())
 			return
 		}
-		if !desktopSessionIDPattern.MatchString(notice.SessionID) {
+		if !desktopSessionIDPattern().MatchString(notice.SessionID) {
 			log.Warn("dropping desktop clipboard summary with invalid session ID",
 				"sessionId", notice.SessionID, "helperSession", session.SessionID)
 			return
@@ -2320,7 +2342,7 @@ func (h *Heartbeat) sendDesktopDisconnectNotification(sessionID, reason string) 
 	if h.wsClient == nil {
 		return
 	}
-	if !desktopSessionIDPattern.MatchString(sessionID) {
+	if !desktopSessionIDPattern().MatchString(sessionID) {
 		log.Warn("refusing to send desktop disconnect notification with invalid session ID", "sessionId", sessionID)
 		return
 	}
@@ -2458,6 +2480,8 @@ func (h *Heartbeat) Start() {
 	if h.sessionBroker != nil {
 		h.startDarwinDesktopWatcher()
 		h.startSessionBannerSweep()
+		// Linux + desktop_wayland_helper only; a no-op otherwise.
+		h.startLinuxDesktopHelperManager()
 	}
 	if h.promptHost != nil {
 		promptCtx, promptCancel := context.WithCancel(context.Background())
@@ -2790,6 +2814,14 @@ func (h *Heartbeat) Stop() {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
+
+		// Linux desktop helpers (#12117) are stopped first and synchronously
+		// (bounded to 5 s): every unit is collected and every hosted desktop
+		// session reported ended while the broker and the API link are still
+		// up, and nothing is respawned while the broker closes.
+		if m := h.linuxDesktopHelpers.Load(); m != nil {
+			m.Shutdown()
+		}
 
 		if h.stopBrokerAcceptingAndWait != nil {
 			if err := h.stopBrokerAcceptingAndWait(ctx); err != nil {
@@ -3954,7 +3986,7 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		h.applyWorkloadInventoryConfig(wiRaw)
 	}
 
-	// Apply wake_on_lan_settings (read-only readiness collection). Same rule:
+	// Apply wake_on_lan_settings (readiness collection; writes inactive). Same rule:
 	// above the policy-probe early return. An absent block changes nothing.
 	h.applyWakeOnLanFromUpdate(update)
 
@@ -7672,6 +7704,13 @@ func (h *Heartbeat) processCommand(cmd Command) {
 	if result.Status == "duplicate" {
 		return
 	}
+	// #11154: another process reports this result. The journal entry is left
+	// in place on purpose (no End): if that process fails and this agent comes
+	// back, the restart reports the command failed.
+	if result.Status == tools.StatusResultHandedOff {
+		log.Info("command result handed to another process; not submitting it", logging.KeyCommandID, cmd.ID)
+		return
+	}
 
 	// Submit result back to API
 	if err := h.submitCommandResult(cmd.ID, result); err != nil {
@@ -7814,7 +7853,11 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 	}
 
 	result, executed := h.executeCommandViaPoolReportingDelivery(cmd)
-	if executed && result.Status != "duplicate" {
+	// #11154: another process reports a handed-off result. No hand-off is
+	// armed, so the journal entry survives, and nothing is submitted here; the
+	// websocket client drops the marker it is returned.
+	handedOff := result.Status == tools.StatusResultHandedOff
+	if executed && result.Status != "duplicate" && !handedOff {
 		// This delivery ran the command, so its hand-off (the websocket
 		// client's OnResultHandedOff, right after this returns) is the one
 		// that clears the journal entry (#8296).
@@ -7823,7 +7866,7 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 
 	wsResult := toWSCommandResult(cmd.ID, result)
 
-	if result.Status != "duplicate" && !isEphemeralCommand(cmd.Type) && !isWSDirectOnlyCommand(cmd.Type) {
+	if result.Status != "duplicate" && !handedOff && !isEphemeralCommand(cmd.Type) && !isWSDirectOnlyCommand(cmd.Type) {
 		go func() {
 			if err := h.submitCommandResult(cmd.ID, result); err != nil {
 				log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err.Error())

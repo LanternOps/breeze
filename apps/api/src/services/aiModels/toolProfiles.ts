@@ -195,7 +195,7 @@ export const STALE_WINDOW_AUTO_FLOOR: Readonly<Record<ProfiledSurface, Constrain
  */
 export type ProfilePrefixTokens = Readonly<Record<ProfiledSurface, Readonly<Record<'minimal' | 'standard' | 'full', number | null>>>>;
 export const PROFILE_PREFIX_TOKENS: ProfilePrefixTokens = Object.freeze({
-  chat: { minimal: 3320, standard: 11037, full: 128300 },
+  chat: { minimal: 3344, standard: 11037, full: 128300 },
   helper: { minimal: 2789, standard: 4600, full: 8562 },
   script_builder: { minimal: 3419, standard: 4238, full: 6372 },
   ai_agents: { minimal: 2995, standard: 10292, full: 79071 },

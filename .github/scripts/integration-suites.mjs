@@ -231,7 +231,7 @@ function resolveImport(repoRoot, fromFile, spec) {
 }
 
 // The repo paths under apps/api/src a file imports by string literal (static,
-// re-export, side-effect, and literal dynamic `import('…')`). Direct imports
+// re-export, side-effect, and a dynamic import of a string literal). Direct imports
 // only: the API's import graph is one component through db/index.ts, so a
 // transitive closure would put every test in core.
 // A relative or `@/` specifier that resolves to no file is pushed onto

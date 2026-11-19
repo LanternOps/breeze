@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -42,6 +43,10 @@ func newOrderingTestHeartbeat(t *testing.T, status int, bodies chan<- map[string
 	t.Helper()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") { // ignore local port probes
+			http.NotFound(w, r)
+			return
+		}
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read body: %v", err)
@@ -392,6 +397,10 @@ func TestSendPolicyStateRegistryEndpoint(t *testing.T) {
 			bodies := make(chan map[string]any, 4)
 			paths := make(chan string, 4)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasPrefix(r.URL.Path, "/api/") { // ignore local port probes
+					http.NotFound(w, r)
+					return
+				}
 				var decoded map[string]any
 				if err := json.NewDecoder(r.Body).Decode(&decoded); err != nil {
 					t.Errorf("decode body: %v", err)

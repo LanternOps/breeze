@@ -81,6 +81,24 @@ describe('WakeOnLanTab', () => {
     }));
   });
 
+  it('warns that the button stays hidden until proven only while verified is selected', () => {
+    render(<WakeOnLanTab {...baseProps} />);
+    expect(screen.queryByTestId('wake-verified-warning')).toBeNull();
+    fireEvent.click(screen.getByTestId('wake-button-mode-verified'));
+    const warning = screen.getByTestId('wake-verified-warning');
+    expect(warning.getAttribute('role')).toBe('note');
+    expect(warning.textContent).toMatch(/hidden/i);
+    expect(warning.textContent).toMatch(/proven/i);
+    expect(warning.textContent).toMatch(/ready/i);
+    fireEvent.click(screen.getByTestId('wake-button-mode-always'));
+    expect(screen.queryByTestId('wake-verified-warning')).toBeNull();
+  });
+
+  it('shows the verified warning for a stored verified link', () => {
+    render(<WakeOnLanTab {...baseProps} existingLink={link({ configureSettings: false, buttonMode: 'verified' })} />);
+    expect(screen.getByTestId('wake-verified-warning')).toBeTruthy();
+  });
+
   it('shows the status panel only once the policy has a saved link', () => {
     const { rerender } = render(<WakeOnLanTab {...baseProps} />);
     expect(screen.queryByTestId('wake-status-panel-stub')).toBeNull();

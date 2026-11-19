@@ -160,7 +160,7 @@ func TestSupportViewingStaysActiveWhenAStaleStartLosesToANewerOne(t *testing.T) 
 // The indicator names who is viewing, from the identity the server put on the
 // start's prompt block — and only in support mode.
 func TestSupportViewerComesFromTheStartPrompt(t *testing.T) {
-	name, org := "Billy", "Olive Technology"
+	name, org := "Billy", "Fabrikam MSP"
 	prompt := promptPayload(t, &ipc.DesktopPrompt{Mode: "notify", TechnicianName: &name, OrgName: &org})
 
 	s, _, _ := newSupportStreamHarness(t)
@@ -170,7 +170,7 @@ func TestSupportViewerComesFromTheStartPrompt(t *testing.T) {
 	if res := startSupportStream(t, s, "desk-start-1", "1", map[string]any{"prompt": prompt}); res.Status != "completed" {
 		t.Fatalf("start: %q (%s)", res.Status, res.Error)
 	}
-	if got := s.h.SupportViewer(); got != "Billy from Olive Technology" {
+	if got := s.h.SupportViewer(); got != "Billy from Fabrikam MSP" {
 		t.Fatalf("viewer = %q", got)
 	}
 

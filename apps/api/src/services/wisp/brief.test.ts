@@ -254,7 +254,7 @@ describe('buildBrief', () => {
     h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
     h.spendSummary.mockResolvedValue({ spentTodayCents: 0, backgroundCents: 0, chatCents: 0, budgetCentsPerDay: 200, budgetResetsAt: NOW });
     const brief = await buildBrief(GRANT, NOW);
-    expect(brief.title).toBe('Good morning — nothing needs you');
+    expect(brief.title).toBe('Good afternoon — nothing needs you');
     expect(brief.body).toBe('Nothing needs you right now.');
     expect(brief.sections.map((s) => s.heading)).toEqual(['Spend']);
     expect(brief.sections[0]!.lines).toEqual(['$0.00 of $2.00 today (background $0.00 · chat $0.00)']);
@@ -272,7 +272,7 @@ describe('buildBrief', () => {
     ]));
     const brief = await buildBrief(GRANT, NOW);
     // Needs you: both approval cards (one snoozed). Open: the four that are not snoozed.
-    expect(brief.title).toBe('Good morning — 2 need you, 4 open');
+    expect(brief.title).toBe('Good afternoon — 2 need you, 4 open');
     // A 62-character summary now fits whole (#11428); snoozed concerns stay out of the lock-screen body.
     expect(brief.body.split(' · ')).toEqual([long, 'Patch window missed', 'Low thing']);
     const needs = brief.sections.find((s) => s.heading === 'Needs you');
@@ -300,7 +300,7 @@ describe('buildBrief', () => {
         concern({ severity: 'medium', summary: 'Disk is filling up.' }),
       ]);
       const brief = await buildBrief(GRANT, NOW);
-      expect(brief.title).toBe('Good morning — 2 need you, 3 open');
+      expect(brief.title).toBe('Good afternoon — 2 need you, 3 open');
       expect(brief.sections.find((s) => s.heading === 'Needs you')?.lines)
         .toEqual(['No successful backup since July.', 'The maintenance window has no start time.']);
     });
@@ -308,14 +308,14 @@ describe('buildBrief', () => {
     it('a snoozed HIGH concern with no approval card does not need you', async () => {
       live([concern({ severity: 'high', status: 'snoozed', summary: 'Snoozed high' })]);
       const brief = await buildBrief(GRANT, NOW);
-      expect(brief.title).toBe('Good morning — nothing needs you');
+      expect(brief.title).toBe('Good afternoon — nothing needs you');
       expect(brief.sections.find((s) => s.heading === 'Needs you')).toBeUndefined();
     });
 
     it('a readiness note is not an open concern, but still counts as a readiness gap', async () => {
       live([readiness(ORG), readiness(ORG2), concern({ severity: 'medium', summary: 'Patch window missed.' })]);
       const brief = await buildBrief(GRANT, NOW);
-      expect(brief.title).toBe('Good morning — 0 need you, 1 open');
+      expect(brief.title).toBe('Good afternoon — 0 need you, 1 open');
       expect(brief.body).toBe('Patch window missed');
       expect(brief.sections.find((s) => s.heading === 'Open concerns')?.lines).toEqual(['medium: 1']);
       expect(brief.sections.find((s) => s.heading === 'Watching')?.lines).toEqual(['2 readiness gaps']);
@@ -324,14 +324,14 @@ describe('buildBrief', () => {
     it('only a snoozed concern with an approval card waiting: the body does not say nothing needs you', async () => {
       live([concern({ severity: 'medium', status: 'snoozed', approvalIntentId: 'intent-3', summary: 'Restart the print spooler?' })]);
       const brief = await buildBrief(GRANT, NOW);
-      expect(brief.title).toBe('Good morning — 1 need you, 0 open');
+      expect(brief.title).toBe('Good afternoon — 1 need you, 0 open');
       expect(brief.body).toBe('Open Wisp to review.');
     });
 
     it('only readiness notes and snoozed concerns: nothing needs you', async () => {
       live([readiness(ORG), concern({ severity: 'low', status: 'snoozed' })]);
       const brief = await buildBrief(GRANT, NOW);
-      expect(brief.title).toBe('Good morning — nothing needs you');
+      expect(brief.title).toBe('Good afternoon — nothing needs you');
       expect(brief.body).toBe('Nothing needs you right now.');
     });
 
@@ -346,7 +346,7 @@ describe('buildBrief', () => {
       });
       live([...kids, parent, concern({ severity: 'medium', summary: 'Disk is filling up.' })]);
       const brief = await buildBrief(GRANT, NOW);
-      expect(brief.title).toBe('Good morning — 1 need you, 2 open');
+      expect(brief.title).toBe('Good afternoon — 1 need you, 2 open');
       expect(brief.body.split(' · ')).toEqual(['3 devices: phantom incident event', 'Disk is filling up']);
       expect(brief.sections.find((s) => s.heading === 'Needs you')?.lines).toEqual(['3 devices: phantom incident event']);
       expect(brief.sections.find((s) => s.heading === 'Open concerns')?.lines).toEqual(['high: 1', 'medium: 1']);
@@ -360,7 +360,7 @@ describe('buildBrief', () => {
       });
       live([kid, parent]);
       const brief = await buildBrief(GRANT, NOW);
-      expect(brief.title).toBe('Good morning — 1 need you, 1 open');
+      expect(brief.title).toBe('Good afternoon — 1 need you, 1 open');
       expect(brief.body).toBe('Phantom incident event');
     });
 
@@ -372,7 +372,7 @@ describe('buildBrief', () => {
       });
       live([kid, parent]);
       const brief = await buildBrief(GRANT, NOW);
-      expect(brief.title).toBe('Good morning — 1 need you, 1 open');
+      expect(brief.title).toBe('Good afternoon — 1 need you, 1 open');
       expect(brief.sections.find((s) => s.heading === 'Needs you')?.lines).toEqual(['Restart the agent?']);
     });
 
@@ -525,7 +525,7 @@ describe('buildBrief', () => {
     });
   });
 
-  it('reports overnight activity since the given time, spend and watching with readiness gaps', async () => {
+  it('reports activity since the given time, spend and watching with readiness gaps', async () => {
     h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
     h.selectQueue.ai_agent_runs = [[{ ran: 2, skipped: 0 }]];
     const since = new Date('2026-10-23T12:00:00Z');
@@ -556,11 +556,44 @@ describe('buildBrief', () => {
 
     const brief = await buildBrief(GRANT, NOW, { since });
     const byHeading = Object.fromEntries(brief.sections.map((s) => [s.heading, s.lines]));
-    expect(byHeading.Overnight).toEqual(['2 assessments run', '1 specialist launched', '1 concern resolved']);
+    expect(byHeading['Since your last brief']).toEqual(['2 assessments run', '1 specialist launched', '1 concern resolved']);
     expect(byHeading.Spend).toEqual(['$2.00 of $5.00 today (background $0.30 · chat $1.70)']);
     expect(byHeading.Watching).toEqual(['2 active watches', '2 readiness gaps']);
     expect(h.listActivity).toHaveBeenCalledWith(CEILING, { limit: 100 });
     expect(h.spendSummary).toHaveBeenCalledWith(GRANT, NOW);
+  });
+
+  describe('#11678 §8: the greeting and the window heading follow the brief\'s own time', () => {
+    beforeEach(() => {
+      h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
+    });
+
+    it.each([
+      ['2026-11-10T12:30:00Z', 'Good morning'], // 07:30 EST
+      ['2026-11-10T20:58:00Z', 'Good afternoon'], // 15:58 EST
+      ['2026-11-11T02:00:00Z', 'Good evening'], // 21:00 EST
+      ['2026-11-11T07:00:00Z', 'Good evening'], // 02:00 EST
+    ])('at %s in America/New_York the title opens "%s"', async (iso, greeting) => {
+      const brief = await buildBrief(GRANT, new Date(iso), { timeZone: 'America/New_York' });
+      expect(brief.title).toBe(`${greeting} — nothing needs you`);
+    });
+
+    it('an unknown zone greets by UTC rather than failing the brief', async () => {
+      const brief = await buildBrief(GRANT, new Date('2026-11-10T20:58:00Z'), { timeZone: 'Not/AZone' });
+      expect(brief.title).toBe('Good evening — nothing needs you');
+    });
+
+    it('the activity window is "Since your last brief" after one, "Last 24 hours" before the first; never "Overnight"', async () => {
+      h.selectQueue.ai_agent_runs = [[{ ran: 1, skipped: 0 }]];
+      const after = await buildBrief(GRANT, NOW, { since: new Date('2026-10-23T12:00:00Z') });
+      expect(after.sections.find((s) => s.heading === 'Since your last brief')?.lines).toEqual(['1 assessment run']);
+
+      h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
+      h.selectQueue.ai_agent_runs = [[{ ran: 1, skipped: 0 }]];
+      const first = await buildBrief(GRANT, NOW);
+      expect(first.sections.find((s) => s.heading === 'Last 24 hours')?.lines).toEqual(['1 assessment run']);
+      expect([...after.sections, ...first.sections].some((s) => s.heading === 'Overnight')).toBe(false);
+    });
   });
 
   describe('#11428: assessments skipped because nothing changed (#11423)', () => {
@@ -571,17 +604,17 @@ describe('buildBrief', () => {
     it('adds a skipped line beside the assessments that ran', async () => {
       h.selectQueue.ai_agent_runs = [[{ ran: 3, skipped: 41 }]];
       const brief = await buildBrief(GRANT, NOW);
-      expect(brief.sections.find((s) => s.heading === 'Overnight')?.lines)
+      expect(brief.sections.find((s) => s.heading === 'Last 24 hours')?.lines)
         .toEqual(['3 assessments run', '41 assessments skipped — nothing had changed']);
     });
 
     it('one skip reads in the singular, with no ran line when none ran', async () => {
       h.selectQueue.ai_agent_runs = [[{ ran: 0, skipped: 1 }]];
       const brief = await buildBrief(GRANT, NOW);
-      expect(brief.sections.find((s) => s.heading === 'Overnight')?.lines).toEqual(['1 assessment skipped — nothing had changed']);
+      expect(brief.sections.find((s) => s.heading === 'Last 24 hours')?.lines).toEqual(['1 assessment skipped — nothing had changed']);
     });
 
-    it('tolerates zero and an absent row: no skipped line, no Overnight section', async () => {
+    it('tolerates zero and an absent row: no skipped line, no activity section', async () => {
       h.selectQueue.ai_agent_runs = [[{ ran: 0, skipped: 0 }]];
       expect((await buildBrief(GRANT, NOW)).sections.map((s) => s.heading)).toEqual(['Spend']);
       h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
@@ -595,7 +628,7 @@ describe('buildBrief', () => {
       h.selectQueue.ai_agent_runs = [[{ ran: 9, skipped: 9 }]];
       const brief = await buildBrief(GRANT, NOW);
       expect(h.selects.some((s) => s.table === 'ai_agent_runs')).toBe(false);
-      expect(brief.sections.find((s) => s.heading === 'Overnight')).toBeUndefined();
+      expect(brief.sections.find((s) => s.heading === 'Last 24 hours')).toBeUndefined();
     });
 
     it('a site-restricted ceiling (no org-level reach) reads no runs', async () => {
@@ -603,7 +636,7 @@ describe('buildBrief', () => {
       h.selectQueue.ai_agent_runs = [[{ ran: 9, skipped: 9 }]];
       const brief = await buildBrief(GRANT, NOW);
       expect(h.selects.some((s) => s.table === 'ai_agent_runs')).toBe(false);
-      expect(brief.sections.find((s) => s.heading === 'Overnight')).toBeUndefined();
+      expect(brief.sections.find((s) => s.heading === 'Last 24 hours')).toBeUndefined();
     });
   });
 });
@@ -672,6 +705,24 @@ describe('runMorningBriefs', () => {
       queueSweep([grantRow()], [], []);
       await expect(runMorningBriefs(NOW)).resolves.toEqual({ due: 1, sent: 1, suppressed: 0 });
     });
+  });
+
+  // #11678 §8: a brief set for 15:50 was titled "Good morning" with an
+  // "Overnight" section. The sweep builds it in the brief's own zone.
+  it('greets for the hour in the brief\'s zone and names the window since the last brief', async () => {
+    const lastBriefAt = new Date('2026-10-23T19:50:00Z');
+    h.loadNudgeBookkeeping.mockResolvedValue(new Map([[USER, {
+      prefs: prefs({ briefTimeLocal: '15:50', briefTimezone: 'America/New_York' }), lastDigestAt: null, lastBriefAt,
+    }]]));
+    queueSweep([grantRow({ createdAt: new Date('2026-10-01T00:00:00Z') })]);
+    h.selectQueue.ai_agent_runs = [[{ ran: 2, skipped: 0 }]];
+
+    await expect(runMorningBriefs(new Date('2026-10-24T19:58:00Z'))).resolves.toEqual({ due: 1, sent: 1, suppressed: 0 }); // 15:58 EDT
+
+    const payload = h.notifyUser.mock.calls[0]![0] as { title: string; briefSections: Array<{ heading: string }> };
+    expect(payload.title).toBe('Good afternoon — nothing needs you');
+    expect(payload.briefSections.map((s) => s.heading)).toContain('Since your last brief');
+    expect(payload.briefSections.map((s) => s.heading)).not.toContain('Overnight');
   });
 
   it('is dark while wispEnabled() is false: no read, no brief', async () => {

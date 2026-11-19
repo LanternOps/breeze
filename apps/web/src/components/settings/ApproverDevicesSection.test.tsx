@@ -124,6 +124,18 @@ describe('ApproverDevicesSection', () => {
     expect(badge.textContent).toBe('Not attested');
   });
 
+  // #11678 §6: the intro said "All of this is optional", but a high-risk or
+  // critical approval needs an approver device under the platform-default
+  // policy (enforcing since 2026-11-05) unless the partner turns it off.
+  it('says when an approver device is required instead of calling it optional', async () => {
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
+    await screen.findByTestId('approver-device-dev-1');
+    const intro = screen.getByTestId('approver-devices-section').querySelector('p')!.textContent ?? '';
+    expect(intro).not.toMatch(/optional/i);
+    expect(intro).toMatch(/high-risk or critical request needs one of these devices/);
+    expect(intro).toMatch(/Other approvals work without one/);
+  });
+
   it('shows an empty state when no devices are registered', async () => {
     listApproverDevicesMock.mockResolvedValueOnce([]);
     render(<ApproverDevicesSection passkeyCount={0} mfaMethod={null} />);
