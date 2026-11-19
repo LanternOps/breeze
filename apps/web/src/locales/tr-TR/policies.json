@@ -1267,6 +1267,14 @@
             "nic_cmdlets_unavailable": "Bu cihazda ağ bağdaştırıcısı ayarları okunamıyor",
             "nic_eee_enabled": "Energy-Efficient Ethernet açık",
             "firmware_adapter_unavailable": "Üretici yazılımı ayarları henüz okunamıyor",
+            "nic_eee_unknown": "Energy-Efficient Ethernet durumu bilinmiyor",
+            "firmware_wake_on_lan_not_lan_only": "BIOS Wake on LAN yalnızca LAN olarak ayarlı değil",
+            "firmware_deep_sleep_enabled": "BIOS Derin Uyku Denetimi açık",
+            "firmware_setting_unrecognised": "Breeze'in denetlediği bir BIOS ayarı bu modelde tanınmadı",
+            "firmware_value_not_allowed": "Bu model Breeze'in gerektirdiği BIOS değerine izin vermiyor",
+            "firmware_value_unrecognised": "Breeze'in denetlediği bir BIOS değeri tanınmadı",
+            "firmware_unreadable": "BIOS ayarları okunamadı",
+            "firmware_interface_unavailable": "Bu model BIOS ayarlarını Windows'a sunmuyor",
             "vendor_observe_only": "Üretici yazılımı gözlemleniyor (salt okunur)"
           },
           "attempts": {

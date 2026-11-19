@@ -1267,6 +1267,14 @@
             "nic_cmdlets_unavailable": "No se pueden leer los ajustes del adaptador de red en este dispositivo",
             "nic_eee_enabled": "Energy-Efficient Ethernet activado",
             "firmware_adapter_unavailable": "Aún no se puede leer la configuración del firmware",
+            "nic_eee_unknown": "Estado de Energy-Efficient Ethernet desconocido",
+            "firmware_wake_on_lan_not_lan_only": "Wake on LAN del BIOS no está configurado como solo LAN",
+            "firmware_deep_sleep_enabled": "El control de suspensión profunda del BIOS está activado",
+            "firmware_setting_unrecognised": "No se reconoció en este modelo una configuración del BIOS que Breeze revisa",
+            "firmware_value_not_allowed": "Este modelo no permite el valor del BIOS que Breeze necesita",
+            "firmware_value_unrecognised": "No se reconoció un valor del BIOS que Breeze revisa",
+            "firmware_unreadable": "No se pudo leer la configuración del BIOS",
+            "firmware_interface_unavailable": "Este modelo no expone la configuración del BIOS a Windows",
             "vendor_observe_only": "Observando el firmware del fabricante (solo lectura)"
           },
           "attempts": {

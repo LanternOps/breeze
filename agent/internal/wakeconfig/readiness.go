@@ -7,6 +7,7 @@ package wakeconfig
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 
 // Readiness states the agent can report (a subset of the server's).
 const (
+	StateReady         = "ready"
 	StateUnsupportedVM = "unsupported_vm"
 	StateNoWired       = "no_wired_adapter"
 	StateNotConfigured = "not_configured"
@@ -71,7 +73,8 @@ type Inputs struct {
 	Model        string
 	Virtual      bool
 	Windows      *WindowsReadings
-	Firmware     biosconfig.Adapter
+	// Firmware is nil when the make has no firmware adapter (ReadFirmware).
+	Firmware *FirmwareReadings
 	// VirtualPlatform is the VM rule's platform name when Virtual (the Surface
 	// observation records which rule decided).
 	VirtualPlatform string
@@ -136,9 +139,11 @@ func orUnknown(v string) string {
 }
 
 // Compute turns one set of readings into a Snapshot. First matching rule wins:
-// virtual machine, no wired adapter, a wrong Windows setting (not_configured),
-// otherwise unproven. There is no "ready" path in this release: the firmware
-// layer cannot be read, and the agent never claims what it did not verify.
+// virtual machine, no wired adapter, a wrong Windows, NIC or firmware setting
+// (not_configured), every layer read and correct (ready), otherwise unproven.
+// Ready needs a firmware adapter (Dell only in this release), Fast Startup
+// known off, and one wired adapter with magic packet on and EEE known off or
+// absent: the agent never claims what it did not read.
 func Compute(in Inputs) Snapshot {
 	now := in.Now.UTC()
 	reasons := map[string]bool{}
@@ -197,12 +202,9 @@ func Compute(in Inputs) Snapshot {
 		// nothing it says is trusted for readiness yet.
 		firmware = "observe_only"
 	case in.Firmware != nil:
-		// Unreachable this release: biosconfig.Detect returns nil for every
-		// make. A vendor adapter's firmware read and its reason codes arrive
-		// with that vendor's wave, after its hardware has been captured. Until
-		// then a non-nil adapter is still reported unproven, never ready.
-		firmware = "adapter_unread"
+		firmware = in.Firmware.Status
 	}
+	var firmwareCurrent map[string]string
 
 	switch {
 	case in.Virtual:
@@ -238,18 +240,29 @@ func Compute(in Inputs) Snapshot {
 				}
 			}
 		}
-		// A good adapter has every setting correct and in effect; one whose
-		// settings read correct but await a reboot is good after reboot.
-		good, goodAfterReboot := false, false
+		// good: no adapter setting is known wrong and in effect. A good
+		// adapter whose settings await a reboot is good after reboot. proven:
+		// one adapter is known right on every reading, which ready requires.
+		// While any wired adapter is present, only a present one can prove
+		// ready; with none present (undocked) the remembered ones keep
+		// readiness for 30 days.
+		anyPresent := len(present) > 0
+		good, goodAfterReboot, proven := false, false, false
 		for _, mac := range macs {
-			if rec := mem[mac]; rec.MagicPacket == "enabled" && rec.EEE != "enabled" && rec.ShutdownWake != "disabled" {
+			rec := mem[mac]
+			if rec.MagicPacket == "enabled" && rec.EEE != "enabled" && rec.ShutdownWake != "disabled" {
 				if pendingMAC[mac] {
 					goodAfterReboot = true
-				} else {
-					good = true
-					break
+					continue
+				}
+				good = true
+				if (rec.EEE == "disabled" || rec.EEE == "absent") && (present[mac] || !anyPresent) {
+					proven = true
 				}
 			}
+		}
+		if good && !proven {
+			reasons["nic_eee_unknown"] = true
 		}
 		if !good && !goodAfterReboot {
 			for _, mac := range macs {
@@ -272,6 +285,11 @@ func Compute(in Inputs) Snapshot {
 				}
 			}
 		}
+		var verdict firmwareVerdict
+		verdict, firmwareCurrent = evaluateFirmware(in.Firmware, reasons)
+		if verdict == firmwareWrong {
+			wrong = true
+		}
 		configuring := ap != nil && ap.Configure
 		switch {
 		case wrong && configuring && len(ap.Failed) > 0:
@@ -288,6 +306,8 @@ func Compute(in Inputs) Snapshot {
 		case !good && goodAfterReboot:
 			snap.ReadinessState = StateNeedsReboot
 			reasons["reboot_pending"] = true
+		case verdict == firmwareOK && fast == "disabled" && proven:
+			snap.ReadinessState = StateReady
 		default:
 			snap.ReadinessState = StateUnproven
 			switch {
@@ -311,6 +331,13 @@ func Compute(in Inputs) Snapshot {
 	snap.Details = map[string]any{
 		"os": in.OS, "manufacturer": in.Manufacturer, "model": in.Model, "virtual": in.Virtual,
 		"fastStartup": fast, "firmware": firmware, "adapters": adapters,
+	}
+	if in.Firmware != nil {
+		// Only the target settings are reported, never the whole BIOS list.
+		if firmwareCurrent != nil {
+			snap.Details["firmwareSettings"] = firmwareCurrent
+		}
+		snap.Details["firmwareProtection"] = in.Firmware.Protection.String()
 	}
 	if in.Observation != nil {
 		snap.Details["vendorObservation"] = in.Observation
@@ -360,6 +387,29 @@ func fingerprint(in Inputs, fast string, macs []string, mem AdapterMemory, state
 	// their wake proofs were recorded against.
 	if cmdletsUnavailable(in) {
 		w("nic_cmdlets_unavailable")
+	}
+	// Also written only with a firmware adapter, so makes without one keep
+	// their fingerprint. Covers the target settings only (name, current value,
+	// whether the target is allowed); protection does not decide a wake.
+	if fw := in.Firmware; fw != nil {
+		w("firmware")
+		w(fw.Vendor)
+		w(fw.Status)
+		byName := make(map[string]biosconfig.Setting, len(fw.Settings))
+		for _, s := range fw.Settings {
+			byName[s.Name] = s
+		}
+		for _, t := range firmwareTargets[fw.Vendor] {
+			w(t.Name)
+			if s, ok := byName[t.Name]; ok {
+				w("=" + s.Value)
+				if slices.Contains(s.Allowed, t.Value) {
+					w("allowed")
+				}
+			} else {
+				w("absent")
+			}
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

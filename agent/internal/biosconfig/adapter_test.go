@@ -3,6 +3,7 @@ package biosconfig
 import (
 	"context"
 	"errors"
+	"runtime"
 	"testing"
 )
 
@@ -17,21 +18,24 @@ var allMakes = [][2]string{
 	{"  ", "  "},
 }
 
-// With no observe grant, Detect returns nil for every make, so a device can
-// never report firmware state it was not authorized to read.
+// With no observe grant, Detect returns nil for every make but Dell (read-only,
+// Windows only), so a device can never report HP or Lenovo firmware state it
+// was not authorized to read.
 func TestDetectNilWithoutObserveGrant(t *testing.T) {
 	for _, m := range allMakes {
+		if m[0] == "Dell Inc." {
+			continue
+		}
 		if a := Detect(m[0], m[1], 0); a != nil {
 			t.Errorf("Detect(%q, %q, 0) = %v, want nil", m[0], m[1], a)
 		}
 	}
 }
 
-// Dell follows the plan's own write path, and Surface has no firmware
-// adapter: neither gets one from any grant.
-func TestDetectNilForDellAndSurfaceWhateverTheGrant(t *testing.T) {
+// Surface has no firmware adapter: it gets none from any grant.
+func TestDetectNilForSurfaceWhateverTheGrant(t *testing.T) {
 	all := VendorHP | VendorLenovo | VendorSurface
-	for _, m := range [][2]string{{"Dell Inc.", "OptiPlex 7090"}, {"Microsoft Corporation", "Surface Pro 9"}, {"Apple Inc.", "Mac14,3"}, {"", ""}} {
+	for _, m := range [][2]string{{"Microsoft Corporation", "Surface Pro 9"}, {"Apple Inc.", "Mac14,3"}, {"", ""}} {
 		if a := Detect(m[0], m[1], all); a != nil {
 			t.Errorf("Detect(%q, %q, all) = %v, want nil", m[0], m[1], a)
 		}
@@ -115,6 +119,21 @@ func TestApplyNotEnabled(t *testing.T) {
 		}
 		if calls := f.Calls(); len(calls) != 0 {
 			t.Errorf("%s Apply ran %d scripts", m[0], len(calls))
+		}
+	}
+}
+
+func TestDetectDell(t *testing.T) {
+	for _, mfr := range []string{"Dell Inc.", "DELL INC.", " Dell Inc. ", "Dell Computer Corporation", "Dell"} {
+		a := Detect(mfr, "OptiPlex 7060", 0)
+		if runtime.GOOS != "windows" {
+			if a != nil {
+				t.Errorf("Detect(%q) on %s = %v, want nil", mfr, runtime.GOOS, a)
+			}
+			continue
+		}
+		if a == nil || a.Vendor() != "dell" {
+			t.Errorf("Detect(%q) = %v, want the dell adapter", mfr, a)
 		}
 	}
 }

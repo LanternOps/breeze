@@ -159,17 +159,23 @@ func (h *Heartbeat) collectWakeInputs(ctx context.Context) (wakeconfig.Inputs, e
 		return wakeconfig.Inputs{}, fmt.Errorf("hardware identity: %w", err)
 	}
 	virt := collectors.ClassifyVirtualization(hw)
-	return wakeconfig.Inputs{
+	in := wakeconfig.Inputs{
 		OS:              runtime.GOOS,
 		Manufacturer:    hw.Manufacturer,
 		Model:           hw.Model,
 		Virtual:         virt.IsVirtual,
 		VirtualPlatform: virt.Platform,
 		Windows:         readings,
-		// No firmware adapter is trusted for readiness at the observe stage;
-		// a granted vendor is read by the manager's observer instead.
-		Firmware: biosconfig.Detect(hw.Manufacturer, hw.Model, 0),
-	}, nil
+	}
+	if !virt.IsVirtual {
+		// Read-only. A failed firmware read is reported in the snapshot and
+		// never fails the collection. A VM is unsupported_vm whatever its
+		// firmware says, so it is not read. Only Dell has an adapter trusted
+		// for readiness (grant 0); HP and Lenovo are read by the manager's
+		// observer instead.
+		in.Firmware = wakeconfig.ReadFirmware(ctx, biosconfig.Detect(hw.Manufacturer, hw.Model, 0))
+	}
+	return in, nil
 }
 
 func (h *Heartbeat) startWake() {
