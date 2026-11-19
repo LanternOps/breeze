@@ -67,7 +67,8 @@ describe('oemObserveResultSchema', () => {
       (r) => { r.errors.push({ step: 'x', code: 'y', message: 'z' }); },
       (r) => { r.lenovo.extra = 1; },
       (r) => { r.lenovo.catalog.extra = 1; },
-      (r) => { r.lenovo.catalog.byRebootType['2'] = 1; },
+      (r) => { r.lenovo.catalog.categories[0].extra = 1; },
+      (r) => { r.lenovo.catalog.byRebootType = {}; },
     ];
     for (const mutate of mutations) {
       const r = golden('lenovo');

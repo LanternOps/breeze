@@ -34,9 +34,13 @@
     "catalog": {
       "status": 200,
       "windows": "11",
-      "packageCount": 31,
-      "byPackageType": { "application": 6, "driver": 19, "bios": 1, "firmware": 4, "other": 1 },
-      "byRebootType": { "0": 12, "1": 2, "3": 14, "4": 0, "5": 3, "other": 0 },
+      "packageCount": 16,
+      "categories": [
+        { "name": "Software and Utilities", "count": 7 },
+        { "name": "Camera and Card Reader", "count": 7 },
+        { "name": "BIOS UEFI", "count": 1 },
+        { "name": "Product Firmware", "count": 1 }
+      ],
       "biosListed": true,
       "truncated": false
     }

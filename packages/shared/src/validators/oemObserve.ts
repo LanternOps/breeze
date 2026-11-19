@@ -181,17 +181,20 @@ const lenovoResultSchema = z
         /** The MTM: the first four characters of the model. Validated before any URL is built from it. */
         machineType: z.string().regex(/^[A-Z0-9]{4}$/).nullable(),
         family: z.enum(['thinkpad', 'thinkcentre', 'thinkstation', 'ideapad', 'other', 'unknown']),
+        /**
+         * One GET of download.lenovo.com/catalog/<MTM>_Win<10|11>.xml. That catalog
+         * lists each package's location, category and checksum only: PackageType
+         * and RebootType live in each package's own descriptor XML, which passive
+         * observe does not fetch. So the counts here are by Lenovo's category text
+         * (vendor catalog data, not device data).
+         */
         catalog: z
           .object({
             status: httpStatus.nullable(),
             windows: z.enum(['10', '11']).nullable(),
             packageCount: count,
-            byPackageType: z
-              .object({ application: count, driver: count, bios: count, firmware: count, other: count })
-              .strict(),
-            byRebootType: z
-              .object({ '0': count, '1': count, '3': count, '4': count, '5': count, other: count })
-              .strict(),
+            categories: z.array(z.object({ name: toolText(96).min(1), count }).strict()).max(32),
+            /** A category naming BIOS is listed. */
             biosListed: z.boolean(),
             /** The catalog was larger than the read bound; the counts cover what was read. */
             truncated: z.boolean(),
