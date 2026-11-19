@@ -1,0 +1,25 @@
+{
+  "pr-9518-api-unit": {
+    "source": "the failing test of the real queue interaction in fixtures/queue-selection/pr-9518-api-unit.json, and its literal imports (2026-11-18 tree)",
+    "failing_test": "apps/api/src/services/quotePdf.documentModel.test.ts",
+    "tests": [
+      "apps/api/src/services/quotePdf.documentModel.test.ts",
+      "apps/api/src/services/ticketService.test.ts"
+    ],
+    "edges": {
+      "apps/api/src/services/quotePdf.documentModel.test.ts": ["apps/api/src/services/quotePdf.ts"]
+    }
+  },
+  "pr-10023-api-unit": {
+    "source": "the test #10023's last commit fixed (test(mcp): normalise the advertised tool count), and the import chain to aiTools.ts, which #10001 changed",
+    "failing_test": "apps/api/src/routes/mcpServer.tasks.test.ts",
+    "tests": [
+      "apps/api/src/routes/mcpServer.tasks.test.ts",
+      "apps/api/src/services/quotePdf.documentModel.test.ts"
+    ],
+    "edges": {
+      "apps/api/src/routes/mcpServer.tasks.test.ts": ["apps/api/src/routes/mcpServer.ts"],
+      "apps/api/src/routes/mcpServer.ts": ["apps/api/src/services/aiTools.ts"]
+    }
+  }
+}
