@@ -97,7 +97,7 @@ slug_is() { local got; got="$(repo_slug "$2")"; if [ "$got" = "$3" ]; then ok "r
 slug_is "https"                       'https://github.com/LanternOps/breeze.git'      'LanternOps/breeze'
 slug_is "https, no .git"              'https://github.com/LanternOps/breeze'          'LanternOps/breeze'
 slug_is "https, trailing slash"       'https://github.com/LanternOps/breeze/'         'LanternOps/breeze'
-slug_is "https with a user"           'https://todd@github.com/LanternOps/breeze.git' 'LanternOps/breeze'
+slug_is "https with a user"           'https://user@github.com/LanternOps/breeze.git' 'LanternOps/breeze'
 slug_is "scp-style ssh"               'git@github.com:LanternOps/breeze.git'          'LanternOps/breeze'
 slug_is "scp-style ssh, host alias"   'git@github-work:LanternOps/breeze.git'         'LanternOps/breeze'
 slug_is "ssh:// with a port"          'ssh://git@github.com:22/LanternOps/breeze.git' 'LanternOps/breeze'
