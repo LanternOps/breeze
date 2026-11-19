@@ -14,12 +14,16 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
 }));
 
-vi.mock('../opsAlerts', () => ({
+vi.mock('../opsAlerts', async (orig) => ({
+  ...(await orig<typeof import('../opsAlerts')>()),
   isOpsAlertingConfigured,
   sendOpsAlert,
 }));
 
 import { runAbuseDigest } from './index';
+import { opsText } from '../opsAlerts';
+
+const HOSTILE = '[click](http://evil.example) `x`\n@everyone';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -53,5 +57,20 @@ describe('runAbuseDigest', () => {
 
     await expect(runAbuseDigest()).resolves.toBeUndefined();
     expect(sendOpsAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it('escapes partner names in the watch-tier lines', async () => {
+    isOpsAlertingConfigured.mockReturnValue(true);
+    sendOpsAlert.mockResolvedValue(true);
+    dbExecute
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ signal_key: 'k', score: 5, name: HOSTILE }])
+      .mockResolvedValueOnce([{ count: '1' }]);
+    await runAbuseDigest();
+    const { body } = sendOpsAlert.mock.calls[0]![0] as { body: string };
+    expect(body).toContain(opsText(HOSTILE));
+    expect(body).not.toContain('](http');
+    expect(body).not.toContain('`x`');
+    expect(body).not.toContain('\n@everyone');
   });
 });

@@ -35,12 +35,15 @@ vi.mock('./deliveryStats', () => ({
 }));
 vi.mock('./sendingDomainService', () => ({ suspendSendingDomain: suspendMock }));
 vi.mock('./statusMail', () => ({ sendSendingDomainStatusEmail: statusMailMock }));
-vi.mock('../opsAlerts', () => ({ sendOpsAlert: opsAlertMock }));
+vi.mock('../opsAlerts', async (orig) => ({ ...(await orig<typeof import('../opsAlerts')>()), sendOpsAlert: opsAlertMock }));
 vi.mock('../auditService', () => ({ createAuditLogAsync: auditMock }));
 vi.mock('../auditEvents', () => ({ ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000' }));
 vi.mock('../../config/env', () => ({ isHosted: hostedMock }));
 
+import { opsText } from '../opsAlerts';
 import { evaluateAutoSuspension } from './autoSuspend';
+
+const HOSTILE = '[click](http://evil.example) `x`\n@everyone';
 
 const PARTNER = '11111111-1111-4111-8111-111111111111';
 const DOMAIN_A = '22222222-2222-4222-8222-222222222222';
@@ -195,5 +198,21 @@ describe('evaluateAutoSuspension — the fan-out', () => {
     windowStats.value = stats({ sent: 10, delivered: 10, complained: 3 });
     opsAlertMock.mockRejectedValueOnce(new Error('discord down'));
     await expect(evaluateAutoSuspension(PARTNER)).resolves.toMatchObject({ outcome: 'suspended_complaints' });
+  });
+
+  it('escapes the partner name and domains in the ops alert', async () => {
+    selectRows.push([
+      { id: DOMAIN_A, domain: HOSTILE, createdBy: 'u1', partnerName: HOSTILE },
+      { id: DOMAIN_B, domain: 'billing.acme.test', createdBy: null, partnerName: HOSTILE },
+    ]);
+    windowStats.value = stats({ sent: 10, delivered: 10, complained: 3 });
+    await evaluateAutoSuspension(PARTNER);
+    const alert = opsAlertMock.mock.calls[0]![0];
+    for (const text of [alert.title, alert.body]) {
+      expect(text).toContain(opsText(HOSTILE));
+      expect(text).not.toContain('](http');
+      expect(text).not.toContain('`x`');
+      expect(text).not.toContain('\n@everyone');
+    }
   });
 });

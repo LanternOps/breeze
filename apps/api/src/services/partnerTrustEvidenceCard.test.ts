@@ -40,17 +40,20 @@ const redis = {
 };
 
 vi.mock('./redis', () => ({ getRedis: vi.fn(() => redis) }));
-vi.mock('./opsAlerts', () => ({ sendOpsAlert: vi.fn(async () => true) }));
+vi.mock('./opsAlerts', async (orig) => ({ ...(await orig<typeof import('./opsAlerts')>()), sendOpsAlert: vi.fn(async () => true) }));
 
+import { opsText, sendOpsAlert } from './opsAlerts';
 import {
   buildEvidenceCard,
   consumeTrustActionToken,
   mintTrustActionToken,
   renderEvidenceCardSummary,
+  sendEvidenceCard,
   verifyTrustActionToken,
 } from './partnerTrustEvidenceCard';
 
 const PARTNER_ID = '22222222-2222-4222-8222-222222222222';
+const HOSTILE = '[click](http://evil.example) `x`\n@everyone';
 const OPERATOR_ID = '11111111-1111-4111-8111-111111111111';
 
 describe('partner trust action tokens', () => {
@@ -161,5 +164,30 @@ describe('buildEvidenceCard', () => {
     const card = await buildEvidenceCard(PARTNER_ID);
     expect(card.sendingDomains).toEqual([]);
     expect(renderEvidenceCardSummary(card)).toContain('Sending domains: none');
+  });
+
+  it('escapes tenant-controlled card fields in the ops alert, but not in the email HTML', async () => {
+    process.env.JWT_SECRET = 'test-trust-action-secret-at-least-32-characters';
+    process.env.PUBLIC_APP_URL = 'https://app.example.test';
+    (mocks.queryResults[0]![0] as { name: string }).name = HOSTILE;
+    (mocks.queryResults[1]![0] as { name: string }).name = HOSTILE;
+    (mocks.queryResults[2]![0] as { hostname: string }).hostname = HOSTILE;
+    (mocks.queryResults[4]![0] as { domain: string }).domain = HOSTILE;
+    mocks.queryResults.push([{ id: OPERATOR_ID, email: 'op@example.test' }]);
+    vi.mocked(sendOpsAlert).mockClear();
+
+    await sendEvidenceCard(PARTNER_ID, 'review_requested');
+
+    const sent = vi.mocked(sendOpsAlert).mock.calls[0]![0];
+    for (const text of [sent.title, sent.body]) {
+      expect(text).not.toContain('](http');
+      expect(text).not.toContain('`x`');
+      expect(text).not.toContain('\n@everyone');
+    }
+    expect(sent.title).toContain(opsText(HOSTILE));
+    expect(sent.body).toContain(opsText(HOSTILE));
+    expect(sent.body).toContain('https://app.example.test/admin/trust/act?token=');
+    // The email HTML escapes for HTML itself; it must not carry markdown backslashes.
+    expect(sent.html).toContain('[click](http://evil.example)');
   });
 });

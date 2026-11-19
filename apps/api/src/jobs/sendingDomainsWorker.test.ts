@@ -85,7 +85,7 @@ vi.mock('../services/emailDomains/config', () => ({
 }));
 
 const { opsAlertMock } = vi.hoisted(() => ({ opsAlertMock: vi.fn(async () => true) }));
-vi.mock('../services/opsAlerts', () => ({ sendOpsAlert: opsAlertMock, isOpsAlertingConfigured: () => true }));
+vi.mock('../services/opsAlerts', async (orig) => ({ ...(await orig<typeof import('../services/opsAlerts')>()), sendOpsAlert: opsAlertMock, isOpsAlertingConfigured: () => true }));
 
 const { hostedFlag } = vi.hoisted(() => ({ hostedFlag: { value: false } }));
 vi.mock('../config/env', () => ({ isHosted: () => hostedFlag.value }));
@@ -116,6 +116,9 @@ const { evaluateAutoSuspendMock } = vi.hoisted(() => ({
 vi.mock('../services/emailDomains/autoSuspend', () => ({ evaluateAutoSuspension: evaluateAutoSuspendMock }));
 
 import { PartnerLaneSendFailure, ProviderManagementAuthError } from '../services/emailDomains/provider';
+import { opsText } from '../services/opsAlerts';
+
+const HOSTILE = '[click](http://evil.example) `x`\n@everyone';
 import {
   SENDING_DOMAINS_QUEUE, enqueueAutoSuspendEvaluation, enqueueSyncDomain, enqueueTestSend,
   initializeSendingDomainsWorker, runDailyMaintenance, runSendingDomainsSweep, runTestSend,
@@ -345,6 +348,17 @@ describe('sweep', () => {
     expect(deletes).toHaveLength(0);
     expect(updates.at(-1)).toMatchObject({ attempts: 3 });
     expect(updates.at(-1)!.nextAttemptAt).toBeInstanceOf(Date);
+  });
+
+  it('escapes provider-sourced ids in the stuck-release alert', async () => {
+    execRows.push([]);
+    execRows.push([{ id: 'r1', provider: HOSTILE, provider_domain_id: HOSTILE, attempts: 10 }]);
+    await runSendingDomainsSweep(new Date('2026-09-17T12:00:00Z'));
+    const { body } = opsAlertMock.mock.calls[0]![0] as { body: string };
+    expect(body).toContain(opsText(HOSTILE));
+    expect(body).not.toContain('](http');
+    expect(body).not.toContain('`x`');
+    expect(body).not.toContain('\n@everyone');
   });
 
   it('raises an ops alert for an outbox row stuck past ten attempts and stops retrying it', async () => {
@@ -587,6 +601,21 @@ describe('daily maintenance', () => {
     await runDailyMaintenance(new Date('2026-09-17T12:00:00Z'));
     expect(providerMock.listDomains).not.toHaveBeenCalled();
     expect(opsAlertMock).not.toHaveBeenCalled();
+  });
+
+  it('escapes provider domain names in the drift alert', async () => {
+    hostedFlag.value = true;
+    providerMock.listDomains.mockResolvedValue([{ providerDomainId: 'pd-ghost', domain: HOSTILE }]);
+    execRows.push([]);
+    providerMock.findDomainByName.mockResolvedValue({
+      providerDomainId: 'pd-ghost', state: 'verified', records: [], createdAt: new Date('2026-09-10T00:00:00Z'),
+    });
+    await runDailyMaintenance(new Date('2026-09-17T12:00:00Z'));
+    const { body } = opsAlertMock.mock.calls[0]![0] as { body: string };
+    expect(body).toContain(opsText(HOSTILE));
+    expect(body).not.toContain('](http');
+    expect(body).not.toContain('`x`');
+    expect(body).not.toContain('\n@everyone');
   });
 
   it('alerts on a provider domain older than 24h that no local row or outbox row explains — and deletes nothing', async () => {

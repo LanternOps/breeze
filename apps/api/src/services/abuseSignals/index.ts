@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { partnerTrustMode } from '../../config/partnerTrustMode';
-import { sendOpsAlert, isOpsAlertingConfigured } from '../opsAlerts';
+import { sendOpsAlert, isOpsAlertingConfigured, opsText } from '../opsAlerts';
 import { recordAbuseSignalFired } from '../abuseMetrics';
 import { AUTO_RESTRICT_SIGNAL_KEYS, restrictOnHardDeny } from '../partnerTrustPromotion';
 import { captureException } from '../sentry';
@@ -193,7 +193,7 @@ export async function runAbuseDigest(): Promise<void> {
   });
 
   const severityLine = stats.openBySeverity.map((r) => `${r.severity}: ${r.count}`).join(', ') || 'none open';
-  const watchLines = stats.watchRows.map((r) => `- ${r.name}: ${r.signal_key} (score ${r.score})`).join('\n');
+  const watchLines = stats.watchRows.map((r) => `- ${opsText(r.name)}: ${opsText(r.signal_key)} (score ${r.score})`).join('\n');
   const delivered = await sendOpsAlert({
     title: 'Weekly abuse-signals digest',
     body: [

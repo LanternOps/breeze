@@ -3,7 +3,7 @@ import { promises as dns } from 'node:dns';
 import { and, asc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { auditLogs, devices, organizations, partnerSendingDomains, partners, users } from '../db/schema';
-import { sendOpsAlert } from './opsAlerts';
+import { opsText, sendOpsAlert } from './opsAlerts';
 import { getRedis } from './redis';
 
 export type TrustAction = 'approve' | 'suspend';
@@ -331,20 +331,21 @@ export async function consumeTrustActionToken(jti: string): Promise<boolean> {
   return result === 1;
 }
 
-function renderCardText(card: EvidenceCard): string {
+function renderCardText(card: EvidenceCard, esc: (value: string) => string = (v) => v): string {
+  const t = (value: string | null | undefined, fallback = 'unknown') => (value == null ? fallback : esc(value));
   const devicesText = card.devices.length
-    ? card.devices.map((d) => `- ${d.hostname}: ${d.enrollmentIp ?? 'unknown'} (${d.enrollmentIpClass}, virtual=${d.isVirtual})`).join('\n')
+    ? card.devices.map((d) => `- ${esc(d.hostname)}: ${t(d.enrollmentIp)} (${t(d.enrollmentIpClass)}, virtual=${d.isVirtual})`).join('\n')
     : '- none';
   return [
-    `Partner: ${card.partner.name} (${card.partner.id})`,
-    `Plan/status/trust: ${card.partner.plan} / ${card.partner.status} / ${card.partner.trustState}`,
-    `Signup IP: ${card.signup.ip ?? 'unknown'} (${card.signup.ipClass}, ASN ${card.signup.asn ?? 'unknown'}, classified by ${card.signup.source ?? 'not recorded'})`,
-    `Email domain: ${card.emailDomain.domain ?? 'unknown'} (age: unknown; MX: ${card.emailDomain.hasMx ?? 'unknown'})`,
-    `Cardholder/user: ${card.identity.cardholderName ?? 'unknown'} / ${card.identity.userName ?? 'unknown'} (match: ${card.identity.namesMatch ?? 'unknown'})`,
+    `Partner: ${esc(card.partner.name)} (${card.partner.id})`,
+    `Plan/status/trust: ${esc(card.partner.plan)} / ${esc(card.partner.status)} / ${esc(card.partner.trustState)}`,
+    `Signup IP: ${t(card.signup.ip)} (${t(card.signup.ipClass)}, ASN ${t(card.signup.asn == null ? null : String(card.signup.asn))}, classified by ${t(card.signup.source, 'not recorded')})`,
+    `Email domain: ${t(card.emailDomain.domain)} (age: unknown; MX: ${card.emailDomain.hasMx ?? 'unknown'})`,
+    `Cardholder/user: ${t(card.identity.cardholderName)} / ${t(card.identity.userName)} (match: ${card.identity.namesMatch ?? 'unknown'})`,
     `Billing: ${card.billing.distinctPaymentMethods} distinct payment methods; ${card.billing.failedAttempts} failed attempts`,
     `Capability denials (24h): ${card.denials24h}`,
-    `Matched suspended axes (same region): ${card.matchedSuspendedAxes.join(', ') || 'none'}`,
-    `Sending domains: ${card.sendingDomains.map((d) => `${d.domain} (${d.status})`).join(', ') || 'none'}`,
+    `Matched suspended axes (same region): ${card.matchedSuspendedAxes.map((x) => esc(x)).join(', ') || 'none'}`,
+    `Sending domains: ${card.sendingDomains.map((d) => `${esc(d.domain)} (${esc(d.status)})`).join(', ') || 'none'}`,
     'Devices:', devicesText,
   ].join('\n');
 }
@@ -394,10 +395,12 @@ export async function sendEvidenceCard(
   const approveUrl = `${base}/admin/trust/act?token=${encodeURIComponent(approveToken)}`;
   const suspendUrl = `${base}/admin/trust/act?token=${encodeURIComponent(suspendToken)}`;
   const summary = renderCardText(card);
-  const body = `${summary}\n\nApprove: ${approveUrl}\nSuspend: ${suspendUrl}`;
+  // The ops body is Discord markdown; the HTML email below escapes `summary`
+  // itself, so only the body gets the markdown-safe rendering.
+  const body = `${renderCardText(card, (v) => opsText(v))}\n\nApprove: ${approveUrl}\nSuspend: ${suspendUrl}`;
   const html = `<h2>${escapeHtml(card.partner.name)} trust evidence</h2><pre>${escapeHtml(summary)}</pre>` +
     `<p><a href="${escapeHtml(approveUrl)}">Approve</a> &nbsp; <a href="${escapeHtml(suspendUrl)}">Suspend</a></p>`;
-  await sendOpsAlert({ title: `Partner trust review: ${card.partner.name} (${trigger})`, body, html });
+  await sendOpsAlert({ title: `Partner trust review: ${opsText(card.partner.name)} (${trigger})`, body, html });
 }
 
 export function renderEvidenceCardSummary(card: EvidenceCard): string {
