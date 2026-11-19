@@ -430,6 +430,11 @@ x-api-env: &api-env
   BREEZE_OEM_UPDATES_DISABLED_LANES: ${BREEZE_OEM_UPDATES_DISABLED_LANES:-}
   # Scheduled runs and overnight reboots started per 10-minute tick. Empty keeps the default.
   OEM_UPDATES_MAX_DISPATCH_PER_TICK: ${OEM_UPDATES_MAX_DISPATCH_PER_TICK:-}
+  # Vendor canary (#11065 observe-first): partner UUIDs (at most 3) that run
+  # best-guess vendor code at its code-table stage. Empty = off for everyone.
+  # DISABLED is a feature:vendor kill switch (recreate api + worker to apply).
+  BREEZE_VENDOR_CANARY_PARTNER_IDS: ${BREEZE_VENDOR_CANARY_PARTNER_IDS:-}
+  BREEZE_VENDOR_CANARY_DISABLED: ${BREEZE_VENDOR_CANARY_DISABLED:-}
   # Lab only: opens closed gates for the listed device ids. The API refuses to
   # boot with it set under NODE_ENV=production, so the prod template omits it.
   BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: ${BREEZE_OEM_UPDATES_LAB_DEVICE_IDS:-}
