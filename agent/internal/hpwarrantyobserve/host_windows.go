@@ -17,10 +17,11 @@ import (
 	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
-// This file is the package's only process runner and its only registry
-// reader. The runner starts exactly one program, the host's System32 Windows
+// This file is the package's only process runner and its own registry reader.
+// The runner starts exactly one program, the host's System32 Windows
 // PowerShell, with exactly powershellArgs(); the registry reader opens only
-// the keys named in observe.go, read-only.
+// the keys named in observe.go, read-only. The reused vendor-updates readers
+// (BIOS identity and the Uninstall keys) are read-only registry reads too.
 
 const (
 	scriptTimeout   = 60 * time.Second

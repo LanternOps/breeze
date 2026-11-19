@@ -91,6 +91,19 @@ describe('hpWarrantyObservationSchema', () => {
     expect(hpWarrantyObservationSchema.safeParse(o).success).toBe(false);
   });
 
+  it('accepts CIM type names with digits (UInt32, Real64, UInt8Array) and refuses others', () => {
+    for (const cimType of ['UInt32', 'Real64', 'UInt8Array', 'SInt64']) {
+      const o = readWire('business_present.json');
+      o.hpWarranty.properties[0].cimType = cimType;
+      expect(hpWarrantyObservationSchema.safeParse(o).success, cimType).toBe(true);
+    }
+    for (const cimType of ['9Bad', 'UInt 32', '', 'x'.repeat(25)]) {
+      const o = readWire('business_present.json');
+      o.hpWarranty.properties[0].cimType = cimType;
+      expect(hpWarrantyObservationSchema.safeParse(o).success, cimType).toBe(false);
+    }
+  });
+
   it('accepts only HP module directory names for cmsl', () => {
     const o = readWire('business_present.json');
     o.cmsl[0].name = 'PSWindowsUpdate';

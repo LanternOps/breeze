@@ -21,7 +21,7 @@ import (
 //     never enough;
 //   - within the start-up delay, so a crash-looping agent emits nothing;
 //   - on the heartbeat goroutine: one run at a time, in its own goroutine,
-//     with a deadline, cancelled on shutdown;
+//     with a deadline, cancelled by stopHpWarrantyObserve at shutdown;
 //   - off Windows.
 //
 // The record goes to the agent-log path with EmitShipAlways: component
@@ -87,34 +87,41 @@ func (h *Heartbeat) maybeStartHpWarrantyObserve() {
 	}
 	mode, _ := s.authorityLocked(now)
 	due := s.observeLastRun.IsZero() || now.Sub(s.observeLastRun) >= hpObserveInterval || mode != s.observeLastMode
-	if (mode != hpCmslModeObserve && mode != hpCmslModeAct) || s.observeRunning || now.Before(s.observeFirstAt) || !due {
+	if s.observeStopping || (mode != hpCmslModeObserve && mode != hpCmslModeAct) || s.observeRunning ||
+		now.Before(s.observeFirstAt) || !due {
 		s.mu.Unlock()
 		return
 	}
 	s.observeRunning, s.observeLastRun, s.observeLastMode = true, now, mode
-	s.mu.Unlock()
-
+	ctx, cancel := context.WithTimeout(context.Background(), hpObserveTimeout)
+	s.observeCancel = cancel
+	// Added to inventoryWg under s.mu: once stopHpWarrantyObserve has set
+	// observeStopping, no run can be added while DrainAndWait waits.
 	h.inventoryWg.Go(func() {
 		defer func() {
+			cancel()
 			s.mu.Lock()
-			s.observeRunning = false
+			s.observeRunning, s.observeCancel = false, nil
 			s.mu.Unlock()
 		}()
 		defer observability.Recoverer("heartbeat.hp_warranty_observe")
-
-		ctx, cancel := context.WithTimeout(context.Background(), hpObserveTimeout)
-		defer cancel()
-		if h.stopChan != nil {
-			go func() {
-				select {
-				case <-h.stopChan:
-					cancel()
-				case <-ctx.Done():
-				}
-			}()
-		}
+		// A run that hit its deadline still emits: the timeout is a recorded
+		// error code, which is evidence too.
 		if o := collect(ctx, mode); o != nil {
 			emit(o)
 		}
 	})
+	s.mu.Unlock()
+}
+
+// stopHpWarrantyObserve is the shutdown hook: it cancels a run in flight and
+// stops new ones. DrainAndWait and Stop call it before waiting.
+func (h *Heartbeat) stopHpWarrantyObserve() {
+	s := &h.hpWarranty
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observeStopping = true
+	if s.observeCancel != nil {
+		s.observeCancel()
+	}
 }

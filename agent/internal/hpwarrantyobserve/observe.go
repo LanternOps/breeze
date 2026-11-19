@@ -24,6 +24,7 @@
 package hpwarrantyobserve
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -95,7 +96,7 @@ var (
 	denyRe         = regexp.MustCompile(denyPattern)
 	allowRe        = regexp.MustCompile(allowPattern)
 	propertyNameRe = regexp.MustCompile(propertyNamePattern)
-	cimTypeRe      = regexp.MustCompile(`^[A-Za-z]{1,24}$`)
+	cimTypeRe      = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]{0,23}$`)
 	errorCodeRe    = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
 	dateNameRe     = regexp.MustCompile(`(?i)date|expir|lastupdat|timestamp|cache`)
 	dottedVerRe    = regexp.MustCompile(`^\d{1,9}(\.\d{1,9}){0,3}$`)
@@ -243,7 +244,6 @@ func Collect(ctx context.Context, host Host, mode string) *Observation {
 		Mode:          mode,
 		Model:         optText(bios.SystemProductName),
 		Family:        optText(bios.SystemFamily),
-		NativeArch:    c.nativeArch(),
 		Namespaces: Namespaces{
 			RootHP: StateNotChecked, InstrumentedServices: StateNotChecked,
 			V1: StateNotChecked, InstrumentedBIOS: StateNotChecked,
@@ -252,7 +252,9 @@ func Collect(ctx context.Context, host Host, mode string) *Observation {
 		Conflicts: []Conflict{},
 		Errors:    []StepError{},
 	}
+	// c.o first: every step, nativeArch included, may record an error.
 	c.o = o
+	o.NativeArch = c.nativeArch()
 	c.wmi()
 	c.cmsl()
 	c.powershell()
@@ -421,6 +423,8 @@ func (c *collector) wmi() {
 		return
 	}
 	var s scriptOutput
+	// A UTF-8 console encoding can put a byte-order mark before the JSON.
+	out = bytes.TrimPrefix(bytes.TrimSpace(out), []byte("\xef\xbb\xbf"))
 	if err := json.Unmarshal(out, &s); err != nil {
 		c.addError("wmi", "output_unparsable")
 		return
@@ -620,7 +624,9 @@ func (c *collector) cmsl() {
 		if vers, err := c.host.ListDirs(root + `\` + name); err == nil {
 			for _, v := range vers {
 				if moduleVerRe.MatchString(v) && len(m.Versions) < maxVersions {
-					m.Versions = append(m.Versions, "v"+v)
+					if vv := vVersion(v); vv != nil {
+						m.Versions = append(m.Versions, *vv)
+					}
 				}
 			}
 			sort.Strings(m.Versions)
@@ -727,25 +733,36 @@ func (c *collector) conflicts() {
 // --- bounds and text -------------------------------------------------------
 
 // bound keeps the record within MaxBytes by dropping rows, last class first,
-// then property lists. It records that it did.
+// then date formats, then property lists. The truncation marker is added
+// BEFORE trimming, so the record with its marker fits: a record over the cap
+// is stored by the API as a rejection marker only.
 func bound(o *Observation) {
 	if size(o) <= MaxBytes {
 		return
-	}
-	for _, co := range []*ClassObservation{o.HPEntitlements, o.HPWarranty} {
-		for co != nil && len(co.Rows) > 0 && size(o) > MaxBytes {
-			co.Rows = co.Rows[:len(co.Rows)-1]
-		}
-	}
-	for _, co := range []*ClassObservation{o.HPEntitlements, o.HPWarranty} {
-		for co != nil && len(co.Properties) > 0 && size(o) > MaxBytes {
-			co.Properties = co.Properties[:len(co.Properties)-1]
-		}
 	}
 	if len(o.Errors) >= maxErrors {
 		o.Errors = o.Errors[:maxErrors-1]
 	}
 	o.Errors = append(o.Errors, StepError{Step: "bound", Code: "truncated"})
+	classes := []*ClassObservation{o.HPEntitlements, o.HPWarranty}
+	for _, co := range classes {
+		for co != nil && len(co.Rows) > 0 && size(o) > MaxBytes {
+			co.Rows = co.Rows[:len(co.Rows)-1]
+		}
+	}
+	for _, co := range classes {
+		if co != nil && size(o) > MaxBytes {
+			co.DateFormats = map[string]string{}
+		}
+	}
+	for _, co := range classes {
+		for co != nil && len(co.Properties) > 0 && size(o) > MaxBytes {
+			co.Properties = co.Properties[:len(co.Properties)-1]
+		}
+	}
+	if o.Classes != nil && size(o) > MaxBytes {
+		o.Classes.Names = []string{}
+	}
 }
 
 func size(o *Observation) int {

@@ -424,3 +424,79 @@ func TestScriptScalarCollapse(t *testing.T) {
 		t.Fatalf("namespaces = %+v errors = %+v", o.Namespaces, o.Errors)
 	}
 }
+
+// Review #1: an arch read that fails (IsWow64Process2 missing on older
+// Windows) is an error code in the record, not a panic.
+func TestCollectSurvivesArchError(t *testing.T) {
+	f := newFakeHost(t)
+	h := f.host()
+	h.IsWow64Process2 = func() (uint16, uint16, error) { return 0, 0, errors.New("proc not found") }
+	o := Collect(context.Background(), h, "observe")
+	if o == nil || o.NativeArch != "unknown" {
+		t.Fatalf("observation = %+v", o)
+	}
+	if o.Errors[0] != (StepError{Step: "arch", Code: "unavailable"}) {
+		t.Fatalf("errors = %+v", o.Errors)
+	}
+}
+
+// Review #2: CIM type names carry digits (UInt32, Real64, UInt8Array).
+func TestCIMTypesWithDigitsKept(t *testing.T) {
+	f := newFakeHost(t)
+	f.script = []byte(`{"rootHp":{"s":"present","n":[]},"isv":{"s":"present","n":"v1"},"v1":{"s":"present","n":[]},` +
+		`"cls":{"HP_Warranty":{"s":"present","props":[{"n":"Status","t":"UInt32"},{"n":"Level","t":"Real64"},{"n":"Codes","t":"UInt8Array"},{"n":"X","t":"9Bad"}],"rows":0,"values":[]}}}`)
+	o := Collect(context.Background(), f.host(), "observe")
+	got := []string{}
+	for _, p := range o.HPWarranty.Properties {
+		got = append(got, p.CIMType)
+	}
+	if strings.Join(got, ",") != "UInt32,Real64,UInt8Array,Other" {
+		t.Fatalf("cim types = %v", got)
+	}
+}
+
+// Review #3: the truncation marker itself must fit under the cap, at every
+// size the trimmed record can land on.
+func TestBoundNeverExceedsCapWithMarker(t *testing.T) {
+	for valueLen := 1; valueLen <= maxValueLen; valueLen++ {
+		var props, row []string
+		for i := range 64 {
+			props = append(props, fmt.Sprintf(`{"n":"Status%02d","t":"String"}`, i))
+			row = append(row, fmt.Sprintf(`"Status%02d":{"k":"string","v":"%s"}`, i, strings.Repeat("y", valueLen)))
+		}
+		var rows []string
+		for range 25 {
+			rows = append(rows, "{"+strings.Join(row, ",")+"}")
+		}
+		f := newFakeHost(t)
+		f.script = fmt.Appendf(nil, `{"rootHp":{"s":"present","n":[]},"isv":{"s":"present","n":"v1"},"v1":{"s":"present","n":[]},`+
+			`"cls":{"HP_Warranty":{"s":"present","props":[%s],"rows":25,"values":[%s]}}}`, strings.Join(props, ","), strings.Join(rows, ","))
+		o := Collect(context.Background(), f.host(), "observe")
+		if s := size(o); s > MaxBytes {
+			t.Fatalf("value length %d: observation is %d bytes, over %d", valueLen, s, MaxBytes)
+		}
+	}
+}
+
+// Review #4: a module version directory too long for the contract is dropped,
+// not shipped to be rejected.
+func TestModuleVersionTooLongDropped(t *testing.T) {
+	f := newFakeHost(t)
+	modules := pf + `\WindowsPowerShell\Modules`
+	f.dirs[modules] = append(f.dirs[modules], "HPCMSL")
+	f.dirs[modules+`\HPCMSL`] = []string{"1.8.6", "123456789.123456789.123456789.123456789"}
+	o := Collect(context.Background(), f.host(), "observe")
+	if len(o.CMSL) != 1 || len(o.CMSL[0].Versions) != 1 || o.CMSL[0].Versions[0] != "v1.8.6" {
+		t.Fatalf("cmsl = %+v", o.CMSL)
+	}
+}
+
+// Review (low): a UTF-8 byte-order mark before the JSON still parses.
+func TestScriptOutputWithBOM(t *testing.T) {
+	f := newFakeHost(t)
+	f.script = append([]byte("\xef\xbb\xbf"), f.script...)
+	o := Collect(context.Background(), f.host(), "observe")
+	if o.Namespaces.V1 != StateAbsent || len(o.Errors) != 0 {
+		t.Fatalf("namespaces = %+v errors = %+v", o.Namespaces, o.Errors)
+	}
+}

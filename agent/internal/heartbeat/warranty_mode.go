@@ -50,6 +50,10 @@ type hpWarrantyState struct {
 	observeLastRun  time.Time
 	observeLastMode string
 	observeFirstAt  time.Time
+	// observeStopping is set at shutdown; observeCancel cancels the run in
+	// flight (hp_warranty_observe.go stopHpWarrantyObserve).
+	observeStopping bool
+	observeCancel   context.CancelFunc
 	// collect and emit are seams for tests; nil means the real observer and
 	// the agent-log record.
 	collect func(ctx context.Context, mode string) *hpwarrantyobserve.Observation

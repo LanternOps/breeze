@@ -167,6 +167,35 @@ func TestObserveSingleFlight(t *testing.T) {
 	}
 }
 
+// Review #5: shutdown (DrainAndWait runs stopHpWarrantyObserve before it
+// waits) cancels a run in flight and starts no new one.
+func TestStopHpWarrantyObserveCancelsAndBlocksNew(t *testing.T) {
+	r := newObserveRig(t)
+	cancelled := make(chan struct{})
+	r.h.hpWarranty.collect = func(ctx context.Context, mode string) *hpwarrantyobserve.Observation {
+		<-ctx.Done()
+		close(cancelled)
+		return nil
+	}
+	r.advance(hpObserveMaxFirstDelay)
+	r.h.applyConfigUpdate(map[string]any{"warranty_settings": modeBlock("observe")})
+	r.h.stopHpWarrantyObserve()
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop did not cancel the run in flight")
+	}
+	r.h.inventoryWg.Wait()
+
+	ran := false
+	r.h.hpWarranty.collect = func(context.Context, string) *hpwarrantyobserve.Observation { ran = true; return nil }
+	r.advance(25 * time.Hour)
+	r.beat(modeBlock("act"))
+	if ran {
+		t.Fatal("an observe started after stop")
+	}
+}
+
 func TestObserveNotHPEmitsNothing(t *testing.T) {
 	r := newObserveRig(t)
 	r.h.hpWarranty.collect = func(context.Context, string) *hpwarrantyobserve.Observation { return nil }

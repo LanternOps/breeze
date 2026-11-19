@@ -2782,6 +2782,7 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 	h.stopTimeSync()
 	h.stopWorkloads()
 	h.stopWake()
+	h.stopHpWarrantyObserve()
 	log.Info("draining in-flight commands and inventory goroutines")
 	// Both pools share ctx's deadline: their tasks run concurrently, so
 	// draining them in turn still bounds the whole wait by that deadline.
@@ -2814,6 +2815,7 @@ func (h *Heartbeat) Stop() {
 		h.stopTimeSync()
 		h.stopWorkloads()
 		h.stopWake()
+		h.stopHpWarrantyObserve()
 		shutdownTimeout := h.shutdownTimeout
 		if shutdownTimeout <= 0 {
 			shutdownTimeout = 5 * time.Second

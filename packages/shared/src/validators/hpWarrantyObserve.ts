@@ -71,7 +71,7 @@ const classObservationSchema = z
         z
           .object({
             name: propertyName,
-            cimType: z.string().regex(/^[A-Za-z]{1,24}$/, 'must be a CIM type name'),
+            cimType: z.string().regex(/^[A-Za-z][A-Za-z0-9]{0,23}$/, 'must be a CIM type name'),
           })
           .strict(),
       )
