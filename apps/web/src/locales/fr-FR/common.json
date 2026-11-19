@@ -803,6 +803,7 @@
         "devices": "Dispositifs",
         "scripts": "Scénarios",
         "alerts": "Alertes",
+        "pages": "Pages de l'application",
         "users": "Utilisateurs",
         "settings": "Paramètres",
         "recent-devices": "Dispositifs récents",
