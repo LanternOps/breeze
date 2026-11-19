@@ -20,7 +20,7 @@ func TestRecoveryDistributionBacksOffFailedFetches(t *testing.T) {
 	f := &countingDownloader{fakeRecoveryDownloader: fakeRecoveryDownloader{t: t, downloadErr: sentinel, envErr: sentinel}, downloads: &downloads, envelopes: &envelopes}
 	_, src := recoveryDistributionWithClock(func() recoveryDownloader { return f }, true, func() time.Time { return now })
 	var buf bytes.Buffer
-	for n := 0; n < 3; n++ {
+	for n := range 3 {
 		if err := src.Fetch(context.Background(), "1.2.3", &buf); !errors.Is(err, sentinel) {
 			t.Fatalf("attempt %d: want the original failure, got %v", n, err)
 		}

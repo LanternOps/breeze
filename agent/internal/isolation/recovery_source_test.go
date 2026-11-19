@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -180,12 +181,7 @@ func keys(m map[string][]byte) []string {
 }
 
 func contains(list []string, want string) bool {
-	for _, s := range list {
-		if s == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, want)
 }
 
 // The poll task is registered once; healthy re-probes only read it back.
@@ -203,7 +199,7 @@ func TestRecoveryEnsureReprobeDoesNotReregister(t *testing.T) {
 		return run(args...)
 	}
 	ensure := recoveryEnsure(s, trustTestVersion)
-	for n := 0; n < 3; n++ {
+	for range 3 {
 		if _, err := ensure(context.Background()); err != nil {
 			t.Fatal(err)
 		}
