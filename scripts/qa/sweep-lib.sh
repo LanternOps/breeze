@@ -937,8 +937,16 @@ prewarm_mcp() {
 # public repo is a human step.
 QA_REPO_PRIVATE=""
 # repo_slug <git-url>: OWNER/NAME of a GitHub remote URL, or nothing.
+# Accepts https://[user@]github.com/O/R[.git][/], ssh://git@host[:port]/O/R[.git]
+# and scp-style git@host:O/R[.git] (any host: an ssh alias names GitHub too).
+# The slug only adds a refusal (QA_REPO == code repo), so a permissive host
+# match cannot open anything; the visibility check is the gate.
 repo_slug() {
-  printf '%s' "$1" | sed -nE 's#^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$#\2#p' | sed -E 's/\.git$//'
+  printf '%s' "$1" | sed -nE \
+    -e 's#^https://([^/@[:space:]]+@)?github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/?$#\2#p' \
+    -e 's#^ssh://[^/@[:space:]]+@[^/[:space:]]+/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/?$#\1#p' \
+    -e 's#^[^/@:[:space:]]+@[^/:[:space:]]+:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/?$#\1#p' \
+    | sed -E 's/\.git$//' | head -1
 }
 # require_private_qa_repo: QA_REPO_PRIVATE=QA_REPO when, and only when, QA_REPO
 # is a well-formed OWNER/NAME that is not the code repo and GitHub reports its
@@ -1202,10 +1210,11 @@ ledger_issue() {
   [[ "$n" =~ ^[0-9]{1,7}$ ]] || return 1
   printf '%s\n' "$n"
 }
-# _verdict_recorded <pr>: STATE already holds a verdict for <pr> on this main SHA.
+# _verdict_recorded <pr> <result>: STATE already holds this verdict for <pr> on
+# this main SHA (a changed verdict is posted again, with its detail).
 _verdict_recorded() {
-  [ -f "$STATE" ] && jq -e --arg pr "$1" --arg sha "$NEW_SHA" \
-    '(.prVerdicts // []) | any(.pr == $pr and .sha == $sha)' "$STATE" >/dev/null 2>&1
+  [ -f "$STATE" ] && jq -e --arg pr "$1" --arg r "$2" --arg sha "$NEW_SHA" \
+    '(.prVerdicts // []) | any(.pr == $pr and .result == $r and .sha == $sha)' "$STATE" >/dev/null 2>&1
 }
 # _post_verdicts <list-file>: post the queued per-PR sections ("<pr>=<result>
 # <section-file>" lines) as comments on the ledger issue, each comment under
@@ -1315,7 +1324,7 @@ publish_outbox() {
         case "$result" in PASS|PARTIAL|FAIL|BLOCKED|NO_UI) ;; *) log "outbox REJECT $(basename "$f"): bad result"; continue ;; esac
         [ "$(wc -c < "$bodyf" | tr -d ' ')" -le "$QA_VERDICT_MAX" ] || { log "outbox REJECT $(basename "$f"): verdict body over $QA_VERDICT_MAX bytes"; continue; }
         # One record per PR per main SHA (a re-run of the same range doesn't double-post).
-        if _verdict_recorded "$pr"; then
+        if _verdict_recorded "$pr" "$result"; then
           log "outbox SKIP $(basename "$f"): PR $pr already recorded for main@${NEW_SHA:0:9}"; PR_VERDICTS="$PR_VERDICTS $pr=$result"; continue
         fi
         # "PR N", never "#N": in the QA repo a #N would point at its own issue N.

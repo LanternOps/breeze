@@ -93,6 +93,17 @@ new_run vis-code; QA_REPO_PRIVATE=""; QA_REPO="lanternops/Breeze"
 check "visibility: the code repo is refused even if it reports PRIVATE, without asking GitHub" "! require_private_qa_repo && ! grep -q 'repo view' '$GH_LOG'"
 new_run vis-nocode; QA_REPO_PRIVATE=""; QA_CODE_REPO=""
 check "visibility: an unknown code repo is refused (cannot prove the target differs)" "! require_private_qa_repo"
+slug_is() { local got; got="$(repo_slug "$2")"; if [ "$got" = "$3" ]; then ok "repo_slug: $1"; else bad "repo_slug: $1 (got: '$got')"; fi; }
+slug_is "https"                       'https://github.com/LanternOps/breeze.git'      'LanternOps/breeze'
+slug_is "https, no .git"              'https://github.com/LanternOps/breeze'          'LanternOps/breeze'
+slug_is "https, trailing slash"       'https://github.com/LanternOps/breeze/'         'LanternOps/breeze'
+slug_is "https with a user"           'https://todd@github.com/LanternOps/breeze.git' 'LanternOps/breeze'
+slug_is "scp-style ssh"               'git@github.com:LanternOps/breeze.git'          'LanternOps/breeze'
+slug_is "scp-style ssh, host alias"   'git@github-work:LanternOps/breeze.git'         'LanternOps/breeze'
+slug_is "ssh:// with a port"          'ssh://git@github.com:22/LanternOps/breeze.git' 'LanternOps/breeze'
+slug_is "a local path is no slug"     '/Users/x/breeze'                               ''
+slug_is "extra path segments are no slug" 'https://github.com/LanternOps/breeze/tree/main' ''
+check "static: the installer persists QA_CODE_REPO for the nightly" "grep -q '<key>QA_CODE_REPO</key>' '$QA_DIR/install-schedule.sh'"
 new_run vis-bad; QA_REPO_PRIVATE=""; QA_REPO="LanternOps/breeze-qa --jq x"
 check "visibility: a malformed repo name is refused" "! require_private_qa_repo && ! grep -q . '$GH_LOG'"
 new_run qagh
@@ -196,6 +207,10 @@ check "ledger: the run row carries only runner values (result word from the repo
 outbox 001.json '{"action":"pr_result","pr":100,"result":"PASS","body":"clicked Devices, row saved"}'
 publish_outbox >/dev/null 2>&1
 check "ledger: a verdict already recorded for this main SHA is not re-posted" "! grep -q 'issue comment' '$GH_LOG' && [ \"\$(hosted_verdict 100)\" = PASS ]"
+: > "$GH_LOG"; : > "$GH_LOG.bodies"; rm -rf "$RUN_DIR/outbox"; mkdir -p "$RUN_DIR/outbox"
+outbox 001.json '{"action":"pr_result","pr":100,"result":"FAIL","body":"row 2 no longer saves"}'
+publish_outbox >/dev/null 2>&1
+check "ledger: a changed verdict on the same main SHA is posted with its detail" "grep -qx '### PR 100: FAIL' '$GH_LOG.bodies' && grep -q 'row 2 no longer saves' '$GH_LOG.bodies' && [ \"\$(hosted_verdict 100)\" = FAIL ]"
 # Report summaries are untrusted: only the RESULT word is used.
 new_run ledger-word; IN_SCOPE=" "; SLICE=0; PREV_SHA=""
 record_run_ledger "RESULT: [click](evil) PASS" 1 >/dev/null 2>&1

@@ -91,6 +91,7 @@ cat > "$PLIST" <<PL
     <key>QA_HOME</key><string>$QA_HOME</string>
     <key>QA_SOURCE_REPO</key><string>$REPO</string>
     <key>QA_REPO</key><string>$QA_REPO</string>
+    <key>QA_CODE_REPO</key><string>$QA_CODE_REPO</string>
     <key>HOME</key><string>$HOME</string>
   </dict>
   <key>StartCalendarInterval</key><array>$INTERVALS</array>
