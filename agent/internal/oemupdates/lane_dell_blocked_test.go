@@ -26,8 +26,9 @@ func TestDellFilterRefusesBlockedIDs(t *testing.T) {
 	}
 }
 
-// The refusal reaches the runner as a run error, so nothing is executed.
-func TestDellBlockedIDsRunNothing(t *testing.T) {
+// Filter refuses blocked ids, and an allowed plan never puts -localblockedswb
+// on any dcu-cli command line the lane runs.
+func TestDellApplyNeverPassesLocalBlockedSWB(t *testing.T) {
 	l := testDellLane(t, map[string]string{dcu64: "5.7.2"})
 	if _, err := l.Filter([]string{CategoryApplication}, []string{"NP58K"}); err == nil {
 		t.Fatal("blocked ids accepted")
