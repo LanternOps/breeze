@@ -305,6 +305,11 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // supplies no device selector. Its device access sits past the old byte
   // window.
   'routes/backup/bmr.ts:POST /bmr/recover/authenticate',
+  // TPM coverage aggregate (#8318 T1): counts only, no device input; scoped
+  // by the cross-file buildDeviceScope (routes/devices/scope.ts), which applies
+  // the org condition AND permissions.allowedSiteIds (an empty allowlist is an
+  // empty result), the same narrowing as the device list and /posture.
+  'routes/devices/tpmCoverage.ts:GET /tpm-coverage',
 ]);
 
 // SITE_SCOPE_INPUT_EXEMPT entries that ARE reached via the user `authMiddleware`
@@ -353,6 +358,8 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   // auth (requireScope) but exempt because the escrow enrichment is constrained
   // to the org- and site-scoped device set listStatusRows already resolved.
   'routes/security/compliance.ts:GET /encryption',
+  // Site-gated via the cross-file buildDeviceScope (see SITE_SCOPE_INPUT_EXEMPT).
+  'routes/devices/tpmCoverage.ts:GET /tpm-coverage',
 ]);
 
 // BASELINE RATCHET — pre-existing handlers flagged at the time this detector

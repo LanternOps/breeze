@@ -81,6 +81,7 @@ import {
   buildSettingsDecisionFields,
   retainStateKillSwitchEnabled,
   agentEchEnabled,
+  tpmAttestationEnabled,
   type RemoteManagementDecision,
 } from './heartbeatSettingsDecision';
 import { agentCollectorAbsenceCache, agentCollectorAbsenceKey, deviceHasAgentCollectors } from '../../services/unifi/unifiCollectorService';
@@ -2253,6 +2254,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // Takes effect on the agent's next connection; never tears down live
   // connections.
   mergedConfigUpdate.ech_enabled = agentEchEnabled();
+
+  // #8318 T1 — TPM EK attestation switch, ALWAYS sent as true/false for the
+  // same reason: turning it back off must reach agents that saw it on.
+  mergedConfigUpdate.tpm_attestation_enabled = tpmAttestationEnabled();
 
   // Security remediation Wave 6, Task 9 — ALWAYS sent, as true or false.
   //

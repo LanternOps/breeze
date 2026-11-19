@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentEchEnabled, buildSettingsDecisionFields, type SettingsDecisionInput } from './heartbeatSettingsDecision';
+import { agentEchEnabled, buildSettingsDecisionFields, tpmAttestationEnabled, type SettingsDecisionInput } from './heartbeatSettingsDecision';
 import type { HelperSettings } from '../../services/helperSettings';
 
 // #8616 — the pure legacy-or-retain builder for the heartbeat's PAM, helper
@@ -189,5 +189,17 @@ describe('agentEchEnabled (#8869)', () => {
     ['false', false],
   ])('AGENT_ECH_ENABLED=%s -> %s', (value, expected) => {
     expect(agentEchEnabled({ AGENT_ECH_ENABLED: value } as NodeJS.ProcessEnv)).toBe(expected);
+  });
+});
+
+describe('tpmAttestationEnabled (#8318 T1)', () => {
+  it.each([
+    [undefined, false],
+    ['', false],
+    ['TRUE', false],
+    ['false', false],
+    ['true', true],
+  ])('TPM_ATTESTATION_ENABLED=%s -> %s', (value, expected) => {
+    expect(tpmAttestationEnabled({ TPM_ATTESTATION_ENABLED: value } as NodeJS.ProcessEnv)).toBe(expected);
   });
 });

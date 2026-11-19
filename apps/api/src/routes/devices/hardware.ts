@@ -5,6 +5,7 @@ import { deviceHardware, deviceDisks, deviceNetwork, deviceConnections, deviceIp
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import { DEVICE_HARDWARE_READ_COLUMNS } from '../../services/deviceHardwareColumns';
 
 export const hardwareRoutes = new Hono();
 
@@ -29,7 +30,7 @@ hardwareRoutes.get(
     }
 
     const [hardware] = await db
-      .select()
+      .select(DEVICE_HARDWARE_READ_COLUMNS)
       .from(deviceHardware)
       .where(eq(deviceHardware.deviceId, deviceId))
       .limit(1);

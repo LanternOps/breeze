@@ -147,7 +147,12 @@ export function writeAuditEventStrict(c: RequestLike, event: AuditEventInput): P
   return createAuditLog(buildAuditLogParams(c, event));
 }
 
-function buildAuditLogParams(c: RequestLike, event: AuditEventInput): CreateAuditLogParams {
+/**
+ * The audit row `writeAuditEvent*` would write, for a service that inserts it
+ * itself inside the transaction of the change it records (so the two commit
+ * or roll back together). The caller then calls `markRequestAuditWritten`.
+ */
+export function buildAuditLogParams(c: RequestLike, event: AuditEventInput): CreateAuditLogParams {
   const details = (event.details && typeof event.details === 'object')
     ? { ...event.details }
     : {};
