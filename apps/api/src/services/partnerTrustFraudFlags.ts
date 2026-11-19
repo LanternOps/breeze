@@ -204,17 +204,17 @@ async function runEffects(row: LedgerRow): Promise<void> {
       await closeOpenCheckoutsAfterRestrict(row.partnerId, row.restrictReason);
       await alertOperator(`Partner restricted on a billing fraud flag: ${name}`, [
         `Partner: ${name} (${row.partnerId})`,
-        `Flag kind: ${row.flagKind}`,
+        `Flag kind: ${opsText(row.flagKind)}`,
         `Previous trust state: ${row.previousTrustState}`,
-        `Stripe object: ${row.stripeObjectId}`,
+        `Stripe object: ${opsText(row.stripeObjectId)}`,
         'Review the partner. If the restriction is wrong, use Restore in the trust queue: it returns the partner to its previous state and stops this Stripe object from restricting it again.',
       ]);
     }
   } else {
     await alertOperator(`Billing fraud flag recorded (${row.outcome}): ${name}`, [
       `Partner: ${name} (${row.partnerId})`,
-      `Flag kind: ${row.flagKind}`,
-      `Stripe object: ${row.stripeObjectId}`,
+      `Flag kind: ${opsText(row.flagKind)}`,
+      `Stripe object: ${opsText(row.stripeObjectId)}`,
       row.outcome === 'suppressed'
         ? 'Not restricted: an admin restore already cleared this Stripe object for this partner.'
         : 'Not changed: the partner was already restricted.',
@@ -298,7 +298,7 @@ async function processFlag(flag: BillingFraudFlag): Promise<FraudFlagConsumeOutc
     await alertOperator('Billing fraud flag for a partner not in this region', [
       `Partner id: ${flag.partnerId}`,
       `Flag id: ${flag.id}`,
-      `Flag kind: ${flag.kind}`,
+      `Flag kind: ${opsText(flag.kind)}`,
       'Consumed as partner_missing. If this repeats, check that this API points at its own region\'s billing service.',
     ]);
     await billing.consumeFraudFlag(flag.id, 'partner_missing');
@@ -350,7 +350,7 @@ export async function runBillingFraudFlagSweep(): Promise<FraudFlagSweepResult> 
       if (consecutiveFeedFailures === FEED_FAILURE_ALERT_THRESHOLD) {
         await alertOperator('Billing fraud flag feed unreadable', [
           `${consecutiveFeedFailures} consecutive runs could not read the billing fraud flag feed.`,
-          `Last error: ${error instanceof Error ? error.message : String(error)}`,
+          `Last error: ${opsText(error instanceof Error ? error.message : String(error), 300)}`,
           'No partner is restricted on a billing fraud flag until it recovers.',
         ]);
       }

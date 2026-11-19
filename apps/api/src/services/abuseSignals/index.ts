@@ -41,11 +41,11 @@ function formatSignalAlert(s: ComputedSignal & { rowId: string }): { title: stri
   return {
     title: `Abuse signal: ${s.signalKey} (${s.severity})`,
     body: [
-      `Partner: ${String(s.evidence.partnerName ?? 'unknown')} (${shortId})`,
+      `Partner: ${opsText(String(s.evidence.partnerName ?? 'unknown'))} (${shortId})`,
       `Score: ${s.score}`,
       `Partner id: ${s.partnerId}`,
       `Review: docs/superpowers/specs/security-auth/2026-07-11-signup-abuse-detection-design.md — suspend playbook applies`,
-      `Evidence: ${JSON.stringify(s.evidence).slice(0, 800)}`,
+      `Evidence: ${opsText(JSON.stringify(s.evidence), 800)}`,
     ].join('\n'),
   };
 }
