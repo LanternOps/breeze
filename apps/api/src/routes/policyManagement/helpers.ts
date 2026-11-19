@@ -715,7 +715,29 @@ export async function getConfigPolicyNonCompliantDevices(
 }
 
 /**
- * Gets config policy compliance results for a specific device.
+ * #12187: true when a config-axis `automation_policy_compliance` row's rule
+ * still exists. Results are keyed by (feature link id, rule name), and a policy
+ * save replaces its rule rows, so a removed or renamed rule leaves its old
+ * result behind with nothing to delete it. Match on link + name, never rule id:
+ * the rule id changes on every save, the name does not.
+ *
+ * Evaluated under the caller's own RLS context. An org-scoped caller sees its
+ * partner's partner-wide rules through
+ * `config_policy_compliance_rules_partner_wide_select` (keyed on
+ * `breeze_current_partner_id()`), so results for live partner-wide rules stay
+ * visible to org users. Rows without a `config_item_name` never match.
+ */
+export function configComplianceRuleStillExists(): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM ${configPolicyComplianceRules}
+    WHERE ${configPolicyComplianceRules.featureLinkId} = ${automationPolicyCompliance.configPolicyId}
+      AND ${configPolicyComplianceRules.name} = ${automationPolicyCompliance.configItemName}
+  )`;
+}
+
+/**
+ * Gets config policy compliance results for a specific device. Results whose
+ * rule no longer exists are left out (#12187).
  */
 export async function getConfigPolicyComplianceForDevice(
   deviceId: string,
@@ -747,7 +769,8 @@ export async function getConfigPolicyComplianceForDevice(
       and(
         eq(automationPolicyCompliance.deviceId, deviceId),
         isNull(automationPolicyCompliance.policyId),
-        isNotNull(automationPolicyCompliance.configPolicyId)
+        isNotNull(automationPolicyCompliance.configPolicyId),
+        configComplianceRuleStillExists()
       )
     );
 
