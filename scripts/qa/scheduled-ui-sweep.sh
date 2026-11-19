@@ -104,7 +104,7 @@ cleanup() {
   [ -f "$QA_WORKTREE/.env.pre-hosted" ] && mv "$QA_WORKTREE/.env.pre-hosted" "$QA_WORKTREE/.env"
   remove_stack_net
   stop_model_forwarder; stop_egress_proxy
-  rm -f "$ENVVALS"; rm -rf "$LOCK"
+  rm -f "$ENVVALS" "$ENVVALS".*; rm -rf "$LOCK"   # .* = a killed build's temp files
 }
 trap cleanup EXIT
 

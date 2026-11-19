@@ -307,6 +307,11 @@ already been swept and its defects are recorded. In this mode the rules below
     (the queued or existing QA issue title or number), UI/UX notes, BLOCKED
     prerequisites. Short and concrete; at most 50 KB.
   - Outbox file names: letters, digits, `.`, `_`, `-`, ending `.json`.
+  - Never write a password, key, token or connection string into
+    `report.md` or the outbox, not even the seeded login: say "the seeded
+    admin". The runner refuses any body or title that contains a secret value
+    from this stack, however it is spelled, split or encoded, and the finding
+    is then lost.
   - Bodies that look like credentials are rejected. Dedupe strictly against
     `OPEN_ISSUES_FILE` first (grep its titles for the symptom's key words) —
     a nightly job that refiles is worse than none.

@@ -159,7 +159,7 @@ check "no-prose: commits.tsv holds sha, date and PR number only" "[ \"\$(cut -f3
 check "no-prose: no squash subject or commit body reaches any agent file" "! grep -rq 'marker-\|IGNORE\|curl evil' '$RUN_DIR'"
 check "no-prose: the PR number is the LAST (#N) of the subject" "grep -q \$'\t124\$' '$RUN_DIR/commits.tsv' && ! grep -q \$'\t77\$' '$RUN_DIR/commits.tsv'"
 check "no-prose: changed paths are listed per commit" "grep -q \$'\tapps/web/src/Devices.tsx\$' '$RUN_DIR/changed-files.tsv' && grep -q \$'\tok file.md\$' '$RUN_DIR/changed-files.tsv'"
-check "no-prose: a path with a control character is dropped" "! grep -q 'bad' '$RUN_DIR/changed-files.tsv'"
+check "no-prose: a path with a control character is dropped" "! cut -f2- '$RUN_DIR/changed-files.tsv' | grep -q 'bad'"   # the path column: a SHA can hold bad
 check "no-prose: both scope files are read-only" "{ [ ! -w '$RUN_DIR/commits.tsv' ] && [ ! -w '$RUN_DIR/changed-files.tsv' ]; } || [ \"\$(id -u)\" = 0 ]"
 check "no-prose: IN_SCOPE is captured in shell memory from git" "[ \"\$(cat '$T/inscope')\" = ' 124 123 ' ]"
 new_run noprose-first
@@ -593,6 +593,19 @@ S3_REGION=us-east-1
 AUDIT_ADMIN_DATABASE_URL=postgresql://audit_admin:Url-Only-Pw-7731@db:5432/audit
 CACHE_URL=redis://cache_user:Enc%2FPw%40Only99@cache:6379
 SIGNING_MATERIAL=abc???>>>def
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T0AAA0001/B0BBB0002/hookPathTok3nValue9
+ADMIN_DATABASE_URL=postgresql://postgres:Pg-Admin-Pw-3321@postgres:5432/postgres
+TOKEN_ISSUER=breeze-issuer
+COOKIE_DOMAIN=localhost
+APP_DISPLAY_NAME="Breeze RMM Dev"
+QUOTED_SECRET="quoted-with-comment-99"   # rotate monthly
+DOCS_URL=https://docs.example.com/guides/install
+B64_SIGNING_KEY=Ab3/Cd4+Ef5/Gh6+Ij7/Kl8+Mn9/Op0/Qr1+St2=
+PATCH_REPORT_STORAGE_PATH=./data/patch-reports
+CADDY_TRUSTED_PROXIES=127.0.0.1/32 ::1/128
+OAUTH_AUTH_EPOCH_ENFORCE_AFTER=2026-08-06T00:30:00Z
+CORS_ALLOWED_ORIGINS=http://localhost:4321,https://app.example.com
+MIXED_LIST=http://localhost:4321,Zq9Xv8Wt7Us6
 ENV
 cat > "$QA_WORKTREE/.env.stack" <<'ENV'
 ENROLLMENT_KEY_PEPPER=dev-enrollment-pepper-0000000000000000
@@ -625,11 +638,14 @@ for v in 'Qz7-vault_Pass+w0rd/9x' 'f3A9kQ2mZx7Lp0Vt8Rw4Ny6Bc1Hd5Js3' 'quoted-mod
   'app-Role-Pw-5521' 'docker-only-token-884422' 'breeze:breeze' ':breeze@' \
   'postgresql://breeze:breeze@postgres:5432/breeze' 'postgresql://breeze:breeze@localhost:5432/breeze' \
   'redis://:Qz7-vault_Pass+w0rd/9x@localhost:6379' 'Url-Only-Pw-7731' ':Url-Only-Pw-7731@' 'audit_admin:Url-Only-Pw-7731' \
-  'audit_admin' 'Enc%2FPw%40Only99' 'Enc/Pw@Only99'; do kv_has "$v"; done
+  'Enc%2FPw%40Only99' 'Enc/Pw@Only99' 'https://hooks.slack.com/services/T0AAA0001/B0BBB0002/hookPathTok3nValue9' \
+  'Pg-Admin-Pw-3321' 'quoted-with-comment-99' 'http://localhost:4321,Zq9Xv8Wt7Us6'; do kv_has "$v"; done
 for v in 'localhost' 'development' 'http://localhost:54321' 'http://localhost:54321/api' 'http://localhost:9000' 'admin@breeze.local' \
   'noreply@breeze.local' "postgres:16-alpine@sha256:$KV_SHA" 'breeze-portal:dev' 'standalone-single-primary' 'post_upgrade' \
   'linux/arm64' 'm365-graph-read-executor' 'us-east-1' 'breeze-wt-kvtest01' 'breeze-wt-kvtest01-postgres-1' \
-  '/usr/src/app' 'abc123def456' '/usr/local/sbin:/usr/local/bin:/usr/bin' 'example-only-value-77'; do kv_lacks "$v"; done
+  '/usr/src/app' 'abc123def456' '/usr/local/sbin:/usr/local/bin:/usr/bin' 'example-only-value-77' 'audit_admin' 'postgres' \
+  'breeze-issuer' 'Breeze RMM Dev' '"quoted-with-comment-99"' 'https://docs.example.com/guides/install' \
+  './data/patch-reports' '127.0.0.1/32 ::1/128' '2026-08-06T00:30:00Z' 'http://localhost:4321,https://app.example.com'; do kv_lacks "$v"; done
 check "builder: the list is private to the runner" "[ \"\$(stat -f '%Lp' '$ENVVALS' 2>/dev/null || stat -c '%a' '$ENVVALS')\" = 600 ]"
 check "builder: no blank line (grep -f would match everything)" "! grep -q '^\$' '$ENVVALS'"
 check "builder: no value under the minimum length" "! awk 'length(\$0) < 8 {f=1} END{exit !f}' '$ENVVALS'"
@@ -704,6 +720,8 @@ ${kv_pct:7}"
 known_refused "the URL-encoded password in a URL" "redis://:Qz7-vault_Pass%2Bw0rd%2F9x@localhost:6379"
 known_refused "HTML-entity encoded" "Qz7-vault_Pass&#43;w0rd&#47;9x"
 known_refused "a password that exists only inside a URL" "pw Url-Only-Pw-7731"
+known_refused "a token in a webhook URL path" "hook https://hooks.slack.com/services/T0AAA0001/B0BBB0002/hookPathTok3nValue9"
+known_refused "a base64 value with / cut in halves by prose" "start Ab3/Cd4+Ef5/Gh6+Ij7/ then some words Kl8+Mn9/Op0/Qr1+St2= end"
 known_refused "the decoded form of a percent-encoded URL password" "pw Enc/Pw@Only99"
 kv_urlsafe="$(kv_enc b64url 'abc???>>>def')"
 check "known value: control: the url-safe fixture really differs from standard base64" "[ '$kv_urlsafe' != '$(kv_enc b64 'abc???>>>def' | tr -d =)' ]"
@@ -727,6 +745,8 @@ Mail from noreply@breeze.local; region us-east-1; platform linux/arm64.
 2. The console shows \`GET /api/v1/devices 500\`
 
 Breeze redis topology standalone-single-primary, ws auth post_upgrade.
+Breeze RMM Dev, issuer breeze-issuer, docs https://docs.example.com/guides/install
+The postgres container restarted once.
 Audience m365-graph-read-executor. Container breeze-wt-kvtest01-postgres-1 is healthy.
 main@0123456789abcdef0123456789abcdef01234567
 MD
@@ -766,6 +786,8 @@ check "wiring: the list is rebuilt after the switch to hosted mode" "grep -q 'sw
 check "wiring: the boot-log filter uses the shared userinfo shape" "grep -q 'URL_CREDS_ERE' '$RUNNER'"
 check "wiring: one userinfo definition in the lib" "[ \"\$(grep -c '://(\\[^/\\[:space:\\]:@\\]' '$QA_DIR/sweep-lib.sh')\" = 1 ]"
 check "wiring: the seeded admin password matches wt-stack" "grep -qF \"password: 'BreezeAdmin123!'\" '$QA_DIR/../dev/wt-stack/cli.ts'"
+check "wiring: the cleanup removes a killed build's temp files" "grep -qF 'rm -f \"\$ENVVALS\" \"\$ENVVALS\".*' '$RUNNER'"
+check "static: the skill tells the agent not to write secrets" "printf '%s' \"\$SCHED_SKILL\" | grep -q 'Never write a password'"
 check "wiring: the seeded portal password matches the fixtures" "grep -qF 'PortalTest123!' '$QA_DIR/../../e2e-tests/seed-fixtures.sql'"
 
 new_run gate-log

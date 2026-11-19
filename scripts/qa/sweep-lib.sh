@@ -290,7 +290,7 @@ with open(envvals, "rb") as f:
         plain.add(c)
         b64.update(b64_forms(raw))
         hexed.add(raw.hex())
-        if re.fullmatch(r"[a-z0-9_+=-]{24,}", c):
+        if re.fullmatch(r"[a-z0-9_+/=-]{24,}", c):
             pieces.update(c[i:i + PIECE] for i in range(len(c) - PIECE + 1))
 for drop in (True, False):
     for s in decodings(lines_of(data, drop)):
@@ -324,7 +324,8 @@ _stack_container_env() {
 # the seeded passwords and, given the stack project, its descriptor and the real
 # environment of its containers. URLs also give their userinfo parts. A value is
 # left out only when it is public by shape and its key does not name a secret
-# (URL without credentials, path, email, image ref, number, config word), or when
+# (a URL without credentials on a local host or with a path of plain words, a
+# path, email, image ref, number, word, display name or config word), or when
 # the runner hands it to the agent to quote (stack URLs, container names, the
 # admin email): otherwise every report would be refused. Replaced atomically; a
 # failure leaves the previous list and returns non-zero.
@@ -345,8 +346,12 @@ MIN_VALUE = 8
 SEEDED = ["BreezeAdmin123!", "PortalTest123!"]   # wt-stack admin, E2E portal user
 SECRET_WORDS = {"SECRET", "SECRETS", "TOKEN", "TOKENS", "PASSWORD", "PASSWD", "PWD", "PASS", "PASSPHRASE", "KEY", "KEYS",
                 "KEYRING", "APIKEY", "PEPPER", "SALT", "CREDENTIAL", "CREDENTIALS", "PRIVATE", "COOKIE", "DSN", "JWK"}
+STRONG_WORDS = {"SECRET", "SECRETS", "TOKEN", "TOKENS", "PASSWORD", "PASSWD", "PASSPHRASE", "PRIVATE", "CREDENTIAL",
+                "CREDENTIALS"}
 METADATA = {"ID", "KID", "TTL", "MINUTES", "HOURS", "HOUR", "DAYS", "SECONDS", "MS", "VERSION", "URL", "ENABLED", "MODE",
-            "LIMIT", "SOURCE", "FILE", "PATH", "REF", "NAME", "PROVIDER", "ENFORCE", "AUDIENCE"}
+            "LIMIT", "SOURCE", "FILE", "PATH", "REF", "NAME", "PROVIDER", "ENFORCE", "AUDIENCE", "ISSUER", "DOMAIN",
+            "HOST", "PORT", "ALGORITHM", "ALG", "TYPE", "SECURE", "SAMESITE", "PREFIX", "LENGTH", "BYTES"}
+LOCAL_HOST = re.compile(r"(?i)(?:localhost|127\.0\.0\.1|\[::1\]|[a-z0-9-]+|[a-z0-9.-]+\.(?:local|localhost|internal|test))(?::\d{1,5})?")
 PUBLIC_KEYS = {"PATH", "HOME", "PWD", "OLDPWD", "HOSTNAME", "LANG", "LC_ALL", "TERM", "USER", "SHELL", "SHLVL"}
 URL_USERINFO = re.compile(r"[a-z][a-z0-9+.-]*://([^/?#@\s]*)@", re.I)
 values = set()
@@ -356,19 +361,34 @@ def add(v):
         values.add(v)
 def secret_key(key):
     parts = key.upper().split("_")
-    return parts[-1] not in METADATA and any(p in SECRET_WORDS for p in parts)
+    if parts[-1] in SECRET_WORDS:
+        return True
+    return parts[-1] not in METADATA and any(p in STRONG_WORDS for p in parts)
 def config_word(v):
     return re.fullmatch(r"[a-z0-9]+(?:[-_./:][a-z0-9]+)*", v) is not None and all(
         s.isalpha() or len(s) <= 6 for s in re.split(r"[-_./:]", v))
 def public_value(key, v):
+    items = [x for x in re.split(r"[,\s]+", v) if x]
+    if len(items) > 1:   # a list is public when every item is
+        return all(public_value(key, x) for x in items)
     if key.endswith(("_IMAGE", "_IMAGE_REF")) or re.search(r"@sha256:[0-9a-f]{64}\Z", v):
+        return True
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)?", v):
+        return True
+    if re.fullmatch(r"(?i)[0-9a-f:.]*[:.][0-9a-f:.]*(?:/\d{1,3})?", v) and re.search(r"\d", v):
+        return True   # an IP address or CIDR
+    if re.fullmatch(r"\.{1,2}/[\w./-]*", v):
         return True
     if re.fullmatch(r"(?i)true|false|yes|no|on|off|-?\d+(?:\.\d+)?", v):
         return True
     if re.fullmatch(r"v?\d+(?:\.\d+)+(?:[-+][\w.]+)?", v):
         return True
-    if re.fullmatch(r"(?i)[a-z][a-z0-9+.-]*://[^\s@?#]*", v):
-        return True
+    u = re.fullmatch(r"(?i)[a-z][a-z0-9+.-]*://([^/\s@?#]*)(/[^\s@?#]*)?", v)
+    if u:
+        segments = [p for p in (u.group(2) or "").split("/") if p]
+        return LOCAL_HOST.fullmatch(u.group(1)) is not None or all(config_word(p.lower()) for p in segments)
+    if re.fullmatch(r"[A-Za-z]+", v) or re.fullmatch(r"[A-Za-z][\w.,&()-]*(?: [\w.,&()-]+)+", v):
+        return True   # a word, or a display name such as "Breeze RMM"
     if re.fullmatch(r"/[\w./-]*(?::/[\w./-]*)*", v) or re.fullmatch(r"[^\s@:/]+@[^\s@:/]+", v):
         return True
     return config_word(v)
@@ -382,8 +402,9 @@ def add_url_parts(v):
     for m in URL_USERINFO.finditer(v):
         add(v)
         user, _, pw = m.group(1).partition(":")
-        add(user)
-        add(urllib.parse.unquote(user))
+        for u in {user, urllib.parse.unquote(user)}:
+            if not public_value("", u):
+                add(u)
         if pw:
             add_password(pw, user)
 entries, env = [], {}
@@ -394,10 +415,8 @@ for src in sources:
             if not m:
                 continue
             key, v = m.group(1), m.group(2).strip()
-            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"\x27":
-                v = v[1:-1]
-            else:
-                v = re.sub(r"\s+#.*$", "", v)
+            q = re.fullmatch(r"([\"\x27])(.*)\1(?:\s+#.*)?", v)
+            v = q.group(2) if q else re.sub(r"\s+#.*$", "", v)
             if v:
                 entries.append((key, v))
                 env[key] = v
