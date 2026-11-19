@@ -1,6 +1,6 @@
 import { pgTable, uuid, varchar, timestamp, jsonb, pgEnum, real, index, uniqueIndex, check } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { partners, partnerTrustStateEnum } from './orgs';
+import { partners } from './orgs';
 import { users } from './users';
 import { scripts } from './scripts';
 import { devices } from './devices';
@@ -102,7 +102,7 @@ export const partnerBillingFraudFlags = pgTable('partner_billing_fraud_flags', {
   stripeChargeId: varchar('stripe_charge_id', { length: 255 }),
   billingFlaggedAt: timestamp('billing_flagged_at', { withTimezone: true }),
   outcome: varchar('outcome', { length: 32 }).notNull().$type<'restricted' | 'already_restricted' | 'suppressed'>(),
-  previousTrustState: partnerTrustStateEnum('previous_trust_state'),
+  previousTrustState: varchar('previous_trust_state', { length: 16 }).$type<'probation' | 'trusted'>(),
   restrictedTrustChangedAt: timestamp('restricted_trust_changed_at', { withTimezone: true }),
   effectsDoneAt: timestamp('effects_done_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -116,6 +116,6 @@ export const partnerBillingFraudFlags = pgTable('partner_billing_fraud_flags', {
   check('partner_billing_fraud_flags_outcome_chk', sql`${t.outcome} IN ('restricted', 'already_restricted', 'suppressed')`),
   check(
     'partner_billing_fraud_flags_restricted_shape_chk',
-    sql`(${t.outcome} = 'restricted') = (${t.previousTrustState} IS NOT NULL) AND (${t.outcome} = 'restricted') = (${t.restrictedTrustChangedAt} IS NOT NULL) AND (${t.previousTrustState} IS NULL OR ${t.previousTrustState} <> 'restricted')`,
+    sql`(${t.outcome} = 'restricted') = (${t.previousTrustState} IS NOT NULL) AND (${t.outcome} = 'restricted') = (${t.restrictedTrustChangedAt} IS NOT NULL) AND (${t.previousTrustState} IS NULL OR ${t.previousTrustState} IN ('probation', 'trusted'))`,
   ),
 ]);

@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS partner_billing_fraud_flags (
   stripe_charge_id            varchar(255),
   billing_flagged_at          timestamptz,
   outcome                     varchar(32) NOT NULL,
-  previous_trust_state        partner_trust_state,
+  previous_trust_state        varchar(16),
   restricted_trust_changed_at timestamptz,
   effects_done_at             timestamptz,
   created_at                  timestamptz NOT NULL DEFAULT now(),
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS partner_billing_fraud_flags (
     CHECK (
       (outcome = 'restricted') = (previous_trust_state IS NOT NULL)
       AND (outcome = 'restricted') = (restricted_trust_changed_at IS NOT NULL)
-      AND (previous_trust_state IS NULL OR previous_trust_state <> 'restricted')
+      AND (previous_trust_state IS NULL OR previous_trust_state IN ('probation', 'trusted'))
     )
 );
 
