@@ -52,7 +52,7 @@ const summary: HardwareLifecycleSummary = {
 
 describe('hardware lifecycle PDF', () => {
   it('renders the cover, plan table, other equipment and recommendations (legacy snapshot: no serverReplaceAgeYears falls back to the server default, not replaceAgeYears)', () => {
-    const doc = buildReportPdf([], { ...opts, summary, branding: { name: 'OliveTech', logoDataUrl: null, logoAspect: null, contactEmail: 'pat@olive.example', contactName: 'Pat' } });
+    const doc = buildReportPdf([], { ...opts, summary, branding: { name: 'Fabrikam MSP', logoDataUrl: null, logoAspect: null, contactEmail: 'pat@fabrikam.example', contactName: 'Pat' } });
     const text = pdfText(doc);
     expect(text).toContain('Hardware Lifecycle Report');
     expect(text).toContain('Harlow & Pierce P.C.');
@@ -63,7 +63,7 @@ describe('hardware lifecycle PDF', () => {
     expect(text).toContain('2 other devices');
     // jsPDF escapes parentheses inside text operators.
     expect(text).not.toContain('not yet classified');
-    expect(text).toContain('To approve or discuss this plan, contact Pat \\(pat@olive.example\\).');
+    expect(text).toContain('To approve or discuss this plan, contact Pat \\(pat@fabrikam.example\\).');
     expect(text).toContain('Replace now');
     expect(text).toContain('Due soon');
     expect(text).toContain('Purchase date unknown');

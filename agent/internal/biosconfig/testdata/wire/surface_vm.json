@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "vendor": "microsoft",
+  "nativeArch": "amd64",
+  "interface": "absent",
+  "errorCode": null,
+  "durationMs": 3,
+  "collectedWith": "0.131.0",
+  "surface": {
+    "systemSku": null,
+    "model": "Virtual Machine",
+    "virtual": true,
+    "virtualPlatform": "hyperv",
+    "decidedBy": "vm_rule",
+    "adapters": [],
+    "adaptersTruncated": false
+  }
+}

@@ -69,7 +69,7 @@ func newTestIndicator(f *fakeIndicatorUI) *supportIndicator {
 }
 
 func TestSupportIndicatorShowsWhileViewedAndHidesWhenNot(t *testing.T) {
-	f := &fakeIndicatorUI{viewer: "Billy from Olive Technology"}
+	f := &fakeIndicatorUI{viewer: "Billy from Fabrikam MSP"}
 	ind := newTestIndicator(f)
 
 	ind.reconcile()
@@ -81,7 +81,7 @@ func TestSupportIndicatorShowsWhileViewedAndHidesWhenNot(t *testing.T) {
 	ind.reconcile()
 	ind.reconcile() // idempotent while nothing changes
 	shows, hides, console := f.snapshot()
-	if len(shows) != 1 || shows[0] != "Billy from Olive Technology is viewing your screen" {
+	if len(shows) != 1 || shows[0] != "Billy from Fabrikam MSP is viewing your screen" {
 		t.Fatalf("shows=%v", shows)
 	}
 	if f.starts[0] != 1_700_000_000_000 {
@@ -91,7 +91,7 @@ func TestSupportIndicatorShowsWhileViewedAndHidesWhenNot(t *testing.T) {
 		t.Fatalf("hides=%d", hides)
 	}
 	joined := strings.Join(console, "\n")
-	if !strings.Contains(joined, "Billy from Olive Technology is viewing your screen") ||
+	if !strings.Contains(joined, "Billy from Fabrikam MSP is viewing your screen") ||
 		!strings.Contains(joined, "close this window or press Ctrl+C") {
 		t.Fatalf("the console must say who is viewing and how to stop: %q", joined)
 	}
@@ -263,7 +263,7 @@ func TestSupportIndicatorSurvivesAPanickingReconcile(t *testing.T) {
 // ends "is viewing your screen" and fits the banner's label limit, and the
 // cut never splits a multi-byte character.
 func TestSupportIndicatorShortensALongViewerNameNotTheSentence(t *testing.T) {
-	f := &fakeIndicatorUI{active: true, viewer: strings.Repeat("Ä", 400) + " from Olive Technology"}
+	f := &fakeIndicatorUI{active: true, viewer: strings.Repeat("Ä", 400) + " from Fabrikam MSP"}
 	ind := newTestIndicator(f)
 	ind.reconcile()
 	shows, _, console := f.snapshot()
@@ -289,7 +289,7 @@ func TestSupportIndicatorShortensALongViewerNameNotTheSentence(t *testing.T) {
 // server-supplied name are removed from both the pill and the console line,
 // so the name cannot reorder or hide the rest of the text.
 func TestSupportIndicatorStripsControlAndBidiCharactersFromTheViewerName(t *testing.T) {
-	f := &fakeIndicatorUI{active: true, viewer: "Bil\u202ely\x1b[31m\u2066 from\u2069 Olive\r\nTech"}
+	f := &fakeIndicatorUI{active: true, viewer: "Bil\u202ely\x1b[31m\u2066 from\u2069 Fabrikam\r\nMSP"}
 	ind := newTestIndicator(f)
 	ind.reconcile()
 	shows, _, console := f.snapshot()
@@ -303,7 +303,7 @@ func TestSupportIndicatorStripsControlAndBidiCharactersFromTheViewerName(t *test
 			}
 		}
 	}
-	if want := "Billy[31m from Olive" + "Tech is viewing your screen"; shows[0] != want {
+	if want := "Billy[31m from Fabrikam" + "MSP is viewing your screen"; shows[0] != want {
 		t.Fatalf("pill = %q, want %q", shows[0], want)
 	}
 }

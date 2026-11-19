@@ -108,3 +108,47 @@ export const OEM_DISPATCH_REFUSALS = [
   'cancelled_at_claim',
 ] as const;
 export type OemDispatchRefusal = (typeof OEM_DISPATCH_REFUSALS)[number];
+
+/**
+ * Lanes `oem_observe` can read (observe-first amendment, #11065). Dell has no stage entry: its
+ * lab wave stands, so there is nothing to observe there.
+ */
+export const OEM_OBSERVE_LANES = ['surface', 'hp', 'lenovo'] as const;
+export type OemObserveLane = (typeof OEM_OBSERVE_LANES)[number];
+
+/**
+ * First agent release that ships the read-only `oem_observe` handler. Its own minimum, so an older
+ * agent never receives the type (it would only reject it as unknown). Set to the release after the
+ * one in rc when the contract was added; move it if that release slips.
+ */
+export const OEM_OBSERVE_MIN_AGENT_VERSION = '0.131.0';
+
+/** Whether an agent can run `oem_observe`. Fails CLOSED, like `agentSupportsOemUpdates`. */
+export function agentSupportsOemObserve(agentVersion: string | null | undefined): boolean {
+  if (typeof agentVersion !== 'string') return false;
+  const cmp = semverCompare(agentVersion.trim(), OEM_OBSERVE_MIN_AGENT_VERSION);
+  return cmp !== null && cmp >= 0;
+}
+
+/**
+ * Why the observe seam refused. Its own list rather than more members of
+ * `OEM_DISPATCH_REFUSALS`, whose console copy is user-facing: observe is an internal canary
+ * instrument, and only our own operators reach it.
+ */
+export const OEM_OBSERVE_REFUSALS = [
+  'device_not_found',
+  'flag_off',
+  'not_canary',
+  'ephemeral',
+  'parked',
+  'decommissioned',
+  'not_applicable',
+  'kill_switch',
+  'agent_too_old',
+  'no_policy',
+  'offline',
+  'recent_observation',
+  'trust_denied',
+  'cancelled_at_claim',
+] as const;
+export type OemObserveRefusal = (typeof OEM_OBSERVE_REFUSALS)[number];

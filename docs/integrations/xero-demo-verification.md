@@ -99,7 +99,7 @@ apps" means Xero → Settings → Connected apps for that organisation.
 | Breeze build SHA | feature/7167-xero/wave-7172-c-web on main 4bc6093a44 (+ #7387 scope change) |
 | Tester | Todd + Claude (Xero calls made as the stack's connection; writes guarded to demo organisations) |
 | Xero app (client id prefix) | Web app "Breeze Lab local (7167)", created 2026-09-28 (granular scopes only) |
-| Organisations used | Demo Company (US); OliveTech LLC connected once for X7 and disconnected, no data touched |
+| Organisations used | Demo Company (US); our own company's Xero org connected once for X7 and disconnected, no data touched |
 
 ### Results
 

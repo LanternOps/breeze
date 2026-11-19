@@ -34,7 +34,7 @@ Related skills, not repeated here: `feature-pipeline` (intake and gates),
    against the host. Cap **~8 heavy fixers** machine-wide (13 sonnet fixers → load 66;
    36 parallel tsc → load 48 + 6 GB swap). Load 2.5 with 3 live sessions = room for 5.
 3. `claude-dispatch usage` — pick the account yourself and always pass
-   `--account <letter>`: b lanternops, c olivetech, d pressless (Max subscriptions;
+   `--account <letter>`: b, c or d (separate Max subscriptions;
    burn the soonest-reset first, skip ≥80% 5h). **Never a** (breezermm — retired
    2026-10-23, login expired) and **never e** (lanternops2 — API pay-per-token).
    ~60 s after launch grep the session log for "Not logged in": a logged-out fixer

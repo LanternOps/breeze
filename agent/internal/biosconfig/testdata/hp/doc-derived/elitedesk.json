@@ -1,0 +1,24 @@
+{
+  "_source": "doc-derived: HP BIOS WMI interface white paper (HP_BIOSEnumeration, HP_BIOSPassword). Not a capture. Replaced by a scrubbed capture in the act PR.",
+  "enum": [
+    {"name": "Wake On LAN", "value": "Boot to Hard Drive", "possible": ["Disable", "Boot to Network", "Follow Boot Order", "Boot to Hard Drive"]},
+    {"name": "S5 Maximum Power Savings", "value": "Enable", "possible": ["Disable", "Enable"]},
+    {"name": "S4/S5 Wake on LAN", "value": "Enable", "possible": ["Disable", "Enable"]},
+    {"name": "Deep Sleep", "value": "Off", "possible": ["Off", "On"]},
+    {"name": "After Power Loss", "value": "Power Off", "possible": ["Power Off", "Power On", "Previous State"]},
+    {"name": "Network (PXE) Boot", "value": "Enable", "possible": ["Disable", "Enable"]},
+    {"name": "Asset Tracking Number", "value": "EXAMPLE-ASSET-0001", "possible": []},
+    {"name": "Ownership Tag", "value": "Property of Example Corp", "possible": []},
+    {"name": "Serial Number", "value": "EXAMPLESERIAL1", "possible": []},
+    {"name": "Wake On LAN Asset Mode", "value": "EXAMPLE-ASSET-0002", "possible": []},
+    {"name": "Enhanced BIOS Authentication Mode", "value": "Disable", "possible": ["Disable", "Enable"]},
+    {"name": "Num Lock State at Power-On", "value": "Off", "possible": ["Off", "On"]},
+    {"name": "Fast Boot", "value": "Enable", "possible": ["Disable", "Enable"]}
+  ],
+  "passwords": [
+    {"name": "Setup Password", "isSet": 1},
+    {"name": "Power-On Password", "isSet": 0}
+  ],
+  "settingInterface": true,
+  "error": null
+}

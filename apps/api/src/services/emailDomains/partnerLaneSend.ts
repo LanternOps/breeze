@@ -1,4 +1,4 @@
-import { sendOpsAlert } from '../opsAlerts';
+import { opsText, sendOpsAlert } from '../opsAlerts';
 import { getRedis } from '../redis';
 import type { MailPurpose, PartnerMailStream } from './mailPurposes';
 import { BREEZE_OUTBOUND_HEADER, BREEZE_OUTBOUND_HEADER_VALUE } from './outboundMarker';
@@ -131,7 +131,7 @@ export async function sendOnPartnerLane(input: PartnerLaneSendInput): Promise<Pa
     if (kind === 'lane_unavailable' && await claimLaneAlertSlot(input.partnerId)) {
       await sendOpsAlert({
         title: 'Partner sending lane unavailable',
-        body: `The partner-lane provider refused a send (429, paused account, or quota). Messages are falling back to EMAIL_FROM meanwhile. partner=${input.partnerId} domain=${input.domainId}${detail ? ` detail=${detail}` : ''}`,
+        body: `The partner-lane provider refused a send (429, paused account, or quota). Messages are falling back to EMAIL_FROM meanwhile. partner=${input.partnerId} domain=${input.domainId}${detail ? ` detail=${opsText(detail, 300)}` : ''}`,
       }).catch(() => undefined);
     }
 

@@ -1354,7 +1354,7 @@ describe('remote sessions — site-scope enforcement', () => {
         mode: 'notify',
         technicianName: 'Billy Tech',
         technicianEmail: 'billy@example.com',
-        orgName: 'Olive Technology',
+        orgName: 'Fabrikam MSP',
         consentUnavailableBehavior: 'proceed',
         consentTimeoutMs: 30000,
         notifyOnEnd: true,

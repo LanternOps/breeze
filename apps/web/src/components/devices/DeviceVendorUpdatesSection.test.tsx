@@ -366,3 +366,59 @@ describe('DeviceVendorUpdatesSection', () => {
       expect(within(root).getByTestId('vendor-updates-state').getAttribute('data-state')).toBe('reboot_overdue'));
   });
 });
+
+// Observe-first (#11065): a vendor canary partner's read-only observations share
+// the history list as `Observed` rows, even before any run has written a status.
+describe('DeviceVendorUpdatesSection: observations', () => {
+  const observed = (id: string, observation: Record<string, unknown> | null, over: Record<string, unknown> = {}) => run(id, {
+    kind: 'observe',
+    observation,
+    outcome: null,
+    toolVersion: null,
+    items: [],
+    ...over,
+  });
+
+  it('loads history for an observe lane with no run on record, and shows an Observed row', async () => {
+    answer(
+      statusBody({ displayState: 'not_managed', lane: 'lenovo', observe: true, status: null }),
+      { runs: [observed('obs-1', { lane: 'lenovo', verdict: 'observed', tools: ['lenovo_client_update', 'lenovo_system_update'], conflicts: [] })], total: 1 },
+    );
+    render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
+    const root = await section();
+    const row = await within(root).findByTestId('vendor-updates-run-obs-1');
+    expect(row).toHaveAttribute('data-kind', 'observe');
+    expect(row).toHaveTextContent('Observed');
+    expect(within(row).getByTestId('vendor-updates-observation-verdict')).toHaveTextContent('Lenovo: read-only check finished');
+    expect(within(row).getByTestId('vendor-updates-observation-tools')).toHaveTextContent('Lenovo.Client.Update, Lenovo System Update');
+  });
+
+  it('a consumer HP reads as unsupported, and no tools found says so', async () => {
+    answer(
+      statusBody({ displayState: 'not_managed', lane: 'hp', observe: true, status: null }),
+      { runs: [observed('obs-2', { lane: 'hp', verdict: 'platform_unsupported', tools: [], conflicts: ['hp_support_assistant'] })], total: 1 },
+    );
+    render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
+    const row = await within(await section()).findByTestId('vendor-updates-run-obs-2');
+    expect(within(row).getByTestId('vendor-updates-observation-verdict')).toHaveTextContent(/HP: this model is not supported/);
+    expect(within(row).getByTestId('vendor-updates-observation-tools')).toHaveTextContent('No vendor tools found');
+  });
+
+  it('a pending observation shows the row with no verdict yet', async () => {
+    answer(
+      statusBody({ displayState: 'not_managed', lane: 'lenovo', observe: true, status: null }),
+      { runs: [observed('obs-3', null, { status: 'pending', completedAt: null })], total: 1 },
+    );
+    render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
+    const row = await within(await section()).findByTestId('vendor-updates-run-obs-3');
+    expect(row).toHaveTextContent('Observed');
+    expect(within(row).queryByTestId('vendor-updates-observation-verdict')).toBeNull();
+  });
+
+  it('without observe and without a run on record, history is not asked for', async () => {
+    answer(statusBody({ displayState: 'not_managed', lane: 'dell', status: null }));
+    render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
+    await section();
+    expect(fetchMock.mock.calls.some(([path]) => String(path).includes('/history'))).toBe(false);
+  });
+});

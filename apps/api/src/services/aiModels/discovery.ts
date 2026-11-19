@@ -11,7 +11,7 @@ import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { isGatewayConnectionKind, type GatewayConnectionKind, type ModelLifecycle } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiPlatformModels, partnerAiConnections, partnerAiModels } from '../../db/schema';
-import { sendOpsAlert } from '../opsAlerts';
+import { opsText, sendOpsAlert } from '../opsAlerts';
 import { captureException } from '../sentry';
 import { createAnthropicClient, type AnthropicClientTarget } from './connectionFactory';
 import { CONNECTION_MODEL_DISCOVERERS, type ConnectionModelDiscoverer } from './connectionDiscovery';
@@ -123,14 +123,14 @@ function formatSyncAlert(write: SyncWrite): { title: string; body: string } {
   const lines: string[] = [];
   if (write.toNotify.length > 0) {
     lines.push(
-      `New Anthropic model(s) discovered: ${write.toNotify.map((m) => m.modelId).join(', ')}.`,
+      `New Anthropic model(s) discovered: ${write.toNotify.map((m) => opsText(m.modelId)).join(', ')}.`,
       'They are unpriced and not offered to anyone until a platform admin sets a price and offers them on /admin/ai-models.',
     );
   }
-  if (write.markedMissing.length > 0) lines.push(`No longer listed by the Models API (missing): ${write.markedMissing.join(', ')}.`);
-  if (write.retired.length > 0) lines.push(`Retired after 14 days unlisted: ${write.retired.join(', ')}.`);
+  if (write.markedMissing.length > 0) lines.push(`No longer listed by the Models API (missing): ${write.markedMissing.map((m) => opsText(m)).join(', ')}.`);
+  if (write.retired.length > 0) lines.push(`Retired after 14 days unlisted: ${write.retired.map((m) => opsText(m)).join(', ')}.`);
   if (write.defaultProblem) {
-    lines.push(`The platform default model ${write.defaultProblem.modelId} is ${write.defaultProblem.lifecycle}; choose another default on /admin/ai-models.`);
+    lines.push(`The platform default model ${opsText(write.defaultProblem.modelId)} is ${opsText(write.defaultProblem.lifecycle)}; choose another default on /admin/ai-models.`);
   }
   const title = write.toNotify.length > 0
     ? `${write.toNotify.length} new Anthropic model(s) awaiting pricing`

@@ -1266,7 +1266,8 @@
             "nic_unreadable": "È presente una scheda cablata, ma non è stato possibile leggerla",
             "nic_cmdlets_unavailable": "Le impostazioni della scheda di rete non possono essere lette su questo dispositivo",
             "nic_eee_enabled": "Energy-Efficient Ethernet attivo",
-            "firmware_adapter_unavailable": "Le impostazioni del firmware non sono ancora leggibili"
+            "firmware_adapter_unavailable": "Le impostazioni del firmware non sono ancora leggibili",
+            "vendor_observe_only": "Osservazione del firmware del produttore (sola lettura)"
           },
           "attempts": {
             "pending": "In sospeso",
@@ -1276,6 +1277,14 @@
             "timed_out": "Timeout",
             "unknown": "Sconosciuto",
             "refused": "Rifiutato"
+          },
+          "observing": "Osservazione {{vendor}}: {{interface}}",
+          "observingWithCode": "Osservazione {{vendor}}: {{interface}} ({{code}})",
+          "observeInterfaces": {
+            "present": "interfaccia presente",
+            "absent": "interfaccia non presente",
+            "access_denied": "accesso negato",
+            "error": "errore di lettura"
           }
         }
       },

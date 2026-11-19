@@ -64,6 +64,7 @@ vi.mock('../../db', () => {
 });
 
 vi.mock('../dispatchDeviceCommand', () => ({ dispatchDeviceCommand: vi.fn() }));
+vi.mock('./observe', () => ({ observedHpPlatformUnsupported: vi.fn(async () => false) }));
 vi.mock('../partnerTrust.commands', () => ({ assertDeviceExecuteAllowed: vi.fn(async () => undefined) }));
 
 vi.mock('./toolManifest', async (importOriginal) => {
@@ -86,6 +87,7 @@ import {
 } from './dispatch';
 import { defaultOfflinePolicy } from '../commandOfflinePolicy';
 import { getLaneManifest, isLaneOpen, openCategoriesForLane } from './toolManifest';
+import { observedHpPlatformUnsupported } from './observe';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 const ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -558,5 +560,20 @@ describe('dispatchOemUpdateRun: attempts per occurrence (#11065 W07)', () => {
     const outcome = await dispatchOemUpdateRun(input({ trigger: 'on_demand', occurrenceKey: null }));
     expect(outcome.ok).toBe(true);
     expect(state.upsertSet).not.toHaveProperty('attempts');
+  });
+});
+
+describe('observe-first O4b: a consumer HP never gets HPIA', () => {
+  it('consumer HP with 404 catalog: oem_update_run refuses not_applicable', async () => {
+    vi.mocked(observedHpPlatformUnsupported).mockResolvedValueOnce(true);
+    state.device = { ...eligibleDevice(), manufacturer: 'HP', model: 'HP Laptop 15-fd0xxx' };
+    await expectRefusal('not_applicable');
+    expect(observedHpPlatformUnsupported).toHaveBeenCalledWith(DEVICE_ID);
+  });
+
+  it('is read only for an HP', async () => {
+    vi.mocked(observedHpPlatformUnsupported).mockClear();
+    await dispatchOemUpdateRun(input());
+    expect(observedHpPlatformUnsupported).not.toHaveBeenCalled();
   });
 });

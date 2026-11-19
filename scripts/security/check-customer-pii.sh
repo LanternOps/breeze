@@ -42,8 +42,12 @@ ALLOW_RE="$ALLOW_RE"'|(^|\.)gserviceaccount\.com$'
 # carry userinfo, not a mailbox.
 ALLOW_RE="$ALLOW_RE"'|^github\.com$'
 # Exact known-safe domains: public/example, infra, generic placeholders, and
-# owner-blessed real domains (olivetech.co — see PR #1968 discussion).
-ALLOW_RE="$ALLOW_RE"'|^(anthropic\.com|nist\.gov|google\.com|gmail\.com|mailinator\.com|contoso\.com|lanternops\.io|lantern\.it|olivetech\.co|a\.com|b\.co|b\.com|x\.com|mail\.x\.com|x\.io|y\.com|foo\.com|bar\.com|test\.com|corp\.com|company\.com|org\.com|msp\.com|yourmsp\.com|customer\.com|cust\.com|partner\.com|evil\.com|notours\.com|nowhere\.com|yourcompany\.com|yourdomain\.com|theirdomain\.com)$'
+# owner-blessed real domains.
+ALLOW_RE="$ALLOW_RE"'|^(anthropic\.com|nist\.gov|google\.com|gmail\.com|mailinator\.com|contoso\.com|lanternops\.io|lantern\.it|a\.com|b\.co|b\.com|x\.com|mail\.x\.com|x\.io|y\.com|foo\.com|bar\.com|test\.com|corp\.com|company\.com|org\.com|msp\.com|yourmsp\.com|customer\.com|cust\.com|partner\.com|evil\.com|notours\.com|nowhere\.com|yourcompany\.com|yourdomain\.com|theirdomain\.com)$'
+# Public OEM vendor catalog host (vendor updates #11065): the agent's observe
+# client test proves a userinfo URL (https://u:p@download.lenovo.com/...) is
+# refused, which the email regex reads as an address. Exact host only.
+ALLOW_RE="$ALLOW_RE"'|^download\.lenovo\.com$'
 # pt-BR placeholder domains (console i18n catalogs) — Portuguese counterparts
 # of company.com / yourmsp.com / example.com; ".exemplo" is not a real TLD.
 ALLOW_RE="$ALLOW_RE"'|^(empresa\.com|exemplo\.com|seumsp\.com)$|\.exemplo$'

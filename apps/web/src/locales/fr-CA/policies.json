@@ -1266,7 +1266,8 @@
             "nic_unreadable": "Une carte filaire est présente, mais n'a pas pu être lue",
             "nic_cmdlets_unavailable": "Les paramètres de la carte réseau ne peuvent pas être lus sur cet appareil",
             "nic_eee_enabled": "Energy-Efficient Ethernet activé",
-            "firmware_adapter_unavailable": "Les paramètres du micrologiciel ne sont pas encore lisibles"
+            "firmware_adapter_unavailable": "Les paramètres du micrologiciel ne sont pas encore lisibles",
+            "vendor_observe_only": "Observation du micrologiciel du fabricant (lecture seule)"
           },
           "attempts": {
             "pending": "En attente",
@@ -1276,6 +1277,14 @@
             "timed_out": "Délai dépassé",
             "unknown": "Inconnu",
             "refused": "Refusé"
+          },
+          "observing": "Observation {{vendor}} : {{interface}}",
+          "observingWithCode": "Observation {{vendor}} : {{interface}} ({{code}})",
+          "observeInterfaces": {
+            "present": "interface présente",
+            "absent": "interface absente",
+            "access_denied": "accès refusé",
+            "error": "erreur de lecture"
           }
         }
       },

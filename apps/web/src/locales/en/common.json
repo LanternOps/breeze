@@ -803,6 +803,7 @@
         "devices": "Devices",
         "scripts": "Scripts",
         "alerts": "Alerts",
+        "pages": "Pages",
         "users": "Users",
         "settings": "Settings",
         "recent-devices": "Recent devices",

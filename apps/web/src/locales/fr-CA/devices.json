@@ -5016,7 +5016,8 @@
       "noOpenCategories": "Rien ne peut s’exécuter avec ce choix. Seuls le BIOS et le micrologiciel sont disponibles ici : choisissez Redémarrer à la fin.",
       "decommissioned": "Cet appareil est mis hors service, rien ne peut donc lui être envoyé.",
       "cancelledAtClaim": "L’exécution a été annulée avant d’atteindre l’appareil. Réessayez."
-    }
+    },
+    "observeQueued": "Vérification en lecture seule lancée sur {{hostname}}. Rien n’est installé."
   },
   "vendorUpdates": {
     "title": "Mises à jour du constructeur",
@@ -5101,7 +5102,16 @@
       "byUnknown": "Inconnu",
       "range": "{{from}}-{{to}} sur {{total}}",
       "previousPage": "Précédent",
-      "nextPage": "Suivant"
+      "nextPage": "Suivant",
+      "observed": "Observé",
+      "observedTools": "Outils trouvés : {{tools}}",
+      "observedNoTools": "Aucun outil du fabricant trouvé",
+      "observedVerdict": {
+        "observed": "{{vendor}} : vérification en lecture seule terminée",
+        "observedWithErrors": "{{vendor}} : vérification en lecture seule terminée, certaines lectures ont échoué",
+        "platformUnsupported": "{{vendor}} : ce modèle n’est pas pris en charge par les outils professionnels du fabricant",
+        "invalid": "{{vendor}} : le résultat de la vérification est illisible"
+      }
     }
   },
   "reinstalledBadge": {

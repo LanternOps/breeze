@@ -232,4 +232,13 @@ describe('oemGatesFingerprint', () => {
     vi.stubEnv('BREEZE_OEM_UPDATES_LAB_DEVICE_IDS', 'device-1');
     expect(oemGatesFingerprint()).not.toBe(allow);
   });
+
+  it('changes with the vendor canary partner list and kill switch', () => {
+    const base = oemGatesFingerprint();
+    vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', 'aaaaaaaa-0000-4000-8000-000000000001');
+    const canary = oemGatesFingerprint();
+    expect(canary).not.toBe(base);
+    vi.stubEnv('BREEZE_VENDOR_CANARY_DISABLED', 'oem_updates:lenovo');
+    expect(oemGatesFingerprint()).not.toBe(canary);
+  });
 });

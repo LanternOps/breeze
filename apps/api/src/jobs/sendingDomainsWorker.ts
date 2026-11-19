@@ -10,7 +10,7 @@ import { recordProviderKeyProbe } from '../services/emailDomains/keyProbe';
 import { PartnerLaneSendFailure, ProviderManagementAuthError } from '../services/emailDomains/provider';
 import { getEmailDomainProvider } from '../services/emailDomains/providerRegistry';
 import { tryCountPartnerLaneSend } from '../services/emailDomains/sendCap';
-import { sendOpsAlert } from '../services/opsAlerts';
+import { opsText, sendOpsAlert } from '../services/opsAlerts';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
@@ -219,7 +219,7 @@ async function drainReleaseOutbox(
       stuck += 1;
       await sendOpsAlert({
         title: 'Sending domain release stuck',
-        body: `Provider ${row.provider} domain ${row.provider_domain_id} has failed ${row.attempts} release attempts. It is still held at the provider. Release it by hand and delete email_provider_domain_releases row ${row.id}.`,
+        body: `Provider ${opsText(row.provider)} domain ${opsText(row.provider_domain_id, 253)} has failed ${row.attempts} release attempts. It is still held at the provider. Release it by hand and delete email_provider_domain_releases row ${row.id}.`,
       });
       continue;
     }
@@ -229,7 +229,7 @@ async function drainReleaseOutbox(
       stuck += 1;
       await sendOpsAlert({
         title: 'Sending domain release for another provider',
-        body: `email_provider_domain_releases row ${row.id} names provider ${row.provider}, but this instance runs ${provider.id}. Not attempted.`,
+        body: `email_provider_domain_releases row ${row.id} names provider ${opsText(row.provider)}, but this instance runs ${opsText(provider.id)}. Not attempted.`,
       });
       continue;
     }
@@ -521,7 +521,7 @@ export async function runDailyMaintenance(now: Date = new Date()): Promise<{ dri
         // human (spec §2, §6.4).
         await sendOpsAlert({
           title: `Sending-domain drift: ${drift} provider domain(s) with no Breeze row`,
-          body: unknown.map((d) => `${d.domain} (${d.providerDomainId})`).join('\n'),
+          body: unknown.map((d) => `${opsText(d.domain, 253)} (${opsText(d.providerDomainId, 253)})`).join('\n'),
         });
       }
     }

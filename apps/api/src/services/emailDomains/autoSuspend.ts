@@ -3,7 +3,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { partnerSendingDomains, partners } from '../../db/schema';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
 import { createAuditLogAsync } from '../auditService';
-import { sendOpsAlert } from '../opsAlerts';
+import { opsText, sendOpsAlert } from '../opsAlerts';
 import { getEmailDomainsConfig } from './config';
 import { STATS_WINDOW_DAYS, loadPartnerSendingWindowStats } from './deliveryStats';
 import { suspendSendingDomain } from './sendingDomainService';
@@ -158,7 +158,7 @@ export async function evaluateAutoSuspension(partnerId: string): Promise<AutoSus
     // ONE alert for the partner, not one per domain: the operator is being told
     // about an account, and N pages for one account is how an alert channel
     // gets muted.
-    const partnerName = rows[0]!.partnerName;
+    const partnerName = opsText(rows[0]!.partnerName);
     try {
       await sendOpsAlert({
         title: `Sending domains auto-suspended: ${partnerName}`,
@@ -166,7 +166,7 @@ export async function evaluateAutoSuspension(partnerId: string): Promise<AutoSus
           `Partner: ${partnerName}`,
           `Partner id: ${partnerId}`,
           `Reason: ${reasonLine}`,
-          `Domains suspended (${suspendedDomainIds.length}): ${rows.filter((r) => suspendedDomainIds.includes(r.id)).map((r) => r.domain).join(', ')}`,
+          `Domains suspended (${suspendedDomainIds.length}): ${rows.filter((r) => suspendedDomainIds.includes(r.id)).map((r) => opsText(r.domain, 253)).join(', ')}`,
           `Window totals: sent=${stats.sent} delivered=${stats.delivered} bounced=${stats.bounced} complained=${stats.complained} failed=${stats.failed} suppressed=${stats.suppressed}`,
           'Unsuspending is manual: /admin/sending-domains (platform admin + MFA).',
         ].join('\n'),

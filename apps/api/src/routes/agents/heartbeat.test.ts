@@ -227,7 +227,7 @@ vi.mock('./helpers', () => ({
   // that does not care about warranty still exercises the delivery merge rather
   // than the builder-throws path.
   buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslEnabled: false })),
-  buildWakeOnLanConfigUpdate: vi.fn(async () => ({ enabled: false, configureSettings: false as const, firmwareWrites: [] as string[] })),
+  buildWakeOnLanConfigUpdate: vi.fn(async () => ({ enabled: false, configureSettings: false as const, firmwareWrites: [] as string[], observeVendors: [] as string[] })),
   // Null = no onedrive policy for the device. Tests that exercise delivery
   // override this per-test. Omitting it entirely would make every heartbeat
   // test silently exercise only the builder-throws path (undefined is not a
@@ -1053,11 +1053,14 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
         helpers.buildEventLogConfigUpdate, helpers.buildHardwareMonitoringConfigUpdate,
         helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
         helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate,
-        helpers.buildWakeOnLanConfigUpdate, helpers.buildTimeSyncConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
+        helpers.buildTimeSyncConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
         helpers.buildWorkloadInventoryConfigUpdate, buildFeatureUpdateConfigUpdate,
       ]) {
         expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ hierarchy }));
       }
+      // The wake builder also takes the agent's partner, for observe_vendors.
+      expect(vi.mocked(helpers.buildWakeOnLanConfigUpdate))
+        .toHaveBeenCalledWith('device-1', expect.objectContaining({ hierarchy }), 'partner-1');
       expect(vi.mocked(helpers.buildHelperConfigUpdate))
         .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ hierarchy }));
       expect(vi.mocked(helpers.buildPolicyProbeConfigUpdate)).toHaveBeenCalledWith('org-1', { partnerId: 'partner-1' });
@@ -4881,12 +4884,13 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
       enabled: false,
       configure_settings: false,
       firmware_writes: [],
+      observe_vendors: [],
     });
   });
 
   it('delivers wake_on_lan_settings enabled=true when a wake_on_lan policy resolves', async () => {
     const { buildWakeOnLanConfigUpdate } = await import('./helpers');
-    vi.mocked(buildWakeOnLanConfigUpdate).mockResolvedValueOnce({ enabled: true, configureSettings: false, firmwareWrites: [] });
+    vi.mocked(buildWakeOnLanConfigUpdate).mockResolvedValueOnce({ enabled: true, configureSettings: false, firmwareWrites: [], observeVendors: [] });
     const resp = await buildApp().request('/agents/device-1/heartbeat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -4898,7 +4902,33 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
       enabled: true,
       configure_settings: false,
       firmware_writes: [],
+      observe_vendors: [],
     });
+  });
+
+  // Observe-first amendment §1: the list rides the existing block, snake_case,
+  // resolved for the authenticated agent's partner.
+  it('delivers observe_vendors from the builder, resolved for the agent partner', async () => {
+    const { buildWakeOnLanConfigUpdate } = await import('./helpers');
+    vi.mocked(buildWakeOnLanConfigUpdate).mockClear();
+    vi.mocked(buildWakeOnLanConfigUpdate).mockResolvedValueOnce({
+      enabled: true, configureSettings: false, firmwareWrites: [], observeVendors: ['hp', 'lenovo'],
+    });
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.wake_on_lan_settings).toEqual({
+      enabled: true,
+      configure_settings: false,
+      firmware_writes: [],
+      observe_vendors: ['hp', 'lenovo'],
+    });
+    expect(vi.mocked(buildWakeOnLanConfigUpdate).mock.calls[0]?.[2]).toBe('partner-1');
   });
 
   it('runs the wake_on_lan builder inside withDbTransaction so a failing fallback query cannot poison the request transaction', async () => {
@@ -4913,7 +4943,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     });
     vi.mocked(buildWakeOnLanConfigUpdate).mockImplementationOnce(async () => {
       callOrder.push('wakeBuilder:ran');
-      return { enabled: false, configureSettings: false as const, firmwareWrites: [] as string[] };
+      return { enabled: false, configureSettings: false as const, firmwareWrites: [] as string[], observeVendors: [] as string[] };
     });
     const resp = await buildApp().request('/agents/device-1/heartbeat', {
       method: 'POST',

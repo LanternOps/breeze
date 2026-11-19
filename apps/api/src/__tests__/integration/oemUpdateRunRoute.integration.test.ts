@@ -328,6 +328,8 @@ describe('#11065 POST /devices/:id/oem-updates/run', () => {
       expect(await res.json()).toEqual({
         displayState: 'not_managed',
         lane: 'dell',
+        // Dell is not an observe lane, so Run Now installs rather than observes.
+        observe: false,
         status: null,
         gates: { bios: 'open', firmware: 'open', driver: 'open', application: 'open' },
       });

@@ -1266,7 +1266,8 @@
             "nic_unreadable": "Ein kabelgebundener Adapter ist vorhanden, konnte aber nicht gelesen werden",
             "nic_cmdlets_unavailable": "Netzwerkadapter-Einstellungen können auf diesem Gerät nicht gelesen werden",
             "nic_eee_enabled": "Energy-Efficient Ethernet ist aktiviert",
-            "firmware_adapter_unavailable": "Firmware-Einstellungen können noch nicht gelesen werden"
+            "firmware_adapter_unavailable": "Firmware-Einstellungen können noch nicht gelesen werden",
+            "vendor_observe_only": "Hersteller-Firmware wird beobachtet (nur lesen)"
           },
           "attempts": {
             "pending": "Ausstehend",
@@ -1276,6 +1277,14 @@
             "timed_out": "Zeitüberschreitung",
             "unknown": "Unbekannt",
             "refused": "Abgelehnt"
+          },
+          "observing": "Beobachtung {{vendor}}: {{interface}}",
+          "observingWithCode": "Beobachtung {{vendor}}: {{interface}} ({{code}})",
+          "observeInterfaces": {
+            "present": "Schnittstelle vorhanden",
+            "absent": "Schnittstelle nicht vorhanden",
+            "access_denied": "Zugriff verweigert",
+            "error": "Lesefehler"
           }
         }
       },

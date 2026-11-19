@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { OEM_LANES, type OemLane } from '@breeze/shared';
 import { resolveApplicability } from './applicability';
+import { resolveObserveApplicability } from './applicability';
 import { SHIPPED_OEM_LANES } from './toolManifest';
 
 const base = {
@@ -128,5 +129,40 @@ describe('resolveApplicability: device shape', () => {
       state: 'not_applicable',
       reason: 'vendor_disabled',
     });
+  });
+});
+
+describe('observe-first (#11065): consumer HP narrowing and observe applicability', () => {
+  const base = {
+    osType: 'windows',
+    isVirtual: false,
+    deviceRole: 'workstation',
+    enabledLanes: ['dell', 'surface', 'hp', 'lenovo'] as const,
+    shippedLanes: ['dell', 'surface', 'hp', 'lenovo'] as const,
+  };
+
+  it('an HP whose newest observation found no platform catalog is not applicable', () => {
+    expect(resolveApplicability({ ...base, manufacturer: 'HP', model: 'HP Laptop 15', observedHpPlatformUnsupported: true }))
+      .toEqual({ state: 'not_applicable', reason: 'platform_unsupported' });
+    expect(resolveApplicability({ ...base, manufacturer: 'HP', model: 'HP Laptop 15', observedHpPlatformUnsupported: false }))
+      .toEqual({ state: 'applicable', lane: 'hp' });
+    expect(resolveApplicability({ ...base, manufacturer: 'HP', model: 'HP Laptop 15' }))
+      .toEqual({ state: 'applicable', lane: 'hp' });
+  });
+
+  it('the narrowing touches no other lane', () => {
+    expect(resolveApplicability({ ...base, manufacturer: 'Dell Inc.', model: 'Latitude', observedHpPlatformUnsupported: true }))
+      .toEqual({ state: 'applicable', lane: 'dell' });
+  });
+
+  it('observe applicability ignores shipped lanes, keeps the anchored matching, and excludes Dell', () => {
+    const id = { osType: 'windows', isVirtual: false, deviceRole: 'workstation' };
+    expect(resolveObserveApplicability({ ...id, manufacturer: 'LENOVO', model: '21K5' })).toEqual({ state: 'applicable', lane: 'lenovo' });
+    expect(resolveObserveApplicability({ ...id, manufacturer: 'HP', model: 'HP Laptop' })).toEqual({ state: 'applicable', lane: 'hp' });
+    expect(resolveObserveApplicability({ ...id, manufacturer: 'Microsoft Corporation', model: 'Surface Pro 11' })).toEqual({ state: 'applicable', lane: 'surface' });
+    expect(resolveObserveApplicability({ ...id, manufacturer: 'Microsoft Corporation', model: 'Virtual Machine' }).state).toBe('not_applicable');
+    expect(resolveObserveApplicability({ ...id, manufacturer: 'Dell Inc.', model: 'Latitude' }).state).toBe('not_applicable');
+    expect(resolveObserveApplicability({ ...id, manufacturer: 'HPE', model: 'ProLiant' }).state).toBe('not_applicable');
+    expect(resolveObserveApplicability({ ...id, isVirtual: true, manufacturer: 'LENOVO', model: '21K5' }).state).toBe('not_applicable');
   });
 });
