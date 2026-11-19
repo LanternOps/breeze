@@ -88,6 +88,7 @@ import {
 } from '../agents/policyProbeSafety';
 import { withoutFeatureLinkAuthority } from '../../services/securityScanQuarantineAuthority';
 import type { SensitiveDataAuthorityValues } from '../../services/sensitiveDataPolicyAuthority';
+import { vendorStage } from '../../services/vendorCanary';
 
 /**
  * 400 body when two compliance rule sets in the link share a name, a name
@@ -175,10 +176,15 @@ featureLinkRoutes.get(
   requireScope('organization', 'partner', 'system'),
   requireConfigPolicyRead,
   (c) => {
+    const auth = c.get('auth') as AuthContext;
     const data: OemUpdatesGateSnapshot = {
       lanes: OEM_LANES.map((lane) => ({
         lane,
         shipped: SHIPPED_OEM_LANES.includes(lane),
+        // A vendor canary partner (#11065 observe-first) may switch on a lane
+        // that has not shipped, for its read-only observation. Its categories
+        // stay closed. Only a partner-scoped caller carries a partner here.
+        observable: vendorStage('oem_updates', lane, auth?.partnerId ?? null) !== 'off',
         categories: Object.fromEntries(
           OEM_CATEGORIES.map((category) => [category, isCategoryOpen(lane, category)]),
         ) as Record<OemCategory, boolean>,

@@ -318,6 +318,9 @@ export const REVALIDATION_REQUIRED_TYPES: ReadonlySet<string> = new Set([
   // services/oemUpdates/revalidation.ts: a kill switch, a closed gate or the flag going
   // off cancels the row while it is still unclaimed. A running one is never touched.
   'oem_update_run',
+  // Read-only vendor observation: rechecks the flag, the canary stage and the kill
+  // switches at claim (services/oemUpdates/observe.ts).
+  'oem_observe',
 ]);
 
 /**

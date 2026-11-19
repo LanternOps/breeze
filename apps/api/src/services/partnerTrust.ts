@@ -147,6 +147,8 @@ export const GATED_COMMAND_TYPES = [
   'oem_update_run',
   // Vendor updates (#11065): operator-directed; runs the vendor binary as SYSTEM to hand its schedule back.
   'oem_update_release',
+  // Read-only vendor observation (canary only): runs vendor reads as SYSTEM.
+  'oem_observe',
   'pam_apply_v2',
   'pam_reconcile_v2',
   // #8928: carries the technician's deny reason to the end user's screen.

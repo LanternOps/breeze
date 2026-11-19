@@ -1502,5 +1502,6 @@ export * from './flowWebhooks';
 export * from './flowConversions';
 export * from './networkIsolation';
 export * from './oemUpdates';
+export * from './oemObserve';
 export * from './unitLength';
 export * from './migrationWindows';
