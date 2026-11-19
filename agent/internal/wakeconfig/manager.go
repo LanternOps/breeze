@@ -176,6 +176,10 @@ func (m *Manager) observe(ctx context.Context, in Inputs, grant biosconfig.Vendo
 		if r := recover(); r != nil {
 			log.Warn("wake vendor observation panicked; reported as an error")
 			o = biosconfig.Failed(observationVendor(in.Manufacturer), "panic")
+			if o != nil {
+				// The observer's own stamping did not run.
+				stampCommon(o, "unknown", "unknown")
+			}
 		}
 	}()
 	ctx, cancel := context.WithTimeout(ctx, observeTimeout)

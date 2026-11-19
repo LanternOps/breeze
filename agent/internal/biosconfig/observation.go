@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -329,6 +330,42 @@ func CleanPtr(s string, max int) *string { return cleanPtr(s, max) }
 
 // DecodeScript is decodeScript for other packages.
 func DecodeScript(out []byte, v any) error { return decodeScript(out, v) }
+
+// scriptWriteVerbs are PowerShell verbs and forms no read script may carry.
+var scriptWriteVerbs = []string{"Set-", "New-", "Remove-", "Clear-", "Rename-", "Enable-", "Disable-", "Start-", "Stop-", "Restart-", "Invoke-Expression", "iex ", "Add-Type"}
+
+// WriteVerbIn returns the first write verb found in a read script, or "".
+// Tests in this package and in wakeconfig run it on every constant script.
+func WriteVerbIn(script string) string {
+	for _, v := range scriptWriteVerbs {
+		if strings.Contains(script, v) {
+			return v
+		}
+	}
+	return ""
+}
+
+// asciiJSON marshals v with every non-ASCII rune as a \uXXXX escape, so a
+// script decodes it the same whatever the console's input code page.
+func asciiJSON(v any) ([]byte, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var b strings.Builder
+	for _, r := range string(raw) {
+		switch {
+		case r < 0x80:
+			b.WriteRune(r)
+		case r > 0xFFFF:
+			hi, lo := utf16.EncodeRune(r)
+			fmt.Fprintf(&b, `\u%04x\u%04x`, hi, lo)
+		default:
+			fmt.Fprintf(&b, `\u%04x`, r)
+		}
+	}
+	return []byte(b.String()), nil
+}
 
 // ValidErrorCode reports whether code is an identifier the schema accepts.
 func ValidErrorCode(code string) bool { return errorCodeRe.MatchString(code) }

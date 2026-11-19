@@ -1,6 +1,7 @@
 package biosconfig
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -31,6 +32,12 @@ var bannedWriteWords = []string{
 	"Remove-" + "WmiObject",
 	"ExecMethod",
 	".Put" + "(",
+	// Other ways to call a WMI method than the one pinned Invoke-CimMethod.
+	"Invoke" + "Method",
+	"[wmi" + "class]",
+	"[wmi" + "]",
+	"Get-" + "WmiObject",
+	"gwmi" + " ",
 	"Install-" + "Module",
 	"Restart-" + "Computer",
 	"shutdown" + ".exe",
@@ -105,10 +112,35 @@ func TestOnlyReadMethodInvoked(t *testing.T) {
 // covers interpolation; this pins that there is none to cover).
 func TestScriptsAreConstantAndReadOnly(t *testing.T) {
 	for name, s := range map[string]string{"hp": hpReadScript, "lenovo": lenovoReadScript, "selections": lenovoSelectionsScript} {
-		for _, verb := range []string{"Set-", "New-", "Remove-", "Clear-", "Rename-", "Enable-", "Disable-", "Start-", "Stop-", "Restart-", "Invoke-Expression", "iex ", "Add-Type"} {
-			if strings.Contains(s, verb) {
-				t.Errorf("%s script contains %q", name, verb)
-			}
+		if v := WriteVerbIn(s); v != "" {
+			t.Errorf("%s script contains %q", name, v)
 		}
 	}
+}
+
+// Stdin is pure ASCII JSON, so the script decodes a setting name the same
+// whatever the console input code page.
+func TestSelectionsStdinIsASCII(t *testing.T) {
+	f := newFakeRunner()
+	f.out[lenovoReadScript] = mustJSON(t, map[string]any{
+		"settings": []string{"WakeOnLAN\u00e9\u20ac,Enable", "WakeOnLAN,ACOnly"}, "passwordState": 0,
+		"classes": []string{"Lenovo_GetBiosSelections"}, "error": nil,
+	})
+	f.out[lenovoSelectionsScript] = selectionsReply(t, map[string]string{})
+	observer(t, DetectWith("LENOVO", "20U9CTO1WW", VendorLenovo, f.run)).Observe(context.Background())
+	for _, c := range f.Calls() {
+		if c.script != lenovoSelectionsScript {
+			continue
+		}
+		for _, b := range c.stdin {
+			if b > 0x7e {
+				t.Fatalf("stdin has a non-ASCII byte: %q", c.stdin)
+			}
+		}
+		if !strings.Contains(string(c.stdin), `\u00e9\u20ac`) {
+			t.Fatalf("non-ASCII name not escaped: %q", c.stdin)
+		}
+		return
+	}
+	t.Fatal("selections did not run")
 }

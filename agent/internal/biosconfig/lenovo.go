@@ -2,7 +2,6 @@ package biosconfig
 
 import (
 	"context"
-	"encoding/json"
 	"math"
 	"regexp"
 	"slices"
@@ -216,7 +215,7 @@ func (a *lenovoAdapter) selections(ctx context.Context, l *LenovoObservation) {
 		}
 		names = append(names, s.Name)
 	}
-	stdin, err := json.Marshal(map[string][]string{"names": names})
+	stdin, err := asciiJSON(map[string][]string{"names": names})
 	if err != nil {
 		return
 	}

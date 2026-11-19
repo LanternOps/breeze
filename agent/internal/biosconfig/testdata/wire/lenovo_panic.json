@@ -1,10 +1,10 @@
 {
   "schema": 1,
   "vendor": "lenovo",
-  "nativeArch": "amd64",
+  "nativeArch": "arm64",
   "interface": "error",
   "errorCode": "panic",
-  "durationMs": 812,
+  "durationMs": 406,
   "collectedWith": "0.131.0",
   "lenovo": {
     "settings": [],

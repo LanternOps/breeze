@@ -270,9 +270,31 @@ func TestObservePanicIsInterfaceError(t *testing.T) {
 	if o.Lenovo == nil || o.Lenovo.Settings == nil {
 		t.Fatalf("panic observation must still carry its vendor block: %+v", o)
 	}
+	// The common block must still be complete, or the server's strict schema
+	// rejects the whole snapshot and the device stops uploading readiness.
+	if o.Schema != 1 || o.NativeArch == "" || o.CollectedWith == "" {
+		t.Fatalf("panic observation lacks its common fields: %+v", o)
+	}
 	select {
 	case <-h.m.Done():
 		t.Fatal("loop exited after a panic")
 	default:
 	}
+}
+
+// A panic inside the production observer (a vendor read, not the observer
+// wrapper) is caught where the common fields are known, and the result is the
+// wire shape the panic golden pins.
+func TestObserverPanicKeepsCommonFields(t *testing.T) {
+	panicky := func(context.Context, string, []byte) ([]byte, error) { panic("provider exploded") }
+	clock := t0
+	now := func() time.Time { clock = clock.Add(406 * time.Millisecond); return clock }
+	o := observerWith(panicky, func() string { return "arm64" }, "0.131.0", now)(context.Background(), lenovoInputs(), biosconfig.VendorLenovo)
+	if o == nil || o.Interface != biosconfig.InterfaceError || o.ErrorCode == nil || *o.ErrorCode != "panic" {
+		t.Fatalf("observation = %+v", o)
+	}
+	if o.Schema != 1 || o.NativeArch != "arm64" || o.CollectedWith != "0.131.0" || o.Lenovo == nil {
+		t.Fatalf("common fields = %+v", o)
+	}
+	checkWakeWireGolden(t, "lenovo_panic", o)
 }

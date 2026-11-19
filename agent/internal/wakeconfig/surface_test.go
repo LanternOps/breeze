@@ -225,6 +225,19 @@ func TestSurfaceScriptFailureIsInterfaceError(t *testing.T) {
 	}
 }
 
+// The Surface read script carries no write verb (the source scan in
+// biosconfig/readonly_test.go also covers its file).
+func TestSurfaceScriptIsReadOnly(t *testing.T) {
+	if v := biosconfig.WriteVerbIn(surfaceReadScript); v != "" {
+		t.Fatalf("surface script contains %q", v)
+	}
+	for _, banned := range []string{"MacAddress", "PermanentAddress", "Invoke-CimMethod"} {
+		if strings.Contains(surfaceReadScript, banned) {
+			t.Fatalf("surface script reads %q", banned)
+		}
+	}
+}
+
 // Observation needs both the make and the grant; nothing runs otherwise.
 func TestObserveRequiresGrantAndMake(t *testing.T) {
 	cases := []struct {
@@ -264,25 +277,31 @@ func TestSurfaceWireGolden(t *testing.T) {
 	vm.Model, vm.Virtual, vm.VirtualPlatform = "Virtual Machine", true, "hyperv"
 	ovm := testObserver(newFakeScripts(), "amd64")(context.Background(), vm, biosconfig.VendorSurface)
 	ovm.DurationMs = 3
-	for name, v := range map[string]*biosconfig.Observation{"surface": o, "surface_vm": ovm} {
-		got, err := json.MarshalIndent(v, "", "  ")
-		if err != nil {
+	checkWakeWireGolden(t, "surface", o)
+	checkWakeWireGolden(t, "surface_vm", ovm)
+}
+
+// checkWakeWireGolden compares v with biosconfig/testdata/wire/<name>.json,
+// the goldens the shared schema test parses.
+func checkWakeWireGolden(t *testing.T, name string, v *biosconfig.Observation) {
+	t.Helper()
+	got, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, '\n')
+	path := filepath.Join("..", "biosconfig", "testdata", "wire", name+".json")
+	if os.Getenv("WAKE_WIRE_UPDATE") == "1" {
+		if err := os.WriteFile(path, got, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		got = append(got, '\n')
-		path := filepath.Join("..", "biosconfig", "testdata", "wire", name+".json")
-		if os.Getenv("WAKE_WIRE_UPDATE") == "1" {
-			if err := os.WriteFile(path, got, 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		want, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(got) != string(want) {
-			t.Fatalf("%s golden differs; regenerate with WAKE_WIRE_UPDATE=1\n got: %s\nwant: %s", name, got, want)
-		}
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("%s golden differs; regenerate with WAKE_WIRE_UPDATE=1\n got: %s\nwant: %s", name, got, want)
 	}
 }
 

@@ -35,27 +35,53 @@ func observerWith(run biosconfig.Runner, arch func() string, agentVersion string
 			return nil
 		}
 		start := now()
-		var o *biosconfig.Observation
-		if a := biosconfig.DetectWith(in.Manufacturer, in.Model, grant, run); a != nil {
-			if ob, ok := a.(biosconfig.Observer); ok {
-				o = ob.Observe(ctx)
-			}
-		} else if grant.Has(biosconfig.VendorSurface) && isSurfaceMake(in.Manufacturer) {
-			o = observeSurface(ctx, run, in)
-		}
+		o := readVendor(ctx, run, in, grant)
 		if o == nil {
 			return nil
 		}
-		o.Schema = 1
-		o.NativeArch = arch()
-		o.CollectedWith = biosconfig.CleanText(agentVersion, 32)
-		if o.CollectedWith == "" {
-			o.CollectedWith = "unknown"
-		}
+		stampCommon(o, arch(), agentVersion)
 		if d := now().Sub(start).Milliseconds(); d > 0 {
 			o.DurationMs = d
 		}
 		return o
+	}
+}
+
+// readVendor runs the granted vendor's read. A panic inside it is an error
+// observation for that vendor, returned here so the caller still stamps the
+// common fields the server's schema requires.
+func readVendor(ctx context.Context, run biosconfig.Runner, in Inputs, grant biosconfig.VendorSet) (o *biosconfig.Observation) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Warn("wake vendor observation panicked; reported as an error")
+			o = biosconfig.Failed(observationVendor(in.Manufacturer), "panic")
+		}
+	}()
+	if a := biosconfig.DetectWith(in.Manufacturer, in.Model, grant, run); a != nil {
+		if ob, ok := a.(biosconfig.Observer); ok {
+			return ob.Observe(ctx)
+		}
+		return nil
+	}
+	if grant.Has(biosconfig.VendorSurface) && isSurfaceMake(in.Manufacturer) {
+		return observeSurface(ctx, run, in)
+	}
+	return nil
+}
+
+// stampCommon fills the common block every observation must carry to pass
+// the server's strict schema.
+func stampCommon(o *biosconfig.Observation, arch, agentVersion string) {
+	o.Schema = 1
+	switch arch {
+	case "amd64", "arm64", "x86":
+		o.NativeArch = arch
+	default:
+		o.NativeArch = "unknown"
+	}
+	o.CollectedWith = biosconfig.CleanText(agentVersion, 32)
+	if o.CollectedWith == "" {
+		o.CollectedWith = "unknown"
 	}
 }
 
