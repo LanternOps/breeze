@@ -323,8 +323,15 @@ describe('ticket_email_links claim', () => {
   }
 
   it('a reply to an internally linked message does not thread onto the ticket', async () => {
-    const { comments } = await replyToLinkedMessage('internal');
+    const { ticketId, comments } = await replyToLinkedMessage('internal');
     expect(comments).toHaveLength(0);
+    // It falls through to the normal unmatched path: a new ticket for the
+    // known requester (fx is a fresh partner per test).
+    const others = await admin()
+      .select({ id: tickets.id })
+      .from(tickets)
+      .where(and(eq(tickets.partnerId, fx.partnerId), sql`${tickets.id} <> ${ticketId}`));
+    expect(others).toHaveLength(1);
   });
 
   it('a reply to a publicly linked message still threads onto the ticket', async () => {
