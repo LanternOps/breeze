@@ -12,7 +12,7 @@ import {
 } from './store';
 import { resolveAllBackupAssignedDevices, type BackupAssignedDevice } from '../../services/featureConfigResolver';
 import { type BackupVerification, type RecoveryReadiness, type RecoveryRiskFactor } from './types';
-import { verificationTimeoutMs } from './verificationTimeout';
+import { verificationStuckAfterMs } from './verificationTimeout';
 // NOTE: Circular import with verificationService is intentional and safe.
 // listBackupVerifications is only called at function invocation time, not at module evaluation.
 import {
@@ -405,12 +405,13 @@ export async function recomputeRecoveryReadinessForDevice(
   const now = Date.now();
   // #7495: a verification that has not finished yet (pending/running) is
   // neutral — it is excluded from the score instead of counting as a failure.
-  // One stuck past its verificationTimeoutMs (#11813: its command's budget plus
-  // grace) is a real failure (the timeout job will mark it failed; count it
-  // here too so a lagging reaper can't hide it).
+  // One stuck past its deadline is a real failure (the timeout job will mark it
+  // failed; count it here too so a lagging reaper can't hide it). This view has
+  // no executed_at, so it uses the safe upper bound (undelivered limit + the
+  // row's scaled budget + grace) and never flags a healthy run.
   const recent = listed.map((row): BackupVerification => {
     if (row.status !== 'pending' && row.status !== 'running') return row;
-    const stuck = (now - toEpoch(row.startedAt)) > verificationTimeoutMs(row.verificationType);
+    const stuck = (now - toEpoch(row.startedAt)) > verificationStuckAfterMs(row.verificationType, row.details);
     return stuck ? { ...row, status: 'failed' } : row;
   }).filter((row) => row.status !== 'pending' && row.status !== 'running');
 

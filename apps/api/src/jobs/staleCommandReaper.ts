@@ -26,6 +26,7 @@ import {
 import { getBullMQConnection } from '../services/redis';
 import {
   getCommandTimeoutMs,
+  getCommandUndeliveredTimeoutMs,
   BACKUP_JOB_ABSOLUTE_TIMEOUT_MS,
   BACKUP_STALL_TIMEOUT_MS,
   EXCLUDED_COMMAND_TYPES,
@@ -637,8 +638,14 @@ export async function reapStaleDeviceCommands(): Promise<number> {
       // 2 h to them would reap a week's worth of legitimately-waiting installs
       // on the first pass after deploy, so their retired 7-day rule is kept
       // for exactly this branch.
+      // backup_verify / backup_test_restore scale their EXECUTION budget with
+      // the snapshot (up to 12 h) but not their wait to be delivered, so this
+      // branch reads the undelivered limit, which is the 2 h base for them
+      // and the execution timeout for everything else.
       const legacyTimeoutMs =
-        cmd.type === 'software_install' ? LEGACY_SOFTWARE_INSTALL_QUEUE_MS : timeoutMs;
+        cmd.type === 'software_install'
+          ? LEGACY_SOFTWARE_INSTALL_QUEUE_MS
+          : getCommandUndeliveredTimeoutMs(cmd.type, cmd.payload as Record<string, unknown> | null);
       due = now - cmd.createdAt.getTime() >= legacyTimeoutMs;
       kind = 'timeout';
       errorMsg = deliveryDeferred

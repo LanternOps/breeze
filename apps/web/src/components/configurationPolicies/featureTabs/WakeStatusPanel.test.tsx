@@ -60,6 +60,32 @@ describe('WakeStatusPanel', () => {
     consoleError.mockRestore();
   });
 
+  // Observe-first amendment §2: "Observing (vendor)" with interface and code.
+  it('shows Observing with the vendor, interface and error code, and no values', async () => {
+    load(page([
+      row({
+        deviceId: 'a', hostname: 'host-a', state: 'unproven', reasonCodes: ['vendor_observe_only'], vendor: 'hp',
+        observation: { vendor: 'hp', interface: 'absent', errorCode: '0x8004100E' },
+      }),
+      row({ deviceId: 'b', hostname: 'host-b', vendor: 'lenovo', observation: { vendor: 'lenovo', interface: 'present', errorCode: null } }),
+      row({ deviceId: 'c', hostname: 'host-c', observation: null }),
+      row({ deviceId: 'd', hostname: 'host-d' }),
+    ]));
+    render(<WakeStatusPanel policyId="p1" />);
+    await screen.findByText('host-a');
+    const a = screen.getByTestId('wake-observing-a').textContent ?? '';
+    expect(a).toContain('Observing');
+    expect(a).toContain('HP');
+    expect(a).toContain('interface not present');
+    expect(a).toContain('0x8004100E');
+    const b = screen.getByTestId('wake-observing-b').textContent ?? '';
+    expect(b).toContain('Lenovo');
+    expect(b).toContain('interface present');
+    expect(screen.queryByTestId('wake-observing-c')).toBeNull();
+    expect(screen.queryByTestId('wake-observing-d')).toBeNull();
+    expect(document.body.textContent).toContain('Observing vendor firmware (read only)');
+  });
+
   it('says "came online", never "woke"', async () => {
     load(page([row({ lastAttempt: { outcome: 'came_online', refusalCode: null, at: '2026-11-15T10:00:00.000Z' } })]));
     render(<WakeStatusPanel policyId="p1" />);

@@ -82,6 +82,7 @@ import {
   buildSettingsDecisionFields,
   retainStateKillSwitchEnabled,
   agentEchEnabled,
+  tpmAttestationEnabled,
   type RemoteManagementDecision,
 } from './heartbeatSettingsDecision';
 import { agentCollectorAbsenceCache, agentCollectorAbsenceKey, deviceHasAgentCollectors } from '../../services/unifi/unifiCollectorService';
@@ -2255,6 +2256,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // connections.
   mergedConfigUpdate.ech_enabled = agentEchEnabled();
 
+  // #8318 T1 — TPM EK attestation switch, ALWAYS sent as true/false for the
+  // same reason: turning it back off must reach agents that saw it on.
+  mergedConfigUpdate.tpm_attestation_enabled = tpmAttestationEnabled();
+
   // Security remediation Wave 6, Task 9 — ALWAYS sent, as true or false.
   //
   // An earlier revision omitted the key when unset/false, mirroring
@@ -2846,7 +2851,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null;
     featureUpdateSettings: RingFeatureUpdates | null;
     warrantySettings: { hpCmslOptedIn: boolean } | null;
-    wakeOnLanSettings: { enabled: boolean } | null;
+    wakeOnLanSettings: { enabled: boolean; observeVendors?: string[] } | null;
     hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null;
     timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null;
     workloadInventorySettings: Awaited<ReturnType<typeof buildWorkloadInventoryConfigUpdate>> | null;
@@ -3044,9 +3049,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // its own transaction: a failure
       // is caught outside it and cannot poison the request transaction.
       try {
+        // observe_vendors (observe-first amendment §1) is resolved for the
+        // authenticated agent's partner: an env and code lookup, no query.
         policyConfigs.wakeOnLanSettings = beatPolicySet
-          ? await buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts)
-          : await withDbTransaction(() => buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts));
+          ? await buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts, agent.partnerId)
+          : await withDbTransaction(() => buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts, agent.partnerId));
       } catch (err) {
         console.error(`[agents] failed to build wake_on_lan config update for ${agentId}:`, err);
         captureException(err);
@@ -3231,10 +3238,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     );
   }
   if (wakeOnLanSettings) {
+    // observe_vendors is always sent, `[]` when off, so a revoked vendor
+    // reaches the agent on the next heartbeat rather than waiting on an
+    // absent key. It grants reads only; writes stay off (W06).
     policyConfigUpdate.wake_on_lan_settings = {
       enabled: wakeOnLanSettings.enabled,
       configure_settings: false,
       firmware_writes: [],
+      observe_vendors: wakeOnLanSettings.observeVendors ?? [],
     };
   }
   const hasPolicyConfigUpdate = Object.keys(policyConfigUpdate).length > 0;

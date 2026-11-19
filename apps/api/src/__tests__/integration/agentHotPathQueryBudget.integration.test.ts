@@ -1339,7 +1339,7 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     expect(body.configUpdate.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
     expect(body.configUpdate.monitoring_settings).toMatchObject({ check_interval_seconds: 90, watches: [expect.objectContaining({ name: 'BudgetService' })] });
     expect(body.configUpdate.onedrive_helper_settings.libraries).toHaveLength(1);
-    expect(body.configUpdate.wake_on_lan_settings).toEqual({ enabled: true, configure_settings: false, firmware_writes: [] });
+    expect(body.configUpdate.wake_on_lan_settings).toEqual({ enabled: true, configure_settings: false, firmware_writes: [], observe_vendors: [] });
 
     expect(steady.transactions).toBe(2);
     expect(steady.buckets.policySetLoad).toBe(1);

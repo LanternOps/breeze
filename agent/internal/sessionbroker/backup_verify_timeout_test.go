@@ -151,3 +151,66 @@ func TestBackupVerificationTimeoutCancelsHelperAndAbsorbsLateResult(t *testing.T
 		})
 	}
 }
+
+// The helper derives its run budget from the request's TimeoutMs (minus
+// backupipc.VerifyRunMargin), so the forward wait the heartbeat chose from the
+// command's scaled timeBudgetSeconds must reach the helper unchanged. Pins
+// that contract for both verification commands, at the base and a scaled
+// budget.
+func TestBackupVerificationForwardCarriesTimeoutToHelper(t *testing.T) {
+	for _, commandType := range []string{"backup_verify", "backup_test_restore"} {
+		for _, timeout := range []time.Duration{backupipc.VerifyCommandTimeout, 395 * time.Minute, backupipc.VerifyMaxCommandTimeout} {
+			t.Run(fmt.Sprintf("%s/%s", commandType, timeout), func(t *testing.T) {
+				serverConn, clientConn := net.Pipe()
+				defer func() { _ = serverConn.Close() }()
+				defer func() { _ = clientConn.Close() }()
+
+				session := &Session{
+					SessionID: "backup-verify-timeout-carry",
+					conn:      ipc.NewConn(serverConn),
+					pending:   make(map[string]pendingResponse),
+					done:      make(chan struct{}),
+				}
+				go session.RecvLoop(func(_ *Session, _ *ipc.Envelope) {})
+				broker := &Broker{
+					sessions:   make(map[string]*Session),
+					byIdentity: make(map[string][]*Session),
+				}
+				broker.SetBackupSession(session)
+
+				helper := ipc.NewConn(clientConn)
+				gotTimeoutMs := make(chan int64, 1)
+				go func() {
+					env, err := helper.Recv()
+					if err != nil {
+						gotTimeoutMs <- -1
+						return
+					}
+					var req backupipc.BackupCommandRequest
+					if err := json.Unmarshal(env.Payload, &req); err != nil {
+						gotTimeoutMs <- -1
+						return
+					}
+					gotTimeoutMs <- req.TimeoutMs
+					_ = helper.SendTyped(env.ID, backupipc.TypeBackupResult, backupipc.BackupCommandResult{
+						CommandID: req.CommandID,
+						Success:   true,
+						Stdout:    `{}`,
+					})
+				}()
+
+				if _, err := broker.ForwardBackupCommand("carry-"+commandType, commandType, []byte(`{}`), timeout, false); err != nil {
+					t.Fatalf("ForwardBackupCommand: %v", err)
+				}
+				select {
+				case got := <-gotTimeoutMs:
+					if got != timeout.Milliseconds() {
+						t.Fatalf("helper saw TimeoutMs = %d, want %d", got, timeout.Milliseconds())
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("helper never received the request")
+				}
+			})
+		}
+	}
+}

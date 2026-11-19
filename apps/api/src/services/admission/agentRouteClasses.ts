@@ -97,6 +97,10 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   // Endpoint-messaging receipts (#8741): small, user-attested; the agent keeps
   // sticky messages and re-reports, so shedding at level 2+ loses nothing.
   'POST /:id/message-events': 'standard',
+  // TPM EK collection (#8318 T1): best-effort, two small calls at most once
+  // per process per 7 days; a shed attempt is retried at the next hardware send.
+  'POST /:id/attestation/challenge': 'standard',
+  'POST /:id/attestation/complete': 'standard',
   // bulk
   'PUT /:id/hardware': 'bulk',
   'PUT /:id/software': 'bulk',

@@ -1037,6 +1037,7 @@ describe('agent routes', () => {
       expect(body.configUpdate).toEqual({
         backup_server_url: '',
         ech_enabled: true,
+        tpm_attestation_enabled: false,
         event_log_settings: {
           max_events_per_cycle: 100,
           collect_categories: ['security', 'hardware', 'application', 'system'],
@@ -1059,7 +1060,7 @@ describe('agent routes', () => {
         // false (the revoke-on-unassign contract), exactly like patch_source.
         warranty_settings: { hp_cmsl_enabled: false, hp_cmsl_mode: 'off', hp_cmsl_tiers: [] },
         // #10838: no wake_on_lan policy resolves to an explicit enabled false.
-        wake_on_lan_settings: { enabled: false, configure_settings: false, firmware_writes: [] },
+        wake_on_lan_settings: { enabled: false, configure_settings: false, firmware_writes: [], observe_vendors: [] },
         // Security remediation Wave 6, Task 9 — always sent (true or false),
         // mirroring AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID. Sending the explicit
         // false is what makes the switch reversible: an omitted key is a no-op
@@ -1171,6 +1172,7 @@ describe('agent routes', () => {
       expect(body.configUpdate).toEqual({
         backup_server_url: '',
         ech_enabled: true,
+        tpm_attestation_enabled: false,
         event_log_settings: {
           max_events_per_cycle: 100,
           collect_categories: ['security', 'hardware', 'application', 'system'],
@@ -1184,7 +1186,7 @@ describe('agent routes', () => {
         feature_update_settings: { mode: 'block' },
         hardware_monitoring_settings: { enabled: true, poll_interval_minutes: 10, disk_health_interval_minutes: 60 },
         warranty_settings: { hp_cmsl_enabled: false, hp_cmsl_mode: 'off', hp_cmsl_tiers: [] },
-        wake_on_lan_settings: { enabled: false, configure_settings: false, firmware_writes: [] },
+        wake_on_lan_settings: { enabled: false, configure_settings: false, firmware_writes: [], observe_vendors: [] },
         require_manifest_signing_key_id: false
       });
       expect(insertValues).toHaveBeenCalledWith(

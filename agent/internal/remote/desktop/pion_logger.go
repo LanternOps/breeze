@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pion/ice/v4"
 	"github.com/pion/logging"
 	"github.com/pion/webrtc/v4"
 )
@@ -68,8 +69,8 @@ func (l pionLogger) error(detail string) {
 }
 
 // newDesktopSettingEngine is the pion SettingEngine every desktop peer
-// connection uses: ICE timeouts tuned for screen sharing, and pion's logs
-// routed into the agent log.
+// connection uses: ICE timeouts tuned for screen sharing, mDNS off, and pion's
+// logs routed into the agent log.
 func newDesktopSettingEngine() webrtc.SettingEngine {
 	se := webrtc.SettingEngine{}
 	se.SetICETimeouts(
@@ -77,6 +78,14 @@ func newDesktopSettingEngine() webrtc.SettingEngine {
 		15*time.Second, // failedTimeout — reduced from 25s default for faster recovery
 		2*time.Second,  // keepAliveInterval — refresh STUN bindings when no media
 	)
+	// pion promotes an unset mode to QueryOnly, which opens a multicast socket
+	// in every session; on macOS that socket is in the user-session desktop
+	// helper and can raise the Local Network privacy prompt (#12240). Our host
+	// candidates were always plain IPs (only QueryAndGather publishes .local
+	// names). A viewer's .local host candidates are now discarded instead of
+	// resolved; on a LAN the session still connects because the viewer checks
+	// our IP host candidates and we learn it as a peer-reflexive candidate.
+	se.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
 	se.LoggerFactory = pionLoggerFactory{}
 	return se
 }

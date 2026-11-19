@@ -871,7 +871,7 @@ type Heartbeat struct {
 	hpWarrantyNow func() time.Time
 
 	// verificationPool is the lane for backup_verify and backup_test_restore
-	// (#6106). Each waits up to backupVerificationTimeout on the backup
+	// (#6106). Each waits up to backupVerificationForwardTimeout on the backup
 	// helper; on the shared pool that wait held a slot, so a few
 	// verifications could starve scripts and monitors. It has pool's worker
 	// and queue sizes, so verifications get the concurrency they had, now in
@@ -7938,7 +7938,7 @@ func (h *Heartbeat) executeCommandViaPoolReportingDelivery(cmd Command) (result 
 	// permanently shrinks the pool (issue #2387). Ephemeral commands
 	// (terminal/tunnel/desktop data) should complete in milliseconds, so they
 	// get a much shorter tier (issue #2400) — still log-only.
-	warnAfter := h.commandWarnAfter(cmd.Type)
+	warnAfter := h.commandWarnAfterFor(cmd)
 	started := time.Now()
 	watchdog := time.NewTimer(warnAfter)
 	defer watchdog.Stop()
@@ -8004,6 +8004,23 @@ func (h *Heartbeat) commandWarnAfter(cmdType string) time.Duration {
 	return defaultCommandInFlightWarnAfter
 }
 
+// commandWarnAfterFor is commandWarnAfter for a whole command. A
+// backup_verify / backup_test_restore waits on the helper for its own
+// forward timeout, which scales with the snapshot up to
+// backupipc.VerifyMaxCommandTimeout, so it only counts as wedged once that
+// wait is over (never earlier than the default tier). A test override still
+// takes precedence.
+func (h *Heartbeat) commandWarnAfterFor(cmd Command) time.Duration {
+	warnAfter := h.commandWarnAfter(cmd.Type)
+	if h.commandInFlightWarnAfter > 0 || !isBackupVerificationCommand(cmd.Type) {
+		return warnAfter
+	}
+	if forward := backupVerificationForwardTimeout(cmd.Payload); forward > warnAfter {
+		return forward
+	}
+	return warnAfter
+}
+
 // inFlightCommand is one pool-dispatched command currently executing, as
 // tracked for the heartbeat wedge gauges (issue #2400).
 type inFlightCommand struct {
@@ -8019,7 +8036,7 @@ type inFlightCommand struct {
 // and tracking starts when a worker picks the command up, not when it is
 // queued behind a backlog.
 func (h *Heartbeat) runTrackedCommand(cmd Command) tools.CommandResult {
-	key := h.trackInFlight(time.Now(), h.commandWarnAfter(cmd.Type))
+	key := h.trackInFlight(time.Now(), h.commandWarnAfterFor(cmd))
 	defer h.untrackInFlight(key)
 	return h.executeCommand(cmd)
 }

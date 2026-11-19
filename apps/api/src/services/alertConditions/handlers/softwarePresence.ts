@@ -28,6 +28,10 @@ export const softwarePresenceHandler: ConditionHandler = {
 
   async evaluate(condition: unknown, deviceId: string): Promise<ConditionResult> {
     const cond = condition as SoftwarePresenceCondition;
+    // The kind templates reference {{name}} and interpolation leaves unknown
+    // tokens literal, so without this every alert title read
+    // "{{name}} on <device>". Same gap #7966 closed for service/process.
+    const templateValues = { name: cond.name };
 
     const [latest] = await db
       .select({ name: softwareInventory.name, version: softwareInventory.version })
@@ -47,6 +51,7 @@ export const softwarePresenceHandler: ConditionHandler = {
       const passed = !latest;
       return {
         passed,
+        templateValues,
         description: passed ? `${cond.name} is not installed` : `${cond.name} is installed`,
       };
     }
@@ -58,6 +63,7 @@ export const softwarePresenceHandler: ConditionHandler = {
       const passed = !!latest;
       return {
         passed,
+        templateValues,
         description: passed ? `${cond.name} is installed` : `${cond.name} is not installed`,
       };
     }
@@ -65,17 +71,18 @@ export const softwarePresenceHandler: ConditionHandler = {
     // presence === 'version_below'
     if (!latest || !latest.version) {
       // Nothing installed (or no version recorded) is not "below" anything.
-      return { passed: false, description: `${cond.name} is not installed` };
+      return { passed: false, templateValues, description: `${cond.name} is not installed` };
     }
 
     const comparison = compareVersions(latest.version, cond.version as string);
     if (comparison === null) {
-      return { passed: false, description: `Version ${latest.version} not comparable` };
+      return { passed: false, templateValues, description: `Version ${latest.version} not comparable` };
     }
 
     const passed = comparison < 0;
     return {
       passed,
+      templateValues,
       description: passed
         ? `${cond.name} version ${latest.version} is below ${cond.version}`
         : `${cond.name} version ${latest.version} is not below ${cond.version}`,

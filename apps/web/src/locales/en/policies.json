@@ -1266,7 +1266,8 @@
             "nic_unreadable": "A wired adapter is present but could not be read",
             "nic_cmdlets_unavailable": "Network adapter settings cannot be read on this device",
             "nic_eee_enabled": "Energy-Efficient Ethernet is on",
-            "firmware_adapter_unavailable": "Firmware settings cannot be read yet"
+            "firmware_adapter_unavailable": "Firmware settings cannot be read yet",
+            "vendor_observe_only": "Observing vendor firmware (read only)"
           },
           "attempts": {
             "pending": "Pending",
@@ -1276,6 +1277,14 @@
             "timed_out": "Timed out",
             "unknown": "Unknown",
             "refused": "Refused"
+          },
+          "observing": "Observing {{vendor}}: {{interface}}",
+          "observingWithCode": "Observing {{vendor}}: {{interface}} ({{code}})",
+          "observeInterfaces": {
+            "present": "interface present",
+            "absent": "interface not present",
+            "access_denied": "access denied",
+            "error": "read error"
           }
         }
       },

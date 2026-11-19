@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "vendor": "lenovo",
+  "nativeArch": "arm64",
+  "interface": "error",
+  "errorCode": "panic",
+  "durationMs": 406,
+  "collectedWith": "0.131.0",
+  "lenovo": {
+    "settings": [],
+    "settingCount": 0,
+    "truncated": false,
+    "passwordState": null,
+    "classes": [],
+    "machineType": null,
+    "selectionCalls": 0,
+    "selectionErrors": 0
+  }
+}
