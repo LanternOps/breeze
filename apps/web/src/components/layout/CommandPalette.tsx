@@ -19,6 +19,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
+import { seedRouterHistoryState } from '@/lib/replaceUrl';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useFeaturesStore } from '../../stores/featuresStore';
@@ -449,6 +450,20 @@ export default function CommandPalette() {
         return;
       }
       if (item.href && typeof window !== 'undefined') {
+        // Same page, different fragment (Partner Settings sections): Astro's
+        // router would pushState without a hashchange, so the page would not
+        // switch sections. Assign the hash instead (see samePageHashClick.ts).
+        const target = new URL(item.href, window.location.href);
+        if (
+          item.href.includes('#') &&
+          target.origin === window.location.origin &&
+          target.pathname === window.location.pathname &&
+          target.search === window.location.search
+        ) {
+          window.location.hash = target.hash;
+          seedRouterHistoryState();
+          return;
+        }
         void navigateTo(item.href);
       }
     },

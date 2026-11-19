@@ -142,6 +142,19 @@ describe('CommandPalette — pages and Partner Settings sections (#12210, #12216
     expect(navigateToMock).toHaveBeenCalledWith('/settings/partner#email-templates');
   });
 
+  it('switches section via the hash when already on Partner Settings', () => {
+    window.history.replaceState(null, '', '/settings/partner#security');
+    try {
+      open();
+      search('branding');
+      fireEvent.click(screen.getByRole('button', { name: /^Branding/ }));
+      expect(window.location.hash).toBe('#branding');
+      expect(navigateToMock).not.toHaveBeenCalled();
+    } finally {
+      window.history.replaceState(null, '', '/');
+    }
+  });
+
   it('hides pages and sections the user cannot open', () => {
     setPermissions([]);
     claimsMock.mockReturnValue({ scope: 'organization' });
