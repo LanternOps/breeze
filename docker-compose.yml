@@ -1218,7 +1218,11 @@ services:
       # Read the PostgreSQL section of the upgrade guide before taking this line.
       PGDATA: /var/lib/postgresql/data
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # POSTGRES_DATA_VOLUME picks which declared volume holds the database:
+      # postgres_data (unset, the default) or postgres_data_alt. The PostgreSQL
+      # major-version runbook restores into the other slot so the old volume
+      # stays untouched as the rollback. Any other value fails `docker compose`.
+      - ${POSTGRES_DATA_VOLUME:-postgres_data}:/var/lib/postgresql/data
     healthcheck:
       <<: *healthcheck
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-breeze} -d ${POSTGRES_DB:-breeze}']
@@ -1417,6 +1421,9 @@ volumes:
   caddy_config:
   api_data:
   postgres_data:
+  # Second database slot, used only when POSTGRES_DATA_VOLUME selects it (see
+  # the postgres service).
+  postgres_data_alt:
   redis_data:
 
 secrets:

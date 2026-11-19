@@ -39,14 +39,14 @@ type RenderedService = {
 
 // Variables that would change what the shipped files render. They are removed
 // from the inherited environment so a developer's shell cannot flip a result.
-const SCRUBBED = ['POSTGRES_IMAGE_REF', 'PGDATA', 'COMPOSE_FILE', 'COMPOSE_PROJECT_NAME'];
+const SCRUBBED = ['POSTGRES_IMAGE_REF', 'POSTGRES_DATA_VOLUME', 'PGDATA', 'COMPOSE_FILE', 'COMPOSE_PROJECT_NAME'];
 
 /**
  * `docker compose config` for the given files, with .env.example as the env
  * file (it carries a value for every required variable) and `overrides`
  * layered on top. Process env wins over --env-file in compose interpolation.
  */
-function renderPostgres(files: string[], overrides: Record<string, string> = {}): RenderedService {
+function renderConfig(files: string[], overrides: Record<string, string> = {}): string {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined && !SCRUBBED.includes(k)) env[k] = v;
@@ -58,7 +58,11 @@ function renderPostgres(files: string[], overrides: Record<string, string> = {})
     '--env-file', path.join(REPO_ROOT, '.env.example'),
     'config', '--format', 'json',
   ], { cwd: REPO_ROOT, encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
-  return (JSON.parse(rendered) as { services: Record<string, RenderedService> }).services.postgres!;
+  return rendered;
+}
+
+function renderPostgres(files: string[], overrides: Record<string, string> = {}): RenderedService {
+  return (JSON.parse(renderConfig(files, overrides)) as { services: Record<string, RenderedService> }).services.postgres!;
 }
 
 const namedVolumeTargets = (svc: RenderedService) =>
@@ -84,6 +88,41 @@ describe('docker-compose.yml postgres data directory', () => {
     expect(svc.volumes).toEqual([
       expect.objectContaining({ type: 'volume', source: 'postgres_data', target: '/var/lib/postgresql/data' }),
     ]);
+  }, DOCKER_SPAWN_TIMEOUT_MS);
+
+  // POSTGRES_DATA_VOLUME selects which declared volume holds the data, so the
+  // PostgreSQL 16 -> 18 runbook can restore into a second volume while the old
+  // one stays untouched as the rollback. It is read by every path that starts
+  // the stack (guided-setup.sh and its boot service pass -f docker-compose.yml
+  // --env-file .env, which never loads docker-compose.override.yml).
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+  ])('mounts postgres_data when POSTGRES_DATA_VOLUME is %s', (_label, value) => {
+    const overrides: Record<string, string> = { POSTGRES_IMAGE_REF: 'pgvector/pgvector:pg16' };
+    if (value !== undefined) overrides.POSTGRES_DATA_VOLUME = value;
+    const svc = renderPostgres(['docker-compose.yml'], overrides);
+    expect(svc.volumes?.map((m) => m.source)).toEqual(['postgres_data']);
+  }, DOCKER_SPAWN_TIMEOUT_MS);
+
+  it('mounts the alternate slot, at the same PGDATA, when POSTGRES_DATA_VOLUME=postgres_data_alt', () => {
+    const svc = renderPostgres(['docker-compose.yml'], {
+      POSTGRES_IMAGE_REF: 'pgvector/pgvector:pg18',
+      POSTGRES_DATA_VOLUME: 'postgres_data_alt',
+    });
+    expect(svc.volumes).toEqual([
+      expect.objectContaining({ type: 'volume', source: 'postgres_data_alt', target: '/var/lib/postgresql/data' }),
+    ]);
+    expect(svc.environment?.PGDATA).toBe('/var/lib/postgresql/data');
+  }, DOCKER_SPAWN_TIMEOUT_MS);
+
+  it('refuses to render when POSTGRES_DATA_VOLUME names an undeclared volume', () => {
+    // Fail closed: a typo must stop `docker compose`, never start Postgres on
+    // a new empty volume.
+    expect(() => renderConfig(['docker-compose.yml'], {
+      POSTGRES_IMAGE_REF: 'pgvector/pgvector:pg18',
+      POSTGRES_DATA_VOLUME: 'postgres_data_typo',
+    })).toThrow(/undefined volume postgres_data_typo/);
   }, DOCKER_SPAWN_TIMEOUT_MS);
 
   it('keeps PGDATA on the tmpfs in the per-worktree stack (dev + worktree overrides)', () => {
