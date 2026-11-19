@@ -310,7 +310,7 @@ func TestContainmentCapabilitiesUsesCachedPlatform(t *testing.T) {
 	for n := 0; n < 3; n++ {
 		var capabilities SecurityCapabilities
 		containmentCapabilities(&capabilities)
-		if capabilities.NetworkIsolationVersion != isolation.CapabilityPolicyAllow || !capabilities.NetworkIsolationReady || capabilities.NetworkIsolationMechanism != "wfp" {
+		if capabilities.NetworkIsolationVersion != isolation.CapabilityReleaseToken || !capabilities.NetworkIsolationReady || capabilities.NetworkIsolationMechanism != "wfp" {
 			t.Fatalf("capability=%+v", capabilities)
 		}
 	}
@@ -323,8 +323,8 @@ func TestContainmentCapabilitiesUsesCachedPlatform(t *testing.T) {
 // packages/shared/src/utils/networkIsolation.ts. A build that cannot isolate
 // advertises 0 whatever it could accept: this wave activates nothing.
 func TestContainmentCapabilityLevels(t *testing.T) {
-	if isolation.CapabilityBase != 1 || isolation.CapabilityDeadMan != 2 || isolation.CapabilityPolicyAllow != 3 {
-		t.Fatalf("levels changed: base %d, deadMan %d, policyAllow %d", isolation.CapabilityBase, isolation.CapabilityDeadMan, isolation.CapabilityPolicyAllow)
+	if isolation.CapabilityBase != 1 || isolation.CapabilityDeadMan != 2 || isolation.CapabilityPolicyAllow != 3 || isolation.CapabilityReleaseToken != 4 {
+		t.Fatalf("levels changed: base %d, deadMan %d, policyAllow %d, releaseToken %d", isolation.CapabilityBase, isolation.CapabilityDeadMan, isolation.CapabilityPolicyAllow, isolation.CapabilityReleaseToken)
 	}
 	previous := currentContainmentPlatform.Load()
 	t.Cleanup(func() { currentContainmentPlatform.Store(previous) })
@@ -336,8 +336,8 @@ func TestContainmentCapabilityLevels(t *testing.T) {
 	}{
 		{"not activated", isolation.Capability{Mechanism: "wfp", UnsupportedReason: "not_activated"}, 0, false},
 		{"unsupported", isolation.Capability{UnsupportedReason: "unsupported"}, 0, false},
-		{"capable, not ready", isolation.Capability{Version: 1, Mechanism: "pf"}, isolation.CapabilityPolicyAllow, false},
-		{"capable, ready", isolation.Capability{Version: 1, Mechanism: "pf", Ready: true}, isolation.CapabilityPolicyAllow, true},
+		{"capable, not ready", isolation.Capability{Version: 1, Mechanism: "pf"}, isolation.CapabilityReleaseToken, false},
+		{"capable, ready", isolation.Capability{Version: 1, Mechanism: "pf", Ready: true}, isolation.CapabilityReleaseToken, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			currentContainmentPlatform.Store(&containmentPlatform{isolator: staticCapabilityIsolator{cap: tc.cap}})

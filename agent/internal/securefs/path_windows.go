@@ -649,7 +649,14 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	if err != nil {
 		return nil, fmt.Errorf("open staging file: %w", err)
 	}
-	_, copyErr := io.Copy(temp, src)
+	var holeWarn, copyErr error
+	if winAttrs&windows.FILE_ATTRIBUTE_SPARSE_FILE != 0 && sparseWarn == nil {
+		// #6446: the temporary really is sparse now, so recreate the holes
+		// instead of allocating every zero run the source left unallocated.
+		holeWarn, copyErr = copySparse(temp, tempHandle, src)
+	} else {
+		_, copyErr = io.Copy(temp, src)
+	}
 	closeErr := src.Close()
 	if copyErr != nil {
 		return nil, fmt.Errorf("copy staging file: %w", copyErr)
@@ -664,6 +671,9 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	}
 	if sparseWarn != nil {
 		warnings = append(warnings, sparseWarn)
+	}
+	if holeWarn != nil {
+		warnings = append(warnings, holeWarn)
 	}
 	if owner != nil {
 		// Unix uid/gid has no Windows meaning. #5520's walker never records an
@@ -1337,11 +1347,10 @@ const installableWinAttrs = uint32(
 // filesystem that does not support sparse files — FAT32, exFAT, a network
 // redirector — degrades to a fully-allocated restore instead of failing it.
 //
-// Caveat worth stating plainly: this restores the file's SPARSENESS, not its
-// original hole map. The manifest records no allocated-range list, so the
-// bytes the restore writes are written for real; a run of zeroes that was a
-// hole on the source lands as allocated zeroes here. The file is sparse and
-// can be punched thereafter, which is what #5407 asked for.
+// Setting the flag alone restores SPARSENESS, not the hole map: bytes written
+// afterwards are allocated, zeroes included. The callers recreate the holes
+// from the content itself (#6446) — copySparse while filling the pinned
+// temporary, punchHolesByPath for a file already written by pathname.
 func maybeSetSparse(handle windows.Handle, winAttrs uint32) error {
 	if winAttrs&windows.FILE_ATTRIBUTE_SPARSE_FILE == 0 {
 		return nil

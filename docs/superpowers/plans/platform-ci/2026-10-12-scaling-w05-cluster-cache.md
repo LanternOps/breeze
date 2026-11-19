@@ -711,7 +711,7 @@ Server-side only; ships with the next API release. No flag. After deploy, on eac
 
 ## Follow-ups to file at merge (not in this wave)
 
-1. Spec W4: classify the other per-process caches (`agentAuthNegativeCache`, partner scope-policy and allowlist caches, module-level `Map`s) and move the cluster-unsafe ones onto `cluster: true`.
+1. Spec W4: classify the other per-process caches (`agentAuthNegativeCache`, partner scope-policy and allowlist caches, module-level `Map`s) and move the cluster-unsafe ones onto `cluster: true`. *(Done 2026-11-18, #8636: every module-level cache is classified in `apps/api/src/__tests__/processLocalCaches.contract.test.ts` (cluster / redis-coherent / process-local / not-a-cache), and a new unclassified cache fails CI. Eight hand-rolled caches whose writers invalidated only their own process now publish through `registerClusterInvalidator` (`services/clusterInvalidator.ts`): partner OAuth scope policy, partner IP allowlist, device remote-access policy, LLM provider catalog, third-party package catalog, Wisp standing-state facts, AI gateway connection state, AI kill state. `agentAuthNegativeCache` stays process-local: it is fail-closed and no writer invalidates it.)*
 2. With W07 hit-rate data, revisit the TTLs. With cross-instance invalidation, the 60 s TTLs on C1–C4 and C6–C7 are now a backstop for writers outside the ratchet, and could be longer.
 3. If production shows the subscriber failing (not timing out) at boot, retry `start()` when Redis recovers (the boot sequence's existing "Redis came back" hook, `index.ts` ~405-430). A timeout already recovers on its own (D9).
 4. #8257 (device-keyed Redis policy caches bound to org) stays open and separate.

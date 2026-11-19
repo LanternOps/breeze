@@ -58,7 +58,7 @@ export async function seedDevice(orgId: string, siteId: string, label: string, o
 }
 
 export type SeedLink =
-  | { featureType: 'helper' | 'pam' | 'warranty'; inlineSettings: Record<string, unknown> }
+  | { featureType: 'helper' | 'pam' | 'warranty' | 'wake_on_lan'; inlineSettings: Record<string, unknown> }
   | { featureType: 'event_log'; maxEventsPerCycle?: number; withoutSettings?: true }
   | { featureType: 'hardware_monitoring'; pollIntervalMinutes: number }
   | { featureType: 'patch'; exclusiveWindowsUpdate: boolean }
@@ -102,7 +102,7 @@ export async function seedPolicy(input: {
       ...(input.parentPolicyId ? { parentPolicyId: input.parentPolicyId } : {}),
     } as never).returning();
     for (const l of input.links ?? []) {
-      const inline = l.featureType === 'helper' || l.featureType === 'pam' || l.featureType === 'warranty'
+      const inline = l.featureType === 'helper' || l.featureType === 'pam' || l.featureType === 'warranty' || l.featureType === 'wake_on_lan'
         ? l.inlineSettings
         : l.featureType === 'monitors' && l.inheritance ? { inheritance: l.inheritance } : undefined;
       const [link] = await db.insert(configPolicyFeatureLinks).values({

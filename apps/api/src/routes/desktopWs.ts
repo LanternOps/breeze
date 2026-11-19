@@ -86,6 +86,7 @@ import {
 } from '../services/desktopSessionFinalization';
 import { enqueueDesktopSessionFinalization } from '../jobs/desktopSessionFinalizationWorker';
 import { ensureDesktopStreamStopped } from '../services/desktopSessionStop';
+import { endRemoteSessionAsOperator } from '../services/remoteSessionOperatorEnd';
 import {
   authorizeConsumedRemoteWsTicket,
   revalidateRemoteWsAuthorityBounded,
@@ -1945,6 +1946,68 @@ export function createDesktopWsRoutes(
         console.error('[desktop-ws] Failed to create viewer WebSocket ticket:', error);
         return c.json({ error: 'Unable to create WebSocket ticket. Please try again later.' }, 503);
       }
+    }
+  );
+
+  // #11931: the desktop viewer app's hang-up. The viewer holds a viewer token,
+  // not a user session, so it cannot call POST /remote/sessions/:id/end. Without
+  // this the hang-up only closed the peer, and the agent's peer-drop report
+  // ended the row as `peer_disconnected` — indistinguishable from a network
+  // drop. The same live authorization as every other viewer route: a token
+  // that could no longer offer cannot end either, and in that case the peer
+  // close still ends the session (as `peer_disconnected`). No body: the viewer
+  // does not count bytes, so the row keeps what it has.
+  app.post(
+    '/:id/viewer/end',
+    zValidator('param', desktopSessionIdParamSchema),
+    async (c) => {
+      const { id: sessionId } = c.req.valid('param');
+      const access = await validateViewerSessionAccess(c.req.header('Authorization'), sessionId);
+      if (!access.valid) {
+        return c.json({ error: access.error }, access.status);
+      }
+
+      const { session, device, user } = access;
+      // Viewer-token routes run outside any request transaction.
+      const result = await withSystemDbAccessContext(() => endRemoteSessionAsOperator({
+        session,
+        device,
+        logTag: 'desktop-ws',
+      }));
+      if (!result.ok) {
+        if (result.reason === 'not_found') {
+          return c.json({ error: 'Session not found' }, 404);
+        }
+        return c.json({ error: 'Session is already ended', status: result.status }, 400);
+      }
+
+      await logSessionAudit(
+        'session_ended',
+        user.id,
+        device.orgId,
+        {
+          sessionId,
+          deviceId: device.id,
+          deviceHostname: device.hostname,
+          type: session.type,
+          durationSeconds: result.durationSeconds,
+          endedVia: 'viewer',
+        },
+        getTrustedClientIp(c),
+      );
+
+      if (result.viewerRevocationError) {
+        throw result.viewerRevocationError;
+      }
+
+      return c.json({
+        id: result.updated.id,
+        status: result.updated.status,
+        endedAt: result.updated.endedAt,
+        durationSeconds: result.updated.durationSeconds,
+        terminationPhase: result.updated.terminationPhase,
+        terminalGeneration: formatDesktopGeneration(result.terminalGeneration),
+      });
     }
   );
 

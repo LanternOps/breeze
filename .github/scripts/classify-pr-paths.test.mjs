@@ -520,7 +520,7 @@ test('integration-test has a 16-way shard matrix and does not wait on lint/typec
   assert.match(body, /^    needs: \[changes\]$/mu, 'integration-test must not needs: lint or typecheck — that added ~8 min to the critical path and a lint failure still fails CI Success via ci-success');
   // Room for a whole-shard retry (W1, #10744): 2 × 24.3 min slowest step + setup.
   assert.match(body, /^    timeout-minutes: 55$/mu);
-  assert.match(body, /run: node \.github\/scripts\/retry-shard\.mjs --runner vitest --label integration-\$\{\{ matrix\.shard \}\} --budget-minutes 50 -- pnpm --filter=@breeze\/api test:integration --shard=\$\{\{ matrix\.shard \}\}\/16$/mu);
+  assert.match(body, /run: node \.github\/scripts\/retry-shard\.mjs --runner vitest --label integration-\$\{\{ matrix\.shard \}\} --budget-minutes 50 --stall-minutes 10 -- pnpm --filter=@breeze\/api test:integration --shard=\$\{\{ matrix\.shard \}\}\/16$/mu);
 });
 
 // Execute the real summary shell. The bypass may only fire on the literal

@@ -219,12 +219,13 @@ describe('startNetworkIsolation', () => {
 
   describe('containment policy permits (#10100)', () => {
     const sent = () => h.dispatch.mock.calls[0]![0].payload.parameters;
-    it.each([1, 2])('level %i: sends no extras and does not read the policy', async (level) => {
+    // The policy is still read, for its release options only (#10103): what it asked for is recorded
+    // when this agent cannot take it.
+    it.each([1, 2])('level %i: sends no extras', async (level) => {
       h.device.networkIsolationVersion = level;
       h.resolvePolicy.mockResolvedValue(WITH_EXTRAS);
       expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).not.toHaveProperty('error');
       expect(sent().allow.every((entry: { scope: string }) => entry.scope === 'breeze')).toBe(true);
-      expect(h.resolvePolicy).not.toHaveBeenCalled();
       expect(sent()).not.toHaveProperty('policyRevision');
       expect(h.row.allowSnapshotRevision).toBeNull();
     });

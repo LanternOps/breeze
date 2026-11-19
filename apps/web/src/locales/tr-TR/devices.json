@@ -880,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "Uyumluluk sonucu bildirilmedi. Bu cihaza uyumluluk kurallarını içeren bir Yapılandırma Politikası atayın veya bir sonraki değerlendirmeyi bekleyin.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Bir yapılandırma ilkesi atayın"
+    "assignPolicy": "Bir yapılandırma ilkesi atayın",
+    "notCollectedProbeLimit": "Toplanmadı (yoklama sınırı)",
+    "notCollectedProbeLimitHint": "Bu kuruluşun uyumluluk yoklama listesi dolu, bu nedenle buradaki en az bir denetim toplanmıyor. Listede yer açılana kadar değerlendirilmez, uyarı oluşturmaz ve düzeltilmez."
   },
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} {{orgName}} kuruluşuna taşındı",
@@ -1465,6 +1467,19 @@
         "unknown": "tanınmayan bir hata oluştu"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Bir ağ filtresi tarafından engellendi",
+      "titleUntrustedCertificate": "Sunucu sertifikasına güvenilmiyor",
+      "webFilter": "Bu cihazın ağındaki bir ağ güvenlik filtresi Breeze sunucusu yerine yanıt veriyor ({{locationHost}}). Bu genellikle internet sağlayıcısının modemindeki bir güvenlik özelliği, bir güvenlik duvarı web filtresi veya bir ağ oturum açma sayfasıdır.",
+      "captivePortal": "Bu cihazın ağı, bağlantıları bir oturum açma sayfasında (captive portal) tutuyor.",
+      "plaintextUnknown": "Bu cihazın ağındaki bir şey, Breeze bağlantısına TLS yerine şifrelenmemiş HTTP ile yanıt verdi.",
+      "untrustedCertificate": "Breeze sunucusuna yapılan bağlantı, bu cihazın güvenmediği bir sertifika sundu (veren: {{certIssuer}}). Bu genellikle bir güvenlik duvarı veya proxy tarafından yapılan TLS denetimi, kendi barındırılan bir sunucudaki bir sertifika sorunu ya da bu cihazdaki güncel olmayan güvenilir kök sertifika deposudur. Breeze bunu atlamaz.",
+      "viaEch": "Şu anda Encrypted Client Hello üzerinden erişilebilir.",
+      "cleared": "{{from}} ile {{to}} arasında engellendi.",
+      "lastKnown": "Son bildirim: {{time}}. Cihaz o zamandan beri bildirimde bulunmadı, bu nedenle bu artık geçerli olmayabilir.",
+      "howToFix": "Nasıl düzeltilir",
+      "noDetail": "ayrıntı yok"
+    },
     "logShipping": {
       "label": "Günlük gönderimi",
       "state": {
@@ -1688,6 +1703,7 @@
       "lastSeen": "Son Görülme",
       "serial": "Seri No",
       "productSku": "Ürün Numarası",
+      "hardwareModel": "Model",
       "assetTag": "Varlık Etiketi",
       "location": "Konum",
       "source": "Kaynak"
@@ -1706,6 +1722,7 @@
       "lastSeen": "Son görülme zamanına göre sırala",
       "serial": "Seri numarasına göre sırala",
       "productSku": "Ürün numarasına göre sırala",
+      "hardwareModel": "Modele göre sırala",
       "assetTag": "Varlık etiketine göre sırala",
       "location": "Konuma göre sırala",
       "source": "Kaynağa göre sırala"
@@ -1863,6 +1880,9 @@
       "unmanagedInstall": "Breeze Assist, Breeze tarafından yüklenmedi ve dağıtım kapalı, bu nedenle ajan ona dokunmuyor.",
       "unknown": "Breeze Assist etkin ancak yüklü değil."
     },
+    "controlPlaneBlockBadge": "Ağ filtresi",
+    "controlPlaneBlockBadgeCertificate": "Sertifikaya güvenilmiyor",
+    "controlPlaneBlockLastKnownTooltip": "Son bildirim: {{time}}; cihaz o zamandan beri bildirimde bulunmadı.",
     "agentVersionRelation": {
       "equalTooltip": "Etkin sürümle eşleşiyor: {{version}}",
       "aheadTooltip": "{{version}} sabitlemesinin ilerisinde",
@@ -2817,6 +2837,10 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (beklenmeyen bir hata oluştu; yeniden deneyin)",
       "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı",
       "bulkWakeResult": "{{sent}} cihaza gönderildi, {{skipped}} cihaz atlandı",
+      "bulkWakePolicySkipped": "{{count}} cihaz Wake-on-LAN ilkesi nedeniyle atlandı",
+      "bulkWakeAllBlockedByPolicy": "Uyandırma gönderilmedi: {{count}} cihaz Wake-on-LAN ilkesi tarafından engellendi",
+      "bulkWakeLookupFailedSkipped": "{{count}} cihaz denetlenemedi, tekrar deneyin",
+      "bulkWakeAllLookupFailed": "Uyandırma gönderilmedi: {{count}} cihaz denetlenemedi, tekrar deneyin",
       "scriptQueuedOneOffline": "\"{{script}}\" betiği {{hostname}} için kuyruğa alındı — cihaz yeniden bağlandığında çalışacak"
     },
     "tryAgain": "Tekrar deneyin",
@@ -2866,7 +2890,9 @@
       "relayDisconnected": "gönderim sırasında aktarıcı bağlantısı kesildi — yeniden deneyin",
       "missingTarget": "bulunamadı veya erişim reddedildi",
       "removed": "kaldırıldı",
-      "invalidRelay": "aktarıcı seçimi geçersiz"
+      "invalidRelay": "aktarıcı seçimi geçersiz",
+      "policyNotReady": "Wake-on-LAN ilkesi tarafından engellendi (hazır değil)",
+      "policyLookupFailed": "Wake-on-LAN ilkesi denetlenemedi — yeniden deneyin"
     }
   },
   "filterAddDropdown": {
@@ -4876,6 +4902,7 @@
     "startDescription": "Breeze yönetim iletişimi dışındaki ağ trafiğini engelleyin.",
     "releaseDescription": "Breeze yalıtım kurallarının kaldırılmasını isteyin. Çevrimdışı cihaz yeniden bağlandığında isteği alır.",
     "serverWarning": "Bu bir sunucu işletim sistemidir. Yalıtım diğer cihazların hizmetlerini kesintiye uğratabilir.",
+    "deadManUnsupported": "Bu cihazın kısıtlama ilkesi bir dead-man serbest bırakma tanımlıyor, ancak aracı sürümü bunu desteklemiyor. Cihaz bu olmadan yalıtılacak.",
     "reason": "Gerekçe",
     "ttlHours": "Süre (saat)",
     "incidentId": "Mevcut olay kimliği (isteğe bağlı)",
@@ -4899,6 +4926,20 @@
     "codeNext": "Sonraki saatin kodu",
     "codeValidUntil": "Geçerli kodun son kullanımı: {{date}}",
     "codeError": "Acil durum kodları yüklenemedi. Yeniden deneyin.",
+    "tabCode": "Acil durum kodu",
+    "tabToken": "Serbest bırakma belirteci",
+    "issueToken": "Serbest bırakma belirteci oluştur",
+    "hideToken": "Belirteci gizle",
+    "tokenLabel": "Serbest bırakma belirteci",
+    "copyToken": "Belirteci kopyala",
+    "tokenCopied": "Kopyalandı",
+    "tokenCopyError": "Belirteç kopyalanamadı. Seçip elle kopyalayın.",
+    "tokenQrAlt": "Serbest bırakma belirtecini içeren QR kodu",
+    "tokenValidUntil": "Belirteç {{date}} tarihine kadar geçerli",
+    "tokenCommandHint": "İzole cihazda bu komutu yönetici veya root olarak çalıştırın ve <token> yerine belirteci yazın:",
+    "tokenError": "Serbest bırakma belirteci oluşturulamadı. Yeniden deneyin.",
+    "tokenUnavailable": "Bu izolasyon için serbest bırakma belirteci kullanılamıyor.",
+    "codesDisabledNote": "Bu cihaz için acil durum kodları kapalı. Bunun yerine imzalı bir serbest bırakma belirteci kullanın.",
     "incidentHeading": "Ağ yalıtımı",
     "retry": "Yalıtım durumunu yeniden dene",
     "filterLabel": "Yalıtılmış",

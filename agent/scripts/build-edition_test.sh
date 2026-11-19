@@ -274,6 +274,13 @@ else
   pass "real self-host build produced a binary for ${host_goos}/${host_goarch}"
 fi
 
+# Release builds strip local paths: -trimpath must be recorded in the binary.
+if go version -m "${built_bin}" 2>/dev/null | grep -q -- '-trimpath=true'; then
+  pass "real self-host build is built with -trimpath"
+else
+  fail "real self-host build must be built with -trimpath"
+fi
+
 # --- Summary ----------------------------------------------------------------
 
 if [ "$failures" -ne 0 ]; then

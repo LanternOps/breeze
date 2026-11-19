@@ -50,7 +50,7 @@ func TestStopConcurrentWithConnectHasNoDataRace(t *testing.T) {
 	// Many iterations so the write in connect and the read in Stop actually
 	// overlap; the race detector flags the pair even on near misses.
 	for i := 0; i < 50; i++ {
-		client := NewWithOptions(socketPath, ipc.HelperRoleUser, ipc.HelperBinaryDesktopHelper, ipc.DesktopContextUserSession)
+		client := trustTestServer(NewWithOptions(socketPath, ipc.HelperRoleUser, ipc.HelperBinaryDesktopHelper, ipc.DesktopContextUserSession))
 
 		var wg sync.WaitGroup
 		wg.Add(2)

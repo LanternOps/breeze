@@ -72,6 +72,7 @@ import {
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
   systemProtectionInlineSettingsSchema,
   containmentInlineSettingsSchema,
+  wakeOnLanInlineSettingsSchema,
   timeSyncInlineSettingsSchema,
   workloadInventoryInlineSettingsSchema,
   warrantyInlineSettingsSchema,
@@ -86,6 +87,10 @@ import {
   tryNormalizePatchInlineSettings,
 } from './configPolicyPatching';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
+import {
+  uncollectableComplianceRegistryPathMessage,
+  uncollectableComplianceRegistryPaths,
+} from '../routes/agents/policyProbeSafety';
 import { getPolicyBaselineDefaults } from './policyBaselineDefaults';
 import type { AutomationAction } from './automationRuntime';
 import { scheduleComplianceAlertReconcile } from './complianceAlertReconcileTrigger';
@@ -1273,6 +1278,7 @@ async function decomposeInlineSettings(
     case 'system_protection':
     case 'containment':
     case 'oem_updates':
+    case 'wake_on_lan':
     case 'security_agents':
       // Pure JSONB — no normalized table needed
       break;
@@ -1298,7 +1304,9 @@ async function decomposeInlineSettings(
  * — the others build their rows defensively from `unknown` and cannot throw —
  * plus the compliance rule set name rules decompose cannot enforce by itself:
  * names are unique within the link (DuplicateComplianceItemNameError) and fit
- * the 200-character state columns (ComplianceItemNameTooLongError).
+ * the 200-character state columns (ComplianceItemNameTooLongError), and no
+ * registry_check names a path the agent never collects
+ * (ComplianceRegistryPathNotCollectedError).
  */
 function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settings: unknown): void {
   // Same early-out as decomposeInlineSettings: nothing to decompose, nothing to check.
@@ -1396,6 +1404,7 @@ async function deleteNormalizedRows(
     case 'system_protection':
     case 'containment':
     case 'oem_updates':
+    case 'wake_on_lan':
     case 'security_agents':
       // Pure JSONB — no normalized table to delete
       break;
@@ -1509,6 +1518,8 @@ async function assembleInlineSettings(
         durationHours: row.durationHours,
         timezone: row.timezone,
         windowStart: row.windowStart,
+        dayOfWeek: row.dayOfWeek,
+        dayOfMonth: row.dayOfMonth,
         suppressAlerts: row.suppressAlerts,
         suppressPatching: row.suppressPatching,
         suppressAutomations: row.suppressAutomations,
@@ -1704,6 +1715,7 @@ async function assembleInlineSettings(
     case 'system_protection':
     case 'containment':
     case 'oem_updates':
+    case 'wake_on_lan':
     case 'security_agents':
       // Pure JSONB — settings stored directly on feature link
       return null;
@@ -1824,6 +1836,22 @@ export class ComplianceItemNameTooLongError extends Error {
   }
 }
 
+/**
+ * #11976: a registry_check rule on a path the agent never collects
+ * (policyProbeSafety.uncollectableComplianceRegistryPaths) would report
+ * "Registry value not found" on every evaluation. The HTTP routes refuse this
+ * with a 400 (COMPLIANCE_REGISTRY_PATH_NOT_COLLECTED) and the AI tool with a
+ * readable error; this is the backstop for every other caller.
+ */
+export class ComplianceRegistryPathNotCollectedError extends Error {
+  readonly code = 'COMPLIANCE_REGISTRY_PATH_NOT_COLLECTED' as const;
+
+  constructor(readonly paths: string[]) {
+    super(uncollectableComplianceRegistryPathMessage(paths[0] ?? ''));
+    this.name = 'ComplianceRegistryPathNotCollectedError';
+  }
+}
+
 function assertValidComplianceItemNames(settings: unknown): void {
   if (!settings || typeof settings !== 'object') return;
   const items = (settings as { items?: unknown }).items;
@@ -1833,6 +1861,8 @@ function assertValidComplianceItemNames(settings: unknown): void {
   if (names.length > 0) throw new DuplicateComplianceItemNameError(names);
   const overlong = overlongComplianceItemNames(objects);
   if (overlong.length > 0) throw new ComplianceItemNameTooLongError(overlong);
+  const uncollectable = uncollectableComplianceRegistryPaths(settings);
+  if (uncollectable.length > 0) throw new ComplianceRegistryPathNotCollectedError(uncollectable);
 }
 
 /**
@@ -2020,6 +2050,11 @@ export async function addFeatureLink(
   if (featureType === 'containment') {
     if (featurePolicyId) throw new Error('containment is inline-only; featurePolicyId must not be set');
     inlineSettings = containmentInlineSettingsSchema.parse(inlineSettings);
+  }
+
+  if (featureType === 'wake_on_lan') {
+    if (featurePolicyId) throw new Error('wake_on_lan is inline-only; featurePolicyId must not be set');
+    inlineSettings = wakeOnLanInlineSettingsSchema.parse(inlineSettings);
   }
 
   // #5511 W02: warranty gains an hpCmsl block whose consent only the server may
@@ -2219,6 +2254,13 @@ export async function updateFeatureLink(
       if (updates.featurePolicyId) throw new Error('containment is inline-only; featurePolicyId must not be set');
       if (updates.inlineSettings !== undefined) {
         updates.inlineSettings = containmentInlineSettingsSchema.parse(updates.inlineSettings);
+      }
+    }
+
+    if (existing.featureType === 'wake_on_lan') {
+      if (updates.featurePolicyId) throw new Error('wake_on_lan is inline-only; featurePolicyId must not be set');
+      if (updates.inlineSettings !== undefined) {
+        updates.inlineSettings = wakeOnLanInlineSettingsSchema.parse(updates.inlineSettings);
       }
     }
 
@@ -3341,6 +3383,8 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   'containment',
   // #11065: partner-wide inline settings; featurePolicyId is always refused below.
   'oem_updates',
+  // #10838: partner-wide inline settings; featurePolicyId is always refused.
+  'wake_on_lan',
 ]);
 
 /**

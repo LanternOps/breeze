@@ -12,7 +12,11 @@ import {
  *   - `execute_command` `event_logs_query` on the Security channel, optionally
  *     with an XPath from the restricted grammar below;
  *   - `set_device_context`, an explicitly authorized WRITE exception: a note on
- *     the device, never an effect on it.
+ *     the device, never an effect on it. In a CHAT this note runs without a
+ *     card whatever the switch says, but only inside the card-free note bounds
+ *     (aiNoteWrites.ts), which apply with the switch on too; in a chat the
+ *     switch only changes the audit method recorded. It still decides the note
+ *     for device troubleshooting runs.
  *
  * Nothing here decides whether the switch is on. A non-null answer only means
  * "the switch would cover this call"; both gates (aiAgentSdk.ts, runLoop.ts)

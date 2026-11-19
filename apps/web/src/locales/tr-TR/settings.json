@@ -525,7 +525,8 @@
         "unverified": "Doğrulanmadı",
         "failed": "Doğrulama başarısız",
         "failedWithSummary": "Doğrulama başarısız: {{summary}}",
-        "stale": "Yeniden doğrulayın: uç nokta değişti"
+        "stale": "Yeniden doğrulayın: uç nokta değişti",
+        "invalid": "Doğrulama kaydı okunamıyor: yeniden doğrulayın"
       },
       "setPriceToEnable": "Etkinleştirmek için bir fiyat belirleyin",
       "manual": {
@@ -595,7 +596,7 @@
       "verify": "Doğrula",
       "verifyQueued": "Model denetimi sıraya alındı",
       "verifyFailed": "Model denetimi sıraya alınamadı.",
-      "verifyGatewayHint": "Uç noktanıza kısa bir araç çağırma testi uygular (birkaç bin token kullanır).",
+      "verifyGatewayHint": "Uç noktanıza bir araç çağırma testi uygular. Yukarıdaki maliyet notuna bakın.",
       "remove": "Modeli kaldır",
       "removeTitle": "Bu model kaldırılsın mı?",
       "removeMessage": "“{{model}}” bu bağlantıdan silinecek. Geçmiş kullanım ve maliyet kayıtları korunur. Daha sonra yeniden ekleyebilirsiniz.",
@@ -1010,6 +1011,7 @@
     "noLogo": "Logo yok",
     "uploadImage": "Resim yükle",
     "imageHelp": "PNG, JPEG veya WebP, kodlamadan sonra en fazla 400 KB; büyük görseller 800 piksele küçültülür.",
+    "logoLowRes": "Bu logo {{width}} × {{height}} piksel. Raporlar, teklifler ve faturalar logoyu en fazla yaklaşık 64 mm (2,5 inç) genişliğinde yazdırır, bu nedenle baskıda bulanık görünür. Uzun kenarı en az 600 piksel olan bir sürüm yükleyin.",
     "invalidSavedLogo": "Kaydedilen logo verileri geçersiz. Kaldırın veya yenisini yükleyin.",
     "pasteUrl": "Veya bir resim URL'si yapıştırın",
     "customCss": "Özel CSS",
@@ -3348,7 +3350,8 @@
           "turnCount": "Tur sayısı",
           "summary": "Özet",
           "computeCost": "Hesaplama",
-          "computeEstimated": "(tahmini)"
+          "computeEstimated": "(tahmini)",
+          "scope": "Kapsam"
         },
         "flags": {
           "budgetExceeded": "Bütçe aşıldı",
@@ -3434,6 +3437,24 @@
           "partialNote": "Gözetimsiz politika yetkilendirmesi devre dışıyken kısmi muhasebeleştirme yapılır — bu, gerçek maruziyeti olduğundan az gösterebilir.",
           "unavailable": "Bu çalıştırmanın organizasyonu için etkin bir aracı politikası yok.",
           "loading": "Bütçe yükleniyor…"
+        },
+        "scope": {
+          "org_one": "Tüm kuruluş (başlatma anında {{count}} cihaz)",
+          "org_other": "Tüm kuruluş (başlatma anında {{count}} cihaz)",
+          "site_one": "{{name}} sitesi (başlatma anında {{count}} cihaz)",
+          "site_other": "{{name}} sitesi (başlatma anında {{count}} cihaz)",
+          "siteUnnamed_one": "Tek bir site (başlatma anında {{count}} cihaz)",
+          "siteUnnamed_other": "Tek bir site (başlatma anında {{count}} cihaz)",
+          "devices_one": "{{count}} seçili cihaz",
+          "devices_other": "{{count}} seçili cihaz"
+        },
+        "chain": {
+          "title": "Bu inceleme",
+          "description": "Her adım önceki bir adımdan devam etti ve önceki adımların ürettiği dosyaları kullanabildi.",
+          "step": "Adım {{step}}",
+          "current": "Bu çalıştırma",
+          "open": "Çalıştırmayı aç",
+          "noGoal": "Kayıtlı hedef yok"
         }
       },
       "triage": {
@@ -5229,7 +5250,7 @@
     "deviceRevoked": "Cihaz iptal edildi",
     "deviceRenamed": "Cihaz yeniden adlandırıldı",
     "approvalSecurity": "Onay güvenliği",
-    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "Bu cihazlar, yüksek riskli onayları (ayrıcalıklı erişim, yapay zeka eylemleri) biyometrik bir yöntemle doğrulayabilir. Breeze mobil uygulamasında oturum açtığınızda telefonunuz kendisini otomatik olarak kaydeder; bu tarayıcıyı Windows Hello veya Touch ID ile de kaydedebilirsiniz. Bunların hepsi isteğe bağlıdır; onaylar bu olmadan da çalışmaya devam eder.",
+    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "Bu cihazlar, yüksek riskli onayları (ayrıcalıklı erişim, yapay zeka eylemleri) biyometrik bir yöntemle doğrulayabilir. Breeze mobil uygulamasında oturum açtığınızda telefonunuz kendisini otomatik olarak kaydeder; bu tarayıcıyı Windows Hello veya Touch ID ile de kaydedebilirsiniz. Ortağınızın onay ilkesi bunu kapatmadıkça, yüksek veya kritik riskli bir isteği onaylamak için bu cihazlardan biri gerekir. Diğer onaylar bunlar olmadan da çalışır.",
     "loadingApproverDevices": "Onaylayıcı cihazlar yükleniyor…",
     "tryAgain": "Tekrar deneyin",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Henüz kayıtlı onaylayıcı cihaz yok. Telefonunuzdaki Breeze mobil uygulamasında oturum açın; uygulama burada otomatik olarak görünür veya biyometri ile onaylamak için bu tarayıcıyı aşağıdan kaydedin.",
@@ -5266,14 +5287,19 @@
     "useYourPasskeyOrAuthenticatorCodeInstead": "Bunun yerine şifrenizi veya kimlik doğrulama kodunuzu kullanın; seçeneklerinizi güncellemek için sayfayı yeniden yükleyin.",
     "pendingActivatesOnFirstApproval": "Beklemede — ilk onayda etkinleştirilir",
     "sessionExpiredReloadAndTryAgain": "Oturumun süresi doldu — sayfayı yeniden yükleyin ve tekrar deneyin.",
-    "registrationCancelled": "Kayıt iptal edildi."
+    "registrationCancelled": "Kayıt iptal edildi.",
+    "ssoVerificationExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu veya zaten kullanıldı. Bu cihazı kaydetmek için yeniden doğrulayın.",
+    "signInOptionsChanged": "Oturum açma seçenekleriniz değişti. Sayfayı yeniden yükleyip tekrar deneyin."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Kayıt olurken şifrenizle (Touch ID / Windows Hello) onaylayacaksınız.",
     "authenticatorCode": "Kimlik doğrulayıcı kodu",
     "confirmYourPassword": "Şifrenizi doğrulayın",
     "switchToAuthenticatorCode": "Bunun yerine kimlik doğrulama uygulamasını kullanın",
-    "usePasskeyInstead": "Bunun yerine geçiş anahtarınızı kullanın"
+    "usePasskeyInstead": "Bunun yerine geçiş anahtarınızı kullanın",
+    "ssoVerifyFirst": "Bu hesap kimlik sağlayıcınız üzerinden oturum açar ve parolası yoktur. Önce sağlayıcınızla doğrulayın, ardından bu cihazı kaydedin.",
+    "ssoVerifyButton": "Kimlik sağlayıcınızla doğrulayın",
+    "ssoVerified": "Kimlik doğrulandı. Bu cihazı 5 dakika içinde kaydedin."
   },
   "cannedResponsesCard": {
     "cannedResponses": "Hazır yanıtlar",
@@ -8289,6 +8315,10 @@
     "heading": "Plan ve özellikler",
     "description": "Planınızın içerdikleri. Kilitli özellikler görünür kalır; böylece bir yükseltmenin neler kattığını görebilirsiniz.",
     "currentPlan": "Mevcut plan",
+    "changePlan": "Planı değiştir",
+    "enrollmentPaused": "Yeni cihaz kaydı duraklatıldı: {{limit}} cihazın {{active}} tanesi kullanımda.",
+    "enrollmentPausedNoCounts": "Hesabınız cihaz sınırına ulaştığı için yeni cihaz kaydı duraklatıldı.",
+    "enrollmentPausedChangePlan": "Daha fazla eklemek için planınızı değiştirin.",
     "plans": {
       "free": "Ücretsiz",
       "starter": "Starter",
@@ -8937,6 +8967,47 @@
       "stale": "Bu toplu işlem siz açtıktan sonra değişti. Yenilenen listeyi inceleyip tekrar deneyin.",
       "notHeld": "Bu toplu işlem artık bir karar beklemiyor.",
       "enforcementOff": "Hesap kaldırma bu sunucuda yalnızca rapor modunda, bu yüzden uygulanacak bir şey yok."
+    }
+  },
+  "portalScim": {
+    "title": "Microsoft Entra sağlama (SCIM)",
+    "description": "Müşterinin Entra kiracısının, Breeze Portal uygulamasına atanan kişiler için portal hesapları oluşturmasına ve ayrıldıklarında bunları devre dışı bırakmasına izin verin.",
+    "loading": "Sağlama yükleniyor…",
+    "retry": "Tekrar dene",
+    "refreshFailed": "Yenilenemedi. Gördükleriniz güncel olmayabilir.",
+    "needsTenant": "Sağlamayı kurmadan önce yukarıda bu kuruluşun Microsoft kiracısını kanıtlayın.",
+    "tenantUrl": "Kiracı URL'si",
+    "noBaseUrl": "API'nin genel adresi yapılandırılmadığı için Kiracı URL'si gösterilemiyor. Yöneticinizden PUBLIC_API_URL değerini ayarlamasını isteyin.",
+    "counts": "{{provisioned}} sağlandı · {{deactivated}} dizin tarafından devre dışı bırakıldı",
+    "secretOnce": "Bu token'ı şimdi kopyalayın ve Entra uygulamasındaki Gizli Belirteç alanına yapıştırın. Bir daha gösterilmeyecek.",
+    "secretToken": "Gizli Belirteç",
+    "secretDone": "Kopyaladım",
+    "lastUsed": "Son kullanım {{date}}",
+    "neverUsed": "Henüz kullanılmadı",
+    "notWorking": "Çalışmıyor: bu kuruluşun kanıtlanmış kiracısı değişti",
+    "revoke": "İptal Et",
+    "label": "Token adı",
+    "create": "Sağlama token'ı oluştur",
+    "createSubmit": "Oluştur",
+    "cancel": "İptal",
+    "copy": "Kopyala",
+    "copied": "Kopyalandı",
+    "copyFailed": "Panoya kopyalanamadı.",
+    "revokeConfirm": {
+      "title": "Bu sağlama token'ı iptal edilsin mi?",
+      "message": "Entra, \"{{label}}\" ile sağlamayı hemen durdurur. Daha önce sağlanan kişiler hesaplarını korur."
+    },
+    "toasts": {
+      "created": "Sağlama token'ı oluşturuldu.",
+      "revoked": "Sağlama token'ı iptal edildi."
+    },
+    "errors": {
+      "load": "Sağlama yüklenemedi.",
+      "create": "Sağlama token'ı oluşturulamadı.",
+      "revoke": "Sağlama token'ı iptal edilemedi.",
+      "tenantNotProven": "Sağlama token'ı oluşturmadan önce bu kuruluşun Microsoft kiracısını kanıtlayın.",
+      "limit": "Bu kuruluşta zaten iki etkin sağlama token'ı var. Önce birini iptal edin.",
+      "notFound": "Bu sağlama token'ı artık yok."
     }
   }
 }

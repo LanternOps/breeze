@@ -175,7 +175,8 @@ async function loadGrantBudget(grantId: string): Promise<GrantBudgetRow> {
 
 /**
  * What the grant spent in the UTC day `now` falls in, by line:
- *  - background: its runs QUEUED that day (excluding skipped ones), plus its
+ *  - background: its runs QUEUED that day (excluding skipped ones; a run counts
+ *    its model `cost_cents` plus its settled sandbox `compute_cents`), plus its
  *    grant-keyed overhead rows (`GRANT_OVERHEAD_SOURCE_REF_PREFIXES`) settled
  *    that day;
  *  - chat: invocations on its Wisp sessions that are not a run's own call,
@@ -186,7 +187,7 @@ export async function spendBreakdownUnderGrant(grantId: string, now: Date = new 
   const { start, end } = utcDayWindow(now);
   const { runs, overhead, chat } = await inSystemContext(async () => {
     const runRows = await db
-      .select({ total: sql<string | number | null>`coalesce(sum(${aiAgentRuns.costCents}), 0)::bigint` })
+      .select({ total: sql<string | number | null>`coalesce(sum(${aiAgentRuns.costCents} + coalesce(${aiAgentRuns.computeCents}, 0)), 0)::bigint` })
       .from(aiAgentRuns)
       .where(and(
         eq(aiAgentRuns.grantId, grantId),

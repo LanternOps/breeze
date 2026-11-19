@@ -202,6 +202,11 @@ const CROSS_FILE_GUARDED_DELEGATES: ReadonlyArray<readonly [string, string]> = [
   // `fleetScope` (deviceScopeCondition + siteScopeCondition) and pins an optional
   // deviceId to the device axis. Behaviour: `timeSync/fleet.test.ts`.
   ['listFleetTimeStatus', join('timeSync', 'fleet.ts')],
+  // `export_dataset`'s set-based adapters (`aiToolsExportDatasets/*.ts`):
+  // resolves the export's device set through the frozen frame,
+  // `allowedDeviceIds` and `deviceSiteDenied`; behaviour pinned by
+  // `aiToolsExportShared.test.ts`.
+  ['exportDeviceSet', 'aiToolsExportShared.ts'],
 ];
 
 /**

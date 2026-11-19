@@ -29,6 +29,11 @@ func withKeepaliveTiming(t *testing.T, interval, timeout time.Duration) {
 	})
 }
 
+// setLastPong backdates a session's most recent pong.
+func setLastPong(s *Session, at time.Time) {
+	s.lastPongAt.Store(&at)
+}
+
 // newPairedSession builds a broker-side Session plus a client ipc.Conn for
 // tests that need to drive the server-initiated keepalive path. The client
 // side intentionally does NOT auto-reply to pings so the timeout can fire.
@@ -56,7 +61,7 @@ func TestKeepaliveReapsStrandedSession(t *testing.T) {
 
 	// Force lastPongAt into the past so the first tick triggers the timeout
 	// without having to wait for natural drift.
-	session.lastPongAt.Store(time.Now().Add(-time.Second).UnixNano())
+	setLastPong(session, time.Now().Add(-time.Second))
 
 	// Drain client writes so the broker's first Send doesn't block on the
 	// socket buffer. We ignore read errors — the socket will close mid-test.
@@ -187,7 +192,7 @@ func TestMaybeStartKeepalive_WatchdogSessionStaysAlive(t *testing.T) {
 
 	// Force lastPongAt deep into the past so that IF runKeepalive ran, the
 	// very first tick would close the session. The test asserts the opposite.
-	session.lastPongAt.Store(time.Now().Add(-time.Hour).UnixNano())
+	setLastPong(session, time.Now().Add(-time.Hour))
 
 	b := &Broker{
 		sessions:   map[string]*Session{session.SessionID: session},
@@ -216,7 +221,7 @@ func TestMaybeStartKeepalive_SystemSessionIsReaped(t *testing.T) {
 	session, clientIPC := newPairedSession(t, "system-1", "S-1-5-18")
 	defer clientIPC.Close()
 
-	session.lastPongAt.Store(time.Now().Add(-time.Hour).UnixNano())
+	setLastPong(session, time.Now().Add(-time.Hour))
 
 	go func() {
 		for {
@@ -498,6 +503,10 @@ func TestKeepaliveClosesAtSendFailureThreshold(t *testing.T) {
 	if !session.IsClosed() {
 		t.Error("session should have been closed at the send-failure threshold")
 	}
+	// #11044: the close is the agent's, and says why.
+	if reason := session.CloseReason(); !strings.Contains(reason, "keepalive pings to the helper failed 3 times") {
+		t.Errorf("CloseReason = %q, want the send-failure reason", reason)
+	}
 }
 
 // Fewer than keepaliveMaxSendFailures consecutive failures must NOT close the
@@ -567,7 +576,7 @@ func TestRecvLoopDispatchesPongToNotePong(t *testing.T) {
 
 	// Seed lastPongAt far in the past so we can detect a successful
 	// NotePong() by observing LastPongAge drop back near zero.
-	session.lastPongAt.Store(time.Now().Add(-time.Hour).UnixNano())
+	setLastPong(session, time.Now().Add(-time.Hour))
 	if age := session.LastPongAge(); age < 59*time.Minute {
 		t.Fatalf("precondition: expected seeded stale pong age, got %v", age)
 	}

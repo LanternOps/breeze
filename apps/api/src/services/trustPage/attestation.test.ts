@@ -261,7 +261,7 @@ describe('signTrustAttestation', () => {
     await sign();
     const keys = () => [...redis.store.keys()];
     const first = keys()[0]!;
-    expect(first).toMatch(/^trust:attest:trust-[A-Za-z0-9_-]{16}:[0-9a-f]{64}:snap-1:\d+$/);
+    expect(first).toMatch(/^trust:attest:trust-[A-Za-z0-9_-]{16}:[0-9a-f]{64}:snap-1:\d+:cis[01]$/);
 
     await sign({}, `${ISSUER}/portal/trust/nw/acme-renamed`);
     expect(keys()).toHaveLength(2);
@@ -274,6 +274,24 @@ describe('signTrustAttestation', () => {
     await sign();
     expect(keys()).toHaveLength(4);
     expect(keys().filter((k) => k.startsWith(`trust:attest:${prepared.kid}:`))).toHaveLength(1);
+  });
+
+  it('#9087: the token cache key changes when the CIS framework-view flag flips', async () => {
+    const prev = process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW;
+    try {
+      process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'true';
+      const on = await sign();
+      process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'false';
+      const off = await sign();
+      // A token signed while CIS was served is never handed out after the switch turns off.
+      expect(off).not.toBe(on);
+      const keys = [...redis.store.keys()];
+      expect(keys).toHaveLength(2);
+      expect(keys.some((k) => k.endsWith(':cis1'))).toBe(true);
+      expect(keys.some((k) => k.endsWith(':cis0'))).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW; else process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = prev;
+    }
   });
 
   it('cache TTL never outlives exp − 60 s', async () => {

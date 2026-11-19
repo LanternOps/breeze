@@ -1,0 +1,641 @@
+package desktop
+
+import (
+	"errors"
+	"image"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/pion/webrtc/v4"
+)
+
+// resizingCapturer is a fake capturer whose display mode can change between
+// frames, like a resolution change mid-session. Every frame is distinct (so
+// the differ never skips it) and BGRA (so cursor compositing is skipped).
+type resizingCapturer struct {
+	mu   sync.Mutex
+	w, h int
+	n    byte
+	// static repeats the same pixels (a static screen), so the differ skips
+	// a frame it has already seen.
+	static bool
+	// boundsW/boundsH, when set, are what GetScreenBounds reports instead of
+	// the frame size (macOS Retina: NSScreen x scale can differ from SCK).
+	boundsW, boundsH int
+}
+
+func (c *resizingCapturer) setSize(w, h int) {
+	c.mu.Lock()
+	c.w, c.h = w, h
+	c.mu.Unlock()
+}
+
+func (c *resizingCapturer) Capture() (*image.RGBA, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.static {
+		c.n++
+	}
+	img := image.NewRGBA(image.Rect(0, 0, c.w, c.h))
+	for i := range img.Pix {
+		img.Pix[i] = c.n
+	}
+	return img, nil
+}
+func (c *resizingCapturer) CaptureRegion(int, int, int, int) (*image.RGBA, error) {
+	return c.Capture()
+}
+func (c *resizingCapturer) GetScreenBounds() (int, int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.boundsW > 0 {
+		return c.boundsW, c.boundsH, nil
+	}
+	return c.w, c.h, nil
+}
+func (c *resizingCapturer) Close() error { return nil }
+func (c *resizingCapturer) IsBGRA() bool { return true }
+
+// sizedStubEncoder behaves like the real backends on the CPU path: it encodes
+// only frames of exactly its configured size (FitRGBAFrame) and errors on any
+// other, so a resolution change the session does not follow fails every frame.
+type sizedStubEncoder struct {
+	stubEncoder
+	mu        sync.Mutex
+	name      string
+	w, h      int
+	setDims   [][2]int
+	keyframes int
+	encodes   int
+	dimErr    error
+}
+
+func (e *sizedStubEncoder) Encode(frame []byte) ([]byte, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, err := FitRGBAFrame(frame, e.w, e.h); err != nil {
+		return nil, err
+	}
+	e.encodes++
+	return []byte{0, 0, 0, 1, 0x65}, nil
+}
+func (e *sizedStubEncoder) SetDimensions(w, h int) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.setDims = append(e.setDims, [2]int{w, h})
+	if e.dimErr != nil {
+		return e.dimErr
+	}
+	e.w, e.h = AlignEven(w, h)
+	return nil
+}
+func (e *sizedStubEncoder) ForceKeyframe() error {
+	e.mu.Lock()
+	e.keyframes++
+	e.mu.Unlock()
+	return nil
+}
+func (e *sizedStubEncoder) Name() string { return e.name }
+func (e *sizedStubEncoder) snapshot() (w, h, keyframes, encodes int, setDims [][2]int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.w, e.h, e.keyframes, e.encodes, append([][2]int(nil), e.setDims...)
+}
+
+// newGeometryTestSession builds a session streaming from a resizingCapturer at
+// w x h through a sizedStubEncoder already configured for that size, the way
+// StartSession leaves it.
+func newGeometryTestSession(t *testing.T, w, h int, backendName string) (*Session, *resizingCapturer, *sizedStubEncoder, *SafeInput) {
+	t.Helper()
+	si := NewSafeInput(&workerRecorder{}, "geom")
+	t.Cleanup(si.Close)
+	cap := &resizingCapturer{w: w, h: h}
+	stub := &sizedStubEncoder{name: backendName}
+	enc := &VideoEncoder{backend: stub}
+	if err := enc.SetDimensions(w, h); err != nil {
+		t.Fatal(err)
+	}
+	s := &Session{id: "geom", isActive: true, inputHandler: si}
+	s.capturer = cap
+	s.encoder.Store(enc)
+	s.metrics = newStreamMetrics()
+	s.differ = newFrameDiffer()
+	s.encoderPF = PixelFormatBGRA
+	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, "video", "geom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.videoTrack = track
+	return s, cap, stub, si
+}
+
+// #11754: a display mode change mid-session resizes the encoder in place and
+// sends the first frame at the new size, instead of failing every frame.
+func TestCaptureAndSendFrameFollowsResolutionChange(t *testing.T) {
+	for _, backend := range []string{"mft", "openh264"} {
+		t.Run(backend, func(t *testing.T) {
+			s, cap, stub, si := newGeometryTestSession(t, 1920, 1080, backend)
+			enc := s.encoder.Load()
+
+			s.captureAndSendFrame(16 * time.Millisecond)
+			if _, _, _, encodes, _ := stub.snapshot(); encodes != 1 {
+				t.Fatalf("precondition: first frame at the start size was not encoded (encodes=%d)", encodes)
+			}
+			_, geoBefore := si.Epochs()
+			_, _, kfBefore, _, _ := stub.snapshot()
+
+			cap.setSize(2560, 1440)
+			s.captureAndSendFrame(16 * time.Millisecond)
+
+			w, h, kf, encodes, _ := stub.snapshot()
+			if w != 2560 || h != 1440 {
+				t.Fatalf("encoder dimensions after the change = %dx%d, want 2560x1440", w, h)
+			}
+			if encodes != 2 {
+				t.Fatalf("the first frame at the new size was not encoded (encodes=%d, cpuEncodeErrors=%d)", encodes, s.cpuEncodeErrors)
+			}
+			if kf <= kfBefore {
+				t.Fatalf("no keyframe forced at the new size (keyframes %d -> %d)", kfBefore, kf)
+			}
+			if s.cpuEncodeErrors != 0 {
+				t.Fatalf("cpuEncodeErrors = %d, want 0", s.cpuEncodeErrors)
+			}
+			if s.encoder.Load() != enc {
+				t.Fatalf("the encoder was replaced; a resolution change must resize it in place")
+			}
+			if _, geo := si.Epochs(); geo <= geoBefore {
+				t.Fatalf("geometry epoch did not move (%d -> %d): input mapped to the old size would still be accepted", geoBefore, geo)
+			}
+		})
+	}
+}
+
+// A steady stream at one size is not a geometry transition.
+func TestCaptureAndSendFrameSteadySizeIsNotATransition(t *testing.T) {
+	s, _, stub, si := newGeometryTestSession(t, 1920, 1080, "mft")
+	_, geoBefore := si.Epochs()
+	for range 5 {
+		s.captureAndSendFrame(16 * time.Millisecond)
+	}
+	_, _, _, encodes, setDims := stub.snapshot()
+	if encodes != 5 {
+		t.Fatalf("encodes = %d, want 5", encodes)
+	}
+	if len(setDims) != 1 {
+		t.Fatalf("SetDimensions called %d times on a steady stream, want only the initial call: %v", len(setDims), setDims)
+	}
+	if _, geo := si.Epochs(); geo != geoBefore {
+		t.Fatalf("geometry epoch moved on a steady stream (%d -> %d)", geoBefore, geo)
+	}
+}
+
+// refreshRecorder is a workerRecorder whose platform handler caches screen
+// metrics, like the Windows and macOS handlers.
+type refreshRecorder struct {
+	workerRecorder
+}
+
+func (h *refreshRecorder) RefreshScreenGeometry() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls = append(h.calls, "refresh_geometry")
+}
+
+// recordAnnouncements captures the geometry announcements the viewer would be
+// sent, for the duration of the test.
+func recordAnnouncements(t *testing.T) func() []map[string]any {
+	t.Helper()
+	var mu sync.Mutex
+	var got []map[string]any
+	prev := sendGeometryAnnouncement
+	sendGeometryAnnouncement = func(_ *Session, body map[string]any) {
+		mu.Lock()
+		got = append(got, body)
+		mu.Unlock()
+	}
+	t.Cleanup(func() { sendGeometryAnnouncement = prev })
+	return func() []map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]map[string]any(nil), got...)
+	}
+}
+
+func hasCall(calls []string, want string) bool {
+	return slices.Contains(calls, want)
+}
+
+// The viewer is told the new size and the epochs to use with it, held input
+// is released, and the input handler re-reads its screen metrics.
+func TestResolutionChangeAnnouncesGeometryAndRefreshesInput(t *testing.T) {
+	announced := recordAnnouncements(t)
+	inner := &refreshRecorder{}
+	si := NewSafeInput(inner, "geom")
+	t.Cleanup(si.Close)
+	s, cap, _, _ := newGeometryTestSession(t, 1920, 1080, "mft")
+	s.inputHandler = si
+	s.displayIndex = 1
+
+	s.captureAndSendFrame(16 * time.Millisecond)
+	if n := len(announced()); n != 0 {
+		t.Fatalf("a frame at the start size announced %d geometry changes", n)
+	}
+	if err := si.HandleEvent(InputEvent{Type: "key_down", Key: "shift"}); err != nil {
+		t.Fatal(err)
+	}
+
+	cap.setSize(1280, 720)
+	s.captureAndSendFrame(16 * time.Millisecond)
+
+	got := announced()
+	if len(got) != 1 {
+		t.Fatalf("announcements = %d, want 1: %v", len(got), got)
+	}
+	msg := got[0]
+	epoch, geo := si.Epochs()
+	want := map[string]any{
+		"type": "monitor_switched", "index": 1, "width": 1280, "height": 720,
+		"reason": "resolution_change", "inputEpoch": epoch, "geoEpoch": geo,
+	}
+	for k, v := range want {
+		if msg[k] != v {
+			t.Errorf("monitor_switched[%q] = %v (%T), want %v (%T)", k, msg[k], msg[k], v, v)
+		}
+	}
+	calls := inner.snapshot()
+	if !hasCall(calls, "key_up:shift") {
+		t.Errorf("held input was not released on the resolution change: %v", calls)
+	}
+	if !hasCall(calls, "refresh_geometry") {
+		t.Errorf("the input handler did not re-read its screen metrics: %v", calls)
+	}
+}
+
+// Odd capture sizes (fractional DPI) are aligned like the encoder aligns them,
+// so they neither look like a change every frame nor resize the encoder.
+func TestOddCaptureSizeIsNotAResolutionChange(t *testing.T) {
+	announced := recordAnnouncements(t)
+	s, cap, stub, _ := newGeometryTestSession(t, 1512, 948, "mft")
+	cap.setSize(1512, 949) // one extra row: what an unaligned capturer yields
+	for range 3 {
+		s.captureAndSendFrame(16 * time.Millisecond)
+	}
+	if n := len(announced()); n != 0 {
+		t.Fatalf("an odd extra row was announced as a geometry change %d times", n)
+	}
+	_, _, _, encodes, setDims := stub.snapshot()
+	if encodes != 3 || len(setDims) != 1 {
+		t.Fatalf("encodes=%d setDims=%v, want 3 encodes and only the initial SetDimensions", encodes, setDims)
+	}
+}
+
+// When the encoder cannot be resized, frames of the new size are dropped (not
+// fed to it to fail), and the resize is retried only after a backoff.
+func TestResolutionChangeEncoderResizeFailureBacksOff(t *testing.T) {
+	recordAnnouncements(t)
+	s, cap, stub, _ := newGeometryTestSession(t, 1920, 1080, "openh264")
+	stub.mu.Lock()
+	stub.dimErr = errFakeResize
+	stub.mu.Unlock()
+
+	cap.setSize(2560, 1440)
+	s.captureAndSendFrame(16 * time.Millisecond)
+	s.captureAndSendFrame(16 * time.Millisecond)
+
+	_, _, _, encodes, setDims := stub.snapshot()
+	if encodes != 0 {
+		t.Fatalf("a frame of the new size reached the unresized encoder (%d encodes)", encodes)
+	}
+	if s.cpuEncodeErrors != 0 {
+		t.Fatalf("cpuEncodeErrors = %d: the mismatch must not be fed to Encode", s.cpuEncodeErrors)
+	}
+	// The initial StartSession-style call plus exactly one resize attempt.
+	if len(setDims) != 2 {
+		t.Fatalf("SetDimensions calls = %v, want the initial one plus one attempt inside the backoff", setDims)
+	}
+
+	// After the backoff the resize is tried again and, once it works, the
+	// stream resumes at the new size.
+	stub.mu.Lock()
+	stub.dimErr = nil
+	stub.mu.Unlock()
+	s.encoderResizeRetryAt = time.Now().Add(-time.Millisecond)
+	s.captureAndSendFrame(16 * time.Millisecond)
+	if w, h, _, encodes, _ := stub.snapshot(); w != 2560 || h != 1440 || encodes != 1 {
+		t.Fatalf("after the backoff: encoder %dx%d, encodes %d; want 2560x1440 and 1", w, h, encodes)
+	}
+}
+
+// The GPU texture path has no CPU frame; it follows the capturer's bounds.
+func TestFollowBoundsGeometryResizesForTexturePath(t *testing.T) {
+	announced := recordAnnouncements(t)
+	s, cap, stub, si := newGeometryTestSession(t, 1920, 1080, "mft")
+	s.captureW, s.captureH = 1920, 1080
+	enc := s.encoder.Load()
+	_, geoBefore := si.Epochs()
+
+	if !s.followBoundsGeometry(cap, enc) {
+		t.Fatalf("unchanged bounds must not block the texture path")
+	}
+	if len(announced()) != 0 {
+		t.Fatalf("unchanged bounds announced a geometry change")
+	}
+
+	cap.setSize(3840, 2160)
+	if !s.followBoundsGeometry(cap, enc) {
+		t.Fatalf("a resizable encoder must not block the texture path")
+	}
+	if w, h, kf, _, _ := stub.snapshot(); w != 3840 || h != 2160 || kf == 0 {
+		t.Fatalf("encoder after a mode change: %dx%d keyframes=%d; want 3840x2160 and a forced keyframe", w, h, kf)
+	}
+	if _, geo := si.Epochs(); geo <= geoBefore {
+		t.Fatalf("geometry epoch did not move (%d -> %d)", geoBefore, geo)
+	}
+	if got := announced(); len(got) != 1 || got[0]["width"] != 3840 || got[0]["height"] != 2160 {
+		t.Fatalf("announcements = %v, want one at 3840x2160", got)
+	}
+}
+
+// A frame taken from a capturer that a monitor switch has since replaced is
+// not announced: the switch announces the new monitor itself.
+func TestResolutionChangeFromReplacedCapturerIsNotAnnounced(t *testing.T) {
+	announced := recordAnnouncements(t)
+	s, cap, _, si := newGeometryTestSession(t, 1920, 1080, "mft")
+	s.captureW, s.captureH = 1920, 1080
+	_, geoBefore := si.Epochs()
+	s.mu.Lock()
+	s.capturer = &resizingCapturer{w: 1280, h: 1024}
+	s.mu.Unlock()
+
+	s.applyCaptureGeometry(cap, 2560, 1440, geometryReasonResolutionChange)
+
+	if n := len(announced()); n != 0 {
+		t.Fatalf("a replaced capturer's frame was announced (%d)", n)
+	}
+	if _, geo := si.Epochs(); geo != geoBefore {
+		t.Fatalf("geometry epoch moved for a replaced capturer (%d -> %d)", geoBefore, geo)
+	}
+}
+
+func TestSafeInputRefreshScreenGeometryRunsOnTheWorker(t *testing.T) {
+	inner := &refreshRecorder{}
+	si := NewSafeInput(inner, "geom")
+	t.Cleanup(si.Close)
+	si.RefreshScreenGeometry()
+	if !hasCall(inner.snapshot(), "refresh_geometry") {
+		t.Fatalf("RefreshScreenGeometry was not forwarded: %v", inner.snapshot())
+	}
+	// A handler without cached metrics is left alone.
+	plain := NewSafeInput(&workerRecorder{}, "plain")
+	t.Cleanup(plain.Close)
+	plain.RefreshScreenGeometry()
+}
+
+var errFakeResize = errors.New("fake: encoder cannot run at this size")
+
+// Review fix: on a static screen the frame dropped while the resize failed is
+// offered again once the resize can be retried (the differ must not keep it).
+func TestResolutionChangeRetryOnStaticScreen(t *testing.T) {
+	recordAnnouncements(t)
+	s, cap, stub, _ := newGeometryTestSession(t, 1920, 1080, "openh264")
+	stub.mu.Lock()
+	stub.dimErr = errFakeResize
+	stub.mu.Unlock()
+	cap.mu.Lock()
+	cap.static = true
+	cap.mu.Unlock()
+
+	cap.setSize(2560, 1440)
+	s.captureAndSendFrame(16 * time.Millisecond) // resize fails, frame dropped
+
+	stub.mu.Lock()
+	stub.dimErr = nil
+	stub.mu.Unlock()
+	s.encoderResizeRetryAt = time.Now().Add(-time.Millisecond)
+	s.captureAndSendFrame(16 * time.Millisecond) // identical pixels
+
+	if w, h, _, encodes, _ := stub.snapshot(); w != 2560 || h != 1440 || encodes != 1 {
+		t.Fatalf("static screen after the retry: encoder %dx%d, encodes %d; want 2560x1440 and the frame encoded", w, h, encodes)
+	}
+}
+
+// Review fix: the first frame from a capturer a monitor switch installed is
+// that capturer's starting size. The switch already ran the transition, so the
+// capture path only resizes the encoder (the ticker loop, macOS/Linux/GDI,
+// never sees capturerSwapped).
+func TestFirstFrameAfterMonitorSwitchIsNotASecondTransition(t *testing.T) {
+	announced := recordAnnouncements(t)
+	s, cap, stub, si := newGeometryTestSession(t, 1920, 1080, "openh264")
+	s.adoptCaptureSize(cap, 1920, 1080)
+	_, geoBefore := si.Epochs()
+
+	next := &resizingCapturer{w: 1280, h: 1024}
+	s.mu.Lock()
+	s.capturer = next
+	s.mu.Unlock()
+	s.captureAndSendFrame(16 * time.Millisecond)
+
+	if n := len(announced()); n != 0 {
+		t.Fatalf("the new monitor's first frame was announced as a resolution change (%d)", n)
+	}
+	if _, geo := si.Epochs(); geo != geoBefore {
+		t.Fatalf("geometry epoch moved on the new monitor's first frame (%d -> %d)", geoBefore, geo)
+	}
+	if w, h, _, encodes, _ := stub.snapshot(); w != 1280 || h != 1024 || encodes != 1 {
+		t.Fatalf("encoder %dx%d encodes %d; want 1280x1024 and the frame encoded", w, h, encodes)
+	}
+
+	// A real mode change on the new monitor afterwards is still a transition.
+	next.setSize(1600, 1200)
+	s.captureAndSendFrame(16 * time.Millisecond)
+	if got := announced(); len(got) != 1 || got[0]["reason"] != "resolution_change" {
+		t.Fatalf("a mode change on the new monitor was not announced: %v", got)
+	}
+}
+
+// Review fix + coverage: a hardware encoder that cannot run at the new size is
+// replaced by software. When the software encoder is sized from bounds that
+// differ from the real frame size, the next frame corrects it at once; the
+// hardware encoder's retry backoff must not freeze the stream.
+func TestHardwareResizeFailureSwapsToSoftwareWithoutBackoff(t *testing.T) {
+	recordAnnouncements(t)
+	sw := &sizedStubEncoder{name: "openh264"}
+	prev := newSoftwareSwapCandidate
+	newSoftwareSwapCandidate = func(cfg EncoderConfig) (*VideoEncoder, error) {
+		return &VideoEncoder{cfg: cfg, backend: sw}, nil
+	}
+	t.Cleanup(func() { newSoftwareSwapCandidate = prev })
+
+	s, cap, hw, _ := newGeometryTestSession(t, 1920, 1080, "mft")
+	hw.mu.Lock()
+	hw.hardware = true
+	hw.dimErr = errFakeResize
+	hw.mu.Unlock()
+	hwEnc := s.encoder.Load()
+
+	cap.mu.Lock()
+	cap.w, cap.h = 2880, 1800            // real frames
+	cap.boundsW, cap.boundsH = 1440, 900 // what GetScreenBounds claims
+	cap.mu.Unlock()
+
+	s.captureAndSendFrame(16 * time.Millisecond) // hardware resize fails -> swap
+	if s.encoder.Load() == hwEnc {
+		t.Fatalf("the hardware encoder that cannot run at the new size was not replaced")
+	}
+	s.captureAndSendFrame(16 * time.Millisecond) // software corrected and used
+
+	if w, h, _, encodes, _ := sw.snapshot(); w != 2880 || h != 1800 || encodes != 1 {
+		t.Fatalf("software encoder %dx%d encodes %d on the next frame; want 2880x1800 and the frame encoded", w, h, encodes)
+	}
+}
+
+// secureResizingCapturer is a resizingCapturer on a secure desktop (UAC,
+// Winlogon), captured at the primary display's origin.
+type secureResizingCapturer struct {
+	resizingCapturer
+}
+
+func (c *secureResizingCapturer) ConsumeDesktopSwitch() bool { return false }
+func (c *secureResizingCapturer) OnSecureDesktop() bool      { return true }
+
+// Strix review: a resolution change while a secure desktop is shown keeps the
+// input offset at the origin, as the desktop switch onto it set it. Re-applying
+// the monitor's virtual-screen origin would shift every click off the dialog.
+func TestResolutionChangeOnSecureDesktopKeepsOriginOffset(t *testing.T) {
+	recordAnnouncements(t)
+	applied := 0
+	prev := applySessionDisplayOffset
+	applySessionDisplayOffset = func(h InputHandler, idx int, x, y *atomic.Int32) {
+		applied++
+		h.SetDisplayOffset(1920, 0) // a secondary monitor's origin
+		x.Store(1920)
+	}
+	t.Cleanup(func() { applySessionDisplayOffset = prev })
+
+	inner := &refreshRecorder{}
+	si := NewSafeInput(inner, "geom")
+	t.Cleanup(si.Close)
+	s, _, _, _ := newGeometryTestSession(t, 1920, 1080, "openh264")
+	cap := &secureResizingCapturer{resizingCapturer: resizingCapturer{w: 1920, h: 1080}}
+	s.capturer = cap
+	s.inputHandler = si
+	s.displayIndex = 1
+	s.adoptCaptureSize(cap, 1920, 1080)
+
+	cap.setSize(1280, 1024)
+	s.captureAndSendFrame(16 * time.Millisecond)
+
+	if applied != 0 {
+		t.Fatalf("the monitor origin was re-applied on a secure desktop (%d times)", applied)
+	}
+	if got := s.cursorOffsetX.Load(); got != 0 {
+		t.Fatalf("cursor offset X = %d on a secure desktop, want 0", got)
+	}
+	if calls := inner.snapshot(); !hasCall(calls, "offset:0,0") {
+		t.Fatalf("input offset not held at the origin on a secure desktop: %v", calls)
+	}
+
+	// Off the secure desktop the transition re-applies the monitor origin.
+	s2, cap2, _, _ := newGeometryTestSession(t, 1920, 1080, "openh264")
+	s2.adoptCaptureSize(cap2, 1920, 1080)
+	cap2.setSize(1280, 1024)
+	s2.captureAndSendFrame(16 * time.Millisecond)
+	if applied != 1 {
+		t.Fatalf("the monitor origin was not re-applied on the default desktop (applied=%d)", applied)
+	}
+}
+
+// Strix review (#12194): a session that STARTS on a secure desktop gets no
+// desktop switch to correct a monitor origin, so the one place that sets the
+// input offset holds it at the origin there, with a non-primary display
+// selected. Off the secure desktop it applies the monitor's origin.
+func TestApplyInputOffsetHoldsOriginOnSecureDesktop(t *testing.T) {
+	applied := 0
+	prev := applySessionDisplayOffset
+	applySessionDisplayOffset = func(h InputHandler, idx int, x, y *atomic.Int32) {
+		applied++
+		h.SetDisplayOffset(1920, 0) // a secondary monitor's origin
+		x.Store(1920)
+	}
+	t.Cleanup(func() { applySessionDisplayOffset = prev })
+
+	rec := &workerRecorder{}
+	s := &Session{id: "secure-start", inputHandler: rec}
+	s.cursorOffsetX.Store(1920) // a stale monitor origin
+	s.cursorOffsetY.Store(40)
+	s.applyInputOffset(&secureResizingCapturer{resizingCapturer: resizingCapturer{w: 1920, h: 1080}}, 1)
+
+	if applied != 0 {
+		t.Fatalf("the monitor origin was applied on a secure desktop (%d times)", applied)
+	}
+	if x, y := s.cursorOffsetX.Load(), s.cursorOffsetY.Load(); x != 0 || y != 0 {
+		t.Fatalf("cursor offset = %d,%d on a secure desktop, want 0,0", x, y)
+	}
+	if calls := rec.snapshot(); !hasCall(calls, "offset:0,0") || hasCall(calls, "offset:1920,0") {
+		t.Fatalf("input offset not held at the origin on a secure desktop: %v", calls)
+	}
+
+	rec2 := &workerRecorder{}
+	s2 := &Session{id: "default-start", inputHandler: rec2}
+	s2.applyInputOffset(&resizingCapturer{w: 1920, h: 1080}, 1)
+	if applied != 1 || s2.cursorOffsetX.Load() != 1920 {
+		t.Fatalf("the monitor origin was not applied on the default desktop (applied=%d, x=%d)",
+			applied, s2.cursorOffsetX.Load())
+	}
+
+	// A session with no input handler (view-only) is a no-op, not a panic.
+	(&Session{id: "no-input"}).applyInputOffset(&secureResizingCapturer{}, 1)
+}
+
+// Every path that sets the input offset goes through applyInputOffset, so no
+// path can miss the secure-desktop rule again: session start, monitor switch,
+// desktop switch and the mid-session geometry refresh. The only reference to
+// applyDisplayOffset is the applySessionDisplayOffset seam it calls.
+func TestEveryInputOffsetPathHoldsTheSecureDesktopRule(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			code := strings.TrimSpace(line)
+			if strings.HasPrefix(code, "//") {
+				continue
+			}
+			if strings.Contains(code, "applyDisplayOffset(") && !strings.HasPrefix(code, "func applyDisplayOffset(") {
+				t.Errorf("%s:%d sets the input offset without the secure-desktop rule; call applyInputOffset: %s", f, i+1, code)
+			}
+		}
+	}
+
+	read := func(name string) string {
+		t.Helper()
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	webrtc := read("session_webrtc.go")
+	start := webrtc[strings.Index(webrtc, "func (m *SessionManager) StartSession("):]
+	if !strings.Contains(start, "session.applyInputOffset(capturer, ") {
+		t.Error("StartSession must set the input offset through applyInputOffset with the session's capturer")
+	}
+	ctl := read("session_control.go")
+	if !strings.Contains(ctl[strings.Index(ctl, "func (s *Session) switchMonitor("):], "s.applyInputOffset(newCap, index)") {
+		t.Error("switchMonitor must set the input offset through applyInputOffset with the new capturer")
+	}
+}

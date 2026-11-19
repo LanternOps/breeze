@@ -28,6 +28,7 @@ import { conversionSummarySql } from '../services/flows/conversion/ledger';
 import { partnerServicePrincipalMcpAuthMiddleware } from '../middleware/partnerServicePrincipalMcpAuth';
 import { bearerTokenAuthMiddleware } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier, getToolDomain, aiTools, toolManagesDbContext } from '../services/aiTools';
+import { unattendedNoteWriteContext } from '../services/deviceNoteBounds';
 import { isTopologyAiToolName } from '../services/topology/aiToolGate';
 import { isNetworkIsolationCommand } from '../services/networkIsolation/bypass';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, isReadOnlyResolution, TIER1_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS, TOOL_ACTION_INPUT_KEYS } from '../services/aiGuardrails';
@@ -2537,9 +2538,15 @@ async function handleToolsCall(
       // is confined to the API key's OWN site restriction — exactly one site —
       // and refused for an org-wide or multi-site key. Name-gated so every
       // other tool keeps the three-argument call.
+      // #12140: a device note runs here at Tier 2 with no approval card, so it
+      // takes the unattended-note bounds (deviceNoteBounds.ts). Name-gated the
+      // same way.
+      const noteContext = unattendedNoteWriteContext(toolName);
       const result = rewritePartnerWideRefusalForMcp(isTopologyAiToolName(toolName)
         ? await executeTool(toolName, toolInput, toolAuth, { topologyBinding: { kind: 'mcp_site_key' } })
-        : await executeTool(toolName, toolInput, toolAuth), auth);
+        : noteContext
+          ? await executeTool(toolName, toolInput, toolAuth, { context: noteContext })
+          : await executeTool(toolName, toolInput, toolAuth), auth);
       const safeResult = compactToolResultForChat(toolName, result);
 
       // #6408: a pure returned `{error}` is a tool-execution error, not a

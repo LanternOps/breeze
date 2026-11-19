@@ -68,6 +68,7 @@ import { eq, and, desc, sql, inArray, gte, lte, isNull, isNotNull, or, SQL } fro
 import { alertSiteScopeByDeviceIds, alertSiteScopeCondition } from '../routes/alerts/helpers';
 import type { AuthContext } from '../middleware/auth';
 import { isAutomationPrincipal } from '../middleware/principalKind';
+import { mfaGatedToolError } from './aiToolMfaGate';
 
 async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly string[]): Promise<void> {
   await Promise.all([...new Set(deviceIds)].map((deviceId) =>
@@ -861,6 +862,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_deployments', async (input, auth, context) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_deployments', action, auth);
+      if (mfaError) return mfaError;
 
       // Creating or driving a deployment is an organization-wide change (the
       // target resolves against the whole org), matching routes/deployments.ts.
@@ -1235,6 +1238,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_patches', async (input, auth, context) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_patches', action, auth);
+      if (mfaError) return mfaError;
       const orgId = getOrgId(auth);
 
       if (action === 'approve' || action === 'decline' || action === 'defer' || action === 'bulk_approve') {
@@ -2526,6 +2531,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_automations', async (input, auth) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_automations', action, auth);
+      if (mfaError) return mfaError;
       const orgId = getOrgId(auth);
 
       // Site axis (app-layer only; RLS does NOT enforce it): an automation may

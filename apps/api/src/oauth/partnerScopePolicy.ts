@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema';
+import { registerClusterInvalidator } from '../services/clusterInvalidator';
 import { ERROR_IDS, logOauthError } from './log';
 
 /**
@@ -26,12 +27,16 @@ type CacheEntry = { value: PartnerOauthScopePolicy; expiresAt: number };
 // every token mint and every token validation, so even a cheap DB lookup
 // here multiplies the per-request latency noticeably at MCP RPS. A 60s
 // TTL keeps the policy change propagation window small while absorbing
-// the >99% hot-path repeat reads from the same partner. The cache is
-// intentionally NOT Redis-backed: the data is already tiny, eventual
-// consistency is fine, and Redis unavailability must not break token
-// issuance.
+// the >99% hot-path repeat reads from the same partner. The VALUES stay in
+// process memory (Redis unavailability must not break token issuance); only
+// invalidations go over the W05 cluster cache bus (#8636), so a policy change
+// on one API instance drops the entry on every other one within about 1 s.
+// With Redis down, other instances fall back to the 60 s TTL.
 const POLICY_CACHE_TTL_MS = 60_000;
 const policyCache = new Map<string, CacheEntry>();
+// Bumped by every invalidation: a DB read that started before it saw the
+// pre-write row, so it answers its own caller but is not cached.
+let policyGeneration = 0;
 
 // In-flight promises so concurrent callers for the same partner share a
 // single DB read (stampede avoidance). Node is single-threaded but the
@@ -109,10 +114,11 @@ export async function getPartnerScopePolicy(
   const existing = inflight.get(partnerId);
   if (existing) return existing;
 
+  const generationAtStart = policyGeneration;
   const p = (async () => {
     try {
       const value = await fetchPolicyFromDb(partnerId);
-      cachePut(partnerId, value);
+      if (generationAtStart === policyGeneration) cachePut(partnerId, value);
       return value;
     } catch (err) {
       // Fail CLOSED on a DB error: deny all MCP scopes rather than mint an
@@ -128,17 +134,38 @@ export async function getPartnerScopePolicy(
         context: { partnerId },
       });
       return { mcp_allowed_scopes: [] };
-    } finally {
-      inflight.delete(partnerId);
     }
   })();
   inflight.set(partnerId, p);
+  // `p` never rejects (the catch above returns the fail-closed policy). Only
+  // remove our own flight: an invalidation may already have replaced it.
+  void p.finally(() => {
+    if (inflight.get(partnerId) === p) inflight.delete(partnerId);
+  });
   return p;
 }
 
+function dropPolicyLocal(partnerId?: string): void {
+  policyGeneration += 1;
+  if (partnerId) {
+    policyCache.delete(partnerId);
+    // A caller arriving after the write must not join a read of the old row.
+    inflight.delete(partnerId);
+  } else {
+    policyCache.clear();
+    inflight.clear();
+  }
+}
+
+const policyInvalidator = registerClusterInvalidator('partner-oauth-scope-policy', dropPolicyLocal);
+
+/**
+ * Drop the cached policy for `partnerId` (or all) on this instance now, and on
+ * every other API instance once the caller's transaction commits. Call it from
+ * the writer, inside or outside its transaction.
+ */
 export function clearPartnerScopePolicyCache(partnerId?: string): void {
-  if (partnerId) policyCache.delete(partnerId);
-  else policyCache.clear();
+  policyInvalidator.invalidateAroundCommit(partnerId);
 }
 
 // Test-only: peek at cache state.

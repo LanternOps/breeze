@@ -172,7 +172,8 @@ export async function listTemplateSets(actor: TemplateActor, q: { orgId?: string
   }
   const rows = await db.select().from(deliverableTemplateSets)
     .where(conditions.length === 0 ? undefined : and(...conditions))
-    .orderBy(asc(deliverableTemplateSets.name));
+    // Names are unique per owner only (a partner-wide and an org set may match); id makes the order total for paging callers.
+    .orderBy(asc(deliverableTemplateSets.name), asc(deliverableTemplateSets.id));
   const items = await loadItems(rows.map((r) => r.id));
   return rows.map((row) => ({ ...row, items: items.get(row.id) ?? [], ownerScope: ownerScopeOf(row) }));
 }

@@ -384,11 +384,11 @@
         "backup_status": "Stato dei backup"
       },
       "threatDetection": {
-        "agents": "Endpoint con agente di rilevamento",
         "breezeDevices": "Dispositivi gestiti da Breeze",
         "carriedIn": "Riportati, ancora aperti",
         "coverage": "Limiti di questo rapporto",
-        "devicesWithoutAgent": "Dispositivi gestiti senza agente",
+        "devicesWithAgent": "Dispositivi gestiti con agente di rilevamento",
+        "devicesWithoutAgent": "Dispositivi gestiti senza agente di rilevamento",
         "notMeasured": "N/D",
         "opened": "Rilevamenti segnalati",
         "resolved": "Rilevamenti risolti"

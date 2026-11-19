@@ -48,7 +48,9 @@ import { devices } from '../../db/schema/devices';
 import { wispGrants } from '../../db/schema/wisp';
 import { wispThreadPosts } from '../../db/schema/wispThreadPosts';
 import { sanitizeUntrustedToolText } from '../aiInputSanitizer';
+import { summarizeStepResult } from './stepOutputSummary';
 import { captureException } from '../sentry';
+import { capAtBoundary } from '../../utils/capAtBoundary';
 import { notifyUser, resolveSpecialistPostAudience, SpecialistAudienceRefusedError } from './notifyUser';
 import { specialistResultDedupeKey } from './threadPosts';
 import { getOrCreateThread } from './threads';
@@ -112,21 +114,6 @@ function capChars(text: string, max: number): string {
 }
 
 /**
- * Cap at `max` code points (never mid surrogate pair), cutting at the last
- * paragraph break in the back half of the budget, else the last line break,
- * else the last space, else hard (only for text with no whitespace there);
- * marked with "…". A report normally loses whole paragraphs, not part of one.
- */
-function capAtBoundary(text: string, max: number): string {
-  const chars = Array.from(text);
-  if (chars.length <= max) return text;
-  const head = chars.slice(0, Math.max(0, max - 1)).join('');
-  const floor = Math.floor(head.length / 2);
-  const at = [head.lastIndexOf('\n\n'), head.lastIndexOf('\n'), head.search(/\s\S*$/)].find((i) => i >= floor);
-  return `${(at === undefined ? head : head.slice(0, at)).trimEnd()}…`;
-}
-
-/**
  * Device- or model-written text, made safe to show: filtered, single spaces
  * kept, capped.
  */
@@ -178,20 +165,6 @@ function runPostText(
   const room = SPECIALIST_RESULT_BODY_MAX_CHARS - (waiting ? Array.from(waiting).length + 2 : 0);
   const summary = run.summary?.trim() ? cleanReport(run.summary, room) : 'The run left no summary. Open the run for its steps.';
   return { title, body: waiting ? `${summary}\n\n${waiting}` : summary };
-}
-
-/** A released step's result, as one short line of text (device output: cleaned and capped). */
-function stepOutcomeText(result: unknown, max: number): string {
-  if (result === null || result === undefined) return 'no result recorded';
-  const r = result as Record<string, unknown>;
-  const raw = typeof result === 'string'
-    ? result
-    : typeof r.summary === 'string' ? r.summary
-      : typeof r.stdout === 'string' ? r.stdout
-        : typeof r.message === 'string' ? r.message
-          : JSON.stringify(result);
-  const clean = cleanText(raw ?? '', max);
-  return clean.length > 0 ? clean : 'no output';
 }
 
 // ---------------------------------------------------------------------------
@@ -379,7 +352,7 @@ export async function postSpecialistStepOutcome(intentId: string): Promise<Speci
   const ran = intent.status === 'completed';
   const head = `Approved step ${ran ? 'ran' : 'failed'}: ${stepLabel} — `;
   const room = SPECIALIST_STEP_BODY_MAX_CHARS - Array.from(head).length;
-  const outcome = ran ? stepOutcomeText(intent.result, room) : cleanText(intent.errorCode ?? 'error', room) || 'error';
+  const outcome = ran ? summarizeStepResult(intent.result, room) : cleanText(intent.errorCode ?? 'error', room) || 'error';
   return deliver({
     userId: dest.userId,
     threadId: dest.threadId,

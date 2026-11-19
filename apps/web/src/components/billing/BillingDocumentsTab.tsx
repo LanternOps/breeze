@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { httpUrlErrorMessage } from '@breeze/shared';
+import { partnerDocumentPageSizeDefault } from '@breeze/shared/documents';
 import InheritedField from '../shared/InheritedField';
 
 interface InheritedAddress {
@@ -26,8 +27,11 @@ interface BillingDocumentsTabProps {
   setFooter: (v: string) => void;
   documentTheme: 'classic' | 'condensed';
   setDocumentTheme: (v: 'classic' | 'condensed') => void;
-  documentPageSize: 'letter' | 'a4';
-  setDocumentPageSize: (v: 'letter' | 'a4') => void;
+  /** '' = no choice: documents follow the region default (#12097). */
+  documentPageSize: 'letter' | 'a4' | '';
+  setDocumentPageSize: (v: 'letter' | 'a4' | '') => void;
+  /** The server's page size for a partner with no country on file (#12097). */
+  pageSizeFallback?: 'letter' | 'a4';
   companyName: string;
   setCompanyName: (v: string) => void;
   phone: string;
@@ -66,7 +70,7 @@ interface BillingDocumentsTabProps {
 export default function BillingDocumentsTab({
   autoEmailInvoice, setAutoEmailInvoice, notifyOnBehalfAcceptance, setNotifyOnBehalfAcceptance, deviceAppendix, setDeviceAppendix, footer, setFooter,
   lineShowDate, setLineShowDate, lineShowNote, setLineShowNote, lineShowWorkedTime, setLineShowWorkedTime, lineGrouping, setLineGrouping,
-  documentTheme, setDocumentTheme, documentPageSize, setDocumentPageSize,
+  documentTheme, setDocumentTheme, documentPageSize, setDocumentPageSize, pageSizeFallback = 'letter',
   companyName, setCompanyName, phone, setPhone, website, setWebsite, websiteInvalid,
   addr1, setAddr1, addr2, setAddr2, city, setCity, region, setRegion, postal, setPostal,
   country, setCountry, terms, setTerms,
@@ -75,6 +79,21 @@ export default function BillingDocumentsTab({
   const { t } = useTranslation('billing');
   const inheritedSource = t('partnerBillingSettings.company.inheritedFromCompanyDetails');
   const addressOverridden = [addr1, addr2, city, region, postal, country].some((f) => f.trim() !== '');
+  // #12097: what "Region default" prints on, live from the letterhead country
+  // being edited, then the company-details country, then the server default —
+  // the same resolver the API renders with.
+  const pageSizeDefault = partnerDocumentPageSizeDefault(
+    { billingAddressCountry: country, settings: { address: { country: inheritedAddress?.country ?? null } } },
+    pageSizeFallback,
+  );
+  const pageSizeLabel = (size: 'letter' | 'a4') => (size === 'a4'
+    ? t('partnerBillingSettings.defaults.documentPageSizeA4')
+    : t('partnerBillingSettings.defaults.documentPageSizeLetter'));
+  const pageSizeSourceText = {
+    billing_address: t('partnerBillingSettings.defaults.documentPageSizeFromBillingAddress'),
+    company_address: t('partnerBillingSettings.defaults.documentPageSizeFromCompanyAddress'),
+    deployment_region: t('partnerBillingSettings.defaults.documentPageSizeFromServer'),
+  }[pageSizeDefault.source];
   const useCompanyAddress = () => {
     setAddr1(''); setAddr2(''); setCity(''); setRegion(''); setPostal(''); setCountry('');
   };
@@ -194,13 +213,20 @@ export default function BillingDocumentsTab({
             <label className="text-sm font-medium" htmlFor="pb-document-page-size">{t('partnerBillingSettings.defaults.documentPageSize')}</label>
             <select
               id="pb-document-page-size" value={documentPageSize}
-              onChange={(e) => setDocumentPageSize(e.target.value as 'letter' | 'a4')}
+              onChange={(e) => setDocumentPageSize(e.target.value as 'letter' | 'a4' | '')}
               data-testid="partner-billing-document-page-size"
+              aria-describedby={documentPageSize === '' ? 'pb-document-page-size-source' : undefined}
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
             >
+              <option value="">{t('partnerBillingSettings.defaults.documentPageSizeRegionDefault', { size: pageSizeLabel(pageSizeDefault.pageSize) })}</option>
               <option value="letter">{t('partnerBillingSettings.defaults.documentPageSizeLetter')}</option>
               <option value="a4">{t('partnerBillingSettings.defaults.documentPageSizeA4')}</option>
             </select>
+            {documentPageSize === '' && (
+              <p id="pb-document-page-size-source" data-testid="partner-billing-document-page-size-source" className="mt-1 text-xs text-muted-foreground">
+                {pageSizeSourceText}
+              </p>
+            )}
           </div>
         </div>
         <div className="mt-4">

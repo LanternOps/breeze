@@ -144,6 +144,12 @@ const closeAgentRunSession = vi.hoisted(() =>
   vi.fn<(sessionId: string, status: 'completed' | 'failed') => Promise<void>>());
 vi.mock('./executionLedger', () => ({
   createAgentRunSession, startToolExecution, completeToolExecution, reconcileHungExecutions, closeAgentRunSession,
+  recordRunTaskPrompt: vi.fn(async () => undefined), recordRunAssistantTurn: vi.fn(async () => undefined),
+}));
+// #11971: no hop of these runs was claimed before (the real lookup would read the mocked db).
+vi.mock('./agentRunFailover', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agentRunFailover')>()),
+  hopReservationSessionId: vi.fn(async () => undefined),
 }));
 
 const resolveEffectiveAgentSystem = vi.hoisted(() =>
@@ -311,7 +317,14 @@ vi.mock('../workspace/workspaceService', async (importOriginal) => {
 // `finalize` was invoked.
 import { __resetWorkspaceRegistry, getWorkspaceForRun } from '../workspace/workspaceRegistry';
 
+const loadHandleManifest = vi.hoisted(() =>
+  vi.fn<(input: { orgId: string; handles: string[] }) => Promise<unknown[]>>(async () => []));
+vi.mock('./analysisContinuation', () => ({ loadHandleManifest }));
+
 import { executeAgentRun } from './runLoop';
+import { deviceSiteDenied } from '../aiToolsSiteScope';
+import type { AuthContext } from '../../middleware/auth';
+import type { ToolExecutionContext } from '../toolExecutionContext';
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
 import { ANALYSIS_TOOL_ALLOWLIST } from './analysisProfile';
 
@@ -351,8 +364,10 @@ const STAGED_INPUTS: AiAgentRunStagedInputs = { handles: [], deviceIds: [DEVICE_
 function seedRows(options: {
   effective?: AiAgentPolicy;
   stagedInputs?: AiAgentRunStagedInputs | null;
+  triggerRef?: Record<string, unknown>;
   computeReservedCents?: number | null;
   fundingSource?: 'platform' | 'partner_key' | null;
+  continuedFromRunId?: string | null;
 } = {}) {
   const effective = options.effective ?? policy();
   const stagedInputs = options.stagedInputs === undefined ? STAGED_INPUTS : options.stagedInputs;
@@ -373,13 +388,14 @@ function seedRows(options: {
     profile: 'analysis',
     correlationGroupId: null,
     scheduleId: null,
-    triggerRef: {},
+    triggerRef: options.triggerRef ?? {},
     taskId: null,
     taskStepKey: null,
     taskAttemptOrdinal: null,
     stagedInputs,
     computeReservedCents,
     fundingSource: options.fundingSource ?? null,
+    continuedFromRunId: options.continuedFromRunId ?? null,
   }]];
   dbMockState.rowQueues.ai_agents = [[{
     id: AGENT_ID,
@@ -395,6 +411,8 @@ function seedRows(options: {
 }
 
 const hooks: Hooks = {};
+/** Every pre-hook verdict the scripted query saw, in order (W02). */
+const verdicts: unknown[] = [];
 let lastQueryOptions: Record<string, unknown> | undefined;
 const closeMock = vi.fn();
 /** Deep snapshots of every `transitionRunStatus` patch, taken at call time. */
@@ -423,6 +441,7 @@ function scriptQuery(script: {
     const generator = (async function* () {
       for (const call of script.toolCalls ?? []) {
         const verdict = await hooks.pre!(call.tool, call.input);
+        verdicts.push(verdict);
         if (verdict.allowed) {
           await hooks.post!(call.tool, call.input, '{"status":"recorded"}', false, 5);
         } else {
@@ -440,6 +459,7 @@ function scriptQuery(script: {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  verdicts.length = 0;
   __resetWorkspaceRegistry();
   reserveAiBudget.mockResolvedValue({
     kind: 'unlimited', reservationId: '00000000-0000-4000-8000-0000000000e1',
@@ -638,5 +658,85 @@ describe('sandbox lifecycle + compute settlement (execution plane W04)', () => {
     await executeAgentRun(RUN_ID);
 
     expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 0, 'platform');
+  });
+});
+
+describe('frozen export grants reach the tool context (W02 analysis sessions)', () => {
+  it('hands the frozen export grants to every allowed tool call', async () => {
+    const grants = { datasets: ['event_logs'], sensitiveGates: [] as never[] };
+    seedRows({ effective: policy({ toolAllowlist: ['export_dataset'] }), stagedInputs: { ...STAGED_INPUTS, exportGrants: grants } });
+    scriptQuery({ toolCalls: [{ tool: 'export_dataset', input: { dataset: 'event_logs' } }] });
+    await executeAgentRun(RUN_ID);
+    expect(verdicts[0], JSON.stringify(verdicts[0])).toMatchObject({ allowed: true });
+    expect((verdicts[0] as { context?: ToolExecutionContext }).context?.exportGrants).toEqual(grants);
+  });
+
+  it('a run admitted before W02 (no exportGrants on staged_inputs) passes none', async () => {
+    seedRows({ effective: policy({ toolAllowlist: ['export_dataset'] }) });
+    scriptQuery({ toolCalls: [{ tool: 'export_dataset', input: { dataset: 'event_logs' } }] });
+    await executeAgentRun(RUN_ID);
+    expect(verdicts[0]).toMatchObject({ allowed: true });
+    expect((verdicts[0] as { context?: ToolExecutionContext }).context).not.toHaveProperty('exportGrants');
+  });
+
+  it('a present-but-null frozen grant reaches the tool context verbatim (the handler then permits nothing), never as absent', async () => {
+    seedRows({ effective: policy({ toolAllowlist: ['export_dataset'] }), stagedInputs: { ...STAGED_INPUTS, exportGrants: null as never } });
+    scriptQuery({ toolCalls: [{ tool: 'export_dataset', input: { dataset: 'event_logs' } }] });
+    await executeAgentRun(RUN_ID);
+    expect((verdicts[0] as { context?: Record<string, unknown> }).context).toHaveProperty('exportGrants', null);
+  });
+
+  it('an analysis run with no staged_inputs row value gets NO export grants, never the legacy set', async () => {
+    seedRows({ effective: policy({ toolAllowlist: ['export_dataset'] }), stagedInputs: null });
+    scriptQuery({ toolCalls: [{ tool: 'export_dataset', input: { dataset: 'event_logs' } }] });
+    await executeAgentRun(RUN_ID);
+    expect((verdicts[0] as { context?: ToolExecutionContext }).context?.exportGrants).toEqual({ datasets: [], sensitiveGates: [] });
+  });
+
+  it('an org-frame run is pinned to its frozen list: a device added after admission is denied', async () => {
+    // Spec §7. Passes on arrival: pins existing behaviour so the frame change cannot regress it.
+    seedRows({ stagedInputs: { ...STAGED_INPUTS, scope: { kind: 'org', siteId: null, deviceCount: 2 } } });
+    await executeAgentRun(RUN_ID);
+    const runAuth = hooks.getAuth!() as AuthContext;
+    expect(runAuth.allowedDeviceIds).toEqual([DEVICE_A, DEVICE_B]);
+    expect(deviceSiteDenied(runAuth, 'any-site', '00000000-0000-4000-8000-0000000000ff')).toBe(true);
+  });
+});
+
+describe('analysis manifest reaches the task prompt (W03)', () => {
+  const H1 = '00000000-0000-4000-8000-0000000000a1';
+  const R1 = '00000000-0000-4000-8000-0000000000b1';
+
+  it('loads the manifest for the frozen handles inside the run context system block', async () => {
+    seedRows({ triggerRef: { goal: 'find bsod causes' }, stagedInputs: { ...STAGED_INPUTS, handles: [H1] } });
+    let ambientAtCall: unknown;
+    loadHandleManifest.mockImplementation(async () => {
+      ambientAtCall = dbMockState.ambientContext;
+      return [{ handle: H1, name: 'bsod.csv', bytes: 14000, contentType: 'text/csv', kind: 'output', producedByRunId: R1, producerChainDepth: 0 }];
+    });
+    await executeAgentRun(RUN_ID);
+    expect(loadHandleManifest).toHaveBeenCalledWith({ orgId: ORG_ID, handles: [H1] });
+    expect(ambientAtCall).toEqual({ scope: 'system' });
+    const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+    expect(prompt).toContain(`${H1} · bsod.csv · 14000 bytes · text/csv · output · produced by run ${R1} (step 1 of chain)`);
+  });
+
+  it('warns when a continuation run (lineage set) has no readable seed, and still runs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    seedRows({ triggerRef: { goal: 'g', continuation: { fromRunId: R1, seed: '' } }, continuedFromRunId: R1 });
+    await executeAgentRun(RUN_ID);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('continuation seed unreadable'), expect.objectContaining({ runId: RUN_ID }));
+    expect(queryMock).toHaveBeenCalled();
+    warn.mockClear();
+    seedRows({ triggerRef: { goal: 'g' } });
+    await executeAgentRun(RUN_ID);
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('continuation seed unreadable'), expect.anything());
+    warn.mockRestore();
+  });
+
+  it('reads malformed staged handles defensively and still renders a prompt', async () => {
+    seedRows({ stagedInputs: { ...STAGED_INPUTS, handles: 'nope' as never } });
+    await executeAgentRun(RUN_ID);
+    expect(loadHandleManifest).toHaveBeenCalledWith({ orgId: ORG_ID, handles: [] });
   });
 });

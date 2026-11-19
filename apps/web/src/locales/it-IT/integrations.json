@@ -159,7 +159,8 @@
       "missing": "Autorizzazioni mancanti",
       "unexpectedAlert": "Rilevate autorizzazioni inattese",
       "unknownPermission": "Autorizzazione sconosciuta (ruolo {{appRoleId}})",
-      "grantsVerifiedAt": "Autorizzazioni verificate"
+      "grantsVerifiedAt": "Autorizzazioni verificate",
+      "graphTokenOnly": "Autorizzazioni Graph verificate. Le autorizzazioni sulle altre risorse Microsoft non sono state verificate; concedi Application.Read.All per un controllo completo."
     },
     "actions": {
       "connect": "Connetti",
@@ -170,6 +171,7 @@
       "consentFailed": "Impossibile avviare il consenso.",
       "retestFailed": "Impossibile ripetere il test della connessione.",
       "retestSucceeded": "Nuovo test della connessione completato.",
+      "retestNeedsAttention": "Nuovo test completato, ma la connessione richiede ancora attenzione.",
       "disconnectWarning": "La disconnessione impedisce a Breeze di usare questa connessione. Il consenso Microsoft a livello tenant resta attivo finché un amministratore del cliente non lo rimuove in Microsoft Entra.",
       "disconnectFailed": "Impossibile disconnettere la connessione.",
       "disconnectSucceeded": "Connessione Breeze disconnessa.",
@@ -192,6 +194,7 @@
       "grant_unexpected": "Microsoft segnala autorizzazioni esterne al manifest approvato.",
       "manifest_stale": "Le autorizzazioni concesse usano un manifest precedente. Concedi di nuovo il consenso.",
       "organization_probe_failed": "Controllo dell'organizzazione Microsoft non riuscito. Ripeti il test della connessione.",
+      "grant_reconciliation_unavailable": "Microsoft ha accettato la connessione, ma Breeze non può leggere quali autorizzazioni questo tenant ha concesso all'app delle azioni amministrative, quindi non possono essere verificate. Le azioni amministrative restano in pausa finché non lo sono.",
       "executor_unavailable": "Il servizio di verifica non è disponibile. Ripeti il test più tardi.",
       "executor_unavailablePending": "Impossibile completare la connessione. Riprova con Connetti; se continua a non riuscire, contatta il supporto.",
       "unknown": "La verifica richiede attenzione. Ripeti il test della connessione o avvia di nuovo il consenso."
@@ -289,11 +292,9 @@
     "unableToSendTestNotification": "Impossibile inviare la notifica di test.",
     "failedToLoadCommunicationSettings": "Impossibile caricare le impostazioni di comunicazione",
     "slackSettingsSaved": "Impostazioni Slack salvate.",
-    "slackTestNotificationQueued": "Notifica di test Slack accodata.",
     "teamsSettingsSaved": "Impostazioni Teams salvate.",
-    "teamsTestNotificationQueued": "Notifica di test Teams accodata.",
     "discordSettingsSaved": "Impostazioni Discord salvate.",
-    "discordTestNotificationQueued": "Notifica di test Discord accodata.",
+    "discordTestNotificationSent": "Notifica di test Discord inviata.",
     "loadingCommunicationIntegrations": "Caricamento integrazioni di comunicazione...",
     "communicationIntegrations": "Integrazioni di comunicazione",
     "connectChatToolsRouteAlertsBySeverityAnd": "Connetti strumenti di chat, instrada gli avvisi per severità e personalizza i template dei messaggi. ",

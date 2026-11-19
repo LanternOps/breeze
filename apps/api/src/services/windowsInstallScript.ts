@@ -44,7 +44,9 @@ export function generateWindowsInstallScript(serverUrl: string): string {
     try {
         $meta = Invoke-RestMethod -Uri "$serverUrl/api/v1/agent-versions/latest?platform=windows&arch=amd64&component=agent" -UseBasicParsing -UserAgent 'BreezeInstaller/1.0'
     } catch {
-        throw "Breeze: could not fetch release integrity metadata from $serverUrl - refusing to install without a trusted checksum"
+        # Keep the underlying exception: a TLS failure here is often a network
+        # filter or captive portal answering in place of the server (#8868).
+        throw "Breeze: could not fetch release integrity metadata from $serverUrl ($($_.Exception.GetBaseException().Message)) - a captive portal or web filter may be intercepting this network; refusing to install without a trusted checksum"
     }
 
     $expectedSha = [string]$meta.checksum

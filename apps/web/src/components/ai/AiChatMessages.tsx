@@ -516,7 +516,7 @@ export default function AiChatMessages({
     }
     if (emptyState) {
       return (
-        <div className={layout === "page" ? "flex flex-1 flex-col justify-end px-4 py-6" : "flex flex-1 flex-col justify-end p-3"}>
+        <div className={layout === "page" ? "flex flex-1 flex-col justify-end px-4 py-6" : "flex flex-1 flex-col justify-start overflow-y-auto p-3"}>
           <div className={layout === "page" ? "mx-auto w-full max-w-3xl" : undefined}>{emptyState}</div>
         </div>
       );
@@ -652,7 +652,7 @@ export default function AiChatMessages({
 /** An assistant reply: prose, no avatar, no bubble (spec D2). */
 function AssistantMarkdown({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
   return (
-    <div className="prose prose-sm max-w-none break-words text-sm text-foreground prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none dark:prose-invert">
+    <div className="prose prose-sm max-w-none break-words text-sm text-foreground prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none [&_blockquote_p:first-of-type]:before:content-none [&_blockquote_p:last-of-type]:after:content-none dark:prose-invert">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

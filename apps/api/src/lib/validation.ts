@@ -139,31 +139,36 @@ export function formatZodError(error: ZodErrorLike): ValidationErrorBody {
  * Does this Content-Type name a JSON body, exactly as Hono's own validator
  * decides it?
  *
- * Copied deliberately from `hono/dist/validator/validator.js` (`jsonRegex`,
- * Hono 4.13.2) rather than re-derived. A route that hand-parses its body
- * instead of using {@link zValidator} has to reproduce this verdict or it
- * silently changes what the endpoint accepts — and an approximation gets it
- * wrong in BOTH directions. A hand-rolled `^application\/(\w+\+)?json\b`
- * looks equivalent and is not: `\b` matches before a hyphen so it ACCEPTS
- * `application/json-bogus`, which Hono rejects, and `\w` excludes `.` and `-`
- * so it REJECTS `application/vnd.api+json` and `application/merge-patch+json`,
- * which Hono accepts. Verified against the installed Hono, not reasoned.
+ * Copied deliberately from `hono/dist/validator/validator.js` (`jsonRegex` and
+ * `getMediaType`, Hono 4.13.18) rather than re-derived. A route that
+ * hand-parses its body instead of using {@link zValidator} has to reproduce
+ * this verdict or it silently changes what the endpoint accepts — and an
+ * approximation gets it wrong in BOTH directions. A hand-rolled
+ * `^application\/(\w+\+)?json\b` looks equivalent and is not: `\b` matches
+ * before a hyphen so it ACCEPTS `application/json-bogus`, which Hono rejects,
+ * and `\w` excludes `.` and `-` so it REJECTS `application/vnd.api+json` and
+ * `application/merge-patch+json`, which Hono accepts.
  *
- * Anchored end-to-end, so the parameter list is part of the match: that is what
- * makes `; charset=utf-8` legal and `json-bogus` not.
- *
- * DO NOT `.trim()` the header before testing it. The anchors are the point, and
- * trimming widens the predicate past Hono: `@hono/node-server` normalises only
- * HTTP whitespace (SP, HTAB, CR, LF), so a NON-BREAKING space survives into the
- * header value — `application/json\u00a0` is rejected by Hono and was accepted
- * here while this trimmed. Verified against the installed Hono, not reasoned.
+ * Since 4.13.18 (GHSA-92p4-j3wq-jmqx) Hono decides by the MEDIA TYPE ALONE:
+ * everything from the first `;` is dropped, the rest is `.trim()`med and
+ * lower-cased, and only then matched. The parameter list no longer matters, so
+ * `application/json ; charset=utf-8`, `application/json;` and
+ * `application/json; odd` are all JSON. `.trim()` is JavaScript's, which strips
+ * Unicode whitespace too, so `application/json` followed by a non-breaking
+ * space is JSON as well (4.13.14 and earlier rejected it). Keep this in step
+ * with Hono, not with HTTP's whitespace rules: `jsonContentType.test.ts` uses
+ * Hono as the oracle and fails on any drift it samples.
  */
-export const JSON_CONTENT_TYPE_RE =
-  /^application\/([a-z-\.]+\+)?json(;\s*[a-zA-Z0-9\-]+\=([^;]+))*$/i;
+export const JSON_MEDIA_TYPE_RE = /^application\/([\w.-]+\+)?json$/i;
+
+/** The media type of a Content-Type header, as Hono's validator reads it. */
+function mediaTypeOf(header: string): string {
+  return header.split(';')[0]!.trim().toLowerCase();
+}
 
 /** True when `header` is a JSON media type by Hono's rule. */
 export function isJsonContentType(header: string | undefined | null): boolean {
-  return JSON_CONTENT_TYPE_RE.test(header ?? '');
+  return header ? JSON_MEDIA_TYPE_RE.test(mediaTypeOf(header)) : false;
 }
 
 type ValidatorHook<
@@ -207,13 +212,6 @@ export const zValidator = <
     }
   );
 
-// Was a SECOND hand-maintained copy of Hono's jsonRegex — semantically
-// equivalent to JSON_CONTENT_TYPE_RE above (the literal spelling differed:
-// `[a-z\-.]` vs `[a-z-\.]`, `=` vs `\=`) but written out separately. Two
-// copies of the same rule is one more than can be kept in step. Aliased so
-// there is a single definition to fix when Hono changes.
-const JSON_CONTENT_TYPE = JSON_CONTENT_TYPE_RE;
-
 /**
  * `zValidator('json', schema)` for routes whose body is genuinely OPTIONAL.
  *
@@ -246,7 +244,8 @@ export const optionalJsonValidator = <T extends z.ZodType>(
 
     // Mirror Hono's own gate: a non-JSON (or absent) Content-Type means the
     // json target simply isn't populated, rather than being an error.
-    if (contentType && JSON_CONTENT_TYPE.test(contentType)) {
+    // Single definition of the rule: isJsonContentType above.
+    if (isJsonContentType(contentType)) {
       const text = await c.req.text();
       if (text.trim() !== '') {
         try {

@@ -57,21 +57,105 @@ const SCREENCONNECT_GUID_SQL_RE = 'ScreenConnect Client \\([0-9a-f]{16}\\)';
 /** A denied `WIN-` prefix must be shorter than this many characters total. */
 const WIN_PREFIX_DENY_MAX_LENGTH = 12;
 
+/** Fewer letters/digits than this identifies nothing (`x`, `ab`, `a-1`). */
+const MIN_IDENTIFYING_LENGTH = 3;
+
 /**
- * Hostnames that must never enter the corpus as a `hostname` fingerprint:
- * empty/blank, `localhost`, and a degenerate short `WIN-` name. Windows
- * Setup's real default is `WIN-<10 random chars>` (14 characters total),
- * which is AT the threshold and therefore NOT denied — a genuine
+ * Up to this many digits in the whole name is a sequence number (`dc01`,
+ * `server-2`, `server2019`), not entropy. Five or more, in one run or split
+ * across labels (`pc-48213`, `server12345`, `pc-2019-0042`), reads as an
+ * asset tag and keeps the name.
+ */
+const MAX_SEQUENCE_DIGITS = 4;
+
+/** Label separators: anything that is not a letter or digit in any script. */
+const NON_ALNUM_RE = /[^\p{L}\p{N}]+/gu;
+
+/**
+ * Words that many unrelated sites pick for a machine on their own (#11843).
+ * A cross-partner collision on a name built only from these is coincidence,
+ * not a reused box: a device named `server` at one partner and a device named
+ * `server` at a suspended partner share nothing but the word.
+ *
+ * Department names (`finance`, `accounting`, ...) are deliberately NOT here:
+ * `finance-pc-12` is the kind of site-chosen name the hostname axis keeps.
+ */
+const GENERIC_HOSTNAME_WORDS = new Set([
+  // Server roles.
+  'server', 'srv', 'svr', 'dc', 'pdc', 'bdc', 'addc', 'ad', 'dns', 'dhcp',
+  'file', 'files', 'fileserver', 'fs', 'nas', 'san', 'storage', 'share',
+  'print', 'printer', 'printserver', 'sql', 'sqlserver', 'db', 'database',
+  'web', 'webserver', 'www', 'mail', 'exchange', 'app', 'apps', 'backup',
+  'hyperv', 'host', 'vmhost', 'esx', 'esxi', 'vm', 'vps', 'rds', 'terminal',
+  'ts', 'gateway', 'gw', 'firewall', 'fw', 'router', 'proxy', 'ftp', 'vpn',
+  'rdsh', 'appserver', 'mailserver', 'dbserver',
+  // Endpoint form factors.
+  'desktop', 'laptop', 'notebook', 'pc', 'workstation', 'ws', 'computer',
+  'client', 'tablet', 'kiosk', 'mac', 'macbook', 'imac', 'macmini', 'mini',
+  'pro', 'air',
+  // Who sits at it.
+  'admin', 'administrator', 'user', 'owner', 'guest', 'manager', 'staff',
+  'reception', 'receptionist', 'frontdesk', 'front', 'desk', 'office',
+  // Modifiers that only qualify one of the above.
+  'new', 'old', 'main', 'my', 'home', 'primary', 'secondary', 'spare', 'temp',
+  'test', 'dev', 'demo', 'lab',
+  // OS-installer defaults every fresh install shares.
+  'ubuntu', 'debian', 'raspberrypi', 'kali', 'centos', 'fedora', 'rocky',
+  'almalinux', 'rhel', 'linux', 'windows', 'localhost',
+  // DNS suffixes that say nothing about the site.
+  'local', 'localdomain', 'lan', 'internal', 'intranet', 'corp', 'domain',
+  'workgroup',
+]);
+
+/**
+ * A hostname built only from generic words, single-letter markers
+ * (`server-a`) and at most MAX_SEQUENCE_DIGITS digits in total: `server`,
+ * `DC01`, `file-server`, `office-pc-01`, `server.local`. One distinctive label
+ * anywhere keeps the name (`server.contoso.local`, `acmeit-desktop-07`,
+ * `DESKTOP-AB12CD3`), so the per-install and per-site names this detector
+ * exists for still match. Non-Latin labels are never in the word list, so
+ * they count as distinctive.
+ *
+ * A word list rather than a length rule: "no digits and under N characters"
+ * would also drop short site-chosen names (`kingstn`) that do identify a box.
+ *
+ * Not covered: cloud-provider defaults built from addresses or size/region
+ * slugs (`ip-172-31-5-9`, `ubuntu-s-1vcpu-1gb-nyc1-01`). They carry more
+ * digits than a sequence number and stay in the corpus.
+ *
+ * Pure; exported for tests. Case-insensitive.
+ */
+export function isGenericHostname(h: string): boolean {
+  const lower = h.trim().toLowerCase();
+  if (lower.replace(NON_ALNUM_RE, '').length < MIN_IDENTIFYING_LENGTH) return true;
+
+  let digits = 0;
+  for (const token of lower.split(NON_ALNUM_RE)) {
+    if (token.length === 0) continue;
+    if (/^[a-z]$/.test(token)) continue; // single-letter marker: server-a
+    const [, stem = '', suffix = ''] = /^(.*?)(\d*)$/.exec(token) ?? [];
+    if (stem.length > 0 && !GENERIC_HOSTNAME_WORDS.has(stem)) return false;
+    digits += suffix.length;
+  }
+  return digits <= MAX_SEQUENCE_DIGITS;
+}
+
+/**
+ * Hostnames that must never enter the corpus as a `hostname` fingerprint, and
+ * that the scorer ignores if an older corpus row already holds one:
+ * empty/blank, `localhost`, a degenerate short `WIN-` name, and a generic
+ * role name (isGenericHostname).
+ *
+ * Windows Setup's real default is `WIN-<10 random chars>` (14 characters
+ * total), which is AT the threshold and therefore NOT denied — a genuine
  * unrenamed-installer default still enters the corpus and can still fire a
  * match, which is intentional (see the module header: this is exactly the
- * unrenamed-default-box signature the detector exists to catch). This deny
- * only catches shorter, hand-typed or truncated `WIN-` stand-ins that carry
- * no real per-install entropy and would otherwise pollute cross-partner
+ * unrenamed-default-box signature the detector exists to catch). The `WIN-`
+ * deny only catches shorter, hand-typed or truncated stand-ins that carry no
+ * real per-install entropy and would otherwise pollute cross-partner
  * correlation with coincidental collisions.
  *
- * Pure; exported for tests. Expects an already-lowercased/trimmed value —
- * callers normalize before checking (and before storing) so the deny-list
- * and the stored value agree on casing.
+ * Pure; exported for tests. Case-insensitive.
  */
 export function isDeniedHostname(h: string): boolean {
   const trimmed = h.trim();
@@ -79,7 +163,7 @@ export function isDeniedHostname(h: string): boolean {
   const lower = trimmed.toLowerCase();
   if (lower === 'localhost') return true;
   if (lower.startsWith('win-') && lower.length < WIN_PREFIX_DENY_MAX_LENGTH) return true;
-  return false;
+  return isGenericHostname(lower);
 }
 
 interface FingerprintRow {
@@ -323,6 +407,11 @@ type RecidivistAxis = 'fingerprint' | 'hostname_ip' | 'hostname';
 export function computeRecidivistSignals(matches: RecidivistMatch[], cfg: SignalConfig): ComputedSignal[] {
   const byPartner = new Map<string, RecidivistMatch[]>();
   for (const m of matches) {
+    // The sync only upserts, so corpus rows written before a name joined the
+    // deny rule are still there. Skip them here too, or one stale `server` row
+    // keeps its signal open and re-corroborating (#11843). The partner is
+    // still in scannedPartnerIds, so its open signal stale-resolves.
+    if (m.kind === 'hostname' && isDeniedHostname(m.value)) continue;
     const list = byPartner.get(m.partnerId);
     if (list) list.push(m);
     else byPartner.set(m.partnerId, [m]);

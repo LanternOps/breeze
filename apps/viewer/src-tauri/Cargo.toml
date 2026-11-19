@@ -22,9 +22,18 @@ tauri-plugin-process = "2"
 tauri-plugin-store = "2"
 tokio = { version = "1", features = ["time"] }
 url = "2"
+# #12129: the session window sends End natively on close (src/session_end.rs).
+# Same reqwest + rustls/ring stack tauri-plugin-updater already builds.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [target."cfg(any(target_os = \"macos\", windows, target_os = \"linux\"))".dependencies]
-tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+# No `deep-link` feature (#11753): with it, the plugin forwards a second
+# launch's argv to tauri-plugin-deep-link (-> on_open_url) on Windows/Linux AND
+# runs our callback, so one breeze:// link opened two windows. Our callback in
+# lib.rs is the one path for a running instance; the deep-link plugin still
+# reads a cold start's argv on its own (get_current in setup()).
+tauri-plugin-single-instance = "2"
 
 # Only for the `enable-webrtc` / `enable-media-stream` settings wry leaves off
 # (src/linux_webrtc.rs). Same crate and feature level wry already builds.

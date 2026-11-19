@@ -1,4 +1,5 @@
 import { AI_AGENT_RUN_STATUSES, utf8MaxBytes } from '@breeze/shared';
+import { EXPORT_DATASETS } from './aiToolsExportDatasetNames';
 /**
  * AI Tool Input Schemas
  *
@@ -512,7 +513,7 @@ const ls = launchSpecialistInputSchema.shape;
 // Capped at 160 chars by aiTools.descriptionBudget.contract.test.ts.
 export function launchSpecialistKindDescribe(workspaceEnabled: boolean): string {
   return workspaceEnabled
-    ? 'After one card: assessment {scope?: org|orgs_with_open_alerts}, device_troubleshooting, analysis, sweep if scheduled. Rest ask first'
+    ? 'After one card: assessment {scope?: org|orgs_with_open_alerts}, device_troubleshooting, analysis (org: whole customer), sweep if scheduled. Rest ask first'
     : 'After one card: assessment {scope?: org|orgs_with_open_alerts}, device_troubleshooting, sweep if scheduled. analysis is off here. Rest ask first';
 }
 export function launchSpecialistShapeFor(workspaceEnabled: boolean) {
@@ -524,9 +525,17 @@ export function launchSpecialistShapeFor(workspaceEnabled: boolean) {
     // invalid_params. The kinds whose keys do not fit here (device_troubleshooting,
     // assessment, bulk_ticket_reply, operator_recipe) are listed in the tool
     // description (aiToolsWisp.ts launchSpecialistDescription): a parameter
-    // description is capped at 160 chars (A-W03).
+    // description is capped at 160 chars (A-W03); with W06's analysis keys
+    // there is no room for a "rest: see tool" pointer, and `patch_plan {}`
+    // stays because it tells the model that kind takes no keys.
+    //
+    // Wisp analysis sessions W06: this text carries the analysis KEYS only.
+    // How to continue, when to start fresh and that a chain is bounded do not
+    // fit any of the capped texts, so they arrive in the message an admitted
+    // analysis launch returns (`analysisLaunchMessage`), at the moment the
+    // model holds the run id it would continue from.
     params: ls.params.describe(
-      'Only these keys per kind: sweep {sweepKinds?}; analysis {goal, deviceIds?, siteId?}; patch_plan {}; remediation_research {deviceId, alertId?}; rest: see tool',
+      'analysis {goal, scope: org|site|devices, siteId|deviceIds, continueFromRunId?}; sweep {sweepKinds?}; patch_plan {}; remediation_research {deviceId, alertId?}',
     ),
     reason: ls.reason.describe('Why, in one sentence a technician would accept'),
   };
@@ -622,6 +631,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_vulnerability_report: z.object({
     status: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.enum(['open', 'patched', 'mitigated', 'accepted', 'all'])).optional(),
     severity: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.enum(['low', 'medium', 'high', 'critical'])).optional(),
+    ...pageZodShape(20, 100),
   }),
 
   get_device_vulnerabilities: z.object({
@@ -957,6 +967,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     orgId: uuid,
     category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']).optional(),
     includeSuperseded: z.boolean().optional(),
+    includeDetails: z.boolean().optional(),
+    ...pageZodShape(15, 100),
   }),
 
   manage_org_documents: z.object({
@@ -1228,7 +1240,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   // Deliverable template sets W05 (#5573 spec 4.6/10).
-  list_deliverable_templates: z.object({ orgId: uuid.optional() }),
+  list_deliverable_templates: z.object({ orgId: uuid.optional(), includeDetails: z.boolean().optional(), ...pageZodShape(4, 50) }),
 
   manage_deliverables: z.object({
     action: z.enum(['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence', 'apply_template']),
@@ -1763,6 +1775,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   get_user_risk_detail: z.object({
     userId: uuid,
     orgId: uuid.optional(),
+    limit: z.number().int().min(1).max(100).optional().describe('Max recent events (default 10, max 100)'),
+    includeDetails: z.boolean().optional(),
   }),
 
   assign_security_training: z.object({
@@ -2202,7 +2216,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   export_dataset: z.object({
-    dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
+    dataset: z.enum(EXPORT_DATASETS),
     format: z.enum(['jsonl', 'csv']).optional(),
     filters: z.record(z.string(), z.unknown()).optional(),
     deviceIds: z.array(uuid).max(200).optional(),
@@ -2523,6 +2537,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   search_documentation: z.object({
     query: z.string().min(1).max(500),
     section: z.enum(['getting-started', 'deploy', 'agents', 'security', 'features', 'monitoring', 'reference']).optional(),
+    limit: z.number().int().min(1).max(5).optional().describe('Max pages (default 5, max 5)'),
   }),
 
   query_webhooks: z.object({
@@ -2571,6 +2586,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   query_custom_fields: z.object({
     action: z.enum(['list_definitions', 'get_device_values']),
     deviceId: uuid.optional(),
+    ...pageZodShape(15, 100),
   }).refine(
     (d) => d.action !== 'get_device_values' || !!d.deviceId,
     { message: 'deviceId is required for get_device_values' },

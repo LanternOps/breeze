@@ -68,7 +68,9 @@
       "check": "Verificação",
       "lastChecked": "Última verificação",
       "noComplianceResultsYetAssignThisPolicy": "Ainda não há resultados de conformidade. Atribua esta política a dispositivos e adicione regras de conformidade; o status aparecerá após a próxima avaliação.",
-      "summary": "Mostrando os primeiros {{shown}} de {{total}} resultados — o resumo abaixo reflete apenas esta página."
+      "summary": "Mostrando os primeiros {{shown}} de {{total}} resultados — o resumo abaixo reflete apenas esta página.",
+      "notCollectedProbeLimit": "Não coletado (limite de sondagens)",
+      "notCollectedProbeLimitHint": "A lista de sondagens de conformidade desta organização está cheia, então pelo menos uma verificação aqui não é coletada. Ela não é avaliada, alertada nem corrigida até que a lista tenha espaço."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Selecione uma organização para esta política.",
@@ -796,8 +798,10 @@
         "notifyOnEnd": "Notificar no término",
         "sendNotificationWhenWindowCloses": "Enviar uma notificação quando a janela for encerrada.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Janelas semanais abrem todo domingo no horário de início, no fuso horário selecionado.",
-        "monthlyOpensOnTheFirst": "Janelas mensais abrem no dia 1º de cada mês no horário de início, no fuso horário selecionado."
+        "dayOfWeek": "Dia da semana",
+        "dayOfWeekHint": "O dia em que cada janela semanal abre, no fuso horário selecionado.",
+        "dayOfMonth": "Dia do mês",
+        "dayOfMonthHint": "O dia em que cada janela mensal abre, no fuso horário selecionado. Em um mês sem esse dia, a janela abre no último dia do mês."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Coleta do agente",
@@ -1198,9 +1202,95 @@
         "aboutTitle": "Sobre a Restauração do Sistema",
         "aboutBody": "Aplica-se apenas a dispositivos Windows. A Restauração do Sistema abrange arquivos do sistema, o registro, programas instalados e configurações. Não é um backup e não abrange arquivos pessoais. Por padrão, o Windows limita a criação de pontos de restauração a um a cada 24 horas, e um ponto criado pode ser removido depois pelo Windows ou se tornar inutilizável."
       },
+      "wakeOnLanTab": {
+        "title": "Wake-on-LAN",
+        "description": "Escolha quando o botão Ativar aparece para um dispositivo offline.",
+        "platformDefaultNote": "Nenhuma política atribuída. Padrão da plataforma: o botão Ativar aparece em todo dispositivo offline.",
+        "modeTitle": "Quando o botão Ativar aparece",
+        "mode": {
+          "always": "Sempre",
+          "alwaysHelp": "Mostrar Ativar em todo dispositivo offline. Dispositivos que estouram o tempo repetidamente são sinalizados abaixo, mas nunca ocultados.",
+          "verified": "Somente quando verificado como pronto",
+          "verifiedHelp": "Mostrar Ativar apenas para dispositivos que informam estar prontos ou comprovados por uma ativação anterior que ficou online. Os demais podem receber uma ativação de teste."
+        },
+        "verifiedWarning": "Neste modo, Ativar fica oculto em um dispositivo até que uma ativação seja comprovada nele (uma ativação anterior que ficou online) ou o dispositivo informe estar pronto. No início, o botão ficará oculto na maioria dos dispositivos.",
+        "aboutTitle": "Sobre esta configuração",
+        "aboutBody": "Esta política apenas decide quando o botão Ativar aparece. O Breeze lê a prontidão de Wake-on-LAN de cada dispositivo, mas não altera BIOS, adaptador de rede nem configurações do Windows.",
+        "panel": {
+          "title": "Status dos dispositivos",
+          "description": "Prontidão dos dispositivos regidos por esta política.",
+          "advisory": "Notebooks só ativam ligados na tomada, e o suporte a Modern Standby varia conforme o modelo, então um notebook que informa estar pronto ainda pode não ficar online.",
+          "cappedNote": "Mostrando os primeiros {{scanned}} dispositivos alcançados por esta política. As contagens cobrem apenas esses dispositivos.",
+          "chipAll": "Todos ({{count}})",
+          "loading": "Carregando o status dos dispositivos...",
+          "loadFailed": "Não foi possível carregar o status dos dispositivos.",
+          "empty": "Nenhum dispositivo desta política corresponde.",
+          "noAttempts": "Nenhuma tentativa de ativação",
+          "flagged": "Sinalizado: {{count}} tempos esgotados seguidos",
+          "testWake": "Enviar ativação de teste",
+          "allowAgain": "Permitir ativar novamente",
+          "testWakeSent": "Ativação de teste enviada para {{host}}.",
+          "allowedAgain": "{{host}} pode ser ativado novamente.",
+          "actionFailed": "A ação falhou. Tente novamente.",
+          "previous": "Anterior",
+          "next": "Próxima",
+          "pageOf": "Página {{page}} de {{pages}}",
+          "columns": {
+            "device": "Dispositivo",
+            "state": "Estado",
+            "reasons": "Motivos",
+            "hardware": "Hardware",
+            "lastAttempt": "Última tentativa",
+            "actions": "Ações"
+          },
+          "states": {
+            "ready": "Pronto",
+            "needs_reboot": "Requer reinicialização",
+            "not_configured": "Não configurado",
+            "apply_failed": "Falha ao aplicar",
+            "firmware_protected": "Protegido pelo firmware",
+            "unproven": "Não comprovado",
+            "no_wired_adapter": "Sem adaptador com fio",
+            "unsupported_vm": "Máquina virtual",
+            "unsupported_os": "SO não compatível",
+            "agent_update_required": "Atualização do agente necessária",
+            "no_data": "Ainda sem dados"
+          },
+          "reasons": {
+            "virtual_machine": "Máquina virtual",
+            "no_wired_adapter": "Sem adaptador de rede com fio",
+            "fast_startup_enabled": "Inicialização rápida ativada",
+            "fast_startup_unknown": "Estado da Inicialização rápida desconhecido",
+            "nic_magic_packet_disabled": "Ativação por magic packet do adaptador desativada",
+            "nic_magic_packet_unknown": "Estado da ativação por magic packet desconhecido",
+            "nic_unreadable": "Há um adaptador com fio, mas não foi possível lê-lo",
+            "nic_cmdlets_unavailable": "As configurações do adaptador de rede não podem ser lidas neste dispositivo",
+            "nic_eee_enabled": "Energy-Efficient Ethernet ativado",
+            "firmware_adapter_unavailable": "As configurações do firmware ainda não podem ser lidas"
+          },
+          "attempts": {
+            "pending": "Pendente",
+            "sent": "Enviado",
+            "send_failed": "Falha no envio",
+            "came_online": "Ficou online",
+            "timed_out": "Tempo esgotado",
+            "unknown": "Desconhecido",
+            "refused": "Recusado"
+          }
+        }
+      },
       "containmentTab": {
         "title": "Contenção",
         "description": "Destinos adicionais que um dispositivo isolado ainda pode acessar. O plano de controle do Breeze é sempre permitido.",
+        "deadManLabel": "Liberação dead-man",
+        "deadManOff": "Desativada",
+        "deadMan15": "15 minutos",
+        "deadMan30": "30 minutos",
+        "deadMan60": "1 hora",
+        "deadMan240": "4 horas",
+        "deadMan1440": "24 horas",
+        "deadManCustom": "{{minutes}} minutos",
+        "deadManHelp": "Quando definida, um dispositivo isolado que não consegue alcançar o Breeze por esse tempo se libera sozinho e informa uma autoliberação, que precisa ser reconhecida antes de o dispositivo poder ser isolado novamente. Use apenas quando a disponibilidade importar mais do que a contenção: qualquer coisa que isole o dispositivo do Breeze por esse tempo, incluindo uma indisponibilidade do lado do Breeze, o libera, e todos os dispositivos isolados que perdem o contato ao mesmo tempo são liberados juntos. Aplica-se apenas a agentes que a suportam; os demais isolam sem ela.",
         "empty": "Nenhum destino adicional. Um dispositivo isolado acessa apenas o plano de controle do Breeze.",
         "addRow": "Adicionar destino",
         "removeRow": "Remover destino {{index}}",
@@ -1438,6 +1528,8 @@
       "searchPlaceholder": "Pesquisar por nome ou ID de pacote",
       "searchFailed": "Falha na pesquisa de pacotes — tente novamente ou informe um ID de pacote manualmente.",
       "searchDegraded": "A pesquisa de pacotes está indisponível no momento — informe um ID de pacote manualmente abaixo.",
+      "indexLastUpdated": "Índice atualizado pela última vez {{when}}",
+      "indexStale": "— o índice do winget está desatualizado, então pacotes mais novos podem estar ausentes.",
       "noPackagesMatched": "Nenhum pacote encontrado",
       "breezeTested": "Testado pelo Breeze v{{version}}",
       "selectedPackages": "Pacotes selecionados",
@@ -1879,6 +1971,7 @@
       "loadingSoftwareCatalog": "Carregando catálogo de software...",
       "softwareLibrary": "Biblioteca de software",
       "browseAndDeployApprovedSoftwarePackages": "Navegue e implante pacotes de software aprovados.",
+      "libraryScopeNote": "Esta biblioteca lista pacotes que você pode implantar nos dispositivos sob demanda. Ela não é uma lista do software que o Breeze mantém atualizado. As atualizações dos aplicativos instalados vêm das fontes de patches de uma política de configuração, de um anel de atualização e do que winget, Chocolatey ou Homebrew informam em cada dispositivo.",
       "addPackage": "Adicionar pacote",
       "bulkDeploy": "Implantação em massa",
       "dismiss": "Dispensar",
@@ -1915,6 +2008,11 @@
       "summaryCompleted7d": "Concluídas (7 dias)",
       "summaryFailed7d": "Com falha (7 dias)",
       "categoryFilterLabel": "Categoria",
+      "sourceFilterLabel": "Origem",
+      "allSources": "Todas as origens",
+      "sourceWinget": "winget",
+      "sourceBrew": "Homebrew",
+      "sourceInstaller": "Arquivo instalador / URL",
       "requiredVariables": "Variáveis obrigatórias",
       "uninstallCommand": "Comando de desinstalação",
       "managedByBreezeHint": "Gerenciado pelo Breeze. Este pacote não pode ser editado nem excluído, e novas versões não podem ser adicionadas aqui."

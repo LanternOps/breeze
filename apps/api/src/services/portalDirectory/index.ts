@@ -17,7 +17,11 @@ export {
 } from './runStore';
 export {
   PortalDirectoryIdentityError,
+  disableIdentityInTransaction,
   disablePortalIdentity,
+  liftScimBlockerInTransaction,
+  liftScimIdentityBlocker,
+  purgeIdentitySessions,
   removeDisabledPortalIdentity,
   restorePortalIdentity,
   type PortalDirectoryIdentityErrorCode,

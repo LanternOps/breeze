@@ -217,6 +217,12 @@ func (h *Heartbeat) forgetDesktopOwner(desktopSessionID string) {
 	if desktopSessionID == "" {
 		return
 	}
+	// A session hosted by a Linux desktop helper is no longer live on it.
+	// The mark is released and the owner removed under one lock, so a
+	// completed start re-asserting its mark sees either both or neither.
+	h.linuxHostedMu.Lock()
+	defer h.linuxHostedMu.Unlock()
+	h.releaseLinuxHostedLocked(desktopSessionID)
 	h.sweepEndedDesktopOwners()
 	owner, ok := h.desktopOwners.Load(desktopSessionID)
 	if !ok {
@@ -248,6 +254,13 @@ func (h *Heartbeat) desktopOwnerSession(desktopSessionID string) *sessionbroker.
 // On macOS, it pre-checks TCC Screen Recording permission and returns a clear error
 // if the required permissions haven't been configured yet.
 func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []desktop.ICEServerConfig, displayIndex int, policy desktop.SessionPolicy, payload map[string]any) tools.CommandResult {
+	return h.startDesktopViaHelperFor(sessionID, offer, iceServers, displayIndex, policy, payload, "")
+}
+
+// startDesktopViaHelperFor is startDesktopViaHelper with the Linux routing
+// decision: a non-empty linuxLogindSession sends the start to that logind
+// session's Linux desktop helper (#12117) instead of a payload-targeted one.
+func (h *Heartbeat) startDesktopViaHelperFor(sessionID, offer string, iceServers []desktop.ICEServerConfig, displayIndex int, policy desktop.SessionPolicy, payload map[string]any, linuxLogindSession string) tools.CommandResult {
 	// Log TCC status for diagnostics but don't gate — the cached status may be
 	// stale (e.g. permission just granted). Let the capturer attempt and fail
 	// with the real error instead of blocking on a potentially outdated check.
@@ -318,6 +331,9 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 			log.Warn("refusing a desktop start overtaken before it reached the helper",
 				"sessionId", sessionID, "generation", req.StartGeneration, "reason", string(reason))
 			return tools.NewErrorResult(streamStartOvertakenError(reason), 0)
+		}
+		if linuxLogindSession != "" {
+			return h.startDesktopViaLinuxHelper(sessionID, linuxLogindSession, req)
 		}
 		// On-demand (RDS) hosts bypass find-or-spawn entirely: handleStartDesktop
 		// already leased the target session's helper, so the only thing left is to
@@ -556,6 +572,12 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 }
 
 func (h *Heartbeat) findActiveHelperWithPreference(targetSession string, preferActiveRDPOverSignInConsole bool, allowDisconnected ...bool) *sessionbroker.Session {
+	// On Linux a target is a logind session id, and only the desktop helper
+	// root bound to that session may serve it (#12117). Untargeted Linux
+	// lookups keep the generic selection below.
+	if linuxDesktopRouteHostOS == "linux" && targetSession != "" {
+		return linuxCapableBoundHelper(h.linuxDesktopController(), targetSession)
+	}
 	session := h.sessionBroker.FindCapableSession("capture", targetSession)
 	if runtime.GOOS == "darwin" {
 		if preferred := h.sessionBroker.PreferredDesktopSession(); preferred != nil {
@@ -700,6 +722,13 @@ func winSessionStillExists(targetSession string) bool {
 
 // findOrSpawnHelper locates a capable helper session, spawning one if needed.
 func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Session {
+	if linuxDesktopRouteHostOS == "linux" && targetSession != "" {
+		session, err := h.findOrSpawnLinuxHelper(targetSession)
+		if err != nil {
+			log.Warn("no Linux desktop helper for the logind session", "logindSession", targetSession, "error", err.Error())
+		}
+		return session
+	}
 	session := h.findActiveHelper(targetSession)
 
 	// Log when an existing helper is in a disconnected Windows session.
@@ -808,6 +837,13 @@ func ensureDarwinHelperPrereqs() {
 // spawnHelperForDesktop spawns a user helper in the target session.
 // If targetSession is empty, it auto-detects the first active non-services session.
 func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
+	if linuxDesktopRouteHostOS == "linux" {
+		// A targeted spawn is a request for the desktop helper of that
+		// logind session (#12117), which the manager starts with systemd-run
+		// after re-checking logind itself. Every other case — the flag off,
+		// no manager, an untargeted spawn — returns the terminal sentinel.
+		return h.spawnLinuxDesktopHelper(targetSession)
+	}
 	if runtime.GOOS == "darwin" {
 		// Ensure the LaunchAgent plists exist on disk and the console users are
 		// in the breeze group before any kickstart/bootstrap.
@@ -856,10 +892,9 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 	}
 
 	if runtime.GOOS != "windows" {
-		// Linux (and any other non-darwin GOOS): no desktop-helper binary is
-		// shipped yet. Phase 2 replaces this with a loginctl-based per-session
-		// spawn. Return a terminal sentinel so findOrSpawnHelper does not waste
-		// 10s polling for a helper that can never connect.
+		// Any other non-darwin GOOS: no desktop-helper binary. Return a
+		// terminal sentinel so findOrSpawnHelper does not waste 10s polling
+		// for a helper that can never connect. (Linux is handled above.)
 		return ErrLinuxDesktopHelperUnsupported
 	}
 

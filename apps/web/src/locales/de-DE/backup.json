@@ -1092,6 +1092,7 @@
     "status": {
       "no_backups": "Keine Sicherungen",
       "completed": "Abgeschlossen",
+      "overdue": "Keine aktuelle Sicherung",
       "completed_with_errors": "Mit Fehlern abgeschlossen",
       "in_progress": "In Bearbeitung",
       "unsuccessful": "Nicht erfolgreich",
@@ -1163,6 +1164,7 @@
       "other": "Sonstige"
     },
     "noObservation": "Keine Beobachtung",
+    "overdueLast": "Zuletzt: {{date}}",
     "openDevice": "Gerät öffnen",
     "empty": "Kein Gerät passt zu diesen Filtern.",
     "loadMore": "Mehr laden",

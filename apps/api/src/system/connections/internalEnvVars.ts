@@ -118,6 +118,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BACKUP_LOCAL_ROOT: 'filesystem path (operator root for API-side local backup storage)',
   BACKUP_PUBLISH_MARGIN_MS: 'timing knob',
   BACKUP_RESTORE_PIN_LINGER_MS: 'timing knob',
+  BACKUP_SNAPSHOT_CLEANUP_CRON: 'job schedule override',
+  BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS: 'worker run budget knob',
   // BINARY_*
   BINARY_CHECKSUM_MANIFEST: 'binary checksum manifest override',
   BINARY_VERSION_FILE: 'build metadata path',

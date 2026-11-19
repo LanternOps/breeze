@@ -658,9 +658,12 @@ describe('B-W06 tools/call returns a task to a declaring modern client', () => {
     expect(body.result.structuredContent.status).toBe('completed');
   });
 
-  it('an ineligible (Tier 4) call never returns a task: MCP_APPROVAL_REQUIRED', async () => {
+  // #11989: a base-Tier-4 tool is refused by checkGuardrails itself, before
+  // the approval gate (it used to reach that gate as MCP_APPROVAL_REQUIRED).
+  it('an ineligible (Tier 4) call never returns a task: refused by the guardrail', async () => {
     const { body } = await modernCall('tier4_tool', {}, { caps: TASK_CAPS });
-    expect(JSON.stringify(body)).toContain('MCP_APPROVAL_REQUIRED');
+    expect(body.result?.isError).toBe(true);
+    expect(JSON.stringify(body)).toContain('is registered at Tier 4 and is not available');
     expect(body.result?.resultType).not.toBe('task');
     expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
   });

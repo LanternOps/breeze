@@ -525,7 +525,8 @@
         "unverified": "Not verified",
         "failed": "Verification failed",
         "failedWithSummary": "Verification failed: {{summary}}",
-        "stale": "Re-verify: endpoint changed"
+        "stale": "Re-verify: endpoint changed",
+        "invalid": "Verification record unreadable: verify again"
       },
       "setPriceToEnable": "Set a price to enable",
       "manual": {
@@ -595,7 +596,7 @@
       "verify": "Verify",
       "verifyQueued": "Model check queued",
       "verifyFailed": "Couldn't queue the model check.",
-      "verifyGatewayHint": "Runs a short tool-calling test against your endpoint (uses a few thousand tokens).",
+      "verifyGatewayHint": "Runs a tool-calling test against your endpoint. See the cost note above.",
       "remove": "Remove model",
       "removeTitle": "Remove this model?",
       "removeMessage": "“{{model}}” will be deleted from this connection. Past usage and cost history is kept. You can add it again later.",
@@ -1010,6 +1011,7 @@
     "noLogo": "No logo",
     "uploadImage": "Upload image",
     "imageHelp": "PNG, JPEG, or WebP, up to 400 KB after encoding; large images are scaled down to 800 px.",
+    "logoLowRes": "This logo is {{width}} × {{height}} px. Reports, quotes and invoices print it up to about 2.5 in (64 mm) wide, so it will look soft in print. Upload a version at least 600 px on its long side.",
     "invalidSavedLogo": "Saved logo data is invalid. Remove it or upload a new one.",
     "pasteUrl": "Or paste an image URL",
     "customCss": "Custom CSS",
@@ -3348,7 +3350,8 @@
           "turnCount": "Turns",
           "summary": "Summary",
           "computeCost": "Compute",
-          "computeEstimated": "(estimated)"
+          "computeEstimated": "(estimated)",
+          "scope": "Scope"
         },
         "flags": {
           "budgetExceeded": "Budget exceeded",
@@ -3434,6 +3437,24 @@
           "partialNote": "Partial accounting while unattended policy authorization is disabled — this may understate actual exposure.",
           "unavailable": "No active agent policy for this run's organization.",
           "loading": "Loading budget…"
+        },
+        "scope": {
+          "org_one": "Whole organization ({{count}} device as of launch)",
+          "org_other": "Whole organization ({{count}} devices as of launch)",
+          "site_one": "Site {{name}} ({{count}} device as of launch)",
+          "site_other": "Site {{name}} ({{count}} devices as of launch)",
+          "siteUnnamed_one": "One site ({{count}} device as of launch)",
+          "siteUnnamed_other": "One site ({{count}} devices as of launch)",
+          "devices_one": "{{count}} selected device",
+          "devices_other": "{{count}} selected devices"
+        },
+        "chain": {
+          "title": "This investigation",
+          "description": "Each step continued from an earlier one and could use the files earlier steps produced.",
+          "step": "Step {{step}}",
+          "current": "This run",
+          "open": "Open run",
+          "noGoal": "No goal recorded"
         }
       },
       "triage": {
@@ -5229,7 +5250,7 @@
     "deviceRevoked": "Device revoked",
     "deviceRenamed": "Device renamed",
     "approvalSecurity": "Approval security",
-    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "These devices can confirm high-risk approvals (privileged access, AI actions) with a biometric. Your phone registers itself automatically when you sign in to the Breeze mobile app; you can also register this browser with Windows Hello or Touch ID. All of this is optional — approvals still work without it.",
+    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "These devices can confirm high-risk approvals (privileged access, AI actions) with a biometric. Your phone registers itself automatically when you sign in to the Breeze mobile app; you can also register this browser with Windows Hello or Touch ID. Approving a high-risk or critical request needs one of these devices unless your partner's approval policy turns that off. Other approvals work without one.",
     "loadingApproverDevices": "Loading approver devices…",
     "tryAgain": "Try again",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "No approver devices registered yet. Sign in to the Breeze mobile app on your phone and it appears here automatically, or register this browser below to approve with a biometric.",
@@ -5266,14 +5287,19 @@
     "useYourPasskeyOrAuthenticatorCodeInstead": "Use your passkey or authenticator code instead — reload the page to update your options.",
     "pendingActivatesOnFirstApproval": "Pending — activates on first approval",
     "sessionExpiredReloadAndTryAgain": "Session expired — reload the page and try again.",
-    "registrationCancelled": "Registration was cancelled."
+    "registrationCancelled": "Registration was cancelled.",
+    "ssoVerificationExpired": "Your identity provider verification has expired or was already used. Verify again to register this device.",
+    "signInOptionsChanged": "Your sign-in options changed. Reload the page and try again."
   },
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "You'll confirm with your passkey (Touch ID / Windows Hello) when you register.",
     "authenticatorCode": "Authenticator code",
     "confirmYourPassword": "Confirm your password",
     "switchToAuthenticatorCode": "Use authenticator app instead",
-    "usePasskeyInstead": "Use your passkey instead"
+    "usePasskeyInstead": "Use your passkey instead",
+    "ssoVerifyFirst": "This account signs in through your identity provider and has no password. Verify with your provider first, then register this device.",
+    "ssoVerifyButton": "Verify with your identity provider",
+    "ssoVerified": "Identity verified. Register this device within 5 minutes."
   },
   "cannedResponsesCard": {
     "cannedResponses": "Canned responses",
@@ -8289,6 +8315,10 @@
     "heading": "Plan & features",
     "description": "What your plan includes. Locked features stay visible so you can see what an upgrade adds.",
     "currentPlan": "Current plan",
+    "changePlan": "Change plan",
+    "enrollmentPaused": "New device enrollment is paused: {{active}} of {{limit}} devices.",
+    "enrollmentPausedNoCounts": "New device enrollment is paused because your account has reached its device limit.",
+    "enrollmentPausedChangePlan": "Change your plan to add more.",
     "plans": {
       "free": "Free",
       "starter": "Starter",
@@ -8937,6 +8967,47 @@
       "stale": "This batch changed since you opened it. Review the refreshed list and try again.",
       "notHeld": "This batch is no longer waiting for a decision.",
       "enforcementOff": "Deprovisioning is in report-only mode on this server, so there is nothing to apply."
+    }
+  },
+  "portalScim": {
+    "title": "Microsoft Entra provisioning (SCIM)",
+    "description": "Let the customer's Entra tenant create portal accounts for the people assigned to the Breeze Portal app, and disable them when they leave.",
+    "loading": "Loading provisioning…",
+    "retry": "Try again",
+    "refreshFailed": "Couldn't refresh. What you see may be out of date.",
+    "needsTenant": "Prove this organization's Microsoft tenant above before you set up provisioning.",
+    "tenantUrl": "Tenant URL",
+    "noBaseUrl": "The API's public address is not configured, so the Tenant URL can't be shown. Ask your administrator to set PUBLIC_API_URL.",
+    "counts": "{{provisioned}} provisioned · {{deactivated}} deactivated by the directory",
+    "secretOnce": "Copy this token now and paste it into the Entra app's Secret Token field. It won't be shown again.",
+    "secretToken": "Secret token",
+    "secretDone": "I've copied it",
+    "lastUsed": "Last used {{date}}",
+    "neverUsed": "Not used yet",
+    "notWorking": "Not working: this organization's proven tenant has changed",
+    "revoke": "Revoke",
+    "label": "Token name",
+    "create": "Create provisioning token",
+    "createSubmit": "Create",
+    "cancel": "Cancel",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Couldn't copy to the clipboard.",
+    "revokeConfirm": {
+      "title": "Revoke this provisioning token?",
+      "message": "Entra stops provisioning with \"{{label}}\" immediately. People already provisioned keep their accounts."
+    },
+    "toasts": {
+      "created": "Provisioning token created.",
+      "revoked": "Provisioning token revoked."
+    },
+    "errors": {
+      "load": "Couldn't load provisioning.",
+      "create": "Couldn't create the provisioning token.",
+      "revoke": "Couldn't revoke the provisioning token.",
+      "tenantNotProven": "Prove this organization's Microsoft tenant before you create a provisioning token.",
+      "limit": "This organization already has two active provisioning tokens. Revoke one first.",
+      "notFound": "That provisioning token no longer exists."
     }
   }
 }

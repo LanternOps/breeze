@@ -778,6 +778,17 @@ describe('chat kit units (Wisp companion W01)', () => {
     expect(prose.className).toContain('break-words');
   });
 
+  // #11678 §7: @tailwindcss/typography adds open/close quotes to
+  // `blockquote p`, so a drafted customer message that carries its own quotes
+  // rendered ““…””. jsdom computes no ::before/::after content, so this pins
+  // the overrides that turn the plugin's quotes off.
+  it('assistant blockquotes get no added quotation marks (#11678)', () => {
+    const { getByTestId } = view([u('u1'), a('a1', '> "We have started on your printer."')]);
+    const prose = getByTestId('ai-msg-assistant').querySelector('.prose') as HTMLElement;
+    expect(prose.className).toContain('[&_blockquote_p:first-of-type]:before:content-none');
+    expect(prose.className).toContain('[&_blockquote_p:last-of-type]:after:content-none');
+  });
+
   it('layout=panel has no max-w-3xl wrapper and no dividers', () => {
     // Dividers are opt-in per surface (showTimeDividers); the docked panel never
     // opts in (AiChatSidebar.wispHome.test pins that it passes no flag).
@@ -792,6 +803,16 @@ describe('chat kit units (Wisp companion W01)', () => {
     const { getByTestId, queryByText } = view([], { emptyState: <div data-testid="custom-empty">hello</div> });
     expect(getByTestId('custom-empty')).toBeTruthy();
     expect(queryByText('Check server health')).toBeNull();
+  });
+
+  it('the panel empty state anchors at the top (no void under the header); the page layout keeps it at the bottom', () => {
+    const panel = view([], { emptyState: <div data-testid="custom-empty">hello</div> });
+    const wrap = panel.getByTestId('custom-empty').parentElement!.parentElement as HTMLElement;
+    expect(wrap.className).toContain('justify-start');
+    expect(wrap.className).not.toContain('justify-end');
+    panel.unmount();
+    const page = view([], { emptyState: <div data-testid="custom-empty">hello</div>, layout: 'page' });
+    expect((page.getByTestId('custom-empty').parentElement!.parentElement as HTMLElement).className).toContain('justify-end');
   });
 
   it('without emptyState the quick actions still render', () => {

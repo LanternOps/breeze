@@ -22,6 +22,14 @@ it.each(['feature_disabled', 'partner_not_enabled', 'unsupported_platform', 'dev
   fireEvent.click(release);
   expect(screen.getByTestId('isolation-dialog')).toBeInTheDocument();
 });
+it.each([[true, 1], [false, 0], [undefined, 0]])('threads startEligibility.deadManUnsupported=%s into the isolate dialog', (flag, shown) => {
+  mocks.data.startEligibility = { allowed: true, reason: null, deadManUnsupported: flag } as never;
+  render(<DeviceActions device={device} compact />);
+  fireEvent.click(screen.getByTestId('device-actions-menu'));
+  fireEvent.click(screen.getByTestId('device-isolation-start'));
+  expect(screen.getByTestId('isolation-dialog')).toBeInTheDocument();
+  expect(screen.queryAllByTestId('isolation-dead-man-unsupported')).toHaveLength(shown);
+});
 it('shows a reason for a blocked start and honors execute permission', () => {
   mocks.data.startEligibility = { allowed: false, reason: 'feature_disabled' };
   const view = render(<DeviceActions device={device} compact />);

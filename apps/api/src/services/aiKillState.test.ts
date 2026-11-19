@@ -3,6 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Wave 5A Task 2 (#3827). Same db-mock shape as ipAllowlist.test.ts: a
 // controllable `limit`/`update`+`returning` pair exposed off the mocked `db`
 // so each test can script exactly one query's result.
+// `ctxState` models an ambient DB context for the #8636 publish-scope tests:
+// while `inContext`, after-exit/after-commit work is queued (flush = COMMIT,
+// discard = ROLLBACK), and runOutsideDbContext runs its callback outside it.
+const ctxState = vi.hoisted(() => ({
+  inContext: false,
+  scope: undefined as 'system' | 'organization' | undefined,
+  exit: [] as Array<() => unknown>,
+  commit: [] as Array<() => unknown>,
+}));
+
 vi.mock('../db', () => {
   const limit = vi.fn();
   const returning = vi.fn();
@@ -18,9 +28,26 @@ vi.mock('../db', () => {
       __returning: returning,
       __leftJoin: leftJoin,
     },
-    getCurrentDbAccessContext: vi.fn(() => undefined),
-    runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => fn()),
+    getCurrentDbAccessContext: vi.fn(() => (ctxState.scope ? { scope: ctxState.scope } : undefined)),
+    runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => {
+      const previous = ctxState.inContext;
+      ctxState.inContext = false;
+      try {
+        return fn();
+      } finally {
+        ctxState.inContext = previous;
+      }
+    }),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    // #8636 — bumpAiKillState invalidates through the cluster invalidator.
+    runAfterDbContextExit: (_label: string, work: () => unknown) => {
+      if (ctxState.inContext) ctxState.exit.push(work);
+      else work();
+    },
+    runAfterDbContextCommit: (_label: string, work: () => unknown) => {
+      if (ctxState.inContext) ctxState.commit.push(work);
+      else work();
+    },
   };
 });
 
@@ -31,6 +58,8 @@ import {
   readAiKillState,
   readAiKillStateRow,
 } from './aiKillState';
+import { ClusterCacheBus, __setClusterCacheBusForTests } from './clusterCacheBus';
+import { getClusterCacheTarget } from './clusterCacheRegistry';
 
 async function getLimitMock() {
   const mod = await import('../db');
@@ -48,6 +77,14 @@ async function getLeftJoinMock() {
 }
 
 beforeEach(async () => {
+  ctxState.inContext = false;
+  ctxState.scope = undefined;
+  ctxState.exit = [];
+  ctxState.commit = [];
+  // Earlier tests pin a return value with mockReturnValue; restore the default.
+  vi.mocked((await import('../db')).getCurrentDbAccessContext).mockImplementation(
+    () => (ctxState.scope ? { scope: ctxState.scope } : undefined) as never,
+  );
   _resetAiKillStateCacheForTest();
   (await getLimitMock()).mockReset();
   (await getReturningMock()).mockReset();
@@ -278,5 +315,130 @@ describe('_resetAiKillStateCacheForTest', () => {
 
     _resetAiKillStateCacheForTest();
     expect(getCachedAiKillStateSnapshot()).toEqual({ killed: false, epoch: 0 });
+  });
+});
+
+describe('cluster cache binding (#8636)', () => {
+  const NAME = 'ai-kill-state';
+  let published: Array<[string, string | null]>;
+
+  beforeEach(() => {
+    published = [];
+    const bus = new ClusterCacheBus({ origin: 'unit', getPublisher: () => null, createSubscriber: () => null });
+    vi.spyOn(bus, 'publish').mockImplementation(async (cache: string, key: string | null) => {
+      published.push([cache, key]);
+      return 'published';
+    });
+    __setClusterCacheBusForTests(bus);
+  });
+  afterEach(() => __setClusterCacheBusForTests(null));
+
+  it('a received drop keeps the sync snapshot but makes the next readAiKillState re-read the row', async () => {
+    const limit = await getLimitMock();
+    limit.mockResolvedValueOnce([{ killed: false, epoch: 0 }]).mockResolvedValueOnce([{ killed: true, epoch: 1 }]);
+    expect(await readAiKillState()).toEqual({ killed: false, epoch: 0 });
+    expect(await readAiKillState()).toEqual({ killed: false, epoch: 0 });
+    expect(limit).toHaveBeenCalledTimes(1);
+
+    getClusterCacheTarget(NAME)!.invalidate();
+
+    // The sync seam keeps answering with the last snapshot until the re-read lands.
+    expect(getCachedAiKillStateSnapshot()).toEqual({ killed: false, epoch: 0 });
+    expect(await readAiKillState()).toEqual({ killed: true, epoch: 1 });
+    expect(limit).toHaveBeenCalledTimes(2);
+    expect(getCachedAiKillStateSnapshot()).toEqual({ killed: true, epoch: 1 });
+  });
+
+  it('bumpAiKillState publishes [name, null]', async () => {
+    const returning = await getReturningMock();
+    returning.mockResolvedValueOnce([{ killed: true, epoch: 2 }]);
+    await bumpAiKillState(true, 'manual stop', 'user-1');
+    expect(published).toEqual([[NAME, null]]);
+  });
+
+  it('a read in flight when a received drop lands answers its caller but does not refresh the TTL', async () => {
+    const limit = await getLimitMock();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    limit
+      .mockImplementationOnce(async () => { await gate; return [{ killed: false, epoch: 0 }]; })
+      .mockResolvedValueOnce([{ killed: true, epoch: 1 }]);
+    const inFlight = readAiKillState();
+
+    getClusterCacheTarget(NAME)!.invalidate();
+    release();
+    expect(await inFlight).toEqual({ killed: false, epoch: 0 });
+
+    // The pre-flip read did not stamp the TTL, so the next call reads again.
+    expect(await readAiKillState()).toEqual({ killed: true, epoch: 1 });
+    expect(limit).toHaveBeenCalledTimes(2);
+  });
+
+  it('a local flip during an in-flight read keeps the flipped snapshot (the stale read does not overwrite it)', async () => {
+    const limit = await getLimitMock();
+    const returning = await getReturningMock();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    limit.mockImplementationOnce(async () => { await gate; return [{ killed: false, epoch: 0 }]; });
+    returning.mockResolvedValueOnce([{ killed: true, epoch: 1 }]);
+
+    const inFlight = readAiKillState();
+    await bumpAiKillState(true, 'stop', 'user-1');
+    release();
+    // The stale read still answers its own caller...
+    expect(await inFlight).toEqual({ killed: false, epoch: 0 });
+    // ...but neither the sync seam nor the cached read regresses to it.
+    expect(getCachedAiKillStateSnapshot()).toEqual({ killed: true, epoch: 1 });
+    expect(await readAiKillState()).toEqual({ killed: true, epoch: 1 });
+    expect(limit).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed read during an invalidation still fails closed in the sync seam', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const limit = await getLimitMock();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    limit.mockImplementationOnce(async () => { await gate; throw new Error('db down'); });
+    const inFlight = readAiKillState();
+    getClusterCacheTarget(NAME)!.invalidate();
+    release();
+    expect(await inFlight).toEqual({ killed: true, epoch: -1 });
+    expect(getCachedAiKillStateSnapshot()).toEqual({ killed: true, epoch: -1 });
+    error.mockRestore();
+  });
+
+  it('a write that joined a system-scoped ambient transaction publishes only on COMMIT, never on rollback', async () => {
+    const returning = await getReturningMock();
+    returning.mockResolvedValue([{ killed: true, epoch: 3 }]);
+    ctxState.scope = 'system';
+    ctxState.inContext = true;
+
+    await bumpAiKillState(true, 'stop', 'user-1');
+    expect(published).toEqual([]);
+    ctxState.inContext = false;
+    ctxState.commit = []; // ROLLBACK discards commit-only work
+    for (const work of ctxState.exit.splice(0)) work();
+    expect(published).toEqual([]);
+
+    ctxState.inContext = true;
+    await bumpAiKillState(true, 'stop', 'user-1');
+    ctxState.inContext = false;
+    for (const work of ctxState.exit.splice(0)) work();
+    for (const work of ctxState.commit.splice(0)) work();
+    expect(published).toEqual([[NAME, null]]);
+  });
+
+  it('a write in its own transaction (non-system ambient) publishes at once, even if the caller later rolls back', async () => {
+    const returning = await getReturningMock();
+    returning.mockResolvedValueOnce([{ killed: true, epoch: 4 }]);
+    ctxState.scope = 'organization';
+    ctxState.inContext = true;
+
+    await bumpAiKillState(true, 'stop', 'user-1');
+    expect(published).toEqual([[NAME, null]]);
+    // The caller's request transaction rolls back: nothing was left queued on it.
+    expect(ctxState.commit).toEqual([]);
+    expect(ctxState.exit).toEqual([]);
+    ctxState.inContext = false;
   });
 });

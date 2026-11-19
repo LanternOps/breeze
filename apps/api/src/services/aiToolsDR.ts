@@ -10,6 +10,7 @@ import { db } from '../db';
 import { devices, drExecutions, drPlanGroups, drPlans } from '../db/schema';
 import { eq, and, asc, desc, inArray, lt, or, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { classifyDrExecutionAuthorizationError, createDrExecutionAndEnqueue } from './drExecutionService';
 import { drRestoreConfigSchema, isBareMetalRebuildConfig } from './drBareMetalRebuildStep';
@@ -620,6 +621,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('manage_dr_plan', async (input, auth) => {
+      const mfaError = mfaGatedToolError('manage_dr_plan', typeof input.action === 'string' ? input.action : undefined, auth);
+      if (mfaError) return mfaError;
       const action = input.action as string;
 
       if (action === 'create_plan') {

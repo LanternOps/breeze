@@ -24,6 +24,7 @@ import { ENABLE_2FA } from '../auth/schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
 import { runBulkIsolated } from '../../lib/bulkOps';
+import { resolveWakeAvailability, WAKE_LOOKUP_FAILED_AVAILABILITY } from '../../services/wakeAvailability';
 import { dispatchWake, type WakeFailure, type WakeFailureCode, type WakePrepared } from '../../services/wakeOnLan';
 import { dispatchDeviceCommand } from '../../services/dispatchDeviceCommand';
 import type { QueuedCommand } from '../../services/commandQueue';
@@ -37,6 +38,7 @@ import { applyAutomationActionTerminal } from '../../services/automationActionRe
 import { SERVER_TIMEOUT_RESULT_STATUS } from '../../services/commandResultAcceptance';
 import { captureException } from '../../services/sentry';
 import { isNetworkIsolationCommand, USE_NETWORK_ISOLATION_ROUTES } from '../../services/networkIsolation/bypass';
+import { wakeFailureStatus } from '../../services/wakeFailureStatus';
 
 export const commandsRoutes = new Hono();
 
@@ -105,6 +107,10 @@ commandsRoutes.post(
       const ipAddress = getTrustedClientIpOrUndefined(c);
       const userAgent = c.req.header('user-agent');
 
+      // One availability lookup for the whole batch (fixed statement count),
+      // inside the caller's RLS context. Bulk never honours testWake.
+      const availability = await withAuthDbAccessContext(auth, () => resolveWakeAvailability(deviceIds));
+
       // Each authorization and preparation commits independently. Delivery runs
       // in runBulkIsolated's post-commit hook so fast relay results can see both
       // the command and attempt even while later devices are still preparing.
@@ -140,6 +146,7 @@ commandsRoutes.post(
             ipAddress,
             userAgent,
             bulkId,
+            availability: availability.get(deviceId) ?? WAKE_LOOKUP_FAILED_AVAILABILITY,
           });
         },
         async (deviceId, prepared) => {
@@ -327,7 +334,8 @@ commandsRoutes.post(
         details: {
           deviceId,
           ...commandAuditDetails(command.id, data.type, data.payload || {}),
-          bulk: true
+          bulk: true,
+          delivery,
         }
       });
     }
@@ -599,9 +607,10 @@ commandsRoutes.post(
         const wake = await dispatchWake(deviceId, auth.user.id, {
           ipAddress: getTrustedClientIpOrUndefined(c),
           userAgent: c.req.header('user-agent'),
+          testWake: data.payload?.testWake === true,
         });
         if (!wake.ok) {
-          return c.json({ error: wake.message, code: wake.code }, 412);
+          return c.json({ error: wake.message, code: wake.code }, wakeFailureStatus(wake.code));
         }
         return wake;
       }
@@ -675,7 +684,7 @@ commandsRoutes.post(
 
     const delivered = await outcome.deliver();
     if (!delivered.ok) {
-      return c.json({ error: delivered.message, code: delivered.code }, 412);
+      return c.json({ error: delivered.message, code: delivered.code }, wakeFailureStatus(delivered.code));
     }
     return c.json({
       id: delivered.commandId,
@@ -957,7 +966,9 @@ commandsRoutes.post(
       details: {
         deviceId,
         enabled: data.enabled,
-        ...commandAuditDetails(command.id, 'set_auto_update', { enabled: data.enabled })
+        ...commandAuditDetails(command.id, 'set_auto_update', { enabled: data.enabled }),
+        delivery: res.delivery,
+        ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
       }
     });
 

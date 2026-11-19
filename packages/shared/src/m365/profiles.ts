@@ -28,11 +28,29 @@ export interface M365ApplicationGrant {
   readonly value: string;
 }
 
+/**
+ * One application role grant as observed or required.
+ *
+ * `appRoleId` is null only for a Microsoft Graph role seen in the app-only
+ * token's `roles` claim (reconciliation mode `graph_token_only`, #12085) whose
+ * id could not be resolved because it is not in the manifest. Such a grant
+ * always carries its `value`, and it is always unexpected drift.
+ */
 export interface CanonicalAppRoleAssignment {
   readonly resourceApplicationId: string;
-  readonly appRoleId: string;
+  readonly appRoleId: string | null;
   readonly value: string | null;
 }
+
+/**
+ * How the executor learned a connection's grants (#12085):
+ * - `exact`: the full appRoleAssignments inventory across every resource.
+ * - `graph_token_only`: the inventory read was denied (no
+ *   Application.Read.All), so only the Microsoft Graph roles in the app-only
+ *   token were checked. App roles on other resources were not.
+ */
+export const GRANT_RECONCILIATION_MODES = ['exact', 'graph_token_only'] as const;
+export type GrantReconciliationMode = (typeof GRANT_RECONCILIATION_MODES)[number];
 
 export interface M365PermissionProfileManifest {
   readonly id: M365ConnectionProfile;
@@ -46,13 +64,20 @@ export interface M365PermissionProfileManifest {
   readonly applicationPermissionAssignments?: readonly M365ApplicationGrant[];
 }
 
+/**
+ * Identity of a grant: (resourceApplicationId, appRoleId). A null-id grant
+ * (graph_token_only drift) keys by its value under a prefix no GUID can take,
+ * so it never matches a manifest grant and never collides with another one.
+ */
 export function canonicalGrantKey(
-  grant: Pick<M365ApplicationGrant, 'resourceApplicationId' | 'appRoleId'>,
+  grant: Pick<CanonicalAppRoleAssignment, 'resourceApplicationId' | 'appRoleId'>
+    & { readonly value?: string | null },
 ): string {
+  if (grant.appRoleId === null) return `${grant.resourceApplicationId}/value:${grant.value ?? ''}`;
   return `${grant.resourceApplicationId}/${grant.appRoleId}`;
 }
 
-const MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID = '00000003-0000-0000-c000-000000000000';
+export const MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID = '00000003-0000-0000-c000-000000000000';
 
 export const M365_PERMISSION_PROFILES = {
   'communications-delegated': {

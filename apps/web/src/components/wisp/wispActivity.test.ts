@@ -31,6 +31,26 @@ describe('fetchWispActivity', () => {
     expect(out.nextCursor).toBeNull();
   });
 
+  // The Workers card reads these two; a parser that rebuilds items field by
+  // field silently drops anything it was not taught.
+  it('keeps the pending-approval fields of an approval-parked specialist', async () => {
+    mockFetch.mockResolvedValue(res(true, { data: { items: [
+      item({ id: 'a', kind: 'specialist', runStatus: 'awaiting_approval', pendingApprovals: 2, pendingIntentId: 'intent-1' }),
+      item({ id: 'b', kind: 'specialist', runStatus: 'awaiting_approval', pendingApprovals: 0, pendingIntentId: null }),
+      item({ id: 'c', kind: 'specialist', runStatus: 'running' }),
+      item({ id: 'd', kind: 'specialist', runStatus: 'awaiting_approval', pendingApprovals: '2', pendingIntentId: 7 }),
+      item({ id: 'e', kind: 'specialist', runStatus: 'awaiting_approval', pendingApprovals: -1 }),
+    ], nextCursor: null } }));
+    const { items } = await fetchWispActivity('t1', null);
+    expect(items[0]).toMatchObject({ pendingApprovals: 2, pendingIntentId: 'intent-1' });
+    expect(items[1]).toMatchObject({ pendingApprovals: 0, pendingIntentId: null });
+    expect(items[2]).not.toHaveProperty('pendingApprovals');
+    // A malformed count is dropped (the card then shows the raw status), never guessed.
+    expect(items[3]).not.toHaveProperty('pendingApprovals');
+    expect(items[3]).not.toHaveProperty('pendingIntentId');
+    expect(items[4]).not.toHaveProperty('pendingApprovals');
+  });
+
   it('throws on a non-ok response', async () => {
     mockFetch.mockResolvedValue(res(false, {}));
     await expect(fetchWispActivity('t1', null)).rejects.toThrow();

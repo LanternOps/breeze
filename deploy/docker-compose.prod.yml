@@ -161,6 +161,8 @@ x-api-env: &api-env
   # Backup sweep tuning (worker role; optional, blank = default).
   BACKUP_GC_LIVE_SET_MAX_BYTES: ${BACKUP_GC_LIVE_SET_MAX_BYTES:-}
   BACKUP_GC_MAX_DELETES_PER_RUN: ${BACKUP_GC_MAX_DELETES_PER_RUN:-}
+  BACKUP_SNAPSHOT_CLEANUP_CRON: ${BACKUP_SNAPSHOT_CLEANUP_CRON:-}
+  BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS: ${BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: "true"
   # Agent diagnostic log retention (worker role; all optional, see .env.example).
@@ -388,6 +390,7 @@ x-api-env: &api-env
   AGENT_ECH_ENABLED: ${AGENT_ECH_ENABLED:-true}
   NETWORK_ISOLATION_ENABLED: ${NETWORK_ISOLATION_ENABLED:-false}
   NETWORK_ISOLATION_ENABLED_PARTNER_IDS: ${NETWORK_ISOLATION_ENABLED_PARTNER_IDS:-}
+  NETWORK_ISOLATION_TOKEN_SIGNING_KEY: ${NETWORK_ISOLATION_TOKEN_SIGNING_KEY:-}
   # #10190 prompt host kill switch. `-default` (no colon) on purpose: unset
   # passes "default" (the code default), while an explicit empty value passes
   # '' (the kill switch: nothing enabled). `:-` would turn unset into ''.
@@ -499,6 +502,9 @@ x-api-env: &api-env
   HP_WARRANTY_ENABLED: ${HP_WARRANTY_ENABLED:-}
   IP_CLASSIFY_PROVIDER: ${IP_CLASSIFY_PROVIDER:-}
   IP_CLASSIFY_API_KEY: ${IP_CLASSIFY_API_KEY:-}
+  IP_CLASSIFY_TOR_LIST_URL: ${IP_CLASSIFY_TOR_LIST_URL:-}
+  IP_CLASSIFY_HOSTING_ASN_URL: ${IP_CLASSIFY_HOSTING_ASN_URL:-}
+  IP_CLASSIFY_ASN_DB_URL: ${IP_CLASSIFY_ASN_DB_URL:-}
   MCP_LLM_PROVIDER: ${MCP_LLM_PROVIDER:-}
   MCP_LLM_BASE_URL: ${MCP_LLM_BASE_URL:-}
   MCP_LLM_MODEL: ${MCP_LLM_MODEL:-}

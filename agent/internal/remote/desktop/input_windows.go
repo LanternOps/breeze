@@ -175,6 +175,16 @@ func (h *WindowsInputHandler) refreshScreenMetrics() {
 	h.metricsValid = h.cachedCW > 0 && h.cachedCH > 0
 }
 
+// RefreshScreenGeometry re-reads the virtual-screen metrics after a display
+// mode change (#11754). Without it a click (SendMouseClick only reads them
+// when unset) or a drag already in progress normalises against the old
+// virtual-screen size until the next mouse-down.
+func (h *WindowsInputHandler) RefreshScreenGeometry() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.refreshScreenMetrics()
+}
+
 // screenToAbsolute converts screen coordinates to the normalized 0–65535
 // coordinate space required by MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK.
 func (h *WindowsInputHandler) screenToAbsolute(x, y int) (absX, absY int32, ok bool) {

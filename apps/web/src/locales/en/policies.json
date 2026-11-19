@@ -68,7 +68,9 @@
       "check": "Check",
       "lastChecked": "Last Checked",
       "noComplianceResultsYetAssignThisPolicy": "No compliance results yet. Assign this policy to devices and add compliance rules; status appears after the next evaluation.",
-      "summary": "Showing the first {{shown}} of {{total}} results — the summary below reflects this page only."
+      "summary": "Showing the first {{shown}} of {{total}} results — the summary below reflects this page only.",
+      "notCollectedProbeLimit": "Not collected (probe limit)",
+      "notCollectedProbeLimitHint": "This organization's compliance probe list is full, so at least one check here is not collected. It is not evaluated, alerted on or remediated until the list has room."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Select an organization for this policy.",
@@ -796,8 +798,10 @@
         "notifyOnEnd": "Notify on end",
         "sendNotificationWhenWindowCloses": "Send notification when window closes.",
         "notifyOnEnd2": "notifyOnEnd",
-        "weeklyOpensEverySunday": "Weekly windows open every Sunday at the start time, in the selected timezone.",
-        "monthlyOpensOnTheFirst": "Monthly windows open on the 1st of each month at the start time, in the selected timezone."
+        "dayOfWeek": "Day of week",
+        "dayOfWeekHint": "The day each weekly window opens, in the selected timezone.",
+        "dayOfMonth": "Day of month",
+        "dayOfMonthHint": "The day each monthly window opens, in the selected timezone. In a month without that day, the window opens on the month's last day."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Agent collection",
@@ -1198,9 +1202,95 @@
         "aboutTitle": "About System Restore",
         "aboutBody": "Applies to Windows devices only. System Restore covers system files, the registry, installed programs and settings. It is not a backup and does not cover personal files. Windows limits restore-point creation to once every 24 hours by default, and a created point can later be removed by Windows or become unusable."
       },
+      "wakeOnLanTab": {
+        "title": "Wake on LAN",
+        "description": "Choose when the Wake button shows for an offline device.",
+        "platformDefaultNote": "No policy is assigned. Platform default: the Wake button shows on every offline device.",
+        "modeTitle": "When the Wake button shows",
+        "mode": {
+          "always": "Always",
+          "alwaysHelp": "Show Wake on every offline device. Devices that keep timing out are flagged below but never hidden.",
+          "verified": "Only when verified ready",
+          "verifiedHelp": "Show Wake only for devices reporting ready, or proven by a past wake that came online. Other devices can be sent one test wake."
+        },
+        "verifiedWarning": "With this mode the Wake button stays hidden on a device until a wake has been proven there (a past wake that came online) or the device reports ready. Expect it to be hidden on most devices at first.",
+        "aboutTitle": "About this setting",
+        "aboutBody": "This policy only decides when the Wake button shows. Breeze reads each device's Wake-on-LAN readiness but does not change BIOS, network adapter or Windows settings.",
+        "panel": {
+          "title": "Device status",
+          "description": "Readiness of the devices this policy governs.",
+          "advisory": "Laptops wake only on AC power, and Modern Standby support varies by model, so a laptop that reports ready may still not come online.",
+          "cappedNote": "Showing the first {{scanned}} devices this policy reaches. Counts cover only those devices.",
+          "chipAll": "All ({{count}})",
+          "loading": "Loading device status...",
+          "loadFailed": "Could not load device status.",
+          "empty": "No devices governed by this policy match.",
+          "noAttempts": "No wake attempts",
+          "flagged": "Flagged: {{count}} timeouts in a row",
+          "testWake": "Send test wake",
+          "allowAgain": "Allow wake again",
+          "testWakeSent": "Test wake sent to {{host}}.",
+          "allowedAgain": "{{host}} can be woken again.",
+          "actionFailed": "The action failed. Try again.",
+          "previous": "Previous",
+          "next": "Next",
+          "pageOf": "Page {{page}} of {{pages}}",
+          "columns": {
+            "device": "Device",
+            "state": "State",
+            "reasons": "Reasons",
+            "hardware": "Hardware",
+            "lastAttempt": "Last attempt",
+            "actions": "Actions"
+          },
+          "states": {
+            "ready": "Ready",
+            "needs_reboot": "Needs reboot",
+            "not_configured": "Not configured",
+            "apply_failed": "Apply failed",
+            "firmware_protected": "Firmware protected",
+            "unproven": "Unproven",
+            "no_wired_adapter": "No wired adapter",
+            "unsupported_vm": "Virtual machine",
+            "unsupported_os": "Unsupported OS",
+            "agent_update_required": "Agent update required",
+            "no_data": "No data yet"
+          },
+          "reasons": {
+            "virtual_machine": "Virtual machine",
+            "no_wired_adapter": "No wired network adapter",
+            "fast_startup_enabled": "Fast Startup is on",
+            "fast_startup_unknown": "Fast Startup state unknown",
+            "nic_magic_packet_disabled": "Adapter magic packet wake is off",
+            "nic_magic_packet_unknown": "Adapter magic packet wake state unknown",
+            "nic_unreadable": "A wired adapter is present but could not be read",
+            "nic_cmdlets_unavailable": "Network adapter settings cannot be read on this device",
+            "nic_eee_enabled": "Energy-Efficient Ethernet is on",
+            "firmware_adapter_unavailable": "Firmware settings cannot be read yet"
+          },
+          "attempts": {
+            "pending": "Pending",
+            "sent": "Sent",
+            "send_failed": "Send failed",
+            "came_online": "Came online",
+            "timed_out": "Timed out",
+            "unknown": "Unknown",
+            "refused": "Refused"
+          }
+        }
+      },
       "containmentTab": {
         "title": "Containment",
         "description": "Extra destinations an isolated device may still reach. The Breeze control plane is always allowed.",
+        "deadManLabel": "Dead-man release",
+        "deadManOff": "Off",
+        "deadMan15": "15 minutes",
+        "deadMan30": "30 minutes",
+        "deadMan60": "1 hour",
+        "deadMan240": "4 hours",
+        "deadMan1440": "24 hours",
+        "deadManCustom": "{{minutes}} minutes",
+        "deadManHelp": "When set, an isolated device that cannot reach Breeze for this long releases itself and reports a self-release, which must be acknowledged before the device can be isolated again. Use it only when availability matters more than containment: anything that cuts the device off from Breeze for this long, including an outage on the Breeze side, releases it, and every isolated device that loses contact at the same time releases together. Applies only to agents that support it; others isolate without it.",
         "empty": "No extra destinations. An isolated device reaches only the Breeze control plane.",
         "addRow": "Add destination",
         "removeRow": "Remove destination {{index}}",
@@ -1438,6 +1528,8 @@
       "searchPlaceholder": "Search by name or package ID",
       "searchFailed": "Package search failed — try again, or enter a package ID manually.",
       "searchDegraded": "Package search is unavailable right now — enter a package ID manually below.",
+      "indexLastUpdated": "Index last updated {{when}}",
+      "indexStale": "— the winget index is out of date, so newer packages may be missing.",
       "noPackagesMatched": "No packages matched",
       "breezeTested": "Breeze tested v{{version}}",
       "selectedPackages": "Selected packages",
@@ -1879,6 +1971,7 @@
       "loadingSoftwareCatalog": "Loading software catalog...",
       "softwareLibrary": "Software Library",
       "browseAndDeployApprovedSoftwarePackages": "Browse and deploy approved software packages.",
+      "libraryScopeNote": "This library lists packages you can deploy to devices on demand. It is not a list of software Breeze keeps up to date. Updates to installed apps come from a configuration policy's patch sources, an update ring, and what winget, Chocolatey or Homebrew reports on each device.",
       "addPackage": "Add Package",
       "bulkDeploy": "Bulk Deploy",
       "dismiss": "Dismiss",
@@ -1915,6 +2008,11 @@
       "summaryCompleted7d": "Completed (7d)",
       "summaryFailed7d": "Failed (7d)",
       "categoryFilterLabel": "Category",
+      "sourceFilterLabel": "Source",
+      "allSources": "All sources",
+      "sourceWinget": "winget",
+      "sourceBrew": "Homebrew",
+      "sourceInstaller": "Installer file / URL",
       "requiredVariables": "Required variables",
       "uninstallCommand": "Uninstall command",
       "managedByBreezeHint": "Managed by Breeze. This package cannot be edited, deleted or given new versions here."

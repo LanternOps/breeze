@@ -286,7 +286,7 @@ export const listTicketsQuerySchema = z.object({
   priority: ticketPrioritySchema.optional(),
   slaState: z.enum(['ok', 'at_risk', 'breached', 'breaching']).optional(),
   search: z.string().max(200).optional(),
-  sort: z.enum(['triage', 'newest', 'oldest', 'due']).default('triage'),
+  sort: z.enum(['triage', 'newest', 'oldest', 'updated', 'due']).default('triage'),
   // deleted=only returns the soft-deleted "Archived" queue (tickets:manage only).
   // Omitted/any other value returns live tickets (deleted rows excluded).
   deleted: z.enum(['only']).optional(),

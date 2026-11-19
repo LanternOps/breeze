@@ -781,7 +781,7 @@ describe('AI routes', () => {
     // #9431: a stale card (decided in another window, in Approvals, on mobile,
     // or timed out) gets a clear "already decided" answer — never a second
     // decision and never the generic "not found".
-    it.each(['approved', 'not_approved'] as const)(
+    it.each(['approved', 'not_approved', 'expired'] as const)(
       'returns 409 approval_already_decided with outcome %s for an execution of this session that is no longer pending',
       async (outcome) => {
         vi.mocked(getSession).mockResolvedValueOnce({ id: SESSION_ID, orgId: ORG_ID } as any);

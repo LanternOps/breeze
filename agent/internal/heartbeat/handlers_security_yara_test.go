@@ -38,12 +38,15 @@ func goldenBundle(t *testing.T) ([]byte, string) {
 }
 
 // bundleServer serves body to requests carrying the agent token and counts
-// requests; any other path or token gets 404/401.
+// requests to path (other local processes may probe the port); any other
+// path or token gets 404/401.
 func bundleServer(t *testing.T, path string, body []byte) (*httptest.Server, *atomic.Int64) {
 	t.Helper()
 	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
+		if r.URL.Path == path {
+			hits.Add(1)
+		}
 		if r.Header.Get("Authorization") != "Bearer agent-token" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return

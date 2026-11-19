@@ -317,6 +317,8 @@ dependencies = [
 name = "breeze-viewer"
 version = "0.10.0"
 dependencies = [
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "tauri",
@@ -4012,7 +4014,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tauri",
- "tauri-plugin-deep-link",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

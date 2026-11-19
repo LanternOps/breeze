@@ -15,6 +15,7 @@ describe('ai_run_artifacts Drizzle schema (spec §6.1)', () => {
       'content_type',
       'created_at',
       'created_by_tool',
+      'dataset',
       'expires_at',
       'head_preview',
       'id',

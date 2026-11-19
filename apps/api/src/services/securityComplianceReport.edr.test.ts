@@ -95,7 +95,9 @@ describe('posture report: EDR coverage', () => {
     expect(rows['pc-1']).toMatchObject({ protectionManaged: true, protection: 'Managed endpoint protection' });
     expect(rows['pc-2']).toMatchObject({ protectionManaged: false, protection: 'No data' });
     const summary = result.summary as any;
-    expect(summary.controls.unprotectedCount).toBe(1);
+    // pc-2 ("No data") is not assessed, never unprotected (#12044).
+    expect(summary.controls.unprotectedCount).toBe(0);
+    expect(summary.controls.anyAvUnknownCount).toBe(1);
     // Over assessed devices (spec §19.7): pc-2 has no evidence at all → 1 of 1.
     expect(summary.controls.edrCoveragePct).toBe(100);
     expect(summary.controls.anyAvCoveragePct).toBe(100);
@@ -125,7 +127,9 @@ describe('posture report: EDR coverage', () => {
     // Neither device has any evidence → nothing assessed → N/A, not 0% (spec §19.7).
     expect(summary.controls.edrCoveragePct).toBeNull();
     expect(summary.controls.edrUnknownCount).toBe(2);
-    expect(summary.controls.unprotectedCount).toBe(2);
+    // Two devices without data are two not assessed, not two unprotected (#12044).
+    expect(summary.controls.unprotectedCount).toBe(0);
+    expect(summary.controls.anyAvUnknownCount).toBe(2);
     expect(JSON.stringify(result)).not.toContain('Managed endpoint protection');
   });
 

@@ -56,7 +56,7 @@ import { tickets } from '../../db/schema/portal';
 import { wispGrants } from '../../db/schema/wisp';
 import { wispConcerns } from '../../db/schema/wispConcerns';
 import { wispEnabled } from '../../config/env';
-import { ASSESSMENT_BUDGET_CENTS_PER_RUN } from '../aiAgents/assessmentProfile';
+import { ASSESSMENT_BUDGET_CENTS_PER_RUN, parseCheckInSubject } from '../aiAgents/assessmentProfile';
 import {
   createAndEnqueueAgentRun,
   transitionRunStatus,
@@ -802,12 +802,19 @@ function parseReason(v: unknown): AssessmentReason | null {
       return { kind: 'onboarding' };
     case 'on_demand':
       return isNonEmptyString(r.requestId) ? { kind: 'on_demand', requestId: r.requestId } : null;
-    case 'check_in':
+    case 'check_in': {
       // W07: the instruction is rendered into the prompt (single-lined there);
-      // malformed evidence is dropped, never the reason.
-      return isUuid(r.checkInId) && isNonEmptyString(r.instruction)
-        ? { kind: 'check_in', checkInId: r.checkInId, instruction: r.instruction, evidence: parseCheckInEvidence(r.evidence) }
-        : null;
+      // malformed evidence or subject (#11978) is dropped, never the reason.
+      if (!isUuid(r.checkInId) || !isNonEmptyString(r.instruction)) return null;
+      const subject = parseCheckInSubject(r.subject);
+      return {
+        kind: 'check_in',
+        checkInId: r.checkInId,
+        instruction: r.instruction,
+        evidence: parseCheckInEvidence(r.evidence),
+        ...(subject ? { subject } : {}),
+      };
+    }
     default:
       return null;
   }
@@ -922,7 +929,12 @@ async function loadDigest(
       .orderBy(desc(sql`GREATEST(${alerts.triggeredAt}, ${alerts.resolvedAt})`))
       .limit(DIGEST_ROW_LIMIT);
     const ticketRows = !may('tickets') ? [] : await db
-      .select({ id: tickets.id, number: tickets.ticketNumber, title: tickets.subject, status: tickets.status, updatedAt: tickets.updatedAt })
+      // #11678 §3: internal_number (T-2026-0001) is what chat and the ticket
+      // thread call a ticket; the portal's public ticket_number is a fallback.
+      .select({
+        id: tickets.id, internalNumber: tickets.internalNumber, publicNumber: tickets.ticketNumber,
+        title: tickets.subject, status: tickets.status, updatedAt: tickets.updatedAt,
+      })
       .from(tickets)
       .where(and(eq(tickets.orgId, orgId), gte(tickets.updatedAt, since)))
       .orderBy(desc(tickets.updatedAt))
@@ -953,13 +965,16 @@ async function loadDigest(
         // shows when it was resolved, not when it first fired.
         at: toIso(r.resolvedAt && r.resolvedAt > r.at ? r.resolvedAt : r.at),
       })),
-      tickets: ticketRows.map((r) => ({
-        id: r.id,
-        number: r.number ? sanitizeSweepText(r.number, 50) : null,
-        title: sanitizeSweepText(r.title, 160),
-        status: sanitizeSweepText(String(r.status), 30),
-        updatedAt: toIso(r.updatedAt),
-      })),
+      tickets: ticketRows.map((r) => {
+        const number = r.internalNumber || r.publicNumber;
+        return {
+          id: r.id,
+          number: number ? sanitizeSweepText(number, 50) : null,
+          title: sanitizeSweepText(r.title, 160),
+          status: sanitizeSweepText(String(r.status), 30),
+          updatedAt: toIso(r.updatedAt),
+        };
+      }),
       incidents: incidentRows.map((r) => ({
         id: r.id,
         sourceKind: sanitizeSweepText(r.sourceKind, 60),

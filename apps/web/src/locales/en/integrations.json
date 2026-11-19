@@ -159,7 +159,8 @@
       "missing": "Missing permissions",
       "unexpectedAlert": "Unexpected permissions detected",
       "unknownPermission": "Unknown permission (role {{appRoleId}})",
-      "grantsVerifiedAt": "Permissions verified"
+      "grantsVerifiedAt": "Permissions verified",
+      "graphTokenOnly": "Graph permissions verified. Permissions on other Microsoft resources were not checked; grant Application.Read.All for a full check."
     },
     "actions": {
       "connect": "Connect",
@@ -170,6 +171,7 @@
       "consentFailed": "Consent could not be started.",
       "retestFailed": "The connection could not be retested.",
       "retestSucceeded": "Connection retest completed.",
+      "retestNeedsAttention": "Retest finished, but the connection still needs attention.",
       "disconnectWarning": "Disconnecting stops Breeze from using this connection. Microsoft tenant-wide consent remains until a customer administrator removes it in Microsoft Entra.",
       "disconnectFailed": "The connection could not be disconnected.",
       "disconnectSucceeded": "Breeze connection disconnected.",
@@ -192,6 +194,7 @@
       "grant_unexpected": "Microsoft reports permissions outside the approved manifest.",
       "manifest_stale": "The granted permissions use an older manifest. Grant consent again.",
       "organization_probe_failed": "The Microsoft organization check failed. Retest the connection.",
+      "grant_reconciliation_unavailable": "Microsoft accepted the connection, but Breeze can't read which permissions this tenant granted to the Admin actions app, so they can't be verified. Admin actions stay paused until they are.",
       "executor_unavailable": "The verification service is unavailable. Retest later.",
       "executor_unavailablePending": "Couldn't finish connecting. Try Connect again; if it keeps failing, contact support.",
       "unknown": "Verification needs attention. Retest the connection or start consent again."
@@ -289,11 +292,9 @@
     "unableToSendTestNotification": "Unable to send test notification.",
     "failedToLoadCommunicationSettings": "Failed to load communication settings",
     "slackSettingsSaved": "Slack settings saved.",
-    "slackTestNotificationQueued": "Slack test notification queued.",
     "teamsSettingsSaved": "Teams settings saved.",
-    "teamsTestNotificationQueued": "Teams test notification queued.",
     "discordSettingsSaved": "Discord settings saved.",
-    "discordTestNotificationQueued": "Discord test notification queued.",
+    "discordTestNotificationSent": "Discord test notification sent.",
     "loadingCommunicationIntegrations": "Loading communication integrations...",
     "communicationIntegrations": "Communication integrations",
     "connectChatToolsRouteAlertsBySeverityAnd": "Connect chat tools, route alerts by severity, and customize messaging templates. ",

@@ -42,6 +42,8 @@ export interface VncClipboardState {
   policy: ClipboardDirectionPolicy | null;
   lastTransfer: ClipboardTransfer | null;
   remoteItemAvailable: boolean;
+  /** The latest server cut was held, not written locally: the toolbar offers a pull. */
+  remoteHeld: boolean;
 }
 
 export type VncSendOutcome =
@@ -87,12 +89,18 @@ export function attachVncClipboard(
   const openedAt = now();
   let pushesSeen = 0;
   let lastCopyIntentAt: number | null = null;
+  // noVNC sends keys and clicks itself; the capture listeners below see them
+  // on their way to its canvas.
+  let lastInputAt: number | null = null;
   let remoteText: string | null = null;
+  let remoteHeld = false;
   let lastTransfer: ClipboardTransfer | null = null;
   let queue: Promise<unknown> = Promise.resolve();
   let detached = false;
 
-  const state = (): VncClipboardState => ({ policy, lastTransfer, remoteItemAvailable: remoteText !== null });
+  const state = (): VncClipboardState => ({
+    policy, lastTransfer, remoteItemAvailable: remoteText !== null, remoteHeld,
+  });
   const emit = () => deps.onChange?.(state());
   const record = (direction: ClipboardTransfer['direction'], text: string) => {
     lastTransfer = { direction, type: 'text', bytes: utf8Length(text), at: now() };
@@ -106,6 +114,7 @@ export function attachVncClipboard(
       console.warn('[vnc-clipboard] failed to write remote→local:', err);
       return false;
     }
+    if (text === remoteText) remoteHeld = false;
     record('from-remote', text);
     return true;
   }
@@ -131,17 +140,26 @@ export function attachVncClipboard(
     const decision = remoteClipboardDecision({
       now: now(),
       hasFocus: deps.hasFocus(),
+      lastInputAt,
       lastCopyIntentAt,
       channelOpenedAt: openedAt,
       pushesSeen: seen,
     });
+    // A held baseline is on offer but not flagged: it predates the session.
+    remoteHeld = decision === 'hold';
     if (decision === 'apply') void writeLocal(text);
     else emit();
   };
 
+  const onPointerDown = () => {
+    if (!detached) lastInputAt = now();
+  };
+
   const onKeyDown = (e: Event) => {
     const ke = e as KeyboardEvent;
-    if (detached || !policy) return;
+    if (detached) return;
+    lastInputAt = now();
+    if (!policy) return;
     if (isCopyChord(ke)) lastCopyIntentAt = now();
     if (!policy.viewerToHost || !isPasteChord(ke)) return;
     // Hold the key back from noVNC until the clipboard has gone out.
@@ -166,6 +184,7 @@ export function attachVncClipboard(
 
   rfb.addEventListener('clipboard', onServerCut);
   keyTarget.addEventListener('keydown', onKeyDown, true);
+  keyTarget.addEventListener('mousedown', onPointerDown, true);
 
   return {
     get state() { return state(); },
@@ -187,6 +206,7 @@ export function attachVncClipboard(
       detached = true;
       rfb.removeEventListener('clipboard', onServerCut);
       keyTarget.removeEventListener('keydown', onKeyDown, true);
+      keyTarget.removeEventListener('mousedown', onPointerDown, true);
     },
   };
 }

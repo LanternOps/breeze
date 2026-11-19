@@ -307,6 +307,10 @@ const (
 	CmdPamRequestNotify = "pam_request_notify"
 )
 
+// StatusResultHandedOff is the internal marker for a result another process
+// will report; see wire.ResultStatusHandedOff. Delivery paths drop it.
+const StatusResultHandedOff = wire.ResultStatusHandedOff
+
 // CommandResult represents the result of a command execution
 type CommandResult struct {
 	Status string `json:"status"` // completed, failed, timeout
@@ -466,9 +470,11 @@ type ServiceListResponse struct {
 
 // Event log types
 type EventLog struct {
-	Name         string `json:"name"`
-	DisplayName  string `json:"displayName"`
-	RecordCount  int64  `json:"recordCount"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+	// RecordCount is nil, and omitted on the wire, when the count was not
+	// read; 0 means the log is empty (#11975).
+	RecordCount  *int64 `json:"recordCount,omitempty"`
 	MaxSizeBytes int64  `json:"maxSizeBytes,omitempty"`
 	Retention    string `json:"retention,omitempty"`
 }

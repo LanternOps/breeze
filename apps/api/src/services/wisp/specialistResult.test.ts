@@ -300,6 +300,24 @@ describe('postSpecialistStepOutcome', () => {
     expect(p.body).toContain('Service restarted');
   });
 
+  // The agent returns a device read as stdout holding a JSON document. Posted
+  // raw, the thread showed one escaped event record cut mid-sentence.
+  it('describes a JSON device read instead of pasting it', async () => {
+    const stdout = JSON.stringify({ events: [{
+      recordId: 135400, logName: 'System', level: 'Information', timeCreated: '2026-11-15T20:13:46.38Z', eventId: 506,
+      source: 'Microsoft-Windows-Kernel-Power', message: 'The system is entering Modern Standby \\r\\n\\r\\nReason: Idle Timeout.',
+    }] });
+    queue(
+      [intentRow({ actionName: 'execute_command', result: { status: 'completed', exitCode: 0, commandId: 'c1', stdout } })],
+      [runRow({ status: 'awaiting_approval' })], [{ actionLabel: 'Query "System" event log on WS-01' }], [],
+    );
+    await postSpecialistStepOutcome(INTENT);
+    expect(h.notifyUser.mock.calls[0]![0].body).toBe(
+      'Approved step ran: Query "System" event log on WS-01 — 1 event from the System log, 2026-11-15 20:13:46 UTC. '
+      + '20:13:46 event 506: The system is entering Modern Standby (Reason: Idle Timeout.)',
+    );
+  });
+
   it('a redelivered release (post already there) yields no second post', async () => {
     queue([intentRow()], [runRow({ status: 'awaiting_approval' })], [{ actionLabel: 'Restart' }], [{ id: 'post-1' }]);
     await expect(postSpecialistStepOutcome(INTENT)).resolves.toEqual({ posted: false, reason: 'already_posted' });

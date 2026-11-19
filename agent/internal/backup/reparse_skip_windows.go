@@ -63,3 +63,18 @@ func readReparseData(path string) ([]byte, error) {
 	}
 	return buf[:n], nil
 }
+
+// platformRawWinAttrs returns the raw FILE_ATTRIBUTE_* bits the directory
+// listing (or stat, for a backup root) reported for info (#7326). It is not
+// masked like winFileAttrs: the placeholder policy needs RECALL_ON_* and
+// OFFLINE, which are never restored.
+func platformRawWinAttrs(info os.FileInfo) uint32 {
+	if info == nil {
+		return 0
+	}
+	data, ok := info.Sys().(*syscall.Win32FileAttributeData)
+	if !ok || data == nil {
+		return 0
+	}
+	return data.FileAttributes
+}

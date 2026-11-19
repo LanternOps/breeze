@@ -27,7 +27,9 @@ type ContainmentReport struct {
 
 type ContainmentDesired = isolation.DesiredBlock
 
-var containmentUUID = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+var containmentUUID = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+})
 var errContainmentSpec = errors.New("invalid network isolation specification")
 
 // containmentExpirySlack tolerates agent/server clock skew on the 720 h upper
@@ -66,7 +68,7 @@ func validateContainmentPayload(payload map[string]any, server string, now time.
 }
 
 func validContainmentIdentity(s isolation.Spec, now time.Time) bool {
-	return containmentUUID.MatchString(s.IsolationID) && s.Generation >= 1 && now.Before(s.ExpiresAt) && !s.ExpiresAt.After(now.Add(isolation.MaxTTL+containmentExpirySlack))
+	return containmentUUID().MatchString(s.IsolationID) && s.Generation >= 1 && now.Before(s.ExpiresAt) && !s.ExpiresAt.After(now.Add(isolation.MaxTTL+containmentExpirySlack))
 }
 
 // validateContainmentAllow binds the permit to this agent's configured control
@@ -248,6 +250,8 @@ type containmentManager interface {
 	HandleRelease(context.Context, map[string]any) isolation.CommandOutcome
 	Reconcile(context.Context, *isolation.DesiredBlock)
 	NotePolicyRejected(ctx context.Context, isolationID string, generation int, reason isolation.PolicyRejectReason)
+	// NoteControlPlaneContact feeds the dead-man (#10103). It never blocks.
+	NoteControlPlaneContact()
 	Startup(context.Context)
 	Tick(context.Context)
 	Report() *isolation.Report
@@ -457,7 +461,13 @@ func (h *Heartbeat) containmentReport() *ContainmentReport {
 }
 
 func (h *Heartbeat) reconcileContainment(d *isolation.DesiredBlock) {
-	if h.containment == nil || d == nil || d.NetworkIsolation == nil {
+	if h.containment == nil {
+		return
+	}
+	// A validated heartbeat response is authenticated control-plane contact,
+	// whatever its containment block holds: the dead-man measures the channel.
+	h.containment.manager.NoteControlPlaneContact()
+	if d == nil || d.NetworkIsolation == nil {
 		return
 	}
 	if err := validateContainmentDesired(d.NetworkIsolation, h.serverURL(), time.Now()); err != nil {
@@ -492,6 +502,7 @@ func containmentCapabilities(c *SecurityCapabilities) {
 	c.NetworkIsolationMechanism = cap.Mechanism
 	c.NetworkIsolationUnsupportedReason = cap.UnsupportedReason
 	c.NetworkIsolationReady = cap.Version >= 1 && cap.Ready
+	c.NetworkIsolationDeadMan = cap.AdvertisesDeadMan()
 }
 
 // containmentBlocksUpgrade: no self-update starts while isolated. Companion

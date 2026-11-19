@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/breeze-rmm/agent/internal/obfuscate"
 )
@@ -22,8 +23,7 @@ const (
 
 // SecurityValidator validates script content for potentially dangerous operations
 type SecurityValidator struct {
-	level    SecurityLevel
-	patterns []*dangerPattern
+	level SecurityLevel
 }
 
 type dangerPattern struct {
@@ -34,16 +34,13 @@ type dangerPattern struct {
 
 // NewSecurityValidator creates a new security validator with the specified level
 func NewSecurityValidator(level SecurityLevel) *SecurityValidator {
-	v := &SecurityValidator{
-		level:    level,
-		patterns: make([]*dangerPattern, 0),
-	}
-	v.initPatterns()
-	return v
+	return &SecurityValidator{level: level}
 }
 
-// initPatterns initializes the dangerous pattern list
-func (v *SecurityValidator) initPatterns() {
+// dangerPatterns compiles the constant pattern set once per process, on the
+// first Validate call.
+var dangerPatterns = sync.OnceValue(func() []*dangerPattern {
+	var patterns []*dangerPattern
 	// Basic level patterns - clearly dangerous operations
 	basicPatterns := []struct {
 		pattern string
@@ -134,7 +131,7 @@ func (v *SecurityValidator) initPatterns() {
 			log.Warn("failed to compile security pattern", "pattern", p.pattern, "error", err)
 			continue
 		}
-		v.patterns = append(v.patterns, &dangerPattern{
+		patterns = append(patterns, &dangerPattern{
 			regex:       regex,
 			description: p.desc,
 			level:       SecurityLevelBasic,
@@ -148,13 +145,14 @@ func (v *SecurityValidator) initPatterns() {
 			log.Warn("failed to compile security pattern", "pattern", p.pattern, "error", err)
 			continue
 		}
-		v.patterns = append(v.patterns, &dangerPattern{
+		patterns = append(patterns, &dangerPattern{
 			regex:       regex,
 			description: p.desc,
 			level:       SecurityLevelStrict,
 		})
 	}
-}
+	return patterns
+})
 
 // Validate checks the script content for dangerous patterns, with no
 // acknowledgements. Equivalent to ValidateWithAcknowledgements(content, nil).
@@ -195,7 +193,7 @@ func (v *SecurityValidator) ValidateWithAcknowledgements(content string, acknowl
 
 	// Check each pattern. Basic patterns are registered first, so a script
 	// that trips both levels always reports the unconditional one.
-	for _, p := range v.patterns {
+	for _, p := range dangerPatterns() {
 		if p.level > v.level {
 			continue
 		}
@@ -251,7 +249,7 @@ func (v *SecurityValidator) ValidateWithDetails(content string) []string {
 	}
 
 	var matches []string
-	for _, p := range v.patterns {
+	for _, p := range dangerPatterns() {
 		if p.level > v.level {
 			continue
 		}

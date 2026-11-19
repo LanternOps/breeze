@@ -14,6 +14,12 @@ describe('WispWelcome (W01 Task 7)', () => {
     ).toBeInTheDocument();
   });
 
+  it('showTitle=false drops the "Wisp" label (the docked pane header already says it) and keeps the greeting', () => {
+    render(<WispWelcome scopeLabel="Acme" onSuggest={vi.fn()} showTitle={false} />);
+    expect(screen.queryByText('Wisp')).toBeNull();
+    expect(screen.getByText("I'm looking around Acme.")).toBeInTheDocument();
+  });
+
   it('intro=false keeps only the chips (a brief is already on screen)', () => {
     render(<WispWelcome scopeLabel="Acme" onSuggest={vi.fn()} intro={false} />);
     expect(screen.queryByText("I'm looking around Acme.")).toBeNull();

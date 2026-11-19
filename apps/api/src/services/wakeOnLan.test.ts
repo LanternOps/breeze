@@ -123,7 +123,12 @@ vi.mock('./commandDispatch', () => ({
 }));
 vi.mock('../routes/agentWs', () => ({ isAgentConnected: vi.fn(() => true), sendCommandToAgent: vi.fn(() => true) }));
 vi.mock('./commandQueue', () => ({ CommandTypes: { WAKE_ON_LAN: 'wake_on_lan' } }));
-import { openOrJoinWakeAttempt, applyWakeRelayResult } from './wakeAttempts';
+vi.mock('./wakeAvailability', async () => ({
+  ...(await vi.importActual<typeof import('./wakeAvailability')>('./wakeAvailability')),
+  resolveWakeAvailability: vi.fn(),
+}));
+import { resolveWakeAvailability, WAKE_LOOKUP_FAILED_AVAILABILITY, type WakeAvailability } from './wakeAvailability';
+import { openOrJoinWakeAttempt, applyWakeRelayResult, recordWakeRefusal } from './wakeAttempts';
 import { claimPendingCommandForDelivery } from './commandDispatch';
 import { dispatchWake } from './wakeOnLan';
 import { sendCommandToAgent } from '../routes/agentWs';
@@ -147,6 +152,8 @@ function seedWake(status: string, network: unknown[] = [], history: unknown[] = 
     .mockReturnValueOnce(chain([{ id: 'relay', agentId: 'relay-agent', hostname: 'relay', siteId: 'site', status: 'online' }]));
 }
 
+const avail = (over: Partial<WakeAvailability> = {}): WakeAvailability =>
+  ({ show: true, mode: 'none', state: 'no_data', testWakeAllowed: false, flaggedTimeouts: false, ...over });
 const networkMac = { mac: 'AA:BB:CC:DD:EE:01', isPrimary: true, updatedAt: new Date() };
 const wake = async () => {
   const prepared = await dispatchWake('target', 'user', { relayDeviceIdOverride: 'relay' });
@@ -158,6 +165,8 @@ describe('dispatchWake target eligibility and MAC ordering', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     selectMock.mockReset();
+    vi.mocked(resolveWakeAvailability).mockReset();
+    vi.mocked(resolveWakeAvailability).mockResolvedValue(new Map([['target', avail()]]));
     updateMock.mockReturnValue({ set: () => ({ where: async () => {} }) });
     insertMock.mockReturnValue({ values: () => Object.assign(Promise.resolve(), {
       returning: async () => [{ id: 'command' }],
@@ -252,6 +261,77 @@ describe('dispatchWake target eligibility and MAC ordering', () => {
   });
 });
 
+describe('dispatchWake Wake-on-LAN policy gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    vi.mocked(resolveWakeAvailability).mockReset();
+    updateMock.mockReturnValue({ set: () => ({ where: async () => {} }) });
+    insertMock.mockReturnValue({ values: () => Object.assign(Promise.resolve(), {
+      returning: async () => [{ id: 'command' }],
+    }) });
+  });
+  const hidden = avail({ show: false, mode: 'verified', state: 'not_configured' });
+  const resolveTo = (a: WakeAvailability) =>
+    vi.mocked(resolveWakeAvailability).mockResolvedValue(new Map([['target', a]]));
+
+  it('refuses WAKE_NOT_READY under verified when the device is not ready, and records the refusal', async () => {
+    resolveTo(hidden);
+    seedWake('offline', [networkMac]);
+    expect(await wake()).toMatchObject({ ok: false, code: 'WAKE_NOT_READY' });
+    expect(recordWakeRefusal).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'target', code: 'WAKE_NOT_READY' }));
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    // Only the target read ran: no MAC/subnet/relay work.
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns WAKE_LOOKUP_FAILED without recording when the availability lookup failed', async () => {
+    vi.mocked(resolveWakeAvailability).mockResolvedValue(new Map([['target', WAKE_LOOKUP_FAILED_AVAILABILITY]]));
+    seedWake('offline', [networkMac]);
+    expect(await wake()).toMatchObject({ ok: false, code: 'WAKE_LOOKUP_FAILED' });
+    expect(recordWakeRefusal).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the device is missing from the availability map', async () => {
+    vi.mocked(resolveWakeAvailability).mockResolvedValue(new Map());
+    seedWake('offline', [networkMac]);
+    expect(await wake()).toMatchObject({ ok: false, code: 'WAKE_LOOKUP_FAILED' });
+  });
+
+  it('testWake bypasses the gate only when testWakeAllowed', async () => {
+    resolveTo(avail({ show: false, mode: 'verified', state: 'unproven', testWakeAllowed: true }));
+    seedWake('offline', [networkMac]);
+    const prepared = await dispatchWake('target', 'user', { relayDeviceIdOverride: 'relay', testWake: true });
+    expect(prepared.ok).toBe(true);
+
+    resolveTo(hidden);
+    seedWake('offline', [networkMac]);
+    expect(await dispatchWake('target', 'user', { relayDeviceIdOverride: 'relay', testWake: true }))
+      .toMatchObject({ ok: false, code: 'WAKE_NOT_READY' });
+  });
+
+  it('does not honour testWake without the flag even when testWakeAllowed', async () => {
+    resolveTo(avail({ show: false, mode: 'verified', state: 'unproven', testWakeAllowed: true }));
+    seedWake('offline', [networkMac]);
+    expect(await wake()).toMatchObject({ ok: false, code: 'WAKE_NOT_READY' });
+  });
+
+  it('dispatches with no policy (mode none) and under always', async () => {
+    for (const a of [avail(), avail({ mode: 'always', state: 'not_configured' })]) {
+      resolveTo(a);
+      seedWake('offline', [networkMac]);
+      expect(await wake()).toMatchObject({ ok: true });
+    }
+  });
+
+  it('uses pre-resolved availability without a lookup (bulk)', async () => {
+    seedWake('offline', [networkMac]);
+    const result = await dispatchWake('target', 'user', { relayDeviceIdOverride: 'relay', availability: hidden });
+    expect(result).toMatchObject({ ok: false, code: 'WAKE_NOT_READY' });
+    expect(resolveWakeAvailability).not.toHaveBeenCalled();
+  });
+});
 
 describe('isWakeableMac', () => {
   it.each(['aa:bb:cc:dd:ee:ff', 'aa-bb-cc-dd-ee-ff', 'AABB.CCDD.EEFF', ' \taa:bb:cc:dd:ee:ff\n'])('accepts %s', mac => {

@@ -35,6 +35,7 @@ export type BodyLimitRule =
   | 'agent-ingest'
   | 'agent-hardware-health'
   | 'agent-time-status'
+  | 'agent-wake-status'
   | 'agent-workloads'
   | 'agent-topology-adjacency'
   | 'agent-unifi-telemetry'
@@ -259,6 +260,14 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
     return {
       rule: 'agent-time-status',
       maxSize: 512 * 1024,
+      error: 'Request body too large',
+    };
+  }
+  // Wake-on-LAN readiness snapshot (#10838): 64 KiB.
+  if (path.match(/^\/api\/v1\/agents\/[^/]+\/wake-status$/)) {
+    return {
+      rule: 'agent-wake-status',
+      maxSize: 64 * 1024,
       error: 'Request body too large',
     };
   }

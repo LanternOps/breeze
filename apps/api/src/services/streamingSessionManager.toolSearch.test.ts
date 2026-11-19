@@ -85,6 +85,11 @@ vi.mock('./aiToolOutput', () => ({
   redactSensitiveToolInput: (input: Record<string, unknown>) => input,
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
+// The real prepareSdkChild, wrapped so one test can add a gateway child's queryOptions (#11817).
+vi.mock('./aiModels/connectionFactory', async (orig) => {
+  const actual = await orig<typeof import('./aiModels/connectionFactory')>();
+  return { ...actual, prepareSdkChild: vi.fn(actual.prepareSdkChild) };
+});
 
 // Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of whichever test reaches it first (#11011).
 vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
@@ -95,6 +100,8 @@ import { TOOL_SEARCH_MIN_REMAINING_TURNS, TOOL_SEARCH_TURN_HEADROOM } from './ai
 import { settleInvocation } from './aiModels/settleInvocation';
 import { lookupWispGrant, wispSessionToolFilter } from './wisp/chatCeiling';
 import { createBreezeMcpServer } from './aiAgentSdkTools';
+import { SDK_PERMISSION_MODE } from './llm/sdkChildEnvGuards';
+import { prepareSdkChild } from './aiModels/connectionFactory';
 import type { AuthContext } from '../middleware/auth';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -194,8 +201,16 @@ afterEach(() => {
 });
 
 
-function optionsOfLastQuery(): { tools: string[]; env: Record<string, string>; maxTurns: number } {
-  const call = queryMock.mock.calls.at(-1)![0] as { options: { tools: string[]; env: Record<string, string>; maxTurns: number } };
+interface LastQueryOptions {
+  tools: string[];
+  allowedTools: string[];
+  env: Record<string, string>;
+  maxTurns: number;
+  permissionMode?: string;
+}
+
+function optionsOfLastQuery(): LastQueryOptions {
+  const call = queryMock.mock.calls.at(-1)![0] as { options: LastQueryOptions };
   return call.options;
 }
 
@@ -255,6 +270,10 @@ describe('tool-search policy wiring (A-W04)', () => {
     expect(optionsOfLastQuery().env.CLAUDE_CODE_DISABLE_CLAUDE_MDS).toBe('1');
     // Agent SDK 0.3.288: the env query() actually receives opts out of the CLI's display 'updates' default.
     expect(optionsOfLastQuery().env.CLAUDE_CODE_THINKING_DISPLAY_UPDATES).toBe('0');
+    // #11817: an explicit mode, and ToolSearch runs under it without an allow
+    // entry (sdkPermissionMode.e2e.test.ts proves that on the real CLI).
+    expect(optionsOfLastQuery().permissionMode).toBe(SDK_PERMISSION_MODE);
+    expect(optionsOfLastQuery().allowedTools).not.toContain('ToolSearch');
   });
 
   it('keeps tools: [] and ENABLE_TOOL_SEARCH=false for a surface that did not opt in', async () => {
@@ -265,6 +284,7 @@ describe('tool-search policy wiring (A-W04)', () => {
     await session.processorPromise;
     expect(optionsOfLastQuery().tools).toEqual([]);
     expect(optionsOfLastQuery().env.ENABLE_TOOL_SEARCH).toBe('false');
+    expect(optionsOfLastQuery().permissionMode).toBe(SDK_PERMISSION_MODE);
   });
 
   it('keeps the full list on a self-host gateway base URL', async () => {
@@ -279,6 +299,24 @@ describe('tool-search policy wiring (A-W04)', () => {
     expect(optionsOfLastQuery().env.ANTHROPIC_BASE_URL).toBe('http://litellm.internal:4000');
     expect(optionsOfLastQuery().tools).toEqual([]);
     expect(optionsOfLastQuery().env.ENABLE_TOOL_SEARCH).toBe('false');
+    // #11817: the same mode on a gateway connection as on a first-party one.
+    expect(optionsOfLastQuery().permissionMode).toBe(SDK_PERMISSION_MODE);
+  });
+
+  it("#11817: a gateway child's extra query options cannot override the permission mode", async () => {
+    const actual = await vi.importActual<typeof import('./aiModels/connectionFactory')>('./aiModels/connectionFactory');
+    vi.mocked(prepareSdkChild).mockImplementationOnce(async (...args) => ({
+      ...(await actual.prepareSdkChild(...args)),
+      queryOptions: { permissionMode: 'bypassPermissions' },
+    }));
+    mockSdkQuery([RESULT_MSG]);
+    const session = await manager.getOrCreate(
+      'sess-override', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(prepareSdkChild).toHaveBeenCalled();
+    expect(optionsOfLastQuery().permissionMode).toBe(SDK_PERMISSION_MODE);
   });
 
   it('honours the AI_TOOL_SEARCH=off kill switch', async () => {

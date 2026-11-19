@@ -379,6 +379,7 @@
       "triage": "orden de triaje",
       "newest": "Lo nuevo primero",
       "oldest": "El más viejo primero",
+      "updated": "Actualizados recientemente",
       "due": "Fecha de vencimiento"
     },
     "priority": {

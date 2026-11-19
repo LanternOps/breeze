@@ -34,7 +34,7 @@ export async function openOrJoinWakeAttempt(input: WakeRequest & {
 }
 
 const RECORDED_REFUSALS = new Set<WakeFailureCode>([
-  'NO_MACS', 'NO_SUBNET', 'IPV6_ONLY', 'NO_RELAY', 'RELAY_OVERRIDE_INVALID',
+  'NO_MACS', 'NO_SUBNET', 'IPV6_ONLY', 'NO_RELAY', 'RELAY_OVERRIDE_INVALID', 'WAKE_NOT_READY',
 ]);
 
 export async function recordWakeRefusal(input: WakeRequest & { code: WakeFailureCode }): Promise<void> {

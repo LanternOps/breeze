@@ -323,6 +323,14 @@ type AuthRequest struct {
 	// prompt host negotiates it to a catalog locale (promptcatalog.Negotiate)
 	// for the strings it renders for this session. Additive (#10190 W03).
 	UILocale string `json:"uiLocale,omitempty"`
+
+	// LogindSessionID and SpawnTicket are presented only by the Linux
+	// per-session desktop helper (#12117): the logind session root spawned it
+	// into, and the single-use ticket root minted for that spawn. The broker
+	// treats both as claims; the ticket is checked against the kernel uid and
+	// root's own record. Any other helper presenting either is refused.
+	LogindSessionID string `json:"logindSessionId,omitempty"`
+	SpawnTicket     string `json:"spawnTicket,omitempty"`
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.
@@ -551,6 +559,14 @@ type RevocationLease struct {
 	HardDeadlineUnixMs int64  `json:"hardDeadlineUnixMs"`
 	RenewEverySec      int64  `json:"renewEverySec"`
 	GraceSec           int64  `json:"graceSec"`
+	// ExpiresInMs and HardDeadlineInMs carry the same two deadlines as the
+	// time remaining when the server sent them (#11840). They need no clock
+	// agreement, and when set they win over the absolute fields. Only the
+	// server-payload decoder fills them: the agent hands its helper deadlines
+	// already resolved to this machine's clock, in the absolute fields, so an
+	// older helper reads them correctly too.
+	ExpiresInMs      int64 `json:"expiresInMs,omitempty"`
+	HardDeadlineInMs int64 `json:"hardDeadlineInMs,omitempty"`
 }
 
 // DesktopStartResponse is returned by the user helper after creating the
@@ -827,6 +843,13 @@ type StateSync struct {
 	// stale heartbeat (#8934). Same compatibility contract as AuthRejectedAt:
 	// older watchdogs ignore it and LastHeartbeat stays empty.
 	ServerUnavailableAt string `json:"serverUnavailableAt,omitempty"`
+	// ControlPlaneBlockedAt (RFC3339) is set instead of LastHeartbeat when the
+	// agent's heartbeat loop is alive but a network filter is blocking its
+	// control plane (#8868). The watchdog treats a fresh value as "running,
+	// blocked by the network" and does not restart the agent for its stale
+	// heartbeat. Same compatibility contract as ServerUnavailableAt: older
+	// watchdogs ignore it and LastHeartbeat stays empty.
+	ControlPlaneBlockedAt string `json:"controlPlaneBlockedAt,omitempty"`
 }
 
 // IntegrityCheck asks the agent to verify the integrity of the given targets.

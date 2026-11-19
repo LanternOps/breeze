@@ -41,10 +41,6 @@ var literalValueExceptions = map[string]map[string]string{
 	"internal/updater/rollback_detached_script.go": {
 		"payload": "escaped by rollbackJournalPayload",
 	},
-	"internal/heartbeat/handlers_uninstall.go": {
-		"strings.ReplaceAll(s, \"'\", `'\\''`)": "POSIX sh quoting in shQuote, not PowerShell",
-		"reason":                                "constant messages in the macOS sh script",
-	},
 	"internal/userhelper/notify_windows.go": {
 		"notifyAUMID": "constant",
 	},

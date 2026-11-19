@@ -14,6 +14,7 @@ import {
   securityAgentsInlineSettingsSchema,
   systemProtectionInlineSettingsSchema,
   containmentInlineSettingsSchema,
+  wakeOnLanInlineSettingsSchema,
   oemUpdatesInlineSettingsSchema,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
@@ -27,6 +28,11 @@ import {
 } from '../routes/configurationPolicies/oemUpdatesGate';
 import { AI_AUTO_INSTALL_REFUSAL_MESSAGE } from './aiToolsSoftwarePolicyAudit';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { withoutObservedStateValues } from './complianceRuleResults';
+import {
+  uncollectableComplianceRegistryPaths,
+  uncollectableComplianceRegistryPathMessage,
+} from '../routes/agents/policyProbeSafety';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { deviceScopeCondition } from './aiToolsSiteScope';
 import { describeFirstZodIssue } from '../lib/zodIssues';
@@ -121,6 +127,8 @@ export const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (r
   // #11070: strict. Arming, featurePolicyId and closed gates are refused
   // earlier, by oemUpdatesToolRefusal.
   oem_updates: { schema: oemUpdatesInlineSettingsSchema, normalize: true },
+  // #10838: strict; configureSettings must be false until writes ship.
+  wake_on_lan: { schema: wakeOnLanInlineSettingsSchema, normalize: true },
 };
 
 /**
@@ -271,7 +279,7 @@ function validateInlineSettingsForFeature(
   }
 
   const entry = featureType ? VALIDATED_INLINE_SETTINGS[featureType] : undefined;
-  if (!entry || (featureType !== 'containment' && (raw === undefined || raw === null))) return { value: raw };
+  if (!entry || ((featureType !== 'containment' && featureType !== 'wake_on_lan') && (raw === undefined || raw === null))) return { value: raw };
 
   const parsed = entry.schema.safeParse(raw);
   if (!parsed.success) {
@@ -281,6 +289,12 @@ function validateInlineSettingsForFeature(
     const described = describeFirstZodIssue(parsed.error);
     if (!described) return { error: `Invalid ${featureType} inline settings.` };
     return { error: `Invalid ${featureType} inline settings — ${described}` };
+  }
+  // #11976: same refusal as the HTTP route; left to the service backstop it
+  // would reach the model as the generic tool error.
+  if (featureType === 'compliance') {
+    const uncollectable = uncollectableComplianceRegistryPaths(raw);
+    if (uncollectable.length > 0) return { error: uncollectableComplianceRegistryPathMessage(uncollectable[0]!) };
   }
   return { value: entry.normalize ? parsed.data : raw };
 }
@@ -315,7 +329,7 @@ export const CONTAINMENT_LINK_FEATURE_TYPE_REQUIRED =
 /** Per-feature inline settings reference, returned on demand by describe. */
 export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFeatureType, string>> = {
   patch: `{ sources: ["os","third_party"], scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", scheduleDayOfMonth?: 1, rebootPolicy: "never"|"if_required"|"always"|"maintenance_window" } for schedule/reboot only; set featurePolicyId → existing update ring UUID to attach approval behaviour. Approval (auto-approve severities, deferral) and per-app block/pin rules live on the linked Update Ring (manage_update_rings), not on the policy.`,
-  maintenance: `{ recurrence: "once"|"daily"|"weekly"|"monthly", windowStart?: "naive ISO-8601 local datetime for once (e.g. 2026-03-15T02:00) | HH:MM local time of day for daily/weekly/monthly (omitted, "" or null = 00:00; a blank windowStart never means the window is off). Never pass a Z-suffixed or offset-bearing instant for a recurring cadence — it is rejected and the window falls back to midnight.", durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, rebootIfPending: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }. The day is fixed: weekly opens every Sunday and monthly on the 1st, at windowStart in timezone. There is no day-of-week or day-of-month field, so a window cannot be moved to another day. rebootIfPending: true reboots (after the usual reboot warning) Windows and Linux devices that report a pending reboot while the window is open. The check runs every 10 minutes and only reaches devices that are online during the window, so a laptop that is off or asleep then is not rebooted. macOS never reports a pending reboot. get_effective_configuration with includeSettings returns the resolved schedule (day, start time, next window) as effectiveSchedule.`,
+  maintenance: `{ recurrence: "once"|"daily"|"weekly"|"monthly", windowStart?: "naive ISO-8601 local datetime for once (e.g. 2026-03-15T02:00) | HH:MM local time of day for daily/weekly/monthly (omitted, "" or null = 00:00; a blank windowStart never means the window is off). Never pass a Z-suffixed or offset-bearing instant for a recurring cadence — it is rejected and the window falls back to midnight.", dayOfWeek?: "sun"|"mon"|"tue"|"wed"|"thu"|"fri"|"sat", dayOfMonth?: 1-31, durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, rebootIfPending: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }. weekly opens every dayOfWeek (default Sunday) and monthly on dayOfMonth (default the 1st; the last day of a shorter month), at windowStart in timezone. rebootIfPending: true reboots (after the usual reboot warning) Windows and Linux devices that report a pending reboot while the window is open. The check runs every 10 minutes and only reaches devices that are online during the window, so a laptop that is off or asleep then is not rebooted. macOS never reports a pending reboot. get_effective_configuration with includeSettings returns the resolved schedule (day, start time, next window) as effectiveSchedule.`,
   automation: `{ items: [{ name, enabled: true, triggerType: "schedule"|"event"|"manual", cronExpression?: "0 2 * * *", timezone?: "America/New_York", eventType?: "device.offline"|"alert.triggered"|"compliance.failed"|"patch.available", actions: [{ type: "run_script"|"send_notification"|"create_alert"|"execute_command", scriptId?|channelId?|severity?|message?|command? }], onFailure: "stop"|"continue"|"notify" }] }`,
   event_log: `{ retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ["security","hardware","application","system"], minimumLevel: "info"|"warning"|"error"|"critical", collectionIntervalMinutes: 15, rateLimitPerHour: 12000, applicationProviders: [] /* up to 20 extra Application-log Warning/Information providers; only the winning policy applies */ }`,
   compliance: `{ items: [{ name, enforcementLevel?: "monitor"|"warn"|"enforce" (default "monitor"; enforce also runs the rule's remediation), checkIntervalMinutes?: 60, rules: 1-50 of [ { type: "required_software", softwareName: "Contoso Agent" (case-insensitive name match against installed software), softwareVersion?: "7.0", versionOperator?: "any"|"eq"|"gte"|"gt"|"lte" (omit or "any" = presence only; any other operator REQUIRES softwareVersion; "gt" is evaluated as >=) } | { type: "prohibited_software", prohibitedName } | { type: "disk_space_minimum", minGb: number (minimum FREE space in GB), diskPath?: "C:" (default: every disk) } | { type: "os_version", osType?: "windows"|"macos"|"linux"|"any" (default "any"), minOsVersion?: "10.0.19045" } | { type: "registry_check", registryPath, registryValueName, registryExpectedValue? (omit = the value only has to exist) } | { type: "config_check", configFilePath, configKey, configExpectedValue? } ] }] }. Each rule may also carry description? and remediation?. A failing rule marks the device non-compliant (see configuration_policy_compliance). enforcementLevel "warn" and "enforce" also raise an alert per device (medium / high) that auto-resolves once the device is compliant again; "monitor" only reports. To be alerted when an app is missing or removed, use a required_software rule with enforcementLevel "warn", or a software_presence monitor (manage_monitor_definitions, condition { name, presence: "not_installed" }).`,
@@ -337,6 +351,7 @@ export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFea
   workload_inventory: `{ enabled: false, dockerEnabled: true, podmanEnabled: true, hypervEnabled: true, proxmoxEnabled: true, intervalMinutes: 60 } — inline-only workload inventory settings. enabled defaults to false (opt-in): runtimes are always detected, but containers and VMs are listed only when enabled is true and the runtime's own flag is true. Turning a runtime off deletes its listed workloads. intervalMinutes is an integer in 15..1440. Collection is read-only.`,
   security_agents: `{ version: 1, agents: [{ vendor: "huntress"|"sentinelone"|"controld"|"nextdns"|"bitdefender", enabled: boolean, platforms?: ["windows"|"macos"|"linux"] }] } — inline-only third-party security agent selection. Strict: no keys, tokens or other fields (per-customer keys come from the vendor integration). Each vendor at most once; agents: [] opts the assigned devices out. No featurePolicyId. This tool cannot enable a vendor (enabling installs software, which needs a person with devices.execute); it can only list vendors as disabled.`,
   oem_updates: `{ version: 1, enabled: false, schedule: { weekOfMonth: "first"|"second"|"third"|"fourth"|"last", dayOfWeek: "sun".."sat", windowStart: "HH:MM", windowHours: 1..8 }, catchUpNights: 0..14, reboot: "overnight"|"never", vendors: { dell?|surface?|hp?|lenovo?: { enabled: boolean, categories: { bios?, firmware?, driver?, application?: boolean }, blockedUpdateIds: [] (at most 200 unique IDs) } } } — inline-only vendor (Dell, Surface, HP, Lenovo) update schedule. Strict; every field but blockedUpdateIds is required. An absent vendor or category is off. A category whose rollout gate is still closed cannot be set true. No featurePolicyId. This tool cannot turn vendor updates on (on, a new category, overnight reboot, unblocking an update, assigning or activating a policy that has them on all need a person with devices.execute); it can turn them off, remove a category or block an update.`,
+  wake_on_lan: `{ configureSettings: false, buttonMode: "verified"|"always" } — strict inline-only Wake-on-LAN setting. buttonMode "always" shows the Wake button on every offline device; "verified" shows it only where wake readiness is proven. configureSettings must be false (Breeze does not change WOL settings yet). No featurePolicyId.`,
   containment: `{ version: 1, extraAllow: [], defaultTtlHours: 72, deadManMinutes: 0, remoteRelay: true, requireSignedReleaseToken: false } — strict inline-only containment configuration (not consumed yet); version is required, other fields default as shown. No featurePolicyId. defaultTtlHours: integer 1..720; deadManMinutes: 0 or integer 15..1440. extraAllow: at most 32 strict { host? (DNS name), cidr?, proto: "tcp"|"udp"|"udp+tcp", ports: 1..16 unique integers 1..65535, label: trimmed 1..100 characters }; exactly one of host/cidr, no wildcard or localhost hosts, loopback networks, IPv4 prefixes shorter than /8, or IPv6 prefixes shorter than /32.`,
   system_protection: `{ beforePatching: true, beforeScripts: false, beforeSoftwareInstall: false, labelPrefix: 'Breeze' } — inline-only Windows System Restore checkpoint toggles. Strict: unknown keys are rejected, so there is no onFailure/abort setting. beforePatching defaults to true (matches existing agent behaviour); the other two default to false (opt-in). labelPrefix is 1..64 characters with no control characters. A checkpoint is best-effort and not a backup: Windows may throttle or later remove it.`,
 };
@@ -416,9 +431,8 @@ function shapeEffectiveConfig(
     // The compact default page drops sourceTargetId: inheritanceChain carries
     // the (level, target, policy) triple for every winning assignment, and one
     // id per feature type is what kept the page from fitting the chat budget.
-    // #10397: the stored maintenance settings cannot say which day a window
-    // opens (weekly = Sunday, monthly = the 1st) and a blank windowStart means
-    // midnight, not "never". Ship the schedule the evaluator runs beside them.
+    // #10397: a blank windowStart means midnight, not "never", and an absent
+    // dayOfWeek / dayOfMonth (#9574) means Sunday / the 1st. Ship the schedule the evaluator runs beside them.
     // Described from the same inlineSettings blob shown next to it, so the two
     // can never contradict each other on the page.
     const effectiveSchedule = opts.includeSettings && featureType === 'maintenance'
@@ -1122,7 +1136,7 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({
           policyId,
           policyName: policy.name,
-          devices: rows,
+          devices: rows.map((row) => ({ ...row, details: withoutObservedStateValues(row.details) })),
           showing: rows.length,
         });
       }
@@ -1275,6 +1289,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'containment is inline-only; featurePolicyId must not be set' });
         }
 
+        if (featureType === 'wake_on_lan' && input.featurePolicyId) {
+          return JSON.stringify({ error: 'wake_on_lan is inline-only; featurePolicyId must not be set' });
+        }
+
         if (featureType === 'security_agents') {
           const refusal = securityAgentsToolRefusal(input.featurePolicyId ?? null, input.inlineSettings ?? null);
           if (refusal) return refusal;
@@ -1334,6 +1352,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
 
         if (existingFeatureType === 'containment' && input.featurePolicyId) {
           return JSON.stringify({ error: 'containment is inline-only; featurePolicyId must not be set' });
+        }
+
+        if (existingFeatureType === 'wake_on_lan' && input.featurePolicyId) {
+          return JSON.stringify({ error: 'wake_on_lan is inline-only; featurePolicyId must not be set' });
         }
 
         if (existingFeatureType === 'security_agents') {

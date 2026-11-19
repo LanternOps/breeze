@@ -51,6 +51,7 @@ import {
 import ComponentStatePill from "./hardware/ComponentStatePill";
 import { WARRANTY_STATUS_BADGE } from "./DeviceWarrantyCard";
 import { formatDateOnly, parseDateOnly } from "@/lib/dateOnly";
+import { formatDateTime } from "@/lib/dateTimeFormat";
 import {
   matchesMergedListFilters,
   sortByDisplayName,
@@ -173,6 +174,23 @@ export type OSType = "windows" | "macos" | "linux";
 export type WarrantyStatus = "active" | "expiring" | "expired" | "unknown" | "subscription_active";
 
 /**
+ * Server-decided Wake-on-LAN button availability (#10838). The client only
+ * honours an explicit `show: false`; an absent field (older API) keeps Wake.
+ */
+export type WakeAvailability = {
+  show: boolean;
+  mode: "none" | "verified" | "always" | "unknown";
+  state: string;
+  testWakeAllowed: boolean;
+  flaggedTimeouts: boolean;
+};
+
+/** Wake is offered unless the server said otherwise. */
+export function wakeAllowedByServer(device: { wakeAvailability?: WakeAvailability }): boolean {
+  return device.wakeAvailability?.show !== false;
+}
+
+/**
  * Presentation-level discriminator for the unified Devices list (#1322, #4622).
  * `agent` = an enrolled endpoint running the Go agent (devices table).
  * `network` = a discovered network device (printer/router/switch/…) from
@@ -247,6 +265,20 @@ export type Device = {
   helperVersion?: string | null;
   /** Agent-reported Breeze Assist install problem (#6925); null/absent = none. */
   helperInstallIssue?: string | null;
+  /**
+   * Active control-plane block kind (#8868): a network filter, captive portal
+   * or untrusted TLS interceptor answers in place of the server. null/absent =
+   * none. The detail (filter host, issuer) is on the device page only.
+   */
+  controlPlaneBlockKind?: string | null;
+  /**
+   * Set (server time of the last report) when the device has not reported
+   * since its block was last asserted: the pill renders in a muted
+   * "last known" form. null/absent = the block is current.
+   */
+  controlPlaneBlockLastKnownAt?: string | null;
+  /** Server-decided Wake button availability (#10838); absent on older APIs. */
+  wakeAvailability?: WakeAvailability;
   /**
    * Control-plane URL the agent last heartbeated to (devices.agent_server_url,
    * #2288). The opt-in Server column renders only its hostname. Any current
@@ -396,6 +428,8 @@ export type Device = {
     serialNumber?: string;
     /** device_hardware.product_sku (#9593); the opt-in Product Number column. */
     productSku?: string;
+    /** device_hardware.model (#11332), as reported; the opt-in Model column. */
+    model?: string;
   };
   /**
    * Headline device reliability score (0-100) from the existing
@@ -535,6 +569,7 @@ const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   // #9863 — the list joins device_warranty on the device subject only.
   "warranty",
   "productSku",
+  "hardwareModel",
   "vpn",
   // #9038 — alerts/tickets hang off the device record, which non-agent rows lack.
   "attention",
@@ -919,6 +954,7 @@ const sortValue: Record<Exclude<ColumnId, "diskUsage">, (d: Device) => string | 
     return (cls === "manual" ? d.serialNumber : cls === "agent" ? d.hardware?.serialNumber : null) || null;
   },
   productSku: (d) => ((d.deviceClass ?? "agent") === "agent" ? d.hardware?.productSku || null : null),
+  hardwareModel: (d) => ((d.deviceClass ?? "agent") === "agent" ? d.hardware?.model || null : null),
   assetTag: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.assetTag || null : null),
   location: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.location || null : null),
   // #5213 — network-only, like class/type above; agent rows sort blanks-last.
@@ -1849,6 +1885,16 @@ export default function DeviceList({
     }
   };
   // Assist on disk but not run by the agent (#10183, #10185) is not "Not installed".
+  // #8868 — closed-enum kind from the list row; an unknown kind from a newer
+  // API still gets the generic network-filter label.
+  const controlPlaneBlockLabel = (kind: string): string => {
+    switch (kind) {
+      case "untrusted_certificate":
+        return t("deviceList.controlPlaneBlockBadgeCertificate");
+      default:
+        return t("deviceList.controlPlaneBlockBadge");
+    }
+  };
   const helperInstallIssueLabel = (issue: string): string =>
     helperInstalledDespiteIssue(issue)
       ? t("deviceList.helperUnavailable")
@@ -2120,6 +2166,8 @@ export default function DeviceList({
         // must act on for this device — diagnostics go on the detail page.
         const pillClass =
           "inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium bg-warning/15 text-warning border-warning/30";
+        const mutedPillClass =
+          "inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium bg-muted text-muted-foreground border-muted";
         const secondary: Array<{ key: string; node: React.ReactNode }> = [];
         if (
           isAgentUpdateStuck({
@@ -2186,6 +2234,28 @@ export default function DeviceList({
             ),
           });
         }
+        if (device.controlPlaneBlockKind) {
+          const lastKnownAt = device.controlPlaneBlockLastKnownAt ?? null;
+          secondary.push({
+            key: "cpblock",
+            node: (
+              <span
+                data-testid={`device-${device.id}-status-control-plane-block`}
+                data-last-known={lastKnownAt ? "true" : undefined}
+                title={
+                  lastKnownAt
+                    ? t("deviceList.controlPlaneBlockLastKnownTooltip", {
+                        time: formatDateTime(lastKnownAt, { dateStyle: "medium", timeStyle: "short" }),
+                      })
+                    : undefined
+                }
+                className={lastKnownAt ? mutedPillClass : pillClass}
+              >
+                {controlPlaneBlockLabel(device.controlPlaneBlockKind)}
+              </span>
+            ),
+          });
+        }
         if (device.updateOfferWithheldReason) {
           secondary.push({
             key: "withheld",
@@ -2208,6 +2278,9 @@ export default function DeviceList({
             ? helperInstallIssueLabel(device.helperInstallIssue)
             : t("deviceList.helperNotInstalled"),
           withheld: t("deviceList.updateWithheld"),
+          cpblock: device.controlPlaneBlockKind
+            ? controlPlaneBlockLabel(device.controlPlaneBlockKind)
+            : t("deviceList.controlPlaneBlockBadge"),
         };
         const [topSecondary, ...restSecondary] = secondary;
         return (
@@ -2933,8 +3006,8 @@ export default function DeviceList({
         const cls = device.deviceClass ?? "agent";
         const value = cls === "manual" ? device.serialNumber : cls === "agent" ? device.hardware?.serialNumber : null;
         return (
-          <td key="serial" className="px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-serial`}>
-            {value ? <span className="truncate" title={value}>{value}</span> : dash}
+          <td key="serial" className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-serial`}>
+            {value ? <span className="block truncate" title={value}>{value}</span> : dash}
           </td>
         );
       },
@@ -2946,6 +3019,18 @@ export default function DeviceList({
         return (
           <td key="productSku" className="px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-product-sku`}>
             {value ? <span className="truncate" title={value}>{value}</span> : dash}
+          </td>
+        );
+      },
+    },
+    // #11332 - SMBIOS model shown exactly as reported (no derived label).
+    hardwareModel: {
+      header: () => sortHeader("hardwareModel", t("deviceList.tableColumns.hardwareModel"), t("deviceList.sortBy.hardwareModel")),
+      cell: (device) => {
+        const value = (device.deviceClass ?? "agent") === "agent" ? device.hardware?.model : null;
+        return (
+          <td key="hardwareModel" className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-model`}>
+            {value ? <span className="block truncate" title={value}>{value}</span> : dash}
           </td>
         );
       },
@@ -3837,7 +3922,7 @@ export default function DeviceList({
                                     <RotateCcw className="h-4 w-4" />
                                     {t("deviceList.reboot")}{" "}
                                   </button>
-                                  {canWake && device.status === "offline" && (
+                                  {canWake && device.status === "offline" && wakeAllowedByServer(device) && (
                                     <button
                                       type="button"
                                       onClick={() => {

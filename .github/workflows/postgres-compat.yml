@@ -297,7 +297,7 @@ jobs:
           MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
           NODE_ENV: test
           DB_CONTEXTLESS_WRITE_STRICT: 'true'
-        run: node .github/scripts/retry-shard.mjs --runner vitest --label integration-pg${PG_MAJOR}-${{ matrix.shard }} --budget-minutes 50 -- pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/16
+        run: node .github/scripts/retry-shard.mjs --runner vitest --label integration-pg${PG_MAJOR}-${{ matrix.shard }} --budget-minutes 50 --stall-minutes 10 -- pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/16
 
       - name: Upload flake report
         if: always()

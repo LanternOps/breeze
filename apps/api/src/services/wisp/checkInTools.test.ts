@@ -213,8 +213,8 @@ describe('wisp check-in tools — registry', () => {
     }
     expect(TOOL_RATE_LIMITS.schedule_check_in).toEqual({ limit: 10, windowSeconds: 600 });
     expect(TOOL_RATE_LIMITS.cancel_check_in).toEqual({ limit: 20, windowSeconds: 300 });
-    // W07: a notify check-in adds a row; a run check-in keeps its card.
-    expect(WISP_SELF_STATE_TOOLS.get('schedule_check_in')).toBe('notify_check_in');
+    // Both modes skip the card: notify adds a row, run spends only inside the grant budget.
+    expect(WISP_SELF_STATE_TOOLS.get('schedule_check_in')).toBe('own_check_in');
     expect(WISP_SELF_STATE_TOOLS.get('cancel_check_in')).toBe('own_thread');
     expect(WISP_SELF_STATE_TOOLS.has('list_check_ins')).toBe(false);
   });

@@ -117,6 +117,7 @@ Until a model is verified it has no tool calling and cannot be used for chat, th
 | **Verification failed: no tool_use block** | The server or model does not support function calling. For vLLM, start the server with `--enable-auto-tool-choice --tool-call-parser <parser>`. For Ollama, use a model that supports tools, such as `qwen2.5`. |
 | **egress_blocked** | The address is not allowed for this deployment: a private address on hosted Breeze, a private address on a self-hosted install without `IS_HOSTED=false`, `http` to a public address, or a loopback/link-local address. Use a public `https` URL, or fix the deployment setting. |
 | **Re-verify: endpoint changed** | The connection's base URL changed after the model was verified. Click **Verify** again. |
+| **Verification record unreadable: verify again** | A verification record is stored for the model, but Breeze cannot read it, for example because it was edited by hand. The model has no tool calling until it is verified again. Click **Verify** again. The API log names the model's offering and the fields that could not be read. |
 
 ## Default model and the offered model list
 

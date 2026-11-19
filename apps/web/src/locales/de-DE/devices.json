@@ -880,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "Es wurden keine Compliance-Ergebnisse gemeldet. Weisen Sie diesem Gerät eine Konfigurationsrichtlinie mit Compliance-Regeln zu oder warten Sie auf die nächste Auswertung.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Konfigurationsrichtlinie zuweisen"
+    "assignPolicy": "Konfigurationsrichtlinie zuweisen",
+    "notCollectedProbeLimit": "Nicht erfasst (Abfragelimit)",
+    "notCollectedProbeLimitHint": "Die Compliance-Abfrageliste dieser Organisation ist voll, daher wird mindestens eine Prüfung hier nicht erfasst. Sie wird erst ausgewertet, gemeldet oder behoben, wenn die Liste wieder Platz hat."
   },
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} wurde nach {{orgName}} verschoben",
@@ -1465,6 +1467,19 @@
         "unknown": "ein unbekannter Fehler ist aufgetreten"
       }
     },
+    "controlPlaneBlock": {
+      "title": "Von einem Netzwerkfilter blockiert",
+      "titleUntrustedCertificate": "Serverzertifikat nicht vertrauenswürdig",
+      "webFilter": "Ein Netzwerk-Sicherheitsfilter im Netzwerk dieses Geräts antwortet anstelle des Breeze-Servers ({{locationHost}}). Meist ist das eine Sicherheitsfunktion des Routers des Internetanbieters, ein Webfilter der Firewall oder eine Anmeldeseite des Netzwerks.",
+      "captivePortal": "Das Netzwerk dieses Geräts hält Verbindungen auf einer Anmeldeseite (Captive Portal) fest.",
+      "plaintextUnknown": "Etwas im Netzwerk dieses Geräts hat die Breeze-Verbindung mit unverschlüsseltem HTTP statt TLS beantwortet.",
+      "untrustedCertificate": "Die Verbindung zum Breeze-Server hat ein Zertifikat vorgelegt, dem dieses Gerät nicht vertraut (ausgestellt von {{certIssuer}}). Meist ist das eine TLS-Prüfung durch eine Firewall oder einen Proxy, ein Zertifikatsproblem auf einem selbst gehosteten Server oder ein veralteter Speicher vertrauenswürdiger Stammzertifikate auf diesem Gerät. Breeze umgeht dies nicht.",
+      "viaEch": "Derzeit über Encrypted Client Hello erreichbar.",
+      "cleared": "War von {{from}} bis {{to}} blockiert.",
+      "lastKnown": "Zuletzt gemeldet: {{time}}. Das Gerät hat sich seitdem nicht gemeldet, daher trifft dies möglicherweise nicht mehr zu.",
+      "howToFix": "So beheben Sie das Problem",
+      "noDetail": "keine Angabe"
+    },
     "logShipping": {
       "label": "Log-Übertragung",
       "state": {
@@ -1688,6 +1703,7 @@
       "lastSeen": "Zuletzt gesehen",
       "serial": "Seriennummer",
       "productSku": "Produktnummer",
+      "hardwareModel": "Modell",
       "assetTag": "Asset-Tag",
       "location": "Standort",
       "source": "Quelle"
@@ -1706,6 +1722,7 @@
       "lastSeen": "Sortieren nach der zuletzt gesehenen Zeit",
       "serial": "Nach Seriennummer sortieren",
       "productSku": "Nach Produktnummer sortieren",
+      "hardwareModel": "Nach Modell sortieren",
       "assetTag": "Nach Asset-Tag sortieren",
       "location": "Nach Standort sortieren",
       "source": "Nach Quelle sortieren"
@@ -1863,6 +1880,9 @@
       "unmanagedInstall": "Breeze Assist wurde nicht von Breeze installiert und die Bereitstellung ist aus, daher lässt der Agent es unverändert.",
       "unknown": "Breeze Assist ist aktiviert, aber nicht installiert."
     },
+    "controlPlaneBlockBadge": "Netzwerkfilter",
+    "controlPlaneBlockBadgeCertificate": "Zertifikat nicht vertrauenswürdig",
+    "controlPlaneBlockLastKnownTooltip": "Zuletzt gemeldet: {{time}}; das Gerät hat sich seitdem nicht gemeldet.",
     "agentVersionRelation": {
       "equalTooltip": "Entspricht der effektiven Version {{version}}",
       "aheadTooltip": "Vor dem Pin {{version}}",
@@ -2813,6 +2833,10 @@
       "bulkMoveSiteNotMovedError": "{{devices}} (ein unerwarteter Fehler ist aufgetreten; bitte erneut versuchen)",
       "deviceMovedToSite": "{{hostname}} an einen neuen Standort verschoben",
       "bulkWakeResult": "An {{sent}} gesendet, {{skipped}} übersprungen",
+      "bulkWakePolicySkipped": "{{count}} wegen der Wake-on-LAN-Richtlinie übersprungen",
+      "bulkWakeAllBlockedByPolicy": "Kein Wake gesendet: {{count}} durch die Wake-on-LAN-Richtlinie blockiert",
+      "bulkWakeLookupFailedSkipped": "{{count}} konnten nicht geprüft werden, bitte erneut versuchen",
+      "bulkWakeAllLookupFailed": "Kein Wake gesendet: {{count}} konnten nicht geprüft werden, bitte erneut versuchen",
       "scriptQueuedOneOffline": "Skript „{{script}}“ für {{hostname}} eingereiht – wird ausgeführt, sobald das Gerät wieder verbunden ist"
     },
     "tryAgain": "Versuchen Sie es erneut",
@@ -2866,7 +2890,9 @@
       "relayDisconnected": "Relay-Verbindung beim Senden getrennt — erneut versuchen",
       "missingTarget": "nicht gefunden oder Zugriff verweigert",
       "removed": "entfernt",
-      "invalidRelay": "mit ungültiger Relay-Auswahl"
+      "invalidRelay": "mit ungültiger Relay-Auswahl",
+      "policyNotReady": "durch ihre Wake-on-LAN-Richtlinie blockiert (nicht bereit)",
+      "policyLookupFailed": "deren Wake-on-LAN-Richtlinie nicht geprüft werden konnte — erneut versuchen"
     }
   },
   "filterAddDropdown": {
@@ -4876,6 +4902,7 @@
     "startDescription": "Netzwerkverkehr außer der Breeze-Verwaltung blockieren.",
     "releaseDescription": "Entfernung der Breeze-Isolierungsregeln anfordern. Ein Offline-Gerät erhält die Freigabe beim erneuten Verbinden.",
     "serverWarning": "Dies ist ein Serverbetriebssystem. Die Isolierung kann Dienste für andere Geräte unterbrechen.",
+    "deadManUnsupported": "Die Eindämmungsrichtlinie dieses Geräts legt eine Dead-Man-Freigabe fest, aber die Agent-Version des Geräts unterstützt sie nicht. Das Gerät wird ohne Dead-Man-Freigabe isoliert.",
     "reason": "Begründung",
     "ttlHours": "Dauer (Stunden)",
     "incidentId": "Bestehende Vorfall-ID (optional)",
@@ -4899,6 +4926,20 @@
     "codeNext": "Code für die nächste Stunde",
     "codeValidUntil": "Aktueller Code gültig bis {{date}}",
     "codeError": "Notfallcodes konnten nicht geladen werden. Versuchen Sie es erneut.",
+    "tabCode": "Notfallcode",
+    "tabToken": "Freigabe-Token",
+    "issueToken": "Freigabe-Token ausstellen",
+    "hideToken": "Token ausblenden",
+    "tokenLabel": "Freigabe-Token",
+    "copyToken": "Token kopieren",
+    "tokenCopied": "Kopiert",
+    "tokenCopyError": "Das Token konnte nicht kopiert werden. Markieren und manuell kopieren.",
+    "tokenQrAlt": "QR-Code mit dem Freigabe-Token",
+    "tokenValidUntil": "Token gültig bis {{date}}",
+    "tokenCommandHint": "Führen Sie auf dem isolierten Gerät diesen Befehl als Administrator oder root aus und ersetzen Sie <token> durch das Token:",
+    "tokenError": "Es konnte kein Freigabe-Token ausgestellt werden. Versuchen Sie es erneut.",
+    "tokenUnavailable": "Für diese Isolierung ist kein Freigabe-Token verfügbar.",
+    "codesDisabledNote": "Notfallcodes sind für dieses Gerät deaktiviert. Verwenden Sie stattdessen ein signiertes Freigabe-Token.",
     "incidentHeading": "Netzwerkisolierung",
     "retry": "Isolierungsstatus erneut laden",
     "filterLabel": "Isoliert",

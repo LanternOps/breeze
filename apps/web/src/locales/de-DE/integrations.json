@@ -159,7 +159,8 @@
       "missing": "Fehlende Berechtigungen",
       "unexpectedAlert": "Unerwartete Berechtigungen erkannt",
       "unknownPermission": "Unbekannte Berechtigung (Rolle {{appRoleId}})",
-      "grantsVerifiedAt": "Berechtigungen geprüft"
+      "grantsVerifiedAt": "Berechtigungen geprüft",
+      "graphTokenOnly": "Graph-Berechtigungen geprüft. Berechtigungen für andere Microsoft-Ressourcen wurden nicht geprüft. Erteilen Sie Application.Read.All für eine vollständige Prüfung."
     },
     "actions": {
       "connect": "Verbinden",
@@ -170,6 +171,7 @@
       "consentFailed": "Die Zustimmung konnte nicht gestartet werden.",
       "retestFailed": "Die Verbindung konnte nicht erneut geprüft werden.",
       "retestSucceeded": "Die erneute Verbindungsprüfung ist abgeschlossen.",
+      "retestNeedsAttention": "Die erneute Prüfung ist abgeschlossen, aber die Verbindung erfordert weiterhin Aufmerksamkeit.",
       "disconnectWarning": "Durch das Trennen kann Breeze diese Verbindung nicht mehr verwenden. Die mandantenweite Microsoft-Zustimmung bleibt bestehen, bis ein Kundenadministrator sie in Microsoft Entra entfernt.",
       "disconnectFailed": "Die Verbindung konnte nicht getrennt werden.",
       "disconnectSucceeded": "Die Breeze-Verbindung wurde getrennt.",
@@ -192,6 +194,7 @@
       "grant_unexpected": "Microsoft meldet Berechtigungen außerhalb des genehmigten Manifests.",
       "manifest_stale": "Die erteilten Berechtigungen verwenden ein älteres Manifest. Erteilen Sie die Zustimmung erneut.",
       "organization_probe_failed": "Die Prüfung der Microsoft-Organisation ist fehlgeschlagen. Prüfen Sie die Verbindung erneut.",
+      "grant_reconciliation_unavailable": "Microsoft hat die Verbindung akzeptiert, aber Breeze kann nicht lesen, welche Berechtigungen dieser Mandant der App für Administratoraktionen erteilt hat, daher können sie nicht überprüft werden. Administratoraktionen bleiben pausiert, bis das möglich ist.",
       "executor_unavailable": "Der Prüfdienst ist nicht verfügbar. Versuchen Sie es später erneut.",
       "executor_unavailablePending": "Die Verbindung konnte nicht abgeschlossen werden. Versuchen Sie es erneut mit „Verbinden“; wenn der Fehler bestehen bleibt, wenden Sie sich an den Support.",
       "unknown": "Die Verifizierung erfordert Aufmerksamkeit. Prüfen Sie die Verbindung erneut oder starten Sie die Zustimmung neu."
@@ -289,11 +292,9 @@
     "unableToSendTestNotification": "Testbenachrichtigung kann nicht gesendet werden.",
     "failedToLoadCommunicationSettings": "Die Kommunikationseinstellungen konnten nicht geladen werden",
     "slackSettingsSaved": "Slack-Einstellungen gespeichert.",
-    "slackTestNotificationQueued": "Slack-Testbenachrichtigung in der Warteschlange.",
     "teamsSettingsSaved": "Teams-Einstellungen gespeichert.",
-    "teamsTestNotificationQueued": "Teams-Testbenachrichtigung in der Warteschlange.",
     "discordSettingsSaved": "Discord-Einstellungen gespeichert.",
-    "discordTestNotificationQueued": "Discord-Testbenachrichtigung in der Warteschlange.",
+    "discordTestNotificationSent": "Discord-Testbenachrichtigung gesendet.",
     "loadingCommunicationIntegrations": "Kommunikationsintegrationen werden geladen...",
     "communicationIntegrations": "Kommunikationsintegrationen",
     "connectChatToolsRouteAlertsBySeverityAnd": "Verbinden Sie Chat-Tools, leiten Sie Warnungen nach Schweregrad weiter und passen Sie Nachrichtenvorlagen an.",

@@ -336,6 +336,7 @@ suite portal sources apps/api/src/routes/portal*
 # import evidence: owned by another suite and imported by a test here
 suite portal sources apps/api/src/routes/orgPortalEntraTenant.ts
 suite portal sources apps/api/src/routes/orgPortalDirectory.ts
+suite portal sources apps/api/src/routes/orgPortalScim.ts
 suite portal sources apps/api/src/routes/orgPortalAccessPolicy.ts
 suite portal sources apps/api/src/routes/orgPortalAccessRequests.ts
 suite portal sources apps/api/src/routes/orgPortalUsers.ts
@@ -472,5 +473,6 @@ suite wisp sources apps/api/src/services/aiAgents/runService.ts
 suite wisp sources apps/api/src/services/aiAgents/troubleshootProfile.ts
 suite wisp sources apps/api/src/services/aiGuardrails.ts
 suite wisp sources apps/api/src/services/aiTools.ts
+suite wisp sources apps/api/src/services/aiToolsArtifacts.ts
 suite wisp sources apps/api/src/services/aiToolsWisp.ts
 suite wisp sources apps/api/src/services/orgMerge.ts

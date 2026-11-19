@@ -48,6 +48,7 @@ import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { cancelCheckInShape, configPolicyOwnerShape, createWatchShape, deliveryToolShape, launchSpecialistShapeFor, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listCheckInsShape, listConcernsShape, listLinksShape, raiseConcernShape, scheduleCheckInShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
+import { EXPORT_DATASETS, EXPORT_DATASET_PARAM_DESCRIPTION, EXPORT_FILTERS_PARAM_DESCRIPTION } from './aiToolsExportDatasetNames';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
 import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
@@ -1279,7 +1280,15 @@ function makeToolHandler(
         ? {
           orgId: captureSession.orgId,
           sessionId: captureSession.breezeSessionId,
-          ...(captureSession.wispGrant ? { wispThreadId: captureSession.wispGrant.threadId } : {}),
+          ...(captureSession.wispGrant
+            ? {
+              wispThreadId: captureSession.wispGrant.threadId,
+              // #11845: the grant pin from the ai_sessions row (trusted
+              // session context, never tool input) for read_artifact's
+              // analysis-output arm.
+              wispGrant: { grantId: captureSession.wispGrant.grantId, revisionId: captureSession.wispGrant.revisionId },
+            }
+            : {}),
         }
         : undefined;
       // An absent member means no KEY at all, and an empty bag means no FOURTH
@@ -2592,6 +2601,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
       {
         query: z.string().min(1).max(500),
         section: z.enum(['getting-started', 'deploy', 'agents', 'security', 'features', 'monitoring', 'reference']).optional(),
+        limit: z.number().int().min(1).max(5).optional().describe('Max pages (default 5, max 5)'),
       },
       makeHandler('search_documentation')
     ),
@@ -3425,6 +3435,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
       {
         status: z.enum(['open', 'patched', 'mitigated', 'accepted', 'all']).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+        ...pageZodShape(20, 100),
       },
       makeHandler('get_vulnerability_report')
     ),
@@ -3697,9 +3708,9 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
       'export_dataset',
       registryDescription('export_dataset'),
       {
-        dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
+        dataset: z.enum(EXPORT_DATASETS).describe(EXPORT_DATASET_PARAM_DESCRIPTION),
         format: z.enum(['jsonl', 'csv']).optional(),
-        filters: z.record(z.string(), z.unknown()).optional(),
+        filters: z.record(z.string(), z.unknown()).optional().describe(EXPORT_FILTERS_PARAM_DESCRIPTION),
         deviceIds: z.array(z.string()).optional(),
         siteId: z.string().optional(),
         maxRows: z.number().optional(),
@@ -5590,6 +5601,8 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
         orgId: uuid,
         category: z.enum(['baseline', 'runbook', 'policy', 'evidence', 'report', 'export', 'other']).optional(),
         includeSuperseded: z.boolean().optional(),
+        includeDetails: z.boolean().optional(),
+        ...pageZodShape(15, 100),
       },
       makeHandler('list_org_documents')
     ),
@@ -5694,7 +5707,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
     tool(
       'list_deliverable_templates',
       registryDescription('list_deliverable_templates'),
-      { orgId: uuid.optional() },
+      { orgId: uuid.optional(), includeDetails: z.boolean().optional(), ...pageZodShape(4, 50) },
       makeHandler('list_deliverable_templates')
     ),
 

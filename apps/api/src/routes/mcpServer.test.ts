@@ -738,6 +738,49 @@ describe('MCP transport integration', () => {
     expect(ledgerUpdateSet).not.toHaveBeenCalled();
   });
 
+  // #12140: set_device_context runs over MCP at Tier 2 with no approval card,
+  // so the dispatch pins `unattendedNoteWrite` and the handler applies the
+  // unattended-note bounds (deviceNoteBounds.ts). No other tool gets the flag.
+  it.each([
+    ['set_device_context', { unattendedNoteWrite: true }],
+    ['execute_command', undefined],
+  ] as const)('pins the unattended-note flag only for set_device_context (%s)', async (toolName, expectedContext) => {
+    delete process.env.IS_HOSTED;
+    process.env.NODE_ENV = 'development';
+    setTestApiKey({ oauthGrantId: 'grant-1', scopes: ['ai:read', 'ai:execute'] });
+    routeMocks.getToolDefinitions.mockReturnValue([{ name: toolName, description: '', input_schema: {} }]);
+    routeMocks.executeTool.mockResolvedValue('Context recorded successfully (ID: ctx-1).');
+    routeMocks.getToolTier.mockImplementation((name: string) => (name === toolName ? 2 : undefined));
+    testState.aiTools = new Map([[toolName, { deviceArgs: ['deviceId'] }]]);
+    testState.redis = { get: vi.fn(async () => null) };
+    testState.db = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }) }) }),
+      insert: () => ({ values: () => ({ returning: async () => [{ id: 'mcp-exec-1' }] }) }),
+      update: () => ({ set: () => ({ where: async () => undefined }) }),
+    };
+
+    const res = await mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: toolName, arguments: { orgId: 'org-1', deviceId: 'device-1', contextType: 'issue', summary: 'note' } },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(routeMocks.executeTool).toHaveBeenCalledTimes(1);
+    const args = routeMocks.executeTool.mock.calls[0]!;
+    expect(args[0]).toBe(toolName);
+    if (expectedContext) {
+      expect(args[3]).toEqual({ context: expectedContext });
+    } else {
+      expect(args).toHaveLength(3);
+    }
+  });
+
   // Reversed 2026-08-02: same rationale as the successful-call sanitization
   // test above — pinned to Tier 2 since a Tier 3 call no longer reaches this
   // pipeline (executeTool throwing) at all over MCP.

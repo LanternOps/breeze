@@ -78,6 +78,13 @@ describe('ThirdPartyCatalog', () => {
     fetchMock.mockResolvedValue(makeJsonResponse({ items: sampleItems, total: sampleItems.length }));
   });
 
+  it('says the catalog only names and rates patches and is not the maintenance list (#12053)', async () => {
+    render(<ThirdPartyCatalog />);
+    const note = await screen.findByTestId('catalog-scope-note');
+    expect(note).toHaveTextContent(/does not decide which apps are updated/i);
+    expect(note).toHaveTextContent(/per-user winget installs/i);
+  });
+
   it('renders entries with vendor, package name, and winget id', async () => {
     render(<ThirdPartyCatalog />);
     await screen.findByText('Mozilla Firefox');

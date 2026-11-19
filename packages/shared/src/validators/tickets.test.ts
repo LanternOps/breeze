@@ -329,6 +329,12 @@ describe('listTicketsQuerySchema showMerged (#8972)', () => {
   });
 });
 
+describe('listTicketsQuerySchema sort updated (#12064)', () => {
+  it('accepts sort=updated', () => {
+    expect(listTicketsQuerySchema.parse({ sort: 'updated' }).sort).toBe('updated');
+  });
+});
+
 describe('createTicketFromChatSchema', () => {
   const base = { subject: 'Outlook would not open', description: 'Sarah could not open Outlook.', status: 'open' as const, timeMinutes: 15, billable: true };
 

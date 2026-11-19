@@ -23,6 +23,7 @@
  */
 import { flowsEnabled } from '../config/env';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { captureException } from './sentry';
@@ -43,6 +44,11 @@ const recordOf = (v: unknown): Record<string, unknown> =>
 // The wrapper forwards the trailing execution context (a two-parameter wrapper
 // would silently drop it, see AiTool.handler): run_flow reads the chat session
 // from it.
+/** The MFA gate (aiToolMfaGate.ts) ahead of the flows kill switch, so the refusal does not depend on it. */
+function mfaGated(name: string, handler: ReturnType<typeof guarded>): ReturnType<typeof guarded> {
+  return async (input, auth, context) => mfaGatedToolError(name, undefined, auth) ?? handler(input, auth, context);
+}
+
 function guarded(name: string, fn: (input: Record<string, unknown>, auth: AuthContext, context?: ToolExecutionContext) => Promise<unknown>) {
   return async (input: Record<string, unknown>, auth: AuthContext, context?: ToolExecutionContext): Promise<string> => {
     if (!flowsEnabled()) return DISABLED;
@@ -310,10 +316,10 @@ export function registerFlowTools(aiTools: Map<string, AiTool>): void {
         required: ['runId'],
       },
     },
-    handler: guarded('cancel_flow_run', async (input, auth) => {
+    handler: mfaGated('cancel_flow_run', guarded('cancel_flow_run', async (input, auth) => {
       const { cancelFlowRun } = await import('./flows/runService');
       const runId = str(input.runId);
       return runId ? cancelFlowRun(auth, runId) : { ok: false, error: 'run_not_found' };
-    }),
+    })),
   });
 }

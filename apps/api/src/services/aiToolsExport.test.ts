@@ -96,6 +96,7 @@ describe('export_dataset', () => {
     expect(createArtifact.mock.calls[0]![0]).toMatchObject({
       orgId: 'org-1', runId: 'run-1', kind: 'input_capture',
       createdByTool: 'export_dataset', contentType: 'application/x-ndjson', region: 'eu',
+      dataset: 'event_logs',
     });
   });
 
@@ -215,6 +216,69 @@ describe('export_dataset', () => {
     expect(captured).toContain('a\nb"');
   });
 
+  const SEVEN = ['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields'];
+
+  it('refuses a dataset outside the frozen export grants, before any pager or artifact', async () => {
+    const parsed = JSON.parse(await getTool().handler({ dataset: 'metrics' }, auth,
+      { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: { datasets: ['event_logs'], sensitiveGates: [] } }) as string);
+    expect(parsed).toMatchObject({ error: 'dataset_not_permitted', dataset: 'metrics', permitted: ['event_logs'] });
+    expect(createPager).not.toHaveBeenCalled();
+    expect(createArtifact).not.toHaveBeenCalled();
+  });
+
+  it('an empty frozen dataset set refuses every dataset', async () => {
+    for (const dataset of SEVEN) {
+      const parsed = JSON.parse(await getTool().handler({ dataset }, auth,
+        { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: { datasets: [], sensitiveGates: [] } }) as string);
+      expect(parsed.error).toBe('dataset_not_permitted');
+    }
+    expect(createPager).not.toHaveBeenCalled();
+  });
+
+  it('malformed frozen grants fail closed (nothing permitted), never fall back to legacy', async () => {
+    const parsed = JSON.parse(await getTool().handler({ dataset: 'metrics' }, auth,
+      { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: { datasets: 'metrics' } as never }) as string);
+    expect(parsed).toMatchObject({ error: 'dataset_not_permitted', permitted: [] });
+    expect(createPager).not.toHaveBeenCalled();
+  });
+
+  it('no frozen grants (a run admitted before W02): the original seven, legacy grants on the request, security rows reported withheld', async () => {
+    createPager.mockResolvedValue(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
+    const parsed = JSON.parse(await getTool().handler({ dataset: 'event_logs' }, auth, { runTargets: ['d1'], stagedBytesRemaining: 1_000_000 }) as string);
+    expect(parsed.error).toBeUndefined();
+    expect(parsed.sensitiveRowsWithheld).toEqual(['security_events']);
+    expect(createPager.mock.calls[0]![0]).toMatchObject({ exportGrants: { datasets: SEVEN, sensitiveGates: [] }, notes: [] });
+  });
+
+  it('W05: change_log without the user_account_changes gate reports those rows withheld; with it, nothing withheld', async () => {
+    createPager.mockResolvedValue(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
+    const without = JSON.parse(await getTool().handler({ dataset: 'change_log' }, auth,
+      { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: { datasets: ['change_log'], sensitiveGates: ['security_events'] } }) as string);
+    expect(without.error).toBeUndefined();
+    expect(without.sensitiveRowsWithheld).toEqual(['user_account_changes']);
+    createPager.mockResolvedValue(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
+    const withGate = JSON.parse(await getTool().handler({ dataset: 'change_log' }, auth,
+      { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: { datasets: ['change_log'], sensitiveGates: ['user_account_changes'] } }) as string);
+    expect(withGate).not.toHaveProperty('sensitiveRowsWithheld');
+  });
+
+  it('copies adapter notes into the result; omits notes and sensitiveRowsWithheld when there are none', async () => {
+    createPager.mockImplementationOnce(async (r: { notes: string[] }) => { r.notes.push('a note'); return pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]); });
+    const grants = { datasets: SEVEN, sensitiveGates: ['security_events' as const] };
+    const withNote = JSON.parse(await getTool().handler({ dataset: 'event_logs' }, auth, { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: grants }) as string);
+    expect(withNote.notes).toEqual(['a note']);
+    expect(withNote.sensitiveRowsWithheld).toBeUndefined();
+    createPager.mockResolvedValueOnce(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
+    const plain = JSON.parse(await getTool().handler({ dataset: 'metrics' }, auth, { runTargets: ['d1'], stagedBytesRemaining: 1_000_000, exportGrants: grants }) as string);
+    expect(plain).not.toHaveProperty('notes');
+    expect(plain).not.toHaveProperty('sensitiveRowsWithheld');
+  });
+
+  it('states that a capped export sets truncated (on the dataset parameter: the description is at its budget)', () => {
+    const props = getTool().definition.input_schema.properties as Record<string, { description: string }>;
+    expect(props.dataset!.description).toContain('capped exports set truncated');
+  });
+
   it('rejects an unknown dataset', async () => {
     const tool = getTool();
     const parsed = JSON.parse(await tool.handler({ dataset: 'passwords' }, auth));
@@ -250,6 +314,46 @@ describe('export_dataset', () => {
       { runTargets: [], stagedBytesRemaining: 1_000_000 },
     ));
     expect(parsed.error).toBe('orgId is required: you have access to multiple organizations');
+    expect(createArtifact).not.toHaveBeenCalled();
+  });
+
+  it.each(['reliability_scores', 'reliability_history', 'reliability_events', 'boot_performance', 'hardware_events', 'service_checks',
+    'alerts', 'patch_state', 'patch_attempts', 'change_log'])(
+    'a legacy run (no exportGrants) cannot export %s', async (dataset) => {
+      const out = JSON.parse(await getTool().handler({ dataset }, auth, { runTargets: ['d1'], stagedBytesRemaining: 1_000_000 }) as string);
+      expect(out.error).toBe('dataset_not_permitted');
+      expect(createPager).not.toHaveBeenCalled();
+    });
+
+  it('the tool text states the time range rule and the dataset caveats (description budget: rules live on the params)', async () => {
+    const def = getTool().definition;
+    const props = def.input_schema.properties as Record<string, { description: string }>;
+    expect(def.description).toContain('workspace_stage');
+    expect(props.filters!.description).toContain('timeRange');
+    expect(props.filters!.description).toContain('max 180 d');
+    expect(props.filters!.description).toContain('ignored by current state');
+    // W05: the two array filters.
+    expect(props.filters!.description).toContain('patch_state status[]');
+    expect(props.filters!.description).toContain('change_log changeType[]');
+    expect(props.dataset!.description).toContain('service_checks: non-running only');
+    // The per-dataset rules (withheld rows, dedupe keys) travel as result notes.
+    expect(props.dataset!.description).toContain('notes in the result');
+    expect(getTool().searchHint).toContain('reliability');
+    for (const hint of ['alerts', 'patches', 'change log']) expect(getTool().searchHint).toContain(hint);
+    // The SDK surface (what an analysis run's model sees) carries the same wording.
+    const sdk = await import('node:fs/promises').then((fs) => fs.readFile(new URL('./aiAgentSdkTools.ts', import.meta.url), 'utf8'));
+    expect(sdk).toContain('dataset: z.enum(EXPORT_DATASETS).describe(EXPORT_DATASET_PARAM_DESCRIPTION)');
+    expect(sdk).toContain('.describe(EXPORT_FILTERS_PARAM_DESCRIPTION)');
+  });
+
+  it('maps ExportFilterError to its code, not export_failed', async () => {
+    const { ExportFilterError } = await import('./aiToolsExportShared');
+    sanitizeThrownToolError.mockClear();
+    createPager.mockRejectedValueOnce(new ExportFilterError('invalid_time_range', 'filters.timeRange spans more than 180 days; narrow it.'));
+    const out = JSON.parse(await getTool().handler({ dataset: 'event_logs' }, auth,
+      { runTargets: ['d1'], stagedBytesRemaining: 1_000_000 }) as string);
+    expect(out).toEqual({ error: 'invalid_time_range', message: 'filters.timeRange spans more than 180 days; narrow it.' });
+    expect(sanitizeThrownToolError).not.toHaveBeenCalled();
     expect(createArtifact).not.toHaveBeenCalled();
   });
 

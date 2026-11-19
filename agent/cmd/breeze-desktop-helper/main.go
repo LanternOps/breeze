@@ -208,7 +208,16 @@ func runDesktopHelper() {
 }
 
 func desktopHelperRole() ipc.HelperRole {
-	if runtime.GOOS == "darwin" {
+	return desktopHelperRoleFor(runtime.GOOS)
+}
+
+// desktopHelperRoleFor is the desktop helper's role on goos. On macOS and
+// Linux it runs as the logged-in user (on Linux the broker admits a user-role
+// desktop helper only with a spawn ticket, #12117); on Windows it is the
+// SYSTEM helper in the user's session.
+func desktopHelperRoleFor(goos string) ipc.HelperRole {
+	switch goos {
+	case "darwin", "linux":
 		return ipc.HelperRoleUser
 	}
 	return ipc.HelperRoleSystem

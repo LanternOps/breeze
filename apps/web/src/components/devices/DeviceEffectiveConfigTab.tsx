@@ -24,6 +24,7 @@ import {
   Zap,
   type LucideIcon,
   Cpu,
+  Power,
 } from "lucide-react";
 
 import type { ConfigFeatureType } from "@breeze/shared";
@@ -171,6 +172,12 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
     },
     Icon: Cpu,
   },
+  wake_on_lan: {
+    get label() {
+      return i18n.t("policies:configurationPolicies.featureTabs.wakeOnLanTab.title");
+    },
+    Icon: Power,
+  },
 };
 
 // Display order = FEATURE_META insertion order. Derived (not hand-listed) so the
@@ -294,6 +301,22 @@ function summarizeOemUpdates(settings: Record<string, unknown> | null): Settings
   return items;
 }
 
+// #9574: the day a weekly / monthly window opens on rides on the recurrence
+// line ("weekly on sat", "monthly on day 31"), so a Saturday and a Sunday window
+// summarize differently without pushing timezone out of the four slots. The
+// separate day keys are dropped; the one the recurrence does not read would
+// only mislead.
+function withMaintenanceDay(settings: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!settings) return settings;
+  const { dayOfWeek, dayOfMonth, ...rest } = settings;
+  if (rest.recurrence === "weekly" && typeof dayOfWeek === "string") {
+    rest.recurrence = `weekly on ${dayOfWeek}`;
+  } else if (rest.recurrence === "monthly" && typeof dayOfMonth === "number") {
+    rest.recurrence = `monthly on day ${dayOfMonth}`;
+  }
+  return rest;
+}
+
 function summarizeFeatureSettings(
   featureType: FeatureType,
   feature: ResolvedFeature,
@@ -301,6 +324,9 @@ function summarizeFeatureSettings(
 ): SettingsSummaryItem[] {
   if (featureType === "oem_updates") return summarizeOemUpdates(feature.inlineSettings);
   const pickedKeys = FEATURE_SUMMARY_KEYS[featureType];
+  if (featureType === "maintenance") {
+    return summarizeSettings(withMaintenanceDay(feature.inlineSettings), pickedKeys);
+  }
   if (featureType !== "patch") return summarizeSettings(feature.inlineSettings, pickedKeys);
   const settings = feature.inlineSettings;
   const hasSettings = !!settings && Object.keys(settings).length > 0;

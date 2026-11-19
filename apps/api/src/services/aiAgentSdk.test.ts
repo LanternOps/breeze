@@ -6,7 +6,8 @@ import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vites
 // this record, so the terminal return of a won release is asserted against it.
 const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'session_tap' } as const;
 const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
-import { createSessionPostToolUse, createSessionPreToolUse, intentCreationRefusal, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
+import { createSessionPostToolUse, createSessionPreToolUse, intentCreationRefusal, runPreFlightChecks, safeParseJson, settleApprovalWaits } from './aiAgentSdk';
+import { flushDeferredToolFailureFlags } from './aiSessionAutoFlag';
 import { classifyChatReadOnlyEventLogsQuery } from './aiChatEventLogsReadOnly';
 import { db } from '../db';
 import { aiToolExecutions } from '../db/schema';
@@ -171,6 +172,8 @@ vi.mock('./aiAgentSdkTools', () => ({
     s1_threat_action: 3,
     // #11674: a public ticket reply's approval card names the ticket.
     manage_tickets: 2,
+    // #12149: the topology investigation's inline tier-3 diagnostic.
+    diagnose_connectivity: 3,
   },
   BREEZE_MCP_TOOL_NAMES: [],
   // #11395: read by the preflight only under a constrained chat tool profile.
@@ -210,6 +213,15 @@ vi.mock('./actionIntents/intentService', () => ({
   waitForIntentDecision: (...args: unknown[]) => mockWaitForIntentDecision(...args),
   waitForIntentTerminalOutcome: (...args: unknown[]) => mockWaitForIntentTerminalOutcome(...args),
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
+}));
+
+// #12098: the close-out every undecided wait is settled with. Default: still
+// undecided before its deadline (database clock).
+const mockCloseOutUndecidedIntent = vi.fn(
+  async (_intentId: string): Promise<unknown> => ({ kind: 'decided', status: 'pending_approval' }),
+);
+vi.mock('./actionIntents/intentExpiry', () => ({
+  closeOutUndecidedIntent: (intentId: string) => mockCloseOutUndecidedIntent(intentId),
 }));
 
 // #5205 W05 (#5210): the terminal outbox publication, mocked wholesale — its
@@ -1429,11 +1441,12 @@ describe('createSessionPreToolUse', () => {
       vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
-      const pre = await createSessionPreToolUse(session)('execute_command', { commandType: 'list_processes' });
+      const input = { commandType: 'list_processes' }; // one object, as the MCP handler passes it to both hooks (#11989)
+      const pre = await createSessionPreToolUse(session)('execute_command', input);
       expect(pre).toEqual({ allowed: true });
       await createSessionPostToolUse(session)(
         'execute_command',
-        { commandType: 'list_processes' },
+        input,
         JSON.stringify({ status: 'completed' }),
         false,
         3,
@@ -1463,11 +1476,12 @@ describe('createSessionPreToolUse', () => {
       vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
-      const pre = await createSessionPreToolUse(session)('take_screenshot', {});
+      const input = {}; // one object, as the MCP handler passes it to both hooks (#11989)
+      const pre = await createSessionPreToolUse(session)('take_screenshot', input);
       expect(pre).toEqual({ allowed: true });
       await createSessionPostToolUse(session)(
         'take_screenshot',
-        {},
+        input,
         JSON.stringify({ status: 'completed' }),
         false,
         3,
@@ -1481,6 +1495,176 @@ describe('createSessionPreToolUse', () => {
         approved: true,
         approvalMethod: 'per_step_user',
       });
+    });
+  });
+
+  // #11989: the approval method is recorded against the CALL (its SDK
+  // tool_use id), not the session. The SDK runs sibling tool calls
+  // concurrently, so two approval-gated calls can both pass the gate before
+  // either one's postToolUse audit runs.
+  describe('#11989: overlapping approval-gated calls each audit their own approval method', () => {
+    const cardCheck = { allowed: true, tier: 2, requiresApproval: false, description: 'Needs a card' };
+    const readOnlyAutoCheck = { allowed: true, tier: 2, requiresApproval: false, readOnly: true, description: 'List processes' };
+
+    // The approval-card path inserts with `.returning()`, the auto-execute
+    // paths await `.values()` directly; one stand-in serves both.
+    function mockInsertForBothPaths() {
+      const values = vi.fn(() =>
+        Object.assign(Promise.resolve(undefined), { returning: vi.fn().mockResolvedValue([{ id: 'exec-card' }]) }),
+      );
+      vi.mocked(db.insert).mockReturnValue({ values } as any);
+      vi.mocked(db.update).mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) } as any);
+    }
+
+    function auditDetailsFor(toolName: string): Array<Record<string, unknown>> {
+      return mockWriteAuditEvent.mock.calls
+        .filter((c) => (c[1] as any)?.action === `ai.tool.${toolName}`)
+        .map((c) => (c[1] as any).details);
+    }
+
+    beforeEach(() => {
+      mockInsertForBothPaths();
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+    });
+
+    it('two different tools: both pass the gate, then both finish — each keeps its own method', async () => {
+      vi.mocked(checkGuardrails).mockImplementation(((toolName: string) =>
+        toolName === 'take_screenshot' ? cardCheck : readOnlyAutoCheck) as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+      const pre = createSessionPreToolUse(session);
+      const post = createSessionPostToolUse(session);
+      const screenshotInput = { deviceId: 'device-1' };
+      const listInput = { commandType: 'list_processes' };
+
+      expect(await pre('take_screenshot', screenshotInput, undefined, 'toolu_a')).toEqual({ allowed: true });
+      expect(await pre('execute_command', listInput, undefined, 'toolu_b')).toEqual({ allowed: true });
+      await post('take_screenshot', screenshotInput, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_a');
+      await post('execute_command', listInput, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_b');
+
+      expect(auditDetailsFor('take_screenshot')).toEqual([
+        expect.objectContaining({ approved: true, approvalMethod: 'per_step_user' }),
+      ]);
+      expect(auditDetailsFor('execute_command')).toEqual([
+        expect.objectContaining({ approved: false, approvalMethod: 'read_only_auto' }),
+      ]);
+    });
+
+    it('the same tool twice by different paths, finishing in reverse order — each keeps its own method', async () => {
+      vi.mocked(checkGuardrails).mockImplementation(((_toolName: string, input: Record<string, unknown>) =>
+        input.commandType === 'list_processes' ? readOnlyAutoCheck : cardCheck) as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+      const pre = createSessionPreToolUse(session);
+      const post = createSessionPostToolUse(session);
+      const approvedInput = { commandType: 'kill_process', pid: 42 };
+      const autoInput = { commandType: 'list_processes' };
+
+      expect(await pre('execute_command', approvedInput, undefined, 'toolu_card')).toEqual({ allowed: true });
+      expect(await pre('execute_command', autoInput, undefined, 'toolu_auto')).toEqual({ allowed: true });
+      // The auto-executed read finishes first, then the approved call.
+      await post('execute_command', autoInput, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_auto');
+      await post('execute_command', approvedInput, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_card');
+
+      expect(auditDetailsFor('execute_command')).toEqual([
+        expect.objectContaining({ approved: false, approvalMethod: 'read_only_auto', toolInput: autoInput }),
+        expect.objectContaining({ approved: true, approvalMethod: 'per_step_user', toolInput: approvedInput }),
+      ]);
+    });
+
+    it('without an SDK tool_use id, the call is still matched by its own input object', async () => {
+      vi.mocked(checkGuardrails).mockImplementation(((_toolName: string, input: Record<string, unknown>) =>
+        input.commandType === 'list_processes' ? readOnlyAutoCheck : cardCheck) as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+      const pre = createSessionPreToolUse(session);
+      const post = createSessionPostToolUse(session);
+      const approvedInput = { commandType: 'kill_process', pid: 42 };
+      const autoInput = { commandType: 'list_processes' };
+
+      await pre('execute_command', approvedInput);
+      await pre('execute_command', autoInput);
+      await post('execute_command', autoInput, JSON.stringify({ ok: true }), false, 3);
+      await post('execute_command', approvedInput, JSON.stringify({ ok: true }), false, 3);
+
+      expect(auditDetailsFor('execute_command')).toEqual([
+        expect.objectContaining({ approved: false, approvalMethod: 'read_only_auto', toolInput: autoInput }),
+        expect.objectContaining({ approved: true, approvalMethod: 'per_step_user', toolInput: approvedInput }),
+      ]);
+    });
+
+    it('a plan step and a card-approved call of the same tool, overlapping — plan_step and per_step_user', async () => {
+      vi.mocked(checkGuardrails).mockImplementation(((_toolName: string, input: Record<string, unknown>) =>
+        input.commandType === 'list_processes' ? readOnlyAutoCheck : cardCheck) as any);
+      const planInput = { command: 'whoami' };
+      const autoInput = { commandType: 'list_processes' };
+      const session = makeActiveSession({
+        approvalMode: 'action_plan',
+        auditSnapshot: {},
+        activePlanId: 'plan-1',
+        approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+      });
+      const pre = createSessionPreToolUse(session);
+      const post = createSessionPostToolUse(session);
+
+      expect(await pre('execute_command', planInput, undefined, 'toolu_plan')).toEqual({ allowed: true });
+      expect(await pre('execute_command', autoInput, undefined, 'toolu_auto')).toEqual({ allowed: true });
+      // The off-plan call (an approval card under action_plan) finishes first.
+      await post('execute_command', autoInput, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_auto');
+      await post('execute_command', planInput, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_plan');
+
+      expect(auditDetailsFor('execute_command')).toEqual([
+        expect.objectContaining({ approved: true, approvalMethod: 'per_step_user', toolInput: autoInput }),
+        expect.objectContaining({ approved: true, approvalMethod: 'plan_step', toolInput: planInput }),
+      ]);
+    });
+
+    it('a record is never read back under another tool name', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(cardCheck as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+      const input = { deviceId: 'device-1' };
+
+      await createSessionPreToolUse(session)('take_screenshot', input, undefined, 'toolu_a');
+      await createSessionPostToolUse(session)('execute_command', input, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_a');
+
+      expect(auditDetailsFor('execute_command')).toEqual([
+        expect.objectContaining({ approved: false, approvalMethod: 'unknown' }),
+      ]);
+    });
+
+    it('the post hook consumes the record even when it writes no tier>=2 audit detail', async () => {
+      // The gate records at tier 2; the post hook's own re-check resolves
+      // tier 1, so no approval detail is written for that call. Its record
+      // must still be removed, or it would sit in the session map — shown
+      // here by a later call reusing the same id and finding nothing.
+      vi.mocked(checkGuardrails).mockReturnValueOnce(cardCheck as any); // gate
+      vi.mocked(checkGuardrails).mockReturnValueOnce({ allowed: true, tier: 1, requiresApproval: false } as any); // post re-check
+      vi.mocked(checkGuardrails).mockReturnValue(readOnlyAutoCheck as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+      const pre = createSessionPreToolUse(session);
+      const post = createSessionPostToolUse(session);
+
+      await pre('take_screenshot', { deviceId: 'device-1' }, undefined, 'toolu_reused');
+      await post('take_screenshot', { deviceId: 'device-1' }, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_reused');
+      await post('take_screenshot', { deviceId: 'device-1' }, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_reused');
+
+      expect(auditDetailsFor('take_screenshot')).toEqual([
+        expect.not.objectContaining({ approvalMethod: expect.anything() }),
+        expect.objectContaining({ approved: false, approvalMethod: 'unknown' }),
+      ]);
+    });
+
+    it('a call the gate recorded nothing for still audits approved:false / unknown', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(readOnlyAutoCheck as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+      const pre = createSessionPreToolUse(session);
+      const post = createSessionPostToolUse(session);
+      const gatedInput = { commandType: 'list_processes' };
+
+      await pre('execute_command', gatedInput, undefined, 'toolu_gated');
+      // A different call (new id, new input object) that never passed this gate.
+      await post('execute_command', { commandType: 'list_processes' }, JSON.stringify({ ok: true }), false, 3, undefined, undefined, 'toolu_other');
+
+      expect(auditDetailsFor('execute_command')).toEqual([
+        expect.objectContaining({ approved: false, approvalMethod: 'unknown' }),
+      ]);
     });
   });
 
@@ -2357,9 +2541,12 @@ describe('createSessionPreToolUse', () => {
           approvalRequestIds: ['appr-5-expired'],
           // Deadline already in the past — the sweep just hasn't caught up yet.
           expiresAt: new Date(Date.now() - 1_000),
+          approvalExpiresAt: new Date(Date.now() - 1_000),
         }),
       );
       mockWaitForIntentDecision.mockResolvedValue('pending_approval');
+      // #12098: the close-out expired it (database clock past the deadline).
+      mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'expired' });
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
       const result = await createSessionPreToolUse(session)('execute_command', {});
@@ -2369,10 +2556,206 @@ describe('createSessionPreToolUse', () => {
         error:
           'Approval request expired before a decision was made; the action was not executed. Re-issue the tool call if it is still needed.',
       });
-      // Same durable-no-mutation contract as the still-pending case: giving
-      // up here must not touch the intent — an approver deciding it late (or
-      // the reaper's own sweep) is what actually resolves the row.
+      // No release claim. #12098: "expired" is said only after the close-out
+      // expired the intent, so a late approval can no longer release it.
       expect(mockTransitionIntent).not.toHaveBeenCalled();
+      expect(mockCloseOutUndecidedIntent).toHaveBeenCalledWith('intent-5-expired');
+    });
+
+    // #12098: a decision can land in the last sleep of the wait (after its
+    // last poll) or in the moment before the close-out. The close-out loses to
+    // it and returns the decision, which must be reported as it is.
+    describe('a decision that beat the past-deadline close-out (#12098)', () => {
+      const REISSUE = /re-issue/i;
+
+      beforeEach(() => {
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true,
+          tier: 3,
+          requiresApproval: true,
+          description: 'Execute command',
+        } as any);
+        mockInsertReturning({ id: 'exec-12098' });
+        mockCreateActionIntent.mockResolvedValue(
+          makeIntentSnapshot({
+            id: 'intent-12098',
+            approvalRequestIds: ['appr-12098'],
+            expiresAt: new Date(Date.now() - 1_000),
+            approvalExpiresAt: new Date(Date.now() - 1_000),
+          }),
+        );
+        mockWaitForIntentDecision.mockResolvedValue('pending_approval');
+        mockCloseOutUndecidedIntent.mockClear();
+      });
+
+      it('an approval is released inline once and never reported expired', async () => {
+        mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'decided', status: 'approved' });
+        mockTransitionIntent.mockResolvedValue(true);
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+        } as any);
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {});
+
+        expect(mockCloseOutUndecidedIntent).toHaveBeenCalledWith('intent-12098');
+        expect(result).toEqual({ allowed: true, intentId: 'intent-12098', context: RELEASED_CONTEXT });
+        // The single approved -> executing claim, against the release lease.
+        expect(mockTransitionIntent).toHaveBeenCalledTimes(1);
+        expect(mockTransitionIntent).toHaveBeenCalledWith(
+          'intent-12098',
+          'approved',
+          'executing',
+          expect.anything(),
+          { requireNotExpired: 'release' },
+        );
+      });
+
+      it('an approval the release worker already claimed is a handoff, not an expiry', async () => {
+        mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'decided', status: 'executing' });
+        mockTransitionIntent.mockResolvedValue(false);
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {});
+
+        expect(result).toMatchObject({ allowed: false, handoff: expect.anything() });
+        expect(JSON.stringify(result)).not.toMatch(REISSUE);
+        expect(JSON.stringify(result)).not.toMatch(/expired/i);
+      });
+
+      it('a denial is reported as a denial, with no re-issue wording', async () => {
+        mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'decided', status: 'rejected' });
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {});
+
+        expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+        expect(mockTransitionIntent).not.toHaveBeenCalled();
+      });
+
+      it('still pending by the database clock: reported pending, not expired', async () => {
+        mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'decided', status: 'pending_approval' });
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {});
+
+        expect(result).toEqual({
+          allowed: false,
+          error: 'Approval still pending; this action will complete once approved.',
+        });
+        expect(mockTransitionIntent).not.toHaveBeenCalled();
+      });
+
+      it('a failed close-out says the outcome is unconfirmed and does not invite a re-issue', async () => {
+        mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'unknown' });
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+
+        const result = (await createSessionPreToolUse(session)('execute_command', {})) as {
+          allowed: boolean;
+          error?: string;
+        };
+
+        expect(result.allowed).toBe(false);
+        expect(result.error).toMatch(/could not be confirmed/);
+        expect(result.error).toMatch(/do not re-issue/i);
+        expect(result.error).not.toMatch(/was not executed/);
+        expect(mockTransitionIntent).not.toHaveBeenCalled();
+      });
+
+      it('a failed close-out before the deadline is still pending, not unconfirmed', async () => {
+        mockCreateActionIntent.mockResolvedValue(
+          makeIntentSnapshot({ id: 'intent-12098', approvalRequestIds: ['appr-12098'] }),
+        );
+        mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'unknown' });
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {});
+
+        expect(result).toEqual({
+          allowed: false,
+          error: 'Approval still pending; this action will complete once approved.',
+        });
+      });
+
+      it('an intent row that vanished mid-wait is refused, not left as pending', async () => {
+        mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'missing' });
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {});
+
+        expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+        expect(mockTransitionIntent).not.toHaveBeenCalled();
+      });
+
+      it('an expiry the 30 s sweep won carries the same re-issue hint as the close-out expiry', async () => {
+        mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'decided', status: 'expired' });
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {});
+
+        expect(result).toEqual({
+          allowed: false,
+          error:
+            'Approval request expired before a decision was made; the action was not executed. Re-issue the tool call if it is still needed.',
+        });
+        expect(mockTransitionIntent).not.toHaveBeenCalled();
+      });
+
+      // Review follow-up: a wait that was ended early (teardown, interrupt,
+      // new user message) must not take the inline claim even when an
+      // approval landed just before it ended. On teardown the SDK never calls
+      // the tool, so a claimed intent would sit in `executing`; on a new
+      // message the tool would run in a turn the user has moved past. The
+      // release worker runs it instead.
+      const teardown = (s: ReturnType<typeof makeActiveSession>) => s.abortController.abort();
+      const settle = (s: ReturnType<typeof makeActiveSession>) => { settleApprovalWaits(s as any); };
+      it.each([
+        // [label, how the wait ends, close-out status, when the end arrives]
+        ['session teardown', teardown, 'approved', 'wait'],
+        ['a new user message / interrupt', settle, 'approved', 'wait'],
+        // The worker already claimed or finished it: still the dying turn's handoff.
+        ['session teardown, worker claimed', teardown, 'executing', 'wait'],
+        ['a new user message, worker finished', settle, 'completed', 'wait'],
+        // Teardown while the close-out itself runs still counts. (A new
+        // message then does not settle anything: the wait has already ended.)
+        ['session teardown during the close-out', teardown, 'approved', 'closeOut'],
+      ] as const)('an approval found after the wait was ended early (%s) is handed off, never claimed inline', async (_label, endWait, status, endsDuring) => {
+        mockTransitionIntent.mockResolvedValue(true);
+        mockWaitForIntentTerminalOutcome.mockResolvedValueOnce(null);
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+        mockWaitForIntentDecision.mockImplementationOnce(async () => {
+          if (endsDuring === 'wait') endWait(session);
+          return 'pending_approval';
+        });
+        mockCloseOutUndecidedIntent.mockImplementationOnce(async () => {
+          if (endsDuring === 'closeOut') endWait(session);
+          return { kind: 'decided', status };
+        });
+
+        const result = await createSessionPreToolUse(session)('execute_command', {});
+
+        expect(mockCloseOutUndecidedIntent).toHaveBeenCalledWith('intent-12098');
+        // No approved -> executing claim from the dying turn.
+        expect(mockTransitionIntent).not.toHaveBeenCalledWith(
+          'intent-12098',
+          'approved',
+          'executing',
+          expect.anything(),
+          expect.anything(),
+        );
+        expect(result).toMatchObject({ allowed: false, handoff: expect.anything() });
+        expect(JSON.stringify(result)).not.toMatch(REISSUE);
+        expect(JSON.stringify(result)).not.toMatch(/expired/i);
+      });
+
+      it('a decision the wait itself saw is not closed out again', async () => {
+        mockWaitForIntentDecision.mockResolvedValue('rejected');
+        const session = makeActiveSession({ approvalMode: 'per_step' });
+
+        await createSessionPreToolUse(session)('execute_command', {});
+
+        expect(mockCloseOutUndecidedIntent).not.toHaveBeenCalled();
+      });
     });
 
     it('CASes the intent executing -> completed once the inline tool call finishes successfully', async () => {
@@ -2390,12 +2773,13 @@ describe('createSessionPreToolUse', () => {
       vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
-      const preResult = await createSessionPreToolUse(session)('execute_command', {});
+      const input = {}; // one object, as the MCP handler passes it to both hooks (#11994)
+      const preResult = await createSessionPreToolUse(session)('execute_command', input);
       expect(preResult).toEqual({ allowed: true, intentId: 'intent-6', context: RELEASED_CONTEXT });
 
       mockTransitionIntent.mockClear();
       const postToolUse = createSessionPostToolUse(session);
-      await postToolUse('execute_command', {}, JSON.stringify({ status: 'completed' }), false, 10);
+      await postToolUse('execute_command', input, JSON.stringify({ status: 'completed' }), false, 10);
 
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-6', 'executing', 'completed', expect.objectContaining({
         executedAt: expect.any(Date),
@@ -2745,10 +3129,11 @@ describe('createSessionPreToolUse', () => {
         const auth = reachOf('org-1', 'org-2');
         const session = makeActiveSession({ auth, toolAuth: auth });
 
-        const pre = await createSessionPreToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] });
+        const input = { proposalId: 'p-x', deviceIds: ['d-2'] }; // one object, as the MCP handler passes it to both hooks (#11994)
+        const pre = await createSessionPreToolUse(session)('run_script', input);
         expect(pre).toMatchObject({ allowed: true, intentId: 'intent-x' });
         vi.mocked(checkGuardrails).mockClear();
-        await createSessionPostToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] }, JSON.stringify({ results: {} }), false, 10);
+        await createSessionPostToolUse(session)('run_script', input, JSON.stringify({ results: {} }), false, 10);
 
         expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
           expect.anything(),
@@ -2788,8 +3173,9 @@ describe('createSessionPreToolUse', () => {
         const auth = reachOf('org-1', 'org-2');
         const session = makeActiveSession({ auth, toolAuth: auth });
 
-        await createSessionPreToolUse(session)('run_script', { scriptId: 'abcd1234-0000-0000-0000-000000000000', deviceIds: ['d-1'] });
-        await createSessionPostToolUse(session)('run_script', { scriptId: 'abcd1234-0000-0000-0000-000000000000', deviceIds: ['d-1'] }, JSON.stringify({ results: {} }), false, 10);
+        const input = { scriptId: 'abcd1234-0000-0000-0000-000000000000', deviceIds: ['d-1'] }; // one object, as the MCP handler passes it to both hooks (#11994)
+        await createSessionPreToolUse(session)('run_script', input);
+        await createSessionPostToolUse(session)('run_script', input, JSON.stringify({ results: {} }), false, 10);
 
         expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName: 'run_script', orgId: 'org-1' });
         expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
@@ -2829,7 +3215,8 @@ describe('createSessionPreToolUse', () => {
         set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
       } as any);
       const session = makeActiveSession({ approvalMode: 'per_step' });
-      await createSessionPreToolUse(session)('execute_command', {});
+      const input = {}; // one object, as the MCP handler passes it to both hooks (#11994)
+      await createSessionPreToolUse(session)('execute_command', input);
 
       const payload = {
         orgId: 'org-1', contactId: null, action: 'disable_user' as const,
@@ -2838,7 +3225,7 @@ describe('createSessionPreToolUse', () => {
       const refusal = { error: 'Caller verification required', requiresCallerVerification: payload };
       mockTransitionIntent.mockClear();
       await createSessionPostToolUse(session)(
-        'execute_command', {}, JSON.stringify(refusal), true, 5,
+        'execute_command', input, JSON.stringify(refusal), true, 5,
       );
 
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-guard', 'executing', 'failed', expect.objectContaining({
@@ -2859,10 +3246,11 @@ describe('createSessionPreToolUse', () => {
         set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
       } as any);
       const session = makeActiveSession({ approvalMode: 'per_step' });
-      await createSessionPreToolUse(session)('execute_command', {});
+      const input = {}; // one object, as the MCP handler passes it to both hooks (#11994)
+      await createSessionPreToolUse(session)('execute_command', input);
       mockTransitionIntent.mockClear();
       await createSessionPostToolUse(session)(
-        'execute_command', {}, JSON.stringify({ error: 'Caller verification required' }), true, 5,
+        'execute_command', input, JSON.stringify({ error: 'Caller verification required' }), true, 5,
       );
       expect(mockTransitionIntent).toHaveBeenCalledWith('intent-plain-err', 'executing', 'failed', expect.objectContaining({
         errorCode: 'tool_execution_failed',
@@ -2899,8 +3287,9 @@ describe('createSessionPreToolUse', () => {
         set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
       } as any);
       const session = makeActiveSession({ approvalMode: 'per_step' });
+      const input = {}; // one object, as the MCP handler passes it to both hooks (#11994)
 
-      const pre = await createSessionPreToolUse(session)('execute_command', {});
+      const pre = await createSessionPreToolUse(session)('execute_command', input);
       expect(pre).toEqual({ allowed: true, intentId: opts.intentId, context: RELEASED_CONTEXT });
 
       // Only the TERMINAL CAS loses.
@@ -2911,7 +3300,7 @@ describe('createSessionPreToolUse', () => {
 
       await createSessionPostToolUse(session)(
         'execute_command',
-        {},
+        input,
         JSON.stringify({ status: 'completed' }),
         false,
         10,
@@ -3009,12 +3398,13 @@ describe('createSessionPreToolUse', () => {
       } as any);
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
-      const pre = await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+      const input = { deviceId: 'd-1' }; // one object, as the MCP handler passes it to both hooks (#11989)
+      const pre = await createSessionPreToolUse(session)('execute_command', input);
       expect(pre).toEqual({ allowed: true, intentId: opts.intentId, context: RELEASED_CONTEXT });
 
       await createSessionPostToolUse(session)(
         'execute_command',
-        { deviceId: 'd-1' },
+        input,
         JSON.stringify({ status: 'completed' }),
         false,
         10,
@@ -3080,7 +3470,8 @@ describe('createSessionPreToolUse', () => {
         } as any);
         const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
-        const pre = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+        const input = { deviceId: 'd-1' }; // one object, as the MCP handler passes it to both hooks (#11989)
+        const pre = (await createSessionPreToolUse(session)('execute_command', input)) as {
           allowed: boolean;
           error: string;
           handoff?: string;
@@ -3090,7 +3481,7 @@ describe('createSessionPreToolUse', () => {
 
         await createSessionPostToolUse(session)(
           'execute_command',
-          { deviceId: 'd-1' },
+          input,
           JSON.stringify({ status: APPROVED_COMPLETED_STATUS, message: pre.error }),
           false,
           0,
@@ -3136,7 +3527,8 @@ describe('createSessionPreToolUse', () => {
       } as any);
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
-      const pre = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+      const input = { deviceId: 'd-1' }; // one object, as the MCP handler passes it to both hooks (#11989)
+      const pre = (await createSessionPreToolUse(session)('execute_command', input)) as {
         error: string;
         handoff?: string;
       };
@@ -3144,7 +3536,7 @@ describe('createSessionPreToolUse', () => {
 
       await createSessionPostToolUse(session)(
         'execute_command',
-        { deviceId: 'd-1' },
+        input,
         JSON.stringify({ status: APPROVED_FAILED_STATUS, message: pre.error }),
         true,
         0,
@@ -3182,10 +3574,11 @@ describe('createSessionPreToolUse', () => {
       } as any);
       const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
 
-      await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+      const input = { deviceId: 'd-1' }; // one object, as the MCP handler passes it to both hooks (#11989)
+      await createSessionPreToolUse(session)('execute_command', input);
       await createSessionPostToolUse(session)(
         'execute_command',
-        { deviceId: 'd-1' },
+        input,
         JSON.stringify({ status: 'completed' }),
         false,
         10,
@@ -3215,12 +3608,13 @@ describe('createSessionPreToolUse', () => {
       vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
       const session = makeActiveSession({ approvalMode: 'per_step' });
 
-      const preResult = await createSessionPreToolUse(session)('execute_command', {});
+      const input = {}; // one object, as the MCP handler passes it to both hooks (#11994)
+      const preResult = await createSessionPreToolUse(session)('execute_command', input);
       expect(preResult).toEqual({ allowed: true, intentId: 'intent-7', context: RELEASED_CONTEXT });
 
       mockTransitionIntent.mockClear();
       const postToolUse = createSessionPostToolUse(session);
-      await postToolUse('execute_command', {}, JSON.stringify({ error: 'boom' }), true, 10);
+      await postToolUse('execute_command', input, JSON.stringify({ error: 'boom' }), true, 10);
 
       // error_code is a stable, categorized short code (matches the durable
       // release worker's vocabulary) — never the raw, unbounded tool error
@@ -3233,11 +3627,10 @@ describe('createSessionPreToolUse', () => {
     });
 
     it('does not touch any intent from postToolUse when this session never won an inline release CAS', async () => {
-      // Tier >= 2 so postToolUse takes the update branch that checks
-      // pendingIntentBySession — but preToolUse was never called on this
-      // session (e.g. a Tier-2 auto-approve execution, or a Tier-3 call that
-      // lost the CAS / timed out earlier), so nothing should have been
-      // tracked for it.
+      // Tier >= 2 so postToolUse takes the update branch that takes this
+      // call's releasedIntents record — but preToolUse was never called for
+      // this call (e.g. a Tier-3 call that lost the CAS / timed out earlier),
+      // so nothing was recorded for it.
       vi.mocked(checkGuardrails).mockReturnValue({
         allowed: true,
         tier: 2,
@@ -3316,7 +3709,7 @@ describe('createSessionPreToolUse', () => {
         .find((evt: any) => evt.type === 'approval_required');
       expect((publishedEvent as any)?.intentBacked).toBeUndefined();
 
-      expect(waitForApproval).toHaveBeenCalledWith('exec-2', 300_000, expect.any(AbortSignal));
+      expect(waitForApproval).toHaveBeenCalledWith('exec-2', 300_000, expect.any(AbortSignal), expect.any(Object));
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
 
       // THE REGRESSION: Tier 2 under per_step must never route through the
@@ -3371,7 +3764,7 @@ describe('createSessionPreToolUse', () => {
       expect(mockCreateActionIntent).not.toHaveBeenCalled();
     });
 
-    it('does not register the session in pendingIntentBySession, so the postToolUse completion-CAS stays a no-op', async () => {
+    it('does not record a released intent for the call, so the postToolUse completion-CAS stays a no-op', async () => {
       vi.mocked(checkGuardrails).mockReturnValue({
         allowed: true,
         tier: 2,
@@ -3573,7 +3966,7 @@ describe('createSessionPreToolUse', () => {
         waitingOn: 'other_approvers',
       }));
 
-      expect(waitForApproval).toHaveBeenCalledWith('exec-h1', 300_000, expect.any(AbortSignal));
+      expect(waitForApproval).toHaveBeenCalledWith('exec-h1', 300_000, expect.any(AbortSignal), expect.any(Object));
       // Marked executing after approval.
       expect(mockSet).toHaveBeenCalledWith({ status: 'executing' });
     });
@@ -4084,21 +4477,27 @@ describe('createSessionPostToolUse', () => {
   });
 
   it('persists delegantToolCallId on the updated execution row (tier >= 2)', async () => {
+    // A tier-2 auto-approved call: the gate leaves its row `executing`, and
+    // the post hook closes that row (#11994: by the id the gate recorded).
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,
-      tier: 3,
-      requiresApproval: true,
+      tier: 2,
+      requiresApproval: false,
     } as any);
-    const session = makeActiveSession();
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    const session = makeActiveSession({ approvalMode: 'auto_approve' });
     const where = vi.fn().mockResolvedValue(undefined);
     const set = vi.fn().mockReturnValue({ where });
     vi.mocked(db.update).mockReturnValue({ set } as any);
+    const input = { userIdentifier: 'u1', reason: 'forgot' };
+    expect(await createSessionPreToolUse(session)('take_screenshot', input, undefined, 'toolu_d')).toEqual({ allowed: true });
     const callback = createSessionPostToolUse(session);
 
-    await callback('m365_reset_password', { userIdentifier: 'u1', reason: 'forgot' }, JSON.stringify({
+    await callback('take_screenshot', input, JSON.stringify({
       message: 'Reset the password for u1.',
       delegantToolCallId: 'tc-456',
-    }), false, 12);
+    }), false, 12, undefined, undefined, 'toolu_d');
 
     const setCall = set.mock.calls.find((c) => c[0] && 'status' in c[0]);
     expect(setCall).toBeDefined();
@@ -4234,20 +4633,39 @@ describe('inline secret-bearing completion (Task 6)', () => {
   }
 
   it('writes the sealed blob to the intent, and never to the chat row, the execution ledger row, or the SSE stream', async () => {
-    const session = makeActiveSession();
+    // Drive the real tier-3 release so the gate leaves this call's ledger row
+    // `executing` and the post hook closes it (#11994: by id). Without the
+    // gate there is no row to close and Sink 2 below would pass vacuously.
+    const selectChain: Record<string, unknown> = {
+      from: vi.fn(() => selectChain),
+      where: vi.fn(() => selectChain),
+      limit: vi.fn(async () => [{ id: 'intent-1', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
+    };
+    vi.mocked(db.select).mockReturnValue(selectChain as any);
+    mockInsertReturning({ id: 'exec-sealed' });
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-1', approvalRequestIds: ['appr-sealed'] }));
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    const session = makeActiveSession({ approvalMode: 'per_step' });
+    const input = { userIdentifier: 'a@b.com' };
+    expect(await createSessionPreToolUse(session)('m365_reset_password', input, undefined, 'toolu_sealed'))
+      .toEqual({ allowed: true, intentId: 'intent-1', context: RELEASED_CONTEXT });
+    mockTransitionIntent.mockClear();
+    mockSet.mockClear();
+    mockInsertValues();
     const callback = createSessionPostToolUse(session);
 
     await callback(
       'm365_reset_password',
-      { userIdentifier: 'a@b.com' },
+      input,
       'Reset done; credential available for one-time reveal.',
       false,
       12,
       { intentId: 'intent-1', sealedResult: { temporaryPasswordEnc: 'enc:v3:abc' } },
+      undefined,
+      'toolu_sealed',
     );
 
-    // The intent write gets the sealed ciphertext, keyed off sealed.intentId
-    // (not pendingIntentBySession — preToolUse never ran on this session).
+    // The intent write gets the sealed ciphertext, keyed off sealed.intentId.
     expect(mockTransitionIntent).toHaveBeenCalledWith(
       'intent-1',
       'executing',
@@ -4265,6 +4683,7 @@ describe('inline secret-bearing completion (Task 6)', () => {
     // row. A prior version of this test only swept db.insert, so a bug that
     // set `toolOutput: sealed?.sealedResult ?? parsedOutput` here instead of
     // `parsedOutput` would have passed silently.
+    expect(updateSetPayloads()).toContainEqual(expect.objectContaining({ status: 'completed', toolOutput: expect.anything() }));
     expect(JSON.stringify(updateSetPayloads())).not.toContain('enc:v3:abc');
 
     // Sink 3: the SSE tool_result event streamed to the browser/mobile client.
@@ -4295,15 +4714,15 @@ describe('inline secret-bearing completion (Task 6)', () => {
     );
   });
 
-  it('prefers sealed.intentId over pendingIntentBySession when both are present (genuine tier-3 run, not an empty map)', async () => {
+  it('prefers sealed.intentId over the call\'s released intent when both are present (genuine tier-3 run, not an empty record)', async () => {
     // A prior version of this test called preToolUse with a tool name absent
     // from the TOOL_TIERS mock, so it hit the very first "Unknown tool" guard
-    // and never created an intent — pendingIntentBySession stayed empty and
+    // and never created an intent — no released intent was recorded and
     // the `not.toHaveBeenCalledWith('intent-legacy', ...)` assertion passed
     // trivially, even against the regression it claimed to catch (flipping
     // the `??` precedence). Fixed by registering m365_reset_password as a
     // tier-3 tool in the TOOL_TIERS mock (below) and driving the full tier-3
-    // release-CAS path so the WeakMap is genuinely populated.
+    // release-CAS path so the call's releasedIntents record genuinely exists.
     const selectChain: Record<string, unknown> = {
       from: vi.fn(() => selectChain),
       where: vi.fn(() => selectChain),
@@ -6363,6 +6782,69 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
     expect(updatedRows.every((r) => r.table === schema.aiToolExecutions)).toBe(true);
   });
 
+  // #11678 §1: a Tier 3 intent denied (or cancelled, or expired) while the
+  // chat waits on it never runs, so postToolUse never closes its ledger row.
+  // The gate closes it itself, or the row sits in `pending` forever.
+  describe('#11678: a Tier 3 intent that ends undecided-or-denied closes its pending row', () => {
+    beforeEach(() => {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true, tier: 3, requiresApproval: true, description: 'Execute command',
+      } as any);
+      vi.mocked(db.insert).mockImplementation(((table: unknown) => ({
+        values: vi.fn((values: Record<string, unknown>) => {
+          insertedRows.push({ table, values });
+          return { returning: vi.fn(async () => [{ id: 'exec-denied' }]) };
+        }),
+      })) as any);
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-denied' }));
+    });
+
+    // Ignore the intent-id stamp written once the intent exists; only status writes matter here.
+    async function statusUpdates() {
+      return (await ledgerUpdates()).filter((u) => 'status' in u);
+    }
+
+    it.each([
+      ['rejected', 'denied'],
+      ['cancelled', 'cancelled'],
+      ['expired', 'expired'],
+    ] as const)('a %s intent closes the row as rejected, saying it was %s', async (status, word) => {
+      mockWaitForIntentDecision.mockResolvedValueOnce(status);
+      const session = makeActiveSession();
+
+      const verdict = await createSessionPreToolUse(session)('execute_command', { deviceId: 'device-1' }, undefined, 'tu-d');
+
+      expect(verdict).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+      expect(await ledgerInserts()).toEqual([expect.objectContaining({ status: 'pending' })]);
+      expect(await statusUpdates()).toEqual([expect.objectContaining({
+        status: 'rejected', errorMessage: expect.stringContaining(word), completedAt: expect.any(Date),
+      })]);
+    });
+
+    it('an intent the close-out expired at its deadline closes the row as rejected', async () => {
+      mockWaitForIntentDecision.mockResolvedValueOnce('pending_approval');
+      mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'expired' });
+      const session = makeActiveSession();
+
+      await createSessionPreToolUse(session)('execute_command', { deviceId: 'device-1' }, undefined, 'tu-e');
+
+      expect(await statusUpdates()).toEqual([expect.objectContaining({
+        status: 'rejected', errorMessage: expect.stringContaining('expired'),
+      })]);
+    });
+
+    it('an intent still pending before its deadline keeps its row pending (an approval may still run it)', async () => {
+      mockWaitForIntentDecision.mockResolvedValueOnce('pending_approval');
+      mockCloseOutUndecidedIntent.mockResolvedValueOnce({ kind: 'decided', status: 'pending_approval' });
+      const session = makeActiveSession();
+
+      const verdict = await createSessionPreToolUse(session)('execute_command', { deviceId: 'device-1' }, undefined, 'tu-p');
+
+      expect(verdict).toMatchObject({ allowed: false, error: expect.stringContaining('Approval still pending') });
+      expect(await statusUpdates()).toEqual([]);
+    });
+  });
+
   it('redacts secret-shaped text in the stored refusal reason', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false } as any);
     vi.mocked(checkToolRateLimit).mockResolvedValue('Refused: password=hunter2 is not allowed');
@@ -6385,5 +6867,589 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
     const rows = await ledgerInserts();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ status: 'refused', errorMessage: 'Guardrails check failed' });
+  });
+});
+
+// #11994: the SDK runs sibling tool calls concurrently, so two calls in one
+// session can both pass the gate before either one's postToolUse runs. Each
+// call must complete its OWN action intent and its OWN ai_tool_executions row
+// with its own output, never a sibling's.
+describe('#11994: overlapping calls complete their own intent and ledger row', () => {
+  let ledgerUpdates: Array<{ values: Record<string, unknown>; where: unknown }>;
+  let ledgerIds: string[];
+  let sessionFlags: Array<Record<string, unknown>>;
+
+  const tier3Check = { allowed: true, tier: 3, requiresApproval: true, description: 'Execute command' };
+  const cardCheck = { allowed: true, tier: 2, requiresApproval: false, description: 'Take screenshot' };
+  const readOnlyAutoCheck = { allowed: true, tier: 2, requiresApproval: false, readOnly: true, description: 'List processes' };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockCreateActionIntent.mockReset();
+    mockWaitForIntentDecision.mockReset();
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockReset();
+    mockTransitionIntent.mockResolvedValue(true);
+    mockRevalidateApprovedIntentForRelease.mockReset();
+    mockRevalidateApprovedIntentForRelease.mockResolvedValue({ ok: true, auth: {} } as IntentReleaseRevalidation);
+    vi.mocked(checkToolPermission).mockResolvedValue(null);
+    vi.mocked(checkToolRateLimit).mockResolvedValue(null);
+    mockGetUserPushTokens.mockResolvedValue([]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+    const selectChain: Record<string, unknown> = {
+      from: vi.fn(() => selectChain),
+      where: vi.fn(() => selectChain),
+      limit: vi.fn(async () => [{ id: 'intent', boundArgumentDigest: 'digest', ...RELEASED_INTENT_DECISION }]),
+    };
+    vi.mocked(db.select).mockReturnValue(selectChain as any);
+
+    const schema = await import('../db/schema');
+    ledgerUpdates = [];
+    ledgerIds = [];
+    sessionFlags = [];
+    let next = 0;
+    // An insert that can be awaited at `.values()` or chained to
+    // `.returning()`. A ledger row keeps the id the caller supplied, or gets
+    // the next `exec-N` (what the column's defaultRandom would hand back).
+    vi.mocked(db.insert).mockImplementation(((table: unknown) => ({
+      values: vi.fn((values: Record<string, unknown>) => {
+        const isLedger = table === schema.aiToolExecutions;
+        const id = isLedger && typeof values?.id === 'string' ? values.id : `${isLedger ? 'exec' : 'row'}-${++next}`;
+        if (isLedger) ledgerIds.push(id);
+        return Object.assign(Promise.resolve(undefined), { returning: vi.fn().mockResolvedValue([{ id }]) });
+      }),
+    })) as any);
+    vi.mocked(db.update).mockImplementation(((table: unknown) => ({
+      set: vi.fn((values: Record<string, unknown>) => ({
+        where: vi.fn(async (where: unknown) => {
+          if (table === schema.aiToolExecutions) ledgerUpdates.push({ values, where });
+          if (table === schema.aiSessions && 'flagReason' in values) sessionFlags.push(values);
+        }),
+      })),
+    })) as any);
+  });
+
+  /** The post hook's terminal ledger writes (status completed|failed, with an output). */
+  function terminalLedgerUpdates() {
+    return ledgerUpdates.filter((u) => u.values.completedAt instanceof Date && 'toolOutput' in u.values);
+  }
+  function intentCompletions() {
+    return mockTransitionIntent.mock.calls
+      .filter((c) => c[1] === 'executing' && (c[2] === 'completed' || c[2] === 'failed'))
+      .map((c) => ({ intentId: c[0], to: c[2], result: (c[3] as { result?: unknown } | undefined)?.result }));
+  }
+
+  it('two inline Tier-3 releases: each intent and each ledger row gets its own call\'s output', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent
+      .mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }))
+      .mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-b', approvalRequestIds: ['appr-b'] }));
+    const session = makeActiveSession({ approvalMode: 'per_step' });
+    const pre = createSessionPreToolUse(session);
+    const post = createSessionPostToolUse(session);
+    const inputA = { deviceId: 'd-a' };
+    const inputB = { deviceId: 'd-b' };
+
+    expect(await pre('execute_command', inputA, undefined, 'toolu_a')).toEqual({ allowed: true, intentId: 'intent-a', context: RELEASED_CONTEXT });
+    expect(await pre('execute_command', inputB, undefined, 'toolu_b')).toEqual({ allowed: true, intentId: 'intent-b', context: RELEASED_CONTEXT });
+    const [execA, execB] = ledgerIds;
+    mockTransitionIntent.mockClear();
+
+    // The FIRST release finishes first: the call whose entry the second
+    // release used to overwrite.
+    await post('execute_command', inputA, JSON.stringify({ who: 'a' }), false, 5, undefined, undefined, 'toolu_a');
+    await post('execute_command', inputB, JSON.stringify({ who: 'b' }), false, 5, undefined, undefined, 'toolu_b');
+
+    expect(intentCompletions()).toEqual([
+      { intentId: 'intent-a', to: 'completed', result: { who: 'a' } },
+      { intentId: 'intent-b', to: 'completed', result: { who: 'b' } },
+    ]);
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(2);
+    expect(terminal[0]!.values.toolOutput).toEqual({ who: 'a' });
+    expect(JSON.stringify(terminal[0]!.where)).toContain(execA!);
+    expect(JSON.stringify(terminal[0]!.where)).not.toContain(execB!);
+    expect(terminal[1]!.values.toolOutput).toEqual({ who: 'b' });
+    expect(JSON.stringify(terminal[1]!.where)).toContain(execB!);
+  });
+
+  it('without SDK tool_use ids, each Tier-3 call is matched by its own input object', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent
+      .mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }))
+      .mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-b', approvalRequestIds: ['appr-b'] }));
+    const session = makeActiveSession({ approvalMode: 'per_step' });
+    const pre = createSessionPreToolUse(session);
+    const post = createSessionPostToolUse(session);
+    const inputA = { deviceId: 'd-a' };
+    const inputB = { deviceId: 'd-b' };
+
+    await pre('execute_command', inputA);
+    await pre('execute_command', inputB);
+    mockTransitionIntent.mockClear();
+    await post('execute_command', inputA, JSON.stringify({ who: 'a' }), false, 5);
+    await post('execute_command', inputB, JSON.stringify({ who: 'b' }), true, 5);
+
+    expect(intentCompletions()).toEqual([
+      { intentId: 'intent-a', to: 'completed', result: { who: 'a' } },
+      { intentId: 'intent-b', to: 'failed', result: { who: 'b' } },
+    ]);
+  });
+
+  it('a Tier-2 call finishing during a Tier-3 execution leaves the Tier-3 intent to its own call', async () => {
+    vi.mocked(checkGuardrails).mockImplementation(((toolName: string) =>
+      toolName === 'execute_command' ? tier3Check : cardCheck) as any);
+    vi.mocked(waitForApproval).mockResolvedValue(true);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-t3', approvalRequestIds: ['appr-t3'] }));
+    const session = makeActiveSession({ approvalMode: 'per_step' });
+    const pre = createSessionPreToolUse(session);
+    const post = createSessionPostToolUse(session);
+    const t3Input = { deviceId: 'd-1' };
+    const t2Input = { deviceId: 'd-2' };
+
+    expect(await pre('execute_command', t3Input, undefined, 'toolu_t3')).toEqual({ allowed: true, intentId: 'intent-t3', context: RELEASED_CONTEXT });
+    expect(await pre('take_screenshot', t2Input, undefined, 'toolu_t2')).toEqual({ allowed: true });
+    mockTransitionIntent.mockClear();
+
+    await post('take_screenshot', t2Input, JSON.stringify({ image: 't2' }), false, 5, undefined, undefined, 'toolu_t2');
+    expect(intentCompletions()).toEqual([]);
+
+    await post('execute_command', t3Input, JSON.stringify({ who: 't3' }), false, 5, undefined, undefined, 'toolu_t3');
+    expect(intentCompletions()).toEqual([
+      { intentId: 'intent-t3', to: 'completed', result: { who: 't3' } },
+    ]);
+  });
+
+  it('a refused same-name sibling never closes another call\'s executing ledger row', async () => {
+    // A auto-executes (read-only Tier 2) and is still running; B, the same
+    // tool, gets a card that is rejected. B's refusal echo must not land on
+    // A's `executing` row, and A must still close its own row afterwards.
+    vi.mocked(checkGuardrails).mockImplementation(((_toolName: string, input: Record<string, unknown>) =>
+      input.commandType === 'list_processes' ? readOnlyAutoCheck : cardCheck) as any);
+    vi.mocked(waitForApproval).mockResolvedValue(false);
+    const session = makeActiveSession({ approvalMode: 'per_step' });
+    const pre = createSessionPreToolUse(session);
+    const post = createSessionPostToolUse(session);
+    const inputA = { commandType: 'list_processes' };
+    const inputB = { commandType: 'kill_process', pid: 42 };
+
+    expect(await pre('execute_command', inputA, undefined, 'toolu_a')).toEqual({ allowed: true });
+    const execA = ledgerIds[0]!;
+    const refused = await pre('execute_command', inputB, undefined, 'toolu_b');
+    expect(refused.allowed).toBe(false);
+
+    await post('execute_command', inputB, JSON.stringify({ error: 'rejected' }), true, 0, undefined, undefined, 'toolu_b');
+    await post('execute_command', inputA, JSON.stringify({ processes: [] }), false, 5, undefined, undefined, 'toolu_a');
+
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]!.values).toMatchObject({ status: 'completed', toolOutput: { processes: [] } });
+    expect(JSON.stringify(terminal[0]!.where)).toContain(execA);
+  });
+
+  it('two overlapping helper (PAM) calls of one tool each close their own row, finishing in reverse order', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(cardCheck as any);
+    mockDecideHelperToolAction.mockResolvedValue('pending');
+    vi.mocked(waitForApproval).mockResolvedValue(true);
+    const session = makeActiveSession({
+      auth: makeAuth({
+        scope: 'organization',
+        helperDeviceId: 'device-7',
+        user: { id: 'device-7', email: 'helper@host-01', name: 'HOST-01' },
+      } as any),
+      approvalMode: 'per_step',
+    });
+    const pre = createSessionPreToolUse(session);
+    const post = createSessionPostToolUse(session);
+    const inputA = { deviceId: 'd-a' };
+    const inputB = { deviceId: 'd-b' };
+
+    expect(await pre('take_screenshot', inputA, undefined, 'toolu_a')).toEqual({ allowed: true });
+    expect(await pre('take_screenshot', inputB, undefined, 'toolu_b')).toEqual({ allowed: true });
+    const [execA, execB] = ledgerIds;
+    await post('take_screenshot', inputB, JSON.stringify({ who: 'b' }), false, 5, undefined, undefined, 'toolu_b');
+    await post('take_screenshot', inputA, JSON.stringify({ who: 'a' }), false, 5, undefined, undefined, 'toolu_a');
+
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(2);
+    expect(terminal[0]!.values.toolOutput).toEqual({ who: 'b' });
+    expect(JSON.stringify(terminal[0]!.where)).toContain(execB!);
+    expect(terminal[1]!.values.toolOutput).toEqual({ who: 'a' });
+    expect(JSON.stringify(terminal[1]!.where)).toContain(execA!);
+  });
+
+  it('a plan step and an off-plan card-approved call of one tool each close their own row', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(cardCheck as any);
+    vi.mocked(waitForApproval).mockResolvedValue(true);
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+    const pre = createSessionPreToolUse(session);
+    const post = createSessionPostToolUse(session);
+    const planInput = { command: 'whoami' };
+    const autoInput = { command: 'hostname' }; // off-plan: an approval card under action_plan
+
+    expect(await pre('execute_command', planInput, undefined, 'toolu_plan')).toEqual({ allowed: true });
+    expect(await pre('execute_command', autoInput, undefined, 'toolu_auto')).toEqual({ allowed: true });
+    const [planExec, autoExec] = ledgerIds;
+    // The plan-step row was inserted with an id the gate chose (what postToolUse closes).
+    expect(planExec).toMatch(/^[0-9a-f-]{36}$/);
+    expect(autoExec).toBeDefined();
+    await post('execute_command', autoInput, JSON.stringify({ who: 'auto' }), false, 5, undefined, undefined, 'toolu_auto');
+    await post('execute_command', planInput, JSON.stringify({ who: 'plan' }), false, 5, undefined, undefined, 'toolu_plan');
+
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(2);
+    expect(terminal[0]!.values.toolOutput).toEqual({ who: 'auto' });
+    expect(JSON.stringify(terminal[0]!.where)).toContain(autoExec!);
+    expect(terminal[1]!.values.toolOutput).toEqual({ who: 'plan' });
+    expect(JSON.stringify(terminal[1]!.where)).toContain(planExec!);
+  });
+
+  // #11994 x #11968: a Tier-3 call whose input the tool refuses, corrected on
+  // the model's retry, beside a same-name sibling Tier-3 call in the same turn.
+  // The refusal, the sibling and the retry each pass the gate under their own
+  // tool_use id, so each closes exactly its own intent and its own ledger row,
+  // once, with its own outcome — and the corrected refusal does not flag the
+  // session.
+  it('a refusal corrected on retry beside a Tier-3 sibling: each intent and ledger row closes once with its own outcome', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent
+      .mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-first', approvalRequestIds: ['appr-first'] }))
+      .mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-sibling', approvalRequestIds: ['appr-sibling'] }))
+      .mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-retry', approvalRequestIds: ['appr-retry'] }));
+    const session = makeActiveSession({ approvalMode: 'per_step' });
+    const pre = createSessionPreToolUse(session);
+    const post = createSessionPostToolUse(session);
+    const firstInput = { deviceId: 'd-a', command: '' };
+    const siblingInput = { deviceId: 'd-b', command: 'hostname' };
+    const retryInput = { deviceId: 'd-a', command: 'whoami' };
+    const refusal = JSON.stringify({ error: 'Invalid input: command: Too small' });
+
+    expect(await pre('execute_command', firstInput, undefined, 'toolu_first')).toMatchObject({ allowed: true, intentId: 'intent-first' });
+    expect(await pre('execute_command', siblingInput, undefined, 'toolu_sibling')).toMatchObject({ allowed: true, intentId: 'intent-sibling' });
+    // The refused call returns while the sibling is still running.
+    await post('execute_command', firstInput, refusal, true, 2, undefined, undefined, 'toolu_first');
+    // The model corrects its input and calls again; the sibling finishes
+    // before the retry does.
+    expect(await pre('execute_command', retryInput, undefined, 'toolu_retry')).toMatchObject({ allowed: true, intentId: 'intent-retry' });
+    const [firstExec, siblingExec, retryExec] = ledgerIds;
+    await post('execute_command', siblingInput, JSON.stringify({ who: 'sibling' }), false, 5, undefined, undefined, 'toolu_sibling');
+    await post('execute_command', retryInput, JSON.stringify({ who: 'retry' }), false, 5, undefined, undefined, 'toolu_retry');
+
+    expect(ledgerIds).toHaveLength(3);
+    expect(intentCompletions()).toEqual([
+      { intentId: 'intent-first', to: 'failed', result: { error: 'Invalid input: command: Too small' } },
+      { intentId: 'intent-sibling', to: 'completed', result: { who: 'sibling' } },
+      { intentId: 'intent-retry', to: 'completed', result: { who: 'retry' } },
+    ]);
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(3);
+    const closes = (exec: string) => terminal.filter((u) => JSON.stringify(u.where).includes(exec));
+    expect(closes(firstExec!)).toHaveLength(1);
+    expect(closes(firstExec!)[0]!.values).toMatchObject({ status: 'failed', toolOutput: { error: 'Invalid input: command: Too small' } });
+    expect(closes(siblingExec!)).toHaveLength(1);
+    expect(closes(siblingExec!)[0]!.values).toMatchObject({ status: 'completed', toolOutput: { who: 'sibling' } });
+    expect(closes(retryExec!)).toHaveLength(1);
+    expect(closes(retryExec!)[0]!.values).toMatchObject({ status: 'completed', toolOutput: { who: 'retry' } });
+
+    // The refusal was corrected within the turn: no flag now or at turn end.
+    expect(sessionFlags).toEqual([]);
+    await flushDeferredToolFailureFlags(session);
+    expect(sessionFlags).toEqual([]);
+  });
+
+  // #12131: the close binds the row to its session as well as its id and
+  // `executing` status — the id comes from an in-memory store, so the filter
+  // must not trust it alone.
+  /** The values each `eq(column, value)` term of a `where(and(...))` compares against. */
+  function whereValues(where: unknown): unknown[] {
+    return ((where as { _and?: Array<{ _eq?: unknown[] }> })._and ?? []).map((term) => term._eq?.[1]);
+  }
+
+  it('closes the call\'s executing row by id, status AND session (#12131)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = makeActiveSession({ approvalMode: 'per_step', breezeSessionId: 'session-12131' });
+    const input = { deviceId: 'd-a' };
+
+    expect(await createSessionPreToolUse(session)('execute_command', input, undefined, 'toolu_a')).toMatchObject({ allowed: true });
+    const [execA] = ledgerIds;
+    await createSessionPostToolUse(session)('execute_command', input, JSON.stringify({ who: 'a' }), false, 5, undefined, undefined, 'toolu_a');
+
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(1);
+    expect(whereValues(terminal[0]!.where)).toEqual(expect.arrayContaining([execA, 'executing', 'session-12131']));
+  });
+
+  // #12131: a call whose row the gate left `executing` must not keep it
+  // `executing` (until the stale-execution reaper) when its post hook takes a
+  // topology early return. The topology paths withhold raw tool output, so the
+  // row closes with the same withheld marker the topology ledger row carries.
+  const WITHHELD = { topologyInvestigation: true, outputWithheld: true };
+
+  it('a sealed (timed-out) topology turn closes the call\'s executing row without its raw output (#12131)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = makeActiveSession({ approvalMode: 'per_step', pendingTurnToolExecutionCount: 0, toolUseNames: new Map() });
+    const input = { deviceId: 'd-a' };
+
+    expect(await createSessionPreToolUse(session)('execute_command', input, undefined, 'toolu_a')).toMatchObject({ allowed: true });
+    const [execA] = ledgerIds;
+    // The turn times out while the call is still running (streamingSessionManager C1).
+    session.topologyTurnSealed = true;
+    await createSessionPostToolUse(session)('execute_command', input, JSON.stringify({ secret: 'LATE-RAW-OUTPUT' }), false, 5, undefined, undefined, 'toolu_a');
+
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]!.values).toMatchObject({ status: 'completed', toolOutput: WITHHELD });
+    expect(whereValues(terminal[0]!.where)).toEqual(expect.arrayContaining([execA, 'executing', 'session-1']));
+    expect(JSON.stringify(ledgerUpdates)).not.toContain('LATE-RAW-OUTPUT');
+    // No second ledger row for the call.
+    expect(ledgerIds).toEqual([execA]);
+  });
+
+  it('a topology investigation closes the call\'s executing row instead of writing a second one (#12131)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = makeActiveSession({
+      approvalMode: 'per_step',
+      pendingTurnToolExecutionCount: 0,
+      toolUseNames: new Map(),
+      topologyInvestigation: {
+        investigationId: 'session-1', allowedToolNames: new Set(['execute_command']), append: vi.fn(), startBlock: vi.fn(), noteUsage: vi.fn(() => true),
+        beforeToolCall: vi.fn(async () => ({ allowed: true as const })), complete: vi.fn(), abort: vi.fn(),
+      },
+    });
+    const input = { deviceId: 'd-a' };
+
+    expect(await createSessionPreToolUse(session)('execute_command', input, undefined, 'toolu_a')).toMatchObject({ allowed: true });
+    const [execA] = ledgerIds;
+    await createSessionPostToolUse(session)('execute_command', input, JSON.stringify({ secret: 'RAW-OUTPUT' }), true, 5, undefined, undefined, 'toolu_a');
+
+    const terminal = terminalLedgerUpdates();
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]!.values).toMatchObject({ status: 'failed', toolOutput: WITHHELD, durationMs: 5 });
+    expect(whereValues(terminal[0]!.where)).toEqual(expect.arrayContaining([execA, 'executing', 'session-1']));
+    expect(JSON.stringify(ledgerUpdates)).not.toContain('RAW-OUTPUT');
+    expect(ledgerIds).toEqual([execA]);
+  });
+
+  // #12149: the intent the call's release CASed to `executing` must reach its
+  // terminal status on the topology early returns too — not sit `executing`
+  // until the stale-execution reaper fails a run that succeeded as
+  // `execution_lost`. Its result never carries the raw tool output.
+  const TOPOLOGY_RUN = '90000000-0000-4000-8000-000000000001';
+  function topologySession() {
+    return makeActiveSession({
+      approvalMode: 'per_step',
+      pendingTurnToolExecutionCount: 0,
+      toolUseNames: new Map(),
+      topologyInvestigation: {
+        investigationId: 'session-1', allowedToolNames: new Set(['diagnose_connectivity']), append: vi.fn(), startBlock: vi.fn(), noteUsage: vi.fn(() => true),
+        beforeToolCall: vi.fn(async () => ({ allowed: true as const })), complete: vi.fn(), abort: vi.fn(),
+      },
+    });
+  }
+  function intentTerminalPatch(intentId: string) {
+    return mockTransitionIntent.mock.calls.find((c) => c[0] === intentId && c[1] === 'executing')?.[3] as Record<string, unknown> | undefined;
+  }
+
+  it('a sealed (timed-out) topology turn completes the call\'s released intent, raw output withheld (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    session.topologyTurnSealed = true;
+    await createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ runId: TOPOLOGY_RUN, state: 'queued', note: 'LATE-RAW-OUTPUT' }), false, 5, undefined, undefined, 'toolu_a');
+
+    expect(intentCompletions()).toEqual([
+      { intentId: 'intent-a', to: 'completed', result: { ...WITHHELD, runId: TOPOLOGY_RUN, state: 'queued' } },
+    ]);
+    expect(intentTerminalPatch('intent-a')).toMatchObject({ executedAt: expect.any(Date) });
+    expect(JSON.stringify(mockTransitionIntent.mock.calls)).not.toContain('LATE-RAW-OUTPUT');
+  });
+
+  it('a topology investigation completes the released intent with the run id and state only (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    await createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ runId: TOPOLOGY_RUN, state: 'queued', siteId: 's', note: 'FOREIGN-SITE-SECRET' }), false, 5, undefined, undefined, 'toolu_a');
+
+    expect(intentCompletions()).toEqual([
+      { intentId: 'intent-a', to: 'completed', result: { ...WITHHELD, runId: TOPOLOGY_RUN, state: 'queued' } },
+    ]);
+    expect(intentTerminalPatch('intent-a')).toMatchObject({ executedAt: expect.any(Date) });
+    expect(JSON.stringify(mockTransitionIntent.mock.calls)).not.toContain('FOREIGN-SITE-SECRET');
+  });
+
+  it('a failed topology call fails its released intent with the stable error code and the withheld marker (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    await createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ error: 'RAW-ERROR-TEXT' }), true, 5, undefined, undefined, 'toolu_a');
+
+    expect(intentCompletions()).toEqual([{ intentId: 'intent-a', to: 'failed', result: WITHHELD }]);
+    expect(intentTerminalPatch('intent-a')).toMatchObject({ executedAt: expect.any(Date), errorCode: 'tool_execution_failed' });
+    expect(JSON.stringify(mockTransitionIntent.mock.calls)).not.toContain('RAW-ERROR-TEXT');
+  });
+
+  it('a successful topology call with a malformed result still completes its intent, marker only (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    await createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ runId: 'not-a-uuid', state: 'queued' }), false, 5, undefined, undefined, 'toolu_a');
+
+    expect(intentCompletions()).toEqual([{ intentId: 'intent-a', to: 'completed', result: WITHHELD }]);
+  });
+
+  it('a topology call still finishes its intent when the investigation post hook throws (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    vi.mocked(session.eventBus.publish).mockImplementation(() => { throw new Error('bus down'); });
+    await expect(createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ runId: TOPOLOGY_RUN, state: 'queued' }), false, 5, undefined, undefined, 'toolu_a')).rejects.toThrow('bus down');
+
+    expect(intentCompletions()).toEqual([
+      { intentId: 'intent-a', to: 'completed', result: { ...WITHHELD, runId: TOPOLOGY_RUN, state: 'queued' } },
+    ]);
+  });
+
+  it('a lost topology completion CAS is reported, not retried (#12149)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue(tier3Check as any);
+    mockCreateActionIntent.mockResolvedValueOnce(makeIntentSnapshot({ id: 'intent-a', approvalRequestIds: ['appr-a'] }));
+    const session = topologySession();
+    const input = { site_id: 's' };
+
+    expect(await createSessionPreToolUse(session)('diagnose_connectivity', input, undefined, 'toolu_a')).toMatchObject({ allowed: true, intentId: 'intent-a' });
+    mockWriteAuditEvent.mockClear();
+    mockTransitionIntent.mockResolvedValue(false);
+    await createSessionPostToolUse(session)('diagnose_connectivity', input,
+      JSON.stringify({ runId: TOPOLOGY_RUN, state: 'queued' }), false, 5, undefined, undefined, 'toolu_a');
+
+    expect(intentCompletions()).toHaveLength(1);
+    const marker = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === 'action_intent.executed');
+    expect(marker?.[1]).toMatchObject({
+      resourceId: 'intent-a',
+      result: 'failure',
+      details: expect.objectContaining({ errorCode: 'execution_cas_lost', intendedStatus: 'completed' }),
+    });
+  });
+});
+
+// #11968: an input refusal the model corrects on its next call must not flag
+// the whole session; one it never corrects within the turn still does.
+describe('createSessionPostToolUse — auto-flag on a correctable input refusal (#11968)', () => {
+  let flagSets: Array<Record<string, unknown>>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false } as any);
+    mockInsertValues();
+    flagSets = [];
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn((payload: Record<string, unknown>) => {
+        if ('flagReason' in payload) flagSets.push(payload);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    } as any);
+  });
+
+  const refusal = JSON.stringify({ error: 'invalid_params', detail: 'params.goal: Too big' });
+  const success = JSON.stringify({ requestId: 'req-1', status: 'queued' });
+
+  it('does not flag when the same tool succeeds after an invalid_params refusal in the same turn', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1', 'tu-2'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('launch_specialist', { kind: 'x' }, refusal, true, 0);
+    await callback('launch_specialist', { kind: 'x' }, success, false, 10);
+
+    expect(flagSets).toEqual([]);
+    await flushDeferredToolFailureFlags(session);
+    expect(flagSets).toEqual([]);
+  });
+
+  it('does not flag when the same tool succeeds after a schema refusal (Invalid input: …)', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1', 'tu-2'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('query_devices', {}, JSON.stringify({ error: 'Invalid input: limit: Too big' }), true, 0);
+    await callback('query_devices', {}, JSON.stringify({ devices: [] }), false, 5);
+    await flushDeferredToolFailureFlags(session);
+
+    expect(flagSets).toEqual([]);
+  });
+
+  it('holds an uncorrected invalid_params refusal until the turn ends, then flags with the same reason', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('launch_specialist', { kind: 'x' }, refusal, true, 0);
+    expect(flagSets).toEqual([]);
+
+    await flushDeferredToolFailureFlags(session);
+    expect(flagSets).toEqual([
+      expect.objectContaining({ flagReason: 'Tool failed: launch_specialist — invalid_params', flaggedAt: expect.any(Date) }),
+    ]);
+  });
+
+  it('a success of a DIFFERENT tool does not clear the held refusal', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1', 'tu-2'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('launch_specialist', { kind: 'x' }, refusal, true, 0);
+    await callback('query_devices', {}, JSON.stringify({ devices: [] }), false, 5);
+    await flushDeferredToolFailureFlags(session);
+
+    expect(flagSets).toHaveLength(1);
+    expect(flagSets[0]!.flagReason).toBe('Tool failed: launch_specialist — invalid_params');
+  });
+
+  it('a refusal after the correcting success is held again and flagged if the turn ends on it', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1', 'tu-2', 'tu-3'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('launch_specialist', { kind: 'x' }, refusal, true, 0);
+    await callback('launch_specialist', { kind: 'x' }, success, false, 10);
+    await callback('launch_specialist', { kind: 'y' }, refusal, true, 0);
+    await flushDeferredToolFailureFlags(session);
+
+    expect(flagSets).toHaveLength(1);
+  });
+
+  it('any other tool failure still flags the session at once', async () => {
+    const session = makeActiveSession({ toolUseIdQueue: ['tu-1'] });
+    const callback = createSessionPostToolUse(session);
+
+    await callback('execute_command', { deviceId: 'd-1' }, JSON.stringify({ error: 'Device is offline' }), true, 3);
+
+    expect(flagSets).toEqual([
+      expect.objectContaining({ flagReason: 'Tool failed: execute_command — Device is offline' }),
+    ]);
+    // Nothing was held, so the turn end adds no second write.
+    await flushDeferredToolFailureFlags(session);
+    expect(flagSets).toHaveLength(1);
   });
 });
