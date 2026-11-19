@@ -62,6 +62,15 @@ type TrustQueueRow = {
   deviceCount: number;
   promotionBlockers?: RecordedPromotionBlockers | null;
   card?: EvidenceCard;
+  /** A restriction from a billing fraud flag that Restore can undo (billing#51). */
+  fraudFlagRestore?: FraudFlagRestore | null;
+};
+
+type FraudFlagRestore = {
+  previousTrustState: string;
+  restrictedAt: string;
+  /** Exactly the restriction's flag rows; the restore must name all of them. */
+  flags: Array<{ id: string; kind: string; stripeObjectId: string; outcome: string }>;
 };
 
 type QueueResponse = {
@@ -277,6 +286,43 @@ export default function TrustQueue() {
     }
   };
 
+  // One click (plus a confirmation): returns the partner to the trust state it
+  // had before a billing fraud flag restricted it, and stops the same billing
+  // objects from restricting it again.
+  const restore = async (row: TrustQueueRow) => {
+    const restorable = row.fraudFlagRestore;
+    if (!restorable) return;
+    if (!window.confirm(`Restore ${row.name} to ${restorable.previousTrustState}? The billing objects behind this restriction will not restrict it again.`)) return;
+
+    setActingOn(row.id);
+    try {
+      const result = await runAction<{ trustState: string }>({
+        request: () => fetchWithAuth(`/admin/partners/${encodeURIComponent(row.id)}/trust/fraud-flag-restore`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ flagIds: restorable.flags.map((flag) => flag.id) }),
+        }),
+        errorFallback: 'Unable to restore partner',
+        successMessage: 'Partner restored',
+      });
+      if (result.trustState === 'trusted') {
+        setRows((current) => current.filter((candidate) => candidate.id !== row.id));
+      } else {
+        setRows((current) => current.map((candidate) => candidate.id === row.id
+          ? { ...candidate, trustState: result.trustState, fraudFlagRestore: null, trustChangedAt: new Date().toISOString() }
+          : candidate));
+      }
+    } catch (error) {
+      if (error instanceof ActionError && (error.status === 401 || error.status === 403)) {
+        setLoadState('unauthorized');
+      } else {
+        handleActionError(error, 'Unable to restore partner');
+      }
+    } finally {
+      setActingOn(null);
+    }
+  };
+
   if (loadState === 'loading') {
     return <p className="py-12 text-center text-sm text-muted-foreground">Loading partner trust queue…</p>;
   }
@@ -350,7 +396,14 @@ export default function TrustQueue() {
                       </td>
                       <td className="px-3 py-3 align-top"><span className="font-medium">{row.name}</span><div className="text-xs text-muted-foreground">{row.slug}</div></td>
                       <td className="px-3 py-3 align-top">{row.plan}</td>
-                      <td className="px-3 py-3 align-top">{row.trustState}</td>
+                      <td className="px-3 py-3 align-top">
+                        {row.trustState}
+                        {row.fraudFlagRestore && (
+                          <div className="text-xs text-muted-foreground" data-testid={`trust-queue-fraud-restore-${row.id}`}>
+                            Billing fraud flag ({row.fraudFlagRestore.flags.length}); was {row.fraudFlagRestore.previousTrustState}
+                          </div>
+                        )}
+                      </td>
                       <td className="max-w-56 px-3 py-3 align-top text-muted-foreground">{row.trustReason ?? 'Not available'}</td>
                       <td className="px-3 py-3 align-top text-muted-foreground">{formatDate(row.trustChangedAt)}</td>
                       <td className="px-3 py-3 align-top">
@@ -363,6 +416,9 @@ export default function TrustQueue() {
                       <td className="px-3 py-3 align-top text-muted-foreground">{formatDate(row.trustReviewRequestedAt)}</td>
                       <td className="px-3 py-3 align-top">
                         <div className="flex justify-end gap-2">
+                          {row.fraudFlagRestore && (
+                            <button type="button" disabled={isActing} onClick={() => void restore(row)} className="rounded-md border border-emerald-600 px-3 py-2 text-xs font-medium text-emerald-700 disabled:opacity-60">Restore</button>
+                          )}
                           <button type="button" disabled={isActing} onClick={() => void act(row, 'approve')} className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-60">Approve</button>
                           <button type="button" disabled={isActing} onClick={() => void act(row, 'restrict')} className="rounded-md border px-3 py-2 text-xs font-medium disabled:opacity-60">Restrict</button>
                           <button type="button" disabled={isActing} onClick={() => void act(row, 'suspend')} className="rounded-md bg-destructive px-3 py-2 text-xs font-medium text-destructive-foreground disabled:opacity-60">Suspend</button>
