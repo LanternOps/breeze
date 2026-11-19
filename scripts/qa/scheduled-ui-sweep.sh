@@ -18,6 +18,10 @@
 #   QA_MODEL           optional --model
 #   QA_AGENT_TOKEN_FILE the agent's own `claude setup-token` token (default $QA_HOME/.agent-auth/oauth-token)
 #   QA_MAX_NEW_ISSUES  cap on issues filed per run       (default 10)
+#   QA_REPO            the ONLY repo the sweep writes to (default LanternOps/breeze-qa).
+#                      Must be private: checked before any other GitHub call and
+#                      again before publishing; anything else and nothing is published.
+#   QA_CODE_REPO       the code repo (default: the source repo's origin). Never a target.
 #   QA_DRY_RUN=1       do everything except run claude (smoke-tests the plumbing)
 #   QA_FORCE=1         run even if origin/main hasn't moved since the last sweep
 
@@ -86,7 +90,7 @@ restore_stack_env() {
   return 0
 }
 # build_envvals: literal values (>= 8 chars) of every entry in every non-example
-# .env* in the worktree -> redaction list for public sinks. .env.stack is left
+# .env* in the worktree -> redaction list for published text. .env.stack is left
 # out: wt-stack writes dev defaults and the stack's own URL there, which reports
 # legitimately quote.
 build_envvals() {
@@ -101,17 +105,7 @@ build_envvals() {
     fi | cut -d= -f2- | sed -E 's/^["'\'']//; s/["'\'']$//' \
       | awk 'length($0) >= 8' | sort -u > "$ENVVALS" )
 }
-# Trusted-side issue writer for runner-detected problems: one open issue per
-# title (label qa-sweep); repeats become a comment instead of a new issue.
-runner_issue() {  # runner_issue <title> <body-file>
-  if [ "${QA_DRY_RUN:-0}" = 1 ]; then log "DRY RUN: would file/comment issue: $1 (body: $2)"; return 0; fi
-  body_ok "$2" || { log "REFUSED to publish '$1': body failed secret checks (kept locally: $2)"; return 1; }
-  gh -R "$QA_REPO" label create qa-sweep --color C5DEF5 --description "Found by the scheduled UI QA sweep" >/dev/null 2>&1 || true
-  local n; n="$(gh -R "$QA_REPO" issue list --label qa-sweep --state open --search "\"$1\" in:title" --json number,title 2>/dev/null \
-               | jq -r --arg t "$1" '[.[]|select(.title==$t)][0].number // empty')"
-  if [ -n "$n" ]; then gh -R "$QA_REPO" issue comment "$n" --body-file "$2" >/dev/null && log "commented on #$n: $1"
-  else gh -R "$QA_REPO" issue create --title "$1" --label qa-sweep --body-file "$2" >/dev/null && log "filed: $1"; fi
-}
+# runner_issue (sweep-lib.sh) files the runner's own findings into QA_REPO.
 
 # --- single-flight lock (stale after 8h) ------------------------------------
 if ! mkdir "$LOCK" 2>/dev/null; then
@@ -130,7 +124,7 @@ cleanup() {
   fi
   [ -f "$QA_WORKTREE/.env.pre-hosted" ] && mv "$QA_WORKTREE/.env.pre-hosted" "$QA_WORKTREE/.env"
   remove_stack_net
-  stop_model_forwarder; stop_egress_proxy; stop_gh_broker
+  stop_model_forwarder; stop_egress_proxy
   rm -f "$ENVVALS"; rm -rf "$LOCK"
 }
 trap cleanup EXIT
@@ -191,8 +185,13 @@ fi
 grep -q '^## Scheduled mode' .claude/skills/ui-qa-sweep/SKILL.md \
   || { notify "QA sweep: skill has no Scheduled mode section - re-run install-schedule.sh"; log "FATAL skill contract missing"; exit 1; }
 log "main=$NEW_SHA prev=${PREV_SHA:-none}"
-QA_REPO="${QA_REPO:-$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)}"
-[[ "$QA_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { notify "QA sweep: could not resolve GitHub repo"; log "FATAL bad QA_REPO '$QA_REPO'"; exit 1; }
+# Output is private (2026-11-19): the sweep writes only to QA_REPO, which must be
+# a private repo and not the code repo; nothing is posted to the public PRs.
+# Checked here, before any other GitHub call, and again before publishing.
+QA_REPO="${QA_REPO:-LanternOps/breeze-qa}"
+QA_CODE_REPO="${QA_CODE_REPO:-$(repo_slug "$(git -C "$QA_SOURCE_REPO" remote get-url origin 2>/dev/null)")}"
+require_private_qa_repo || { notify "QA sweep: $QA_REPO is not a verified private repo; nothing run"; log "FATAL publishing repo '$QA_REPO' not verified private (code repo '${QA_CODE_REPO:-unknown}')"; exit 1; }
+log "publishing to $QA_REPO (private; code repo $QA_CODE_REPO is never written)"
 
 if [ -n "$PREV_SHA" ] && [ "$PREV_SHA" = "$NEW_SHA" ] && [ "${QA_FORCE:-0}" != 1 ]; then
   log "main unchanged since last sweep; nothing to do"; exit 0
@@ -234,7 +233,7 @@ for ov in "$SCRIPT_DIR/qa-env.overrides" "$QA_HOME/env.overrides"; do
   done < <(grep -E '^[A-Z][A-Z0-9_]*=' "$ov")
 done
 
-build_envvals   # literal env values -> redaction list for public sinks
+build_envvals   # literal env values -> redaction list for published text
 
 # Node from .nvmrc (auto-install via nvm if this Mac doesn't have it yet)
 NODE_WANT="$(tr -d 'v \n' < .nvmrc 2>/dev/null)"
@@ -311,7 +310,7 @@ if ! stack_healthy; then
     for c in $(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}} {{.Status}}' 2>/dev/null \
                | grep -iE 'unhealthy|exited|restarting' | cut -d' ' -f1); do
       docker logs --tail 200 "$c" > "$RUN_DIR/container-$c.log" 2>&1
-      # Public excerpt: only error-signature lines, literal .env values stripped,
+      # Published excerpt: only error-signature lines, literal .env values stripped,
       # anything still secret-shaped dropped. Full logs stay on the QA Mac.
       echo; echo "### \`$c\` error lines"; echo '```'
       grep -E 'CRITICAL|FATAL|Error:|error:|ERROR' "$RUN_DIR/container-$c.log" | tail -8 | cut -c1-240 \
@@ -361,17 +360,14 @@ mkdir -p "$RUN_DIR/outbox" "$RUN_DIR/browser"
 # .claude/ keeps skills/commands/agents/settings from being created there.
 mkdir -p "$RUN_DIR/.claude" && chmod 0555 "$RUN_DIR/.claude"
 
-# PR scope is computed here (trusted) so the agent needs no git access.
-if [ -n "$PREV_SHA" ] && git cat-file -e "$PREV_SHA" 2>/dev/null; then
-  git log --first-parent --format='%H%x09%cI%x09%s' "$PREV_SHA..$NEW_SHA" > "$RUN_DIR/commits.tsv"
-else
-  git log --first-parent --since='3 days ago' --format='%H%x09%cI%x09%s' "$NEW_SHA" > "$RUN_DIR/commits.tsv"
-fi
-chmod 0444 "$RUN_DIR/commits.tsv"
-# PR numbers the agent may annotate = LAST "(#N)" of each in-scope commit.
-# Captured in shell memory now, before the agent runs, so it can't widen it.
-IN_SCOPE=" $(cut -f3 "$RUN_DIR/commits.tsv" | sed -nE 's/.*\(#([0-9]+)\)[[:space:]]*$/\1/p' | tr '\n' ' ') "
-log "commits in scope: $(wc -l < "$RUN_DIR/commits.tsv" | tr -d ' ')"
+# PR scope is computed here (trusted) from local git, so the agent needs no git
+# or GitHub access and reads no PR text: commits.tsv = sha, date, PR number;
+# changed-files.tsv = sha, path. No subject (= the PR title) or body reaches it.
+# IN_SCOPE (the PRs a verdict may name) is shell memory, fixed before the agent runs.
+SCOPE_FROM=""
+if [ -n "$PREV_SHA" ] && git cat-file -e "$PREV_SHA" 2>/dev/null; then SCOPE_FROM="$PREV_SHA"; fi
+compute_scope "$SCOPE_FROM" "$NEW_SHA"
+log "commits in scope: $(wc -l < "$RUN_DIR/commits.tsv" | tr -d ' '); PRs:$IN_SCOPE"
 
 # Hosted-only surfaces (Wisp): self-hosted is the default product under test, so
 # PRs touching these paths are deferred to a second, hosted-mode phase on the
@@ -379,9 +375,8 @@ log "commits in scope: $(wc -l < "$RUN_DIR/commits.tsv" | tr -d ' ')"
 HOSTED_PATHS_RE="${QA_HOSTED_PATHS_RE:-(^|/)[^/]*wisp[^/]*(/|$)}"
 HOSTED_PRS_FILE="$RUN_DIR/hosted-prs.txt"
 {
-  while IFS=$'\t' read -r sha _ subj; do
-    pr="$(printf '%s' "$subj" | sed -nE 's/.*\(#([0-9]+)\)[[:space:]]*$/\1/p')"
-    [ -n "$pr" ] || continue
+  while IFS=$'\t' read -r sha _ pr; do
+    [[ "$pr" =~ ^[0-9]{1,7}$ ]] || continue
     git show --name-only --format= "$sha" | grep -qiE "$HOSTED_PATHS_RE" && echo "$pr"
   done < "$RUN_DIR/commits.tsv"
   state_get '.pendingHostedPrs // [] | .[]'
@@ -405,22 +400,23 @@ build_mcp_config "$BASE_URL" "$SCRIPT_DIR/qa-mcp.json" "$RUN_DIR/mcp.json" \
 
 # --- agent sandbox + egress (fixed before the agent starts) -------------------
 # The agent's whole process tree runs under a Seatbelt profile: network limited
-# to three loopback ports (stack, model forwarder, gh broker), env files/logs/gh
-# config unreadable, worktree and runner inputs read-only. It holds no
-# credential: its model calls go to the forwarder, which adds the token and
-# leaves the machine through the egress proxy (api.anthropic.com:443 only); it
-# reads GitHub only through the gh broker (read-only, pinned to QA_REPO); the
-# stack it drives has no egress (secure_stack above). The profile is
-# self-checked here; if it doesn't hold, the agent never starts.
+# to two loopback ports (stack, model forwarder), env files/logs/gh config
+# unreadable, worktree and runner inputs read-only. It holds no credential: its
+# model calls go to the forwarder, which adds the token and leaves the machine
+# through the egress proxy (api.anthropic.com:443 only). It does not read
+# GitHub at all: the runner hands it the scope files above and the open
+# qa-sweep issues of the private QA repo. The stack it drives has no egress
+# (secure_stack above). The profile is self-checked here; if it doesn't hold,
+# the agent never starts.
 AGENT_PROFILE="$QA_HOME/.sandbox/agent.sb"
 AGENT_TMP="$QA_HOME/.t"   # the agent's TMPDIR; the only place it may use unix sockets (kept short: 104-byte socket paths)
 rm -rf "$AGENT_TMP"
 ( umask 077; mkdir -p "$QA_HOME/.sandbox" "$STACK_ENV_DIR" "$AGENT_TMP" )
 snapshot_commentable_issues   # outbox `comment` targets: open qa-sweep issues as of now
 log "commentable qa-sweep issues:${QA_COMMENTABLE:- none}"
-snapshot_open_issues   # the agent's dedupe list (its GitHub reader has no search)
+snapshot_open_issues   # the agent's dedupe list: number + title of open qa-sweep issues in QA_REPO
 log "open issues for dedupe: $(wc -l < "$RUN_DIR/open-issues.tsv" | tr -d ' ')"
-if ! { start_egress_proxy && start_model_forwarder && start_gh_broker && qa_sandbox_profile "$AGENT_PROFILE" && sandbox_selfcheck; }; then
+if ! { start_egress_proxy && start_model_forwarder && qa_sandbox_profile "$AGENT_PROFILE" && sandbox_selfcheck; }; then
   notify "QA sweep: agent sandbox/egress proxy/model forwarder failed its self-check; agent not started (see $LOG)"
   log "FATAL sandbox self-check"; echo "SANDBOX_FAILED" > "$RUN_DIR/result"; exit 1
 fi
@@ -436,18 +432,18 @@ log "in-sandbox auth: subscription mode via the model forwarder (the agent holds
 
 PROMPT="Read $QA_WORKTREE/.claude/skills/ui-qa-sweep/SKILL.md and follow its **Scheduled mode** section exactly (skills and slash commands are disabled in this run; do not try to invoke them).
 Run parameters:
-- RUN_DIR=$RUN_DIR   (write report.md, ledger.md and outbox/*.json here — nowhere else)
+- RUN_DIR=$RUN_DIR   (write report.md and outbox/*.json here — nowhere else)
 - BASE_URL=$BASE_URL (stack descriptor: $QA_WORKTREE/.breeze-stack.json)
 - MAIN_SHA=$NEW_SHA
 - PREV_SWEPT_SHA=${PREV_SHA:-none}
-- COMMITS_FILE=$RUN_DIR/commits.tsv (first-parent commits in scope: sha, date, subject)
+- COMMITS_FILE=$RUN_DIR/commits.tsv (first-parent commits in scope: sha<TAB>date<TAB>PR number, '-' = none)
+- CHANGED_FILES_FILE=$RUN_DIR/changed-files.tsv (paths each in-scope commit changed: sha<TAB>path)
 - ROTATION_SLICE=$SLICE
 - ENV_DRIFT_FILE=$DRIFT (environment changes detected this run; empty = none)
 - PHASE=self-hosted
 - HOSTED_PRS_FILE=$HOSTED_PRS_FILE (PRs deferred to the hosted phase — do NOT emit pr_result for these; empty = none)
-- OPEN_ISSUES_FILE=$RUN_DIR/open-issues.tsv (every open issue at run start: number<TAB>title; grep it to dedupe)
-- QA_GH=$SCRIPT_DIR/qa-gh (your only GitHub reader: run it exactly where the skill says \`gh\`, e.g. \`$SCRIPT_DIR/qa-gh issue list --label qa-sweep --state open\`; it is fixed to $QA_REPO and has no search)
-You are unattended: never ask questions. You cannot write to GitHub directly; queue writes in RUN_DIR/outbox as the skill describes."
+- OPEN_ISSUES_FILE=$RUN_DIR/open-issues.tsv (open qa-sweep issues in the private QA repo at run start: number<TAB>title; grep it to dedupe)
+You are unattended: never ask questions. You have no GitHub access and no shell; queue writes in RUN_DIR/outbox as the skill describes."
 
 # Flip the running stack to hosted mode in place (same DB, same data, same
 # origin): hosted env on api/web/portal + a manual `wisp` entitlement for every
@@ -500,12 +496,12 @@ if [ "${QA_DRY_RUN:-0}" = 1 ]; then
   exit 0
 fi
 
-# Least privilege. The agent reads untrusted text (public issue/PR bodies, page
-# content), so: no permission bypass (dontAsk = unlisted tools are denied, never
-# prompted); reads limited to the worktree + RUN_DIR; writes limited to RUN_DIR;
-# Bash limited to qa-gh, the gh broker's client (read-only issue/PR queries,
-# repo fixed by the broker; no curl/jq/git, no gh itself); GitHub writes go
-# through the outbox, validated + published by this script.
+# Least privilege. The agent reads no GitHub text at all (2026-11-19 redesign),
+# but page content and merged code are still input, so: no permission bypass
+# (dontAsk = unlisted tools are denied, never prompted); reads limited to the
+# worktree + RUN_DIR; writes limited to RUN_DIR; no Bash at all; GitHub writes
+# go through the outbox, validated + published to the private QA repo by this
+# script.
 # QA_HOME/bin and state.json are out of reach. The stack's .env files are moved
 # out of the worktree for the duration of each run (hide_stack_env).
 # Skills and slash commands are off (Skill denied, --disable-slash-commands,
@@ -528,15 +524,14 @@ ALLOWED_TOOLS=(
   "${PW_TOOLS[@]/#/mcp__playwright__}" "ToolSearch" "TodoWrite"
   "Read(/$QA_WORKTREE/**)" "Read(/$RUN_DIR/**)"
   "Edit(/$RUN_DIR/**)"   # Edit rules cover Write too
-  # GitHub reads only through the broker's client. The rule is the first layer;
-  # the boundary is the broker (repo pinned, read-only verbs) plus the sandbox
-  # (no route to GitHub, gh config unreadable), so gh itself cannot work inside.
-  "Bash($SCRIPT_DIR/qa-gh:*)"
 )
 DENIED_TOOLS=(
   "Skill"
+  # No shell. Every input the agent needs is a file the runner wrote; a Read
+  # deny rule would not bind a shell command that reads without naming the file.
+  "Bash"
   "Read(/$QA_WORKTREE/.env*)" "Read(/$QA_WORKTREE/**/.env*)"
-  "Edit(/$RUN_DIR/commits.tsv)" "Edit(/$RUN_DIR/open-issues.tsv)" "Edit(/$RUN_DIR/hosted-prs.txt)" "Edit(/$RUN_DIR/mcp.json)" "Edit(/$RUN_DIR/env-*)"
+  "Edit(/$RUN_DIR/commits.tsv)" "Edit(/$RUN_DIR/changed-files.tsv)" "Edit(/$RUN_DIR/open-issues.tsv)" "Edit(/$RUN_DIR/hosted-prs.txt)" "Edit(/$RUN_DIR/mcp.json)" "Edit(/$RUN_DIR/env-*)"
   "Edit(/$RUN_DIR/.claude/**)" "Edit(/$RUN_DIR/**/.claude/**)"
   "Edit(/$RUN_DIR/CLAUDE.md)" "Edit(/$RUN_DIR/**/CLAUDE.md)" "Edit(/$RUN_DIR/**/CLAUDE.local.md)"
   "Edit(/$RUN_DIR/*.log)" "Edit(/$RUN_DIR/*.err)" "Edit(/$RUN_DIR/transcript*)"
@@ -545,16 +540,6 @@ DENIED_TOOLS=(
   "mcp__playwright__browser_route" "mcp__playwright__browser_unroute"
   "mcp__playwright__browser_route_list" "mcp__playwright__browser_network_state_set"
   "mcp__playwright__browser_file_upload" "mcp__playwright__browser_drop"
-  # Built-in read-only shell commands can run without an allow rule, and a Read
-  # deny rule doesn't bind a command that reads without naming the file
-  # (`grep -r x .`). Bash is here only for gh, so deny the readers outright.
-  "Bash(cat:*)" "Bash(head:*)" "Bash(tail:*)" "Bash(less:*)" "Bash(more:*)"
-  "Bash(grep:*)" "Bash(egrep:*)" "Bash(fgrep:*)" "Bash(rg:*)" "Bash(ag:*)"
-  "Bash(find:*)" "Bash(xargs:*)" "Bash(sed:*)" "Bash(awk:*)" "Bash(cut:*)"
-  "Bash(sort:*)" "Bash(uniq:*)" "Bash(diff:*)" "Bash(cmp:*)" "Bash(comm:*)"
-  "Bash(strings:*)" "Bash(xxd:*)" "Bash(od:*)" "Bash(hexdump:*)" "Bash(base64:*)"
-  "Bash(nl:*)" "Bash(tac:*)" "Bash(rev:*)" "Bash(wc:*)" "Bash(jq:*)" "Bash(git:*)"
-  "Bash(gh:*)" "Bash(curl:*)" "Bash(python3:*)" "Bash(/usr/bin/python3:*)"
   "WebFetch" "WebSearch" "Agent" "Task"
 )
 run_agent() {  # run_agent <prompt> <timeout> <transcript-suffix>
@@ -600,15 +585,15 @@ if [ "$RC" = 0 ] && [ -n "${HOSTED_PRS// /}" ]; then
   if switch_to_hosted && secure_stack; then   # the recreated containers start on the project network again
     HPROMPT="Read $QA_WORKTREE/.claude/skills/ui-qa-sweep/SKILL.md and follow its **Scheduled mode** section, **Hosted phase** subsection, exactly (skills and slash commands are disabled in this run; do not try to invoke them).
 Run parameters:
-- RUN_DIR=$RUN_DIR   (append to report.md; update ledger.md; add outbox/*.json — nowhere else)
+- RUN_DIR=$RUN_DIR   (append to report.md; add outbox/*.json — nowhere else)
 - BASE_URL=$BASE_URL (same stack and data as the self-hosted phase, now IS_HOSTED=true with Wisp enabled + entitled)
 - MAIN_SHA=$NEW_SHA
 - PHASE=hosted
 - HOSTED_PRS_FILE=$HOSTED_PRS_FILE (verify exactly these PRs; emit one pr_result each)
 - COMMITS_FILE=$RUN_DIR/commits.tsv
-- OPEN_ISSUES_FILE=$RUN_DIR/open-issues.tsv (every open issue at run start: number<TAB>title; grep it to dedupe)
-- QA_GH=$SCRIPT_DIR/qa-gh (your only GitHub reader, fixed to $QA_REPO, no search; use it where the skill says \`gh\`)
-You are unattended: never ask questions. Queue GitHub writes in RUN_DIR/outbox as the skill describes."
+- CHANGED_FILES_FILE=$RUN_DIR/changed-files.tsv
+- OPEN_ISSUES_FILE=$RUN_DIR/open-issues.tsv (open qa-sweep issues in the private QA repo at run start: number<TAB>title; grep it to dedupe)
+You are unattended: never ask questions. You have no GitHub access and no shell; queue writes in RUN_DIR/outbox as the skill describes."
     run_agent "$HPROMPT" "${QA_HOSTED_TIMEOUT:-90m}" "-hosted" && HOSTED_OK=1
   else
     log "hosted switch FAILED; hosted PRs carried to next run"
@@ -649,8 +634,10 @@ if [ "$RC" = 0 ] && agent_report_present; then
               pendingHostedPrs: [$pend[] | select($kt[.] != null)], pendingHostedTries: $kt}' > "$tmp" && mv "$tmp" "$STATE"
   ln -sfn "$RUN_DIR" "$QA_HOME/latest"
   SUMMARY="$(agent_report_summary)"
+  record_run_ledger "$SUMMARY" 1 || log "WARN: ledger not updated"
   notify "${SUMMARY:-Sweep complete} — main@${NEW_SHA:0:9}$HOSTED_NOTE"
 else
+  record_run_ledger "" 0 || log "WARN: ledger not updated"
   notify "QA sweep did not complete (exit $RC); cursor not advanced$HOSTED_NOTE. Log: $RUN_DIR"
 fi
 

@@ -55,6 +55,10 @@ ALLOWED_QUERIES = ("", "beta=true")
 MAX_BODY = 64 * 1024 * 1024
 OAUTH_BETA = "oauth-2025-04-20"
 INLINE_SOURCES = ("base64", "text", "content")
+# A string that is (after leading whitespace) an http(s) URL.
+URL_VALUE = re.compile(r"\A\s*https?://", re.I)
+# Content-block keys that name something for the API to fetch or open.
+FETCH_KEYS = ("url", "file_id")
 TOKEN_RE = re.compile(r"\Ask-ant-oat[0-9]{2}-[A-Za-z0-9_-]{20,500}\Z")
 # Client headers worth forwarding. Anything else -- Authorization, x-api-key,
 # Cookie, Proxy-*, Host, hop-by-hop, Content-Length -- is dropped.
@@ -121,6 +125,28 @@ def body_refusal(body):
             if isinstance(src, dict) and src.get("type") not in INLINE_SOURCES:
                 return "%s source" % str(src.get("type"))[:40]
             stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    # And, wherever a block or source sits in the messages or the system
+    # prompt (2026-11-19): no `url` or `file_id` field at all, and no source
+    # (dict or string) holding an http(s) URL, whatever its type says. Text
+    # that mentions a URL is fine. A tool_use block's `input` is skipped: it is
+    # the model's own call to one of the agent's tools (browser_navigate takes
+    # a `url`), which the API does not act on.
+    stack = [req.get("messages"), req.get("system")]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, val in node.items():
+                if key == "input" and node.get("type") in ("tool_use", "server_tool_use"):
+                    continue
+                if key in FETCH_KEYS and isinstance(val, str):
+                    return "content names a %s" % key
+                if key == "source":
+                    vals = val.values() if isinstance(val, dict) else [val]
+                    if any(isinstance(v, str) and URL_VALUE.match(v) for v in vals):
+                        return "a source holds an http(s) URL"
+                stack.append(val)
         elif isinstance(node, list):
             stack.extend(node)
     return None

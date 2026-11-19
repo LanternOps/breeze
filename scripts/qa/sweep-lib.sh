@@ -5,7 +5,8 @@
 # are checked against values the runner fixed before the agent started.
 #
 # Globals the caller sets: QA_HOME, QA_WORKTREE, QA_SOURCE_REPO, RUN_DIR, RUN_ID,
-# QA_REPO, NEW_SHA, IN_SCOPE, ENVVALS, STACK_ENV_DIR, STATE, and a log() function.
+# QA_REPO, QA_CODE_REPO, NEW_SHA, PREV_SHA, SLICE, IN_SCOPE, ENVVALS,
+# STACK_ENV_DIR, STATE, and a log() function.
 # macOS /bin/bash is 3.2: no associative arrays, no ${x@Q}.
 # shellcheck disable=SC2034  # globals are shared with the runner and the tests
 
@@ -52,8 +53,14 @@ print("clean")
 #   joined -- lines joined, a line with no space in it with no separator, two
 #             lines of words with one space. SECRET_RE, credentials in a URL
 #             and each .env value must not occur.
-#   spaced -- lines joined with one space: no credentials in a URL. (Joined
-#             without one, a URL line and an email line read as user:pass@.)
+#   spaced -- lines joined with one space: no credentials in a URL.
+#   tight  -- lines joined with no separator at all (Strix r11): no
+#             user:pass@ that a line break cut apart, as "https://admin:hun"
+#             then "ter2@host". One shape is exempt, because every report has
+#             it: a line ending in scheme://host:PORT followed by a line
+#             starting with name@ (a URL line, then an email line). The limit
+#             that leaves: a password that begins with 1-5 digits, cut right
+#             after them with scheme://user:digits whole on one line.
 #   chains -- consecutive lines that are nothing but 12+ token characters
 #             ([A-Za-z0-9_-]), joined, must not hold _body_scan's long
 #             token-like run. The heuristic is not run on the flat or joined
@@ -132,6 +139,35 @@ def token_chains(lines):
     if cur:
         chains.append(cur)
     return chains
+USERINFO = re.compile(r"[a-z][a-z0-9+.-]*://([^/\s:@]+):([^/\s@]+)@")
+def tight_of(lines):
+    # Lines joined with NO separator (spaces inside a line kept), plus the
+    # offsets where two lines meet.
+    out, cuts = "", []
+    for ln in lines:
+        cur = norm_line(ln, True)
+        if not cur:
+            continue
+        if out:
+            cuts.append(len(out))
+        out += cur
+    return out, cuts
+def split_userinfo(text, cuts):
+    # A user:pass@ that a line break cut apart. One shape is exempt: a line
+    # that ends in scheme://host:PORT (1-5 digits) followed by a line that
+    # starts with name@ -- a URL line then an email line, in every report.
+    for m in USERINFO.finditer(text):
+        # From the "://" on: the scheme letters may be glued to the end of
+        # the line before ("...stack at" + "http://..."), which is no split.
+        sep = text.index("://", m.start())
+        inside = [c for c in cuts if sep <= c < m.end()]
+        if not inside:
+            continue
+        p0 = m.start(2)
+        if len(inside) == 1 and inside[0] > p0 and text[p0:inside[0]].isdigit() and inside[0] - p0 <= 5:
+            continue
+        return True
+    return False
 def tokenlike(s):
     for m in re.finditer(r"[A-Za-z0-9+/=_-]{40,}", s):
         t = m.group()
@@ -151,6 +187,8 @@ for drop in (True, False):
         sys.exit(3)
     if re.search(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@", spaced):
         sys.exit(3)
+    if split_userinfo(*tight_of(lines)):
+        sys.exit(3)
     if any(tokenlike(c) for c in token_chains(lines)):
         sys.exit(3)
     for vf, vj in values:
@@ -159,7 +197,8 @@ for drop in (True, False):
 print("clean")
 ' "$1" "$2" "$3" "$SECRET_RE" 2>/dev/null
 }
-# body_ok <file>: gate for anything headed to a PUBLIC GitHub sink. Fails
+# body_ok <file>: gate for anything headed to GitHub (the private QA repo: still
+# a sink other people read, so the gate stays as strict as it was). Fails
 # CLOSED: the body passes only when every check positively reports it clean. A
 # size it cannot bound, a missing redaction list or any tool failure rejects it.
 body_ok() {
@@ -197,12 +236,12 @@ text_ok() {
 # autolink, image, HTML, entity, mention or issue reference inside a code block,
 # so however a URL, host, mention or reference is spelled, it stays inert text.
 # A fence closes only on a line of at least as many backticks as it opened with,
-# and the fence is longer than every backtick run in the text. The one live
-# element is a runner-written "Related:" line after the fence listing the bare
-# #N numbers the text names; a bare number can only point into QA_REPO. As a
-# second layer, every @ gets a zero-width joiner and every `://` / `www.` is
-# defanged (`[:]//`, `www[.]`) for the raw text in notification emails. A
-# failure means the text is not published.
+# and the fence is longer than every backtick run in the text. Nothing outside
+# the fence comes from the agent (the earlier runner-written "Related: #N" line
+# is gone: in the private QA repo a #N would name its own issue N, not the
+# public PR the agent meant). As a second layer, every @ gets a zero-width
+# joiner and every `://` / `www.` is defanged (`[:]//`, `www[.]`) for the raw
+# text in notification emails. A failure means the text is not published.
 fence_text() {
   /usr/bin/python3 -I - "$1" <<'PY'
 import re, sys
@@ -217,13 +256,7 @@ text = text.replace(b"://", b"[:]//")
 text = re.sub(rb"(?i)\b(www)\.", rb"\1[.]", text)
 longest = max((len(r) for r in re.findall(rb"`+", text)), default=0)
 fence = b"`" * max(3, longest + 1)
-refs = []
-for n in re.findall(rb"(?:^|(?<=[\s(\[,;:]))#([0-9]{1,7})(?![0-9A-Za-z_])", text):
-    if n not in refs and len(refs) < 20:
-        refs.append(n)
 out = fence + b"text\n" + text + (b"" if text.endswith(b"\n") else b"\n") + fence + b"\n"
-if refs:
-    out += b"\nRelated: " + b" ".join(b"#" + n for n in refs) + b"\n"
 with open(path, "wb") as f:
     f.write(out)
 PY
@@ -243,8 +276,8 @@ safe_title() {
 # tree: claude, its Bash commands (gh), the Playwright MCP server and Chromium.
 # Unlike Claude Code permission rules, it binds every tool and every child
 # process, and the agent cannot change it once started.
-#   - network: three loopback ports only -- the QA stack (Caddy), the model
-#     forwarder and the gh broker -- so no other service listening on this
+#   - network: two loopback ports only -- the QA stack (Caddy) and the model
+#     forwarder -- so no other service listening on this
 #     Mac's loopback (the egress proxy included) is reachable. Unix sockets are denied too (except the agent's own
 #     TMPDIR), which also blocks DNS (mDNSResponder), docker.sock and ssh-agent;
 #     hostname lookups for the proxy's upstreams happen in the proxy.
@@ -277,10 +310,11 @@ safe_title() {
 #     Playwright caches, shell rc files, LaunchAgents -- fails closed, so nothing
 #     the next unsandboxed run executes or loads can be planted. The worktree,
 #     the developer checkout and runner state are additionally denied by name.
-#   - GitHub: the agent has NO route to it (not on the egress allowlist) and
-#     cannot read gh's config/token store. Its only reader is qa-gh, a client of
-#     the runner's gh broker (gh-broker.py), which runs outside the sandbox,
-#     allows read-only issue/PR queries and pins every one to QA_REPO.
+#   - GitHub: the agent has NO route to it (not on the egress allowlist), no
+#     reader for it and cannot read gh's config/token store. Everything it
+#     needs from GitHub the runner computes first and hands it as read-only
+#     files: the merged-since list from local git (no titles or bodies) and the
+#     open qa-sweep issues of the private QA repo (number + title).
 #   - well-known credential stores (~/.aws, ~/.kube, ~/.docker, ~/.gnupg, ...)
 #     and the developer's real browser profiles are unreadable as well.
 # ---------------------------------------------------------------------------
@@ -348,11 +382,11 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
     && acfg="$(_sb_real "$(agent_claude_dir)")" \
     && st="$(_sb_real "$STACK_ENV_DIR")" && sed_env="$(_sb_real "$ENVVALS")" \
     && lib="$(_sb_real "$QA_LIB_DIR")" || { log "sandbox: bad path"; return 1; }
-  # The agent's network is these three loopback ports and nothing else. The
+  # The agent's network is these two loopback ports and nothing else. The
   # egress proxy is not one of them: the agent reaches the model only through
   # the forwarder, which holds the credential and uses the proxy itself.
-  for p in "${QA_STACK_PORT:-}" "${MODEL_PORT:-}" "${GH_BROKER_PORT:-}"; do
-    [[ "$p" =~ ^[0-9]{1,5}$ ]] || { log "sandbox: stack/forwarder/broker port missing or bad ('$p')"; return 1; }
+  for p in "${QA_STACK_PORT:-}" "${MODEL_PORT:-}"; do
+    [[ "$p" =~ ^[0-9]{1,5}$ ]] || { log "sandbox: stack/forwarder port missing or bad ('$p')"; return 1; }
   done
   audit="$qh/.audit"
   # The shared git dir: a checkout that is a linked worktree keeps config and hooks there.
@@ -408,12 +442,11 @@ qa_sandbox_profile() {  # qa_sandbox_profile <out-file>
 (version 1)
 (allow default)
 
-;; network: three loopback ports -- the QA stack, the model forwarder, the gh broker
+;; network: two loopback ports -- the QA stack and the model forwarder
 (deny network-outbound)
 (allow network-outbound
   (remote ip "localhost:$QA_STACK_PORT")
-  (remote ip "localhost:$MODEL_PORT")
-  (remote ip "localhost:$GH_BROKER_PORT"))
+  (remote ip "localhost:$MODEL_PORT"))
 ;; unix sockets only in the agent's own TMPDIR (Playwright <-> Chromium)
 (allow network-outbound (remote unix-socket (subpath "$atmp")))
 
@@ -509,6 +542,7 @@ $locked
   (subpath "$lib")
   (literal "$(_sb_real "$STATE")")
   (literal "$run/commits.tsv")
+  (literal "$run/changed-files.tsv")
   (literal "$run/open-issues.tsv")
   (literal "$run/hosted-prs.txt")
   (literal "$run/mcp.json")
@@ -535,8 +569,7 @@ SB
 # Strix r10 its one client is the model forwarder (the agent cannot reach it):
 # CONNECT to :443 of a fixed host allowlist (the model API only); all else is
 # refused and logged to egress_log_path, which the agent cannot touch. GitHub
-# is deliberately NOT on it: the agent reads GitHub only through the gh broker
-# below, which runs outside the sandbox and pins the repo.
+# is deliberately NOT on it: the agent does not read GitHub at all.
 # The QA stack's own containers are bounded separately (isolate_stack): they
 # run on an internal-only Docker network, so the app the agent administers
 # cannot be told to call out either.
@@ -601,31 +634,10 @@ stop_model_forwarder() {
   MODEL_PID=""; MODEL_PORT=""
 }
 
-# gh broker: the agent's only GitHub reader (qa-gh -> gh-broker.py). Runs as
-# the runner, outside the sandbox; read-only issue/PR verbs, every call pinned
-# to QA_REPO, each request logged next to the egress log.
-GH_BROKER_PID=""; GH_BROKER_PORT=""; GH_BROKER_LOG=""
-gh_broker_log_path() { printf '%s' "$QA_HOME/.audit/gh-$RUN_ID.log"; }
-start_gh_broker() {
-  local gh_bin; gh_bin="${QA_GH_BIN:-$(command -v gh)}" || return 1
-  [ -n "$gh_bin" ] || return 1
-  GH_BROKER_LOG="$(gh_broker_log_path)"
-  ( umask 077; mkdir -p "$QA_HOME/.sandbox" "$(dirname "$GH_BROKER_LOG")" && : >> "$GH_BROKER_LOG" ) || return 1
-  _start_daemon GH_BROKER_PORT GH_BROKER_PID "$QA_HOME/.sandbox/gh-broker.port" \
-    /usr/bin/python3 "$QA_LIB_DIR/gh-broker.py" --repo "$QA_REPO" --gh "$gh_bin" \
-    --port-file "$QA_HOME/.sandbox/gh-broker.port" --log "$GH_BROKER_LOG" || { stop_gh_broker; return 1; }
-  log "gh broker on 127.0.0.1:$GH_BROKER_PORT (repo: $QA_REPO; audit log: $GH_BROKER_LOG)"
-}
-stop_gh_broker() {
-  [ -n "$GH_BROKER_PID" ] && kill "$GH_BROKER_PID" 2>/dev/null
-  GH_BROKER_PID=""; GH_BROKER_PORT=""
-}
-
 # build_agent_cmd <cmd...>: AGENT_CMD = <cmd> wrapped in the sandbox, with the
-# model forwarder as its only route out and the gh broker as its only GitHub
-# reader. It holds no credential: every Anthropic credential variable is
-# removed and claude gets the forwarder's placeholder. Needs AGENT_PROFILE,
-# MODEL_PORT and GH_BROKER_PORT.
+# model forwarder as its only route out. It holds no credential: every
+# Anthropic credential variable (and any GitHub token) is removed and claude
+# gets the forwarder's placeholder. Needs AGENT_PROFILE and MODEL_PORT.
 build_agent_cmd() {
   AGENT_CMD=(/usr/bin/sandbox-exec -f "$AGENT_PROFILE"
     /usr/bin/env -u SSH_AUTH_SOCK -u GPG_AGENT_INFO -u DOCKER_HOST
@@ -647,13 +659,12 @@ build_agent_cmd() {
     "PWTEST_SERVER_REGISTRY=${AGENT_TMP:-$QA_HOME/.t}/pw-registry"
     "CLAUDE_CONFIG_DIR=$(agent_claude_dir)"
     "CLAUDE_SECURESTORAGE_CONFIG_DIR=$(agent_claude_dir)"
-    "QA_GH_PORT=$GH_BROKER_PORT"
     "$@")
 }
 
 # sandbox_selfcheck: prove the sandbox holds on THIS machine before an agent
 # runs under it (fail closed). Needs AGENT_PROFILE, the proxy, the model
-# forwarder, the gh broker and QA_STACK_PORT. Every "must fail" probe has a control that must succeed
+# forwarder and QA_STACK_PORT. Every "must fail" probe has a control that must succeed
 # outside the sandbox, so a probe that could never succeed proves nothing.
 sandbox_selfcheck() {
   local fails="" canary="$QA_WORKTREE/.env.qa-sandbox-canary" lp lpid out
@@ -714,15 +725,9 @@ sandbox_selfcheck() {
     PORT="$(cat "$lp")" tcp sbx && fails="$fails other-loopback-port-open"
   else fails="$fails loopback-probe-inconclusive"; fi
   { kill "$lpid"; wait "$lpid"; } 2>/dev/null; rm -f "$lp"
-  # GitHub: the broker answers, and refuses a request aimed at another repo.
-  sbx /usr/bin/env "QA_GH_PORT=$GH_BROKER_PORT" "$QA_LIB_DIR/qa-gh" issue list --limit 1 --json number >/dev/null 2>&1 \
-    || fails="$fails gh-broker-unreachable"
-  out="$(sbx /usr/bin/env "QA_GH_PORT=$GH_BROKER_PORT" "$QA_LIB_DIR/qa-gh" issue list --repo cli/cli --limit 1 2>&1)"
-  case "$out" in *"qa-gh: refused"*) ;; *) fails="$fails gh-broker-not-pinned" ;; esac
   sbx /bin/sh -c ': >> "$1"' _ "$RUN_DIR/commits.tsv" 2>/dev/null && fails="$fails scope-writable"
   [ -f "$EGRESS_LOG" ] || fails="$fails audit-log-missing"
   sbx /bin/sh -c ': >> "$1"' _ "$EGRESS_LOG" 2>/dev/null && fails="$fails audit-log-writable"
-  sbx /bin/sh -c ': >> "$1"' _ "$GH_BROKER_LOG" 2>/dev/null && fails="$fails gh-audit-log-writable"
   sbx /bin/sh -c ': > "$1"' _ "$RUN_DIR/.sandbox-selfcheck" 2>/dev/null || fails="$fails run-dir-readonly"
   rm -f "$RUN_DIR/.sandbox-selfcheck"
   # Writes are an allow-list: the home directory and every PATH directory this
@@ -808,7 +813,7 @@ EOF
   [ -n "$kr" ] && { fails="$fails keychain-readable"; log "sandbox: keychain readable from inside:$kr"; }
   [ "$kw" = 1 ] && { fails="$fails keychain-writable"; log "sandbox: keychain writable from inside"; }
   if [ -n "$fails" ]; then log "sandbox selfcheck FAILED:$fails"; return 1; fi
-  log "sandbox selfcheck OK (env files + gh config unreadable, no direct egress/DNS, proxy enforces allowlist without GitHub, loopback = stack/forwarder/broker only (egress proxy unreachable), agent env + forwarder argv hold no credential, forwarder refuses non-model routes and the API accepts its token, gh broker pinned to $QA_REPO, scope and audit logs read-only, RUN_DIR writable, home + PATH dirs + ~/.claude.json read-only, home directory unreadable outside the allow-list (~/.claude, ~/.ssh, ~/.config, shell history, the checkout and its .env), every keychain incl. login unreadable + unwritable)"
+  log "sandbox selfcheck OK (env files + gh config unreadable, no direct egress/DNS, proxy enforces allowlist without GitHub, loopback = stack/forwarder only (egress proxy unreachable), agent env + forwarder argv hold no credential, forwarder refuses non-model routes and the API accepts its token, scope and audit logs read-only, RUN_DIR writable, home + PATH dirs + ~/.claude.json read-only, home directory unreadable outside the allow-list (~/.claude, ~/.ssh, ~/.config, shell history, the checkout and its .env), every keychain incl. login unreadable + unwritable)"
 }
 
 # ---------------------------------------------------------------------------
@@ -921,28 +926,116 @@ prewarm_mcp() {
 }
 
 # ---------------------------------------------------------------------------
-# Outbox publisher
+# Publishing target: a PRIVATE repo, never the public code repo (2026-11-19)
 # ---------------------------------------------------------------------------
+# The sweep writes only to QA_REPO (default LanternOps/breeze-qa), and only
+# while GitHub says that repo is private. Every runner gh call goes through
+# qa_gh, which refuses unless require_private_qa_repo has verified the repo it
+# targets. The code repo (QA_CODE_REPO, the checkout's origin) is refused by
+# name before GitHub is asked, so a misconfigured QA_REPO cannot point the
+# publisher back at it even if it were private. Promoting a finding to the
+# public repo is a human step.
+QA_REPO_PRIVATE=""
+# repo_slug <git-url>: OWNER/NAME of a GitHub remote URL, or nothing.
+repo_slug() {
+  printf '%s' "$1" | sed -nE 's#^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$#\2#p' | sed -E 's/\.git$//'
+}
+# require_private_qa_repo: QA_REPO_PRIVATE=QA_REPO when, and only when, QA_REPO
+# is a well-formed OWNER/NAME that is not the code repo and GitHub reports its
+# visibility as exactly PRIVATE. Anything else (PUBLIC, INTERNAL, an error, no
+# answer, an unknown code repo) clears it and fails: nothing is published.
+require_private_qa_repo() {
+  QA_REPO_PRIVATE=""
+  local repo="${QA_REPO:-}" code="${QA_CODE_REPO:-}" vis
+  [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { log "publish target: bad QA_REPO; not publishing"; return 1; }
+  [[ "$code" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { log "publish target: code repo unknown, cannot prove $repo differs; not publishing"; return 1; }
+  if [ "$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$code" | tr '[:upper:]' '[:lower:]')" ]; then
+    log "publish target: $repo is the code repo; not publishing"; return 1
+  fi
+  vis="$(gh repo view "$QA_REPO" --json visibility --jq .visibility 2>/dev/null)" || { log "publish target: could not read the visibility of $repo; not publishing"; return 1; }
+  [ "$vis" = PRIVATE ] || { log "publish target: $repo is not private ('$vis'); not publishing"; return 1; }
+  QA_REPO_PRIVATE="$repo"
+}
+# qa_gh <gh args...>: gh against the verified private repo, or a refusal.
+qa_gh() {
+  if [ -z "$QA_REPO_PRIVATE" ] || [ "$QA_REPO_PRIVATE" != "${QA_REPO:-}" ]; then
+    log "REFUSED gh call: the publishing repo is not verified private"; return 1
+  fi
+  gh -R "$QA_REPO_PRIVATE" "$@"
+}
+# _jq_str <s>: <s> as a JSON string literal (for a runner constant in a --jq filter).
+_jq_str() { jq -n --arg v "$1" '$v'; }
+# _issue_number <exact-title>: the open qa-sweep issue with that exact title.
+_issue_number() {
+  qa_gh issue list --label qa-sweep --state open --limit 1000 --json number,title \
+    --jq ".[] | select(.title == $(_jq_str "$1")) | .number" 2>/dev/null | LC_ALL=C grep -E '^[0-9]{1,7}$' | head -1
+}
+# runner_issue <title> <body-file>: the runner's own findings (boot failure,
+# environment drift), one open issue per title, repeats become a comment.
+runner_issue() {
+  if [ "${QA_DRY_RUN:-0}" = 1 ]; then log "DRY RUN: would file/comment issue: $1 (body: $2)"; return 0; fi
+  require_private_qa_repo || { log "REFUSED to publish '$1' (kept locally: $2)"; return 1; }
+  body_ok "$2" || { log "REFUSED to publish '$1': body failed secret checks (kept locally: $2)"; return 1; }
+  qa_gh label create qa-sweep --color C5DEF5 --description "Found by the scheduled UI QA sweep" >/dev/null 2>&1 || true
+  local n; n="$(_issue_number "$1")"
+  if [ -n "$n" ]; then qa_gh issue comment "$n" --body-file "$2" >/dev/null && log "commented on #$n: $1"
+  else qa_gh issue create --title "$1" --label qa-sweep --body-file "$2" >/dev/null && log "filed: $1"; fi
+}
+
 # snapshot_commentable_issues: the issues an outbox `comment` may target, fixed
 # before the agent starts = open qa-sweep issues in QA_REPO right now. Empty on
 # failure, which rejects every comment.
 snapshot_commentable_issues() {
-  QA_COMMENTABLE=" $(gh -R "$QA_REPO" issue list --label qa-sweep --state open --limit 1000 --json number --jq '.[].number' 2>/dev/null \
+  QA_COMMENTABLE=" $(qa_gh issue list --label qa-sweep --state open --limit 1000 --json number --jq '.[].number' 2>/dev/null \
                      | grep -E '^[0-9]{1,7}$' | tr '\n' ' ')"
   [ "$QA_COMMENTABLE" = " " ] && QA_COMMENTABLE=""
   return 0
 }
 # snapshot_open_issues: RUN_DIR/open-issues.tsv (number<TAB>title, read-only),
-# the agent's dedupe list. Fetched here with the runner's gh, before the agent
-# starts, so the agent's GitHub reader needs no search at all. Empty on failure.
+# the agent's dedupe list: open qa-sweep issues of the private QA repo, which
+# the sweep itself wrote. Titles keep printable ASCII minus markup characters
+# (the safe_title set). Nothing from the public repo. Empty on failure.
 snapshot_open_issues() {
-  local out="$RUN_DIR/open-issues.tsv"
+  local out="$RUN_DIR/open-issues.tsv" num title
   rm -f "$out"
   # shellcheck disable=SC2016  # jq program
-  gh -R "$QA_REPO" issue list --state open --limit 3000 --json number,title \
+  qa_gh issue list --label qa-sweep --state open --limit 1000 --json number,title \
       --jq '.[] | "\(.number)\t\(.title | gsub("[\\t\\r\\n]"; " "))"' 2>/dev/null \
-    | LC_ALL=C grep -aE $'^[0-9]{1,7}\t' > "$out"
+    | while IFS=$'\t' read -r num title; do
+        [[ "$num" =~ ^[0-9]{1,7}$ ]] || continue
+        printf '%s\t%s\n' "$num" "$(safe_title "$title" | cut -c1-200)"
+      done > "$out"
   chmod 0444 "$out"
+}
+
+# compute_scope <prev-sha|''> <new-sha>: the merged-since list, from local git
+# only (run inside the worktree), written read-only for the agent:
+#   RUN_DIR/commits.tsv        sha<TAB>committed-at<TAB>pr ("-" when none)
+#   RUN_DIR/changed-files.tsv  sha<TAB>path
+# No subject or body reaches a file: a squash subject is the PR's title and its
+# body the PR's description, i.e. text anyone can write. The PR number is the
+# LAST "(#N)" of the subject (GitHub appends it; earlier ones are references).
+# Paths with control characters are dropped. IN_SCOPE (" N N ") is set in shell
+# memory, so nothing the agent writes later can widen it. Empty prev = the
+# last 3 days of first-parent history.
+compute_scope() {
+  local prev="$1" new="$2" range sha date subj pr path
+  local commits="$RUN_DIR/commits.tsv" files="$RUN_DIR/changed-files.tsv"
+  rm -f "$commits" "$files"; : > "$commits"; : > "$files"
+  IN_SCOPE=" "
+  if [ -n "$prev" ]; then range=("$prev..$new"); else range=(--since='3 days ago' "$new"); fi
+  while IFS=$'\t' read -r sha date subj; do
+    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || continue
+    pr="$(printf '%s' "$subj" | sed -nE 's/.*\(#([0-9]{1,7})\)[[:space:]]*$/\1/p')"
+    printf '%s\t%s\t%s\n' "$sha" "$date" "${pr:--}" >> "$commits"
+    [ -n "$pr" ] && case "$IN_SCOPE" in *" $pr "*) ;; *) IN_SCOPE="$IN_SCOPE$pr " ;; esac
+    { git diff --name-only -z "$sha^" "$sha" 2>/dev/null || git diff-tree --no-commit-id --name-only -r -z --root "$sha" 2>/dev/null; } \
+      | while IFS= read -r -d '' path; do
+          case "$path" in *[[:cntrl:]]*) continue ;; esac
+          [ "${#path}" -le 400 ] && printf '%s\t%s\n' "$sha" "$path"
+        done >> "$files"
+  done < <(git log --first-parent --format='%H%x09%cI%x09%s' "${range[@]}")
+  chmod 0444 "$commits" "$files"
 }
 
 # ---------------------------------------------------------------------------
@@ -1078,26 +1171,84 @@ snapshot_outbox() {
     < <(_agent_io outbox "$RUN_DIR" "$PUBLISH_DIR" "${QA_MAX_OUTBOX:-300}" 120000)
 }
 
-# hosted_verdict <pr>: the result publish_outbox validated and published for
-# <pr> this run, or nothing. Reads runner memory only.
+# hosted_verdict <pr>: the result publish_outbox validated and recorded in the
+# private ledger for <pr> this run, or nothing. Reads runner memory only.
 hosted_verdict() {
   local v
   for v in ${PR_VERDICTS:-}; do [ "${v%%=*}" = "$1" ] && printf '%s\n' "${v#*=}"; done | tail -1
 }
 
+# ---------------------------------------------------------------------------
+# The private ledger. One open issue titled LEDGER_TITLE in QA_REPO holds the
+# sweep's coverage. Its body is written by the runner alone, from runner state
+# (STATE: runs and per-PR verdicts), and replaced every run. Per-PR detail goes
+# in one comment per run (split when large): a runner header per PR, the
+# agent's text fenced. Nothing is written to the public PRs themselves.
+# ---------------------------------------------------------------------------
+LEDGER_TITLE="QA sweep ledger"
+QA_VERDICT_MAX=50000      # one pr_result body; a ledger comment stays under QA_BODY_MAX
+QA_LEDGER_CHUNK=55000
+# ledger_issue: the open ledger issue's number, creating the issue if missing.
+ledger_issue() {
+  local n url f
+  n="$(_issue_number "$LEDGER_TITLE")"
+  if [ -z "$n" ]; then
+    f="$(mktemp "${PUBLISH_DIR:-$QA_HOME}/.ledger-init.XXXXXX")" || return 1
+    printf 'Scheduled UI QA sweep ledger. The runner rewrites this body after every run.\n' > "$f"
+    url="$(qa_gh issue create --title "$LEDGER_TITLE" --label qa-sweep --body-file "$f" 2>/dev/null)"
+    rm -f "$f"
+    n="$(printf '%s' "$url" | sed -nE 's#.*/issues/([0-9]{1,7})[[:space:]]*$#\1#p')"
+  fi
+  [[ "$n" =~ ^[0-9]{1,7}$ ]] || return 1
+  printf '%s\n' "$n"
+}
+# _verdict_recorded <pr>: STATE already holds a verdict for <pr> on this main SHA.
+_verdict_recorded() {
+  [ -f "$STATE" ] && jq -e --arg pr "$1" --arg sha "$NEW_SHA" \
+    '(.prVerdicts // []) | any(.pr == $pr and .sha == $sha)' "$STATE" >/dev/null 2>&1
+}
+# _post_verdicts <list-file>: post the queued per-PR sections ("<pr>=<result>
+# <section-file>" lines) as comments on the ledger issue, each comment under
+# QA_LEDGER_CHUNK bytes and gated again as a whole. PR_VERDICTS gains a PR only
+# once the comment holding its section is posted.
+_post_verdicts() {
+  local list="$1" issue chunk="$PUBLISH_DIR/.ledger-chunk.md" prs="" kv sec size=0 ssize
+  [ -s "$list" ] || return 0
+  issue="$(ledger_issue)" || { log "ledger: no ledger issue; verdicts not recorded"; return 1; }
+  _flush_chunk() {
+    [ -n "$prs" ] || return 0
+    if body_ok "$chunk" && qa_gh issue comment "$issue" --body-file "$chunk" >/dev/null; then
+      PR_VERDICTS="$PR_VERDICTS$prs"
+    else
+      log "ledger: a verdict comment was refused or failed; its PRs stay unrecorded:$prs"
+    fi
+    prs=""; size=0
+  }
+  _start_chunk() {
+    printf 'Run %s on main@%s: per-PR verdicts from the scheduled UI QA sweep. The agent'"'"'s text is shown verbatim in code blocks.\n' \
+      "$RUN_ID" "${NEW_SHA:0:9}" > "$chunk"
+    size="$(wc -c < "$chunk" | tr -d ' ')"
+  }
+  _start_chunk
+  while read -r kv sec; do
+    ssize="$(wc -c < "$sec" | tr -d ' ')"
+    if [ -n "$prs" ] && [ $((size + ssize)) -gt "$QA_LEDGER_CHUNK" ]; then _flush_chunk; _start_chunk; fi
+    cat "$sec" >> "$chunk"; size=$((size + ssize)); prs="$prs $kv"
+  done < "$list"
+  _flush_chunk
+}
+
 publish_outbox() {
+  PR_VERDICTS=""; PUBLISHED_ISSUES=0
   snapshot_outbox || { log "outbox: could not create the publish directory; nothing published"; return 1; }
-  gh -R "$QA_REPO" label create qa-sweep --color C5DEF5 --description "Found by the scheduled UI QA sweep" >/dev/null 2>&1 || true
-  gh -R "$QA_REPO" label create qa-swept --color 0E8A16 --description "Merged PR checked in the browser by the scheduled UI QA sweep (see QA comment)" >/dev/null 2>&1 || true
-  gh -R "$QA_REPO" label create qa-no-ui --color EDEDED --description "Merged PR reviewed by the scheduled QA sweep: no UI surface to test" >/dev/null 2>&1 || true
+  # Re-checked here: a run lasts hours, and the repo must still be private now.
+  require_private_qa_repo || { log "outbox: publishing repo not verified private; nothing published (kept in $RUN_DIR)"; return 1; }
+  qa_gh label create qa-sweep --color C5DEF5 --description "Found by the scheduled UI QA sweep" >/dev/null 2>&1 || true
   # Rejections name the outbox file, never the agent-written value: a refused
   # field may be the very secret the gate caught.
-  local created=0 comments=0 prs=0 f action title full_title clean_title issue labels bodyf pr result
-  local max_comments="${QA_MAX_COMMENTS:-20}"
-  # PR_VERDICTS (" <pr>=<result> ..."): verdicts this run validated AND
-  # published, built only from values that passed the gates below. The hosted
-  # carry-over reads it through hosted_verdict; nothing re-reads agent files.
-  PR_VERDICTS=""
+  local created=0 comments=0 f action title full_title clean_title issue labels bodyf pr result sec
+  local max_comments="${QA_MAX_COMMENTS:-20}" vlist="$PUBLISH_DIR/.verdicts"
+  : > "$vlist"
   # One verdict per PR: if both phases wrote a pr_result for the same PR (e.g. a
   # BLOCKED from the self-hosted phase, then the hosted check), the newest wins.
   # Only a bare PR number may key the keep file: an entry with a malformed .pr
@@ -1139,13 +1290,13 @@ publish_outbox() {
         fi
         title="$(printf '%s' "$clean_title" | cut -c1-200)"
         # Agent titles must start with the exact ASCII "[UI] ". The "[QA] "
-        # namespace (and "QA sweep ledger") belongs to the runner: runner_issue
+        # namespace (and the ledger title) belongs to the runner: runner_issue
         # dedupes its issues by exact title and the release checklist reads
         # them as ship/block gates, so an agent title can never equal one.
         if [ "$created" -ge "$MAX_NEW_ISSUES" ] || ! printf '%s' "$title" | LC_ALL=C grep -Eq '^\[UI\] .{5,}'; then
           log "outbox REJECT $(basename "$f"): cap reached or bad title"; continue
         fi
-        gh -R "$QA_REPO" issue create --title "$title" --body-file "$bodyf" --label qa-sweep && created=$((created+1)) ;;
+        qa_gh issue create --title "$title" --body-file "$bodyf" --label qa-sweep >/dev/null && created=$((created+1)) ;;
       comment)
         issue="$(jq -r '.issue // empty' "$f")"
         [[ "$issue" =~ ^[0-9]{1,7}$ ]] || { log "outbox REJECT $(basename "$f"): bad issue"; continue; }
@@ -1153,38 +1304,85 @@ publish_outbox() {
         case "$QA_COMMENTABLE" in *" $issue "*) ;; *) log "outbox REJECT $(basename "$f"): #$issue was not an open qa-sweep issue at run start"; continue ;; esac
         [ "$comments" -lt "$max_comments" ] || { log "outbox REJECT $(basename "$f"): comment cap ($max_comments) reached"; continue; }
         # ... and still open + labelled now.
-        labels="$(gh -R "$QA_REPO" issue view "$issue" --json labels,state --jq 'select(.state=="OPEN")|[.labels[].name]|join(",")' 2>/dev/null)"
-        case ",$labels," in *,qa-sweep,*) gh -R "$QA_REPO" issue comment "$issue" --body-file "$bodyf" && comments=$((comments+1)) ;;
+        labels="$(qa_gh issue view "$issue" --json labels,state --jq 'select(.state=="OPEN")|[.labels[].name]|join(",")' 2>/dev/null)"
+        case ",$labels," in *,qa-sweep,*) qa_gh issue comment "$issue" --body-file "$bodyf" >/dev/null && comments=$((comments+1)) ;;
           *) log "outbox REJECT $(basename "$f"): #$issue is not an open qa-sweep issue" ;; esac ;;
       pr_result)
         # $pr was validated (bare number, newest for its PR) above.
         result="$(jq -r '.result // empty' "$f")"
         # IN_SCOPE is shell memory captured before the agent ran; commits.tsv is never re-read.
-        case "$IN_SCOPE" in *" $pr "*) ;; *) log "outbox REJECT $(basename "$f"): PR #$pr not in this run's commit range"; continue ;; esac
-        if [ "$result" = NO_UI ]; then
-          gh -R "$QA_REPO" pr edit "$pr" --add-label qa-no-ui >/dev/null && prs=$((prs+1)) && PR_VERDICTS="$PR_VERDICTS $pr=NO_UI"
-          continue
+        case "$IN_SCOPE" in *" $pr "*) ;; *) log "outbox REJECT $(basename "$f"): PR $pr not in this run's commit range"; continue ;; esac
+        case "$result" in PASS|PARTIAL|FAIL|BLOCKED|NO_UI) ;; *) log "outbox REJECT $(basename "$f"): bad result"; continue ;; esac
+        [ "$(wc -c < "$bodyf" | tr -d ' ')" -le "$QA_VERDICT_MAX" ] || { log "outbox REJECT $(basename "$f"): verdict body over $QA_VERDICT_MAX bytes"; continue; }
+        # One record per PR per main SHA (a re-run of the same range doesn't double-post).
+        if _verdict_recorded "$pr"; then
+          log "outbox SKIP $(basename "$f"): PR $pr already recorded for main@${NEW_SHA:0:9}"; PR_VERDICTS="$PR_VERDICTS $pr=$result"; continue
         fi
-        case "$result" in PASS|PARTIAL|FAIL|BLOCKED) ;; *) log "outbox REJECT $(basename "$f"): bad result"; continue ;; esac
-        # One QA comment per PR per main SHA (a re-run of the same range doesn't double-post).
-        if gh -R "$QA_REPO" pr view "$pr" --json comments --jq '.comments[].body' 2>/dev/null | grep -qF "<!-- breeze-qa-sweep main=${NEW_SHA:0:9} -->"; then
-          log "outbox SKIP pr #$pr: already annotated for this sweep"; PR_VERDICTS="$PR_VERDICTS $pr=$result"; continue
-        fi
-        { printf '<!-- breeze-qa-sweep main=%s -->\n### Scheduled UI QA: %s\n_Checked on main@%s (%s)._\n\n' \
-            "${NEW_SHA:0:9}" "$result" "${NEW_SHA:0:9}" "$RUN_ID"; cat "$bodyf"; } > "$bodyf.pr"
-        gh -R "$QA_REPO" pr comment "$pr" --body-file "$bodyf.pr" >/dev/null && gh -R "$QA_REPO" pr edit "$pr" --add-label qa-swept >/dev/null \
-          && prs=$((prs+1)) && PR_VERDICTS="$PR_VERDICTS $pr=$result" ;;
+        # "PR N", never "#N": in the QA repo a #N would point at its own issue N.
+        sec="$f.section.md"
+        { printf '\n### PR %s: %s\n' "$pr" "$result"
+          [ "$result" = NO_UI ] || { echo; cat "$bodyf"; }
+        } > "$sec"
+        printf '%s=%s %s\n' "$pr" "$result" "$sec" >> "$vlist" ;;
       *) log "outbox REJECT $(basename "$f"): unknown action" ;;
     esac
   done
-  log "outbox: $created issue(s) created, $comments comment(s), $prs PR(s) annotated"
-  local ledger="$PUBLISH_DIR/ledger.md"
-  _agent_io read "$RUN_DIR" ledger.md "$QA_BODY_MAX" > "$ledger" 2>/dev/null || rm -f "$ledger"
-  if [ -s "$ledger" ] && body_ok "$ledger" && fence_text "$ledger"; then
-    local n; n="$(gh -R "$QA_REPO" issue list --label qa-sweep --state open --search 'QA sweep ledger in:title' --json number,title \
-                 --jq '[.[]|select(.title=="QA sweep ledger")][0].number // empty')"
-    if [ -n "$n" ]; then gh -R "$QA_REPO" issue edit "$n" --body-file "$ledger" >/dev/null
-    else gh -R "$QA_REPO" issue create --title "QA sweep ledger" --label qa-sweep --body-file "$ledger" >/dev/null; fi
-    log "ledger updated"
+  _post_verdicts "$vlist"
+  PUBLISHED_ISSUES="$created"
+  log "outbox: $created issue(s) created, $comments comment(s), $(printf '%s' "$PR_VERDICTS" | wc -w | tr -d ' ') PR verdict(s) recorded in the private ledger"
+}
+
+# record_run_ledger <report-summary> <completed 0|1>: add this run and the PR
+# verdicts publish_outbox recorded (PR_VERDICTS) to STATE, then rewrite the
+# ledger issue's body from STATE. Only runner values are written: the RESULT
+# word is taken from the agent's summary line when it is exactly PASS, ISSUES
+# or BLOCKED, otherwise "-"; a run that did not complete is INCOMPLETE.
+record_run_ledger() {
+  local word=INCOMPLETE tmp body issue open
+  if [ "$2" = 1 ]; then
+    word="$(printf '%s\n' "$1" | head -1 | LC_ALL=C sed -nE 's/^RESULT: (PASS|ISSUES|BLOCKED)([^A-Za-z0-9_].*)?$/\1/p')"
+    word="${word:--}"
   fi
+  open="$(printf '%s' "${QA_COMMENTABLE:-}" | wc -w | tr -d ' ')"
+  tmp="$(mktemp "$QA_HOME/.state.XXXXXX")" || return 1
+  # shellcheck disable=SC2016  # jq program
+  jq -n --slurpfile old <(cat "$STATE" 2>/dev/null || echo '{}') \
+     --arg run "$RUN_ID" --arg sha "$NEW_SHA" --arg prev "${PREV_SHA:-}" --arg slice "${SLICE:-0}" \
+     --arg result "$word" --arg verdicts "${PR_VERDICTS:-}" --argjson issues "${PUBLISHED_ISSUES:-0}" \
+     --argjson open "${open:-0}" --argjson completed "$2" \
+     '($old[0] // {}) as $o
+      | [$verdicts | splits(" +") | select(test("^[0-9]+=[A-Z_]+$")) | split("=") | {pr: .[0], result: .[1], sha: $sha, run: $run}] as $nv
+      | ($nv + ($o.prVerdicts // [])) as $all
+      | (reduce $all[] as $v ({seen: {}, out: []};
+           if .seen[$v.pr] then . else .seen[$v.pr] = true | .out += [$v] end) | .out[:400]) as $pv
+      | ([{run: $run, sha: $sha, prev: $prev, slice: $slice, result: $result,
+           prs: ($nv | length), issues: $issues, open: $open, completed: ($completed == 1)}] + ($o.runs // []))[:20] as $runs
+      | $o + {prVerdicts: $pv, runs: $runs}' > "$tmp" && mv "$tmp" "$STATE" || { rm -f "$tmp"; return 1; }
+  require_private_qa_repo || { log "ledger: publishing repo not verified private; ledger not updated"; return 1; }
+  body="$QA_HOME/.ledger-body.md"
+  # shellcheck disable=SC2016  # jq program
+  jq -r '
+    def s9: if . == null or . == "" then "-" else .[0:9] end;
+    ((.runs // []) | map(select(.completed)) | first) as $last
+    | "Scheduled UI QA sweep ledger. The runner rewrites this body after every run;",
+      "per-PR detail is in the run comments below. Findings stay in this private repo:",
+      "promoting one to the public repo is a human step.",
+      "",
+      (if $last then "Coverage: swept through main@\($last.sha | s9) (\($last.run)) | open qa-sweep issues at run start: \($last.open)"
+       else "Coverage: no completed sweep yet" end),
+      "",
+      "## Recent runs (newest first)",
+      "",
+      "| run | main | from | slice | result | PRs with a verdict | issues filed |",
+      "|---|---|---|---|---|---|---|",
+      ((.runs // [])[] | "| \(.run) | \(.sha | s9) | \(.prev | s9) | \(.slice) | \(.result) | \(.prs) | \(.issues) |"),
+      "",
+      "## Per-PR verdicts (newest first, latest per PR)",
+      "",
+      "```text",
+      ((.prVerdicts // [])[] | "pr=\(.pr) result=\(.result) main=\(.sha | s9) run=\(.run)"),
+      "```"' "$STATE" > "$body" || return 1
+  body_ok "$body" || { log "ledger: body failed the secret gate; not updated (kept: $body)"; return 1; }
+  issue="$(ledger_issue)" || { log "ledger: no ledger issue; not updated"; return 1; }
+  qa_gh issue edit "$issue" --body-file "$body" >/dev/null && log "ledger updated (issue $issue)"
 }

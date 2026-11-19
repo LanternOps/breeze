@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install (or update) the scheduled UI QA sweep as a macOS launchd agent.
 #
-#   scripts/qa/install-schedule.sh [--hours "1 13"] [--agent-token] [--uninstall]
+#   scripts/qa/install-schedule.sh [--hours "1 13"] [--qa-repo OWNER/NAME] [--agent-token] [--uninstall]
 #
 # The agent's model calls carry its own long-lived claude.ai token, never your
 # login (its sandbox gives it no keychain). Make one with `claude setup-token`
@@ -10,9 +10,14 @@
 # holds it: each run pipes it to a loopback model forwarder outside the
 # sandbox, which adds it to the agent's model API requests.
 #
-# Copies the runner (+ sweep-lib.sh, egress-proxy.py, model-forwarder.py, gh-broker.py, qa-gh), MCP config and the ui-qa-sweep skill into ~/.breeze-qa/bin (so the job never depends on
+# Copies the runner (+ sweep-lib.sh, egress-proxy.py, model-forwarder.py), MCP config and the ui-qa-sweep skill into ~/.breeze-qa/bin (so the job never depends on
 # which branch this checkout happens to be on) and loads a LaunchAgent that fires at
 # the given local hours (default: 01:30 nightly). launchd catches up a missed fire on wake.
+#
+# Output is private: the sweep writes only to --qa-repo (default
+# LanternOps/breeze-qa), which must be a private repo other than the code repo.
+# The installer refuses anything else, and every run checks again. Nothing is
+# posted to the public repo; promoting a finding there is a human step.
 set -euo pipefail
 
 LABEL="io.lanternops.breeze-qa-sweep"
@@ -26,10 +31,12 @@ REPO="$(cd "$(git -C "$CHECKOUT" rev-parse --path-format=absolute --git-common-d
 HOURS="1"
 SET_TOKEN=0
 MINUTE="30"
+QA_REPO="${QA_REPO:-LanternOps/breeze-qa}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --hours) HOURS="$2"; shift 2 ;;
+    --qa-repo) QA_REPO="$2"; shift 2 ;;
     --agent-token) SET_TOKEN=1; shift ;;
     --uninstall)
       launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
@@ -50,14 +57,18 @@ if [ "$SET_TOKEN" = 1 ]; then
   ( umask 077; mkdir -p "$(dirname "$TF")" && rm -f "$TF" && printf '%s\n' "$TOKEN" > "$TF" ) || { echo "ERROR: could not write $TF"; exit 1; }
   unset TOKEN
 fi
+# The publishing target must be private and not the code repo (same check every run makes).
+QA_CODE_REPO="${QA_CODE_REPO:-$(repo_slug "$(git -C "$REPO" remote get-url origin 2>/dev/null)")}"
+require_private_qa_repo || { echo "ERROR: $QA_REPO is not a verified private repo distinct from ${QA_CODE_REPO:-the code repo}; pass --qa-repo OWNER/NAME of a private repo"; exit 1; }
+echo "publishing target: $QA_REPO (private)"
 [ -x /usr/bin/sandbox-exec ] && [ -x /usr/bin/python3 ] \
   || { echo "ERROR: needs /usr/bin/sandbox-exec and /usr/bin/python3 (agent sandbox + egress proxy)"; exit 1; }
 install -m 0755 "$SRC_DIR/scheduled-ui-sweep.sh" "$QA_HOME/bin/scheduled-ui-sweep.sh"
 install -m 0644 "$SRC_DIR/sweep-lib.sh" "$QA_HOME/bin/sweep-lib.sh"
 install -m 0755 "$SRC_DIR/egress-proxy.py" "$QA_HOME/bin/egress-proxy.py"
 install -m 0755 "$SRC_DIR/model-forwarder.py" "$QA_HOME/bin/model-forwarder.py"   # holds the agent token; the agent never does
-install -m 0755 "$SRC_DIR/gh-broker.py" "$QA_HOME/bin/gh-broker.py"   # the agent's only GitHub reader (runs outside the sandbox)
-install -m 0755 "$SRC_DIR/qa-gh" "$QA_HOME/bin/qa-gh"                 # its client, run by the agent
+# The agent no longer reads GitHub (2026-11-19): remove an older install's broker.
+rm -f "$QA_HOME/bin/gh-broker.py" "$QA_HOME/bin/qa-gh"
 install -m 0644 "$SRC_DIR/qa-mcp.json" "$QA_HOME/bin/qa-mcp.json"
 install -m 0644 "$SRC_DIR/qa-env.overrides" "$QA_HOME/bin/qa-env.overrides"
 install -m 0644 "$CHECKOUT/.claude/skills/ui-qa-sweep/SKILL.md" "$QA_HOME/bin/ui-qa-sweep.SKILL.md"   # contract travels with the runner
@@ -79,6 +90,7 @@ cat > "$PLIST" <<PL
   <dict>
     <key>QA_HOME</key><string>$QA_HOME</string>
     <key>QA_SOURCE_REPO</key><string>$REPO</string>
+    <key>QA_REPO</key><string>$QA_REPO</string>
     <key>HOME</key><string>$HOME</string>
   </dict>
   <key>StartCalendarInterval</key><array>$INTERVALS</array>
