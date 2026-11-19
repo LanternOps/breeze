@@ -227,6 +227,33 @@ describe('recidivist-endpoint detector (real DB)', () => {
     expect(secondForActive[0]!.severity).toBe('alert');
     expect(secondForActive[0]!.evidence.axes).toEqual(['hostname_ip']);
   });
+
+  it('scenario 5 (#11843): a generic role hostname shared with a suspended partner fires nothing, even from a corpus row written before the deny rule', async () => {
+    const active = await seedPartnerOrgDeviceSite('active');
+    const suspended = await seedPartnerOrgDeviceSite('suspended');
+    for (const [p, ip] of [[active, '10.9.0.1'], [suspended, '10.9.1.1']] as const) {
+      await seedDevice({ orgId: p.org.id, siteId: p.site.id, hostname: 'SERVER', enrollmentIp: ip, lastSeenIp: ip });
+    }
+
+    // The sync no longer writes the name...
+    expect(await runDetector(new Date())).toEqual([]);
+    const stored = await withSystemDbAccessContext(() =>
+      db.select().from(abuseEndpointFingerprints).where(eq(abuseEndpointFingerprints.value, 'server')),
+    );
+    expect(stored).toEqual([]);
+
+    // ...and a row an older sync already wrote (the sync only upserts, never
+    // deletes) still correlates in SQL but no longer scores.
+    const testDb = getTestDb();
+    await testDb.insert(abuseEndpointFingerprints).values([
+      { partnerId: active.partner.id, kind: 'hostname', value: 'server' },
+      { partnerId: suspended.partner.id, kind: 'hostname', value: 'server' },
+    ]);
+    const { matches, scannedPartnerIds } = await withSystemDbAccessContext(() => loadRecidivistMatches());
+    expect(matches.some((m) => m.kind === 'hostname' && m.value === 'server')).toBe(true);
+    expect(scannedPartnerIds).toContain(active.partner.id); // so an open signal stale-resolves
+    expect(computeRecidivistSignals(matches, loadSignalConfig())).toEqual([]);
+  });
 });
 
 /**

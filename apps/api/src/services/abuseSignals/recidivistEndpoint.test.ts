@@ -14,6 +14,8 @@ import {
   type RecidivistMatch,
 } from './recidivistEndpoint';
 import { SIGNAL_DEFAULTS, type SignalConfig } from './config';
+import { computeCorroborationSignals } from './corroboration';
+import type { ComputedSignal } from './types';
 
 // All fixture partner/device ids below are invented UUID-shaped fixture
 // values — never real tenants.
@@ -83,6 +85,85 @@ describe('isDeniedHostname', () => {
     expect(isDeniedHostname('ACMEIT-DESKTOP-07')).toBe(false);
     expect(isDeniedHostname('finance-pc-12')).toBe(false);
   });
+
+  // #11843: role-style names that many unrelated sites choose carry no
+  // per-install entropy. A cross-partner collision on one is coincidence, not
+  // a reused box.
+  it('denies bare generic role hostnames (case-insensitive)', () => {
+    for (const h of ['server', 'SERVER', 'Server', 'dc', 'fileserver', 'desktop', 'laptop', 'pc', 'admin', 'reception', 'workstation', 'nas']) {
+      expect(isDeniedHostname(h), h).toBe(true);
+    }
+  });
+
+  it('denies a generic role name with a short numeric suffix', () => {
+    for (const h of ['dc01', 'DC-01', 'dc_2', 'server1', 'server-2', 'server2019', 'server9999', 'dc9999', 'srv-01', 'pc-0042']) {
+      expect(isDeniedHostname(h), h).toBe(true);
+    }
+  });
+
+  it('denies a generic role name with a single-letter suffix', () => {
+    for (const h of ['SERVER-A', 'dc-b', 'pc-a', 'srv-x']) {
+      expect(isDeniedHostname(h), h).toBe(true);
+    }
+  });
+
+  it('denies fused role compounds', () => {
+    for (const h of ['appserver', 'mailserver', 'dbserver', 'vpn', 'rdsh01']) {
+      expect(isDeniedHostname(h), h).toBe(true);
+    }
+  });
+
+  it('denies a hostname made only of generic words and short numbers', () => {
+    for (const h of ['file-server', 'office-pc-01', 'front-desk', 'new-server', 'reception-pc', 'macbook-pro']) {
+      expect(isDeniedHostname(h), h).toBe(true);
+    }
+  });
+
+  it('denies a generic name under a generic DNS suffix', () => {
+    for (const h of ['server.local', 'dc01.corp.local', 'desktop.localdomain', 'localhost.localdomain']) {
+      expect(isDeniedHostname(h), h).toBe(true);
+    }
+  });
+
+  it('denies OS-installer default names that every fresh install shares', () => {
+    for (const h of ['ubuntu', 'debian', 'raspberrypi', 'kali']) {
+      expect(isDeniedHostname(h), h).toBe(true);
+    }
+  });
+
+  it('denies hostnames too short or too numeric to identify anything', () => {
+    for (const h of ['x', 'ab', '01', '1234', 'a-1']) {
+      expect(isDeniedHostname(h), h).toBe(true);
+    }
+  });
+
+  // True positives the detector exists for must keep entering the corpus.
+  it('keeps hostnames that carry per-install or per-site entropy', () => {
+    for (const h of [
+      'DESKTOP-AB12CD3', // Windows 10/11 default: 7 random chars
+      'LAPTOP-9QK2M7XZ',
+      'WIN-ABCDEFGHIJ', // Windows Setup default (intentionally kept, see WIN- rule)
+      'acmeit-desktop-07', // site/org token
+      'jsmith-laptop', // person token
+      'server.contoso.local', // generic label, distinctive domain
+      'srvacme01', // generic prefix fused to a site token
+      'pc-48213', // 5-digit asset tag
+      'server12345', // 5 fused digits: an asset tag, not a sequence number
+      'dc12345',
+      'pc-2019-0042', // 8 digits split across labels: still an asset tag
+      'server-12-34-56-78',
+      'file-acme-server', // distinctive label in the middle
+      'server.local.acmecorp', // ...or at the end
+      'kingstn.local',
+      'server-kingstn',
+      'сервер-бухгалтерия', // non-Latin names are distinctive, not "too short"
+      'касса-1',
+      'kingstn',
+      'vps-7f3a9c',
+    ]) {
+      expect(isDeniedHostname(h), h).toBe(false);
+    }
+  });
 });
 
 describe('syncEndpointFingerprints', () => {
@@ -132,6 +213,24 @@ describe('syncEndpointFingerprints', () => {
     expect(upsertSql).toContain('finance-pc-01');
     expect(upsertSql).not.toContain('win-abc123');
     expect(upsertSql).not.toContain('WIN-ABC123');
+  });
+
+  it('skips a generic role hostname so it never enters the cross-partner corpus (#11843)', async () => {
+    vi.mocked(db.execute)
+      .mockResolvedValueOnce([] as never) // software_inventory scan
+      .mockResolvedValueOnce([
+        { id: 'device-1', partner_id: 'partner-a', hostname: 'Finance-PC-01', last_seen_ip: null, enrollment_ip: null },
+        { id: 'device-2', partner_id: 'partner-a', hostname: 'SERVER', last_seen_ip: null, enrollment_ip: null },
+        { id: 'device-3', partner_id: 'partner-a', hostname: 'DC01', last_seen_ip: null, enrollment_ip: null },
+      ] as never)
+      .mockResolvedValueOnce([] as never); // the upsert
+
+    await syncEndpointFingerprints(now);
+
+    const upsertSql = JSON.stringify(vi.mocked(db.execute).mock.calls[2]![0] as unknown);
+    expect(upsertSql).toContain('finance-pc-01');
+    expect(upsertSql).not.toMatch(/"server"/);
+    expect(upsertSql).not.toMatch(/"dc01"/);
   });
 
   it('records egress_ip from last_seen_ip, falling back to enrollment_ip', async () => {
@@ -362,15 +461,15 @@ describe('computeRecidivistSignals', () => {
 
     const hostnameIpSignal = computeRecidivistSignals(
       [
-        match({ kind: 'hostname', otherPartnerId: 'partner-suspended' }),
-        match({ kind: 'egress_ip', otherPartnerId: 'partner-suspended' }),
+        match({ kind: 'hostname', value: 'finance-pc-01', otherPartnerId: 'partner-suspended' }),
+        match({ kind: 'egress_ip', value: '203.0.113.5', otherPartnerId: 'partner-suspended' }),
       ],
       cfg,
     )[0]!;
     expect(hostnameIpSignal.score).toBe(90);
     expect(hostnameIpSignal.severity).toBe('alert');
 
-    const hostnameSignal = computeRecidivistSignals([match({ kind: 'hostname' })], cfg)[0]!;
+    const hostnameSignal = computeRecidivistSignals([match({ kind: 'hostname', value: 'finance-pc-01' })], cfg)[0]!;
     expect(hostnameSignal.score).toBe(60);
     expect(hostnameSignal.severity).toBe('watch');
   });
@@ -383,11 +482,82 @@ describe('computeRecidivistSignals', () => {
 
   it('caps evidence.matches to the first 10 matches for a partner', () => {
     const matches = Array.from({ length: 15 }, (_, i) =>
-      match({ kind: 'hostname', value: `host-${i}`, otherPartnerId: `partner-suspended-${i}` }),
+      match({ kind: 'hostname', value: `acme-host-${i}`, otherPartnerId: `partner-suspended-${i}` }),
     );
     const signals = computeRecidivistSignals(matches, cfg);
     expect(signals).toHaveLength(1);
     expect((signals[0]!.evidence as { matches: unknown[] }).matches).toHaveLength(10);
+  });
+
+  // #11843: corpus rows written before the deny rule grew are never deleted
+  // (the sync only upserts), so the scorer must ignore them too or a stale
+  // 'server' row keeps an open signal alive forever.
+  it('ignores a hostname match on a generic role name already in the corpus', () => {
+    expect(computeRecidivistSignals([match({ kind: 'hostname', value: 'server' })], cfg)).toEqual([]);
+  });
+
+  it('drops generic hostname matches before the evidence cap, so they never take up evidence slots', () => {
+    const matches = [
+      ...Array.from({ length: 12 }, (_, i) => match({ kind: 'hostname', value: 'server', otherPartnerId: `partner-suspended-${i}` })),
+      ...Array.from({ length: 3 }, (_, i) => match({ kind: 'hostname', value: `acme-host-${i}`, otherPartnerId: `partner-other-${i}` })),
+    ];
+    const signals = computeRecidivistSignals(matches, cfg);
+    expect(signals).toHaveLength(1);
+    const evidence = signals[0]!.evidence as { matches: Array<{ value: string }> };
+    expect(evidence.matches.map((m) => m.value)).toEqual(['acme-host-0', 'acme-host-1', 'acme-host-2']);
+  });
+
+  it('only filters hostname matches — a guid or ip value is never run through the hostname deny rule', () => {
+    const signals = computeRecidivistSignals(
+      [
+        match({ kind: 'hostname', value: 'finance-pc-01', otherPartnerId: 'partner-suspended' }),
+        match({ kind: 'egress_ip', value: '10.0.0.1', otherPartnerId: 'partner-suspended' }),
+      ],
+      cfg,
+    );
+    expect((signals[0]!.evidence as { axes: string[] }).axes).toEqual(['hostname_ip']);
+  });
+
+  it('does not upgrade a generic hostname plus a same-counterpart ip match to hostname_ip', () => {
+    const signals = computeRecidivistSignals(
+      [
+        match({ kind: 'hostname', value: 'server', otherPartnerId: 'partner-suspended' }),
+        match({ kind: 'egress_ip', value: '203.0.113.5', otherPartnerId: 'partner-suspended' }),
+      ],
+      cfg,
+    );
+    expect(signals).toEqual([]);
+  });
+
+  it('still fires the fingerprint axis alongside a generic hostname match, and drops the generic match from evidence', () => {
+    const signals = computeRecidivistSignals(
+      [
+        match({ kind: 'remote_tool_guid', value: 'abc' }),
+        match({ kind: 'hostname', value: 'server' }),
+      ],
+      cfg,
+    );
+    expect(signals).toHaveLength(1);
+    const evidence = signals[0]!.evidence as { axes: string[]; matches: Array<{ value: string }> };
+    expect(evidence.axes).toEqual(['fingerprint']);
+    expect(evidence.matches.map((m) => m.value)).toEqual(['abc']);
+  });
+
+  it('a generic hostname match no longer corroborates an enrollment burst into fraud.corroborated_watch', () => {
+    const burst: ComputedSignal = {
+      partnerId: 'partner-active',
+      signalKey: 'rmm.enrollment_velocity',
+      score: 55,
+      severity: 'watch',
+      evidence: {},
+    };
+    const generic = computeRecidivistSignals([match({ kind: 'hostname', value: 'server' })], cfg);
+    expect(computeCorroborationSignals([...generic, burst], cfg)).toEqual([]);
+
+    // Control: the same burst with a distinctive hostname match still corroborates.
+    const distinctive = computeRecidivistSignals([match({ kind: 'hostname', value: 'finance-pc-01' })], cfg);
+    const corroborated = computeCorroborationSignals([...distinctive, burst], cfg);
+    expect(corroborated.map((s) => s.signalKey)).toEqual(['fraud.corroborated_watch']);
   });
 
   it('never re-checks partner status — trusts whatever matches it is given (direction rule enforced upstream in SQL)', () => {
