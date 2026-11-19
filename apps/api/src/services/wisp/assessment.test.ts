@@ -1011,7 +1011,7 @@ describe('loadAssessmentContext', () => {
   });
   const queueDigest = () => {
     h.results.push([{ id: 'a1', title: 'CPU\nhigh', severity: 'high', status: 'active', at: new Date('2026-10-24T07:00:00Z') }]);
-    h.results.push([{ id: 't1', number: 'T-1', title: 'Printer', status: 'open', updatedAt: new Date('2026-10-24T07:30:00Z') }]);
+    h.results.push([{ id: 't1', internalNumber: 'T-1', publicNumber: 'PUB1', title: 'Printer', status: 'open', updatedAt: new Date('2026-10-24T07:30:00Z') }]);
     h.results.push([{ viewPermission: 'organizations:read' }]); // incidents: distinct view permissions present
     h.results.push([{ id: 'i1', sourceKind: 'psa', condition: 'auth_failed', openedAt: new Date('2026-10-24T08:00:00Z') }]);
     h.results.push([{ id: 'r1', profile: 'full', status: 'completed', summary: 'did a thing' }]);
@@ -1214,7 +1214,7 @@ describe('loadAssessmentContext', () => {
         h.queries.length = 0;
         h.results.length = 0;
         h.resolveGrantCeiling.mockResolvedValue(c);
-        h.results.push([{ id: 't1', number: 'T-1', title: 'Printer', status: 'open', updatedAt: new Date('2026-10-24T07:30:00Z') }]);
+        h.results.push([{ id: 't1', internalNumber: 'T-1', publicNumber: 'PUB1', title: 'Printer', status: 'open', updatedAt: new Date('2026-10-24T07:30:00Z') }]);
         h.results.push([], [], []);
         const ctx = await loadAssessmentContext(firstLookRun());
         expect(ctx!.firstLook).toBe(true);
@@ -1313,7 +1313,7 @@ describe('loadAssessmentContext', () => {
 
     it('with only tickets:read, the tickets query runs and nothing else is read', async () => {
       h.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['tickets:read']) }));
-      h.results.push([{ id: 't1', number: null, title: 'Printer', status: 'open', updatedAt: new Date('2026-10-24T07:30:00Z') }]);
+      h.results.push([{ id: 't1', internalNumber: null, publicNumber: null, title: 'Printer', status: 'open', updatedAt: new Date('2026-10-24T07:30:00Z') }]);
       const ctx = await loadAssessmentContext(run());
       const digestTables = [alerts, tickets, connectionHealthIncidents, aiAgentRuns, actionIntents];
       expect(digestTables.filter((t) => tablesQueried().has(t))).toEqual([tickets]);
@@ -1323,12 +1323,29 @@ describe('loadAssessmentContext', () => {
       });
     });
 
+    // #11678 §3: chat and the ticket thread say T-2026-0001 (internal_number);
+    // the digest said the portal's ticket_number, so assessments cited the
+    // same ticket by a different number. The public number is only a fallback.
+    it('cites a ticket by its internal number, falling back to the public number, then nothing', async () => {
+      h.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['tickets:read']) }));
+      const at = new Date('2026-10-24T07:30:00Z');
+      h.results.push([
+        { id: 't1', internalNumber: 'T-2026-0001', publicNumber: 'N3LLYNLZEI', title: 'Printer', status: 'open', updatedAt: at },
+        { id: 't2', internalNumber: null, publicNumber: 'Q8ZK2M4WPA', title: 'Scanner', status: 'open', updatedAt: at },
+        { id: 't3', internalNumber: null, publicNumber: null, title: 'Fax', status: 'open', updatedAt: at },
+      ]);
+      const ctx = await loadAssessmentContext(run());
+      expect(ctx!.digest.tickets.map((r) => [r.id, r.number])).toEqual([
+        ['t1', 'T-2026-0001'], ['t2', 'Q8ZK2M4WPA'], ['t3', null],
+      ]);
+    });
+
     it("the org's own membership term narrows it too: no alerts:read in the org term → no alerts query", async () => {
       h.resolveGrantCeiling.mockResolvedValue(ceiling({
         permissionKeys: new Set(['*:*']),
         orgTerms: new Map([[ORG, { permissionKeys: keys(['alerts:read']), siteIds: null }]]),
       }));
-      h.results.push([{ id: 't1', number: 'T-1', title: 'Printer', status: 'open', updatedAt: new Date('2026-10-24T07:30:00Z') }]);
+      h.results.push([{ id: 't1', internalNumber: 'T-1', publicNumber: 'PUB1', title: 'Printer', status: 'open', updatedAt: new Date('2026-10-24T07:30:00Z') }]);
       h.results.push([]); // no incidents present
       h.results.push([]);
       h.results.push([]);

@@ -128,6 +128,17 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
     expect(line).toMatch(/at most 3/i);
   });
 
+  // #11678 §4: record_concern returns no id, so a concern raised this run
+  // cannot be nudged until a later run. The run summary said "I did not nudge
+  // anyone, because no concern ids … came back"; the rule says so up front.
+  it('the nudge rule limits nudges to listed open concerns and says a new one waits for a later run', () => {
+    const p = buildAssessmentTaskPrompt(ctx());
+    const line = p.split('\n').find((l) => l.includes('→ nudge'))!;
+    expect(line).toMatch(/open concerns list/i);
+    expect(line).toMatch(/recorded this run[^\n]*later run/i);
+    expect(line).toMatch(/do not mention/i);
+  });
+
   // #11427: the model rewrote summaries to "the alert resolved" with no status,
   // which left every concern open. The rule now names the closing call.
   it('the update_concern rule says how to close a concern and that a summary edit keeps it open', () => {

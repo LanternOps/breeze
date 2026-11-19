@@ -5250,7 +5250,7 @@
     "deviceRevoked": "Dispositivo revocado",
     "deviceRenamed": "Dispositivo renombrado",
     "approvalSecurity": "Seguridad de aprobación",
-    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "Estos dispositivos pueden confirmar aprobaciones de alto riesgo (acceso privilegiado y acciones de AI) mediante datos biométricos. Su teléfono se registra automáticamente cuando inicia sesión en la aplicación móvil Breeze; también puede registrar este navegador con Windows Hello o Touch ID. Todo esto es opcional: las aprobaciones funcionan aun sin estos métodos.",
+    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "Estos dispositivos pueden confirmar aprobaciones de alto riesgo (acceso privilegiado y acciones de AI) mediante datos biométricos. Su teléfono se registra automáticamente cuando inicia sesión en la aplicación móvil Breeze; también puede registrar este navegador con Windows Hello o Touch ID. Para aprobar una solicitud de riesgo alto o crítico se necesita uno de estos dispositivos, salvo que la política de aprobación de su partner lo desactive. Las demás aprobaciones funcionan sin ellos.",
     "loadingApproverDevices": "Cargando dispositivos aprobadores...",
     "tryAgain": "Intentar otra vez",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Aún no se han registrado dispositivos aprobadores. Inicie sesión en la aplicación móvil Breeze en su teléfono y aparecerá aquí automáticamente, o registre este navegador a continuación para aprobar con un biométrico.",

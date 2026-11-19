@@ -5250,7 +5250,7 @@
     "deviceRevoked": "Appareil révoqué",
     "deviceRenamed": "Appareil renommé",
     "approvalSecurity": "Sécurité de l’approbation",
-    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "Ces appareils peuvent confirmer les approbations à haut risque (accès privilégié, actions IA) à l’aide d’un biométrie. Votre téléphone s’enregistre automatiquement lorsque vous vous connectez à l’application mobile Breeze ; vous pouvez également enregistrer ce navigateur avec Windows Hello ou Touch ID. Tout cela est optionnel — les approbations fonctionnent toujours sans cela.",
+    "theseDevicesCanConfirmHighRiskApprovalsPrivilegedAccessA": "Ces appareils peuvent confirmer les approbations à haut risque (accès privilégié, actions IA) à l’aide d’un biométrie. Votre téléphone s’enregistre automatiquement lorsque vous vous connectez à l’application mobile Breeze ; vous pouvez également enregistrer ce navigateur avec Windows Hello ou Touch ID. L’approbation d’une demande à risque élevé ou critique exige l’un de ces appareils, sauf si la politique d’approbation de votre partenaire désactive cette exigence. Les autres approbations fonctionnent sans.",
     "loadingApproverDevices": "Chargement des appareils d’approbation...",
     "tryAgain": "Réessayer",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Aucun appareil d’approbation n’est encore enregistré. Connectez-vous à l’application mobile Breeze sur votre téléphone et elle apparaît automatiquement ici, ou inscrivez-vous à ce navigateur ci-dessous pour approuver avec une biométrie.",

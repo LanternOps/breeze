@@ -1,0 +1,17 @@
+{
+  "id": "snapshot-not-credited-to-user",
+  "title": "Wisp answers from its standing state without mentioning the snapshot or crediting it to the user",
+  "issue": 11678,
+  "expect": "pass",
+  "door": "wisp",
+  "steps": [
+    { "name": "still", "type": "say", "approve": "none", "maxSec": 90,
+      "text": "Are you still keeping an eye on my customers? What have you been doing since we last talked?" }
+  ],
+  "checks": [
+    { "kind": "reply_matches", "step": "still", "flags": "i", "pattern": "(assess|concern|watch|check-in|look)", "precondition": true,
+      "note": "it answered from its loop" },
+    { "kind": "reply_not_matches", "step": "still", "flags": "i", "pattern": "snapshot|standing[ _]state",
+      "note": "#11678 §5: Wisp said \"the snapshot you just sent\"; the block is Breeze's, never the user's, and is not named" }
+  ]
+}
