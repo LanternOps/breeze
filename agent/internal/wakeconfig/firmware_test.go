@@ -238,6 +238,26 @@ func TestFirmwareChangeChangesFingerprint(t *testing.T) {
 	}
 }
 
+// testdata/windows_dell_optiplex7060.json is readScript's output on the lab
+// OptiPlex 7060 (Intel I219-LM, EEE only under EEELinkAdvertisement, on), MAC
+// scrubbed. With the capture's firmware it is not_configured on every layer.
+func TestDellCapturesEndToEnd(t *testing.T) {
+	win, err := ParseWindowsReadings(readFixture(t, "windows_dell_optiplex7060.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(win.Adapters) != 1 || win.Adapters[0].EEE != "enabled" || win.Adapters[0].MagicPacket != "enabled" {
+		t.Fatalf("%+v", win.Adapters)
+	}
+	in := dellInputs(dellCaptured(), "")
+	in.Windows = win
+	s := Compute(in)
+	want := []string{"fast_startup_enabled", "firmware_deep_sleep_enabled", "firmware_wake_on_lan_not_lan_only", "nic_eee_enabled"}
+	if s.ReadinessState != "not_configured" || !reflect.DeepEqual(s.ReasonCodes, want) {
+		t.Fatalf("got %s %v, want %v", s.ReadinessState, s.ReasonCodes, want)
+	}
+}
+
 type fakeAdapter struct {
 	settings []biosconfig.Setting
 	readErr  error

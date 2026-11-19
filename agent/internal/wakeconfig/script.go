@@ -5,6 +5,10 @@ package wakeconfig
 // enum, never by DisplayName/DisplayValue (those are localised). It lives in an
 // untagged file so its read-only guarantee is tested on every OS.
 //
+// EEE is the standard *EEE keyword, else Intel's EEELinkAdvertisement (0 off,
+// 1 on): Intel I219 drivers, as in Dell business desktops, have no *EEE, so
+// without it EEE read as absent while it was on (lab OptiPlex 7060).
+//
 // The NetAdapter cmdlets are probed with Get-Command before use (#12138). A
 // missing cmdlet raises CommandNotFoundException, whose category is also
 // ObjectNotFound, so without the probe the Get-NetAdapter catch below would
@@ -22,11 +26,13 @@ $rows=@(foreach ($n in $nics) {
  $mp=$null
  try { $mp=([string](Get-NetAdapterPowerManagement -Name $n.Name).WakeOnMagicPacket).ToLowerInvariant() } catch { $mp=$null }
  $eee=$null
- try {
-  $p=@(Get-NetAdapterAdvancedProperty -Name $n.Name -RegistryKeyword '*EEE')
-  if ($p.Count -gt 0) { $eee=[string]@($p[0].RegistryValue)[0] }
- } catch {
-  if ($_.CategoryInfo.Category -ne 'ObjectNotFound') { $eee='error' }
+ foreach ($kw in @('*EEE','EEELinkAdvertisement')) {
+  try {
+   $p=@(Get-NetAdapterAdvancedProperty -Name $n.Name -RegistryKeyword $kw)
+   if ($p.Count -gt 0) { $eee=[string]@($p[0].RegistryValue)[0]; break }
+  } catch {
+   if ($_.CategoryInfo.Category -ne 'ObjectNotFound') { $eee='error'; break }
+  }
  }
  [pscustomobject]@{ name=[string]$n.Name; mac=[string]$n.MacAddress; magicPacket=$mp; eee=$eee }
 })
