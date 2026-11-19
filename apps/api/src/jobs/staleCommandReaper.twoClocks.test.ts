@@ -297,6 +297,65 @@ describe('reapStaleDeviceCommands — two clocks (#5128)', () => {
     expect(setArg.result.error).toContain('no response from agent');
   });
 
+  // Verify / test restore: the execution budget scales with the snapshot
+  // (payload.timeBudgetSeconds, up to 12 h) and runs from executed_at, but
+  // these rows carry no deliver_by, so the UNDELIVERED limit stays the 2 h base.
+  describe.each(['backup_verify', 'backup_test_restore'])('%s', (type) => {
+    const verifyRow = (over: Record<string, unknown> = {}) =>
+      scriptRow({ type, payload: { snapshotId: 's1', timeBudgetSeconds: 6 * 3600 }, ...over });
+
+    it('a sent row inside its scaled budget is left alone past the 2h base', async () => {
+      selectMock.mockReturnValue(selectChain([verifyRow({
+        status: 'sent',
+        createdAt: new Date(NOW - 5 * HOUR),
+        executedAt: new Date(NOW - 4 * HOUR),
+      })]));
+      expect(await reapStaleDeviceCommands()).toBe(0);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('a sent row past its scaled budget is failed as timeout', async () => {
+      selectMock.mockReturnValue(selectChain([verifyRow({
+        status: 'sent',
+        createdAt: new Date(NOW - 7 * HOUR),
+        executedAt: new Date(NOW - 6 * HOUR - 60_000),
+      })]));
+      const { command: update } = routeUpdates([{ id: 'c1' }]);
+      expect(await reapStaleDeviceCommands()).toBe(1);
+      const setArg = update.set.mock.calls[0]![0] as { result: { error: string } };
+      expect(setArg.result.error).toContain('360 minutes');
+    });
+
+    it('a sent row without a budget keeps the 2h execution clock', async () => {
+      selectMock.mockReturnValue(selectChain([verifyRow({
+        payload: { snapshotId: 's1' },
+        status: 'sent',
+        createdAt: new Date(NOW - 3 * HOUR),
+        executedAt: new Date(NOW - 2 * HOUR - 60_000),
+      })]));
+      routeUpdates([{ id: 'c1' }]);
+      expect(await reapStaleDeviceCommands()).toBe(1);
+    });
+
+    it('a legacy pending row expires at created_at + 2h even with a 6h budget', async () => {
+      selectMock.mockReturnValue(selectChain([verifyRow({
+        createdAt: new Date(NOW - 2 * HOUR - 60_000),
+      })]));
+      const { command: update } = routeUpdates([{ id: 'c1' }]);
+      expect(await reapStaleDeviceCommands()).toBe(1);
+      const setArg = update.set.mock.calls[0]![0] as { result: { error: string } };
+      expect(setArg.result.error).toContain('120 min timeout');
+    });
+
+    it('a legacy pending row inside 2h is left alone', async () => {
+      selectMock.mockReturnValue(selectChain([verifyRow({
+        createdAt: new Date(NOW - HOUR),
+      })]));
+      expect(await reapStaleDeviceCommands()).toBe(0);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('the terminal UPDATE is a CAS on the observed pending status, never IN (pending, sent)', async () => {
     selectMock.mockReturnValue(selectChain([scriptRow({ deliverBy: new Date(NOW - 1000) })]));
     const { command: update } = routeUpdates([{ id: 'c1' }]);

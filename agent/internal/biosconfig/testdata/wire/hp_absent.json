@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "vendor": "hp",
+  "nativeArch": "amd64",
+  "interface": "absent",
+  "errorCode": "0x8004100E",
+  "durationMs": 812,
+  "collectedWith": "0.131.0",
+  "hp": {
+    "settings": [],
+    "settingCount": 0,
+    "truncated": false,
+    "setupPasswordSet": null,
+    "powerOnPasswordSet": null,
+    "sureAdmin": null,
+    "settingInterface": null
+  }
+}

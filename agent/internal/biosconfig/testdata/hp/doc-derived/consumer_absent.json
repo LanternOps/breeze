@@ -1,0 +1,7 @@
+{
+  "_source": "doc-derived: a consumer HP has no root\\HP\\InstrumentedBIOS namespace; Get-CimInstance reports HRESULT 0x8004100e (WBEM_E_INVALID_NAMESPACE).",
+  "enum": [],
+  "passwords": [],
+  "settingInterface": null,
+  "error": {"step": "enum", "fqid": "HRESULT 0x8004100e,Microsoft.Management.Infrastructure.CimCmdlets.GetCimInstanceCommand", "native": "InvalidNamespace"}
+}

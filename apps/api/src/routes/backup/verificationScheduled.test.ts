@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const recomputeRecoveryReadinessForDeviceMock = vi.fn(async () => undefined);
 const persistVerificationToDbMock = vi.fn(async () => undefined);
@@ -59,6 +59,8 @@ vi.mock('../../db/schema', () => ({
   deviceCommands: {
     id: 'device_commands.id',
     status: 'device_commands.status',
+    executedAt: 'device_commands.executed_at',
+    completedAt: 'device_commands.completed_at',
   },
 }));
 
@@ -97,10 +99,20 @@ import { ensurePostBackupIntegrityChecks, processBackupVerificationResult, recal
 import { backupJobs, backupVerifications, jobOrgById, verificationOrgById } from './store';
 import {
   LEGACY_VERIFICATION_TIMEOUT_REASON,
+  VERIFICATION_TIMEOUT_GRACE_MS,
   VERIFICATION_TIMEOUT_REASON_CODE,
-  verificationTimeoutMs,
   verificationTimeoutReason,
 } from './verificationTimeout';
+import { PgDialect } from 'drizzle-orm/pg-core';
+
+const MIN = 60 * 1000;
+const HOUR = 60 * MIN;
+/** Past the 2h base + grace. */
+const PAST_BASE_MS = 2 * HOUR + VERIFICATION_TIMEOUT_GRACE_MS + MIN;
+
+function compileWhere(whereArg: unknown) {
+  return new PgDialect().sqlToQuery(whereArg as never);
+}
 
 describe('verification timeout handling', () => {
   beforeEach(() => {
@@ -548,8 +560,11 @@ describe('verification timeout handling', () => {
     const orgId = 'org-timeout-db';
     const deviceId = 'dev-timeout-db';
     const verificationId = 'verify-timeout-db';
-    // #11813: past the derived budget (command timeout + grace), not 30 min.
-    const startedAt = new Date(Date.now() - verificationTimeoutMs('integrity') - 60 * 1000);
+    // #11813: past the derived budget (command timeout + grace), not 30 min,
+    // measured from the command's claim.
+    const startedAt = new Date(Date.now() - PAST_BASE_MS - 20 * MIN);
+    const commandId = '12121212-1212-4121-8121-121212121212';
+    const executedAt = new Date(Date.now() - PAST_BASE_MS);
 
     const timedOutRow = {
       id: verificationId,
@@ -565,11 +580,16 @@ describe('verification timeout handling', () => {
       filesVerified: 0,
       filesFailed: 0,
       sizeBytes: null,
-      details: { source: 'test', commandId: 'cmd-timeout-db' },
+      details: { source: 'test', commandId },
       createdAt: startedAt,
     };
 
-    selectMock.mockReturnValueOnce(selectChain([timedOutRow]));
+    selectMock
+      .mockReturnValueOnce(selectChain([timedOutRow]))
+      .mockReturnValueOnce(selectChain([{ id: commandId, status: 'sent', executedAt, completedAt: null }]));
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: commandId }]) })) })),
+    });
 
     try {
       const count = await timeoutStaleVerifications();
@@ -580,7 +600,7 @@ describe('verification timeout handling', () => {
         status: 'failed',
         completedAt: expect.any(String),
         details: expect.objectContaining({
-          reason: verificationTimeoutReason('integrity'),
+          reason: verificationTimeoutReason(2 * HOUR),
           reasonCode: VERIFICATION_TIMEOUT_REASON_CODE,
         }),
       }));
@@ -638,6 +658,213 @@ describe('verification timeout handling', () => {
       if (index >= 0) backupVerifications.splice(index, 1);
       verificationOrgById.delete(verificationId);
     }
+  });
+
+  // The timeout clock runs from the command's claim (executed_at) plus the
+  // verification's own scaled budget (details.timeBudgetSeconds), and the
+  // command write is a compare-and-set on what the scan observed.
+  describe('timeout clock: executed_at + scaled budget, CAS on the observed command', () => {
+    const ORG = 'org-clock';
+    const COMMAND = '13131313-1313-4131-8131-131313131313';
+
+    function dbVerificationRow(over: { startedAgoMs: number; details?: Record<string, unknown>; type?: 'integrity' | 'test_restore' }) {
+      const startedAt = new Date(Date.now() - over.startedAgoMs);
+      return {
+        id: 'verify-clock',
+        orgId: ORG,
+        deviceId: 'dev-clock',
+        backupJobId: 'job-clock',
+        snapshotId: 'snap-clock',
+        verificationType: over.type ?? 'integrity',
+        status: 'running',
+        startedAt,
+        completedAt: null,
+        restoreTimeSeconds: null,
+        filesVerified: 0,
+        filesFailed: 0,
+        sizeBytes: null,
+        details: { source: 'test', commandId: COMMAND, ...(over.details ?? {}) },
+        createdAt: startedAt,
+      };
+    }
+
+    function commandRow(over: { status: string; executedAgoMs: number | null; completedAgoMs?: number | null }) {
+      return {
+        id: COMMAND,
+        status: over.status,
+        executedAt: over.executedAgoMs === null ? null : new Date(Date.now() - over.executedAgoMs),
+        completedAt: over.completedAgoMs == null ? null : new Date(Date.now() - over.completedAgoMs),
+      };
+    }
+
+    function routeCommandUpdate(returning: unknown[]) {
+      const where = vi.fn(() => ({ returning: vi.fn().mockResolvedValue(returning) }));
+      const set = vi.fn(() => ({ where }));
+      updateMock.mockReturnValue({ set });
+      return { set, where };
+    }
+
+    afterEach(() => {
+      verificationOrgById.delete('verify-clock');
+      const index = backupVerifications.findIndex((row) => row.id === 'verify-clock');
+      if (index >= 0) backupVerifications.splice(index, 1);
+    });
+
+    // The production failure: delivery deferred ~25 min while the file index
+    // hydrated. Started 2h10m ago but claimed 1h45m ago: inside its 2h budget.
+    it('does not count the wait before delivery against the budget', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([dbVerificationRow({ startedAgoMs: 2 * HOUR + 10 * MIN })]))
+        .mockReturnValueOnce(selectChain([commandRow({ status: 'sent', executedAgoMs: HOUR + 45 * MIN })]));
+
+      expect(await timeoutStaleVerifications()).toBe(0);
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(persistVerificationToDbMock).not.toHaveBeenCalled();
+    });
+
+    it('leaves a run inside its scaled budget alone long past the 2h base', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([dbVerificationRow({ startedAgoMs: 5 * HOUR, details: { timeBudgetSeconds: 395 * 60 } })]))
+        .mockReturnValueOnce(selectChain([commandRow({ status: 'sent', executedAgoMs: 4 * HOUR + 40 * MIN })]));
+
+      expect(await timeoutStaleVerifications()).toBe(0);
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(persistVerificationToDbMock).not.toHaveBeenCalled();
+    });
+
+    it('fails a run past its scaled budget with a CAS on the observed sent status and executed_at, and states the budget', async () => {
+      const row = commandRow({ status: 'sent', executedAgoMs: 395 * MIN + VERIFICATION_TIMEOUT_GRACE_MS + MIN });
+      selectMock
+        .mockReturnValueOnce(selectChain([dbVerificationRow({ startedAgoMs: 7 * HOUR, details: { timeBudgetSeconds: 395 * 60 } })]))
+        .mockReturnValueOnce(selectChain([row]));
+      const { set, where } = routeCommandUpdate([{ id: COMMAND }]);
+
+      expect(await timeoutStaleVerifications()).toBe(1);
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed',
+        result: expect.objectContaining({ status: 'timeout', error: 'Verification timed out after 400 minutes' }),
+      }));
+      const { params, sql: sqlText } = compileWhere((where.mock.calls[0] as unknown[])[0]);
+      expect(params).toEqual([
+        'device_commands.id', COMMAND,
+        'device_commands.status', 'sent',
+        'device_commands.executed_at', row.executedAt,
+      ]);
+      expect(sqlText).not.toMatch(/ in \(/i);
+      expect(persistVerificationToDbMock).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'verify-clock',
+        status: 'failed',
+        details: expect.objectContaining({
+          reason: 'Verification timed out after 400 minutes',
+          reasonCode: VERIFICATION_TIMEOUT_REASON_CODE,
+          timeBudgetSeconds: 395 * 60,
+        }),
+      }));
+    });
+
+    // A successful result arriving between the scan and the write must win.
+    it('does not fail the verification when the command CAS loses (claimed or completed in between)', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([dbVerificationRow({ startedAgoMs: 4 * HOUR })]))
+        .mockReturnValueOnce(selectChain([commandRow({ status: 'sent', executedAgoMs: PAST_BASE_MS })]));
+      routeCommandUpdate([]);
+
+      expect(await timeoutStaleVerifications()).toBe(0);
+      expect(updateMock).toHaveBeenCalledTimes(1);
+      expect(persistVerificationToDbMock).not.toHaveBeenCalled();
+      expect(safePublishMock).not.toHaveBeenCalled();
+    });
+
+    it('fails a never-delivered command on the 2h undelivered clock with a CAS on pending + NULL executed_at', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([dbVerificationRow({ startedAgoMs: PAST_BASE_MS, details: { timeBudgetSeconds: 12 * 3600 } })]))
+        .mockReturnValueOnce(selectChain([commandRow({ status: 'pending', executedAgoMs: null })]));
+      const { where } = routeCommandUpdate([{ id: COMMAND }]);
+
+      expect(await timeoutStaleVerifications()).toBe(1);
+      const { params, sql: sqlText } = compileWhere((where.mock.calls[0] as unknown[])[0]);
+      expect(params).toEqual([
+        'device_commands.id', COMMAND,
+        'device_commands.status', 'pending',
+        'device_commands.executed_at',
+      ]);
+      expect(sqlText).toMatch(/\$5 is null/i);
+      expect(persistVerificationToDbMock).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed',
+        details: expect.objectContaining({ reason: verificationTimeoutReason(2 * HOUR) }),
+      }));
+    });
+
+    it('settles the verification of a command the reaper already failed, without writing the command', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([dbVerificationRow({ startedAgoMs: 3 * HOUR })]))
+        .mockReturnValueOnce(selectChain([commandRow({ status: 'failed', executedAgoMs: PAST_BASE_MS, completedAgoMs: 4 * MIN })]));
+
+      expect(await timeoutStaleVerifications()).toBe(1);
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(persistVerificationToDbMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'verify-clock', status: 'failed' }));
+    });
+
+    it('settles the verification of a missing command on the 2h clock from started_at', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([dbVerificationRow({ startedAgoMs: PAST_BASE_MS, details: { timeBudgetSeconds: 12 * 3600 } })]))
+        .mockReturnValueOnce(selectChain([]));
+
+      expect(await timeoutStaleVerifications()).toBe(1);
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(persistVerificationToDbMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'verify-clock', status: 'failed' }));
+    });
+
+    it('waits out the grace for a command that just completed (its result is being ingested), then settles', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([dbVerificationRow({ startedAgoMs: 4 * HOUR })]))
+        .mockReturnValueOnce(selectChain([commandRow({ status: 'completed', executedAgoMs: PAST_BASE_MS, completedAgoMs: MIN })]));
+      expect(await timeoutStaleVerifications()).toBe(0);
+      expect(persistVerificationToDbMock).not.toHaveBeenCalled();
+
+      selectMock
+        .mockReturnValueOnce(selectChain([dbVerificationRow({ startedAgoMs: 4 * HOUR })]))
+        .mockReturnValueOnce(selectChain([commandRow({ status: 'completed', executedAgoMs: PAST_BASE_MS, completedAgoMs: VERIFICATION_TIMEOUT_GRACE_MS + MIN })]));
+      expect(await timeoutStaleVerifications()).toBe(1);
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(persistVerificationToDbMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'verify-clock', status: 'failed' }));
+    });
+
+    it('skips the pass when the command lookup fails (a failed lookup is not a missing command)', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([dbVerificationRow({ startedAgoMs: 6 * HOUR })]))
+        .mockImplementationOnce(() => { throw new Error('db down'); });
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        expect(await timeoutStaleVerifications()).toBe(0);
+        expect(updateMock).not.toHaveBeenCalled();
+        expect(persistVerificationToDbMock).not.toHaveBeenCalled();
+      } finally {
+        errorSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('loads every candidate command in one query', async () => {
+      const second = '14141414-1414-4141-8141-141414141414';
+      selectMock
+        .mockReturnValueOnce(selectChain([
+          dbVerificationRow({ startedAgoMs: 2 * HOUR + 10 * MIN }),
+          { ...dbVerificationRow({ startedAgoMs: 2 * HOUR + 10 * MIN }), id: 'verify-clock-2', details: { commandId: second } },
+        ]))
+        .mockReturnValueOnce(selectChain([
+          commandRow({ status: 'sent', executedAgoMs: HOUR }),
+          { ...commandRow({ status: 'sent', executedAgoMs: HOUR }), id: second },
+        ]));
+
+      try {
+        expect(await timeoutStaleVerifications()).toBe(0);
+        expect(selectMock).toHaveBeenCalledTimes(2);
+      } finally {
+        verificationOrgById.delete('verify-clock-2');
+      }
+    });
   });
 
   // #11813: rows the timeout job failed before the reason code existed carry
@@ -701,7 +928,7 @@ describe('verification timeout handling', () => {
   it('writes the reason code on the no-orgId path too, and fails the command with the derived reason', async () => {
     const verificationId = 'verify-no-org';
     const commandId = '99999999-9999-4999-8999-999999999999';
-    const startedAt = new Date(Date.now() - verificationTimeoutMs('test_restore') - 60 * 1000);
+    const startedAt = new Date(Date.now() - PAST_BASE_MS - 20 * MIN);
     backupVerifications.push({
       id: verificationId,
       orgId: '',
@@ -722,6 +949,12 @@ describe('verification timeout handling', () => {
       where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: commandId }]) })),
     }));
     updateMock.mockReturnValue({ set: setMock });
+    // No DB verification rows (memory path), then the command lookup.
+    selectMock
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([
+        { id: commandId, status: 'sent', executedAt: new Date(Date.now() - PAST_BASE_MS), completedAt: null },
+      ]));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     try {
@@ -730,7 +963,7 @@ describe('verification timeout handling', () => {
         status: 'failed',
         result: expect.objectContaining({
           status: 'timeout',
-          error: verificationTimeoutReason('test_restore'),
+          error: verificationTimeoutReason(2 * HOUR),
           timedOutBy: 'verification-timeout-check',
         }),
       }));
@@ -738,7 +971,7 @@ describe('verification timeout handling', () => {
         id: verificationId,
         status: 'failed',
         details: expect.objectContaining({
-          reason: verificationTimeoutReason('test_restore'),
+          reason: verificationTimeoutReason(2 * HOUR),
           reasonCode: VERIFICATION_TIMEOUT_REASON_CODE,
         }),
       }));
@@ -767,7 +1000,7 @@ describe('verification timeout handling', () => {
       restoreTimeSeconds: null,
       filesVerified: 0,
       filesFailed: 0,
-      details: { source: 'test', commandId, reason: verificationTimeoutReason('integrity'), reasonCode: VERIFICATION_TIMEOUT_REASON_CODE },
+      details: { source: 'test', commandId, reason: verificationTimeoutReason(2 * HOUR), reasonCode: VERIFICATION_TIMEOUT_REASON_CODE },
       createdAt: startedAt.toISOString(),
     });
     verificationOrgById.set(verificationId, orgId);

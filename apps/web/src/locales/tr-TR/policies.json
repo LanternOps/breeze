@@ -1266,7 +1266,8 @@
             "nic_unreadable": "Kablolu bir bağdaştırıcı var ancak okunamadı",
             "nic_cmdlets_unavailable": "Bu cihazda ağ bağdaştırıcısı ayarları okunamıyor",
             "nic_eee_enabled": "Energy-Efficient Ethernet açık",
-            "firmware_adapter_unavailable": "Üretici yazılımı ayarları henüz okunamıyor"
+            "firmware_adapter_unavailable": "Üretici yazılımı ayarları henüz okunamıyor",
+            "vendor_observe_only": "Üretici yazılımı gözlemleniyor (salt okunur)"
           },
           "attempts": {
             "pending": "Beklemede",
@@ -1276,6 +1277,14 @@
             "timed_out": "Zaman aşımı",
             "unknown": "Bilinmiyor",
             "refused": "Reddedildi"
+          },
+          "observing": "Gözlemleniyor {{vendor}}: {{interface}}",
+          "observingWithCode": "Gözlemleniyor {{vendor}}: {{interface}} ({{code}})",
+          "observeInterfaces": {
+            "present": "arayüz mevcut",
+            "absent": "arayüz mevcut değil",
+            "access_denied": "erişim reddedildi",
+            "error": "okuma hatası"
           }
         }
       },

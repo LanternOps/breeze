@@ -4,6 +4,7 @@ import {
   BACKUP_JOB_ABSOLUTE_TIMEOUT_MS,
   CALLER_VERIFY_TIMEOUT_MS,
   getCommandTimeoutMs,
+  getCommandUndeliveredTimeoutMs,
   RESTORE_POINT_CHECKPOINT_BUDGET_MS,
   SCRIPT_GRACE_BUFFER_MS,
   SECURITY_SCAN_COMMAND_GRACE_MS,
@@ -189,5 +190,40 @@ describe('command timeouts', () => {
       expect(getCommandTimeoutMs(CommandTypes.SECURITY_THREAT_QUARANTINE, { timeoutMinutes: 720 })).toBe(30 * MIN);
       expect(getCommandTimeoutMs(CommandTypes.SECURITY_COLLECT_STATUS, { timeoutMinutes: 720 })).toBe(5 * MIN);
     });
+  });
+
+  // Verify / test restore budgets scale with the snapshot: the payload carries
+  // `timeBudgetSeconds`, computed when the verification is created.
+  describe.each([CommandTypes.BACKUP_VERIFY, CommandTypes.BACKUP_TEST_RESTORE])('%s', (type) => {
+    const HOUR = 60 * 60 * 1000;
+
+    it('reads the execution budget from payload.timeBudgetSeconds, clamped to [2h, 12h]', () => {
+      expect(getCommandTimeoutMs(type, { timeBudgetSeconds: 395 * 60 })).toBe(395 * 60 * 1000);
+      expect(getCommandTimeoutMs(type, { timeBudgetSeconds: 60 })).toBe(2 * HOUR);
+      expect(getCommandTimeoutMs(type, { timeBudgetSeconds: 100 * 3600 })).toBe(12 * HOUR);
+    });
+
+    it('falls back to 2h for an absent or invalid budget', () => {
+      expect(getCommandTimeoutMs(type)).toBe(2 * HOUR);
+      expect(getCommandTimeoutMs(type, null)).toBe(2 * HOUR);
+      for (const timeBudgetSeconds of ['36000', null, Number.NaN, Number.POSITIVE_INFINITY, {}]) {
+        expect(getCommandTimeoutMs(type, { timeBudgetSeconds })).toBe(2 * HOUR);
+      }
+    });
+
+    it('keeps the undelivered limit at the 2h base whatever the execution budget', () => {
+      // No deliver_by on these rows: the reaper's pending clock is
+      // created_at + this, and a command cannot wait 12 h to be delivered.
+      expect(getCommandUndeliveredTimeoutMs(type, { timeBudgetSeconds: 12 * 3600 })).toBe(2 * HOUR);
+      expect(getCommandUndeliveredTimeoutMs(type)).toBe(2 * HOUR);
+    });
+  });
+
+  it('uses the execution timeout as the undelivered limit for every other type', () => {
+    expect(getCommandUndeliveredTimeoutMs(CommandTypes.SCRIPT, { timeoutSeconds: 600 })).toBe(
+      getCommandTimeoutMs(CommandTypes.SCRIPT, { timeoutSeconds: 600 }),
+    );
+    expect(getCommandUndeliveredTimeoutMs(CommandTypes.BACKUP_RUN)).toBe(getCommandTimeoutMs(CommandTypes.BACKUP_RUN));
+    expect(getCommandUndeliveredTimeoutMs(CommandTypes.LIST_PROCESSES)).toBe(5 * 60 * 1000);
   });
 });
