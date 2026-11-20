@@ -14,6 +14,7 @@ import {
   authenticateStorageSession,
   renewStorageSession,
   resolveStorageSessionObjects,
+  type StorageSessionCallOp,
   type StorageSessionRow,
 } from '../../services/backupStorageSessions';
 import type { SnapshotIdReservation } from '../../services/backupSnapshotIdReservations';
@@ -87,12 +88,17 @@ function noStore(c: Context): void {
   c.header('Cache-Control', 'no-store');
 }
 
-async function authenticate(c: Context) {
+/**
+ * `op` is the call being answered: only a renew can re-arm the lapsed lease of
+ * an unused verification read session (authenticateStorageSession).
+ */
+async function authenticate(c: Context, op: StorageSessionCallOp) {
   const agent = c.get('agent' as never) as AgentIdentity;
   return authenticateStorageSession({
     sessionId: c.req.param('sessionId') ?? '',
     token: c.req.header(STORAGE_SESSION_HEADER),
     agent: { deviceId: agent.deviceId, orgId: agent.orgId },
+    op,
   });
 }
 
@@ -229,7 +235,7 @@ agentStorageSessionRoutes.post('/:id/storage-sessions/:sessionId/:op', requireAg
       | { done: Response }
       | { session: StorageSessionRow; reservation: SnapshotIdReservation };
     const pre: Pre = await run(async (): Promise<Pre> => {
-      const auth = await authenticate(c);
+      const auth = await authenticate(c, op === 'renew' ? 'renew' : op === 'objects:resolve' ? 'resolve' : 'write');
       if (!auth.ok) return { done: c.json({ error: auth.error }, auth.status) };
       const session = auth.session;
       meter.scope = session.scope;
@@ -335,7 +341,7 @@ agentStorageSessionRoutes.get('/:id/storage-sessions/:sessionId/object', require
       return c.json({ error: 'key is required' }, 400);
     }
     return orgRunner(c)(async () => {
-      const auth = await authenticate(c);
+      const auth = await authenticate(c, 'object');
       if (!auth.ok) return c.json({ error: auth.error }, auth.status);
       meter.scope = auth.session.scope;
       if (auth.session.scope !== 'snapshot_read') return c.json({ error: 'scope_mismatch', code: 'scope_mismatch' }, 403);

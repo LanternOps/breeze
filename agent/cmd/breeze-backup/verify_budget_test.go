@@ -169,6 +169,12 @@ func TestVerifyRunBudgetFor(t *testing.T) {
 		{"12h cap", backupipc.VerifyMaxCommandTimeout.Milliseconds(), backupipc.VerifyMaxCommandTimeout - backupipc.VerifyRunMargin},
 		{"above cap", (48 * time.Hour).Milliseconds(), backupipc.VerifyMaxCommandTimeout - backupipc.VerifyRunMargin},
 		{"overflow-sized", math.MaxInt64, backupipc.VerifyMaxCommandTimeout - backupipc.VerifyRunMargin},
+		// #11813: the agent deducts the wait on its verification lane, so the
+		// wait can be shorter than the 2h base; the helper honours it down to
+		// the agent's floor (margin + a 5m run), below which the agent never
+		// forwards.
+		{"lane-shortened 70m", (70 * time.Minute).Milliseconds(), 60 * time.Minute},
+		{"agent floor 15m", (backupipc.VerifyRunMargin + 5*time.Minute).Milliseconds(), 5 * time.Minute},
 		// A wait no longer than the margin would leave no budget (and a zero
 		// TimeBudget means "unbounded" to the verify loop): use the default.
 		{"shorter than margin", (5 * time.Minute).Milliseconds(), 42 * time.Second},

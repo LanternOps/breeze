@@ -2,11 +2,13 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	"github.com/breeze-rmm/agent/internal/wire"
 	"github.com/breeze-rmm/agent/internal/workerpool"
 )
 
@@ -47,12 +49,89 @@ func init() {
 	handlerRegistry[tools.CmdBackupCleanup] = handleBackupCleanup
 }
 
+// verificationMinUsefulRun is the shortest helper run worth starting: a
+// verification with less than backupipc.VerifyRunMargin + this left of its
+// budget when it reaches the helper is failed instead (#11813).
+const verificationMinUsefulRun = 5 * time.Minute
+
+// verificationForwardTimeoutAfterWait is the forward wait for a verification
+// received at receivedAt that is about to reach the helper at now: its budget
+// less the time it waited on this agent. The server's clocks for the command
+// (its storage session's deadline, the stale-command reaper, the verification
+// timeout) all run from delivery, so the wait here is spent out of the same
+// budget; the helper, which stops backupipc.VerifyRunMargin short of the wait
+// it is given, then finishes inside them.
+//
+// ok is false when less than backupipc.VerifyRunMargin +
+// verificationMinUsefulRun is left: there is no useful run to start, and a
+// wait no longer than the margin would make the helper fall back to its
+// default run budget, past the server's deadline. A zero receivedAt (the
+// handler was reached without a dispatch site's stamp) or a wait that is not
+// positive deducts nothing.
+func verificationForwardTimeoutAfterWait(budget time.Duration, receivedAt, now time.Time) (time.Duration, bool) {
+	if receivedAt.IsZero() {
+		return budget, true
+	}
+	waited := now.Sub(receivedAt)
+	if waited <= 0 {
+		return budget, true
+	}
+	remaining := budget - waited
+	return remaining, remaining >= backupipc.VerifyRunMargin+verificationMinUsefulRun
+}
+
+// verificationNow is the clock for a verification's receipt stamp and its
+// lane wait (time.Now, monotonic; a test seam).
+func (h *Heartbeat) verificationNow() time.Time {
+	if h.verificationClock != nil {
+		return h.verificationClock()
+	}
+	return time.Now()
+}
+
+// stampVerificationReceipt records when a verification command reached this
+// agent, before it joins its pool's queue, so the time it then waits there
+// comes out of its budget (verificationForwardTimeoutAfterWait). Both
+// dispatch sites call it; any other command is returned unchanged.
+func (h *Heartbeat) stampVerificationReceipt(cmd Command) Command {
+	if isBackupVerificationCommand(cmd.Type) && cmd.receivedAt.IsZero() {
+		cmd.receivedAt = h.verificationNow()
+	}
+	return cmd
+}
+
+// forwardBackupVerification forwards a backup_verify or backup_test_restore
+// with what is left of its budget once the helper is up, or fails it with
+// ErrCodeVerificationQueueExpired, without reaching the helper, when too
+// little is left for a useful run.
+func forwardBackupVerification(h *Heartbeat, cmd Command) tools.CommandResult {
+	budget := backupVerificationForwardTimeout(cmd.Payload)
+	return forwardToBackupHelperWithin(h, cmd, func() (time.Duration, *tools.CommandResult) {
+		now := h.verificationNow()
+		remaining, ok := verificationForwardTimeoutAfterWait(budget, cmd.receivedAt, now)
+		if ok {
+			return remaining, nil
+		}
+		waited := now.Sub(cmd.receivedAt)
+		left := max(remaining, 0)
+		log.Warn("backup verification waited on this agent until too little of its budget was left; not starting it",
+			logging.KeyCommandID, cmd.ID, "type", cmd.Type,
+			"waited", waited.Round(time.Second).String(), "budget", budget.String(), "left", left.Round(time.Second).String())
+		refused := tools.NewErrorResult(fmt.Errorf(
+			"backup verification was not started: it waited %s on this device behind other verifications, "+
+				"leaving %s of its %s time budget, less than the %s a run needs; run it again when fewer verifications are queued",
+			waited.Round(time.Minute), left.Round(time.Minute), budget, backupipc.VerifyRunMargin+verificationMinUsefulRun), 0)
+		refused.ErrorCode = wire.ErrCodeVerificationQueueExpired
+		return 0, &refused
+	})
+}
+
 func handleBackupVerify(h *Heartbeat, cmd Command) tools.CommandResult {
-	return forwardToBackupHelper(h, cmd, backupVerificationForwardTimeout(cmd.Payload))
+	return forwardBackupVerification(h, cmd)
 }
 
 func handleBackupTestRestore(h *Heartbeat, cmd Command) tools.CommandResult {
-	return forwardToBackupHelper(h, cmd, backupVerificationForwardTimeout(cmd.Payload))
+	return forwardBackupVerification(h, cmd)
 }
 
 func handleBackupCleanup(h *Heartbeat, cmd Command) tools.CommandResult {
@@ -84,6 +163,7 @@ func (h *Heartbeat) commandPoolFor(cmdType string) *workerpool.Pool {
 // logged and dropped without a result, like any polled command the shared
 // pool rejects.
 func (h *Heartbeat) dispatchPolledCommand(cmd Command) bool {
+	cmd = h.stampVerificationReceipt(cmd)
 	if !h.commandPoolFor(cmd.Type).Submit(func() { h.processCommand(cmd) }) {
 		log.Warn("command rejected, worker pool full", logging.KeyCommandID, cmd.ID, "type", cmd.Type)
 		return false

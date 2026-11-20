@@ -473,6 +473,58 @@ describe('verification timeout handling', () => {
     }
   });
 
+  // #11813: a verification that waited on the agent's verification lane past
+  // the point where a useful run fits before the server's deadline is failed
+  // by the agent without reaching the helper: a failed command, no stdout,
+  // the reason in its errorCode.
+  it.each([
+    ['verification_queue_expired', 'verification_queue_expired'],
+    ['an unknown code', undefined],
+  ] as const)('persists the errorCode of a failed command when it is %s', async (errorCode, expected) => {
+    const orgId = 'org-queue-expired';
+    const verificationId = 'verify-queue-expired';
+    const commandId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const startedAt = new Date();
+    backupVerifications.push({
+      id: verificationId,
+      orgId,
+      deviceId: 'dev-queue-expired',
+      backupJobId: 'job-queue-expired',
+      snapshotId: 'snap-queue-expired',
+      verificationType: 'integrity',
+      status: 'running',
+      startedAt: startedAt.toISOString(),
+      completedAt: null,
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId, reasonCode: VERIFICATION_TIMEOUT_REASON_CODE },
+      createdAt: startedAt.toISOString(),
+    });
+    verificationOrgById.set(verificationId, orgId);
+    const agentError = 'verification was not started: it waited 1h52m on this device';
+
+    try {
+      await processBackupVerificationResult(commandId, {
+        status: 'failed',
+        error: agentError,
+        errorCode: expected ?? 'some_future_code',
+      });
+
+      const persisted = (persistVerificationToDbMock.mock.calls.at(-1) as unknown[] | undefined)?.[0] as
+        | { id: string; status: string; details: Record<string, unknown> }
+        | undefined;
+      expect(persisted?.id).toBe(verificationId);
+      expect(persisted?.status).toBe('failed');
+      expect(persisted?.details.reason).toBe(agentError);
+      expect(persisted?.details.reasonCode).toBe(expected);
+    } finally {
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) backupVerifications.splice(index, 1);
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
   it('keeps only allowlisted agent codes and resets filesUnchecked on every result', async () => {
     const orgId = 'org-other-code';
     const verificationId = 'verify-other-code';
