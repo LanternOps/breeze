@@ -1367,7 +1367,7 @@ function buildPasswordResetTemplate(params: PasswordResetEmailParams): EmailTemp
  * The subject never changes. A partner's custom button label was written for
  * the password button, so it never relabels an SSO one.
  */
-export function buildPortalInviteTemplate(params: PortalInviteEmailParams): EmailTemplate {
+export function buildPortalInviteTemplate(params: Omit<PortalInviteEmailParams, 'trigger'>): EmailTemplate {
   const orgName = params.orgName?.trim();
   const inviter = params.inviterName?.trim();
   const customMessage = params.message?.trim();
@@ -1432,7 +1432,7 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
  * support footer: the platform support address is not the customer's IT
  * provider.
  */
-export function buildPortalAccessApprovedTemplate(params: PortalAccessApprovedEmailParams): EmailTemplate {
+export function buildPortalAccessApprovedTemplate(params: Omit<PortalAccessApprovedEmailParams, 'trigger'>): EmailTemplate {
   const orgName = params.orgName?.trim();
   const subject = orgName ? `You can now sign in to the ${orgName} portal` : 'You can now sign in to your portal';
   const lead = orgName
@@ -1457,7 +1457,7 @@ export function buildPortalAccessApprovedTemplate(params: PortalAccessApprovedEm
  * address is the requester's. No requester-typed text; `orgName` comes from
  * the org row.
  */
-export function buildPortalSelfRegistrationLinkTemplate(params: PortalSelfRegistrationLinkEmailParams): EmailTemplate {
+export function buildPortalSelfRegistrationLinkTemplate(params: Omit<PortalSelfRegistrationLinkEmailParams, 'trigger'>): EmailTemplate {
   const orgName = params.orgName.trim();
   const subject = `Confirm your request for access to ${orgName}'s portal`;
   const lead = `Someone, hopefully you, asked for access to ${orgName}'s customer portal with this address. Confirm within 30 minutes:`;
@@ -1478,7 +1478,7 @@ export function buildPortalSelfRegistrationLinkTemplate(params: PortalSelfRegist
 }
 
 /** Self-registration for an address that already has a portal account (W6 #11383). */
-export function buildPortalSelfRegistrationExistingAccountTemplate(params: PortalSelfRegistrationExistingAccountEmailParams): EmailTemplate {
+export function buildPortalSelfRegistrationExistingAccountTemplate(params: Omit<PortalSelfRegistrationExistingAccountEmailParams, 'trigger'>): EmailTemplate {
   const orgName = params.orgName.trim();
   const subject = `You already have an account for ${orgName}'s portal`;
   const lead = `You already have an account for ${orgName}'s customer portal. Sign in, or reset your password if you have forgotten it. If you can't sign in, contact your IT provider.`;
@@ -1498,7 +1498,7 @@ export function buildPortalSelfRegistrationExistingAccountTemplate(params: Porta
 }
 
 /** Portal access request declined (W3 #11380, spec §5.10): neutral, no link. */
-export function buildPortalAccessDeclinedTemplate(params: PortalAccessDeclinedEmailParams): EmailTemplate {
+export function buildPortalAccessDeclinedTemplate(params: Omit<PortalAccessDeclinedEmailParams, 'trigger'>): EmailTemplate {
   const orgName = params.orgName?.trim();
   const subject = 'Your portal access request';
   const copy = orgName
