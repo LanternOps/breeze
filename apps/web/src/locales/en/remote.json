@@ -245,6 +245,7 @@
     "unverifiedHint": "Device didn't respond in time — refresh to verify"
   },
   "fileManager": {
+    "absolutePathHint": "Enter an absolute folder path",
     "activeCount": "{{count}} active",
     "activity": "Activity",
     "cancelled": "Cancelled",
@@ -270,6 +271,7 @@
       "upload": "Failed to upload",
       "uploadTimeout": "Upload timed out after 2 minutes. The file may still be written on the device — refresh to verify."
     },
+    "folderPath": "Folder path",
     "freeOf": "{{free}} free of {{total}}",
     "goUp": "Go up",
     "home": "Home",
@@ -284,6 +286,7 @@
       "invalidName": "Folder names can't contain path separators or characters this device's file system doesn't allow.",
       "nameExists": "A file or folder with this name already exists here."
     },
+    "openFolder": "Open folder",
     "selectedCount": "Selected Count",
     "size": "Size",
     "title": "File Manager",
