@@ -1,8 +1,11 @@
 # Learned networks: run discovery on the network you meant
 
 Date: 2026-11-20
-Status: Proposed. Awaiting owner approval. Advisor quorum complete (Fable + Codex gpt-6.2-astra xhigh:
-"agree with changes"; resolution in section 15). Builder check complete.
+Status: Proposed. Awaiting owner approval. Codex (gpt-6.2-astra, xhigh) and a builder check read the
+**first draft**; Codex returned "agree with changes" (section 15). Written after those reads and not
+independently reviewed in full: the stored gated flag, interface binding, the attempt record and
+per-site lock, and the two merge forms. Credential grants (8.3) had two narrow Codex reads; the outcome
+of each is in section 15.
 Related: #5905 (known-networks registry idea, slice 2), #7884 (site assignment vs observed location, shipped), #7969 (pinned scan agent, shipped).
 Companion: [site location design](2026-10-03-topology-site-location-design.md) (SL).
 
@@ -107,7 +110,7 @@ path, stops scanning (`no_network_assigned`) instead of quietly returning to the
 
 ## 6. Data model
 
-Four new tables, all direct `org_id` (tenancy shape 1): RLS enabled and forced with the four standard
+Five new tables, all direct `org_id` (tenancy shape 1): RLS enabled and forced with the four standard
 `breeze_has_org_access(org_id)` policies in the creating migration.
 
 `org_id NOT NULL` justification (Partner-Wide First): these are observations made by one org's devices
@@ -150,14 +153,22 @@ device leaves, so the Networks tab can show "5 devices in the last 14 days" at m
 `id`; `org_id`; `network_id`; `address` inet NOT NULL; `first_seen_at`; `last_seen_at`.
 Unique `(network_id, address)`.
 
+**`discovery_profile_snmp_grants`**: the fingerprints a profile's saved SNMP secrets were entered for
+(section 8.3). A fifth table, same tenancy shape and registrations.
+
+`id`; `org_id`; `profile_id` (composite FK to `discovery_profiles`, cascade); `gateway_id` (composite FK
+to `learned_network_gateways`, **cascade**: a retired fingerprint takes its grants with it);
+`granted_by`; `granted_at`. Unique `(profile_id, gateway_id)`. A grant names a fingerprint, never a
+network, so adding a gateway to a network grants nothing.
+
 **New columns**
 
 | Column | Purpose |
 |---|---|
 | `sites.discovery_network_required` boolean NOT NULL default false | The gated flag. Set in the same transaction as a site's first assignment. Cleared only by an explicit admin action, and only while the site has no assigned network. `(false, has networks)` cannot exist. |
-| `devices.network_attachment_digest`, `devices.network_attachment_sequence`, `devices.network_attachments_confirmed_at` | The last accepted report: a digest of its normalized content plus WAN address, its sequence, and when the server last saw it confirmed. Lives on the row the heartbeat already writes (section 8.1). |
+| `devices.network_attachment_epoch`, `devices.network_attachment_sequence`, `devices.network_attachment_digest`, `devices.network_attachments_confirmed_at` | The last accepted report: its install epoch and sequence, a digest of its normalized content plus WAN address, and when the server last saw it confirmed. They live on the row every heartbeat already locks and updates (verified: `routes/agents/heartbeat.ts` reads its own row for update and writes `lastSeenAt` each beat). |
 | `discovery_profiles.network_id` uuid NULL | Optional narrowing to one network. Its FK **blocks deletion** of the network; it is never set null, because clearing it would widen the profile. |
-| `discovery_profiles.snmp_bound_gateway_ids` uuid[] NOT NULL default '{}' | The fingerprints this profile's saved SNMP secrets were entered for (section 8.3). |
+| `discovery_profiles.snmp_grant_mode` varchar NOT NULL default 'unrestricted', CHECK in (`unrestricted`, `bound`) | Whether this profile's saved SNMP secrets may be sent anywhere a site agent is (today's behavior) or only behind granted fingerprints (section 8.3). |
 | `discovery_jobs.network_id` uuid NULL | The network the scan ran on. History: set null on delete. |
 | `discovery_jobs.network_dispatch` jsonb NULL | The attempt record written before the command leaves (section 8.2). Secret-free and bounded, like `topology_dispatch`. |
 | `discovered_assets.last_network_id` uuid NULL | The network of the last guarded scan that saw the asset. History: set null on delete. |
@@ -179,14 +190,16 @@ Every one of these needs an export-policy classification (jsonb is `excludedOpen
 **Registrations** (mechanical; grep the precedent, `topology_site_fingerprints` and
 `topology_device_presence`, in each file):
 
-- All four tables: `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts`, `CORE_TENANT_EXPORT_POLICY`.
+- All five tables: `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts`, `CORE_TENANT_EXPORT_POLICY`.
 - `learned_network_devices` also: `CORE_DEVICE_CASCADE_DELETE_TABLES`, `CORE_DEVICE_ORG_DENORMALIZED_TABLES`
   and `CORE_DEVICE_ORG_MOVE_DELETE_TABLES` (disposition **Delete**: its rows name a source-org network and
   are rebuilt by the next report), plus `deviceInstallBoundary/classification.ts`. A device org move also
-  clears the three `devices.network_attachment*` columns.
+  clears the four `devices.network_attachment*` columns.
 - Org merge: two orgs can hold the same fingerprint (most likely when one customer was created twice).
   The merge must not abort on the unique index. The colliding source network is merged into the target
-  org's network, re-pointing profiles, jobs, assets, device rows and WAN rows. Its assignment carries over
+  org's network, re-pointing profiles, jobs, assets, device rows and WAN rows. A grant follows its
+  fingerprint: it re-points only to the target row with the identical address and MAC, which is the only
+  row it can collide with. Its assignment carries over
   when the target's network is unassigned. When both are assigned, to what are now two sites of one org,
   the target's assignment wins and the source site keeps `discovery_network_required = true` with one
   network fewer, so it fails closed if that was its last. The registry mechanism is the builder's.
@@ -212,7 +225,7 @@ A new heartbeat field, always on, carried by the heartbeat the agent already sen
 
 ```json
 "networkAttachmentsV1": {
-  "sequence": 418, "capturedAt": "2026-11-20T15:04:05Z", "complete": true,
+  "epoch": "9f2c1e7ab4d04c11", "sequence": 418, "capturedAt": "2026-11-20T15:04:05Z", "complete": true,
   "attachments": [
     { "interfaceName": "Ethernet", "localAddress": "192.168.1.57", "prefixLength": 24,
       "gatewayAddress": "192.168.1.1", "gatewayMac": "a4:2b:b0:11:22:9c", "primary": true }
@@ -224,14 +237,16 @@ A new heartbeat field, always on, carried by the heartbeat the agent already sen
   virtual-switch kind (use the existing interface-kind classification).
 - `gatewayMac` comes from the OS neighbour cache and is `null` when absent. The report never probes.
 - `primary` marks the interface that carries the route to the Breeze server.
-- `sequence` is monotonic per install and survives restarts. `complete` is false when a read failed or
-  the list was truncated.
+- `epoch` is a random id the agent creates and persists with `sequence`. It changes whenever that state
+  is lost (reinstall, re-attach, wiped data directory). `sequence` is monotonic within an epoch and
+  survives restarts. `complete` is false when a read failed or the list was truncated.
 - An empty, complete list is a valid report and means "on no identifiable network".
 
 ### 7.2 Guarded scan
 
 A gated scan is a **distinct command type** (name is the builder's), not a new field on
-`network_discovery`. An agent that predates it rejects an unknown type, so a downgraded or stale agent
+`network_discovery`. An agent that predates it answers `unknown command type` (verified:
+`agent/internal/heartbeat/heartbeat.go`, the handler-registry miss), so a downgraded or stale agent
 cannot run a gated scan by ignoring a field. `network_discovery` itself is unchanged and remains the
 command for sites that are not gated.
 
@@ -272,8 +287,9 @@ enum. The guard is written as a reusable function, not inlined in the discovery 
 - Both API heartbeat parsers hand `networkAttachmentsV1` to one service.
 - Ignored entirely for ephemeral (Quick Support) devices and parked devices: a stranger's PC must not
   teach an org its home network.
-- **Ordering.** A report is applied only when its `sequence` is greater than the stored one and its
-  `capturedAt` is within a bounded age. Only a `complete` report may clear a membership.
+- **Ordering.** A report with the stored `epoch` is applied only when its `sequence` is greater than the
+  stored one. A report with a different `epoch` replaces the stored state. Either way `capturedAt` must
+  be within a bounded age, and only a `complete` report may clear a membership.
 - **Zero extra writes in steady state.** The service computes a digest of the normalized attachments
   plus the request's WAN address and compares it with `devices.network_attachment_digest`, on the device
   row the heartbeat already reads and updates. Equal: it only folds the confirmation time into that same
@@ -298,18 +314,21 @@ producer of a discovery scan command goes through it: `loadDispatchScanInputs` i
 `network_discovery` tool in `services/aiToolsNetwork.ts`, which the SDK tool delegates to. A contract
 test fails if either command type is built outside the shared builder.
 
-Evaluated in this order:
+Evaluated in this order. **The order is normative**: the first row that applies decides, and decides
+the failure code.
 
-| Situation | Result |
-|---|---|
-| The job's org or site differs from the live profile's | Fail `profile_moved`. Checked before any credential is decrypted. |
-| `profile.network_id` is set but the network is unassigned or assigned to another site | Fail `network_not_assigned`. This takes precedence over everything below, including a site that is not gated. |
-| Site is not gated | Unrestricted: today's selection and the unchanged `network_discovery` command. |
-| Site is gated and has no assigned network | Fail `no_network_assigned`. |
-| Site is gated | Allowed networks = `profile.network_id` when set, otherwise every network assigned to the site. Allowed fingerprints = their fingerprints, intersected with `snmp_bound_gateway_ids` when the profile has saved SNMP secrets (section 8.3). An empty intersection fails `credentials_need_reentry`. |
+| # | Situation | Result |
+|---|---|---|
+| 1 | The job's org or site differs from the live profile's | Fail `profile_moved`. Checked before any credential is decrypted. |
+| 2 | `profile.network_id` is set but the network is unassigned or assigned to another site | Fail `network_not_assigned`, on a gated site and on one that is not. |
+| 3 | The profile has saved SNMP secrets and `snmp_grant_mode = 'bound'` | **Always guarded**, whether or not the site is gated (section 8.3). Allowed fingerprints = its granted fingerprints that belong to a network assigned to this site (and to `profile.network_id` when set). None: fail `credentials_need_reentry`. |
+| 4 | Site is not gated | Unrestricted: today's selection and the unchanged `network_discovery` command. |
+| 5 | Site is gated and has no assigned network | Fail `no_network_assigned`. |
+| 6 | Site is gated | Allowed networks = `profile.network_id` when set, otherwise every network assigned to the site. Allowed fingerprints = their fingerprints. |
 
-For a gated site, **eligible agents** are devices assigned to the site, online, not ephemeral, not
-parked, currently on an allowed network, and at or above the guard's minimum agent version
+For a guarded dispatch, **eligible agents** are devices assigned to the site, online, not ephemeral, not
+parked, currently behind an **allowed fingerprint** (matched on `learned_network_devices.gateway_id`,
+not merely on the network), and at or above the guard's minimum agent version
 (`COMMAND_MIN_AGENT_VERSION`, which fails closed on unknown versions). The same rule, including the
 ephemeral and parked exclusions, applies to an explicitly requested agent, a pinned agent and the AI
 tool's target device. Attachment and version are filtered in the query, before the candidate cap.
@@ -325,7 +344,10 @@ conscripted even when it is physically on the network.
 **The attempt is recorded before the command leaves.** `discovery_jobs.network_dispatch` stores the
 mode (unrestricted or guarded), the chosen agent, and the allowed network and fingerprint ids. A result
 or an adjacency report is accepted only against that record, and a refusal that arrives immediately
-after the send is recorded with its code rather than dropped. Failures are stored on
+after the send is recorded with its code rather than dropped. The AI tool has no job row: its attempt
+record is the persisted command it already creates, whose payload the server wrote. The verifier reads
+the allowed fingerprints from that stored payload, never from the upload. (The builder confirms the AI
+path always persists the command before sending; if it does not, a gated AI scan gets a job row.) Failures are stored on
 `discovery_jobs.errors` as `{ code, message }`. The AI tool returns the same codes as a refusal.
 
 **When an assignment change takes effect.** Assignment mutations and the gate's attempt write take the
@@ -345,15 +367,49 @@ The existing origin-binding rule (`credentialOriginBinding.ts`, applied on profi
 SNMP secrets do not carry forward onto a destination the profile has not probed before. This design
 extends that rule to networks:
 
-- `snmp_bound_gateway_ids` grows only when someone supplies the secrets (create, or an update that
-  re-enters them): it becomes the then-allowed fingerprint set.
-- Gating a site binds each of its profiles that has saved secrets to the first network's fingerprints.
-  That is a narrowing, so no re-entry is needed.
-- A profile with saved secrets runs only behind bound fingerprints. Assigning a second network to the
-  site, pointing the profile at another network, or merging a new gateway into its network does not
-  extend the binding. The profile keeps running on what it was bound to and shows "credentials not sent
-  on `<network>` until re-entered". If nothing bound remains, it fails `credentials_need_reentry`.
-- Removing fingerprints never needs re-entry. Profiles without saved secrets are unaffected.
+A profile with saved secrets is in one of two modes (`snmp_grant_mode`), and holds zero or more grants
+(`discovery_profile_snmp_grants`), each naming one fingerprint.
+
+- **`unrestricted`**: today's behavior. Valid only while the profile's site is not gated.
+- **`bound`**: the secrets go only behind granted fingerprints. Zero grants means the profile cannot
+  run. "No grants" and "unrestricted" are different states and are never inferred from each other.
+
+**What changes the mode or the grants. Nothing else does.**
+
+1. **A full re-entry of the secrets.** "Full" means every secret the profile will hold after the save
+   was supplied in that request: the existing retention check, applied across both the community and
+   the SNMPv3 fields. A save that keeps any masked or omitted secret grants nothing. On a full
+   re-entry the grants are **replaced** by a fresh set computed from the profile as saved, independent
+   of what it held before: if the site is gated, the fingerprints of `network_id` when set, otherwise of
+   every network assigned to the site, and the mode is `bound`; if the site is not gated, no grants and
+   the mode is `unrestricted`. Creating a profile with secrets is a full re-entry.
+2. **Every transition of a site into gated.** Each time `discovery_network_required` goes from false to
+   true, every profile of that site with saved secrets in `unrestricted` mode becomes `bound` to the
+   fingerprints of the network being assigned. This narrows where the secrets go, so it needs no
+   re-entry. It runs under the site lock.
+3. **A fingerprint is deleted.** Its grants go with it (the FK cascade).
+
+Consequences, each of which is intended:
+
+- `bound` never returns to `unrestricted` except through rule 1 on a site that is not gated. Un-gating a
+  site, or un-gating and assigning a different network, leaves a bound profile bound to what it had.
+- Assigning a second network to the site, pointing the profile at another network, or merging in an
+  additional gateway grants nothing. The profile keeps running where it has grants and shows
+  "credentials not sent on `<network>` until re-entered". With no usable grant it fails
+  `credentials_need_reentry`.
+- Moving a profile to another site without a full re-entry keeps its grants, none of which belong to
+  the new site, so it cannot run there.
+- A profile created with secrets on a gated site that has no assigned network is `bound` with no grants.
+
+**Atomicity.** A profile save locks the profile row before it reads any retained secret, takes the site
+lock, and commits the destination (site, `network_id`, ranges), the secrets, the mode and the grants in
+one transaction. A concurrent save cannot pair one save's secrets with another's grants.
+
+**Known limit.** The guarded command carries the secrets, so they reach the chosen agent before it
+proves the network. The agent's guard prevents their use, not their receipt. The server narrows this by
+choosing only agents behind an allowed fingerprint (8.2).
+
+Profiles without saved secrets are unaffected by all of this.
 
 ### 8.4 Result verification
 
@@ -385,9 +441,10 @@ Under the discovery router, org-scoped like the rest of it:
   assigned to sites they can access, and unassigned networks on which a device they can access has been
   seen. They can assign only to sites they can access.
 - **Merge** has two forms. *Additional gateway* (an HA peer) moves the source's fingerprints into the
-  target. *Replaces the gateway* does the same and deletes the target's old fingerprint, so a retired
-  router that turns up somewhere else is learned as a new, unassigned network instead of still counting
-  as the office. Both re-point profiles, jobs and assets and delete the source.
+  target. *Replaces a gateway* does the same and deletes the fingerprints of the target that the admin
+  **names in the request** as retired; it never guesses which. A retired router that turns up somewhere
+  else is then learned as a new, unassigned network instead of still counting as the office. Both forms
+  re-point profiles, jobs and assets and delete the source network. Neither creates a grant.
 - **Unassign or move** a network that profiles point at, or that is a site's last network, is allowed
   after a confirmation that lists the effect: pointed profiles fail closed until changed, and a site left
   with no network stops scanning.
@@ -461,9 +518,13 @@ Ignored (4)  ▸
   scan agent for a gated site.
 - A full-tunnel VPN makes the tunnel the primary route, so no WAN address is recorded while it is up.
 - Phone hotspots and guest networks appear as unassigned networks and are removed by retention.
-- The fresh-proof step needs a way to get a layer-2 answer on each OS without the cgo ARP path
-  (`arp_nocgo.go` returns nothing today). If a platform cannot provide one, that platform's agents are
-  not eligible to scan for gated sites; the builder must say so in the plan rather than weaken step 2.
+- **The fresh-proof step is unproven on every OS and is the first thing to build.** The existing ARP
+  sender is cgo-only (`discovery/arp.go`, pcap) and Windows agents are built with cgo off, so it cannot
+  be the mechanism there. Candidates, none verified: on Windows, delete the gateway's neighbour entry and
+  resolve it again through `iphlpapi` (`ResolveIpNetEntry2` or `SendARP`), which needs no cgo; on Linux,
+  an ARP request over a raw `AF_PACKET` socket; on macOS, BPF. The agent wave starts with a spike that
+  proves a fresh answer on all three. If one platform cannot do it, the plan stops and comes back to the
+  owner; step 2 is not weakened and that platform is not quietly dropped.
 
 ## 12. Open: owner decision
 
@@ -491,9 +552,11 @@ The agent guard is built as a reusable function either way, so including this la
    be merged without re-pointing profiles.
 4. **A replaced router's old fingerprint is removed on merge**, so the old router cannot stand in for
    the office later.
-5. **Saved SNMP secrets are bound to fingerprints** (8.3). The cost: after a router replacement, or to
-   use a profile's credentials on a second network, someone re-enters them. This follows the existing
-   re-entry rule for site moves and widened ranges.
+5. **Saved SNMP secrets are granted per fingerprint** (8.3, a fifth table). The cost: after a router
+   replacement, or to use a profile's credentials on a second network, someone re-enters them. This
+   follows the existing re-entry rule for site moves and widened ranges. It is the most intricate part
+   of the design; the alternative is to drop it and let network assignment decide where saved secrets
+   go, which is simpler and lets anyone with `devices:write` re-point them.
 6. **The scan is bound to the proven interface and cancelled on a network change**, not only checked
    before and after.
 7. **Scanners must be assigned to the site** even when a device from another site is on the network.
@@ -527,6 +590,7 @@ The agent guard is built as a reusable function either way, so including this la
     immediately after the send is recorded with its code;
   - real Postgres: an assignment change racing a dispatch never lets a result through that the new
     state does not allow;
+  - each action sequence in section 15's credential rows, as a test that the secrets are not sent;
   - an old or unknown-version agent at a site that is **not** gated still scans, through both producers;
   - a cross-tenant forge against each new table as `breeze_app`, and a cross-org network reference
     through each composite FK;
@@ -551,14 +615,31 @@ landed:
 | A refusal returned immediately after the send could be dropped | Attempt recorded before the send (8.2). |
 | Adjacency reports and the credentialed pass run before the result returns | Re-prove before credentials and before posting; adjacency route verified (7.2 steps 5 and 6, 8.4). |
 | An older agent would ignore a new payload field | Distinct guarded command type (7.2). |
-| Job and profile can disagree on site by dispatch time | `profile_moved`, checked before credentials are decrypted (8.2). |
+| Dispatch preconditions and their order | The evaluation order in 8.2. |
 | Deleting a network could clear a profile's narrowing | Blocking FK, re-pointing merge, precedence of an invalid `network_id` (section 6, 8.2). |
 | A retired router's fingerprint stays authorized after a merge | Two merge forms (8.5). |
 | Result paths beyond the job path | One verifier on every path, including the AI response (8.4). |
 | Plain uuid links allow cross-org references | Composite, deferrable FKs throughout (section 6). |
 | Heartbeat write load | Digest on the device row, membership-only writes, batched shared timestamps, isolated learner (8.1). |
 | Report ordering and completeness | `sequence`, `complete`, bounded capture age (7.1, 8.1). |
-| Eligibility must be the same on every selection path, and filtered before the candidate cap | 8.2. |
+| One eligibility rule for every selection path, filtered before the candidate cap | 8.2. |
+| Report sequence needs a reset rule (author's own review) | Install `epoch` (7.1, 8.1). |
+
+A second, narrow Codex read of the first version of 8.3 returned "does not hold" with nine action
+sequences. 8.3 was rewritten around an explicit mode and per-fingerprint grants. Each sequence is a
+required test (section 14):
+
+| Sequence | Closed by |
+|---|---|
+| Un-gate, then assign a different network | `bound` never returns to `unrestricted` without a full re-entry; rule 2 runs on every transition into gated. |
+| Create a credentialed profile on a gated site with no network, then un-gate | It is `bound` with no grants; "no grants" is not "unrestricted". |
+| Supply one new secret while keeping another masked | Only a full re-entry grants. |
+| Two concurrent saves, one masked and one moving the profile | Row lock before reading retained secrets; one transaction. |
+| Re-enter secrets on a profile pointed at a new network | Grants are computed from the profile as saved, not from the old grants. |
+| An agent behind a newly merged gateway of the same network | Eligibility matches the fingerprint, not the network. |
+| A replacement merge after an additional-gateway merge | The request names the fingerprints retired. |
+| Org merge with the same fingerprint under two ids | A grant re-points only to the identical address and MAC. |
+| Conflicting failure codes when the last network is unassigned | The evaluation order in 8.2 is normative. |
 | O4's premise is not enforced | Cross-network update count on the job, warn only (8.4). |
 | Baseline "disappeared" wording | Corrected (section 10). |
 | Saved credentials and newly authorized networks | Fingerprint binding (8.3). |
