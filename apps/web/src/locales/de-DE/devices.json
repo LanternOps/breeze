@@ -5198,5 +5198,25 @@
       "invalid_target_version": "Die Version des vorhandenen Eintrags fehlt. Öffnen Sie die Neuverknüpfung erneut."
     },
     "stepUpHeld": "Ihre Bestätigung gilt weiterhin für diese Neuverknüpfung."
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Gerätedaten",
+    "serial": "Seriennummer",
+    "serialShort": "S/N",
+    "lanIp": "LAN-IP",
+    "warranty": {
+      "active": "Garantie bis {{date}}",
+      "expiring": "Garantie endet am {{date}}",
+      "expired": "Garantie abgelaufen am {{date}}"
+    },
+    "warrantyStatus": "Garantie: {{status}}",
+    "warrantyDetails": "Garantiedetails",
+    "manageContacts": "Kontakte verwalten",
+    "notBilled": "Nicht abgerechnet",
+    "billingDetails": "Abrechnungsdetails"
+  },
+  "deviceAssetRecord": {
+    "title": "Asset-Datensatz",
+    "description": "Ansprechpartner, Standort und wer dafür bezahlt."
   }
 }

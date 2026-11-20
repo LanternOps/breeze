@@ -335,6 +335,8 @@ export default function AssetCircuitCard({ subject, id }: AssetCircuitCardProps)
                       data-testid={`asset-circuit-toggle-${i.id}`}
                       disabled={busy}
                       onClick={() => (i.role === 'wan' ? setConfirmClear(i) : void setRole(i, 'wan'))}
+                      // Five rows of "Mark as WAN" need distinct accessible names.
+                      aria-label={`${i.role === 'wan' ? t('assetCircuitCard.unmarkWan') : t('assetCircuitCard.markWan')}: ${i.name ?? i.kind ?? ''}`}
                       className="ml-auto text-sm font-medium text-primary hover:underline disabled:opacity-50"
                     >
                       {i.role === 'wan' ? t('assetCircuitCard.unmarkWan') : t('assetCircuitCard.markWan')}

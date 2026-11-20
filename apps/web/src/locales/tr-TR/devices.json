@@ -5198,5 +5198,25 @@
       "invalid_target_version": "Mevcut kaydın sürümü eksik. Yeniden bağlamayı tekrar açın."
     },
     "stepUpHeld": "Doğrulamanız bu yeniden bağlama için hâlâ geçerli."
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Cihaz bilgileri",
+    "serial": "Seri numarası",
+    "serialShort": "Seri No",
+    "lanIp": "LAN IP adresi",
+    "warranty": {
+      "active": "Garanti bitişi {{date}}",
+      "expiring": "Garanti {{date}} tarihinde bitiyor",
+      "expired": "Garanti {{date}} tarihinde sona erdi"
+    },
+    "warrantyStatus": "Garanti: {{status}}",
+    "warrantyDetails": "Garanti ayrıntıları",
+    "manageContacts": "Kişileri yönet",
+    "notBilled": "Faturalanmıyor",
+    "billingDetails": "Faturalama ayrıntıları"
+  },
+  "deviceAssetRecord": {
+    "title": "Varlık kaydı",
+    "description": "Kime ulaşılacağı, nerede durduğu ve ücretini kimin ödediği."
   }
 }

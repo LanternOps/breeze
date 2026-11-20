@@ -5198,5 +5198,25 @@
       "invalid_target_version": "Falta la versión del registro existente. Abre la revinculación de nuevo."
     },
     "stepUpHeld": "Tu verificación sigue siendo válida para esta revinculación."
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Datos del dispositivo",
+    "serial": "Número de serie",
+    "serialShort": "N/S",
+    "lanIp": "IP de LAN",
+    "warranty": {
+      "active": "Garantía hasta {{date}}",
+      "expiring": "La garantía vence el {{date}}",
+      "expired": "Garantía vencida el {{date}}"
+    },
+    "warrantyStatus": "Garantía: {{status}}",
+    "warrantyDetails": "Detalles de la garantía",
+    "manageContacts": "Administrar contactos",
+    "notBilled": "No facturado",
+    "billingDetails": "Detalles de facturación"
+  },
+  "deviceAssetRecord": {
+    "title": "Registro del activo",
+    "description": "A quién contactar, dónde está y quién lo paga."
   }
 }

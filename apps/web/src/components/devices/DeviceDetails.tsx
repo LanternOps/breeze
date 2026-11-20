@@ -6,7 +6,6 @@ import { usePermissions } from "@/lib/permissions";
 import { ENABLE_ENDPOINT_MESSAGING } from "@/lib/featureFlags";
 import DeviceChatPanel from "../endpointMessages/DeviceChatPanel";
 import { fetchWithAuth } from "../../stores/auth";
-import { asList } from "@/lib/asList";
 import {
   Monitor,
   Container,
@@ -80,13 +79,11 @@ import DevicePlaybookHistory from "./DevicePlaybookHistory";
 import DevicePeripheralsTab from "./DevicePeripheralsTab";
 import DeviceWorkloadsTab from "./DeviceWorkloadsTab";
 import DeviceRestorePointAttempts from "./DeviceRestorePointAttempts";
-import DeviceWarrantyCard from "./DeviceWarrantyCard";
-import PhysicalPlacementCard from "./PhysicalPlacementCard";
-import AssetCircuitCard from "./AssetCircuitCard";
 import { EntityLink } from "@/components/shared/EntityLink";
 import WispTalkButton from "@/components/wisp/WispTalkButton";
-import DeviceBillingCard from "./DeviceBillingCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
+import DeviceHeaderFacts from "./DeviceHeaderFacts";
+import DeviceAssetRecord from "./DeviceAssetRecord";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
 import PossibleReplacementBanner from "./PossibleReplacementBanner";
 import { navigateTo } from "@/lib/navigation";
@@ -105,7 +102,6 @@ import DeviceComplianceTab from "./DeviceComplianceTab";
 import DeviceLinkedProfilesTab from "./DeviceLinkedProfilesTab";
 import { Trans, useTranslation } from "react-i18next";
 import "../../lib/i18n";
-import ContactResponsibilitiesCard from "../shared/ContactResponsibilitiesCard";
 import { Puzzle } from "lucide-react";
 import ExtensionSlotHost, {
   useExtensionSlotDescriptors,
@@ -320,86 +316,6 @@ function anomalyIdFromHash(hash: string): string | undefined {
 function scriptExecutionIdFromHash(hash: string): string | undefined {
   const [tab, executionId] = hash.split("/");
   return tab === "scripts" ? decodeScriptExecutionId(executionId) : undefined;
-}
-
-type LinkedNetworkAsset = { id: string; label: string };
-
-// Back-link to any discovered assets identity-linked to this device (#3261
-// Task 4). Renders nothing while loading or when there are zero matches —
-// most devices were never seen by network discovery, and a permanent empty
-// row would just be noise.
-function NetworkAssetRow({ deviceId, orgId }: { deviceId: string; orgId?: string }) {
-  const { t } = useTranslation("devices");
-  const [assets, setAssets] = useState<LinkedNetworkAsset[] | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setAssets(null);
-    // The endpoint 400s ("orgId is required") for partner/all-orgs sessions
-    // unless told which org owns the device.
-    const params = new URLSearchParams({ linkedDeviceId: deviceId });
-    if (orgId) params.set("orgId", orgId);
-    fetchWithAuth(`/discovery/assets?${params.toString()}`)
-      .then(async (res) => {
-        if (!res.ok) return [];
-        const data = await res.json();
-        const raw: any[] = asList(data, "assets");
-        return raw.map((a) => ({
-          id: a.id,
-          label: a.label || a.hostname || a.ipAddress || a.id,
-        }));
-      })
-      .catch(() => [])
-      .then((mapped) => {
-        if (!cancelled) setAssets(mapped);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deviceId, orgId]);
-
-  if (!assets || assets.length === 0) return null;
-
-  if (assets.length === 1) {
-    const asset = assets[0]!;
-    return (
-      <div className="flex items-center justify-between gap-4 rounded-lg border bg-card px-5 py-3 text-sm">
-        <span className="text-muted-foreground">
-          {t("deviceDetails.networkAsset")}
-        </span>
-        <a
-          href={`/devices/network/${asset.id}`}
-          data-testid="device-network-asset-link"
-          className="font-medium text-primary hover:underline"
-        >
-          {asset.label}
-        </a>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="rounded-lg border bg-card px-5 py-3 text-sm"
-      data-testid="device-network-asset-list"
-    >
-      <p className="text-muted-foreground">
-        {t("deviceDetails.networkAssets")}
-      </p>
-      <ul className="mt-1 space-y-1">
-        {assets.map((asset) => (
-          <li key={asset.id}>
-            <a
-              href={`/devices/network/${asset.id}`}
-              className="font-medium text-primary hover:underline"
-            >
-              {asset.label}
-            </a>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
 }
 
 /** One cell of the Overview stat strip; an unknown value is muted so the eye
@@ -1023,6 +939,10 @@ export default function DeviceDetails({
                   />
                 </span>
               </p>
+              {/* Identity strip: model, serial, LAN IP, warranty, contact, and
+                  "Not billed" only when uncovered. See DeviceHeaderFacts for
+                  the test a fact must pass to live here. */}
+              <DeviceHeaderFacts device={device} onOpenTab={(tab) => switchTab(tab)} />
               {/* #9027: same idea as the org record's "Workspace: X" chip. Not
                   a live region — it describes the page, it is not an event. */}
               {scopeMismatch && (
@@ -1078,10 +998,13 @@ export default function DeviceDetails({
 
       {activeTab === "overview" && (
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-          <div className="min-w-0 flex-1 space-y-6">
+          <div data-testid="device-overview-main" className="min-w-0 flex-1 space-y-6">
             {/* #9029: blocks run in triage order — (1) state + what is open,
-                (2) health, (3) the performance chart, (4) contacts / warranty
-                / billing. Empty cards collapse to one line with a next step. */}
+                (2) health, (3) reliability, (4) the performance chart — and
+                Overview ENDS there. Contacts, warranty, billing and placement
+                are header facts (DeviceHeaderFacts) with their full records on
+                the Details tab (DeviceAssetRecord); WAN/circuit is on Hardware.
+                DeviceDetails.overviewOrder.test.tsx holds the allowlist. */}
             <DeviceOverviewState
               deviceId={device.id}
               status={device.status}
@@ -1144,22 +1067,6 @@ export default function DeviceDetails({
               compact
               offlineSince={device.status === "offline" ? device.lastSeen : undefined}
             />
-
-            <ContactResponsibilitiesCard
-              orgId={device.orgId}
-              siteId={device.siteId}
-              deviceId={device.id}
-              assignHref={device.orgId ? `/organizations/${device.orgId}#contacts` : undefined}
-            />
-
-            <DeviceWarrantyCard deviceId={device.id} compact />
-
-            <PhysicalPlacementCard subject="device" id={device.id} />
-            <AssetCircuitCard subject="device" id={device.id} />
-
-            <DeviceBillingCard deviceId={device.id} />
-
-            <NetworkAssetRow deviceId={device.id} orgId={device.orgId || undefined} />
           </div>
 
           {/* #9030: the rail collapses instantly — animating `width` reflowed
@@ -1183,7 +1090,12 @@ export default function DeviceDetails({
         </div>
       )}
 
-      {activeTab === "details" && <DeviceInfoTab deviceId={device.id} />}
+      {activeTab === "details" && (
+        <div className="space-y-8">
+          <DeviceInfoTab deviceId={device.id} />
+          <DeviceAssetRecord device={device} />
+        </div>
+      )}
 
       {activeTab === "linked-profiles" && (
         <DeviceLinkedProfilesTab deviceId={device.id} />

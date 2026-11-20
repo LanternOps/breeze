@@ -5198,5 +5198,25 @@
       "invalid_target_version": "La version de la fiche existante est manquante. Rouvrez le rattachement."
     },
     "stepUpHeld": "Votre vérification est toujours valable pour ce rattachement."
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Données de l’appareil",
+    "serial": "Numéro de série",
+    "serialShort": "N/S",
+    "lanIp": "IP LAN",
+    "warranty": {
+      "active": "Garantie jusqu’au {{date}}",
+      "expiring": "La garantie prend fin le {{date}}",
+      "expired": "Garantie expirée le {{date}}"
+    },
+    "warrantyStatus": "Garantie : {{status}}",
+    "warrantyDetails": "Détails de la garantie",
+    "manageContacts": "Gérer les contacts",
+    "notBilled": "Non facturé",
+    "billingDetails": "Détails de facturation"
+  },
+  "deviceAssetRecord": {
+    "title": "Fiche de l’actif",
+    "description": "Qui contacter, où il se trouve et qui le paie."
   }
 }

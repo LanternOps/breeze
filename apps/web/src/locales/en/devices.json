@@ -5198,5 +5198,25 @@
       "invalid_target_version": "The existing record’s version is missing. Open the reattach again."
     },
     "stepUpHeld": "Your verification is still valid for this reattach."
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Device facts",
+    "serial": "Serial number",
+    "serialShort": "SN",
+    "lanIp": "LAN IP",
+    "warranty": {
+      "active": "Warranty to {{date}}",
+      "expiring": "Warranty ends {{date}}",
+      "expired": "Warranty expired {{date}}"
+    },
+    "warrantyStatus": "Warranty: {{status}}",
+    "warrantyDetails": "Warranty details",
+    "manageContacts": "Manage contacts",
+    "notBilled": "Not billed",
+    "billingDetails": "Billing details"
+  },
+  "deviceAssetRecord": {
+    "title": "Asset record",
+    "description": "Who to contact, where it sits, and who pays for it."
   }
 }

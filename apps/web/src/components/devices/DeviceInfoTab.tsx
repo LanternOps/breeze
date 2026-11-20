@@ -46,6 +46,7 @@ import { derivePromptRenderer, helperInstallIssueKey } from "./promptRenderer";
 import { formatNumber } from "@/lib/i18n/format";
 import { Trans, useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { formatHardwareIdentityValue } from "./hardwareIdentity";
 import { dropdownChoiceLabel } from "../../lib/customFieldChoice";
 
 type DeviceInfoTabProps = {
@@ -562,45 +563,6 @@ function LogShippingRow({ logShipping }: { logShipping: DeviceInfo["logShipping"
       </dd>
     </div>
   );
-}
-
-const hardwareIdentityPlaceholderValues = new Set([
-  "0",
-  "00000000",
-  "000000000000000",
-  "123456789",
-  "default string",
-  "none",
-  "null",
-  "n/a",
-  "na",
-  "not applicable",
-  "not available",
-  "not specified",
-  "o.e.m",
-  "oem",
-  "serial number",
-  "system manufacturer",
-  "system product name",
-  "system serial number",
-  "unknown",
-]);
-
-function formatHardwareIdentityValue(value: string | null | undefined): string {
-  const trimmed = value?.trim();
-  if (!trimmed) return "—";
-
-  const normalized = trimmed
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .replace(/\.+$/, "");
-  if (
-    hardwareIdentityPlaceholderValues.has(normalized) ||
-    normalized.includes("to be filled by")
-  ) {
-    return "—";
-  }
-  return trimmed;
 }
 
 function formatMotherboard(hw: DeviceInfo["hardware"]): string {

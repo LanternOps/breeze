@@ -24,6 +24,8 @@ import type { Device, DeviceStatus, OSType } from "./DeviceList";
 import { parseWakeAvailability } from "./deviceRowTransform";
 import type { DeviceActionOptions } from "./DeviceActions";
 import { fetchWithAuth } from "../../stores/auth";
+import { hardwareIdentityOrNull } from "./hardwareIdentity";
+import { pickLanIp } from "./pickLanIp";
 import { useRecentsStore } from "../../stores/recentsStore";
 import {
   sendDeviceCommand,
@@ -204,6 +206,13 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
             ? data.uptimeSeconds
             : (latestMetrics?.uptimeSeconds ?? undefined),
         deviceRole: data.deviceRole ?? undefined,
+        // Header identity strip (model / serial / LAN IP). Same whitelist
+        // hazard as the fields below: drop these and the header silently
+        // shows nothing. Placeholders ("System Serial Number") read as unset.
+        manufacturer: hardwareIdentityOrNull(data.hardware?.manufacturer),
+        model: hardwareIdentityOrNull(data.hardware?.model),
+        serialNumber: hardwareIdentityOrNull(data.hardware?.serialNumber),
+        lanIp: pickLanIp(data.networkInterfaces),
         displayName: data.displayName ?? undefined,
         isHeadless: data.isHeadless ?? undefined,
         pendingReboot: data.pendingReboot === true,

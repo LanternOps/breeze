@@ -3,70 +3,18 @@
 // panel is at most a handful of rows, and a card does not fetch while the user
 // is on Software/Patches). Read-only, so no runAction; the loading/error/retry
 // triad is the read convention (DeviceWarrantyCard.tsx:101-110, ContractDetail.tsx:336-341).
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { Receipt } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { navigateTo } from '@/lib/navigation';
-import { loginPathWithNext } from '../../lib/authScope';
-import { usePermissions } from '@/lib/permissions';
 import { getDeviceRoleIcon, getDeviceRoleLabel } from '@/lib/deviceRoles';
-import { getDeviceBilling, type DeviceBillingCoverage, type DeviceCoverageLine } from '../../lib/api/devices';
+import { type DeviceCoverageLine } from '../../lib/api/devices';
+import { useDeviceBilling } from './useDeviceBilling';
 import { CONTRACT_STATUS_ROLES } from '../../lib/api/contracts';
 import { StatusPill } from '../billing/shared/StatusPill';
 
-const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
-
-type CardError = { code?: string; groupName?: string };
-
 export default function DeviceBillingCard({ deviceId }: { deviceId: string }) {
   const { t } = useTranslation('devices');
-  const { can } = usePermissions();
-  // Decision 8: the gate is checked BEFORE the component fetches, so a tech
-  // without billing access sees no card and issues no request — rather than a
-  // request that 403s and an error state for a permission they never had.
-  const allowed = can('contracts', 'read');
-
-  const [data, setData] = useState<DeviceBillingCoverage | null>(null);
-  const [error, setError] = useState<CardError | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [hidden, setHidden] = useState(false);
-  const requestGeneration = useRef(0);
-
-  const load = useCallback(async () => {
-    const generation = ++requestGeneration.current;
-    setLoading(true);
-    setError(null);
-    setHidden(false);
-    try {
-      const res = await getDeviceBilling(deviceId);
-      if (generation !== requestGeneration.current) return;
-      if (res.status === 401 || res.status === 403) {
-        setHidden(true);
-        setData(null);
-        if (res.status === 401) UNAUTHORIZED();
-        return;
-      }
-      const body = await res.json().catch(() => null) as { data?: DeviceBillingCoverage; code?: string; details?: { groupName?: string } } | null;
-      if (generation !== requestGeneration.current) return;
-      if (!res.ok || !body?.data) {
-        setError({ code: body?.code, groupName: body?.details?.groupName });
-        setData(null);
-        return;
-      }
-      setData(body.data);
-    } catch {
-      if (generation !== requestGeneration.current) return;
-      setError({});
-      setData(null);
-    } finally {
-      if (generation === requestGeneration.current) setLoading(false);
-    }
-  }, [deviceId]);
-
-  useEffect(() => {
-    if (allowed) void load();
-    return () => { requestGeneration.current += 1; };
-  }, [allowed, load]);
+  const { allowed, data, error, loading, hidden, reload: load } = useDeviceBilling(deviceId);
 
   if (!allowed || hidden) return null;
 

@@ -18,7 +18,7 @@ type WarrantyEntitlement = {
   endDate: string;
 };
 
-type WarrantyData = {
+export type WarrantyData = {
   id: string;
   deviceId: string;
   manufacturer: string;

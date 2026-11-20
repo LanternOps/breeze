@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DeviceDetails from './DeviceDetails';
 import type { Device } from './DeviceList';
@@ -78,6 +78,7 @@ describe('DeviceDetails — "Network asset" back-link (#3261)', () => {
     expect(screen.queryByTestId('device-network-asset-list')).toBeNull();
   });
 
+  // Several matches collapse to one header fact that opens the list.
   it('renders a short list when more than one asset links to this device', async () => {
     fetchWithAuthMock.mockImplementation((url: string) => {
       if (url === ASSETS_URL) {
@@ -95,7 +96,8 @@ describe('DeviceDetails — "Network asset" back-link (#3261)', () => {
 
     render(<DeviceDetails device={baseDevice} />);
 
-    const list = await screen.findByTestId('device-network-asset-list');
+    fireEvent.click(await screen.findByTestId('device-network-asset-list'));
+    const list = screen.getByTestId('device-network-asset-list-panel');
     expect(list.textContent).toContain('Core Switch');
     expect(list.textContent).toContain('core-switch-02');
     const links = screen.getAllByRole('link', { name: /Core Switch|core-switch-02/ });

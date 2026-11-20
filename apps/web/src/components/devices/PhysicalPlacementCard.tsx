@@ -11,14 +11,14 @@ import { loginPathWithNext } from '../../lib/authScope';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
-type PlacementFields = {
+export type PlacementFields = {
   room: string | null;
   rack: string | null;
   rackUnit: number | null;
   heightU: number | null;
 };
 
-type PlacementResponse = {
+export type PlacementResponse = {
   subject?: { kind: 'device' | 'discovered'; id: string };
   authority: { kind: 'device' | 'discovered'; id: string; linked: boolean };
   placement: PlacementFields | null;
@@ -37,7 +37,7 @@ type FormErrors = Partial<Record<keyof FormState, string>>;
 const DASH = '—';
 const UNIT_RE = /^\d+$/;
 
-function isPlacementResponse(v: unknown): v is PlacementResponse {
+export function isPlacementResponse(v: unknown): v is PlacementResponse {
   if (!v || typeof v !== 'object') return false;
   const { authority, placement } = v as Record<string, unknown>;
   if (!authority || typeof authority !== 'object') return false;

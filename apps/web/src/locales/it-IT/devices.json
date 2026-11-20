@@ -5198,5 +5198,25 @@
       "invalid_target_version": "Manca la versione del record esistente. Riapri il ricollegamento."
     },
     "stepUpHeld": "La tua verifica è ancora valida per questo ricollegamento."
+  },
+  "deviceHeaderFacts": {
+    "ariaLabel": "Dati del dispositivo",
+    "serial": "Numero di serie",
+    "serialShort": "S/N",
+    "lanIp": "IP LAN",
+    "warranty": {
+      "active": "Garanzia fino al {{date}}",
+      "expiring": "La garanzia scade il {{date}}",
+      "expired": "Garanzia scaduta il {{date}}"
+    },
+    "warrantyStatus": "Garanzia: {{status}}",
+    "warrantyDetails": "Dettagli garanzia",
+    "manageContacts": "Gestisci contatti",
+    "notBilled": "Non fatturato",
+    "billingDetails": "Dettagli di fatturazione"
+  },
+  "deviceAssetRecord": {
+    "title": "Scheda asset",
+    "description": "Chi contattare, dove si trova e chi lo paga."
   }
 }
