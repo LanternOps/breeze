@@ -727,10 +727,11 @@ export async function getConfigPolicyNonCompliantDevices(
  * under RLS "link deleted" and "link not readable by this session" look the
  * same. That matters for partner-wide policies: an org session reads them only
  * through the `*_partner_wide_select` branches, keyed on
- * `breeze_current_partner_id()`, and org SSO sessions carry no partner. Failing
- * closed would hide their live partner-wide violations. The cost is that
- * results for a deleted policy, and stale partner-wide results seen from such a
- * session, still show (as before).
+ * `breeze_current_partner_id()`, so any caller without a current partner (for
+ * example an org SSO session minted before #12246, until its next refresh)
+ * cannot read them. Failing closed would hide their live partner-wide
+ * violations. The cost is that results for a deleted policy, and stale
+ * partner-wide results seen from such a session, still show (as before).
  */
 export function configComplianceResultNotStale(): SQL {
   return sql`(

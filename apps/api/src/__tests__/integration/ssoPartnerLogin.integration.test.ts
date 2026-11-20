@@ -883,7 +883,8 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     const payload = decodeJwt((await exchangeRes.json()).accessToken);
     expect(payload.scope).toBe('organization');
     expect(payload.orgId).toBe(org.id);
-    expect(payload.partnerId).toBeNull();
+    // #12246: the org session carries its org's owning partner, like password login.
+    expect(payload.partnerId).toBe(partner.id);
     expect(payload.sub).toBe(user.id);
   });
 

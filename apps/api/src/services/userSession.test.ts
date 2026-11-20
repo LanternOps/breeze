@@ -31,6 +31,9 @@ const identity: UserSessionIdentity = {
   mobileDeviceId: 'mobile-install-1',
 };
 
+/** organizations row the issuer reads for an organization-scope identity (#12246). */
+const ORG_ROW = [{ partnerId: identity.partnerId }];
+
 const capability = {
   transitionId: '55555555-5555-4555-8555-555555555555',
   generation: 4,
@@ -83,7 +86,7 @@ describe('guarded user-session issuance', () => {
   });
 
   it('asserts the transition, locks live epochs, stores current JTI, and binds the family before returning', async () => {
-    const harness = transactionHarness([[{ status: 'active', authEpoch: 8, mfaEpoch: 13 }]]);
+    const harness = transactionHarness([[{ status: 'active', authEpoch: 8, mfaEpoch: 13 }], ORG_ROW]);
 
     const issued = await issueUserSession(identity, {
       tx: harness.tx,
@@ -128,7 +131,7 @@ describe('guarded user-session issuance', () => {
   });
 
   it('signs the identity mfaSrc into both tokens as mfa_src, and omits it when the identity has none', async () => {
-    const withSource = transactionHarness([[{ status: 'active', authEpoch: 8, mfaEpoch: 13 }]]);
+    const withSource = transactionHarness([[{ status: 'active', authEpoch: 8, mfaEpoch: 13 }], ORG_ROW]);
     const issued = await issueUserSession({ ...identity, mfaSrc: 'factor' }, {
       tx: withSource.tx,
       capability,
@@ -137,7 +140,7 @@ describe('guarded user-session issuance', () => {
     await expect(verifyToken(issued.accessToken)).resolves.toMatchObject({ mfa: true, mfa_src: 'factor' });
     await expect(verifyToken(issued.refreshToken)).resolves.toMatchObject({ mfa: true, mfa_src: 'factor' });
 
-    const withoutSource = transactionHarness([[{ status: 'active', authEpoch: 8, mfaEpoch: 13 }]]);
+    const withoutSource = transactionHarness([[{ status: 'active', authEpoch: 8, mfaEpoch: 13 }], ORG_ROW]);
     const legacyShaped = await issueUserSession({ ...identity, mfa: false }, {
       tx: withoutSource.tx,
       capability,
@@ -153,6 +156,7 @@ describe('guarded user-session issuance', () => {
     const presentedJti = '88888888-8888-4888-8888-888888888888';
     const harness = transactionHarness([
       [{ status: 'active', authEpoch: 4, mfaEpoch: 7 }],
+      ORG_ROW,
       [{
         userId: identity.userId,
         revokedAt: null,
@@ -212,4 +216,69 @@ describe('guarded user-session issuance', () => {
     expect(transitionMocks.bindAuthIssuanceSession).not.toHaveBeenCalled();
   });
 
+  describe('organization-scope partner parity (#12246)', () => {
+    const OTHER_PARTNER = '99999999-9999-4999-8999-999999999999';
+    const LIVE = [{ status: 'active', authEpoch: 8, mfaEpoch: 13 }];
+    const epochs = { authEpoch: 8, mfaEpoch: 13 };
+
+    it('fills a missing partnerId from the org row, so an org session always carries its owning partner', async () => {
+      const harness = transactionHarness([LIVE, ORG_ROW]);
+      const issued = await issueUserSession({ ...identity, partnerId: null }, {
+        tx: harness.tx,
+        capability,
+        expectedEpochs: epochs,
+      });
+      await expect(verifyToken(issued.accessToken)).resolves.toMatchObject({
+        scope: 'organization',
+        orgId: identity.orgId,
+        partnerId: identity.partnerId,
+      });
+      await expect(verifyToken(issued.refreshToken)).resolves.toMatchObject({ partnerId: identity.partnerId });
+    });
+
+    it('rejects a partnerId that is not the org\'s owner before minting a family or signing tokens', async () => {
+      const harness = transactionHarness([LIVE, ORG_ROW]);
+      await expect(issueUserSession({ ...identity, partnerId: OTHER_PARTNER }, {
+        tx: harness.tx,
+        capability,
+        expectedEpochs: epochs,
+      })).rejects.toMatchObject({ name: 'UserSessionTenantMismatchError' });
+      expect(harness.inserted).toHaveLength(0);
+      expect(transitionMocks.bindAuthIssuanceSession).not.toHaveBeenCalled();
+    });
+
+    it('rejects an organization-scope identity whose org is missing, or that names no org', async () => {
+      const missingOrg = transactionHarness([LIVE, []]);
+      await expect(issueUserSession(identity, {
+        tx: missingOrg.tx,
+        capability,
+        expectedEpochs: epochs,
+      })).rejects.toMatchObject({ name: 'UserSessionTenantMismatchError' });
+      expect(missingOrg.inserted).toHaveLength(0);
+
+      const noOrgId = transactionHarness([LIVE]);
+      await expect(issueUserSession({ ...identity, orgId: null }, {
+        tx: noOrgId.tx,
+        capability,
+        expectedEpochs: epochs,
+      })).rejects.toMatchObject({ name: 'UserSessionTenantMismatchError' });
+      expect(noOrgId.inserted).toHaveLength(0);
+    });
+
+    it('reads no org row for a partner-scope identity', async () => {
+      const harness = transactionHarness([LIVE]);
+      const issued = await issueUserSession({ ...identity, scope: 'partner', orgId: null }, {
+        tx: harness.tx,
+        capability,
+        expectedEpochs: epochs,
+      });
+      await expect(verifyToken(issued.accessToken)).resolves.toMatchObject({
+        scope: 'partner',
+        orgId: null,
+        partnerId: identity.partnerId,
+      });
+      // Only the user lock selects; the family mint is an insert.
+      expect(harness.events.filter((e) => e === 'lock-user-or-family')).toHaveLength(1);
+    });
+  });
 });
