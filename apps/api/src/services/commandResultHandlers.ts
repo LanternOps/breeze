@@ -227,6 +227,7 @@ async function handleBackupVerificationResult({ result, stdout, commandId }: Par
     status: result.status,
     stdout,
     error: result.error,
+    errorCode: result.errorCode,
   });
 }
 
