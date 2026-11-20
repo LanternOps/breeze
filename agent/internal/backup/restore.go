@@ -496,10 +496,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 // failed), and the resume state is kept so the same restore run again picks
 // up from here. Logged once, in place of one WARN per remaining file.
 func endRestoreOnSessionLoss(result *RestoreResult, cause error, total int64) {
-	notAttempted := int(total) - result.FilesRestored - result.FilesFailed
-	if notAttempted < 0 {
-		notAttempted = 0
-	}
+	notAttempted := max(int(total)-result.FilesRestored-result.FilesFailed, 0)
 	result.FilesNotAttempted = notAttempted
 	if result.FilesRestored == 0 {
 		result.Status = "failed"
