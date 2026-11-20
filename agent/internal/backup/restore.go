@@ -65,8 +65,13 @@ type RestoreResult struct {
 	StagingDir        string   `json:"stagingDir,omitempty"`
 	Error             string   `json:"error,omitempty"`
 	// Code is the stable code of the first integrity check that failed
-	// (integrity_mismatch, missing_checksum, …); set only when the command
-	// carried an integrity expectation.
+	// (integrity_mismatch, missing_checksum, …), set only when the command
+	// carried an integrity expectation, unless the run ended because its
+	// storage session ended: then it is ResultCodeStorageSessionLost, which
+	// takes precedence over (overwrites) any earlier integrity code. A file
+	// that failed its integrity check is still listed in FailedFiles and
+	// Warnings. The rebuild engine relies on this code to fail its restore
+	// phase (rebuild.restoreInterrupted).
 	Code string `json:"code,omitempty"`
 
 	// SecurityDescriptorQuarantined counts the Windows entries whose recorded
