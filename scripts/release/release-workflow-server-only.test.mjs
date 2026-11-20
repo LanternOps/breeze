@@ -535,9 +535,17 @@ function gitRepo(dir) {
   return spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).stdout.trim();
 }
 
+// The manifest step reads the declared macOS floor from the checkout (#12169)
+// and refuses to run without it; copy the real file into each fixture.
+function writePlatformFloors(dir) {
+  mkdirSync(join(dir, 'agent'), { recursive: true });
+  writeFileSync(join(dir, 'agent', 'platform-floors.json'), readFileSync(join(REPO_ROOT, 'agent', 'platform-floors.json')));
+}
+
 function prepareAssets(kind) {
   const work = mkdtempSync(join(scratch, `prepare-${kind}-`));
   const commit = gitRepo(work);
+  writePlatformFloors(work);
   mkdirSync(join(work, 'artifacts', 'api-dist'), { recursive: true });
   mkdirSync(join(work, 'artifacts', 'web-dist'), { recursive: true });
   writeFileSync(join(work, 'artifacts', 'api-dist', 'index.js'), 'api\n');
@@ -591,6 +599,7 @@ test('manifest: both release kinds refuse to ship without the built-in YARA pack
     for (const file of ['breeze-yara-builtin.json', 'breeze-yara-builtin-report.json']) {
       const work = mkdtempSync(join(scratch, `prepare-nopack-${kind}-`));
       gitRepo(work);
+      writePlatformFloors(work);
       for (const dir of ['artifacts/api-dist', 'artifacts/web-dist', 'artifacts/breeze-recovery-linux-amd64', 'artifacts/macos-pkg-attestation', 'artifacts/breeze-yara-builtin']) {
         mkdirSync(join(work, dir), { recursive: true });
       }
@@ -633,6 +642,7 @@ test('manifest: a full release still refuses to ship without the recovery ISO or
   for (const missing of ['artifacts/breeze-recovery-linux-amd64', 'artifacts/macos-pkg-attestation']) {
     const work = mkdtempSync(join(scratch, 'prepare-missing-'));
     gitRepo(work);
+    writePlatformFloors(work);
     for (const dir of ['artifacts/api-dist', 'artifacts/web-dist', 'artifacts/breeze-recovery-linux-amd64', 'artifacts/macos-pkg-attestation']) {
       mkdirSync(join(work, dir), { recursive: true });
     }

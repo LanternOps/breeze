@@ -163,8 +163,8 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   ['services/aiToolsAgentLogs.ts:470', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — trigger_agent_upgrade / trigger_agent_restart: same aiExecuteCommand
   // -> resolveCommandCreatedBy path.
-  ['services/aiToolsAgentMgmt.ts:481', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsAgentMgmt.ts:622', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentMgmt.ts:501', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentMgmt.ts:642', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (b) — manage_ai_agents is in AGENT_HUMAN_ONLY_TOOLS: an ai_agent
   // principal is refused in checkAgentGuardrails before the handler runs at
   // all (P2-5, #4192 — the tool GRANTS agent authority, so an agent must

@@ -121,6 +121,12 @@ vi.mock('./sentry', () => ({
   captureMessage: vi.fn(),
 }));
 
+// #12169 — the minimum-OS read is its own unit (agentOsFloorCommands.test.ts);
+// here it is a seam the dispatch gate consults. Default: no refusal.
+vi.mock('./agentOsFloorCommands', () => ({
+  agentOsFloorRefusal: vi.fn(async () => null),
+}));
+
 vi.mock('./backupMetrics', () => ({
   recordBackupCommandTimeout: vi.fn(),
   recordRestoreTimeout: vi.fn(),
@@ -1976,6 +1982,27 @@ describe('command queue service', () => {
 
       expect(result.status).toBe('failed');
       expect(result.error).toMatch(/edition/i);
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    it('refuses update_agent to a build above the Mac\'s minimum OS (#12169), before any row is written', async () => {
+      const { agentOsFloorRefusal } = await import('./agentOsFloorCommands');
+      vi.mocked(agentOsFloorRefusal).mockResolvedValueOnce('os_below_minimum');
+      const insertValues = mockDevice({ ...strandedDevice, agentEdition: 'self-host', agentVersion: '0.108.0', watchdogVersion: '0.108.0' });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.140.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toBe('os_below_minimum');
+      expect(agentOsFloorRefusal).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ type: 'update_agent', deviceId: 'dev-stranded', payload: { version: '0.140.0' } }),
+      );
       expect(insertValues).not.toHaveBeenCalled();
     });
 

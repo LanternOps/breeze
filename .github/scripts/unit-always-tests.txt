@@ -408,6 +408,7 @@ apps/api/src/services/accounting/neutralCore.guard.test.ts
 apps/api/src/services/actionIntents/secretBearingTools.contract.test.ts
 apps/api/src/services/agentEditionCompat.test.ts
 apps/api/src/services/agentOrgRateLimit.test.ts
+apps/api/src/services/agentOsFloor.test.ts
 apps/api/src/services/aiAgent.authz.test.ts
 apps/api/src/services/aiAgentDiagnosisPrompt.test.ts
 apps/api/src/services/aiAgentSdk.inlineReleaseOrdering.test.ts

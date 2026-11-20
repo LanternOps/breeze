@@ -16,6 +16,10 @@ import {
   verifyReleaseArtifactManifestIntegrity,
   verifyManifestSignatureAgainstOfficialKeysOnly,
   ReleaseManifestTooOldError,
+  ReleaseManifestAssetLookupError,
+  ReleaseManifestMinOsMissingError,
+  ReleaseAssetNotDistributableError,
+  FIRST_RELEASE_WITH_MIN_OS,
 } from "./releaseArtifactManifest";
 import { requiredPlatformTrustFor } from "./releaseAssetTrust";
 
@@ -993,5 +997,95 @@ describe("releaseArtifactManifest", () => {
         verifyManifestSignatureAgainstOfficialKeysOnly("{}", "too-short"),
       ).toBe(false);
     });
+  });
+});
+
+describe("per-asset minOs (#12169)", () => {
+  const darwinAgent = "breeze-agent-darwin-arm64";
+  const asset = Buffer.from("darwin agent bytes");
+  const savedKeys = process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+  afterEach(() => {
+    if (savedKeys === undefined) delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    else process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = savedKeys;
+  });
+
+  function verify(args: {
+    assetName?: string;
+    release: string;
+    assetOverrides?: Record<string, unknown>;
+    requireDarwinMinOs?: boolean;
+  }) {
+    const assetName = args.assetName ?? darwinAgent;
+    const signed = makeSignedManifest({
+      assetName,
+      assetBuffer: asset,
+      release: args.release,
+      assetOverrides: { edition: "self-host", ...(args.assetOverrides ?? {}) },
+    });
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+    return verifyReleaseArtifactManifestAsset({
+      assetName,
+      manifestBytes: signed.manifest,
+      signatureBytes: signed.signature,
+      requireDarwinMinOs: args.requireDarwinMinOs,
+    });
+  }
+
+  it("verifyReleaseArtifactManifestAsset returns minOs for a stamped darwin asset", async () => {
+    await expect(
+      verify({ release: FIRST_RELEASE_WITH_MIN_OS, assetOverrides: { minOs: "12.0" }, requireDarwinMinOs: true }),
+    ).resolves.toMatchObject({ minOs: "12.0" });
+  });
+
+  it("returns minOs null when the asset carries none", async () => {
+    await expect(verify({ release: "v0.129.0" })).resolves.toMatchObject({ minOs: null });
+  });
+
+  it.each(["12.x", "", "13.0.0.0", 13, null])("rejects malformed minOs %j", async (minOs) => {
+    await expect(verify({ release: "v0.129.0", assetOverrides: { minOs } })).rejects.toBeInstanceOf(
+      ReleaseManifestAssetLookupError,
+    );
+  });
+
+  it("requireDarwinMinOs refuses a post-threshold darwin asset without minOs", async () => {
+    for (const release of [FIRST_RELEASE_WITH_MIN_OS, `${FIRST_RELEASE_WITH_MIN_OS}-rc.1`, "v9.0.0"]) {
+      await expect(verify({ release, requireDarwinMinOs: true })).rejects.toBeInstanceOf(
+        ReleaseManifestMinOsMissingError,
+      );
+    }
+    // Subclass of the policy-refusal category, so callers that classify by it
+    // keep treating it as "not distributable".
+    await expect(verify({ release: FIRST_RELEASE_WITH_MIN_OS, requireDarwinMinOs: true })).rejects.toBeInstanceOf(
+      ReleaseAssetNotDistributableError,
+    );
+  });
+
+  it("requireDarwinMinOs also covers the darwin pkg and the other darwin components", async () => {
+    for (const assetName of [
+      "breeze-agent-darwin-amd64.pkg",
+      "breeze-backup-darwin-arm64",
+      "breeze-watchdog-darwin-amd64",
+      "breeze-desktop-helper-darwin-arm64",
+    ]) {
+      await expect(
+        verify({ assetName, release: FIRST_RELEASE_WITH_MIN_OS, requireDarwinMinOs: true }),
+      ).rejects.toBeInstanceOf(ReleaseManifestMinOsMissingError);
+    }
+  });
+
+  it("pre-threshold darwin asset without minOs verifies with minOs null", async () => {
+    await expect(verify({ release: "v0.130.0-rc.1", requireDarwinMinOs: true })).resolves.toMatchObject({
+      minOs: null,
+    });
+  });
+
+  it("non-darwin assets are never required to carry minOs", async () => {
+    await expect(
+      verify({ assetName: "breeze-agent-linux-amd64", release: FIRST_RELEASE_WITH_MIN_OS, requireDarwinMinOs: true }),
+    ).resolves.toMatchObject({ minOs: null });
+  });
+
+  it("the serving path (no requireDarwinMinOs) does not refuse a missing minOs", async () => {
+    await expect(verify({ release: FIRST_RELEASE_WITH_MIN_OS })).resolves.toMatchObject({ minOs: null });
   });
 });

@@ -993,6 +993,18 @@ export default function DeviceList({
   sortInHash = false,
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
+  // Tooltip copy follows the reason the server is withholding update offers;
+  // edition_unconfirmed and any unrecognized reason keep the edition copy.
+  const withheldTooltip = (reason: string | null | undefined): string => {
+    switch (reason) {
+      case "os_below_minimum":
+        return t("deviceList.updateWithheldTooltipOs");
+      case "os_version_unknown":
+        return t("deviceList.updateWithheldTooltipOsUnknown");
+      default:
+        return t("deviceList.updateWithheldTooltip");
+    }
+  };
   const { can } = usePermissions();
   const canSendMessage = ENABLE_ENDPOINT_MESSAGING && can("endpoint_messages", "send"); // UX gate; POST /endpoint-messages requires endpoint_messages.send; #8968: hidden until the build enables messaging
   const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
@@ -2262,7 +2274,7 @@ export default function DeviceList({
             node: (
               <span
                 data-testid={`device-${device.id}-status-update-withheld`}
-                title={t("deviceList.updateWithheldTooltip")}
+                title={withheldTooltip(device.updateOfferWithheldReason)}
                 className={pillClass}
               >
                 {t("deviceList.updateWithheld")}
@@ -2556,7 +2568,7 @@ export default function DeviceList({
         const withheldBadge = device.updateOfferWithheldReason ? (
           <span
             data-testid={`device-${device.id}-update-withheld`}
-            title={t("deviceList.updateWithheldTooltip")}
+            title={withheldTooltip(device.updateOfferWithheldReason)}
             className="ml-1.5 rounded bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning"
           >
             {t("deviceList.updateWithheld")}

@@ -17,12 +17,15 @@ import {
   getPairedBinariesVersion,
 } from "./binarySource";
 import { getBinaryEdition } from "./binaryEdition";
+import { DECLARED_MACOS_FLOOR } from "./agentOsFloor";
 import {
   MAX_MANIFEST_BYTES,
   isReleaseArtifactManifestVerificationConfigured,
   ReleaseAssetNotDistributableError,
+  darwinMinOsRequired,
   ReleaseManifestAssetAbsentError,
   ReleaseManifestAssetLookupError,
+  ReleaseManifestMinOsMissingError,
   ReleaseManifestSignatureError,
   verifyReleaseArtifactManifestAsset,
   verifyReleaseArtifactManifestIdentity,
@@ -436,22 +439,36 @@ async function getReleaseAssetMetadata(args: {
   manifestSignature?: string;
   signingKeyId?: string;
   edition: string;
+  minOs: string | null;
 } | null> {
   if (!args.trustedManifest) {
     const checksum = args.fallbackChecksums?.get(args.asset.name);
     if (!checksum) return null;
     // Legacy checksums.txt fallback (non-production only) predates the
     // edition field entirely — same default as an unset manifest field.
-    return { checksum, size: args.asset.size, edition: EDITION_SELF_HOST };
+    return { checksum, size: args.asset.size, edition: EDITION_SELF_HOST, minOs: null };
   }
 
-  const verified = await verifyReleaseArtifactManifestAsset({
-    assetName: args.asset.name,
-    manifestBytes: args.trustedManifest.manifestBytes,
-    signatureBytes: args.trustedManifest.signatureBytes,
-    expectedRepository: getReleaseSourceRepository(),
-    expectedRelease: args.releaseTag,
-  });
+  let verified;
+  try {
+    verified = await verifyReleaseArtifactManifestAsset({
+      assetName: args.asset.name,
+      manifestBytes: args.trustedManifest.manifestBytes,
+      signatureBytes: args.trustedManifest.signatureBytes,
+      expectedRepository: getReleaseSourceRepository(),
+      expectedRelease: args.releaseTag,
+      requireDarwinMinOs: true,
+    });
+  } catch (err) {
+    // #12169: a post-threshold darwin asset with no minOs is skipped (its
+    // Macs stay on their current version) rather than aborting the whole
+    // sync, which would also strand every Windows and Linux device.
+    if (err instanceof ReleaseManifestMinOsMissingError) {
+      reportMinOsMissing(args.asset.name, err);
+      return null;
+    }
+    throw err;
+  }
 
   // Defense in depth: this whole function only runs inside the GitHub sync
   // flow, so an asset labeled edition "hosted" here would mean a hosted
@@ -472,7 +489,21 @@ async function getReleaseAssetMetadata(args: {
     manifestSignature: args.trustedManifest.signature,
     signingKeyId: "release-artifact-manifest-ed25519",
     edition: verified.edition ?? EDITION_SELF_HOST,
+    minOs: verified.minOs,
   };
+}
+
+const warnedMinOsMissingAssets = new Set<string>();
+
+/** #12169: loud, deduped report of a darwin asset refused for a missing minOs. */
+function reportMinOsMissing(assetName: string, err: ReleaseManifestMinOsMissingError): void {
+  console.error(`[binarySync] Not registering ${assetName}: ${err.message}`);
+  if (warnedMinOsMissingAssets.has(assetName)) return;
+  warnedMinOsMissingAssets.add(assetName);
+  captureException(err, undefined, {
+    release_asset_name: assetName,
+    manifest_refusal_reason: "not-distributable",
+  });
 }
 
 async function scanBinaryDir(
@@ -619,6 +650,11 @@ async function registerLocalBinaries(args: {
       };
       const releaseManifest = JSON.stringify(manifestObj);
       const manifestSignature = await signManifest(releaseManifest);
+      // #12169: no signed floor exists on this path. A post-threshold darwin
+      // binary staged here was built from this source, so it carries the
+      // floor this source declares; anything else stays NULL (no floor).
+      const localMinOs =
+        bin.platform === "macos" && darwinMinOsRequired(bin.filename, version) ? DECLARED_MACOS_FLOOR : null;
 
       // Demote existing "isLatest" entries for this platform/arch/component/edition.
       if (autoPromote) {
@@ -652,6 +688,7 @@ async function registerLocalBinaries(args: {
           manifestSignature,
           signingKeyId: keyId,
           edition,
+          minOsVersion: localMinOs,
         })
         .onConflictDoUpdate({
           // Match the actual unique constraint
@@ -670,6 +707,7 @@ async function registerLocalBinaries(args: {
             releaseManifest,
             manifestSignature,
             signingKeyId: keyId,
+            minOsVersion: keepKnownMinOs(),
             ...(autoPromote ? { isLatest: true } : {}),
           },
         });
@@ -745,6 +783,7 @@ const warnedRefusedManifestAssets = new Set<string>();
 /** Test-only: reset the per-asset refusal dedup between cases. */
 export function __resetRefusedManifestAssetWarnCache(): void {
   warnedRefusedManifestAssets.clear();
+  warnedMinOsMissingAssets.clear();
 }
 
 // verifyReleaseArtifactManifestAsset's ReleaseManifestAssetLookupError covers
@@ -888,6 +927,7 @@ async function registerFromOfficialManifest(args: {
           assetName: bin.filename,
           manifestBytes,
           signatureBytes,
+          requireDarwinMinOs: true,
         });
       } catch (err) {
         if (isAssetAbsentFromManifest(err)) {
@@ -949,6 +989,7 @@ async function registerFromOfficialManifest(args: {
           manifestSignature: signatureString,
           signingKeyId: "release-artifact-manifest-ed25519",
           edition,
+          minOsVersion: verified.minOs,
         })
         .onConflictDoUpdate({
           target: [
@@ -965,6 +1006,7 @@ async function registerFromOfficialManifest(args: {
             releaseManifest: manifestString,
             manifestSignature: signatureString,
             signingKeyId: "release-artifact-manifest-ed25519",
+            minOsVersion: keepKnownMinOs(),
             ...(autoPromote ? { isLatest: true } : {}),
           },
         });
@@ -2604,7 +2646,17 @@ type UpsertMetadata = {
   manifestSignature?: string;
   signingKeyId?: string;
   edition: string;
+  /** #12169: the asset's minimum OS from the signed manifest; null = none recorded. */
+  minOs: string | null;
 };
+
+// #12169: on re-registration, take the manifest's floor when it has one and
+// keep the stored floor when it does not, so a re-sync from a source without
+// minOs (checksums fallback, a pre-threshold manifest) never erases a known
+// floor and silently ungates Macs.
+// Built per call, not at module load: suites that mock db/schema without
+// agentVersions still import this module (devices routes import it).
+const keepKnownMinOs = () => sql`COALESCE(excluded.min_os_version, ${agentVersions.minOsVersion})`;
 
 // Spec 3b: when syncing from an OVERRIDDEN repository, the release manifest is
 // signed by the self-hoster's release key, which agents do not (and must not
@@ -2649,6 +2701,7 @@ async function applyDeploymentSigning(args: {
     manifestSignature,
     signingKeyId: keyId,
     edition: metadata.edition,
+    minOs: metadata.minOs,
   };
 }
 
@@ -2708,6 +2761,7 @@ async function upsertVersion(
         isLatest: autoPromote,
         component,
         edition,
+        minOsVersion: signedMetadata.minOs,
       })
       .onConflictDoUpdate({
         target: [
@@ -2725,6 +2779,7 @@ async function upsertVersion(
           signingKeyId: signedMetadata.signingKeyId,
           fileSize: BigInt(signedMetadata.size),
           releaseNotes: releaseNotes ?? null,
+          minOsVersion: keepKnownMinOs(),
           ...(autoPromote ? { isLatest: true } : {}),
         },
       });
@@ -2750,6 +2805,7 @@ async function upsertBackupVersionExplicit(
     manifestSignature?: string;
     signingKeyId?: string;
     edition: string;
+    minOs: string | null;
   },
   releaseNotes: string | null | undefined,
   isLatest: boolean,
@@ -2772,6 +2828,7 @@ async function upsertBackupVersionExplicit(
         isLatest,
         component: "backup",
         edition: metadata.edition,
+        minOsVersion: metadata.minOs,
       })
       .onConflictDoUpdate({
         // Five columns, matching `agent_versions_version_platform_arch_component_edition_unique`.
@@ -2794,6 +2851,7 @@ async function upsertBackupVersionExplicit(
           fileSize: BigInt(metadata.size),
           releaseNotes: releaseNotes ?? null,
           isLatest,
+          minOsVersion: keepKnownMinOs(),
         },
       });
   }));

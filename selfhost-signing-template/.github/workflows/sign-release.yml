@@ -649,6 +649,10 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x breeze/agent/installer/macos/build-pkg.sh
+          # The minimum macOS this release supports, from the same source the
+          # signed manifest stamps (#12169). Source commits that predate the
+          # file also predate the 8th argument, which their build-pkg.sh ignores.
+          MIN_MACOS="$(jq -r '.macos // empty' breeze/agent/platform-floors.json 2>/dev/null || true)"
           for arch in amd64 arm64; do
             breeze/agent/installer/macos/build-pkg.sh \
               "staging/breeze-agent-darwin-${arch}" \
@@ -657,7 +661,8 @@ jobs:
               "staging/breeze-watchdog-darwin-${arch}" \
               "$VERSION" \
               "$arch" \
-              "staging/breeze-agent-darwin-${arch}.pkg"
+              "staging/breeze-agent-darwin-${arch}.pkg" \
+              "$MIN_MACOS"
           done
 
       - name: Sign .pkg installers

@@ -402,6 +402,15 @@ function deriveVerificationReason(params: {
   return parts.length > 0 ? parts.join('; ') : null;
 }
 
+/**
+ * Agent result codes persisted to `details.reasonCode`. Only codes a consumer
+ * keys on are kept; any other code the agent reports is dropped, as before.
+ * `storage_session_lost`: the run stopped because its brokered storage session
+ * ended (revoked or expired); the files it did not reach are counted in
+ * `details.filesUnchecked`, not failed — distinct from corruption.
+ */
+const PERSISTED_AGENT_VERIFICATION_CODES = new Set(['storage_session_lost']);
+
 export async function processBackupVerificationResult(
   commandId: string,
   commandResult: { status: string; stdout?: string; error?: string }
@@ -474,6 +483,10 @@ export async function processBackupVerificationResult(
   // visible instead of only the downgraded status.
   const filesIncomplete = (agentResult.filesIncomplete as number) ?? 0;
   details.filesIncomplete = filesIncomplete;
+  // Files the run never reached (time budget, or a lost storage session):
+  // neither verified nor failed. Always overwritten so an earlier attempt's
+  // count cannot outlive this result.
+  details.filesUnchecked = (agentResult.filesUnchecked as number) ?? 0;
   details.warnings = agentResult.warnings || [];
   details.cleanedUp = agentResult.cleanedUp;
   details.restorePath = agentResult.restorePath;
@@ -503,7 +516,10 @@ export async function processBackupVerificationResult(
     delete details.reason;
   }
   // Nor may a timeout marker: this row is now answered by the agent (#11813).
-  delete details.reasonCode;
+  // The agent's own code replaces it only when it is one consumers key on.
+  const agentCode = typeof agentResult.code === 'string' ? agentResult.code : '';
+  if (PERSISTED_AGENT_VERIFICATION_CODES.has(agentCode)) details.reasonCode = agentCode;
+  else delete details.reasonCode;
 
   await persistVerificationToDb(pending);
   recordBackupVerificationResult(pending.verificationType, pending.status);
