@@ -399,6 +399,22 @@ describe('platform admin with a partner-scoped request context acting on another
     expect(body).toMatchObject({ code: 'LEGAL_HOLD_ACTIVE' });
     expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
   });
+
+  it('POST /admin/tenant-erasure refuses partner B\'s org with an unresolved network isolation (the isolation check sees B\'s rows)', async () => {
+    const s = await seed({ platformAdmin: true });
+    await getTestDb().execute(sql`
+      INSERT INTO device_network_isolations (org_id, device_id, break_glass_secret_enc, requested_by_kind, reason, expires_at)
+      VALUES (${s.orgB.id}::uuid, ${s.deviceB.id}::uuid, 'enc:v1:placeholder', 'user', 'integration fixture', now() + interval '1 hour')
+    `);
+    const app = await buildApp();
+
+    const res = await app.request('/admin/tenant-erasure', json({ orgId: s.orgB.id, confirmEmail: s.callerEmail }));
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).not.toEqual({ error: 'org not found' });
+    expect(res.status).toBe(409);
+    expect(body).toMatchObject({ error: 'isolation_unresolved' });
+    expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('right-reason control: a system-scoped request context (#12299)', () => {
