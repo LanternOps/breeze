@@ -347,6 +347,14 @@ pub fn place_card(work_area: Rect, size: Size, index: usize) -> Position {
     Position { x: x.clamp(work_area.x, max_x), y: y.clamp(work_area.y, max_y) }
 }
 
+/// Where the live-chat window goes: bottom-right of the work area, whole frame
+/// inside it. `outer` is the window's OUTER size (title bar and borders
+/// included): the chat window is decorated, so placing it by its client size
+/// left the reply box and Send button under the taskbar (#12312).
+pub fn place_chat_window(work_area: Rect, outer: Size) -> Position {
+    place_card(work_area, outer, 0)
+}
+
 // ---------------------------------------------------------------------------
 // Prompt cards (#10190): windows
 // ---------------------------------------------------------------------------
@@ -697,6 +705,9 @@ pub fn show_chat_window(app: &AppHandle, conversation_id: &str, user_initiated: 
 
     const CHAT_W: f64 = 380.0;
     const CHAT_H: f64 = 520.0;
+    // Windows 11 at 100% measured 16 x 39 around the client area.
+    const CHAT_FRAME_FALLBACK_W: f64 = 16.0;
+    const CHAT_FRAME_FALLBACK_H: f64 = 48.0;
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(window_url(conversation_id).into()))
         .title(crate::native_string("native.chat.title"))
         .inner_size(CHAT_W, CHAT_H)
@@ -706,12 +717,33 @@ pub fn show_chat_window(app: &AppHandle, conversation_id: &str, user_initiated: 
         .focused(true)
         // In the taskbar so a new message can flash it.
         .skip_taskbar(false)
-        .resizable(true);
-    let builder = match primary_bottom_right(app, CHAT_W, CHAT_H) {
-        Some((x, y)) => builder.position(x, y),
-        None => builder.center(),
-    };
-    builder.build().map(|_| ()).map_err(|e| format!("create chat window: {}", e))
+        .resizable(true)
+        // Built hidden: the outer (decorated) size is only known once the
+        // window exists, and it must be placed before the user sees it.
+        .visible(false);
+    let window = builder.build().map_err(|e| format!("create chat window: {}", e))?;
+    match cursor_work_area(app) {
+        Some(work_area) => {
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let outer = match window.outer_size() {
+                Ok(s) => {
+                    let s = s.to_logical::<f64>(scale);
+                    Size { width: s.width, height: s.height }
+                }
+                // No frame metrics: assume a generous title bar and border
+                // rather than none, so the window still clears the taskbar.
+                Err(_) => Size { width: CHAT_W + CHAT_FRAME_FALLBACK_W, height: CHAT_H + CHAT_FRAME_FALLBACK_H },
+            };
+            let p = place_chat_window(work_area, outer);
+            let _ = window.set_position(tauri::LogicalPosition::new(p.x, p.y));
+        }
+        None => {
+            let _ = window.center();
+        }
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+    Ok(())
 }
 
 /// Push the current view to the chat window (no-op when it is not open).
@@ -755,6 +787,31 @@ mod tests {
             && p.y >= wa.y
             && p.x + size.width <= wa.x + wa.width + 1e-9
             && p.y + size.height <= wa.y + wa.height + 1e-9
+    }
+
+    /// #12312: the chat window has a native title bar, so its outer size is
+    /// larger than the 380x520 client area. Lab numbers (Windows 11, 1920x1080,
+    /// 100% scale): outer 396x559, work area 1920x1032. The old placement put
+    /// the top at y=496, so the bottom (1055) sat under the taskbar.
+    #[test]
+    fn place_chat_window_keeps_the_whole_frame_above_the_taskbar() {
+        let wa = Rect { x: 0.0, y: 0.0, width: 1920.0, height: 1032.0 };
+        let outer = Size { width: 396.0, height: 559.0 };
+        let p = place_chat_window(wa, outer);
+        assert_eq!(p, Position { x: 1920.0 - 396.0 - CARD_MARGIN, y: 1032.0 - 559.0 - CARD_MARGIN });
+        assert!(inside(wa, outer, p), "{p:?}");
+        assert_ne!(p.y, 496.0, "the old full-monitor placement");
+        // Taskbar on top or on the left, and a second monitor left of the primary.
+        for wa in [
+            Rect { x: 0.0, y: 48.0, width: 1920.0, height: 1032.0 },
+            Rect { x: 62.0, y: 0.0, width: 1858.0, height: 1080.0 },
+            Rect { x: -1280.0, y: 40.0, width: 1280.0, height: 984.0 },
+        ] {
+            assert!(inside(wa, outer, place_chat_window(wa, outer)), "{wa:?}");
+        }
+        // A work area smaller than the window: the top-left corner stays on screen.
+        let small = Rect { x: 0.0, y: 0.0, width: 360.0, height: 500.0 };
+        assert_eq!(place_chat_window(small, outer), Position { x: 0.0, y: 0.0 });
     }
 
     #[test]
