@@ -448,6 +448,11 @@ type Command struct {
 	ID      string         `json:"id"`
 	Type    string         `json:"type"`
 	Payload map[string]any `json:"payload"`
+	// receivedAt is when a backup verification command reached this agent,
+	// stamped by both dispatch sites before it joins its pool's queue
+	// (stampVerificationReceipt). Zero for every other command and for a
+	// handler reached any other way, which then deducts no wait (#11813).
+	receivedAt time.Time
 }
 
 // helperLifecycleController is the subset of *sessionbroker.HelperLifecycleManager
@@ -1292,6 +1297,13 @@ type Heartbeat struct {
 	// whenever h.sessionBroker itself is nil, which is treated as "nothing to
 	// stop, proceed" rather than calling a method on a nil broker.
 	backupHelperStopIfIdle func() bool
+
+	// backupForwarderOverride replaces the session broker for
+	// forwardToBackupHelper, and verificationClock time.Now for a
+	// verification's receipt stamp and its lane wait. Test seams; nil in
+	// production.
+	backupForwarderOverride backupHelperForwarder
+	verificationClock       func() time.Time
 
 	// backupHelperInstallMu serializes installBackupBinary so the periodic
 	// reconcile and any future manual dev-push surface for this component
@@ -7938,6 +7950,9 @@ func (h *Heartbeat) executeCommandViaPoolReportingDelivery(cmd Command) (result 
 		return h.runTrackedCommand(cmd), true
 	}
 
+	// Before the pool: a verification's wait in its lane comes out of its
+	// budget (#11813).
+	cmd = h.stampVerificationReceipt(cmd)
 	pool := h.commandPoolFor(cmd.Type)
 	if pool == nil {
 		return h.executeCommand(cmd), true
