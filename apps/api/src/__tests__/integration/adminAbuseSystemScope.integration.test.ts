@@ -127,6 +127,8 @@ import {
   createUser,
 } from './db-utils';
 import { getTestDb } from './setup';
+import { insertHoldRaw, markMergedShell } from './orgEvidenceHoldFixture';
+import { EVIDENCE_HOLD_DEFERRED_ACTION } from '../../services/orgEvidenceHold';
 
 async function buildApp() {
   const { adminRoutes } = await import('../../routes/admin');
@@ -331,6 +333,7 @@ describe('platform admin with a partner-scoped request context acting on another
     const body = await res.json() as { signals: Array<{ id: string }> };
     const ids = new Set(body.signals.map((r) => r.id));
     for (const id of s.signalIds) expect(ids.has(id)).toBe(true);
+    expectRequestScopeUnchanged();
   });
 
   it('POST /admin/signals/:id/acknowledge acknowledges partner B\'s signal', async () => {
@@ -398,6 +401,7 @@ describe('platform admin with a partner-scoped request context acting on another
     expect(res.status).toBe(409);
     expect(body).toMatchObject({ code: 'LEGAL_HOLD_ACTIVE' });
     expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
+    expectRequestScopeUnchanged();
   });
 
   it('POST /admin/tenant-erasure refuses partner B\'s org with an unresolved network isolation (the isolation check sees B\'s rows)', async () => {
@@ -414,6 +418,36 @@ describe('platform admin with a partner-scoped request context acting on another
     expect(res.status).toBe(409);
     expect(body).toMatchObject({ error: 'isolation_unresolved' });
     expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
+    expectRequestScopeUnchanged();
+  });
+
+  it('POST /admin/tenant-erasure reports the evidence hold on partner B\'s merged-away org (the hold lookup sees B\'s rows)', async () => {
+    const s = await seed({ platformAdmin: true });
+    const survivor = await createOrganization({ partnerId: s.partnerB.id });
+    const mergeEventId = await markMergedShell({
+      partnerId: s.partnerB.id,
+      loserOrgId: s.orgB.id,
+      survivorOrgId: survivor.id,
+    });
+    await insertHoldRaw({
+      partnerId: s.partnerB.id,
+      loserOrgId: s.orgB.id,
+      survivorOrgId: survivor.id,
+      mergeEventId,
+    });
+    const app = await buildApp();
+
+    const res = await app.request('/admin/tenant-erasure', json({ orgId: s.orgB.id, confirmEmail: s.callerEmail }));
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).not.toEqual({ error: 'org not found' });
+    expect(res.status).toBe(202);
+    expect(body).toMatchObject({ evidenceHold: { retained: true, survivorOrgId: survivor.id } });
+    const [audit] = await getTestDb()
+      .select()
+      .from(auditLogs)
+      .where(and(eq(auditLogs.action, EVIDENCE_HOLD_DEFERRED_ACTION), eq(auditLogs.resourceId, s.orgB.id)));
+    expect(audit?.actorId).toBe(s.caller.id);
+    expectRequestScopeUnchanged();
   });
 });
 
