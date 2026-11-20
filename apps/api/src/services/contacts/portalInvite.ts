@@ -30,6 +30,7 @@
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import type { AlreadyHasAccessReason } from '@breeze/shared';
 import { contacts } from '../../db/schema/contacts';
+import { contactRoles } from '../../db/schema/contactRoles';
 import { portalUsers } from '../../db/schema';
 import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../inboundEmail/resolveOrg';
 import {
@@ -39,8 +40,9 @@ import {
   type PortalAccountTarget,
 } from '../portalAccountState';
 import { portalUserHasIdentitySql } from '../portalUserIdentities';
-import { normalizeContactEmail, updateContact, type ContactActor, type ContactExecutor } from './crud';
+import { normalizeContactEmail, type ContactActor, type ContactExecutor } from './crud';
 import { portalLoginEmailEquals } from '../portalLoginEmail';
+import { addLegacyDerivedContactRoles, removeContactResponsibility } from './responsibilities';
 
 /**
  * The ONE comparison every portal-invite path uses to find an existing login
@@ -351,12 +353,13 @@ export async function bindContactLoginForInvite(
     decision = { kind: 'invite', portalUserId: created!.id, email: normalizedEmail, authEpoch: created!.authEpoch, created: true, contactLink: 'direct' };
   }
 
-  // A UNION, never a replace, and only when missing: `updateContact` locks the
-  // organization row for an org-level contact (see loginLink.ts), so an
-  // idempotent re-invite must not write.
+  // A UNION, never a replace, and only when missing: an idempotent re-invite
+  // must not write. The additive adapter (as in loginLink.ts) never deletes or
+  // re-scopes, so a contact holding scoped responsibilities is not refused by
+  // the fail-closed roles-replace path.
   const roles = locked.roles ?? [];
   if (!roles.includes('portal')) {
-    await updateContact(exec, contact.id, orgId, { roles: [...roles, 'portal'] }, actor);
+    await addLegacyDerivedContactRoles(exec, { contactId: contact.id, orgId, roles: ['portal'] });
   }
   return decision;
 }
@@ -372,7 +375,7 @@ export async function dropPortalRoleForRemovedLogin(
   exec: ContactExecutor,
   input: { orgId: string; contactId: string; actor: ContactActor },
 ): Promise<void> {
-  const { orgId, contactId, actor } = input;
+  const { orgId, contactId } = input;
   const [row] = await exec
     .select({ roles: contacts.roles })
     .from(contacts)
@@ -389,5 +392,27 @@ export async function dropPortalRoleForRemovedLogin(
     .where(and(eq(portalUsers.contactId, contactId), eq(portalUsers.orgId, orgId)))
     .limit(1);
   if (remaining) return;
-  await updateContact(exec, contactId, orgId, { roles: roles.filter((r) => r !== 'portal') }, actor);
+  // `contacts.roles[]` is a projection of contact_roles (spec §8.2): remove the
+  // canonical `portal` assignment at every scope it is held, and the removal
+  // refreshes the projection.
+  const held = await exec
+    .select({ siteId: contactRoles.siteId, deviceGroupId: contactRoles.deviceGroupId })
+    .from(contactRoles)
+    .where(and(
+      eq(contactRoles.contactId, contactId),
+      eq(contactRoles.orgId, orgId),
+      eq(contactRoles.role, 'portal'),
+    ));
+  for (const { siteId, deviceGroupId } of held) {
+    await removeContactResponsibility(exec, {
+      contactId,
+      orgId,
+      role: 'portal',
+      scope: siteId
+        ? { type: 'site', siteId }
+        : deviceGroupId
+          ? { type: 'device_group', deviceGroupId }
+          : { type: 'organization' },
+    });
+  }
 }

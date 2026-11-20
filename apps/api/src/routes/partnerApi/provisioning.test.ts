@@ -413,11 +413,12 @@ describe('POST /sites', () => {
     // contact_roles assignment, then caller-verification destination provenance.
     // Only the first two RETURNING payloads are consumed by this path.
     insertResults = [[siteRow], [{ id: 'contact-1', siteId: SITE_ID, roles: ['site'] }], [], []];
-    // Two reads now, in order: the contacts mirror's existing-primary lookup
-    // (none — the site was just created), then the partner-export stamp
-    // re-read. Priming only the stamp would feed its row to the mirror, which
-    // would read as an existing contact and take the update path.
-    selectResults = [[], [{ partnerExportUpdatedAt: UPDATED_AT }]];
+    // Three reads, in order: the contacts mirror's existing-primary lookup
+    // (none — the site was just created), the legacy adapter's contact_roles
+    // read (none held), then the partner-export stamp re-read. Priming only the
+    // stamp would feed its row to an earlier read, which would read as an
+    // existing contact / role row and take the wrong path.
+    selectResults = [[], [], [{ partnerExportUpdatedAt: UPDATED_AT }]];
   }
 
   it('requires the sites:write scope', async () => {

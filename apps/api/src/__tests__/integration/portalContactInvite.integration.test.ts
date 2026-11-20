@@ -25,11 +25,12 @@ vi.mock('../../services/email', async (importOriginal) => ({
   }),
 }));
 import { db, withDbTransaction, withSystemDbAccessContext } from '../../db';
-import { contacts, portalUserIdentities, portalUsers } from '../../db/schema';
+import { contactRoles as contactRolesTable, contacts, deviceGroups, portalUserIdentities, portalUsers } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
 import { registerOrgPortalUsersRoutes } from '../../routes/orgPortalUsers';
 import { portalRoutes } from '../../routes/portal';
 import { bindContactLoginForInvite, ContactGoneError } from '../../services/contacts/portalInvite';
+import { CONTACT_ROLES } from '../../services/contacts/types';
 import { createAccessToken } from '../../services/jwt';
 import { createOrganization, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -69,6 +70,12 @@ async function post(env: Env, orgId: string, path: string, body: unknown) {
 
 async function seedContact(orgId: string, email: string | null, name = 'Seeded Contact', roles: string[] = []) {
   const [row] = await getTestDb().insert(contacts).values({ orgId, email, name, roles }).returning({ id: contacts.id });
+  if (roles.length > 0) {
+    // Org-level responsibility rows mirror the blob (the portal-role drop reads contact_roles).
+    await getTestDb().insert(contactRolesTable)
+      .values(roles.map((role) => ({ contactId: row!.id, orgId, role, siteId: null, deviceGroupId: null })))
+      .onConflictDoNothing();
+  }
   return row!.id;
 }
 
@@ -473,5 +480,35 @@ describe('invite from contacts × account state machine (W2) — real Postgres',
     expect(await loginsIn(orgId)).toEqual([expect.objectContaining({ id: loginId, contactId: null })]);
     expect(await contactRoles(contactId)).toEqual([]);
     expect(sentInvites).toEqual([]);
+  });
+});
+
+describe('deleting a login drops the contact portal responsibility (#11599) — real Postgres', () => {
+  it('removes portal @ Organization, keeps technical @ DeviceGroup and billing @ Organization, and reprojects contacts.roles', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const orgId = env.organization.id;
+    const [group] = await getTestDb().insert(deviceGroups)
+      .values({ orgId, name: `DG-${crypto.randomUUID()}`, type: 'static' }).returning({ id: deviceGroups.id });
+    const contactId = await seedContact(orgId, 'ada@acme.example', 'Ada', ['portal', 'billing']);
+    await getTestDb().insert(contactRolesTable).values({
+      contactId, orgId, role: 'technical', siteId: null, deviceGroupId: group!.id,
+    });
+    await getTestDb().update(contacts)
+      .set({ roles: CONTACT_ROLES.filter((r) => ['technical', 'billing', 'portal'].includes(r)) })
+      .where(eq(contacts.id, contactId));
+    const loginId = await seedLogin({ orgId, email: 'ada@acme.example', contactId });
+
+    const res = await buildMspApp().request(`/organizations/${orgId}/portal-users/${loginId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${await mfaTokenFor(env)}` },
+    });
+
+    expect(res.status, await res.clone().text()).toBe(200);
+    const held = await withSystemDbAccessContext(() =>
+      db.select({ role: contactRolesTable.role, deviceGroupId: contactRolesTable.deviceGroupId })
+        .from(contactRolesTable).where(eq(contactRolesTable.contactId, contactId)));
+    expect(held.map((r) => `${r.role}:${r.deviceGroupId ?? ''}`).sort())
+      .toEqual([`billing:`, `technical:${group!.id}`].sort());
+    expect(await contactRoles(contactId)).toEqual(CONTACT_ROLES.filter((r) => ['technical', 'billing'].includes(r)));
   });
 });

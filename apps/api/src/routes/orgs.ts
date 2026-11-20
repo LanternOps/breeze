@@ -27,6 +27,8 @@ import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 // import there fails their module load ("No 'psaConnections' export is defined
 // on the mock") before a single test runs.
 import { psaConnections } from '../db/schema/integrations';
+// Concrete module for the same reason: the barrel is partially mocked by route tests.
+import { contacts } from '../db/schema/contacts';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { isAutomationPrincipal } from '../middleware/principalKind';
 import { markPermissionGate } from '../middleware/permissionGate';
@@ -81,7 +83,7 @@ import {
 } from '../services/settingsSecretMasking';
 import { settingsSecretWouldFollowNewOrigin } from '../services/credentialOriginBinding';
 import { isMaskedIntegrationSecret } from '../services/notificationChannelSecrets';
-import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
+import { anyHoldsOrgBillingResponsibility, lockOrganizationForProjection, projectBillingContact, syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
@@ -3500,6 +3502,10 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
     writeData.settings = encryptColumnValueForWrite('sites', 'settings', resolvedSecrets.settings);
   }
 
+  // The contact mirror below takes the organization lock; take it BEFORE the
+  // sites row lock so this path keeps the org -> site order (no 40P01 inversion).
+  if (data.contact !== undefined) await lockOrganizationForProjection(db, site.orgId);
+
   const [updated] = await db
     .update(sites)
     .set(writeData)
@@ -3571,6 +3577,9 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
   //    ai_sessions.topology_site_id, children first.
   // Both counts land on the audit row.
   const removed = await db.transaction(async (tx) => {
+    // Parent-first: the organization lock precedes the site row lock, matching
+    // every writer that re-projects organizations.billing_contact.
+    await lockOrganizationForProjection(tx, site.orgId);
     if (!(await lockSiteForDelete(tx, site.id))) return null;
     // #7471 — devices.site_id is NO ACTION, so ANY device row still pointing at
     // the site (including soft-deleted 'decommissioned' ones, which the Sites
@@ -3592,7 +3601,15 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
     }
     const removedTopologyAlerts = await deleteSiteOwnedTopologyAlerts(tx, site.orgId, site.id);
     const topologyAiSessions = await deleteSiteTopologyAiSessions(tx, { orgId: site.orgId, siteId: site.id });
+    // contacts.site_id cascades with the site, taking contact_roles with it —
+    // so decide whether billing_contact is affected BEFORE the delete.
+    const siteContacts = await tx
+      .select({ id: contacts.id })
+      .from(contacts)
+      .where(and(eq(contacts.siteId, site.id), eq(contacts.orgId, site.orgId)));
+    const heldBilling = await anyHoldsOrgBillingResponsibility(tx, site.orgId, siteContacts.map((row) => row.id));
     await tx.delete(sites).where(eq(sites.id, id));
+    if (heldBilling) await projectBillingContact(tx, site.orgId);
     return { removedTopologyAlerts, topologyAiSessions };
   });
   if (removed === null) {

@@ -299,6 +299,15 @@ vi.mock('../services/orgImport', () => ({
   MAX_IMPORT_ROWS: 1000,
 }));
 
+// Site delete decides whether billing_contact needs re-projecting from contact_roles
+// (real Postgres coverage: siteDeleteBillingContact.integration). Not a billing holder here.
+vi.mock('../services/contacts/compat', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/contacts/compat')>()),
+  lockOrganizationForProjection: vi.fn().mockResolvedValue(undefined),
+  anyHoldsOrgBillingResponsibility: vi.fn().mockResolvedValue(false),
+  projectBillingContact: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock('../db/schema', () => ({
   partners: {},
   // Site delete's topology-investigation cleanup (#6000) names these tables.
@@ -542,11 +551,12 @@ describe('org routes', () => {
    * Site delete (#6000 + PR #7117 T3) runs the owned-alert cleanup, the pinned
    * topology-session cleanup and the site delete in ONE db.transaction. Routes
    * a test's transaction through its own db doubles, except the session read,
-   * which finds no pinned investigations.
+   * which finds no pinned investigations. The organization projection lock
+   * reads `.for('no key update')`, so the bare read is also lockable.
    */
   const siteDeleteTxOver = (base: any) => ({
     ...base,
-    select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })) })),
+    select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Object.assign(Promise.resolve([]), { for: vi.fn(() => Promise.resolve([])) })) })) })),
   });
 
   /** Site delete (#6000) runs its cleanup + delete in db.transaction; earlier tests override that mock. */

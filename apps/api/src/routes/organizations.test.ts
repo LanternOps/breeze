@@ -1,3 +1,11 @@
+// Site delete decides whether billing_contact needs re-projecting from contact_roles
+// (real Postgres coverage: siteDeleteBillingContact.integration). Not a billing holder here.
+vi.mock('../services/contacts/compat', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/contacts/compat')>()),
+  lockOrganizationForProjection: vi.fn().mockResolvedValue(undefined),
+  anyHoldsOrgBillingResponsibility: vi.fn().mockResolvedValue(false),
+  projectBillingContact: vi.fn().mockResolvedValue(null),
+}));
 const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
 vi.mock('../services/billingProfileService', () => ({ ensureDefaultProfile }));
 vi.mock('../services/mfaPolicyActivation', async (importOriginal) => ({
@@ -755,6 +763,12 @@ describe('organization routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([{ removed: 0, other: 0 }])
+          })
+        } as any)
+        // The site's contacts, read before the delete to decide billing re-projection.
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([])
           })
         } as any);
 

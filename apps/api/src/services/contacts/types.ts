@@ -38,6 +38,7 @@
 // TYPE-ONLY, so it is erased at compile time and this module keeps its
 // dependency-free runtime shape (route suites mock ./crud wholesale).
 import type { ContactValidationCode } from './crud';
+import type { ResponsibilityValidationCode } from './responsibilities';
 
 /** Same cap as the org importer, applied by the routes to the rows array. */
 export const MAX_IMPORT_ROWS = 1000;
@@ -230,7 +231,14 @@ export type ContactImportErrorCode =
    * `invalid-role`, `site-not-in-org`) with its own copy, because "check the
    * server log" would hide a row the operator can actually fix.
    */
-  | ContactValidationCode;
+  | ContactValidationCode
+  /**
+   * The same, for the responsibility model: a legacy `roles` write on a contact
+   * holding scoped responsibilities it cannot express
+   * (`legacy-write-cannot-represent-scoped-responsibilities`) is refused under
+   * its own code, not collapsed into `write-failed`.
+   */
+  | ResponsibilityValidationCode;
 
 export interface ContactImportErrorEntry {
   index: number;
