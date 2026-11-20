@@ -11,7 +11,9 @@ import {
   renderLinkRow,
 } from './emailLayout';
 import type { PartnerLaneMailPurpose, PlatformMailPurpose } from './emailDomains/mailPurposes';
-import { platformFallbackFrom, resolveSender, type HeldReason } from './emailDomains/senderResolution';
+import { platformFallbackFrom, resolveSender, type HeldReason, type SendTrigger } from './emailDomains/senderResolution';
+
+export type { HeldReason, SendTrigger } from './emailDomains/senderResolution';
 import {
   renderPartnerEmail,
   type PartnerEmailCustom,
@@ -70,23 +72,30 @@ export class EmailTransportError extends Error implements EmailTransportErrorFie
 /**
  * A partner-lane send that was refused rather than moved to the platform
  * sender (senderResolution.ts `HeldReason`). Nothing was sent on either lane.
- * Queue-backed callers retry per their own policy; the cap resets at 00:00 UTC.
+ * There is no hold queue: `retryAt` is when trying again can succeed. Queue
+ * and outbox senders reschedule to it within their own maximum age
+ * (heldSendRetry.ts); synchronous routes answer with a 4xx (heldSendHttp.ts).
  */
 export class EmailSendHeldError extends Error {
   readonly reason: HeldReason;
   readonly partnerId: string;
   readonly purpose: string;
+  readonly retryAt: Date;
 
-  constructor(fields: { reason: HeldReason; partnerId: string; purpose: string }) {
+  constructor(fields: { reason: HeldReason; partnerId: string; purpose: string; retryAt: Date }) {
     super(
-      `Email not sent: partner ${fields.partnerId} reached its daily partner-lane send cap ` +
-      `(purpose ${fields.purpose}). It was held, not sent from the platform sender; ` +
-      'the cap resets at 00:00 UTC.',
+      fields.reason === 'domain_suspended'
+        ? `Email not sent: partner ${fields.partnerId}'s sending domain is suspended by an administrator ` +
+          `(purpose ${fields.purpose}). It was held, not sent from the platform sender.`
+        : `Email not sent: partner ${fields.partnerId} reached its daily partner-lane send cap ` +
+          `(purpose ${fields.purpose}). It was held, not sent from the platform sender; ` +
+          'the cap resets at 00:00 UTC.',
     );
     this.name = 'EmailSendHeldError';
     this.reason = fields.reason;
     this.partnerId = fields.partnerId;
     this.purpose = fields.purpose;
+    this.retryAt = fields.retryAt;
   }
 }
 
@@ -116,7 +125,11 @@ export interface RawEmailMessage extends SendEmailBase {
 
 /**
  * Every send declares WHAT IT IS; `services/emailDomains/mailPurposes.ts`
- * decides who it is from. There is no raw `from`: an unclassified send does
+ * decides who it is from. A partner-lane send also declares WHO CAUSED IT
+ * (`trigger`, #12249): `external` for mail an outsider can make Breeze send
+ * (inbound autoresponse, portal self-registration and password reset,
+ * trust-page access confirmation), `internal` otherwise. It picks the daily
+ * bucket; see senderResolution.ts `SendTrigger`. There is no raw `from`: an unclassified send does
  * not compile (spec G5), and a spoofed envelope address is unrepresentable.
  *
  * A partner-lane purpose MUST state its partner — `null` is allowed and means
@@ -125,8 +138,8 @@ export interface RawEmailMessage extends SendEmailBase {
  * context, never from request input (spec §8.1).
  */
 export type SendEmailParams = SendEmailBase & (
-  | { purpose: PlatformMailPurpose; partnerId?: never; partnerName?: never }
-  | { purpose: PartnerLaneMailPurpose; partnerId: string | null; partnerName?: string | null }
+  | { purpose: PlatformMailPurpose; partnerId?: never; partnerName?: never; trigger?: never }
+  | { purpose: PartnerLaneMailPurpose; trigger: SendTrigger; partnerId: string | null; partnerName?: string | null }
 );
 
 export interface InvoiceEmailParams {
@@ -484,11 +497,16 @@ export class EmailService {
       purpose: params.purpose,
       partnerId: params.partnerId ?? null,
       partnerName: params.partnerName ?? null,
+      // A platform purpose returns before the bucket is read. A partner-lane
+      // caller that bypassed the type counts as internal: the cautious bucket.
+      trigger: params.trigger ?? 'internal',
       defaultFrom: this.defaultFrom,
     });
 
     if (resolved.lane === 'held') {
-      throw new EmailSendHeldError({ reason: resolved.reason, partnerId: resolved.partnerId, purpose: params.purpose });
+      throw new EmailSendHeldError({
+        reason: resolved.reason, partnerId: resolved.partnerId, purpose: params.purpose, retryAt: resolved.retryAt,
+      });
     }
 
     if (resolved.lane === 'partner') {

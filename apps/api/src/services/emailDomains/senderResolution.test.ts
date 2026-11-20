@@ -51,7 +51,11 @@ vi.mock('./config', () => ({
   getEmailDomainsConfig: vi.fn(() => domainsConfigFixture()),
 }));
 vi.mock('./partnerLaneLookup', () => ({ lookupPartnerLaneIdentity: vi.fn() }));
-vi.mock('./sendCap', () => ({ countPartnerLaneSend: vi.fn(async () => 'allowed' as const) }));
+vi.mock('./sendCap', async (importOriginal) => ({
+  // The real window arithmetic; only the Redis-backed counter is replaced.
+  nextCapWindowStart: (await importOriginal<typeof import('./sendCap')>()).nextCapWindowStart,
+  countPartnerLaneSend: vi.fn(async () => 'allowed' as const),
+}));
 
 const laneConfigured = vi.mocked(isPartnerLaneConfigured);
 const domainsConfig = vi.mocked(getEmailDomainsConfig);
@@ -151,7 +155,7 @@ describe('resolveSender (W01: always the platform lane)', () => {
   it('returns platform_purpose for every platform purpose, whatever partnerId is passed', async () => {
     for (const purpose of PLATFORM_PURPOSES) {
       for (const partnerId of [null, 'partner-1']) {
-        const resolved = await resolveSender({ purpose, partnerId, defaultFrom: DEFAULT_FROM });
+        const resolved = await resolveSender({ trigger: 'internal', purpose, partnerId, defaultFrom: DEFAULT_FROM });
         expect(resolved).toEqual({ lane: 'platform', from: DEFAULT_FROM, reason: 'platform_purpose' });
       }
     }
@@ -159,7 +163,7 @@ describe('resolveSender (W01: always the platform lane)', () => {
 
   it('returns no_partner for a partner purpose with a null partnerId', async () => {
     for (const purpose of PARTNER_PURPOSES) {
-      const resolved = await resolveSender({ purpose, partnerId: null, defaultFrom: DEFAULT_FROM });
+      const resolved = await resolveSender({ trigger: 'internal', purpose, partnerId: null, defaultFrom: DEFAULT_FROM });
       expect(resolved.lane).toBe('platform');
       expect(resolved.lane === 'platform' && resolved.reason).toBe('no_partner');
     }
@@ -167,7 +171,7 @@ describe('resolveSender (W01: always the platform lane)', () => {
 
   it('returns lane_unconfigured for a partner purpose with a partner — the lane does not exist until W04', async () => {
     for (const purpose of PARTNER_PURPOSES) {
-      const resolved = await resolveSender({ purpose, partnerId: 'partner-1', defaultFrom: DEFAULT_FROM });
+      const resolved = await resolveSender({ trigger: 'internal', purpose, partnerId: 'partner-1', defaultFrom: DEFAULT_FROM });
       expect(resolved.lane).toBe('platform');
       expect(resolved.lane === 'platform' && resolved.reason).toBe('lane_unconfigured');
     }
@@ -175,11 +179,13 @@ describe('resolveSender (W01: always the platform lane)', () => {
 
   it('carries the purpose fallback From onto the platform result', async () => {
     const branded = await resolveSender({
+      trigger: 'internal',
       purpose: 'invoice.sent', partnerId: 'partner-1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM,
     });
     expect(fromOf(branded)).toBe('"Acme MSP" <no-reply@2breeze.app>');
 
     const ticket = await resolveSender({
+      trigger: 'internal',
       purpose: 'ticket.customer_notification', partnerId: 'partner-1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM,
     });
     expect(fromOf(ticket)).toBe('"Acme MSP" <no-reply@2breeze.app>');
@@ -194,7 +200,7 @@ describe('resolveSender (W01: always the platform lane)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const unknown = 'nope.unknown' as MailPurpose;
 
-    const resolved = await resolveSender({ purpose: unknown, partnerId: null, defaultFrom: DEFAULT_FROM });
+    const resolved = await resolveSender({ trigger: 'internal', purpose: unknown, partnerId: null, defaultFrom: DEFAULT_FROM });
 
     expect(resolved).toEqual({ lane: 'platform', from: DEFAULT_FROM, reason: 'platform_purpose' });
     expect(warn).toHaveBeenCalledTimes(1);
@@ -220,6 +226,7 @@ describe('resolveSender — the partner branch (spec §8.3)', () => {
 
   it('returns the partner lane when every condition holds', async () => {
     await expect(resolveSender({
+      trigger: 'internal',
       purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM,
     })).resolves.toEqual({
       // Spec §8.3: the From is `"<display_name or partner name>" <local@domain>`.
@@ -231,9 +238,9 @@ describe('resolveSender — the partner branch (spec §8.3)', () => {
   });
 
   it('asks for the stream the purpose declares', async () => {
-    await resolveSender({ purpose: 'invoice.sent', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+    await resolveSender({ trigger: 'internal', purpose: 'invoice.sent', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
     expect(lookup).toHaveBeenCalledWith('p1', 'billing');
-    await resolveSender({ purpose: 'report.delivery', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+    await resolveSender({ trigger: 'internal', purpose: 'report.delivery', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
     expect(lookup).toHaveBeenLastCalledWith('p1', 'general');
   });
 
@@ -241,7 +248,7 @@ describe('resolveSender — the partner branch (spec §8.3)', () => {
   // deployment until an operator sets EMAIL_DOMAINS_PROVIDER.
   it('returns lane_unconfigured, before any lookup, when the lane is off', async () => {
     laneConfigured.mockReturnValue(false);
-    const resolved = await resolveSender({ purpose: 'quote.sent', partnerId: 'p1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
+    const resolved = await resolveSender({ trigger: 'internal', purpose: 'quote.sent', partnerId: 'p1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
     expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP" <no-reply@2breeze.app>', reason: 'lane_unconfigured' });
     expect(lookup).not.toHaveBeenCalled();
     expect(cap).not.toHaveBeenCalled();
@@ -250,20 +257,20 @@ describe('resolveSender — the partner branch (spec §8.3)', () => {
   // Condition 1b: the dark-launch allowlist (spec §9.1).
   it('honours EMAIL_DOMAINS_PARTNER_ALLOWLIST and does not read for an excluded partner', async () => {
     domainsConfig.mockReturnValue(domainsConfigFixture({ partnerAllowlist: ['p-other'] }));
-    const resolved = await resolveSender({ purpose: 'portal.invite', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+    const resolved = await resolveSender({ trigger: 'internal', purpose: 'portal.invite', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
     expect(resolved).toEqual({ lane: 'platform', from: DEFAULT_FROM, reason: 'not_allowlisted' });
     expect(lookup).not.toHaveBeenCalled();
   });
 
   it('an EMPTY allowlist means every eligible partner', async () => {
     domainsConfig.mockReturnValue(domainsConfigFixture());
-    expect((await resolveSender({ purpose: 'portal.invite', partnerId: 'p1', defaultFrom: DEFAULT_FROM })).lane).toBe('partner');
+    expect((await resolveSender({ trigger: 'internal', purpose: 'portal.invite', partnerId: 'p1', defaultFrom: DEFAULT_FROM })).lane).toBe('partner');
   });
 
   it('maps each lookup refusal to its own reason', async () => {
     for (const reason of ['partner_ineligible', 'no_identity', 'domain_not_sendable'] as const) {
       lookup.mockResolvedValue({ ok: false, reason });
-      const resolved = await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+      const resolved = await resolveSender({ trigger: 'internal', purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
       expect(resolved).toEqual({ lane: 'platform', from: DEFAULT_FROM, reason });
     }
   });
@@ -271,16 +278,62 @@ describe('resolveSender — the partner branch (spec §8.3)', () => {
   // Condition 4 runs LAST so an ineligible partner never burns a counter slot.
   it('checks the cap only after the lookup succeeds', async () => {
     lookup.mockResolvedValue({ ok: false, reason: 'no_identity' });
-    await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+    await resolveSender({ trigger: 'internal', purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
     expect(cap).not.toHaveBeenCalled();
   });
 
   // Over the cap the send is HELD, not moved to the platform sender: falling
   // back would let a partner-level limit be exceeded on the platform domain.
-  it('holds an over-cap send instead of falling back to the platform lane', async () => {
+  it('holds an over-cap internal send until the next UTC day instead of falling back', async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 10, 19, 15, 30, 0) });
+    try {
+      cap.mockResolvedValue('over_cap');
+      const resolved = await resolveSender({ purpose: 'invoice.sent', trigger: 'internal', partnerId: 'p1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
+      expect(resolved).toEqual({ lane: 'held', reason: 'over_cap', partnerId: 'p1', retryAt: new Date('2026-11-20T00:00:00.000Z') });
+      expect(cap).toHaveBeenCalledWith('p1', 'internal');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Strix finding on #12249: an outsider-triggered send counts against its own
+  // bucket, and when that bucket is spent it goes out from the platform sender
+  // rather than being held, so an outsider can neither stop the partner's mail
+  // nor spend the partner's own budget.
+  it('counts an external send against the external bucket and never holds it', async () => {
+    cap.mockResolvedValue('allowed');
+    expect((await resolveSender({ purpose: 'portal.password_reset', trigger: 'external', partnerId: 'p1', defaultFrom: DEFAULT_FROM })).lane).toBe('partner');
+    expect(cap).toHaveBeenLastCalledWith('p1', 'external');
+
     cap.mockResolvedValue('over_cap');
-    const resolved = await resolveSender({ purpose: 'invoice.sent', partnerId: 'p1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
-    expect(resolved).toEqual({ lane: 'held', reason: 'over_cap', partnerId: 'p1' });
+    const resolved = await resolveSender({ purpose: 'ticket.customer_notification', trigger: 'external', partnerId: 'p1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
+    expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP" <no-reply@2breeze.app>', reason: 'external_over_cap' });
+  });
+
+  // The SAME purpose is internal or external depending on the call site: the
+  // technician reply and the inbound autoresponse are both ticket.customer_notification.
+  it('classifies by the trigger the call site passes, not by purpose', async () => {
+    cap.mockResolvedValue('over_cap');
+    const internal = await resolveSender({ purpose: 'ticket.customer_notification', trigger: 'internal', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+    expect(internal.lane).toBe('held');
+    const external = await resolveSender({ purpose: 'ticket.customer_notification', trigger: 'external', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+    expect(external.lane).toBe('platform');
+  });
+
+  // #12249 design: only an administrator's suspension holds; an automatic one
+  // reaches here as domain_not_sendable and keeps the platform fallback (above).
+  it('holds every send, external included, on an administrator-suspended domain, without spending a slot', async () => {
+    vi.useFakeTimers({ now: Date.UTC(2026, 10, 19, 15, 30, 0) });
+    try {
+      lookup.mockResolvedValue({ ok: false, reason: 'domain_suspended' });
+      for (const trigger of ['internal', 'external'] as const) {
+        const resolved = await resolveSender({ purpose: 'quote.sent', trigger, partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+        expect(resolved).toEqual({ lane: 'held', reason: 'domain_suspended', partnerId: 'p1', retryAt: new Date('2026-11-19T16:30:00.000Z') });
+      }
+      expect(cap).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // A cap check that cannot answer (Redis down) is not an over-cap verdict: the
@@ -288,44 +341,44 @@ describe('resolveSender — the partner branch (spec §8.3)', () => {
   // silently lifted on the partner lane.
   it('falls back to the platform lane when the cap check cannot answer', async () => {
     cap.mockResolvedValue('unavailable');
-    const resolved = await resolveSender({ purpose: 'invoice.sent', partnerId: 'p1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
+    const resolved = await resolveSender({ trigger: 'internal', purpose: 'invoice.sent', partnerId: 'p1', partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
     expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP" <no-reply@2breeze.app>', reason: 'cap_unavailable' });
   });
 
   it('builds the From from the identity display name, else the partner name', async () => {
     lookup.mockResolvedValue({ ...OK_IDENTITY, displayName: 'Acme Support' });
-    expect(fromOf(await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })))
+    expect(fromOf(await resolveSender({ trigger: 'internal', purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })))
       .toBe('"Acme Support" <support@mail.acme.test>');
 
     lookup.mockResolvedValue({ ...OK_IDENTITY, displayName: null, partnerName: 'Acme MSP' });
-    expect(fromOf(await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })))
+    expect(fromOf(await resolveSender({ trigger: 'internal', purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })))
       .toBe('"Acme MSP" <support@mail.acme.test>');
   });
 
   it('strips header-breaking characters from the display name, exactly as fromWithDisplayName does', async () => {
     lookup.mockResolvedValue({ ...OK_IDENTITY, displayName: 'Evil"\r\nBcc: victim <x>' });
-    expect(fromOf(await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })))
+    expect(fromOf(await resolveSender({ trigger: 'internal', purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })))
       .toBe('"Evil Bcc: victim x" <support@mail.acme.test>');
   });
 
   it('falls back to the bare address when nothing usable survives sanitising', async () => {
     lookup.mockResolvedValue({ ...OK_IDENTITY, displayName: '"<>"', partnerName: '  ' });
-    expect(fromOf(await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })))
+    expect(fromOf(await resolveSender({ trigger: 'internal', purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM })))
       .toBe('support@mail.acme.test');
   });
 
   it('carries the identity reply-to onto the partner result', async () => {
     lookup.mockResolvedValue({ ...OK_IDENTITY, replyTo: 'help@acme.test' });
-    const resolved = await resolveSender({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+    const resolved = await resolveSender({ trigger: 'internal', purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM });
     expect(resolved.lane === 'partner' && resolved.replyTo).toBe('help@acme.test');
   });
 
   it('still short-circuits a platform purpose and a null partner with the lane ON', async () => {
     for (const purpose of PLATFORM_PURPOSES) {
-      const resolved = await resolveSender({ purpose, partnerId: 'p1', defaultFrom: DEFAULT_FROM });
+      const resolved = await resolveSender({ trigger: 'internal', purpose, partnerId: 'p1', defaultFrom: DEFAULT_FROM });
       expect(resolved).toEqual({ lane: 'platform', from: DEFAULT_FROM, reason: 'platform_purpose' });
     }
-    const nullPartner = await resolveSender({ purpose: 'quote.sent', partnerId: null, partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
+    const nullPartner = await resolveSender({ trigger: 'internal', purpose: 'quote.sent', partnerId: null, partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM });
     expect(nullPartner).toEqual({ lane: 'platform', from: '"Acme MSP" <no-reply@2breeze.app>', reason: 'no_partner' });
     expect(lookup).not.toHaveBeenCalled();
     expect(laneConfigured).not.toHaveBeenCalled();

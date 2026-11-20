@@ -34,7 +34,7 @@ const SENDER_DOMAIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[
 const SENDABLE_DOMAIN_STATUSES = new Set(['verified', 'at_risk']);
 
 export type PartnerLaneLookup =
-  | { ok: false; reason: 'partner_ineligible' | 'no_identity' | 'domain_not_sendable' }
+  | { ok: false; reason: 'partner_ineligible' | 'no_identity' | 'domain_not_sendable' | 'domain_suspended' }
   | {
       ok: true;
       partnerName: string;
@@ -99,6 +99,7 @@ export async function lookupPartnerLaneIdentity(
         domainId: partnerSendingDomains.id,
         domain: partnerSendingDomains.domain,
         domainStatus: partnerSendingDomains.status,
+        domainStatusReason: partnerSendingDomains.statusReason,
       })
       .from(partners)
       .leftJoin(
@@ -143,6 +144,16 @@ export async function lookupPartnerLaneIdentity(
   // domain problem, not a missing identity, and spec §8.3 maps it accordingly —
   // the difference is visible to the operator reading the reason.
   if (!row.domainId || !row.domain) return { ok: false, reason: 'domain_not_sendable' };
+  // An ADMINISTRATOR's suspension (#12249) is a decision to stop this
+  // partner's mail, so resolveSender holds it rather than sending it from the
+  // platform address. The AUTOMATIC suspension (`abuse_auto`, autoSuspend.ts)
+  // is deliberately not: it is driven by bounce and complaint stats that have no
+  // purpose dimension, so mail an outsider caused could trip it, and holding
+  // there would let an outsider stop the partner's mail. It stays
+  // domain_not_sendable and falls back to the platform lane as before.
+  if (row.domainStatus === 'suspended' && row.domainStatusReason === 'platform_suspended') {
+    return { ok: false, reason: 'domain_suspended' };
+  }
   if (!row.domainStatus || !SENDABLE_DOMAIN_STATUSES.has(row.domainStatus)) {
     return { ok: false, reason: 'domain_not_sendable' };
   }
