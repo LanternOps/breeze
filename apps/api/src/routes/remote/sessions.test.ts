@@ -1717,6 +1717,60 @@ describe('remote sessions — site-scope enforcement', () => {
     );
   });
 
+  describe('POST /sessions/:id/desktop-connect-code — Cache-Control (#9557 W4)', () => {
+    const connectCodeRequest = () => app.request(`/remote/sessions/${SESSION_ID}/desktop-connect-code`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    function rigAllowedSession() {
+      getSessionWithOrgCheck.mockResolvedValue({
+        session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
+        device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1' },
+      });
+    }
+
+    it('marks the minted code no-store', async () => {
+      rigAllowedSession();
+      vi.mocked(createDesktopConnectCode).mockResolvedValueOnce({ code: 'one-time-code', expiresInSeconds: 60 } as never);
+
+      const res = await connectCodeRequest();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ code: 'one-time-code' });
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+    });
+
+    it('marks a missing session no-store', async () => {
+      getSessionWithOrgCheck.mockResolvedValue(null);
+
+      const res = await connectCodeRequest();
+
+      expect(res.status).toBe(404);
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+    });
+
+    it('marks a refused mint no-store', async () => {
+      rigAllowedSession();
+      checkRemoteAccess.mockReturnValueOnce(Promise.resolve({ allowed: false, reason: 'Remote desktop is disabled by policy' }));
+
+      const res = await connectCodeRequest();
+
+      expect(res.status).toBe(403);
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+    });
+
+    it('marks a failed mint no-store', async () => {
+      rigAllowedSession();
+      vi.mocked(createDesktopConnectCode).mockRejectedValueOnce(new Error('redis down'));
+
+      const res = await connectCodeRequest();
+
+      expect(res.status).toBe(503);
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+    });
+  });
+
   it('passes the parked-device code through when a live session\'s device is parked', async () => {
     getSessionWithOrgCheck.mockResolvedValue({
       session: { id: SESSION_ID, type: 'desktop', status: 'active', deviceId: DEVICE_IN_ALLOWED, userId: 'user-1' },
