@@ -288,3 +288,51 @@ describe('agentCommandResultValidation — bounding work is capped (resource-cap
     expect((structured.securityDescriptorQuarantinedPaths as string[]).length).toBe(RESTORE_QUARANTINED_PATHS_MAX);
   });
 });
+
+describe('agentCommandResultValidation — trimming never loosens other checks', () => {
+  it('still rejects a restricted-descriptor path list holding non-strings', () => {
+    expect(restoreStructuredResultSchema.safeParse({
+      status: 'completed',
+      securityDescriptorQuarantinedPaths: [1, 'a', { x: 1 }],
+    }).success).toBe(false);
+  });
+
+  it('cuts a restricted-descriptor path on a code-point boundary (no lone surrogate)', () => {
+    // 1023 ASCII characters then an astral character: a UTF-16 cut at 1024
+    // would keep only its high surrogate.
+    const path = `${'p'.repeat(1_023)}😀tail`;
+    const r = restoreStructuredResultSchema.safeParse({
+      status: 'completed',
+      securityDescriptorQuarantined: 1,
+      securityDescriptorQuarantinedPaths: [path],
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      const kept = (r.data.securityDescriptorQuarantinedPaths as string[])[0]!;
+      expect(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(kept)).toBe(false);
+      expect(codePoints(kept)).toBeLessThanOrEqual(1_024);
+    }
+  });
+
+  it('does not let a trimmed result replace an oversize stdout that is a different document', () => {
+    const body = { status: 'failed', filesFailed: 5_000, failedFiles: paths(5_000) };
+    expect(() => validateCriticalCommandResult('backup_verify', {
+      commandId: 'cmd-unrelated-stdout',
+      status: 'completed',
+      stdout: 'x'.repeat(CRITICAL_RESULT_STDOUT_MAX_BYTES + 1),
+      result: body,
+    })).toThrow(/stdout exceeds/);
+  });
+
+  it('still salvages a WebSocket result whose stdout is the same document', () => {
+    const body = { status: 'failed', filesFailed: 12_000, failedFiles: paths(12_000) };
+    const stdout = JSON.stringify(body);
+    expect(Buffer.byteLength(stdout)).toBeGreaterThan(CRITICAL_RESULT_STDOUT_MAX_BYTES);
+    // Different key order, as Go's re-marshal of the parsed body produces.
+    const result = { failedFiles: body.failedFiles, filesFailed: body.filesFailed, status: body.status };
+    const validated = validateCriticalCommandResult('backup_verify', {
+      commandId: 'cmd-same-doc', status: 'completed', stdout, result,
+    });
+    expect(validated!.structuredResult.filesFailed).toBe(12_000);
+  });
+});

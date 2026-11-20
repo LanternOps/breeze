@@ -136,8 +136,10 @@ export function boundCriticalResultLists(
     }
   }
 
-  if (Array.isArray(input.securityDescriptorQuarantinedPaths)) {
-    const list = input.securityDescriptorQuarantinedPaths as unknown[];
+  // Only a list of strings is trimmed; anything else is left for the schema to
+  // reject, as it always has.
+  if (isStringList(input.securityDescriptorQuarantinedPaths)) {
+    const list = input.securityDescriptorQuarantinedPaths;
     const trimmed = boundQuarantinedPaths(list) ?? [];
     if (trimmed.length !== list.length || trimmed.some((entry, i) => entry !== list[i])) {
       out.securityDescriptorQuarantinedPaths = trimmed;
@@ -265,7 +267,8 @@ export function boundQuarantinedPaths(value: unknown): string[] | undefined {
   return value
     .filter((entry): entry is string => typeof entry === 'string')
     .slice(0, RESTORE_QUARANTINED_PATHS_MAX)
-    .map((entry) => entry.slice(0, RESTORE_QUARANTINED_PATH_MAX_CHARS));
+    // By code point: a UTF-16 slice can leave a lone surrogate, which jsonb rejects.
+    .map((entry) => truncateCodePoints(entry, RESTORE_QUARANTINED_PATH_MAX_CHARS));
 }
 
 // Exported preprocessed below as restoreStructuredResultSchema.
@@ -467,11 +470,37 @@ function boundEnvelopeDetailLists(envelope: GenericCommandResultEnvelope): Gener
   const parsed = parseStructuredResult(envelope);
   const bounded = boundCriticalResultLists(parsed, { maxBytes, encodedBytes });
   if (bounded === parsed) return envelope;
+  if (envelope.result === undefined) {
+    return { ...envelope, stdout: JSON.stringify(bounded) };
+  }
+  // `result` was trimmed. Its stdout is replaced only when it is the same
+  // document (the WebSocket leg sends the body as both); any other stdout
+  // keeps its own size check, so trimming `result` cannot let an unrelated
+  // oversize stdout through.
+  const stdoutIsSameDocument =
+    envelope.stdout === undefined || jsonDocumentsEqual(deepJsonParse(envelope.stdout), parsed);
   return {
     ...envelope,
-    stdout: JSON.stringify(bounded),
-    result: envelope.result !== undefined ? bounded : undefined,
+    stdout: stdoutIsSameDocument ? JSON.stringify(bounded) : envelope.stdout,
+    result: bounded,
   };
+}
+
+// Structural equality of two parsed JSON values, ignoring object key order (Go
+// re-marshals the parsed body with sorted keys). Linear in the documents.
+function jsonDocumentsEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const other = b as unknown[];
+    return a.length === other.length && a.every((value, i) => jsonDocumentsEqual(value, other[i]));
+  }
+  const aRecord = a as Record<string, unknown>;
+  const bRecord = b as Record<string, unknown>;
+  const keys = Object.keys(aRecord);
+  if (keys.length !== Object.keys(bRecord).length) return false;
+  return keys.every((key) => Object.hasOwn(bRecord, key) && jsonDocumentsEqual(aRecord[key], bRecord[key]));
 }
 
 function ensureObjectLike(commandType: string, value: unknown): Record<string, unknown> {

@@ -410,6 +410,59 @@ describe('verification timeout handling', () => {
     }
   });
 
+  it('persists how many failed files and warnings the result left out', async () => {
+    const orgId = 'org-omitted';
+    const verificationId = 'verify-omitted';
+    const commandId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const startedAt = new Date();
+    backupVerifications.push({
+      id: verificationId,
+      orgId,
+      deviceId: 'dev-omitted',
+      backupJobId: 'job-omitted',
+      snapshotId: 'snap-omitted',
+      verificationType: 'integrity',
+      status: 'running',
+      startedAt: startedAt.toISOString(),
+      completedAt: null,
+      restoreTimeSeconds: null,
+      filesVerified: 0,
+      filesFailed: 0,
+      details: { source: 'test', commandId, failedFilesOmitted: 7, warningsOmitted: 7 },
+      createdAt: startedAt.toISOString(),
+    });
+    verificationOrgById.set(verificationId, orgId);
+
+    try {
+      await processBackupVerificationResult(commandId, {
+        status: 'completed',
+        stdout: JSON.stringify({
+          snapshotId: 'snap-omitted',
+          status: 'failed',
+          filesVerified: 10,
+          filesFailed: 1_500,
+          failedFiles: Array.from({ length: 1_500 }, (_, i) => `/data/file_${i}`),
+          // One string, so no note can be appended: the count is the only signal.
+          warnings: 'volatile entries changed during the backup',
+        }),
+      });
+
+      const persisted = (persistVerificationToDbMock.mock.calls.at(-1) as unknown[] | undefined)?.[0] as
+        | { id: string; filesFailed: number; details: Record<string, unknown> }
+        | undefined;
+      expect(persisted?.id).toBe(verificationId);
+      expect(persisted?.filesFailed).toBe(1_500);
+      expect((persisted?.details.failedFiles as string[]).length).toBe(1_000);
+      expect(persisted?.details.failedFilesOmitted).toBe(500);
+      // Overwritten on every result, so an earlier attempt's count cannot linger.
+      expect(persisted?.details.warningsOmitted).toBe(0);
+    } finally {
+      const index = backupVerifications.findIndex((row) => row.id === verificationId);
+      if (index >= 0) backupVerifications.splice(index, 1);
+      verificationOrgById.delete(verificationId);
+    }
+  });
+
   // The usual production order: the timeout job fails the row and its
   // command, which revokes the read session; the agent then answers with a
   // storage_session_lost result. That answer replaces the timeout marker.
