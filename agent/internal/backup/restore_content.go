@@ -53,6 +53,10 @@ type contentFetchOutcome struct {
 	failed   bool
 	err      error
 	warnings []string
+	// interrupted: the run was ending (caller stop, or the storage session
+	// ended) when this download returned, so the file has no verdict: it is
+	// neither restored nor failed.
+	interrupted bool
 }
 
 // contentSlot is one manifest content entry inside the restore window.
@@ -97,6 +101,9 @@ type contentRestorer struct {
 	warnOwnership  func()
 	progressFn     ProgressFunc
 	checkCancelled func() bool
+	// endRun ends the run with a cause; fetchAndVerify calls it when the
+	// storage session ends (endsVerifyRun). nil = never ended early.
+	endRun context.CancelCauseFunc
 	// integrity is the command's integrity expectation (nil = none): the
 	// staged bytes are checked against it, and a resumed file is skipped
 	// only when it still holds the attested content.
@@ -145,7 +152,7 @@ func (c *contentRestorer) run(ctx context.Context) (cancelled bool) {
 			}
 		}
 		for _, s := range slots {
-			if s.ready && !s.outcome.failed && s.stagingFile != "" {
+			if s.ready && !s.outcome.failed && !s.outcome.interrupted && s.stagingFile != "" {
 				_ = os.Remove(s.stagingFile)
 			}
 		}
@@ -225,7 +232,9 @@ func (c *contentRestorer) run(ctx context.Context) (cancelled bool) {
 			}
 		}
 	}
-	return false
+	// The last entry's inline re-fetch (a resumed file whose target changed)
+	// may have ended the run; nothing else is left to install either way.
+	return c.checkCancelled()
 }
 
 // admit computes a slot's paths and resume disposition. Caller's goroutine.
@@ -282,6 +291,10 @@ func (c *contentRestorer) finish(ctx context.Context, i int, s *contentSlot) {
 		// Rare (the target changed since it was journaled): fetch inline.
 		// No other window entry shares this staging file (see run).
 		s.outcome = c.fetchAndVerify(ctx, *s)
+	}
+	if s.outcome.interrupted {
+		// No verdict: the run is ending, and run's next check returns.
+		return
 	}
 
 	if s.outcome.failed {
@@ -359,6 +372,24 @@ func (c *contentRestorer) fetchAndVerify(ctx context.Context, s contentSlot) con
 	check, dlWarnings, err := downloadAndCheckStaged(ctx, c.provider, file, s.stagingFile, c.integrity)
 	if err != nil {
 		_ = os.Remove(s.stagingFile)
+		if ctx != nil && ctx.Err() != nil {
+			// The run was already ending (a caller stop, or another download
+			// met the lost session): no verdict on this file.
+			slog.Debug("restore download returned after the run ended; file not attempted",
+				"backupPath", file.BackupPath, "error", err.Error())
+			return contentFetchOutcome{interrupted: true, err: err}
+		}
+		if endsVerifyRun(err) {
+			// The storage session ended: no read through it can succeed, so
+			// end the run now rather than fail every remaining file. The
+			// run logs it once (endRestoreOnSessionLoss).
+			slog.Debug("storage session lost; ending the restore with this file not attempted",
+				"backupPath", file.BackupPath, "error", err.Error())
+			if c.endRun != nil {
+				c.endRun(err)
+			}
+			return contentFetchOutcome{interrupted: true, err: err}
+		}
 		slog.Warn("restored file failed its download or content check",
 			"backupPath", file.BackupPath, "target", s.targetPath, "error", err.Error())
 		return contentFetchOutcome{failed: true, err: err}

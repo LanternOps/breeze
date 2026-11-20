@@ -56,9 +56,14 @@ type RestoreResult struct {
 	BytesRestored int64    `json:"bytesRestored"`
 	FilesFailed   int      `json:"filesFailed"`
 	FailedFiles   []string `json:"failedFiles,omitempty"`
-	Warnings      []string `json:"warnings,omitempty"`
-	StagingDir    string   `json:"stagingDir,omitempty"`
-	Error         string   `json:"error,omitempty"`
+	// FilesNotAttempted counts the entries the run never reached because
+	// its storage session ended (Code storage_session_lost): neither
+	// restored nor failed. The resume state is kept, so running the same
+	// restore again picks them up.
+	FilesNotAttempted int      `json:"filesNotAttempted,omitempty"`
+	Warnings          []string `json:"warnings,omitempty"`
+	StagingDir        string   `json:"stagingDir,omitempty"`
+	Error             string   `json:"error,omitempty"`
 	// Code is the stable code of the first integrity check that failed
 	// (integrity_mismatch, missing_checksum, …); set only when the command
 	// carried an integrity expectation.
@@ -118,9 +123,25 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	}
 
 	result := &RestoreResult{SnapshotID: cfg.SnapshotID}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// runCtx is what the file pass works under. endRun ends it early when
+	// the brokered storage session ends (endsVerifyRun): no later read can
+	// succeed, so the files not yet reached are not attempted rather than
+	// failed one by one.
+	runCtx, endRun := context.WithCancelCause(ctx)
+	defer endRun(context.Canceled)
+	var total int64 // entries this run restores; set once the manifest is read
 	checkCancelled := func() bool {
-		if ctx == nil || ctx.Err() == nil {
+		if runCtx.Err() == nil {
 			return false
+		}
+		// The caller's stop wins: a stop closes the session too, and a stop
+		// is not a session loss.
+		if lost := sessionLostCause(runCtx); lost != nil && ctx.Err() == nil {
+			endRestoreOnSessionLoss(result, lost, total)
+			return true
 		}
 		result.Error = fmt.Sprintf("operation cancelled: %v", ctx.Err())
 		if result.FilesRestored > 0 {
@@ -145,6 +166,15 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	snapshot, manifestWarnings, err := downloadVerifiedManifest(ctx, provider, cfg.SnapshotID, workRoot, cfg.Integrity, cfg.SelectedPaths)
 	if err != nil {
 		result.Status = "failed"
+		if ctx.Err() == nil && endsVerifyRun(err) {
+			// Reported as a result body, not an error, so the code and the
+			// reason reach the server (an error return carries neither).
+			result.Code = ResultCodeStorageSessionLost
+			result.Error = fmt.Sprintf("restore stopped: the storage session ended before the snapshot manifest finished downloading; nothing was restored (%v)", err)
+			slog.Warn("restore stopped: storage session ended during the manifest download",
+				"snapshotId", cfg.SnapshotID, "error", err.Error())
+			return result, nil
+		}
 		result.Code = integrityResultCode(cfg.Integrity, err)
 		return result, fmt.Errorf("download manifest: %w", err)
 	}
@@ -175,7 +205,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	// Junctions (#7325) live in their own manifest array and get their own
 	// pass, after every other entry is in place.
 	junctions := filterJunctions(snapshot.Junctions, cfg.SelectedPaths)
-	total := int64(len(contentFiles) + len(links) + len(dirs) + len(junctions))
+	total = int64(len(contentFiles) + len(links) + len(dirs) + len(junctions))
 	if total == 0 {
 		result.Status = "completed"
 		if len(cfg.SelectedPaths) > 0 {
@@ -268,10 +298,11 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		warnOwnership:  warnOwnership,
 		progressFn:     progressFn,
 		checkCancelled: checkCancelled,
+		endRun:         endRun,
 		integrity:      cfg.Integrity,
 		blockedBeneath: blockedBeneath,
 	}
-	if content.run(ctx) {
+	if content.run(runCtx) {
 		return result, nil
 	}
 
@@ -452,6 +483,36 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	}
 
 	return result, nil
+}
+
+// endRestoreOnSessionLoss records a restore that stopped because its storage
+// session ended. Nothing already written is rolled back: those files are
+// reported restored, the entries never reached are FilesNotAttempted (not
+// failed), and the resume state is kept so the same restore run again picks
+// up from here. Logged once, in place of one WARN per remaining file.
+func endRestoreOnSessionLoss(result *RestoreResult, cause error, total int64) {
+	notAttempted := int(total) - result.FilesRestored - result.FilesFailed
+	if notAttempted < 0 {
+		notAttempted = 0
+	}
+	result.FilesNotAttempted = notAttempted
+	if result.FilesRestored == 0 {
+		result.Status = "failed"
+	} else {
+		result.Status = "partial"
+	}
+	result.Code = ResultCodeStorageSessionLost
+	result.Error = restoreSessionLostMessage(cause, result.FilesRestored, result.FilesFailed, notAttempted)
+	slog.Warn("restore stopped: storage session ended; reporting partial counts",
+		"snapshotId", result.SnapshotID, "filesRestored", result.FilesRestored,
+		"filesFailed", result.FilesFailed, "filesNotAttempted", notAttempted, "error", cause.Error())
+}
+
+// restoreSessionLostMessage explains a restore that stopped because its
+// storage session ended, counts first (list views truncate the reason).
+func restoreSessionLostMessage(cause error, restored, failed, notAttempted int) string {
+	return fmt.Sprintf("restore stopped: the storage session ended after %d of %d files (%d restored, %d failed); the remaining %d were not attempted, and running the restore again resumes from here (%v)",
+		restored+failed, restored+failed+notAttempted, restored, failed, notAttempted, cause)
 }
 
 // contentKeys returns the object keys of the entries that carry content,

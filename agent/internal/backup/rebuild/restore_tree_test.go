@@ -169,3 +169,16 @@ func TestRestoreInterrupted_TrustsACompletedRestore(t *testing.T) {
 		t.Fatalf("a live ctx is never an interruption: %v", err)
 	}
 }
+
+// A file restore whose storage session ended stops early with nothing failed
+// and a live ctx; the files it never reached must not let the phase pass as
+// complete (with or without AllowPartialRestore).
+func TestRestoreInterrupted_StorageSessionLost(t *testing.T) {
+	for _, status := range []string{"partial", "failed"} {
+		res := &backup.RestoreResult{Status: status, FilesRestored: 3, FilesNotAttempted: 7, Code: backup.ResultCodeStorageSessionLost}
+		err := restoreInterrupted(context.Background(), res)
+		if err == nil || !strings.Contains(err.Error(), "storage session ended") {
+			t.Fatalf("status %s: err = %v, want a storage-session interruption", status, err)
+		}
+	}
+}
