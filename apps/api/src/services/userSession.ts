@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { users } from '../db/schema/users';
+import { organizations } from '../db/schema/orgs';
 import type { Tx as AuthLifecycleTransaction } from './authLifecycle';
 import {
   assertAuthIssuanceCapability,
@@ -64,6 +65,63 @@ export class UserSessionEpochMismatchError extends AuthIssuanceCapabilityError {
   }
 }
 
+/**
+ * An organization-scope identity whose partnerId is not the partner that owns
+ * its org (or whose org does not exist). Thrown before any family is minted or
+ * token signed.
+ */
+export class UserSessionTenantMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UserSessionTenantMismatchError';
+  }
+}
+
+/**
+ * The partner that owns `orgId`, read on the issuance transaction. Every
+ * organization-scope session carries it (#12246): partner-wide config rows
+ * (org_id NULL) are readable by an org session only through the
+ * `*_partner_wide_select` RLS branches, which key on the session's partner
+ * (`breeze_current_partner_id()`). Read-only — an org session's
+ * `accessiblePartnerIds` stays empty, so it gains no partner-axis write.
+ * Returns null when the org does not exist.
+ */
+export async function resolveOrganizationSessionPartnerId(
+  tx: AuthLifecycleTransaction,
+  orgId: string,
+): Promise<string | null> {
+  const [org] = await tx
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  return org?.partnerId ?? null;
+}
+
+/**
+ * Pin an organization-scope identity to its org's owning partner. A caller
+ * that passed no partnerId gets the owner filled in (a session minted from an
+ * older token that carried none heals here); a caller that passed a different
+ * partner is a minter bug and is refused. Other scopes pass through.
+ */
+async function bindOrganizationSessionPartner(
+  tx: AuthLifecycleTransaction,
+  identity: UserSessionIdentity,
+): Promise<UserSessionIdentity> {
+  if (identity.scope !== 'organization') return identity;
+  if (!identity.orgId) {
+    throw new UserSessionTenantMismatchError('Organization session requires an orgId');
+  }
+  const ownerPartnerId = await resolveOrganizationSessionPartnerId(tx, identity.orgId);
+  if (!ownerPartnerId) {
+    throw new UserSessionTenantMismatchError('Organization session names an unknown organization');
+  }
+  if (identity.partnerId !== null && identity.partnerId !== ownerPartnerId) {
+    throw new UserSessionTenantMismatchError('Organization session partner does not own its organization');
+  }
+  return identity.partnerId === ownerPartnerId ? identity : { ...identity, partnerId: ownerPartnerId };
+}
+
 async function lockLiveUserSecurityState(
   tx: AuthLifecycleTransaction,
   userId: string,
@@ -86,7 +144,7 @@ async function lockLiveUserSecurityState(
 
 /** Sole authority issuer for transition-guarded user sessions. */
 export async function issueUserSession(
-  identity: UserSessionIdentity,
+  requestedIdentity: UserSessionIdentity,
   options: GuardedUserSessionIssueOptions,
 ): Promise<AuthorizedUserSession> {
   if (!options?.tx || !options.capability || !options.expectedEpochs) {
@@ -96,7 +154,7 @@ export async function issueUserSession(
   await assertAuthIssuanceCapability(options.tx, options.capability);
 
   // Global lock order: transition (asserted above), user, then refresh family.
-  const epochs = await lockLiveUserSecurityState(options.tx, identity.userId);
+  const epochs = await lockLiveUserSecurityState(options.tx, requestedIdentity.userId);
   if (
     epochs.authEpoch !== options.expectedEpochs.authEpoch
     || epochs.mfaEpoch !== options.expectedEpochs.mfaEpoch
@@ -104,6 +162,9 @@ export async function issueUserSession(
     if (options.refreshRotation) throw new RefreshTokenCurrentnessError();
     throw new UserSessionEpochMismatchError();
   }
+
+  // Unlocked read; it takes no row lock, so the lock order above is unchanged.
+  const identity = await bindOrganizationSessionPartner(options.tx, requestedIdentity);
 
   const refreshJti = randomUUID();
   let familyId: string;

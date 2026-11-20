@@ -47,6 +47,7 @@ import {
   getUserEpochs,
   getRefreshFamily,
   issueUserSession,
+  resolveOrganizationSessionPartnerId,
   rateLimiter,
   getRedis,
   verifyPassword,
@@ -3816,12 +3817,19 @@ ssoRoutes.get('/callback', async (c) => {
         throw new SsoLoginFinalizationError('/login?error=invalid_role_scope');
       }
 
+      // #12246: an org session carries its org's owning partner, exactly as a
+      // password login does, so the partner-wide config SELECT branches apply.
+      const orgPartnerId = await resolveOrganizationSessionPartnerId(tx, provider.orgId!);
+      if (!orgPartnerId) {
+        throw new SsoLoginFinalizationError('/login?error=no_org_access');
+      }
+
       sessionIdentity = {
         userId: user.id,
         email: user.email,
         roleId: orgUser.roleId,
         orgId: provider.orgId!,
-        partnerId: null,
+        partnerId: orgPartnerId,
         scope: 'organization' as const,
         mfa: ssoMfa,
         mfaSrc: ssoMfaSrc

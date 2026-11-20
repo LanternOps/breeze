@@ -16,7 +16,7 @@ function ssoStateCookieHeader(state: string): string {
   return `breeze_sso_state=${encodeURIComponent(value)}`;
 }
 
-const { permissionGate, mfaGate, recordedPermissionGuards, pendingLinkRedis, issueUserSessionMock } = vi.hoisted(() => ({
+const { permissionGate, mfaGate, recordedPermissionGuards, pendingLinkRedis, issueUserSessionMock, resolveOrgSessionPartnerMock } = vi.hoisted(() => ({
   permissionGate: { deny: false },
   mfaGate: { deny: false },
   recordedPermissionGuards: [] as Array<[string, string]>,
@@ -30,6 +30,8 @@ const { permissionGate, mfaGate, recordedPermissionGuards, pendingLinkRedis, iss
     del: vi.fn(),
   },
   issueUserSessionMock: vi.fn(),
+  // #12246: the org-axis callback resolves the provider org's owning partner.
+  resolveOrgSessionPartnerMock: vi.fn(),
 }));
 
 vi.mock('../services/redis', () => ({
@@ -84,6 +86,7 @@ const ssoTransitionMocks = vi.hoisted(() => ({
 vi.mock('../services/authBrowserTransition', () => authTransitionMocks);
 vi.mock('../services/userSession', () => ({
   issueUserSession: issueUserSessionMock,
+  resolveOrganizationSessionPartnerId: resolveOrgSessionPartnerMock,
   bindIssuedUserSession: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../services/ssoBrowserTransition', () => ({
@@ -162,6 +165,7 @@ vi.mock('../services/sso', async () => ({
 vi.mock('../services', () => ({
   createTokenPair: issueUserSessionMock,
   issueUserSession: issueUserSessionMock,
+  resolveOrganizationSessionPartnerId: resolveOrgSessionPartnerMock,
   bindIssuedUserSession: vi.fn().mockResolvedValue(undefined),
   createSession: vi.fn(),
   // Task 7 follow-up: SSO callback now mints a refresh-token family for
@@ -544,6 +548,8 @@ const ORG_UUID = '00000000-0000-4000-8000-000000000010';
 const ORG_UUID_OTHER = '00000000-0000-4000-8000-000000000099';
 const USER_UUID = '00000000-0000-4000-8000-000000000020';
 const PARTNER_UUID = '00000000-0000-4000-8000-000000000030';
+// Owning partner of the org-axis provider's org (#12246).
+const ORG_SESSION_PARTNER_ID = PARTNER_UUID;
 
 describe('sso routes', () => {
   let app: Hono;
@@ -606,6 +612,7 @@ describe('sso routes', () => {
     });
     authTransitionMocks.cancelAuthIssuance.mockResolvedValue(undefined);
     authTransitionMocks.finishAuthIssuance.mockImplementation(async (_capability, callback) => callback(db));
+    resolveOrgSessionPartnerMock.mockReset().mockResolvedValue(ORG_SESSION_PARTNER_ID);
     issueUserSessionMock.mockReset().mockResolvedValue({
       accessToken: 'access-token',
       refreshToken: 'refresh-token',
@@ -2666,6 +2673,26 @@ describe('sso routes', () => {
         expect.objectContaining({ scope: 'organization', userId: USER_UUID }),
         { failClosed: true },
       );
+    });
+
+    // #12246: an org session carries its org's owning partner, like password
+    // login, so partner-wide config is readable through its RLS SELECT branch.
+    it('mints the org session with the provider org\'s owning partner', async () => {
+      wireLinkedLogin({ trustsIdpMfa: false, userMfaEnabled: false });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(resolveOrgSessionPartnerMock).toHaveBeenCalledWith(expect.anything(), ORG_UUID);
+      const identity = vi.mocked(createTokenPair).mock.calls.at(-1)?.[0] as { scope?: string; orgId?: string; partnerId?: string | null };
+      expect(identity).toMatchObject({ scope: 'organization', orgId: ORG_UUID, partnerId: ORG_SESSION_PARTNER_ID });
+    });
+
+    it('fails closed with no_org_access and mints nothing when the provider org has no owning partner row', async () => {
+      wireLinkedLogin({ trustsIdpMfa: false, userMfaEnabled: false });
+      resolveOrgSessionPartnerMock.mockResolvedValueOnce(null);
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('error=no_org_access');
+      expect(issueUserSessionMock).not.toHaveBeenCalled();
     });
 
     // An enrolled user's trusted IdP assertion does not depend on the policy
