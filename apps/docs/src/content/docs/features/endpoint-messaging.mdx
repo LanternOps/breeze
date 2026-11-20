@@ -19,6 +19,16 @@ Neither one grants remote access.
 
 macOS and Linux devices show "No chat on this device" on the Chat tab.
 
+## Remote Desktop session hosts
+
+Breeze Assist runs only in the console session, so on a Remote Desktop session host the people working in RDP sessions are not reached the way a workstation user is:
+
+- **Live chat** goes to the user at the server's console, if there is one. It never opens in an RDP session. With nobody at the console it fails with "Chat needs Breeze Assist on a Windows console session."
+- **Messages** show as a card to the console user only. With the default helper mode on session hosts (on-demand), RDP users get nothing, and a message sent when nobody is at the console fails with "no helper".
+- With `helper_lifecycle_mode: always-on` set in the agent configuration, RDP users get the message as a Windows notification instead of a card. There is no Acknowledge button on a notification.
+
+The status shown for a session host is the console user's status, not every user's.
+
 ## Turn it on
 
 1. Open a configuration policy and go to the **Breeze Assist** tab.
