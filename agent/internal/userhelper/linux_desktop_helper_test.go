@@ -130,7 +130,7 @@ func stubLinuxDesktopRunSeams(t *testing.T) (awaitTCCLoop func()) {
 		runTCCCheckLoop, detectCapabilitiesFn, captureReprobeGOOS = restoreTCC, restoreDetect, restoreGOOS
 	})
 	entered := make(chan struct{}, 1)
-	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, _ string, _ bool) {
+	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, _ string, _ bool, _ selfRestartGuard) {
 		select {
 		case entered <- struct{}{}:
 		default:
