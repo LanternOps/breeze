@@ -98,7 +98,7 @@ const MESSAGE = {
 
 async function sendInvoice() {
   await (await service()).sendEmail({
-    ...MESSAGE, purpose: 'invoice.sent', partnerId: PARTNER, partnerName: 'Acme MSP',
+    ...MESSAGE, purpose: 'invoice.sent', trigger: 'internal', partnerId: PARTNER, partnerName: 'Acme MSP',
   });
 }
 

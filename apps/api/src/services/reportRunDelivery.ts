@@ -158,6 +158,43 @@ export async function recordTransientGateFailure(deliveryId: string, error: stri
   );
 }
 
+/**
+ * The not-before marker a held release writes into `last_error` (#12249): the
+ * table has no next-attempt column. `heldNotBefore` reads it back in the pass;
+ * HELD_MARKER_SQL_PATTERN lets listUnsettledDeliveries filter on it in SQL.
+ */
+export const HELD_MARKER_SQL_PATTERN = '^held:[a-z_]+:until=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$';
+
+export function heldMarker(reason: string, notBefore: Date): string {
+  return `held:${reason}:until=${notBefore.toISOString()}`;
+}
+
+export function heldNotBefore(lastError: string | null): Date | null {
+  if (!lastError || !new RegExp(HELD_MARKER_SQL_PATTERN).test(lastError)) return null;
+  const at = new Date(lastError.slice(lastError.indexOf(':until=') + ':until='.length));
+  return Number.isFinite(at.getTime()) ? at : null;
+}
+
+/**
+ * A claimed send was HELD (#12249): nothing went out on either lane. Back to
+ * `pending` with `error` (a `held:<reason>:until=<ISO>` not-before marker, as
+ * the table has no next-attempt column) so the next pass retries it then.
+ * Claimed rows only, like settleDelivery.
+ */
+export async function releaseHeldDelivery(deliveryId: string, error: string): Promise<void> {
+  const now = new Date();
+  const released = await inOwnSystemContext(() =>
+    db
+      .update(reportRunDeliveries)
+      .set({ state: 'pending', claimedAt: null, lastError: error, updatedAt: now })
+      .where(and(eq(reportRunDeliveries.id, deliveryId), eq(reportRunDeliveries.state, 'claimed')))
+      .returning({ id: reportRunDeliveries.id }),
+  );
+  if (released.length === 0) {
+    console.warn('[reportRunDelivery] held release matched no claimed row', { deliveryId });
+  }
+}
+
 /** The rows a delivery pass for ONE run still has to attempt. */
 export async function listPendingDeliveriesForRun(reportRunId: string): Promise<DeliveryRow[]> {
   return inOwnSystemContext(() =>
@@ -191,6 +228,11 @@ export async function listUnsettledDeliveries(olderThan: Date, limit: number): P
           and(isNull(reportRunDeliveries.claimedAt), lt(reportRunDeliveries.createdAt, olderThan)),
           lt(reportRunDeliveries.claimedAt, olderThan),
         ),
+        // #12249: a held row released back to pending keeps its old created_at.
+        // Leave it out until its not-before time, or it is listed on every pass
+        // and can crowd newer rows out of `limit`. CASE so the cast only ever
+        // sees a well-formed marker (Postgres does not short-circuit AND).
+        sql`not (case when ${reportRunDeliveries.lastError} ~ ${HELD_MARKER_SQL_PATTERN} then substring(${reportRunDeliveries.lastError} from ${'until=(.*)$'})::timestamptz > now() else false end)`,
       ))
       .orderBy(reportRunDeliveries.createdAt)
       .limit(limit),

@@ -785,7 +785,17 @@ It returns the partner lane only when all hold:
    `evaluateCapabilityContinuationForState('custom_sending_domain', …)` — the
    side-effect-free evaluator, so a send never writes a denial audit row;
 3. an identity exists for the stream and its domain is `verified` or `at_risk`;
-4. the partner is under the daily partner-lane cap (§9.1).
+4. the partner is under the daily partner-lane cap (§9.1) for the call
+   site's trigger. Over the internal cap the send is held rather than moved to
+   the platform lane; over the external cap it goes to the platform lane
+   (§9.1, amended 2026-11-19).
+
+An identity whose domain an administrator suspended (`suspended` /
+`platform_suspended`) is **held**, not sent on the platform lane (amended
+2026-11-19): the suspension is a decision to stop this partner's mail. An
+automatic suspension (`abuse_auto`) keeps the platform-lane fallback, because
+bounce and complaint statistics have no purpose dimension and mail an
+outsider caused could trip it.
 
 Otherwise it returns the platform lane with the purpose's **fallback From**,
 which is whatever that send site produces today:
@@ -862,10 +872,30 @@ none. Tickets keep `{slug}@TICKETS_INBOUND_DOMAIN`; quotes and invoices keep
   eligible partner; set means only those partner ids.
 - **Kill switch**: platform-admin suspend / unsuspend / force-release.
   Suspension takes effect on the next send because resolution reads the row.
+  An administrator's suspension holds the domain's mail; an automatic one
+  (§9.3) falls back to the platform lane (§8.3, amended 2026-11-19).
 - **Caps**: `EMAIL_DOMAINS_MAX_PER_PARTNER` (default 3 rows),
   `EMAIL_DOMAINS_DAILY_SEND_CAP` (partner-lane messages per partner per UTC
-  day; Redis counter). Over the cap the message goes out on the platform lane,
-  as it would today, and an abuse signal fires. The send cap defaults to 2,000
+  day; Redis counter). Amended 2026-11-19, in two buckets of that size, chosen
+  by the **call site** (`trigger`), not the purpose, because the inbound
+  autoresponse and a technician's reply share `ticket.customer_notification`:
+  - `internal` (mail the partner's own staff cause). Over the cap the message
+    is **held**: `sendEmail` throws `EmailSendHeldError` with a `retryAt` (the
+    next 00:00 UTC), nothing is sent on either lane, and an abuse signal fires.
+    It previously went out on the platform lane, which let a partner-level
+    limit be exceeded on the platform domain.
+  - `external` (mail an outsider can cause: the inbound-email autoresponse,
+    portal self-registration and password reset, the trust-page access
+    confirmation). Over the cap the message goes out on the platform lane
+    (`external_over_cap`) and no abuse signal fires, so an outsider can
+    neither spend the partner's own budget nor stop its mail.
+
+  There is no hold queue. Queue and outbox senders reschedule a held message
+  to `retryAt` within their own maximum age and drop it with a logged reason
+  past it; synchronous routes that have not committed anything answer 429
+  (`Retry-After`) or 409 (suspended domain).
+  When Redis cannot answer, the message still goes out on the platform lane
+  (`cap_unavailable`): an outage neither loses mail nor lifts the cap. The send cap defaults to 2,000
   when `isHosted()` and to **unlimited** otherwise: a self-hoster's volume is
   their own business, and a default that silently moved their ticket mail back
   to the old From at message 2,001 would be a bug report, not a protection.

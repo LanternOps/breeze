@@ -149,6 +149,8 @@ describe('resendInvoiceEmail', () => {
     expect(envelope.purpose).toBe('invoice.sent');
     expect(envelope.partnerId).toBe('p1');
     expect(envelope.partnerName).toBe('Lantern MSP');
+    // #12249: staff send it, so it spends the partner's own (internal) bucket.
+    expect(envelope.trigger).toBe('internal');
     expect(envelope).not.toHaveProperty('from');
     expect(envelope.attachments?.[0]?.filename).toBe('INV-2026-0007.pdf');
 
@@ -161,6 +163,7 @@ describe('resendInvoiceEmail', () => {
     try {
       const resolved = await resolveSender({
         purpose: envelope.purpose,
+        trigger: envelope.trigger,
         partnerId: envelope.partnerId,
         partnerName: envelope.partnerName,
         defaultFrom: 'Breeze <no-reply@breeze.test>',
@@ -239,6 +242,17 @@ describe('resendInvoiceEmail', () => {
     const result = await resendInvoiceEmail(INV_ID, actor);
     expect(result).toMatchObject({ emailed: false, reason: 'send_failed' });
     expect(result.recipients).toEqual(['ap@acme.test']);
+  });
+
+  // #12249: a held send definitely did not go out and nothing was committed, so
+  // it is not swallowed into send_failed: the route answers it with a 4xx.
+  it('rethrows a held send instead of swallowing it', async () => {
+    const held = Object.assign(new Error('held'), {
+      name: 'EmailSendHeldError', reason: 'over_cap', partnerId: 'p1', purpose: 'invoice.sent', retryAt: new Date(Date.now() + 3_600_000),
+    });
+    sendEmailMock.mockRejectedValue(held);
+    queueHappyPath();
+    await expect(resendInvoiceEmail(INV_ID, actor)).rejects.toBe(held);
   });
 
   it('refuses a draft — there is nothing issued to re-send', async () => {

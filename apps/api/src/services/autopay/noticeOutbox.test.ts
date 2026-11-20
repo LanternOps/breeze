@@ -112,3 +112,48 @@ it('BRZ-8807: billing off never cancels a blocked-kind row that was already sent
   expect(await dispatchPendingBillingNotices()).toEqual({ sent: 1, failed: 0 });
   expect(h.row.status).toBe('sent'); expect(h.send).not.toHaveBeenCalled();
 });
+
+// #12249: a held notice is rescheduled to the held error's retryAt instead of
+// the transport backoff, spends no attempt, and is not a Sentry event per hold.
+// The outbox has no creation timestamp (#12283), so the maximum age runs from
+// the FIRST hold, recorded in last_error; past it the notice is parked failed
+// with a logged reason and one Sentry event, like the other terminal path.
+const heldError = (retryAt: Date) => Object.assign(new Error('held'), {
+  name: 'EmailSendHeldError', reason: 'over_cap', partnerId: 'partner', purpose: 'billing.notice', retryAt,
+});
+it('reschedules a held notice to retryAt without spending an attempt or reporting to Sentry', async () => {
+  h.row.attempts = 5;
+  const retryAt = new Date(Date.now() + 6 * 60 * 60 * 1000);
+  h.send.mockRejectedValueOnce(heldError(retryAt));
+  const before = Date.now();
+  await dispatchPendingBillingNotices();
+  expect(h.row.status).toBe('pending');
+  expect(h.row.attempts).toBe(5);
+  expect(h.row.lastError).toMatch(/^EmailSendHeldError since=/);
+  expect(new Date(h.row.lastError.split('since=')[1]).getTime()).toBeGreaterThanOrEqual(before - 1000);
+  expect(h.row.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(retryAt.getTime());
+  expect(h.row.nextAttemptAt.getTime()).toBeLessThanOrEqual(retryAt.getTime() + 15 * 60 * 1000);
+  expect(h.capture).not.toHaveBeenCalled();
+});
+it('keeps the first-hold time across holds', async () => {
+  const since = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+  h.row.lastError = `EmailSendHeldError since=${since}`;
+  h.send.mockRejectedValueOnce(heldError(new Date(Date.now() + 60 * 60 * 1000)));
+  await dispatchPendingBillingNotices();
+  expect(h.row).toMatchObject({ status: 'pending', lastError: `EmailSendHeldError since=${since}` });
+});
+it('parks a held notice failed, with a logged reason, once retryAt is past the maximum age from the first hold', async () => {
+  h.row.lastError = `EmailSendHeldError since=${new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()}`;
+  h.send.mockRejectedValueOnce(heldError(new Date(Date.now() + 6 * 60 * 60 * 1000)));
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  await dispatchPendingBillingNotices();
+  expect(h.row.status).toBe('failed');
+  expect(h.row.lastError).toBe('EmailSendHeldError');
+  expect(warn).toHaveBeenCalledWith('[email] held send dropped', expect.objectContaining({
+    site: 'billingNoticeOutbox', billing_notice_id: 'outbox', reason: 'over_cap',
+  }));
+  expect(JSON.stringify(warn.mock.calls)).not.toContain('client@example.test');
+  expect(h.capture).toHaveBeenCalledOnce();
+  warn.mockRestore();
+});

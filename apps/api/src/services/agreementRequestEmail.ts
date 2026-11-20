@@ -137,6 +137,7 @@ export async function deliverAgreementRequestEmail(d: AgreementRequestDelivery):
     await emailService.sendEmail({
       to: d.recipients,
       purpose: 'agreement.sent',
+      trigger: 'internal',
       partnerId: d.partnerId,
       partnerName: d.partnerName ?? null,
       replyTo: d.partnerReplyTo?.trim() || undefined,

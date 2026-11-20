@@ -8,7 +8,7 @@ vi.mock('../../sentry', () => ({ captureException }));
 
 import {
   buildAccessDeniedEmail, buildAccessGrantedEmail, buildAccessVerificationEmail, buildStaffAccessRequestEmail,
-  sendAccessGrantedEmail, sendAccessVerificationEmail, sendStaffAccessRequestEmail,
+  sendAccessDeniedEmail, sendAccessGrantedEmail, sendAccessVerificationEmail, sendStaffAccessRequestEmail,
 } from './emails';
 
 const URL_V = 'https://portal.example.test/portal/trust/access/verify#' + 'x'.repeat(48);
@@ -50,6 +50,18 @@ describe('senders', () => {
   it('requester mail rides the partner lane with the partner named', async () => {
     await expect(sendAccessVerificationEmail({ to: 'r@x.test', partnerId: 'p1', partnerName: 'Acme' }, { orgName: 'C', partnerName: 'Acme', verifyUrl: URL_V })).resolves.toBe(true);
     expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({ to: 'r@x.test', purpose: 'trust.access_verification', partnerId: 'p1', partnerName: 'Acme' }));
+  });
+  // #12249: the anonymous request is external; the MSP's decisions are internal.
+  it('classifies the anonymous verification as external and the staff decisions as internal', async () => {
+    const lane = { to: 'r@x.test', partnerId: 'p1', partnerName: 'Acme' };
+    await sendAccessVerificationEmail(lane, { orgName: 'C', partnerName: 'Acme', verifyUrl: URL_V });
+    await sendAccessGrantedEmail(lane, { orgName: 'C', partnerName: 'Acme', downloadUrl: 'https://p/x#t', expiresAt: new Date('2026-12-01T00:00:00Z'), documentTitles: [] });
+    await sendAccessDeniedEmail(lane, { orgName: 'C', partnerName: 'Acme', note: null });
+    expect(sendEmail.mock.calls.map((c) => [c[0].purpose, c[0].trigger])).toEqual([
+      ['trust.access_verification', 'external'],
+      ['trust.access_granted', 'internal'],
+      ['trust.access_denied', 'internal'],
+    ]);
   });
   it('staff mail is platform lane (no partnerId) and skips an empty recipient list', async () => {
     await expect(sendStaffAccessRequestEmail([], { orgName: 'C', requesterName: 'R', requesterEmail: 'r@x', requesterCompany: 'X', purpose: 'p', reviewUrl: 'u' })).resolves.toBe(false);

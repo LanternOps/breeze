@@ -10,7 +10,7 @@ vi.mock('../redis', () => ({ getRedis: getRedisMock }));
 vi.mock('./config', () => ({ getEmailDomainsConfig: getConfigMock }));
 vi.mock('./capHits', () => ({ recordCapHit: recordCapHitMock }));
 
-import { partnerLaneCapKey, tryCountPartnerLaneSend } from './sendCap';
+import { countPartnerLaneSend, nextCapWindowStart, partnerLaneCapKey, tryCountPartnerLaneSend } from './sendCap';
 
 const PARTNER = '11111111-1111-1111-1111-111111111111';
 
@@ -40,9 +40,9 @@ describe('partnerLaneCapKey', () => {
     const noon = Date.UTC(2026, 8, 17, 12, 0, 0);
     const lateSameDay = Date.UTC(2026, 8, 17, 23, 59, 59);
     const nextDay = Date.UTC(2026, 8, 18, 0, 0, 1);
-    expect(partnerLaneCapKey(PARTNER, noon)).toBe(partnerLaneCapKey(PARTNER, lateSameDay));
-    expect(partnerLaneCapKey(PARTNER, noon)).not.toBe(partnerLaneCapKey(PARTNER, nextDay));
-    expect(partnerLaneCapKey(PARTNER, noon)).toContain(PARTNER);
+    expect(partnerLaneCapKey(PARTNER, noon, 'internal')).toBe(partnerLaneCapKey(PARTNER, lateSameDay, 'internal'));
+    expect(partnerLaneCapKey(PARTNER, noon, 'internal')).not.toBe(partnerLaneCapKey(PARTNER, nextDay, 'internal'));
+    expect(partnerLaneCapKey(PARTNER, noon, 'internal')).toContain(PARTNER);
   });
 });
 
@@ -51,7 +51,7 @@ describe('tryCountPartnerLaneSend (spec §9.1)', () => {
     const redis = redisWithCount(1);
     getRedisMock.mockReturnValue(redis);
     await expect(tryCountPartnerLaneSend(PARTNER)).resolves.toBe(true);
-    expect(redis.__chain.incr).toHaveBeenCalledWith(partnerLaneCapKey(PARTNER, Date.now()));
+    expect(redis.__chain.incr).toHaveBeenCalledWith(partnerLaneCapKey(PARTNER, Date.now(), 'internal'));
     // The expiry is set on EVERY increment, in the same round trip. A bare INCR
     // would leave an immortal key per partner per day forever.
     expect(redis.__chain.expire).toHaveBeenCalledTimes(1);
@@ -107,6 +107,30 @@ describe('tryCountPartnerLaneSend (spec §9.1)', () => {
   });
 });
 
+describe('countPartnerLaneSend tells an over-cap verdict from an outage', () => {
+  it('allowed under the cap and at 0 (unlimited)', async () => {
+    getRedisMock.mockReturnValue(redisWithCount(1));
+    await expect(countPartnerLaneSend(PARTNER, 'internal')).resolves.toBe('allowed');
+    getConfigMock.mockReturnValue({ dailySendCap: 0, partnerAllowlist: [] });
+    await expect(countPartnerLaneSend(PARTNER, 'internal')).resolves.toBe('allowed');
+  });
+
+  it('over_cap only for a genuine count past the cap', async () => {
+    getRedisMock.mockReturnValue(redisWithCount(2001));
+    await expect(countPartnerLaneSend(PARTNER, 'internal')).resolves.toBe('over_cap');
+  });
+
+  it('unavailable when Redis is missing, throws, or returns an unreadable result', async () => {
+    getRedisMock.mockReturnValue(null);
+    await expect(countPartnerLaneSend(PARTNER, 'internal')).resolves.toBe('unavailable');
+    getRedisMock.mockReturnValue({ multi: () => { throw new Error('ECONNRESET'); } });
+    await expect(countPartnerLaneSend(PARTNER, 'internal')).resolves.toBe('unavailable');
+    const chain = { incr: vi.fn(() => chain), expire: vi.fn(() => chain), exec: vi.fn(async () => null) };
+    getRedisMock.mockReturnValue({ multi: vi.fn(() => chain) });
+    await expect(countPartnerLaneSend(PARTNER, 'internal')).resolves.toBe('unavailable');
+  });
+});
+
 describe('recordPartnerLaneCapHit wiring (W06)', () => {
   it('records the hit for the abuse producer on a genuine over-cap count', async () => {
     getConfigMock.mockReturnValue({ dailySendCap: 2000 });
@@ -129,5 +153,50 @@ describe('recordPartnerLaneCapHit wiring (W06)', () => {
     getRedisMock.mockReturnValue(redisWithCount(3));
     await tryCountPartnerLaneSend(PARTNER);
     expect(recordCapHitMock).not.toHaveBeenCalled();
+  });
+});
+
+// Strix finding on #12249: mail an outsider can trigger (inbound-email
+// autoresponse, portal self-registration and password reset, trust-page access
+// verification) must not spend the budget the partner's own mail draws on.
+describe('separate buckets for internally and externally triggered sends', () => {
+  it('counts the external bucket under its own key, never the partner key', async () => {
+    const redis = redisWithCount(1);
+    getRedisMock.mockReturnValue(redis);
+    const now = Date.now();
+    await expect(countPartnerLaneSend(PARTNER, 'external')).resolves.toBe('allowed');
+    const key = redis.__chain.incr.mock.calls[0]![0];
+    expect(key).toBe(partnerLaneCapKey(PARTNER, now, 'external'));
+    expect(key).not.toBe(partnerLaneCapKey(PARTNER, now, 'internal'));
+    expect(key).toContain(PARTNER);
+  });
+
+  it('keeps the internal key unchanged, so counters already in Redis carry over on deploy', () => {
+    const noon = Date.UTC(2026, 8, 17, 12, 0, 0);
+    expect(partnerLaneCapKey(PARTNER, noon, 'internal')).toBe(`email-domains:partner-lane-sends:${PARTNER}:2026-09-17`);
+  });
+
+  it('an external over-cap count is NOT recorded as the partner\'s own cap hit', async () => {
+    getRedisMock.mockReturnValue(redisWithCount(2001));
+    await expect(countPartnerLaneSend(PARTNER, 'external')).resolves.toBe('over_cap');
+    expect(recordCapHitMock).not.toHaveBeenCalled();
+    getRedisMock.mockReturnValue(redisWithCount(2001));
+    await expect(countPartnerLaneSend(PARTNER, 'internal')).resolves.toBe('over_cap');
+    expect(recordCapHitMock).toHaveBeenCalledWith(PARTNER);
+  });
+
+  it('the domain test send counts against the internal bucket', async () => {
+    const redis = redisWithCount(1);
+    getRedisMock.mockReturnValue(redis);
+    await tryCountPartnerLaneSend(PARTNER);
+    expect(redis.__chain.incr).toHaveBeenCalledWith(partnerLaneCapKey(PARTNER, Date.now(), 'internal'));
+  });
+});
+
+describe('nextCapWindowStart', () => {
+  it('is the next 00:00 UTC, strictly after now', () => {
+    expect(nextCapWindowStart(Date.UTC(2026, 8, 17, 12, 0, 0)).toISOString()).toBe('2026-09-18T00:00:00.000Z');
+    expect(nextCapWindowStart(Date.UTC(2026, 8, 17, 0, 0, 0)).toISOString()).toBe('2026-09-18T00:00:00.000Z');
+    expect(nextCapWindowStart(Date.UTC(2026, 11, 31, 23, 59, 59)).toISOString()).toBe('2027-01-01T00:00:00.000Z');
   });
 });

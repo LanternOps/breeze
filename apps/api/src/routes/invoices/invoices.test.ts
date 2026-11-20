@@ -433,6 +433,35 @@ describe('invoice lifecycle routes', () => {
     });
   });
 
+  // #12249: a held send is a clear 4xx, never the 500 it used to be. The
+  // response is built from fixed strings: the held error's message names the
+  // partner id, which must not reach the client.
+  describe('a held send', () => {
+    const PARTNER_UUID = '99999999-9999-9999-9999-999999999999';
+    const held = (reason: 'over_cap' | 'domain_suspended') => Object.assign(
+      new Error(`Email not sent: partner ${PARTNER_UUID} reached its daily partner-lane send cap`),
+      { name: 'EmailSendHeldError', reason, partnerId: PARTNER_UUID, purpose: 'invoice.sent', retryAt: new Date(Date.now() + 3_600_000) },
+    );
+
+    it.each(['send', 'resend'] as const)('POST /:id/%s over the cap → 429 with Retry-After', async (action) => {
+      const fn = action === 'send' ? pdfSvc.sendInvoiceEmail : pdfSvc.resendInvoiceEmail;
+      (fn as any).mockRejectedValue(held('over_cap'));
+      const res = await app().request(`/${INV_ID}/${action}`, { method: 'POST' });
+      expect(res.status).toBe(429);
+      expect(Number(res.headers.get('Retry-After'))).toBeGreaterThan(0);
+      const text = await res.text();
+      expect(JSON.parse(text)).toMatchObject({ code: 'EMAIL_SEND_HELD', reason: 'over_cap' });
+      expect(text).not.toContain(PARTNER_UUID);
+    });
+
+    it('POST /:id/send on an administrator-suspended domain → 409', async () => {
+      (pdfSvc.sendInvoiceEmail as any).mockRejectedValue(held('domain_suspended'));
+      const res = await app().request(`/${INV_ID}/send`, { method: 'POST' });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'EMAIL_SEND_HELD', reason: 'domain_suspended' });
+    });
+  });
+
   it('POST /:id/resend calls resendInvoiceEmail with the composer options', async () => {
     (pdfSvc.resendInvoiceEmail as any).mockResolvedValue({
       invoice: { id: INV_ID, orgId: 'o1', status: 'sent' }, emailed: true, recipients: ['a@x.test'],
