@@ -3,16 +3,16 @@ spec_issue: LanternOps/breeze#8758
 refs: [LanternOps/breeze#11294, LanternOps/breeze#8759]
 spec: docs/superpowers/specs/ticketing/2026-10-14-email-first-ticketing-design.md
 base: origin/main @ 4aacc0d479
-status: plan-drafted, awaiting Gate B
+status: plan-approved (Gate B, Todd 2026-11-19, with changes; see Decisions)
 ---
 
 # Email-first ticket replies: implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking. Each wave is one PR off a fresh `origin/main`. Read the spec section named in each wave before you start it.
 
-**Goal:** A public technician reply reaches an email-only requester as the reply text, including through a connected Microsoft 365 mailbox. Later waves add one partner-default/org-override setting, a `{{reply_body}}` merge variable, reply attachments, and a shared-queue notice.
+**Goal:** A public technician reply reaches an email-only requester as the reply text, including through a connected Microsoft 365 mailbox. W1 first makes the customer recipient explicit (the stored reply address, sent from the mailbox that received the ticket) for every partner with a connected mailbox. Later waves add one partner-default/org-override setting, a `{{reply_body}}` merge variable, reply attachments, and a shared-queue notice.
 
-**Architecture:** All customer reply mail already leaves through one worker, `apps/api/src/jobs/ticketNotifyWorker.ts` (`collectRequesterEmail` → `sendEmailPayloads`). The Graph lane (`graphReplySender.ts`) gains a recipient replace that fails closed. After that, the comment body is allowed on every lane. Settings live on `partners.settings.ticketing.emailCustomer`, with an org override column on `org_ticket_settings`, read by one resolver in `@breeze/shared`. No new tables.
+**Architecture:** All customer reply mail already leaves through one worker, `apps/api/src/jobs/ticketNotifyWorker.ts` (`collectRequesterEmail` → `sendEmailPayloads`). Inbound ingest stores the message's `Reply-To`, the outbound mailbox is picked deterministically, and the Graph lane (`graphReplySender.ts`) gains a recipient replace that fails closed. After that, the comment body is allowed on every lane. Settings live on `partners.settings.ticketing.emailCustomer`, with an org override column on `org_ticket_settings`, read by one resolver in `@breeze/shared`. No new tables (two new columns: `ticket_email_inbound.reply_to_address` in W1, `org_ticket_settings.email_customer` in W2).
 
 **Tech stack:** Hono, Drizzle (queries only), hand-written SQL migrations, BullMQ, Microsoft Graph v1.0 mail API, Astro + React islands, Vitest.
 
@@ -22,7 +22,7 @@ status: plan-drafted, awaiting Gate B
 
 | Wave | Ships | Depends on | Migration | Ships alone as |
 |---|---|---|---|---|
-| **W1** | Connected M365 mailbox sends the reply text: recipient replace + the `!graphMailbox` gate removed | — | none | Partners with the existing `fullMessageReply` flag get the reply text on the M365 path. No one else sees a change. |
+| **W1** | Reply-To stored at ingest; deterministic outbound mailbox; recipient replace on every Graph customer send; the `!graphMailbox` gate removed | — | 1: `ticket_email_inbound.reply_to_address` | **Every partner with a connected M365 mailbox:** customer mail on the Graph lane (reply notice, resolved notice, autoresponse) goes to the requester's reply address only (no Cc/Bcc carried over), from the mailbox that received the ticket. Partners with the existing `fullMessageReply` flag also get the reply text on the M365 path. |
 | **W2** | "Email with customers" setting: partner default (Settings → Ticketing → Email) + org override (`OrgTicketSettingsEditor`), `resolveEmailCustomer`, the legacy flag retired | W1 | 2: column + data copy | The toggle is reachable in the UI. |
 | **W3** | `{{reply_body}}` merge variable on the Public reply notice template | W1 | none | Partners with a custom template choose where the text goes. |
 | **W4** | Reply attachments in the customer email, on all three lanes | W1 | none | Files on a public reply go out with the text. |
@@ -35,6 +35,7 @@ W3 and W4 can run in parallel after W1. W1 is the wave the reporters asked for.
 
 - Internal notes never reach a customer path. The worker enters customer mail only for `event.payload.isPublic && !event.payload.inbound`. Text goes out only for a live public comment on a live ticket (`!ticket.deletedAt && !comment.deletedAt && comment.isPublic`). Keep that check exactly as it is.
 - Graph customer sends: To = `payload.to` only. Cc and Bcc are empty. Reply-To = the connected mailbox. No other address from the original message survives (D3).
+- `payload.to` for customer mail is the requester's **reply address**: the `Reply-To` stored at ingest on the ticket's creating inbound row when it holds exactly one usable address, else `submitterEmail` (the message's `From`). `submitterEmail` stays the requester's identity (org routing, sender verification, contact matching) and is not rewritten.
 - Missing `submitterEmail` means no customer send (already `return []`).
 - `replyIncludesComment` off, or absent, means today's portal notice, on every lane.
 - New partners are off: `queueNotifyAddresses: []`, `replyIncludesComment: false`.
@@ -54,25 +55,71 @@ W3 and W4 can run in parallel after W1. W1 is the wave the reporters asked for.
 | `orgMergeRegistry.ts` | none: `org_ticket_settings: keep-survivor` | `apps/api/src/services/orgMergeRegistry.ts:562`. On an org merge the source org's `email_customer` override is dropped and the survivor's kept. State this in the W2 PR. |
 | `CORE_TENANT_EXPORT_POLICY` | **W2: add `email_customer` to `excludedOpen`** (jsonb) | `apps/api/src/services/tenantExportPolicyRegistry.ts:753` |
 | Device / ticket id lists | none: no `device_id` or `ticket_id` column added | — |
+| `ticket_email_inbound.reply_to_address` (W1) | partner-axis table: grep every registry for `ticket_email_inbound` at implementation time and classify the column wherever the table is listed. Do not assume "none". | W1 Task 1 |
 | RLS | none: the column inherits the existing `org_ticket_settings` policies | — |
 
 `partners.settings` is an existing jsonb column. Adding a key adds no export classification.
 
 ## Review focus
 
-1. **A follow-up from a Cc'd colleague.** The newest inbound m365 message (the one `resolveOutboundMailbox` replies to) is from someone other than `submitterEmail`. The reply must go to `submitterEmail` only. Test: W1 Task 1 `replaces createReply recipients with exactly payload.to`.
-2. **Graph ignores or partly applies the recipient PATCH.** Never send in that case. Test: W1 Task 1 `deletes the draft and throws when the PATCH response still carries other recipients`.
-3. **A custom Public reply notice that says "Sign in to the portal".** With the setting on, the reply text must still appear. Test: W1 Task 2 `custom template still carries the reply text before the CTA`.
+1. **A follow-up from a Cc'd colleague.** The newest inbound m365 message (the one `resolveOutboundMailbox` replies to) is from someone other than the requester. The reply must go to the requester's reply address only. Test: W1 Task 3 `replaces createReply recipients with exactly payload.to`.
+2. **Graph ignores or partly applies the recipient PATCH.** Never send in that case. Test: W1 Task 3 `deletes the draft and throws when the PATCH response still carries other recipients`.
+3. **A custom Public reply notice that says "Sign in to the portal".** With the setting on, the reply text must still appear. Test: W1 Task 4 `custom template still carries the reply text before the CTA`.
 4. **A reply whose attachments exceed the email budget,** or an attachment whose artifact has expired. The mail must still send with the text, and list what was left out. Test: W4 Task 2 `over-budget and expired attachments are listed by name, not attached`.
 5. **A queue address that is also the connected mailbox,** with the ticket ingested from that mailbox. No second copy to that address, and no new ticket from the notice. Tests: W5 Task 2 `skips the connected mailbox when the event was ingested from it`, and W5 Task 3 `ingest drops a queue notice`.
+6. **A web-form ticket** (`From` is a no-reply relay, `Reply-To` is the customer). The reply, resolved notice and autoresponse go to the `Reply-To` address on every lane. Test: W1 Task 1 `web-form ticket replies to the stored Reply-To`.
+7. **Two connected mailboxes.** The reply leaves from the mailbox that received the ticket, threaded on a message from that mailbox. Test: W1 Task 2 `two connections: picks the mailbox that ingested the ticket`.
 
 ---
 
 ## W1: connected M365 mailbox sends the reply text
 
-Spec D3. **Gate in W1 is the existing legacy flag** `partners.settings.ticketing.inbound.fullMessageReply` (API-only today). This keeps W1 free of migrations, and it is the flag the reporting deployment already set. W2 moves the gate onto the new setting. See open question 1.
+Spec D3. **The reply-text gate in W1 is the existing legacy flag** `partners.settings.ticketing.inbound.fullMessageReply` (API-only today); it is the flag the reporting deployment already set. W2 moves the gate onto the new setting (decision 1).
 
-### Task 1: Graph recipient replace, failing closed
+**Reach.** Tasks 1–3 are not gated by the flag. They change customer mail for **every partner with a connected M365 mailbox**: the recipient becomes the stored reply address only (Cc/Bcc from the original are dropped), and the sending mailbox is picked deterministically. Task 1 also changes the recipient on the platform/partner lane for tickets whose creating message carried a usable `Reply-To`. The W1 PR body says so.
+
+Task order matters: Task 1 (store `Reply-To`) must land before Task 3 (recipient replace). Today `createReply` honours the original message's `Reply-To`; once the replace pins To to `payload.to`, a web-form ticket (`From` = a no-reply relay) would otherwise be answered at the no-reply address.
+
+### Task 1: store Reply-To at inbound ingest, use it as the reply address
+
+Today ingest stores only `From` (`submitterEmail: n.from`, `inboundEmailService.ts:932`; autoresponse `to: n.from`, `autoresponder.ts:145`). No normalizer parses `Reply-To`.
+
+**Files:**
+- Create: `apps/api/migrations/<after-newest>-ticket-email-inbound-reply-to.sql`: `ALTER TABLE ticket_email_inbound ADD COLUMN IF NOT EXISTS reply_to_address text;` (nullable, no backfill)
+- Modify: `apps/api/src/db/schema/emailInbound.ts` (`replyToAddress: text('reply_to_address')`)
+- Modify: `apps/api/src/services/inboundEmail/types.ts` (`replyTo?: string` on the normalized message)
+- Modify: `apps/api/src/services/ticketMailbox/normalizeGraphMessage.ts` (Graph `replyTo` recipients), `normalizeGmailMessage.ts` and `apps/api/src/services/inboundEmail/mailgun.ts` (`Reply-To` header)
+- Modify: `apps/api/src/services/inboundEmail/inboundEmailService.ts` (write `replyToAddress` on both inbound-row inserts) and `autoresponder.ts` (`to` = the reply address)
+- Modify: `apps/api/src/jobs/ticketNotifyWorker.ts` (`collectRequesterEmail` sets `payload.to` from `requesterReplyAddress(ticket)`)
+- Test: the three normalizer tests, `inboundEmailService.test.ts`, `ticketNotifyWorker.leak.test.ts`
+
+**Interfaces:**
+- Produces: `normalizeReplyTo(raw: unknown): string | undefined`. Returns a lower-cased address only when the header holds **exactly one** syntactically valid address. Several addresses, a malformed value, or an address equal to the partner's own inbound address or a connected mailbox means `undefined` (fall back to `From`; the last case is a loop guard).
+- Produces: `requesterReplyAddress(ticket): Promise<string | null>`. Reads `reply_to_address` from the ticket's creating inbound row (the earliest row for the ticket whose `from_address` equals `submitterEmail`), else returns `submitterEmail`. A later follow-up's `Reply-To` never changes the address.
+- `submitterEmail` is not rewritten: identity, org routing, sender verification and contact matching keep using `From`.
+
+- [ ] **Step 1: Write failing tests.** Normalizers: `parses a single Reply-To`, `ignores a multi-address Reply-To`, `ignores a malformed Reply-To`. Ingest: `stores reply_to_address on the inbound row`, `Reply-To equal to the connected mailbox is not stored`. Worker: `web-form ticket replies to the stored Reply-To` (both lanes), `no Reply-To falls back to submitterEmail`, `a follow-up's Reply-To does not change the address`. Autoresponder: `autoresponse goes to the Reply-To`.
+- [ ] **Step 2: Run and see them fail.**
+- [ ] **Step 3: Implement.** Write the migration, run `pnpm db:migrate && pnpm db:check-drift`. `ticket_email_inbound` is partner-axis; grep the registries (`CORE_TENANT_EXPORT_POLICY`, `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts`, the partner export lists) at implementation time and classify the new column wherever the table is listed (`docs/agents/tenancy-rls.md`). Then the parsers, the ingest write, and the worker read.
+- [ ] **Step 4: Run and see them pass,** plus the integration suites that cover inbound email.
+- [ ] **Step 5: Commit.** `feat(ticketing): store Reply-To at inbound ingest and use it as the reply address (Refs #8758)`
+
+### Task 2: deterministic outbound mailbox
+
+`resolveOutboundMailbox` (`apps/api/src/services/ticketMailbox/resolveOutboundMailbox.ts`) takes **one** connected connection with `.limit(1)` and no ordering, then the ticket's newest m365 inbound message from any mailbox. With two connected mailboxes the reply can leave from the wrong mailbox, or `createReply` can be called with a message id that lives in the other mailbox.
+
+**Files:** `resolveOutboundMailbox.ts` (+ `resolveOutboundMailbox.test.ts`)
+
+**Decision:** select explicitly. (a) Take the ticket's newest m365 inbound row; its `to_address` is the receiving mailbox (`normalizeGraphMessage.ts:338` sets `to` to the connection's `mailboxAddress`). Pick the connected, tenant-owned connection whose `mailbox_address` matches it, and thread on that row's message. (b) If the ticket has no m365 inbound row (portal, technician, alert, API ticket): exactly one connected mailbox means that mailbox, with no thread (`sendNewMail`). More than one means a stable order, `ORDER BY created_at, id` (the oldest connection), logged once with the candidate count. (c) If the receiving mailbox is no longer connected, return `null` (platform lane). Never pair a mailbox with a message from another mailbox.
+
+- [ ] **Step 1: Write failing tests.** `two connections: picks the mailbox that ingested the ticket`, `receiving mailbox disconnected: returns null`, `no inbound row + two connections: oldest connection, no thread`, `gmail-only partner resolves no graph mailbox` (decision 9: keep as a regression test).
+- [ ] **Step 2: Run and see them fail.** `cd apps/api && npx vitest run src/services/ticketMailbox/resolveOutboundMailbox.test.ts`
+- [ ] **Step 3: Implement.** Keep the tenant-ownership inner join.
+- [ ] **Step 4: Run and see them pass,** plus `src/jobs/ticketNotifyWorker.graphFork.test.ts`.
+- [ ] **Step 5: Commit.** `fix(ticketing): pick the outbound mailbox that received the ticket (Refs #8758)`
+
+### Task 3: Graph recipient replace, failing closed
+
 
 **Files:**
 - Modify: `apps/api/src/services/ticketMailbox/graphReplySender.ts`
@@ -82,7 +129,7 @@ Spec D3. **Gate in W1 is the existing legacy flag** `partners.settings.ticketing
 - Produces: `sendThreadedReply(t: GraphSendTarget, originalMessageId: string, html: string, opts: ThreadedReplyOptions): Promise<void>`. `ThreadedReplyOptions` gains a required `to: string`. Optional `subject?: string` is unchanged.
 - Produces: `sendNewMail(t, to, subject, html)` keeps its signature and now also sets `replyTo: [{ emailAddress: { address: t.mailbox } }]`.
 
-**Decision:** the replace applies to **every** Graph customer send (comment notice, resolved notice and autoresponse), each with its own `payload.to`. All three go through `sendThreadedReply`, and an unvalidated recipient set is wrong for all of them. For the comment and resolved notices `payload.to` is `ticket.submitterEmail`. For the autoresponse it is `event.payload.to`.
+**Decision (decision 8, approved):** the replace applies to **every** Graph customer send (comment notice, resolved notice and autoresponse), each with its own `payload.to`. All three go through `sendThreadedReply`, and an unvalidated recipient set is wrong for all of them. For the comment and resolved notices `payload.to` is the requester's reply address (Task 1). For the autoresponse it is `event.payload.to`, which Task 1 also sets from the reply address. This reaches every connected-mailbox partner, flag or not.
 
 - [ ] **Step 1: Write failing tests** (fetch mocked as in the existing file):
   - `replaces createReply recipients with exactly payload.to`: the PATCH body has `toRecipients: [{emailAddress:{address:'requester@example.com'}}]`, `ccRecipients: []`, `bccRecipients: []`, and `replyTo: [{emailAddress:{address:'support@example.com'}}]`, plus `body`.
@@ -95,7 +142,7 @@ Spec D3. **Gate in W1 is the existing legacy flag** `partners.settings.ticketing
 - [ ] **Step 5: Update the caller.** In `ticketNotifyWorker.ts` `sendEmailPayloads`, both `sendThreadedReply` calls pass `{ to: payload.to, …(threadedReplyUsesSubject ? { subject } : {}) }`. Run `src/jobs/ticketNotifyWorker.graphFork.test.ts`. Update its expectations to the new options object. Do not delete assertions.
 - [ ] **Step 6: Commit.** `feat(ticketing): pin Graph reply recipients to the requester, fail closed (Refs #8758)`
 
-### Task 2: reply text on every lane, with-reply default copy
+### Task 4: reply text on every lane, with-reply default copy
 
 **Files:**
 - Modify: `apps/api/src/jobs/ticketNotifyWorker.ts` (`composeLaidOutRequesterMail`, `collectRequesterEmail` lines ~526–640; delete `appendFullReplyBody` ~753)
@@ -120,7 +167,7 @@ Spec D3. **Gate in W1 is the existing legacy flag** `partners.settings.ticketing
 - [ ] **Step 5b: Lab check before merge.** Use a real connected M365 test mailbox. Confirm that the PATCH response echoes the To, Cc and Bcc addresses verbatim; if Graph rewrites an alias, the exact match must normalise for it. Confirm that a reply to a message whose From differs from the requester reaches only the requester.
 - [ ] **Step 6: Update the docs.** `apps/docs` ticketing page: the reply-text option now works with a connected Microsoft 365 mailbox. Commit with `feat(ticketing): send the public reply text through a connected M365 mailbox (Refs #8758)`.
 
-**W1 PR:** label `category:ticketing`. Body: behaviour change only for partners with `fullMessageReply: true` and a connected mailbox. Recipient replace for all Graph customer mail.
+**W1 PR:** label `category:ticketing`. Body: the reply-text change reaches only partners with `fullMessageReply: true` and a connected mailbox. The recipient and mailbox changes (Tasks 1–3) reach **every partner with a connected M365 mailbox**: customer mail goes to the stored reply address only, from the mailbox that received the ticket. Tickets whose creating message carried a usable `Reply-To` are answered there on every lane. One migration (Task 1).
 
 ---
 
@@ -135,7 +182,7 @@ Spec D1. Rule 9 block for the PR: **Home** is Settings → Ticketing → Email (
 - Modify: `packages/shared/src/validators/ticketConfig.ts` (`orgTicketSettingsSchema` gains `emailCustomer`)
 
 **Interfaces:**
-- Produces: `emailCustomerSettingsSchema = z.object({ queueNotifyAddresses: z.array(z.string().trim().toLowerCase().email()).max(10).optional(), replyIncludesComment: z.boolean().optional() }).strict()`. W2 ships both keys: the address list is stored but unread until W5. Max 10 addresses (proposal; open question 3).
+- Produces: `emailCustomerSettingsSchema = z.object({ queueNotifyAddresses: z.array(z.string().trim().toLowerCase().email()).max(10).optional(), replyIncludesComment: z.boolean().optional() }).strict()`. W2 ships both keys: the address list is stored but unread until W5. Max 10 addresses (decision 3). The schema checks syntax only; the eligibility rule (decision 2) needs the database and runs in the W2 Task 3 write paths, so no ineligible address is ever stored, even before W5.
 - Produces: `type EmailCustomerSettings = z.infer<…>` and `type ResolvedEmailCustomer = { queueNotifyAddresses: string[]; replyIncludesComment: boolean; source: { queueNotifyAddresses: 'org'|'partner'|'default'; replyIncludesComment: 'org'|'partner'|'default' } }`.
 - Produces: `resolveEmailCustomer(partner: unknown, org: unknown): ResolvedEmailCustomer`, with tolerant reads (malformed input means default). A field the org sets wins. An org `queueNotifyAddresses: []` is set, meaning "off for this org", and is not inherit.
 - `orgTicketSettingsSchema.emailCustomer: emailCustomerSettingsSchema.nullable().optional()`. `null` clears the override. The existing `refine` (at least one field) still passes with only `emailCustomer`.
@@ -162,8 +209,9 @@ The data copy starts with `SELECT set_config('breeze.scope', 'system', true);`. 
 - Modify: `apps/api/src/services/ticketConfigService.ts:437` (**remove** `fullMessageReply`; add `emailCustomer` and the partner's resolved values)
 - Modify: `apps/api/src/jobs/ticketNotifyWorker.ts` (`loadPartnerMailBits` returns raw `settings.ticketing.emailCustomer`; load the org's `org_ticket_settings.email_customer`; gate on `resolveEmailCustomer(...).replyIncludesComment`; delete the `fullMessageReply` type field and every read)
 - Modify: `packages/shared/src/validators/partnerTicketingSettings.ts:61`. `ticketingInboundSettingsSchema` is non-strict (unknown keys are stripped), so **delete** `fullMessageReply`. An old client that sends it is stripped silently, not rejected.
+- Create: `apps/api/src/services/ticketQueueAddresses.ts` (+ test): `assertQueueAddressesEligible(partnerId, addresses): Promise<void>`, called by **both** write paths (`PATCH /partners/me` and the org ticket-settings PATCH) before persisting a non-empty `queueNotifyAddresses`. Decision 2, verify by **domain**, no token: an address is eligible when it is (a) a connected mailbox's `mailbox_address` for the partner, (b) the email of an active staff user of the partner, or (c) on a domain in `partner_sending_domains` for the partner with status `verified`. Customer-org domains (`customer_email_domains`) do **not** count: the notice carries ticket metadata across the partner's orgs and is staff mail. An ineligible address returns 400 naming it. No token table, and nothing is mailed to an unverified address.
 
-- [ ] Steps: failing tests. `org override off beats partner on` (worker leak test). `after migration a stored inbound.fullMessageReply:true is not read`, where the partner has the legacy flag and `emailCustomer.replyIncludesComment:false`, so the portal notice is sent. Route tests for `PATCH /partners/me` and the org ticket-settings PATCH round-trip. Then `rg -n fullMessageReply apps packages -g '!*.test.*'` returns only the migration file. Commit.
+- [ ] Steps: failing tests. `org override off beats partner on` (worker leak test). `after migration a stored inbound.fullMessageReply:true is not read`, where the partner has the legacy flag and `emailCustomer.replyIncludesComment:false`, so the portal notice is sent. Route tests for `PATCH /partners/me` and the org ticket-settings PATCH round-trip. `queue address on an unverified domain is rejected (400)`, `connected mailbox / staff user / verified-sending-domain address is accepted` (partner and org paths). Then `rg -n fullMessageReply apps packages -g '!*.test.*'` returns only the migration file. Commit.
 
 ### Task 4: web, partner card and org override
 
@@ -199,7 +247,7 @@ Gating: `reply_body` is empty unless the resolved setting is on **and** the comm
 
 **Facts checked:** Graph adds an attachment to a draft with `POST /users/{mailbox}/messages/{draftId}/attachments` (a `#microsoft.graph.fileAttachment` with base64 `contentBytes`) for files **under 3 MB**. For 3–150 MB it uses `POST …/attachments/createUploadSession`, then ranged PUTs ([attachment resource](https://learn.microsoft.com/en-us/graph/api/resources/attachment?view=graph-rest-1.0), [large attachments](https://learn.microsoft.com/en-us/graph/outlook-large-attachments)). Re-check both pages at implementation time. Ticket attachments are capped at 10 MB each and 5 per comment (`packages/shared/src/constants/ticketAttachments.ts`), so the worst case is 50 MB. `SendEmailBase.attachments` exists (`apps/api/src/services/email.ts:81`), and `PartnerLaneMessage = RawEmailMessage` (`emailDomains/provider.ts:121`) carries it type-wise. **Verify** that the `ticket.customer_notification` branch of `EmailService.sendEmail` forwards `attachments` into `sendOnPartnerLane`, and fix it in this wave if not.
 
-**Decision (proposal, open question 4):** attach real files, never links (the spec rules out customer-portal downloads). The total budget is `REPLY_ATTACHMENT_BUDGET_BYTES = 15 * 1024 * 1024`. Files are taken in `createdAt` order until the next one would exceed the budget. Anything left over, or anything that throws `AttachmentExpiredError`, is listed by filename under the reply: "Not attached: <names>. Reply to this email if you need them." Only when the resolved `replyIncludesComment` is on.
+**Decision (decision 4):** attach real files, never links (the spec rules out customer-portal downloads). The total budget is `REPLY_ATTACHMENT_BUDGET_BYTES = 15 * 1024 * 1024`. Files are taken in `createdAt` order until the next one would exceed the budget. Anything left over, or anything that throws `AttachmentExpiredError`, is listed by filename under the reply: "Not attached: <names>. Reply to this email if you need them." Only when the resolved `replyIncludesComment` is on.
 
 ### Task 1: Graph draft attachments
 
@@ -227,7 +275,7 @@ Spec D2 "Create". Resolves `queueNotifyAddresses` through `resolveEmailCustomer`
 
 **Files:** `EmailCustomerCard.tsx`, `OrgTicketSettingsEditor.tsx`, locales. The address list editor uses the same page Save. Test ids are `email-customer-queue-addresses` and `org-email-customer-queue-addresses`. The org control is Inherit / Custom list / Off (`[]`).
 
-Validation (proposal, open question 2): any syntactically valid address, max 10, lower-cased and de-duplicated by the schema. The card shows a hint when an address is the connected mailbox. No verification email in this wave.
+Validation (decision 2): max 10, lower-cased and de-duplicated by the schema, and eligible by domain through `assertQueueAddressesEligible` (W2 Task 3): the connected mailbox, a staff user's address, or a domain verified for the partner. The card surfaces the 400 next to the offending address and says which addresses qualify. No verification email and no token table.
 
 - [ ] Steps: failing component tests. Implement. Run the tests. Commit.
 
@@ -239,11 +287,11 @@ Validation (proposal, open question 2): any syntactically valid address, max 10,
 - Modify: `apps/api/src/jobs/ticketNotifyWorker.ts` (`collectQueueNotice`)
 - Test: `ticketOutboxPublisher.test.ts`, `ticketNotifyWorker.test.ts`, `ticketEventsContract.test.ts`
 
-**Interfaces:** `queueNoticeFromOutboxRow(row): TicketEventInput | null` returns an event for `ticket.created` with no `assigneeId`. The worker resolves the addresses itself: an empty list means no send, so the publisher stays settings-free. `ingestedFromMailbox` is the connected mailbox address when the ticket was created from an m365 or gmail ingest. Find where the creating inbound row records its mailbox, and add it to the outbox payload in the ingest path.
+**Interfaces:** `queueNoticeFromOutboxRow(row): TicketEventInput | null` returns an event for `ticket.created` with no `assigneeId`. The worker resolves the addresses itself: an empty list means no send, so the publisher stays settings-free. At send time the worker re-checks eligibility (a sending domain can lose verification, a staff user can leave) and skips, with a log line, any address that no longer qualifies. `ingestedFromMailbox` is the connected mailbox address when the ticket was created from an m365 or gmail ingest. Find where the creating inbound row records its mailbox, and add it to the outbox payload in the ingest path.
 
-The notice is a hardcoded staff layout (not partner-editable; open question 5). It holds the ticket number, subject, org name, requester name and email, source, and a staff link (`/tickets/<id>` on the app URL). Use platform `EmailService`, `purpose: 'ticket.staff_notification'`, with headers `{ [BREEZE_OUTBOUND_HEADER]: '1' }`. Send one message per address, `bestEffort: true`.
+The notice is a hardcoded staff layout (not partner-editable; decision 5). It holds the ticket number, subject, org name, requester name and email, source, and a staff link (`/tickets/<id>` on the app URL). Use platform `EmailService`, `purpose: 'ticket.staff_notification'`, with headers `{ [BREEZE_OUTBOUND_HEADER]: '1' }`. Send one message per address, `bestEffort: true`.
 
-- [ ] Steps: failing tests. `unassigned portal create enqueues one queue notice`. `assigned create enqueues none`. `skips the connected mailbox when the event was ingested from it` (a second address still receives one). `empty resolved list sends nothing`. `import mode writes no outbox row, so no notice`. `notice carries X-Breeze-Outbound: 1`. Implement. Run the tests plus the outbox publisher tests. Commit.
+- [ ] Steps: failing tests. `unassigned portal create enqueues one queue notice`. `assigned create enqueues none`. `skips the connected mailbox when the event was ingested from it` (a second address still receives one). `empty resolved list sends nothing`. `address that lost eligibility is skipped`. `import mode writes no outbox row, so no notice`. `notice carries X-Breeze-Outbound: 1`. Implement. Run the tests plus the outbox publisher tests. Commit.
 
 ### Task 3: loop proof
 
@@ -277,14 +325,15 @@ Spec D2 "Customer reply". **Event transport:** emit it directly through `fx.emit
 - **Locales.** A new key in `en` only fails CI. Add it to all 8, and never call `t(cond ? a : b)`.
 - **Web parser drop.** If `ticketConfigApi` or the org settings fetch parses fields explicitly, add `emailCustomer` there. Fetch-mocked component tests pass even when the parser drops the field.
 
-## Open questions for Todd
+## Decisions (Gate B, Todd 2026-11-19)
 
-1. **W1 gate.** W1 turns on the M365 reply text only for partners with the API-only `fullMessageReply` flag. The UI toggle follows in W2. Alternative: merge W1 and W2 into one larger PR. **Recommend keeping them separate**: W1 has no migration and unblocks the reporting deployments now.
-2. **Queue address validation** (spec open call). The proposal is any valid address, max 10, with no verification mail. A verification step would add a token table.
-3. **Address cap.** 10 per level?
-4. **Attachments over budget.** The proposal is a 15 MB total budget, with overflow and expired files listed by name and no download links (the spec rules out customer-portal downloads). Signed, expiring public download links would be a separate security-reviewed design.
-5. **Queue notice template** (spec open call). The proposal is a fixed staff layout, not a partner-editable template, because it is staff mail.
-6. **No-inbound fallback subject** (spec open call). The proposal keeps today's rendered template subject (`[T-…] New reply: …`), which carries the ticket token so replies thread back, rather than `RE: <subject>`.
-7. **Gmail mailboxes.** A connected Gmail mailbox has no outbound lane (`resolveOutboundMailbox` is m365-only), so those partners use the platform/partner lane, where the flag already appends the text today. Out of scope unless you want a Gmail send lane.
-8. **Recipient replace scope.** W1 applies the replace to every Graph customer send: comment, resolved and autoresponse. The spec's D3 names only the reply. `submitterEmail` and the autoresponse `to` are both the message's `From` (`inboundEmailService.ts:932`, `autoresponder.ts:145`). A sender whose `Reply-To` differs from `From` would now get mail at `From`. Is that acceptable for all three, or should the replace cover the comment notice only?
-9. **Gmail connections on the Graph path (inferred, not verified).** `resolveOutboundMailbox` filters the inbound message by `provider = 'm365'` but not the connection query. A partner with only a Gmail connection may get a `graphMailbox` payload. Verify in W1 Task 1, and file it separately if it is real.
+1. **W1 gate. Decided: as proposed.** W1 turns on the M365 reply text only for partners with the API-only `fullMessageReply` flag; the UI toggle follows in W2. W1 and W2 stay separate PRs. (W1 now carries one small migration, the `reply_to_address` column.)
+2. **Queue address validation. Decided: verify by domain, not token.** An address must be the connected mailbox, a staff user's address, or on a domain already verified for the partner (`partner_sending_domains`, status `verified`). No token table; no ticket metadata mailed to strangers. Enforced on write in W2 Task 3 and re-checked at send in W5 Task 2.
+3. **Address cap. Decided: as proposed,** 10 per level.
+4. **Attachments over budget. Decided: as proposed.** A 15 MB total budget; overflow and expired files are listed by name; no download links.
+5. **Queue notice template. Decided: as proposed,** a fixed staff layout, not partner-editable.
+6. **No-inbound fallback subject. Decided: as proposed,** today's rendered template subject (`[T-…] New reply: …`).
+7. **Gmail mailboxes. Decided: as proposed,** out of scope; Gmail-connected partners stay on the platform/partner lane.
+8. **Recipient replace scope. Decided: all three Graph customer sends** (comment, resolved, autoresponse), **after** W1 Task 1 stores `Reply-To` at ingest. Without that task, web-form tickets (`From` = a no-reply relay) would be answered at the no-reply address, because today `createReply` honours `Reply-To` and the replace would stop that. The replace reaches every partner with a connected mailbox, not only flagged partners (see the wave table and the W1 PR note).
+9. **Gmail connections on the Graph path. Decided: not a real risk.** The connection query inner-joins `ticket_mailbox_tenant_ownerships`, which only an M365 connection has. W1 Task 2 keeps the test `gmail-only partner resolves no graph mailbox` as a regression guard.
+10. **Outbound mailbox selection (added at Gate B).** `resolveOutboundMailbox` took one connection with no ordering. W1 Task 2 makes the selection explicit: the mailbox that received the ticket, else a stable order.
