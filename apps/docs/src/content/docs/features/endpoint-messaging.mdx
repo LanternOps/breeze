@@ -1,0 +1,64 @@
+---
+title: Endpoint messaging and live chat
+description: Send a message card to the person at a device, or open a live chat with them, from the Breeze console.
+---
+
+Technicians can reach the person signed in at a device in two ways:
+
+- **Message**: a card on the user's screen, optionally with an **Acknowledge** button. Use it for notices such as planned maintenance.
+- **Live chat**: a chat window the technician opens from the device page. The user can reply.
+
+Neither one grants remote access.
+
+## Requirements
+
+- **Windows device, console session.** The user must be signed in at the console with Breeze Assist running. A user in a Remote Desktop session, or a disconnected session, does not get a card or a chat window.
+- **Agent 0.128.0 or later.** Older agents are refused with "agent unsupported".
+- **Endpoint messaging switched on in policy.** See below.
+- **Permissions.** `endpoint_messages:send` to send, chat, retract and resend; `endpoint_messages:read` to see history. Org Admin, Org Technician and Partner Technician have both.
+
+macOS and Linux devices show "No chat on this device" on the Chat tab.
+
+## Turn it on
+
+1. Open a configuration policy and go to the **Breeze Assist** tab.
+2. Switch on **Endpoint messaging**.
+3. Leave **Allow replies from the user** on if users should be able to answer in a chat. With it off, chats are one-way.
+4. Assign the policy to the devices.
+
+A device picks the setting up at its next check-in, usually within a minute. A chat started before then fails with "Chat needs Breeze Assist on a Windows console session."
+
+## Send a message
+
+Use **Send message** from the Devices list (bulk action), an organization header or a site header.
+
+- Set a title, body, severity, whether the user must acknowledge it, and when it expires.
+- **Messages** in the sidebar lists what was sent, with a status per device: queued, displayed, acknowledged, retracted, expired or failed.
+- **Retract** takes a card off the user's screen if it is still showing.
+
+Links in a card are shown as text. Clicking one does not open a browser.
+
+## Start a live chat
+
+1. Open the device and go to the **Chat** tab.
+2. Type the first message and choose **Start chat**. A chat window opens on the user's screen with your company name and your name.
+3. Replies appear in the Chat tab within a few seconds.
+4. Choose **End chat** when you are done. The user's window shows "This chat has ended."
+
+Limits:
+
+- One open chat per device.
+- Only a technician can start a chat. The user cannot start one from the tray.
+- A chat with no activity for 30 minutes ends automatically.
+- Messages are limited to 2,000 characters.
+
+After the first message, later technician messages do not raise the window again. If the user closed it, the Breeze Assist tray menu shows **Open chat** with an unread count.
+
+## Retention and audit
+
+- Sends, retractions, chat opens and chat closes are written to the audit log. Message text is never written there.
+- Message and chat text is deleted after 90 days. History rows are deleted after 13 months.
+
+## Hiding the feature
+
+The **Send message** entry points and the **Chat** tab are shown by default. To hide them in a web image you build yourself, set `PUBLIC_ENABLE_ENDPOINT_MESSAGING=false` at build time.
