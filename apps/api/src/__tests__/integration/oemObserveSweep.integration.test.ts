@@ -55,14 +55,11 @@ const lenovoObserveOn = {
   vendors: { lenovo: { enabled: true, categories: {}, blockedUpdateIds: [] } },
 };
 
-/** A partner with one org, one eligible Lenovo workstation, and an org policy that enables the lane. */
-async function seedTenant() {
-  const partner = await createPartner();
-  const org = await createOrganization({ partnerId: partner.id });
-  const site = await createSite({ orgId: org.id });
+/** An eligible Lenovo workstation, online, on an agent that can observe. */
+async function seedDevice(orgId: string, siteId: string): Promise<string> {
   const [device] = await getTestDb().insert(devices).values({
-    orgId: org.id,
-    siteId: site.id,
+    orgId,
+    siteId,
     agentId: `observe-${randomUUID()}`,
     hostname: 'observe-host',
     osType: 'windows',
@@ -74,11 +71,20 @@ async function seedTenant() {
   }).returning({ id: devices.id });
   await getTestDb().insert(deviceHardware).values({
     deviceId: device!.id,
-    orgId: org.id,
+    orgId,
     manufacturer: 'LENOVO',
     model: '21K5CTO1WW',
     biosVersion: 'N3JET30W',
   });
+  return device!.id;
+}
+
+/** A partner with one org, one eligible device, and an org policy that enables the lane. */
+async function seedTenant() {
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner.id });
+  const site = await createSite({ orgId: org.id });
+  const deviceId = await seedDevice(org.id, site.id);
   const [policy] = await getTestDb().insert(configurationPolicies).values({
     orgId: org.id,
     name: `vendor updates ${randomUUID()}`,
@@ -95,7 +101,7 @@ async function seedTenant() {
     targetId: org.id,
     priority: 0,
   });
-  return { partnerId: partner.id, orgId: org.id, deviceId: device!.id };
+  return { partnerId: partner.id, orgId: org.id, siteId: site.id, deviceId };
 }
 
 const observeRows = (deviceId: string) =>
@@ -168,6 +174,20 @@ describe('#12292 scheduled observe sweep against real PostgreSQL', () => {
       .where(and(eq(deviceCommands.deviceId, canary.deviceId), eq(deviceCommands.type, 'oem_observe')));
     await expect(runOemObserveSweep(new Date(now))).resolves.toEqual({ considered: 1, dispatched: 1 });
     expect(await observeRows(canary.deviceId)).toHaveLength(2);
+  });
+
+  it('reads each device\'s own commands: one device\'s recent observation does not hold back another', async () => {
+    const canary = await seedTenant();
+    vi.stubEnv('BREEZE_VENDOR_CANARY_PARTNER_IDS', canary.partnerId);
+    const now = new Date();
+
+    await expect(runOemObserveSweep(now)).resolves.toEqual({ considered: 1, dispatched: 1 });
+    // A second device in the same org, under the same policy, with no command of its own.
+    const sibling = await seedDevice(canary.orgId, canary.siteId);
+
+    await expect(runOemObserveSweep(now)).resolves.toEqual({ considered: 1, dispatched: 1 });
+    expect(await observeRows(canary.deviceId)).toHaveLength(1);
+    expect(await observeRows(sibling)).toHaveLength(1);
   });
 
   it('sends nothing to a partner that is not on the canary list, in the same run as one that is', async () => {
