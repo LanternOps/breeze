@@ -23,7 +23,7 @@
  * result and scrubs one that fails the contract, and writes nothing else. The
  * status row, reboot accounting and update-type ownership never see observe.
  */
-import { and, desc, eq, gt, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
 import {
   agentSupportsOemObserve,
   oemObservePayloadSchema,
@@ -317,12 +317,20 @@ export async function runOemObserveSweep(now: Date): Promise<{ considered: numbe
       // A prefilter only; resolveObserveApplicability decides.
       sql`trim(${deviceHardware.manufacturer}) ~* '^(lenovo|hp( inc\\.?)?|hewlett-packard|microsoft corporation)$'`,
       sql`(trim(${deviceHardware.manufacturer}) !~* '^microsoft corporation$' OR trim(${deviceHardware.model}) ~* '^surface\\s')`,
-      sql`NOT EXISTS (
-        SELECT 1 FROM ${deviceCommands} c
-        WHERE c.device_id = ${devices.id}
-          AND c.type = ${CommandTypes.OEM_OBSERVE}
-          AND (c.created_at > ${retryAfter} OR (c.status = 'completed' AND c.created_at > ${since}))
-      )`,
+      // Column comparisons, not a raw template: drizzle encodes a Date only
+      // against a timestamp column. A bare `${date}` in `sql` reaches the driver
+      // as a Date and the whole query throws (#12292).
+      notExists(db
+        .select({ one: sql`1` })
+        .from(deviceCommands)
+        .where(and(
+          eq(deviceCommands.deviceId, devices.id),
+          oemObserveCommandFilter(),
+          or(
+            gt(deviceCommands.createdAt, retryAfter),
+            and(eq(deviceCommands.status, 'completed'), gt(deviceCommands.createdAt, since)),
+          ),
+        ))),
       ...(after ? [gt(devices.id, after)] : []),
     ))
     .orderBy(devices.id)
