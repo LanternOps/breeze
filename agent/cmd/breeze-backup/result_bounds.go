@@ -198,14 +198,25 @@ func fitBackupResultForDelivery(result backupipc.BackupCommandResult) (backupipc
 func fitBackupResult(result backupipc.BackupCommandResult) (
 	fitted backupipc.BackupCommandResult, notesText string, limit deliveryLimit,
 ) {
+	return fitBackupResultAgainst(result, limitServerResult)
+}
+
+// fitBackupResultAgainst is fitBackupResult with the server's cap on the
+// result body supplied by the caller: limitServerResult for most commands,
+// limitCriticalResult for the command families the server validates more
+// tightly (see fitBackupResultForCommand).
+func fitBackupResultAgainst(result backupipc.BackupCommandResult, server deliveryLimit) (
+	fitted backupipc.BackupCommandResult, notesText string, limit deliveryLimit,
+) {
 	var notes []string
+	fits := func(r backupipc.BackupCommandResult) bool { return !exceededLimitAgainst(r, server).fired() }
 
 	// Captured BEFORE any tier runs: once the tiers have shrunk the payload the
 	// binding limit is no longer observable, and reporting a limit derived from
 	// the already-degraded result is how the wrong one gets named. Every tier
 	// below is handed this value so the warning it persists names the same
 	// limit the log line does.
-	limit = exceededLimit(result)
+	limit = exceededLimitAgainst(result, server)
 
 	// Tier 1 — always applied, and cheap (no JSON parse). Bounding the failure
 	// detail BEFORE marshalling is the primary fix; the tiers below are the
@@ -320,9 +331,13 @@ func finishBounding(
 // reporting — so both the degradation and any residual send failure are logged
 // at ERROR under component=backup, which puts them above the default warn
 // log-shipping threshold and therefore on the server.
-func sendBackupResult(conn *ipc.Conn, envelopeID string, result backupipc.BackupCommandResult) error {
+//
+// commandType selects the server limits the result is bounded against: the
+// critical families (verify, test restore, restore, DR, vault) are validated
+// far more tightly than backup_run — see fitBackupResultForCommand.
+func sendBackupResult(conn *ipc.Conn, envelopeID, commandType string, result backupipc.BackupCommandResult) error {
 	log := logging.L("backup")
-	fitted, degraded, limit := fitBackupResult(result)
+	fitted, degraded, limit := fitBackupResultForCommand(commandType, result)
 	if degraded != "" {
 		// Sizes are reported from the raw fields rather than a full marshal of
 		// the original: re-marshalling tens of megabytes just to populate a log
@@ -378,10 +393,16 @@ func fits(result backupipc.BackupCommandResult) bool {
 // JSON string encoding never shrinks its input — so an oversize result is
 // rejected without marshalling tens of megabytes on the endpoint.
 func exceededLimit(result backupipc.BackupCommandResult) deliveryLimit {
+	return exceededLimitAgainst(result, limitServerResult)
+}
+
+// exceededLimitAgainst is exceededLimit with the server's body limit supplied
+// by the caller (limitServerResult or limitCriticalResult).
+func exceededLimitAgainst(result backupipc.BackupCommandResult, server deliveryLimit) deliveryLimit {
 	// Tightest first. Stdout alone, because Stdout is what becomes the server's
 	// `result` field; see serverResultBudget.
-	if len(result.Stdout) > serverResultBudget {
-		return limitServerResult
+	if len(result.Stdout) > server.budget {
+		return server
 	}
 	if len(result.Stdout)+len(result.Stderr)+len(result.CommandID) > resultPayloadBudget {
 		return limitIPCFrame
@@ -450,6 +471,15 @@ var (
 		label:  "server result budget",
 		budget: serverResultBudget,
 		cap:    wire.MaxCommandResultBytes,
+	}
+	// limitCriticalResult is the server's structured-result cap for the
+	// command families it validates as critical (verify, test restore,
+	// restore, DR, vault) — about a tenth of limitServerResult.
+	limitCriticalResult = deliveryLimit{
+		name:   "server critical result cap (wire.CriticalResultStructuredMaxBytes)",
+		label:  "server critical result budget",
+		budget: wire.CriticalResultBudget,
+		cap:    wire.CriticalResultStructuredMaxBytes,
 	}
 	limitIPCFrame = deliveryLimit{
 		name:   "agent IPC frame (ipc.MaxMessageSize)",

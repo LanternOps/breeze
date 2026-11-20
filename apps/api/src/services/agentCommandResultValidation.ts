@@ -45,9 +45,127 @@ const VERIFICATION_COMMAND_TYPES = new Set(['backup_verify', 'backup_test_restor
 const TOPOLOGY_DIAGNOSTIC_COMMAND_TYPES = new Set(['network_diagnostic']);
 const VAULT_COMMAND_TYPES = new Set(['vault_sync']);
 
+// Detail-list limits for restore / verification results. Mirrored by the agent
+// (agent/internal/wire/critical_result_limits.go, pinned by a Go test that
+// parses these declarations), which bounds its lists to them before sending.
+// String limits count Unicode code points (zod 4), not bytes.
+export const CRITICAL_RESULT_FAILED_FILES_MAX = 1000;
+export const CRITICAL_RESULT_WARNINGS_MAX = 100;
+export const CRITICAL_RESULT_LIST_ENTRY_MAX_CHARS = 4096;
+export const CRITICAL_RESULT_WARNING_TEXT_MAX_CHARS = 10_000;
+export const CRITICAL_RESULT_ERROR_MAX_CHARS = 10_000;
+
+function truncateCodePoints(value: string, max: number): string {
+  // UTF-16 length is never below the code-point count.
+  if (value.length <= max) return value;
+  const codePoints = [...value];
+  if (codePoints.length <= max) return value;
+  return codePoints.slice(0, max - 1).join('') + '…';
+}
+
+function isStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function omittedCount(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+/**
+ * Bounds a restore / verification result's `failedFiles` and `warnings` lists
+ * (and its `error` text) to the schema limits instead of letting one oversize
+ * list reject the whole result, which loses its counts and status. Agents that
+ * predate agent-side bounding send unbounded lists. The first entries are kept;
+ * `failedFilesOmitted` / `warningsOmitted` record how many were dropped (added
+ * to any count the agent already reported), and a final warning says so. Counts
+ * such as `filesFailed` are never touched. With `maxBytes`, the lists are then
+ * halved until JSON.stringify of the result fits. Returns the input itself when
+ * nothing was over a limit.
+ */
+export function boundCriticalResultLists(value: unknown, maxBytes?: number): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const input = value as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...input };
+  let changed = false;
+
+  const clean = (list: string[]): string[] => {
+    const cleaned = list
+      .filter((entry) => entry.length > 0)
+      .map((entry) => truncateCodePoints(entry, CRITICAL_RESULT_LIST_ENTRY_MAX_CHARS));
+    if (cleaned.length !== list.length || cleaned.some((entry, i) => entry !== list[i])) changed = true;
+    return cleaned;
+  };
+  // A numeric failedFiles (bmr_recover's count) is left alone.
+  const failed = isStringList(input.failedFiles) ? clean(input.failedFiles) : null;
+  const warnings = isStringList(input.warnings) ? clean(input.warnings) : null;
+  for (const [key, max] of [
+    ['warnings', CRITICAL_RESULT_WARNING_TEXT_MAX_CHARS],
+    ['error', CRITICAL_RESULT_ERROR_MAX_CHARS],
+  ] as const) {
+    const text = input[key];
+    if (typeof text === 'string') {
+      const cut = truncateCodePoints(text, max);
+      if (cut !== text) {
+        out[key] = cut;
+        changed = true;
+      }
+    }
+  }
+
+  const priorFailedOmitted = omittedCount(input.failedFilesOmitted);
+  const priorWarningsOmitted = omittedCount(input.warningsOmitted);
+  // The note rides a warnings list: the run's own, or a new one.
+  const canNote = warnings !== null || input.warnings === undefined;
+  let failedKeep = failed ? Math.min(failed.length, CRITICAL_RESULT_FAILED_FILES_MAX) : 0;
+  let warnKeep = warnings ? Math.min(warnings.length, CRITICAL_RESULT_WARNINGS_MAX) : 0;
+  const dropping = () =>
+    (failed !== null && failedKeep < failed.length) || (warnings !== null && warnKeep < warnings.length);
+  const reserveNoteSlot = () => {
+    if (canNote && dropping()) warnKeep = Math.min(warnKeep, CRITICAL_RESULT_WARNINGS_MAX - 1);
+  };
+  const setOmitted = (key: string, n: number) => {
+    if (n > 0) out[key] = n;
+    else delete out[key];
+  };
+  const apply = () => {
+    const failedOmitted = priorFailedOmitted + (failed ? failed.length - failedKeep : 0);
+    const warningsOmitted = priorWarningsOmitted + (warnings ? warnings.length - warnKeep : 0);
+    if (failed) {
+      out.failedFiles = failed.slice(0, failedKeep);
+      setOmitted('failedFilesOmitted', failedOmitted);
+    }
+    const note = canNote && dropping();
+    if (warnings || note) {
+      const kept = (warnings ?? []).slice(0, warnKeep);
+      if (note) {
+        kept.push(
+          `${failedOmitted} more failed file(s) and ${warningsOmitted} more warning(s) not listed: ` +
+            "the result exceeded the server's limits for detail lists; the file counts are complete"
+        );
+      }
+      out.warnings = kept;
+      setOmitted('warningsOmitted', warningsOmitted);
+    }
+  };
+
+  reserveNoteSlot();
+  if (dropping()) changed = true;
+  if (changed) apply();
+  if (maxBytes !== undefined) {
+    while (Buffer.byteLength(JSON.stringify(out), 'utf8') > maxBytes && (failedKeep > 0 || warnKeep > 0)) {
+      if (failedKeep > 0) failedKeep = Math.floor(failedKeep / 2);
+      else warnKeep = Math.floor(warnKeep / 2);
+      reserveNoteSlot();
+      changed = true;
+      apply();
+    }
+  }
+  return changed ? out : value;
+}
+
 const warningListSchema = z.union([
-  z.array(z.string().max(4096)).max(100),
-  z.string().max(10_000),
+  z.array(z.string().max(CRITICAL_RESULT_LIST_ENTRY_MAX_CHARS)).max(CRITICAL_RESULT_WARNINGS_MAX),
+  z.string().max(CRITICAL_RESULT_WARNING_TEXT_MAX_CHARS),
 ]);
 
 // Windows entries restored with a restrictive access list because their
@@ -66,7 +184,9 @@ export function boundQuarantinedPaths(value: unknown): string[] | undefined {
     .map((entry) => entry.slice(0, RESTORE_QUARANTINED_PATH_MAX_CHARS));
 }
 
-export const restoreStructuredResultSchema = z.object({
+// Preprocessed so an oversize detail list is bounded, not rejected — on every
+// parse, including handlers that re-parse stored stdout.
+export const restoreStructuredResultSchema = z.preprocess((value) => boundCriticalResultLists(value), z.object({
   snapshotId: z.string().min(1).max(255).optional(),
   // 'refused' is the bare_metal_rebuild engine's preflight verdict (W05a); the
   // helper reports it as a successful command and the server maps it.
@@ -79,11 +199,11 @@ export const restoreStructuredResultSchema = z.object({
   // A path list from file restores; a count from the bare-metal recovery
   // helper (bmr_recover), which always sends the field.
   failedFiles: z.union([
-    z.array(z.string().min(1).max(4096)).max(1000),
+    z.array(z.string().min(1).max(CRITICAL_RESULT_LIST_ENTRY_MAX_CHARS)).max(CRITICAL_RESULT_FAILED_FILES_MAX),
     z.number().int().nonnegative(),
   ]).optional(),
   warnings: warningListSchema.optional(),
-  error: z.string().max(10_000).optional(),
+  error: z.string().max(CRITICAL_RESULT_ERROR_MAX_CHARS).optional(),
   stagingDir: z.string().max(4096).optional(),
   stateApplied: z.boolean().optional(),
   driversInjected: z.number().int().nonnegative().optional(),
@@ -112,9 +232,9 @@ export const restoreStructuredResultSchema = z.object({
   securityDescriptorQuarantinedPaths: z.array(z.string()).transform(boundQuarantinedPaths).optional(),
   // bmr_recover: stable outcome code (see bmrCompleteSchema in routes/backup/schemas.ts).
   code: z.string().max(64).optional(),
-}).passthrough();
+}).passthrough());
 
-export const backupVerificationStructuredResultSchema = z.object({
+export const backupVerificationStructuredResultSchema = z.preprocess((value) => boundCriticalResultLists(value), z.object({
   snapshotId: z.string().min(1).max(255).optional(),
   status: z.enum(['passed', 'failed', 'partial']),
   filesVerified: z.number().int().nonnegative().optional(),
@@ -124,7 +244,7 @@ export const backupVerificationStructuredResultSchema = z.object({
   restoreTimeSeconds: z.number().int().nonnegative().optional(),
   restorePath: z.string().max(4096).optional(),
   cleanedUp: z.boolean().optional(),
-  failedFiles: z.array(z.string().min(1).max(4096)).max(1000).optional(),
+  failedFiles: z.array(z.string().min(1).max(CRITICAL_RESULT_LIST_ENTRY_MAX_CHARS)).max(CRITICAL_RESULT_FAILED_FILES_MAX).optional(),
   // #6350: files the BACKUP run never uploaded. They are absent from the
   // manifest, so verification cannot observe them — the agent reads the count
   // off the manifest and refuses `passed` when it is non-zero.
@@ -133,10 +253,10 @@ export const backupVerificationStructuredResultSchema = z.object({
   // storage session ended (code `storage_session_lost`). Not failures.
   filesUnchecked: z.number().int().nonnegative().optional(),
   warnings: warningListSchema.optional(),
-  error: z.string().max(10_000).optional(),
+  error: z.string().max(CRITICAL_RESULT_ERROR_MAX_CHARS).optional(),
   // Stable outcome code (e.g. `storage_session_lost`, an integrity failure code).
   code: z.string().max(64).optional(),
-}).passthrough();
+}).passthrough());
 
 export const vaultSyncStructuredResultSchema = z.object({
   vaultId: z.string().guid().optional(),
@@ -219,6 +339,24 @@ function parseStructuredResult(envelope: GenericCommandResultEnvelope): unknown 
   return deepJsonParse(envelope.stdout);
 }
 
+// Shipped agents bound a result body only to the general 5 MB cap, so a
+// restore / verification body can arrive over the structured-size cap purely
+// because of its detail lists. Bound the lists (and shrink them to the cap)
+// BEFORE the size check, and measure the bounded body, so such a result keeps
+// its counts and status instead of being rejected whole. A body still over the
+// cap after its lists are emptied is rejected as before; the caps themselves
+// are unchanged.
+function boundEnvelopeDetailLists(envelope: GenericCommandResultEnvelope): GenericCommandResultEnvelope {
+  const parsed = parseStructuredResult(envelope);
+  const bounded = boundCriticalResultLists(parsed, CRITICAL_RESULT_STRUCTURED_MAX_BYTES);
+  if (bounded === parsed) return envelope;
+  return {
+    ...envelope,
+    stdout: JSON.stringify(bounded),
+    result: envelope.result !== undefined ? bounded : undefined,
+  };
+}
+
 function ensureObjectLike(commandType: string, value: unknown): Record<string, unknown> {
   if (!value) return {};
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -235,6 +373,9 @@ export function validateCriticalCommandResult(
   const family = detectCriticalFamily(commandType);
   if (!family) return null;
 
+  if (family === 'verification' || family === 'restore' || family === 'dr') {
+    envelope = boundEnvelopeDetailLists(envelope);
+  }
   ensureCriticalResultSizeLimits(envelope);
 
   const parsed = parseStructuredResult(envelope);
