@@ -221,7 +221,7 @@ describe('DeviceScriptHistory highlighted execution (#4886)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
 
     expect(screen.queryByText('Execution Details')).toBeNull();
-    expect(window.location.hash).toBe('#scripts');
+    expect(window.location.hash).toBe('#scripts/view=all');
   });
 
   it('Run again from the auto-opened modal also drops the execution hash', async () => {
@@ -231,7 +231,7 @@ describe('DeviceScriptHistory highlighted execution (#4886)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Run again/i }));
 
-    expect(window.location.hash).toBe('#scripts');
+    expect(window.location.hash).toBe('#scripts/view=all');
   });
 
   it('does not auto-open anything when the highlighted id matches no execution', async () => {

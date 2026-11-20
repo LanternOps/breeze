@@ -13,7 +13,7 @@ import {
 } from '@/lib/cancelScriptExecution';
 import { usePermissions } from '@/lib/permissions';
 import { useHashState } from '@/lib/useHashState';
-import { deviceScriptsHash, deviceScriptsViewHash, scriptsViewFromHash, type ScriptsView } from '@/lib/deviceScriptsLink';
+import { deviceScriptsViewHash, scriptsViewFromHash, type ScriptsView } from '@/lib/deviceScriptsLink';
 import { groupExecutionsByScript, outputExcerpt } from './scriptLatestResults';
 import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
@@ -473,7 +473,7 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
   // reopens this dialog every time the operator comes back to the device.
   const closeExecution = () => {
     setSelectedExecution(null);
-    if (highlightExecutionId) window.location.replace(`#${deviceScriptsHash()}`);
+    if (highlightExecutionId) window.location.replace(`#${deviceScriptsViewHash(view)}`);
   };
 
   // #5318 — one cancel path shared with ScriptExecutionsPage; the API
