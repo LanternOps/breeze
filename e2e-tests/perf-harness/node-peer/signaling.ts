@@ -2,7 +2,7 @@
  * Signaling client for the Breeze remote-desktop WebRTC flow.
  *
  * This replicates, over plain HTTP, exactly what the native Tauri viewer does
- * (see apps/viewer/src/lib/webrtc.ts) to bring up a desktop session:
+ * (see packages/remote-desktop-ui/src/webrtc.ts) to bring up a desktop session:
  *
  *   1. POST /api/v1/auth/login                          -> admin access token
  *   2. POST /api/v1/remote/sessions                     -> create desktop session (sessionId)

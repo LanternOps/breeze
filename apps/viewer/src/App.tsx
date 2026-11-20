@@ -5,7 +5,7 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import DesktopViewer from './components/DesktopViewer';
 import UpdateIndicator from './components/UpdateIndicator';
 import { QuitConfirm } from './components/QuitConfirm';
-import { parseDeepLink, type ConnectionParams } from './lib/protocol';
+import { parseDeepLink, type ConnectionParams } from '@breeze/remote-desktop-ui';
 import { createDeepLinkGate, deepLinkKey } from './lib/deepLinkGate';
 
 /**

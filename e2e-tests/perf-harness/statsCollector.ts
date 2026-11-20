@@ -2,7 +2,7 @@
  * Client-side WebRTC stats capture for the Breeze remote-desktop viewer.
  *
  * The real viewer creates its RTCPeerConnection deep inside app code and does
- * NOT expose it on window (see apps/viewer/src/lib/webrtc.ts). Rather than
+ * NOT expose it on window (see packages/remote-desktop-ui/src/webrtc.ts). Rather than
  * requiring an app change, we install an init script BEFORE any document loads
  * that wraps `window.RTCPeerConnection`, so every PC the page (or any same-origin
  * frame) constructs is stashed on `window.__breezePerf.pcs`. The poller then

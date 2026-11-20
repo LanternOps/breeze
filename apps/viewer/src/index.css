@@ -1,6 +1,13 @@
 @import "tailwindcss";
 
 /*
+ * The shared package builds Tailwind class strings in TypeScript (displayScaling.ts),
+ * and Tailwind only generates classes it finds while scanning sources. Without this,
+ * the viewer's video fit/actual-size styles are missing from the built CSS.
+ */
+@source "../../../packages/remote-desktop-ui/src";
+
+/*
  * Semantic color tokens (ported from the v3 tailwind.config.js theme.extend.colors).
  * In v4, `--color-<name>` generates the `bg-<name>` / `text-<name>` / `border-<name>`
  * / `ring-<name>` utilities, and the nested v3 `accent.{DEFAULT,hover,soft}` map to

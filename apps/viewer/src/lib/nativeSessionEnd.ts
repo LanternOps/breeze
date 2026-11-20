@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { AuthenticatedConnectionParams } from './webrtc';
+import type { AuthenticatedConnectionParams } from '@breeze/remote-desktop-ui';
 
 type Invoke = (cmd: string, args: Record<string, unknown>) => Promise<unknown>;
 

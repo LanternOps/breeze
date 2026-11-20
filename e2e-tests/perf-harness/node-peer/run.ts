@@ -139,7 +139,7 @@ async function main(): Promise<void> {
   const iceServers: WeriftIceServer[] = await fetchIceServers(cfg, viewerToken, sessionId);
   console.log(`[node-peer] ICE servers: ${iceServers.map((s) => s.urls).join(', ')}`);
 
-  // ── Peer connection (mirrors apps/viewer/src/lib/webrtc.ts) ──────────────
+  // ── Peer connection (mirrors packages/remote-desktop-ui/src/webrtc.ts) ──────────────
   const pc = new RTCPeerConnection({
     iceServers,
     codecs: { video: [h264Codec()] },

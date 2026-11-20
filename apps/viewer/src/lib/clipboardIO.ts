@@ -11,7 +11,7 @@
  * allow-write-image (src-tauri/capabilities/default.json), core:image:default
  * (via core:default) for Image.new.
  */
-import type { ImageFormat, LocalClipboardIO } from './clipboardSync';
+import type { ImageFormat, LocalClipboardIO } from '@breeze/remote-desktop-ui';
 
 export interface ImageCodec {
   encodePng(rgba: Uint8Array, width: number, height: number): Promise<Uint8Array>;

@@ -97,7 +97,9 @@ for (const [paths, on] of [
   // Rust / Tauri apps. desktopWs_inputSchema.test.ts (test-api) reads apps/viewer/src.
   [['apps/helper/src-tauri/src/main.rs'], ['rust']],
   [['apps/viewer/src-tauri/src/main.rs'], ['rust']],
-  [['apps/viewer/src/lib/protocol.ts'], ['rust', 'api']],
+  [['apps/viewer/src/components/DesktopViewer.tsx'], ['rust', 'api']],
+  // desktopWs_inputSchema.test.ts also reads packages/remote-desktop-ui/src/paste.ts; packages/** sets every area.
+  [['packages/remote-desktop-ui/src/paste.ts'], ['api', 'web', 'portal', 'addins', 'm365', 'rust']],
   [['Cargo.lock'], ['rust']],
   [['rust-toolchain.toml'], ['rust']],
   // Mobile has its own gate (mobile-native-changes); no area job reads it except
@@ -467,7 +469,7 @@ const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 const thinArms = new Set([...summary.matchAll(/^ {14}([a-z0-9-]+)\) \[\[ "\$\{\w+_RESULT\}" != "skipped" \]\] \|\| \w+_RESULT=success ;;$/gmu)].map((m) => m[1]));
 const thinOpt = (name) => (thinArms.has(name) ? `(?:${escape(` && !contains(needs.changes.outputs.thin_skip, ',${name},')`)})?` : '');
 test('W05: the thin clause is allowed only on a job CI Success can count as satisfied', () => {
-  assert.equal(thinArms.size, 27);
+  assert.equal(thinArms.size, 28);
   assert.equal(thinOpt('smoke-test'), '');
   assert.ok(new RegExp(`^    if: ${escape(APP_IF)}${thinOpt('test-shared')}$`, 'mu').test(job('test-shared')));
   assert.ok(!new RegExp(`^    if: ${escape(APP_IF)}${thinOpt('test-shared')}$`, 'mu')
@@ -518,9 +520,23 @@ test('ci-success needs test-document-ui and asserts it in both branches (#9414)'
   assert.match(summary, /\[\[ "\$\{TEST_DOCUMENT_UI_RESULT\}" != "success" \]\]/u);
   assert.match(summary, /\[\[ "\$\{TEST_DOCUMENT_UI_RESULT\}" != "skipped" \]\]/u);
 });
+// #9557 W1: @breeze/remote-desktop-ui holds the viewer's Tauri-free libraries; same
+// app-gated shape as test-document-ui.
+test('test-remote-desktop-ui runs the package suite and typecheck, gated on code AND app (#9557)', () => {
+  assert.match(job('test-remote-desktop-ui'), new RegExp(`^    if: ${escape(APP_IF)}${thinOpt('test-remote-desktop-ui')}$`, 'mu'));
+  assert.match(job('test-remote-desktop-ui'), /^        run: pnpm --filter @breeze\/remote-desktop-ui exec vitest run$/mu);
+  assert.match(job('test-remote-desktop-ui'), /^        run: pnpm --filter=@breeze\/remote-desktop-ui typecheck$/mu);
+  assert.doesNotMatch(job('test-remote-desktop-ui'), /^    if: .*outputs\.(api|web|portal|addins|m365|rust) ==/mu);
+});
+test('ci-success needs test-remote-desktop-ui and asserts it in both branches (#9557)', () => {
+  assert.match(workflow, /^  ci-success:\n(?:.*\n)*?    needs: \[[^\]]*\btest-remote-desktop-ui\b[^\]]*\]/mu);
+  assert.match(summary, /^          TEST_REMOTE_DESKTOP_UI_RESULT: \$\{\{ needs\.test-remote-desktop-ui\.result \}\}$/mu);
+  assert.match(summary, /\[\[ "\$\{TEST_REMOTE_DESKTOP_UI_RESULT\}" != "success" \]\]/u);
+  assert.match(summary, /\[\[ "\$\{TEST_REMOTE_DESKTOP_UI_RESULT\}" != "skipped" \]\]/u);
+});
 test('jobs that must never be area-gated are not', () => {
   for (const name of ['changes', 'lint', 'typecheck', 'security-audit', 'workspace-runtime', 'docs-check', 'ci-success',
-    'auth-browser-transition-browser-contract', 'test-document-ui', 'test-viewer', 'test-mobile']) {
+    'auth-browser-transition-browser-contract', 'test-document-ui', 'test-remote-desktop-ui', 'test-viewer', 'test-mobile']) {
     assert.doesNotMatch(job(name), /^    if: .*outputs\.(api|web|portal|addins|m365|rust) ==/mu, name);
   }
 });

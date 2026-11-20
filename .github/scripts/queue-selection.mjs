@@ -17,10 +17,13 @@ export const MAX_DELTA_MERGES = 40;
 export const CLASSIFIER_KEYS = ['code', 'docs', 'agent', 'app', 'api', 'web', 'portal', 'addins', 'm365', 'rust',
   'topology_browser', 'agent_code', 'integration', 'path_readers', 'reader_tests'];
 const AREAS = ['api', 'web', 'portal', 'addins', 'm365', 'rust', 'agent_code'];
-const PATH_AREAS = { viewer: 'apps/viewer/', mobile: 'apps/mobile/', shared: 'packages/shared/', document_ui: 'packages/document-ui/' };
+// viewer also lists the package it imports: a change there can break the viewer's suite.
+const PATH_AREAS = { viewer: ['apps/viewer/', 'packages/remote-desktop-ui/'], mobile: 'apps/mobile/', shared: 'packages/shared/',
+  document_ui: 'packages/document-ui/', remote_desktop_ui: 'packages/remote-desktop-ui/' };
 const unit = {
   'test-api': 'api', 'test-web': 'web', 'test-portal': 'portal',
   'test-mobile': 'mobile', 'test-viewer': 'viewer', 'test-shared': 'shared', 'test-document-ui': 'document_ui',
+  'test-remote-desktop-ui': 'remote_desktop_ui',
   'test-office-addin-core': 'addins', 'test-excel-addin': 'addins', 'test-word-addin': 'addins',
   'test-powerpoint-addin': 'addins', 'test-outlook-addin': 'addins',
   'test-m365-graph-read-executor': 'm365', 'test-m365-graph-actions-executor': 'm365',
@@ -142,6 +145,7 @@ export function routeOwnTest(path, context) {
   const prefixJobs = {
     'apps/web/': 'test-web', 'apps/portal/': 'test-portal', 'apps/viewer/': 'test-viewer',
     'apps/mobile/': 'test-mobile', 'packages/shared/': 'test-shared', 'packages/document-ui/': 'test-document-ui',
+    'packages/remote-desktop-ui/': 'test-remote-desktop-ui',
     'packages/extension-sdk/': 'test-api', 'ee/workspace/': 'test-api',
     'packages/office-addin-core/': 'test-office-addin-core',
     ...Object.fromEntries(['excel', 'word', 'powerpoint', 'outlook'].map(p => [`apps/${p}-addin/`, `test-${p}-addin`])),
@@ -151,7 +155,7 @@ export function routeOwnTest(path, context) {
 }
 function areas(paths, flags) {
   return new Set([...AREAS.filter(key => truth(flags[key])), ...Object.entries(PATH_AREAS)
-    .filter(([, prefix]) => paths.some(p => p.startsWith(prefix))).map(([key]) => key)]);
+    .filter(([, prefix]) => [prefix].flat().some(pre => paths.some(p => p.startsWith(pre)))).map(([key]) => key)]);
 }
 // ── W07b3 / W07c (#10751): shadow fields beside the selection ─────────────
 //

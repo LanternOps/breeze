@@ -158,8 +158,9 @@ function readTypeLiterals(source: string, re: RegExp): Set<string> {
 
 function readViewerEmittedInputKinds(): string[] {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  // apps/api/src/routes -> apps/viewer/src/...
+  // apps/api/src/routes -> apps/viewer/src/... (component) and packages/remote-desktop-ui/src/... (libraries)
   const viewerRoot = path.resolve(here, '../../../viewer/src');
+  const uiRoot = path.resolve(here, '../../../../packages/remote-desktop-ui/src');
 
   const desktopViewerSource = readFileSync(path.join(viewerRoot, 'components/DesktopViewer.tsx'), 'utf8');
   // Quote- and property-order-agnostic within each sendInputFn({...}) call.
@@ -176,7 +177,7 @@ function readViewerEmittedInputKinds(): string[] {
   // channel; the WS fallback sends raw events via inputChannel.send and never
   // emits it, so desktopInputEvent has no reason to accept it.
 
-  const pasteSource = readFileSync(path.join(viewerRoot, 'lib/paste.ts'), 'utf8');
+  const pasteSource = readFileSync(path.join(uiRoot, 'paste.ts'), 'utf8');
   const pasteKinds = readTypeLiterals(pasteSource, /type:\s*['"]([a-zA-Z_]+)['"]/g);
 
   return Array.from(new Set([...directKinds, ...pasteKinds]));

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDeepLinkGate, deepLinkKey } from './deepLinkGate';
-import type { ConnectionParams } from './protocol';
+import type { ConnectionParams } from '@breeze/remote-desktop-ui';
 
 const DESKTOP: ConnectionParams = {
   mode: 'desktop',

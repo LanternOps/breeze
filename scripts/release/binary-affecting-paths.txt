@@ -15,6 +15,7 @@
 agent/**                        # Go agent family, installer/, recovery-media/, build-edition.sh, go.mod/go.sum
 apps/agent/**                   # stray Go tree; defensive
 apps/viewer/**                  # Tauri Viewer incl. src-tauri/Cargo.lock
+packages/remote-desktop-ui/**   # Viewer frontend libraries, compiled into the signed Tauri Viewer
 apps/helper/**                  # Tauri Helper
 docker/Dockerfile.binaries
 

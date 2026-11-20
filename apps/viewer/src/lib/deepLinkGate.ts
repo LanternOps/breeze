@@ -1,4 +1,4 @@
-import type { ConnectionParams } from './protocol';
+import type { ConnectionParams } from '@breeze/remote-desktop-ui';
 
 /**
  * Identity of a deep link: what it connects to and with which single-use code.

@@ -8,7 +8,7 @@
 // polyfill without inputType, which the dedupe needs.
 
 import { forwardRef, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import type { CompositionCapture } from '../lib/compositionCapture';
+import type { CompositionCapture } from '@breeze/remote-desktop-ui';
 
 interface Props {
   capture: CompositionCapture;

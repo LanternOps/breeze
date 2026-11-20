@@ -5,7 +5,7 @@
 // feeds — this test fails first.
 
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -108,16 +108,39 @@ test('the Go module cannot reach outside agent/ through a replace directive', ()
   }
 });
 
-test('the Viewer and Helper take no workspace dependencies (their closure stays inside the protected set)', () => {
-  for (const app of ['viewer', 'helper']) {
-    const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'apps', app, 'package.json'), 'utf8'));
-    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
-      for (const [name, spec] of Object.entries(manifest[field] ?? {})) {
-        assert.ok(!String(spec).startsWith('workspace:'), `apps/${app} ${field}.${name} is a workspace dependency (${spec})`);
-        assert.ok(!/^(?:file|link):/u.test(String(spec)), `apps/${app} ${field}.${name} points at a local path (${spec})`);
+// A workspace package the Viewer or Helper depends on is compiled into the signed binary, so
+// the policy must protect its directory too, and that of everything it depends on in turn.
+function workspaceDir(name) {
+  for (const root of ['apps', 'packages', 'ee']) {
+    for (const entry of readdirSync(join(REPO_ROOT, root), { withFileTypes: true })) {
+      const manifest = join(REPO_ROOT, root, entry.name, 'package.json');
+      if (entry.isDirectory() && existsSync(manifest) && JSON.parse(readFileSync(manifest, 'utf8')).name === name) {
+        return `${root}/${entry.name}`;
       }
     }
   }
+  return null;
+}
+
+test('the Viewer and Helper take workspace dependencies only inside the protected set', () => {
+  const seen = new Set();
+  const check = (dir) => {
+    const manifest = JSON.parse(readFileSync(join(REPO_ROOT, dir, 'package.json'), 'utf8'));
+    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+      for (const [name, spec] of Object.entries(manifest[field] ?? {})) {
+        assert.ok(!/^(?:file|link):/u.test(String(spec)), `${dir} ${field}.${name} points at a local path (${spec})`);
+        if (!String(spec).startsWith('workspace:')) continue;
+        const target = workspaceDir(name);
+        assert.ok(target, `${dir} ${field}.${name} names no workspace package`);
+        assert.ok(covered(target), `${dir} ${field}.${name} lives in ${target}, which binary-affecting-paths.txt does not protect`);
+        if (!seen.has(target)) {
+          seen.add(target);
+          check(target);
+        }
+      }
+    }
+  };
+  for (const app of ['viewer', 'helper']) check(`apps/${app}`);
 });
 
 test('the extraction sees the obvious inputs (guards against a vacuous pass)', () => {
