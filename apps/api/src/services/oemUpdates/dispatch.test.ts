@@ -397,7 +397,13 @@ describe('dispatchOemUpdateRun: the payload', () => {
       occurrenceKey: '2027-01',
       blockedUpdateIds: ['ABC12'],
       escrowedProtectorIds: [PROTECTOR_ID],
-      tool: null,
+      // Dell's tool is pinned (W10), so the payload names it for a fresh install.
+      tool: {
+        version: '5.7.2',
+        url: getLaneManifest('dell').tool!.url,
+        sha256: getLaneManifest('dell').tool!.sha256,
+        prerequisites: [expect.objectContaining({ name: 'dotnet_desktop_runtime' })],
+      },
     });
   });
 

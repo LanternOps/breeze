@@ -1,0 +1,88 @@
+﻿<Configuration>
+  <Group Name="Settings" Version="5.7.2" TimeSaved="11/19/2026 12:58:30 AM (UTC -7:00)">
+    <Group Name="General">
+      <Property Name="SettingsModifiedTime">
+        <Value>11/19/2026 12:58:29 AM</Value>
+      </Property>
+      <Property Name="DownloadPath" Default="ValueIsDefault" />
+      <Property Name="CustomCatalogPaths" Default="ValueIsDefault" />
+      <Property Name="EnableDefaultDellCatalog" Default="ValueIsDefault" />
+      <Property Name="EnableCatalogXML" Default="ValueIsDefault" />
+      <Property Name="TestMode" Default="ValueIsDefault" />
+      <Property Name="SuspendBitLocker">
+        <Value>true</Value>
+      </Property>
+      <Property Name="AutoUpdateUserConsent" Default="ValueIsDefault" />
+      <Property Name="MaxRetryAttempts" Default="ValueIsDefault" />
+      <Property Name="ExcludeUpdatesFromLastNDays" Default="ValueIsDefault" />
+      <Property Name="EnableRingDeployment" Default="ValueIsDefault" />
+      <Property Name="LocalBlockedSWB" Default="ValueIsDefault" />
+      <Group Name="CustomProxySettings">
+        <Property Name="UseDefaultProxy" Default="ValueIsDefault" />
+        <Property Name="Server" Default="ValueIsDefault" />
+        <Property Name="Port" Default="ValueIsDefault" />
+        <Property Name="EnableProxyFallbackToDirectConnection" Default="ValueIsDefault" />
+        <Property Name="UseAuthentication" Default="ValueIsDefault" />
+      </Group>
+    </Group>
+    <Group Name="Schedule">
+      <Property Name="ScheduleMode">
+        <Value>ManualUpdates</Value>
+      </Property>
+      <Property Name="MonthlyScheduleMode" Default="ValueIsDefault" />
+      <Property Name="WeekOfMonth" Default="ValueIsDefault" />
+      <Property Name="Time" Default="ValueIsDefault" />
+      <Property Name="DayOfWeek" Default="ValueIsDefault" />
+      <Property Name="DayOfMonth" Default="ValueIsDefault" />
+      <Property Name="AutomationMode" Default="ValueIsDefault" />
+      <Property Name="ScheduledExecution" Default="ValueIsDefault" />
+      <Property Name="DeferUpdate" Default="ValueIsDefault" />
+      <Property Name="DisableNotification" Default="ValueIsDefault" />
+      <Property Name="SchedulerRetryEnabled" Default="ValueIsDefault" />
+      <Property Name="SchedulerRetryCount" Default="ValueIsDefault" />
+      <Property Name="SchedulerMaxRetryInterval" Default="ValueIsDefault" />
+      <Property Name="InstallationDeferral" Default="ValueIsDefault" />
+      <Property Name="DeferralInstallInterval" Default="ValueIsDefault" />
+      <Property Name="DeferralInstallCount" Default="ValueIsDefault" />
+      <Property Name="SystemRestartDeferral" Default="ValueIsDefault" />
+      <Property Name="DeferRestartInterval" Default="ValueIsDefault" />
+      <Property Name="DeferRestartCount" Default="ValueIsDefault" />
+      <Property Name="EnableForceRestart" Default="ValueIsDefault" />
+      <Property Name="ThrottleEnabled" Default="ValueIsDefault" />
+      <Property Name="ThrottleLimit" Default="ValueIsDefault" />
+    </Group>
+    <Group Name="UpdateFilter">
+      <Property Name="FilterApplicableMode" Default="ValueIsDefault" />
+      <Group Name="RecommendedLevel">
+        <Property Name="IsCriticalUpdatesSelected" Default="ValueIsDefault" />
+        <Property Name="IsRecommendedUpdatesSelected" Default="ValueIsDefault" />
+        <Property Name="IsOptionalUpdatesSelected" Default="ValueIsDefault" />
+        <Property Name="IsSecurityUpdatesSelected" Default="ValueIsDefault" />
+      </Group>
+      <Group Name="UpdateType">
+        <Property Name="IsDriverSelected" Default="ValueIsDefault" />
+        <Property Name="IsApplicationSelected" Default="ValueIsDefault" />
+        <Property Name="IsBiosSelected" Default="ValueIsDefault" />
+        <Property Name="IsFirmwareSelected" Default="ValueIsDefault" />
+        <Property Name="IsUtilitySelected" Default="ValueIsDefault" />
+        <Property Name="IsUpdateTypeOtherSelected" Default="ValueIsDefault" />
+      </Group>
+      <Group Name="DeviceCategory">
+        <Property Name="IsAudioSelected" Default="ValueIsDefault" />
+        <Property Name="IsChipsetSelected" Default="ValueIsDefault" />
+        <Property Name="IsInputSelected" Default="ValueIsDefault" />
+        <Property Name="IsNetworkSelected" Default="ValueIsDefault" />
+        <Property Name="IsStorageSelected" Default="ValueIsDefault" />
+        <Property Name="IsVideoSelected" Default="ValueIsDefault" />
+        <Property Name="IsDeviceCategoryOtherSelected" Default="ValueIsDefault" />
+      </Group>
+    </Group>
+    <Group Name="AdvancedDriverRestore">
+      <Property Name="IsCabSourceDell" Default="ValueIsDefault" />
+      <Property Name="CabPath" Default="ValueIsDefault" />
+      <Property Name="IsAdvancedDriverRestoreEnabled">
+        <Value>false</Value>
+      </Property>
+    </Group>
+  </Group>
+</Configuration>

@@ -17,6 +17,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/getsentry/sentry-go v0.50.0
 	github.com/go-ole/go-ole v1.3.0
+	github.com/google/go-tpm v0.9.8
 	github.com/google/gopacket v1.1.19
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
@@ -24,6 +25,7 @@ require (
 	github.com/hirochachacha/go-smb2 v1.1.0
 	github.com/jezek/xgb v1.3.1
 	github.com/niallnsec/yaraxwasm v1.1.0
+	github.com/pion/ice/v4 v4.4.8
 	github.com/pion/logging v0.2.4
 	github.com/pion/rtcp v1.2.20
 	github.com/pion/webrtc/v4 v4.2.26
@@ -84,6 +86,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
+	github.com/google/go-tpm-tools v0.3.13-0.20230620182252-4639ecce2aba // indirect
 	github.com/google/s2a-go v0.1.11 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.25 // indirect
 	github.com/googleapis/gax-go/v2 v2.27.0 // indirect
@@ -97,7 +100,6 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.28 // indirect
 	github.com/pion/datachannel v1.6.3 // indirect
 	github.com/pion/dtls/v3 v3.1.15 // indirect
-	github.com/pion/ice/v4 v4.4.8 // indirect
 	github.com/pion/interceptor v0.1.51 // indirect
 	github.com/pion/mdns/v2 v2.2.2 // indirect
 	github.com/pion/randutil v0.1.0 // indirect

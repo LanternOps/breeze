@@ -13,12 +13,17 @@ import (
 	"github.com/breeze-rmm/agent/internal/wakeconfig"
 )
 
-// Of the wake_on_lan_settings block only `enabled` and the boolean
-// `configure_settings` are read. firmware_writes is ignored on purpose (it
-// arrives with the Dell write wave), and no field can name a setting or value:
-// the writable settings are a compile-time list in wakeconfig. Writes stay
-// inactive until wakeconfig's activation switch is flipped, so in this release
-// configure_settings true is carried but never reaches a writer.
+// Of the wake_on_lan_settings block only `enabled`, the boolean
+// `configure_settings` and `observe_vendors` are read. firmware_writes is
+// ignored on purpose (it arrives with the Dell write wave), and no field can
+// name a setting or value: the writable settings are a compile-time list in
+// wakeconfig. Writes stay inactive until wakeconfig's activation switch is
+// flipped, so in this release configure_settings true is carried but never
+// reaches a writer. observe_vendors grants reads only, and only for the closed
+// set of lanes biosconfig.ParseLane knows.
+
+// maxObserveVendorEntries bounds how much of observe_vendors is read.
+const maxObserveVendorEntries = 8
 
 // parseWakeSettings reads wake_on_lan_settings in snake_case or camelCase. A
 // non-object, or a missing or non-boolean `enabled`, is rejected. Anything but
@@ -37,7 +42,35 @@ func parseWakeSettings(raw any) (wakeconfig.Settings, bool) {
 		cfg = m["configureSettings"]
 	}
 	configure, _ := cfg.(bool)
-	return wakeconfig.Settings{Enabled: enabled, ConfigureSettings: configure}, true
+	obs, present := m["observe_vendors"]
+	if !present {
+		obs = m["observeVendors"]
+	}
+	return wakeconfig.Settings{Enabled: enabled, ConfigureSettings: configure, Observe: parseObserveVendors(obs)}, true
+}
+
+// parseObserveVendors reads observe_vendors. Anything but a list of strings,
+// including an absent key (an older API), grants nothing; unknown names are
+// ignored; only the first few entries are read.
+func parseObserveVendors(raw any) biosconfig.VendorSet {
+	list, ok := raw.([]any)
+	if !ok {
+		return 0
+	}
+	var set biosconfig.VendorSet
+	for i, v := range list {
+		if i == maxObserveVendorEntries {
+			break
+		}
+		name, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if lane, ok := biosconfig.ParseLane(name); ok {
+			set |= lane
+		}
+	}
+	return set
 }
 
 // applyWakeOnLanSettings hands a parsed block to the manager. An invalid
@@ -103,6 +136,7 @@ func (h *Heartbeat) wakeOptions() wakeconfig.Options {
 		Writer:     wakeconfig.NewWriter(),
 		Reread:     wakeconfig.CollectWindows,
 		BootID:     wakeconfig.BootID,
+		Observe:    wakeconfig.NewObserver(h.agentVersion),
 	}
 }
 
@@ -125,14 +159,23 @@ func (h *Heartbeat) collectWakeInputs(ctx context.Context) (wakeconfig.Inputs, e
 		return wakeconfig.Inputs{}, fmt.Errorf("hardware identity: %w", err)
 	}
 	virt := collectors.ClassifyVirtualization(hw)
-	return wakeconfig.Inputs{
-		OS:           runtime.GOOS,
-		Manufacturer: hw.Manufacturer,
-		Model:        hw.Model,
-		Virtual:      virt.IsVirtual,
-		Windows:      readings,
-		Firmware:     biosconfig.Detect(hw.Manufacturer, hw.Model),
-	}, nil
+	in := wakeconfig.Inputs{
+		OS:              runtime.GOOS,
+		Manufacturer:    hw.Manufacturer,
+		Model:           hw.Model,
+		Virtual:         virt.IsVirtual,
+		VirtualPlatform: virt.Platform,
+		Windows:         readings,
+	}
+	if !virt.IsVirtual {
+		// Read-only. A failed firmware read is reported in the snapshot and
+		// never fails the collection. A VM is unsupported_vm whatever its
+		// firmware says, so it is not read. Only Dell has an adapter trusted
+		// for readiness (grant 0); HP and Lenovo are read by the manager's
+		// observer instead.
+		in.Firmware = wakeconfig.ReadFirmware(ctx, biosconfig.Detect(hw.Manufacturer, hw.Model, 0))
+	}
+	return in, nil
 }
 
 func (h *Heartbeat) startWake() {

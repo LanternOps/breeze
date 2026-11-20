@@ -35,7 +35,7 @@ vi.mock('../../services/recoveryAuthorizationSubject', () => ({
 
 import { recomputeRecoveryReadinessForDevice, runBackupVerification, runScheduledBackupVerification, processBackupVerificationResult, timeoutStaleVerifications, listRecoveryReadiness, getBackupHealthSummary, toVerificationListItem } from './verificationService';
 import { backupJobs, backupSnapshots, backupVerifications, jobOrgById, verificationOrgById } from './store';
-import { VERIFICATION_TIMEOUT_REASON_CODE, verificationTimeoutMs, verificationTimeoutReason } from './verificationTimeout';
+import { VERIFICATION_TIMEOUT_REASON_CODE, shortestVerificationTimeoutMs, verificationTimeoutReason } from './verificationTimeout';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
@@ -380,6 +380,84 @@ describe('backup verification service', () => {
       if (idx >= 0) backupJobs.splice(idx, 1);
       jobOrgById.delete(jobId);
     }
+  });
+
+  // The verify budget scales with the snapshot: computed once at creation,
+  // sent to the agent as an integer payload field and stored on the row.
+  describe('scaled time budget', () => {
+    const GIB = 1024 * 1024 * 1024;
+
+    async function dispatchWith(
+      verificationType: 'integrity' | 'test_restore',
+      snapshotCounts: { fileCount: number | null; sizeBytes: number | null },
+      jobCounts: { fileCount?: number | null; totalSize?: number | null },
+    ) {
+      const snapshot = backupSnapshots.find((row) => row.id === 'snap-001')!;
+      const job = backupJobs.find((row) => row.id === 'job-001')!;
+      const prior = { fileCount: snapshot.fileCount, sizeBytes: snapshot.sizeBytes, jobFileCount: job.fileCount, jobTotalSize: job.totalSize };
+      Object.assign(snapshot, snapshotCounts);
+      if ('fileCount' in jobCounts) job.fileCount = jobCounts.fileCount;
+      if ('totalSize' in jobCounts) job.totalSize = jobCounts.totalSize;
+      vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
+        command: { id: `cmd-budget-${verificationType}`, status: 'sent' } as any,
+      });
+      try {
+        const { verification } = await runBackupVerification({
+          orgId: 'org-123',
+          deviceId: 'dev-001',
+          backupJobId: 'job-001',
+          verificationType,
+          source: 'test',
+        });
+        const payload = vi.mocked(queueCommandForExecution).mock.calls.at(-1)![2] as Record<string, unknown>;
+        const idx = backupVerifications.findIndex((v) => v.id === verification.id);
+        if (idx >= 0) backupVerifications.splice(idx, 1);
+        verificationOrgById.delete(verification.id);
+        return { payload, details: verification.details as Record<string, unknown> };
+      } finally {
+        snapshot.fileCount = prior.fileCount;
+        snapshot.sizeBytes = prior.sizeBytes;
+        job.fileCount = prior.jobFileCount;
+        job.totalSize = prior.jobTotalSize;
+      }
+    }
+
+    it.each(['integrity', 'test_restore'] as const)('sends a %s budget from the snapshot counts and stores it on the row', async (type) => {
+      const { payload, details } = await dispatchWith(type, { fileCount: 525_000, sizeBytes: 10 * GIB }, {});
+      expect(payload.timeBudgetSeconds).toBe(395 * 60);
+      expect(Number.isInteger(payload.timeBudgetSeconds)).toBe(true);
+      expect(details.timeBudgetSeconds).toBe(395 * 60);
+      expect(details.commandId).toBe(`cmd-budget-${type}`);
+    });
+
+    it('falls back to the backup job counts, each value on its own', async () => {
+      // Snapshot knows the size only; the job supplies the file count.
+      const { payload } = await dispatchWith('integrity', { fileCount: null, sizeBytes: 10 * GIB }, { fileCount: 525_000, totalSize: 1 });
+      expect(payload.timeBudgetSeconds).toBe(395 * 60);
+      const sizeFromJob = await dispatchWith('integrity', { fileCount: 525_000, sizeBytes: null }, { fileCount: 1, totalSize: 10 * GIB });
+      expect(sizeFromJob.payload.timeBudgetSeconds).toBe(395 * 60);
+      // A zero count on the snapshot is not knowledge: the job's count is used.
+      const zeroOnSnapshot = await dispatchWith('integrity', { fileCount: 0, sizeBytes: 10 * GIB }, { fileCount: 525_000 });
+      expect(zeroOnSnapshot.payload.timeBudgetSeconds).toBe(395 * 60);
+    });
+
+    it('uses the 2h base when neither the snapshot nor the job knows its size', async () => {
+      const { payload, details } = await dispatchWith('integrity', { fileCount: null, sizeBytes: null }, { fileCount: null, totalSize: null });
+      expect(payload.timeBudgetSeconds).toBe(2 * 60 * 60);
+      expect(details.timeBudgetSeconds).toBe(2 * 60 * 60);
+    });
+  });
+
+  it('keeps a server-computed timeBudgetSeconds in list items, and nothing else agent-controlled', () => {
+    const base = {
+      id: 'v-list', orgId: 'org-123', deviceId: 'dev-001', backupJobId: 'job-001', snapshotId: null,
+      verificationType: 'integrity' as const, status: 'running' as const, startedAt: new Date().toISOString(),
+      completedAt: null, filesVerified: 0, filesFailed: 0, createdAt: new Date().toISOString(),
+    };
+    expect(toVerificationListItem({ ...base, details: { commandId: 'c', timeBudgetSeconds: 23_700 } }).details)
+      .toEqual({ timeBudgetSeconds: 23_700 });
+    expect(toVerificationListItem({ ...base, details: { commandId: 'c', timeBudgetSeconds: 'x' } }).details).toBeNull();
+    expect(toVerificationListItem({ ...base, details: { commandId: 'c', timeBudgetSeconds: 1.5 } }).details).toBeNull();
   });
 
   it('records a snapshot that failed its integrity check as a failed verification without queueing a command', async () => {
@@ -763,7 +841,8 @@ describe('timeoutStaleVerifications', () => {
 
   it('times out a verification that has been pending past its command budget (#11813)', async () => {
     const verificationId = `verify-timeout-stale-${Date.now()}`;
-    const staleStartedAt = new Date(Date.now() - verificationTimeoutMs('integrity') - 60 * 1000).toISOString();
+    // No command row (not a UUID): settles on the 2h undelivered clock from started_at.
+    const staleStartedAt = new Date(Date.now() - shortestVerificationTimeoutMs() - 60 * 1000).toISOString();
 
     backupVerifications.push({
       id: verificationId,
@@ -787,7 +866,7 @@ describe('timeoutStaleVerifications', () => {
 
     const updated = backupVerifications.find((v) => v.id === verificationId);
     expect(updated?.status).toBe('failed');
-    expect((updated?.details as Record<string, unknown>)?.reason).toBe(verificationTimeoutReason('integrity'));
+    expect((updated?.details as Record<string, unknown>)?.reason).toBe(verificationTimeoutReason(2 * 60 * 60 * 1000));
     expect((updated?.details as Record<string, unknown>)?.reasonCode).toBe(VERIFICATION_TIMEOUT_REASON_CODE);
   });
 

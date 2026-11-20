@@ -1,0 +1,10 @@
+Checking for updates...
+Checking for application component updates...
+Determining available updates...
+Check for updates completed
+Number of applicable updates for the current system configuration: 3
+NP58K: Intel Management Engine Components Installer - Driver -- Recommended -- CS
+VP20T: Intel PCIe Ethernet Network Driver - Driver -- Urgent -- NI
+GPXYY: Intel UHD/Iris Plus Graphics Driver - Driver -- Urgent -- VI
+Execution completed.
+The program exited with return code: 0

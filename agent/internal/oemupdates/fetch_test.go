@@ -179,8 +179,10 @@ func TestCompiledAllowlistIsPerRole(t *testing.T) {
 	if !ok {
 		t.Fatal("no dell entry in allowlist.json")
 	}
-	if strings.Join(tool.Publishers, ",") != "Dell Inc" {
-		t.Errorf("dell tool publishers = %v, want only Dell Inc", tool.Publishers)
+	// W10 lab capture: the DCU 5.7.2 installer and the installed dcu-cli.exe
+	// 5.7.2.42 are both signed CN="Dell Technologies Inc." (not "Dell Inc").
+	if strings.Join(tool.Publishers, ",") != "Dell Technologies Inc." {
+		t.Errorf("dell tool publishers = %v, want only Dell Technologies Inc.", tool.Publishers)
 	}
 	if strings.Join(tool.Hosts, ",") != "dl.dell.com,downloads.dell.com" {
 		t.Errorf("dell tool hosts = %v", tool.Hosts)
@@ -189,7 +191,9 @@ func TestCompiledAllowlistIsPerRole(t *testing.T) {
 	if !ok {
 		t.Fatal("no dotnet_desktop_runtime entry")
 	}
-	if strings.Join(rt.Publishers, ",") != "Microsoft Corporation" {
+	// W10 lab capture: windowsdesktop-runtime-10.0.15-win-x64.exe is signed
+	// CN=".NET", O=Microsoft Corporation; the pin is on the CN.
+	if strings.Join(rt.Publishers, ",") != ".NET" {
 		t.Errorf("runtime publishers = %v", rt.Publishers)
 	}
 	if strings.Join(rt.Hosts, ",") != "builds.dotnet.microsoft.com,download.visualstudio.microsoft.com" {

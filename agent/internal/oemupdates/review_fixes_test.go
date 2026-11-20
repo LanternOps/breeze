@@ -16,8 +16,8 @@ import (
 func TestToolInstallerMustBeSignedByTheToolPublisher(t *testing.T) {
 	f := newInstallFixture()
 	f.lane.onInstall = &ToolState{Present: true, Path: dcuPath, Version: "5.7.2"}
-	// A Microsoft-signed binary is a valid prerequisite signer, never the tool.
-	f.deps.Verifier = verifierFunc(func(string) (string, error) { return "Microsoft Corporation", nil })
+	// A .NET-signed binary is a valid prerequisite signer, never the tool.
+	f.deps.Verifier = verifierFunc(func(string) (string, error) { return ".NET", nil })
 	_, outcome, err := EnsureTool(context.Background(), f.lane, toolSpec(), f.deps)
 	if outcome != OutcomeToolUnavailable || codeOf(err) != "publisher_mismatch" || len(f.exec.Calls()) != 0 {
 		t.Fatalf("outcome=%q code=%q calls=%d", outcome, codeOf(err), len(f.exec.Calls()))
@@ -33,9 +33,9 @@ func TestPrerequisiteUsesItsOwnAllowlist(t *testing.T) {
 		URL: "https://builds.dotnet.microsoft.com/rt.exe", SHA256: strings.Repeat("b", 64)}}
 	f.deps.Verifier = verifierFunc(func(path string) (string, error) {
 		if strings.HasSuffix(path, "prereq-0.exe") {
-			return "Microsoft Corporation", nil
+			return ".NET", nil
 		}
-		return "Dell Inc", nil
+		return "Dell Technologies Inc.", nil
 	})
 	if _, outcome, err := EnsureTool(context.Background(), f.lane, spec, f.deps); err != nil || outcome != "" {
 		t.Fatalf("outcome=%q err=%v", outcome, err)

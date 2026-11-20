@@ -2745,11 +2745,14 @@ jobs:
       # registry key, and its tests run the real flash guard. It pulls
       # remote/desktop in through privilege -> remote/tools, and its test binary
       # still builds with CGO_ENABLED=0.
+      # ./internal/hpwarrantyobserve (#5511) runs its real read-only WMI script
+      # under Windows PowerShell 5.1 on the (non-HP) runner: the script must
+      # parse and the missing root/HP namespace must map to `absent`.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/authenticode ./internal/flashguard ./internal/oemupdates ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/windisks ./internal/recoveryconsole ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/backup/hosttool ./internal/collectors/timesync ./internal/executor ./internal/securefs ./internal/winsvcinstall ./internal/svcquery ./internal/pamdecline ./cmd/breeze-watchdog
+        run: go test ./internal/authenticode ./internal/flashguard ./internal/oemupdates ./internal/hpwarrantyobserve ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/windisks ./internal/recoveryconsole ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/backup/hosttool ./internal/collectors/timesync ./internal/executor ./internal/securefs ./internal/winsvcinstall ./internal/svcquery ./internal/pamdecline ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two

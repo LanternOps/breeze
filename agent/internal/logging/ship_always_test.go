@@ -126,3 +126,43 @@ func TestShippingHandlerShipAlwaysNoShipperIsNoop(t *testing.T) {
 		t.Fatal("expected record to reach the local handler without a shipper")
 	}
 }
+
+// EmitShipAlways ships its record even when the LOCAL log_level is above the
+// record's level, which a ShipAlways attr on an ordinary logger call cannot
+// (slog asks Enabled before Handle). The record is still kept out of the local
+// log at that level. HP warranty observe (#5511) depends on this.
+func TestEmitShipAlwaysShipsBelowLocalLevel(t *testing.T) {
+	var buf bytes.Buffer
+	root := newSwitchableHandler(&shippingHandler{
+		base: slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}),
+	})
+	shipper := installTestShipper(t, slog.LevelWarn)
+	logger := slog.New(root).With(slog.String(KeyComponent, "hp_warranty_observe"))
+
+	// Control: the ordinary call is filtered by the local level and never ships.
+	logger.Info("vendor_observation", "observation", map[string]any{"schemaVersion": 1}, ShipAlways())
+	select {
+	case entry := <-shipper.buffer:
+		t.Fatalf("control: an Info call below the local level shipped %+v; the bypass test proves nothing", entry)
+	default:
+	}
+
+	EmitShipAlways(logger, slog.LevelInfo, "vendor_observation", "observation", map[string]any{"schemaVersion": 1})
+	select {
+	case entry := <-shipper.buffer:
+		if entry.Level != "info" || entry.Component != "hp_warranty_observe" || entry.Message != "vendor_observation" {
+			t.Fatalf("shipped %+v", entry)
+		}
+		if _, ok := entry.Fields["observation"]; !ok {
+			t.Fatalf("observation field missing: %#v", entry.Fields)
+		}
+		if _, leaked := entry.Fields[KeyShipAlways]; leaked {
+			t.Fatalf("ship-always marker leaked: %#v", entry.Fields)
+		}
+	default:
+		t.Fatal("EmitShipAlways did not ship below the local level")
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("a record below the local level must not be written locally: %s", buf.String())
+	}
+}

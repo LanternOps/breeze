@@ -1266,7 +1266,16 @@
             "nic_unreadable": "Há um adaptador com fio, mas não foi possível lê-lo",
             "nic_cmdlets_unavailable": "As configurações do adaptador de rede não podem ser lidas neste dispositivo",
             "nic_eee_enabled": "Energy-Efficient Ethernet ativado",
-            "firmware_adapter_unavailable": "As configurações do firmware ainda não podem ser lidas"
+            "firmware_adapter_unavailable": "As configurações do firmware ainda não podem ser lidas",
+            "nic_eee_unknown": "Estado do Energy-Efficient Ethernet desconhecido",
+            "firmware_wake_on_lan_not_lan_only": "O Wake on LAN do BIOS não está definido como somente LAN",
+            "firmware_deep_sleep_enabled": "O controle de suspensão profunda do BIOS está ativado",
+            "firmware_setting_unrecognised": "Uma configuração do BIOS verificada pelo Breeze não foi reconhecida neste modelo",
+            "firmware_value_not_allowed": "Este modelo não permite o valor do BIOS de que o Breeze precisa",
+            "firmware_value_unrecognised": "Um valor do BIOS verificado pelo Breeze não foi reconhecido",
+            "firmware_unreadable": "Não foi possível ler as configurações do BIOS",
+            "firmware_interface_unavailable": "Este modelo não expõe as configurações do BIOS ao Windows",
+            "vendor_observe_only": "Observando o firmware do fabricante (somente leitura)"
           },
           "attempts": {
             "pending": "Pendente",
@@ -1276,6 +1285,14 @@
             "timed_out": "Tempo esgotado",
             "unknown": "Desconhecido",
             "refused": "Recusado"
+          },
+          "observing": "Observando {{vendor}}: {{interface}}",
+          "observingWithCode": "Observando {{vendor}}: {{interface}} ({{code}})",
+          "observeInterfaces": {
+            "present": "interface presente",
+            "absent": "interface ausente",
+            "access_denied": "acesso negado",
+            "error": "erro de leitura"
           }
         }
       },

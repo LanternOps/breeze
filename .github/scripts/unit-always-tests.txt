@@ -162,6 +162,7 @@ apps/api/src/__tests__/integration/topology-foundation.integration.test.ts
 apps/api/src/__tests__/integration/topology-rollout.integration.test.ts
 apps/api/src/__tests__/integration/topologyExclusionsRls.integration.test.ts
 apps/api/src/__tests__/integration/topologyExecutePermission.integration.test.ts
+apps/api/src/__tests__/integration/tpmAttestation.integration.test.ts
 apps/api/src/__tests__/integration/webhookRetryBudget.integration.test.ts
 apps/api/src/__tests__/integration/wispConcernsReadinessSubjectMigration.integration.test.ts
 apps/api/src/__tests__/integration/wispThreadsRls.integration.test.ts
@@ -351,6 +352,7 @@ apps/api/src/routes/agentWs.rejectionFrame.test.ts
 apps/api/src/routes/agents/agentRoleCoverage.test.ts
 apps/api/src/routes/agents/download.test.ts
 apps/api/src/routes/agents/isolationVerify.test.ts
+apps/api/src/routes/agents/logs.test.ts
 apps/api/src/routes/agents/schemas.commandResult.test.ts
 apps/api/src/routes/agents/token.conflictCodes.test.ts
 apps/api/src/routes/agents/yaraRuleSets.test.ts
@@ -521,6 +523,7 @@ apps/api/src/services/connectionHealth/sources/fixLinks.contract.test.ts
 apps/api/src/services/connectionHealth/sources/webhook.test.ts
 apps/api/src/services/controlPlaneBlockHealth.test.ts
 apps/api/src/services/corsPolicy.test.ts
+apps/api/src/services/deviceHardwareColumns.test.ts
 apps/api/src/services/deviceInstallBoundary/orgMoveParity.test.ts
 apps/api/src/services/deviceNoteWriteCallers.contract.test.ts
 apps/api/src/services/diagnosticAccess/classification.test.ts
@@ -627,6 +630,7 @@ apps/api/src/services/toolSources/openapiSpec.test.ts
 apps/api/src/services/topology/aiPresenceIsolation.test.ts
 apps/api/src/services/topology/diagnosticPlanner.test.ts
 apps/api/src/services/topology/presenceNoAutoSiteMove.test.ts
+apps/api/src/services/tpmAttestation/makeCredential.test.ts
 apps/api/src/services/userSession.callers.test.ts
 apps/api/src/services/versionInfo.test.ts
 apps/api/src/services/versionMismatch.test.ts
@@ -814,9 +818,11 @@ packages/shared/src/utils/scriptSecurityPatterns.test.ts
 packages/shared/src/utils/yaraBundle.test.ts
 packages/shared/src/utils/yaraIocImport.test.ts
 packages/shared/src/validators/backupDestinationPrefix.test.ts
+packages/shared/src/validators/hpWarrantyObserve.test.ts
 packages/shared/src/validators/oemObserve.test.ts
 packages/shared/src/validators/oemUpdates.test.ts
 packages/shared/src/validators/queryParams.test.ts
 packages/shared/src/validators/softwareDownloadPolicy.parity.test.ts
+packages/shared/src/validators/wakeStatus.observation.test.ts
 packages/shared/src/zodJitlessEntry.test.ts
 packages/shared/src/zodJitlessShim.test.ts

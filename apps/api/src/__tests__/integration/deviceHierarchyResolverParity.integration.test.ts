@@ -255,7 +255,7 @@ const NON_TRIVIAL: Record<string, (own: any) => void> = {
   buildEventLogConfigUpdate: (o) => expect(o).toMatchObject({ max_events_per_cycle: 321 }),
   buildPamConfigUpdate: (o) => expect(o).toEqual({ uacInterceptionEnabled: true }),
   buildPatchSourceConfigUpdate: (o) => expect(o).toEqual({ exclusiveWindowsUpdate: expect.any(Boolean) }),
-  buildWarrantyConfigUpdate: (o) => expect(o).toEqual({ hpCmslEnabled: expect.any(Boolean) }),
+  buildWarrantyConfigUpdate: (o) => expect(o).toEqual({ hpCmslOptedIn: expect.any(Boolean) }),
   buildTimeSyncConfigUpdate: (o) => expect(o).toMatchObject({ enforce_ntp: true, poll_interval_minutes: 30 }),
   resolveDeviceWorkloadInventorySettings: (o) =>
     expect(o.settings).toMatchObject({ enabled: true, podmanEnabled: false, intervalMinutes: 30 }),

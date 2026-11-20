@@ -30,7 +30,7 @@ func newInstallFixture() *installFixture {
 	l := newFakeLane()
 	f := &installFixture{
 		lane:  l,
-		ver:   &fakeVerifier{publisher: "Dell Inc"},
+		ver:   &fakeVerifier{publisher: "Dell Technologies Inc."},
 		fetch: &fakeFetcher{fail: map[string]error{}},
 	}
 	f.exec = installingExec(l, nil)
@@ -145,7 +145,7 @@ func TestNoManifestToolAndNoToolIsToolUnavailable(t *testing.T) {
 
 func TestWrongPublisherOnDownloadNeverRuns(t *testing.T) {
 	f := newInstallFixture()
-	f.ver.publisher = "Dell Inc Evil"
+	f.ver.publisher = "Dell Technologies Inc. Evil"
 	_, outcome, err := EnsureTool(context.Background(), f.lane, toolSpec(), f.deps)
 	if outcome != OutcomeToolUnavailable || codeOf(err) != "publisher_mismatch" {
 		t.Fatalf("outcome=%q code=%q", outcome, codeOf(err))
@@ -185,7 +185,7 @@ func TestPrerequisiteInstalledFirstAndVerified(t *testing.T) {
 	f.lane.onInstall = &ToolState{Present: true, Path: dcuPath, Version: "5.7.2"}
 	f.lane.prereqs["dotnet_desktop_runtime"] = &fakePrereq{installed: "8.0.1", becomes: "10.0.8"}
 	f.ver.publisher = ""
-	f.ver.byPath = map[string]string{dcuPath: "Dell Inc"}
+	f.ver.byPath = map[string]string{dcuPath: "Dell Technologies Inc."}
 	spec := toolSpec()
 	spec.Prerequisites = []Prerequisite{{Name: "dotnet_desktop_runtime", MinVersion: "10.0.8",
 		URL: "https://builds.dotnet.microsoft.com/rt.exe", SHA256: strings.Repeat("b", 64)}}
@@ -195,9 +195,9 @@ func TestPrerequisiteInstalledFirstAndVerified(t *testing.T) {
 	f.deps.Verifier = verifierFunc(func(path string) (string, error) {
 		switch {
 		case strings.HasSuffix(path, "prereq-0.exe"):
-			return "Microsoft Corporation", nil
+			return ".NET", nil
 		default:
-			return "Dell Inc", nil
+			return "Dell Technologies Inc.", nil
 		}
 	})
 	_, outcome, err := EnsureTool(context.Background(), f.lane, spec, f.deps)
@@ -267,9 +267,9 @@ func TestPrerequisiteThatDoesNotTakeIsDetected(t *testing.T) {
 	f.lane.prereqs["dotnet_desktop_runtime"] = &fakePrereq{installed: "8.0.0"} // never becomes 10
 	f.deps.Verifier = verifierFunc(func(path string) (string, error) {
 		if strings.HasSuffix(path, "prereq-0.exe") {
-			return "Microsoft Corporation", nil
+			return ".NET", nil
 		}
-		return "Dell Inc", nil
+		return "Dell Technologies Inc.", nil
 	})
 	spec := toolSpec()
 	spec.Prerequisites = []Prerequisite{{Name: "dotnet_desktop_runtime", MinVersion: "10.0.8",

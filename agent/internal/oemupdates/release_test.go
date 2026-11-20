@@ -8,7 +8,7 @@ import (
 func releaseDeps(dcu *fakeDCU, store Store) Deps {
 	return Deps{
 		Exec:     dcu,
-		Verifier: &fakeVerifier{publisher: "Dell Inc"},
+		Verifier: &fakeVerifier{publisher: "Dell Technologies Inc."},
 		Store:    store,
 		Elevated: func() bool { return true },
 	}

@@ -30,6 +30,7 @@ import { sessionsRoutes } from './sessions';
 import { diagnosticLogsRoutes } from './diagnosticLogs';
 import { tabCountsRoutes } from './tabCounts';
 import { attentionCountsRoutes } from './attentionCounts';
+import { tpmCoverageRoutes } from './tpmCoverage';
 import { watchdogLogsRoutes } from './watchdogLogs';
 import { bootMetricsRoutes } from './bootMetrics';
 import { deviceRestorePointAttemptsRoutes } from './restorePoints';
@@ -84,6 +85,8 @@ deviceRoutes.route('/', customFieldImportRoutes);
 deviceRoutes.route('/', optionsRoutes);
 // Same reason: static `/attention-counts` (#9038) must not reach core's `GET /:id`.
 deviceRoutes.route('/', attentionCountsRoutes);
+// Same reason: static `/tpm-coverage` (#8318 T1) must not reach core's `GET /:id`.
+deviceRoutes.route('/', tpmCoverageRoutes);
 
 deviceRoutes.route('/', healthRoutes);
 
