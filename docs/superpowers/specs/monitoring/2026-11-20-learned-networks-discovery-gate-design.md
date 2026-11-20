@@ -140,13 +140,15 @@ names only the nullable column (`ON DELETE SET NULL (network_id)`), as the pinne
 `id`; `org_id`; `network_id`; `gateway_address` inet NOT NULL; `gateway_mac` macaddr NOT NULL;
 `first_seen_at`; `last_seen_at`. **Unique `(org_id, gateway_mac, gateway_address)`.**
 
-**`learned_network_devices`**: which devices have been seen on which network. Rows persist after the
-device leaves, so the Networks tab can show "5 devices in the last 14 days" at midnight.
+**`learned_network_devices`**: which devices have been seen behind which fingerprint. Rows persist
+after the device leaves, so the Networks tab can show "5 devices in the last 14 days" at midnight.
 
-`id`; `org_id`; `network_id`; `device_id` (composite FK to `devices(id, org_id)`, cascade); `gateway_id`
-(constrained to the same network and org); `interface_name`; `local_address` inet; `is_primary` boolean
+`id`; `org_id`; `device_id` (composite FK to `devices(id, org_id)`, cascade); `gateway_id` (composite FK
+to `learned_network_gateways`, cascade); `interface_name`; `local_address` inet; `is_primary` boolean
 (this interface carries the route to the Breeze server); `is_current` boolean; `first_seen_at`;
-`last_seen_at`. Unique `(device_id, network_id)`. Written **only when membership changes**.
+`last_seen_at`. **Unique `(device_id, gateway_id)`**: membership is per fingerprint, and the network is
+read through the fingerprint, so a device attached behind two gateways of one network has two rows and
+a network merge never collides. Written **only when membership changes**.
 
 **`learned_network_wan_addresses`**: WAN history per network.
 
@@ -175,8 +177,9 @@ network, so adding a gateway to a network grants nothing.
 
 Every one of these needs an export-policy classification (jsonb is `excludedOpen`).
 
-**A device is currently on a network** when it has an `is_current` row for it, its
+**A device is currently behind a fingerprint** when it has an `is_current` row for it, its
 `network_attachments_confirmed_at` is within the freshness window (default 10 minutes) and it is online.
+It is currently on a network when that holds for any of the network's fingerprints.
 
 **Nothing removes a network out from under a site or a profile without failing closed:**
 
@@ -196,13 +199,16 @@ Every one of these needs an export-policy classification (jsonb is `excludedOpen
   are rebuilt by the next report), plus `deviceInstallBoundary/classification.ts`. A device org move also
   clears the four `devices.network_attachment*` columns.
 - Org merge: two orgs can hold the same fingerprint (most likely when one customer was created twice).
-  The merge must not abort on the unique index. The colliding source network is merged into the target
-  org's network, re-pointing profiles, jobs, assets, device rows and WAN rows. A grant follows its
-  fingerprint: it re-points only to the target row with the identical address and MAC, which is the only
-  row it can collide with. Its assignment carries over
-  when the target's network is unassigned. When both are assigned, to what are now two sites of one org,
-  the target's assignment wins and the source site keeps `discovery_network_required = true` with one
-  network fewer, so it fails closed if that was its last. The registry mechanism is the builder's.
+  The merge must not abort on the unique index. It folds **per fingerprint**: each colliding source
+  fingerprint's device rows and grants move to the target org's row with the identical address and MAC,
+  which is the only row it can collide with. A source network whose fingerprints all fold into **one**
+  target network is merged into it, re-pointing profiles, jobs, assets and WAN rows; its assignment
+  carries over when the target's network is unassigned, and when both are assigned (to what are now two
+  sites of one org) the target's assignment wins. A source network whose fingerprints fold into
+  **different** target networks is never guessed at: it is kept, unassigned and without those
+  fingerprints, so profiles pointing at it fail `network_not_assigned`. In every case a source site keeps
+  `discovery_network_required = true`, so it fails closed if it lost its last network. The registry
+  mechanism is the builder's.
 
 **Limits and retention**
 
@@ -322,6 +328,7 @@ the failure code.
 | 1 | The job's org or site differs from the live profile's | Fail `profile_moved`. Checked before any credential is decrypted. |
 | 2 | `profile.network_id` is set but the network is unassigned or assigned to another site | Fail `network_not_assigned`, on a gated site and on one that is not. |
 | 3 | The profile has saved SNMP secrets and `snmp_grant_mode = 'bound'` | **Always guarded**, whether or not the site is gated (section 8.3). Allowed fingerprints = its granted fingerprints that belong to a network assigned to this site (and to `profile.network_id` when set). None: fail `credentials_need_reentry`. |
+| 3a | The profile has saved SNMP secrets, is `unrestricted`, and the site is gated | Cannot arise (8.3 rule 2). If it does, fail `credentials_need_reentry`; never treat it as row 6. |
 | 4 | Site is not gated | Unrestricted: today's selection and the unchanged `network_discovery` command. |
 | 5 | Site is gated and has no assigned network | Fail `no_network_assigned`. |
 | 6 | Site is gated | Allowed networks = `profile.network_id` when set, otherwise every network assigned to the site. Allowed fingerprints = their fingerprints. |
@@ -377,17 +384,26 @@ A profile with saved secrets is in one of two modes (`snmp_grant_mode`), and hol
 **What changes the mode or the grants. Nothing else does.**
 
 1. **A full re-entry of the secrets.** "Full" means every secret the profile will hold after the save
-   was supplied in that request: the existing retention check, applied across both the community and
-   the SNMPv3 fields. A save that keeps any masked or omitted secret grants nothing. On a full
+   arrived as fresh plaintext in that request, across both the community and the SNMPv3 fields. It is
+   its own predicate, decided from the secrets alone; it is not the return value of the existing
+   retention helper, which answers a different question and returns early on some saves. On a full
    re-entry the grants are **replaced** by a fresh set computed from the profile as saved, independent
-   of what it held before: if the site is gated, the fingerprints of `network_id` when set, otherwise of
-   every network assigned to the site, and the mode is `bound`; if the site is not gated, no grants and
-   the mode is `unrestricted`. Creating a profile with secrets is a full re-entry.
+   of what it held before: if the site is gated, the fingerprints of the networks **assigned to the
+   site**, restricted to `network_id` when set, and the mode is `bound`; if the site is not gated, no
+   grants and the mode is `unrestricted`. Creating a profile with secrets is a full re-entry.
 2. **Every transition of a site into gated.** Each time `discovery_network_required` goes from false to
    true, every profile of that site with saved secrets in `unrestricted` mode becomes `bound` to the
-   fingerprints of the network being assigned. This narrows where the secrets go, so it needs no
-   re-entry. It runs under the site lock.
+   fingerprints of the network being assigned, restricted to the profile's `network_id` when set (a
+   profile pointed at some other network becomes `bound` with no grants). This narrows where the
+   secrets go, so it needs no re-entry. It runs under the site lock.
 3. **A fingerprint is deleted.** Its grants go with it (the FK cascade).
+4. **A save that supplies some secrets but not all** (a rotation that keeps another secret masked)
+   adds nothing and **shrinks** the grants to those effective for the profile as saved. A secret
+   supplied while the profile was narrowed to one network is therefore never eligible on another.
+
+`profile.network_id` may be **set** only to a network assigned to the profile's site at save time. A
+save that would leave it pointing anywhere else is rejected. The existing rule that rejects a site move
+or a widened range while secrets are retained stays exactly as it is; this section adds to it.
 
 Consequences, each of which is intended:
 
@@ -397,13 +413,14 @@ Consequences, each of which is intended:
   additional gateway grants nothing. The profile keeps running where it has grants and shows
   "credentials not sent on `<network>` until re-entered". With no usable grant it fails
   `credentials_need_reentry`.
-- Moving a profile to another site without a full re-entry keeps its grants, none of which belong to
-  the new site, so it cannot run there.
 - A profile created with secrets on a gated site that has no assigned network is `bound` with no grants.
 
-**Atomicity.** A profile save locks the profile row before it reads any retained secret, takes the site
-lock, and commits the destination (site, `network_id`, ranges), the secrets, the mode and the grants in
-one transaction. A concurrent save cannot pair one save's secrets with another's grants.
+**Locking and atomicity.** Every writer takes locks in one order: the affected site rows in ascending
+id (both sites on a move), then the profile row (or its insert). Assignment mutations, profile saves and
+profile creation all follow it. A save reads retained secrets only after it holds the profile lock, and
+commits the destination (site, `network_id`, ranges), the secrets, the mode and the grants in one
+transaction, so one save's secrets can never be paired with another's grants. Dispatch reads a profile's
+secrets and its grants in the same snapshot.
 
 **Known limit.** The guarded command carries the secrets, so they reach the chosen agent before it
 proves the network. The agent's guard prevents their use, not their receipt. The server narrows this by
@@ -640,6 +657,14 @@ required test (section 14):
 | A replacement merge after an additional-gateway merge | The request names the fingerprints retired. |
 | Org merge with the same fingerprint under two ids | A grant re-points only to the identical address and MAC. |
 | Conflicting failure codes when the last network is unassigned | The evaluation order in 8.2 is normative. |
+
+The second narrow read confirmed all nine are closed and raised eight further cases. They are folded in
+and **have not been re-read**: a partial rotation while narrowed (8.3 rule 4), a profile pointed at a
+network that is not its site's (the `network_id` rule, rule 2's restriction), "full re-entry" as its own
+predicate (rule 1), one lock order (8.3), a gated site holding an unrestricted credentialed profile
+(8.2 row 3a), an org merge that splits one network across two (section 6), and a device behind two
+gateways of one network (membership per fingerprint, section 6). Each is also a required test. Review
+stops here; the plan carries these as tests rather than as further design passes.
 | O4's premise is not enforced | Cross-network update count on the job, warn only (8.4). |
 | Baseline "disappeared" wording | Corrected (section 10). |
 | Saved credentials and newly authorized networks | Fingerprint binding (8.3). |
