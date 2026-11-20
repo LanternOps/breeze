@@ -14,7 +14,7 @@ import {
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
-import { S1_THREAT_ACTIONS, SentinelOneClient, SentinelOneHttpError, type S1ThreatAction, type S1ActionStatus } from '../services/sentinelOne/client';
+import { S1_THREAT_ACTIONS, SentinelOneClient, SentinelOneHttpError, type S1ThreatAction, type S1ActionStatus, type S1Site } from '../services/sentinelOne/client';
 import { captureException } from '../services/sentry';
 import { redactLogMessage } from '../services/logRedaction';
 import { publishEvent } from '../services/eventBus';
@@ -331,7 +331,7 @@ export async function mapSiteOrgIds(integrationId: string): Promise<Map<string, 
 }
 
 /**
- * Upsert discovered sites (derived from the fetched agent list) into s1_org_mappings.
+ * Upsert inventory sites and agent-derived fallback sites into s1_org_mappings.
  * Sites are keyed on (integration_id, s1_site_id). On conflict, updates s1_site_name,
  * agents_count, and last_seen_at but DOES NOT overwrite a mapped org_id with null —
  * preserving any existing mapping.
@@ -339,45 +339,51 @@ export async function mapSiteOrgIds(integrationId: string): Promise<Map<string, 
 export async function upsertDiscoveredSites(params: {
   integrationId: string;
   partnerId: string;
-  sites: Array<{ siteId: string; siteName: string | null; count: number; registrationToken: string | null }>;
+  sites: Array<{ siteId: string; siteName: string | null; count: number | null; registrationToken: string | null }>;
 }): Promise<void> {
   if (params.sites.length === 0) return;
 
   const now = new Date();
-  const values = params.sites.map((site) => ({
-    integrationId: params.integrationId,
-    partnerId: params.partnerId,
-    s1SiteId: site.siteId,
-    s1SiteName: site.siteName ?? null,
-    agentsCount: site.count,
-    registrationToken: site.registrationToken
-      ? encryptSecret(site.registrationToken, { aad: 's1_org_mappings.registration_token' })
-      : null,
-    lastSeenAt: now,
-    updatedAt: now,
-  }));
+  // An incremental agent batch is not a site total. Unknown counts initialize
+  // new rows to zero but leave any existing total unchanged on conflict.
+  for (const hasCount of [true, false]) {
+    const sites = params.sites.filter((site) => (site.count !== null) === hasCount);
+    if (sites.length === 0) continue;
+    const values = sites.map((site) => ({
+      integrationId: params.integrationId,
+      partnerId: params.partnerId,
+      s1SiteId: site.siteId,
+      s1SiteName: site.siteName ?? null,
+      agentsCount: site.count ?? 0,
+      registrationToken: site.registrationToken
+        ? encryptSecret(site.registrationToken, { aad: 's1_org_mappings.registration_token' })
+        : null,
+      lastSeenAt: now,
+      updatedAt: now,
+    }));
 
-  await db
-    .insert(s1OrgMappings)
-    .values(values)
-    .onConflictDoUpdate({
-      target: [s1OrgMappings.integrationId, s1OrgMappings.s1SiteId],
-      set: {
-        s1SiteName: sql`excluded.s1_site_name`,
-        agentsCount: sql`excluded.agents_count`,
-        // COALESCE so a sync that returns no token (listSites failed or omitted it)
-        // preserves the existing one — never clobber a working deploy credential with NULL.
-        registrationToken: sql`COALESCE(excluded.registration_token, s1_org_mappings.registration_token)`,
-        lastSeenAt: sql`excluded.last_seen_at`,
-        updatedAt: sql`excluded.updated_at`,
-        // partnerId is updated in case the composite FK partner changes (rare)
-        partnerId: sql`excluded.partner_id`,
-        // org_id is NOT included here — COALESCE preserves the existing mapped value.
-        // The full formula `COALESCE(s1_org_mappings.org_id, excluded.org_id)` would
-        // require a raw SET expression; omitting org_id from the set clause achieves
-        // the same effect (Drizzle leaves the column unchanged on conflict update).
-      }
-    });
+    await db
+      .insert(s1OrgMappings)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [s1OrgMappings.integrationId, s1OrgMappings.s1SiteId],
+        set: {
+          s1SiteName: sql`excluded.s1_site_name`,
+          ...(hasCount ? { agentsCount: sql`excluded.agents_count` } : {}),
+          // COALESCE so a sync that returns no token (listSites failed or omitted it)
+          // preserves the existing one — never clobber a working deploy credential with NULL.
+          registrationToken: sql`COALESCE(excluded.registration_token, s1_org_mappings.registration_token)`,
+          lastSeenAt: sql`excluded.last_seen_at`,
+          updatedAt: sql`excluded.updated_at`,
+          // partnerId is updated in case the composite FK partner changes (rare)
+          partnerId: sql`excluded.partner_id`,
+          // org_id is NOT included here — COALESCE preserves the existing mapped value.
+          // The full formula `COALESCE(s1_org_mappings.org_id, excluded.org_id)` would
+          // require a raw SET expression; omitting org_id from the set clause achieves
+          // the same effect (Drizzle leaves the column unchanged on conflict update).
+        }
+      });
+  }
 }
 
 /**
@@ -525,16 +531,15 @@ async function syncAgentsForIntegration(
   const agentResult = await dbModule.runOutsideDbContext(() =>
     client.listAgents(fullListing ? undefined : integration.lastSyncAt ?? undefined)
   );
-  // Site registration tokens are an additive capability (deploy-time enrollment);
-  // a failure here (e.g. the API token lacks sites:read) must NOT abort the core
-  // agent/threat sync. Degrade to no tokens this run — the COALESCE upsert preserves
-  // any previously-synced token, and the next successful sync backfills.
-  let tokenBySite = new Map<string, string | null>();
+  // Fetch the complete site inventory, including sites with no enrolled agents.
+  // A failure here (e.g. the API token lacks sites:read) must NOT abort the core
+  // agent/threat sync. Fall back to agent-derived sites; the COALESCE upsert
+  // preserves any previously-synced token until a successful inventory refresh.
+  let inventorySites: S1Site[] = [];
   try {
-    const siteTokens = await dbModule.runOutsideDbContext(() => client.listSites());
-    tokenBySite = new Map(siteTokens.map((s) => [s.siteId, s.registrationToken]));
+    inventorySites = await dbModule.runOutsideDbContext(() => client.listSites());
   } catch (error) {
-    console.error('[s1-sync] listSites failed; continuing agent sync without token refresh:', error);
+    console.error('[s1-sync] listSites failed; continuing with agent-derived site discovery:', error);
     captureException(error instanceof Error ? error : new Error(String(error)));
   }
   const fetchedAgents = agentResult.results;
@@ -552,12 +557,22 @@ async function syncAgentsForIntegration(
       siteCountMap.set(agent.siteId, { siteName: agent.siteName, count: 1 });
     }
   }
-  const discoveredSites = Array.from(siteCountMap.entries()).map(([siteId, info]) => ({
+  const discoveredById = new Map(Array.from(siteCountMap.entries()).map(([siteId, info]) => [siteId, {
     siteId,
     siteName: info.siteName,
-    count: info.count,
-    registrationToken: tokenBySite.get(siteId) ?? null,
-  }));
+    count: fullListing && !agentResult.truncated ? info.count : null,
+    registrationToken: null as string | null,
+  }]));
+  for (const site of inventorySites) {
+    const fromAgents = discoveredById.get(site.siteId);
+    discoveredById.set(site.siteId, {
+      siteId: site.siteId,
+      siteName: site.siteName ?? fromAgents?.siteName ?? null,
+      count: site.agentsCount ?? fromAgents?.count ?? null,
+      registrationToken: site.registrationToken,
+    });
+  }
+  const discoveredSites = Array.from(discoveredById.values());
 
   // Step 1: Reconcile provisional mappings BEFORE upsert so carried org_id survives.
   // Skip sites with no siteName — a null siteName can never match a provisional row
@@ -566,7 +581,7 @@ async function syncAgentsForIntegration(
   await reconcileProvisionalSiteMappings(
     integration.id,
     discoveredSites
-      .filter((s): s is { siteId: string; siteName: string; count: number; registrationToken: string | null } => typeof s.siteName === 'string' && s.siteName.length > 0)
+      .filter((s): s is typeof s & { siteName: string } => typeof s.siteName === 'string' && s.siteName.length > 0)
       .map((s) => ({ siteId: s.siteId, siteName: s.siteName }))
   );
 

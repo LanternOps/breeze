@@ -11,12 +11,15 @@
  * import so the DB mock is in place before the module resolves its `db` binding.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 // ── DB mock ─────────────────────────────────────────────────────────────────
 
 const insertedValues: Array<Record<string, unknown>> = [];
 const updatedPayloads: Array<Record<string, unknown>> = [];
 const deletedWhere: Array<unknown> = [];
+const conflictUpdates: Array<{ set: Record<string, unknown> }> = [];
 
 /**
  * Tracks args for INSERT ... values(...).onConflictDoUpdate chains.
@@ -32,7 +35,10 @@ function makeInsertMock() {
         insertedValues.push(...arr);
         return chain;
       }),
-      onConflictDoUpdate: vi.fn().mockReturnThis(),
+      onConflictDoUpdate: vi.fn().mockImplementation((config) => {
+        conflictUpdates.push(config);
+        return chain;
+      }),
       onConflictDoNothing: vi.fn().mockReturnThis(),
       returning: vi.fn().mockResolvedValue([]),
     };
@@ -149,6 +155,9 @@ beforeEach(() => {
   insertedValues.length = 0;
   updatedPayloads.length = 0;
   deletedWhere.length = 0;
+  conflictUpdates.length = 0;
+  listAgentsMock.mockResolvedValue({ results: [], truncated: false });
+  listSitesMock.mockResolvedValue([]);
   mockDb.insert.mockImplementation(makeInsertMock());
   mockDb.update.mockImplementation(makeUpdateMock());
   mockDb.delete.mockImplementation(makeDeleteMock());
@@ -203,6 +212,157 @@ describe('upsertDiscoveredSites', () => {
     await upsertDiscoveredSites({ integrationId: 'int-1', partnerId: 'partner-1', sites: [] });
     expect(insertedValues).toHaveLength(0);
     expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it('preserves existing organization mappings and tokens when a refresh omits a token', async () => {
+    await upsertDiscoveredSites({
+      integrationId: 'int-1', partnerId: 'partner-1',
+      sites: [{ siteId: 'site-123', siteName: 'Acme', count: 0, registrationToken: null }],
+    });
+
+    const update = conflictUpdates[0]!.set;
+    expect(update).not.toHaveProperty('orgId');
+    const tokenUpdate = new PgDialect().sqlToQuery(update.registrationToken as SQL);
+    expect(tokenUpdate.sql).toBe('COALESCE(excluded.registration_token, s1_org_mappings.registration_token)');
+    // Authoritative zero counts must update existing totals too.
+    expect(update).toHaveProperty('agentsCount');
+  });
+
+  it('preserves an existing agent count when only an incremental batch is available', async () => {
+    await upsertDiscoveredSites({
+      integrationId: 'int-1', partnerId: 'partner-1',
+      sites: [
+        { siteId: 'site-known', siteName: 'Known', count: 5, registrationToken: null },
+        { siteId: 'site-unknown', siteName: 'Unknown', count: null, registrationToken: null },
+      ],
+    });
+
+    expect(insertedValues.find((row) => row.s1SiteId === 'site-unknown')!.agentsCount).toBe(0);
+    expect(conflictUpdates[0]!.set).toHaveProperty('agentsCount');
+    expect(conflictUpdates[1]!.set).not.toHaveProperty('agentsCount');
+  });
+});
+
+describe('site inventory discovery during agent sync', () => {
+  const sync = () => processSyncIntegration({
+    type: 'sync-integration', integrationId: 'int-1', syncAgents: true, syncThreats: false,
+  });
+
+  it('discovers empty and populated sites even when no agents changed since the last sync', async () => {
+    const lastSyncAt = new Date('2026-01-01T00:00:00Z');
+    primeIntegration({ lastSyncAt, lastFullAgentSyncAt: new Date() });
+    listSitesMock.mockResolvedValueOnce([
+      { siteId: 'site-empty', siteName: 'New Customer', registrationToken: 'enroll-token', agentsCount: 0 },
+      { siteId: 'site-existing', siteName: 'Existing Customer', registrationToken: null, agentsCount: 7 },
+    ]);
+
+    await sync();
+
+    expect(listAgentsMock).toHaveBeenCalledWith(lastSyncAt);
+    expect(insertedValues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        s1SiteId: 'site-empty', s1SiteName: 'New Customer', agentsCount: 0,
+        integrationId: 'int-1', partnerId: 'partner-1', registrationToken: 'enc:enroll-token',
+      }),
+      expect.objectContaining({ s1SiteId: 'site-existing', agentsCount: 7 }),
+    ]));
+    expect(insertedValues).toHaveLength(2);
+    expect(updatedPayloads).toContainEqual(expect.objectContaining({ lastSyncStatus: 'success' }));
+  });
+
+  it('uses the inventory total and emits only one row when an agent also belongs to the site', async () => {
+    primeIntegration({ lastSyncAt: new Date('2026-01-01T00:00:00Z'), lastFullAgentSyncAt: new Date() });
+    listAgentsMock.mockResolvedValueOnce({
+      results: [{ id: 'agent-1', siteId: 'site-1', siteName: 'Old Name' }], truncated: false,
+    });
+    listSitesMock.mockResolvedValueOnce([
+      { siteId: 'site-1', siteName: 'Current Name', registrationToken: null, agentsCount: 9 },
+    ]);
+
+    await sync();
+
+    expect(insertedValues).toEqual([
+      expect.objectContaining({ s1SiteId: 'site-1', s1SiteName: 'Current Name', agentsCount: 9 }),
+    ]);
+  });
+
+  it('falls back to agent-derived sites if the site API is unavailable', async () => {
+    primeIntegration();
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    listAgentsMock.mockResolvedValueOnce({
+      results: [{ id: 'agent-1', siteId: 'site-fallback', siteName: 'Fallback' }], truncated: false,
+    });
+    listSitesMock.mockRejectedValueOnce(new Error('sites unavailable'));
+
+    try {
+      await sync();
+      expect(insertedValues).toEqual([
+        expect.objectContaining({ s1SiteId: 'site-fallback', agentsCount: 1, registrationToken: null }),
+      ]);
+      expect(updatedPayloads).toContainEqual(expect.objectContaining({ lastSyncStatus: 'success' }));
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    { lastSyncAt: new Date('2026-01-01T00:00:00Z'), truncated: false },
+    { lastSyncAt: null, truncated: true },
+  ])('does not replace totals with partial agent counts (%j)', async ({ lastSyncAt, truncated }) => {
+    primeIntegration({ lastSyncAt, lastFullAgentSyncAt: new Date() });
+    listAgentsMock.mockResolvedValueOnce({
+      results: [{ id: 'agent-1', siteId: 'site-1', siteName: 'Customer' }], truncated,
+    });
+
+    await sync();
+
+    expect(insertedValues).toEqual([expect.objectContaining({ s1SiteId: 'site-1' })]);
+    expect(conflictUpdates[0]!.set).not.toHaveProperty('agentsCount');
+  });
+
+  it('refreshes fallback totals after a complete periodic full listing', async () => {
+    primeIntegration({
+      lastSyncAt: new Date(Date.now() - 15 * 60_000),
+      lastFullAgentSyncAt: new Date(Date.now() - 7 * 60 * 60_000),
+    });
+    listAgentsMock.mockResolvedValueOnce({
+      results: [
+        { id: 'agent-1', siteId: 'site-fallback', siteName: 'Customer' },
+        { id: 'agent-2', siteId: 'site-fallback', siteName: 'Customer' },
+      ],
+      truncated: false,
+    });
+    listSitesMock.mockRejectedValueOnce(new Error('sites unavailable'));
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await sync();
+
+      expect(listAgentsMock).toHaveBeenCalledWith(undefined);
+      expect(insertedValues).toEqual([
+        expect.objectContaining({ s1SiteId: 'site-fallback', agentsCount: 2 }),
+      ]);
+      expect(conflictUpdates[0]!.set).toHaveProperty('agentsCount');
+      expect(updatedPayloads).toContainEqual(expect.objectContaining({ lastFullAgentSyncAt: expect.any(Date) }));
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('reconciles a provisional mapping for an empty inventory site before upserting it', async () => {
+    primeIntegration();
+    // Integration, provisional name mapping, then absence of the real site row.
+    mockDb.select
+      .mockReturnValueOnce(selectReturning([{ id: 'mapping-1', orgId: 'org-1' }]))
+      .mockReturnValueOnce(selectReturning([]));
+    listSitesMock.mockResolvedValueOnce([
+      { siteId: 'site-empty', siteName: 'Customer', registrationToken: null, agentsCount: 0 },
+    ]);
+
+    await sync();
+
+    expect(updatedPayloads).toContainEqual(expect.objectContaining({ s1SiteId: 'site-empty', orgId: 'org-1' }));
+    expect(conflictUpdates[0]!.set).not.toHaveProperty('orgId');
   });
 });
 
