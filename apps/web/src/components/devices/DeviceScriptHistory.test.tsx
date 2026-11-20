@@ -224,6 +224,16 @@ describe('DeviceScriptHistory highlighted execution (#4886)', () => {
     expect(window.location.hash).toBe('#scripts');
   });
 
+  it('Run again from the auto-opened modal also drops the execution hash', async () => {
+    window.location.hash = '#scripts/exec-1';
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} highlightExecutionId="exec-1" />);
+    await screen.findByText('Execution Details');
+
+    fireEvent.click(screen.getByRole('button', { name: /Run again/i }));
+
+    expect(window.location.hash).toBe('#scripts');
+  });
+
   it('does not auto-open anything when the highlighted id matches no execution', async () => {
     render(<DeviceScriptHistory deviceId={DEVICE_ID} highlightExecutionId="exec-does-not-exist" />);
 

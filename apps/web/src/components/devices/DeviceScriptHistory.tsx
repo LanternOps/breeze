@@ -503,7 +503,7 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
   // open it pre-filled with this device and the execution's runtime values.
   const handleRunAgain = async (execution: ScriptExecution) => {
     if (!execution.scriptId) return;
-    setSelectedExecution(null);
+    closeExecution();
     setRunAgainLoading(true);
     try {
       const response = await fetchWithAuth(`/scripts/${execution.scriptId}`);
