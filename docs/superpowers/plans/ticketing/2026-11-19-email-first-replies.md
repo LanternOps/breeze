@@ -1,5 +1,6 @@
 ---
 spec_issue: LanternOps/breeze#8758
+tracking_issue: LanternOps/breeze#12268
 refs: [LanternOps/breeze#11294, LanternOps/breeze#8759]
 spec: docs/superpowers/specs/ticketing/2026-10-14-email-first-ticketing-design.md
 base: origin/main @ 4aacc0d479

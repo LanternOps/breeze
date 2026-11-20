@@ -1,5 +1,6 @@
 ---
 issue: 11808
+tracking_issue: LanternOps/breeze#12275
 status: plan-approved (Gate B, Todd 2026-11-19, with changes)
 date: 2026-11-18
 base: main @ e8bf959e63
