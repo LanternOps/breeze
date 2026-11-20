@@ -28,18 +28,18 @@ export type EndpointMessageSeverity = (typeof ENDPOINT_MESSAGE_SEVERITIES)[numbe
  * agent would ignore the extra keys, show a transient toast and report
  * success, so the API never queues a message to an agent below this.
  *
- * Fail-closed placeholder until the release carrying the agent change is cut:
- * no real agent reaches 999.0.0, so nothing is queued.
+ * The handler has shipped since v0.124.0. The floor is 0.128.0 because that is
+ * the agent and Breeze Assist version the card, ack and chat paths were proved
+ * on in the Windows lab; nothing older was exercised.
  */
-export const ENDPOINT_MESSAGING_MIN_AGENT_VERSION = '999.0.0';
+export const ENDPOINT_MESSAGING_MIN_AGENT_VERSION = '0.128.0';
 
 /**
  * First agent release with the `retract_message` handler (#8742 W02). A
  * W1-era agent has the IPC type but no command handler, so retract is refused
- * (`agent_unsupported`) below it. Same fail-closed placeholder as above until
- * the release is cut.
+ * (`agent_unsupported`) below it. Same lab-proved floor as above.
  */
-export const ENDPOINT_MESSAGE_RETRACT_MIN_AGENT_VERSION = '999.0.0';
+export const ENDPOINT_MESSAGE_RETRACT_MIN_AGENT_VERSION = '0.128.0';
 
 function versionAtLeast(agentVersion: string | null | undefined, min: string): boolean {
   if (typeof agentVersion !== 'string' || agentVersion.trim() === '') return false;
