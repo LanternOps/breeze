@@ -122,6 +122,7 @@ func TestVtableIndices_MatchHeaderOrder(t *testing.T) {
 		"AddToSnapshotSet":      vtblAddToSnapshotSet,
 		"DoSnapshotSet":         vtblDoSnapshotSet,
 		"GetSnapshotProperties": vtblGetSnapshotProperties,
+		"Query":                 vtblQuery,
 	}
 	for name, got := range used {
 		want, ok := index[name]
@@ -293,5 +294,24 @@ func TestHrStatusUnwrittenSentinel(t *testing.T) {
 		if sentinel == status {
 			t.Errorf("sentinel collides with a real VSS status 0x%08X", status)
 		}
+	}
+}
+
+// TestQueryEnumLayout pins what the #12295 Query fallback reads: IVssEnumObject
+// Next after IUnknown, the VSS_OBJECT_TYPE values passed to Query, and the
+// VSS_OBJECT_PROP layout (a 4-byte type, padding, then the 128-byte union whose
+// largest member is VSS_SNAPSHOT_PROP).
+func TestQueryEnumLayout(t *testing.T) {
+	if vtblEnumNext != 3 {
+		t.Errorf("IVssEnumObject::Next = %d, want 3", vtblEnumNext)
+	}
+	if vssObjectNone != 1 || vssObjectSnapshot != 3 {
+		t.Errorf("VSS_OBJECT_NONE/SNAPSHOT = %d/%d, want 1/3", vssObjectNone, vssObjectSnapshot)
+	}
+	if off := unsafe.Offsetof(vssObjectProp{}.Snap); off != 8 {
+		t.Errorf("VSS_OBJECT_PROP.Snap offset = %d, want 8", off)
+	}
+	if size := unsafe.Sizeof(vssObjectProp{}); size != 136 {
+		t.Errorf("VSS_OBJECT_PROP size = %d, want 136", size)
 	}
 }
