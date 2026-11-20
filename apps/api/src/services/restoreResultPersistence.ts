@@ -80,6 +80,9 @@ export function buildRestoreResultMetadata(
     'filesRestored',
     'bytesRestored',
     'filesFailed',
+    // backup_restore: entries never reached because the storage session ended
+    // (code `storage_session_lost`); not failures.
+    'filesNotAttempted',
     'failedFiles',
     'stagingDir',
     'stateApplied',
