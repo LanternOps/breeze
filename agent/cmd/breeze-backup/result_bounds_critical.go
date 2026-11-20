@@ -151,7 +151,9 @@ func boundCriticalResultLists(result backupipc.BackupCommandResult) (backupipc.B
 		warningsOmitted := priorWarningsOmitted + len(warnings) - warnKeep
 		if hasWarningList || needNote() {
 			// Never nil: a nil slice encodes as null, which the server rejects.
-			kept := append(make([]string, 0, warnKeep+1), warnings[:warnKeep]...)
+			// warnKeep is at most CriticalResultWarningsMax, and at most one
+			// less when the note is added, so the list never outgrows this.
+			kept := append(make([]string, 0, wire.CriticalResultWarningsMax), warnings[:warnKeep]...)
 			if needNote() {
 				kept = append(kept, fmt.Sprintf(
 					"%d more failed file(s) and %d more warning(s) not listed: the result exceeded the server's limits for detail lists; the file counts are complete",
