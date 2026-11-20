@@ -34,8 +34,10 @@ import { announceOemRunQueued, readOemStatus } from "./vendorUpdatesApi";
 import { showToast } from "../shared/Toast";
 import {
   agentSupportsForceReboot,
+  agentSupportsOemObserve,
   agentSupportsOemUpdates,
   FORCE_REBOOT_MIN_AGENT_VERSION,
+  OEM_OBSERVE_MIN_AGENT_VERSION,
   OEM_UPDATE_MIN_AGENT_VERSION,
   type OemLane,
 } from "@breeze/shared";
@@ -457,6 +459,8 @@ export default function DeviceActions({
   const [vendorLane, setVendorLane] = useState<OemLane | null>(null);
   // #11281: every category gate closed means the run can only come back 409 lane_closed.
   const [vendorLaneClosed, setVendorLaneClosed] = useState(false);
+  // #12227: observe mode runs a read-only check with its own, higher agent minimum.
+  const [vendorObserve, setVendorObserve] = useState(false);
   const [vendorUpdatesOpen, setVendorUpdatesOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [powerMenuOpen, setPowerMenuOpen] = useState(false);
@@ -484,6 +488,7 @@ export default function DeviceActions({
   useEffect(() => {
     setVendorLane(null);
     setVendorLaneClosed(false);
+    setVendorObserve(false);
     setVendorUpdatesOpen(false);
     if (!asksForVendorLane) return;
     let current = true;
@@ -491,7 +496,10 @@ export default function DeviceActions({
       if (!current) return;
       if (read.kind === "ok") {
         setVendorLane(read.view.lane);
-        setVendorLaneClosed(Object.values(read.view.gates).every((gate) => gate === "closed"));
+        // Observe mode closes every gate by design but still accepts a read-only check (#12227).
+        const observe = read.view.observe === true;
+        setVendorObserve(observe);
+        setVendorLaneClosed(!observe && Object.values(read.view.gates).every((gate) => gate === "closed"));
       }
       // Hidden is the safe answer, and the section on the Patches tab offers a retry.
       else if (read.kind === "error") console.warn(`[DeviceActions] could not read vendor update status for ${device.id}`);
@@ -608,11 +616,14 @@ export default function DeviceActions({
   // Disabled with its reason. A run only starts on a device that is online now, and
   // the server's 409s stay the real check (see the note at the top of this file:
   // this is not a queued command).
-  const vendorUpdatesSupported = agentSupportsOemUpdates(device.agentVersion);
+  const vendorUpdatesSupported = vendorObserve
+    ? agentSupportsOemObserve(device.agentVersion)
+    : agentSupportsOemUpdates(device.agentVersion);
+  const vendorMinAgentVersion = vendorObserve ? OEM_OBSERVE_MIN_AGENT_VERSION : OEM_UPDATE_MIN_AGENT_VERSION;
   const vendorUpdatesReason = !online
     ? offlineTitle
     : !vendorUpdatesSupported
-      ? t("deviceActions.runVendorUpdatesAgentUpgradeRequired", { version: OEM_UPDATE_MIN_AGENT_VERSION })
+      ? t("deviceActions.runVendorUpdatesAgentUpgradeRequired", { version: vendorMinAgentVersion })
       : vendorLaneClosed
         ? t("runVendorUpdatesDialog.refusal.laneClosed")
         : undefined;
