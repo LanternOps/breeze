@@ -35,7 +35,8 @@ moves them):
   - requires `auth.user.isPlatformAdmin === true`;
   - writes a `platform_admin.<route>` audit row for every request.
 
-  Every lifecycle route also has `requireMfa()`:
+  Every route below also has `requireMfa()`, except `GET /admin/trust/queue`
+  (no route-level MFA gate) and `POST /admin/trust/act` (fresh TOTP instead):
 
   | Route | Logic lives in | Audit row |
   |---|---|---|
@@ -143,7 +144,7 @@ Three rules hold throughout:
    platform action. The same admin confirms it in the web app with
    `confirmEmail` plus a fresh TOTP. The service then runs in a real web
    session, which has MFA, IP and user agent, so step-up and audit match the UI
-   by construction (Decision 3).
+   by construction (Decision 3a).
 3. **Never visible to a tenant principal**, on any surface, proven by test (§3.4).
 
 ### 3.2 Tools (first cut)
@@ -151,14 +152,14 @@ Three rules hold throughout:
 | Tool | Kind | Service function | Wave |
 |---|---|---|---|
 | `partner_lookup` | read | `findPartnersForAdmin({ query })`, by id, slug or name prefix. Needed because a model cannot act on a partner it cannot resolve; the UI has the trust queue. | W2 |
-| `partner_trust_get` | read | `getPartnerTrustSummary(partnerId)` over `loadTrustState`, `loadFraudRestoreEpisodes` and an MCP projection of `buildEvidenceCard` (§3.9) | W2 |
+| `partner_trust_get` | read | `getPartnerTrustSummary(partnerId)` over `loadTrustState`, `loadFraudRestoreEpisodes` and an MCP projection of `buildEvidenceCard` (§3.12) | W2 |
 | `partner_signals_list` | read | `listAbuseSignals(filter)`, the extracted `GET /admin/signals` | W2 |
 | `partner_suspend_preview` | read (dry run) | `previewPartnerSuspension(partnerId, callerId)` (§3.7) | W2 |
 | `platform_action_status` | read | `getPlatformAction(id, callerId)`: status and outcome of a pending write | W3 |
 | `partner_signal_acknowledge` | write → confirm | `acknowledgeAbuseSignals(ids, actor)` (single and bulk) | W3 |
 | `partner_unsuspend` | write → confirm | `unsuspendPartner(partnerId, reason, actor)` | W3 |
 | `partner_fraud_flag_restore` | write → confirm | `restoreBillingFraudRestriction` (already a service; gains `actor`) | W3 |
-| `partner_suspend` | write → confirm | `suspendPartner(partnerId, reason, actor, { previewDigest })` | W3 (see Decision 1) |
+| `partner_suspend` | write → confirm | `suspendPartner(partnerId, reason, actor, { previewDigest })` | W4 (see Decision 1) |
 | `partner_trust_restrict` / `partner_trust_promote` | write → confirm | `changeTrustState`, extracted from `trust.ts` | W3 (see Decision 6) |
 
 Write tools take `partnerId`, `reason` (same minimum length as the route) and
@@ -175,17 +176,41 @@ A **platform-admin MCP principal** is an MCP credential whose bound user
 - `users.is_platform_admin = true` and `users.status = 'active'`;
 - the credential is not a partner service principal, not on
   `MCP_UNATTENDED_TIER3_PRINCIPALS`, and of an allowed credential type
-  (Decision 2; recommended: OAuth bearer grants only);
-- the credential carries a dedicated scope, `platform:admin`, which only a
-  platform admin can be granted at consent or mint time. Tenant `ai:*` scopes
-  never imply it.
+  (Decision 2; recommended: dedicated platform OAuth grants only);
+- the credential is a **platform grant**: issued for the platform MCP audience
+  with dedicated scopes `platform:read` (reads, preview) and/or
+  `platform:propose` (create pending writes). Only a platform admin can be
+  granted these at consent. Tenant `ai:*` scopes never imply them. A tenant
+  MCP grant held by a user who happens to be a platform admin does **not**
+  qualify: promoting a tenant credential by looking up its owner would hand a
+  human's platform authority to a credential minted for tenant work.
 
-These are checked **live on every `tools/list`, `tools/call` and confirm**, not
-cached on the key. A demoted or disabled admin loses the group on the next
+These are checked **live on every `tools/list`, `tools/call` and status
+request**, and again at confirm and immediately before the service runs. The
+checks cover:
+
+- the grant, client and audience are live;
+- the subject is bound to the grant;
+- the auth epochs are current;
+- the user is active and `is_platform_admin` is still true.
+
+Nothing is cached on the key. A demoted or disabled admin loses the group on the next
 request. The check produces a separate `PlatformAdminActor`
 (`{ userId, email (real, from users), grantId, scopes }`). It never mutates the
 tenant `AuthContext`, so `isPlatformAdmin` stays `false` there and no existing
 `isPlatformAdmin` bypass in tenant tools starts to apply.
+
+**Assurance.** A platform grant is issued only after a real factor
+verification (TOTP or passkey) in the consenting browser session. It records
+that time as `assuranceAt`. Reads require `assuranceAt` within a window, and
+once the window passes, a browser step-up refreshes it (Decision 8). Writes
+always need a fresh TOTP at confirm (§3.6).
+
+**Issuance gap.** The OAuth issuer and bearer verifier assume partner tenancy
+today (`oauth/provider.ts`, `middleware/bearerTokenAuth.ts`). A platform admin
+with no partner or org membership, whose web token has `system` scope, cannot
+obtain a grant at all. W2 adds a platform issuance and verification path for
+the platform audience. It does not reuse the tenant one.
 
 ### 3.4 Surface and hiding
 
@@ -208,22 +233,32 @@ tenant `AuthContext`, so `isPlatformAdmin` stays `false` there and no existing
 
 **Proof of hiding** (tests are W2 exit criteria):
 
-1. **Tenant server.** For an org key, a partner key, a partner service
-   principal, an OAuth grant of a non-admin partner user, and an OAuth grant of
-   a platform admin on the tenant server:
+1. **Tenant server.** Over the real transports, for each of these
+   credentials:
+   - an org key;
+   - a partner key;
+   - a partner service principal;
+   - an unattended principal;
+   - an OAuth grant of a non-admin partner user;
+   - a tenant OAuth grant **owned by a platform admin**.
+
+   On every page of the listing, including with valid and malformed
+   arguments:
    - `tools/list` contains none of the names;
    - `tools/call` on each name returns the same `Unknown tool` error as a
      made-up name.
 2. **Platform mount.** Each non-admin credential above, plus a platform-admin
-   credential without `platform:admin`, gets the same 404 or `unauthorized`
+   credential without the `platform:*` scopes, gets the same 404 or `unauthorized`
    body as a disabled mount. The response does not reveal whether the mount
    exists.
 3. **Live demotion.** A platform admin lists the tools; `is_platform_admin` is
    then cleared; the next list is empty and the next call is refused. Repeat
    with `status = 'disabled'`.
 4. **Chat and Wisp.** `getToolDefinitions()`, the chat-surface tool list, the
-   Wisp subject maps and the rendered tool index contain none of the names
-   (contract test).
+   Wisp subject maps (including wildcard grants), the full and lazy tool
+   indexes, agent catalogs, MCP resources and tasks, and tenant approval queues
+   and notifications contain none of the names (contract test). No platform
+   service function is called on any refused path.
 5. **Confirm.** A pending action created by admin A cannot be read or
    confirmed by admin B (`operator_mismatch`), by a non-admin web session, or
    without session MFA plus fresh TOTP.
@@ -311,15 +346,29 @@ functions and contain no `db.` calls for these operations.
      user agent;
    - stores the outcome on the action record for `platform_action_status`.
 4. **Reject and expiry.** The page has Reject. Unconfirmed actions expire
-   after 30 minutes (Decision 3). Rejected and expired actions are audited
+   after 30 minutes. Rejected and expired actions are audited
    `platform_action.rejected` / `.expired`.
 
-**Storage.** Recommended: Redis, the same mechanism as trust action tokens
-(`partnerTrustEvidenceCard.ts`). It needs no migration. The durable record is
-the audit trail (§3.9). The alternative is a system-only table (§4).
+**Storage.** Recommended: a durable, system-only `platform_action_requests`
+table (§4). The single-use confirmation token stays in Redis, as trust action
+tokens do (`partnerTrustEvidenceCard.ts`). It has its own `typ`/purpose and is
+bound to the request id, origin grant, target, verb, argument digest, preview
+digest, operator and a short expiry. The durable row carries:
+
+- the status lifecycle: `pending → confirmed → executing → completed |
+  completed_with_failures | failed`, or `rejected | expired`;
+- the outcome.
+
+It lets a lost response be recovered and lets a crash mid-execution be seen.
+It enforces **one live suspension request per partner** with a partial unique
+index. Redis-only storage was considered and rejected (Decision 3b).
 
 **Retries.** A client that loses the result calls `platform_action_status`. It
-never re-files.
+never re-files. The status tool reports every outcome explicitly. A suspend
+whose token or OAuth revocation failed is `completed_with_failures` with the
+failed step named, never `completed`. The tenant MCP server's generic error
+classifier is not reused, because it can read an error body that carries
+counts as a success.
 
 ### 3.7 Dry-run preview for suspend
 
@@ -345,14 +394,23 @@ transaction** and returns counts only, no row data:
 
 The preview makes no billing-service calls.
 
-`previewDigest` = HMAC over `partnerId`, `partner.status` and the counts.
-Execution is **bound to the preview** in two ways:
+`previewDigest` is an HMAC over:
+
+- `partnerId` and `partner.status`;
+- the counts;
+- a hash of the **sorted target identities**: device ids for the uninstall
+  set, org ids and user ids.
+
+Equal counts can hide a changed target set, so the digest covers the
+identities. Execution is **bound to the preview** in three ways:
 
 - the MCP call refuses a stale digest (`preview_stale`; re-preview);
-- the confirm page shows the live re-preview next to it.
+- the confirm page shows the live re-preview next to it;
+- the mutation transaction re-selects the targets and applies the drift policy
+  (Decision 9).
 
-At confirm time, growth in device count does **not** block. Blocking would let
-an abusing partner race the suspend by enrolling more devices. The audit row
+Transient credentials (sessions, tokens, OAuth artifacts, remote sessions) are
+always swept live at execution, whatever the preview said. The audit row
 records both the previewed and the actual counts.
 
 ### 3.8 Re-run safety (small behaviour change, W1)
@@ -369,6 +427,19 @@ is already idempotent:
 The service returns `partial` with `retrySafe: true`, and the MCP status
 surfaces it as `completed_with_failures`, never `completed`. The existing
 integration suite gains a re-run case.
+
+Before `partner_suspend` ships over MCP (W4), suspension also gets:
+
+- **serialization:** a per-partner advisory lock inside the transaction, plus
+  the one-live-request index (§3.6);
+- **a durable record of pending post-commit work,** written in the suspend
+  transaction, so an unfinished effect can be retried on its own after a crash
+  between commit and cleanup. Effects stay in today's order: checkout close
+  before subscription cancel.
+- **tests** for duplicate calls, concurrent change, crash recovery and failure
+  of each downstream effect.
+
+The UI path benefits from all three as well.
 
 ### 3.9 Audit
 
@@ -389,6 +460,10 @@ The group exists only when **both** hold:
 - `PLATFORM_ADMIN_MCP_ENABLED=true`, a new flag, default `false`, validated as
   a boolean in `config/validate.ts`.
 
+Whether writes also require `enforce` (as opposed to `shadow`) is Decision 10.
+`partner_fraud_flag_restore` is only meaningful under `enforce` in any case,
+because the fraud-flag sweep only runs there.
+
 When either is off, the mount returns 404 and the confirm route returns 404 for
 MCP-origin actions. The flag is set per region. Docs (`apps/docs` deploy
 environment page) list it under the hosted-only variables that self-hosters can
@@ -397,14 +472,16 @@ skip.
 ### 3.11 Rate limits
 
 Each limit is per platform-admin user, kept in Redis, and fails closed when
-Redis is down:
+Redis is down. The tenant limiter (`checkToolRateLimit`) is **not** reused: it allows tools
+that have no entry and applies tenant multipliers. The platform mount has its
+own table, keyed on user and grant.
 
 | Tool class | Limit |
 |---|---|
 | Reads (`partner_lookup`, `partner_trust_get`, `partner_signals_list`) | 60/min |
 | `partner_suspend_preview` | 20/min |
 | Pending-action creation, all write tools | 20/h, at most 5 live unconfirmed actions |
-| `partner_suspend` creation | 5/h |
+| `partner_suspend` creation | 5/h, and one live request per target partner |
 | Confirm | the existing `requireFreshMfaStepUp` throttle, plus 30/h |
 
 Limits are tunable by env and never exceed the per-credential MCP message limit.
@@ -414,13 +491,13 @@ Limits are tunable by env and never exceed the per-credential MCP message limit.
 - **Projection.** MCP results go to a third-party model. `partner_trust_get`
   returns an **MCP projection** of the evidence card:
   - trust state, status, plan, timestamps;
-  - signal summaries (key, severity, score, timestamps);
+  - signal summaries (fields per Decision 5);
   - fraud-restore episode metadata;
   - device and denial counts.
 
   By default it omits payment-instrument details, raw IP addresses, personal
-  names and email addresses (Decision 5). Signal `evidence` JSON is returned
-  only with `includeEvidence: true`, and is size-capped.
+  names and email addresses. Raw signal evidence stays in the admin UI
+  (Decision 5).
 - **Untrusted text.** Partner-controlled strings (partner name, hostnames, user
   and domain names, evidence text) are data, not instructions. They go through
   the same untrusted-output filtering the tenant MCP server applies (rule 6a)
@@ -443,27 +520,47 @@ It asserts identical calls for `via: 'ui'` and `via: 'mcp'`.
 
 ## 4. Tenancy and data model impact
 
-- **Recommended design (Redis pending actions): no new table, no migration, no
-  RLS or cascade change.** Every touched table keeps its current policy, and
-  services keep reaching them under explicit system scope (#12303 pattern).
-- **If Decision 3 picks a table** (`platform_action_requests`) over Redis:
-  - It is a **platform-axis table with no `org_id` or `partner_id` tenant
-    column.** The target partner is stored as `target_partner_id` and is not a
-    tenancy key.
+- **New table `platform_action_requests`** (recommended, Decision 3b). It holds
+  the pending-write row from §3.6.
+  - It is a **platform-axis table with no tenant column**: no `org_id` and no
+    `partner_id`. The target partner is stored as `target_partner_id`, which is
+    not a tenancy key. Other columns:
+    - `operator_user_id`, `origin_grant_id`, `tool`;
+    - `args` (jsonb), `args_digest`, `preview_digest`, `preview_counts`
+      (jsonb);
+    - `status`, `outcome` (jsonb);
+    - `confirmed_by[]`, `created_at`, `expires_at`, `executed_at`.
   - RLS: enabled + forced, with a **system-only** policy (same shape as
-    `partner_abuse_signals`) in the creating migration.
-  - It is not in `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry` or
-    `CORE_TENANT_EXPORT_POLICY`: it is not tenant-owned. Partner deletion keeps
-    the row as an audit artifact; `target_partner_id` has no FK, or `ON DELETE
-    SET NULL`.
-  - The migration name follows `apps/api/migrations/README.md`.
+    `partner_abuse_signals`), in the creating migration. Only the platform
+    services touch it, under `runOutsideDbContext(() =>
+    withSystemDbAccessContext(…))`.
+  - It is not registered in `CORE_ORG_CASCADE_DELETE_ORDER`,
+    `orgMergeRegistry` or `CORE_TENANT_EXPORT_POLICY`, because it is not
+    tenant-owned and has no `org_id`. Partner deletion keeps the row as an
+    audit artifact. `target_partner_id` has no FK, so a deleted partner leaves
+    a dangling id, the same as audit rows. The tenancy-rls contract tests that
+    enumerate tables need a "platform/system-only" classification entry; W3
+    confirms which allowlist that is.
+  - A partial unique index on `(target_partner_id) WHERE tool =
+    'partner_suspend' AND status IN ('pending','confirmed','executing')`
+    enforces one live suspension per partner.
+  - The migration name follows `apps/api/migrations/README.md`. The migration
+    is idempotent and writes no rows.
+- **Suspension post-commit work record (W4).** Either a column set on the
+  request row above or a small system-only table with the same RLS and cascade
+  position. W4's plan decides which.
+- **Unchanged.** Every existing table touched by suspend, unsuspend, signals and
+  trust keeps its current policy. Services keep reaching those tables under
+  explicit system scope (#12303 pattern).
 - **Not used:** the tenant `action_intents` table. Giving it a nullable
   `org_id` or a platform axis would touch the approvals inbox, approver
   resolution, release re-validation, org-merge and export. All of those assume
-  a tenant axis (Decision 3, option B).
-- **OAuth scope `platform:admin`.** It needs a consent-screen string and a
-  grant-time check that the consenting user is a platform admin. No schema
-  change if scopes are stored as text, which W2 verifies.
+  a tenant axis (Decision 3a, option B).
+- **OAuth.** Adds the platform audience and the `platform:read` /
+  `platform:propose` scopes, plus a grant-time check that the consenting user
+  is a platform admin. W2 verifies whether the grant tables need a column for
+  the audience or the assurance timestamp. If they do, the column goes on the
+  existing OAuth tables under their current RLS shape.
 
 ## 5. Out of scope
 
@@ -473,98 +570,150 @@ It asserts identical calls for `via: 'ui'` and `via: 'mcp'`.
 - Refunds or billing re-creation on unsuspend. These stay manual, as today.
 - Partner-facing notifications that don't exist today. This spec preserves
   every existing notification and adds none.
-- A general four-eyes primitive for platform actions. #4119 covers a narrower
-  case (catalog revision activation); see Decision 7.
+- A general four-eyes primitive across all platform actions. #4119 covers a
+  narrower case (catalog revision activation). Decision 7 covers suspend only.
 - Changing what the trust signals detect, or their thresholds.
 - In-app AI chat or Wisp access to these tools.
 
 ## 6. Open decisions
 
+Each decision records Claude's recommendation. Where the independent `codex
+exec` review (gpt-6.2-astra, xhigh, read-only) disagreed, its position is
+stated next to it.
+
 1. **First-wave scope.**
-   - A: reads + preview only first (W2), then writes (W3).
-   - B: reads + reversible writes first (ack, unsuspend, fraud-flag restore,
-     restrict); suspend later.
+   - A: reads + preview first.
+   - B: reads + reversible writes first.
    - C: everything at once.
 
-   **Recommend A, with W3 ordered as B.** Reads and preview prove the principal,
-   hiding and projection with no blast radius. Within W3, `partner_suspend`
-   ships last because of its irreversible uninstall.
+   **Recommend A,** then reversible writes (ack, unsuspend, fraud-flag restore,
+   restrict/promote) in W3, and `partner_suspend` alone in W4, after its
+   hardening (§3.8). Reads and preview prove the principal, hiding and
+   projection with no blast radius. *Codex: agrees.*
 2. **Which credentials can be a platform-admin principal.**
-   - A: OAuth bearer grants only: user-bound and interactive consent, revoked
-     with the user.
-   - B: also user-created API keys with `platform:admin`.
+   - A: dedicated platform OAuth grants only.
+   - B: also user-created API keys with a platform scope.
+   - C: tenant grants whose owner is a platform admin.
 
-   **Recommend A.** A long-lived static key with partner-suspend power is the
-   wrong credential shape, and API keys today act as service credentials.
-3. **Approval and step-up mechanism for writes.**
-   - A: pending platform action (Redis) plus confirmation in the admin web app
-     with `confirmEmail` (suspend) and a fresh TOTP. The service runs in that
-     web request.
-   - B: add a platform axis to `action_intents` (nullable `org_id`, a
-     platform-admin approver pool, release under the rebuilt MCP credential).
-   - C: TOTP passed as a tool argument in the MCP call.
+   **Recommend A.** Option B is a long-lived static key with partner-suspend
+   power. Option C promotes a tenant credential to platform authority. *Codex:
+   agrees, and adds the separate platform issuance path (§3.3).*
+3. **Approval and step-up for writes.**
 
-   **Recommend A.** It reuses proven pieces (`requireFreshMfaStepUp`,
-   one-time consume-before-act from `trustAct.ts`, `platformAdminMiddleware`).
-   It gives exact UI step-up and audit parity, and keeps tenant intents
-   untouched. C puts a live second factor through the model provider and the
-   client transcript. Sub-decision: Redis versus a system-only table for the
-   pending action. Recommend Redis: no migration, and audit is the durable
-   record.
+   **3a. Mechanism.**
+   - A: a pending platform request plus browser confirmation in the admin app:
+     a fresh TOTP, and `confirmEmail` for suspend. The service runs in that web
+     request.
+   - B: a platform axis on `action_intents`.
+   - C: TOTP passed as a tool argument.
+
+   **Recommend A.** It reuses `requireFreshMfaStepUp`, the single-use
+   consume-before-act pattern from `trustAct.ts` and `platformAdminMiddleware`.
+   It gives exact UI step-up and audit parity and leaves tenant intents
+   untouched. Option C would send a live second factor through the model
+   provider and the client transcript. *Codex: agrees.*
+
+   **3b. Pending-request store.**
+   - A: Redis only, like trust action tokens.
+   - B: a durable system-only table, with the single-use token in Redis.
+
+   **Recommend B.** Claude's first draft chose A (no migration). Codex argued
+   for B, for status recovery after a lost response or a crash and for
+   one-live-suspension enforcement. Claude agrees on the merits.
 4. **Surface.**
-   - A: separate registry on `/api/v1/mcp/platform`.
-   - B: the same `/api/v1/mcp` endpoint, with the group merged into
-     `tools/list` for platform-admin principals only, through a gate in
-     `isToolListedForCaller` and `tools/call`.
+   - A: a separate registry on `/api/v1/mcp/platform`.
+   - B: the same `/api/v1/mcp`, with the group merged into the listing for
+     platform principals.
 
-   **Recommend A.** Hiding holds by construction, not by a filter that every
-   new list path must remember. Chat, Wisp and intents can never see the tools.
-   It costs one extra MCP server entry in the operator's client.
-5. **What reads expose to the model.**
-   - A: a redacted projection by default, with opt-in signal evidence.
-   - B: full evidence-card parity with the UI.
+   **Recommend A.** Hidden by construction from chat, Wisp, intents and the
+   tool index. *Codex: agrees.*
+5. **What signal and trust reads expose to the model.**
+   - A: trust state, status, plan, timestamps, counts, fraud-restore episode
+     metadata, and per-signal key, severity, score and timestamps. Signal
+     evidence only with opt-in, size-capped. Never payment-instrument details,
+     raw IPs, personal names or emails.
+   - B (codex): ids, severity, status and timestamps only. No internal signal
+     keys or scores, no evidence, no free-text reasons. Partner-controlled
+     labels omitted where possible, otherwise capped, sanitized and delimited.
 
-   **Recommend A.** The model provider is a third party, and the decision to
-   suspend is confirmed in the web UI, where the full evidence is shown anyway.
-6. **Add `partner_trust_restrict` / `partner_trust_promote`.** They are not in
-   the issue's list, but restrict is the reversible containment step the UI
-   offers before suspend.
-   - A: add both in W3.
+   **Claude recommends A without the evidence opt-in.** Triage over MCP needs
+   to know what a signal is about, and the decision is confirmed in the web
+   UI, where full evidence is shown. **Codex recommends B**, keeping detection
+   internals out of a third-party model's context. Maintainer to choose.
+6. **Add `partner_trust_restrict` / `partner_trust_promote`.** These are not in
+   the issue's list.
+   - A: both.
    - B: restrict only.
    - C: neither.
 
    **Recommend A.** Without restrict, the only containment tool over MCP is the
-   irreversible one.
-7. **Four-eyes for suspend.**
-   - A: required: a second platform admin confirms.
-   - B: optional, behind `PLATFORM_ADMIN_FOUR_EYES_SUSPEND` (default off).
-   - C: defer to a follow-up that generalises #4119.
+   irreversible one. *Codex: not asked.*
+7. **Four-eyes for suspend over MCP.**
+   - A: required. Two distinct active platform admins confirm the same
+     preview. With one admin, MCP suspend is refused before any side effect,
+     with a "second admin required" message.
+   - B: optional, behind `PLATFORM_ADMIN_FOUR_EYES_SUSPEND`, default off. The
+     request row supports `confirmed_by[]` and refuses self-confirmation when
+     the flag is on.
+   - C: defer to a generalised #4119.
 
-   With fewer than two active platform admins, A makes suspend over MCP
-   impossible, and suspend still works in the UI with one admin. **Recommend
-   B**:
-   - the design leaves room for a second confirmer (`confirmations[]` on the
-     action, self-confirmation refused when on);
-   - single-admin confirm with fresh TOTP plus a bound preview is already
-     stronger than today's UI path;
-   - the flag is turned on once the platform-admin pool allows it.
-8. **MFA for reads.** The REST reads require a session MFA claim; MCP grants
-   carry none.
-   - A: allow reads for a live platform-admin OAuth principal with
-     `platform:admin` scope. The grant's consent required an MFA-satisfied
-     session (enforced at consent for this scope).
-   - B: require a periodic web step-up that unlocks reads for N hours.
+   **Claude recommends B.** The single-admin confirm (live re-preview +
+   `confirmEmail` + fresh TOTP in the web UI) is a human review at least as
+   strong as today's UI suspend. Option A would make MCP suspend unusable
+   while the platform-admin pool is small, and the UI path would still allow
+   one admin. **Codex recommends A**: suspend is irreversible, and the tenant
+   sole-operator fallback is the wrong model. A real disagreement; maintainer
+   to choose.
+8. **Assurance for reads over MCP.** The REST signal reads require a session
+   MFA claim. The trust queue GET does not.
+   - A: the platform grant's consent requires an MFA-satisfied session. The
+     grant stores `assuranceAt`, and reads are allowed while it is newer than
+     a window (proposed 12 h). After that, a browser step-up refreshes it.
+   - B (codex): short-lived, issuer-verified evidence that an actual factor
+     was used, bound to the human and the grant. Reads stay hidden until that
+     exists, because `requireMfa()` reflects effective policy and can admit
+     password-only sessions.
 
-   **Recommend A,** with the consent-time MFA requirement added in W2.
+   **Recommend A, made factor-based to meet codex's point.** `assuranceAt` is
+   set only from a real factor verification (TOTP or passkey) at consent or
+   step-up, never from the policy flag. That closes most of the gap between A
+   and B. Every write, including acknowledge, needs a fresh browser TOTP;
+   *codex agrees*, because acknowledging suppresses further alerts.
+9. **Preview drift at execution.**
+   - A (codex): any material drift in the target identities requires a new
+     preview.
+   - B: never block; record both previewed and actual counts.
+   - C: block on removed or changed targets, and on a status change such as
+     already suspended. Growth alone does not block: newly enrolled devices are
+     included and the confirm page shows them.
+
+   **Recommend C.** Blocking on growth would let a partner under suspension
+   race the suspend by enrolling devices. **Codex recommends A.**
+10. **Trust mode required for writes.**
+    - A: reads and writes in `shadow` and `enforce`.
+    - B (codex): reads and preview in `shadow`, writes only in `enforce`.
+
+    **Recommend A.** Suspend, unsuspend and acknowledge don't depend on trust
+    enforcement, and the UI allows them in `shadow`. Fraud-flag restore is
+    inert outside `enforce` anyway. **Codex recommends B** as a tighter rollout
+    gate.
+11. **`confirmEmail` on the evidence-card suspend.** The `/admin/trust/act`
+    suspend currently has TOTP but no `confirmEmail`.
+    - A: add it when the card path moves onto the shared confirm component.
+    - B: leave it.
+
+    **Recommend A,** as deliberate hardening called out in the W1 PR. *Codex:
+    suggested it.*
 
 ## 7. Waves
 
 | Wave | Content | Exit criteria |
 |---|---|---|
-| **W1: service extraction** (after #12303 merges) | `services/partnerLifecycle/*`; routes and `trustAct` become adapters; `PlatformActor` + `via` on UI audit rows; re-run-safe uninstall queueing (§3.8). No MCP code. | All existing admin route tests and the #12303 integration suite pass unchanged; new parity and re-run tests; no `db.` calls left in the adapters for these operations. |
-| **W2: principal + surface + reads** | `platform:admin` scope and consent gate; live principal check; `/api/v1/mcp/platform` mount behind hosted + flag; `partner_lookup`, `partner_trust_get` (projection), `partner_signals_list`, `partner_suspend_preview`; rate limits; `platform_admin.mcp.*` audit. | The five hiding proofs (§3.4) pass; integration tests run as `breeze_app` with a partner-scoped platform admin acting on another partner; disabled-flag and self-hosted 404 tests. |
-| **W3: writes behind confirm** | Pending platform actions; confirm page and route; `platform_action_status`; tools in order: ack → unsuspend → fraud-flag restore → restrict/promote → suspend. | Side-effect parity contract (§3.13); audit parity (§3.9); `operator_mismatch`, replay, expiry and stale-preview tests; Playwright confirm flow (`data-testid`). |
-| **W4 (optional): four-eyes** | Second confirmer behind a flag (Decision 7). | Self-confirmation refused when on; behaviour unchanged when off. |
+| **W1: service extraction** (after #12303 merges) | `services/partnerLifecycle/*`; routes and `trustAct` become adapters; `PlatformActor` + `via` on UI audit rows; uninstall queueing safe to re-run (§3.8). No MCP code. | All existing admin route tests and the #12303 integration suite pass unchanged; new parity and re-run tests; no `db.` calls left in the adapters for these operations. |
+| **W2: principal + surface + reads** | Platform OAuth audience, scopes, issuance and verification; live principal check; `/api/v1/mcp/platform` mount behind hosted + flag; `partner_lookup`, `partner_trust_get` (projection), `partner_signals_list`, `partner_suspend_preview`; platform rate limits; `platform_admin.mcp.*` audit. | The five hiding proofs (§3.4) pass over real transports, including a tenant grant owned by a platform admin. Integration tests run as `breeze_app` with a partner-scoped platform admin acting on another partner. Disabled-flag and self-hosted 404 tests pass. Instruction-shaped partner strings are tested against the projection. |
+| **W3: reversible writes behind confirm** | `platform_action_requests` migration; confirm page and route; `platform_action_status`; tools in order ack (single and bounded bulk) → unsuspend → fraud-flag restore → restrict/promote. | Side-effect parity contract (§3.13); audit parity (§3.9); tests for `operator_mismatch`, replay, expiry and rejection; Playwright confirm flow (`data-testid`). |
+| **W4: `partner_suspend`** | Suspension serialization, durable post-commit work record, drift policy (Decision 9), then the tool. | Tests for duplicate calls, concurrent change, crash recovery and failure of each downstream effect; stale-preview and drift tests; one-live-request index test. |
+| **W5 (only if Decision 7 = B): four-eyes flag** | Second confirmer behind `PLATFORM_ADMIN_FOUR_EYES_SUSPEND`. | Self-confirmation refused when on; behaviour unchanged when off. If Decision 7 = A, this lands inside W4. |
 
 ## 8. Test and rollout notes
 
@@ -587,7 +736,7 @@ It asserts identical calls for `via: 'ui'` and `via: 'mcp'`.
   1. Ship W2 with `PLATFORM_ADMIN_MCP_ENABLED=false`.
   2. Enable it in one region on the operator's own account and exercise the
      reads.
-  3. Enable W3 writes one tool at a time, suspend last.
+  3. Enable W3 writes one tool at a time, then W4 suspend last.
   4. Exercise suspend first against a test partner, under a test-only
      configuration with no real billing subscription.
 - **Docs.** Add an admin runbook for connecting the platform MCP server and
