@@ -35,8 +35,8 @@ moves them):
   - requires `auth.user.isPlatformAdmin === true`;
   - writes a `platform_admin.<route>` audit row for every request.
 
-  Every route below also has `requireMfa()`, except `GET /admin/trust/queue`
-  (no route-level MFA gate) and `POST /admin/trust/act` (fresh TOTP instead):
+  The mutating routes and the signals read below also have `requireMfa()`;
+  `POST /admin/trust/act` uses a fresh TOTP instead:
 
   | Route | Logic lives in | Audit row |
   |---|---|---|
@@ -166,7 +166,10 @@ Write tools take `partnerId`, `reason` (same minimum length as the route) and
 `confirmPartnerSlug`. The slug must match the target partner's slug. This is
 the model-side typo gate; the human-side typo gate stays `confirmEmail` on the
 confirm page. `partner_suspend` also requires the `previewDigest` returned by
-`partner_suspend_preview`.
+`partner_suspend_preview`. `partner_fraud_flag_restore` takes the exact
+`flagIds` of the restriction episode, which `partner_trust_get` returns. The
+confirm page re-shows the live episode, and the service's existing `stale`
+guard refuses if the episode changed.
 
 ### 3.3 Principal
 
@@ -207,7 +210,9 @@ once the window passes, a browser step-up refreshes it (Decision 8). Writes
 always need a fresh TOTP at confirm (§3.6).
 
 **Issuance gap.** The OAuth issuer and bearer verifier assume partner tenancy
-today (`oauth/provider.ts`, `middleware/bearerTokenAuth.ts`). A platform admin
+today. Verified: token mint in `oauth/provider.ts` refuses a grant with no
+partner, and `middleware/bearerTokenAuth.ts` rejects a bearer with no
+`partner_id` claim. A platform admin
 with no partner or org membership, whose web token has `system` scope, cannot
 obtain a grant at all. W2 adds a platform issuance and verification path for
 the platform audience. It does not reuse the tenant one.
@@ -367,8 +372,9 @@ index. Redis-only storage was considered and rejected (Decision 3b).
 never re-files. The status tool reports every outcome explicitly. A suspend
 whose token or OAuth revocation failed is `completed_with_failures` with the
 failed step named, never `completed`. The tenant MCP server's generic error
-classifier is not reused, because it can read an error body that carries
-counts as a success.
+classifier is not reused. `pureReturnedToolError` (`routes/mcpServer.ts`)
+treats a body with keys besides `error`/`code` as a success, so a
+`partial_suspend` body that carries counts would read as one.
 
 ### 3.7 Dry-run preview for suspend
 
@@ -514,6 +520,7 @@ test spies on each effect:
 - the billing client `closeOpenCheckouts` / `cancelSubscription`;
 - `cancelDeviceCommands`;
 - the trust-state publish and the serving-set refresh;
+- the checkout close after a restrict (`closeOpenCheckoutsAfterRestrict`);
 - the approval email inside `setTrustState`.
 
 It asserts identical calls for `via: 'ui'` and `via: 'mcp'`.
@@ -659,26 +666,28 @@ stated next to it.
 
    **Claude recommends B.** The single-admin confirm (live re-preview +
    `confirmEmail` + fresh TOTP in the web UI) is a human review at least as
-   strong as today's UI suspend. Option A would make MCP suspend unusable
-   while the platform-admin pool is small, and the UI path would still allow
-   one admin. **Codex recommends A**: suspend is irreversible, and the tenant
+   strong as today's UI suspend. Option A would make MCP suspend unusable on
+   a deployment with fewer than two platform admins, while the UI path would
+   still allow one admin. **Codex recommends A**: suspend is irreversible, and the tenant
    sole-operator fallback is the wrong model. A real disagreement; maintainer
    to choose.
 8. **Assurance for reads over MCP.** The REST signal reads require a session
-   MFA claim. The trust queue GET does not.
+   MFA claim, and MCP grants carry none.
    - A: the platform grant's consent requires an MFA-satisfied session. The
      grant stores `assuranceAt`, and reads are allowed while it is newer than
      a window (proposed 12 h). After that, a browser step-up refreshes it.
    - B (codex): short-lived, issuer-verified evidence that an actual factor
      was used, bound to the human and the grant. Reads stay hidden until that
-     exists, because `requireMfa()` reflects effective policy and can admit
-     password-only sessions.
+     exists, because `requireMfa()` is a policy check, not proof of a recent
+     factor.
 
    **Recommend A, made factor-based to meet codex's point.** `assuranceAt` is
    set only from a real factor verification (TOTP or passkey) at consent or
    step-up, never from the policy flag. That closes most of the gap between A
-   and B. Every write, including acknowledge, needs a fresh browser TOTP;
-   *codex agrees*, because acknowledging suppresses further alerts.
+   and B, but it is not codex's position: **codex recommends B** (short-lived
+   evidence, reads hidden until it exists). Every write, including
+   acknowledge, needs a fresh browser TOTP; *codex agrees*, because
+   acknowledging suppresses further alerts.
 9. **Preview drift at execution.**
    - A (codex): any material drift in the target identities requires a new
      preview.
