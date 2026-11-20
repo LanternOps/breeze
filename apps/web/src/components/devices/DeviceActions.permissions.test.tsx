@@ -203,6 +203,21 @@ describe('DeviceActions — Run vendor updates (#11065)', () => {
     expect(screen.queryByTestId('run-vendor-updates-dialog')).toBeNull();
   });
 
+  it('enabled when every gate is closed but the lane is in observe mode (read-only check)', async () => {
+    h.granted.add('devices:execute');
+    vi.mocked(fetchWithAuth).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ...statusBody('dell', 'closed'), observe: true }),
+    } as Response);
+    render(<DeviceActions device={dell} compact />);
+    await openMore();
+    const action = await screen.findByTestId('device-action-run-vendor-updates');
+    await waitFor(() => expect(action.getAttribute('aria-disabled')).not.toBe('true'));
+    await userEvent.click(action);
+    expect(await screen.findByTestId('run-vendor-updates-dialog')).toBeInTheDocument();
+  });
+
   it('disabled on an unknown agent version: the check fails closed', async () => {
     h.granted.add('devices:execute');
     render(<DeviceActions device={{ ...dell, agentVersion: '' }} compact />);

@@ -491,7 +491,10 @@ export default function DeviceActions({
       if (!current) return;
       if (read.kind === "ok") {
         setVendorLane(read.view.lane);
-        setVendorLaneClosed(Object.values(read.view.gates).every((gate) => gate === "closed"));
+        // Observe mode closes every gate by design but still accepts a read-only check (#12227).
+        setVendorLaneClosed(
+          read.view.observe !== true && Object.values(read.view.gates).every((gate) => gate === "closed"),
+        );
       }
       // Hidden is the safe answer, and the section on the Patches tab offers a retry.
       else if (read.kind === "error") console.warn(`[DeviceActions] could not read vendor update status for ${device.id}`);
