@@ -1,11 +1,11 @@
 ---
 name: release
-description: Use when cutting, shipping, or announcing a Breeze RMM release — "cut a release", "ship vX.Y.Z", "release notes for X", "what do self-hosters need to know", "draft the release announcement", "do the release write-up". Orchestrates the whole release-comms pass: a self-hoster-focused GitHub Release body (breaking changes, required env vars, migrations), then /update-breeze-release-notes (marketing site), /update-breeze-docs (technical docs), and a Discord announcement. Also covers the post-release deploy + agent-fleet promote steps that the tag alone does NOT do.
+description: Use when cutting, shipping, or announcing a Breeze RMM release — "cut a release", "ship vX.Y.Z", "release notes for X", "what do self-hosters need to know", "draft the release announcement", "do the release write-up". Orchestrates the whole release-comms pass: a self-hoster-focused GitHub Release body (breaking changes, required env vars, migrations), then /update-breeze-release-notes (marketing site), /update-breeze-docs (technical docs), a Discord announcement, and an email update to subscribers sent through Sequenzy. Also covers the post-release deploy + agent-fleet promote steps that the tag alone does NOT do.
 ---
 
 # Breeze Release
 
-This skill drives the **communication and rollout** pass for a release: the GitHub Release body (especially the self-hoster section), the marketing release notes, the technical docs, and the Discord announcement — plus the post-release deploy/promote steps the tag alone doesn't handle.
+This skill drives the **communication and rollout** pass for a release: the GitHub Release body (especially the self-hoster section), the marketing release notes, the technical docs, the Discord announcement and the subscriber email update — plus the post-release deploy/promote steps the tag alone doesn't handle.
 
 It assumes the **code is already merged to `main` and green**. Tagging is the trigger; this skill is about everything that surrounds it.
 
@@ -389,6 +389,50 @@ Template:
 
 Tone: operator-to-operator, not corporate. Lead with what people can do now. If a release is mostly internal/security, say so plainly ("mostly hardening + reliability — recommended upgrade").
 
+## Step 5b — Email update via Sequenzy
+
+Draft an email update for the Breeze subscriber list and send it through Sequenzy from the `updates@` sender. **Sending is external comms: show Todd the full draft (subject, preview text, body, audience) and send or schedule only on his explicit go.** A go for the release does not cover this send.
+
+**Where it goes (verify each time, don't assume):**
+- Sequenzy MCP (`mcp__sequenzy__*`). If only `authenticate` is listed, run it and have Todd finish the sign-in, or ask him to re-auth with `/mcp`. Then load the campaign/broadcast tools with `ToolSearch "+sequenzy campaign"`, and read their schemas before calling them.
+- Company: the **Breeze** workspace (`get_account`, then `select_company`). Do not send from the LanternOps workspace.
+- Sender: `Breeze <updates@hello.breezermm.com>`, the company default. Confirm it with `get_company`.
+- Audience: the Breeze subscriber list(s) from `list_lists`. Name the list and its active-subscriber count in the draft you show Todd.
+- If the MCP has no campaign tool, build the draft in the Sequenzy dashboard instead, and file `submit_feedback` about the missing tool.
+
+**When to send:** after the marketing release-notes page is **deployed** (the email links to it) and the hosted regions run the new version (Step 6). Draft it alongside Discord, and send it last.
+
+**Content.** Use the same source as the marketing notes (Step 3). Write for MSP owners and technicians, not developers, and follow the `lanternops-marketing` voice: operator to operator, plain, no hype.
+
+```
+Subject:  Breeze vX.Y.Z: <the one or two headline things>   (≤ 60 chars)
+Preview:  <one line that adds to the subject, not a repeat>
+
+<2–3 sentence opener: what you can do now that you couldn't last week>
+
+What's new
+• <headline 1, one sentence>
+• <headline 2>
+• <headline 3>
+• <security line, if any: "N security fixes; self-hosters should upgrade">
+
+<⚠️ one short paragraph if there's an action-required / breaking change, saying what to do and where the steps are>
+
+Self-hosting? <one line: upgrade command, or "see the upgrade notes">.
+
+Read the full release notes → https://breezermm.com/releases/<YYYY-MM-DD-vX-Y-Z>/
+
+— Todd
+```
+
+Rules:
+- Use 3–5 highlights. Give the action-required item its own paragraph, never a bullet.
+- Name security areas at most, never mechanics. Link to the GitHub release for detail.
+- Leave out features that ship dark or API-only, and leave out internal tooling. Use the Step 3 rule.
+- Don't promise dates for "still to come" items.
+- Before you ask for a go, send a test to Todd's own address if the tools allow it, and check that the links resolve.
+- After the send, note the campaign id and the recipient count in the release session log.
+
 ## Step 6 — Roll it out
 
 The tag built images and registered binaries; it does **not** deploy prod or update the agent fleet on its own. The intent **is** for cutting a release to flow straight into rollout — but **always confirm with Todd before touching prod**, then proceed. Three parts, per region: **back up the DB → deploy the droplet → (later) promote the agent fleet**.
@@ -663,6 +707,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] `/update-breeze-release-notes` (marketing site) — published via the site's deploy script, not just committed
 - [ ] `/update-breeze-docs` (technical docs)
 - [ ] Discord announcement drafted, shown to Todd
+- [ ] **Email update** (Step 5b) drafted in Sequenzy from `updates@hello.breezermm.com` to the Breeze list, shown to Todd, sent only on his go — after the marketing page is deployed and hosted is on the new version
 - [ ] Confirmed rollout with Todd
 - [ ] DB backed up per region (encrypted off-region dump) **immediately before that region's deploy** — verified non-trivial dump size (not the `defaultdb` 4K trap)
 - [ ] Droplets deployed — **night region first** (back up → deploy → verify), then the other + `/health` green
