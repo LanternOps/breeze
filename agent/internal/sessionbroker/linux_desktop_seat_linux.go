@@ -28,7 +28,8 @@ func LinuxActiveSeatSession(ctx context.Context) (*DetectedSession, error) {
 	if id == "" {
 		return nil, nil
 	}
-	out, err := runLoginctl(ctx, loginctl, "show-session", id, "--property=Id,User,Type,State,Class,Remote")
+	out, err := runLoginctl(ctx, loginctl, "show-session", id,
+		"--property=Id", "--property=User", "--property=Type", "--property=State", "--property=Class", "--property=Remote")
 	if err != nil {
 		return nil, fmt.Errorf("loginctl show-session %s: %w", id, err)
 	}

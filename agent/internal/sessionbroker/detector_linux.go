@@ -11,9 +11,15 @@ import (
 	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
-// logindSessionProperties is the property list asked of `loginctl
-// show-session`; applyLogindSessionProperties (logind_props.go) parses it.
-const logindSessionProperties = "--property=Type,Remote,Display,Seat,State,Class,LockedHint,IdleHint,IdleSinceHint"
+// logindShowSessionArgs asks `loginctl show-session` for the properties
+// applyLogindSessionProperties (logind_props.go) parses. One --property flag
+// per name: systemd 255's loginctl prints nothing for a comma-joined list.
+func logindShowSessionArgs(sessionID string) []string {
+	return []string{"show-session", sessionID,
+		"--property=Type", "--property=Remote", "--property=Display", "--property=Seat",
+		"--property=State", "--property=Class", "--property=LockedHint",
+		"--property=IdleHint", "--property=IdleSinceHint"}
+}
 
 type linuxDetector struct{}
 
@@ -57,8 +63,7 @@ func (d *linuxDetector) listSessionsCounted() ([]DetectedSession, int, error) {
 		// at their defaults; flag it so callers never read those defaults as
 		// "nobody is at a desktop" (the consent gate's occupancy check).
 		propCtx, propCancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
-		propOut, propErr := procspawn.CommandContext(propCtx, "loginctl", "show-session", sessionID,
-			logindSessionProperties).Output()
+		propOut, propErr := procspawn.CommandContext(propCtx, "loginctl", logindShowSessionArgs(sessionID)...).Output()
 		propCancel()
 		if propErr != nil {
 			sess.PropertiesUnknown = true

@@ -47,7 +47,8 @@ func lookupLinuxLogindSession(ctx context.Context, id string) (LogindSessionStat
 	if err != nil {
 		return LogindSessionState{}, fmt.Errorf("resolve loginctl: %w", err)
 	}
-	out, err := runLoginctl(ctx, loginctl, "show-session", id, "--property=Id,User,Type,State,Class,Remote")
+	out, err := runLoginctl(ctx, loginctl, "show-session", id,
+		"--property=Id", "--property=User", "--property=Type", "--property=State", "--property=Class", "--property=Remote")
 	if err != nil {
 		return LogindSessionState{}, fmt.Errorf("loginctl show-session %s: %w", id, err)
 	}
@@ -70,7 +71,7 @@ func lookupLinuxLogindSession(ctx context.Context, id string) (LogindSessionStat
 		if other == id {
 			continue
 		}
-		otherOut, err := runLoginctl(ctx, loginctl, "show-session", other, "--property=Type,Remote")
+		otherOut, err := runLoginctl(ctx, loginctl, "show-session", other, "--property=Type", "--property=Remote")
 		if err != nil {
 			st.PropertiesUnknown = true
 			return st, nil

@@ -38,6 +38,10 @@ func (e *linuxEnumerator) ActiveSessions() []SessionInfo {
 		if s.Display == "" {
 			continue
 		}
+		// A display-manager greeter has a display but no user to run Assist for.
+		if s.Class != "" && s.Class != "user" {
+			continue
+		}
 		seen[s.UID] = true
 		sessions = append(sessions, SessionInfo{
 			Key:      strconv.FormatUint(uint64(s.UID), 10),

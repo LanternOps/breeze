@@ -193,7 +193,7 @@ func isLinuxDesktopSession(s *Session) bool {
 }
 
 // parseLogindShowSession reads `loginctl show-session <id>
-// --property=Id,User,Type,State,Class,Remote` output. A property that is
+// --property=Id --property=User ... --property=Remote` output. A property that is
 // missing or unreadable marks the result PropertiesUnknown.
 func parseLogindShowSession(id, out string) LogindSessionState {
 	props := parseKeyValueLines(out)
@@ -242,7 +242,7 @@ func parseLogindUserSessions(out string) (ids []string, ok bool) {
 }
 
 // isLocalGraphicalLogindSession reads `loginctl show-session <id>
-// --property=Type,Remote` output for another session of the same uid.
+// --property=Type --property=Remote` output for another session of the same uid.
 func isLocalGraphicalLogindSession(out string) (graphical, ok bool) {
 	props := parseKeyValueLines(out)
 	typ, hasType := props["Type"]
