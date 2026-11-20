@@ -162,5 +162,7 @@ describe('DeviceHeaderFacts', () => {
     render(<DeviceHeaderFacts device={device()} />);
     const link = await screen.findByRole('link', { name: /sw-core-01/ });
     expect(link).toHaveAttribute('href', '/devices/network/na-1');
+    // A bare asset name in the header reads as noise; say what it is, visibly.
+    expect(within(link).getByText('Network asset')).not.toHaveClass('sr-only');
   });
 });

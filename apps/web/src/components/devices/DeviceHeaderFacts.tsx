@@ -401,7 +401,7 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
           className="inline-flex items-center gap-1.5 hover:text-foreground"
         >
           <Network className={ICON} aria-hidden="true" />
-          <span className="sr-only">{t('deviceDetails.networkAsset')}: </span>
+          <span>{t('deviceDetails.networkAsset')}</span>
           <span className="text-foreground underline decoration-muted-foreground/50 underline-offset-4">{asset.label}</span>
         </a>
       ),
