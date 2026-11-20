@@ -7,6 +7,7 @@ import { db, assertOutsideHeldDbContext, runOutsideDbContext, withSystemDbAccess
 import { billingNoticeOutbox, organizations, partners } from '../../db/schema';
 import { captureException } from '../sentry';
 import { getEmailService } from '../email';
+import { heldSendDecision, isEmailSendHeldError, logHeldSendDropped } from '../emailDomains/heldSend';
 import { isBillingEnabledForOrg } from '../billingEnabled';
 import { isBlockedWhileBillingOff } from './billingNoticePolicy';
 import type { Tx, RenderedNotice } from './types';
@@ -54,6 +55,16 @@ const owns = (row: Row) => and(eq(billingNoticeOutbox.id, row.id),
   eq(billingNoticeOutbox.status, 'sending'), eq(billingNoticeOutbox.attempts, row.attempts));
 
 const ACK_PENDING = 'Delivery acknowledgement pending';
+const HELD_ERROR = 'EmailSendHeldError';
+/**
+ * A held notice (#12249) may use this many attempts in total before it is
+ * parked `failed`. The outbox has no creation timestamp, so this attempt bound
+ * stands in for a maximum age: over the cap each retry waits for the next UTC
+ * day, so three attempts is at most about two days late.
+ */
+export const BILLING_NOTICE_HELD_MAX_ATTEMPTS = 3;
+/** Never wait longer than this for one held retry (one UTC day plus the spread). */
+const BILLING_NOTICE_HELD_MAX_WAIT_MS = 26 * 60 * 60 * 1000;
 function reportFailure(row: Row, phase: string, _error: unknown): void {
   // Transport/handler messages may contain bearer URLs. Keep only safe identity
   // and a bounded phase; never persist or capture the raw exception message.
@@ -165,6 +176,27 @@ export async function dispatchPendingBillingNotices(now = new Date()): Promise<{
         }));
         if (completed) counts.sent++;
       } catch (error) {
+        if (isEmailSendHeldError(error)) {
+          // #12249: held, not failed. Nothing went out on either lane. Retry at
+          // the held error's retryAt, not the transport backoff, and do not
+          // report each hold to Sentry. The row has no creation time, so the
+          // maximum age is a held-attempt bound (the claim already spent one).
+          const exhausted = row.attempts >= BILLING_NOTICE_HELD_MAX_ATTEMPTS;
+          const decision = exhausted ? null : heldSendDecision(error, {
+            firstAttemptAt: Date.now(), maxAgeMs: BILLING_NOTICE_HELD_MAX_WAIT_MS,
+          });
+          if (!decision || decision.action === 'drop') {
+            logHeldSendDropped('billingNoticeOutbox', error, {
+              billing_notice_id: row.id, billing_notice_kind: row.kind, org_id: row.orgId, attempts: row.attempts,
+            });
+          }
+          try { await scope(() => db.update(billingNoticeOutbox).set(decision?.action === 'reschedule'
+            ? { status: 'pending', nextAttemptAt: decision.at, lastError: HELD_ERROR }
+            : { status: 'failed', lastError: HELD_ERROR }).where(owns(row))); }
+          catch (persistError) { reportFailure(row, 'retry_persistence', persistError); }
+          counts.failed++;
+          continue;
+        }
         const delay = Math.min(60 * 2 ** Math.min(row.attempts - 1, 6), 3600) * 1000;
         reportFailure(row, row.attempts >= 8 ? (row.sentAt ? 'handler_failed' : 'failed') : (row.sentAt ? 'handler' : 'send'), error);
         try { await scope(() => db.update(billingNoticeOutbox).set({

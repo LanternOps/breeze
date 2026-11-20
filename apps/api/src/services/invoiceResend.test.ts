@@ -244,6 +244,17 @@ describe('resendInvoiceEmail', () => {
     expect(result.recipients).toEqual(['ap@acme.test']);
   });
 
+  // #12249: a held send definitely did not go out and nothing was committed, so
+  // it is not swallowed into send_failed: the route answers it with a 4xx.
+  it('rethrows a held send instead of swallowing it', async () => {
+    const held = Object.assign(new Error('held'), {
+      name: 'EmailSendHeldError', reason: 'over_cap', partnerId: 'p1', purpose: 'invoice.sent', retryAt: new Date(Date.now() + 3_600_000),
+    });
+    sendEmailMock.mockRejectedValue(held);
+    queueHappyPath();
+    await expect(resendInvoiceEmail(INV_ID, actor)).rejects.toBe(held);
+  });
+
   it('refuses a draft — there is nothing issued to re-send', async () => {
     dbResults.push([invoice({ status: 'draft', invoiceNumber: null, sentAt: null })]);
     await expect(resendInvoiceEmail(INV_ID, actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });

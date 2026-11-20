@@ -58,7 +58,11 @@ const REASON_TEXT: Record<string, string> = {
  */
 export function buildSendingDomainStatusTemplate(input: SendingDomainStatusMailInput): EmailTemplate {
   const subject = `${HEADLINE[input.event]}: ${input.domain}`;
-  const lead = LEAD[input.event](input.domain);
+  // #12249: an administrator's suspension HOLDS the domain's mail (nothing is
+  // sent from the Breeze address); only the automatic one falls back.
+  const lead = input.event === 'suspended' && input.statusReason === 'platform_suspended'
+    ? `${input.domain} has been suspended by Breeze. Mail for its streams is not being sent until the suspension is lifted.`
+    : LEAD[input.event](input.domain);
   const reason = input.statusReason ? REASON_TEXT[input.statusReason] : undefined;
 
   const body = `

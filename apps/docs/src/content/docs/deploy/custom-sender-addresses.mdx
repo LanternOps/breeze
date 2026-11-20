@@ -185,7 +185,7 @@ with no key, or `fake` in production.
 | `EMAIL_DOMAINS_ADOPT_EXISTING_ALLOWLIST` | empty | **v0.118.0+.** Comma-separated domains that may be adopted when they already exist at the provider, without the `_breeze-verify` TXT record |
 | `EMAIL_DOMAINS_REGION` | `us-east-1` | Region for newly created domains: `us-east-1`, `eu-west-1`, `sa-east-1`, `ap-northeast-1` |
 | `EMAIL_DOMAINS_MAX_PER_PARTNER` | `3` | How many sending domains one partner may hold |
-| `EMAIL_DOMAINS_DAILY_SEND_CAP` | unlimited when self-hosted | Messages per partner per UTC day on the custom-domain lane. `0` is unlimited. Over the cap, the send is held and fails with a clear error until the next UTC day. It is not sent from `EMAIL_FROM` |
+| `EMAIL_DOMAINS_DAILY_SEND_CAP` | unlimited when self-hosted | Messages per partner per UTC day on the custom-domain lane. `0` is unlimited. Each partner has two budgets of this size. Mail the partner's own staff cause (quotes, invoices, replies, reports) that goes over the cap is held: it is not sent from `EMAIL_FROM`, queued mail is retried after 00:00 UTC, and a send from the app fails with a clear error. Mail someone outside the partner can cause (ticket autoresponses, portal sign-up and password-reset mail, trust-page access confirmations) has its own budget; over it, that mail is sent from `EMAIL_FROM` instead |
 | `EMAIL_DOMAINS_PARTNER_ALLOWLIST` | empty | Comma-separated partner ids. Empty means every eligible partner |
 | `EMAIL_DOMAINS_DENYLIST` | empty | Extra domains nobody on this server may add |
 | `EMAIL_DOMAINS_WEBHOOK_SECRET` | — | Delivery-webhook signing secret. Unset leaves the endpoint inert, which is the right setting behind NAT or a VPN |

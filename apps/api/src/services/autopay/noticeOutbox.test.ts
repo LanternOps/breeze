@@ -26,7 +26,7 @@ vi.mock('../../db', async () => {
   };
   return { db, assertOutsideHeldDbContext: () => {}, runOutsideDbContext: (fn: any) => fn(), withSystemDbAccessContext: (fn: any) => fn() };
 });
-import { dispatchPendingBillingNotices, registerNoticeSentHandler } from './noticeOutbox';
+import { BILLING_NOTICE_HELD_MAX_ATTEMPTS, dispatchPendingBillingNotices, registerNoticeSentHandler } from './noticeOutbox';
 beforeEach(() => {
   vi.clearAllMocks(); h.billingEnabled = true; h.ackFailures = 0; h.invoiceEligible = true;
   h.send.mockReset().mockResolvedValue(undefined);
@@ -111,4 +111,36 @@ it('BRZ-8807: billing off never cancels a blocked-kind row that was already sent
   h.billingEnabled = false; h.row.kind = 'autopay_request'; h.row.sentAt = new Date();
   expect(await dispatchPendingBillingNotices()).toEqual({ sent: 1, failed: 0 });
   expect(h.row.status).toBe('sent'); expect(h.send).not.toHaveBeenCalled();
+});
+
+// #12249: a held notice is rescheduled to the held error's retryAt instead of
+// the transport backoff, and is not a Sentry event. The outbox has no creation
+// timestamp, so the maximum age is a held-attempt bound: once the row has used
+// BILLING_NOTICE_HELD_MAX_ATTEMPTS it is parked failed with a logged reason.
+const heldError = (retryAt: Date) => Object.assign(new Error('held'), {
+  name: 'EmailSendHeldError', reason: 'over_cap', partnerId: 'partner', purpose: 'billing.notice', retryAt,
+});
+it('reschedules a held notice to retryAt, clears the ack marker and reports nothing to Sentry', async () => {
+  const retryAt = new Date(Date.now() + 6 * 60 * 60 * 1000);
+  h.send.mockRejectedValueOnce(heldError(retryAt));
+  await dispatchPendingBillingNotices();
+  expect(h.row.status).toBe('pending');
+  expect(h.row.lastError).toBe('EmailSendHeldError');
+  expect(h.row.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(retryAt.getTime());
+  expect(h.row.nextAttemptAt.getTime()).toBeLessThanOrEqual(retryAt.getTime() + 15 * 60 * 1000);
+  expect(h.capture).not.toHaveBeenCalled();
+});
+it('parks a held notice failed, with a logged reason, once it has used the held-attempt bound', async () => {
+  h.row.attempts = BILLING_NOTICE_HELD_MAX_ATTEMPTS - 1; // the claim spends the last one
+  h.send.mockRejectedValueOnce(heldError(new Date(Date.now() + 60 * 60 * 1000)));
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  await dispatchPendingBillingNotices();
+  expect(h.row.status).toBe('failed');
+  expect(h.row.lastError).toBe('EmailSendHeldError');
+  expect(warn).toHaveBeenCalledWith('[email] held send dropped', expect.objectContaining({
+    site: 'billingNoticeOutbox', billing_notice_id: 'outbox', reason: 'over_cap',
+  }));
+  expect(JSON.stringify(warn.mock.calls)).not.toContain('client@example.test');
+  expect(h.capture).not.toHaveBeenCalled();
+  warn.mockRestore();
 });

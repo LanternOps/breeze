@@ -19,7 +19,7 @@ const U2 = '00000000-0000-4000-8000-0000000000e2';
 
 type Row = {
   id: string; reportRunId: string; recipientUserId: string; channel: 'email';
-  state: 'pending' | 'claimed' | 'sent' | 'failed' | 'unknown'; attempts: number; lastError: string | null;
+  state: 'pending' | 'claimed' | 'sent' | 'failed' | 'unknown'; attempts: number; lastError: string | null; createdAt: Date;
 };
 
 const fake = vi.hoisted(() => ({
@@ -107,6 +107,10 @@ vi.mock('./reportRunDelivery', () => ({
     const row = fake.rows.get(id);
     if (row && row.state === 'pending') row.lastError = error;
   }),
+  releaseHeldDelivery: vi.fn(async (id: string, error: string) => {
+    const row = fake.rows.get(id);
+    if (row && row.state === 'claimed') { row.state = 'pending'; row.lastError = error; }
+  }),
   summarizeDeliveries: vi.fn(async (runId: string) => {
     const rows = [...fake.rows.values()].filter((r) => r.reportRunId === runId);
     const count = (s: Row['state'][]) => rows.filter((r) => s.includes(r.state)).length;
@@ -143,7 +147,7 @@ import { deliverNarrativeEmails } from './reportNarrativeDelivery';
 
 function seed(userId: string, state: Row['state'] = 'pending', email: string | null = `${userId.slice(-2)}@example.com`) {
   const id = `d-${userId}`;
-  fake.rows.set(id, { id, reportRunId: RUN, recipientUserId: userId, channel: 'email', state, attempts: 0, lastError: null });
+  fake.rows.set(id, { id, reportRunId: RUN, recipientUserId: userId, channel: 'email', state, attempts: 0, lastError: null, createdAt: new Date() });
   fake.users.set(userId, { id: userId, email, status: 'active' });
   return id;
 }
@@ -307,17 +311,61 @@ describe('narrative email authority gate (#4248 W03)', () => {
     expect(row(U1).state).toBe('unknown');
   });
 
-  // A held send (daily partner-lane cap) went out on neither lane: definitely
-  // not sent, so `failed`, never the ambiguous `unknown`.
-  it('treats a held send as failed, not unknown', async () => {
-    seed(U1);
-    fake.authority.set(U1, unrestricted());
-    const held = Object.assign(new Error('Email not sent: partner p1 reached its daily partner-lane send cap'), { name: 'EmailSendHeldError' });
-    emailReportRunMock.mockRejectedValueOnce(held);
+  // #12249: a held send went out on neither lane. Inside the maximum age the
+  // row goes back to `pending` with a not-before marker (the table has no
+  // next-attempt column) and later passes skip it until then; past the maximum
+  // age it settles `failed` — never the ambiguous `unknown`.
+  describe('a held send', () => {
+    const heldError = (retryAt: Date) => Object.assign(new Error('Email not sent: partner p1 reached its daily partner-lane send cap'), {
+      name: 'EmailSendHeldError', reason: 'over_cap', partnerId: 'p1', purpose: 'report.delivery', retryAt,
+    });
 
-    await deliverNarrativeEmails(RUN, ctx);
+    it('is released back to pending with a not-before marker inside the maximum age', async () => {
+      seed(U1);
+      fake.authority.set(U1, unrestricted());
+      const retryAt = new Date(Date.now() + 6 * 60 * 60 * 1000);
+      emailReportRunMock.mockRejectedValueOnce(heldError(retryAt));
 
-    expect(row(U1)).toMatchObject({ state: 'failed', lastError: expect.stringContaining('daily partner-lane send cap') });
+      const s = await deliverNarrativeEmails(RUN, ctx);
+
+      expect(row(U1).state).toBe('pending');
+      expect(row(U1).lastError).toMatch(/^held:over_cap:until=/);
+      const until = new Date(row(U1).lastError!.split('until=')[1]!);
+      expect(until.getTime()).toBeGreaterThanOrEqual(retryAt.getTime());
+      expect(s).toMatchObject({ transient: 1, failed: 0, unknown: 0 });
+    });
+
+    it('a later pass skips the row, without claiming it, until the marker time', async () => {
+      seed(U1);
+      fake.authority.set(U1, unrestricted());
+      row(U1).lastError = `held:over_cap:until=${new Date(Date.now() + 60 * 60 * 1000).toISOString()}`;
+
+      const s = await deliverNarrativeEmails(RUN, ctx);
+
+      expect(emailReportRunMock).not.toHaveBeenCalled();
+      expect(row(U1)).toMatchObject({ state: 'pending', attempts: 0 });
+      expect(s).toMatchObject({ transient: 1 });
+
+      // Once the marker time has passed the row is attempted again.
+      row(U1).lastError = `held:over_cap:until=${new Date(Date.now() - 1000).toISOString()}`;
+      await deliverNarrativeEmails(RUN, ctx);
+      expect(emailReportRunMock).toHaveBeenCalledTimes(1);
+      expect(row(U1).state).toBe('sent');
+    });
+
+    it('settles failed, with a logged reason, once retryAt is past the maximum age', async () => {
+      seed(U1);
+      fake.authority.set(U1, unrestricted());
+      row(U1).createdAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      emailReportRunMock.mockRejectedValueOnce(heldError(new Date(Date.now() + 6 * 60 * 60 * 1000)));
+
+      await deliverNarrativeEmails(RUN, ctx);
+
+      expect(row(U1)).toMatchObject({ state: 'failed', lastError: 'held:over_cap:past_max_age' });
+      expect(warn).toHaveBeenCalledWith('[email] held send dropped', expect.objectContaining({ site: 'reportNarrativeDelivery' }));
+      warn.mockRestore();
+    });
   });
 
   it('still treats a definite Mailgun 4xx refusal as failed', async () => {

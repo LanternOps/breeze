@@ -158,6 +158,26 @@ export async function recordTransientGateFailure(deliveryId: string, error: stri
   );
 }
 
+/**
+ * A claimed send was HELD (#12249): nothing went out on either lane. Back to
+ * `pending` with `error` (a `held:<reason>:until=<ISO>` not-before marker, as
+ * the table has no next-attempt column) so the next pass retries it then.
+ * Claimed rows only, like settleDelivery.
+ */
+export async function releaseHeldDelivery(deliveryId: string, error: string): Promise<void> {
+  const now = new Date();
+  const released = await inOwnSystemContext(() =>
+    db
+      .update(reportRunDeliveries)
+      .set({ state: 'pending', claimedAt: null, lastError: error, updatedAt: now })
+      .where(and(eq(reportRunDeliveries.id, deliveryId), eq(reportRunDeliveries.state, 'claimed')))
+      .returning({ id: reportRunDeliveries.id }),
+  );
+  if (released.length === 0) {
+    console.warn('[reportRunDelivery] held release matched no claimed row', { deliveryId });
+  }
+}
+
 /** The rows a delivery pass for ONE run still has to attempt. */
 export async function listPendingDeliveriesForRun(reportRunId: string): Promise<DeliveryRow[]> {
   return inOwnSystemContext(() =>

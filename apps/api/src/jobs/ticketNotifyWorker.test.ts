@@ -21,7 +21,10 @@ const { insertValuesMock, selectMock, updateSetMock, sendEmailMock, getEmailServ
   };
 });
 
-vi.mock('bullmq', () => ({ Queue: vi.fn(() => ({ add: vi.fn() })), Worker: vi.fn() }));
+vi.mock('bullmq', () => ({
+  Queue: vi.fn(() => ({ add: vi.fn() })), Worker: vi.fn(),
+  DelayedError: class DelayedError extends Error { constructor() { super('delayed'); this.name = 'DelayedError'; } },
+}));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
 vi.mock('../services/email', () => ({ getEmailService: getEmailServiceMock }));
 const sentry = vi.hoisted(() => ({ captureException: vi.fn() }));
@@ -136,7 +139,7 @@ vi.mock('../services/expoPush', async (orig) => {
 });
 
 import { resolveCommentNotificationPortalHref } from '../services/inboundEmail/commentNotificationPortalHref';
-import { handleTicketEvent } from './ticketNotifyWorker';
+import { handleTicketEvent, processTicketEventJob, TICKET_HELD_MAX_AGE_MS } from './ticketNotifyWorker';
 
 describe('handleTicketEvent', () => {
   beforeEach(() => {
@@ -1469,5 +1472,106 @@ describe('ticket-assignment Pushover to the assignee\'s own key', () => {
     await handleTicketEvent(event as never);
 
     expect(pushoverMock.send).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #12249: a held customer mail is not retried three times in six seconds and
+ * then lost. The job is moved to the held error's retryAt, without spending an
+ * attempt, while it is younger than TICKET_HELD_MAX_AGE_MS; past that it is
+ * dropped with a logged reason. Payloads already delivered are recorded on the
+ * job so a re-run does not send them twice.
+ */
+describe('held customer mail (#12249)', () => {
+  const NOW = Date.UTC(2026, 10, 19, 15, 0, 0);
+  const MIDNIGHT = new Date(Date.UTC(2026, 10, 20, 0, 0, 0));
+  const heldError = (retryAt: Date) => Object.assign(new Error('held'), {
+    name: 'EmailSendHeldError', reason: 'over_cap', partnerId: 'p-1', purpose: 'ticket.customer_notification', retryAt,
+  });
+  const commented = {
+    type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+    actorUserId: 'u-1', eventId: 'evt-held', payload: { commentId: 'c-1', isPublic: true },
+  } as const;
+  const primeRequesterReads = () => selectMock
+    .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0042', ticketNumber: 'KQ04YOHZ-N', subject: 'Printer', submitterEmail: 'enduser@acme.example' }])
+    .mockResolvedValueOnce([{ slug: 'acme', settings: null }]);
+  function fakeJob(over: { timestamp?: number; data?: Record<string, unknown> } = {}) {
+    const job = {
+      id: 'job-1',
+      timestamp: over.timestamp ?? NOW - 60_000,
+      data: { ...commented, ...(over.data ?? {}) } as Record<string, unknown>,
+      updateData: vi.fn(async (d: Record<string, unknown>) => { job.data = d; }),
+      moveToDelayed: vi.fn(async (_at: number, _token?: string) => undefined),
+    };
+    return job;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    withSystemDbAccessContextMock.mockImplementation(async (fn: () => unknown) => fn());
+    getEmailServiceMock.mockReturnValue({ sendEmail: sendEmailMock });
+    vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    sendEmailMock.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('moves the job to retryAt without spending an attempt while inside the maximum age', async () => {
+    primeRequesterReads();
+    sendEmailMock.mockRejectedValueOnce(heldError(MIDNIGHT));
+    const job = fakeJob();
+    await expect(processTicketEventJob(job as never, 'lock-token')).rejects.toMatchObject({ name: 'DelayedError' });
+    expect(job.moveToDelayed).toHaveBeenCalledTimes(1);
+    const [at, token] = job.moveToDelayed.mock.calls[0]!;
+    expect(token).toBe('lock-token');
+    expect(at).toBeGreaterThanOrEqual(MIDNIGHT.getTime());
+    expect(at).toBeLessThanOrEqual(MIDNIGHT.getTime() + 15 * 60 * 1000);
+    // Nothing was delivered before the hold, so nothing is skipped on the re-run.
+    expect(job.updateData).toHaveBeenCalledWith(expect.objectContaining({ heldDeliveredKeys: [] }));
+  });
+
+  it('drops the job with a logged reason once retryAt is past the maximum age', async () => {
+    primeRequesterReads();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    sendEmailMock.mockRejectedValueOnce(heldError(MIDNIGHT));
+    // First attempted long enough ago that midnight is past its deadline.
+    const job = fakeJob({ timestamp: MIDNIGHT.getTime() - TICKET_HELD_MAX_AGE_MS - 1 });
+    await expect(processTicketEventJob(job as never, 'lock-token')).resolves.toBeUndefined();
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith('[email] held send dropped', expect.objectContaining({
+      site: 'ticketNotifyWorker', reason: 'over_cap', partnerId: 'p-1', jobId: 'job-1',
+    }));
+    // Identifiers only: the recipient never reaches the log.
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('enduser@acme.example');
+  });
+
+  it('a payload already delivered before the hold is not sent again on the re-run', async () => {
+    primeRequesterReads();
+    await handleTicketEvent(commented as never);
+    const sent = sendEmailMock.mock.calls[0]![0] as { purpose: string; to: string; subject: string };
+    const key = [sent.purpose, sent.to, sent.subject].join('|');
+
+    primeRequesterReads();
+    sendEmailMock.mockClear();
+    await processTicketEventJob(fakeJob({ data: { heldDeliveredKeys: [key] } }) as never, 'lock-token');
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('without the lock token the held error is thrown for the normal retry', async () => {
+    primeRequesterReads();
+    sendEmailMock.mockRejectedValueOnce(heldError(MIDNIGHT));
+    const job = fakeJob();
+    await expect(processTicketEventJob(job as never, undefined)).rejects.toMatchObject({ name: 'EmailSendHeldError' });
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
+  });
+
+  it('a non-held send failure still throws for the normal BullMQ retry', async () => {
+    primeRequesterReads();
+    sendEmailMock.mockRejectedValueOnce(new Error('smtp down'));
+    const job = fakeJob();
+    await expect(processTicketEventJob(job as never, 'lock-token')).rejects.toThrow('smtp down');
+    expect(job.moveToDelayed).not.toHaveBeenCalled();
   });
 });

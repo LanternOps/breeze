@@ -28,6 +28,7 @@ import { invoiceAutopaySchedules, billingNoticeOutbox, invoices, invoiceLineDevi
 import { isPartnerOnlinePaymentAvailable, isPartnerOnlinePaymentAvailableOnCallerConnection } from './partnerStripe';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import { getEmailService, buildInvoiceTemplate } from './email';
+import { isEmailSendHeldError } from './emailDomains/heldSend';
 import { partnerEmailCustomFromSettings } from './emailTemplates/renderPartnerEmail';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { portalBase } from './portalUrl';
@@ -843,7 +844,10 @@ async function deliverInvoiceEmail(
       attachments: pdf ? [{ filename: `${invoice.invoiceNumber ?? 'invoice'}.pdf`, content: pdf, contentType: 'application/pdf' }] : undefined,
     });
   } catch (err) {
-    if (!swallowThrow) throw err;
+    // A held send (#12249) definitely did not go out: rethrow it even on the
+    // re-send path, so the route answers with a 4xx and a retry time instead
+    // of the ambiguous send_failed.
+    if (!swallowThrow || isEmailSendHeldError(err)) throw err;
     console.error(`[invoicePdf] re-send email failed for invoice ${invoiceId}:`, err);
     return { emailed: false, reason: 'send_failed', recipients };
   }
