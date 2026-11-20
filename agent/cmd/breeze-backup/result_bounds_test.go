@@ -355,7 +355,7 @@ func TestSendBackupResultDeliversOversizeRun(t *testing.T) {
 	result := oversizeRunResult(t)
 
 	sendErr := make(chan error, 1)
-	go func() { sendErr <- sendBackupResult(sender, "env-1", result) }()
+	go func() { sendErr <- sendBackupResult(sender, "env-1", "backup_run", result) }()
 
 	if err := receiver.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
@@ -684,7 +684,7 @@ func TestSendBackupResultReportsSendFailure(t *testing.T) {
 		t.Fatalf("close sender: %v", err)
 	}
 
-	err := sendBackupResult(ipc.NewConn(clientNC), "env-dead", backupipc.BackupCommandResult{
+	err := sendBackupResult(ipc.NewConn(clientNC), "env-dead", "backup_run", backupipc.BackupCommandResult{
 		CommandID: "cmd-dead",
 		Success:   true,
 		Stdout:    `{"status":"completed","snapshot":{"id":"snapshot-1"}}`,

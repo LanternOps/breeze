@@ -411,6 +411,10 @@ function deriveVerificationReason(params: {
  */
 const PERSISTED_AGENT_VERIFICATION_CODES = new Set(['storage_session_lost']);
 
+function nonNegativeIntOrZero(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
 export async function processBackupVerificationResult(
   commandId: string,
   commandResult: { status: string; stdout?: string; error?: string }
@@ -488,6 +492,11 @@ export async function processBackupVerificationResult(
   // count cannot outlive this result.
   details.filesUnchecked = (agentResult.filesUnchecked as number) ?? 0;
   details.warnings = agentResult.warnings || [];
+  // How many failedFiles / warnings entries the agent or the validator left
+  // out to fit the result limits; the only sign of a trimmed list when the
+  // warnings arrived as one string. Always overwritten, like filesUnchecked.
+  details.failedFilesOmitted = nonNegativeIntOrZero(agentResult.failedFilesOmitted);
+  details.warningsOmitted = nonNegativeIntOrZero(agentResult.warningsOmitted);
   details.cleanedUp = agentResult.cleanedUp;
   details.restorePath = agentResult.restorePath;
   // #6561: the agent explains an immediate failure (`no files in snapshot`,

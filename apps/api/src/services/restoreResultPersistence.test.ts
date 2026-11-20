@@ -127,6 +127,25 @@ describe('restore result persistence', () => {
     expect((metadata.securityDescriptorQuarantinedPaths as string[]).length).toBeLessThanOrEqual(100);
   });
 
+  it('keeps how many failed files and warnings the result left out', () => {
+    const metadata = buildRestoreResultMetadata(
+      'backup_restore',
+      { status: 'completed' },
+      { status: 'partial', filesFailed: 5_000, failedFiles: ['/a'], failedFilesOmitted: 4_999, warningsOmitted: 12 },
+    );
+    expect(metadata).toMatchObject({ failedFilesOmitted: 4_999, warningsOmitted: 12 });
+  });
+
+  it('drops an omitted count that is not a non-negative integer', () => {
+    const metadata = buildRestoreResultMetadata(
+      'backup_restore',
+      { status: 'completed' },
+      { status: 'partial', failedFilesOmitted: -1, warningsOmitted: 'many' },
+    );
+    expect(metadata).not.toHaveProperty('failedFilesOmitted');
+    expect(metadata).not.toHaveProperty('warningsOmitted');
+  });
+
   it('omits the new fields for a result that does not carry them', () => {
     const metadata = buildRestoreResultMetadata('backup_restore', { status: 'completed' }, { status: 'completed' });
     expect(metadata).not.toHaveProperty('securityDescriptorQuarantined');
