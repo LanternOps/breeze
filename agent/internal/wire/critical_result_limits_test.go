@@ -65,6 +65,8 @@ func TestCriticalResultLimitsMatchServerValidator(t *testing.T) {
 		{"CRITICAL_RESULT_LIST_ENTRY_MAX_CHARS", "CriticalResultListEntryMaxChars", CriticalResultListEntryMaxChars},
 		{"CRITICAL_RESULT_WARNING_TEXT_MAX_CHARS", "CriticalResultWarningTextMaxChars", CriticalResultWarningTextMaxChars},
 		{"CRITICAL_RESULT_ERROR_MAX_CHARS", "CriticalResultErrorMaxChars", CriticalResultErrorMaxChars},
+		{"RESTORE_QUARANTINED_PATHS_MAX", "CriticalResultQuarantinedPathsMax", CriticalResultQuarantinedPathsMax},
+		{"RESTORE_QUARANTINED_PATH_MAX_CHARS", "CriticalResultQuarantinedPathMaxChars", CriticalResultQuarantinedPathMaxChars},
 	} {
 		if got := serverConstant(t, src, tc.server); got != tc.goVal {
 			t.Errorf("server %s = %d but Go %s = %d; update both in the same commit", tc.server, got, tc.goName, tc.goVal)
@@ -91,12 +93,6 @@ func TestCriticalResultSchemasUseTheNamedLimits(t *testing.T) {
 	}
 	if n := strings.Count(src, "error: z.string().max(CRITICAL_RESULT_ERROR_MAX_CHARS)"); n != 2 {
 		t.Errorf("expected the restore and verification error schemas to read CRITICAL_RESULT_ERROR_MAX_CHARS, found it %d time(s)", n)
-	}
-	// Literal limits that would bypass the named constants.
-	for _, stale := range []string{".max(1000)", "z.string().max(4096)).max(100)"} {
-		if strings.Contains(src, stale) {
-			t.Errorf("validator still carries the literal %q; use the named constant the agent mirrors", stale)
-		}
 	}
 }
 

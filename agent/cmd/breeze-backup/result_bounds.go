@@ -209,6 +209,8 @@ func fitBackupResultAgainst(result backupipc.BackupCommandResult, server deliver
 	fitted backupipc.BackupCommandResult, notesText string, limit deliveryLimit,
 ) {
 	var notes []string
+	// fits reports whether a result is within every delivery limit on the
+	// path to the server.
 	fits := func(r backupipc.BackupCommandResult) bool { return !exceededLimitAgainst(r, server).fired() }
 
 	// Captured BEFORE any tier runs: once the tiers have shrunk the payload the
@@ -373,12 +375,6 @@ func sendBackupResult(conn *ipc.Conn, envelopeID, commandType string, result bac
 }
 
 // --- helpers ---
-
-// fits reports whether result is within every delivery limit on the path to
-// the server.
-func fits(result backupipc.BackupCommandResult) bool {
-	return !exceededLimit(result).fired()
-}
 
 // exceededLimit names the first delivery limit result's payload breaches, and
 // that limit's value; it returns ("", 0) when the result is deliverable.

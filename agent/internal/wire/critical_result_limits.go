@@ -40,6 +40,13 @@ const (
 	CriticalResultWarningTextMaxChars = 10_000
 	// CriticalResultErrorMaxChars caps the in-body `error` string.
 	CriticalResultErrorMaxChars = 10_000
+
+	// CriticalResultQuarantinedPathsMax and CriticalResultQuarantinedPathMaxChars
+	// are the limits the server trims a restore's
+	// securityDescriptorQuarantinedPaths list to (it trims rather than
+	// rejects, but only after the structured-size check).
+	CriticalResultQuarantinedPathsMax     = 100
+	CriticalResultQuarantinedPathMaxChars = 1024
 )
 
 // CriticalResultBudget is the encoded size agent-side code should keep a

@@ -271,6 +271,45 @@ func TestFitCriticalResultKeepsANumericFailedFiles(t *testing.T) {
 	}
 }
 
+// A restore whose bulk is the restricted-descriptor path list: that list is
+// trimmed to the server's own limit, and the few failed files are kept rather
+// than being cut to make room for it.
+func TestFitCriticalResultTrimsQuarantinedPathsBeforeFailedFiles(t *testing.T) {
+	quarantined := make([]string, 20000)
+	for i := range quarantined {
+		quarantined[i] = fmt.Sprintf(`C:\Data\Shared\Finance\ledger_%06d.xlsx`, i)
+	}
+	restore := backup.RestoreResult{
+		SnapshotID: "snap-1", Status: "completed", FilesRestored: 20000, FilesFailed: 3,
+		FailedFiles:                        manyPaths(3),
+		SecurityDescriptorQuarantined:      len(quarantined),
+		SecurityDescriptorQuarantinedPaths: quarantined,
+	}
+	in := criticalResultFor(t, restore)
+	if len(in.Stdout) <= wire.CriticalResultBudget {
+		t.Fatalf("fixture is %d bytes; it must exceed the critical budget", len(in.Stdout))
+	}
+	fitted, _, _ := fitBackupResultForCommand("backup_restore", in)
+	var out backup.RestoreResult
+	if err := json.Unmarshal([]byte(fitted.Stdout), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.FailedFiles) != 3 {
+		t.Errorf("failedFiles kept %d of 3; the quarantine list should give way, not the failed files", len(out.FailedFiles))
+	}
+	if out.SecurityDescriptorQuarantined != len(quarantined) {
+		t.Errorf("securityDescriptorQuarantined = %d, want %d", out.SecurityDescriptorQuarantined, len(quarantined))
+	}
+	if n := len(out.SecurityDescriptorQuarantinedPaths); n == 0 || n > wire.CriticalResultQuarantinedPathsMax {
+		t.Errorf("quarantined paths kept %d, want 1..%d", n, wire.CriticalResultQuarantinedPathsMax)
+	}
+	for _, p := range out.SecurityDescriptorQuarantinedPaths {
+		if n := utf8.RuneCountInString(p); n > wire.CriticalResultQuarantinedPathMaxChars {
+			t.Errorf("quarantined path is %d code points, over %d", n, wire.CriticalResultQuarantinedPathMaxChars)
+		}
+	}
+}
+
 // backup_run is not a critical family: its snapshot index rides the general
 // 5 MB budget and must not be held to the 512 KiB critical one.
 func TestFitCriticalResultIgnoresBackupRun(t *testing.T) {

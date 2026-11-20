@@ -107,6 +107,26 @@ func boundCriticalResultLists(result backupipc.BackupCommandResult) (backupipc.B
 		}
 	}
 
+	// The restricted-descriptor path list: the server trims it to its own
+	// limit rather than rejecting it, but only AFTER the structured-size check,
+	// so an oversize list must be trimmed here or it rejects the result (or
+	// crowds the failed files out of the byte budget below). Its count,
+	// securityDescriptorQuarantined, is the authoritative total.
+	if paths, ok := decodeStringList(obj["securityDescriptorQuarantinedPaths"]); ok {
+		trimmed := make([]string, 0, min(len(paths), wire.CriticalResultQuarantinedPathsMax))
+		touched := len(paths) > wire.CriticalResultQuarantinedPathsMax
+		for _, p := range paths[:min(len(paths), wire.CriticalResultQuarantinedPathsMax)] {
+			cut, truncated := truncateRunes(p, wire.CriticalResultQuarantinedPathMaxChars)
+			touched = touched || truncated
+			trimmed = append(trimmed, cut)
+		}
+		if touched {
+			obj["securityDescriptorQuarantinedPaths"] = mustRawJSON(trimmed)
+			changed = true
+			notes = append(notes, fmt.Sprintf("securityDescriptorQuarantinedPaths kept %d of %d", len(trimmed), len(paths)))
+		}
+	}
+
 	priorFailedOmitted := decodeCount(obj["failedFilesOmitted"])
 	priorWarningsOmitted := decodeCount(obj["warningsOmitted"])
 	_, warningsPresent := obj["warnings"]
@@ -157,7 +177,19 @@ func boundCriticalResultLists(result backupipc.BackupCommandResult) (backupipc.B
 	apply()
 	stdout := encodeStdoutObject(obj, result.Stdout)
 	shrunk := false
-	for len(stdout) > wire.CriticalResultBudget && (failedKeep > 0 || warnKeep > 0) {
+	canShrink := failedKeep > 0 || warnKeep > 0
+	if len(stdout) > wire.CriticalResultBudget && canShrink {
+		// Cut the lists only if that can work: when the body is over budget
+		// even with both emptied, the bulk is elsewhere and the generic tiers
+		// own it — emptying the lists first would lose them for nothing.
+		keptFailed, keptWarnings := failedKeep, warnKeep
+		failedKeep, warnKeep = 0, 0
+		apply()
+		canShrink = len(encodeStdoutObject(obj, result.Stdout)) <= wire.CriticalResultBudget
+		failedKeep, warnKeep = keptFailed, keptWarnings
+		apply()
+	}
+	for canShrink && len(stdout) > wire.CriticalResultBudget && (failedKeep > 0 || warnKeep > 0) {
 		if failedKeep > 0 {
 			failedKeep /= 2
 		} else {

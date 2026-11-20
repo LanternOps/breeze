@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   backupVerificationStructuredResultSchema,
   restoreStructuredResultSchema,
@@ -7,7 +7,13 @@ import {
   CRITICAL_RESULT_WARNINGS_MAX,
   CRITICAL_RESULT_LIST_ENTRY_MAX_CHARS,
   CRITICAL_RESULT_STRUCTURED_MAX_BYTES,
+  CRITICAL_RESULT_STDOUT_MAX_BYTES,
+  CRITICAL_RESULT_WARNING_TEXT_MAX_CHARS,
+  CRITICAL_RESULT_ERROR_MAX_CHARS,
+  CRITICAL_RESULT_BOUNDING_MAX_BYTES,
+  RESTORE_QUARANTINED_PATHS_MAX,
 } from './agentCommandResultValidation';
+import { MAX_COMMAND_RESULT_BYTES } from '../routes/agents/schemas';
 
 // Agents already in the field do not bound verify / test-restore / restore
 // lists to the server's limits. One entry over a list limit, or a body over the
@@ -124,7 +130,7 @@ describe('agentCommandResultValidation — oversize detail lists from shipped ag
       const data = r.data as Record<string, unknown>;
       expect((data.failedFiles as string[]).length).toBe(CRITICAL_RESULT_FAILED_FILES_MAX);
       expect(data.failedFilesOmitted).toBe(499);
-      expect(codePoints((data.warnings as string[])[0])).toBeLessThanOrEqual(CRITICAL_RESULT_LIST_ENTRY_MAX_CHARS);
+      expect(codePoints((data.warnings as string[])[0]!)).toBeLessThanOrEqual(CRITICAL_RESULT_LIST_ENTRY_MAX_CHARS);
       expect(data.filesFailed).toBe(1_500);
     }
   });
@@ -133,7 +139,7 @@ describe('agentCommandResultValidation — oversize detail lists from shipped ag
     const r = restoreStructuredResultSchema.safeParse({ failedFiles: ['目录'.repeat(3_000)] });
     expect(r.success).toBe(true);
     if (r.success) {
-      const entry = (r.data.failedFiles as string[])[0];
+      const entry = (r.data.failedFiles as string[])[0]!;
       expect(codePoints(entry)).toBeLessThanOrEqual(CRITICAL_RESULT_LIST_ENTRY_MAX_CHARS);
       expect(entry.startsWith('目录')).toBe(true);
     }
@@ -167,5 +173,95 @@ describe('agentCommandResultValidation — oversize detail lists from shipped ag
     const r = restoreStructuredResultSchema.safeParse({ status: 'completed', failedFiles: 7 });
     expect(r.success).toBe(true);
     if (r.success) expect(r.data.failedFiles).toBe(7);
+  });
+});
+
+describe('agentCommandResultValidation — bounding work is capped (resource-cap ordering)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('pins the limits the agent mirrors (agent/internal/wire/critical_result_limits.go)', () => {
+    // Changing one of these needs the Go mirror changed in the same commit.
+    expect(CRITICAL_RESULT_FAILED_FILES_MAX).toBe(1000);
+    expect(CRITICAL_RESULT_WARNINGS_MAX).toBe(100);
+    expect(CRITICAL_RESULT_LIST_ENTRY_MAX_CHARS).toBe(4096);
+    expect(CRITICAL_RESULT_WARNING_TEXT_MAX_CHARS).toBe(10_000);
+    expect(CRITICAL_RESULT_ERROR_MAX_CHARS).toBe(10_000);
+    expect(CRITICAL_RESULT_STRUCTURED_MAX_BYTES).toBe(524_288);
+    expect(RESTORE_QUARANTINED_PATHS_MAX).toBe(100);
+  });
+
+  it('never bounds a body larger than the general command_result cap', () => {
+    expect(CRITICAL_RESULT_BOUNDING_MAX_BYTES).toBeLessThanOrEqual(MAX_COMMAND_RESULT_BYTES);
+  });
+
+  it('rejects a body over the bounding ceiling without parsing it', () => {
+    const stdout = JSON.stringify({
+      status: 'failed',
+      filesFailed: 1,
+      failedFiles: ['x'.repeat(CRITICAL_RESULT_BOUNDING_MAX_BYTES)],
+    });
+    const parse = vi.spyOn(JSON, 'parse');
+    expect(() => validateCriticalCommandResult('backup_verify', { commandId: 'cmd-big', status: 'completed', stdout }))
+      .toThrow(/stdout exceeds/);
+    expect(parse).not.toHaveBeenCalled();
+  });
+
+  it('bounds a body just under the ceiling without re-encoding it per pass', () => {
+    const entries = Array.from({ length: CRITICAL_RESULT_FAILED_FILES_MAX }, (_, i) =>
+      `/srv/share/${'deep-directory/'.repeat(270)}file_${i}.bin`);
+    const stdout = JSON.stringify({ status: 'failed', filesFailed: entries.length, failedFiles: entries });
+    expect(Buffer.byteLength(stdout)).toBeGreaterThan(CRITICAL_RESULT_BOUNDING_MAX_BYTES * 0.8);
+    expect(Buffer.byteLength(stdout)).toBeLessThan(CRITICAL_RESULT_BOUNDING_MAX_BYTES);
+
+    const realStringify = JSON.stringify;
+    let stringifiedBytes = 0;
+    vi.spyOn(JSON, 'stringify').mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
+      const out = realStringify(...args);
+      stringifiedBytes += typeof out === 'string' ? out.length : 0;
+      return out;
+    });
+    const validated = validateCriticalCommandResult('backup_verify', { commandId: 'cmd-near', status: 'completed', stdout });
+    vi.restoreAllMocks();
+
+    const structured = validated!.structuredResult;
+    expect(structured.filesFailed).toBe(entries.length);
+    expect((structured.failedFiles as string[]).length).toBeGreaterThan(0);
+    // stdout alone: bounded to the stdout cap the size check applies to it.
+    expect(validated!.serializedResultBytes).toBeLessThanOrEqual(CRITICAL_RESULT_STDOUT_MAX_BYTES);
+    // A few encodes of the bounded (<= 1 MiB) body, not an encode of the
+    // multi-megabyte body per halving pass (that measured ~8.7 MB here).
+    expect(stringifiedBytes).toBeLessThan(4 * CRITICAL_RESULT_STDOUT_MAX_BYTES);
+  });
+
+  it('rejects, without shrinking the lists, a body whose non-list part alone is over the cap', () => {
+    const body = {
+      status: 'failed',
+      filesFailed: 5_000,
+      failedFiles: paths(5_000),
+      extra: 'z'.repeat(CRITICAL_RESULT_STRUCTURED_MAX_BYTES + 1),
+    };
+    expect(() => validateCriticalCommandResult('backup_verify', {
+      commandId: 'cmd-extra', status: 'completed', result: body,
+    })).toThrow(/structured result exceeds/);
+  });
+
+  it('bounds a long restricted-descriptor path list before the size check', () => {
+    const quarantined = Array.from({ length: 20_000 }, (_, i) => `C:\\Data\\Shared\\Finance\\ledger_${i}.xlsx`);
+    const body = {
+      status: 'completed',
+      filesRestored: 20_000,
+      filesFailed: 3,
+      failedFiles: paths(3),
+      securityDescriptorQuarantined: 20_000,
+      securityDescriptorQuarantinedPaths: quarantined,
+    };
+    expect(Buffer.byteLength(JSON.stringify(body))).toBeGreaterThan(CRITICAL_RESULT_STRUCTURED_MAX_BYTES);
+    const validated = validateCriticalCommandResult('backup_restore', {
+      commandId: 'cmd-sd', status: 'completed', result: body,
+    });
+    const structured = validated!.structuredResult;
+    expect(structured.failedFiles).toEqual(paths(3));
+    expect(structured.securityDescriptorQuarantined).toBe(20_000);
+    expect((structured.securityDescriptorQuarantinedPaths as string[]).length).toBe(RESTORE_QUARANTINED_PATHS_MAX);
   });
 });

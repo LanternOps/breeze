@@ -54,6 +54,11 @@ export const CRITICAL_RESULT_WARNINGS_MAX = 100;
 export const CRITICAL_RESULT_LIST_ENTRY_MAX_CHARS = 4096;
 export const CRITICAL_RESULT_WARNING_TEXT_MAX_CHARS = 10_000;
 export const CRITICAL_RESULT_ERROR_MAX_CHARS = 10_000;
+// The largest raw body the server will parse and bound before applying the
+// size caps: the general command_result cap (MAX_COMMAND_RESULT_BYTES in
+// routes/agents/schemas.ts), which the transport schema already enforces. A
+// larger body skips bounding and is rejected by the size check as before.
+export const CRITICAL_RESULT_BOUNDING_MAX_BYTES = 5_000_000;
 
 function truncateCodePoints(value: string, max: number): string {
   // UTF-16 length is never below the code-point count.
@@ -78,11 +83,23 @@ function omittedCount(value: unknown): number {
  * predate agent-side bounding send unbounded lists. The first entries are kept;
  * `failedFilesOmitted` / `warningsOmitted` record how many were dropped (added
  * to any count the agent already reported), and a final warning says so. Counts
- * such as `filesFailed` are never touched. With `maxBytes`, the lists are then
- * halved until JSON.stringify of the result fits. Returns the input itself when
- * nothing was over a limit.
+ * such as `filesFailed` are never touched. A restricted-descriptor path list
+ * is trimmed to its own limit (its count is authoritative).
+ *
+ * With `size`, the lists are then cut until JSON.stringify of the result fits
+ * `size.maxBytes`. That work is linear in the input: one encode of the result
+ * with its lists emptied, a per-entry upper-bound size estimate, and one encode
+ * to confirm — never a re-encode of the whole body per pass. When the non-list
+ * part alone is over the cap the lists are not cut (the size check rejects the
+ * result as before). `size.encodedBytes`, the caller's measurement of the
+ * input, lets an unchanged body that already fits skip the encodes entirely.
+ *
+ * Returns the input itself when nothing was over a limit.
  */
-export function boundCriticalResultLists(value: unknown, maxBytes?: number): unknown {
+export function boundCriticalResultLists(
+  value: unknown,
+  size?: { maxBytes: number; encodedBytes: number },
+): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const input = value as Record<string, unknown>;
   const out: Record<string, unknown> = { ...input };
@@ -109,6 +126,15 @@ export function boundCriticalResultLists(value: unknown, maxBytes?: number): unk
         out[key] = cut;
         changed = true;
       }
+    }
+  }
+
+  if (Array.isArray(input.securityDescriptorQuarantinedPaths)) {
+    const list = input.securityDescriptorQuarantinedPaths as unknown[];
+    const trimmed = boundQuarantinedPaths(list) ?? [];
+    if (trimmed.length !== list.length || trimmed.some((entry, i) => entry !== list[i])) {
+      out.securityDescriptorQuarantinedPaths = trimmed;
+      changed = true;
     }
   }
 
@@ -150,17 +176,68 @@ export function boundCriticalResultLists(value: unknown, maxBytes?: number): unk
 
   reserveNoteSlot();
   if (dropping()) changed = true;
-  if (changed) apply();
-  if (maxBytes !== undefined) {
-    while (Buffer.byteLength(JSON.stringify(out), 'utf8') > maxBytes && (failedKeep > 0 || warnKeep > 0)) {
-      if (failedKeep > 0) failedKeep = Math.floor(failedKeep / 2);
-      else warnKeep = Math.floor(warnKeep / 2);
-      reserveNoteSlot();
-      changed = true;
-      apply();
-    }
+  if (!size || (!changed && size.encodedBytes <= size.maxBytes)) {
+    if (changed) apply();
+    return changed ? out : value;
   }
-  return changed ? out : value;
+
+  // Size of everything but the list entries: the result with both lists
+  // emptied, carrying the worst-case note and markers.
+  const keptFailed = failedKeep;
+  const keptWarnings = warnKeep;
+  failedKeep = 0;
+  warnKeep = 0;
+  apply();
+  const base = Buffer.byteLength(JSON.stringify(out), 'utf8');
+  failedKeep = keptFailed;
+  warnKeep = keptWarnings;
+  if (base > size.maxBytes) {
+    // Over the cap without any list entries: cutting them cannot help.
+    if (changed) apply();
+    return changed ? out : value;
+  }
+
+  const failedCosts = (failed ?? []).slice(0, failedKeep).map(encodedEntryBytesUpperBound);
+  const warnCosts = (warnings ?? []).slice(0, warnKeep).map(encodedEntryBytesUpperBound);
+  const total = (costs: number[]) => costs.reduce((sum, cost) => sum + cost, 0);
+  const prefixWithin = (costs: number[], budget: number) => {
+    let used = 0;
+    let n = 0;
+    while (n < costs.length && used + costs[n]! <= budget) used += costs[n++]!;
+    return n;
+  };
+  const room = size.maxBytes - base;
+  const warnTotal = total(warnCosts);
+  if (total(failedCosts) + warnTotal > room) {
+    // failedFiles gives way first, then warnings.
+    if (warnTotal <= room) {
+      failedKeep = prefixWithin(failedCosts, room - warnTotal);
+    } else {
+      failedKeep = 0;
+      warnKeep = prefixWithin(warnCosts, room);
+    }
+    reserveNoteSlot();
+    changed = true;
+  }
+  if (!changed) return value;
+  apply();
+  // The estimates are upper bounds; one encode confirms the result fits.
+  if (Buffer.byteLength(JSON.stringify(out), 'utf8') > size.maxBytes) {
+    failedKeep = 0;
+    warnKeep = 0;
+    apply();
+  }
+  return out;
+}
+
+// Upper bound on the bytes one string adds to a JSON array: its UTF-8 bytes,
+// quotes and a comma, plus escape overhead (`"` and `\` become two bytes,
+// control characters six, and every surrogate is counted as if it were lone).
+function encodedEntryBytesUpperBound(entry: string): number {
+  const escaped = entry.match(/["\\]/g)?.length ?? 0;
+  const control = entry.match(/[\u0000-\u001f]/g)?.length ?? 0;
+  const surrogates = entry.match(/[\ud800-\udfff]/g)?.length ?? 0;
+  return Buffer.byteLength(entry, 'utf8') + 3 + escaped + 5 * control + 3 * surrogates;
 }
 
 const warningListSchema = z.union([
@@ -346,9 +423,30 @@ function parseStructuredResult(envelope: GenericCommandResultEnvelope): unknown 
 // its counts and status instead of being rejected whole. A body still over the
 // cap after its lists are emptied is rejected as before; the caps themselves
 // are unchanged.
+//
+// The raw size is checked FIRST, before any parse: a body over
+// CRITICAL_RESULT_BOUNDING_MAX_BYTES (the general cap the transport already
+// enforces) is handed straight to the size check, which rejects it. The body
+// is bounded to the cap ensureCriticalResultSizeLimits will apply to it: the
+// structured cap when it carries `result`, the stdout cap when it is stdout
+// alone.
 function boundEnvelopeDetailLists(envelope: GenericCommandResultEnvelope): GenericCommandResultEnvelope {
+  if (byteLength(envelope.stdout) > CRITICAL_RESULT_BOUNDING_MAX_BYTES) return envelope;
+  let encodedBytes = byteLength(envelope.stdout);
+  let maxBytes = CRITICAL_RESULT_STDOUT_MAX_BYTES;
+  if (envelope.result !== undefined) {
+    let serialized: string | undefined;
+    try {
+      serialized = JSON.stringify(envelope.result);
+    } catch {
+      return envelope; // the size check reports it
+    }
+    encodedBytes = byteLength(serialized);
+    if (encodedBytes > CRITICAL_RESULT_BOUNDING_MAX_BYTES) return envelope;
+    maxBytes = CRITICAL_RESULT_STRUCTURED_MAX_BYTES;
+  }
   const parsed = parseStructuredResult(envelope);
-  const bounded = boundCriticalResultLists(parsed, CRITICAL_RESULT_STRUCTURED_MAX_BYTES);
+  const bounded = boundCriticalResultLists(parsed, { maxBytes, encodedBytes });
   if (bounded === parsed) return envelope;
   return {
     ...envelope,
