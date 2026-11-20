@@ -14,6 +14,7 @@ vi.mock('@/lib/permissions', () => ({ usePermissions: () => ({ can }) }));
 vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can }) }));
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+// GET /devices/:id/warranty wraps the record: { warranty: {...} | null } (as DeviceWarrantyCard reads it).
 
 const device = (over: Partial<Device> = {}): Device => ({
   id: 'dev-1',
@@ -78,7 +79,7 @@ describe('DeviceHeaderFacts', () => {
   });
 
   it('shows a warranty chip only for a known status, and its popover opens and closes on Escape', async () => {
-    route({ warranty: json({ id: 'w', deviceId: 'dev-1', manufacturer: 'Dell', serialNumber: 'X', status: 'expiring', warrantyStartDate: '2023-03-01', warrantyEndDate: '2026-12-15', entitlements: [], dataSource: 'provider', lastSyncAt: null, lastSyncError: null }) });
+    route({ warranty: json({ warranty: { id: 'w', deviceId: 'dev-1', manufacturer: 'Dell', serialNumber: 'X', status: 'expiring', warrantyStartDate: '2023-03-01', warrantyEndDate: '2026-12-15', entitlements: [], dataSource: 'provider', lastSyncAt: null, lastSyncError: null } }) });
     render(<DeviceHeaderFacts device={device()} />);
     const chip = await screen.findByTestId('device-fact-warranty');
     expect(chip).toHaveAttribute('aria-expanded', 'false');
@@ -91,7 +92,7 @@ describe('DeviceHeaderFacts', () => {
   });
 
   it('hides the warranty chip when the status is unknown', async () => {
-    route({ warranty: json({ id: 'w', deviceId: 'dev-1', manufacturer: 'DELL', serialNumber: 'X', status: 'unknown', warrantyStartDate: null, warrantyEndDate: null, entitlements: [], dataSource: null, lastSyncAt: null, lastSyncError: null }) });
+    route({ warranty: json({ warranty: { id: 'w', deviceId: 'dev-1', manufacturer: 'DELL', serialNumber: 'X', status: 'unknown', warrantyStartDate: null, warrantyEndDate: null, entitlements: [], dataSource: null, lastSyncAt: null, lastSyncError: null } }) });
     render(<DeviceHeaderFacts device={device()} />);
     await settle();
     expect(screen.queryByTestId('device-fact-warranty')).not.toBeInTheDocument();

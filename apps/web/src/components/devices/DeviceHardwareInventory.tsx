@@ -700,7 +700,7 @@ export default function DeviceHardwareInventory({
         </div>
       </div>
 
-      {/* WAN role and circuit sit beside the adapters they describe (moved
+      {/* WAN role and circuit sit below the adapters they describe (moved
           off Overview, where a workstation showed a "Mark as WAN" link for
           every virtual adapter). */}
       <AssetCircuitCard subject="device" id={deviceId} />

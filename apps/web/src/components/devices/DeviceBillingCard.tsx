@@ -1,7 +1,7 @@
-// #3205 W06: "who pays for this box?" as an Overview CARD, beside warranty and
-// reliability — not a tab (the bar already carries 28 behind OverflowTabs, the
-// panel is at most a handful of rows, and a card does not fetch while the user
-// is on Software/Patches). Read-only, so no runAction; the loading/error/retry
+// #3205 W06: "who pays for this box?" as a CARD, not a tab (the bar already
+// carries 28 behind OverflowTabs and the panel is at most a handful of rows).
+// It lives in the Details tab's Asset record; the header shows a "Not billed"
+// fact when the device is uncovered (DeviceHeaderFacts, same useDeviceBilling). Read-only, so no runAction; the loading/error/retry
 // triad is the read convention (DeviceWarrantyCard.tsx:101-110, ContractDetail.tsx:336-341).
 import { type ReactNode } from 'react';
 import { Receipt } from 'lucide-react';

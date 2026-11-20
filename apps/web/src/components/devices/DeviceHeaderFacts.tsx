@@ -67,7 +67,8 @@ function useWarranty(deviceId: string): KnownWarranty | null {
     let cancelled = false;
     setWarranty(null);
     fetchWithAuth(`/devices/${deviceId}/warranty`)
-      .then(async (res) => (res.ok ? ((await res.json()) as Partial<WarrantyData> | null) : null))
+      // The route wraps the record: { warranty: {...} | null }.
+      .then(async (res) => (res.ok ? ((await res.json()) as { warranty?: Partial<WarrantyData> | null } | null)?.warranty ?? null : null))
       .catch(() => null)
       .then((body) => {
         if (cancelled || !body || typeof body.status !== 'string') return;
