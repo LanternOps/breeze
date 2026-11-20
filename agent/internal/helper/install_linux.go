@@ -1,6 +1,7 @@
 package helper
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/breeze-rmm/agent/internal/patching/linuxsession"
 	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
@@ -120,11 +122,11 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
 		procspawn.Prepare(cmd)
 	}
-	cmd.Env = append(os.Environ(),
-		"HOME="+u.HomeDir,
-		"USER="+u.Username,
-		"LOGNAME="+u.Username,
-	)
+	env, err := desktopSessionEnv(sessionKey)
+	if err != nil {
+		return 0, err
+	}
+	cmd.Env = env
 
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("start helper for uid %s: %w", sessionKey, err)
@@ -132,6 +134,26 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
 	pid := cmd.Process.Pid
 	_ = cmd.Process.Release()
 	return pid, nil
+}
+
+// listGraphicalSessions is a seam so tests need no live logind.
+var listGraphicalSessions = linuxsession.List
+
+// desktopSessionEnv is the environment Assist needs to reach the user's
+// desktop. The agent runs as a service with no DISPLAY, D-Bus or
+// XDG_RUNTIME_DIR; launched with that, GTK fails to start and Assist exits at
+// once, so the agent gives up on it as "keeps closing".
+func desktopSessionEnv(uid string) ([]string, error) {
+	sessions, err := listGraphicalSessions(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("list desktop sessions: %w", err)
+	}
+	for _, s := range sessions {
+		if s.UID == uid {
+			return s.CommandEnv(), nil
+		}
+	}
+	return nil, fmt.Errorf("no desktop session for uid %s", uid)
 }
 
 func isHelperRunning() bool {
