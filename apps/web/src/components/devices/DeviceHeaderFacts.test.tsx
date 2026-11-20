@@ -33,13 +33,14 @@ const device = (over: Partial<Device> = {}): Device => ({
   ...over,
 }) as Device;
 
-type Routes = Partial<Record<'warranty' | 'contacts' | 'billing' | 'placement' | 'assets', Response>>;
+type Routes = Partial<Record<'warranty' | 'contacts' | 'billing' | 'placement' | 'assets' | 'contracts', Response>>;
 
 function route(routes: Routes) {
   vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
     if (url.includes('/warranty')) return routes.warranty ?? json({}, 404);
     if (url.includes('/contact-responsibilities')) return routes.contacts ?? json({ responsibilities: [] });
     if (url.includes('/billing')) return routes.billing ?? json({}, 500);
+    if (url.startsWith('/contracts')) return routes.contracts ?? json({ data: [{ id: 'k1', status: 'active' }] });
     if (url.includes('/placement')) return routes.placement ?? json({}, 404);
     if (url.includes('/discovery/assets')) return routes.assets ?? json({ assets: [] });
     return json({}, 404);
@@ -129,6 +130,17 @@ describe('DeviceHeaderFacts', () => {
       expect(screen.queryByTestId('device-fact-billing')).not.toBeInTheDocument();
       r.unmount();
     }
+  });
+
+  it('shows no "Not billed" chip when the org has no active contracts (a partner that does not bill by contract)', async () => {
+    route({
+      billing: json({ data: { uncovered: true, notBillable: false, lines: [], deviceRole: 'workstation' } }),
+      contracts: json({ data: [] }),
+    });
+    render(<DeviceHeaderFacts device={device()} />);
+    await waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.some(([u]) => String(u).startsWith('/contracts'))).toBe(true));
+    await settle();
+    expect(screen.queryByTestId('device-fact-billing')).not.toBeInTheDocument();
   });
 
   it('does not request billing without contracts:read', async () => {

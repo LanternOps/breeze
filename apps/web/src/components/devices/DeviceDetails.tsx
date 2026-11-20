@@ -836,8 +836,8 @@ export default function DeviceDetails({
           capped at 70% so it wraps onto a second row instead of squeezing
           the title down to an ellipsis. */}
       <div className="rounded-lg border bg-card p-4 shadow-xs md:p-6">
-        <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-start 2xl:justify-between">
-          <div className="flex min-w-0 flex-1 items-start gap-4">
+        <div className="flex flex-col gap-4 2xl:flex-row 2xl:flex-wrap 2xl:items-start 2xl:justify-between">
+          <div className="order-1 flex min-w-0 flex-1 items-start gap-4">
             <div className="hidden h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-muted md:flex">
               <Monitor className="h-7 w-7 text-muted-foreground" />
             </div>
@@ -939,10 +939,6 @@ export default function DeviceDetails({
                   />
                 </span>
               </p>
-              {/* Identity strip: model, serial, LAN IP, warranty, contact, and
-                  "Not billed" only when uncovered. See DeviceHeaderFacts for
-                  the test a fact must pass to live here. */}
-              <DeviceHeaderFacts device={device} onOpenTab={(tab) => switchTab(tab)} />
               {/* #9027: same idea as the org record's "Workspace: X" chip. Not
                   a live region — it describes the page, it is not an event. */}
               {scopeMismatch && (
@@ -968,7 +964,18 @@ export default function DeviceDetails({
               )}
             </div>
           </div>
-          <div className="2xl:max-w-[70%] 2xl:shrink-0">
+          {/* Identity strip: model, serial, LAN IP, warranty, contact, and
+              "Not billed" only when uncovered (see DeviceHeaderFacts for the
+              test a fact must pass to live here). A full-width line of the
+              header, not part of the title column: beside the 2xl action
+              cluster that column is too narrow and the row stacked into seven
+              lines. Below 2xl it sits between the title and the actions; at
+              2xl it wraps under both. Indented to the title text (icon 3.5rem
+              + gap 1rem) from md. */}
+          <div className="order-2 -mt-2 empty:hidden md:pl-[4.5rem] 2xl:order-3 2xl:mt-0 2xl:basis-full">
+            <DeviceHeaderFacts device={device} onOpenTab={(tab) => switchTab(tab)} />
+          </div>
+          <div className="order-3 2xl:order-2 2xl:max-w-[70%] 2xl:shrink-0">
             <DeviceActions
               device={device}
               onAction={onAction}

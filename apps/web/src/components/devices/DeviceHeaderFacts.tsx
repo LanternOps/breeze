@@ -22,6 +22,7 @@ import {
   type ResponsibleContact,
 } from '../shared/useContactResponsibilities';
 import { useDeviceBilling } from './useDeviceBilling';
+import { listContracts } from '../../lib/api/contracts';
 import { isPlacementResponse, type PlacementFields } from './PhysicalPlacementCard';
 import type { WarrantyData } from './DeviceWarrantyCard';
 import type { Device } from './DeviceList';
@@ -93,6 +94,34 @@ function formatDay(value: string | null): string | null {
   const d = parseDateOnly(value);
   if (isNaN(d.getTime())) return value;
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+// ── Billing ──────────────────────────────────────────────────────────────
+
+/**
+ * Whether the org bills anything by contract. "Uncovered" only means something
+ * when the org has active contracts that miss this device; for an org (or a
+ * partner) that does not bill by contract every device is uncovered, and an
+ * amber chip on all of them would be noise. Fetched only once the device is
+ * known to be uncovered; unknown (null) shows nothing.
+ */
+function useOrgHasActiveContracts(orgId: string, enabled: boolean): boolean | null {
+  const [has, setHas] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!enabled || !orgId) return;
+    let cancelled = false;
+    setHas(null);
+    listContracts({ orgId, status: 'active', limit: 1 })
+      .then(async (res) => (res.ok ? ((await res.json()) as { data?: unknown } | null) : null))
+      .catch(() => null)
+      .then((body) => {
+        if (!cancelled && body && Array.isArray(body.data)) setHas(body.data.length > 0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId, enabled]);
+  return has;
 }
 
 // ── Placement ────────────────────────────────────────────────────────────
@@ -199,7 +228,9 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
   const ip = device.lanIp?.trim() || null;
   const picked = contacts.canRead && !contacts.failed && contacts.items ? pickContact(contacts.items) : null;
   // Error is tested before `uncovered`, so a coverage failure never reads as "not billed".
-  const notBilled = billing.allowed && !billing.hidden && !billing.loading && !billing.error && billing.data?.uncovered === true;
+  const uncovered = billing.allowed && !billing.hidden && !billing.loading && !billing.error && billing.data?.uncovered === true;
+  const orgBillsByContract = useOrgHasActiveContracts(device.orgId, uncovered);
+  const notBilled = uncovered && orgBillsByContract === true;
   const placementText = placement
     ? [
         placement.room,
@@ -404,7 +435,7 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
     <ul
       data-testid="device-header-facts"
       aria-label={t('deviceHeaderFacts.ariaLabel')}
-      className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-sm text-muted-foreground"
+      className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-sm text-muted-foreground"
     >
       {facts.map((f) => (
         <li key={f.key} className="flex min-w-0 max-w-full items-center">
