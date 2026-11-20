@@ -27,6 +27,8 @@ export interface ReattachDeviceFormProps {
   /** Known factor counts skip the discovery reads; tests pass them. */
   passkeyCount?: number;
   mfaMethod?: string | null;
+  /** Whether an authenticator app is enrolled (`GET /users/me`), as primary or backup. */
+  totpEnrolled?: boolean;
   /** Back out without requesting (also closes the pending view). */
   onClose: () => void;
   /** The server accepted the request (202): the parent refreshes what it shows. */
@@ -94,6 +96,7 @@ export default function ReattachDeviceForm({
   candidate,
   passkeyCount,
   mfaMethod,
+  totpEnrolled,
   onClose,
   onRequested,
   onTargetChanged,
@@ -140,7 +143,7 @@ export default function ReattachDeviceForm({
     setIntent(null);
   }, [candidate.deviceId, candidate.targetVersion]);
 
-  const { tier, ensureTier } = useReauthTier(passkeyCount, mfaMethod);
+  const { tier, ensureTier } = useReauthTier(passkeyCount, mfaMethod, totpEnrolled);
   const noUsableFactor = phase === 'stepUp' && tier === 'password';
   const hint = REQUEST_EVIDENCE_LEVEL === 'hint';
 

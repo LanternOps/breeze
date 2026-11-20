@@ -7,17 +7,12 @@ import type { WispGrantStatus, WispState } from '../stores/aiStore';
 import { extractApiError } from './apiError';
 import { WispThreadError } from './wispSession';
 import { mintStepUpGrant, type StepUpReauth } from './mfaStepUp';
-import { pickReauthTier, type ReauthTier } from '../components/settings/StepUpPrompt';
+import type { ReauthTier } from '../components/settings/StepUpPrompt';
+import { discoverReauthTier } from './reauthTier';
 
 /** The factor the step-up will ask for (same discovery as TopologyArmStepUp). */
 export async function discoverStepUpTier(): Promise<ReauthTier> {
-  const [user, passkeys] = await Promise.all([fetchWithAuth('/users/me'), fetchWithAuth('/auth/passkeys')]);
-  if (!user.ok || !passkeys.ok) throw new Error('factor discovery failed');
-  const me = (await user.json()) as { mfaMethod?: string | null } | null;
-  const keys = (await passkeys.json()) as unknown;
-  const list = Array.isArray(keys) ? keys : (keys as { passkeys?: unknown[] } | null)?.passkeys;
-  if (!me || !Array.isArray(list)) throw new Error('factor discovery failed');
-  return pickReauthTier(list.length, me.mfaMethod ?? null);
+  return discoverReauthTier();
 }
 
 /** A preview the server refused (entitlement, scope, flag off) — message is the server's. */
