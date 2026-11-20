@@ -5213,7 +5213,9 @@
     "warrantyDetails": "Garanti ayrıntıları",
     "manageContacts": "Kişileri yönet",
     "notBilled": "Faturalanmıyor",
-    "billingDetails": "Faturalama ayrıntıları"
+    "billingDetails": "Faturalama ayrıntıları",
+    "more": "{{count}} tane daha",
+    "showLess": "Daha az göster"
   },
   "deviceAssetRecord": {
     "title": "Varlık kaydı",

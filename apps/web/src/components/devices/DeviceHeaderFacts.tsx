@@ -6,8 +6,11 @@
 //
 // Every fact is conditional: an unknown value renders nothing rather than a
 // dash, so a bare device gets no row at all.
-import { useEffect, useState, type ReactNode } from 'react';
-import { MapPin, Network, Receipt, ShieldCheck, UserRound } from 'lucide-react';
+//
+// The row must not move the page as it loads (see "Load stability" below): it
+// is one fixed-height line, and the facts that need a fetch appear together.
+import { useEffect, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from 'react';
+import { ChevronDown, MapPin, Network, Receipt, ShieldCheck, UserRound } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
@@ -32,6 +35,42 @@ type Props = {
   /** Opens a device tab (the warranty and billing panels link to their full record). */
   onOpenTab?: (tab: 'hardware' | 'details') => void;
 };
+
+// ── Load stability ───────────────────────────────────────────────────────
+//
+// Each fact fetches on its own. Rendered as they land, the row grew from one
+// line to two and pushed the tabs down, and late chips slid in mid-row. Now:
+//  - every source reports when it has SETTLED (answered, failed, or was never
+//    asked), so "still loading" is never confused with "nothing to show";
+//  - the fetched facts appear together once all have settled, or after
+//    REVEAL_DEADLINE_MS so one slow endpoint never holds back the rest;
+//  - the row is a single fixed-height line (useOneLine), so anything late can
+//    only fold behind "N more", never push the page down.
+
+const REVEAL_DEADLINE_MS = 1000;
+
+type Settled<T> = { value: T; settled: boolean };
+
+/**
+ * Loads once per `key` (the request's identity); a null key means the source
+ * is not asked, which counts as settled. `load` must resolve, never reject,
+ * and be a stable module-level function.
+ */
+function useKeyedLoad<T>(key: string | null, load: (key: string) => Promise<T>, empty: T): Settled<T> {
+  const [state, setState] = useState<{ key: string; value: T } | null>(null);
+  useEffect(() => {
+    if (key === null) return;
+    let cancelled = false;
+    void load(key).then((value) => {
+      if (!cancelled) setState({ key, value });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [key, load]);
+  if (key === null) return { value: empty, settled: true };
+  return state?.key === key ? { value: state.value, settled: true } : { value: empty, settled: false };
+}
 
 // ── Model ────────────────────────────────────────────────────────────────
 
@@ -62,31 +101,19 @@ const WARRANTY_TONE: Record<string, FactTone> = {
   expired: 'danger',
 };
 
-function useWarranty(deviceId: string): KnownWarranty | null {
-  const [warranty, setWarranty] = useState<KnownWarranty | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    setWarranty(null);
-    fetchWithAuth(`/devices/${deviceId}/warranty`)
-      // The route wraps the record: { warranty: {...} | null }.
-      .then(async (res) => (res.ok ? ((await res.json()) as { warranty?: Partial<WarrantyData> | null } | null)?.warranty ?? null : null))
-      .catch(() => null)
-      .then((body) => {
-        if (cancelled || !body || typeof body.status !== 'string') return;
-        // "unknown" does not change the next move; the Hardware tab holds the lookup.
-        if (!(body.status in WARRANTY_TONE)) return;
-        setWarranty({
-          status: body.status,
-          warrantyStartDate: body.warrantyStartDate ?? null,
-          warrantyEndDate: body.warrantyEndDate ?? null,
-          dataSource: body.dataSource ?? null,
-        });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deviceId]);
-  return warranty;
+async function loadWarranty(deviceId: string): Promise<KnownWarranty | null> {
+  const body = await fetchWithAuth(`/devices/${deviceId}/warranty`)
+    // The route wraps the record: { warranty: {...} | null }.
+    .then(async (res) => (res.ok ? ((await res.json()) as { warranty?: Partial<WarrantyData> | null } | null)?.warranty ?? null : null))
+    .catch(() => null);
+  // "unknown" does not change the next move; the Hardware tab holds the lookup.
+  if (!body || typeof body.status !== 'string' || !(body.status in WARRANTY_TONE)) return null;
+  return {
+    status: body.status,
+    warrantyStartDate: body.warrantyStartDate ?? null,
+    warrantyEndDate: body.warrantyEndDate ?? null,
+    dataSource: body.dataSource ?? null,
+  };
 }
 
 function formatDay(value: string | null): string | null {
@@ -105,78 +132,48 @@ function formatDay(value: string | null): string | null {
  * amber chip on all of them would be noise. Fetched only once the device is
  * known to be uncovered; unknown (null) shows nothing.
  */
-function useOrgHasActiveContracts(orgId: string, enabled: boolean): boolean | null {
-  const [has, setHas] = useState<boolean | null>(null);
-  useEffect(() => {
-    if (!enabled || !orgId) return;
-    let cancelled = false;
-    setHas(null);
-    listContracts({ orgId, status: 'active', limit: 1 })
-      .then(async (res) => (res.ok ? ((await res.json()) as { data?: unknown } | null) : null))
-      .catch(() => null)
-      .then((body) => {
-        if (!cancelled && body && Array.isArray(body.data)) setHas(body.data.length > 0);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [orgId, enabled]);
-  return has;
+async function loadOrgHasActiveContracts(orgId: string): Promise<boolean | null> {
+  const body = await listContracts({ orgId, status: 'active', limit: 1 })
+    .then(async (res) => (res.ok ? ((await res.json()) as { data?: unknown } | null) : null))
+    .catch(() => null);
+  return body && Array.isArray(body.data) ? body.data.length > 0 : null;
 }
 
 // ── Placement ────────────────────────────────────────────────────────────
 
-function usePlacement(deviceId: string): PlacementFields | null {
-  const [placement, setPlacement] = useState<PlacementFields | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    setPlacement(null);
-    fetchWithAuth(`/devices/${deviceId}/placement`)
-      .then(async (res) => (res.ok ? ((await res.json()) as unknown) : null))
-      .catch(() => null)
-      .then((body) => {
-        if (!cancelled && isPlacementResponse(body)) setPlacement(body.placement);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deviceId]);
-  return placement;
+async function loadPlacement(deviceId: string): Promise<PlacementFields | null> {
+  const body = await fetchWithAuth(`/devices/${deviceId}/placement`)
+    .then(async (res) => (res.ok ? ((await res.json()) as unknown) : null))
+    .catch(() => null);
+  return isPlacementResponse(body) ? body.placement : null;
 }
 
 // ── Linked network assets (#3261 Task 4) ─────────────────────────────────
 
 type LinkedNetworkAsset = { id: string; label: string };
 
-function useLinkedNetworkAssets(deviceId: string, orgId?: string): LinkedNetworkAsset[] {
-  const [assets, setAssets] = useState<LinkedNetworkAsset[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    setAssets([]);
-    // The endpoint 400s ("orgId is required") for partner/all-orgs sessions
-    // unless told which org owns the device.
-    const params = new URLSearchParams({ linkedDeviceId: deviceId });
-    if (orgId) params.set('orgId', orgId);
-    fetchWithAuth(`/discovery/assets?${params.toString()}`)
-      .then(async (res) => {
-        if (!res.ok) return [];
-        const raw = asList<Record<string, unknown>>(await res.json(), 'assets');
-        return raw
-          .filter((a) => typeof a?.id === 'string')
-          .map((a) => ({
-            id: a.id as string,
-            label: String(a.label || a.hostname || a.ipAddress || a.id),
-          }));
-      })
-      .catch(() => [])
-      .then((mapped) => {
-        if (!cancelled) setAssets(mapped);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deviceId, orgId]);
-  return assets;
+const NO_ASSETS: LinkedNetworkAsset[] = [];
+
+/** The endpoint 400s ("orgId is required") for partner/all-orgs sessions unless told which org owns the device. */
+function networkAssetsQuery(deviceId: string, orgId?: string): string {
+  const params = new URLSearchParams({ linkedDeviceId: deviceId });
+  if (orgId) params.set('orgId', orgId);
+  return params.toString();
+}
+
+async function loadLinkedNetworkAssets(query: string): Promise<LinkedNetworkAsset[]> {
+  return fetchWithAuth(`/discovery/assets?${query}`)
+    .then(async (res) => {
+      if (!res.ok) return NO_ASSETS;
+      const raw = asList<Record<string, unknown>>(await res.json(), 'assets');
+      return raw
+        .filter((a) => typeof a?.id === 'string')
+        .map((a) => ({
+          id: a.id as string,
+          label: String(a.label || a.hostname || a.ipAddress || a.id),
+        }));
+    })
+    .catch(() => NO_ASSETS);
 }
 
 // ── Contacts ─────────────────────────────────────────────────────────────
@@ -211,50 +208,167 @@ function ContactLinks({ contact }: { contact: ResponsibleContact }) {
   );
 }
 
+// ── One line ─────────────────────────────────────────────────────────────
+
+type Fact = { key: string; rank: number; node: ReactNode };
+
+// Lower rank stays visible longer when the line is short: an alert first (it
+// is the reason to look), then the identifiers a tech pastes, then context.
+const RANK = {
+  billing: 0,
+  warrantyAlert: 1,
+  model: 2,
+  serial: 3,
+  ip: 4,
+  contact: 5,
+  warranty: 6,
+  placement: 7,
+  networkAsset: 8,
+} as const;
+
+const MORE = 'more';
+const NOTHING_FOLDED: ReadonlySet<string> = new Set();
+
+/**
+ * The facts to fold behind the "N more" toggle so the rest, plus the toggle,
+ * fit `available` px. Facts are placed in rank order; one that does not fit is
+ * folded, but a smaller, lower-ranked one may still take the space. The
+ * top-ranked fact always stays.
+ */
+export function factsToFold(
+  items: Array<{ key: string; rank: number; width: number }>,
+  available: number,
+  gap: number,
+  toggleWidth: number,
+): ReadonlySet<string> {
+  const total = items.reduce((sum, i) => sum + i.width, 0) + gap * Math.max(items.length - 1, 0);
+  if (total <= available) return NOTHING_FOLDED;
+  const budget = available - gap - toggleWidth;
+  const folded = new Set<string>();
+  let used = 0;
+  let kept = 0;
+  for (const item of [...items].sort((a, b) => a.rank - b.rank)) {
+    const need = item.width + (kept > 0 ? gap : 0);
+    if (kept === 0 || used + need <= budget) {
+      used += need;
+      kept += 1;
+    } else {
+      folded.add(item.key);
+    }
+  }
+  return folded;
+}
+
+const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every((k) => b.has(k));
+
+/**
+ * Measures each fact (a folded one keeps its last measured width) and folds
+ * what does not fit on one line. Runs before paint, so nothing flashes; a
+ * ResizeObserver re-fits on window resizes and late font swaps.
+ */
+function useOneLine(facts: Fact[]) {
+  const listRef = useRef<HTMLUListElement>(null);
+  const widths = useRef(new Map<string, number>());
+  const [folded, setFolded] = useState<ReadonlySet<string>>(NOTHING_FOLDED);
+  const [, refit] = useReducer((n: number) => n + 1, 0);
+  const present = facts.length > 0;
+  const factKeys = facts.map((f) => f.key).join();
+
+  useLayoutEffect(() => {
+    const ul = listRef.current;
+    if (!ul) return;
+    for (const li of ul.querySelectorAll<HTMLElement>(':scope > li[data-fact]')) {
+      if (!li.hidden) widths.current.set(li.dataset.fact!, li.getBoundingClientRect().width);
+    }
+    const gap = parseFloat(getComputedStyle(ul).columnGap) || 0;
+    const next = factsToFold(
+      facts.map((f) => ({ key: f.key, rank: f.rank, width: widths.current.get(f.key) ?? 0 })),
+      ul.clientWidth,
+      gap,
+      widths.current.get(MORE) ?? 0,
+    );
+    setFolded((prev) => (sameSet(prev, next) ? prev : next));
+  });
+
+  useEffect(() => {
+    const ul = listRef.current;
+    if (!ul || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => refit());
+    observer.observe(ul);
+    for (const li of ul.querySelectorAll(':scope > li')) observer.observe(li);
+    return () => observer.disconnect();
+  }, [present, factKeys]);
+
+  return { listRef, folded };
+}
+
 // ── Row ──────────────────────────────────────────────────────────────────
 
 const ICON = 'h-3.5 w-3.5 shrink-0 text-muted-foreground';
 
 export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
   const { t } = useTranslation(['devices', 'contactResponsibilities']);
-  const warranty = useWarranty(device.id);
-  const placement = usePlacement(device.id);
-  const assets = useLinkedNetworkAssets(device.id, device.orgId || undefined);
+  const warranty = useKeyedLoad(device.id, loadWarranty, null);
+  const placement = useKeyedLoad(device.id, loadPlacement, null);
+  const assets = useKeyedLoad(networkAssetsQuery(device.id, device.orgId || undefined), loadLinkedNetworkAssets, NO_ASSETS);
   const contacts = useContactResponsibilities({ orgId: device.orgId, siteId: device.siteId || undefined, deviceId: device.id });
   const billing = useDeviceBilling(device.id);
+  const [expanded, setExpanded] = useState(false);
 
   const model = modelLabel(device.manufacturer, device.model);
   const serial = device.serialNumber?.trim() || null;
   const ip = device.lanIp?.trim() || null;
-  const picked = contacts.canRead && !contacts.failed && contacts.items ? pickContact(contacts.items) : null;
   // Error is tested before `uncovered`, so a coverage failure never reads as "not billed".
   const uncovered = billing.allowed && !billing.hidden && !billing.loading && !billing.error && billing.data?.uncovered === true;
-  const orgBillsByContract = useOrgHasActiveContracts(device.orgId, uncovered);
-  const notBilled = uncovered && orgBillsByContract === true;
-  const placementText = placement
+  const orgBillsByContract = useKeyedLoad(uncovered && device.orgId ? device.orgId : null, loadOrgHasActiveContracts, null);
+
+  // Settled = answered, failed, or never asked (no permission, nothing to ask).
+  const settled =
+    warranty.settled &&
+    placement.settled &&
+    assets.settled &&
+    orgBillsByContract.settled &&
+    (!contacts.canRead || !device.orgId || contacts.failed || contacts.items !== null) &&
+    (!billing.allowed || billing.hidden || !billing.loading);
+  const [deadlineFor, setDeadlineFor] = useState<string | null>(null);
+  useEffect(() => {
+    const timer = setTimeout(() => setDeadlineFor(device.id), REVEAL_DEADLINE_MS);
+    return () => clearTimeout(timer);
+  }, [device.id]);
+  const revealed = settled || deadlineFor === device.id;
+
+  // Fetched facts are withheld until `revealed`, then appear together.
+  const shown = <T,>(value: T, empty: T): T => (revealed ? value : empty);
+  const warrantyFact = shown(warranty.value, null);
+  const placementFact = shown(placement.value, null);
+  const assetFacts = shown(assets.value, NO_ASSETS);
+  const picked = revealed && contacts.canRead && !contacts.failed && contacts.items ? pickContact(contacts.items) : null;
+  const notBilled = revealed && uncovered && orgBillsByContract.value === true;
+  const placementText = placementFact
     ? [
-        placement.room,
-        placement.rack ? `${t('physicalPlacementCard.rack')} ${placement.rack}` : null,
+        placementFact.room,
+        placementFact.rack ? `${t('physicalPlacementCard.rack')} ${placementFact.rack}` : null,
         // "U12" is rack-unit notation, the same in every locale.
-        placement.rackUnit != null ? `U${placement.rackUnit}` : null,
+        placementFact.rackUnit != null ? `U${placementFact.rackUnit}` : null,
       ].filter(Boolean).join(', ')
     : '';
 
-  const facts: Array<{ key: string; node: ReactNode }> = [];
+  const facts: Fact[] = [];
 
   if (model) {
-    facts.push({ key: 'model', node: <span data-testid="device-fact-model" className="text-foreground">{model}</span> });
+    facts.push({ key: 'model', rank: RANK.model, node: <span data-testid="device-fact-model" className="text-foreground">{model}</span> });
   }
   if (serial) {
     facts.push({
       key: 'serial',
+      rank: RANK.serial,
       node: (
         <span data-testid="device-fact-serial" className="inline-flex items-center gap-1">
           <abbr title={t('deviceHeaderFacts.serial')} className="text-xs font-medium no-underline">
             {t('deviceHeaderFacts.serialShort')}
           </abbr>
           <span className="font-mono text-foreground">{serial}</span>
-          <CopyButton value={serial} label={t('deviceHeaderFacts.serial')} testId="device-fact-serial-copy" />
+          <CopyButton compact value={serial} label={t('deviceHeaderFacts.serial')} testId="device-fact-serial-copy" />
         </span>
       ),
     });
@@ -262,16 +376,18 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
   if (ip) {
     facts.push({
       key: 'ip',
+      rank: RANK.ip,
       node: (
         <span data-testid="device-fact-ip" className="inline-flex items-center gap-1">
           <span className="sr-only">{t('deviceHeaderFacts.lanIp')}</span>
           <span className="font-mono text-foreground">{ip}</span>
-          <CopyButton value={ip} label={t('deviceHeaderFacts.lanIp')} testId="device-fact-ip-copy" />
+          <CopyButton compact value={ip} label={t('deviceHeaderFacts.lanIp')} testId="device-fact-ip-copy" />
         </span>
       ),
     });
   }
-  if (warranty) {
+  if (warrantyFact) {
+    const warranty = warrantyFact;
     const end = formatDay(warranty.warrantyEndDate);
     const start = formatDay(warranty.warrantyStartDate);
     const statusKey = warranty.status === 'subscription_active' ? 'appleCareSubscription' : warranty.status;
@@ -282,6 +398,7 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
         : t(/* i18n-dynamic */ `deviceHeaderFacts.warranty.${warranty.status}`, { date: end });
     facts.push({
       key: 'warranty',
+      rank: WARRANTY_TONE[warranty.status] === 'neutral' ? RANK.warranty : RANK.warrantyAlert,
       node: (
         <FactPopover
           testId="device-fact-warranty"
@@ -314,6 +431,7 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
     const name = contactDisplayName(picked.contact) as string;
     facts.push({
       key: 'contact',
+      rank: RANK.contact,
       node: (
         <FactPopover
           testId="device-fact-contact"
@@ -354,6 +472,7 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
   if (notBilled) {
     facts.push({
       key: 'billing',
+      rank: RANK.billing,
       node: (
         <FactPopover
           testId="device-fact-billing"
@@ -381,6 +500,7 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
   if (placementText) {
     facts.push({
       key: 'placement',
+      rank: RANK.placement,
       node: (
         <span data-testid="device-fact-placement" className="inline-flex items-center gap-1.5" title={t('physicalPlacementCard.title')}>
           <MapPin className={ICON} aria-hidden="true" />
@@ -390,10 +510,11 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
       ),
     });
   }
-  if (assets.length === 1) {
-    const asset = assets[0]!;
+  if (assetFacts.length === 1) {
+    const asset = assetFacts[0]!;
     facts.push({
       key: 'network-asset',
+      rank: RANK.networkAsset,
       node: (
         <a
           href={`/devices/network/${asset.id}`}
@@ -406,16 +527,17 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
         </a>
       ),
     });
-  } else if (assets.length > 1) {
+  } else if (assetFacts.length > 1) {
     facts.push({
       key: 'network-asset',
+      rank: RANK.networkAsset,
       node: (
         <FactPopover
           testId="device-network-asset-list"
           icon={<Network />}
           panel={
             <ul className="space-y-1">
-              {assets.map((asset) => (
+              {assetFacts.map((asset) => (
                 <li key={asset.id}>
                   <a href={`/devices/network/${asset.id}`} className={PANEL_LINK}>{asset.label}</a>
                 </li>
@@ -429,19 +551,41 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
     });
   }
 
-  if (facts.length === 0) return null;
+  const { listRef, folded } = useOneLine(facts);
 
+  // Nothing to show once every source has answered: no row. Until then the
+  // line is held, even past the reveal deadline, so a device whose only facts
+  // are fetched does not collapse and then grow back when a slow one lands.
+  if (facts.length === 0 && settled) return null;
+
+  const foldable = folded.size > 0;
   return (
     <ul
+      ref={listRef}
       data-testid="device-header-facts"
       aria-label={t('deviceHeaderFacts.ariaLabel')}
-      className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-sm text-muted-foreground"
+      aria-busy={settled ? undefined : true}
+      className={`flex items-center gap-x-5 text-sm text-muted-foreground ${expanded ? 'flex-wrap gap-y-1.5' : 'h-7 flex-nowrap'}`}
     >
       {facts.map((f) => (
-        <li key={f.key} className="flex min-w-0 max-w-full items-center">
+        <li key={f.key} data-fact={f.key} hidden={!expanded && folded.has(f.key)} className="flex max-w-full shrink-0 items-center">
           {f.node}
         </li>
       ))}
+      {/* Always rendered so its width is known before it is needed; inert until then. */}
+      <li data-fact={MORE} aria-hidden={foldable ? undefined : true} className={foldable ? 'flex shrink-0 items-center' : 'invisible absolute'}>
+        <button
+          type="button"
+          data-testid="device-facts-more"
+          aria-expanded={expanded}
+          tabIndex={foldable ? undefined : -1}
+          onClick={() => setExpanded((v) => !v)}
+          className="-mx-1.5 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-sm text-foreground hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {expanded ? t('deviceHeaderFacts.showLess') : t('deviceHeaderFacts.more', { count: Math.max(folded.size, 1) })}
+          <ChevronDown className={`h-3 w-3 shrink-0 text-muted-foreground transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden="true" />
+        </button>
+      </li>
     </ul>
   );
 }

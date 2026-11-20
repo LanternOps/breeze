@@ -5213,7 +5213,9 @@
     "warrantyDetails": "Warranty details",
     "manageContacts": "Manage contacts",
     "notBilled": "Not billed",
-    "billingDetails": "Billing details"
+    "billingDetails": "Billing details",
+    "more": "{{count}} more",
+    "showLess": "Show less"
   },
   "deviceAssetRecord": {
     "title": "Asset record",

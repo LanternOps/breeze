@@ -1,9 +1,9 @@
 import '@/lib/i18n';
 
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import DeviceHeaderFacts from './DeviceHeaderFacts';
+import DeviceHeaderFacts, { factsToFold } from './DeviceHeaderFacts';
 import { fetchWithAuth } from '../../stores/auth';
 import type { Device } from './DeviceList';
 
@@ -33,7 +33,15 @@ const device = (over: Partial<Device> = {}): Device => ({
   ...over,
 }) as Device;
 
-type Routes = Partial<Record<'warranty' | 'contacts' | 'billing' | 'placement' | 'assets' | 'contracts', Response>>;
+type Routes = Partial<Record<'warranty' | 'contacts' | 'billing' | 'placement' | 'assets' | 'contracts', Response | Promise<Response>>>;
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+const EXPIRING = { warranty: { id: 'w', deviceId: 'dev-1', manufacturer: 'Dell', serialNumber: 'X', status: 'expiring', warrantyStartDate: '2023-03-01', warrantyEndDate: '2026-12-15', entitlements: [], dataSource: 'provider', lastSyncAt: null, lastSyncError: null } };
 
 function route(routes: Routes) {
   vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
@@ -47,7 +55,13 @@ function route(routes: Routes) {
   });
 }
 
-const settle = () => waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.length).toBeGreaterThanOrEqual(5));
+/** Every source has been asked (not necessarily answered). */
+const fetched = () => waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.length).toBeGreaterThanOrEqual(5));
+/** Every source has answered and the row has revealed its fetched facts. */
+const settle = async () => {
+  await fetched();
+  await waitFor(() => expect(document.querySelector('[data-testid="device-header-facts"][aria-busy="true"]')).toBeNull());
+};
 
 describe('DeviceHeaderFacts', () => {
   beforeEach(() => {
@@ -164,5 +178,117 @@ describe('DeviceHeaderFacts', () => {
     expect(link).toHaveAttribute('href', '/devices/network/na-1');
     // A bare asset name in the header reads as noise; say what it is, visibly.
     expect(within(link).getByText('Network asset')).not.toHaveClass('sr-only');
+  });
+
+  // ── Load stability: the row must not grow or reshuffle as each fetch lands ──
+
+  it('reveals the loaded facts together, not one by one, while identity facts show at once', async () => {
+    const placement = deferred<Response>();
+    route({ warranty: json(EXPIRING), placement: placement.promise });
+    render(<DeviceHeaderFacts device={device({ model: 'OptiPlex 7060' })} />);
+    expect(screen.getByTestId('device-fact-model')).toBeInTheDocument();
+    expect(screen.getByTestId('device-header-facts')).toHaveAttribute('aria-busy', 'true');
+    await fetched();
+    await act(async () => { await Promise.resolve(); });
+    // Warranty has answered, placement has not: hold the warranty back.
+    expect(screen.queryByTestId('device-fact-warranty')).not.toBeInTheDocument();
+    placement.resolve(json({ authority: { kind: 'device', id: 'dev-1', linked: false }, placement: { room: 'Server room', rack: null, rackUnit: null, heightU: null } }));
+    expect(await screen.findByTestId('device-fact-warranty')).toBeInTheDocument();
+    expect(screen.getByTestId('device-fact-placement')).toBeInTheDocument();
+    expect(screen.getByTestId('device-header-facts')).not.toHaveAttribute('aria-busy', 'true');
+  });
+
+  it('does not hold the row forever when one source never answers', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      route({ warranty: json(EXPIRING), placement: new Promise<Response>(() => {}) });
+      render(<DeviceHeaderFacts device={device()} />);
+      await fetched();
+      expect(screen.queryByTestId('device-fact-warranty')).not.toBeInTheDocument();
+      await act(async () => { vi.advanceTimersByTime(1500); });
+      expect(await screen.findByTestId('device-fact-warranty')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the reserved line past the deadline while a slow source may still add the only fact', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      route({ contacts: new Promise<Response>(() => {}) });
+      render(<DeviceHeaderFacts device={device()} />);
+      await fetched();
+      await act(async () => { vi.advanceTimersByTime(1500); });
+      // Collapsing now and growing back when the contact lands is two jumps.
+      expect(screen.getByTestId('device-header-facts')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reserves the line for a device with no identity facts while its facts load', () => {
+    route({ warranty: new Promise<Response>(() => {}) });
+    render(<DeviceHeaderFacts device={device()} />);
+    expect(screen.getByTestId('device-header-facts')).toHaveAttribute('aria-busy', 'true');
+  });
+
+  it('keeps to one line: low-priority facts fold behind a "more" toggle, alerts and identifiers stay; the rest expand in place', async () => {
+    const WIDTHS: Record<string, number> = { model: 150, serial: 120, ip: 110, warranty: 200, contact: 200, placement: 180, 'network-asset': 180, more: 60 };
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const w = WIDTHS[this.getAttribute('data-fact') ?? ''] ?? 0;
+      return { width: w, height: 24, top: 0, left: 0, right: w, bottom: 24, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    });
+    const client = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.getAttribute('data-testid') === 'device-header-facts' ? 760 : 0;
+    });
+    try {
+      route({
+        warranty: json(EXPIRING),
+        contacts: json({ responsibilities: [{ role: 'technical', level: 'organization', contacts: [{ contactId: 'c1', name: 'Kerri Castellini', email: null, phone: '555', mobile: null, title: null, isPrimary: true }] }] }),
+        placement: json({ authority: { kind: 'device', id: 'dev-1', linked: false }, placement: { room: 'Server room', rack: 'A', rackUnit: 12, heightU: 1 } }),
+        assets: json({ assets: [{ id: 'na-1', label: 'sw-core-01' }] }),
+      });
+      render(<DeviceHeaderFacts device={device({ model: 'OptiPlex 7060', serialNumber: '4XK9P2', lanIp: '10.0.4.21' })} />);
+      const more = await screen.findByTestId('device-facts-more');
+      // 150+120+110+200 + 60 ("3 more") fits 760; adding the contact (200) does not.
+      for (const id of ['device-fact-model', 'device-fact-serial', 'device-fact-ip', 'device-fact-warranty']) {
+        expect(screen.getByTestId(id)).toBeVisible();
+      }
+      for (const id of ['device-fact-contact', 'device-fact-placement', 'device-network-asset-link']) {
+        expect(screen.getByTestId(id)).not.toBeVisible();
+      }
+      expect(more).toHaveTextContent('3 more');
+      expect(more).toHaveAttribute('aria-expanded', 'false');
+      // Expanding is the user's choice, so the row may wrap then; loading never wraps it.
+      fireEvent.click(more);
+      expect(more).toHaveAttribute('aria-expanded', 'true');
+      expect(more).toHaveTextContent('Show less');
+      for (const id of ['device-fact-contact', 'device-fact-placement', 'device-network-asset-link']) {
+        expect(screen.getByTestId(id)).toBeVisible();
+      }
+      fireEvent.click(more);
+      expect(screen.getByTestId('device-fact-contact')).not.toBeVisible();
+    } finally {
+      rect.mockRestore();
+      client.mockRestore();
+    }
+  });
+});
+
+describe('factsToFold', () => {
+  it('folds nothing when everything fits', () => {
+    expect(factsToFold([{ key: 'a', rank: 0, width: 100 }, { key: 'b', rank: 1, width: 100 }], 220, 20, 50).size).toBe(0);
+  });
+
+  it('keeps facts in priority order and skips one that does not fit rather than every fact ranked below it', () => {
+    const folded = factsToFold(
+      [{ key: 'a', rank: 0, width: 100 }, { key: 'b', rank: 1, width: 300 }, { key: 'c', rank: 2, width: 50 }],
+      420, 0, 50,
+    );
+    expect([...folded]).toEqual(['b']);
+  });
+
+  it('always keeps the top-ranked fact', () => {
+    expect([...factsToFold([{ key: 'a', rank: 0, width: 500 }, { key: 'b', rank: 1, width: 500 }], 300, 0, 50)]).toEqual(['b']);
   });
 });

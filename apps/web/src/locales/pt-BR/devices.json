@@ -5213,7 +5213,9 @@
     "warrantyDetails": "Detalhes da garantia",
     "manageContacts": "Gerenciar contatos",
     "notBilled": "Não faturado",
-    "billingDetails": "Detalhes de faturamento"
+    "billingDetails": "Detalhes de faturamento",
+    "more": "mais {{count}}",
+    "showLess": "Mostrar menos"
   },
   "deviceAssetRecord": {
     "title": "Registro do ativo",

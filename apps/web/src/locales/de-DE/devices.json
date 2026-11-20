@@ -5213,7 +5213,9 @@
     "warrantyDetails": "Garantiedetails",
     "manageContacts": "Kontakte verwalten",
     "notBilled": "Nicht abgerechnet",
-    "billingDetails": "Abrechnungsdetails"
+    "billingDetails": "Abrechnungsdetails",
+    "more": "{{count}} weitere",
+    "showLess": "Weniger anzeigen"
   },
   "deviceAssetRecord": {
     "title": "Asset-Datensatz",
