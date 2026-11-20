@@ -1,6 +1,6 @@
 ---
 issue: 11808
-status: drafted
+status: plan-approved (Gate B, Todd 2026-11-19, with changes)
 date: 2026-11-18
 base: main @ e8bf959e63
 ---
@@ -19,7 +19,9 @@ base: main @ e8bf959e63
 
 Evidence labels: **verified** = read in code at that SHA. **inferred** = reasoned, not run. **not checked** = an open fact a task or gate must confirm.
 
-**Issues:** anchor #11808. Wave PRs say `Refs #11808` plus `Closes #<wave sub-issue>`. Never write a closing keyword for #11808: a negated keyword still closes it. The owner closes #11808 after W3 ships.
+**Gate B (2026-11-19): approved with four changes,** folded into the tasks below and listed under *Gate B changes*.
+
+**Issues:** anchor #11808. Follow-up bug #12264 (restricted key, wrong org). Wave PRs say `Refs #11808` plus `Closes #<wave sub-issue>`. Never write a closing keyword for #11808: a negated keyword still closes it. The owner closes #11808 after W3 ships.
 
 ---
 
@@ -47,7 +49,7 @@ Evidence labels: **verified** = read in code at that SHA. **inferred** = reasone
 
 - A key created inside a Fabric returns every site and device in that Fabric, in the same `/v1/hosts` and `/v1/sites` shapes. The "Independent Sites" key returns only sites outside any Fabric.
 - **Inferred from the screenshots:** a key can be limited to **selected sites and devices** when it is created. Two keys may therefore see one console with different site or device subsets.
-- **Not checked:** whether `/v1/devices` for a key limited to one site of a multi-site console returns all of that console's devices. If it does, a key can list one site while devices from a site it cannot see come back. The single-site guard (fact 5) would then attribute the other site's devices to the wrong org. This risk exists **today** with a single restricted key. Several keys make it more likely, so W2 is gated on the answer (Gate G1).
+- **Not checked:** whether `/v1/devices` for a key limited to one site of a multi-site console returns all of that console's devices. If it does, a key can list one site while devices from a site it cannot see come back. The single-site guard (fact 5) would then attribute the other site's devices to the wrong org. This risk exists **today** with a single restricted key. Several keys make it more likely. It is tracked as bug #12264. W2 does not wait for the answer: it ships the strict site-count rule (Task 2.2), and #12264 verifies the API behaviour afterwards.
 - The reporter does not expect one console to appear under two scopes at once. A console moving into a Fabric may briefly appear under both scopes, or under neither (not checked).
 
 ### Decisions
@@ -104,7 +106,7 @@ For a mapping on an uncertain host, the sync writes no devices and runs no stale
 **D9. Explicit mapping deletes** *(advisor)*.
 - `PUT /unifi/mappings` gains `removeMappingIds: uuid[]` (max 500).
 - Each id must belong to the connection and pass the same org and site gates as today's replace-all.
-- Once a connection has more than one enabled key, the host-scoped `hostIds` delete is ignored: those requests only upsert. Otherwise one failed key would hide site B on a console that another key shows with site A, and saving would delete B's mapping and its devices.
+- Once a connection has more than one enabled key, a request that carries `hostIds` is **refused with an explicit signal**, not silently downgraded: 409 `{ success: false, code: 'UNIFI_EXPLICIT_DELETES_REQUIRED', message: 'This connection has several API keys. Send removeMappingIds to remove mappings.' }`, before any write (no upsert, no delete). A host-scoped delete there could otherwise remove site B's mapping and its devices on a console where a failed key hid B while another key showed A; silently ignoring it would instead leave the caller believing the delete happened. *(Gate B)*
 - The web sends `removeMappingIds` for cloud saves from W3.
 - `GET /unifi/hosts` also returns `complete: false` when any key failed, and the mapping card says so.
 
@@ -120,7 +122,7 @@ For a mapping on an uncertain host, the sync writes no devices and runs no stale
 **D12. Rollout guards** *(advisor)*.
 - **W1 code refuses to sync a connection with more than one enabled key.** It records a failed run and writes nothing, so a rollback from W2/W3 to W1 never sweeps based on one key alone.
 - **Pre-W1 code:** a rollback to it reads the legacy column, which W1 keeps up to date for single-key connections. On a connection that already has several keys, pre-W1 code syncs from the first key only. Devices seen only through the other keys go stale; this is reversible on the next run of current code and documented in the W3 PR.
-- **Old API instances during the W1 deploy** can still write a reconnect to the legacy column alone. While a connection has exactly one key, W1 and W2 reads compare the legacy plaintext with the key row's plaintext. If they differ, the legacy value is newer (in W1 and W2 nothing else writes the key row's secret), so it is adopted. W3 removes this reconcile.
+- **Old API instances during the W1 deploy** can still write a reconnect to the legacy column alone. While a connection has exactly one key, W1 and W2 reads compare the legacy plaintext with the key row's plaintext. If they differ, the legacy value is newer (in W1 and W2 nothing else writes the key row's secret), so it is adopted. **If the legacy column fails to decrypt, that means "no adoption"**: the key row is used as is, a warning is logged without the error detail, and the sync is not failed or marked partial for it. *(Gate B)* W3 removes this reconcile.
 
 ---
 
@@ -141,21 +143,14 @@ For a mapping on an uncertain host, the sync writes no devices and runs no stale
 ## Review Focus
 
 1. **One console seen by two keys with different site subsets, one key failing.** The host is uncertain. No devices are written or swept for it, and nothing lands in the wrong org. Pinned in Task 2.2: `partial run: host a failed key reaches gets no devices and no sweep`.
-2. **Saving mappings after a partial `/hosts` read.** No mapping is deleted. Pinned in Task 2.4 (`hostIds delete is ignored once a connection has two enabled keys`) and Task 3.3 (`cloud save sends removeMappingIds, never hostIds`).
+2. **Saving mappings after a partial `/hosts` read.** No mapping is deleted. Pinned in Task 2.3 (`hostIds with two enabled keys returns 409 UNIFI_EXPLICIT_DELETES_REQUIRED and writes nothing`) and Task 3.3 (`cloud save sends removeMappingIds, never hostIds`).
 3. **A device id reported under two hosts while a console moves into a Fabric.** The device stays on its current mapping and org, and is not swept. Pinned in Task 2.1 (`mergeKeyReads quarantines a device id seen under two hosts`) and Task 2.2 (`a quarantined device keeps its row and link`).
 4. **A mapping remapped to another org while a sync is collecting.** That run writes nothing into the old org. Pinned in Task 2.3: `apply skips a mapping whose org changed since the snapshot`.
 5. **Two concurrent "add key" requests at the cap, or with the same label.** The database ends with at most 25 keys and unique labels, enforced by a row lock and the unique index. Pinned in Task 3.1: `two concurrent addKey calls with one slot left produce 25 keys`.
 
 ## Gates
 
-- **G1 (before W2 merges):** ask the reporter for one test, without pasting keys or full output. Make a key limited to **one** site of a multi-site console, if they have one (a UDM running two Network sites, or a linked self-hosted Network Application). Report:
-  - how many sites `/v1/sites` returns for that console;
-  - whether `/v1/devices` returns devices of the other site.
-
-  Outcomes:
-  - **Only the selected site's devices:** W2 ships as written.
-  - **All devices:** add a rule to Task 2.2. Devices of a multi-site-capable host are attributed only when the host's site count from every key that lists it agrees, *and* equals the console's site count from `/v1/hosts` (`reportedState` sites, if the payload carries one, not checked). Otherwise the mapping gets the multi-site error.
-  - **No answer:** ship with the stricter rule.
+- **G1: removed at Gate B (2026-11-19).** The restricted-key / wrong-org question it parked is bug #12264, which exists today with one key. W2 ships the strict site-count rule unconditionally (Task 2.2), and #12264 verifies the API behaviour afterwards.
 - **G2 (before W4):** W1 has been in a tagged release.
 
 ---
@@ -165,7 +160,7 @@ For a mapping on an uncertain host, the sync writes no devices and runs no stale
 | Wave | Delivers | Visible change | Depends on |
 |---|---|---|---|
 | **W1** | Table, verbatim backfill, registry entry, key service. The worker and routes read keys. Multi-key refusal; cloud-only scheduling. | None (parity) | — |
-| **W2** | Multi-key collect + merge, failure bounds, per-key status + `key_results`, obsolete-write guards, `/hosts`, `/test` and the AI tool fanned out, `removeMappingIds` + `hostIds` guard | Additive API fields | W1, G1 |
+| **W2** | Multi-key collect + merge, failure bounds, strict site-count rule, per-key status + `key_results`, obsolete-write guards, `/hosts`, `/test` and the AI tool fanned out, `removeMappingIds` + the explicit `hostIds` refusal | Additive API fields | W1 |
 | **W3** | Key CRUD + audit, keys card, per-key sync detail, explicit-delete saves, per-key health, docs + 8 locales | Users manage several keys | W2 |
 | **W4** | Drop the legacy key column | None | W3, G2 |
 
@@ -217,9 +212,10 @@ Every wave is shippable alone. No connection can hold a second key until W3.
 
 - [ ] **Step 1: Write the failing integration tests.** They run on real Postgres as `breeze_app`, except the migration re-run.
   - `backfills one key per cloud integration with the ciphertext unchanged`. Seed a cloud integration with `encryptSecret('k-123', { aad: 'unifi_integrations.api_key_encrypted' })` and `account_label = 'Main'`, then re-run the migration file to prove it is idempotent. Expect:
-    - exactly one key row, with `label = 'Main'` and `status = 'connected'`;
+    - exactly one key row, with `label = 'Main'` and the parent's status (`connected` here);
     - its ciphertext byte-equal to the parent's;
     - `decryptSecret(row.apiKeyEncrypted, { aad: columnAad(UNIFI_KEY_COLUMN_SPEC) }) === 'k-123'`.
+  - `copies the parent's status to the backfilled key`: parents with `reauth_required` and `error` give keys with the same status and the parent's `last_sync_error`; a parent status outside the key domain gives `pending`. *(Gate B)*
   - `labels a backfilled key Global when the account label is blank` (`'  '`).
   - `self-hosted integrations get no key row`.
   - `label unique ignoring case`: `'Macera'` then `'macera '` raises 23505.
@@ -232,7 +228,7 @@ Every wave is shippable alone. No connection can hold a second key until W3.
   1. Elect system scope.
   2. Add the parent unique constraint.
   3. Create the table and its indexes, with RLS and its four policies.
-  4. Backfill: `INSERT … SELECT i.id, i.partner_id, COALESCE(NULLIF(btrim(i.account_label), ''), 'Global'), i.api_key_encrypted, 'connected', i.last_sync_at FROM unifi_integrations i WHERE i.connection_type = 'cloud' AND i.api_key_encrypted IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unifi_integration_keys k WHERE k.integration_id = i.id)`. Leave `last_sync_status` `NULL`, because its domain differs from the parent's.
+  4. Backfill: `INSERT … SELECT i.id, i.partner_id, COALESCE(NULLIF(btrim(i.account_label), ''), 'Global'), i.api_key_encrypted, CASE WHEN i.status IN ('connected','reauth_required','error') THEN i.status ELSE 'pending' END, i.last_sync_error, i.last_sync_at FROM unifi_integrations i WHERE i.connection_type = 'cloud' AND i.api_key_encrypted IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unifi_integration_keys k WHERE k.integration_id = i.id)`. The key copies the **parent connection's status** (and `last_sync_error`), never a blanket `connected`: a connection that is `reauth_required` today must not show a healthy key after the migration *(Gate B)*. Leave `last_sync_status` `NULL`, because its domain differs from the parent's.
   5. Drop `unifi_integrations_cloud_key_chk` with `DROP CONSTRAINT IF EXISTS`. From here the key table holds the invariant, with D11 enforcing it in code.
 - [ ] **Step 6: Add the Drizzle table and the registry entry.** Run `pnpm db:check-drift`. Expected: no drift.
 - [ ] **Step 7: Run the tests. Expected: PASS.**
@@ -264,7 +260,7 @@ Every wave is shippable alone. No connection can hold a second key until W3.
   ```
   - `listKeys` returns keys in `created_at, id` order and never selects `api_key_encrypted`.
   - `getSyncKeys` returns `null` unless an active **cloud** integration matches `(id, partnerId)`. Its keys are the enabled ones, in stable order.
-  - **D12 reconcile:** when there is exactly one key and the legacy column holds a different plaintext, `getSyncKeys` writes the legacy ciphertext into the key row, resets `key_last4` to `NULL`, logs `[unifi] adopted a reconnect written by an older API instance`, and returns the adopted key.
+  - **D12 reconcile:** when there is exactly one key and the legacy column holds a different plaintext, `getSyncKeys` writes the legacy ciphertext into the key row, resets `key_last4` to `NULL`, logs `[unifi] adopted a reconnect written by an older API instance`, and returns the adopted key. A legacy value that **fails to decrypt** means no adoption: return the key row unchanged, log `[unifi] legacy key unreadable; not adopted`, and do not surface it as a decrypt error or a failed sync. *(Gate B)*
 
 - [ ] **Step 1: Write the failing tests.** Use the table-identity scripted DB from `unifiSyncService.test.ts:30-100`.
   - `listKeys never selects api_key_encrypted`.
@@ -272,6 +268,7 @@ Every wave is shippable alone. No connection can hold a second key until W3.
   - `getSyncKeys returns null for a self-hosted integration`.
   - `getSyncKeys returns an undecryptable key as a decryptError entry, not omitted`.
   - `getSyncKeys adopts a newer legacy key when the connection has one key`.
+  - `getSyncKeys does not adopt an undecryptable legacy value and returns the key row as an ok key` (no `decryptError`, no write). *(Gate B)*
   - `getSyncKeys never consults the legacy column when the connection has two keys`.
   - `sealUnifiKey output opens with the legacy AAD`.
 - [ ] **Step 2: Run them and confirm they fail.** Run `pnpm --filter @breeze/api exec vitest run src/services/unifi/unifiKeyService.test.ts`. Expected: FAIL, module not found.
@@ -323,7 +320,7 @@ Every wave is shippable alone. No connection can hold a second key until W3.
 
 ---
 
-## Wave 2: multi-key sync engine (gate G1)
+## Wave 2: multi-key sync engine
 
 ### Task 2.1: Per-key reads and the pure merge
 
@@ -413,6 +410,7 @@ Every wave is shippable alone. No connection can hold a second key until W3.
     - `'all'` if any failed key has neither a `siteRead` nor a `lastSeenHostIds`;
     - otherwise, the union of each failed key's reach (its `siteRead` hosts, else its snapshot) and `merged.coverageGapHostIds`.
   - **Uncertain-host check:** it runs first for each mapping. A mapping whose host is uncertain gets the error `site <siteId>: API key "<label>" failed this run and may reach host <hostId>, so its devices were not synced`. A coverage gap instead reads `… returned no device list for host <hostId> …`. In both cases `devices` is `undefined` and the resolved metrics stay as they are.
+  - **Strict site-count rule** *(Gate B; ships before #12264 is answered)*: devices of a multi-site-capable host are attributed only when the site count from every key that lists the host agrees and, where the `/v1/hosts` payload carries the console's own site count, equals it. Otherwise the mapping gets the multi-site error. Confirm from a recorded `/v1/hosts` fixture whether that count exists (**not checked**); if it does not, the rule is "every key agrees" and #12264 stays open for the single-key case.
   - **Existing guards:** they run next, unchanged, on `merged.siteRead` and `merged.devicesByHost`. A site missing while some key failed reads `… is not listed by any working API key (failed: "<label>", …)`.
   - **Counters:** `hostsSeen = merged.hosts.length`. `sitesUnmapped` is recorded only when `allKeysSucceeded` holds and the merged site list is complete.
 - `applySyncData`: the stale sweep skips every row whose `unifiDeviceId` is in `collected.protectedDeviceIds`, as well as today's `failedMappingIds`.
@@ -426,6 +424,8 @@ Every wave is shippable alone. No connection can hold a second key until W3.
   - `coverage gap: a host one key lists without a device group is not swept`.
   - `a quarantined device keeps its row and link` (Review Focus 3). Device `d1` sits on mapping `m1`, and keys report it under `h1` and `h2`. Expect no write to `d1` and no stale update.
   - `multi-site check uses the merged site list`. A lists `h1/s1`, B lists `h1/s2`, and both succeed. The mapping on `h1/s1` gets the multi-site error.
+  - `strict rule: keys disagreeing on a host's site count give the multi-site error`.
+  - `strict rule: a key's site count below the console's /v1/hosts site count gives the multi-site error` (only if the field exists; otherwise record that it does not).
   - `every key failed: run failed, nothing written, error lists each key`.
   - `zero enabled keys: fatal fixed message, no client calls`.
   - `single key: identical SyncRunResult to the pre-change engine`. Re-run the existing fixtures through the new signature.
@@ -461,7 +461,7 @@ Every wave is shippable alone. No connection can hold a second key until W3.
 - **PUT /unifi/mappings (D9, server half),** in this task because the worker change is what enables a second key in practice:
   - Accept `removeMappingIds?: z.array(z.string().guid()).max(500)`.
   - A listed id that does not belong to the connection is refused with 400 before any write. Each id must also pass the org and site gates.
-  - When the connection has more than one enabled key, `hostIds` is ignored for deletion.
+  - When the connection has more than one enabled key, a body with `hostIds` returns 409 `UNIFI_EXPLICIT_DELETES_REQUIRED` before any write (D9). The web from W3 never sends `hostIds` for a cloud save, so only stale clients and direct API callers see it.
 
 - [ ] **Step 1: Write the failing tests.**
   - `recordKeyResults skips a key deleted mid-run`.
@@ -473,7 +473,7 @@ Every wave is shippable alone. No connection can hold a second key until W3.
   - `worker: one of two keys failed -> integration connected, partial, error names the key`.
   - `PUT /mappings deletes only the listed removeMappingIds`.
   - `PUT /mappings refuses a removeMappingId of another connection`.
-  - `hostIds delete is ignored once a connection has two enabled keys` (Review Focus 2, API half).
+  - `hostIds with two enabled keys returns 409 UNIFI_EXPLICIT_DELETES_REQUIRED and writes nothing` (Review Focus 2, API half).
   - Integration test `unifiMultiKeySync.integration.test.ts`, on real Postgres. Seed two keys and run `applySyncData` with a partial `CollectedSync`. Assert that no `unifi_devices` row on an uncertain host changes, that a remapped mapping gets no devices, and that both key rows carry their statuses.
 - [ ] **Step 2: Run them and confirm they fail.**
 - [ ] **Step 3: Write the migration, then the schema, then the code.** Run `pnpm db:check-drift`.
@@ -510,7 +510,7 @@ Every wave is shippable alone. No connection can hold a second key until W3.
 - [ ] **Step 4: Run, plus the AI-tool contract tests. Expected: PASS.**
 - [ ] **Step 5: Commit** `feat(unifi): /hosts, /test and the AI hosts view read every key (#11808)`.
 
-**W2 PR:** `Refs #11808`. Before merging, record G1's outcome in the PR body. Run **Integration Tests**.
+**W2 PR:** `Refs #11808`, `Refs #12264`. State that the strict site-count rule ships ahead of #12264's answer. Run **Integration Tests**.
 
 ---
 
@@ -595,7 +595,7 @@ Every wave is shippable alone. No connection can hold a second key until W3.
 - Create: `apps/web/src/components/integrations/unifi/ApiKeysCard.tsx` (+ `ApiKeysCard.test.tsx`)
 - Create: `apps/web/src/components/integrations/unifi/useUnifiKeys.ts`. This is a separate hook because `useUnifiIntegration.ts` is already 870 lines.
 - Modify: `unifiTypes.ts`. Add `UnifiKeySummary`, `UnifiStatus.keys`, `keyIds` on hosts and sites, `HostsResponse.complete`, and `SyncRun.keyResults`. Update the response parsers too, not only the types.
-- Modify: `useUnifiIntegration.ts`. A cloud save computes `removeMappingIds` from the saved mappings the user cleared and **never sends `hostIds`**. The self-hosted save is unchanged.
+- Modify: `useUnifiIntegration.ts`. A cloud save computes `removeMappingIds` from the saved mappings the user cleared and **never sends `hostIds`**. The self-hosted save is unchanged. A 409 `UNIFI_EXPLICIT_DELETES_REQUIRED` (a stale tab) is shown as an error asking for a reload, never swallowed.
 - Modify: `SiteMappingCard.tsx` (a "via <label>" chip per site, and `unifi-hosts-incomplete-banner` when `complete === false`)
 - Modify: `SyncHistoryCard.tsx` (expandable per-key results)
 - Modify: `ConnectedSummaryCard.tsx`. The reauth banner points at the keys card instead of Disconnect.
@@ -691,6 +691,15 @@ Every wave is shippable alone. No connection can hold a second key until W3.
 - [ ] **Step 5: Commit** `chore(unifi): drop the legacy single-key column (#11808)`.
 
 ---
+
+## Gate B changes (Todd, 2026-11-19)
+
+1. **Backfill copies the parent connection's status** (and `last_sync_error`), not a blanket `connected`. Task 1.1.
+2. **A legacy column that fails to decrypt during the D12 reconcile is "no adoption"**, not a failed sync. D12, Task 1.2.
+3. **With two keys, a `hostIds` delete returns an explicit signal** (409 `UNIFI_EXPLICIT_DELETES_REQUIRED`, nothing written) instead of being silently ignored. D9, Tasks 2.3 and 3.3.
+4. **G1 removed.** The restricted-key / wrong-org question is bug #12264. The strict site-count rule ships first, in W2 (Task 2.2).
+
+Open Decisions 1–8 below were accepted as recommended.
 
 ## Open Decisions
 
