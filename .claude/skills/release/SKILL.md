@@ -101,6 +101,16 @@ An open `[QA] Environment change on main needs upgrade notes` lists every runtim
 
 **Restore:** leave the lab host on the promoted release, not a lab build, and note which version it runs.
 
+## Step 0.27 — Hosted-edition upgrade gate: test the bits the fleet will actually get
+
+**Why this gate exists.** The lab legs above install the public draft, which is the **self-host** edition. The hosted fleet never runs those files: the private hosted signing lane (Step 0.6) rebuilds the whole agent family as the hosted edition, with its own Windows signing and its own macOS signing, notarization and `.pkg`. A stranding bug in that build (signing identity, entitlements, host-policy enforcement, installer scripts) passes every self-host lab leg and only shows up when the fleet updates. Standard practice since v0.130.0 (Todd, 2026-11-19).
+
+**On the last release candidate before the final tag** (the rc whose agent code the final will ship; confirm with `git diff --stat <rc-sha> <final-sha> -- agent/` being empty or understood):
+1. Dispatch the hosted lane in **audit mode**: same command as Step 0.6 but `publish_image=false` (details in `internal/ops/release-infra.md`). It builds, signs and verifies everything and keeps the outputs as private workflow artifacts (30-day retention); it publishes no image and touches nothing in prod. Signing quota is spent, so it needs Todd's go like any lane run.
+2. Run the upgrade-in-place legs (Step 0.25 for macOS, the Windows lab VM for Windows) with **those hosted artifacts**, over an agent that is already enrolled and running the previous hosted release. The pass criteria are Step 0.25's, plus: the agent comes back on its own after the update, heartbeats within 2 minutes, reports the candidate version, and the watchdog is running.
+3. The hosted edition enforces a control-plane host allowlist. A lab server is not on it, so fresh enrollment against a lab stack is refused by design. Upgrade-in-place of an already-enrolled agent is the case under test. If the edition refuses something on the lab host that it would allow against prod, record it as a lab limit, not a pass, and cover that path in the canary (Step 6).
+4. Any failure blocks the tag. Record the run id, the artifacts used and the results in the sweep doc (no private repo names, hostnames or allowlist values in public files).
+
 ## Step 0.3 — Dynamic security gates, at the exact commit you will tag
 
 Unit tests and static analysis read the code. These gates exercise it running. All three are run against the SHA you are about to tag, not "main around now". Results and any findings go in the **private** release register in `~/breeze-security`, never in the release body, a PR, or an issue.
@@ -534,6 +544,20 @@ So after any rollback that followed a mid-set failure:
 3. **Un-break minimally:** `ALTER COLUMN <col> SET DEFAULT <sane value>` (keeps `NOT NULL`, lets the old code insert) is the lightest fix; it's inert on the new version (which sets the value explicitly). Note the divergence and **drop the DEFAULT once you're forward again** so the schema matches a fresh install.
 4. **The clean alternative is to roll *forward*** to a fixed build rather than back — completing the migration set makes code and schema match. Prefer this when the fix is understood; the pre-deploy dump is the fallback if it isn't.
 
+### Canary before the fleet promote (standard practice)
+
+A fleet promote is the one step that can strand agents across every tenant at once, so it never goes out cold. After both regions are deployed and healthy, and **before** the fleet-wide promote:
+1. **Pin the canary orgs** (our own tenant on US, plus one consenting customer org if Todd names one) to the release via `organizations.settings->'defaults'->'agentVersionPins'`. Todd's go is required, because it is a prod change.
+2. **Record a baseline first.** For each canary org, note the online device count per platform and the version of each device.
+3. **Soak.** The default is 24 hours; Todd can shorten it per release. Pass means:
+   - every device that was online before the pin reports the new version and is still online;
+   - there are no new offline devices against the baseline;
+   - no device shows repeated update attempts;
+   - macOS devices keep Screen Recording, and a remote session connects.
+
+   A device that was online, took the update and then went quiet is a **stranding signal**. Stop: do not promote, and investigate.
+4. Promote the fleet only after the canary passes. Then clear the canary pins in the same session (see below).
+
 ### Promote the agent fleet — via a DB row change
 
 Prod sets `AGENT_AUTO_PROMOTE=false`, so deploying registers the new binaries in `agent_versions` (`is_latest` stays on the prior version) and devices don't update until you promote. **Promote with a direct DB row change** — this is the method precisely because it **does not require an MFA session**. The API `/promote` endpoint is gated on a platform-admin MFA session (which we can't drive headlessly), so editing `agent_versions` directly is the authorized, MFA-free path. Confirm with Todd first, then run it per region (US and EU have **separate DBs — promote each**).
@@ -629,6 +653,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] **Pre-cut gates** (Step 0.2): newest sweep doc's "Before the release cut" list cleared, sweep fix PR merged, live-agent rows run on the lab rigs (not deferred)
 - [ ] **Dynamic security gates** (Step 0.3) at the tag SHA: private extended fuzz green, Tenant Isolation E2E green, touched-area pentest playbook entries run on the lab and recorded privately
 - [ ] **macOS upgrade-in-place gate** (Step 0.25): previous version → candidate via auto-update on each Mac leg; no TCC prompt, helper loaded within 60 s with no manual bootstrap (#10868), `canCapture=true`, desktop connects, wallpaper back — a leg with no lab host is named in the release body's known gaps
+- [ ] **Hosted-edition upgrade gate** (Step 0.27): hosted lane audit run (`publish_image=false`) on the last rc, and lab upgrade-in-place with those hosted artifacts on macOS and Windows; any failure blocks the tag
 - [ ] In-app What's New entry added to `WHATS_NEW_ENTRIES` (`apps/web/src/lib/whatsNew.ts`) and **merged to main BEFORE the tag** — version = bare semver of this release (or deliberately skipped for an internal-only release)
 - [ ] Tag pushed (off main for full release / off $PREV for surgical hotfix)
 - [ ] **Abuse-asset gate** (Step 0.6): agent-family exes/MSI verified unsigned at the byte level, manifest all `edition=self-host`, checksums spot-checked
@@ -642,6 +667,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] DB backed up per region (encrypted off-region dump) **immediately before that region's deploy** — verified non-trivial dump size (not the `defaultdb` 4K trap)
 - [ ] Droplets deployed — **night region first** (back up → deploy → verify), then the other + `/health` green
 - [ ] Deploy lines recorded and pushed for EU and US
+- [ ] **Canary passed** (Step 6): canary orgs pinned, baseline recorded, soak clean (no stranded devices) — with Todd's go
 - [ ] Agent fleet promoted via slot-aware DB row change (both DBs) — only with Todd's go-ahead
 - [ ] Firewall exception removed (if the doctl fallback was used)
 - [ ] CVE requested for each advisory the private disclosure policy says gets one (request from the draft; it stays private until publish)
