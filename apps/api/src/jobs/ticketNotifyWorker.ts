@@ -27,6 +27,7 @@
  * after the context exits.
  */
 
+import { createHash } from 'node:crypto';
 import { DelayedError, Worker, type Job } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../db';
@@ -1159,9 +1160,13 @@ function approvalMailPayload(m: ApprovalMail): EmailPayload {
   };
 }
 
-/** Identifies a payload across a rescheduled re-run of the same job (#12249). */
-function payloadKey(p: EmailPayload): string {
-  return [p.purpose, p.to, p.subject].join('|');
+/**
+ * Identifies a payload across a rescheduled re-run of the same job (#12249).
+ * Hashed: the key is stored in the job's Redis data, which outlives the job,
+ * and must not carry the recipient address or the ticket subject.
+ */
+export function ticketPayloadKey(p: { purpose: string; to: string; subject: string }): string {
+  return createHash('sha256').update([p.purpose, p.to, p.subject].join('\n')).digest('hex');
 }
 
 interface EmailDelivery {
@@ -1232,7 +1237,7 @@ async function sendEmailPayloads(
       return true;
     };
 
-    const key = payloadKey(payload);
+    const key = ticketPayloadKey(payload);
     if (alreadyDelivered.has(key)) {
       // Sent by an earlier run of this job, before a hold rescheduled it.
       delivered += 1;

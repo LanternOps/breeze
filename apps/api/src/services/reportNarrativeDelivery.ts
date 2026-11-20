@@ -51,6 +51,8 @@ import { loadReportBrandingForOrg } from './reportBranding';
 import { emailReportRun } from './reportDelivery';
 import {
   claimDelivery,
+  heldMarker,
+  heldNotBefore,
   listPendingDeliveriesForRun,
   recordTransientGateFailure,
   releaseHeldDelivery,
@@ -160,14 +162,7 @@ export function classifySendError(error: unknown): 'failed' | 'unknown' {
  * is still useful; older than that it is dropped with a logged reason.
  */
 export const NARRATIVE_HELD_MAX_AGE_MS = 26 * 60 * 60 * 1000;
-const HELD_MARKER_PREFIX = 'held:';
 
-/** The not-before time a held release wrote into last_error, or null. */
-function heldNotBefore(lastError: string | null): Date | null {
-  if (!lastError?.startsWith(HELD_MARKER_PREFIX)) return null;
-  const at = new Date(lastError.split(':until=')[1] ?? '');
-  return Number.isFinite(at.getTime()) ? at : null;
-}
 
 function errorText(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -329,7 +324,7 @@ async function deliverOne(
       // is younger than NARRATIVE_HELD_MAX_AGE_MS; past that, settle failed.
       const decision = heldSendDecision(error, { firstAttemptAt: delivery.createdAt, maxAgeMs: NARRATIVE_HELD_MAX_AGE_MS });
       if (decision.action === 'reschedule') {
-        await releaseHeldDelivery(delivery.id, `${HELD_MARKER_PREFIX}${error.reason}:until=${decision.at.toISOString()}`);
+        await releaseHeldDelivery(delivery.id, heldMarker(error.reason, decision.at));
         return 'transient';
       }
       logHeldSendDropped('reportNarrativeDelivery', error, { reportRunId: artifact.reportRunId, deliveryId: delivery.id });

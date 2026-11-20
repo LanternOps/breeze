@@ -139,7 +139,7 @@ vi.mock('../services/expoPush', async (orig) => {
 });
 
 import { resolveCommentNotificationPortalHref } from '../services/inboundEmail/commentNotificationPortalHref';
-import { handleTicketEvent, processTicketEventJob, TICKET_HELD_MAX_AGE_MS } from './ticketNotifyWorker';
+import { handleTicketEvent, processTicketEventJob, ticketPayloadKey, TICKET_HELD_MAX_AGE_MS } from './ticketNotifyWorker';
 
 describe('handleTicketEvent', () => {
   beforeEach(() => {
@@ -1551,7 +1551,9 @@ describe('held customer mail (#12249)', () => {
     primeRequesterReads();
     await handleTicketEvent(commented as never);
     const sent = sendEmailMock.mock.calls[0]![0] as { purpose: string; to: string; subject: string };
-    const key = [sent.purpose, sent.to, sent.subject].join('|');
+    const key = ticketPayloadKey(sent);
+    // Hashed: no recipient or subject in the job's Redis data.
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
 
     primeRequesterReads();
     sendEmailMock.mockClear();

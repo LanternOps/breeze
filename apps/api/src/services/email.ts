@@ -10,7 +10,7 @@ import {
   renderLayout,
   renderLinkRow,
 } from './emailLayout';
-import type { PartnerLaneMailPurpose, PlatformMailPurpose } from './emailDomains/mailPurposes';
+import { mailPurposePolicy, type MailPurpose, type PartnerLaneMailPurpose, type PlatformMailPurpose } from './emailDomains/mailPurposes';
 import { platformFallbackFrom, resolveSender, type HeldReason, type SendTrigger } from './emailDomains/senderResolution';
 
 export type { HeldReason, SendTrigger } from './emailDomains/senderResolution';
@@ -73,9 +73,16 @@ export class EmailTransportError extends Error implements EmailTransportErrorFie
  * A partner-lane send that was refused rather than moved to the platform
  * sender (senderResolution.ts `HeldReason`). Nothing was sent on either lane.
  * There is no hold queue: `retryAt` is when trying again can succeed. Queue
- * and outbox senders reschedule to it within their own maximum age
- * (heldSendRetry.ts); synchronous routes answer with a 4xx (heldSendHttp.ts).
+ * and outbox senders reschedule to it within their own maximum age, and
+ * synchronous routes answer with a 4xx (services/emailDomains/heldSend.ts).
  */
+function missingTrigger(purpose: string): 'internal' {
+  if (mailPurposePolicy(purpose as MailPurpose).lane === 'partner') {
+    console.warn('[email] partner-lane send without a trigger; counted as internal', { purpose });
+  }
+  return 'internal';
+}
+
 export class EmailSendHeldError extends Error {
   readonly reason: HeldReason;
   readonly partnerId: string;
@@ -506,8 +513,10 @@ export class EmailService {
       partnerId: params.partnerId ?? null,
       partnerName: params.partnerName ?? null,
       // A platform purpose returns before the bucket is read. A partner-lane
-      // caller that bypassed the type counts as internal: the cautious bucket.
-      trigger: params.trigger ?? 'internal',
+      // caller that bypassed the type counts as internal (the cap still
+      // applies) and is logged, since internal is the bucket an outsider must
+      // never be able to spend.
+      trigger: params.trigger ?? missingTrigger(params.purpose),
       defaultFrom: this.defaultFrom,
     });
 

@@ -86,7 +86,10 @@ vi.mock('../db', () => {
   };
 });
 
-vi.mock('./reportRunDelivery', () => ({
+vi.mock('./reportRunDelivery', async (importOriginal) => ({
+  // The real marker helpers (pure); every DB-touching export is replaced below.
+  heldMarker: (await importOriginal<typeof import('./reportRunDelivery')>()).heldMarker,
+  heldNotBefore: (await importOriginal<typeof import('./reportRunDelivery')>()).heldNotBefore,
   STALE_CLAIM_MS: 15 * 60 * 1000,
   listPendingDeliveriesForRun: vi.fn(async (runId: string) =>
     [...fake.rows.values()].filter((r) => r.reportRunId === runId && r.state === 'pending')),
