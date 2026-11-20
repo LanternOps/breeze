@@ -511,7 +511,7 @@ func endRestoreOnSessionLoss(result *RestoreResult, cause error, total int64) {
 // restoreSessionLostMessage explains a restore that stopped because its
 // storage session ended, counts first (list views truncate the reason).
 func restoreSessionLostMessage(cause error, restored, failed, notAttempted int) string {
-	return fmt.Sprintf("restore stopped: the storage session ended after %d of %d files (%d restored, %d failed); the remaining %d were not attempted, and running the restore again resumes from here (%v)",
+	return fmt.Sprintf("restore stopped: the storage session ended after %d of %d files (%d restored, %d failed); the remaining %d were not attempted, and running the same restore again resumes it (%v)",
 		restored+failed, restored+failed+notAttempted, restored, failed, notAttempted, cause)
 }
 
