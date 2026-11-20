@@ -351,7 +351,7 @@ describe('portal access request decision templates (W3 #11380, OD3)', () => {
     const { buildPortalAccessApprovedTemplate } = await import('./email');
     const t = buildPortalAccessApprovedTemplate({
       to: 'a@customer.test', loginUrl: 'https://portal.example.com/login', orgName: 'Contoso',
-      partnerId: 'p1', partnerName: 'Acme MSP',
+      trigger: 'internal', partnerId: 'p1', partnerName: 'Acme MSP',
     });
     expect(t.subject).toBe('You can now sign in to the Contoso portal');
     expect(t.html.match(/<a href=/g)).toHaveLength(1);
@@ -362,7 +362,7 @@ describe('portal access request decision templates (W3 #11380, OD3)', () => {
 
   it('declined: the neutral copy, no link', async () => {
     const { buildPortalAccessDeclinedTemplate } = await import('./email');
-    const t = buildPortalAccessDeclinedTemplate({ to: 'a@customer.test', orgName: 'Contoso', partnerId: 'p1', partnerName: 'Acme MSP' });
+    const t = buildPortalAccessDeclinedTemplate({ to: 'a@customer.test', orgName: 'Contoso', trigger: 'internal', partnerId: 'p1', partnerName: 'Acme MSP' });
     expect(t.subject).toBe('Your portal access request');
     const copy = 'Your request for access to the Contoso portal was not approved. If you think this is a mistake, contact your IT provider.';
     expect(t.html).toContain(copy);
@@ -373,8 +373,8 @@ describe('portal access request decision templates (W3 #11380, OD3)', () => {
   it('escapes the org name in the html', async () => {
     const { buildPortalAccessApprovedTemplate, buildPortalAccessDeclinedTemplate } = await import('./email');
     const orgName = '<b>Evil</b> & Co';
-    const approved = buildPortalAccessApprovedTemplate({ to: 'a@x.test', loginUrl: 'https://p.test/login', orgName, partnerId: null });
-    const declined = buildPortalAccessDeclinedTemplate({ to: 'a@x.test', orgName, partnerId: null });
+    const approved = buildPortalAccessApprovedTemplate({ to: 'a@x.test', loginUrl: 'https://p.test/login', orgName, trigger: 'internal', partnerId: null });
+    const declined = buildPortalAccessDeclinedTemplate({ to: 'a@x.test', orgName, trigger: 'internal', partnerId: null });
     for (const html of [approved.html, declined.html]) {
       expect(html).not.toContain('<b>Evil</b>');
       expect(html).toContain('&lt;b&gt;Evil&lt;/b&gt; &amp; Co');
@@ -383,9 +383,9 @@ describe('portal access request decision templates (W3 #11380, OD3)', () => {
 
   it('falls back to generic wording without an org name', async () => {
     const { buildPortalAccessApprovedTemplate, buildPortalAccessDeclinedTemplate } = await import('./email');
-    expect(buildPortalAccessApprovedTemplate({ to: 'a@x.test', loginUrl: 'https://p.test/login', partnerId: null }).subject)
+    expect(buildPortalAccessApprovedTemplate({ to: 'a@x.test', loginUrl: 'https://p.test/login', trigger: 'internal', partnerId: null }).subject)
       .toBe('You can now sign in to your portal');
-    expect(buildPortalAccessDeclinedTemplate({ to: 'a@x.test', partnerId: null }).text)
+    expect(buildPortalAccessDeclinedTemplate({ to: 'a@x.test', trigger: 'internal', partnerId: null }).text)
       .toContain('Your request for portal access was not approved.');
   });
 });

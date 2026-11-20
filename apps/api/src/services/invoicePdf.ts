@@ -833,6 +833,7 @@ async function deliverInvoiceEmail(
       // platform address (SPF/DKIM stays aligned), replies routed to the MSP's
       // billing inbox. Both values come from rows read above (spec §8.1).
       purpose: 'invoice.sent',
+      trigger: 'internal',
       partnerId: invoice.partnerId,
       partnerName: partner?.name ?? null,
       replyTo: partner?.billingEmail?.trim() || undefined,

@@ -182,7 +182,7 @@ export type PasswordResetEmailParams = {
   supportEmail?: string;
 } & (
   | { purpose: 'auth.password_reset' }
-  | { purpose: 'portal.password_reset'; partnerId: string | null; partnerName?: string | null }
+  | { purpose: 'portal.password_reset'; trigger: SendTrigger; partnerId: string | null; partnerName?: string | null }
 );
 
 export interface PortalInviteEmailParams {
@@ -199,6 +199,8 @@ export interface PortalInviteEmailParams {
    */
   partnerId: string | null;
   partnerName?: string;
+  /** Who caused this send (#12249); picks the daily bucket. */
+  trigger: SendTrigger;
   /** Partner-saved template override; null/absent uses code defaults. */
   custom?: PartnerEmailCustom | null;
   /**
@@ -232,6 +234,8 @@ export interface PortalAccessDecisionEmailParams {
   orgName?: string;
   partnerId: string | null;
   partnerName?: string;
+  /** Who caused this send (#12249); picks the daily bucket. */
+  trigger: SendTrigger;
 }
 
 export interface PortalAccessApprovedEmailParams extends PortalAccessDecisionEmailParams {
@@ -254,6 +258,8 @@ export interface PortalSelfRegistrationLinkEmailParams {
   orgName: string;
   partnerId: string | null;
   partnerName: string | null;
+  /** Who caused this send (#12249); picks the daily bucket. */
+  trigger: SendTrigger;
 }
 
 export interface PortalSelfRegistrationExistingAccountEmailParams {
@@ -263,6 +269,8 @@ export interface PortalSelfRegistrationExistingAccountEmailParams {
   orgName: string;
   partnerId: string | null;
   partnerName: string | null;
+  /** Who caused this send (#12249); picks the daily bucket. */
+  trigger: SendTrigger;
 }
 
 /**
@@ -705,6 +713,7 @@ export class EmailService {
         html: template.html,
         text: template.text,
         purpose: 'portal.password_reset',
+        trigger: params.trigger,
         partnerId: params.partnerId,
         partnerName: params.partnerName ?? null,
       });
@@ -793,6 +802,7 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'portal.invite',
+      trigger: params.trigger,
       partnerId: params.partnerId,
       partnerName: params.partnerName ?? null,
     });
@@ -806,6 +816,7 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'portal.access_request.approved',
+      trigger: params.trigger,
       partnerId: params.partnerId,
       partnerName: params.partnerName ?? null,
     });
@@ -819,6 +830,7 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'portal.access_request.declined',
+      trigger: params.trigger,
       partnerId: params.partnerId,
       partnerName: params.partnerName ?? null,
     });
@@ -832,6 +844,7 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'portal.self_registration.verify',
+      trigger: params.trigger,
       partnerId: params.partnerId,
       partnerName: params.partnerName,
     });
@@ -845,6 +858,7 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'portal.self_registration.existing_account',
+      trigger: params.trigger,
       partnerId: params.partnerId,
       partnerName: params.partnerName,
     });

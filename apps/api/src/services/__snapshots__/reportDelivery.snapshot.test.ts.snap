@@ -56,6 +56,7 @@ http://localhost:4321/reports",
   "to": [
     "a@example.com",
   ],
+  "trigger": "internal",
 }
 `;
 
@@ -117,6 +118,7 @@ http://localhost:4321/reports",
     "a@example.com",
     "b@example.com",
   ],
+  "trigger": "internal",
 }
 `;
 
@@ -215,6 +217,7 @@ http://localhost:4321/reports",
   "to": [
     "a@example.com",
   ],
+  "trigger": "internal",
 }
 `;
 
@@ -267,6 +270,7 @@ http://localhost:4321/reports",
   "to": [
     "a@example.com",
   ],
+  "trigger": "internal",
 }
 `;
 
@@ -324,5 +328,6 @@ http://localhost:4321/reports",
   "to": [
     "a@example.com",
   ],
+  "trigger": "internal",
 }
 `;

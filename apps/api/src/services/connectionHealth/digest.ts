@@ -214,7 +214,7 @@ async function deliverDigests(
           },
         };
         await sendEmail(customer
-          ? { ...envelope, purpose: 'customer.connection_health_digest', partnerId: user.partnerId, partnerName: user.partnerName }
+          ? { ...envelope, purpose: 'customer.connection_health_digest', trigger: 'internal', partnerId: user.partnerId, partnerName: user.partnerName }
           : { ...envelope, purpose: 'staff.connection_health_digest' });
       } catch (err) {
         result.failed += 1;

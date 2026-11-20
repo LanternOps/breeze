@@ -73,6 +73,8 @@ describe('processPortalSelfRegistration (W6 D7)', () => {
       to: ADDRESS,
       verifyUrl: 'https://portal.example.com/portal/request-access/verify#token=raw-token%2B%2F%3D',
       orgName: 'Contoso', partnerId: PARTNER, partnerName: 'Fabrikam IT',
+      // #12249: an anonymous visitor caused it, so the external bucket.
+      trigger: 'external',
     });
     // The name the requester typed never reaches the email.
     expect(JSON.stringify(sent)).not.toContain('Pat <script>');
@@ -102,6 +104,8 @@ describe('processPortalSelfRegistration (W6 D7)', () => {
       loginUrl: 'https://portal.example.com/portal/login',
       forgotPasswordUrl: 'https://portal.example.com/portal/forgot-password',
       orgName: 'Contoso', partnerId: PARTNER, partnerName: 'Fabrikam IT',
+      // #12249: an anonymous visitor caused it, so the external bucket.
+      trigger: 'external',
     });
     expect(mocks.audit.mock.calls[0]![1]).toMatchObject({ orgId: ORG, details: { kind: 'existing_account', domain: 'contoso.example.com', mode: 'instant' } });
   });

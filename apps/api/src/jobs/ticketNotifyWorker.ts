@@ -55,7 +55,7 @@ import { buildTicketPush, dispatchPushToTokens } from '../services/expoPush';
 import { sendPushoverNotification, validatePushoverConfig, type PushoverConfig, type PushoverNotificationPayload } from '../services/notificationSenders';
 import { applyPartnerPushoverDefaults, readPartnerPushoverDefaults } from '../services/partnerPushoverDefaults';
 import { loadUserPushoverKey } from '../services/ticketPushover';
-import type { AlertSeverity } from '../services/email';
+import type { AlertSeverity, SendTrigger } from '../services/email';
 import {
   admitPush,
   assertSamePartner,
@@ -112,7 +112,13 @@ interface EmailPayloadBase {
  */
 type EmailPayloadSender =
   | { purpose: 'ticket.staff_notification' }
-  | { purpose: 'ticket.customer_notification'; partnerId: string | null; partnerName: string | null };
+  | {
+      purpose: 'ticket.customer_notification';
+      /** Who caused this mail (#12249). Only the inbound autoresponse is external. */
+      trigger: SendTrigger;
+      partnerId: string | null;
+      partnerName: string | null;
+    };
 
 type EmailPayload = EmailPayloadBase & EmailPayloadSender;
 
@@ -552,6 +558,7 @@ async function collectRequesterEmail(
       html: composed.html,
       graphMailbox,
       purpose: 'ticket.customer_notification',
+      trigger: 'internal',
       partnerId: ticket.partnerId ?? null,
       partnerName: composed.partnerName,
     }];
@@ -631,6 +638,7 @@ async function collectRequesterEmail(
     headers,
     graphMailbox,
     purpose: 'ticket.customer_notification',
+    trigger: 'internal',
     partnerId: ticket.partnerId ?? null,
     partnerName: composed.partnerName,
   }];
@@ -739,6 +747,7 @@ async function collectMergeNotifications(
     replyTo: partner.replyTo,
     headers: Object.keys(built).length > 0 ? built : undefined,
     purpose: 'ticket.customer_notification',
+    trigger: 'internal',
     partnerId: partnerId ?? null,
     partnerName: partner.name.trim() || null,
   }];
@@ -824,6 +833,8 @@ async function collectAutoresponse(
     graphMailbox,
     threadedReplyUsesSubject: true,
     purpose: 'ticket.customer_notification',
+    // External (#12249): an inbound email from anyone caused this acknowledgement.
+    trigger: 'external',
     partnerId: ticket.partnerId ?? null,
     partnerName: partner.name.trim() || null,
   }];
@@ -1117,6 +1128,7 @@ function approvalMailPayload(m: ApprovalMail): EmailPayload {
     html: m.html,
     bestEffort: true,
     purpose: 'ticket.customer_notification',
+    trigger: 'internal',
     partnerId: m.partnerId,
     partnerName: m.partnerName,
   };
@@ -1160,6 +1172,7 @@ async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<{ attem
           replyTo: payload.replyTo,
           headers: payload.headers,
           purpose: 'ticket.customer_notification',
+          trigger: payload.trigger,
           partnerId: payload.partnerId,
           partnerName: payload.partnerName,
         });

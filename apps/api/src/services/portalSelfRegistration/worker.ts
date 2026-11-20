@@ -77,6 +77,8 @@ export async function processPortalSelfRegistration(data: PortalSelfRegistration
         orgName: target.orgName,
         partnerId: target.partnerId,
         partnerName: target.partnerName,
+        // External (#12249): an anonymous visitor asked to register.
+        trigger: 'external',
       });
     } catch (err) {
       console.error(`${LOG} existing-account email failed`, { orgId: target.orgId, domain: target.domain, ...safeErrorFields(err) });
@@ -106,6 +108,8 @@ export async function processPortalSelfRegistration(data: PortalSelfRegistration
       orgName: target.orgName,
       partnerId: target.partnerId,
       partnerName: target.partnerName,
+      // External (#12249): an anonymous visitor asked to register.
+      trigger: 'external',
     });
   } catch (err) {
     console.error(`${LOG} verify email failed`, { orgId: target.orgId, domain: target.domain, ...safeErrorFields(err) });

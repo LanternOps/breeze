@@ -149,6 +149,8 @@ describe('resendInvoiceEmail', () => {
     expect(envelope.purpose).toBe('invoice.sent');
     expect(envelope.partnerId).toBe('p1');
     expect(envelope.partnerName).toBe('Lantern MSP');
+    // #12249: staff send it, so it spends the partner's own (internal) bucket.
+    expect(envelope.trigger).toBe('internal');
     expect(envelope).not.toHaveProperty('from');
     expect(envelope.attachments?.[0]?.filename).toBe('INV-2026-0007.pdf');
 
@@ -161,6 +163,7 @@ describe('resendInvoiceEmail', () => {
     try {
       const resolved = await resolveSender({
         purpose: envelope.purpose,
+        trigger: envelope.trigger,
         partnerId: envelope.partnerId,
         partnerName: envelope.partnerName,
         defaultFrom: 'Breeze <no-reply@breeze.test>',

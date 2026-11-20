@@ -128,7 +128,7 @@ export async function dispatchPendingBillingNotices(now = new Date()): Promise<{
           if (!renewed) continue;
           row = renewed;
           // No transaction/context remains held while the provider is contacted.
-          await email.sendEmail({ purpose: 'billing.notice', partnerId: sender.id, partnerName: sender.name,
+          await email.sendEmail({ purpose: 'billing.notice', trigger: 'internal', partnerId: sender.id, partnerName: sender.name,
             replyTo: sender.billingEmail ?? undefined, to: row.toEmail,
             subject: rendered.subject, html: rendered.html, text: rendered.text });
           // Acceptance is external to our transaction. Retry ONLY the ack;

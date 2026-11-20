@@ -411,14 +411,14 @@ describe('resolveSender — the db tripwire against the real lookup', () => {
   it('never touches the db module for a platform purpose, with a partner id supplied', async () => {
     const resolve = await realResolveSender();
     for (const purpose of PLATFORM_PURPOSES) {
-      await expect(resolve({ purpose, partnerId: 'p1', defaultFrom: DEFAULT_FROM }))
+      await expect(resolve({ purpose, trigger: 'internal', partnerId: 'p1', defaultFrom: DEFAULT_FROM }))
         .resolves.toEqual({ lane: 'platform', from: DEFAULT_FROM, reason: 'platform_purpose' });
     }
   });
 
   it('never touches the db module for a partner purpose with no partner', async () => {
     const resolve = await realResolveSender();
-    await expect(resolve({ purpose: 'quote.sent', partnerId: null, partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM }))
+    await expect(resolve({ purpose: 'quote.sent', trigger: 'internal', partnerId: null, partnerName: 'Acme MSP', defaultFrom: DEFAULT_FROM }))
       .resolves.toEqual({ lane: 'platform', from: '"Acme MSP" <no-reply@2breeze.app>', reason: 'no_partner' });
   });
 
@@ -427,7 +427,7 @@ describe('resolveSender — the db tripwire against the real lookup', () => {
   // what proves the two cases above are not vacuous.
   it('DOES reach the db module once the partner branch is entered (the control)', async () => {
     const resolve = await realResolveSender();
-    await expect(resolve({ purpose: 'ticket.customer_notification', partnerId: 'p1', defaultFrom: DEFAULT_FROM }))
+    await expect(resolve({ purpose: 'ticket.customer_notification', trigger: 'internal', partnerId: 'p1', defaultFrom: DEFAULT_FROM }))
       .rejects.toThrow(/platform-lane input/);
   });
 });

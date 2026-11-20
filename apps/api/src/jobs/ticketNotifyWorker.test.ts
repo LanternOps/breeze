@@ -224,8 +224,11 @@ describe('handleTicketEvent', () => {
     // null would silently switch the `support` stream off for every ticket.
     // Folded into this case rather than a trailing one because the file's
     // beforeEach clears sendEmailMock between cases.
-    const arg = sendEmailMock.mock.calls[0]![0] as { partnerId?: string | null; headers?: Record<string, string> };
+    const arg = sendEmailMock.mock.calls[0]![0] as { partnerId?: string | null; trigger?: string; headers?: Record<string, string> };
     expect(arg.partnerId).toBe('p-1');
+    // #12249: same purpose as the autoresponse, but a technician caused it, so
+    // the partner's own (internal) bucket. Classified by call site, not purpose.
+    expect(arg.trigger).toBe('internal');
     // Spec §8.5: threading is decided by TICKETS_INBOUND_DOMAIN and nothing
     // else. If a From change could ever move the Message-ID, an inbound reply
     // would stop matching its ticket — the failure mode that loses a customer's
@@ -488,6 +491,9 @@ describe('handleTicketEvent', () => {
     expect(arg.replyTo).toBe('acme@tickets.example.com');
     expect(arg.headers!['Auto-Submitted']).toBe('auto-replied');
     expect(arg.headers!['Message-ID']).toBe('<ticket-t-1@tickets.example.com>');
+    // #12249: anyone who emails the inbound address causes this mail, so it
+    // counts against the EXTERNAL bucket and can never stop the partner's mail.
+    expect((arg as { trigger?: string }).trigger).toBe('external');
   });
 
   it('renders the partner custom auto-reply with ticket/org/partner merge variables', async () => {
