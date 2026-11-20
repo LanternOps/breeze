@@ -245,3 +245,46 @@ func TestRestore_OrdinaryFileErrorsDoNotEndTheRun(t *testing.T) {
 		})
 	}
 }
+
+// sessionLossAfterProvider serves the first `allow` content objects from
+// the wrapped provider and answers every later one with a lost session.
+// Concurrency 1 only (served is not synchronised).
+type sessionLossAfterProvider struct {
+	providers.BackupProvider
+	manifestKey string
+	allow       int
+	served      int
+}
+
+func (p *sessionLossAfterProvider) Download(key, dest string) error {
+	if key != p.manifestKey {
+		if p.served >= p.allow {
+			return errTestSessionGone
+		}
+		p.served++
+	}
+	return p.BackupProvider.Download(key, dest)
+}
+
+// With an integrity expectation the download goes through the attested
+// check; the lost session must still end the run, not fail each file.
+func TestRestore_SessionLostWithAttestedExpectation(t *testing.T) {
+	defer setRestoreConcurrencyForTest(1)()
+	files := make([]integrityFile, 10)
+	for i := range files {
+		files[i] = integrityFile{name: fmt.Sprintf("f%03d.txt", i), content: fmt.Sprintf("attested-%d", i)}
+	}
+	s := setupIntegritySnapshot(t, files)
+	p := &sessionLossAfterProvider{BackupProvider: s.provider, manifestKey: s.manifestKey(), allow: 4}
+
+	result, err := restoreWith(t, p, s.snapshotID, s.attested(t), t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Code != ResultCodeStorageSessionLost || result.Status != "partial" {
+		t.Fatalf("status=%q code=%q, want partial/%s", result.Status, result.Code, ResultCodeStorageSessionLost)
+	}
+	if result.FilesRestored != 4 || result.FilesFailed != 0 || result.FilesNotAttempted != 6 {
+		t.Fatalf("restored=%d failed=%d notAttempted=%d, want 4/0/6", result.FilesRestored, result.FilesFailed, result.FilesNotAttempted)
+	}
+}

@@ -129,7 +129,7 @@ describe('restore result persistence', () => {
 
   it('keeps the not-attempted count, code and reason of a restore stopped by a lost storage session', () => {
     const reason =
-      'restore stopped: the storage session ended after 3 of 50 files (3 restored, 0 failed); the remaining 47 were not attempted, and running the restore again resumes from here';
+      'restore stopped: the storage session ended after 3 of 50 files (3 restored, 0 failed); the remaining 47 were not attempted, and running the same restore again resumes it';
     const metadata = buildRestoreResultMetadata(
       'backup_restore',
       { status: 'failed', stderr: 'restore completed partially', error: 'restore completed partially' },
