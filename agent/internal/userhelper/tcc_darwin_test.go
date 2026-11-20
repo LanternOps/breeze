@@ -315,7 +315,7 @@ func TestTCCCheckLoopFeedsTheRestartGate(t *testing.T) {
 	if h.restarts != 1 {
 		t.Fatalf("restarts = %d after two unexplained checks through the loop, want 1", h.restarts)
 	}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case <-statuses:
 		case <-time.After(2 * time.Second):

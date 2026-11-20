@@ -203,10 +203,7 @@ func decideTCCSelfRestart(s tccRestartState) (bool, string) {
 	for _, r := range s.History.Restarts {
 		// A record from the future (the clock moved back) counts as now, so
 		// a clock change cannot open the gate.
-		age := s.Now.Sub(r.At)
-		if age < 0 {
-			age = 0
-		}
+		age := max(s.Now.Sub(r.At), 0)
 		if age >= tccSelfRestartGrantWindow {
 			continue
 		}

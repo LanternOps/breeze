@@ -740,7 +740,7 @@ func TestTCCRestartGateRestartedStateOutlivesTheRateWindow(t *testing.T) {
 // keeps only the restarts inside it.
 func TestTCCRestartHistoryWithRestart(t *testing.T) {
 	var h tccRestartHistory
-	for i := 0; i < tccSelfRestartMaxStates; i++ {
+	for i := range tccSelfRestartMaxStates {
 		h.RestartedStates = append(h.RestartedStates, tccRestartRecord{At: ago(time.Duration(100-i) * time.Hour), Fingerprint: fmt.Sprintf("fp-%d", i)})
 	}
 	h.Restarts = []tccRestartRecord{
