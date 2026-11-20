@@ -3,6 +3,7 @@ import {
   backupVerificationStructuredResultSchema,
   restoreStructuredResultSchema,
   validateCriticalCommandResult,
+  boundCriticalResultLists,
   CRITICAL_RESULT_FAILED_FILES_MAX,
   CRITICAL_RESULT_WARNINGS_MAX,
   CRITICAL_RESULT_LIST_ENTRY_MAX_CHARS,
@@ -243,6 +244,28 @@ describe('agentCommandResultValidation — bounding work is capped (resource-cap
     expect(() => validateCriticalCommandResult('backup_verify', {
       commandId: 'cmd-extra', status: 'completed', result: body,
     })).toThrow(/structured result exceeds/);
+
+    // The lists are count-bounded, not cut further: cutting cannot make the
+    // body fit, so it would only lose detail.
+    const bounded = boundCriticalResultLists(body, {
+      maxBytes: CRITICAL_RESULT_STRUCTURED_MAX_BYTES,
+      encodedBytes: Buffer.byteLength(JSON.stringify(body)),
+    }) as Record<string, unknown>;
+    expect((bounded.failedFiles as string[]).length).toBe(CRITICAL_RESULT_FAILED_FILES_MAX);
+    expect(bounded.failedFilesOmitted).toBe(5_000 - CRITICAL_RESULT_FAILED_FILES_MAX);
+  });
+
+  it('truncates a multi-megabyte entry by code points without changing its prefix', () => {
+    const r = backupVerificationStructuredResultSchema.safeParse({
+      status: 'failed',
+      error: '目'.repeat(2_000_000),
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      const error = (r.data as Record<string, unknown>).error as string;
+      expect(codePoints(error)).toBe(CRITICAL_RESULT_ERROR_MAX_CHARS);
+      expect(error.endsWith('…')).toBe(true);
+    }
   });
 
   it('bounds a long restricted-descriptor path list before the size check', () => {

@@ -245,6 +245,9 @@ func TestFitCriticalResultAddsToAnExistingOmittedCount(t *testing.T) {
 	}
 	fitted, _, _ := fitBackupResultForCommand("backup_verify", criticalResultFor(t, body))
 	out := decodeBounded(t, fitted.Stdout)
+	if len(out.FailedFiles) != wire.CriticalResultFailedFilesMax {
+		t.Errorf("kept %d failed files, want the first %d", len(out.FailedFiles), wire.CriticalResultFailedFilesMax)
+	}
 	if len(out.FailedFiles)+out.FailedFilesOmitted != 3000 {
 		t.Errorf("kept %d + omitted %d, want 3000", len(out.FailedFiles), out.FailedFilesOmitted)
 	}

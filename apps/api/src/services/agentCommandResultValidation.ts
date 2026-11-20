@@ -63,9 +63,16 @@ export const CRITICAL_RESULT_BOUNDING_MAX_BYTES = 5_000_000;
 function truncateCodePoints(value: string, max: number): string {
   // UTF-16 length is never below the code-point count.
   if (value.length <= max) return value;
-  const codePoints = [...value];
-  if (codePoints.length <= max) return value;
-  return codePoints.slice(0, max - 1).join('') + '…';
+  // Walk at most max + 1 code points rather than spreading a string that may
+  // be megabytes long into an array.
+  let index = 0;
+  let cutAt = 0;
+  for (let count = 0; index < value.length; count++) {
+    if (count === max - 1) cutAt = index;
+    if (count === max) return value.slice(0, cutAt) + '…';
+    index += value.codePointAt(index)! > 0xffff ? 2 : 1;
+  }
+  return value;
 }
 
 function isStringList(value: unknown): value is string[] {
@@ -261,9 +268,8 @@ export function boundQuarantinedPaths(value: unknown): string[] | undefined {
     .map((entry) => entry.slice(0, RESTORE_QUARANTINED_PATH_MAX_CHARS));
 }
 
-// Preprocessed so an oversize detail list is bounded, not rejected — on every
-// parse, including handlers that re-parse stored stdout.
-export const restoreStructuredResultSchema = z.preprocess((value) => boundCriticalResultLists(value), z.object({
+// Exported preprocessed below as restoreStructuredResultSchema.
+const restoreStructuredResultObject = z.object({
   snapshotId: z.string().min(1).max(255).optional(),
   // 'refused' is the bare_metal_rebuild engine's preflight verdict (W05a); the
   // helper reports it as a successful command and the server maps it.
@@ -309,9 +315,10 @@ export const restoreStructuredResultSchema = z.preprocess((value) => boundCritic
   securityDescriptorQuarantinedPaths: z.array(z.string()).transform(boundQuarantinedPaths).optional(),
   // bmr_recover: stable outcome code (see bmrCompleteSchema in routes/backup/schemas.ts).
   code: z.string().max(64).optional(),
-}).passthrough());
+}).passthrough();
 
-export const backupVerificationStructuredResultSchema = z.preprocess((value) => boundCriticalResultLists(value), z.object({
+// Exported preprocessed below as backupVerificationStructuredResultSchema.
+const backupVerificationStructuredResultObject = z.object({
   snapshotId: z.string().min(1).max(255).optional(),
   status: z.enum(['passed', 'failed', 'partial']),
   filesVerified: z.number().int().nonnegative().optional(),
@@ -333,7 +340,7 @@ export const backupVerificationStructuredResultSchema = z.preprocess((value) => 
   error: z.string().max(CRITICAL_RESULT_ERROR_MAX_CHARS).optional(),
   // Stable outcome code (e.g. `storage_session_lost`, an integrity failure code).
   code: z.string().max(64).optional(),
-}).passthrough());
+}).passthrough();
 
 export const vaultSyncStructuredResultSchema = z.object({
   vaultId: z.string().guid().optional(),
@@ -345,6 +352,18 @@ export const vaultSyncStructuredResultSchema = z.object({
   auto: z.boolean().optional(),
   error: z.string().max(10_000).optional(),
 }).passthrough();
+
+// Restore and verification results are preprocessed so an oversize detail list
+// is bounded, not rejected — on every parse, including handlers that re-parse
+// stored stdout (verificationScheduled.ts).
+export const restoreStructuredResultSchema = z.preprocess(
+  (value) => boundCriticalResultLists(value),
+  restoreStructuredResultObject,
+);
+export const backupVerificationStructuredResultSchema = z.preprocess(
+  (value) => boundCriticalResultLists(value),
+  backupVerificationStructuredResultObject,
+);
 
 export type CriticalCommandValidation =
   | {
