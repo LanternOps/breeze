@@ -136,7 +136,7 @@ func TestLapsedLeaseWhoseRenewKeepsFailingNeverResolves(t *testing.T) {
 	lease := server.Now().Add(-time.Minute)
 	cp := newLeaseEnforcingControlPlane(t, server, lease)
 	cp.mu.Lock()
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		cp.failNext = append(cp.failNext, http.StatusServiceUnavailable)
 	}
 	cp.mu.Unlock()
