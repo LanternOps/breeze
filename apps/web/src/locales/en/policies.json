@@ -818,6 +818,7 @@
         "overridesLabel": "Overrides:",
         "failedToLoadMonitors": "Failed to load monitors",
         "createMonitor": "Create monitor",
+        "helpText": "Monitor definitions live under Alerts > Monitors. This tab picks which monitors apply to this policy and can override a monitor's value.",
         "notAttachable": "This monitor can't be attached to this policy. Partner-owned policies can only use partner-wide monitors.",
         "monitorDeleted": "Monitor deleted",
         "recommended": {

@@ -818,6 +818,7 @@
         "overridesLabel": "Substituições:",
         "failedToLoadMonitors": "Falha ao carregar os monitores",
         "createMonitor": "Criar monitor",
+        "helpText": "As definições de monitores ficam em Alertas > Monitores. Esta aba escolhe quais monitores se aplicam a esta política e permite substituir o valor de um monitor.",
         "notAttachable": "Este monitor não pode ser anexado a esta política. Políticas do parceiro só podem usar monitores de todo o parceiro.",
         "monitorDeleted": "Monitor excluído",
         "recommended": {

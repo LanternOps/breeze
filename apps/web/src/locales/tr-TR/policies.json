@@ -818,6 +818,7 @@
         "overridesLabel": "Geçersiz kılmalar:",
         "failedToLoadMonitors": "İzleyiciler yüklenemedi",
         "createMonitor": "Monitör oluştur",
+        "helpText": "Monitör tanımları Uyarılar > Monitörler altında bulunur. Bu sekme, bu ilkeye hangi monitörlerin uygulanacağını seçer ve bir monitörün değerini geçersiz kılabilir.",
         "notAttachable": "Bu monitör bu ilkeye eklenemez. İş ortağına ait ilkeler yalnızca iş ortağı genelindeki monitörleri kullanabilir.",
         "monitorDeleted": "Monitör silindi",
         "recommended": {
