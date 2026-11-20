@@ -261,13 +261,15 @@ vi.mock('./helpers', () => ({
   resolvePinnedUpgradeTargets: async (args: {
     platform: string; architecture: string; agentId?: string;
     requests: Array<{ component: string; pin: string | null }>;
+    deviceOs?: unknown; onOsHold?: (hold: unknown) => void;
   }) => {
     const helpers = await import('./helpers');
     const out = new Map<string, string | null>();
     for (const r of args.requests) {
       out.set(r.component, await helpers.resolvePinnedUpgradeTarget({
         component: r.component, platform: args.platform, architecture: args.architecture, pin: r.pin, agentId: args.agentId,
-      }));
+        deviceOs: args.deviceOs, onOsHold: args.onOsHold,
+      } as never));
     }
     return out;
   },
@@ -2831,6 +2833,36 @@ describe('POST /agents/:id/heartbeat — watchdog-branch agent recovery upgradeT
     // Restore the suite's default resolver impl (clearAllMocks does not).
     vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValue('0.66.0');
   });
+
+  // #12169 — both watchdog-branch resolves (the watchdog's own offer and the
+  // agent recovery offer) are judged against the Mac's stored OS version, and a
+  // held recovery target yields no upgradeTo.
+  it('a Mac below the floor gets no recovery upgradeTo, and both resolves carry its OS', async () => {
+    const { compareAgentVersions, resolvePinnedUpgradeTarget } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(1);
+    vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValue(null); // the gate held it
+    primeSelects(
+      {
+        id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'macos', osVersion: 'darwin 12.7.6',
+        architecture: 'arm64', agentVersion: '0.65.10', watchdogVersion: '0.65.20',
+        lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+      },
+      [{ version: '0.90.0' }],
+    );
+
+    try {
+      const resp = await post();
+      expect(resp.status).toBe(200);
+      expect(((await resp.json()) as { upgradeTo?: string }).upgradeTo).toBeUndefined();
+      const calls = vi.mocked(resolvePinnedUpgradeTarget).mock.calls.map((c) => c[0] as any);
+      expect(calls.map((a) => a.component).sort()).toEqual(['agent', 'watchdog']);
+      for (const a of calls) {
+        expect(a.deviceOs).toEqual({ platform: 'macos', reportedOsVersion: null, storedOsVersion: 'darwin 12.7.6' });
+      }
+    } finally {
+      vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValue('0.66.0');
+    }
+  });
 });
 
 
@@ -3035,6 +3067,25 @@ describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', (
     expect(typeof args.resolveTarget).toBe('function');
   });
 
+  // #12169 — the migration target is resolved through the gated resolver with
+  // the device's OS, so a Mac is never migrated onto a build its OS is below.
+  it('the edition-migration target resolve carries the device OS (#12169)', async () => {
+    const { agentAcceptsServedEdition, resolvePinnedUpgradeTarget } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { maybeDispatchEditionMigration } = await import('../../services/agentEditionAutoMigrate');
+    prime([{ version: '0.66.0' }]);
+
+    expect((await beat({ osVersion: 'darwin 12.7.6' })).status).toBe(200);
+    const args = vi.mocked(maybeDispatchEditionMigration).mock.calls[0]![0];
+    vi.mocked(resolvePinnedUpgradeTarget).mockClear();
+    await args.resolveTarget();
+    const call = vi.mocked(resolvePinnedUpgradeTarget).mock.calls[0]![0] as any;
+    expect(call.component).toBe('agent');
+    expect(call.deviceOs).toEqual(
+      expect.objectContaining({ platform: args.device.osType, reportedOsVersion: 'darwin 12.7.6' }),
+    );
+  });
+
   it('does NOT launch the dispatch when the cheap precheck says no (flag off / non-candidate)', async () => {
     const { agentAcceptsServedEdition } = await import('./helpers');
     vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
@@ -3233,6 +3284,179 @@ describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', (
       for (const [arg] of calls) {
         expect(arg).toEqual({ reportedEdition: 'self-host', agentVersion: '0.105.1' });
       }
+    });
+
+    // #12169 — the minimum-OS hold shares this column with the edition reason.
+    describe('minimum-OS hold (#12169)', () => {
+      const macRow = { osType: 'macos', osVersion: 'darwin 12.7.6' };
+      type HoldArgs = { component: string; onOsHold?: (hold: unknown) => void; deviceOs?: unknown };
+
+      async function holdAgent(reason = 'os_below_minimum') {
+        const { resolvePinnedUpgradeTarget } = await import('./helpers');
+        vi.mocked(resolvePinnedUpgradeTarget).mockImplementation((async (args: HoldArgs) => {
+          if (args.component !== 'agent') return null;
+          args.onOsHold?.({
+            component: 'agent',
+            blockedVersion: '0.140.0',
+            reason,
+            requiredOs: '13.0',
+            reportedOs: reason === 'os_below_minimum' ? '12.7.6' : null,
+          });
+          return null;
+        }) as never);
+      }
+
+      afterEach(async () => {
+        const { resolvePinnedUpgradeTarget } = await import('./helpers');
+        vi.mocked(resolvePinnedUpgradeTarget).mockImplementation((async () => '0.66.0') as never);
+      });
+
+      const withheldWrites = (spy: ReturnType<typeof captureSet>) =>
+        setCalls(spy).filter((s) => 'updateOfferWithheldReason' in s);
+
+      it('macOS 12 beat gets no upgradeTo and persists os_below_minimum', async () => {
+        await holdAgent();
+        const setSpy = captureSet();
+        primeWithRow({ ...macRow, updateOfferWithheldReason: null, updateOfferWithheldSince: null });
+
+        const resp = await beat({ osVersion: 'darwin 12.7.6' });
+        expect(resp.status).toBe(200);
+        expect(((await resp.json()) as { upgradeTo?: string }).upgradeTo).toBeFalsy();
+        const writes = withheldWrites(setSpy);
+        expect(writes).toHaveLength(1);
+        expect(writes[0]!.updateOfferWithheldReason).toBe('os_below_minimum');
+        expect(writes[0]!.updateOfferWithheldSince).toBeInstanceOf(Date);
+      });
+
+      it('passes the beat OS version and the stored one to the resolver', async () => {
+        const { resolvePinnedUpgradeTarget } = await import('./helpers');
+        captureSet();
+        primeWithRow({ ...macRow, updateOfferWithheldReason: null });
+
+        await beat({ osVersion: 'darwin 13.1' });
+        const args = vi.mocked(resolvePinnedUpgradeTarget).mock.calls.map((c) => c[0] as HoldArgs);
+        expect(args.length).toBeGreaterThan(0);
+        for (const a of args) {
+          expect(a.deviceOs).toEqual({ platform: 'macos', reportedOsVersion: 'darwin 13.1', storedOsVersion: 'darwin 12.7.6' });
+        }
+      });
+
+      it('persists os_version_unknown for an unknown-OS hold', async () => {
+        await holdAgent('os_version_unknown');
+        const setSpy = captureSet();
+        primeWithRow({ ...macRow, osVersion: 'darwin', updateOfferWithheldReason: null });
+
+        await beat();
+        expect(withheldWrites(setSpy).map((s) => s.updateOfferWithheldReason)).toEqual(['os_version_unknown']);
+      });
+
+      it('edition reason wins over an os hold', async () => {
+        const { agentAcceptsServedEdition } = await import('./helpers');
+        vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+        await holdAgent();
+        const setSpy = captureSet();
+        primeWithRow({ ...macRow, updateOfferWithheldReason: 'os_below_minimum' });
+
+        await beat();
+        expect(withheldWrites(setSpy).map((s) => s.updateOfferWithheldReason)).toEqual(['edition_unconfirmed']);
+      });
+
+      it('edition clear leaves os_below_minimum (the edition writer clears only its own code)', async () => {
+        await holdAgent();
+        const setSpy = captureSet();
+        primeWithRow({
+          ...macRow,
+          updateOfferWithheldReason: 'os_below_minimum',
+          updateOfferWithheldSince: new Date('2026-11-01T00:00:00Z'),
+        });
+
+        await beat();
+        expect(withheldWrites(setSpy)).toHaveLength(0);
+      });
+
+      it('edition clears and an os hold applies in the same beat → os_below_minimum', async () => {
+        await holdAgent();
+        const setSpy = captureSet();
+        primeWithRow({ ...macRow, updateOfferWithheldReason: 'edition_unconfirmed' });
+
+        await beat();
+        expect(withheldWrites(setSpy).map((s) => s.updateOfferWithheldReason)).toEqual([null, 'os_below_minimum']);
+      });
+
+      it('lookup failure keeps os_below_minimum', async () => {
+        const { resolvePinnedUpgradeTarget } = await import('./helpers');
+        vi.mocked(resolvePinnedUpgradeTarget).mockImplementation((async () => {
+          throw new Error('db down');
+        }) as never);
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const setSpy = captureSet();
+        primeWithRow({ ...macRow, updateOfferWithheldReason: 'os_below_minimum' });
+
+        try {
+          expect((await beat()).status).toBe(200);
+          expect(withheldWrites(setSpy)).toHaveLength(0);
+        } finally {
+          errSpy.mockRestore();
+        }
+      });
+
+      it('a failed hold write is reported and the beat still succeeds', async () => {
+        await holdAgent();
+        const { captureException } = await import('../../services/sentry');
+        const failure = new Error('write failed');
+        const setSpy = vi.fn((values: Record<string, unknown>) => {
+          if (values.updateOfferWithheldReason === 'os_below_minimum') throw failure;
+          return { where: vi.fn(() => whereResultWithReturning()) };
+        });
+        updateMock.mockReturnValue({ set: setSpy });
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        primeWithRow({ ...macRow, updateOfferWithheldReason: null });
+
+        try {
+          const resp = await beat({ osVersion: 'darwin 12.7.6' });
+          expect(resp.status).toBe(200);
+          expect(((await resp.json()) as { upgradeTo?: string }).upgradeTo).toBeFalsy();
+          expect(setSpy.mock.calls.some((c) => c[0].updateOfferWithheldReason === 'os_below_minimum')).toBe(true);
+          expect(vi.mocked(captureException)).toHaveBeenCalledWith(failure);
+        } finally {
+          errSpy.mockRestore();
+        }
+      });
+
+      it('os hold clears when the device upgrades its OS', async () => {
+        const setSpy = captureSet(); // default resolver: no hold
+        primeWithRow({ ...macRow, updateOfferWithheldReason: 'os_below_minimum' });
+
+        await beat({ osVersion: 'darwin 13.1' });
+        const writes = withheldWrites(setSpy);
+        expect(writes).toHaveLength(1);
+        expect(writes[0]!.updateOfferWithheldReason).toBeNull();
+        expect(writes[0]!.updateOfferWithheldSince).toBeNull();
+      });
+
+      it('steady-state held beat writes nothing', async () => {
+        await holdAgent();
+        const setSpy = captureSet();
+        primeWithRow({
+          ...macRow,
+          updateOfferWithheldReason: 'os_below_minimum',
+          updateOfferWithheldSince: new Date('2026-11-01T00:00:00Z'),
+        });
+
+        await beat();
+        expect(withheldWrites(setSpy)).toHaveLength(0);
+      });
+
+      it('a hold on a build the device already runs is not recorded', async () => {
+        const { compareAgentVersions } = await import('./helpers');
+        vi.mocked(compareAgentVersions).mockReturnValue(0);
+        await holdAgent();
+        const setSpy = captureSet();
+        primeWithRow({ ...macRow, updateOfferWithheldReason: null });
+
+        await beat();
+        expect(withheldWrites(setSpy)).toHaveLength(0);
+      });
     });
 
     // #4073 — the update-attempt record stamped by WS update_status is closed

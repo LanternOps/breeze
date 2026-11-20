@@ -276,8 +276,9 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: ${{ matrix.cgo }}
           BUILD_VERSION: ${{ steps.version.outputs.version }}
-          # Allow weak-linking ScreenCaptureKit so the binary runs on macOS 12+
-          # where SCK doesn't exist (prevents dyld Symbol not found crash)
+          # Allow weak-linking ScreenCaptureKit so the binary does not crash with
+          # a dyld "Symbol not found" where SCK doesn't exist; the supported
+          # floor is agent/platform-floors.json, not this flag.
           CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
         run: |
           agent/scripts/build-edition.sh --edition self-host --component agent \
@@ -1011,7 +1012,8 @@ jobs:
               "staging/breeze-watchdog-darwin-${arch}" \
               "$VERSION" \
               "$arch" \
-              "staging/breeze-agent-darwin-${arch}.pkg"
+              "staging/breeze-agent-darwin-${arch}.pkg" \
+              "$(jq -r .macos agent/platform-floors.json)"
           done
 
       - name: Sign .pkg installers
@@ -2900,6 +2902,25 @@ jobs:
           def is_signing_input(name):
               return UNSIGNED_INPUT_RE.match(name) is not None
 
+          # Minimum macOS the agent family supports (#12169). The one
+          # hand-written declaration is agent/platform-floors.json; it is
+          # stamped as "minOs" on the darwin assets the updater and the pkg
+          # run on. Never the -unsigned signing inputs or the Tauri
+          # .dmg/.app.zip files.
+          FLOOR_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){0,2}$")
+          MIN_OS_ASSET_RE = re.compile(
+              r"^breeze-(agent|backup|watchdog|desktop-helper)-darwin-(amd64|arm64)$"
+              r"|^breeze-agent-darwin-(amd64|arm64)\.pkg$"
+          )
+          platform_floors_path = Path("agent/platform-floors.json")
+          if not platform_floors_path.is_file():
+              raise SystemExit("agent/platform-floors.json is missing")
+          macos_floor = json.loads(platform_floors_path.read_text(encoding="utf8")).get("macos")
+          if not isinstance(macos_floor, str) or not FLOOR_RE.fullmatch(macos_floor):
+              raise SystemExit(
+                  f"agent/platform-floors.json macos floor missing or malformed: {macos_floor!r}"
+              )
+
           # The public pipeline no longer Authenticode-signs any agent-family
           # Windows artifact (the exes or the MSI) — this is the self-host
           # edition, unsigned by construction. Evaluated before the generic
@@ -2994,6 +3015,8 @@ jobs:
               }
               if is_signing_input(path.name):
                   entry["intendedUse"] = "signing-input"
+              if MIN_OS_ASSET_RE.match(path.name):
+                  entry["minOs"] = macos_floor
               if path.name.endswith(".pkg"):
                   publisher = pkg_publishers.get(path.name)
                   if publisher is None:
@@ -3124,6 +3147,27 @@ jobs:
                   f"{name}: signed-set asset must not carry intendedUse"
               assert entry.get("platformTrust") != "none", \
                   f"{name}: signed-set asset must not have platformTrust 'none'"
+
+          # Minimum-OS stamping (#12169): exactly the darwin binaries and pkgs
+          # carry minOs, and it equals the declared floor. Nothing else may.
+          FLOOR_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){0,2}$")
+          MIN_OS_ASSET_RE = re.compile(
+              r"^breeze-(agent|backup|watchdog|desktop-helper)-darwin-(amd64|arm64)$"
+              r"|^breeze-agent-darwin-(amd64|arm64)\.pkg$"
+          )
+          with open("agent/platform-floors.json") as floors_fh:
+              declared_floor = json.load(floors_fh).get("macos")
+          assert isinstance(declared_floor, str) and FLOOR_RE.fullmatch(declared_floor), \
+              f"agent/platform-floors.json macos floor missing or malformed: {declared_floor!r}"
+          min_os_expected = [n for n in by_name if MIN_OS_ASSET_RE.match(n)]
+          assert min_os_expected, "no darwin asset matched the minOs set"
+          for name, entry in by_name.items():
+              if MIN_OS_ASSET_RE.match(name):
+                  assert entry.get("minOs") == declared_floor, \
+                      f"{name}: minOs {entry.get('minOs')!r} != declared floor {declared_floor!r}"
+              else:
+                  assert "minOs" not in entry, \
+                      f"{name}: minOs is only allowed on darwin binaries and pkgs"
 
           # Every asset this workflow produces is the self-host edition —
           # hosted builds happen in a separate, private repository.

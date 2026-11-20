@@ -68,6 +68,20 @@ describe('DeviceList — Status column agent-health badges (#7214)', () => {
     expect(screen.getByTestId(`device-${dev.id}-status-update-withheld`)).toBeTruthy();
   });
 
+  it.each([
+    ['os_below_minimum', 'macOS version is below the minimum', 'edition'],
+    ['os_version_unknown', 'macOS version could not be determined', 'edition'],
+    ['edition_unconfirmed', 'served edition', 'macOS'],
+  ])('withheld tooltip for %s uses the matching copy', (reason, included, excluded) => {
+    const dev = device('55555555-5555-5555-5555-555555555556', 'withheld-reason', {
+      updateOfferWithheldReason: reason,
+    });
+    render(<DeviceList devices={[dev]} pageSize={50} />);
+    const title = screen.getByTestId(`device-${dev.id}-status-update-withheld`).getAttribute('title') ?? '';
+    expect(title).toContain(included);
+    expect(title).not.toContain(excluded);
+  });
+
   it('flags an Assist-not-installed device in the default-visible Status column', () => {
     const dev = device('66666666-6666-6666-6666-666666666666', 'no-assist', {
       helperInstallIssue: 'awaiting_server_offer',

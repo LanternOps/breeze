@@ -89,6 +89,7 @@ import { checkDeviceRemoteToolsPolicy } from '../../services/aiRemoteToolsPolicy
 import { recordFilesystemAutoTriggerSkipped, type FilesystemAutoTrigger } from '../../services/filesystemAnalysisPolicyMetrics';
 import { getBinaryEdition } from '../../services/binaryEdition';
 import { isUpgradeTargetServable } from '../../services/localBinaryBuild';
+import { evaluateOsFloor, noteOsFloorHold, type DeviceOsFacts, type OsFloorHoldReason } from '../../services/agentOsFloor';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
 import { recordIssuedCertificateForDevice, revokeInlineAfterContextExit } from '../../services/deviceMtlsCertificateIssuance';
@@ -3233,8 +3234,15 @@ export async function resolvePinnedUpgradeTarget(args: {
   architecture: string;
   pin: string | null;
   agentId?: string;
+  /**
+   * #12169: the device's OS, judged against the target row's
+   * min_os_version. Required so every offer path is gated (tsc finds them).
+   */
+  deviceOs: DeviceOsFacts;
+  /** Called when the minimum-OS gate holds the target (the resolver returns null). */
+  onOsHold?: (hold: UpgradeOsHold) => void;
 }): Promise<string | null> {
-  const { component, platform, architecture, pin, agentId } = args;
+  const { component, platform, architecture, pin, agentId, deviceOs, onOsHold } = args;
 
   if (pin === null) {
     // LOCKSTEP (#3499): this promoted-row query is duplicated by
@@ -3245,7 +3253,7 @@ export async function resolvePinnedUpgradeTarget(args: {
     // whose bytes get served, agents are told to upgrade to something that
     // fails checksum verification on arrival.
     const [latest] = await db
-      .select({ version: agentVersions.version })
+      .select({ version: agentVersions.version, minOsVersion: agentVersions.minOsVersion })
       .from(agentVersions)
       .where(
         and(
@@ -3262,11 +3270,13 @@ export async function resolvePinnedUpgradeTarget(args: {
       )
       .orderBy(desc(agentVersions.createdAt)) // newest first if multiple isLatest rows exist
       .limit(1);
-    return servableTargetOrNull(component, platform, architecture, latest?.version ?? null);
+    return gatedTargetOrNull(
+      component, platform, architecture, latest?.version ?? null, latest?.minOsVersion ?? null, deviceOs, onOsHold,
+    );
   }
 
   const [pinned] = await db
-    .select({ version: agentVersions.version })
+    .select({ version: agentVersions.version, minOsVersion: agentVersions.minOsVersion })
     .from(agentVersions)
     .where(
       and(
@@ -3290,7 +3300,48 @@ export async function resolvePinnedUpgradeTarget(args: {
     warnMissingPinnedBuild(component, platform, architecture, pin, agentId);
     return null;
   }
-  return servableTargetOrNull(component, platform, architecture, pinned.version);
+  return gatedTargetOrNull(component, platform, architecture, pinned.version, pinned.minOsVersion, deviceOs, onOsHold);
+}
+
+/**
+ * A target the minimum-OS gate held (#12169): the device's OS is below the
+ * release's floor (`os_below_minimum`), or cannot be read while the release
+ * has one (`os_version_unknown`). The device stays on its installed version.
+ */
+export interface UpgradeOsHold {
+  component: string;
+  blockedVersion: string;
+  reason: OsFloorHoldReason;
+  requiredOs: string;
+  reportedOs: string | null;
+}
+
+/**
+ * The servability check (#7516), then the minimum-OS gate (#12169). Pins get
+ * no exception: a pinned version above the device's OS floor is held too.
+ */
+async function gatedTargetOrNull(
+  component: string,
+  platform: string,
+  architecture: string,
+  version: string | null,
+  minOs: string | null,
+  deviceOs: DeviceOsFacts,
+  onOsHold: ((hold: UpgradeOsHold) => void) | undefined,
+): Promise<string | null> {
+  const servable = await servableTargetOrNull(component, platform, architecture, version);
+  if (servable === null) return null;
+  const decision = evaluateOsFloor(deviceOs, minOs);
+  if (decision.kind === 'allow') return servable;
+  noteOsFloorHold(deviceOs, decision);
+  onOsHold?.({
+    component,
+    blockedVersion: servable,
+    reason: decision.reason,
+    requiredOs: decision.requiredOs,
+    reportedOs: decision.reportedOs,
+  });
+  return null;
 }
 
 /**
@@ -3333,15 +3384,23 @@ export async function resolvePinnedUpgradeTargets(args: {
   architecture: string;
   requests: readonly PinnedUpgradeRequest[];
   agentId?: string;
+  /** #12169 — see resolvePinnedUpgradeTarget. */
+  deviceOs: DeviceOsFacts;
+  onOsHold?: (hold: UpgradeOsHold) => void;
 }): Promise<Map<string, string | null>> {
-  const { platform, architecture, requests, agentId } = args;
+  const { platform, architecture, requests, agentId, deviceOs, onOsHold } = args;
   const result = new Map<string, string | null>();
   if (requests.length === 0) return result;
 
   const components = [...new Set(requests.map((r) => r.component))];
   const pinned = requests.filter((r): r is PinnedUpgradeRequest & { pin: string } => r.pin !== null);
   const rows = await db
-    .select({ component: agentVersions.component, version: agentVersions.version, isLatest: agentVersions.isLatest })
+    .select({
+      component: agentVersions.component,
+      version: agentVersions.version,
+      isLatest: agentVersions.isLatest,
+      minOsVersion: agentVersions.minOsVersion,
+    })
     .from(agentVersions)
     .where(
       and(
@@ -3359,13 +3418,21 @@ export async function resolvePinnedUpgradeTargets(args: {
 
   for (const request of requests) {
     if (request.pin === null) {
-      const latest = rows.find((r) => r.component === request.component && r.isLatest)?.version ?? null;
-      result.set(request.component, await servableTargetOrNull(request.component, platform, architecture, latest));
+      const latest = rows.find((r) => r.component === request.component && r.isLatest) ?? null;
+      result.set(
+        request.component,
+        await gatedTargetOrNull(
+          request.component, platform, architecture, latest?.version ?? null, latest?.minOsVersion ?? null, deviceOs, onOsHold,
+        ),
+      );
       continue;
     }
     const hit = rows.find((r) => r.component === request.component && r.version === request.pin);
     if (hit) {
-      result.set(request.component, await servableTargetOrNull(request.component, platform, architecture, hit.version));
+      result.set(
+        request.component,
+        await gatedTargetOrNull(request.component, platform, architecture, hit.version, hit.minOsVersion, deviceOs, onOsHold),
+      );
       continue;
     }
     warnMissingPinnedBuild(request.component, platform, architecture, request.pin, agentId);

@@ -32,6 +32,8 @@ import {
   ReleaseManifestAssetLookupError,
   ReleaseManifestSignatureError,
   verifyManifestSignatureAgainstOfficialKeysOnly,
+  darwinMinOsRequired,
+  readManifestAssetMinOs,
 } from "../services/releaseArtifactManifest";
 import { EDITION_HOSTED, EDITION_SELF_HOST } from "../services/releaseAssetTrust";
 import {
@@ -441,6 +443,24 @@ export function canonicalReleaseAssetName(
   }
 
   return null;
+}
+
+/**
+ * #12169: the minimum OS a registered row's schema-v1 release manifest
+ * records for its asset (resolved the same way validateReleaseManifest
+ * resolves the asset name). Null for any other manifest shape.
+ */
+function manifestMinOsForRow(args: {
+  manifest: string | null | undefined;
+  component: string;
+  platform: string;
+  architecture: string;
+  downloadUrl: string;
+}): string | null {
+  const assetName =
+    canonicalReleaseAssetName(args.component, args.platform, args.architecture) ??
+    assetNameFromDownloadUrl(args.downloadUrl);
+  return assetName ? readManifestAssetMinOs(args.manifest, assetName) : null;
 }
 
 // Server-origin discovery for handing agents a download URL that matches
@@ -1009,6 +1029,31 @@ agentVersionRoutes.post(
       );
     }
 
+    // #12169: the floor the (already verified) schema-v1 manifest records for
+    // this asset; null for a per-deployment manifest. A darwin row of a
+    // release that must record one but does not is refused, as the
+    // registration paths and POST /promote refuse it: written as-is, it
+    // would offer the build to every Mac, pinned or promoted, ungated.
+    const createMinOs = manifestMinOsForRow({
+      manifest: data.releaseManifest,
+      component: data.component,
+      platform: data.platform,
+      architecture: data.architecture,
+      downloadUrl: data.downloadUrl,
+    });
+    const createAssetName =
+      canonicalReleaseAssetName(data.component, data.platform, data.architecture) ??
+      assetNameFromDownloadUrl(data.downloadUrl);
+    if (createMinOs === null && createAssetName && darwinMinOsRequired(createAssetName, data.version)) {
+      return c.json(
+        {
+          error: "This darwin release must record its minimum macOS version (minOs) in a signed release manifest",
+          reason: "min_os_missing",
+        },
+        422,
+      );
+    }
+
     // If this version is marked as latest, unset isLatest for other versions
     // with the same platform/architecture/component/edition. Scoped by
     // edition too — otherwise promoting a "self-host" row could demote a
@@ -1044,6 +1089,7 @@ agentVersionRoutes.post(
         isLatest: data.isLatest ?? false,
         component: data.component,
         edition,
+        minOsVersion: createMinOs,
       })
       .returning();
     if (!newVersion) {
@@ -1252,6 +1298,7 @@ agentVersionRoutes.get("/", platformAdminMiddleware, async (c) => {
       isLatest: agentVersions.isLatest,
       fileSize: agentVersions.fileSize,
       releaseNotes: agentVersions.releaseNotes,
+      minOsVersion: agentVersions.minOsVersion,
       createdAt: agentVersions.createdAt,
     })
     .from(agentVersions)
@@ -1313,6 +1360,7 @@ agentVersionRoutes.post(
         releaseManifest: agentVersions.releaseManifest,
         manifestSignature: agentVersions.manifestSignature,
         signingKeyId: agentVersions.signingKeyId,
+        minOsVersion: agentVersions.minOsVersion,
       })
       .from(agentVersions)
       .where(
@@ -1359,6 +1407,19 @@ agentVersionRoutes.post(
       reason: string;
     }> = [];
     for (const row of targetRows) {
+      // #12169: a darwin row of a release that must record its minimum OS but
+      // does not would point Macs at a build the gate cannot judge. Refuse
+      // (fail closed) — e.g. a hosted build whose manifest was not stamped.
+      const rowAssetName = canonicalReleaseAssetName(row.component, row.platform, row.architecture);
+      if (row.minOsVersion == null && rowAssetName && darwinMinOsRequired(rowAssetName, row.version)) {
+        invalidTargets.push({
+          component: row.component,
+          platform: row.platform,
+          architecture: row.architecture,
+          reason: "min_os_missing",
+        });
+        continue;
+      }
       const check = await validateReleaseManifest({
         manifest: row.releaseManifest,
         signature: row.manifestSignature,

@@ -43,6 +43,7 @@ describe('helper bootstrap offer resolves the registered helper row (#6872)', ()
         platform: 'windows',
         architecture: 'amd64',
         pin: null,
+        deviceOs: { platform: 'windows', reportedOsVersion: null, storedOsVersion: null },
       }),
     );
     expect(target).toBe(version);
@@ -60,6 +61,7 @@ describe('helper bootstrap offer resolves the registered helper row (#6872)', ()
         platform: 'linux',
         architecture: 'arm64-none-6872',
         pin: null,
+        deviceOs: { platform: 'linux', reportedOsVersion: null, storedOsVersion: null },
       }),
     );
     expect(target).toBeNull();

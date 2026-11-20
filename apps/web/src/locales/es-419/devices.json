@@ -1429,6 +1429,8 @@
   "deviceInfoTab": {
     "updateStuck": "La actualización del agente a {{target}} parece atascada: {{attempts}} intentos desde {{since}} y el dispositivo sigue en su versión anterior. El actualizador reintenta en cada heartbeat; revise los registros del agente, o el propio dispositivo si no envía ninguno.",
     "updateOfferWithheld": "Las ofertas de actualización están retenidas para este dispositivo (desde {{since}}): no se puede confirmar que la compilación de su agente acepte la edición que sirve este servidor, por lo que permanece en su versión actual. Recupérelo con un instalador de la edición servida o con una versión del agente que informe su edición.",
+    "updateOfferWithheldOs": "Las actualizaciones del agente están en pausa para este dispositivo (desde {{since}}): su versión de macOS es inferior al mínimo que requiere la versión actual del agente, por lo que permanece en la versión de agente instalada. Actualice macOS para reanudar las actualizaciones del agente.",
+    "updateOfferWithheldOsUnknown": "Las actualizaciones del agente están en pausa para este dispositivo (desde {{since}}): no se pudo determinar su versión de macOS, y la versión actual del agente requiere una versión mínima de macOS, por lo que permanece en la versión de agente instalada hasta que informe su versión de macOS.",
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist está habilitado pero no instalado (desde {{since}}): el servidor no ha ofrecido una versión de Breeze Assist para instalar en este dispositivo, así que sigue sin instalarse. Verifica que haya una compilación de Breeze Assist publicada para la plataforma de este dispositivo.",
       "installAbandoned": "Breeze Assist está habilitado pero no instalado (desde {{since}}): la instalación de la versión ofrecida falló repetidamente, así que el agente pausó los reintentos. Volverá a intentarlo en unas horas o cuando se ofrezca una versión más reciente; el registro del agente contiene el error de instalación.",
@@ -1870,6 +1872,8 @@
     "updateStuck": "Actualización atascada",
     "updateStuckTooltip": "Este dispositivo lleva más de una hora reintentando la actualización del agente a {{target}} sin completarla.",
     "updateWithheldTooltip": "El servidor no ofrece actualizaciones a este dispositivo porque no se puede confirmar que la compilación de su agente acepte la edición servida. Permanece en su versión actual hasta que se recupere.",
+    "updateWithheldTooltipOs": "Las actualizaciones están en pausa porque la versión de macOS de este dispositivo es inferior al mínimo que requiere la versión actual del agente.",
+    "updateWithheldTooltipOsUnknown": "Las actualizaciones están en pausa porque no se pudo determinar la versión de macOS de este dispositivo y la versión actual del agente requiere una versión mínima de macOS.",
     "helperNotInstalled": "No instalado",
     "helperUnavailable": "Assist no disponible",
     "helperInstallIssueTooltip": {
