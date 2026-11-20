@@ -2,11 +2,22 @@ package userhelper
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/tccdiag"
 )
+
+// tccCheckInterval is how often we re-check TCC permissions after all are granted.
+const tccCheckInterval = 60 * time.Minute
+
+// tccFastCheckInterval is how often we re-check when permissions are still missing.
+// Uses a shorter interval so the heartbeat picks up newly-granted permissions quickly.
+const tccFastCheckInterval = 2 * time.Minute
+
+// tccFastCheckDuration is how long to use the fast interval after startup.
+const tccFastCheckDuration = 30 * time.Minute
 
 func systemSettingsURLForPermission(permission string) (string, error) {
 	switch permission {

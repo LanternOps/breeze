@@ -3,6 +3,7 @@
 package userhelper
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -188,6 +189,61 @@ func TestRequestScreenRecordingAtLoopStart_OnlyDesktopHelper(t *testing.T) {
 	}
 }
 
+// #11292 / #4327: a desktop helper that just restarted itself must not raise
+// the Screen Recording consent dialog on its way back up, even with the
+// permission reading denied and no rate-limit marker; it must also treat the
+// Accessibility prompt as shown. An ordinary start keeps today's request.
+func TestStartTCCLoop_QuietAfterSelfRestart(t *testing.T) {
+	restoreSignal := resetSelfRestartSignalForTest()
+	t.Cleanup(restoreSignal)
+	EnableSelfRestart()
+	t.Cleanup(func() {
+		accessibilityPromptedMu.Lock()
+		accessibilityPrompted = false
+		accessibilityPromptedMu.Unlock()
+	})
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	desktop := tccLoopPolicyFor(ipc.HelperBinaryDesktopHelper, false)
+
+	for _, tc := range []struct {
+		name        string
+		history     tccRestartHistory
+		wantRequest bool
+	}{
+		{"just restarted itself", tccRestartHistory{Restarts: []tccRestartRecord{{At: now.Add(-time.Minute), Fingerprint: "fp"}}}, false},
+		{"ordinary start", tccRestartHistory{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			accessibilityPromptedMu.Lock()
+			accessibilityPrompted = false
+			accessibilityPromptedMu.Unlock()
+			requested := false
+			restore := stubScreenRecordingFns(t, accessReport(false, false), func() bool { requested = true; return false })
+			defer restore()
+			markerPath := filepath.Join(t.TempDir(), "screen-recording-requested")
+			store := &fileTCCRestartStore{path: filepath.Join(t.TempDir(), tccSelfRestartRecordName)}
+			if err := store.Save(tc.history); err != nil {
+				t.Fatal(err)
+			}
+
+			policy, gate := startTCCLoop(desktop, ipc.DesktopContextUserSession, store, nil, markerPath, func() time.Time { return now })
+
+			if gate == nil {
+				t.Fatal("no self-restart gate for an opted-in user-session desktop helper")
+			}
+			if requested != tc.wantRequest {
+				t.Fatalf("consent dialog requested = %v, want %v", requested, tc.wantRequest)
+			}
+			accessibilityPromptedMu.Lock()
+			axMarked := accessibilityPrompted
+			accessibilityPromptedMu.Unlock()
+			if quiet := !tc.wantRequest; axMarked != quiet || policy.promptAccessibility == quiet {
+				t.Fatalf("accessibility prompted mark = %v, policy.promptAccessibility = %v; want quiet=%v", axMarked, policy.promptAccessibility, quiet)
+			}
+		})
+	}
+}
+
 // #10300: the loop step attaches the verdict only for the desktop helper's
 // policy; any other helper's status is dropped by the broker, so it must not
 // pay for a diagnosis.
@@ -205,13 +261,65 @@ func TestCollectTCCStatusDiagnosesOnlyUnderPolicy(t *testing.T) {
 
 	// promptAccessibility stays false: no consent prompt from a test.
 	var dl denialLog
-	if st := collectTCCStatus(tccLoopPolicy{diagnoseDenial: true}, "", &dl); st.DenialVerdict != "requirement_mismatch" || calls != 1 {
+	st, d := collectTCCStatus(tccLoopPolicy{diagnoseDenial: true}, "", &dl)
+	if st.DenialVerdict != "requirement_mismatch" || calls != 1 {
 		t.Fatalf("desktop policy: verdict %q after %d diagnoses, want requirement_mismatch once", st.DenialVerdict, calls)
+	}
+	// The self-restart gate (#11292) reads the same diagnosis.
+	if d == nil || d.Verdict != tccdiag.VerdictRequirementMismatch {
+		t.Fatalf("desktop policy returned diagnosis %+v, want the one attached", d)
 	}
 	if dl.last != tccdiag.VerdictRequirementMismatch {
 		t.Fatalf("denial log saw %q, want the diagnosis logged", dl.last)
 	}
-	if st := collectTCCStatus(tccLoopPolicy{}, "", &dl); st.DenialVerdict != "" || calls != 1 {
-		t.Fatalf("other helper: verdict %q after %d diagnoses, want none", st.DenialVerdict, calls)
+	if st, d := collectTCCStatus(tccLoopPolicy{}, "", &dl); st.DenialVerdict != "" || calls != 1 || d != nil {
+		t.Fatalf("other helper: verdict %q, diagnosis %+v after %d diagnoses, want none", st.DenialVerdict, d, calls)
+	}
+}
+
+// #11292 review: the loop's check feeds each diagnosis to the self-restart
+// gate. Two unexplained checks in a row, through the loop's own check step,
+// must ask for exactly one restart.
+func TestTCCCheckLoopFeedsTheRestartGate(t *testing.T) {
+	saveAccess, saveDiag := captureAccessFn, tccDiagnoseFn
+	t.Cleanup(func() { captureAccessFn, tccDiagnoseFn = saveAccess, saveDiag })
+	captureAccessFn = func(string) desktop.CaptureAccessReport {
+		return desktop.CaptureAccessReport{State: desktop.CaptureAccessDenied, Reason: "preflight"}
+	}
+	tccDiagnoseFn = func([]tccdiag.Service) tccdiag.Diagnosis { return *unexplainedDiagnosis(100) }
+
+	helperEnd, agentEnd := net.Pipe()
+	t.Cleanup(func() { _ = helperEnd.Close(); _ = agentEnd.Close() })
+	agent := ipc.NewConn(agentEnd)
+	statuses := make(chan struct{}, 8)
+	go func() {
+		for {
+			if _, err := agent.Recv(); err != nil {
+				return
+			}
+			statuses <- struct{}{}
+		}
+	}()
+
+	h := newGateHarness(&memRestartStore{})
+	// Diagnose, but raise no prompt or dialog of any kind.
+	policy := tccLoopPolicy{diagnoseDenial: true}
+	loop := newTCCCheckLoop(ipc.NewConn(helperEnd), policy, ipc.DesktopContextUserSession, h.gate, filepath.Join(t.TempDir(), "tcc-prompted"))
+
+	loop.check()
+	if h.restarts != 0 {
+		t.Fatal("restarted on the first unexplained check")
+	}
+	h.now = h.now.Add(2 * time.Minute)
+	loop.check()
+	if h.restarts != 1 {
+		t.Fatalf("restarts = %d after two unexplained checks through the loop, want 1", h.restarts)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-statuses:
+		case <-time.After(2 * time.Second):
+			t.Fatal("the loop did not send its TCC status")
+		}
 	}
 }
