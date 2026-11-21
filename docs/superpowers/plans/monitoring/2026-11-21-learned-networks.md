@@ -87,7 +87,7 @@ a new file that sorts after everything on `origin/main` and says so in its PR.
 
 - All five tables are shape 1 (direct `org_id`), RLS enabled and forced, four
   `breeze_has_org_access(org_id)` policies and the `breeze_app` grant in the creating migration. Template:
-  `apps/api/migrations/2026-12-25-140000-topology-presence-read-model.sql:92-120`.
+  `apps/api/migrations/2026-12-25-140000-topology-presence-read-model.sql:92-119`.
 - Every reference between these tables, and from `discovery_profiles`, `discovery_jobs` and
   `discovered_assets` to them, is a composite FK including `org_id`, `DEFERRABLE INITIALLY IMMEDIATE`,
   with an explicit `ON DELETE`. Template for `SET NULL (col)`:
@@ -135,6 +135,10 @@ never edit a shipped file, then `pnpm db:migrate && pnpm db:check-drift`.
   `AGENT_COMMAND_ERROR_CODES` (`apps/api/src/routes/agents/schemas.ts:677`) in the same PR; a Go test
   pins the two lists together.
 - A new command type is added to `allCommandTypes` (`agent/internal/heartbeat/handlers_test.go:15`).
+- API tests parse the Go handler registry (`apps/api/src/services/partnerTrust.test.ts`,
+  `services/callerVerification/workstation.contract.test.ts`). A PR that registers a new Go handler
+  classifies its command type on the API side in the same PR (`GATED_COMMAND_TYPES` in
+  `services/partnerTrust.ts`), or Test API goes red.
 - Windows CI runs an explicit package list (`.github/workflows/ci.yml`, job `test-agent-windows`). Every
   new agent package is added to it, and each agent wave ends with a native run on the Windows lab VM.
 
@@ -204,8 +208,21 @@ wave starts.
     gateway proof for up to 60 seconds** while the interface has seen no link, address or route change.
     Discovery scans never reuse a proof. Without this a monitor checked every 30 seconds would re-prove
     the gateway twice a minute.
-12. **Outside O7:** `snmp_devices` rows with no asset have no site and are not gated; the topology
-    interface poll is not covered. Both are follow-ups, filed when W06b lands.
+12. **Outside O7:** `snmp_devices` rows with no asset, and monitors with neither a site nor an asset
+    (which includes partner-wide checks), have no site and are not gated; the topology interface poll
+    is not covered. These are follow-ups, filed when W06b lands.
+13. **Dispatch order changes for every site** (W03a): a job is marked running, with its agent and
+    attempt record, before the command is sent, and a job whose profile moved after it was queued fails
+    `profile_moved`. A job recorded but never sent is cleared by the existing 15-minute expiry.
+14. **`profile.network_id` is checked on every save**, as §8.3 reads. A profile left pointing at a
+    network that is no longer assigned to its site cannot be saved until its network is changed.
+15. **A merge refuses a source network that is assigned to a site.** Unassign it first.
+16. **Known limits found while planning:** a macOS bridge interface is not reported as an attachment;
+    on Windows a static neighbour entry for the gateway may make the fresh proof fail with no answer.
+    Both are recorded in the W02a and W02b plans and added to the docs in W05.
+17. **The probe producers in W06b take no site lock.** They rely on checking every result against the
+    current state. Their own row locks come before the site is known, and a site lock taken second
+    would invert the order used by merges.
 
 ---
 
@@ -223,8 +240,8 @@ Names below are fixed. A wave that needs to change one changes this index in the
 | `learnedNetworkWanAddresses` | `learned_network_wan_addresses` | `network_id`; `address` inet not null; `first_seen_at`; `last_seen_at` |
 | `discoveryProfileSnmpGrants` | `discovery_profile_snmp_grants` | `profile_id`; `gateway_id`; `granted_by` uuid null → users (set null); `granted_at` |
 
-- **A1. Uniques:** `(id, org_id)` on `learned_networks` and `learned_network_gateways` (and on
-  `discovery_profiles` if absent); `learned_network_gateways (org_id, gateway_mac, gateway_address)`;
+- **A1. Uniques:** `(id, org_id)` on `learned_networks` and `learned_network_gateways`, and
+  `discovery_profiles_id_org_id_uniq` on `discovery_profiles` (it has none; `sites` and `devices` do); `learned_network_gateways (org_id, gateway_mac, gateway_address)`;
   `learned_network_devices (device_id, gateway_id)`; `learned_network_wan_addresses (network_id,
   address)`; `discovery_profile_snmp_grants (profile_id, gateway_id)`.
 - **A2. Composite FKs** (all `DEFERRABLE INITIALLY IMMEDIATE`):
@@ -264,7 +281,13 @@ Names below are fixed. A wave that needs to change one changes this index in the
   carries over only when the survivor's network is unassigned); a source network that would split
   across survivor networks is kept, unassigned, without the folded fingerprints. A source site keeps
   `discovery_network_required`. Mechanism: `custom` policies and executors, as `discovered_assets` does
-  (`services/orgMergeCustomExecutors.ts:191-237`).
+  (`services/orgMergeCustomExecutors.ts:191-237`). The A5 trigger stands down while the source org is
+  merging, so the fold decides.
+- **A8. Digest rule for every later wave:** code that deletes or re-points gateway or membership rows
+  outside the ingest (retention, a replacing merge) also clears `devices.network_attachment_digest`
+  for the affected devices, so their next report is applied instead of confirmed.
+- **A9. Partner-export triggers:** `discovered_assets.last_network_id` is added to the export
+  trigger's exclude list in the same migration, so stamping it takes no org-wide export lock.
 
 ### B. Shared constants, types and validators — `packages/shared/src/`
 
@@ -323,9 +346,11 @@ export const verifiedNetworkSchema: z.ZodType<VerifiedNetwork>;
 
 ### C. Wire contract
 
-- **C1. Heartbeat field** `networkAttachmentsV1`: exactly the JSON in §7.1, typed by B1. Always sent
-  by an agent that supports it; an empty complete list is valid. The REST schema declares it as
-  `z.unknown().optional()` next to `networkContextV1` (`routes/agents/schemas.ts:210`).
+- **C1. Heartbeat field** `networkAttachmentsV1`: exactly the JSON in §7.1, typed by B1. The agent
+  reads in the background and attaches each finished report to one heartbeat, so a beat may carry no
+  field. **An absent field means "no change"**; only an empty, complete list means "on no network".
+  The REST schema declares it as `z.unknown().optional()` next to `networkContextV1`
+  (`routes/agents/schemas.ts:210`).
 - **C2. Guarded scan command:** type `network_discovery_guarded`. Payload is the `network_discovery`
   payload plus `expectedNetwork: ExpectedNetwork`. The `network_discovery` command is unchanged.
 - **C3. Guarded result:** the `network_discovery` result plus `verifiedNetwork: VerifiedNetwork`. A
@@ -335,7 +360,12 @@ export const verifiedNetworkSchema: z.ZodType<VerifiedNetwork>;
   `verifiedNetwork` beside `parentJobId` and `report`. The agent sends it on guarded scans only.
 - **C5. W06 command types:** `snmp_poll_guarded`, `network_ping_guarded`, `network_tcp_check_guarded`,
   `network_http_check_guarded`, `network_dns_check_guarded`. Each is its base payload plus
-  `expectedNetwork`, and its base result plus `verifiedNetwork`.
+  `expectedNetwork`, and its base result plus `verifiedNetwork`. **Every result produced after the
+  binding was acquired and confirmed carries `verifiedNetwork`, a failed probe included.** Only a
+  refusal (the binding could not be acquired or confirmed) carries none. The API reads a guarded result
+  with a valid `verifiedNetwork` as its base result, and any guarded result without one as not checked.
+- **C7. Where the body travels:** `verifiedNetwork` and refusal bodies sit in the command result's
+  `result` object; on the REST result route they arrive inside `stdout` and are parsed from it.
 - **C6. Error codes** (Go and API lists, same PR, W02c): `network_mismatch`, `network_changed`.
 
 ### D. Agent packages
@@ -363,6 +393,8 @@ func OpenState(path string) (*State, error) // creates a random 16-hex epoch whe
 func (s *State) Next() (epoch string, sequence uint64, err error) // monotonic; persists one block of 1024 at a time
 func BuildReport(ctx context.Context, st *State, serverHost string, now time.Time) Report
 ```
+
+An empty `serverHost` marks nothing primary and adds no error (`netguard` calls it that way).
 
 Heartbeat wiring: field `NetworkAttachmentsV1 *netattach.Report` with tag
 `json:"networkAttachmentsV1,omitempty"` on `HeartbeatPayload`
@@ -401,8 +433,10 @@ type Binding struct {
 	InterfaceIndex       uint32
 	SourceAddress        netip.Addr
 }
-func (b Binding) Dialer(timeout time.Duration) *net.Dialer                  // LocalAddr + netbind.Control
+func (b Binding) Dialer(timeout time.Duration) *net.Dialer                  // TCP: LocalAddr + netbind.Control
+func (b Binding) UDPDialer(timeout time.Duration) *net.Dialer               // UDP needs its own local address type
 func (b Binding) ListenConfig() net.ListenConfig                            // netbind.Control
+func (b Binding) Resolver() *net.Resolver    // the bound interface's own DNS servers; ErrNoNameserver if none
 func (b Binding) Verified() map[string]any                                  // C3 verifiedNetwork
 
 type Session struct{ /* ... */ }
@@ -425,12 +459,16 @@ on Windows each start allocates a callback slot that is never freed).
 equivalent local type if the import would cycle), and `Scanner` gains
 `ScanContext(ctx context.Context) ([]DiscoveredHost, error)`. With `Bind` set, **every** socket the scan
 opens goes through the binding, the scan stops when `ctx` is cancelled, and nothing is returned after a
-cancel. `Scan()` stays as the unbound path used by `network_discovery`.
+cancel. `Scan()` stays as the unbound path used by `network_discovery`. `ScanContext` opens no SNMP
+session: everything that uses the profile's credentials, the host scan's SNMP discovery included, runs
+in `Scanner.CredentialedPassContext`, after the first re-prove (§7.2 step 5).
 
 **D6. Handler** (W02c): `tools.CmdNetworkDiscoveryGuarded = "network_discovery_guarded"`, handler
 `handleNetworkDiscoveryGuarded` in `agent/internal/heartbeat/handlers_network_guarded.go`. Order:
-`Begin` → `ScanContext` → `Reprove` → credentialed pass (`CollectPhysicalFor` with the session context)
-→ `Reprove` → post adjacency with `verifiedNetwork` → return C3.
+`Begin` → `ScanContext` → `Reprove` → credentialed pass (`CredentialedPassContext`, then
+`CollectPhysicalFor`, both with the session context) → `Reprove` → post adjacency with
+`verifiedNetwork` → return C3. W06a adds `Acquire` (proof reusable for 60 seconds) and
+`Confirm(ctx, binding, since)` for the short probes.
 
 ### E. API services — `apps/api/src/services/learnedNetworks/`
 
@@ -476,7 +514,7 @@ export type AttachmentDeviceFields = {
   networkAttachmentDigest: string; networkAttachmentsConfirmedAt: Date;
 };
 export type IngestIgnoreReason =
-  | 'disabled' | 'ephemeral' | 'invalid_report' | 'stale_sequence' | 'capture_time_out_of_bounds';
+  | 'absent' | 'disabled' | 'ephemeral' | 'invalid_report' | 'stale_sequence' | 'capture_time_out_of_bounds';
 export type IngestPlan =
   | { kind: 'ignore'; reason: IngestIgnoreReason }
   | { kind: 'confirm'; deviceFields: AttachmentDeviceFields }            // digest unchanged: no other write
@@ -509,7 +547,7 @@ export async function runLearnedNetworkRetention(now: Date): Promise<{ networksD
 export type GateProfile = {
   id: string; orgId: string; siteId: string; networkId: string | null;
   snmpGrantMode: 'unrestricted' | 'bound'; hasSavedSnmpSecrets: boolean;
-};
+};  // hasSavedSnmpSecrets comes from storedProfileHoldsSnmpSecrets (W03a); W03b's profileWillHoldSnmpSecrets must agree with it
 export type GateDecision =
   | { kind: 'fail'; error: DiscoveryJobError }
   | { kind: 'unrestricted' }
@@ -543,8 +581,8 @@ export async function explainNoEligibleAgent(input: {
 }): Promise<NoAgentReason>;
 ```
 
-Eligible means: assigned to the site, online, not ephemeral, not parked, an `is_current` row for an
-allowed fingerprint, `network_attachments_confirmed_at` inside the freshness window, and at or above
+Eligible means: assigned to the site, online, not ephemeral, not parked, agent token not suspended, an
+`is_current` row for an allowed fingerprint, `network_attachments_confirmed_at` inside the freshness window, and at or above
 the guard version. Attachment is filtered in SQL; version is prefiltered in SQL and decided exactly
 with `versionAtLeast`. The same function serves requested, pinned and AI-tool targets.
 
@@ -578,7 +616,7 @@ one command type omits the other without an entry in an explicit allowlist.
 export type NetworkDispatchRecord = {
   version: 1; mode: 'unrestricted' | 'guarded'; agentId: string; deviceId: string;
   allowedNetworkIds: string[]; allowedGatewayIds: string[]; decidedAt: string;
-};
+};  // allowedGatewayIds holds the fingerprints actually sent (at most 64): what the agent can prove
 // One UPDATE: network_dispatch, agent_id, status 'running', started_at, WHERE status = 'scheduled'.
 export async function recordDispatchAttempt(jobId: string, record: NetworkDispatchRecord): Promise<boolean>;
 ```
@@ -640,6 +678,10 @@ export type AssignmentEffects = {
   agents: { online: number; onNetwork: number; needUpdate: number };
   sharedVirtualRouterMac: boolean;
 };
+// agents.online: the site's online agents that are not ephemeral or parked. agents.onNetwork: of those,
+// the ones currently behind one of this network's fingerprints. agents.needUpdate: of onNetwork, the
+// ones below the guard version. Confirmation (409) is required when gatesSite, siteLosesLastNetwork,
+// profilesFailingClosed > 0 or sharedVirtualRouterMac is true.
 export async function previewAssignment(input: { orgId: string; networkId: string; siteId: string | null }): Promise<AssignmentEffects>;
 export async function assignNetwork(input: { orgId: string; networkId: string; siteId: string; actorUserId: string }): Promise<void>;
 export async function unassignNetwork(input: { orgId: string; networkId: string; actorUserId: string }): Promise<void>;
@@ -661,6 +703,7 @@ export async function mergeNetworks(input: {
 | `POST /discovery/networks/:id/ignore`, `/restore` | write + MFA | — |
 | `POST /discovery/networks/:id/merge` | write + MFA | `{ sourceNetworkId, mode, retiredGatewayIds? }`; `replaces_gateway` requires at least one retired id belonging to the target |
 | `POST /discovery/sites/:siteId/stop-requiring-network` | write + MFA | `{ confirmed: true }`; 409 while a network is assigned |
+| `GET /discovery/sites/:siteId/network-agents` (W04) | `devices:read` | per agent: on an allowed network or the `IneligibleReason`, from E6, for the scan-agent picker |
 
 Every mutation writes an audit row with `writeRouteAudit`. Site-restricted users see networks assigned
 to sites they can access, and unassigned networks on which a device they can access was seen (§8.5).
@@ -690,13 +733,18 @@ to sites they can access, and unassigned networks on which a device they can acc
 ```
 
 `state` is `needs_review`, `assigned` or `ignored`. `suggestion.reason` is `declared_prefix` or
-`site_devices`. `devices.sample` holds at most 5. A gateway vendor name is shown only if an OUI lookup
-already exists in the API or web; this feature does not add an OUI database.
+`site_devices`; a tie between sites gives no suggestion. `devices.sample` holds at most 5.
+`replacementFor`, when set, is `{ networkId, displayName, siteId, siteName }`. `sites` lists every site
+the caller can access, including sites with no network. `displayName` is the admin's name, or
+"`<prefix>` via `<gateway>`" when there is none; `networkName` fields elsewhere use the same rule. W04
+adds `vendor: string | null` to each gateway from the existing `lookupMacVendor`
+(`services/macVendorLookup.ts`); this feature adds no OUI database.
 
 **F2. Read-side fields added in W04** (with the web that consumes them): profiles gain `networkId`,
 `snmpGrantMode`, `snmpGrantNetworks: [{ networkId, name }]` and the site's `networkRequired`; jobs gain
 `networkId`, `networkName`, `crossNetworkAssetUpdates` and `errors` as `DiscoveryJobError`; assets gain
-`seenOnAssignedNetwork: boolean`. Profile create and update accept `networkId` (W03b).
+`seenOnAssignedNetwork: boolean | null` (null when the asset's site does not require a network).
+Profile create and update accept `networkId` (W03b).
 
 ### G. Web (W04) — `apps/web/src/components/discovery/`
 
@@ -721,8 +769,11 @@ already exists in the API or web; this feature does not add an OUI database.
 
 - A guarded result carries `verifiedNetwork` and is accepted only if that fingerprint was allowed at
   send time and is still assigned to the site. Otherwise it is discarded as not checked.
-- An agent refusal (`network_mismatch`, `network_changed`) is **not checked**, never offline, failed or
-  not responding. `normalizeMonitorStatus` must not turn it into `offline`.
+- **Any guarded result without a valid `verifiedNetwork` is not checked, whatever its status or error
+  code**: never offline, failed or not responding. `normalizeMonitorStatus` must not turn it into
+  `offline`. A failed probe that does carry `verifiedNetwork` is a real failure (C5).
+- A gated site with no assigned network records `no_network_assigned`, so the message can say to
+  assign one.
 - Polling credentials are not granted per fingerprint (§13 item 13).
 - `GUARDED_COMMAND_TYPES` and `COMMAND_MIN_AGENT_VERSION` gain the five types;
   `GUARDED_PROBES_MIN_AGENT_VERSION` starts at `999.0.0` and W06b sets it.
@@ -753,7 +804,7 @@ schema: `routes/agentWs.ts:937`.
 
 **API: results** — `routes/agentWs.ts` discovery branch `:1868-1980`;
 `services/commandResultHandlers.ts:120` (`handleDiscoveryResult`, registered `:1323`);
-`routes/agents/topologyAdjacency.ts:32-70`; job errors are written at `discoveryWorker.ts:427`, `:1921`,
+`routes/agents/topologyAdjacency.ts:32-70` (its body schema and the `process-results` queue schema are strict: a new key must be declared); a new command type also needs entries in `services/commandOfflinePolicy.ts` (`LIVE` `:180`, `EXTRA_ROUTE_TYPES` `:289`); job errors are written at `discoveryWorker.ts:427`, `:1921`,
 `:2128`, `agentWs.ts:1920`, `:1956`, `:1970`, `commandResultHandlers.ts:179`, `:200`,
 `routes/discovery.ts:1073`.
 
@@ -770,7 +821,7 @@ row: `jobs/networkBaselineWorker.ts:234`.
 
 **API: workers** — retention exemplar `jobs/agentLogRetention.ts`; flags `config/env.ts:12` (`envFlag`).
 
-**Agent** — registry `internal/heartbeat/handlers.go:18`; unknown type `heartbeat.go:8258`; type
+**Agent** — registry `internal/heartbeat/handlers.go:18`; unknown type `heartbeat.go:8262`; type
 constants `internal/remote/tools/types.go:184`; `handleNetworkDiscovery`
 `internal/heartbeat/handlers_network.go:38` (SNMP pass `:66-72`, adjacency post `:81-119`);
 `internal/discovery/scanner.go` (`ScanConfig` `:15`, `Scan` `:104-213`); probes `arp.go` (cgo only),
@@ -778,8 +829,8 @@ constants `internal/remote/tools/types.go:184`; `handleNetworkDiscovery`
 `internal/snmppoll/client.go:48-108`; readers `internal/collectors/networkcontext` (`Reader`
 `types.go:146`, `LookupRoute` by type assertion as in `internal/networkdiagnostic/native.go:30-37`,
 `WatchChanges` per OS, interface kinds `interfacekind.go`); state-file exemplar
-`networkcontext/state.go:60-195` and `internal/atomicrename`; error codes
-`internal/wire/errorcodes.go:22`; release build matrix `.github/workflows/release.yml:221-247`; monitor
+`networkcontext/state.go:60-222` and `internal/atomicrename`; error codes
+`internal/wire/errorcodes.go:22`; release build matrix `.github/workflows/release.yml:224-248`; Windows CI package list `.github/workflows/ci.yml:2755`; monitor
 handlers `internal/heartbeat/handlers_monitor.go`; SNMP poll handler `handlers_network.go:353`.
 
 **Web** — `components/discovery/DiscoveryPage.tsx` (tabs `:29`, labels `:393`, hash read `:291`, hash
@@ -795,7 +846,7 @@ notes: `docs/release-notes/next-release-draft.md` (rebase just before enqueueing
 `recordMonitorCheckResult` `:457`); `services/monitorCommands.ts:15-22`;
 `services/networkExecutorSelection.ts`; `services/assetProbeRun.ts`; `routes/monitors.ts:504-589`;
 result branches `routes/agentWs.ts:1540-1706`; `services/alertConditions/handlers/networkCheck.ts:47`
-(`dataAvailable` is the existing "could not observe" channel).
+(`dataAvailable` is the existing "could not observe" channel); web monitor list and detail are under `apps/web/src/components/monitors/`.
 
 ---
 
