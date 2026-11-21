@@ -618,8 +618,64 @@ require_grep '(directory: |^ +- )"/apps/web"$' .github/dependabot.yml \
   "Dependabot must cover Web Dockerfiles before digest pinning can be maintained"
 require_grep '(directory: |^ +- )"/docker"$' .github/dependabot.yml \
   "Dependabot must cover release/security Dockerfiles before digest pinning can be maintained"
-require_grep 'language: \[javascript-typescript, go, actions\]' .github/workflows/codeql.yml \
-  "CodeQL must analyze TypeScript, Go and the Actions workflows"
+require_grep 'language: \[javascript-typescript, go, actions, rust\]' .github/workflows/codeql.yml \
+  "CodeQL must analyze TypeScript, Go, the Actions workflows and the Tauri Rust crates"
+
+# pnpm resolution policy (pnpm-workspace.yaml). minimumReleaseAge holds a
+# freshly published version back from resolution for N minutes, and
+# blockExoticSubdeps keeps transitive dependencies on the registry (no git or
+# tarball URLs). Each key must appear exactly once at top level: a duplicate
+# would leave the effective value to the YAML parser.
+require_single_workspace_setting() {
+  local key="$1"
+  local count
+  [[ -r pnpm-workspace.yaml ]] || fail "cannot read pnpm-workspace.yaml"
+  count="$(grep -cE "^${key}:" pnpm-workspace.yaml || true)"
+  [[ "$count" == "1" ]] || fail "pnpm-workspace.yaml must set $key exactly once at top level (found $count)"
+}
+require_single_workspace_setting minimumReleaseAge
+MIN_RELEASE_AGE="$(sed -nE 's/^minimumReleaseAge:[[:space:]]*([0-9]+)[[:space:]]*(#.*)?$/\1/p' pnpm-workspace.yaml)"
+[[ -n "$MIN_RELEASE_AGE" && "$MIN_RELEASE_AGE" -ge 4320 ]] ||
+  fail "pnpm-workspace.yaml minimumReleaseAge must be a plain number of minutes, at least 4320 (3 days)"
+require_single_workspace_setting blockExoticSubdeps
+require_grep '^blockExoticSubdeps:[[:space:]]*true[[:space:]]*(#.*)?$' pnpm-workspace.yaml \
+  "pnpm-workspace.yaml must set blockExoticSubdeps: true"
+
+# Every Dependabot updates entry carries an explicit cooldown of at least 3
+# days. Every ecosystem this file uses (npm, gomod, github-actions, cargo,
+# docker, docker-compose) supports `cooldown.default-days`; an ecosystem that
+# does not would need a named exemption here rather than a silent skip.
+[[ -r .github/dependabot.yml ]] || fail "cannot read .github/dependabot.yml"
+DEPENDABOT_COOLDOWN_REPORT="$(
+  awk '
+    function finish() {
+      if (eco == "") return
+      entries++
+      if (days == "" || days + 0 < 3) {
+        printf "%s (line %d)\n", eco, start
+      }
+    }
+    /^  - package-ecosystem:/ {
+      finish()
+      eco = $0; sub(/^  - package-ecosystem:[[:space:]]*/, "", eco); gsub(/"/, "", eco)
+      start = NR; days = ""; in_cooldown = 0
+      next
+    }
+    /^    cooldown:[[:space:]]*$/ { in_cooldown = 1; next }
+    in_cooldown && /^      default-days:[[:space:]]*[0-9]+[[:space:]]*(#.*)?$/ {
+      days = $0; sub(/^      default-days:[[:space:]]*/, "", days); sub(/[[:space:]#].*$/, "", days)
+      next
+    }
+    in_cooldown && !/^      / { in_cooldown = 0 }
+    END { finish(); printf "entries=%d\n", entries }
+  ' .github/dependabot.yml
+)"
+DEPENDABOT_ENTRY_COUNT="$(sed -n 's/^entries=//p' <<<"$DEPENDABOT_COOLDOWN_REPORT")"
+[[ "${DEPENDABOT_ENTRY_COUNT:-0}" -gt 0 ]] ||
+  fail ".github/dependabot.yml has no package-ecosystem entries the cooldown check could parse"
+DEPENDABOT_MISSING_COOLDOWN="$(grep -v '^entries=' <<<"$DEPENDABOT_COOLDOWN_REPORT" || true)"
+[[ -z "$DEPENDABOT_MISSING_COOLDOWN" ]] ||
+  fail "every Dependabot updates entry must set cooldown.default-days >= 3; missing or lower on: $(tr '\n' ' ' <<<"$DEPENDABOT_MISSING_COOLDOWN")"
 
 require_grep "severity: 'HIGH,CRITICAL'" .github/workflows/security.yml \
   "Trivy must fail on HIGH and CRITICAL vulnerabilities"
