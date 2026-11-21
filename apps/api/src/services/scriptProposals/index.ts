@@ -5,6 +5,7 @@
 export * from './proposals';
 export * from './runnable';
 export * from './guardrailContext';
+export * from './mcpUnattendedCeiling';
 export * from './dispatchSnapshot';
 export * from './approvalMethod';
 export * from './reviewQueue';

@@ -20,9 +20,37 @@ type SelectRow = Record<string, unknown>;
 let selectQueue: SelectRow[][] = [];
 let writes: Array<{ values: Record<string, unknown>; set: Record<string, unknown> }> = [];
 let returningQueue: Array<Record<string, unknown>> = [];
+// Ceiling CAS writes: each entry is what one update/insert returning() yields.
+let casQueue: Array<Array<Record<string, unknown>>> = [];
+let casWrites: Array<{ kind: 'update' | 'insert'; values: Record<string, unknown> }> = [];
+let txRolledBack = 0;
+
+vi.mock('../db/schema/audit', () => ({ auditLogs: { __audit: true } }));
 
 vi.mock('../db', () => ({
+  runOutsideDbContext: <T,>(fn: () => T) => fn(),
+  withSystemDbAccessContext: async <T,>(fn: () => Promise<T>) => {
+    const before = casWrites.length;
+    try {
+      return await fn();
+    } catch (err) {
+      casWrites.length = before;
+      txRolledBack += 1;
+      throw err;
+    }
+  },
   db: {
+    update: vi.fn(() => ({
+      set: vi.fn((v: Record<string, unknown>) => ({
+        where: vi.fn(() => ({
+          returning: vi.fn(async () => {
+            const rows = casQueue.shift() ?? [];
+            if (rows.length) casWrites.push({ kind: 'update', values: v });
+            return rows;
+          }),
+        })),
+      })),
+    })),
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
@@ -30,12 +58,27 @@ vi.mock('../db', () => ({
         })),
       })),
     })),
-    insert: vi.fn(() => {
+    insert: vi.fn((table: { __audit?: boolean }) => {
+      if (table?.__audit) {
+        return {
+          values: vi.fn(async (v: Record<string, unknown>) => {
+            if (auditFails.next) { auditFails.next = false; throw new Error('audit insert failed'); }
+            auditLog.push(v);
+          }),
+        };
+      }
       let insertedValues: Record<string, unknown> = {};
       return {
         values: vi.fn((v: Record<string, unknown>) => {
           insertedValues = v;
           return {
+            onConflictDoNothing: vi.fn(() => ({
+              returning: vi.fn(async () => {
+                const rows = casQueue.shift() ?? [];
+                if (rows.length) casWrites.push({ kind: 'insert', values: insertedValues });
+                return rows;
+              }),
+            })),
             onConflictDoUpdate: vi.fn((opts: { set: Record<string, unknown> }) => {
               writes.push({ values: insertedValues, set: opts.set });
               return {
@@ -52,8 +95,15 @@ vi.mock('../db', () => ({
 }));
 
 const auditLog: Array<Record<string, unknown>> = [];
+const auditFails = { next: false };
+const markAudit = vi.fn();
 vi.mock('../services/auditService', () => ({
+  markRequestAuditWritten: () => markAudit(),
   createAuditLogAsync: vi.fn(async (params: Record<string, unknown>) => {
+    auditLog.push(params);
+  }),
+  createAuditLog: vi.fn(async (params: Record<string, unknown>) => {
+    if (auditFails.next) { auditFails.next = false; throw new Error('audit insert failed'); }
     auditLog.push(params);
   }),
 }));
@@ -101,7 +151,7 @@ vi.mock('../services/permissions', async (importOriginal) => {
 });
 
 import { PERMISSIONS } from '../services/permissions';
-import { partnerScriptCeilingResourceDigest } from '../services/mfaStepUpGrant';
+import { partnerMcpProposalCeilingResourceDigest, partnerScriptCeilingResourceDigest } from '../services/mfaStepUpGrant';
 import { partnerScriptCeilingStepUpResource } from './auth/schemas';
 import { partnerScriptCeilingGrantResource } from '@breeze/shared';
 import { partnerAiScriptPolicyRoutes } from './partnerAiScriptPolicy';
@@ -154,6 +204,7 @@ function partnerPolicyRow(overrides: Partial<AiScriptPolicyRow> = {}): AiScriptP
     maxUnattendedRiskTier: 'low',
     unattendedAllowedClasses: ['services'],
     maxUnattendedPerHour: 5,
+    mcpUnattendedProposalMaxRisk: 'none',
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
     unattendedEnabledBy: null,
     unattendedEnabledAt: null,
@@ -169,6 +220,10 @@ beforeEach(() => {
   selectQueue = [];
   writes = [];
   returningQueue = [];
+  casQueue = [];
+  casWrites = [];
+  txRolledBack = 0;
+  auditFails.next = false;
   auditLog.length = 0;
   currentAuth = partnerAuth();
   currentPerms = makePerms(ALL_GRANTS);
@@ -527,5 +582,122 @@ describe('mint → redeem round-trip with the shared partner ceiling resource (#
     const res = await putReq({ ...body, unattendedAllowed: false });
     expect(res.status).toBe(200);
     expect(consumeStepUpGrant).not.toHaveBeenCalled();
+  });
+});
+
+describe('PUT /mcp-proposal-ceiling', () => {
+  const ceilingReq = (body: unknown) =>
+    partnerAiScriptPolicyRoutes.request('/mcp-proposal-ceiling', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  const saved = (value: string) => [{ ...partnerPolicyRow(), mcpUnattendedProposalMaxRisk: value }];
+
+  it('raising the ceiling without a grant 403s STEP_UP_REQUIRED and writes nothing', async () => {
+    selectQueue = [[partnerPolicyRow()]];
+    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'medium' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+    expect(casWrites).toHaveLength(0);
+    expect(auditLog).toHaveLength(0);
+  });
+
+  it('raising consumes a grant bound to this partner and the new value, saves, and audits both values under the partner', async () => {
+    selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'low' })]];
+    casQueue = [saved('medium')];
+    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'medium', stepUpGrant: 'grant-1' });
+    expect(res.status).toBe(200);
+    const binding = consumeStepUpGrant.mock.calls[0]![1];
+    expect(binding.operation).toBe('ai_partner_mcp_proposal_ceiling');
+    expect(binding.resourceDigest).toBe(partnerMcpProposalCeilingResourceDigest({ partnerId: PARTNER, mcpUnattendedProposalMaxRisk: 'medium' }));
+    expect(casWrites).toEqual([{ kind: 'update', values: expect.objectContaining({ mcpUnattendedProposalMaxRisk: 'medium' }) }]);
+    expect(Object.keys(casWrites[0]!.values).sort()).toEqual(['mcpUnattendedProposalMaxRisk', 'updatedAt']);
+    expect(auditLog).toHaveLength(1);
+    expect(auditLog[0]).toMatchObject({
+      orgId: null,
+      partnerId: PARTNER,
+      action: 'ai.script_policy.mcp_proposal_ceiling_updated',
+      details: { partnerId: PARTNER, previous: 'low', mcpUnattendedProposalMaxRisk: 'medium' },
+    });
+    expect((await res.json()).policy.mcpUnattendedProposalMaxRisk).toBe('medium');
+  });
+
+  it('409s, without an audit row, when the ceiling moved after this request read it', async () => {
+    selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'medium' })]];
+    casQueue = [[]];
+    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'low' });
+    expect(res.status).toBe(409);
+    expect(casWrites).toHaveLength(0);
+    expect(auditLog).toHaveLength(0);
+  });
+
+  it('a first save races another first save: the loser 409s', async () => {
+    selectQueue = [[]];
+    casQueue = [[]];
+    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'low', stepUpGrant: 'grant-1' });
+    expect(res.status).toBe(409);
+  });
+
+  it('rolls the change back when the audit row cannot be written', async () => {
+    selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'medium' })]];
+    casQueue = [saved('none')];
+    auditFails.next = true;
+    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'none' });
+    expect(res.status).toBe(500);
+    expect(txRolledBack).toBe(1);
+    expect(casWrites).toHaveLength(0);
+  });
+
+  it('a grant that does not match the value 403s and writes nothing', async () => {
+    selectQueue = [[partnerPolicyRow()]];
+    consumeStepUpGrant.mockResolvedValue(false);
+    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'medium', stepUpGrant: 'grant-for-low' });
+    expect(res.status).toBe(403);
+    expect(casWrites).toHaveLength(0);
+  });
+
+  it('lowering needs no grant but still audits', async () => {
+    selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'medium' })]];
+    casQueue = [saved('none')];
+    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'none' });
+    expect(res.status).toBe(200);
+    expect(consumeStepUpGrant).not.toHaveBeenCalled();
+    expect(auditLog[0]).toMatchObject({ details: { previous: 'medium', mcpUnattendedProposalMaxRisk: 'none' } });
+  });
+
+  it('a first save with no partner row counts as a raise from none, and inserts', async () => {
+    selectQueue = [[]];
+    expect((await ceilingReq({ mcpUnattendedProposalMaxRisk: 'low' })).status).toBe(403);
+    selectQueue = [[]];
+    casQueue = [saved('low')];
+    expect((await ceilingReq({ mcpUnattendedProposalMaxRisk: 'low', stepUpGrant: 'grant-1' })).status).toBe(200);
+    expect(casWrites[0]!.kind).toBe('insert');
+  });
+
+  it('refuses without approvals:decide, even lowering', async () => {
+    currentPerms = makePerms([PERMISSIONS.AI_AGENTS_READ, PERMISSIONS.AI_AGENTS_WRITE]);
+    selectQueue = [[partnerPolicyRow({ mcpUnattendedProposalMaxRisk: 'medium' })]];
+    const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'low' });
+    expect(res.status).toBe(403);
+    expect(casWrites).toHaveLength(0);
+  });
+
+  it('refuses a restricted partner token and an organization token', async () => {
+    currentAuth = partnerAuth({ partnerOrgAccess: 'selected' });
+    expect((await ceilingReq({ mcpUnattendedProposalMaxRisk: 'none' })).status).toBe(403);
+    currentAuth = orgAuth();
+    expect((await ceilingReq({ mcpUnattendedProposalMaxRisk: 'none' })).status).toBe(403);
+    expect(casWrites).toHaveLength(0);
+  });
+
+  it('rejects an unknown value, and the lane PUT never accepts the field', async () => {
+    expect((await ceilingReq({ mcpUnattendedProposalMaxRisk: 'extreme' })).status).toBe(400);
+    // Capped at medium: high and critical proposals need two-person approval.
+    expect((await ceilingReq({ mcpUnattendedProposalMaxRisk: 'high', stepUpGrant: 'grant-1' })).status).toBe(400);
+    expect((await ceilingReq({ mcpUnattendedProposalMaxRisk: 'critical', stepUpGrant: 'grant-1' })).status).toBe(400);
+    expect((await putReq({ mcpUnattendedProposalMaxRisk: 'critical' })).status).toBe(400);
+    expect(casWrites).toHaveLength(0);
+    expect(writes).toHaveLength(0);
   });
 });

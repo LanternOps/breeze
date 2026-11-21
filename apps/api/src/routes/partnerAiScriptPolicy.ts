@@ -1,14 +1,15 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, eq, isNull } from 'drizzle-orm';
-import { TOUCH_CLASSES, retiredAiModelField } from '@breeze/shared';
-import { db } from '../db';
+import { MCP_UNATTENDED_PROPOSAL_CEILINGS, TOUCH_CLASSES, riskTierRank, retiredAiModelField, type McpUnattendedProposalCeiling } from '@breeze/shared';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { auditLogs } from '../db/schema/audit';
 import { aiScriptPolicies, type AiScriptPolicyRow } from '../db/schema/aiScriptPolicies';
 import { zValidator } from '../lib/validation';
 import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { getUserEpochs } from '../services/authEpochs';
-import { createAuditLogAsync } from '../services/auditService';
-import { consumeStepUpGrant, partnerScriptCeilingResourceDigest, type ScriptLaneWideningDelta, type StepUpGrantBinding } from '../services/mfaStepUpGrant';
+import { createAuditLogAsync, markRequestAuditWritten } from '../services/auditService';
+import { consumeStepUpGrant, partnerMcpProposalCeilingResourceDigest, partnerScriptCeilingResourceDigest, type ScriptLaneWideningDelta, type StepUpGrantBinding } from '../services/mfaStepUpGrant';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { PERMISSIONS, userCanDecideApprovals } from '../services/permissions';
 import { ENABLE_2FA } from './auth/schemas';
@@ -250,6 +251,122 @@ partnerAiScriptPolicyRoutes.put(
       result: 'success',
       initiatedBy: 'manual',
     });
+    return c.json({ policy: toScriptPolicyDto(row) });
+  },
+);
+
+/**
+ * The partner's MCP unattended proposal ceiling (`mcp_unattended_proposal_max_risk`):
+ * the highest reviewed risk a principal on MCP_UNATTENDED_TIER3_PRINCIPALS may
+ * run as `run_script { proposalId }` over MCP with no human approval. Its own
+ * endpoint rather than a field on PUT / so it never rides along with a lane
+ * save, and its step-up grant binds this one value. Every change, raise or
+ * lower, needs the same partner-wide write authority, `ai_agents:write`, MFA
+ * and `approvals:decide`; a RAISE also consumes a fresh step-up grant bound to
+ * the new value. Every saved change writes an audit row with both values.
+ */
+const mcpCeilingSchema = z
+  .object({
+    mcpUnattendedProposalMaxRisk: z.enum(MCP_UNATTENDED_PROPOSAL_CEILINGS),
+    stepUpGrant: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+
+function mcpCeilingRank(value: McpUnattendedProposalCeiling): number {
+  return value === 'none' ? -1 : riskTierRank(value);
+}
+
+partnerAiScriptPolicyRoutes.put(
+  '/mcp-proposal-ceiling',
+  requirePermission(PERMISSIONS.AI_AGENTS_WRITE.resource, PERMISSIONS.AI_AGENTS_WRITE.action),
+  requireMfa(),
+  zValidator('json', mcpCeilingSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    if (!canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+    if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 400);
+    const partnerId = auth.partnerId;
+    const { mcpUnattendedProposalMaxRisk: next, stepUpGrant } = c.req.valid('json');
+
+    const perms = c.get('permissions');
+    if (!perms || !userCanDecideApprovals(perms)) {
+      return c.json({ error: 'approvals:decide is required for this change', code: 'APPROVALS_DECIDE_REQUIRED' }, 403);
+    }
+    if (!hasSatisfiedMfa(auth)) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+
+    const [existing] = await db
+      .select()
+      .from(aiScriptPolicies)
+      .where(and(isNull(aiScriptPolicies.orgId), eq(aiScriptPolicies.partnerId, partnerId)))
+      .limit(1);
+    const previous: McpUnattendedProposalCeiling = existing?.mcpUnattendedProposalMaxRisk ?? 'none';
+
+    if (mcpCeilingRank(next) > mcpCeilingRank(previous) && ENABLE_2FA) {
+      if (!stepUpGrant) return c.json(STEP_UP_REQUIRED_BODY, 403);
+      const epochs = await getUserEpochs(auth.user.id);
+      const sid = auth.token?.sid;
+      if (!epochs || !sid) return c.json({ error: 'Service temporarily unavailable' }, 503);
+      const binding: StepUpGrantBinding = {
+        userId: auth.user.id,
+        operation: 'ai_partner_mcp_proposal_ceiling',
+        authEpoch: epochs.authEpoch,
+        mfaEpoch: epochs.mfaEpoch,
+        sid,
+        resourceDigest: partnerMcpProposalCeilingResourceDigest({ partnerId, mcpUnattendedProposalMaxRisk: next }),
+      };
+      if (!(await consumeStepUpGrant(stepUpGrant, binding))) return c.json(STEP_UP_REQUIRED_BODY, 403);
+    }
+
+    // Compare-and-set on the value this request checked: a concurrent save
+    // that moved the ceiling in between makes this one a 409, so a raise can
+    // never land against a value its step-up check did not see. The change and
+    // its audit row commit in ONE system-scoped transaction (system scope is
+    // what lets a partner-level, org-less audit row pass the audit_logs insert
+    // policy; every authorization check above has already passed), so neither
+    // can exist without the other.
+    let row: AiScriptPolicyRow | undefined;
+    try {
+      row = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+        const [saved] = existing
+          ? await db
+            .update(aiScriptPolicies)
+            .set({ mcpUnattendedProposalMaxRisk: next, updatedAt: new Date() })
+            .where(and(
+              eq(aiScriptPolicies.id, existing.id),
+              eq(aiScriptPolicies.mcpUnattendedProposalMaxRisk, previous),
+            ))
+            .returning()
+          : await db
+            .insert(aiScriptPolicies)
+            .values({ partnerId, orgId: null, createdBy: auth.user.id, mcpUnattendedProposalMaxRisk: next })
+            .onConflictDoNothing({ target: aiScriptPolicies.partnerId })
+            .returning();
+        if (!saved) return undefined;
+        await db.insert(auditLogs).values({
+          orgId: null,
+          partnerId,
+          actorType: 'user',
+          actorId: auth.user.id,
+          actorEmail: auth.user.email,
+          action: 'ai.script_policy.mcp_proposal_ceiling_updated',
+          resourceType: 'ai_script_policies',
+          resourceId: saved.id,
+          details: { partnerId, previous, mcpUnattendedProposalMaxRisk: next },
+          result: 'success',
+          initiatedBy: 'manual',
+        });
+        return saved;
+      }));
+    } catch (err) {
+      console.error('[partnerAiScriptPolicy] MCP proposal ceiling save failed', err);
+      return c.json({ error: 'Failed to save partner script policy' }, 500);
+    }
+    if (row) markRequestAuditWritten();
+    if (!row) {
+      return c.json({ error: 'The ceiling changed while saving; reload and try again', code: 'CONFLICT' }, 409);
+    }
     return c.json({ policy: toScriptPolicyDto(row) });
   },
 );

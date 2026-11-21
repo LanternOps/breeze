@@ -8071,7 +8071,18 @@
     "saved": "Einstellungen zur Skripterstellung gespeichert.",
     "saveFailed": "Diese Einstellungen konnten nicht gespeichert werden.",
     "loading": "Wird geladen…",
-    "loadFailed": "Die Einstellungen zur Skripterstellung konnten nicht geladen werden."
+    "loadFailed": "Die Einstellungen zur Skripterstellung konnten nicht geladen werden.",
+    "mcpCeiling": {
+      "title": "Unbeaufsichtigte MCP-Skriptausführungen",
+      "description": "Das höchste geprüfte Risiko, bei dem ein in MCP_UNATTENDED_TIER3_PRINCIPALS aufgeführter MCP-Principal ein von der KI vorgeschlagenes Skript ohne menschliche Genehmigung ausführen darf, höchstens Mittel. Die Ausführung muss außerdem die Regeln der unbeaufsichtigten Skript-Lane für die Organisation des Geräts erfüllen: Opt-in, erlaubte Berührungsklassen, geschützte Ressourcen, Schutzschalter und Stundenlimit. Oberhalb der Obergrenze erfordert jede Ausführung eine Genehmigung.",
+      "label": "Ohne Genehmigung ausführen bis",
+      "options": {
+        "none": "Nie (immer Genehmigung erforderlich)",
+        "low": "Niedrig",
+        "medium": "Mittel"
+      },
+      "stepUpBody": "Das Anheben dieser Obergrenze erfordert eine erneute Sicherheitsprüfung. Bestätigen Sie und wählen Sie dann erneut Speichern."
+    }
   },
   "ticketingHubPage": {
     "heading": "Ticketing-Einstellungen",

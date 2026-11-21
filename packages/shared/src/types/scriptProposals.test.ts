@@ -11,13 +11,14 @@ describe('script proposal enums', () => {
     expect(SCRIPT_ORIGINS).toEqual(['human', 'ai_proposal', 'imported', 'system']);
   });
 
-  it('lists the five approval methods', () => {
+  it('lists the six approval methods', () => {
     expect(SCRIPT_APPROVAL_METHODS).toEqual([
       'supervised_self',
       'four_eyes',
       'unattended_reviewer_gated',
       'direct_ui',
       'automation',
+      'unattended_mcp_principal',
     ]);
   });
 

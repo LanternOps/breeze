@@ -267,6 +267,7 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   // mint dispatch that swapped the two digest functions fails below.
   scriptLanePolicyResourceDigest: vi.fn(() => 'sha256:5c719710a9e000000000000000000000000000000000000000000000000000004'),
   partnerScriptCeilingResourceDigest: vi.fn(() => 'sha256:9a7c3111n9000000000000000000000000000000000000000000000000000005'),
+  partnerMcpProposalCeilingResourceDigest: vi.fn(() => 'sha256:3c9c1111n9000000000000000000000000000000000000000000000000000006'),
   // Autopay charge now / partner payment settings / redirected authorization
   // request: three more distinct constants, same reason.
   autopayChargeNowResourceDigest: vi.fn(() => 'sha256:c4a79e0000000000000000000000000000000000000000000000000000000006'),
@@ -496,7 +497,7 @@ import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 import * as mfaPolicyModule from '../services/mfaPolicy';
 import { enforceIpAllowlist } from '../services/ipAllowlist';
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, forceRebootResourceDigest, deviceReattachResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest } from '../services/mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, maintenanceResourceDigest, moveOrgResourceDigest, forceRebootResourceDigest, deviceReattachResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, preAssignmentEnableResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, partnerMcpProposalCeilingResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest } from '../services/mfaStepUpGrant';
 import { checkPasskeyRemovalEligibility, verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
 import { authMiddleware } from '../middleware/auth';
@@ -5529,6 +5530,37 @@ describe('auth routes', () => {
 			const digestFn = operation === 'ai_partner_script_ceiling_grant' ? partnerScriptCeilingResourceDigest : scriptLanePolicyResourceDigest;
 			expect(digestFn).toHaveBeenCalledWith(expect.objectContaining({ ...base, widening }));
 			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({ operation, resourceDigest: digest }));
+		});
+
+		it('mints an ai_partner_mcp_proposal_ceiling grant bound to the partner and the exact ceiling', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-mcp-ceiling');
+			const resource = { partnerId: '00000000-0000-4000-8000-000000000040', mcpUnattendedProposalMaxRisk: 'medium' };
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'ai_partner_mcp_proposal_ceiling', resource }),
+			});
+			expect(res.status).toBe(200);
+			expect(partnerMcpProposalCeilingResourceDigest).toHaveBeenCalledWith(resource);
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'ai_partner_mcp_proposal_ceiling',
+				resourceDigest: 'sha256:3c9c1111n9000000000000000000000000000000000000000000000000000006',
+			}));
+		});
+
+		it.each([
+			[{ partnerId: '00000000-0000-4000-8000-000000000040', mcpUnattendedProposalMaxRisk: 'extreme' }],
+			[{ partnerId: '00000000-0000-4000-8000-000000000040' }],
+			[{ partnerId: '00000000-0000-4000-8000-000000000040', mcpUnattendedProposalMaxRisk: 'low', unattendedAllowed: true }],
+		])('refuses a malformed ai_partner_mcp_proposal_ceiling resource %j before factor verification', async (resource) => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'ai_partner_mcp_proposal_ceiling', resource }),
+			});
+			expect(res.status).toBe(400);
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
 		});
 
 		it('refuses a pre_assignment_enable grant for enabled=false (disabling needs no step-up)', async () => {

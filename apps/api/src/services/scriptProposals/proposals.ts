@@ -213,6 +213,32 @@ export async function consumeProposalForIntent(
     .where(and(
       eq(scriptProposals.id, proposalId),
       isNull(scriptProposals.intentId),
+      isNull(scriptProposals.mcpUnattendedClaimId),
+      eq(scriptProposals.status, 'reviewed'),
+      sql`${scriptProposals.expiresAt} > now()`,
+    ))
+    .returning({ id: scriptProposals.id });
+  return rows.length === 1;
+}
+
+/**
+ * The unattended-MCP counterpart of {@link consumeProposalForIntent}: an
+ * unattended MCP run has no intent, so it claims the proposal with its MCP
+ * tool-execution ledger id. Same CAS shape, so an intent and an unattended run
+ * (or two unattended runs) can never both consume one proposal.
+ */
+export async function consumeProposalForUnattendedMcpRun(
+  tx: Pick<typeof db, 'update'>,
+  proposalId: string,
+  claimId: string,
+): Promise<boolean> {
+  const rows = await tx
+    .update(scriptProposals)
+    .set({ mcpUnattendedClaimId: claimId })
+    .where(and(
+      eq(scriptProposals.id, proposalId),
+      isNull(scriptProposals.intentId),
+      isNull(scriptProposals.mcpUnattendedClaimId),
       eq(scriptProposals.status, 'reviewed'),
       sql`${scriptProposals.expiresAt} > now()`,
     ))

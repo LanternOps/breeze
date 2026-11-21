@@ -26,6 +26,7 @@ import StepUpPrompt, { pickReauthTier, type ReauthTier } from './StepUpPrompt';
 import { listField, numberField } from './aiAgents/agentFields';
 import { useStableT } from '@/lib/i18n/useStableT';
 import ModelDefaultsLink from './aiModels/ModelDefaultsLink';
+import McpProposalCeilingCard from './McpProposalCeilingCard';
 
 /**
  * Classes the unattended lane only executes on Windows (a restore checkpoint
@@ -148,7 +149,7 @@ interface PartnerGetResponse {
   partnerId?: string | null;
 }
 
-type LaneGrantOperation = 'ai_script_lane_grant' | 'ai_partner_script_ceiling_grant';
+type LaneGrantOperation = 'ai_script_lane_grant' | 'ai_partner_script_ceiling_grant' | 'ai_partner_mcp_proposal_ceiling';
 
 /** A save the server refused because it needs a step-up grant the request did
  *  not carry. The web never reads ENABLE_2FA, so this 403 — not a client-side
@@ -617,6 +618,18 @@ export default function ScriptAuthoringPage() {
           </div>
         )}
       </div>
+
+      {!partnerFetchFailed && partnerDraft && (
+        <McpProposalCeilingCard
+          value={partnerPolicy?.mcpUnattendedProposalMaxRisk ?? 'none'}
+          canManage={partnerCanManage}
+          partnerId={partnerId}
+          reauthTier={reauthTier}
+          mintGrant={(resource, code) => mintLaneGrant(resource, code, 'ai_partner_mcp_proposal_ceiling')}
+          revealStepUp={revealStepUp}
+          onSaved={load}
+        />
+      )}
 
       <div className="rounded-lg border bg-card p-6 space-y-4" data-testid="script-authoring-org-card">
         <div>

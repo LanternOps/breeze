@@ -42,6 +42,7 @@ vi.mock('./laneQueries', () => ({
   lockScriptLane: vi.fn(),
   readLaneState: (...a: unknown[]) => mockLane(...a),
   countRecentLaneIntents: vi.fn(),
+  countRecentMcpUnattendedRuns: vi.fn(),
   countRunLaneIntents: (...a: unknown[]) => mockRunCount(...a),
   readLaneDevice: (...a: unknown[]) => mockDevice(...a),
 }));
