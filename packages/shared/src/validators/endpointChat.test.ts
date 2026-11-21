@@ -45,6 +45,13 @@ describe('endpoint chat validators', () => {
     expect(agentSupportsEndpointChat(ENDPOINT_CHAT_MIN_AGENT_VERSION)).toBe(true);
   });
 
+  it('is open to released agents from 0.128.0, the version proved in the lab', () => {
+    expect(ENDPOINT_CHAT_MIN_AGENT_VERSION).toBe('0.128.0');
+    expect(agentSupportsEndpointChat('0.128.0')).toBe(true);
+    expect(agentSupportsEndpointChat('0.129.0')).toBe(true);
+    expect(agentSupportsEndpointChat('0.127.9')).toBe(false);
+  });
+
   it('is exported from the package barrel', () => {
     expect(barrel.endpointChatOpenSchema).toBe(endpointChatOpenSchema);
     expect(barrel.agentSupportsEndpointChat).toBe(agentSupportsEndpointChat);
