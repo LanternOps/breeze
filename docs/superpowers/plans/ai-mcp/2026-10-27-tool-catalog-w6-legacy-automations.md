@@ -333,7 +333,7 @@ Each decision lists the plan's default in **[brackets]**. The tasks are written 
       - R1: "Jobs are moving to Flows."
       - R2: "Jobs can't be changed any more. Move them to Flows."
       - R3: "N jobs were turned off" or "Jobs still run here until they are moved."
-    - "New job" opens Flows. The flow detail shows "Moved from Job <name>".
+    - "New job" opens Flows. *(Superseded 2026-11-21 by #12310: see the amendment at Decision 8.)* The flow detail shows "Moved from Job <name>".
     - Every string is in all 8 locales.
     - Affects C1–C4.
 11. **Self-hoster release notes (required content).** **[R1:]**
@@ -1206,6 +1206,8 @@ Flow ingest for a converted flow adds both alias claims inside its `createFlowRu
 
 ### Task C5: R1 create refusal, contracts, live check, PR C
 
+> **Shipped as written in PR C, then amended.** The create refusal in this task (the 410 in Steps 1, 2 and 4) was lifted on 2026-11-21 by #12310: see the amendment at Decision 8. The text below is kept as the record of what PR C did.
+
 - [ ] **Step 1: Failing tests.**
   - `POST /automations is 410 with flowsUrl when flows are enabled`.
   - `POST /automations still creates when FLOWS_ENABLED=false`.
@@ -1345,7 +1347,7 @@ When the respective flag is closed, the S scan and fan-out branches and the manu
 - [ ] **Shadow.** Two-way trigger evaluation, digest resets, idle never qualifies, 10-minute minimum.
 - [ ] **Claims.** Atomic with admission on both engines. Pre-claim history is honoured. Webhook aliases. UTC keys, parent claims and the cursor rule for converted schedules. The 300-event suite and the parity suite are green.
 - [ ] **Switch and revert.** The switch is one transaction with affirmative acceptances. A switched row is frozen, including DELETE. Revert closes admission and keeps execution authority. The reconciler disables only drained, aged reverted flows.
-- [ ] **R1.** `POST /automations` returns 410 when flows are enabled. `FLOWS_ENABLED` defaults on. UI, docs and release notes are done. The C5 contracts are unchanged.
+- [ ] **R1.** `POST /automations` returns 410 when flows are enabled. *(Superseded 2026-11-21 by #12310: see the amendment at Decision 8.)* `FLOWS_ENABLED` defaults on. UI, docs and release notes are done. The C5 contracts are unchanged.
 - [ ] **R2 (PR D) — moved to #10336.** Writes are frozen (except rows blocked by their environment). The pre-create sweep and the startup check run. The banner shows.
 - [ ] **R3 (PR E) — moved to #10336.** The per-installation gate. The acceptance-only sweep keeps S+R rows. Revert is closed. Unswitched webhook URLs return 410. No code is deleted.
 - [ ] **Spec amended** (Task A0).

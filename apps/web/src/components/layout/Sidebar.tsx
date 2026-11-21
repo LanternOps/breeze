@@ -1161,13 +1161,16 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     // the server has it off the entry stays, locked, with the reason. The link
     // still opens /wisp, which shows the same lock.
     const lockedReason = item.lockedWhenWispOff && wispServer === 'off' ? t('nav.wispLockedServer') : null;
+    // #12310: the icon rail has no room for the Preview tag, so its tooltip and
+    // accessible name carry it.
+    const railLabel = item.previewTag ? `${label} (${t('nav.previewTag')})` : label;
     return (
       <a
         data-testid={lockedReason ? 'nav-wisp-locked' : (item.testId ?? (item.href === '/billing/autopay' ? 'autopay-nav' : undefined))}
         key={item.name}
         href={item.href}
         aria-current={isActive ? 'page' : undefined}
-        title={lockedReason ?? (labels ? undefined : label)}
+        title={lockedReason ?? (labels ? undefined : railLabel)}
         onClick={(event) => {
           if (surface === 'mobile') closeMobileMenu();
           // `/tickets#type=<t>` while already on /tickets: Astro's router would
@@ -1190,18 +1193,16 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         <item.icon className="h-5 w-5 shrink-0" aria-hidden="true" />
         {/* The icon rail still names every link: the tooltip (`title`) is not
             reliably announced, and is absent on touch. */}
-        {labels ? <span className="truncate flex-1">{label}</span> : <span className="sr-only">{label}</span>}
+        {labels ? <span className="truncate flex-1">{label}</span> : <span className="sr-only">{railLabel}</span>}
         {/* #12310: `currentColor` keeps the tag legible on the active (primary) row too. */}
-        {item.previewTag && (labels ? (
+        {item.previewTag && labels && (
           <span
             data-testid="nav-preview-tag"
             className="shrink-0 rounded border border-current px-1.5 chart-legend-xs font-medium opacity-80"
           >
             {t('nav.previewTag')}
           </span>
-        ) : (
-          <span className="sr-only">{t('nav.previewTag')}</span>
-        ))}
+        )}
         {lockedReason && (
           <>
             {labels && <Lock data-testid="nav-wisp-lock-icon" className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}

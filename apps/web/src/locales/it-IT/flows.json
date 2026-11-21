@@ -3,7 +3,7 @@
   "subtitle": "Automazioni in più passaggi che collegano più strumenti in sequenza.",
   "empty": {
     "title": "Nessun flusso per ora",
-    "body": "Un flusso esegue ogni volta gli stessi passaggi: a un orario pianificato, al verificarsi di un evento, da un webhook o quando lo avvii. Usa un flusso quando il lavoro ha più passaggi, richiede un'approvazione o chiama altri strumenti. Non usa l'AI, a meno che un passaggio non la richieda. Per eseguire uno script a un orario pianificato, un'attività è più semplice.",
+    "body": "Un flusso è un elenco salvato di passaggi che Breeze segue allo stesso modo a ogni esecuzione. Può partire a un orario pianificato, al verificarsi di un evento, da un webhook o quando lo avvii. Usa un flusso quando il lavoro ha più passaggi, richiede un'approvazione o chiama altri strumenti. Non usa l'IA, a meno che un passaggio non la richieda. Per eseguire uno script a un orario pianificato, un'attività è più semplice.",
     "how": "I flussi sono in anteprima. Per crearne uno, chiedi a Breeze AI di redigerlo oppure sposta un'attività esistente dalla pagina Attività.",
     "jobsLink": "Vai ad Attività"
   },

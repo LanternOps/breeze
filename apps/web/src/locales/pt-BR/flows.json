@@ -3,7 +3,7 @@
   "subtitle": "Automações em várias etapas que encadeiam ferramentas.",
   "empty": {
     "title": "Ainda não há fluxos",
-    "body": "Um fluxo executa as mesmas etapas todas as vezes: em um agendamento, em um evento, a partir de um webhook ou quando você o inicia. Use um fluxo quando o trabalho tem várias etapas, precisa de uma aprovação ou chama outras ferramentas. Ele não usa AI, a menos que uma etapa peça. Para executar um script em um agendamento, um job é mais simples.",
+    "body": "Um fluxo é uma lista salva de etapas que o Breeze segue da mesma forma em cada execução. Ele pode começar em um agendamento, em um evento, a partir de um webhook ou quando você o inicia. Use um fluxo quando o trabalho tem várias etapas, precisa de uma aprovação ou chama outras ferramentas. Ele não usa IA, a menos que uma etapa peça. Para executar um script em um agendamento, um job é mais simples.",
     "how": "Os fluxos estão em prévia. Para criar um, peça ao Breeze AI para elaborá-lo ou mova um job existente da página Jobs.",
     "jobsLink": "Ir para Jobs"
   },

@@ -3,9 +3,9 @@
   "subtitle": "Automatisations en plusieurs étapes qui enchaînent des outils.",
   "empty": {
     "title": "Aucun flux pour le moment",
-    "body": "Un flux exécute les mêmes étapes à chaque fois : selon une planification, lors d'un événement, à partir d'un webhook ou quand vous le lancez. Utilisez un flux quand le travail comporte plusieurs étapes, exige une approbation ou appelle d'autres outils. Il n'utilise pas l'AI, sauf si une étape le demande. Pour exécuter un script selon une planification, une tâche est plus simple.",
-    "how": "Les flux sont en aperçu. Pour en créer un, demandez à Breeze AI de le rédiger, ou déplacez une tâche existante depuis la page Tâches.",
-    "jobsLink": "Aller aux tâches"
+    "body": "Un flux est une liste d'étapes enregistrée que Breeze suit de la même façon à chaque exécution. Il peut démarrer selon une planification, lors d'un événement, à partir d'un webhook ou quand vous le lancez. Utilisez un flux quand le travail comporte plusieurs étapes, exige une approbation ou appelle d'autres outils. Il n'utilise pas l'IA, sauf si une étape la demande. Pour exécuter un script selon une planification, une tâche est plus simple.",
+    "how": "Les flux sont en préversion. Pour en créer un, demandez à Breeze AI de le rédiger, ou déplacez une tâche existante depuis la page Tâches.",
+    "jobsLink": "Aller aux Tâches"
   },
   "list": {
     "name": "Nom",

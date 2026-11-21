@@ -109,7 +109,7 @@ function postInit(body?: unknown): RequestInit {
  * token the conversion routes answer with, plus the Job routes' frozen-row
  * refusals the Jobs page meets (`automation_converted`, `automation_disabled`).
  * `automations_moved_to_flows` is not sent today: the create refusal was lifted
- * (#12310) and returns with the R2 freeze (#10336), so its copy stays mapped.
+ * (#12310) and returns with the manual flow editor (#10336), so its copy stays mapped.
  */
 export const CONVERSION_ERROR_CODES = [
   'automation_not_found',

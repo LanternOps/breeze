@@ -3,8 +3,8 @@
   "subtitle": "Mehrstufige Automatisierungen, die Werkzeuge miteinander verketten.",
   "empty": {
     "title": "Noch keine Abläufe",
-    "body": "Ein Ablauf führt jedes Mal dieselben Schritte aus: nach Zeitplan, bei einem Ereignis, über einen Webhook oder wenn Sie ihn starten. Nutzen Sie einen Ablauf, wenn die Arbeit mehrere Schritte hat, eine Genehmigung braucht oder andere Werkzeuge aufruft. Er nutzt keine AI, sofern kein Schritt sie anfordert. Um ein Script nach Zeitplan auszuführen, ist ein Auftrag einfacher.",
-    "how": "Abläufe sind eine Vorschau. Um einen zu erstellen, bitten Sie Breeze AI, ihn zu entwerfen, oder verschieben Sie einen vorhandenen Auftrag von der Seite „Aufträge“.",
+    "body": "Ein Ablauf ist eine gespeicherte Liste von Schritten, die Breeze bei jeder Ausführung auf dieselbe Weise abarbeitet. Er kann nach Zeitplan, bei einem Ereignis, über einen Webhook oder von Ihnen gestartet werden. Nutzen Sie einen Ablauf, wenn die Arbeit mehrere Schritte hat, eine Genehmigung braucht oder andere Werkzeuge aufruft. Er nutzt keine KI, sofern kein Schritt sie anfordert. Um ein Skript nach Zeitplan auszuführen, ist ein Auftrag einfacher.",
+    "how": "Abläufe befinden sich in der Vorschau. Um einen zu erstellen, bitten Sie Breeze AI, ihn zu entwerfen, oder verschieben Sie einen vorhandenen Auftrag von der Seite „Aufträge“.",
     "jobsLink": "Zu den Aufträgen"
   },
   "list": {

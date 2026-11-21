@@ -3,7 +3,7 @@
   "subtitle": "Automatizaciones de varios pasos que encadenan herramientas.",
   "empty": {
     "title": "Aún no hay flujos",
-    "body": "Un flujo ejecuta los mismos pasos cada vez: según una programación, ante un evento, desde un webhook o cuando lo inicias. Usa un flujo cuando el trabajo tiene varios pasos, necesita una aprobación o llama a otras herramientas. No usa AI a menos que un paso la pida. Para ejecutar un script según una programación, un trabajo es más sencillo.",
+    "body": "Un flujo es una lista guardada de pasos que Breeze sigue de la misma forma en cada ejecución. Puede iniciarse según una programación, ante un evento, desde un webhook o cuando tú lo inicias. Usa un flujo cuando la tarea tenga varios pasos, necesite una aprobación o llame a otras herramientas. No usa IA a menos que un paso la pida. Para ejecutar un script según una programación, un trabajo es más sencillo.",
     "how": "Los flujos están en vista previa. Para crear uno, pide a Breeze AI que lo redacte o mueve un trabajo existente desde la página Trabajos.",
     "jobsLink": "Ir a Trabajos"
   },

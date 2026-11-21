@@ -99,6 +99,20 @@ describe('Sidebar — Flows server gate', () => {
     expect(container.querySelector('a[href="/jobs"] [data-testid="nav-preview-tag"]')).toBeNull();
   });
 
+  // The icon rail has no room for the tag, so the tooltip and the link's
+  // accessible name carry it instead.
+  it('on the collapsed rail, names Flows as a preview in its tooltip and label', async () => {
+    localStorage.setItem('sidebar-mode', 'collapsed');
+    mockConfig({ features: { flows: true } });
+    const { container } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(container.querySelector('a[href="/flows"]')).not.toBeNull());
+    const flows = container.querySelector('a[href="/flows"]')!;
+    expect(flows.getAttribute('title')).toBe('Flows (Preview)');
+    expect(flows.textContent).toBe('Flows (Preview)');
+    expect(container.querySelector('[data-testid="nav-preview-tag"]')).toBeNull();
+    expect(container.querySelector('a[href="/jobs"]')!.getAttribute('title')).toBe('Jobs');
+  });
+
   it('hides the nav item when the flag is false', async () => {
     mockConfig({ features: { flows: false } });
     const { container } = render(<Sidebar currentPath="/flows" />);
