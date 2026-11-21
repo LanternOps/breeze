@@ -105,7 +105,9 @@ export function forgetStandingStateFacts(grantId: string): void {
 export const STANDING_SPEND_STEPS = 10;
 
 /**
- * The facts' identity, minus what only says time has passed (concern ages),
+ * The facts' identity, minus what only says time has passed (concern ages)
+ * and the count of low/normal tickets (#11677: routine churn; the block shows
+ * the newest figure whenever it is sent for another reason),
  * with spend coarsened to tenths of the budget: every chat turn costs a few
  * cents, and an exact figure would re-send the block on nearly every turn.
  * A user action (#11611) is part of the identity: a new one re-sends the block;
@@ -118,6 +120,8 @@ function factsFingerprint(facts: StandingStateFacts): string {
   const timeless = {
     ...rest,
     concerns: { ...facts.concerns, top: facts.concerns.top.map(({ ageMinutes: _age, ...concern }) => concern) },
+    // #11677: low and normal tickets come and go all day; only urgent and high ones re-send the block.
+    tickets: facts.tickets === null ? null : (({ other: _other, ...attention }) => attention)(facts.tickets),
     spend: {
       budgetCentsPerDay: spend.budgetCentsPerDay,
       step: Math.floor((spend.totalCents * STANDING_SPEND_STEPS) / Math.max(1, spend.budgetCentsPerDay)),

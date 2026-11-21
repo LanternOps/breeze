@@ -156,10 +156,16 @@ describe('standingStateForTurn', () => {
     expect(await dispatched(later(30 * 60_000))).toBeNull();
   });
 
+  it('a low or normal ticket coming or going alone does not re-send the block (#11677)', async () => {
+    await dispatched(NOW);
+    h.loadStandingStateFacts.mockResolvedValue(facts({ tickets: { urgent: 0, high: 0, other: 7, unassignedUrgentHigh: 0, pastResponse: 0, top: [] } }));
+    expect(await dispatched(later(2 * 60_000))).toBeNull();
+  });
+
   it('a device going offline or a new approval waiting returns the block again (#11677)', async () => {
     await dispatched(NOW);
     h.loadStandingStateFacts.mockResolvedValue(facts({ offlineDevices: { count: 1, top: [{ name: 'PC-07', orgName: 'Org A', lastSeenAt: new Date('2027-02-01T11:00:00Z') }] } }));
-    expect((await dispatched(later(2 * 60_000)))?.block).toContain('Offline devices: 1');
+    expect((await dispatched(later(2 * 60_000)))?.block).toContain('Offline devices (15+ min): 1');
     h.loadStandingStateFacts.mockResolvedValue(facts({
       offlineDevices: { count: 1, top: [{ name: 'PC-07', orgName: 'Org A', lastSeenAt: new Date('2027-02-01T11:00:00Z') }] },
       approvals: { pending: 1 },
