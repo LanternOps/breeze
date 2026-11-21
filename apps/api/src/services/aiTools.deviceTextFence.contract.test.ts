@@ -189,6 +189,15 @@ const EXPECTED_FENCED: Readonly<Record<string, readonly string[]>> = {
   get_peripheral_activity: ['vendor', 'product', 'serialNumber', 'peripheralType', 'sourceEventId', 'details'],
   // The user's own name and email; event descriptions/details can quote another user's text.
   get_user_risk_detail: ['name', 'email', 'description', 'details'],
+  get_user_risk_scores: ['userName', 'userEmail'],
+  // Microsoft 365 Graph reads: names, descriptions, rules, domains and device strings are chosen by people (or
+  // devices, or app publishers) in the customer's tenant.
+  m365_query_users: ['displayName', 'userPrincipalName', 'mail', 'jobTitle', 'department'],
+  m365_query_signins: ['userPrincipalName', 'appDisplayName', 'clientAppUsed', 'status', 'location', 'deviceDetail'],
+  m365_query_intune_devices: ['deviceName', 'userPrincipalName', 'osVersion', 'model', 'manufacturer', 'serialNumber'],
+  m365_query_groups: ['displayName', 'mail', 'membershipRule', 'description', 'userPrincipalName'],
+  m365_query_org: ['displayName', 'verifiedDomains'],
+  m365_query_sites: ['name', 'displayName', 'webUrl'],
   // Watched service/process names and the check's details blob are agent-reported.
   get_service_monitoring_status: ['name', 'details'],
   // A run's ledger error echoes tool output; its report, findings and proposals are model text

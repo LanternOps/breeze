@@ -1168,6 +1168,18 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // The user's own name and email; risk-event descriptions and details can quote text another user typed
   // (a training-assignment reason) or a signal's source data.
   get_user_risk_detail: new Set(['name', 'email', 'description', 'details']),
+  // Each ranked user's own name and email.
+  get_user_risk_scores: new Set(['userName', 'userEmail']),
+  // Microsoft 365 Graph reads (projection: M365_READ_ACTION_FIELDS, @breeze/shared/m365). Display names, UPNs, mail,
+  // job titles, group descriptions and membership rules, domains and site names are set by people in the customer's
+  // tenant; Intune device strings by the device or its user; a sign-in's app name by the app's publisher, and its
+  // deviceDetail (device name, browser user agent) by the signing-in client.
+  m365_query_users: new Set(['displayName', 'userPrincipalName', 'mail', 'jobTitle', 'department']),
+  m365_query_signins: new Set(['userPrincipalName', 'appDisplayName', 'clientAppUsed', 'status', 'location', 'deviceDetail']),
+  m365_query_intune_devices: new Set(['deviceName', 'userPrincipalName', 'osVersion', 'model', 'manufacturer', 'serialNumber']),
+  m365_query_groups: new Set(['displayName', 'mail', 'membershipRule', 'description', 'userPrincipalName']),
+  m365_query_org: new Set(['displayName', 'verifiedDomains']),
+  m365_query_sites: new Set(['name', 'displayName', 'webUrl']),
   // Full-control W17 (#6788): a verification reason and a VSS writer's name, state and error come from the machine;
   // an unparseable agent reply is shown raw, and `error` can carry a hostname or a failed command's text. All are
   // fenced as data, never instructions.
