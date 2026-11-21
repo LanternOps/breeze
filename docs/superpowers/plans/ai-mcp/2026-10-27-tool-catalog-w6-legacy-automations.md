@@ -294,6 +294,7 @@ Each decision lists the plan's default in **[brackets]**. The tasks are written 
    - Affects B4, E1.
 8. **Retirement sequence and table drops.**
    - **[R1 = PRs A–C.** Converter, built-ins, fleet lane, claims, shadow, switch/revert, forwarding and UI. `POST /automations` returns `410 automations_moved_to_flows` **only when flows are enabled on the installation**.
+     - **Amendment (2026-11-21, #12310):** the R1 create refusal is lifted. `POST /automations` creates a Job whatever `FLOWS_ENABLED` says, and "New job" opens the Job form again (this also amends Decision 10's "New job opens Flows"). Reason: a flow can only be drafted in AI chat or moved from a Job, so the refusal left a tenant without AI (no key, no credits, or an active Wisp grant, #10289) unable to create any automation. **The refusal must return with the manual flow editor in #10336**, in or before PR D: Task D1's test list freezes PUT, PATCH, trigger and run and omits POST only because R1 already refused it, so D1 must add `POST /automations is 410` back.
    - **R2 = PR D (moved to #10336), at least one release after R1:**
      - Standalone writes return 410 except disable, delete, preview and convert: PUT, PATCH, `/:id/trigger`, `/:id/run`, and `manage_automations` enable/run. The exception is a row blocked by its environment (`flows_disabled`, `event_dispatch_not_durable`), which stays writable.
      - A boot sweep (W05d precedent; opt-out `FLOW_CONVERSION_SWEEP_DISABLED`) pre-creates shadow conversions.

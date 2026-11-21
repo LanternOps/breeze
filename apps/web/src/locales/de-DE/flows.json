@@ -3,7 +3,9 @@
   "subtitle": "Mehrstufige Automatisierungen, die Werkzeuge miteinander verketten.",
   "empty": {
     "title": "Noch keine Abläufe",
-    "body": "Bitten Sie Breeze AI, einen Flow zu entwerfen, und prüfen Sie ihn dann hier."
+    "body": "Ein Ablauf führt jedes Mal dieselben Schritte aus: nach Zeitplan, bei einem Ereignis, über einen Webhook oder wenn Sie ihn starten. Nutzen Sie einen Ablauf, wenn die Arbeit mehrere Schritte hat, eine Genehmigung braucht oder andere Werkzeuge aufruft. Er nutzt keine AI, sofern kein Schritt sie anfordert. Um ein Script nach Zeitplan auszuführen, ist ein Auftrag einfacher.",
+    "how": "Abläufe sind eine Vorschau. Um einen zu erstellen, bitten Sie Breeze AI, ihn zu entwerfen, oder verschieben Sie einen vorhandenen Auftrag von der Seite „Aufträge“.",
+    "jobsLink": "Zu den Aufträgen"
   },
   "list": {
     "name": "Name",
@@ -766,7 +768,7 @@
     "migration": {
       "banner": {
         "r1": "Aufträge wandern in Abläufe.",
-        "r1Body": "Neue Aufträge werden in Abläufen erstellt. Verschieben Sie jeden Auftrag, wenn sein Schattenlauf übereinstimmt; Sie können ihn zurückverschieben."
+        "r1Body": "Sie können hier weiterhin Aufträge erstellen und bearbeiten. Verschieben Sie einen Auftrag, wenn sein Schattenlauf übereinstimmt; Sie können ihn zurückverschieben."
       },
       "convertAll": "Schattenlauf für alle umwandelbaren starten",
       "converting": "Wird gestartet …",

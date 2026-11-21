@@ -68,7 +68,6 @@ import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
 import { conversionSummariesFor, resetShadowIfChanged } from '../services/flows/conversion/ledger';
 import { OccurrenceClaimedError, claimOccurrence, currentConversionForAutomation } from '../services/flows/conversion/claims';
 import { legacyWebhookDeliveryIdHeader, webhookOccurrenceInstant, webhookOccurrenceKeys } from '../services/flows/conversion/webhookOccurrence';
-import { flowsEnabled } from '../config/env';
 
 export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
@@ -1320,17 +1319,11 @@ automationRoutes.get(
 // These mutation routes remain for legacy compatibility.
 // ============================================
 
-/**
- * W06 R1 (#5221, plan Decision 8): new standalone Jobs are not created once
- * Flows are enabled on this installation — "New job" opens Flows instead. With
- * FLOWS_ENABLED=false Jobs stay writable (Flows are unavailable there). Answers
- * before body validation, so a client learns where to go whatever it sent.
- * Managed rows (triage seeding, monitor compile) never come through this route.
- */
-async function refuseCreateWhenFlowsEnabled(c: Context, next: Next) {
-  if (flowsEnabled()) return c.json({ error: 'automations_moved_to_flows', flowsUrl: '/flows' }, 410);
-  await next();
-}
+// #12310: W06 R1 (#5221, plan Decision 8) refused this route with 410
+// `automations_moved_to_flows` while Flows was on. A flow can only be drafted in
+// AI chat or moved from an existing Job, so the refusal left a tenant without
+// AI unable to create any automation. Creation stays open whatever
+// FLOWS_ENABLED says; the refusal returns with the manual flow editor (#10336).
 
 // DEPRECATED: Automations are now managed via Configuration Policies. These routes remain for legacy compatibility.
 automationRoutes.post(
@@ -1338,7 +1331,6 @@ automationRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requireAutomationWrite,
   requireMfa(),
-  refuseCreateWhenFlowsEnabled,
   zValidator('json', createAutomationSchema),
   async (c) => {
     const auth = c.get('auth');

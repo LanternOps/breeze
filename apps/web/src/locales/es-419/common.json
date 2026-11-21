@@ -32,6 +32,7 @@
     "networkMonitor": "Red",
     "jobs": "Trabajos",
     "flows": "Flujos",
+    "previewTag": "Vista previa",
     "monitoring": "Monitoreo",
     "networkDiscovery": "Descubrimiento de red",
     "edr": "EDR",

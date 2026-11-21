@@ -32,6 +32,7 @@
     "networkMonitor": "Réseau",
     "jobs": "Tâches",
     "flows": "Flux",
+    "previewTag": "Aperçu",
     "monitoring": "Supervision",
     "networkDiscovery": "Découverte du réseau",
     "edr": "EDR",

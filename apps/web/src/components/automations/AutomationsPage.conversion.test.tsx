@@ -127,10 +127,16 @@ describe('AutomationsPage — Move to Flows (#5221)', () => {
     expect(window.location.hash).toBe('#convert-a-2');
   });
 
-  it('with Flows on, New job opens Flows and the R1 banner shows', async () => {
+  // #12310: a flow can only be drafted in AI chat, so New job must stay a Job.
+  it('with Flows on, New job still opens the Job form and the banner shows', async () => {
     render(<AutomationsPage />);
-    expect(await screen.findByTestId('jobs-migration-banner')).toBeTruthy();
-    expect(screen.getByTestId('automations-new').getAttribute('href')).toBe('/flows');
+    const banner = await screen.findByTestId('jobs-migration-banner');
+    const newJob = screen.getByTestId('automations-new');
+    expect(newJob.getAttribute('href')).toBe('/jobs/new');
+    expect(newJob.textContent).toBe('New Automation');
+    // The banner must not tell people that new jobs are made somewhere else.
+    expect(banner.textContent).not.toMatch(/new jobs are made in flows/i);
+    expect(banner.textContent).toMatch(/still create/i);
   });
 
   it('the bulk summary survives the list refresh (no full-page spinner on a background reload)', async () => {

@@ -87,6 +87,18 @@ describe('Sidebar — Flows server gate', () => {
     expect(hrefs.indexOf('/flows')).toBe(hrefs.indexOf('/jobs') + 1);
   });
 
+  // #12310: Flows is in the nav by default, so the entry says it is a preview.
+  it('tags Flows as a preview, and no other entry', async () => {
+    mockConfig({ features: { flows: true } });
+    const { container } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(container.querySelector('a[href="/flows"]')).not.toBeNull());
+    const tags = Array.from(container.querySelectorAll('[data-testid="nav-preview-tag"]'));
+    expect(tags).toHaveLength(1);
+    expect(tags[0]!.closest('a')?.getAttribute('href')).toBe('/flows');
+    expect(tags[0]!.textContent).toBe('Preview');
+    expect(container.querySelector('a[href="/jobs"] [data-testid="nav-preview-tag"]')).toBeNull();
+  });
+
   it('hides the nav item when the flag is false', async () => {
     mockConfig({ features: { flows: false } });
     const { container } = render(<Sidebar currentPath="/flows" />);

@@ -3,7 +3,9 @@
   "subtitle": "Automações em várias etapas que encadeiam ferramentas.",
   "empty": {
     "title": "Ainda não há fluxos",
-    "body": "Peça ao Breeze AI para elaborar um fluxo e depois revise-o aqui."
+    "body": "Um fluxo executa as mesmas etapas todas as vezes: em um agendamento, em um evento, a partir de um webhook ou quando você o inicia. Use um fluxo quando o trabalho tem várias etapas, precisa de uma aprovação ou chama outras ferramentas. Ele não usa AI, a menos que uma etapa peça. Para executar um script em um agendamento, um job é mais simples.",
+    "how": "Os fluxos estão em prévia. Para criar um, peça ao Breeze AI para elaborá-lo ou mova um job existente da página Jobs.",
+    "jobsLink": "Ir para Jobs"
   },
   "list": {
     "name": "Nome",
@@ -766,7 +768,7 @@
     "migration": {
       "banner": {
         "r1": "Os jobs estão sendo movidos para Fluxos.",
-        "r1Body": "Novos jobs são criados em Fluxos. Mova cada job quando a sombra dele coincidir; você pode movê-lo de volta."
+        "r1Body": "Você ainda pode criar e editar jobs aqui. Mova um job quando a sombra dele coincidir; você pode movê-lo de volta."
       },
       "convertAll": "Iniciar sombra para todos os conversíveis",
       "converting": "Iniciando…",

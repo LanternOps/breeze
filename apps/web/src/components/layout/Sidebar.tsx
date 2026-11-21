@@ -219,6 +219,8 @@ type NavItem = {
   requiresToolSources?: boolean;
   /** #5218: gated on the SERVER's FLOWS_ENABLED via /config. */
   requiresFlows?: boolean;
+  /** #12310: the entry is shown to everyone but the feature is a preview. */
+  previewTag?: boolean;
   requiresPreAssignment?: boolean;
   /** W06 R1b (#6171): gated on the SERVER's `features.aiOperatorTasks` via /config. */
   requiresAiOperatorTasks?: boolean;
@@ -284,7 +286,7 @@ export const topLevelNav: NavItem[] = [
   { name: 'Scripts', labelKey: 'nav.scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
   // #5288 — Automations finally get a nav home, as Jobs. /automations redirects here.
   { name: 'Jobs', labelKey: 'nav.jobs', href: '/jobs', icon: CalendarClock, requiredPermission: { resource: 'automations', action: 'read' } },
-  { name: 'Flows', labelKey: 'nav.flows', href: '/flows', icon: Workflow, requiresFlows: true, requiredPermission: { resource: 'automations', action: 'read' } },
+  { name: 'Flows', labelKey: 'nav.flows', href: '/flows', icon: Workflow, requiresFlows: true, previewTag: true, requiredPermission: { resource: 'automations', action: 'read' } },
   { name: 'Patches', labelKey: 'nav.patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Vulnerabilities', labelKey: 'nav.vulnerabilities', href: '/vulnerabilities', icon: Bug, requiredPermission: { resource: 'devices', action: 'read' } },
 ];
@@ -1189,6 +1191,17 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         {/* The icon rail still names every link: the tooltip (`title`) is not
             reliably announced, and is absent on touch. */}
         {labels ? <span className="truncate flex-1">{label}</span> : <span className="sr-only">{label}</span>}
+        {/* #12310: `currentColor` keeps the tag legible on the active (primary) row too. */}
+        {item.previewTag && (labels ? (
+          <span
+            data-testid="nav-preview-tag"
+            className="shrink-0 rounded border border-current px-1.5 chart-legend-xs font-medium opacity-80"
+          >
+            {t('nav.previewTag')}
+          </span>
+        ) : (
+          <span className="sr-only">{t('nav.previewTag')}</span>
+        ))}
         {lockedReason && (
           <>
             {labels && <Lock data-testid="nav-wisp-lock-icon" className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
