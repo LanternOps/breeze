@@ -1,7 +1,8 @@
 # Learned networks: run discovery on the network you meant
 
 Date: 2026-11-20
-Status: Proposed. Awaiting owner approval. Codex (gpt-6.2-astra, xhigh) and a builder check read the
+Status: **Approved by the owner 2026-11-21**, including section 12 (decision O7). Plan:
+[index](../../plans/monitoring/2026-11-21-learned-networks.md). Codex (gpt-6.2-astra, xhigh) and a builder check read the
 **first draft**; Codex returned "agree with changes" (section 15). Written after those reads and not
 independently reviewed in full: the stored gated flag, interface binding, the attempt record and
 per-site lock, and the two merge forms. Credential grants (8.3) had two narrow Codex reads; the outcome
@@ -39,9 +40,10 @@ An admin has to.
 | O4 | Asset inventory is **not** re-keyed by network. Ranges only collide through roaming laptops, never between two sites of one customer. | 2026-11-20 |
 | O5 | Track WAN addresses as part of this work. | 2026-11-20 |
 | O6 | No automatic site reassignment of devices, ever (SL section 2). This design never moves a device. | 2026-10-03 |
+| O7 | Gating also covers the other work that makes a site's agents probe its LAN: SNMP polling, network monitors and the asset "Check now" probe (section 12). | 2026-11-21 |
 
 Everything else in this document is a proposal by the author. The calls that change behavior are listed
-in section 13 so they can be rejected individually. One decision is still the owner's (section 12).
+in section 13 so they can be rejected individually.
 
 ## 3. Goals, non-goals, anti-goals
 
@@ -543,20 +545,25 @@ Ignored (4)  ▸
   proves a fresh answer on all three. If one platform cannot do it, the plan stops and comes back to the
   owner; step 2 is not weakened and that platform is not quietly dropped.
 
-## 12. Open: owner decision
+## 12. Decided: gating covers the other LAN probes (O7)
 
-**Should gating also cover the other work that makes a site's agents probe its LAN?** Discovery is not
-the only producer. SNMP polling and network monitors also pick a site agent by site of record
-(`jobs/snmpWorker.ts`, `jobs/monitorWorker.ts`), as does the asset "Check now" probe. From a roaming
-laptop they poll and check home addresses, and a monitor reports an office device as down.
+Discovery is not the only work that makes a site's agents probe its LAN. SNMP polling, network monitors
+and the asset "Check now" probe also run from one of the site's agents (`jobs/snmpWorker.ts`,
+`jobs/monitorWorker.ts`). On a gated site they must follow the same rule as discovery, so that "gated"
+means what it says for the whole site. The owner chose to include this (2026-11-21); it is the final
+wave.
 
-- **Include (recommended):** a final wave applies the same eligibility rule to those three producers on
-  gated sites, with the guard on the ones that carry credentials. "Gated" then means what it says for the
-  whole site. Adds roughly one wave.
-- **Defer:** ship discovery only and file the rest as a follow-up. Smaller, but a gated site still polls
-  and checks from wherever its laptops are.
+On a gated site, each of the three producers:
 
-The agent guard is built as a reusable function either way, so including this later is not a rewrite.
+- sends work only to an **eligible agent** as defined in 8.2 (assigned to the site, online, not
+  ephemeral, not parked, currently behind one of the site's assigned fingerprints, at or above the guard
+  version);
+- sends it as a guarded command, so the agent proves the gateway and binds the probe to that interface
+  (7.2 steps 1 to 3) before anything leaves;
+- treats "no eligible agent" as **not checked**. It never records the target as down, and never raises
+  or resolves an alert on that basis.
+
+Sites that are not gated are unchanged. Two calls here are the author's (section 13, items 13 and 14).
 
 ## 13. Calls made by the author (reject any individually)
 
@@ -589,14 +596,20 @@ The agent guard is built as a reusable function either way, so including this la
     two places: ranges on profiles and baselines (read by presence, SL 6.2) and learned-network
     assignment (read by the gate). The removal plan is a follow-up in which presence takes assigned
     networks as its anchors, which also closes SL open question Q1. It is sequenced after this feature.
+13. **SNMP polling credentials are not granted per fingerprint.** The grants in 8.3 cover discovery
+    profiles only. On a gated site, polling credentials go wherever the site's assigned networks are,
+    through an eligible agent and the guard. Extending grants to polling would mean a second re-entry
+    rule for a second credential store.
+14. **"No eligible agent" is "not checked", never "down"** (section 12), for monitors, polling and the
+    asset probe on gated sites. A monitor therefore goes quiet, not red, while every laptop is away.
 
 ## 14. Left to the builder
 
 - Wave split. Suggested: (1) migration, registrations, ingest, retention, kill switch, with no behavior
   change; (2) agent report and guarded scan; (3) routes, gate, shared command builder, attempt record,
   result verification, credential binding; (4) web; (5) docs, release notes and the lab proof below;
-  (6) the other producers, if section 12 is "include". Wave 1 deploys before agents that send the new
-  field are promoted.
+  (6) the other producers (section 12). Wave 1 deploys before agents that send the new field are
+  promoted.
 - The org-merge mechanism, the exact FK actions, the batch cadence for shared timestamps, the freshness
   window and capture-age bound, the guarded command's name and minimum agent version, and how each OS
   obtains the fresh layer-2 answer.
@@ -668,4 +681,4 @@ stops here; the plan carries these as tests rather than as further design passes
 | O4's premise is not enforced | Cross-network update count on the job, warn only (8.4). |
 | Baseline "disappeared" wording | Corrected (section 10). |
 | Saved credentials and newly authorized networks | Fingerprint binding (8.3). |
-| Other producers that probe a site's LAN | Owner decision (section 12). |
+| Other producers that probe a site's LAN | Owner decision O7: included (section 12). |
