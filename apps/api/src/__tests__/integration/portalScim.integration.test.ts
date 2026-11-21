@@ -109,7 +109,7 @@ describe('create, deactivate, reactivate (spec §5.11)', () => {
     const account = await readAccount(identity!.portalUserId);
     expect(account).toMatchObject({
       authMethod: 'entra', status: 'active', browserAccess: 'granted', disabledBy: null, passwordHash: null,
-      email: userName.toLowerCase(), name: 'Pat Example', entraTenantId: tid, entraOid: oid, contactId: null,
+      email: userName.toLowerCase(), name: 'Pat Example', contactId: null,
     });
     const audits = await admin().select().from(auditLogs).where(and(eq(auditLogs.orgId, org.id), eq(auditLogs.action, 'portal.scim.user.create')));
     expect(audits).toHaveLength(1);
@@ -360,7 +360,6 @@ describe('never link by email (invariant 5, Review Focus 4)', () => {
     const oid = randomUUID();
     const [addin] = await admin().insert(portalUsers).values({
       orgId: org.id, email: 'addin-user@customer.test', authMethod: 'entra', status: 'active', browserAccess: 'none',
-      entraTenantId: tid, entraOid: oid,
     }).returning();
     const [ident] = await admin().insert(portalUserIdentities).values({
       orgId: org.id, portalUserId: addin!.id, provider: 'entra', issuer: entraIssuer(tid), subject: oid, entraTenantId: tid, linkedVia: 'jit',
@@ -408,7 +407,7 @@ describe('never link by email (invariant 5, Review Focus 4)', () => {
     const { org, tid, token } = await seedOrg();
     const oid = randomUUID();
     const [addin] = await admin().insert(portalUsers).values({
-      orgId: org.id, email: 'addin@customer.test', authMethod: 'entra', status: 'active', browserAccess: 'granted', entraTenantId: tid, entraOid: oid,
+      orgId: org.id, email: 'addin@customer.test', authMethod: 'entra', status: 'active', browserAccess: 'granted',
     }).returning();
     await admin().insert(portalUserIdentities).values({
       orgId: org.id, portalUserId: addin!.id, provider: 'entra', issuer: entraIssuer(tid), subject: oid, entraTenantId: tid, linkedVia: 'jit',
@@ -507,7 +506,7 @@ describe('PUT, PATCH atomicity and DELETE aftermath (review)', () => {
     // Org A holds the person on the legacy columns only (no identity row).
     await admin().insert(portalUsers).values({
       orgId: a.org.id, email: `legacy-${randomUUID().slice(0, 8)}@customer.test`, authMethod: 'entra', status: 'active',
-      browserAccess: 'none', entraTenantId: b.tid, entraOid: oid,
+      browserAccess: 'none',
     });
     const res = await call(b.token, 'POST', '/Users', userBody(oid, `pat-${randomUUID().slice(0, 8)}@customer.test`));
     expect(res.status).toBe(409);

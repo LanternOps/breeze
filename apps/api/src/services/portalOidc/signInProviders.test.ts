@@ -6,8 +6,6 @@
  * __tests__/integration/portalGoogleSignIn.integration.test.ts.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { PgDialect } from 'drizzle-orm/pg-core';
-import type { SQL } from 'drizzle-orm';
 
 const h = vi.hoisted(() => ({
   state: { systemDepth: 0 },
@@ -176,9 +174,9 @@ describe('google adapter', () => {
     expect(m.isDomainVerifiedForOrg).not.toHaveBeenCalled();
   });
 
-  it('google legacyKeyHeld is always false; sessionPin carries hd and no tenant', async () => {
-    expect(await googleSignInProvider.legacyKeyHeld(google())).toBe(false);
-    expect(h.selects).toHaveLength(0);
+  it('google sessionPin carries hd and no tenant (W10: no adapter reads legacy portal_users columns)', async () => {
+    expect('legacyKeyHeld' in googleSignInProvider).toBe(false);
+    expect('legacyKeyHeld' in entraSignInProvider).toBe(false);
     expect(googleSignInProvider.sessionPin(google())).toEqual({ entraTenantId: null, googleHostedDomain: HD });
   });
 
@@ -240,13 +238,6 @@ describe('entra adapter (W4, moved)', () => {
     expect(await entraSignInProvider.fenceProof({ orgId: ORG, proofVerifiedAt: null }, entra)).toBe(true);
     expect(m.lockVerifiedDomainRow).not.toHaveBeenCalled();
     expect(h.selects).toHaveLength(0);
-  });
-
-  it('entra legacyKeyHeld reads portal_users (entra_tenant_id, entra_oid) under a system context', async () => {
-    h.results.push([{ id: 'holder' }]);
-    expect(await entraSignInProvider.legacyKeyHeld(entra)).toBe(true);
-    expect(new PgDialect().sqlToQuery(h.selects[0]!.where as SQL).params).toEqual([TID, OID]);
-    expect(await entraSignInProvider.legacyKeyHeld(entra)).toBe(false);
   });
 
   it('entra key, pin and request input', () => {

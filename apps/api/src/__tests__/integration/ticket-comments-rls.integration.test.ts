@@ -50,7 +50,7 @@ async function seedTicketWithMixedComments() {
 
   const [portalUser] = await adminDb
     .insert(portalUsers)
-    .values({
+    .values({ browserAccess: 'granted',
       orgId: org.id,
       email: `tc-rls-portal-${unique}@example.test`,
       name: 'Portal Customer',
@@ -242,7 +242,7 @@ describe('ticket_comments RLS — parent-ticket visibility (2026-06-10-a migrati
     const otherOrg = await createOrganization({ partnerId: otherPartner.id });
     const [otherPortalUser] = await adminDb
       .insert(portalUsers)
-      .values({
+      .values({ browserAccess: 'granted',
         orgId: otherOrg.id,
         email: `tc-rls-other-portal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.test`,
         name: 'Other Portal Customer',

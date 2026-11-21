@@ -148,10 +148,6 @@ export const JOB_SCHEDULES = {
   // lane, so :33 keeps the daily = 3 (mod 5) lane.
   'patch-report-retention': '33 10 * * *',
   'vulnerability-kev-epss-sync': '3 11 * * *',
-  // Portal registration W3 (identities release B) — daily drift REPORT between
-  // portal_user_identities and portal_users.entra_* (never repairs, plan D10).
-  // Hour 11 held only :03 in this lane; :23 keeps the daily = 3 (mod 5) lane.
-  'portal-identity-reconcile': '23 11 * * *',
   'vulnerability-sofa-sync': '3 12 * * *',
   // Portal registration W8 (#11385, plan D10) — daily Google Workspace
   // directory pass: fans out one google-org job per org with an active Google

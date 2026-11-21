@@ -77,8 +77,7 @@ import {
   type ResolvePortalOidcSignInInput,
 } from '../../services/portalOidc/accountResolution';
 import { approvePortalAccessRequest, createPortalAccessRequest } from '../../services/portalAccessRequests';
-import { PORTAL_GOOGLE_ISSUER, entraIssuer, reconcilePortalUserIdentities } from '../../services/portalUserIdentities';
-import { processPortalIdentityReconcileJob } from '../../jobs/portalIdentityReconcile';
+import { PORTAL_GOOGLE_ISSUER, entraIssuer } from '../../services/portalUserIdentities';
 import { ORG_CASCADE_DELETE_ORDER, cascadeDeleteOrg } from '../../services/tenantCascade';
 import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegistry';
 import { entraChainKey } from '../../services/portalDirectory/chain';
@@ -641,13 +640,9 @@ describe('portal directory deprovisioning, end to end (W8 Task 9)', () => {
     expect(await readIdentity(colleague.identityId)).toMatchObject({ disabledAt: null });
   });
 
-  it('a disabled identity cannot come back through SSO access-request approval, an invite, or the reconcile job', async () => { // RF5 (review)
+  it('a disabled identity cannot come back through SSO access-request approval or an invite', async () => { // RF5 (review); W10 retired the reconcile job (iii)
     const f = await seedEntraOrg(2);
     const [leaver, colleague] = f.people as [Person, Person];
-    // Real add-in accounts carry the legacy entra_* columns; the drift report reads them.
-    for (const p of f.people) {
-      await admin().update(portalUsers).set({ entraTenantId: f.tid, entraOid: p.subject }).where(eq(portalUsers.id, p.portalUserId));
-    }
     await deprovisionThroughPipeline(f, leaver);
     const leaverAccount = await readAccount(leaver.portalUserId);
     const leaverIdentity = await readIdentity(leaver.identityId);
@@ -689,13 +684,7 @@ describe('portal directory deprovisioning, end to end (W8 Task 9)', () => {
     expect(await readAccount(invited!.id)).toMatchObject({ status: 'invited', authEpoch: 2 });
     expect(await admin().select().from(portalUserIdentities).where(eq(portalUserIdentities.portalUserId, invited!.id))).toEqual([]);
 
-    // (iii) The reconcile job: a disabled identity whose account still holds
-    // the legacy columns is not drift, and the job changes nothing.
-    await processPortalIdentityReconcileJob();
-    const report = await reconcilePortalUserIdentities({ orgId: f.orgId });
-    expect(report.counts).toEqual({ missingIdentity: 0, orphanIdentity: 0, mismatched: 0, halfPopulated: 0 });
-
-    // Through all three: one identity row, still disabled and bound to the leaver; nothing else moved.
+    // Through both: one identity row, still disabled and bound to the leaver; nothing else moved.
     expect(await identitiesOfSubject()).toEqual([leaverIdentity]);
     expect(await readAccount(leaver.portalUserId)).toEqual(leaverAccount);
     expect(await readIdentity(colleague.identityId)).toMatchObject({ disabledAt: null });

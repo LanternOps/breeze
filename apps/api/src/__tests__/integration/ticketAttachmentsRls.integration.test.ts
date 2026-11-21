@@ -298,8 +298,8 @@ describe('portal attachment read path (REAL route, real Postgres)', () => {
   async function seedPortalUser(orgId: string): Promise<string> {
     const id = crypto.randomUUID();
     await getTestDb().execute(sql`
-      INSERT INTO portal_users (id, org_id, email, name)
-      VALUES (${id}::uuid, ${orgId}::uuid, ${`portal-${uid()}@example.test`}, 'Portal User')
+      INSERT INTO portal_users (id, org_id, email, name, browser_access)
+      VALUES (${id}::uuid, ${orgId}::uuid, ${`portal-${uid()}@example.test`}, 'Portal User', 'granted')
     `);
     return id;
   }

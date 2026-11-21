@@ -16,9 +16,7 @@
  * This module writes nothing: every portal write stays in the resolver (the
  * writer census, __tests__/portalAccountWriters.contract.test.ts).
  */
-import { and, eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { portalUsers } from '../../db/schema';
 import { resolveLinkableEntraAddress } from '../clientAiEntraAddress';
 import type { CreatePortalAccessRequestInput } from '../portalAccessRequests';
 import { findOrgByVerifiedDomain, isDomainVerifiedForOrg, lockVerifiedDomainRow } from '../portalDomainVerification';
@@ -61,8 +59,6 @@ export interface PortalOidcSignInProvider {
   /** D15: called first inside a write branch's transaction; false → the branch refuses `org_unresolved`. */
   fenceProof(org: PortalOidcResolvedOrg, identity: PortalOidcVerifiedIdentity): Promise<boolean>;
   identityKey(identity: PortalOidcVerifiedIdentity): PortalIdentityKey;
-  /** Whether a login holds this identity on legacy `portal_users` columns (read before an invite is spent). */
-  legacyKeyHeld(identity: PortalOidcVerifiedIdentity): Promise<boolean>;
   /** Null → `no_address`. No DB context held. */
   newPersonAddress(
     identity: PortalOidcVerifiedIdentity,
@@ -109,29 +105,6 @@ export const entraSignInProvider: PortalOidcSignInProvider = {
   identityKey(identity) {
     const entra = asEntra(identity);
     return { provider: 'entra', tid: entra.entraTenantId, oid: entra.subject };
-  },
-
-  /**
-   * Whether any login holds `(tid, oid)` on its legacy `portal_users
-   * (entra_tenant_id, entra_oid)` columns (the W3 D4 writer fence keeps them
-   * until identities release C). A login with those columns and no identity row
-   * (drift the daily reconcile only reports) is invisible to step 1, yet
-   * `linkPortalUserIdentity` refuses it as a conflict — so the invite step reads
-   * it BEFORE spending the invite. This also refuses the edge where the invited
-   * account itself is the drifted holder: the invite is not known until it is
-   * consumed, and an unspent invite plus a generic refusal is the safe side.
-   */
-  async legacyKeyHeld(identity) {
-    const entra = asEntra(identity);
-    const [holder] = await withSystemDbAccessContext(
-      () => db
-        .select({ id: portalUsers.id })
-        .from(portalUsers)
-        .where(and(eq(portalUsers.entraTenantId, entra.entraTenantId), eq(portalUsers.entraOid, entra.subject)))
-        .limit(1),
-      'portalOidc.resolve.legacyEntraKey',
-    );
-    return Boolean(holder);
   },
 
   async newPersonAddress(identity, org) {
@@ -215,12 +188,6 @@ export const googleSignInProvider: PortalOidcSignInProvider = {
   identityKey(identity) {
     // The sub exactly as issued: case-sensitive, never normalized (D1).
     return { provider: 'google', sub: asGoogle(identity).subject };
-  },
-
-  // Google has no portal_users legacy columns.
-  async legacyKeyHeld(identity) {
-    asGoogle(identity);
-    return false;
   },
 
   /**

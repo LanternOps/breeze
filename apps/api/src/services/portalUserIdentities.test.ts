@@ -33,7 +33,6 @@ import {
   lockIdentityForAccount,
   portalUserHasIdentitySql,
   portalUserHasUsableIdentitySql,
-  reconcilePortalUserIdentities,
   type IdentityExecutor,
 } from './portalUserIdentities';
 import { db } from '../db';
@@ -225,15 +224,14 @@ describe('ensureEntraIdentity', () => {
   });
 });
 
-describe('linkPortalUserIdentity (W4: invite / self_link / jit, W3 D4 writer fence)', () => {
+describe('linkPortalUserIdentity (W4: invite / self_link / jit; W10: no legacy entra_* fence)', () => {
   const input = {
     orgId: ORG, portalUserId: USER, provider: 'entra' as const, tid: TID, oid: OID,
     linkedVia: 'invite' as const, clearPasswordHash: false, now: NOW,
   };
 
-  it('linkPortalUserIdentity writes the identity and entra_* columns together; conflict writes neither', async () => {
-    // Legacy key free, identity inserted, login row updated.
-    state.selectReturns.push([]);
+  it('linkPortalUserIdentity writes the identity, then proves the login is in the org (no entra_* column, no legacy pre-check); conflict writes nothing', async () => {
+    // Identity inserted, login row updated. W10: no legacy-key SELECT first.
     state.insertReturns.push([{ id: 'i-1' }]);
     state.updateReturns.push([{ id: USER }]);
     await expect(linkPortalUserIdentity(fakeExec(), input)).resolves.toEqual({ kind: 'linked' });
@@ -247,7 +245,8 @@ describe('linkPortalUserIdentity (W4: invite / self_link / jit, W3 D4 writer fen
     });
     expect(state.updates).toHaveLength(1);
     expect(state.updates[0]!.table).toBe(portalUsers);
-    expect(state.updates[0]!.set).toEqual({ entraTenantId: TID, entraOid: OID, updatedAt: NOW });
+    expect(state.updates[0]!.set).toEqual({ updatedAt: NOW });
+    expect(state.selects).toHaveLength(0);
     const where = new PgDialect().sqlToQuery(state.updates[0]!.where as never);
     expect(where.sql).toContain('"portal_users"."id"');
     expect(where.sql).toContain('"portal_users"."org_id"');
@@ -256,41 +255,22 @@ describe('linkPortalUserIdentity (W4: invite / self_link / jit, W3 D4 writer fen
     // (issuer, subject) or (user, provider) taken: the insert returns nothing → no login write.
     state.inserts.length = 0;
     state.updates.length = 0;
-    state.selectReturns.push([]);
     state.insertReturns.push([]);
     await expect(linkPortalUserIdentity(fakeExec(), input)).resolves.toEqual({ kind: 'conflict' });
     expect(state.inserts).toHaveLength(1);
     expect(state.updates).toHaveLength(0);
-
-    // The legacy (entra_tenant_id, entra_oid) key held by ANOTHER login (drift):
-    // refused before any write, so the login update can never raise 23505.
-    state.inserts.length = 0;
-    state.updates.length = 0;
-    state.selects.length = 0;
-    state.selectReturns.push([{ id: 'someone-else' }]);
-    await expect(linkPortalUserIdentity(fakeExec(), input)).resolves.toEqual({ kind: 'conflict' });
-    expect(state.inserts).toHaveLength(0);
-    expect(state.updates).toHaveLength(0);
-    expect(state.selects[0]!.from).toBe(portalUsers);
-    const legacy = new PgDialect().sqlToQuery(state.selects[0]!.where as never);
-    expect(legacy.sql).toContain('"portal_users"."entra_tenant_id"');
-    expect(legacy.sql).toContain('"portal_users"."entra_oid"');
-    expect(legacy.sql).toContain('<>');
-    expect(legacy.params).toEqual(expect.arrayContaining([TID, OID, USER]));
   });
 
   it('clearPasswordHash nulls password_hash in the same statement set', async () => {
-    state.selectReturns.push([]);
     state.insertReturns.push([{ id: 'i-1' }]);
     state.updateReturns.push([{ id: USER }]);
     await linkPortalUserIdentity(fakeExec(), { ...input, linkedVia: 'self_link', clearPasswordHash: true });
     expect(state.updates).toHaveLength(1);
-    expect(state.updates[0]!.set).toEqual({ entraTenantId: TID, entraOid: OID, passwordHash: null, updatedAt: NOW });
+    expect(state.updates[0]!.set).toEqual({ passwordHash: null, updatedAt: NOW });
     expect(state.inserts[0]!.values).toMatchObject({ linkedVia: 'self_link' });
   });
 
   it('throws (the caller rolls back) when the login is not in the org it was linked under', async () => {
-    state.selectReturns.push([]);
     state.insertReturns.push([{ id: 'i-1' }]);
     state.updateReturns.push([]);
     await expect(linkPortalUserIdentity(fakeExec(), input)).rejects.toThrow(/not in this org/);
@@ -394,49 +374,18 @@ describe('linkPortalUserIdentity: google (W7 D5)', () => {
     await expect(linkPortalUserIdentity(fakeExec(), google)).rejects.toThrow(/not in this org/);
   });
 
-  it('linkPortalUserIdentity entra is unchanged (legacy pre-check, entra_* fence)', async () => {
-    state.selectReturns.push([]);
+  it('linkPortalUserIdentity entra takes the same path as google (W10: no legacy pre-check, no entra_* fence)', async () => {
     state.insertReturns.push([{ id: 'i-1' }]);
     state.updateReturns.push([{ id: USER }]);
     await linkPortalUserIdentity(fakeExec(), {
       orgId: ORG, portalUserId: USER, provider: 'entra', tid: TID, oid: OID, linkedVia: 'jit', clearPasswordHash: true, now: NOW,
     });
-    expect(state.selects).toHaveLength(1);
-    expect(state.selects[0]!.from).toBe(portalUsers);
+    expect(state.selects).toHaveLength(0);
     expect(state.inserts[0]!.values).toEqual({
       orgId: ORG, portalUserId: USER, provider: 'entra', issuer: entraIssuer(TID), subject: OID,
       entraTenantId: TID, linkedVia: 'jit', lastUsedAt: NOW,
     });
-    expect(state.updates[0]!.set).toEqual({ entraTenantId: TID, entraOid: OID, passwordHash: null, updatedAt: NOW });
-  });
-});
-
-describe('reconcilePortalUserIdentities', () => {
-  it('refuses to run inside a held DB context (it opens its own system context, never nested)', async () => {
-    state.held = true;
-    await expect(reconcilePortalUserIdentities()).rejects.toThrow(/held/);
-    expect(state.systemCalls).toBe(0);
-  });
-
-  it('reconcile does not report a disabled identity as drift', async () => {
-    // W8 D1: disabling keeps the row AND the legacy entra_* columns, so a
-    // disabled identity is a present identity for every bucket. No bucket may
-    // filter on disabled_at (that would report it as missing / orphaned).
-    const executed: string[] = [];
-    db.execute = (async (query: never) => {
-      executed.push(new PgDialect().sqlToQuery(query).sql);
-      return [];
-    }) as never;
-    try {
-      const report = await reconcilePortalUserIdentities();
-      expect(report.counts).toEqual({ missingIdentity: 0, orphanIdentity: 0, mismatched: 0, halfPopulated: 0 });
-      expect(executed).toHaveLength(4);
-      for (const text of executed) expect(text).not.toMatch(/disabled/);
-      // The missing-identity bucket asks for ANY entra identity row.
-      expect(executed[0]).toMatch(/NOT EXISTS \(SELECT 1 FROM portal_user_identities i\s+WHERE i\.portal_user_id = pu\.id AND i\.provider = 'entra'\)/);
-    } finally {
-      delete (db as { execute?: unknown }).execute;
-    }
+    expect(state.updates[0]!.set).toEqual({ passwordHash: null, updatedAt: NOW });
   });
 });
 

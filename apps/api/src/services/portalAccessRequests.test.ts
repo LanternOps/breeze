@@ -445,7 +445,7 @@ describe('approvePortalAccessRequest', () => {
     }
   });
 
-  it('entra: identity-only active account (auth_method entra) with entra_* dual-write and a jit identity', async () => {
+  it('entra: identity-only active account (auth_method entra), no legacy entra_* columns (W10), and a jit identity', async () => {
     h.results.push(
       [pendingRow({ source: 'entra', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-1', entraTenantId: TID })],
       [{ tenantId: TID }], [], [{ id: 'pu-new', authEpoch: 1 }], [{ id: 'identity-1' }], [],
@@ -455,9 +455,10 @@ describe('approvePortalAccessRequest', () => {
 
     const [account, identity] = inserts();
     expect(firstArg(account, 'values')).toMatchObject({
-      authMethod: 'entra', status: 'active', browserAccess: 'granted', passwordHash: null,
-      entraTenantId: TID, entraOid: 'oid-1', contactId: 'contact-1',
+      authMethod: 'entra', status: 'active', browserAccess: 'granted', passwordHash: null, contactId: 'contact-1',
     });
+    expect(firstArg(account, 'values')).not.toHaveProperty('entraOid');
+    expect(firstArg(account, 'values')).not.toHaveProperty('entraTenantId');
     expect(stepsOf(account, 'onConflictDoNothing')).toHaveLength(1);
     expect(identity!.args[0]).toBe(portalUserIdentities);
     expect(firstArg(identity, 'values')).toEqual({
@@ -481,7 +482,7 @@ describe('approvePortalAccessRequest', () => {
     expect(firstArg(identity, 'values')).toMatchObject({ provider: 'google', issuer: 'https://accounts.google.com', subject: 'sub-1', entraTenantId: null });
   });
 
-  it('IDENTITY_LINKED (409) when the identity insert conflicts, and when the legacy entra_* key conflicts', async () => {
+  it('IDENTITY_LINKED (409) when the identity insert conflicts, and when the login insert conflicts', async () => {
     const entra = pendingRow({ source: 'entra', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-1', entraTenantId: TID });
     h.results.push([entra], [{ tenantId: TID }], [], [{ id: 'pu-new', authEpoch: 1 }], []);
     expect(await rejection(approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW })))

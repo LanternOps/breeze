@@ -421,10 +421,6 @@ async function resolveKnownIdentity(r: Resolution): Promise<PortalOidcSignInOutc
 
 /** Step 2: an invitation-bound sign-in activates the invited account and links the identity. */
 async function acceptInvite(r: Resolution, inviteTokenHash: string): Promise<PortalOidcSignInOutcome> {
-  // D11: a conflict that is knowable before consumption never spends the invite
-  // (Entra: a login holding the key on the legacy columns; see the adapter).
-  if (await r.adapter.legacyKeyHeld(r.identity)) return denied('identity_conflict', r.orgId);
-
   const consumed = await r.inviteConsumer(inviteTokenHash);
   if (!consumed || consumed.orgId !== r.orgId) return denied('invite_invalid', r.orgId);
 

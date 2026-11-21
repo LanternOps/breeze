@@ -55,7 +55,7 @@ describe('Gmail worker E2E (live, gated)', () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });
       // Sender resolves to this org (the 'created' path).
-      await db.insert(portalUsers).values({ orgId: org.id, email: SENDER, name: 'Sender' });
+      await db.insert(portalUsers).values({ browserAccess: 'granted', orgId: org.id, email: SENDER, name: 'Sender' });
       await db.insert(googleWorkspaceConnections).values({
         orgId: org.id,
         customerDomain: process.env.E2E_CUSTOMER_DOMAIN || 'example.com',

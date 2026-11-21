@@ -83,7 +83,7 @@ describe('portal visibility RLS', () => {
 
     const [portalA] = await admin
       .insert(portalUsers)
-      .values({
+      .values({ browserAccess: 'granted',
         orgId: orgA.id,
         email: `portal-${randomUUID()}@example.test`,
         name: 'Portal A',
@@ -377,7 +377,7 @@ describe('portal visibility RLS', () => {
 
     const [portalA] = await admin
       .insert(portalUsers)
-      .values({
+      .values({ browserAccess: 'granted',
         orgId: orgA.id,
         email: `portal-${randomUUID()}@example.test`,
         name: 'Portal A',

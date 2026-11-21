@@ -96,7 +96,7 @@ const unique = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 async function seedPortalUser(orgId: string, email: string): Promise<string> {
   const admin = getTestDb() as any;
   const passwordHash = await hashPassword(PORTAL_PASSWORD);
-  await admin.insert(portalUsers).values({ orgId, email, name: 'Portal Customer', passwordHash, status: 'active' });
+  await admin.insert(portalUsers).values({ browserAccess: 'granted', orgId, email, name: 'Portal Customer', passwordHash, status: 'active' });
   return email;
 }
 

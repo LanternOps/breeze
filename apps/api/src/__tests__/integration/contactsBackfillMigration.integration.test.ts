@@ -104,7 +104,7 @@ async function setBillingContact(orgId: string, value: unknown) {
 async function seedPortalUser(orgId: string, email: string, name: string | null) {
   const [row] = await getTestDb()
     .insert(portalUsers)
-    .values({ orgId, email, name, status: 'active' })
+    .values({ browserAccess: 'granted', orgId, email, name, status: 'active' })
     .returning({ id: portalUsers.id });
   return row!.id;
 }

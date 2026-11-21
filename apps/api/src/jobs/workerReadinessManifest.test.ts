@@ -4,6 +4,7 @@ import { WORKER_READINESS_MANIFEST, declareExpectedConsumers } from './workerRea
 
 const NON_CONSUMERS = [
   'psaTicketingReconciler',
+  'retiredQueueCleanup',
   'desktopSessionOrphanRecovery',
   'oauthRevocationRetryWorker',
   'topologyOutboxWorker',

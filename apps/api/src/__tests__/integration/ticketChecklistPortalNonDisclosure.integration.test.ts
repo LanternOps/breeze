@@ -56,7 +56,7 @@ async function seedPortalUser(orgId: string): Promise<{ id: string; email: strin
   const passwordHash = await hashPassword(PORTAL_PASSWORD);
   const [portalUser] = await admin
     .insert(portalUsers)
-    .values({ orgId, email, name: 'Portal Customer', passwordHash, status: 'active' })
+    .values({ browserAccess: 'granted', orgId, email, name: 'Portal Customer', passwordHash, status: 'active' })
     .returning();
   return { id: portalUser!.id, email: portalUser!.email };
 }

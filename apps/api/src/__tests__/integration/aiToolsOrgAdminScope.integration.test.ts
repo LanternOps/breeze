@@ -107,7 +107,7 @@ async function seed() {
   const orgAdmin = await createUser({ partnerId: partner.id, orgId: orgA.id, email: `w18-org-${randomUUID()}@example.com` });
   await assignUserToOrganization(orgAdmin.id, orgA.id, orgRole.id);
 
-  const [portalUser] = await getTestDb().insert(portalUsers).values({
+  const [portalUser] = await getTestDb().insert(portalUsers).values({ browserAccess: 'granted',
     orgId: orgA.id, email: `w18-portal-${randomUUID()}@example.com`, name: 'Portal Person', passwordHash: HASH_SENTINEL,
     authMethod: 'password', status: 'active',
   }).returning({ id: portalUsers.id });

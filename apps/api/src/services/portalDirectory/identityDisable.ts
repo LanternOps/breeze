@@ -151,7 +151,6 @@ async function readIdentityOwner(orgId: string, identityId: string, portalUserId
       portalUserId: portalUserIdentities.portalUserId,
       provider: portalUserIdentities.provider,
       subject: portalUserIdentities.subject,
-      entraTenantId: portalUserIdentities.entraTenantId,
     })
     .from(portalUserIdentities)
     .where(and(
@@ -527,13 +526,13 @@ export interface RestorePortalIdentityResult {
 }
 
 /** Restore / remove: the identity's owner, the source lock, then the D3 lock order. Throws NOT_FOUND. */
-async function lockForMspAction(orgId: string, portalUserId: string, identityId: string): Promise<LockedPair & { entraTenantId: string | null }> {
+async function lockForMspAction(orgId: string, portalUserId: string, identityId: string): Promise<LockedPair> {
   const owner = await readIdentityOwner(orgId, identityId, portalUserId);
   if (!owner) throw notFound();
   await lockPortalDirectorySource(orgId, owner.provider);
   const locked = await lockAccountThenIdentity(orgId, portalUserId, identityId, owner.subject);
   if (!locked) throw notFound();
-  return { ...locked, entraTenantId: owner.entraTenantId };
+  return locked;
 }
 
 function assertMspIds(input: { orgId: string; portalUserId: string; identityId: string; actorUserId: string }): void {
@@ -672,9 +671,10 @@ export interface RemoveDisabledPortalIdentityInput {
  * else — enabled, or disabled only by `scim` / `msp` — is 409
  * `PORTAL_IDENTITY_NOT_DIRECTORY_DISABLED`. The MSP sees the identity's
  * directory state in the panel before choosing this. Its directory actions
- * cascade with it (the audit log keeps every applied disable, D12). For Entra,
- * the W3 D4 fence clears the account's legacy `entra_*` columns when they
- * name the removed identity. When it was the account's last identity and the
+ * cascade with it (the audit log keeps every applied disable, D12). (W10:
+ * the legacy `portal_users.entra_*` columns are no longer cleared here; nothing
+ * reads them and they are dropped one release later.) When it was the
+ * account's last identity and the
  * account is identity-method, the account becomes a credential-less
  * password-method row so the MSP can re-invite it (see below). Audits
  * `organization.portal_user.identity.remove` with `authMethodReset`.
@@ -687,7 +687,7 @@ export async function removeDisabledPortalIdentity(
   const now = new Date();
 
   const result = await withSystemDbAccessContext(async () => {
-    const { account, identity, subject, entraTenantId } = await lockForMspAction(input.orgId, input.portalUserId, input.identityId);
+    const { account, identity } = await lockForMspAction(input.orgId, input.portalUserId, input.identityId);
     if (identity.disabledAt === null || !identity.disabledBlockers.some((b) => DIRECTORY_BLOCKERS.has(b))) {
       throw new PortalDirectoryIdentityError(
         'PORTAL_IDENTITY_NOT_DIRECTORY_DISABLED',
@@ -697,17 +697,6 @@ export async function removeDisabledPortalIdentity(
     }
     const blockers = [...identity.disabledBlockers];
 
-    if (identity.provider === 'entra' && entraTenantId) {
-      await db
-        .update(portalUsers)
-        .set({ entraTenantId: null, entraOid: null, updatedAt: now })
-        .where(and(
-          eq(portalUsers.id, account.id),
-          eq(portalUsers.orgId, input.orgId),
-          eq(portalUsers.entraTenantId, entraTenantId),
-          eq(portalUsers.entraOid, subject),
-        ));
-    }
     await db
       .delete(portalUserIdentities)
       .where(and(eq(portalUserIdentities.id, identity.id), eq(portalUserIdentities.orgId, input.orgId)));
