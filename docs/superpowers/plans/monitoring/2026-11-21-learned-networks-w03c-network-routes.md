@@ -34,6 +34,7 @@
 | `apps/api/src/index.ts` | Modify after `:1098` | `api.route('/discovery', discoveryNetworksRoutes);` |
 | `apps/api/src/services/mcpCoverage.ts` | Modify after `:551` | `MCP_COVERAGE` entry. |
 | `apps/api/src/__tests__/parkedFanoutModules.ts` | Modify (`FANOUT_MODULES`, `:12`) | Classify `assignment.ts`. |
+| `apps/api/src/__tests__/parkedFanout.contract.test.ts` | Modify (`VISIBILITY_MODULES`, `:120`) | Classify `list.ts`. |
 | `apps/api/src/services/commandMinVersion.ts` (+ `.test.ts`) | Modify | Real `GUARDED_DISCOVERY_MIN_AGENT_VERSION` (Task 7). |
 | `apps/api/src/__tests__/integration/learnedNetworksList.integration.test.ts` | Create | Read model on real Postgres. |
 | `apps/api/src/__tests__/integration/learnedNetworkAssignment.integration.test.ts` | Create | P3, S1, S2, S6, S7, T2b, T4, review focus 4, and the three extras. |
@@ -133,7 +134,7 @@ Queries are set-based: one query per aggregate over all visible network ids, nev
 
 - **Visibility (§8.5).** For `allowedSiteIds = S`: visible when `ln.site_id = ANY(S)`, or `ln.site_id IS NULL` and a device row on it has `dv.site_id = ANY(S)`. Empty `S` sees nothing. `loadNetworkForViewer` returns `'denied'` for an existing, invisible network. For a restricted viewer every device aggregate counts only `dv.site_id = ANY(S)`, and `sites`, `bySite` and suggestions name only sites in `S`.
 - **Devices.** `recentCount`: distinct devices with `d.last_seen_at >= W`. `currentCount`: distinct devices with `d.is_current AND dv.status = 'online' AND dv.network_attachments_confirmed_at >= F` (the §6 "currently behind"). `bySite`: recent devices grouped by non-null `dv.site_id`, with the site name, count descending. `sample`: up to 5 recent devices by newest `d.last_seen_at`, as `{ deviceId, hostname: dv.hostname }`.
-- **Other fields.** `wanAddresses`: every row, `last_seen_at` descending. `gateways`: `first_seen_at` ascending, with `sharedVirtualRouterMac: isSharedVirtualRouterMac(mac)`. `profileCount`: profiles with `network_id = ln.id` (in `S` when set). `state`: `assigned` when `site_id` is set, `ignored` when `ignored_at` is set, else `needs_review`; `data` is ordered by state in that order (`needs_review` first), then `last_seen_at` descending. `suggestion` and `replacementFor`: `needs_review` only, else `null`; declarations come from `readOrgNetworkDeclarations(db, orgId).bySite`. `sites`: every org site in `S`, as `{ siteId, siteName, networkRequired, assignedNetworkCount }`. `limitReached`: the org's network count is at least the cap, whoever the viewer is.
+- **Other fields.** `wanAddresses`: every row, `last_seen_at` descending. `gateways`: `first_seen_at` ascending, with `sharedVirtualRouterMac: isSharedVirtualRouterMac(mac)`. `profileCount`: profiles with `network_id = ln.id` (in `S` when set). `state`: `assigned` when `site_id` is set, `ignored` when `ignored_at` is set, else `needs_review`; `data` is ordered by state in that order (`needs_review` first), then `last_seen_at` descending. `suggestion` and `replacementFor`: `needs_review` only, else `null`; declarations come from `readOrgNetworkDeclarations(db, orgId).bySite`. `sites`: every site of the org the viewer can access (every org site when `allowedSiteIds` is null, else those in `S`), including sites with no assigned network and no profile, as `{ siteId, siteName, networkRequired, assignedNetworkCount }`. W04 reads the gated flag of any site from it. `limitReached`: the org's network count is at least the cap, whoever the viewer is.
 
 - [ ] **Step 1: Write the failing integration tests**
 
@@ -168,6 +169,14 @@ it('a site-restricted viewer sees its sites\' networks and unassigned networks i
   expect(await loadNetworkForViewer({ orgId, allowedSiteIds: [siteA] }, N2)).toBe('denied');
   expect((await listLearnedNetworks({ orgId, allowedSiteIds: [] }, NOW)).data).toEqual([]);
 });
+it('lists every accessible site, including one with no network', async () => {
+  // N1 assigned to A; sites B and C have no network and no profile
+  const { sites } = await listLearnedNetworks({ orgId, allowedSiteIds: null }, NOW);
+  expect(sites.map((s) => s.siteId).sort()).toEqual([siteA, siteB, siteC].sort());
+  expect(sites.find((s) => s.siteId === siteC)).toEqual({ siteId: siteC, siteName: expect.any(String),
+    networkRequired: false, assignedNetworkCount: 0 });
+  expect(sites.find((s) => s.siteId === siteA)).toMatchObject({ networkRequired: true, assignedNetworkCount: 1 });
+});
 it('reports limitReached at the per-org cap', async () => {
   // fixture has 4 networks in the org
   expect((await listLearnedNetworks({ orgId, allowedSiteIds: null }, NOW, 4)).limitReached).toBe(true);
@@ -178,8 +187,8 @@ it('reports limitReached at the per-org cap', async () => {
 `listLearnedNetworks` takes the cap as an optional third argument, `perOrgMax = LEARNED_NETWORKS_PER_ORG_MAX`, so the test does not insert 5,000 rows.
 
 - [ ] **Step 2: Run to verify it fails.** `pnpm test-stack up`, then `pnpm --filter @breeze/api test:integration src/__tests__/integration/learnedNetworksList.integration.test.ts`. Expected: FAIL (module missing).
-- [ ] **Step 3: Implement `list.ts`.**
-- [ ] **Step 4: Run to verify it passes.** Same command. Expected: PASS.
+- [ ] **Step 3: Implement `list.ts`.** Its device aggregates join `devices`, so `parkedFanout.contract.test.ts` discovers it: add `'services/learnedNetworks/list.ts': 'read model: learned networks list (device counts and samples for the Networks tab); selects no targets and dispatches nothing'` to `VISIBILITY_MODULES` (`__tests__/parkedFanout.contract.test.ts:120`).
+- [ ] **Step 4: Run to verify it passes.** Same command, plus `cd apps/api && npx vitest run src/__tests__/parkedFanout.contract.test.ts`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -m "feat(api): learned networks list read model with site-restricted visibility"`
 
 ---
@@ -209,7 +218,7 @@ export const GATING_CANCEL_MESSAGE = 'Cancelled: this site now requires scans to
 - `gatesSite`: `siteId` is set and its `discovery_network_required` is false. `profilesPointed`: profiles with `network_id = networkId`.
 - `siteLosesLastNetwork`: `cur` is set, `siteId !== cur`, and this is `cur`'s only assigned network.
 - `profilesFailingClosed`: 0 unless the network leaves `cur`; then the distinct profiles pointed at it, plus every profile of `cur` when `siteLosesLastNetwork`.
-- `agents` (target site; zeros on unassign): `online` = devices with `site_id = siteId`, status `online`, `is_ephemeral = false`, `notParkedDeviceCondition()`, an agent id; `onNetwork` = of those, an `is_current` row on a fingerprint of this network and `network_attachments_confirmed_at >= now - NETWORK_ATTACHMENT_FRESHNESS_MS`; `needUpdate` = of `onNetwork`, `agentSupportsGuardedCommand('network_discovery', agentVersion)` false. Eligible is `onNetwork - needUpdate`.
+- `agents` (target site; zeros on unassign): `online` = devices with `site_id = siteId`, status `online`, `is_ephemeral = false`, `notParkedDeviceCondition()`, `agent_token_suspended_at IS NULL`, an agent id; `onNetwork` = of those, an `is_current` row on a fingerprint of this network and `network_attachments_confirmed_at >= now - NETWORK_ATTACHMENT_FRESHNESS_MS`; `needUpdate` = of `onNetwork`, `agentSupportsGuardedCommand(DISCOVERY_SCAN_FAMILY, agentVersion)` false (`DISCOVERY_SCAN_FAMILY` from W03a's `scanCommand.ts`, so this file holds no discovery command-type literal for the E8 contract test to flag). Eligible is `onNetwork - needUpdate`.
 - `sharedVirtualRouterMac`: `siteId` is set and any fingerprint passes `isSharedVirtualRouterMac`.
 
 `assignmentNeedsConfirmation(e)` is `e.gatesSite || e.siteLosesLastNetwork || e.profilesFailingClosed > 0 || e.sharedVirtualRouterMac`.
@@ -341,14 +350,17 @@ it("T2b gating binds only to the profile's network", async () => {
    - `invalid_merge` when: source equals target; `replaces_gateway` names no retired id; `additional_gateway` names any; or a retired id is not a gateway of the target.
    - Source assigned → `source_assigned`. Unassign it first, so a merge never silently takes a network away from a site.
 2. **Lock.** Let `S` be `{target.site_id}` plus the `site_id` of every profile whose `network_id` is the source or the target, without nulls. `lockSitesForNetworkGate(S, 'exclusive')`. Then lock those profiles `FOR UPDATE ORDER BY id`. If the target's site or that profile site set changed since the read → `concurrent_change`.
-3. **Retire** (`replaces_gateway` only): `DELETE FROM learned_network_gateways WHERE id = ANY($retired) AND network_id = $target`. Device rows and grants on those fingerprints go with them (FK cascade, §8.3 rule 3).
-4. **Move fingerprints:** `UPDATE learned_network_gateways SET network_id = $target WHERE network_id = $source`.
-5. **Re-point:** `discovery_profiles.network_id`, `discovery_jobs.network_id` and `discovered_assets.last_network_id` from source to target.
-6. **WAN:**
+3. **Clear digests (index A8).** Before any gateway row is deleted or re-pointed, and before membership rows (the heartbeat's lock order: devices, then membership rows): `UPDATE devices SET network_attachment_digest = NULL WHERE org_id = $org AND id IN (SELECT m.device_id FROM learned_network_devices m WHERE m.org_id = $org AND m.gateway_id = ANY($affected))`, where `$affected` is the retired ids plus every gateway of the source. The next report from each of those devices is then applied, not confirmed, so a device behind a retired router learns it again as a new network. This is a worker-side write outside the agent path, like W01b's retention.
+4. **Retire** (`replaces_gateway` only): `DELETE FROM learned_network_gateways WHERE id = ANY($retired) AND network_id = $target`. Device rows and grants on those fingerprints go with them (FK cascade, §8.3 rule 3).
+5. **Move fingerprints:** `UPDATE learned_network_gateways SET network_id = $target WHERE network_id = $source`.
+6. **Re-point:** `discovery_profiles.network_id`, `discovery_jobs.network_id` and `discovered_assets.last_network_id` from source to target.
+7. **WAN:**
    - Insert the source's WAN rows into the target. `ON CONFLICT (network_id, address)` keeps `LEAST(first_seen_at)` and `GREATEST(last_seen_at)`.
    - Then delete the target's rows beyond the newest `WAN_ADDRESSES_PER_NETWORK_MAX` by `last_seen_at`.
-7. **Target times:** `first_seen_at = LEAST`, `last_seen_at = GREATEST`, `updated_at = now()`. The target keeps its name, prefix and assignment.
-8. **Delete the source network.**
+8. **Target times:** `first_seen_at = LEAST`, `last_seen_at = GREATEST`, `updated_at = now()`. The target keeps its name, prefix and assignment.
+9. **Delete the source network.**
+
+Nothing else in this wave deletes or re-points gateway or membership rows: assign, unassign, rename, ignore, restore and stop requiring touch only `learned_networks` and `sites`.
 
 Neither form inserts a grant.
 
@@ -382,6 +394,15 @@ it('merge re-points profiles, jobs, assets and WAN rows and deletes the source',
     { address: '203.0.113.20', firstSeenAt: OLDER, lastSeenAt: NEWER }, { address: '198.51.100.7', firstSeenAt: expect.any(Date), lastSeenAt: expect.any(Date) }]);
   expect(await grantCount()).toBe(grantCountBefore);
 });
+it('merge clears the attachment digest of devices whose memberships it removes or re-points', async () => {
+  // N1 = {G1} assigned to A; N3 = {G3} unassigned; N2 = {G2} not part of the merge. DESKTOP-01 current on G1,
+  // LAPTOP-JS current on G3, a third device D3 current on G2; all three have devices.network_attachment_digest set.
+  await inOrg(() => mergeNetworks({ orgId, targetNetworkId: N1, sourceNetworkId: N3, mode: 'replaces_gateway',
+    retiredGatewayIds: [G1], actorUserId }));
+  expect((await deviceRow(desktop01)).networkAttachmentDigest).toBeNull();   // its G1 row was deleted with G1
+  expect((await deviceRow(laptopJs)).networkAttachmentDigest).toBeNull();    // its G3 gateway was re-pointed to N1
+  expect((await deviceRow(d3)).networkAttachmentDigest).not.toBeNull();      // G2's network is not in the merge
+});
 it('a merge never takes an assigned source', async () => {
   await assigned(N2, siteB);
   await expect(inOrg(() => mergeNetworks({ orgId, targetNetworkId: N1, sourceNetworkId: N2, mode: 'additional_gateway',
@@ -395,6 +416,7 @@ it('a merge never takes an assigned source', async () => {
 - [ ] **Step 5: Prove S6 and S7 discriminate.** Make each change below, see red, and revert:
   - S6: copy the source's fingerprints into the profiles' grants.
   - S7: delete every target gateway on `replaces_gateway`.
+  - Digest: drop step 3. The digest test fails on DESKTOP-01 and LAPTOP-JS.
 - [ ] **Step 6: Commit.** `git commit -m "feat(api): learned network merge, additional and replacement gateway"`
 
 ---
@@ -635,12 +657,13 @@ Expected: PASS. The `'0.1.0'` fixture agents stay below the guard and the `'999.
 
 ## Contract notes
 
-1. **`replacementFor` has no non-null shape in F1.** This plan uses `{ networkId, displayName, siteId, siteName }` (Task 1). Recommended: add it to F1 in the index.
+1. **`replacementFor`** is `{ networkId, displayName, siteId, siteName }` when set (index F1; Task 1's `ReplacementFor`).
 2. **F1 has one `suggestion`, and the list has no paging.** When two sites tie, the suggestion is `null` (Task 1). The list returns every visible network; the 5,000-network cap bounds it, and the aggregates are set-based. If W04 needs paging, it adds a query parameter to F and states it there.
-3. **Which effects need confirmation.** §8.5 names two: profiles that point at the network, and a site's last network. Review focus 4 implies a third, that the assign confirmation shows agent counts before a site is gated. §8.5 adds the shared virtual-router warning. This plan therefore requires confirmation for `gatesSite`, `siteLosesLastNetwork`, `profilesFailingClosed > 0` and `sharedVirtualRouterMac`. Requiring it for `gatesSite` and for `sharedVirtualRouterMac` is inference, not spec text.
-4. **`AssignmentEffects.agents` is defined here, not derived from E6.** E6 decides eligibility per device with an `IneligibleReason`, and the index fixes no precedence between reasons, so the counts are defined directly in Task 3. The eligible count is `onNetwork - needUpdate`.
+3. **Which effects need confirmation** follows index E12: `gatesSite`, `siteLosesLastNetwork`, `profilesFailingClosed > 0` and `sharedVirtualRouterMac`. §8.5 names the profile and last-network effects; review focus 4 (agent counts before a site is gated) and the §8.5 shared virtual-router warning account for the other two.
+4. **`AssignmentEffects.agents`** follows the comment in index E12, computed directly in Task 3 rather than by calling E6 per device: `online` (the site's online agents, not ephemeral, not parked, token not suspended), `onNetwork` (of those, behind one of this network's fingerprints now), `needUpdate` (of `onNetwork`, below the guard version). The eligible count is `onNetwork - needUpdate`.
 5. **B2 has no failure code for a job cancelled by gating.** This plan writes status `cancelled` with a message-only `DiscoveryJobError` (`GATING_CANCEL_MESSAGE`) and does not add a code.
 6. **New exports beyond E12:** `LearnedNetworkError`, `assignmentNeedsConfirmation`, `renameNetwork`, `setNetworkIgnored` and `GATING_CANCEL_MESSAGE` (`assignment.ts`); `listLearnedNetworks`, `loadNetworkForViewer` and `NetworkViewer` (`list.ts`); `suggestSite`, `findReplacementFor` and `displayNameFor` (`suggestions.ts`).
-7. **A merge never takes an assigned source** (`source_assigned`). §8.5 does not say whether the source may be assigned. Refusing keeps a merge from silently taking a network away from a site. The admin unassigns it first, which goes through the confirmation.
+7. **A merge never takes an assigned source** (`source_assigned`, index plan call 15). The admin unassigns it first, which goes through the confirmation.
 8. **Fixture values outside the index list.** `00:00:5e:00:01:0a` is the VRRP prefix §8.5 names; `isSharedVirtualRouterMac` cannot be tested without it (W03a's note 11 says the same). Recommended: add it to the index's fixture list.
-9. **T2b's starting state can only come from a fixture.** Under W03b's literal reading of the `networkId` rule, every save with a non-null resulting `networkId` is checked. No save can therefore produce an unrestricted, credentialed profile whose `network_id` is set, yet spec rule 2 names that state. T2b builds it with admin writes. If the owner prefers the pin precedent (re-check only when `networkId` or the site changes), that state becomes reachable through saves and W03b changes one condition.
+9. **T2b's starting state can only come from a fixture.** `profile.network_id` is checked on every save (index plan call 14), so no save produces an unrestricted, credentialed profile whose `network_id` names a network not assigned to its site, yet spec rule 2 names that state. T2b builds it with admin writes.
+10. **Merge clears digests (index A8).** Merge step 3 nulls `devices.network_attachment_digest` for every device with a membership on a retired fingerprint or on a fingerprint moved from the source, before the gateway rows change. No other function in this wave deletes or re-points gateway or membership rows.

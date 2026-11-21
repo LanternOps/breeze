@@ -33,15 +33,28 @@ plan call 11.
   `parseExpectedNetwork` and `guardRefusal`.
 - Order for every guarded probe: validate the payload (base fields and `expectedNetwork`) →
   `since := time.Now()` → `Acquire` → the base probe through `boundNet` → `Confirm(ctx, b, since)` →
-  base result plus `"verifiedNetwork": b.Verified()`. Nothing leaves the host before `Acquire` returns.
+  the base result, completed or failed, plus `"verifiedNetwork": b.Verified()`. Nothing leaves the host
+  before `Acquire` returns.
+- **Index C5: every result produced after the binding was acquired and confirmed carries
+  `verifiedNetwork`, a failed probe included** (an `offline` ping, an SNMP poll that fails as a whole).
+  Only a refusal, where the binding could not be acquired or confirmed, carries none. The API reads any
+  guarded result without a valid `verifiedNetwork` as not checked.
 - Refusals use W02c's `guardRefusal`: `*MismatchError` → `network_mismatch` with `observedGateways` in
   `Result`; any other `Acquire` or `Confirm` failure → `network_changed`. Status is `failed` and
   `Stdout` is empty, so no refusal carries `"status": "offline"`. A missing base field or a malformed
-  `expectedNetwork` → `invalid_argument`, before anything is acquired.
-- A probe that ran through a confirmed binding reports its real outcome, including `offline`. A probe
-  that needs a name lookup when `b.Nameservers` is empty cannot run, so it is refused before it starts
-  with `network_changed` and the cause `netguard.ErrNoNameserver`, rather than reading as "failed to
-  resolve, offline".
+  `expectedNetwork` → `invalid_argument`, before anything is acquired (no `verifiedNetwork`).
+- **Where each body travels** (index C7; the same rule as W02c's Wave constraints). A completed result's
+  body, `verifiedNetwork` included, is its JSON `Stdout`: the WebSocket leg reparses it into `result`
+  (`toWSCommandResult`, `heartbeat.go:7817`); the REST leg (`submitCommandResult`, `heartbeat.go:7780`)
+  carries it as `stdout` only. A result with `Error` set (a refusal, or a failed probe after `Confirm`)
+  carries its body in an explicit `CommandResult.Result` with `Stdout` empty, because the WebSocket
+  reparse is skipped when `Error` is set; it is the `result` key on both transports, and both result
+  routes store `stdout ?? JSON.stringify(result)` (`routes/agents/commands.ts:143-146`,
+  `routes/agentWs.ts:845-848`).
+- A probe that ran through a confirmed binding reports its real outcome, including `offline`, with
+  `verifiedNetwork`. A probe that needs a name lookup when `b.Nameservers` is empty cannot run, so it is
+  refused before it starts with `network_changed` and the cause `netguard.ErrNoNameserver` (no
+  `verifiedNetwork`, so not checked), rather than reading as "failed to resolve, offline".
 - Proof reuse (index plan call 11): `netguard.ProofReuseWindow = 60 * time.Second`; reuse only when the
   proof's age is strictly less. `Begin` (discovery) never reads or writes the proof cache.
 - Agent-shipped code: TDD, `go test -race`, one review round. Fixtures as in W02c; probe target
@@ -57,6 +70,7 @@ plan call 11.
 | `agent/internal/heartbeat/handlers_monitor.go:41-479`, `handlers_network.go:353-370` | bodies take a `monitorNet`; handlers unchanged outside that |
 | `agent/internal/heartbeat/handlers_probe_guarded.go`, `_test.go` | the five guarded handlers |
 | `agent/internal/remote/tools/types.go:187,195-198`, `heartbeat/handlers_test.go:67-70` | command types, `allCommandTypes` |
+| `apps/api/src/services/partnerTrust.ts:65` (`GATED_COMMAND_TYPES`) | classify the five types; `partnerTrust.test.ts` parses the Go handler registry |
 
 ## How each probe opens its socket
 
@@ -269,7 +283,11 @@ func TestBoundNet_CollectSNMPIsBound(t *testing.T) {
 ### Task 4: The five guarded handlers
 
 **Files:** Create `agent/internal/heartbeat/handlers_probe_guarded.go`, `handlers_probe_guarded_test.go`.
-Modify `agent/internal/remote/tools/types.go` (after `:187` and `:198`), `handlers_test.go:67-70`.
+Modify `agent/internal/remote/tools/types.go` (after `:187` and `:198`), `handlers_test.go:67-70`,
+`apps/api/src/services/partnerTrust.ts:65` (`GATED_COMMAND_TYPES`). `partnerTrust.test.ts` › "classifies
+every known command type exactly once" parses `tools/types.go` and every `heartbeat/handlers*.go`
+registration, so registering the five Go handlers without classifying them turns Test API red. W06b
+adds the same five; whichever PR merges second finds them present and leaves them.
 
 **Interfaces:** Consumes Tasks 1 to 3; W02c `parseExpectedNetwork`, `guardRefusal`. Produces:
 
@@ -289,15 +307,20 @@ var (
 // required checks the base payload (target | url | hostname | parseSnmpPollRequest) before acquiring.
 func runGuardedProbe(cmd Command, required func(map[string]any) *tools.CommandResult,
 	run func(context.Context, Command, monitorNet) tools.CommandResult) tools.CommandResult
-// Unmarshals a completed result's Stdout object, adds "verifiedNetwork", marshals it back.
-func withVerifiedNetwork(res tools.CommandResult, b netguard.Binding) tools.CommandResult
+// Called on every result run returns after a successful Confirm. Completed: unmarshals the Stdout
+// object, adds "verifiedNetwork", marshals it back. Failed (Error set): sets Result to a map holding
+// "verifiedNetwork" (for snmp_poll_guarded also "deviceId" from the payload and "success": false, the
+// shape W06b Task 9 reads), merged over any existing Result map; Stdout stays empty.
+func withVerifiedNetwork(cmd Command, res tools.CommandResult, b netguard.Binding) tools.CommandResult
 // True when the probe resolves a name: ping/tcp target, http URL host, snmp target not an IP literal;
 // dns with no nameserver or a non-literal one. Checked after Acquire: true with empty b.Nameservers → refusal.
 func needsLookup(cmdType string, payload map[string]any) bool
 ```
 
 A failed base result from `required` gets `ErrorCode = wire.ErrCodeInvalidArgument`. A failed result
-from `run` after a successful `Confirm` (for example an SNMP collection error) is returned as is.
+from `run` after a successful `Confirm` (for example an SNMP collection error) keeps its status, error and
+error code and carries `verifiedNetwork` in `Result` (C5; `withVerifiedNetwork`), so the API records it
+as a real failure.
 
 - [ ] **Step 1: Write the failing tests.** `guardedCase` lists the five types with a valid payload each
   (`target: "192.168.1.20"`, `url: "http://192.168.1.20/"`, `hostname: "DESKTOP-01"`, SNMP `target` and
@@ -321,7 +344,8 @@ func TestGuardedProbes_ChangeDuringProbeDiscardsResult(t *testing.T) {
 		confirmGuard = func(context.Context, netguard.Binding, time.Time) error { return netguard.ErrNetworkChanged }
 		res := dispatchGuarded(t, c)
 		raw, _ := json.Marshal(res)
-		if res.ErrorCode != wire.ErrCodeNetworkChanged || res.Stdout != "" || bytes.Contains(raw, []byte("offline")) || rec.calls() == 0 { t.Errorf("%s: %s", c.typ, raw) }
+		if res.ErrorCode != wire.ErrCodeNetworkChanged || res.Stdout != "" || bytes.Contains(raw, []byte("offline")) ||
+			bytes.Contains(raw, []byte("verifiedNetwork")) || rec.calls() == 0 { t.Errorf("%s: %s", c.typ, raw) }
 	}
 }
 func TestGuardedProbes_SuccessAddsVerifiedNetwork(t *testing.T) {
@@ -332,6 +356,24 @@ func TestGuardedProbes_SuccessAddsVerifiedNetwork(t *testing.T) {
 			body := stdoutMap(t, res)
 			if res.Status != "completed" || !reflect.DeepEqual(body["verifiedNetwork"], fixture.Verified()) || rec.calls() == 0 { t.Fatal(res) }
 			if c.typ == tools.CmdSnmpPollGuarded && body["protocol"] != float64(SnmpResultProtocol) { t.Fatal(body) }
+		})
+	}
+}
+func TestGuardedProbes_FailedButProvenCarriesVerifiedNetwork(t *testing.T) { // C5
+	for _, c := range guardedCases {
+		t.Run(c.typ, func(t *testing.T) {
+			// network checks: the probe fails (ping no reply, TCP refused, HTTP and DNS errors) → completed, body status offline.
+			// snmp: collectMetrics returns an error → status failed, Error set.
+			acquireGuard = acquireOK(fixture); rec := useRecNet(t); rec.failAll(errors.New("connect: connection refused"))
+			res := dispatchGuarded(t, c)
+			if c.typ == tools.CmdSnmpPollGuarded {
+				if res.Status != "failed" || res.Error == "" || res.Stdout != "" { t.Fatal(res) }
+			} else if res.Status != "completed" || stdoutMap(t, res)["status"] != "offline" { t.Fatal(res) }
+			// on both transports
+			ws := toWSCommandResult("c-1", res)
+			if got := roundTrip(t, ws.Result)["verifiedNetwork"]; !reflect.DeepEqual(got, fixture.Verified()) { t.Fatal(ws.Result) }
+			raw, _ := json.Marshal(res)
+			if !bytes.Contains(raw, []byte(`verifiedNetwork`)) { t.Fatal(string(raw)) }
 		})
 	}
 }
@@ -348,8 +390,17 @@ func TestUnguardedProbeResultsHaveNoVerifiedNetwork(t *testing.T) { /* each ungu
 ```
 
 - [ ] **Step 2: Run** `cd agent && go test -race ./internal/heartbeat/ -run 'GuardedProbes|UnguardedProbeResults|HandlerRegistry'` — FAIL.
-- [ ] **Step 3: Implement**; register the five in `handlers_probe_guarded.go`'s `init()`; add them to `allCommandTypes`.
+- [ ] **Step 3: Implement**; register the five in `handlers_probe_guarded.go`'s `init()` as
+  `handlerRegistry[tools.CmdXGuarded] = …` (the form the API test parses); add them to `allCommandTypes`.
+  Then run `cd apps/api && npx vitest run src/services/partnerTrust.test.ts` — FAIL, "expected
+  network_dns_check_guarded in exactly one command classification" (the test walks the types sorted,
+  so it names the first unclassified one; unless W06b already merged them). Add the
+  five to `GATED_COMMAND_TYPES`, each after its base type (operator-directed LAN probes, like their base
+  types; skip any already present).
 - [ ] **Step 4: Run** `cd agent && go test -race ./internal/heartbeat/... ./internal/netguard/... ./internal/snmppoll/...` — PASS.
+  Then `cd apps/api && npx vitest run src/services/partnerTrust.test.ts src/services/callerVerification/workstation.contract.test.ts src/routes/agents/schemas.commandResult.test.ts` — PASS
+  (the API tests that read the Go files this wave changes; `workstation.contract.test.ts` reads only
+  `caller_verify.go` and `ipc` files and runs as the index asks).
 - [ ] **Step 5: Commit** — `git commit -m "feat(agent): guarded SNMP poll and network check commands"`
 
 ### Task 5: CI and native runs
@@ -370,7 +421,8 @@ already lists `./internal/netguard` (W02c); this wave adds no package.
   run used is **nonzero** with the bound source, and the ping type returned `online` with at least one
   reply (raw ICMP through `ListenConfig` is tested nowhere else); on the other interface, 0 of each.
   Toggle the bound link during a run whose target is unreachable: the result is `network_changed`, never
-  `offline`.
+  `offline`. Without the toggle, the same unreachable target returns `offline` with `verifiedNetwork`
+  present (C5).
 - [ ] **Step 4: Run** `cd agent && go test -race ./... && CGO_ENABLED=0 go vet ./... && bash ../scripts/check-windows-vet.sh && GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go vet ./...` — PASS.
 - [ ] **Step 5: Commit** — `git commit -m "test(agent): live guarded probe check"`
 
@@ -379,6 +431,7 @@ already lists `./internal/netguard` (W02c); this wave adds no package.
 - [ ] `cd agent && go test -race ./internal/netguard/... ./internal/heartbeat/... ./internal/snmppoll/... ./internal/discovery/...` passes; `CGO_ENABLED=0 go test` of the same packages passes.
 - [ ] `cd agent && CGO_ENABLED=0 go vet ./...`, `bash scripts/check-windows-vet.sh` (repo root) and `cd agent && GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go vet ./...` are clean; `cd agent && golangci-lint run --new-from-rev=origin/main ./...` reports nothing new.
 - [ ] `TestHandlerRegistryCompleteness` and `TestHandlerRegistryNoExtraEntries` pass with the five types.
+- [ ] `cd apps/api && npx vitest run src/services/partnerTrust.test.ts src/services/callerVerification/workstation.contract.test.ts src/routes/agents/schemas.commandResult.test.ts` passes, and each of the five types appears once in `GATED_COMMAND_TYPES`.
 - [ ] The `test-agent-windows` job log shows `./internal/netguard` ran, including `TestAcquire_*`.
 - [ ] The PR body states: `Closes #<sub-issue>`; the five command types; that the unguarded handlers are
   unchanged, naming the tests above; the proof-reuse rule (60 s, dropped on a change to that interface,
@@ -389,14 +442,14 @@ already lists `./internal/netguard` (W02c); this wave adds no package.
 
 ## Contract notes
 
-1. **`netguard.Confirm(ctx, b, since)` is new.** D4 lists only `Acquire` for W06a. Without a check after the
-   probe, a laptop that leaves mid-probe returns a real-looking `offline`. `Confirm` turns that into
-   `network_changed`, which H already treats as not checked.
+1. **`netguard.Confirm(ctx, b, since)`** is in index D6 beside `Acquire`. It checks after the probe that
+   the interface did not change, so a result from a laptop that left mid-probe becomes `network_changed`
+   (no `verifiedNetwork`, so not checked) instead of `offline`.
 2. **Every failure that is not a mismatch is `network_changed`**, as in W02c Contract note 4, including a
-   name lookup that cannot run because the interface has no DNS server. W06b also receives
-   `invalid_argument`, but only for a malformed command its own builder sent. W06b's verdict rule 1 covers
-   only the two refusal codes, so such a result falls through to ordinary failure handling, which can write
-   `offline`. W06b should treat any failed result of a guarded type as not checked.
+   name lookup that cannot run because the interface has no DNS server. W06b can also receive
+   `invalid_argument`, only for a malformed command its own builder sent. None of these carries
+   `verifiedNetwork`, so the index H rule ("any guarded result without a valid `verifiedNetwork` is not
+   checked") covers them all; a failed result that does carry one is a real failure (C5).
 3. **The proof cache is invalidated by a detected change, not by every event.** `WatchChanges` does not say
    which interface changed; the hub re-reads and drops a cached proof when that interface's link, address,
    prefix, gateway or cached gateway MAC differs (W02c's rule). A flap that restores the same state before the
@@ -404,8 +457,8 @@ already lists `./internal/netguard` (W02c); this wave adds no package.
 4. **Name lookups use the bound interface's own DNS servers** (W02c `Binding.Nameservers`). A host whose only
    resolver is a loopback stub cannot run a guarded check by host name; it is refused, never reported offline.
 5. **`snmppoll.SNMPDevice` gains `LocalAddr`, `Control` and `Context`** (Task 2), not listed in the index.
-6. **Open item for W06b: where `verifiedNetwork` is read.** The agent puts it in the completed result's
-   JSON body. On the WebSocket leg that body arrives as `result` (`toWSCommandResult` reparses `Stdout`);
-   on the REST leg it arrives only as `stdout`, because `CommandResult.Result` is unset for these
-   handlers. W06b's verdict reads `result.result.verifiedNetwork`, so its REST path must parse `stdout` or
-   the result is discarded as unverified. `observedGateways` is in `result` on both legs.
+6. **Where W06b reads `verifiedNetwork`** is settled by index C7 and the transport rule in Wave
+   constraints: a completed body is `result` on the WebSocket and `stdout` on REST, which the API
+   parses; a failed-but-proven body and a refusal body (`observedGateways`) are `result` on both legs.
+   W06b's verdict reads `result.result.verifiedNetwork`, so its REST path for a completed result parses
+   `stdout`.

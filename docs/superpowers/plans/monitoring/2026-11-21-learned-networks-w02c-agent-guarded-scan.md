@@ -12,8 +12,8 @@ gateway (`gatewayproof.Prove`), returns a `Binding`, and watches the interface t
 change watcher. `discovery` routes every socket, lookup and network command through one seam file, so a
 bound scan cannot open anything outside the binding. A thin handler runs the spec order.
 
-**Tech stack:** Go agent, `golang.org/x/net/icmp`, `github.com/gosnmp/gosnmp` v1.47.0; Vitest for one
-API list.
+**Tech stack:** Go agent, `golang.org/x/net/icmp`, `github.com/gosnmp/gosnmp` v1.47.0; Vitest for two
+API lists (`AGENT_COMMAND_ERROR_CODES`, `GATED_COMMAND_TYPES`).
 
 **Spec:** `docs/superpowers/specs/monitoring/2026-11-20-learned-networks-discovery-gate-design.md`
 (7.2, 11, 13 item 6, 14).
@@ -37,8 +37,16 @@ review-focus item 3.
   `Begin` failure (attachment read, proof error, watcher unavailable), any watched change and any failed
   re-prove → `network_changed` with the cause in `error`; a malformed `expectedNetwork` →
   `invalid_argument`. A guarded failure never returns hosts.
-- A refusal body travels in `CommandResult.Result`, not `Stdout`: `toWSCommandResult`
-  (`heartbeat.go:7817`) copies an explicit `Result` and skips the stdout reparse when `Error` is set.
+- **Where each body travels (index C7; W06a states the same rule).** A completed result's body (the
+  `network_discovery` keys plus `verifiedNetwork`) is the handler's JSON `Stdout`. On the WebSocket,
+  `toWSCommandResult` (`heartbeat.go:7817`) reparses it into `result`; over REST, `submitCommandResult`
+  (`heartbeat.go:7780`) posts the `tools.CommandResult` as is, so it arrives as `stdout` only and the API
+  parses it from there. A result with `Error` set carries its body in an explicit `CommandResult.Result`
+  and `Stdout` stays empty, because the WebSocket reparse is skipped when `Error` is set (an explicit
+  `Result` always wins). That body is the `result` key on both transports (`tools.CommandResult.Result`
+  is tagged `json:"result,omitempty"`, `remote/tools/types.go:346`, and the REST schema declares it,
+  `routes/agents/schemas.ts:868`), and both result routes store `stdout ?? JSON.stringify(result)`
+  (`routes/agents/commands.ts:143-146`, `routes/agentWs.ts:845-848`). Refusal bodies follow this rule.
 - Values pinned in Tasks 5 and 9: `ProveTimeout` 3 s, `MaxObserved` 8, `expectedGatewaysMax` 64 (index
   plan call 9), watcher restart backoff 1 s, at most 3 watcher starts per process on Windows.
 - Fixtures: index values only. Interfaces `Ethernet` (index 4) and `Wi-Fi` (index 7); local addresses
@@ -54,6 +62,7 @@ review-focus item 3.
 | `agent/internal/discovery/` `netops.go`, `scanner_bound.go`; edits in the probe files | one seam for every open; bound scan and credentialed pass |
 | `agent/internal/heartbeat/handlers_network_guarded.go`; `handlers_network.go:38-119` | handler, payload parse, refusals; adjacency post carries `verified` |
 | `tools/types.go:184`, `handlers_test.go:67`, `wire/errorcodes.go`, `schemas.ts:677`, `ci.yml:2755` | command type, registry list, C6, Windows CI list |
+| `apps/api/src/services/partnerTrust.ts:65` (`GATED_COMMAND_TYPES`) | classify the new command type; `partnerTrust.test.ts` parses the Go handler registry |
 
 ## Every network open in the scan path
 
@@ -268,7 +277,7 @@ filter on rows with a nil `InterfaceKey`.
 1. hub.ensureStarted(); watcher not running → ErrWatchUnavailable
 2. s := hub.subscribe()                            // every later notify marks s.dirty
 3. atts, _, err := currentAttachments(ctx); no rows and err != nil → close s, return the wrapped error
-   (rows plus err is usable: W02a K8 joins partial read errors, and an empty serverHost adds a resolve error)
+   (rows plus err is usable: W02a K8 joins partial read errors; an empty serverHost adds none, W02a K7)
 4. candidates := atts whose GatewayAddress is an expected Address; primary first, then InterfaceName
 5. for each c: mac, err := proveGateway(ctx+ProveTimeout, Interface{c.InterfaceName, c.InterfaceIndex, c.LocalAddress}, c.GatewayAddress)
      err == nil and an expected e has e.Address == c.GatewayAddress and bytes.Equal(e.MAC, mac) → bind c to e, stop
@@ -455,7 +464,7 @@ Both bound methods return `(nil, context.Cause(ctx))` when `ctx` is done at any 
 return. Merge rules are `Scan()`'s (`scanner.go:129-200`).
 
 - [ ] **Step 1: Write the failing tests.** `recordOpeners(t)` swaps `openers` for a recorder of
-  `{kind, b}`: `dialTCP` returns a `net.Pipe()` end for `192.168.1.20:22` and an error otherwise;
+  `{kind, address, b}` (`count(kind)`, `countAddr(kind, address)`, `all()`): `dialTCP` returns a `net.Pipe()` end for `192.168.1.20:22` and an error otherwise;
   `lookupAddr` returns `["DESKTOP-01."]`; `neighbors` returns `{"192.168.1.20": "00:1a:8c:00:00:01"}`;
   the rest return errors or empty maps.
 
@@ -482,10 +491,19 @@ func TestScanContext_CancelledReturnsNoHosts(t *testing.T) {
 }
 func TestCredentialedPass_CancelledReturnsNoHosts(t *testing.T) { /* same with newSNMPClient blocking */ }
 func TestScanContext_RequiresBind(t *testing.T)                 { /* Bind nil → ErrScanNotBound; rec empty */ }
+func TestBoundScan_RoutedRangeStillScanned(t *testing.T) { // spec 7.2 step 3: routed ranges stay scannable
+	rec, b := recordOpeners(t), fixtureBinding // bound to 192.168.1.57 on index 4
+	s := NewScanner(ScanConfig{Subnets: []string{"10.1.2.20/32"}, Methods: []string{"ping", "port_scan"}, PortRanges: []string{"22"}, Bind: &b})
+	_, err := s.ScanContext(ctx); must(t, err)
+	if rec.countAddr("dialTCP", "10.1.2.20:22") != 1 || rec.count("listenICMP") == 0 { t.Fatal(rec.all()) }
+	for _, r := range rec.all() {
+		if r.b == nil || r.b.InterfaceIndex != 4 { t.Errorf("%s opened without the scan's binding", r.kind) }
+	}
+}
 func TestScan_UnboundOpensWithNilBinding(t *testing.T)          { /* Scan() with the recorder: every record has b == nil */ }
 ```
 
-- [ ] **Step 2: Run** `cd agent && go test -race ./internal/discovery/ -run 'BoundScan|ScanContext|CredentialedPass|UnboundOpens'` — FAIL (undefined).
+- [ ] **Step 2: Run** `cd agent && go test -race ./internal/discovery/ -run 'BoundScan|ScanContext|CredentialedPass|UnboundOpens'` — FAIL (undefined; `RoutedRange` fails if the bound path drops targets outside the prefix).
 - [ ] **Step 3: Implement** `scanner_bound.go` and the `PhysicalRequest.bind` path.
 - [ ] **Step 4: Run** `cd agent && go test -race ./internal/discovery/... && CGO_ENABLED=0 go test ./internal/discovery/...`, and on macOS `CGO_ENABLED=1 go build ./internal/discovery/` (compiles `arp.go`) — PASS.
 - [ ] **Step 5: Commit** — `git commit -m "feat(agent/discovery): bound, cancellable scan and credentialed pass"`
@@ -521,7 +539,11 @@ func TestAdjacencyTransport_VerifiedNetworkOnlyWhenSet(t *testing.T) {
 **Files:** Create `agent/internal/heartbeat/handlers_network_guarded.go`, `handlers_network_guarded_test.go`.
 Modify `agent/internal/remote/tools/types.go:184` (`CmdNetworkDiscoveryGuarded = "network_discovery_guarded"`),
 `agent/internal/heartbeat/handlers_test.go:67`, `handlers_network.go:40-52` (extract
-`discoveryScanConfig(payload map[string]any) discovery.ScanConfig` for both handlers).
+`discoveryScanConfig(payload map[string]any) discovery.ScanConfig` for both handlers),
+`apps/api/src/services/partnerTrust.ts:65` (`GATED_COMMAND_TYPES`). `partnerTrust.test.ts` › "classifies
+every known command type exactly once" parses `tools/types.go` and every `heartbeat/handlers*.go`
+registration, so registering the Go handler without classifying its type turns Test API red. W03a adds
+the same entry; whichever PR merges second finds it present and leaves it.
 
 **Interfaces:** Consumes Tasks 2, 5, 7, 8. Produces (W06a reuses `parseExpectedNetwork` and `guardRefusal`):
 
@@ -541,10 +563,13 @@ var (
 )
 ```
 
-Order (D6 with Contract note 3): parse → `beginGuard` → `runGuardedScan(sess.Context())` → `Reprove` →
-`runCredentialedPass` → `collectDiscoveryPhysical(scanner, sess.Context(), …)` → `Reprove` →
-`postAdjacencyV2(…, binding.Verified())` → the `network_discovery` result map plus
-`"verifiedNetwork": binding.Verified()`. A done session context after any stage → `network_changed`.
+Order (D6 with Contract note 3): parse (`parseExpectedNetwork`, then `discoveryScanConfig` and
+`TargetCount`; a bad `expectedNetwork` returns `invalid_argument`, and a `TargetCount` error returns
+`tools.NewErrorResult` as `network_discovery` does, both before anything is sent) → `beginGuard` → `runGuardedScan(sess.Context())` →
+`Reprove` → `runCredentialedPass` → `collectDiscoveryPhysical(scanner, sess.Context(), …)` → `Reprove` →
+`postAdjacencyV2(…, binding.Verified())` → `tools.NewSuccessResult` of the `network_discovery` result map
+plus `"verifiedNetwork": binding.Verified()` (body in `Stdout`, see Wave constraints). A done session
+context after any stage → `network_changed`.
 
 - [ ] **Step 1: Write the failing tests.** `fakeSession` and the three fakes append to `trace`;
   `collectDiscoveryPhysical` is stubbed as in `handlers_network_adjacency_test.go:36`; an `httptest`
@@ -557,6 +582,9 @@ func TestGuardedDiscovery_OrderIsProveScanProveCredentialsProvePost(t *testing.T
 	if res.Status != "completed" || !reflect.DeepEqual(trace, want) { t.Fatal(res.Status, trace) }
 	if got := stdoutMap(t, res)["verifiedNetwork"]; !reflect.DeepEqual(got, fixtureVerified) { t.Fatal(got) }
 	if b := lastPostBody(t); !reflect.DeepEqual(b["verifiedNetwork"], fixtureVerified) { t.Fatal(b) }
+	// both transports: the WebSocket reparse puts it in result; REST carries it in stdout
+	if ws := toWSCommandResult("c-1", res); roundTrip(t, ws.Result)["verifiedNetwork"] == nil { t.Fatal(ws.Result) }
+	if raw, _ := json.Marshal(res); !bytes.Contains(raw, []byte(`\"verifiedNetwork\":`)) { t.Fatal(string(raw)) }
 }
 func TestGuardedDiscovery_RejectsMalformedExpectedNetwork(t *testing.T) {
 	for name, en := range map[string]any{"absent": nil, "not an object": "x", "empty": gateways(), "65 gateways": gateways(repeat(gwJSON, 65)...),
@@ -597,8 +625,19 @@ func TestNetworkDiscoveryResultKeysUnchanged(t *testing.T) { /* unguarded, stubb
 ```
 
 - [ ] **Step 2: Run** `cd agent && go test -race ./internal/heartbeat/ -run 'GuardedDiscovery|GuardRefusal|ResultKeysUnchanged|HandlerRegistry'` — FAIL (undefined; `TestHandlerRegistryCompleteness` fails once the constant exists).
-- [ ] **Step 3: Implement**; register in `handlers_network.go`'s `init()` beside `CmdNetworkDiscovery`; add the constant to `allCommandTypes`.
+- [ ] **Step 3: Implement**; register in `handlers_network.go`'s `init()` beside `CmdNetworkDiscovery`
+  as `handlerRegistry[tools.CmdNetworkDiscoveryGuarded] = handleNetworkDiscoveryGuarded` (the form the API
+  test parses); add the constant to `allCommandTypes`. Then run
+  `cd apps/api && npx vitest run src/services/partnerTrust.test.ts` — FAIL, "expected
+  network_discovery_guarded in exactly one command classification" (unless W03a already merged the
+  entry). Add `'network_discovery_guarded'` to `GATED_COMMAND_TYPES` after `'network_discovery'` (an
+  operator-directed LAN scan, like its base type; skip if present).
 - [ ] **Step 4: Run** `cd agent && go test -race ./internal/heartbeat/... ./internal/discovery/... ./internal/netguard/...` — PASS.
+  Then `cd apps/api && npx vitest run src/services/partnerTrust.test.ts src/services/callerVerification/workstation.contract.test.ts src/routes/agents/schemas.commandResult.test.ts` — PASS.
+  These are the API tests that read the Go files this wave changes: `partnerTrust.test.ts` (handler
+  registry, `tools/types.go`) and `schemas.commandResult.test.ts` (`wire/errorcodes.go`, and the
+  `CommandResult` tags in `tools/types.go`). `workstation.contract.test.ts` reads only the
+  `caller_verify.go` and `ipc` files, which this wave does not touch; it runs here as the index asks.
   `network_discovery` is shown unchanged by the untouched `TestNetworkDiscoveryResultIncludesAdjacencyKey`,
   `TestNetworkDiscoveryLegacyOnlyWithoutTopologyBlock` and `TestNetworkDiscoveryPostsV2WhenAdvertisedAndBoundsResult`,
   plus `TestNetworkDiscoveryResultKeysUnchanged` and `TestAdjacencyTransport_VerifiedNetworkOnlyWhenSet`.
@@ -639,12 +678,14 @@ cd agent && BREEZE_GUARD_LIVE=1 BREEZE_GUARD_GATEWAY=<gw> BREEZE_GUARD_GATEWAY_M
 - [ ] `cd agent && CGO_ENABLED=0 go test ./internal/netbind/... ./internal/netguard/... ./internal/discovery/...` passes; on macOS `cd agent && CGO_ENABLED=1 go build ./...` succeeds.
 - [ ] `cd agent && CGO_ENABLED=0 go vet ./...`, `bash scripts/check-windows-vet.sh` (repo root) and `cd agent && GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go vet ./...` are clean; `cd agent && golangci-lint run --new-from-rev=origin/main ./...` reports nothing new.
 - [ ] `cd agent && go list -deps ./internal/netguard ./internal/gatewayproof ./internal/netattach | grep internal/discovery` prints nothing.
-- [ ] `cd apps/api && npx vitest run src/routes/agents/schemas.commandResult.test.ts` passes.
+- [ ] `cd apps/api && npx vitest run src/routes/agents/schemas.commandResult.test.ts src/services/partnerTrust.test.ts src/services/callerVerification/workstation.contract.test.ts` passes, and from the repo root `grep -c "'network_discovery_guarded'" apps/api/src/services/partnerTrust.ts` prints `1`.
 - [ ] The `test-agent-windows` job log shows `./internal/netbind` and `./internal/netguard` ran.
 - [ ] The PR body states: `Closes #<sub-issue>`; that `network_discovery` is unchanged, naming the tests in
-  Task 9 Step 4; the two codes added on both sides; per OS: version, cgo setting, each live run's outcome
-  and the packet counts per kind on the other interface. **Redact first:** no real addresses, MACs, host
-  names or lab machine names; use the index fixtures.
+  Task 9 Step 4; the two codes added on both sides; the `GATED_COMMAND_TYPES` entry (added here or found
+  from W03a); per OS: version, cgo setting, each live run's outcome (the `BREEZE_GUARD_EXPECT=mismatch`
+  run under its own heading, since W05 leg 4b cites it as the agent-side refusal) and the packet counts
+  per kind on the other interface. **Redact first:** no real addresses, MACs, host names or lab machine
+  names; use the index fixtures.
 - [ ] Each Contract note is folded into the index in this PR or answered by the W02a and W02b owners.
 
 ## Contract notes
@@ -655,10 +696,9 @@ cd agent && BREEZE_GUARD_LIVE=1 BREEZE_GUARD_GATEWAY=<gw> BREEZE_GUARD_GATEWAY_M
    resolver. A loopback stub (`127.0.0.53`) is unreachable through an interface binding, so
    `Nameservers` holds the interface's own DNS servers, never a stub.
 2. **`netattach.Current(ctx, serverHost)` needs a server host `Begin` lacks.** `netguard` passes `""`
-   and uses `Primary` only to order candidates. The W02a plan (K7, K8) does not say how it treats `""`;
-   it may join a resolve error to the rows, and it joins partial read errors in any case. So `netguard`
-   treats "rows plus error" as usable and only "no rows plus error" as a failure. Cleaner: W02a states that
-   `""` marks nothing primary and adds no error.
+   and uses `Primary` only to order candidates. Settled in index D1 and W02a K7: `""` marks nothing
+   primary and adds no error (`TestCurrent_EmptyServerHost`). `Current` still joins partial read errors,
+   so `netguard` treats "rows plus error" as usable and only "no rows plus error" as a failure.
 3. **The credentialed pass includes the SNMP system-group probe.** Spec 7.2 step 5 puts "the SNMP sessions
    that use the profile's credentials" after the first re-prove. D6 names only `CollectPhysicalFor`, but
    `Scan()`'s `snmp` method (`DiscoverSNMP`) uses those credentials too. `ScanContext` runs no SNMP; D5
@@ -669,11 +709,14 @@ cd agent && BREEZE_GUARD_LIVE=1 BREEZE_GUARD_GATEWAY=<gw> BREEZE_GUARD_GATEWAY_M
    the cause in `error`. W03a's job sentence for `network_changed` should not assume a mid-scan move.
 5. **`gatewayproof` and `netattach` must not import `discovery`** (`discovery` imports `netguard`, which
    imports both). The `go list` check in "Done when" enforces it.
-6. **Refusal bodies ride in `result`, not `stdout`.** This matches W06b (`result.result.observedGateways`);
-   W03a stores only the code.
-7. **Index line corrected:** the unknown-command branch is `heartbeat.go:8262`; the code map says `:8258`.
-8. **The watch cannot see a change that is undone before the re-read.** `WatchChanges` names no interface,
-   so the hub diffs a fresh read against the snapshot; a link or address flap that returns to the same
-   state between the event and the read (milliseconds) is missed. A physical move takes longer than that,
-   and the re-proves before credentials and before posting bound what a missed flap can admit. Spec 7.2
-   step 4 says "any change"; this is the closest the OS interfaces allow without per-event parsing.
+6. **Refusal bodies ride in `result`, not `stdout`; completed bodies ride in `stdout`** (Wave
+   constraints, index C7). This matches W06b (`result.result.observedGateways`); W03a stores only the
+   code (its AI-tool path reads `verifiedNetwork` from the stored `stdout`). C7 says bodies "arrive inside `stdout`" on
+   REST: true for a completed body; a refusal body arrives as `result` and the route copies it into the
+   stored `stdout`.
+7. **Folded:** the index code map now gives the unknown-command branch as `heartbeat.go:8262`.
+8. **The watch compares state, not events.** `WatchChanges` names no interface, so the hub diffs a fresh
+   read against the snapshot; a state that is back to the snapshot by the time of the read (milliseconds
+   after the event) counts as unchanged. A physical move takes longer than that, and the re-proves before
+   credentials and before posting are required regardless. Spec 7.2 step 4 says "any change"; this is the
+   closest the OS interfaces allow without per-event parsing.

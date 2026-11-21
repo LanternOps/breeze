@@ -79,7 +79,7 @@ must say:
 | A router replaced | The new router is a new network, flagged "Looks like a replacement for `<name>`". The site's scans fail until it is merged. Merge, choose Replaces a gateway and tick the old router's gateway; the old router then no longer counts as the office, and if it turns up elsewhere it is a new, unassigned network. Profiles with saved SNMP credentials need them re-entered. |
 | Two routers on one network | Merge as Additional gateway for a high-availability pair. |
 | Cleaning up devices recorded elsewhere | Assets, filter "Not seen on an assigned network": devices last recorded by a scan that was not on one of the site's assigned networks. Once the site requires a network, such devices stop being seen; baselines with "disappeared" alerts report them under their existing rules until acknowledged or removed. The Jobs tab shows when a scan updated devices that a scan on another network saw in the last 30 days. |
-| Known limits | Spec section 11, each bullet in plain words: a tampered agent; a fingerprint match is not proof of place (shared virtual-router MACs, cloned router settings); no default route or a NAT virtual switch whose MAC changes on reboot cannot scan for a site that requires a network; a full-tunnel VPN records no WAN address; hotspots and guest networks appear and age out after 90 days; IPv4 only; at most 5,000 learned networks per organization. |
+| Known limits | Spec section 11, each bullet in plain words: a tampered agent; a fingerprint match is not proof of place (shared virtual-router MACs, cloned router settings); no default route or a NAT virtual switch whose MAC changes on reboot cannot scan for a site that requires a network; a full-tunnel VPN records no WAN address; hotspots and guest networks appear and age out after 90 days; IPv4 only; at most 5,000 learned networks per organization. Plus the two from index plan call 16: on macOS, an address on a bridge interface is not reported as a network, so that Mac cannot scan for a site that requires a network; on Windows, a static (permanent) neighbour entry for the gateway may make the agent's gateway check fail, so remove the static entry on a machine meant to scan such a site (state what the W02b evidence file found). |
 | Agent version | Scans for a site that requires a network need agent version `<GUARDED_DISCOVERY_MIN_AGENT_VERSION>` or later. Older agents keep scanning sites that do not require a network. |
 | For self-hosters: turning learning off | `LEARNED_NETWORKS_INGEST_ENABLED=false` on the api service, then restart (map it in the service's `environment:` block if your compose file does not pass it). Networks stop being learned and agents' confirmations stop updating. It never lifts a site's requirement: sites that require a network stop scanning once confirmations age out, after about 10 minutes. |
 | API reference | The routes of index F, one row each, with permission. |
@@ -115,7 +115,8 @@ test -f "$P" && grep -q "features/learned-networks" apps/docs/astro.config.mjs \
 
 - **Release to-do** (under `:15`): `- [ ] **Learned networks two-router lab proof** (#<W05 sub-issue>).
   All nine legs in docs/superpowers/plans/monitoring/evidence/2026-11-21-learned-networks-lab-proof.md
-  pass. Until this is ticked, the two learned-networks entries below do not ship in the release body.`
+  pass (leg 4 may instead read "shown by W02c native run" for its 4b half). Until this is ticked, the two
+  learned-networks entries below do not ship in the release body.`
 - **Self-Hosting / Upgrade Notes:** `**Learned networks and sites that require a network (new)**
   (#<parent>). Agents now report the gateway they are behind, and Discovery has a Networks tab. Nothing
   changes for a site until an admin assigns it a network. After that, the site's discovery scans run only
@@ -150,6 +151,8 @@ expected. Agents: the Windows lab VM, the lab Mac and a Linux lab VM, all assign
 Office`. The Linux lab VM has two network interfaces for leg 5, given distinct reserved addresses (for example `192.168.1.60` behind router A and `192.168.1.61` behind router B) so both routers never hand it the same address. Profiles at `Lab Office`: `P-scan`
 (ping, ARP, port scan, range `192.168.1.0/24`, no SNMP secrets, scheduled every 15 minutes), `P-snmp` (adds SNMP v2c with a saved
 community), `P-long` (port scan of 20 ports over the /24, long enough to run more than two minutes).
+"Pinned to X" below means the profile's scan agent is set to X for that run; otherwise every profile's
+scan agent is Automatic, and a leg that pins a profile sets it back to Automatic when the leg ends.
 
 **Packet capture.** On the agent host, on the interface that faces the router named in the leg:
 
@@ -171,9 +174,10 @@ filter.
 SELECT status, network_id, errors, cross_network_asset_updates FROM discovery_jobs WHERE id = :'job';
 -- W: anything the job wrote
 SELECT count(*) FROM discovered_assets WHERE last_job_id = :'job';
--- C: commands sent for the job's site after a time
-SELECT type, status FROM device_commands c JOIN devices d ON d.id = c.device_id
- WHERE d.site_id = :'site' AND c.created_at > :'since' AND c.type LIKE 'network_discovery%';
+-- C: whether a command was sent for the job. The worker records the attempt before every send
+-- (index E9) and sends no device_commands row, so a null network_dispatch means nothing was sent.
+SELECT agent_id, network_dispatch->>'mode' AS mode, network_dispatch->>'deviceId' AS sent_to_device
+  FROM discovery_jobs WHERE id = :'job';
 ```
 
 **Legs.** Each leg records what was done, what was observed, the ids and counts, and a verdict.
@@ -183,9 +187,9 @@ SELECT type, status FROM device_commands c JOIN devices d ON d.id = c.device_id
 | 1 Learn | Put agents behind router A and the Linux lab VM behind router B; wait two heartbeats. | Networks tab, Needs review: two rows, both `192.168.1.0/24 via 192.168.1.1`, different MACs, each with the devices seen on it and a WAN address (or the same one for both, see Rig). | Both network ids, device counts, WAN shown. |
 | 2 Assign | Assign router A's network to `Lab Office`. | The confirmation says how many of the site's online agents are on this network; after confirming, the Profiles notice for `Lab Office` is gone; router B's row reads "Looks like a replacement for ..." (same address and range). | Effects shown, the site's `discovery_network_required`. |
 | 3 Scan behind A | Run `P-scan` pinned to each agent in turn (Windows, Mac, Linux), all behind router A, capturing on the Linux lab VM's router A interface during its run. | Three jobs completed; Jobs shows router A's network on each; J has `network_id` = A; the Linux capture count is above its baseline (positive control for the filter). | Job ids per OS, J rows, capture counts. |
-| 4 Same agent behind B | Move the Linux lab VM behind router B. 4a: after its next heartbeat, run `P-scan` and let the next scheduled run fire. 4b: move it back to A, wait a heartbeat, move it to B and click Run now before its next heartbeat (retry up to five times). | 4a: job failed with "Agents at this site are online, but none is on an assigned network right now..."; C shows no command for it; W = 0. 4b: job failed with the `network_mismatch` sentence and the result body lists router B's gateway; W = 0. | Both job ids, J, W, C. If 4b never lands because the agent reports a network change at once, record that; the leg passes on 4a and P9's Go tests carry the agent-side refusal. |
+| 4 Same agent behind B | Stop the agents on the Windows lab VM and the lab Mac, so the Linux lab VM is the site's only online agent. Move it behind router B. **4a (the server refuses to dispatch):** after its next heartbeat, run `P-scan` pinned to it; then, with `P-scan` back on Automatic, let the next scheduled run fire. **4b (the agent refuses behind the wrong router; required, owner decision O3):** move it back to A and wait a heartbeat; move it to B and run `P-scan` pinned to it immediately, inside the heartbeat interval, before the server sees the move, capturing on its router B interface. Allow up to three attempts, each starting again from A. Start the other two agents again when the leg ends. | 4a: the pinned run failed with "The chosen scan agent is not on an assigned network right now..." and the scheduled run with "Agents at this site are online, but none is on an assigned network right now..."; C shows `network_dispatch` null for both; W = 0. 4b: job failed with the `network_mismatch` sentence ("The agent was not behind an assigned gateway when the scan started..."); J's error code is `network_mismatch`; C shows mode `guarded` sent to the Linux lab VM (the server did send, the agent refused); the capture on its router B interface shows no probe through the filter beyond baseline; W = 0. | Every job id, J, W, C, the time of each move and each Run now. If no 4b attempt of three ends in the agent's own `network_mismatch` refusal (for example the server already saw the move and failed the job as in 4a, or the agent had not reconnected through router B and the send failed), record each attempt's outcome and why, cite the W02c PR's native `BREEZE_GUARD_EXPECT=mismatch` run per OS as the evidence for the agent-side refusal, and set the leg's verdict to `shown by W02c native run`, not `pass`. |
 | 5 Both at once | Connect the Linux lab VM to router A and router B at the same time (both default routes up). Capture on its router B interface during a 2-minute baseline, then during `P-scan` pinned to it. | Job completed on router A's network; scan-window count on B is no higher than baseline and both are 0 for packets to `192.168.1.77`; the canary is not in inventory. | Job id, both counts, `dst host 192.168.1.77` count, canary query. |
-| 6 Move during a scan | Run `P-long` pinned to the Linux lab VM behind router A; once the job shows running, move the agent behind router B. | Job failed with "The agent's network changed during the scan, so the scan stopped and nothing was saved."; J error code `network_changed`; W = 0. | Job id, J, W, time of the move. |
+| 6 Move during a scan | Run `P-long` pinned to the Linux lab VM behind router A; once the job shows running, move the agent behind router B. | Job failed with "The agent could not confirm that it stayed behind an assigned gateway: its network changed or could not be checked. Nothing from this scan was saved..." (W04 `networkChanged`); J error code `network_changed`; W = 0. | Job id, J, W, time of the move. |
 | 7 Router A replaced | Swap router A for router C; agents stay connected. | A new network flagged "Looks like a replacement for ..."; `P-scan` fails (`no_agent_on_network`); merge router C's network into A's as Replaces a gateway, ticking router A's gateway; `P-scan` then completes; `P-snmp` fails with the `credentials_need_reentry` sentence until the community is re-entered, then completes. Optional: reconnect router A somewhere an agent sees it; it appears as a new, unassigned network. | Network ids, merge request, job ids and outcomes. |
 | 8 Outdated agent | Reinstall the Windows lab VM with the newest release below the guard version that still reports its network (it includes W02a; if no such release exists, build the agent from the W02a merge commit); keep it behind router C and stop the other two agents. Run `P-scan`. | The job fails with "Agents here need updating. Update the agents at this site to the current version, then run the scan again." | Agent version, job id, J. |
 | 9 Unassign and stop requiring | Start the other agents again. Unassign the network, run `P-scan`; Stop requiring a network; run `P-scan` pinned to the outdated Windows lab VM; assign the network again. | Unassign confirmation says the site keeps requiring a network; the Profiles notice stays hidden; the job fails with the `no_network_assigned` sentence; the Networks tab shows the site's banner. After Stop requiring, the Profiles notice returns and the outdated agent's scan completes (a site that does not require a network is unchanged for old agents). The final assign confirmation shows how many online agents are on the network and "1 online agent at Lab Office needs an update before it can run these scans." (review focus 4). | Job ids, J rows, the site flag before and after, the confirmation text. |
@@ -210,6 +214,8 @@ SELECT type, status FROM device_commands c JOIN devices d ON d.id = c.device_id
 
   Under each leg: `**Did:**`, `**Observed:**`, `**Recorded:**`, `**Verdict:**`. Build under test:
   commit SHA of the stack, agent version per OS, the guard version. Result: one table, leg and verdict.
+  Each verdict is `pass` or `fail`; leg 4 alone may read `shown by W02c native run` (its 4b rule), and
+  then names the W02c PR and the runs it cites.
 - [ ] **Step 2: Run legs 1 to 9 in order**, writing raw notes and captures to `$LAB` only.
 - [ ] **Step 3: Fill the evidence file** from the notes, already redacted (Task 4's map).
 
@@ -231,7 +237,8 @@ grep -c 'Verdict:\*\* pending' "$E"                         # 0
 
 - [ ] **Step 3: Report on the wave issue.** One comment: build under test, the Result table (leg,
   verdict, one line of what was seen), a link to the evidence file on the branch.
-- [ ] **Step 4a: All nine pass.** Tick the Release to-do line in the same PR, commit
+- [ ] **Step 4a: All nine pass** (leg 4 may be `shown by W02c native run`, and the PR body says so).
+  Tick the Release to-do line in the same PR, commit
   `docs(evidence): learned networks lab proof`, delete `$LAB`, tear down the stack
   (`pnpm wt-stack down`), rebase, enqueue. After merge, `complete_wave`.
 - [ ] **Step 4b: Any leg fails.** Neither the release-note entries nor the docs page ship. Move Task 1
@@ -248,8 +255,9 @@ grep -c 'Verdict:\*\* pending' "$E"                         # 0
 - [ ] Task 1's check prints `PRESENT`; `pnpm --filter @breeze/docs build` exits 0.
 - [ ] `grep -n "999.0.0" docs/release-notes/next-release-draft.md apps/docs/src/content/docs/features/learned-networks.mdx`
   prints nothing.
-- [ ] The evidence file has all thirteen headings, every leg `**Verdict:** pass`, and Task 4's checks
-  print only fixture values.
+- [ ] The evidence file has all thirteen headings, every leg `**Verdict:** pass` (leg 4 may read
+  `**Verdict:** shown by W02c native run` with its three attempts recorded), and Task 4's checks print
+  only fixture values.
 - [ ] `$LAB` deleted; `pnpm wt-stack down` run; `docker compose ls -a` lists no stack from this run; lab
   agents' `agent.yaml` and `secrets.yaml` restored where they were re-enrolled.
 - [ ] The wave issue carries the result comment.

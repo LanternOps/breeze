@@ -4,7 +4,7 @@
 
 **Goal:** Every discovery scan dispatch, from the worker and from the AI tool, is decided by one gate, built by one builder, recorded before it leaves, and every result is verified against that record and the current state before any host is stored or returned.
 
-**Architecture:** New services under `apps/api/src/services/learnedNetworks/` (site lock, eligibility, gate, builder, attempt record, verifier) plus the shared types in `packages/shared`. `processDispatchScan` decides under a shared per-site advisory lock, re-decides and records the attempt in one transaction, then sends. Four result paths and the AI tool call one verifier. Nothing can gate a site yet (W03c), so production behavior on every site stays as it is, apart from the four changes listed under the wave constraints.
+**Architecture:** New services under `apps/api/src/services/learnedNetworks/` (site lock, eligibility, gate, builder, attempt record, verifier) plus the shared types in `packages/shared`. `processDispatchScan` decides under a shared per-site advisory lock, re-decides and records the attempt in one transaction, then sends. Four result paths and the AI tool call one verifier. Nothing can gate a site yet (W03c), so production behavior on every site stays as it is, apart from the five changes listed under the wave constraints.
 
 **Tech stack:** Hono/TypeScript API, Drizzle on PostgreSQL with forced RLS, BullMQ, Vitest (unit and real-Postgres integration), Zod.
 
@@ -17,16 +17,16 @@
 - **Inert.** `GUARDED_DISCOVERY_MIN_AGENT_VERSION` is `999.0.0` and no route can set `sites.discovery_network_required` or assign a network until W03c. Tests gate a site by writing rows directly: first `UPDATE sites SET discovery_network_required = true`, then insert `learned_networks` with `site_id` (the A6 trigger refuses the other order).
 - **Sites that are not gated keep today's selection, command and payload.** The five visible changes, each one intended:
   1. Row 1 of 8.2 applies to every site. A job whose profile moved to another site or org after it was queued fails `profile_moved`.
-  2. The job is written `running` with its `agent_id` and `network_dispatch` *before* the send, not after.
+  2. The job is written `running` with its `agent_id` and `network_dispatch` before the command is sent.
   3. A job that is no longer `scheduled` when the attempt is recorded is not sent.
   4. A refusal result with `errorCode` `network_mismatch` or `network_changed` stores that code on `discovery_jobs.errors`.
-  5. A job whose attempt was recorded but whose send never completed (the worker stopped in between) is failed by the 15-minute running expiry (`expireStaleRunningJobs`, `jobs/discoveryWorker.ts:407`), not re-dispatched by the 2-minute scheduled sweep.
+  5. A job whose attempt was recorded but whose send never completed (the worker stopped in between) is failed by the 15-minute running expiry (`expireStaleRunningJobs`, `jobs/discoveryWorker.ts:407`). It is `running`, so the 2-minute sweep of `scheduled` jobs does not send it again.
 
   Existing tests that must stay green without edits to their assertions prove the rest: `jobs/discoveryWorker.agentSelection.test.ts`, `jobs/discoveryWorker.topologyDispatch.test.ts`, `jobs/discoveryWorker.test.ts` (the `processDispatchScan` block at `:1064-1110` and every `processResults` case), `jobs/discoveryQueue.test.ts`, `services/aiToolsNetwork.discovery.test.ts`, `services/commandResultHandlers.silentFailures.test.ts`, `routes/agentWs.test.ts` (discovery cases near `:3040-3175`), `routes/agents/topologyAdjacency.test.ts`, and the integration suites `discoveryWorker.dispatchAfterCommit.integration.test.ts`, `discoveryWorker.bmc.integration.test.ts`, `discoveryWorker.autoLinkMac.integration.test.ts` (the last three run `processResults`), `discoveryProfilePinnedDevice.integration.test.ts`, `topologyDiscoveryTransport.integration.test.ts`, `topologyDiscoveryPhysicalE2E.integration.test.ts`, `runScriptNoHeldTransaction.integration.test.ts` (it drives `network_discovery` end to end). Those files gain `vi.mock` entries for the new modules (gate returns `{ kind: 'unrestricted' }`, verify returns `{ ok: true, networkId: null }`, the lock is a no-op). One assertion changes on purpose: the event order in `jobs/discoveryWorker.dbcontext.test.ts` (Task 7).
 - **W01a/W01b names this plan relies on** (W01a's schema is not in this tree yet; the Drizzle property names are the camelCase of the A4 columns): `learnedNetworks`, `learnedNetworkGateways`, `learnedNetworkDevices`, `discoveryProfileSnmpGrants`; `sites.discoveryNetworkRequired`; `devices.networkAttachmentsConfirmedAt`; `discoveryProfiles.networkId`, `.snmpGrantMode`; `discoveryJobs.networkId`, `.networkDispatch`, `.crossNetworkAssetUpdates`; `discoveredAssets.lastNetworkId`. Constants from `services/learnedNetworks/constants.ts` (E2): `NETWORK_ATTACHMENT_FRESHNESS_MS`, `CROSS_NETWORK_WINDOW_DAYS`.
 - **Agent versions in fixtures.** Eligible agents use `agentVersion: '999.0.0'`. "Old" is `'0.128.0'`; "unknown" is `'dev'` (`devices.agent_version` is NOT NULL, so unknown is an unparseable string).
 - **Refusal codes are compared as raw strings** (`result.errorCode === 'network_mismatch'`). Do not call `isAgentCommandErrorCode` and do not edit `AGENT_COMMAND_ERROR_CODES`: that list belongs to W02c and is pinned to the Go list.
-- **Locks.** Order: site locks ascending, then the profile row. Never hold a lock or a DB context across Redis or WebSocket I/O (#1105). The AI tool cannot hold the lock across its 120 s wait; its attempt record is the `device_commands` row, which `insertPreparedCommand` writes before `dispatchToAgent` (`services/commandQueue.ts:1616-1700`).
+- **Locks.** Order: site locks ascending, then the profile row. Never hold a lock or a DB context across Redis or WebSocket I/O (#1105). The AI tool cannot hold the lock across its 120 s wait; its attempt record is the `device_commands` row, which `dispatchPreparedCommand` inserts with `insertPreparedCommand` before it sends (`services/commandQueue.ts:1616`, insert `:1627`, send `:1682`).
 - **Catches.** Lock and verify calls on the result paths run *before* the existing `try` blocks, uncaught, so a failed query fails the transaction instead of being caught next to a later write (`docs/agents/tenancy-rls.md`).
 - **Copy.** Messages never say "verified location". All job error text lives in `messages.ts`.
 
@@ -141,7 +141,8 @@ seedSite(): Promise<{ partnerId: string; orgId: string; siteId: string }>
 gateSite(orgId: string, siteId: string, networks: Array<Array<{ address: string; mac: string }>>):
   Promise<{ networkIds: string[]; gatewayIds: string[][] }>   // flag first, then networks with site_id, then gateways
 seedAgent(o: { orgId: string; siteId: string; hostname: string; version?: string; status?: 'online' | 'offline';
-  isEphemeral?: boolean; behind?: string[]; isCurrent?: boolean; confirmedAgoMs?: number }): Promise<{ deviceId: string; agentId: string }>
+  isEphemeral?: boolean; tokenSuspended?: boolean; behind?: string[]; isCurrent?: boolean; confirmedAgoMs?: number }):
+  Promise<{ deviceId: string; agentId: string }>   // tokenSuspended: devices.agent_token_suspended_at = now()
 seedProfile(o: { orgId: string; siteId: string; withSecrets?: boolean; grantMode?: 'unrestricted' | 'bound';
   grantGatewayIds?: string[]; pinnedDeviceId?: string; networkId?: string }): Promise<string>   // subnets ['192.168.1.0/24']
 seedJob(orgId: string, siteId: string, profileId: string): Promise<string>                      // status 'scheduled'
@@ -199,6 +200,7 @@ const cases: Array<[string, (ctx: Ctx) => Promise<{ deviceId?: string; agentId?:
   ['Quick Support device', async (c) => ({ deviceId: (await seedAgent({ ...c.site, hostname: 'DESKTOP-01', isEphemeral: true, behind: [c.g1] })).deviceId }), 'ephemeral'],
   ['device of another site', async (c) => ({ deviceId: (await seedAgent({ ...c.otherSite, hostname: 'DESKTOP-01', behind: [c.g1] })).deviceId }), 'other_site'],
   ['offline device', async (c) => ({ deviceId: (await seedAgent({ ...c.site, hostname: 'DESKTOP-01', status: 'offline', behind: [c.g1] })).deviceId }), 'offline'],
+  ['online, suspended agent token', async (c) => ({ deviceId: (await seedAgent({ ...c.site, hostname: 'DESKTOP-01', tokenSuspended: true, behind: [c.g1] })).deviceId }), 'offline'],
   ['old agent behind G1', async (c) => ({ agentId: (await seedAgent({ ...c.site, hostname: 'DESKTOP-01', version: '0.128.0', behind: [c.g1] })).agentId }), 'needs_update'],
   ['unknown version behind G1', async (c) => ({ deviceId: (await seedAgent({ ...c.site, hostname: 'DESKTOP-01', version: 'dev', behind: [c.g1] })).deviceId }), 'needs_update'],
   ['behind G2 only', async (c) => ({ deviceId: (await seedAgent({ ...c.site, hostname: 'LAPTOP-JS', behind: [c.g2] })).deviceId }), 'not_on_network'],
@@ -213,7 +215,8 @@ it.each(cases)('explainGuardedAgent: %s is %s', async (_n, make, reason) => {
 it('explainGuardedAgent: a fresh 999.0.0 agent behind G1 is eligible with its fingerprints', ...);   // { eligible: true, agent: { gatewayIds: [g1] } }
 it('loadEligibleGuardedAgents returns only eligible agents, by device id, within the limit', ...);  // all cases above seeded in one site: exactly the eligible ones; limit 1 cuts to the lowest id
 it('explainNoEligibleAgent distinguishes none online, none on the network and agents that need updating', ...);
-  // no online agent -> 'none_online'; online 999.0.0 agents behind G2 only -> 'none_on_network';
+  // no online agent -> 'none_online'; only a suspended-token agent behind G1 -> 'none_online';
+  // online 999.0.0 agents behind G2 only -> 'none_on_network';
   // an online '0.128.0' agent behind G1 -> 'agents_need_update'; only 'dev' agents, none behind G1 -> 'agents_need_update'
 it('S6 eligibility matches the fingerprint', async () => {
   // N1 = {G1, G3}; LAPTOP-JS behind G1, DESKTOP-01 behind G3 (lower device id, so it would rank first)
@@ -226,7 +229,7 @@ it('S6 eligibility matches the fingerprint', async () => {
 
 - [ ] **Step 2: Run and see it fail** (the integration command from Task 3). Expected: FAIL, module missing.
 - [ ] **Step 3: Implement.**
-  - `loadEligibleGuardedAgents`: one query, `devices` inner join `learned_network_devices` on `(device_id, org_id)` with `is_current` and `gateway_id = any(allowedGatewayIds)`; where org, `site_id`, `status = 'online'`, `eq(devices.isEphemeral, false)`, `notParkedDeviceCondition()`, `agent_id is not null`, `network_attachments_confirmed_at >= now() - make_interval(secs => NETWORK_ATTACHMENT_FRESHNESS_MS / 1000)`, and the version prefilter below; `group by devices.id`; `array_agg(distinct gateway_id order by gateway_id)` as `gatewayIds`; order by `devices.id`; `limit (limit ?? MAX_DISCOVERY_AGENT_CANDIDATES)`. Then keep rows where `agentSupportsGuardedCommand(commandType, row.agentVersion)`. Empty `allowedGatewayIds` returns `[]` with no query.
+  - `loadEligibleGuardedAgents`: one query, `devices` inner join `learned_network_devices` on `(device_id, org_id)` with `is_current` and `gateway_id = any(allowedGatewayIds)`; where org, `site_id`, `status = 'online'`, `eq(devices.isEphemeral, false)`, `notParkedDeviceCondition()`, `isNull(devices.agentTokenSuspendedAt)` (as `selectNetworkExecutor` does, `services/networkExecutorSelection.ts:74`), `agent_id is not null`, `network_attachments_confirmed_at >= now() - make_interval(secs => NETWORK_ATTACHMENT_FRESHNESS_MS / 1000)`, and the version prefilter below; `group by devices.id`; `array_agg(distinct gateway_id order by gateway_id)` as `gatewayIds`; order by `devices.id`; `limit (limit ?? MAX_DISCOVERY_AGENT_CANDIDATES)`. Then keep rows where `agentSupportsGuardedCommand(commandType, row.agentVersion)`. Empty `allowedGatewayIds` returns `[]` with no query.
   - The prefilter reads the same minimum as the exact check (parse `COMMAND_MIN_AGENT_VERSION[GUARDED_COMMAND_TYPES[commandType]]` into `[maj, min, patch]`). It is a superset of the exact check:
 
     ```sql
@@ -235,8 +238,8 @@ it('S6 eligibility matches the fingerprint', async () => {
          else false end
     ```
 
-  - `explainGuardedAgent`: read one device by `deviceId` or `agentId` with no org filter, selecting `parked: sql<boolean>\`not (${notParkedDeviceCondition()})\``, then the reason in this order: no row → `not_found`; `parked` → `parked`; other org or no `agent_id` → `not_found`; `is_ephemeral` → `ephemeral`; other site → `other_site`; not online → `offline`; `!agentSupportsGuardedCommand` → `needs_update`; then one read of its fresh current memberships among the allowed ids, none → `not_on_network`. `label` is display name, else hostname, else the device id, except for `not_found` and `parked`, where it is the id the caller passed (another org's names are never echoed). Needs-update is decided before not-on-network because an agent below the guard version may not report attachments at all.
-  - `explainNoEligibleAgent`: one query over the site's online, non-ephemeral, non-parked agents with, per device, whether it has a fresh current row for an allowed fingerprint. No rows → `none_online`. Any row on the network (it failed only the version) → `agents_need_update`. Every row below the guard version → `agents_need_update`. Otherwise `none_on_network`.
+  - `explainGuardedAgent`: read one device by `deviceId` or `agentId` with no org filter, selecting `parked: sql<boolean>\`not (${notParkedDeviceCondition()})\``, then the reason in this order: no row → `not_found`; `parked` → `parked`; other org or no `agent_id` → `not_found`; `is_ephemeral` → `ephemeral`; other site → `other_site`; not online, or `agent_token_suspended_at` set → `offline` (B2 has no separate reason for a suspended token, and such an agent cannot take a command, so it reads as offline); `!agentSupportsGuardedCommand` → `needs_update`; then one read of its fresh current memberships among the allowed ids, none → `not_on_network`. `label` is display name, else hostname, else the device id, except for `not_found` and `parked`, where it is the id the caller passed (another org's names are never echoed). Needs-update is decided before not-on-network because an agent below the guard version may not report attachments at all.
+  - `explainNoEligibleAgent`: one query over the site's online, non-ephemeral, non-parked agents whose token is not suspended, with, per device, whether it has a fresh current row for an allowed fingerprint. No rows → `none_online`. Any row on the network (it failed only the version) → `agents_need_update`. Every row below the guard version → `agents_need_update`. Otherwise `none_on_network`.
   - `parkedFanoutModules.ts`: add `'services/learnedNetworks/eligibility.ts': { guards: 3, reason: 'guarded discovery agent eligibility, the per-agent explanation and the no-agent reason' }` (one `notParkedDeviceCondition(` per function). `discoveryAgentSelection.ts` and `discoveryWorker.ts` keep 2 and 1.
 - [ ] **Step 4: Run and see it pass**: the integration file, then `cd apps/api && npx vitest run src/__tests__/parkedFanout.contract.test.ts src/jobs/discoveryAgentSelection.test.ts`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(api): guarded discovery agent eligibility`.
@@ -265,7 +268,7 @@ export const NO_AGENT_MESSAGES: Record<NoAgentReason, string>;
 export function agentNotEligibleMessage(label: string, reason: IneligibleReason): string;
 ```
 
-Exact copy for `messages.ts`:
+Exact copy for `messages.ts`. The agent reports every guard failure that is not a mismatch as `network_changed` (a move during the scan, and also a network it could not read or prove at the start), so its sentence must be true in both cases:
 
 | Key | Message |
 |---|---|
@@ -274,7 +277,7 @@ Exact copy for `messages.ts`:
 | `credentials_need_reentry` | The profile's saved SNMP credentials are not granted on any network assigned to this site. Re-enter them on the profile. The scan was not sent. |
 | `no_network_assigned` | This site requires an assigned network and has none. The scan was not sent. |
 | `network_mismatch` | The scan agent is not behind a gateway assigned to this site. Nothing was scanned. |
-| `network_changed` | The scan agent's network changed during the scan. Its results were discarded. |
+| `network_changed` | The scan agent could not confirm that it stayed behind a gateway assigned to this site: its network changed or could not be checked. Nothing from this scan was kept. |
 | `network_unverified` | The scan result could not be matched to a network assigned to this site now. Its results were discarded. |
 | `none_online` | No agent at this site is online. The scan was not sent. |
 | `none_on_network` | Agents at this site are online, but none is on an assigned network right now. The scan was not sent. |
@@ -392,8 +395,8 @@ it('finds the known sites (not vacuous)', ...);  // >= 4 paired, >= 14 toolName;
 
 `commandOfflinePolicy.test.ts`: add `'network_discovery_guarded'` to the `extras` list (`:47`) and `expect(defaultOfflinePolicy('network_discovery_guarded')).toEqual({ kind: 'reject' })` beside `:69`. `commandMinVersion.release.test.ts` gains, in its own `it`: the min version is set, `defaultOfflinePolicy(...).kind` is `'reject'`, `EXPLICITLY_CLASSIFIED_COMMAND_TYPES` has it, and `GATED_COMMAND_TYPES` contains it.
 
-- [ ] **Step 2: Run and see it fail.** `cd apps/api && npx vitest run src/services/learnedNetworks/scanCommand src/services/commandOfflinePolicy.test.ts src/services/commandMinVersion.release.test.ts src/services/partnerTrust.test.ts`. Expected: FAIL. The construction rule also matches `discoveryWorker.ts:839` and `aiToolsNetwork.ts:973`. Commit them in a `PENDING` set the construction check skips (`discoveryWorker.ts` counts as classified while it is pending; `aiToolsNetwork.ts` is classified `toolName`). Step 1 of Task 7 deletes `discoveryWorker.ts` from `PENDING` and Step 1 of Task 13 deletes `aiToolsNetwork.ts`, so each check is red until that task's code lands.
-- [ ] **Step 3: Implement.** The guarded order: dedupe by `gatewayId`; fingerprints in `agentGatewayIds` first, then the rest; each group ascending by `gatewayId`; cut to `EXPECTED_GATEWAYS_MAX`. Register `[GUARDED_COMMAND_TYPES.network_discovery]: handleDiscoveryResult`; add the literal `'network_discovery_guarded'` next to each list entry above (classified `GATED`, offline class `live`).
+- [ ] **Step 2: Run and see it fail.** `cd apps/api && npx vitest run src/services/learnedNetworks/scanCommand src/services/commandOfflinePolicy.test.ts src/services/commandMinVersion.release.test.ts src/services/partnerTrust.test.ts`. Expected: FAIL. (If W02c is already on `main`, `GATED_COMMAND_TYPES` already holds the guarded type, so that one assertion and `partnerTrust.test.ts` are green before this step; every other new assertion is red.) The construction rule also matches `discoveryWorker.ts:839` and `aiToolsNetwork.ts:973`. Commit them in a `PENDING` set the construction check skips (`discoveryWorker.ts` counts as classified while it is pending; `aiToolsNetwork.ts` is classified `toolName`). Step 1 of Task 7 deletes `discoveryWorker.ts` from `PENDING` and Step 1 of Task 13 deletes `aiToolsNetwork.ts`, so each check is red until that task's code lands.
+- [ ] **Step 3: Implement.** The guarded order: dedupe by `gatewayId`; fingerprints in `agentGatewayIds` first, then the rest; each group ascending by `gatewayId`; cut to `EXPECTED_GATEWAYS_MAX`. Register `[GUARDED_COMMAND_TYPES.network_discovery]: handleDiscoveryResult`; add the literal `'network_discovery_guarded'` next to each list entry above (classified `GATED`, offline class `live`). In `GATED_COMMAND_TYPES`, add it only if it is not already present: W02c registers the Go handler and adds the entry in its own PR (`partnerTrust.test.ts` parses the Go handler registry), and either PR may land first.
 - [ ] **Step 4: Run and see it pass** (same command, plus `src/services/endpointMessaging/registrations.contract.test.ts src/services/commandResultHandlers.security.test.ts`). Expected: PASS.
 - [ ] **Step 5: Commit** `feat(api): one builder for discovery scan commands`.
 
@@ -539,13 +542,18 @@ it('enqueues a verified result with its verifiedNetwork', async () => {
   await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST], verifiedNetwork: VN } }));
   expect(vi.mocked(enqueueDiscoveryResults).mock.calls[0]![9]).toEqual(VN);
 });
+it('reads verifiedNetwork from stdout when the REST route delivers the body there (C7)', async () => {
+  await handler({ ...input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST] } }),
+    stdout: JSON.stringify({ jobId: JOB_ID, hosts: [HOST], verifiedNetwork: VN }) });
+  expect(vi.mocked(verifyDiscoveryResult).mock.calls[0]![0]).toMatchObject({ verifiedNetwork: VN });
+});
 it('does nothing for a command without a jobId (the AI tool)', async () => {
   await handler(input('network_discovery_guarded', { subnets: ['192.168.1.0/24'] }, { result: { hosts: [HOST] } }));
   expect(db.update).not.toHaveBeenCalled(); expect(verifyDiscoveryResult).not.toHaveBeenCalled();
 });
 ```
 - [ ] **Step 2: Run and see it fail.** `cd apps/api && npx vitest run src/services/commandResultHandlers.test.ts src/services/commandResultHandlers.silentFailures.test.ts`. Expected: FAIL on the new tests.
-- [ ] **Step 3: Implement.** The job select (`:144`) adds `profileId`, `networkDispatch`. Lock and verify run before the `try` (`:123`), as in Task 9. A refusal is recorded only when `expectedJobId` is set.
+- [ ] **Step 3: Implement.** The job select (`:144`) adds `profileId`, `networkDispatch`. Lock and verify run before the `try` (`:123`), as in Task 9. A refusal is recorded only when `expectedJobId` is set. `verifiedNetwork` is `result.result.verifiedNetwork` when present, else `JSON.parse(stdout).verifiedNetwork` (the handler's `stdout` argument; on the REST result route the body may arrive only there, index C7; a parse failure is `undefined`).
 - [ ] **Step 4: Run and see it pass.** Expected: PASS.
 - [ ] **Step 5: Commit** `feat(api): verify persisted discovery command results`.
 
@@ -740,10 +748,12 @@ Run the whole file with `pnpm --filter @breeze/api test:integration src/__tests_
 2. **`versionAtLeast`** is module-private in `packages/shared/src/validators/endpointMessage.ts:44`. The exact version check is `agentSupportsGuardedCommand` (E7), written to the same rule.
 3. **`network_dispatch.allowedGatewayIds`** holds the fingerprints actually sent (at most 64), not every allowed one. That is what the agent can prove, and it stays inside A3's 16 KiB check.
 4. **E8 `commandId`** has no use on the AI path (`aiExecuteCommand` writes its own row id). The tool passes a random UUID and uses only `type` and `payload`.
-5. **The AI path holds no site lock across its send.** Holding it would hold a transaction through the 120 s wait. The persisted command row is the attempt, and the verifier at result time closes the window.
-6. **Additive names** the index does not list: `siteNetworks.ts` (`loadSiteGateState`, `loadNetworkSiteId`, `loadNetworkGateways`), `messages.ts`, `gateProfileFromRow`, `loadGateProfile`, `planSiteLocks`, `parseNetworkDispatchRecord`, `loadProfileForDispatch`, `loadCommandAttempt`, `attemptFromRecord`, `DISCOVERY_SCAN_FAMILY`, `loadDeviceAddresses`, and `storedProfileHoldsSnmpSecrets` in `services/snmpSecrets.ts`. W03b's `profileWillHoldSnmpSecrets` must agree with `storedProfileHoldsSnmpSecrets` on what counts as holding secrets.
+5. **The AI path holds no site lock across its send.** Holding it would hold a transaction through the 120 s wait. The persisted command row is the attempt, and the verifier checks the result against the current state when it returns.
+6. **Additive names** the index does not list: `siteNetworks.ts` (`loadSiteGateState`, `loadNetworkSiteId`, `loadNetworkGateways`), `messages.ts`, `gateProfileFromRow`, `loadGateProfile`, `planSiteLocks`, `parseNetworkDispatchRecord`, `loadProfileForDispatch`, `loadCommandAttempt`, `attemptFromRecord`, `DISCOVERY_SCAN_FAMILY`, `loadDeviceAddresses`, and `storedProfileHoldsSnmpSecrets` in `services/snmpSecrets.ts`. E5 now names it as the source of `hasSavedSnmpSecrets`; W03b's `profileWillHoldSnmpSecrets` delegates to it.
 7. **Registrations the code map does not name:** `services/commandOfflinePolicy.ts` (`LIVE`, `EXTRA_ROUTE_TYPES`) is a fail-closed registry, and the `process-results` queue schema (`jobs/queueSchemas.ts:233`) and the adjacency body (`topologyAdjacency.ts:27`) are `.strict()`. All three must name the new type or key.
 8. **The cross-network count** dates the previous sighting with `discovered_assets.last_seen_at`, since no column records when `last_network_id` was stamped.
 9. **Row 1 is visible on sites that are not gated.** The spec puts it before row 4, so a moved profile fails `profile_moved` everywhere.
 10. **`enqueueDiscoveryResults`** takes `verifiedNetwork` as a 10th positional parameter, after `meta`, so existing callers are unchanged.
 11. **Fixture MACs outside the index list.** Task 1 tests `isSharedVirtualRouterMac` with `00:00:5e:00:01:0a`, `00-00-0C-07-AC-01` and `00:00:5e:00:02:0a`. They are the VRRP and HSRP protocol prefixes named in spec 8.5, not device addresses, and the function cannot be tested without them. The index's fixture list should name them.
+12. **E6's suspended-token rule.** Eligibility excludes an agent whose `devices.agent_token_suspended_at` is set (index E6). B2's `IneligibleReason` has no value for it, so `explainGuardedAgent` reports such an agent as `offline`, and `explainNoEligibleAgent` counts it as not online.
+13. **`network_changed` covers more than a move.** The agent maps every guard failure that is not a mismatch (a read error, a proof error other than no answer, an unavailable watcher, a move mid-scan) to `network_changed`, so its job sentence does not claim the scan was running.

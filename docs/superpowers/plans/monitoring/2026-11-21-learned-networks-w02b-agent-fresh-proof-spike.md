@@ -65,8 +65,9 @@ confirms each one.
 
 Known: x/sys v0.50.0 wraps none of `ResolveIpNetEntry2`, `GetIpNetEntry2`, `DeleteIpNetEntry2`,
 `FlushIpNetTable2` or `SendARP`. They are reached as `windows.NewLazySystemDLL("iphlpapi.dll").NewProc(...)`
-as `networkcontext/windows.go:37-42` does, and each proc is checked with `Find()` before `Call()`, because
-calling a missing export panics the agent (`getIfEntry2`, `windows.go:420-435`, #9233). The row type is a
+as `networkcontext/windows.go:37-42` does, and each proc is checked with `Find()` before `Call()`, so an
+export missing on an older Windows build returns an error instead of reaching `Call()` (precedent
+`getIfEntry2`, `windows.go:420-435`). The row type is a
 local mirror of `MIB_IPNET_ROW2`; the same layout already exists unexported as `windowsNeighbor`
 (`windows.go:268-278`).
 
@@ -112,19 +113,26 @@ The evidence file answers each one for each OS. All must pass on all three.
 
 1. **Correct.** The returned MAC equals the gateway's real MAC, read from the test router's label or
    admin page. The harness compares and prints `match=expected`.
-2. **Fresh.** With a deliberately wrong neighbour entry for the gateway in place, the call returns the
-   live MAC or fails, never the planted one. Run twice: a dynamic (stale) planted entry and a static
-   (permanent) one. Shown with a packet capture taken during the call, or an equivalent observation,
-   that has a request leaving and a reply arriving inside the call's start and end times.
+2. **Fresh.** With a deliberately wrong neighbour entry for the gateway in place, the call never
+   returns the planted MAC. Run twice, 10 calls each. With a dynamic (stale) planted entry, **all 10
+   calls return the real MAC**: a run in which every call fails does not pass. With a static
+   (permanent) one, each call returns the real MAC or `ErrNoAnswer`, and the entry is unchanged
+   afterwards; `ErrNoAnswer` there is recorded as a known limit, not a failure. Shown with a packet
+   capture (`pktmon`, `tcpdump`) taken during the calls in which every call that returned a MAC has a
+   request leaving and a reply arriving inside its start and end times. If the OS refuses to plant a
+   dynamic entry (unknown on Windows, see Lab rig), the stale run is recorded as `not plantable` with the
+   command's output, and `## Decision` names it.
 3. **Unreachable.** With the gateway unreachable and the machine's link still up, the call returns
    `ErrNoAnswer` within its timeout plus 100 ms. Ten calls.
-4. **Harmless.** 100 back-to-back calls do not interrupt the machine's own traffic: ping loss to the
-   gateway during the calls is no higher than in a baseline of the same length without calls, and an
-   open TCP session whose packets go through the gateway shows no gap over 1 second.
+4. **Harmless.** 100 back-to-back calls **all return the real MAC** (`expected=100`) and do not
+   interrupt the machine's own traffic: ping loss to the gateway during the calls is no higher than in a
+   baseline of the same length without calls, and an open TCP session whose packets go through the
+   gateway shows no gap over 1 second.
 5. **Service account.** It works when run as the account the agent runs as (LocalSystem, root under
    launchd, root under systemd), shown by the harness's `user=` line.
 6. **No cgo.** The binary that ran was built with `CGO_ENABLED=0`, shown by the harness's `cgo=` line.
-7. **Time.** Median and worst call time over the 100 calls of criterion 4.
+7. **Time (recorded, not a pass bar).** Median and worst call time over the 100 calls of criterion 4,
+   with that run's `summary` line (its `expected=` and `no_answer=` counts).
 
 ## Lab rig
 
@@ -457,16 +465,19 @@ row in `### Candidates tried`.
 - [ ] **Step 1: C1, C5, C6.** One call, `GATEWAYPROOF_CALLS=1`. Record the `user=`, `cgo=` and `match=` lines.
 - [ ] **Step 2: C2.** Plant a dynamic wrong entry, check it, start the capture, run 10 calls with
 `GATEWAYPROOF_PLANTED_MAC=3c:37:86:aa:bb:10`, stop the capture, check the table again, remove the entry.
-Repeat with a static entry. Pass: no `planted` line, and each call's start-to-end window contains a
-request out and a reply in (or the call failed). After the static run, check that the planted
-permanent entry is still there and unchanged: `Prove` must not alter a static entry.
+Repeat with a static entry. Pass (criterion 2): no `planted` line; on the dynamic run all 10 calls
+print `match=expected`; and every call that returned a MAC has a request out and a reply in inside its
+start-to-end window in the capture. After the static run,
+check that the planted permanent entry is still there and unchanged: `Prove` must not alter a static
+entry.
 - [ ] **Step 3: C3.** Unplug the router's LAN cable from the switch, confirm the machine's link is still
 up, run 10 calls. Pass: every line `result=no_answer` with `ms` not above the timeout plus 100.
 - [ ] **Step 4: C4 and C7.** Baseline: 60 seconds of `ping` to the gateway at 5 per second (`ping -i 0.2`
 on Linux and macOS; on Windows, `Test-Connection` in a loop at the shortest interval it allows, the same
 in both windows) and the TCP session (an SSH session to the host beyond the router running a loop that
 prints a timestamp every 100 ms). Then the same with `GATEWAYPROOF_CALLS=100` running. Pass: loss during
-the calls ≤ baseline loss, largest timestamp gap ≤ 1 s. C7 is the run's `median_ms` and `max_ms`.
+the calls ≤ baseline loss, largest timestamp gap ≤ 1 s. C7 is the run's `median_ms` and `max_ms`, with
+its `summary` line.
 - [ ] **Step 5: Write each OS's section**, every unknown from "What each OS offers" answered in
 `## Unknowns resolved`, and the verdict row. Redact as the wave constraints say.
 - [ ] **Step 6: Commit** `docs(plans): learned networks fresh-proof evidence`.
@@ -512,5 +523,5 @@ needed it, add the `GetIpNetEntry2` permanent-entry check with a test that a `Pe
    `Index`. W02c fills both from `netattach.Attachment` (`InterfaceName`, `InterfaceIndex`), which on
    macOS is the BSD name the reader takes from `net.Interface`.
 4. **A permanent neighbour entry on Windows** may make `Prove` return `ErrNoAnswer` (Task 8 Step 2), so a
-   machine with a static gateway entry cannot be a guarded scan agent. If the lab shows this, it is a new
-   known limit for §11 and goes into the W05 docs.
+   machine with a static gateway entry cannot be a guarded scan agent. This is index plan call 16; W05
+   adds it to the docs' known limits. The evidence file records whether the lab confirmed it.

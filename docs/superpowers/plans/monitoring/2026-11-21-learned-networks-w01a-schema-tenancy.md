@@ -17,7 +17,7 @@ fingerprints in its `resolve` phase through a `custom` executor, then repoints t
 **Spec:** `docs/superpowers/specs/monitoring/2026-11-20-learned-networks-discovery-gate-design.md` (§6).
 
 **Index:** `docs/superpowers/plans/monitoring/2026-11-21-learned-networks.md`. Its Global constraints,
-Review focus and Cross-wave contract (sections A1 to A7) apply to every task here; names in it are fixed.
+Review focus and Cross-wave contract (sections A1 to A9) apply to every task here; names in it are fixed.
 
 ## Wave constraints
 
@@ -140,7 +140,8 @@ it.each(A2_FKS)('cross-org reference through $name is refused', async (fk) => {
   // gateway, device or profile). Expect isPgForeignKeyViolation(err, fk.name) === true.
 });
 
-it('T7 two rows per device: one device behind two gateways of one network', async () => {
+it('T7 two rows per device', async () => {
+  // one device behind two gateways of one network
   // Add gateway (10.1.2.100, 00:1a:8c:00:00:01) to A's network; insert a second device row on it
   // ('Wi-Fi', '10.1.2.57'). Both rows exist. A duplicate (device_id, gateway_id) insert rejects with
   // isPgUniqueViolation(err, 'learned_network_devices_device_gateway_uniq').
@@ -588,7 +589,7 @@ it('trims a folded network to 32 WAN addresses, oldest last_seen_at dropped', as
    rows outside the ingest must null `devices.network_attachment_digest` for the devices whose current rows
    it removes, or they keep confirming a digest whose memberships are gone. W01b retention does this; the
    W03c replace merge must too.
-4. **W01a redefines one shared function** that the index does not name:
+4. **W01a redefines one shared function** (index A9):
    `breeze_partner_export_site_child_update()`, to keep `discovered_assets.last_network_id` out of partner
    export material state (decision 5). The redefinition is the newest body replayed verbatim plus one array
    entry.

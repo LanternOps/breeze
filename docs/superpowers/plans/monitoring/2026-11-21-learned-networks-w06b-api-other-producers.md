@@ -100,7 +100,7 @@ it('every guarded probe type needs the guarded probes version, failing closed', 
 Run: `cd packages/shared && npx vitest run src/types/discoveryNetworkGate.test.ts` and `cd apps/api && npx vitest run src/services/commandMinVersion.test.ts`
 Expected: FAIL (`snmp_poll_guarded` undefined; `GUARDED_PROBES_MIN_AGENT_VERSION` not exported).
 
-- [ ] **Step 3: Implement.** Add the five pairs and the three exports to B2; add the constant and five `COMMAND_MIN_AGENT_VERSION` entries (alphabetical, one comment: "Learned networks W06b: guarded probes. W06b's last task sets the release."). The five types go in `GATED_COMMAND_TYPES` in sort order. If W06a already added them there (its Go handler registration makes `partnerTrust.test.ts` › "classifies every known command type exactly once" require them), leave them.
+- [ ] **Step 3: Implement.** Add the five pairs and the three exports to B2; add the constant and five `COMMAND_MIN_AGENT_VERSION` entries with computed keys, `[GUARDED_COMMAND_TYPES.snmp_poll]: GUARDED_PROBES_MIN_AGENT_VERSION` and so on, as W03a Task 2 does, so `commandMinVersion.ts` holds no probe command-type literal for Task 4's contract to classify (alphabetical, one comment: "Learned networks W06b: guarded probes. W06b's last task sets the release."). Add each of the five types to `GATED_COMMAND_TYPES`, in sort order, only if it is not already present: W06a adds them in its own PR, because its Go handler registration makes `partnerTrust.test.ts` › "classifies every known command type exactly once" require them. (When W06a is already on `main`, the `GATED_COMMAND_TYPES` assertion in Step 1 is green before this step; the rest of Step 1 is red.)
 
 - [ ] **Step 4: Run and see them pass**, plus `cd apps/api && npx vitest run src/services/partnerTrust.test.ts src/services/commandMinVersion.release.test.ts`. Expected: PASS.
 
@@ -197,10 +197,26 @@ export async function verifyProbeResult(input: {
   target: { orgId: string | null; siteId: string | null } | null;
   guard: ExpectationGuard | null;
   result: { status: string; errorCode?: string; result?: unknown };
+  stdout?: string;   // the persisted (REST) path's stdout; the body may arrive only there (index C7)
 }): Promise<ProbeResultVerdict>;
 ```
 
-Verdict rules, in order: (1) guard set and `status === 'failed'` with `errorCode` `network_mismatch` or `network_changed` → `not_checked` with that code. (2) guard set and target null → `not_checked` `network_unverified`. (3) no guard and (target null or `siteId` null) → `accept` with no query. (4) otherwise E10 with `profileId: null`, `attempt` `{ mode: 'guarded', allowedGatewayIds }` or `{ mode: 'unrestricted', allowedGatewayIds: [] }`, and `verifiedNetwork` read from `result.result.verifiedNetwork` (guarded only); `ok` → `accept`, else `not_checked` `network_unverified`. Rule 4 is what discards an unrestricted result that lands after its site became gated (§8.4).
+`verifiedNetwork` is read from `result.result.verifiedNetwork`, else from `JSON.parse(stdout).verifiedNetwork`
+(index C7; a parse failure is `undefined`). Verdict rules, in order (index C5 and H: for a guarded result,
+`verifiedNetwork` alone decides whether it is checked; status and error code never do):
+
+1. Guard set and `verifiedNetwork` does not parse with `verifiedNetworkSchema` → `not_checked`, whatever
+   the status or error code. The stored code is the `errorCode` when it is `network_mismatch` or
+   `network_changed`, else `network_unverified`. No query.
+2. Guard set and target null → `not_checked` `network_unverified`.
+3. No guard and (target null or `siteId` null) → `accept` with no query.
+4. Otherwise E10 with `profileId: null`, `attempt` `{ mode: 'guarded', allowedGatewayIds }` or
+   `{ mode: 'unrestricted', allowedGatewayIds: [] }`, and the `verifiedNetwork` above (guarded only);
+   `ok` → `accept`, else `not_checked` `network_unverified`.
+
+An accepted guarded result is then handled as its base result: a failed probe that carries an accepted
+`verifiedNetwork` is a real failure. Rule 4 is also what discards an unrestricted result that lands after
+its site became gated (§8.4).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -218,8 +234,28 @@ it('a guarded result is accepted only when E10 accepts its verifiedNetwork', asy
     .resolves.toEqual({ kind: 'accept' });
   expect(verifyDiscovery).toHaveBeenCalledWith({ orgId, siteId, profileId: null, attempt: { mode: 'guarded', ...guard }, verifiedNetwork: vn });
   verifyDiscovery.mockResolvedValueOnce({ ok: false, error: { code: 'network_unverified', message: 'x' } });
-  await expect(verifyProbeResult({ target: { orgId, siteId }, guard, result: { status: 'completed', result: {} } }))
-    .resolves.toEqual({ kind: 'not_checked', code: 'network_unverified' });
+  await expect(verifyProbeResult({ target: { orgId, siteId }, guard, result: { status: 'completed', result: { verifiedNetwork: vn } } }))
+    .resolves.toEqual({ kind: 'not_checked', code: 'network_unverified' });   // well-formed, but E10 rejects it
+});
+it('a guarded result without a valid verifiedNetwork is not checked, whatever its status or error code', async () => {
+  const guard = { allowedGatewayIds: [officeGw] };
+  for (const result of [{ status: 'failed', error: 'timeout' }, { status: 'failed', errorCode: 'invalid_argument' },
+    { status: 'completed', result: { monitorId: 'm', status: 'offline' } }, { status: 'completed', result: { verifiedNetwork: { networkId: 'x' } } }])
+    await expect(verifyProbeResult({ target: { orgId, siteId }, guard, result }))
+      .resolves.toEqual({ kind: 'not_checked', code: 'network_unverified' });
+  expect(verifyDiscovery).not.toHaveBeenCalled();
+});
+it('a guarded failure that carries an accepted verifiedNetwork is accepted (a real failure)', async () => {
+  verifyDiscovery.mockResolvedValueOnce({ ok: true, networkId });
+  await expect(verifyProbeResult({ target: { orgId, siteId }, guard: { allowedGatewayIds: [officeGw] },
+    result: { status: 'failed', error: 'timeout', result: { success: false, verifiedNetwork: vn } } }))
+    .resolves.toEqual({ kind: 'accept' });
+});
+it('reads verifiedNetwork from stdout when the result object has none (C7)', async () => {
+  verifyDiscovery.mockResolvedValueOnce({ ok: true, networkId });
+  await verifyProbeResult({ target: { orgId, siteId }, guard: { allowedGatewayIds: [officeGw] },
+    result: { status: 'completed' }, stdout: JSON.stringify({ deviceId: 'd', verifiedNetwork: vn }) });
+  expect(verifyDiscovery).toHaveBeenCalledWith(expect.objectContaining({ verifiedNetwork: vn }));
 });
 it('an unguarded result for a target with no site is accepted without a query', async () => {
   await expect(verifyProbeResult({ target: { orgId, siteId: null }, guard: null, result: { status: 'completed' } }))
@@ -457,7 +493,7 @@ export async function recordSnmpPollNotCheckedAfterDispatch(snmpDeviceId: string
 ```
 It writes exactly `last_status = code` and `consecutive_failures = GREATEST(consecutive_failures - 1, 0)`. It does not touch `last_error`, `last_error_at`, `last_polled`, `last_poll_attempted_at` or `poll_seq`.
 
-On the WebSocket path, after the expectation is consumed and matched, and before the `status !== 'completed'` test: verdict with `currentProbeTargetSite({ kind: 'snmp', id: snmpDeviceId })` and `expectation.guard`; `not_checked` → `recordSnmpPollNotCheckedAfterDispatch`, return. On the persisted path, `handleSnmpPollResult` does the same with `probeGuardFromCommand(command)` (the stored row's payload, which the server wrote) before its failure branch. Both run in `withDbTransaction`, catch outside.
+On the WebSocket path, after the expectation is consumed and matched, and before the `status !== 'completed'` test: verdict with `currentProbeTargetSite({ kind: 'snmp', id: snmpDeviceId })` and `expectation.guard`; `not_checked` → `recordSnmpPollNotCheckedAfterDispatch`, return. On the persisted path, `handleSnmpPollResult` does the same with `probeGuardFromCommand(command)` (the stored row's payload, which the server wrote) and its `stdout` argument (index C7) before its failure branch. Both run in `withDbTransaction`, catch outside.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -472,6 +508,14 @@ it('guarded refusal never reaches recordSnmpPollFailure', async () => {
      ⇒ recordSnmpPollNotCheckedAfterDispatch(id, 'network_changed'); recordSnmpPollFailure and enqueueSnmpPollResults not called */
 });
 it('guarded metrics without an accepted verifiedNetwork are discarded as not checked', async () => { /* both paths ⇒ network_unverified; no enqueue */ });
+it('a guarded failure with an ordinary error and no verifiedNetwork is not checked', async () => {
+  /* both paths: { status: 'failed', error: 'timeout', result: { deviceId, success: false } } (no verifiedNetwork)
+     ⇒ recordSnmpPollNotCheckedAfterDispatch(id, 'network_unverified'); recordSnmpPollFailure not called */
+});
+it('the persisted path reads verifiedNetwork from stdout when the result object has none', async () => {
+  /* commandResultHandlers.snmp_poll_guarded({ …, result: { status: 'completed' }, stdout: JSON.stringify({ deviceId, metrics, verifiedNetwork: vn }) })
+     ⇒ verifyProbeResult called with that stdout; verdict accept ⇒ metrics enqueued */
+});
 it('guarded metrics with an accepted verifiedNetwork are enqueued as before', async () => { /* positive control, both paths */ });
 it('a guarded failure with an accepted verifiedNetwork is a real failure', async () => {
   /* { status: 'failed', error: 'timeout', result: { deviceId, success: false, verifiedNetwork: vn } }, verdict accept
@@ -591,7 +635,7 @@ English copy (exact):
 | `….notChecked.no_agent_on_network` | No agent is on this site's network right now. |
 | `….notChecked.no_network_assigned` | This site requires a network, and none is assigned. |
 | `….notChecked.network_mismatch` | The agent was not on this site's network. |
-| `….notChecked.network_changed` | The agent's network changed during the check. |
+| `….notChecked.network_changed` | The agent could not confirm it stayed on this site's network. |
 | `….notChecked.network_unverified` | The agent's network could not be confirmed. |
 | `common:longTail.monitoring.MonitoringAssetsDashboard.collectionState.not_checked` | Not checked |
 | `devices:networkDeviceDetailPage.collection.status.notChecked` | Not checked |
@@ -687,14 +731,14 @@ Setup. `import './setup'`; mock `services/agentCommandRelay` (`isAgentConnectedA
 
 ## Contract notes
 
-1. **The site lock (E1) is not taken by the probe producers.** `loadPollDispatchInputs` locks the asset row (`jobs/snmpWorker.ts:417-424`) and the probe route locks it in `resolveAssetForMutation` before the site is known, while W03c's merge holds the exclusive site lock and then updates `discovered_assets.last_network_id` (W03c plan, merge step 5). Taking the shared site lock after the asset lock inverts E1's order and can deadlock with a merge; the probe route would also hold it through the 8 s wait. The workers send after their read context closes, so a lock would not cover the send either. The guarantee is result-time verification against current state on every result path (Task 3, rule 4 included). E5 and E10 both say their caller holds the shared site lock; `evaluateProbeGate` and `verifyProbeResult` call them without one. The W03a plan asserts only that `lockSitesForNetworkGate` runs in a transaction, not that E5 or E10 see a held lock; that must stay so.
-2. **E6 must also require `agent_token_suspended_at IS NULL`**, as `selectNetworkExecutor` does (`services/networkExecutorSelection.ts:74`), so the gated and ungated pickers agree. The W03a plan's E6 query does not list it. If W03a does not add it, `evaluateProbeGate` filters its pick on it and asks again without `limit: 1`.
+1. **The site lock (E1) is not taken by the probe producers.** `loadPollDispatchInputs` locks the asset row (`jobs/snmpWorker.ts:417-424`) and the probe route locks it in `resolveAssetForMutation` before the site is known, while W03c's merge holds the exclusive site lock and then updates `discovered_assets.last_network_id` (W03c plan, merge step 6). Taking the shared site lock after the asset lock inverts E1's order and can deadlock with a merge; the probe route would also hold it through the 8 s wait. The workers send after their read context closes, so a lock would not cover the send either. The guarantee is result-time verification against current state on every result path (Task 3, rule 4 included). E5 and E10 both say their caller holds the shared site lock; `evaluateProbeGate` and `verifyProbeResult` call them without one. The W03a plan asserts only that `lockSitesForNetworkGate` runs in a transaction, not that E5 or E10 see a held lock; that must stay so.
+2. **E6 requires `agent_token_suspended_at IS NULL`** (index E6; the W03a plan's eligibility query filters on it, as `selectNetworkExecutor` does at `services/networkExecutorSelection.ts:74`), so the gated and ungated pickers agree. `evaluateProbeGate` adds no filter of its own.
 3. **E10 with `profileId: null`**: the W03a plan evaluates the gate with `profile: null`, so the allowed set is every fingerprint assigned to the site, and it compares the upload's `gatewayId`, `address` and `mac`. `verifyProbeResult` relies on exactly that.
 4. **The expectation records no site.** The C5 payload carries no site id (except the probe's `probeSiteId`), so the verdict uses the target's current site, read at result time. A target that moved sites therefore fails verification, which is the intended outcome.
 5. **E8's contract test** is `services/learnedNetworks/scanCommand.contract.test.ts` (from the W03a plan, not the index). Its classes are discovery-specific; Task 4 adds a parallel pair table instead of reusing its `toolName` class.
-6. **`GATED_COMMAND_TYPES`**: `partnerTrust.test.ts` › "classifies every known command type exactly once" parses the Go handler registry, so W06a's registration of the five types turns that API test red unless the same PR adds them to `GATED_COMMAND_TYPES`. The W06a plan does not mention it. Recommendation: W06a adds them; Task 1 adds them if they are absent.
+6. **`GATED_COMMAND_TYPES`**: `partnerTrust.test.ts` › "classifies every known command type exactly once" parses the Go handler registry, so W06a's registration of the five types requires the same PR to add them to `GATED_COMMAND_TYPES` (index Global constraints, Agent). Task 1 adds any that are not already present.
 7. **Outside O7 beyond plan call 12:** monitors with neither site nor asset (including every partner-wide check) are not site work and stay ungated (Wave constraints). Not filed as a follow-up.
-8. **`no_network_assigned`** is written for a gated site with no assigned network (index H names only `no_agent_on_network`). It is a distinct code so the reason line can tell the admin to assign a network.
-9. **Conflict with the W06a plan: failures after the proof.** W06a returns a failed result from the probe after a successful `Confirm` "as is" (its `runGuardedProbe` step), with no `verifiedNetwork`; it stamps `verifiedNetwork` only on completed results. With this plan's verdict such a failure (for example an SNMP poll that fails as a whole) reads as not checked, so a device that always fails would never show as down. W06a's Contract note 2 asks the opposite: treat every failed guarded result as not checked. Recommendation: W06a stamps `verifiedNetwork` on every result produced after `Confirm` succeeded, failed included; then a refusal, an `invalid_argument` and any pre-proof failure stay not checked, and a real failure stays a failure (Task 9 › "a guarded failure with an accepted verifiedNetwork is a real failure" assumes this). Until one plan changes, the owner decides. Ping, TCP, HTTP and DNS checks are unaffected: W06a reports their `offline` outcome as a completed result with `verifiedNetwork`.
+8. **`no_network_assigned`** is written for a gated site with no assigned network (index H). It is a distinct code so the reason line can tell the admin to assign a network.
+9. **Failures after the proof (index C5 and H).** Every result W06a produces after the binding was acquired and confirmed carries `verifiedNetwork`, a failed probe included; only a refusal carries none. The verdict (Task 3) therefore keys on `verifiedNetwork` alone: any guarded result without a valid one is not checked, whatever its status or error code, and a failed probe with an accepted one is a real failure (Task 9 › "a guarded failure with an accepted verifiedNetwork is a real failure"; Task 9 › "a guarded failure with an ordinary error and no verifiedNetwork is not checked").
 10. **A guarded command that is never answered** is read as on a site that is not gated (Wave constraints). The probe stamp and the SNMP counter carry no "guarded" marker, and adding one would need a migration, which this wave does not take.
 11. **Read from plans, not code:** W03c's `assignNetwork` and `unassignNetwork` (E12, confirmed in the W03c plan) seed the gated state in Task 13; the W03a and W06a details cited here come from their plan files, not merged code.

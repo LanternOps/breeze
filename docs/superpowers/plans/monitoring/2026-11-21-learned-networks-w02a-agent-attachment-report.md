@@ -47,8 +47,8 @@ These close what the spec and contract leave open. The tests in the tasks pin ea
 | K4 | **Default route:** `Family == "ipv4"`, `DestinationPrefix == "0.0.0.0/0"`, `RouteType == "unicast"`, from every routing table except Linux `TableKey == "255"` (local). Each next hop with an address is one candidate; a hop's `InterfaceKey` wins over the row's. Candidates are de-duplicated on (interface key, gateway). macOS scoped defaults (one per interface) are included. |
 | K5 | **Local address:** the interface's IPv4 address whose prefix contains the gateway; otherwise its lowest IPv4 address that is not link-local. An interface with neither is skipped. Link-local, loopback, multicast or unspecified gateways are skipped. |
 | K6 | **Gateway MAC:** the neighbour row on the same interface key with the gateway's address and a 6-byte MAC, unless its state is `incomplete` or `failed`. Otherwise `nil`. `stale` and `permanent` entries count: the report never probes. |
-| K7 | **Primary:** resolve `serverHost` (an IP literal is used as is; otherwise `net.DefaultResolver.LookupNetIP(ctx, "ip4", host)`, first address), then `LookupRoute` with the context key from `Contexts()`. Primary is the attachment on the selected interface whose gateway equals the selected next hop (or the only attachment on that interface when the next hop is nil). At most one. A server route through a tunnel makes nothing primary. |
-| K8 | **`complete` and `err`:** `err` joins every read error (contexts, interfaces, routes, neighbours, uplink, resolve, route lookup). `complete` is false when `err != nil` or the list was cut. A host name with no IPv4 address is not an error: nothing is primary. `Contexts`, `Interfaces` or `Routes` failing with no rows returns `nil, false, err`. |
+| K7 | **Primary:** resolve `serverHost` (an IP literal is used as is; otherwise `net.DefaultResolver.LookupNetIP(ctx, "ip4", host)`, first address), then `LookupRoute` with the context key from `Contexts()`. Primary is the attachment on the selected interface whose gateway equals the selected next hop (or the only attachment on that interface when the next hop is nil). At most one. A server route through a tunnel makes nothing primary. **An empty `serverHost` skips the resolve and the route lookup: nothing is primary and no error is added** (index D1; `netguard` calls `Current(ctx, "")`). |
+| K8 | **`complete` and `err`:** `err` joins every read error (contexts, interfaces, routes, neighbours, uplink, resolve, route lookup). `complete` is false when `err != nil` or the list was cut. A host name with no IPv4 address is not an error: nothing is primary. An empty `serverHost` is not an error either (K7). `Contexts`, `Interfaces` or `Routes` failing with no rows returns `nil, false, err`. |
 | K9 | **Order and cut:** primary first, then `InterfaceName`, then gateway address; cut to `MaxAttachments` (8). Names are truncated to the longest prefix of at most 128 runes **and** 128 UTF-16 units; an empty name becomes `if<index>`. |
 | K10 | **Heartbeat timing:** the read runs in one background goroutine at a time with a 3-second context. A beat never waits for it. Each finished report is attached to one beat only. A report whose read exceeded 3 seconds, or that started more than 5 minutes before the beat (half the server's 10-minute capture bound, index E2), is dropped. The first beat after start carries no report. |
 
@@ -286,6 +286,7 @@ Further table tests in the same file (one `t.Run` per row; each asserts the full
 | `TestCurrent_TwoDefaultRoutes` subtest "office LAN under a full-tunnel VPN" | Ethernet as above, plus `utun4` (kind `tunnel`, `10.1.2.57/32`, default via `10.1.2.100`); server via `utun4` | one attachment, Ethernet, `Primary` false; `complete` true |
 | `TestCurrent_ReadFailureIsIncomplete` | `fail("neighbors")`; `fail("lookup")`; `fail("resolve")`; `fail("bridged")` with one `bridge` and one `ethernet` row; `fail("routes")`, `fail("interfaces")`, `fail("contexts")`, each with no rows | attachments with nil MACs / no primary / no primary / the `ethernet` one only / `nil` / `nil` / `nil`; `complete` false and `err` non-nil in every row |
 | `TestCurrent_ServerWithoutIPv4` | `resolve` returns only an IPv6 address | attachments, none primary, `complete` true, `err` nil |
+| `TestCurrent_EmptyServerHost` | the `TestCurrent_TwoDefaultRoutes` fixture plus `fail("resolve", e)` and `fail("lookup", e)`; `current(ctx, d, "")` | both attachments, none `Primary`, `complete` true, `err` nil (so neither resolve nor lookup was called) |
 | `TestCurrent_CutToEight` | ten `ethernet` rows `eth0`…`eth9`, addresses `192.168.1.50`…`192.168.1.59/24`, all via `192.168.1.1`; server via `eth9` | 8: `eth9` (primary), then `eth0`…`eth6`; `complete` false, `err` nil |
 | `TestCurrent_NameIsCapped` | names of 130 × `é`, 70 × `😀`, and `""` at index 3 | 128 runes; 64 runes; `if3` |
 
@@ -544,6 +545,8 @@ run `NETATTACH_LIVE=1 ./netattach.test -test.run TestCurrent_Live -test.v`:
 
 - [ ] `cd agent && go test -race ./internal/netattach/... ./internal/collectors/networkcontext/... ./internal/heartbeat/...` → `ok` for each package.
 - [ ] `cd agent && CGO_ENABLED=0 go test ./internal/netattach/...` → `ok` (cgo-off on the dev OS).
+- [ ] `cd apps/api && npx vitest run src/services/agentOrgRateLimit.test.ts` → PASS (it parses
+  `heartbeat.go` for `sendInventoryData` call sites; this wave adds none, so it must stay green).
 - [ ] The CI build path (`ci.yml:2304-2315`), cgo off, for each target, from the repo root:
   `for t in linux/amd64 linux/arm64 windows/amd64 darwin/arm64; do CGO_ENABLED=0 agent/scripts/build-edition.sh --edition self-host --component agent --goos ${t%/*} --goarch ${t#*/} --version dev --out /tmp/breeze-agent-${t%/*}-${t#*/} || exit 1; done` → exit 0.
 - [ ] `cd agent && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go vet ./...` → exit 0 (the `lint-agent` macOS step, `ci.yml:3600-3605`).
@@ -567,7 +570,9 @@ run `NETATTACH_LIVE=1 ./netattach.test -test.run TestCurrent_Live -test.v`:
    not stop reporting: `State` moves to a fresh in-memory epoch, which the server treats as a reset (§8.1).
 4. **"Bounded to 3 seconds and never delays a heartbeat" is met by reading in the background** (K10):
    a beat carries a report captured up to one interval earlier, never one older than 5 minutes.
-5. **C1 says the field is "always sent"; this plan omits it on some beats**: the first beat after start,
-   a beat with no read finished since the last one, and after a read that overran or failed to produce a
-   sequence. An absent field means "no news" and must never be read as "on no network" (that is an empty,
-   complete list). W01b must treat an absent field as no change: nothing confirmed, nothing cleared.
+5. **The field is absent on some beats, as index C1 allows**: the first beat after start, a beat with no
+   read finished since the last one, and after a read that overran or failed to produce a sequence. Per
+   C1 an absent field means "no change" and is never read as "on no network" (that is an empty,
+   complete list). W01b treats it as no change: nothing confirmed, nothing cleared (E3 reason `absent`).
+6. **An empty `serverHost` marks nothing primary and adds no error** (K7, index D1).
+   `TestCurrent_EmptyServerHost` pins it; W02c's `netguard` relies on it.

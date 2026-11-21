@@ -36,8 +36,8 @@ Review focus and Cross-wave contract apply to every task here (sections F, F1, F
   `mockResolvedValueOnce`, so an extra mount fetch would break every existing case there.
 - Components render through `ResponsiveTable` (desktop table and mobile cards both in the DOM). Scope
   row assertions with `within(screen.getByTestId('responsive-table-desktop'))`.
-- Fixtures use only the index's synthetic values, plus the site name `Main Office` and the network name
-  `Main Office LAN`. A shared virtual-router fixture MAC is `00:00:5e:00:01:0a` (the VRRP range).
+- Fixtures use only the index's synthetic values, plus the site names `Main Office` and `Warehouse` (as
+  W03c's fixtures) and the network name `Main Office LAN`. A shared virtual-router fixture MAC is `00:00:5e:00:01:0a` (the VRRP range).
 - Index line numbers checked against this checkout and unchanged: `DiscoveryPage.tsx` `:29`, `:278`,
   `:291`, `:393`, `:458-488`, `:531-546`, `:707`; `DiscoveryJobList.tsx` `:94`, `:135`, `:476-527`;
   `DiscoveredAssetList.tsx` `:167`, `:268-340` (filter state and memos; the chip row renders at
@@ -70,7 +70,7 @@ Every element a future spec needs carries a test id from the table below.
 | `apps/api/src/services/learnedNetworks/agentNetworkStatus.ts` | Create. Per-agent network status for the scan-agent picker. |
 | `apps/api/src/routes/discovery.ts` | Modify list and detail picks (`:624-645`, `:733`), jobs (`:1123-1246`), assets (`:1402-1489`). |
 | `apps/api/src/routes/discoveryNetworks.ts` | Modify: add `GET /sites/:siteId/network-agents`. |
-| `apps/api/src/services/learnedNetworks/list.ts` | Modify: gateway `vendor`; export the display-name helper (contract notes 1 and 2). |
+| `apps/api/src/services/learnedNetworks/list.ts` | Modify: gateway `vendor` (index F1; contract note 1). Display names reuse W03c's `displayNameFor` (`suggestions.ts`). |
 | `apps/api/src/__tests__/integration/learnedNetworkReadFields.integration.test.ts` | Create. |
 | `apps/web/src/locales/<8 locales>/discovery.json`, `lib/i18n/learnedNetworksCopy.test.ts` | New keys; plural and copy-rule test. |
 | `apps/web/src/components/discovery/learnedNetworkTypes.ts` | Create. F1 types and mapper. |
@@ -78,7 +78,7 @@ Every element a future spec needs carries a test id from the table below.
 | `.../discovery/discoveryJobFailures.ts` | Create. Failure code to sentence. |
 | `.../discovery/DiscoveryPage.tsx`, `DiscoveryProfileForm.tsx`, `DiscoveryProfileList.tsx`, `DiscoveryJobList.tsx`, `DiscoveredAssetList.tsx` | Modify. Tests beside each; `DiscoveryJobList.test.tsx` is new. |
 | `apps/web/src/lib/__tests__/no-silent-mutations.test.ts` | Add the panel to `TARGET_GLOBS` (beside `:395`). |
-| `docs/superpowers/plans/monitoring/2026-11-21-learned-networks.md` | Amend F, F1, F2 per the contract notes, in the same PR. |
+| `docs/superpowers/plans/monitoring/2026-11-21-learned-networks.md` | No change expected: F, F1 and F2 already carry `vendor`, the `replacementFor` shape, the `sites` rule, the display-name rule and the `network-agents` route. Amend it in the same PR only if this wave changes one of them. |
 
 ---
 
@@ -107,8 +107,9 @@ export async function loadAssetAssignedNetworkStatus(
 
 A network is in `snmpGrantNetworks` when at least one of its fingerprints has a grant for the profile.
 Display name everywhere is the one W03c builds for F1 `displayName` (`name`, else `"<prefix> via
-<gateway>"`); export it from `list.ts` as `learnedNetworkDisplayName` and reuse it. Each loader issues
-one query for the whole batch (no per-row query).
+<gateway>"`): call W03c's `displayNameFor({ name, prefix, gatewayAddresses })` from
+`services/learnedNetworks/suggestions.ts`, passing gateway addresses in `first_seen_at` order. Each loader
+issues one query for the whole batch (no per-row query).
 
 Response additions (explicit picks):
 
@@ -155,18 +156,20 @@ it('asset list carries seenOnAssignedNetwork, null when the loader has no entry'
 it('snmpGrantNetworks names each network holding a granted fingerprint, display name when unnamed');
   // grants on both fingerprints -> [{ name: 'Main Office LAN' }, { name: '192.168.1.0/24 via 192.168.1.1' }]
 it('networkRequired follows sites.discovery_network_required');
+  // a profile on Main Office -> true; a profile on the second site -> false
 it('seenOnAssignedNetwork is true, false or null by site gating and last network');
   // gated site: last network assigned -> true; other network -> false; none -> false
   // site not gated -> null for every asset
 it('jobs read the display name of the network they scanned');
+  // loadNetworkDisplayNames([assigned, unnamed]) -> 'Main Office LAN' and '192.168.1.0/24 via 192.168.1.1'
 ```
 
 - [ ] **Step 3: Run both and see them fail.**
   `cd apps/api && npx vitest run src/routes/discovery.test.ts`: FAIL on the new cases.
   `pnpm test-stack up && pnpm --filter @breeze/api test:integration src/__tests__/integration/learnedNetworkReadFields.integration.test.ts`:
   FAIL (module not found).
-- [ ] **Step 4: Implement** `readFields.ts`, the picks above, `vendor` and the exported display-name
-  helper. Register the integration file if `test:integration-suite-coverage` asks.
+- [ ] **Step 4: Implement** `readFields.ts`, the picks above and `vendor`. Register the integration file
+  if `test:integration-suite-coverage` asks.
 - [ ] **Step 5: Run and see pass:** the two commands above, plus
   `pnpm --filter @breeze/api test:integration-suite-coverage`. Then `pnpm test-stack down`.
 - [ ] **Step 6: Commit** `feat(api): learned network read fields on profiles, jobs and assets`.
@@ -179,7 +182,8 @@ its test, `__tests__/parkedFanoutModules.ts`; extend the Task 1 integration file
 **Interfaces (produces):**
 
 ```ts
-export type AgentNetworkStatus = 'on_network' | 'not_on_network' | 'needs_update';
+// Index F: per agent, on an allowed network or the IneligibleReason from E6.
+export type AgentNetworkStatus = 'on_network' | Extract<IneligibleReason, 'offline' | 'needs_update' | 'not_on_network'>;
 export async function loadSiteAgentNetworkStatus(input: {
   orgId: string; siteId: string; networkId: string | null; now: Date;
 }): Promise<Array<{ deviceId: string; status: AgentNetworkStatus }>>;
@@ -189,23 +193,33 @@ Route: `GET /discovery/sites/:siteId/network-agents?networkId=<uuid>&orgId=<uuid
 site access required (403 otherwise), response `{ data: [{ deviceId, status }] }`. No second
 eligibility rule: the service resolves the allowed gateway ids (fingerprints of `networkId` when it is
 assigned to the site, else of every network assigned to the site), calls E6
-`loadEligibleGuardedAgents({ orgId, siteId, allowedGatewayIds, commandType: 'network_discovery', limit: 500 })`
-and marks those `on_network`. The site's other devices (not ephemeral, not parked) are `needs_update`
-when `agentSupportsGuardedCommand('network_discovery', agentVersion)` is false, else `not_on_network`
-(an offline agent is `not_on_network`; the picker shows its offline label first).
+`loadEligibleGuardedAgents({ orgId, siteId, allowedGatewayIds, commandType: DISCOVERY_SCAN_FAMILY, limit: 500 })`
+(`DISCOVERY_SCAN_FAMILY` from W03a's `scanCommand.ts`; a `'network_discovery'` literal in this file would fail
+W03a's `scanCommand.contract.test.ts`)
+and marks those `on_network`. Every other device of the site that is not ephemeral and not parked gets the
+`IneligibleReason` E6's `explainGuardedAgent` would give it, decided in one query in the same order:
+`offline` (not online, or its agent token is suspended), then `needs_update`
+(`agentSupportsGuardedCommand(DISCOVERY_SCAN_FAMILY, agentVersion)` is false), else `not_on_network`.
+Ephemeral and parked devices, and devices of other sites, are not listed, so `not_found`, `other_site`,
+`ephemeral` and `parked` never occur here.
 
 - [ ] **Step 1: Failing tests.** Route test: `network-agents answers 403 for a site outside the caller's
   allowlist` and `network-agents passes networkId through and returns the service rows`. Integration:
 
 ```ts
-it('network-agents: E6-eligible devices are on_network, below-version devices needs_update, the rest not_on_network');
+it('network-agents: E6-eligible devices are on_network, the rest carry the E6 reason');
+  // gated Main Office with the assigned network: DESKTOP-01 999.0.0 current and fresh -> on_network;
+  // LAPTOP-JS 999.0.0 behind the unassigned fingerprint -> not_on_network; a '0.1.0' agent behind the
+  // assigned fingerprint -> needs_update; an offline 999.0.0 agent -> offline; an ephemeral device -> absent
 it('network-agents: a networkId narrows the allowed gateway ids passed to E6');
+  // two assigned networks; networkId = the second -> loadEligibleGuardedAgents gets only its gateway ids
 ```
 
 - [ ] **Step 2: Run, see fail:** `cd apps/api && npx vitest run src/routes/discoveryNetworks.test.ts`
   and the integration command from Task 1.
 - [ ] **Step 3: Implement**, and add `'services/learnedNetworks/agentNetworkStatus.ts'` to
-  `FANOUT_MODULES` with its guard count and reason `scan-agent picker network status`.
+  `FANOUT_MODULES` with `guards` equal to its `notParkedDeviceCondition(` calls (1 for the one query over the
+  site's other devices) and reason `scan-agent picker network status`.
 - [ ] **Step 4: Run, see pass:** the commands above plus
   `cd apps/api && npx vitest run src/__tests__/parkedFanout.contract.test.ts` and
   `pnpm -F @breeze/api test:site-scope-coverage`.
@@ -254,7 +268,8 @@ it('no new English value contains an em dash or "verified location"', () => {
 ```ts
 // LearnedNetwork, LearnedNetworkGateway, LearnedNetworkWanAddress, LearnedNetworkDevices,
 // LearnedNetworkSite mirror F1 field for field, with two additions: gateway `vendor: string | null`
-// (contract note 1) and `replacementFor: { networkId: string; displayName: string } | null` (note 3).
+// (contract note 1) and `replacementFor: { networkId: string; displayName: string; siteId: string; siteName: string } | null`
+// (index F1, note 3).
 export type LearnedNetworkState = 'needs_review' | 'assigned' | 'ignored';
 export type LearnedNetworkList = { networks: LearnedNetwork[]; sites: LearnedNetworkSite[]; limitReached: boolean };
 export type AssignmentEffectsView = { gatesSite: boolean; profilesPointed: number; profilesFailingClosed: number;
@@ -267,7 +282,8 @@ export function parseAssignmentEffects(body: unknown): AssignmentEffectsView | n
 
 - [ ] **Step 1: Failing tests.** `F1_FIXTURE` is the index F1 JSON with real values (two networks from the
   fixture list, one assigned to `Main Office`, gateway `vendor: 'TP-Link'` on one and `null` on the other,
-  `replacementFor: { networkId, displayName: 'Main Office LAN' }` on the unassigned one).
+  `replacementFor: { networkId, displayName: 'Main Office LAN', siteId, siteName: 'Main Office' }` on the
+  unassigned one).
 
 ```ts
 it('a full F1 response round-trips with every field kept', () => {
@@ -275,8 +291,11 @@ it('a full F1 response round-trips with every field kept', () => {
     { networks: F1_FIXTURE.data, sites: F1_FIXTURE.sites, limitReached: false });
 });
 it('drops a row whose state is not one of the three and keeps the rest');
+  // F1_FIXTURE plus a row with state 'archived' -> networks equals F1_FIXTURE.data
 it('a missing vendor maps to null');
+  // a gateway without the vendor key -> vendor: null
 it('parseAssignmentEffects reads effects from a 409 body and returns null without one');
+  // { code: 'CONFIRMATION_REQUIRED', effects: E } -> E; {} and { effects: { gatesSite: 'yes' } } -> null
 ```
 
 - [ ] **Step 2: Run, see fail:** `cd apps/web && npx vitest run src/components/discovery/learnedNetworkTypes.test.ts`.
@@ -348,8 +367,14 @@ it('shows the suggestion, the replacement hint and the shared virtual-router war
   expect(screen.getByTestId(`learned-network-shared-mac-${NET_VRRP}`)).toBeInTheDocument();   // MAC 00:00:5e:00:01:0a
 });
 it('shows the limit notice when limitReached is true');
+  // limitReached true -> learned-networks-limit-reached has the limitReached copy; false -> absent
 it('shows loading, then error with a retry that refetches, then empty');
+  // pending fetch -> learned-networks-loading; reject -> learned-networks-error; click -retry -> fetch called twice;
+  // { data: [], sites: [], limitReached: false } -> learned-networks-empty
 it('a gated site with no network shows its banner and Stop requiring button');
+  // sites [{ siteId: S, siteName: 'Main Office', networkRequired: true, assignedNetworkCount: 0 }]
+  // -> learned-networks-site-no-network-S reads 'Main Office requires a network but has none assigned...';
+  // learned-networks-stop-requiring-S present; a site with assignedNetworkCount 1 gets no banner
 ```
 
 - [ ] **Step 2: Run, see fail:** `cd apps/web && npx vitest run src/components/discovery/LearnedNetworksPanel.test.tsx`.
@@ -403,6 +428,7 @@ with the network's current `siteName` (siteLosesLastNetwork); `row.sharedMac`
 
 ```ts
 it('assign that answers 200 posts { siteId } and toasts without a dialog');
+  // lastBody(assign) === { siteId: SITE_MAIN }; learned-network-confirm-dialog absent; success toast shown; list refetched
 it('assign that answers 409 CONFIRMATION_REQUIRED opens the dialog from effects and does not toast an error', async () => {
   expect(screen.getByTestId('learned-network-confirm-dialog')).toHaveTextContent(
     '2 of 4 online agents at Main Office are on this network now.');
@@ -413,13 +439,35 @@ it('assign that answers 409 CONFIRMATION_REQUIRED opens the dialog from effects 
   expect(lastBody('/discovery/networks/NET_1/assign')).toEqual({ siteId: SITE_MAIN, confirmed: true });
 });
 it('with no agent on the network the dialog says scans will fail until one is');
+  // effects.agents.onNetwork 0 -> learned-network-effect-agents reads the confirm.noAgentOnNetwork sentence
+it('a 409 whose only effect is a shared virtual-router MAC shows the warning and re-posts confirmed', async () => {
+  // effects { gatesSite: false, profilesPointed: 0, profilesFailingClosed: 0, siteLosesLastNetwork: false,
+  //           agents: { online: 2, onNetwork: 2, needUpdate: 0 }, sharedVirtualRouterMac: true }
+  expect(screen.getByTestId('learned-network-effect-shared-mac')).toHaveTextContent('shared virtual-router MAC');
+  expect(screen.queryByTestId('learned-network-effect-gates')).toBeNull();
+  fireEvent.click(screen.getByTestId('learned-network-confirm-submit'));
+  expect(lastBody(`/discovery/networks/${NET_VRRP}/assign`)).toEqual({ siteId: SITE_MAIN, confirmed: true });
+});
+it('an assign confirmation for a move lists failing profiles and the last-network effect', async () => {
+  // The panel offers Assign only on Needs review rows, so render NetworkConfirmDialog directly with
+  // pending { kind: 'assign', network: NET_ASSIGNED (on Main Office), siteId: SITE_B, siteName: 'Warehouse',
+  //   effects: { gatesSite: false, profilesPointed: 2, profilesFailingClosed: 2, siteLosesLastNetwork: true,
+  //              agents: { online: 1, onNetwork: 1, needUpdate: 0 }, sharedVirtualRouterMac: false } }
+  expect(screen.getByTestId('learned-network-effect-profiles')).toHaveTextContent('2 profiles point at this network');
+  expect(screen.getByTestId('learned-network-effect-last-network')).toHaveTextContent('Main Office will have no network left.');
+  expect(screen.queryByTestId('learned-network-effect-gates')).toBeNull();
+});
 it('unassign lists failing profiles and the last-network effect, then re-posts confirmed', async () => {
   expect(screen.getByTestId('learned-network-effect-keeps-gate')).toHaveTextContent('Main Office still requires a network after this.');
   expect(lastBody(`/discovery/networks/${NET_ASSIGNED}/unassign`)).toEqual({ confirmed: true });
 });
 it('rename sends null for an empty name');
+  // rename input '   ' then save -> lastBody(PATCH /discovery/networks/NET_ASSIGNED) === { name: null }
 it('ignore and restore post to their routes and refetch');
+  // -ignore-NET_1 -> POST /discovery/networks/NET_1/ignore; -restore-IGNORED_1 -> .../restore; GET called after each
 it('merge as an additional gateway posts sourceNetworkId and mode');
+  // -> lastBody(POST /discovery/networks/NET_ASSIGNED/merge) === { sourceNetworkId: NET_2, mode: 'additional_gateway',
+  //    retiredGatewayIds: [] } (W03c's schema accepts an empty list for this mode); the retire checkboxes are not shown
 it('merge replacing a gateway keeps Merge disabled until a gateway is ticked, then posts retiredGatewayIds', async () => {
   expect(screen.getByTestId('learned-network-merge-submit')).toBeDisabled();
   fireEvent.click(screen.getByTestId(`learned-network-merge-retire-${GW_A}`));
@@ -428,7 +476,11 @@ it('merge replacing a gateway keeps Merge disabled until a gateway is ticked, th
     { sourceNetworkId: NET_2, mode: 'replaces_gateway', retiredGatewayIds: [GW_A] });
 });
 it('merge as replacement presets target, source and replaces_gateway from replacementFor');
+  // -merge-replacement-NET_2 -> merge dialog open with target replacementFor.networkId, source NET_2,
+  //    -merge-mode-replaces checked, submit disabled until a retire box is ticked
 it('stop requiring confirms, then posts { confirmed: true }');
+  // -stop-requiring-S -> dialog with confirm.stopRequiringBody; nothing posted until submit;
+  //    then lastBody(POST /discovery/sites/S/stop-requiring-network) === { confirmed: true }
 ```
 
   Add `'src/components/discovery/LearnedNetworksPanel.tsx'` to `TARGET_GLOBS` next to `:395`.
@@ -468,23 +520,31 @@ it.each(DISCOVERY_GATE_FAILURE_CODES)('%s maps to its sentence, not the raw mess
   expect(text).not.toBe('raw'); expect(text).not.toMatch(/^discoveryJobList\./);
 });
 it.each(['none_online', 'none_on_network', 'agents_need_update'])('no_agent_on_network + %s has its own sentence');
+  // equals the copy-table sentence for that reason, and differs from the no-reason noAgentOnNetwork sentence
 it.each(['not_found', 'other_site', 'offline', 'ephemeral', 'parked', 'not_on_network', 'needs_update'])(
   'agent_not_eligible + %s has its own sentence');
+  // equals the copy-table sentence for that reason, and differs from the no-reason agentNotEligible sentence
 it('agents_need_update reads "Agents here need updating..."', () => {
   expect(describeJobFailure({ code: 'no_agent_on_network', reason: 'agents_need_update', message: null }, t))
     .toBe('Agents here need updating. Update the agents at this site to the current version, then run the scan again.');
 });
 it('falls back to the server message for a missing or unknown code');
+  // { code: null, message: 'raw' } and { code: 'something_new', message: 'raw' } -> 'raw'; no message -> null
 // DiscoveryJobList.test.tsx (fetch mocked)
 it('mapJob keeps code, reason, networkId, networkName and crossNetworkAssetUpdates');
+  // API job with errors { code: 'no_agent_on_network', reason: 'none_online', message: 'm' } -> errorCode,
+  // errorReason set; networkId/networkName/crossNetworkAssetUpdates copied; missing ones -> null
 it('a failed job shows the failure sentence in place of the raw message');
+  // discovery-job-error-j1 has the noAgentNoneOnline sentence and not the server message
 it('the Network column shows the network name and the cross-network count', () => {
   expect(desktop().getByTestId('discovery-job-network-j1')).toHaveTextContent('Main Office LAN');
   expect(desktop().getByTestId('discovery-job-cross-network-j1'))
     .toHaveTextContent('3 devices were last seen by a scan on another network');
 });
 it('a pending row shows a dash in the Network column');
+  // synthetic next-<profileId> row -> its Network cell shows the existing empty-cell placeholder
 it('a job with an uncoded error still shows its message');
+  // errors { message: GATING_CANCEL_MESSAGE } (no code) -> discovery-job-error-<id> shows that message
 ```
 
 - [ ] **Step 2: Run, see fail:** `cd apps/web && npx vitest run src/components/discovery/discoveryJobFailures.test.ts src/components/discovery/DiscoveryJobList.test.tsx`.
@@ -500,7 +560,7 @@ it('a job with an uncoded error still shows its message');
 ```ts
 export type SiteNetworkOption = { id: string; displayName: string; prefix: string | null };
 export type SiteNetworkOptions = { networkRequired: boolean; networks: SiteNetworkOption[] };
-export type AgentNetworkStatus = 'on_network' | 'not_on_network' | 'needs_update';
+export type AgentNetworkStatus = 'on_network' | 'offline' | 'not_on_network' | 'needs_update';   // Task 2's values
 export type SavedCredentialBinding = { mode: 'unrestricted' | 'bound'; networks: Array<{ networkId: string; name: string }> };
 ```
 
@@ -516,8 +576,8 @@ export type SavedCredentialBinding = { mode: 'unrestricted' | 'bound'; networks:
 - Choosing a network whose `prefix` is set and differs from the range text shows the `network.fillRange`
   button; pressing it replaces the range text with the prefix.
 - On a gated site the scan-agent options are labelled `network.agentNotOnNetwork` or
-  `network.agentNeedsUpdate` by status (offline keeps its existing label first). Reload on site or
-  network change.
+  `network.agentNeedsUpdate` by status; an `offline` status keeps the picker's existing offline label and
+  adds nothing. Reload on site or network change.
 - With `savedCredentialBinding.mode === 'bound'`: `network.credentialsBound` with the names joined by
   `Intl.ListFormat` in the active language, or `network.credentialsNowhere` when the list is empty; plus
   one `network.credentialsNotSentOn` line per network of the site that is not in the list.
@@ -526,6 +586,8 @@ export type SavedCredentialBinding = { mode: 'unrestricted' | 'bound'; networks:
 
 ```ts
 it('shows the Network select only for a gated site, defaulting to Any of this site\'s networks');
+  // loadSiteNetworks -> { networkRequired: false } -> discovery-profile-network-select absent;
+  // { networkRequired: true, networks: [NET_A] } -> select present, value '', first option "Any of this site's networks"
 it('offers to fill the range from the chosen network prefix', () => {
   fireEvent.click(screen.getByTestId('discovery-profile-network-fill-range'));
   expect(screen.getByDisplayValue('192.168.1.0/24')).toBeInTheDocument();
@@ -541,6 +603,7 @@ it('names the networks saved credentials are bound to and the ones they are not 
     'Saved SNMP credentials are not sent on 10.1.2.0/24 via 10.1.2.100 until they are re-entered.');
 });
 it('submits networkId, and clears it when the site changes');
+  // choose NET_A, submit -> onSubmit values.networkId === NET_A; change site -> '' ; back to the original site -> NET_A
 ```
 
 - [ ] **Step 2: Run, see fail:** `cd apps/web && npx vitest run src/components/discovery/DiscoveryProfileForm.test.tsx`.
@@ -565,11 +628,13 @@ it('shows one notice per site that is not gated, linking to #networks', () => {
   expect(screen.getByTestId('discovery-profile-site-network-link-site-1')).toHaveAttribute('href', '#networks');
 });
 it('mapAsset keeps seenOnAssignedNetwork and maps a missing value to null');
+  // true -> true, false -> false, null -> null, key absent -> null
 it('the Not seen on an assigned network chip counts and filters assets with false', () => {
   expect(screen.getByTestId('discovered-assets-filter-not-on-assigned-network')).toHaveTextContent(
     'Not seen on an assigned network1');
 });
 it('the chip is hidden when no asset is false');
+  // assets with true and null only -> discovered-assets-filter-not-on-assigned-network absent
 ```
 
 - [ ] **Step 2: Run, see fail:** `cd apps/web && npx vitest run src/components/discovery/DiscoveryProfileList.test.tsx src/components/discovery/DiscoveredAssetList.test.tsx`.
@@ -602,6 +667,8 @@ it('the chip is hidden when no asset is false');
 
 ```ts
 it('#networks opens the Networks tab and the tab button writes the hash', ...);
+  // location.hash '#networks' on mount -> 'Networks tab' stub rendered; click discovery-tab-jobs then
+  // discovery-tab-networks -> window.location.hash === '#networks'
 it('shows the no-network notice for a site whose profiles report networkRequired false', () => {
   expect(screen.getByTestId('discovery-profile-site-network-notice-site-1')).toHaveTextContent(
     'HQ has no assigned network. Scans can run from any of its agents, wherever they are.');
@@ -612,7 +679,10 @@ it('loadSiteNetworks reads F1 and returns the site flag and its assigned network
     networks: [{ id: NET_A, displayName: 'Main Office LAN', prefix: '192.168.1.0/24' }] });
 });
 it('loadAgentNetworkStatus maps rows by deviceId');
+  // loadAgentNetworkStatus('site-1', '') -> GET /discovery/sites/site-1/network-agents?orgId=org-1 (no networkId
+  // param for Any); response { data: [{ deviceId: 'd1', status: 'offline' }] } -> { d1: 'offline' }
 it('PATCH and POST carry networkId, null for Any');
+  // form submit with networkId NET_A -> body.networkId === NET_A; with '' -> body.networkId === null
 ```
 
 - [ ] **Step 2: Run, see fail:** `cd apps/web && npx vitest run src/components/discovery/DiscoveryPage.test.tsx`.
@@ -727,7 +797,7 @@ it('PATCH and POST carry networkId, null for Any');
 | `agent_not_eligible` + `not_on_network` | `agentNotOnNetwork` | The chosen scan agent is not on an assigned network right now. Run the scan when it is back at the site, or set the scan agent to Automatic. |
 | `agent_not_eligible` + `needs_update` | `agentNeedsUpdate` | The chosen scan agent needs an update before it can scan this site. Update the agent, then run the scan again. |
 | `network_mismatch` | `networkMismatch` | The agent was not behind an assigned gateway when the scan started, so nothing was scanned. Check that the agent is at the site. If the router was replaced, merge the new network on the Networks tab. |
-| `network_changed` | `networkChanged` | The agent's network changed during the scan, so the scan stopped and nothing was saved. Run the scan again. |
+| `network_changed` | `networkChanged` | The agent could not confirm that it stayed behind an assigned gateway: its network changed or could not be checked. Nothing from this scan was saved. Run the scan again, and check that the agent is at the site if it repeats. |
 | `network_unverified` | `networkUnverified` | The result could not be matched to an assigned network, so it was discarded. Run the scan again, and check the site's networks on the Networks tab if it repeats. |
 
 ## Test ids
@@ -759,7 +829,8 @@ it('PATCH and POST carry networkId, null for Any');
   `pnpm --filter @breeze/api test:integration src/__tests__/integration/learnedNetworkReadFields.integration.test.ts`
   and `pnpm --filter @breeze/api test:integration-suite-coverage` pass; `pnpm test-stack down`.
 - [ ] `cd apps/api && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit -p .; echo "exit $?"` prints `exit 0` (never pipe to `tail`).
-- [ ] The index's F, F1 and F2 are amended in the same PR per the contract notes.
+- [ ] Every field this wave reads matches the index's F, F1 and F2 as written; the index is amended in the
+  same PR only if this wave changed one of them.
 - [ ] PR body: `Closes #<W04 sub-issue>`; the settings line is not applicable (no setting added); the
   end-to-end decision above and that W05's lab proof carries the browser walk; the two
   machine-draft lines from `apps/web/src/locales/README.md`; the `discovery.json` cap bump and why;
@@ -767,24 +838,25 @@ it('PATCH and POST carry networkId, null for Any');
 
 ## Contract notes
 
-1. **F1 has no gateway vendor.** Spec 9 shows one, and an OUI lookup exists
-   (`apps/api/src/services/macVendorLookup.ts:8`, `lookupMacVendor`). W04 adds `vendor: string | null` to
-   each F1 gateway in `list.ts` and amends F1.
-2. **Display name rule for `networkName` and `snmpGrantNetworks[].name`.** F2 does not say what they hold
-   when `learned_networks.name` is null. W04 uses the F1 `displayName` rule for both (never null), via a
-   helper exported from `list.ts`.
-3. **F1 `replacementFor` has no non-null shape.** W04 assumes `{ networkId: string; displayName: string }`
-   and amends F1. If W03c shipped a different shape, the mapper follows it and this plan's fixture changes.
-4. **F1 `sites` must list every site the caller can access in the org**, with `networkRequired`, including
-   sites with no network and no profile. The assign site select and the new-profile form read the gated
-   flag from it. If W03c lists fewer, Task 1 widens it.
+1. **Gateway vendor.** Index F1 says W04 adds `vendor: string | null` to each F1 gateway from
+   `lookupMacVendor` (`apps/api/src/services/macVendorLookup.ts:8`); spec 9 shows it. Task 1 does that in
+   `list.ts`.
+2. **Display name rule for `networkName` and `snmpGrantNetworks[].name`** is the F1 `displayName` rule
+   (index F1, never null), computed with W03c's `displayNameFor` from `suggestions.ts`.
+3. **`replacementFor`** is `{ networkId, displayName, siteId, siteName }` when set (index F1, W03c Task 1).
+   The mapper and fixture use all four fields.
+4. **F1 `sites` lists every site the caller can access in the org**, with `networkRequired`, including
+   sites with no network and no profile (index F1; W03c pins it with a test). The assign site select and the
+   new-profile form read the gated flag from it.
 5. **`seenOnAssignedNetwork` is `boolean | null`, not `boolean`.** As a plain boolean every asset at a site
    that is not gated reads as "not seen on an assigned network", so the filter would flag a whole
    inventory in an org that has never gated a site. `null` means the asset's site is not gated; the chip
    counts only `false`.
-6. **The scan-agent picker needs per-agent data no contracted route returns.** F1 carries counts and at
-   most five sample devices; `/devices` carries no network field. W04 adds
-   `GET /discovery/sites/:siteId/network-agents` (Task 2) and amends the index F table.
-7. **`AssignmentEffects.agents.needUpdate` scope.** E12 does not say whether it counts online agents at the
-   site or only those on the network. The copy ("N online agents at <site> need an update") is true under
-   either reading; W03c's definition should be written into E12.
+6. **The scan-agent picker reads `GET /discovery/sites/:siteId/network-agents`** (index F, owned by this
+   wave, Task 2). Each row is `on_network` or the E6 `IneligibleReason` for that device (`offline`,
+   `needs_update` or `not_on_network`; the route lists only the site's devices that are not ephemeral or
+   parked, so the other reasons do not occur).
+7. **`AssignmentEffects.agents.needUpdate`** counts, of the site's online agents on the network, those below
+   the guard version (index E12). The copy ("N online agents at <site> need an update") is true under it.
+8. **Which assign effects need confirmation** (index E12): `gatesSite`, `siteLosesLastNetwork`,
+   `profilesFailingClosed > 0`, `sharedVirtualRouterMac`. Each has a dialog line and a test in Task 6.

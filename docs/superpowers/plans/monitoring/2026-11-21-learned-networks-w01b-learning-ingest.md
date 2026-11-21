@@ -37,10 +37,14 @@ apply to every task here; names in it are fixed.
 
 ## Decisions this plan makes
 
-1. **Reason order** in the planner is `disabled`, `ephemeral`, `invalid_report`, `stale_sequence`,
-   `capture_time_out_of_bounds`. The first that applies wins.
-2. **Absent field.** When `networkAttachmentsV1` is absent, the route does not call the planner and
-   counts nothing. Absence means an agent that does not send it.
+1. **Reason order** in the planner is `absent`, `disabled`, `ephemeral`, `invalid_report`,
+   `stale_sequence`, `capture_time_out_of_bounds`. The first that applies wins.
+2. **Absent field (C1).** A heartbeat with no `networkAttachmentsV1` field means "no change": the agent
+   reads in the background and attaches each finished report to one beat, so many beats carry none.
+   `planNetworkAttachmentIngest` returns `{ kind: 'ignore', reason: 'absent' }` when the value is
+   `undefined`, before any other check. It is never `invalid_report`, nothing is confirmed or cleared, the
+   four device columns are untouched, and the route does not increment the counter for it. Only an empty,
+   complete list means "on no network". (`null` is a malformed report: `invalid_report`.)
 3. **Digest** = SHA-256 hex of `JSON.stringify(['v1', report.complete, wan, rows])`, where `rows` is
    `[interfaceName, localAddress, prefixLength, gatewayAddress, gatewayMac, primary]` per attachment,
    sorted by `interfaceName`, then `gatewayAddress`, then `gatewayMac ?? ''` (plain `<`, not
@@ -169,6 +173,7 @@ beside `NETWORK_ISOLATION_ENABLED` at `:171` and `:392`), `.env.example` (beside
 
 ```ts
 it.each([
+  ['absent',    () => {}, {}, undefined],
   ['disabled',  () => vi.stubEnv('LEARNED_NETWORKS_INGEST_ENABLED', 'false'), {}, report({ sequence: 419 })],
   ['ephemeral', () => {}, { isEphemeral: true }, report({ sequence: 419 })],
   ['invalid_report', () => {}, {}, { epoch: 'nope' }],
@@ -181,6 +186,9 @@ it.each([
   expect(planNetworkAttachmentIngest({ ...DEVICE, ...over }, raw, '203.0.113.20', NOW)).toEqual({ kind: 'ignore', reason });
 });
 it('first ignore reason wins', () => {
+  vi.stubEnv('LEARNED_NETWORKS_INGEST_ENABLED', 'false');
+  expect(planNetworkAttachmentIngest({ ...DEVICE, isEphemeral: true }, undefined, null, NOW)).toEqual({ kind: 'ignore', reason: 'absent' });
+  vi.unstubAllEnvs();
   expect(planNetworkAttachmentIngest({ ...DEVICE, isEphemeral: true }, { epoch: 'nope' }, null, NOW)).toEqual({ kind: 'ignore', reason: 'ephemeral' });
   expect(planNetworkAttachmentIngest(DEVICE, report({ sequence: 1, capturedAt: '2026-11-19T00:00:00Z' }), null, NOW)).toEqual({ kind: 'ignore', reason: 'stale_sequence' });
 });
@@ -228,7 +236,7 @@ In `ingest.test.ts`: `learnedNetworksIngestEnabled()` is true for unset and `''`
   `.env.example` gets `# LEARNED_NETWORKS_INGEST_ENABLED=true`, with a comment: learned-network heartbeat
   ingest, default on; off stops learning and confirmations, and gated sites then fail closed. The
   `internalEnvVars.ts` entry is `'learned networks heartbeat ingest kill switch (default on)'`.
-  `planNetworkAttachmentIngest` follows decisions 1, 3 and 4 and E3. It is pure: no DB, and reads only
+  `planNetworkAttachmentIngest` follows decisions 1 to 4 and E3. It is pure: no DB, and reads only
   the env flag.
 - [ ] **Step 4: Run** Step 2's command plus `src/system/connections/envInventory.test.ts
   src/config/envReadComposeCoverage.test.ts src/config/envComposeParity.test.ts`. Expected: PASS.
@@ -284,7 +292,7 @@ it('two attachments behind one fingerprint make one row: the primary one wins', 
   // -> one row: interface_name 'Wi-Fi', local_address 192.168.1.80, is_primary true.
 });
 it('prefix is updated when the observed LAN prefix changes, and not written when equal', async () => {
-  // 192.168.1.57/24 then /23 -> prefix '192.168.0.0/23'; updated_at moves only on the change.
+  // 192.168.1.57/24 then /25 -> prefix '192.168.1.0/25'; updated_at moves only on the change.
 });
 it('records the WAN address on the primary attachment network and caps it at 32', async () => {
   // wan '203.0.113.20' -> one WAN row on the primary network, none on the other.
@@ -335,8 +343,8 @@ new `routes/agentWs.heartbeatSchema.test.ts`, the ingest integration file (descr
 
 **Interfaces:**
 - Consumes: Tasks 2 and 3.
-- Produces: `recordNetworkAttachmentReport(outcome: 'confirm' | 'apply' | 'apply_failed' | IngestIgnoreReason): void`
-  and the counter `breeze_network_attachment_reports_total{outcome}`, defined beside
+- Produces: `recordNetworkAttachmentReport(outcome: 'confirm' | 'apply' | 'apply_failed' | Exclude<IngestIgnoreReason, 'absent'>): void`
+  (an absent field is not a report and is not counted) and the counter `breeze_network_attachment_reports_total{outcome}`, defined beside
   `agentControlPlaneBlockReportsTotal` (`routes/metrics.ts:262`, `:897`). `heartbeatMessageSchema` is
   exported from `routes/agentWs.ts`.
 
@@ -375,6 +383,11 @@ it("unchanged report adds no write beyond the heartbeat's own", async () => {
   // -> snapshot equals S exactly (no row inserted, updated or deleted);
   //    device digest unchanged, sequence = 2, confirmed_at advanced; counter outcome 'confirm' +1;
   //    devices.partner_export_updated_at unchanged (the new columns are not partner-export material).
+});
+it('a beat without the field changes nothing and counts nothing', async () => {
+  // beat 1 applies report() (sequence 418). beat 2 carries no networkAttachmentsV1 -> 200; the four
+  // devices.network_attachment* columns equal their beat-1 values (confirmed_at not advanced, digest kept);
+  // learned rows unchanged (same xmin snapshot as the P8 test); every outcome of the counter unchanged.
 });
 it('capturedAt outside the bound is ignored and counted', async () => {
   // beat with capturedAt now - 11 min -> 200; no learned rows; the four columns unchanged (null on a
@@ -415,32 +428,33 @@ recorded statement containing `learned_network`.
   after the `planControlPlaneBlockWrite` merge (`:1399-1402`):
 
 ```ts
-if (data.networkAttachmentsV1 !== undefined) {
-  const attachmentsAt = new Date();
-  const plan = planNetworkAttachmentIngest(device, data.networkAttachmentsV1,
-    getTrustedClientIpOrUndefined(c) ?? null, attachmentsAt);
-  if (plan.kind === 'apply') {
-    try {
-      await withDbTransaction(() => applyNetworkAttachmentChange({ id: device.id, orgId: device.orgId }, plan, attachmentsAt));
-      Object.assign(deviceUpdates, plan.deviceFields);           // only after a committed savepoint
-      recordNetworkAttachmentReport('apply');
-    } catch (err) {
-      console.error('[heartbeat] learned network ingest failed', { deviceId: device.id, orgId: device.orgId });
-      captureException(err);
-      recordNetworkAttachmentReport('apply_failed');             // fields not merged: the next beat retries
-    }
-  } else if (plan.kind === 'confirm') {
-    Object.assign(deviceUpdates, plan.deviceFields);
-    recordNetworkAttachmentReport('confirm');
-  } else {
-    recordNetworkAttachmentReport(plan.reason);
+const attachmentsAt = new Date();
+const attachmentPlan = planNetworkAttachmentIngest(device, data.networkAttachmentsV1,   // undefined -> ignore 'absent'
+  getTrustedClientIpOrUndefined(c) ?? null, attachmentsAt);
+if (attachmentPlan.kind === 'apply') {
+  try {
+    await withDbTransaction(() => applyNetworkAttachmentChange({ id: device.id, orgId: device.orgId }, attachmentPlan, attachmentsAt));
+    Object.assign(deviceUpdates, attachmentPlan.deviceFields);   // only after a committed savepoint
+    recordNetworkAttachmentReport('apply');
+  } catch (err) {
+    console.error('[heartbeat] learned network ingest failed', { deviceId: device.id, orgId: device.orgId });
+    captureException(err);
+    recordNetworkAttachmentReport('apply_failed');               // fields not merged: the next beat retries
   }
-}
+} else if (attachmentPlan.kind === 'confirm') {
+  Object.assign(deviceUpdates, attachmentPlan.deviceFields);
+  recordNetworkAttachmentReport('confirm');
+} else if (attachmentPlan.reason !== 'absent') {
+  recordNetworkAttachmentReport(attachmentPlan.reason);
+}                                                                // 'absent': no change, nothing written or counted
 ```
 
   `device` is the row from `selectOwnDeviceRowForUpdate` (`:865`). It is the full row, so it carries
   `isEphemeral` and the four new columns. The parked return (`:700`) and the watchdog return (`:1201`)
-  come first, so those paths never reach this block.
+  come first, so those paths never reach this block. A `capture_time_out_of_bounds` ignore is also
+  logged at warn level with the device id and the skew in seconds (index review focus 5), at most once
+  per device per hour. The planner runs on every beat that reaches this
+  point; it is pure, so a beat without the field costs no statement (the budget test below pins it).
 - [ ] **Step 4: Run** Step 2's commands, plus `cd apps/api && npx vitest run src/__tests__/agentOwnDeviceRowUpdates.contract.test.ts`
   (PASS with no allowlist change, because `ingest.ts` has no `devices` write), and
   `heartbeatRetainState.integration.test.ts` and `caughtQueryAgentPaths.integration.test.ts`. Expected: PASS.

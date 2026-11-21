@@ -135,10 +135,10 @@ never edit a shipped file, then `pnpm db:migrate && pnpm db:check-drift`.
   `AGENT_COMMAND_ERROR_CODES` (`apps/api/src/routes/agents/schemas.ts:677`) in the same PR; a Go test
   pins the two lists together.
 - A new command type is added to `allCommandTypes` (`agent/internal/heartbeat/handlers_test.go:15`).
-- API tests parse the Go handler registry (`apps/api/src/services/partnerTrust.test.ts`,
-  `services/callerVerification/workstation.contract.test.ts`). A PR that registers a new Go handler
-  classifies its command type on the API side in the same PR (`GATED_COMMAND_TYPES` in
-  `services/partnerTrust.ts`), or Test API goes red.
+- API tests read the agent's Go files: `apps/api/src/services/partnerTrust.test.ts` parses the handler
+  registry, and `routes/agents/schemas.commandResult.test.ts` reads the error codes and result tags. A PR
+  that registers a new Go handler classifies its command type on the API side in the same PR
+  (`GATED_COMMAND_TYPES` in `services/partnerTrust.ts`), or Test API goes red.
 - Windows CI runs an explicit package list (`.github/workflows/ci.yml`, job `test-agent-windows`). Every
   new agent package is added to it, and each agent wave ends with a native run on the Windows lab VM.
 
@@ -175,7 +175,8 @@ wave that owns the code.
    updating, before the admin commits. W03c: `assign preview counts eligible and outdated agents`.
 5. **A device whose clock is wrong.** `capturedAt` outside the bound must not silently make a device
    invisible. Expected: the report is ignored with a counted reason, and the device's ineligibility
-   reason reads as "not on this network" with the last confirmation time. W01b:
+   reason reads as "not on an assigned network right now". The ignore is logged with the device id and
+   the skew, so support can find the cause. W01b:
    `capturedAt outside the bound is ignored and counted`.
 
 ## Plan calls beyond the spec
@@ -362,10 +363,14 @@ export const verifiedNetworkSchema: z.ZodType<VerifiedNetwork>;
   `network_http_check_guarded`, `network_dns_check_guarded`. Each is its base payload plus
   `expectedNetwork`, and its base result plus `verifiedNetwork`. **Every result produced after the
   binding was acquired and confirmed carries `verifiedNetwork`, a failed probe included.** Only a
-  refusal (the binding could not be acquired or confirmed) carries none. The API reads a guarded result
+  refusal carries none: the binding could not be acquired or confirmed, or the probe could not be run
+  through it (for example no DNS server on the bound interface). The API reads a guarded result
   with a valid `verifiedNetwork` as its base result, and any guarded result without one as not checked.
-- **C7. Where the body travels:** `verifiedNetwork` and refusal bodies sit in the command result's
-  `result` object; on the REST result route they arrive inside `stdout` and are parsed from it.
+- **C7. Where the body travels:** a completed result's body is the agent's `Stdout`: the WebSocket leg
+  delivers it as `result`, the REST leg as `stdout` only, so the API parses `stdout` there. A result
+  with an error (a refusal, or a failed probe that still carries `verifiedNetwork`) carries its body in
+  `Result` and arrives as `result` on both legs. A discovery scan that fails after binding for a reason
+  other than a network change carries no `verifiedNetwork`; the job fails with the agent's error.
 - **C6. Error codes** (Go and API lists, same PR, W02c): `network_mismatch`, `network_changed`.
 
 ### D. Agent packages
@@ -581,7 +586,8 @@ export async function explainNoEligibleAgent(input: {
 }): Promise<NoAgentReason>;
 ```
 
-Eligible means: assigned to the site, online, not ephemeral, not parked, agent token not suspended, an
+Eligible means: assigned to the site, online, not ephemeral, not parked, agent token not suspended
+(reported as `offline` when it is), an
 `is_current` row for an allowed fingerprint, `network_attachments_confirmed_at` inside the freshness window, and at or above
 the guard version. Attachment is filtered in SQL; version is prefiltered in SQL and decided exactly
 with `versionAtLeast`. The same function serves requested, pinned and AI-tool targets.
@@ -678,7 +684,7 @@ export type AssignmentEffects = {
   agents: { online: number; onNetwork: number; needUpdate: number };
   sharedVirtualRouterMac: boolean;
 };
-// agents.online: the site's online agents that are not ephemeral or parked. agents.onNetwork: of those,
+// agents.online: the site's online agents that are not ephemeral, parked or token-suspended. agents.onNetwork: of those,
 // the ones currently behind one of this network's fingerprints. agents.needUpdate: of onNetwork, the
 // ones below the guard version. Confirmation (409) is required when gatesSite, siteLosesLastNetwork,
 // profilesFailingClosed > 0 or sharedVirtualRouterMac is true.
