@@ -20,12 +20,21 @@ import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { decodeJwt } from 'jose';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { getTestDb } from './setup';
-import { configurationPolicies, ssoProviders, ssoSessions, users } from '../../db/schema';
+import {
+  configurationPolicies,
+  organizationUsers,
+  partnerUsers,
+  refreshTokenFamilies,
+  ssoProviders,
+  ssoSessions,
+  users,
+} from '../../db/schema';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   assignUserToOrganization,
+  assignUserToPartner,
   bootstrapAuthBinding,
   createOrganization,
   createPartner,
@@ -414,10 +423,234 @@ describe('organization sessions carry their org\'s partner at every minter (#122
     });
     expect(exchangeRes.status).toBe(200);
     const { accessToken } = await exchangeRes.json() as { accessToken: string };
+    let cookies = refreshCookiesFrom(exchangeRes);
 
     expectOrgSession(accessToken, second, user.id);
     const names = await eligibleParentNames(app, accessToken, second.orgId);
     expect(names).toContain(second.ownPartnerPolicyName);
     expect(names).not.toContain(home.ownPartnerPolicyName);
+
+    // Refresh stays on the provider's org, not whichever membership row a
+    // user-wide lookup happens to return first.
+    for (let i = 0; i < 3; i += 1) {
+      const refreshRes = await refresh(app, cookies, binding);
+      expect(refreshRes.status).toBe(200);
+      cookies = refreshCookiesFrom(refreshRes);
+      const refreshed = await refreshRes.json() as { tokens: { accessToken: string } };
+      expectOrgSession(refreshed.tokens.accessToken, second, user.id);
+    }
+  });
+});
+
+describe('refresh re-issues the session\'s own tenant scope', () => {
+  let app: Hono;
+
+  beforeEach(async () => {
+    const { getRedis } = await import('../../services');
+    const redis = getRedis();
+    if (redis) {
+      const keys = [
+        ...await redis.keys('sso:login:*'),
+        ...await redis.keys('ssolink:*'),
+        ...await redis.keys('sso:pendinglink:*'),
+      ];
+      if (keys.length > 0) await redis.del(...keys);
+    }
+    app = new Hono();
+    app.route('/sso', ssoRoutes);
+    app.route('/auth', authRoutes);
+    vi.mocked(exchangeCodeForTokens).mockReset().mockResolvedValue({
+      access_token: 'idp-access-token',
+      token_type: 'Bearer',
+      expires_in: 3600,
+      refresh_token: 'idp-refresh-token',
+      id_token: 'header.payload.signature',
+    });
+  });
+
+  afterEach(() => {
+    vi.mocked(getUserInfo).mockClear();
+    vi.mocked(verifyIdTokenSignature).mockClear();
+  });
+
+  /** An org-homed user who also holds a partner membership on the org's partner. */
+  async function seedDualMembershipUser(fx: Fixture, opts: { password?: string } = {}) {
+    const email = `dual-${Date.now()}-${Math.random().toString(36).slice(2, 6)}@example.com`;
+    const user = opts.password
+      ? await createUser({ partnerId: fx.partnerId, orgId: fx.orgId, email, password: opts.password })
+      : await createPasswordlessUser({ partnerId: fx.partnerId, orgId: fx.orgId, email });
+    await assignUserToOrganization(user.id, fx.orgId, fx.roleId);
+    const partnerRole = await createRole({ scope: 'partner', partnerId: fx.partnerId });
+    if (!partnerRole) throw new Error('partner role fixture failed');
+    await assignUserToPartner(user.id, fx.partnerId, partnerRole.id, 'all');
+    return { user, partnerRoleId: partnerRole.id };
+  }
+
+  async function orgSsoSession(fx: Fixture, userId: string, email: string, sub: string) {
+    await createOrgAxisProvider(fx.orgId);
+    const binding = (await bootstrapAuthBinding()).cookie;
+    const callbackRes = await ssoCallback(app, fx.orgId, binding, sub, email);
+    expect(callbackRes.status).toBe(302);
+    const code = decodeURIComponent(callbackRes.headers.get('location')!.match(/#ssoCode=([^&]+)/)![1]!);
+    const exchangeRes = await app.request('/sso/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie: binding },
+      body: JSON.stringify({ code }),
+    });
+    expect(exchangeRes.status).toBe(200);
+    const { accessToken } = await exchangeRes.json() as { accessToken: string };
+    expectOrgSession(accessToken, fx, userId);
+    return { binding, cookies: refreshCookiesFrom(exchangeRes) };
+  }
+
+  async function passwordSession(email: string, password: string) {
+    const binding = (await bootstrapAuthBinding()).cookie;
+    const res = await app.request('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', cookie: binding },
+      body: JSON.stringify({ email, password }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { tokens: { accessToken: string } };
+    return { binding, cookies: refreshCookiesFrom(res), accessToken: body.tokens.accessToken };
+  }
+
+  async function familyRevokedAt(cookies: RefreshCookies): Promise<Date | null> {
+    const fam = decodeJwt(decodeURIComponent(cookies.refresh.split('=')[1] ?? '')).fam as string;
+    expect(fam).toBeTruthy();
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select({ revokedAt: refreshTokenFamilies.revokedAt })
+        .from(refreshTokenFamilies)
+        .where(eq(refreshTokenFamilies.familyId, fam))
+        .limit(1));
+    if (!row) throw new Error(`no refresh_token_families row for ${fam}`);
+    return row.revokedAt;
+  }
+
+  it('org SSO session for a user who also holds a partner membership stays organization-scope on the same org', async () => {
+    const fx = await seedTenant();
+    const { user } = await seedDualMembershipUser(fx);
+    const session = await orgSsoSession(fx, user.id, user.email, 'ext-sub-dual');
+    let cookies = session.cookies;
+
+    for (let i = 0; i < 2; i += 1) {
+      const refreshRes = await refresh(app, cookies, session.binding);
+      expect(refreshRes.status).toBe(200);
+      cookies = refreshCookiesFrom(refreshRes);
+      const refreshed = await refreshRes.json() as { tokens: { accessToken: string } };
+      expectOrgSession(refreshed.tokens.accessToken, fx, user.id);
+    }
+  });
+
+  it('org membership removed: refresh is refused and the session is revoked, with no partner fallback', async () => {
+    const fx = await seedTenant();
+    const { user } = await seedDualMembershipUser(fx);
+    const { binding, cookies } = await orgSsoSession(fx, user.id, user.email, 'ext-sub-dual-removed');
+
+    await getTestDb().delete(organizationUsers).where(and(
+      eq(organizationUsers.userId, user.id),
+      eq(organizationUsers.orgId, fx.orgId),
+    ));
+
+    const refreshRes = await refresh(app, cookies, binding);
+    expect(refreshRes.status).toBe(401);
+    expect(await refreshRes.json()).not.toHaveProperty('tokens');
+    expect(await familyRevokedAt(cookies)).toBeInstanceOf(Date);
+
+    // The user still holds the partner membership; a retry must not reach it.
+    const retry = await refresh(app, cookies, binding);
+    expect(retry.status).toBe(401);
+  });
+
+  it('partner-scope password session refreshes unchanged', async () => {
+    const fx = await seedTenant();
+    const password = 'PartnerAxis123!';
+    const partnerRole = await createRole({ scope: 'partner', partnerId: fx.partnerId });
+    if (!partnerRole) throw new Error('partner role fixture failed');
+    const user = await createUser({
+      partnerId: fx.partnerId,
+      orgId: null,
+      email: `partner-${Date.now()}@example.com`,
+      password,
+    });
+    await assignUserToPartner(user.id, fx.partnerId, partnerRole.id, 'all');
+    const session = await passwordSession(user.email, password);
+    expect(decodeJwt(session.accessToken)).toMatchObject({
+      scope: 'partner',
+      partnerId: fx.partnerId,
+      orgId: null,
+      roleId: partnerRole.id,
+    });
+    let cookies = session.cookies;
+
+    for (let i = 0; i < 2; i += 1) {
+      const refreshRes = await refresh(app, cookies, session.binding);
+      expect(refreshRes.status).toBe(200);
+      cookies = refreshCookiesFrom(refreshRes);
+      const refreshed = await refreshRes.json() as { tokens: { accessToken: string } };
+      expect(decodeJwt(refreshed.tokens.accessToken)).toMatchObject({
+        sub: user.id,
+        scope: 'partner',
+        partnerId: fx.partnerId,
+        orgId: null,
+        roleId: partnerRole.id,
+      });
+    }
+  });
+
+  it('partner-scope password session of a dual-membership user stays partner-scope; partner membership removed refuses refresh with no org fallback', async () => {
+    const fx = await seedTenant();
+    const password = 'DualPartner123!';
+    const { user, partnerRoleId } = await seedDualMembershipUser(fx, { password });
+    const session = await passwordSession(user.email, password);
+    expect(decodeJwt(session.accessToken)).toMatchObject({
+      scope: 'partner',
+      partnerId: fx.partnerId,
+      orgId: null,
+      roleId: partnerRoleId,
+    });
+
+    const refreshRes = await refresh(app, session.cookies, session.binding);
+    expect(refreshRes.status).toBe(200);
+    const cookies = refreshCookiesFrom(refreshRes);
+    const refreshed = await refreshRes.json() as { tokens: { accessToken: string } };
+    expect(decodeJwt(refreshed.tokens.accessToken)).toMatchObject({
+      scope: 'partner',
+      partnerId: fx.partnerId,
+      orgId: null,
+    });
+
+    await getTestDb().delete(partnerUsers).where(and(
+      eq(partnerUsers.userId, user.id),
+      eq(partnerUsers.partnerId, fx.partnerId),
+    ));
+
+    const denied = await refresh(app, cookies, session.binding);
+    expect(denied.status).toBe(401);
+    expect(await denied.json()).not.toHaveProperty('tokens');
+    expect(await familyRevokedAt(cookies)).toBeInstanceOf(Date);
+  });
+
+  it('single-membership org password session refreshes unchanged', async () => {
+    const fx = await seedTenant();
+    const password = 'SingleOrg123!';
+    const user = await createUser({
+      partnerId: fx.partnerId,
+      orgId: fx.orgId,
+      email: `single-${Date.now()}@example.com`,
+      password,
+    });
+    await assignUserToOrganization(user.id, fx.orgId, fx.roleId);
+    const session = await passwordSession(user.email, password);
+    expectOrgSession(session.accessToken, fx, user.id);
+    let cookies = session.cookies;
+
+    for (let i = 0; i < 2; i += 1) {
+      const refreshRes = await refresh(app, cookies, session.binding);
+      expect(refreshRes.status).toBe(200);
+      cookies = refreshCookiesFrom(refreshRes);
+      const refreshed = await refreshRes.json() as { tokens: { accessToken: string } };
+      expectOrgSession(refreshed.tokens.accessToken, fx, user.id);
+    }
   });
 });

@@ -2785,12 +2785,12 @@ describe('auth routes', () => {
           })
         })
       } as any);
-      // security review #2: membership lookups + users.isPlatformAdmin resolve a
-      // platform admin so this membership-less token re-derives to system scope.
+      // The session's own org membership (roleId) and the org's owning
+      // partner (partnerId) both resolve, so the refresh re-issues org-1.
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ isPlatformAdmin: true }])
+            limit: vi.fn().mockResolvedValue([{ roleId: 'role-1', partnerId: 'partner-1' }])
           })
         })
       } as any);
@@ -2815,19 +2815,22 @@ describe('auth routes', () => {
       expect(markOrder).toBeLessThan(revokeOrder);
     });
 
-    it('should re-derive token claims from current memberships', async () => {
+    it('keeps the session\'s own tenant scope and re-reads the live role on that membership', async () => {
       vi.mocked(verifyToken).mockResolvedValue({
         sub: 'user-123',
         email: 'test@example.com',
         roleId: 'stale-role',
-        orgId: null,
-        partnerId: 'stale-partner',
-        scope: 'partner',
+        orgId: 'org-live',
+        partnerId: null,
+        scope: 'organization',
         type: 'refresh',
         mfa: false,
         iat: 123456,
         jti: 'refresh-jti-3',
         fam: 'family-id-mock'
+      });
+      const membershipWhere = vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([{ roleId: 'role-live' }])
       });
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -2842,21 +2845,7 @@ describe('auth routes', () => {
           })
         } as any)
         .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([])
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                orgId: 'org-live',
-                roleId: 'role-live'
-              }])
-            })
-          })
+          from: vi.fn().mockReturnValue({ where: membershipWhere })
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
@@ -2876,6 +2865,12 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(200);
+      expect(membershipWhere).toHaveBeenCalledTimes(1);
+      expect(assertActiveTenantContext).toHaveBeenCalledWith({
+        scope: 'organization',
+        partnerId: 'partner-live',
+        orgId: 'org-live'
+      });
       expect(createTokenPair).toHaveBeenCalledWith(
         expect.objectContaining({
           sub: 'user-123',
@@ -2888,6 +2883,65 @@ describe('auth routes', () => {
         expect.any(Object)
       );
       expect(revokeRefreshTokenJti).toHaveBeenCalledWith('refresh-jti-3');
+    });
+
+    it('refuses refresh and revokes the family when the session\'s own membership is gone, without trying another axis', async () => {
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123',
+        email: 'test@example.com',
+        roleId: 'role-old',
+        orgId: null,
+        partnerId: 'partner-old',
+        scope: 'partner',
+        type: 'refresh',
+        mfa: false,
+        iat: 123456,
+        jti: 'refresh-jti-lost',
+        fam: 'family-id-mock'
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: 'user-123',
+                email: 'test@example.com',
+                status: 'active'
+              }])
+            })
+          })
+        } as any)
+        // No partner_users row for partner-old any more.
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        // An org membership that a user-wide lookup would have fallen back to.
+        .mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ orgId: 'org-other', roleId: 'role-other', partnerId: 'partner-other' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=refresh-token-lost-membership; breeze_csrf_token=test-csrf-token'
+        }
+      });
+
+      expect(res.status).toBe(401);
+      expect(db.select).toHaveBeenCalledTimes(2);
+      expect(revokeFamily).toHaveBeenCalledWith('family-id-mock', 'tenant-membership-lost');
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
     });
 
     it('rejects refresh when current tenant context is inactive or deleted', async () => {
@@ -2936,6 +2990,8 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(401);
       expect(createTokenPair).not.toHaveBeenCalled();
+      // An inactive tenant is not a lost membership: the family is left alone.
+      expect(revokeFamily).not.toHaveBeenCalled();
     });
   });
 

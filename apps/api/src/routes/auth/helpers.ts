@@ -1850,6 +1850,112 @@ export async function resolveCurrentUserTokenContext(userId: string): Promise<Us
   });
 }
 
+/**
+ * Thrown by resolveSessionTokenContextForRefresh when the user no longer holds
+ * a membership on the exact tenant axis the session was minted with (or the
+ * presented claims do not name one). The session must end; it never moves to
+ * another axis.
+ */
+export class SessionTenantAxisError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SessionTenantAxisError';
+  }
+}
+
+/** The tenant axis recorded in a signed refresh token at mint time. */
+export type MintedSessionAxis = Readonly<{
+  scope: unknown;
+  orgId: unknown;
+  partnerId: unknown;
+}>;
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/**
+ * Token context for a refresh: the same scope and tenant the session was
+ * minted with, re-validated against live state.
+ *
+ * resolveCurrentUserTokenContext picks an axis for a NEW sign-in (partner
+ * membership first, then any org membership). A refresh must not re-pick: an
+ * organization session minted by that org's SSO provider stays on that org
+ * even when the user also holds a partner membership or another org's
+ * membership. The axis comes from the signed refresh token (the family row
+ * does not record it); the role and the org's owning partner are re-read, so
+ * role changes still take effect on refresh.
+ *
+ * Throws SessionTenantAxisError when the membership on that exact axis is
+ * gone, TenantInactiveError when the tenant is no longer active, and
+ * NoTenantMembershipError for a system session whose user is no longer a
+ * platform admin.
+ */
+export async function resolveSessionTokenContextForRefresh(
+  userId: string,
+  minted: MintedSessionAxis,
+): Promise<UserTokenContext> {
+  if (minted.scope === 'system') {
+    // A system session exists only for a platform admin with no tenant
+    // membership. Re-derive and require the same answer: a platform admin who
+    // has since gained a membership signs in again rather than keeping
+    // system scope that a fresh sign-in would not grant.
+    const context = await resolveCurrentUserTokenContext(userId);
+    if (context.scope !== 'system') {
+      throw new SessionTenantAxisError('System session no longer resolves to system scope');
+    }
+    return context;
+  }
+
+  if (minted.scope === 'partner') {
+    if (!nonEmptyString(minted.partnerId)) {
+      throw new SessionTenantAxisError('Partner session names no partner');
+    }
+    const partnerId = minted.partnerId;
+    return runWithSystemDbAccess(async () => {
+      const [membership] = await db
+        .select({ roleId: partnerUsers.roleId })
+        .from(partnerUsers)
+        .where(and(eq(partnerUsers.userId, userId), eq(partnerUsers.partnerId, partnerId)))
+        .limit(1);
+      if (!membership?.roleId) {
+        throw new SessionTenantAxisError('Partner membership for this session is gone');
+      }
+      await assertActiveTenantContext({ scope: 'partner', partnerId, orgId: null });
+      return { roleId: membership.roleId, partnerId, orgId: null, scope: 'partner' as const };
+    });
+  }
+
+  if (minted.scope === 'organization') {
+    if (!nonEmptyString(minted.orgId)) {
+      throw new SessionTenantAxisError('Organization session names no organization');
+    }
+    const orgId = minted.orgId;
+    return runWithSystemDbAccess(async () => {
+      const [membership] = await db
+        .select({ roleId: organizationUsers.roleId })
+        .from(organizationUsers)
+        .where(and(eq(organizationUsers.userId, userId), eq(organizationUsers.orgId, orgId)))
+        .limit(1);
+      if (!membership?.roleId) {
+        throw new SessionTenantAxisError('Organization membership for this session is gone');
+      }
+      // The owning partner is re-read, never taken from the token: older
+      // organization tokens carry no partnerId, and the issuer pins it anyway.
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, orgId))
+        .limit(1);
+      const partnerId = org?.partnerId ?? null;
+      await assertActiveTenantContext({ scope: 'organization', partnerId, orgId });
+      return { roleId: membership.roleId, partnerId, orgId, scope: 'organization' as const };
+    });
+  }
+
+  throw new SessionTenantAxisError('Session names an unknown scope');
+}
+
 export async function resolveUserAuditOrgId(userId: string): Promise<string | null> {
   return runWithSystemDbAccess(async () => {
     try {
