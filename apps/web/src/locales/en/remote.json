@@ -62,7 +62,7 @@
     "launcherSkip": {
       "configError": "Could not resolve the partner-configured remote tool (config error). Falling back to built-in remote desktop.",
       "emptyUrlTemplate": "The partner-configured remote tool has no URL template set. Falling back to built-in remote desktop.",
-      "missingIdentifier": "This device is missing the per-device identifier the partner-configured remote tool needs (e.g. the RustDesk peer ID). Falling back to built-in remote desktop. Set the identifier in Device Settings → Custom Fields.",
+      "missingIdentifier": "This device is missing the per-device identifier the partner-configured remote tool needs (e.g. the RustDesk peer ID). Falling back to built-in remote desktop. Set the identifier in the device’s Details tab → Custom Fields.",
       "providerDisabled": "The partner-configured remote tool for this device is currently disabled. Falling back to built-in remote desktop."
     },
     "launching": "Launching...",

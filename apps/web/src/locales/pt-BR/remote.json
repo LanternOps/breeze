@@ -62,7 +62,7 @@
     "launcherSkip": {
       "configError": "Não foi possível resolver a ferramenta remota configurada pelo parceiro (erro de configuração). Voltando para a área de trabalho remota integrada.",
       "emptyUrlTemplate": "A ferramenta remota configurada pelo parceiro não tem um modelo de URL definido. Voltando para a área de trabalho remota integrada.",
-      "missingIdentifier": "Este dispositivo não possui o identificador individual exigido pela ferramenta remota configurada pelo parceiro (por exemplo, o ID do RustDesk). Usando a área de trabalho remota integrada. Defina o identificador em Configurações do Dispositivo → Campos Personalizados.",
+      "missingIdentifier": "Este dispositivo não possui o identificador individual exigido pela ferramenta remota configurada pelo parceiro (por exemplo, o ID do RustDesk). Usando a área de trabalho remota integrada. Defina o identificador na aba Detalhes do dispositivo → Campos Personalizados.",
       "providerDisabled": "A ferramenta remota configurada pelo parceiro está desativada para este dispositivo. Usando a área de trabalho remota integrada."
     },
     "launching": "Iniciando...",

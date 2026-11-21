@@ -7,7 +7,8 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '@/lib/runAction';
-import { formatDateOnly } from '@/lib/dateOnly';
+import { parseDateOnly } from '@/lib/dateOnly';
+import { formatDate } from '@/lib/dateTimeFormat';
 
 export default function PurchaseDateRow({
   deviceId,
@@ -100,7 +101,7 @@ export default function PurchaseDateRow({
             <>
               {value ? (
                 <span>
-                  {formatDateOnly(value)}
+                  {formatDate(parseDateOnly(value), { year: 'numeric', month: 'short', day: 'numeric', fallback: value })}
                   {source === 'vendor' && (
                     <span className="ml-2 text-xs font-normal text-muted-foreground">{t('deviceInfoTab.purchaseDateFromVendor')}</span>
                   )}

@@ -62,7 +62,7 @@
     "launcherSkip": {
       "configError": "İş ortağı tarafından yapılandırılmış uzak araç çözülemedi (yapılandırma hatası). Yerleşik uzak masaüstüne geri dönme.",
       "emptyUrlTemplate": "Ortak tarafından yapılandırılan uzak aracın ayarlanmış bir URL şablonu yok. Yerleşik uzak masaüstüne geri dönme.",
-      "missingIdentifier": "Bu cihazda, iş ortağı tarafından yapılandırılmış uzak aracın ihtiyaç duyduğu cihaz başına tanımlayıcı eksik (örneğin, RustDesk eş kimliği). Yerleşik uzak masaüstüne geri dönme. Tanımlayıcıyı Cihaz Ayarları → Özel Alanlar bölümünde ayarlayın.",
+      "missingIdentifier": "Bu cihazda, iş ortağı tarafından yapılandırılmış uzak aracın ihtiyaç duyduğu cihaz başına tanımlayıcı eksik (örneğin, RustDesk eş kimliği). Yerleşik uzak masaüstüne geri dönme. Tanımlayıcıyı cihazın Ayrıntılar sekmesinde → Özel Alanlar bölümünde ayarlayın.",
       "providerDisabled": "Bu cihaz için ortak tarafından yapılandırılmış uzak araç şu anda devre dışı. Yerleşik uzak masaüstüne geri dönme."
     },
     "launching": "Başlatılıyor...",
