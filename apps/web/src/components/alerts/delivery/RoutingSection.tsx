@@ -118,7 +118,7 @@ export default function RoutingSection({ rules, channels, policies, currentOrgId
               <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 <span>{t('notificationChannelsPage.priority')} {rule.priority}</span>
                 <span>{describeMatch(rule, t)}</span>
-                <span>{t('deliveryPage.routing.sendTo')}: {channelList(rule.channelIds)}</span>
+                {rule.channelIds.length > 0 && <span>{t('deliveryPage.routing.sendTo')}: {channelList(rule.channelIds)}</span>}
                 {rule.escalationPolicyId && <span>{t('deliveryPage.routing.escalateVia')}: {policyName(rule.escalationPolicyId)}</span>}
               </div>
             </div>

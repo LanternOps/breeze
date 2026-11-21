@@ -158,6 +158,7 @@ describe('RoutingSection (W05b)', () => {
     renderSection([rule({ id: 'gone', channelIds: ['ch-gone'] }), rule({ id: 'empty', channelIds: [] })]);
     expect(within(screen.getByTestId('routing-row-gone')).getByTestId('routing-no-live-channels')).toHaveTextContent('No live channels');
     expect(within(screen.getByTestId('routing-row-empty')).getByTestId('routing-no-live-channels')).toHaveTextContent('No live channels');
+    expect(screen.getByTestId('routing-row-empty')).not.toHaveTextContent('Send to');
   });
 
   it('flags the Everything else row when every channel it names is deleted, but not when it is inbox only (#12002)', () => {
