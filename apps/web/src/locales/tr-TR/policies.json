@@ -910,6 +910,7 @@
         "manageWindowsUpdateExclusivelyThroughBreeze": "Windows Update'yi yalnızca Breeze aracılığıyla yönetin",
         "suppressesTheEndpointSNativeWindowsUpdate": "Uç noktanın yerel Windows Update otomatik yükleme kanalını bastırır, böylece güncellemelerin yalnızca Breeze onay halkaları üzerinden akmasını sağlayarak beklenmeyen yeniden başlatmaları ve programınızın dışında yamaları önler. Windows-yalnızca; Breeze'in kendi tarama/onaylama/yükleme yolu etkilenmez. Devre dışı bırakıldığında temiz bir şekilde geri döner (önceden var olan yönetici Grup İlkesi'ne dokunulmaz).",
         "times": "×",
+        "discardRingChangesConfirm": "Bu halkada kaydedilmemiş değişiklikler var. Kapatıp değişiklikleri silmek istiyor musunuz?",
         "os": "işletim sistemi",
         "thirdParty": "third_party",
         "apps": "uygulamalar",

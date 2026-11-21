@@ -910,6 +910,7 @@
         "manageWindowsUpdateExclusivelyThroughBreeze": "Verwalten Sie Windows Update ausschließlich über Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Unterdrückt den nativen automatischen Windows Update-Installationskanal des Endpunkts, sodass Updates nur über die Genehmigungsringe von Breeze fließen und so unerwartete Neustarts und Patches außerhalb Ihres Zeitplans verhindert werden. Nur Windows; Der eigene Scan/approve/install-Pfad von Breeze bleibt davon unberührt. Wird bei Deaktivierung sauber wiederhergestellt (eine bereits vorhandene Administrator-Gruppenrichtlinie bleibt unberührt).",
         "times": "×",
+        "discardRingChangesConfirm": "Dieser Update-Ring hat nicht gespeicherte Änderungen. Schließen und Änderungen verwerfen?",
         "os": "os",
         "thirdParty": "third_party",
         "apps": "Apps",
