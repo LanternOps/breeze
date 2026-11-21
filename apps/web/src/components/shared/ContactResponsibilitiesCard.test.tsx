@@ -79,6 +79,36 @@ describe('ContactResponsibilitiesCard', () => {
     expect(await screen.findByText('No responsible contacts are assigned yet.')).toBeTruthy();
   });
 
+  it('lists the same person once per role (same email, or same phone however formatted)', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({
+      responsibilities: [
+        {
+          role: 'billing',
+          level: 'organization',
+          contacts: [
+            { contactId: 'c1', name: 'Dana Whitfield', email: 'dana.whitfield@example.com', phone: '+1 555-0142', mobile: null, title: 'Office Manager', isPrimary: true },
+            { contactId: 'c2', name: 'Dana Whitfield', email: 'dana.whitfield@example.com', phone: '+1 555 0142', mobile: null, title: null, isPrimary: true },
+          ],
+        },
+        {
+          role: 'site',
+          level: 'site',
+          contacts: [
+            { contactId: 'c3', name: null, email: null, phone: '+1 555 0199', mobile: null, title: null, isPrimary: true },
+            { contactId: 'c4', name: null, email: null, phone: '+1 555-0199', mobile: null, title: null, isPrimary: true },
+          ],
+        },
+      ],
+    }));
+
+    render(<ContactResponsibilitiesCard orgId={ORG_ID} deviceId="dev-1" />);
+
+    expect(await screen.findAllByText('Dana Whitfield')).toHaveLength(1);
+    expect(screen.getByText(/Office Manager/)).toBeTruthy();
+    expect(screen.getAllByText(/555.0199/)).toHaveLength(1);
+    expect(screen.getAllByText('Primary')).toHaveLength(2);
+  });
+
   it('shows the failure state when the request fails', async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({ error: 'nope' }, 404));
 

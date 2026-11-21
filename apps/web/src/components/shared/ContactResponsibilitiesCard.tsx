@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { dedupeResponsibilities } from '@/lib/contactResponsibilityDedupe';
 import { contactDisplayName, useContactResponsibilities } from './useContactResponsibilities';
 
 type Props = {
@@ -21,7 +22,11 @@ type Props = {
  */
 export default function ContactResponsibilitiesCard({ orgId, siteId, deviceId, assignHref }: Props) {
   const { t } = useTranslation('contactResponsibilities');
-  const { canRead, items, failed } = useContactResponsibilities({ orgId, siteId, deviceId });
+  const resolved = useContactResponsibilities({ orgId, siteId, deviceId });
+  const { canRead, failed } = resolved;
+  // The same person entered twice (same email, or same phone however it is
+  // formatted) is listed once per role.
+  const items = resolved.items && dedupeResponsibilities(resolved.items);
 
   if (!canRead) return null;
 
