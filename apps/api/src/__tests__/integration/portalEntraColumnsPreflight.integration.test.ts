@@ -96,6 +96,14 @@ describe('portal entra columns preflight (W10 G1/G2)', () => {
     expect(rows.map((r) => r.portal_user_id)).not.toContain(ids.clean);
   });
 
+  it('blocking_unreserved_pairs lists exactly the row the final backfill refuses on (plan D8)', async () => {
+    // `mismatched` holds oid-legacy, which no identity reserves, plus a different
+    // identity of its own. `missing` has no identity at all, so the backfill
+    // repairs it and it is not listed.
+    const rows = await run('blocking_unreserved_pairs');
+    expect(rows.map((r) => r.portal_user_id)).toEqual([ids.mismatched]);
+  });
+
   it('fence_writes reports the newest fence-written identity and ignores migrated rows', async () => {
     const [row] = await run('fence_writes');
     expect(new Date(String(row!.last_fence_write_at)).toISOString()).toBe('2026-12-01T00:00:00.000Z');

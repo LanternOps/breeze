@@ -104,6 +104,6 @@ BEGIN
   $q$ INTO unclaimed;
   IF unclaimed > 0 THEN
     RAISE EXCEPTION 'portal identity final backfill refused: % portal_users row(s) hold a legacy Entra pair (entra_tenant_id, entra_oid) that no portal_user_identities row reserves, and the login already has a different Entra identity', unclaimed
-      USING HINT = 'Run apps/api/migrations/preflight/2026-11-21-100000-portal-entra-columns-drop-preflight.sql (query drift_samples, bucket mismatched) to list them. For each one, confirm which Entra object is the right owner. Then do one of two things: clear that row''s entra_oid and entra_tenant_id if a future add-in sign-in by the other object may create a new login, or disable the account. Restart the API; the migration re-applies. Nothing was changed.';
+      USING HINT = 'Run apps/api/migrations/preflight/2026-11-21-100000-portal-entra-columns-drop-preflight.sql (query blocking_unreserved_pairs) to list them. For each row, confirm which Entra object is the right owner of the login, then do one of two things. If the legacy object may sign in later as a NEW login, set that row''s entra_oid and entra_tenant_id to NULL. If the legacy object is the right owner, point the login''s Entra portal_user_identities row at it (subject = entra_oid, issuer and entra_tenant_id from entra_tenant_id). Disabling the account does not clear this. Restart the API and the migration re-applies. Nothing was changed.';
   END IF;
 END $$;

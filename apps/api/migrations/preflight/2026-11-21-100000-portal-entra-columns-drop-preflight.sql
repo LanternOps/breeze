@@ -10,6 +10,9 @@
 -- and never paste it into a PR or issue: it names portal user and org ids.
 --
 -- G1 PASS = `sanity` is not blind AND every count in `drift_counts` is 0.
+--   `blocking_unreserved_pairs` lists exactly the rows that would make PR-A's
+--   final backfill REFUSE to apply (plan D8). It is a subset of `mismatched`;
+--   self-hosters run it before upgrading to release N.
 --   Only against v0.130 do the buckets mean "the identity table holds every
 --   legacy pair". Any non-zero count: stop and escalate. `drift_samples` names
 --   the rows. A missingIdentity row is also repaired by PR-A's final backfill
@@ -104,6 +107,20 @@ SELECT 'half_populated', pu.id, pu.org_id, NULL::uuid
  WHERE (pu.entra_oid IS NULL) <> (pu.entra_tenant_id IS NULL)
  ORDER BY 1, 2
  LIMIT 200;
+
+-- @query blocking_unreserved_pairs
+-- The final backfill's refusal predicate, before the backfill runs: a complete
+-- legacy pair that no identity reserves, on a login that already holds a
+-- DIFFERENT Entra identity (so the backfill cannot reserve it). A login with no
+-- Entra identity is not listed: the backfill repairs it.
+SELECT pu.id AS portal_user_id, pu.org_id, i.id AS current_identity_id
+  FROM public.portal_users pu
+  JOIN public.portal_user_identities i ON i.portal_user_id = pu.id AND i.provider = 'entra'
+ WHERE pu.entra_oid IS NOT NULL AND pu.entra_tenant_id IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM public.portal_user_identities r
+                    WHERE r.issuer = 'https://login.microsoftonline.com/' || pu.entra_tenant_id || '/v2.0'
+                      AND r.subject = pu.entra_oid)
+ ORDER BY pu.id;
 
 -- @query fence_writes
 -- Only a fence writer (v0.130 and earlier) gives a NEW Entra identity a login

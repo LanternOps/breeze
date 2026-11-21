@@ -134,6 +134,8 @@ describe(MIGRATION, () => {
       const mismatched = await seedLegacyLogin(tx, orgId, { tid, oid: 'legacy-oid' });
       await seedIdentity(tx, orgId, mismatched, tid, 'identity-oid');
       const neverBackfilled = await seedLegacyLogin(tx, orgId, { tid: randomUUID(), oid: randomUUID() });
+      // Disabling the account does not clear the refusal: only the pair or the identity does.
+      await tx`UPDATE portal_users SET status = 'disabled', disabled_by = 'msp' WHERE id = ${mismatched}`;
 
       let error: { code?: string; message?: string; hint?: string } | null = null;
       try {
@@ -143,7 +145,8 @@ describe(MIGRATION, () => {
       }
       expect(error).toMatchObject({ code: 'P0001' });
       expect(error!.message).toMatch(/final backfill refused: 1 portal_users row\(s\) hold a legacy Entra pair/);
-      expect(error!.hint).toMatch(/2026-11-21-100000-portal-entra-columns-drop-preflight\.sql/);
+      expect(error!.hint).toMatch(/2026-11-21-100000-portal-entra-columns-drop-preflight\.sql \(query blocking_unreserved_pairs\)/);
+      expect(error!.hint).toMatch(/Disabling the account does not clear this/);
       // The whole file rolled back: not even the repairable row was backfilled.
       const [row] = await tx<{ n: number }[]>`SELECT count(*)::int AS n FROM portal_user_identities WHERE portal_user_id = ${neverBackfilled}`;
       expect(row!.n).toBe(0);
