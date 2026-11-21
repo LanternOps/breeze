@@ -1,4 +1,5 @@
 ---
+tracking_issue: LanternOps/breeze#12350
 spec_issue: LanternOps/breeze#9557
 spec: docs/superpowers/specs/remote-desktop/2026-11-11-browser-remote-desktop-design.md
 spec_pr: LanternOps/breeze#11749
