@@ -10,7 +10,7 @@ import { keysetEnvelope, keysetParamSchema, keysetWhereCondition, readKeysetArgs
 import { orgNameOf, readReachSpansOrgs, splitOrgLegend } from './aiToolOrgLegend';
 import { db } from '../db';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
-import { alerts, devices, notificationChannels } from '../db/schema';
+import { alerts, devices, notificationChannels, notificationRoutingRules } from '../db/schema';
 import { selectNotificationChannelsWithConfig, writeNotificationChannelConfig } from './notificationChannelConfig';
 import { eq, and, desc, sql, inArray, ne, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -839,7 +839,13 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Modifying a partner-wide notification channel requires full partner org access (orgAccess must be "all")' });
         }
 
-        await db.delete(notificationChannels).where(eq(notificationChannels.id, existing.id));
+        // Same routing-rule cleanup as DELETE /alerts/channels/:id (#12002).
+        await db.transaction(async (tx) => {
+          await tx.update(notificationRoutingRules)
+            .set({ channelIds: sql`${notificationRoutingRules.channelIds} - ${existing.id}::text`, updatedAt: new Date() })
+            .where(sql`jsonb_exists(${notificationRoutingRules.channelIds}, ${existing.id}::text)`);
+          await tx.delete(notificationChannels).where(eq(notificationChannels.id, existing.id));
+        });
         return JSON.stringify({ success: true, message: `Channel "${existing.name}" deleted` });
       }
 

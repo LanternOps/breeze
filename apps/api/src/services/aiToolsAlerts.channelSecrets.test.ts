@@ -63,9 +63,12 @@ vi.mock('./aiToolsSiteScope', () => ({
 
 // ---- imports (after mocks) -----------------------------------------------
 
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerAlertTools } from './aiToolsAlerts';
+import { notificationRoutingRules } from '../db/schema';
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -693,6 +696,7 @@ describe('manage_notification_channels — partner-wide gating (#2130)', () => {
     });
     const deleteWhereMock = vi.fn().mockResolvedValue(undefined);
     mocks.dbDelete.mockReturnValue({ where: deleteWhereMock });
+    mocks.dbUpdate.mockReturnValue({ set: () => ({ where: vi.fn().mockResolvedValue(undefined) }) });
 
     const result = JSON.parse(
       await handler(
@@ -703,6 +707,45 @@ describe('manage_notification_channels — partner-wide gating (#2130)', () => {
 
     expect(result.success).toBe(true);
     expect(mocks.dbDelete).toHaveBeenCalled();
+  });
+
+  it('delete: removes the channel from every routing rule that sends to it before deleting it (#12002)', async () => {
+    mocks.dbSelect.mockReturnValueOnce({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([PARTNER_WIDE_CHANNEL]),
+        })),
+      })),
+    });
+    const order: string[] = [];
+    const setMock = vi.fn();
+    const whereMock = vi.fn();
+    mocks.dbUpdate.mockReturnValue({
+      set: (vals: unknown) => {
+        setMock(vals);
+        return { where: (cond: unknown) => { whereMock(cond); order.push('strip'); return Promise.resolve(undefined); } };
+      },
+    });
+    mocks.dbDelete.mockReturnValue({ where: () => { order.push('delete'); return Promise.resolve(undefined); } });
+
+    const result = JSON.parse(
+      await handler(
+        { action: 'delete', channelId: PARTNER_WIDE_CHANNEL.id },
+        makePartnerAuth('all', PARTNER_ID),
+      ) as string,
+    );
+
+    expect(result).toEqual({ success: true, message: `Channel "${PARTNER_WIDE_CHANNEL.name}" deleted` });
+    expect(mocks.dbUpdate).toHaveBeenCalledWith(notificationRoutingRules);
+    expect(order).toEqual(['strip', 'delete']);
+    const dialect = new PgDialect();
+    const strip = dialect.sqlToQuery((setMock.mock.calls[0]![0] as { channelIds: SQL }).channelIds);
+    expect(strip.sql).toBe('"notification_routing_rules"."channel_ids" - $1::text');
+    expect(strip.params).toEqual([PARTNER_WIDE_CHANNEL.id]);
+    expect((setMock.mock.calls[0]![0] as { updatedAt: unknown }).updatedAt).toBeInstanceOf(Date);
+    const match = dialect.sqlToQuery(whereMock.mock.calls[0]![0] as SQL);
+    expect(match.sql).toBe('jsonb_exists("notification_routing_rules"."channel_ids", $1::text)');
+    expect(match.params).toEqual([PARTNER_WIDE_CHANNEL.id]);
   });
 });
 
