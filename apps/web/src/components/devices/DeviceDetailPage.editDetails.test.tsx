@@ -1,7 +1,7 @@
 import '@/lib/i18n';
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceDetailPage from './DeviceDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
@@ -24,6 +24,8 @@ vi.mock('./DeviceDetails', () => ({
     onDeviceUpdated?: () => void;
   }) => (
     <div>
+      {/* OverflowTabs gives the Details tab this id (overflowTabId). */}
+      <button type="button" role="tab" id="device-tab-details">Details</button>
       <p data-testid="name">{device.displayName || device.hostname}</p>
       <button type="button" data-testid="edit-details" onClick={() => onAction('edit-details', device)}>Edit details</button>
       <button type="button" data-testid="saved" onClick={() => onDeviceUpdated?.()}>Saved</button>
@@ -65,5 +67,63 @@ describe('DeviceDetailPage — the Details tab is where the record is edited', (
     await waitFor(() => expect(screen.getByTestId('name')).toHaveTextContent('Front Desk'));
     // Same element: the page refetched in place, no loading spinner swap.
     expect(screen.getByTestId('saved')).toBe(before);
+  });
+
+  describe('choosing it while already on the Details tab', () => {
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    const originalMatchMedia = window.matchMedia;
+
+    function mockReducedMotion(reduce: boolean) {
+      window.matchMedia = vi.fn((query: string) => ({
+        matches: reduce && query.includes('prefers-reduced-motion: reduce'),
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })) as unknown as typeof window.matchMedia;
+    }
+
+    beforeEach(() => {
+      // jsdom has no layout: scrollIntoView is missing, so stub it to observe.
+      Element.prototype.scrollIntoView = scrollIntoView;
+      scrollIntoView.mockClear();
+      window.location.hash = 'details';
+    });
+
+    afterEach(() => {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+      window.matchMedia = originalMatchMedia;
+    });
+
+    it('brings the Details tab into view and focuses it (no hashchange fires)', async () => {
+      mockReducedMotion(false);
+      vi.mocked(fetchWithAuth).mockImplementation(async () => deviceResponse(null));
+      render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+      const editButton = await screen.findByTestId('edit-details');
+      editButton.focus();
+
+      fireEvent.click(editButton);
+
+      const tab = document.getElementById('device-tab-details');
+      await waitFor(() => expect(document.activeElement).toBe(tab));
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView.mock.contexts[0]).toBe(tab);
+      expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'start', behavior: 'smooth' }));
+      expect(window.location.hash).toBe('#details');
+    });
+
+    it('scrolls instantly when the user prefers reduced motion', async () => {
+      mockReducedMotion(true);
+      vi.mocked(fetchWithAuth).mockImplementation(async () => deviceResponse(null));
+      render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+      fireEvent.click(await screen.findByTestId('edit-details'));
+
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+      expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'start', behavior: 'auto' }));
+    });
   });
 });

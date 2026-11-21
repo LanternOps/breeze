@@ -49,6 +49,7 @@ import Breadcrumbs from "../layout/Breadcrumbs";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 import IslandErrorBoundary from "../shared/IslandErrorBoundary";
+import { revealDeviceTab } from "./revealDeviceTab";
 
 type DeviceDetailPageProps = {
   deviceId: string;
@@ -659,8 +660,9 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
         case "edit-details":
           // The Details tab is the one place a device's record (name, role,
           // tags, purchase date, custom fields) is edited; DeviceDetails
-          // follows the hash.
-          window.location.hash = "details";
+          // follows the hash. Already on Details, no hashchange fires, so the
+          // tab is also scrolled into view and focused.
+          revealDeviceTab("details");
           return;
 
         case "change-site":
