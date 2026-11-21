@@ -1331,6 +1331,10 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   analyze_boot_performance: new Set(['name', 'itemId', 'path']),
   manage_startup_items: new Set(['name', 'itemId', 'path', 'error']),
   get_active_users: new Set(['username']),
+  // Endpoint messaging history (#8742): a receipt's session name is whatever
+  // the agent posted (up to 256 characters, any shape), and the hostname is
+  // device-reported. Status, surface and error codes are server-side enums.
+  send_endpoint_message: new Set(['sessionUsername', 'hostname']),
   get_user_experience_metrics: new Set(['username']),
   capture_agent_pprof: new Set(['error']),
   set_agent_log_level: new Set(['error', 'warning']),

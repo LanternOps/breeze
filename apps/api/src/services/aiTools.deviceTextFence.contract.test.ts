@@ -35,8 +35,13 @@ const COMMAND_QUEUE_DISPATCH = [
   'executeCommand', 'executeCommandWithSystemPrecheck', 'executeCommandWithCallerPrecheck',
   'queueCommand', 'queueCommandForExecution', 'queueCommandForExecutionWithSystemPrecheck',
 ];
+// Shared endpoint-service entry points that queue a device command on the
+// tool's behalf. A tool that delegates to one of these never names a dispatch
+// helper itself, so without this list its file was never classified
+// (send_endpoint_message returned device-attested session names unfenced).
+const ENDPOINT_SERVICE_DISPATCH = ['executeEndpointMessageSend'];
 const DEVICE_DISPATCH = new RegExp(
-  String.raw`\b(?:${[...AI_DISPATCH_HELPERS, ...COMMAND_QUEUE_DISPATCH].join('|')})\s*\(|\bCommandTypes\.`,
+  String.raw`\b(?:${[...AI_DISPATCH_HELPERS, ...COMMAND_QUEUE_DISPATCH, ...ENDPOINT_SERVICE_DISPATCH].join('|')})\s*\(|\bCommandTypes\.`,
 );
 
 /**
@@ -171,6 +176,8 @@ const EXPECTED_FENCED: Readonly<Record<string, readonly string[]>> = {
   get_incident_timeline: ['description', 'metadata', 'result', 'summary'],
   remediate_sensitive_data: ['filePath', 'error'],
   get_sensitive_data_overview: ['filePath', 'path', 'error'],
+  // The receipt's session name is whatever the agent posted; the hostname is device-reported.
+  send_endpoint_message: ['sessionUsername', 'hostname'],
 };
 
 describe('contract: pinned fences for high-risk tools', () => {
