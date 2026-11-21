@@ -1065,10 +1065,37 @@ async function lockWritableReservation(session: StorageSessionRow): Promise<Snap
   return reservation;
 }
 
-function logStorageFailure(what: string, sessionId: string, err: unknown): void {
+const LOGGED_RESPONSE_HEADER_NAMES_MAX = 40;
+const LOGGED_RESPONSE_HEADER_NAME_LENGTH_MAX = 64;
+
+/**
+ * What the store answered, as far as it is safe to log: the HTTP status and
+ * the response header NAMES. The SDK attaches the raw response to its errors
+ * as `$response` (deserialization failures included, where the message alone
+ * says nothing about what the store sent). Header values can carry request
+ * ids, tokens or signatures and are never read. Names come from a
+ * tenant-chosen endpoint, so their count and length are bounded.
+ */
+function storageResponseFacts(err: unknown): { statusCode?: number; responseHeaderNames?: string[] } {
+  const response = err && typeof err === 'object' ? (err as { $response?: unknown }).$response : undefined;
+  if (!response || typeof response !== 'object') return {};
+  const { statusCode, headers } = response as { statusCode?: unknown; headers?: unknown };
+  const facts: { statusCode?: number; responseHeaderNames?: string[] } = {};
+  if (typeof statusCode === 'number') facts.statusCode = statusCode;
+  if (headers && typeof headers === 'object') {
+    facts.responseHeaderNames = Object.keys(headers)
+      .slice(0, LOGGED_RESPONSE_HEADER_NAMES_MAX)
+      .map((name) => name.slice(0, LOGGED_RESPONSE_HEADER_NAME_LENGTH_MAX))
+      .sort();
+  }
+  return facts;
+}
+
+export function logStorageFailure(what: string, sessionId: string, err: unknown): void {
   console.warn(`[backupStorageWriteSessions] ${what}`, {
     sessionId,
     error: err instanceof Error ? err.message : String(err),
+    ...storageResponseFacts(err),
   });
 }
 

@@ -21,6 +21,7 @@
  * `backupSsrfAdoption.test.ts`: it fails if the backup surface ever grows
  * another raw outbound client built from a config-derived endpoint.
  */
+import { Readable } from 'node:stream';
 import { S3Client, type S3ClientConfig } from '@aws-sdk/client-s3';
 import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { createGuardedHttpAgents } from './urlSafety';
@@ -106,9 +107,10 @@ function isImfFixdate(value: string): boolean {
 // keeps the store's non-conformance visible after the symptom is gone.
 let abortDateWarned = false;
 
-/** Test seam: re-arms the once-per-process warning. */
+/** Test seam: re-arms the once-per-process warnings (header and body). */
 export function __resetAbortDateWarningForTests(): void {
   abortDateWarned = false;
+  abortDateBodyWarned = false;
 }
 
 /** Removes an `x-amz-abort-date` header (any case) whose value is not an IMF-fixdate. Mutates `headers`. */
@@ -127,16 +129,184 @@ export function dropUnparseableAbortDate(headers: Record<string, string | undefi
   }
 }
 
+/*
+ * The same value can arrive as an `<AbortDate>` element in the XML BODY of
+ * CreateMultipartUpload / ListParts instead of (or as well as) the header. The
+ * SDK reads every body member, AbortDate included, before it applies header
+ * bindings, so dropping the header alone does not help: the parser throws on
+ * the body member first.
+ *
+ * For those two commands only, a 2xx body is buffered (bounded by
+ * `abortDateBodyCapBytes`), an `<AbortDate>` element whose text is not an
+ * IMF-fixdate is removed, and the body is handed back as a fresh stream. Every
+ * other command, GetObject above all, never has its body touched.
+ */
+const ABORT_DATE_BODY_COMMANDS: ReadonlySet<string> = new Set(['CreateMultipartUploadCommand', 'ListPartsCommand']);
+
+// Both commands answer with small documents: an InitiateMultipartUploadResult
+// is a few hundred bytes and a ListPartsResult tops out at 1,000 parts of a
+// few hundred bytes each. A body over this is passed through untouched.
+const DEFAULT_ABORT_DATE_BODY_CAP_BYTES = 4 * 1024 * 1024;
+let abortDateBodyCapBytes = DEFAULT_ABORT_DATE_BODY_CAP_BYTES;
+
+/** Test seam: sets the body buffering cap, returning the previous value. */
+export function __setAbortDateBodyCapForTests(bytes: number): number {
+  const previous = abortDateBodyCapBytes;
+  abortDateBodyCapBytes = bytes;
+  return previous;
+}
+
+// Linear: `[^>]*` and `[^<]*` cannot cross the delimiters that end them, and
+// a match can only start at a literal `<AbortDate`. The body comes from a
+// tenant-chosen endpoint, so no pattern here may backtrack super-linearly.
+const ABORT_DATE_ELEMENT = /<AbortDate(?:\s[^>]*)?>([^<]*)<\/AbortDate>|<AbortDate\s*\/>/g;
+
+let abortDateBodyWarned = false;
+
+/**
+ * Removes every `<AbortDate>` element whose text (trimmed) is not an
+ * IMF-fixdate, including empty and self-closing ones. Everything else in the
+ * document is returned unchanged. Pure; exported for tests.
+ */
+export function stripUnparseableAbortDateElements(xml: string): { xml: string; dropped: string[] } {
+  const dropped: string[] = [];
+  const out = xml.replace(ABORT_DATE_ELEMENT, (element: string, text: string | undefined) => {
+    if (text !== undefined && isImfFixdate(text.trim())) return element;
+    dropped.push(text ?? '');
+    return '';
+  });
+  return { xml: dropped.length > 0 ? out : xml, dropped };
+}
+
+function chunkToBuffer(chunk: unknown): Buffer {
+  if (Buffer.isBuffer(chunk)) return chunk;
+  if (chunk instanceof Uint8Array) return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  // A Readable only yields strings when an encoding was set on it, which the
+  // SDK's Node handler never does; re-encode as UTF-8 rather than lose bytes.
+  return Buffer.from(String(chunk), 'utf8');
+}
+
+/** Replays `head`, then whatever is left of `rest`, as one byte stream. */
+function replayStream(head: Buffer[], rest: AsyncIterator<unknown>): Readable {
+  async function* replay(): AsyncGenerator<Buffer> {
+    try {
+      yield* head;
+      for (;;) {
+        const next = await rest.next();
+        if (next.done) return;
+        yield chunkToBuffer(next.value);
+      }
+    } finally {
+      await rest.return?.();
+    }
+  }
+  return Readable.from(replay(), { objectMode: false });
+}
+
+/**
+ * Reads `body` fully if it fits in `cap` bytes. Over the cap, returns a stream
+ * that replays what was read followed by the unread remainder, so the caller
+ * can pass it on byte-identical. Read errors propagate.
+ */
+async function bufferUpTo(body: Readable, cap: number): Promise<{ bytes: Buffer } | { passthrough: Readable }> {
+  // Pulled by hand: `for await` + `break` would destroy the stream, and the
+  // over-cap path still needs the rest of it.
+  const it = body[Symbol.asyncIterator]();
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for (;;) {
+    const next = await it.next();
+    if (next.done) return { bytes: Buffer.concat(chunks, size) };
+    const chunk = chunkToBuffer(next.value);
+    chunks.push(chunk);
+    size += chunk.length;
+    if (size > cap) return { passthrough: replayStream(chunks, it) };
+  }
+}
+
+function headerValue(headers: Record<string, string | undefined>, name: string): string | undefined {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === name) return headers[key];
+  }
+  return undefined;
+}
+
+function setHeader(headers: Record<string, string | undefined>, name: string, value: string): void {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === name) headers[key] = value;
+  }
+}
+
+interface RawResponse {
+  statusCode?: number;
+  headers?: Record<string, string | undefined>;
+  body?: unknown;
+}
+
+/**
+ * Rewrites a CreateMultipartUpload / ListParts 2xx body in place so it no
+ * longer carries an `<AbortDate>` the SDK cannot parse. Leaves the response
+ * untouched when the status is not 2xx, the body is not a Node stream or byte
+ * array, it is over the cap, or there is nothing to remove.
+ */
+async function dropUnparseableAbortDateFromBody(response: RawResponse, commandName: string): Promise<void> {
+  const status = response.statusCode ?? 0;
+  if (status < 200 || status >= 300) return;
+  const headers = response.headers ?? {};
+  const cap = abortDateBodyCapBytes;
+  const declared = Number(headerValue(headers, 'content-length'));
+  if (Number.isFinite(declared) && declared > cap) return;
+
+  let bytes: Buffer;
+  if (response.body instanceof Uint8Array) {
+    bytes = chunkToBuffer(response.body);
+    if (bytes.length > cap) return;
+  } else if (response.body instanceof Readable) {
+    const read = await bufferUpTo(response.body, cap);
+    if ('passthrough' in read) {
+      response.body = read.passthrough;
+      return;
+    }
+    bytes = read.bytes;
+  } else {
+    return;
+  }
+
+  // latin1 maps every byte to one code unit and back, so the rest of the
+  // document (a UTF-8 <Key>, say) survives byte-for-byte; the tag and an
+  // IMF-fixdate are ASCII, so matching them this way is exact.
+  const { xml, dropped } = stripUnparseableAbortDateElements(bytes.toString('latin1'));
+  if (dropped.length === 0) {
+    response.body = Readable.from(bytes, { objectMode: false });
+    return;
+  }
+  const rewritten = Buffer.from(xml, 'latin1');
+  response.body = Readable.from(rewritten, { objectMode: false });
+  setHeader(headers, 'content-length', String(rewritten.length));
+  if (!abortDateBodyWarned) {
+    abortDateBodyWarned = true;
+    console.warn('[guardedS3Client] dropped an <AbortDate> element from a multipart response body that is not an HTTP-date (logged once per process)', {
+      command: commandName,
+      value: Buffer.from(dropped[0] ?? '', 'latin1').toString('utf8').slice(0, 120),
+    });
+  }
+}
+
 // A deserialize-step middleware, typed structurally: @smithy/types is not a
 // direct dependency, and the stack's own parameter type is a union of every
 // step's middleware shape.
 type DeserializeHandler = (args: unknown) => Promise<{ response: unknown }>;
 
-const tolerateAbortDateMiddleware = ((next: DeserializeHandler) => async (args: unknown) => {
+const tolerateAbortDateMiddleware = ((next: DeserializeHandler, context: { commandName?: string } | undefined) => async (args: unknown) => {
   const result = await next(args);
-  const headers = (result.response as { headers?: unknown } | undefined)?.headers;
+  const response = result.response as RawResponse | undefined;
+  const headers = response?.headers;
   if (headers && typeof headers === 'object') {
-    dropUnparseableAbortDate(headers as Record<string, string | undefined>);
+    dropUnparseableAbortDate(headers);
+  }
+  const commandName = context?.commandName;
+  if (response && commandName && ABORT_DATE_BODY_COMMANDS.has(commandName)) {
+    await dropUnparseableAbortDateFromBody(response, commandName);
   }
   return result;
 }) as unknown as Parameters<S3Client['middlewareStack']['addRelativeTo']>[0];

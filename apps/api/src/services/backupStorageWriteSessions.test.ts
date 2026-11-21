@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
+import { Readable } from 'node:stream';
+import { ListPartsCommand, S3Client } from '@aws-sdk/client-s3';
 import { AGENT_STORAGE_SESSION_RATE_LIMIT } from './agentStorageSessionRateLimit';
 import { STORAGE_SESSION_CALL_BURST } from './backupStorageSessionBudget';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BACKUP_ORPHAN_MANIFEST_MAX_AGE_MS_DEFAULT } from './backupGcKnobs';
 import { MAX_WRITE_URL_TTL_SECONDS } from './backupStoragePresign';
 import { SNAPSHOT_TAKEOVER_MAX_AGE_MS } from './backupSnapshotIdReservations';
@@ -17,6 +19,7 @@ import {
   decideWriteBrokering,
   helperStorageIdentity,
   isAllowedWriteListPrefix,
+  logStorageFailure,
   resolveMintKeyRoot,
   urlExpiresIn,
   writeDeleteDecision,
@@ -365,3 +368,79 @@ describe('resolveMintKeyRoot (writer on)', () => {
     expect(resolveMintKeyRoot('s3', config)).toEqual({ ok: false, reason: 'invalid_destination_prefix' });
   });
 });
+
+// A storage failure the SDK raises while reading an answer (a deserialization
+// error) says nothing about what the store sent. The log line carries the HTTP
+// status and the response header NAMES so the next one is diagnosable without
+// a packet capture; header values can carry request ids, tokens or signatures
+// and are never logged.
+describe('logStorageFailure', () => {
+  const SECRET_HEADER_VALUE = 'header-value-that-must-not-be-logged';
+
+  async function realDeserializationError(): Promise<unknown> {
+    const client = new S3Client({
+      region: 'us-east-1',
+      endpoint: 'https://s3.storage.example.test',
+      forcePathStyle: true,
+      credentials: { accessKeyId: 'AKIDEXAMPLE', secretAccessKey: 'secret' },
+    });
+    (client.config as { requestHandler: unknown }).requestHandler = {
+      handle: async () => ({
+        response: {
+          statusCode: 200,
+          headers: { 'content-type': 'application/xml', 'x-amz-request-id': SECRET_HEADER_VALUE },
+          // A Part timestamp the SDK cannot parse, so it throws while
+          // deserializing a 200.
+          body: Readable.from([Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
+<ListPartsResult><UploadId>u</UploadId><Part><PartNumber>1</PartNumber><LastModified>not a date</LastModified></Part></ListPartsResult>`)]),
+        },
+      }),
+    };
+    return client.send(new ListPartsCommand({ Bucket: 'b', Key: 'k', UploadId: 'u' })).then(
+      () => { throw new Error('expected the SDK to reject'); },
+      (err: unknown) => err,
+    );
+  }
+
+  it('logs the response status and header names of a real SDK error, never a header value', async () => {
+    const err = await realDeserializationError();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      logStorageFailure('multipart create failed', 'session-1', err);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [message, fields] = warn.mock.calls[0] as [string, Record<string, unknown>];
+      expect(message).toBe('[backupStorageWriteSessions] multipart create failed');
+      expect(fields).toMatchObject({ sessionId: 'session-1', statusCode: 200 });
+      expect(fields.responseHeaderNames).toEqual(['content-type', 'x-amz-request-id']);
+      expect(String(fields.error)).toContain('Deserialization error');
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(SECRET_HEADER_VALUE);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('bounds the header names it logs', () => {
+    const headers = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`x-${String(i).padStart(3, '0')}-${'n'.repeat(200)}`, 'v']));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      logStorageFailure('delete failed', 'session-1', Object.assign(new Error('boom'), { $response: { statusCode: 503, headers } }));
+      const fields = warn.mock.calls[0]?.[1] as { statusCode: number; responseHeaderNames: string[] };
+      expect(fields.statusCode).toBe(503);
+      expect(fields.responseHeaderNames.length).toBeLessThanOrEqual(40);
+      for (const name of fields.responseHeaderNames) expect(name.length).toBeLessThanOrEqual(64);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps the old shape for an error with no response', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      logStorageFailure('delete failed', 'session-1', new Error('socket hang up'));
+      expect(warn.mock.calls[0]?.[1]).toEqual({ sessionId: 'session-1', error: 'socket hang up' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
