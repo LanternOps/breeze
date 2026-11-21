@@ -9,6 +9,7 @@ import {
   type AiAgentGraduationRowDto,
   type AiAgentKind,
   type AiApprovalScope,
+  type ApprovalBatchScope,
 } from '@breeze/shared';
 import { useEventStream } from '@/hooks/useEventStream';
 import {
@@ -40,6 +41,7 @@ import { EmptyState } from '../shared/EmptyState';
 import { PageHeader } from '../shared/PageHeader';
 import { showToast } from '../shared/Toast';
 import {
+  buildCrossOrgGroups,
   buildOrgOptions,
   buildSections,
   clusterByOrg,
@@ -50,11 +52,12 @@ import {
   sortRows,
   type ApprovalGroup,
   type PendingApproval,
-  type RiskTier,
   type SortOrder,
 } from './approvalGrouping';
+import CrossOrgBatchPanel from './CrossOrgBatchPanel';
 import DiagnosticAccessApprovalDetails, { isDiagnosticAccessApproval } from './DiagnosticAccessApprovalDetails';
 import OperatorPlanApprovalCard, { isOperatorPlanApproval, isOperatorPlanReadable } from './OperatorPlanApprovalCard';
+import { riskClass } from './riskClass';
 
 const LIVE_REFETCH_DEBOUNCE_MS = 750;
 /** WS is only a nudge; polling is the guarantee. useEventStream gives up
@@ -101,16 +104,15 @@ type DecisionErrorKind =
    *  else decided it, its intent settled, …). Per-row, not a group banner, so
    *  the rest of the group stays batchable — see `decideGroup`. */
   | 'driftedFromBatch';
-/** Group headers add the two WHOLE-batch refusals, which are never per-row:
+/** Group headers add the WHOLE-batch refusals, which are never per-row:
  *  nothing was decided, so they belong above the cards, not on one of them. */
-type GroupErrorKind = DecisionErrorKind | 'batchStepUp' | 'batchNotHomogeneous' | 'batchTooLarge';
-
-const riskClass: Record<RiskTier, string> = {
-  low: 'bg-sky-100 text-sky-800 dark:bg-sky-950/50 dark:text-sky-200',
-  medium: 'bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-200',
-  high: 'bg-orange-100 text-orange-800 dark:bg-orange-950/50 dark:text-orange-200',
-  critical: 'bg-red-100 text-red-800 dark:bg-red-950/50 dark:text-red-200',
-};
+type GroupErrorKind =
+  | DecisionErrorKind
+  | 'batchStepUp'
+  | 'batchNotHomogeneous'
+  | 'batchTooLarge'
+  /** A cross-org batch from a session that is not a partner session. */
+  | 'batchScopeNotPermitted';
 
 /**
  * P2-5 (#4192, Task 21) — "Approve and always allow". Eligibility for a
@@ -318,6 +320,10 @@ export default function ApprovalsInbox() {
   // A SET, not a scalar: one batch decision holds every card in the group, and
   // each of those rows must render (and disable) as busy.
   const [decidingIds, setDecidingIds] = useState<ReadonlySet<string>>(() => new Set());
+  /** The batch (per-org group or cross-org panel) currently in flight, by
+   *  identity. A cross-org batch's ids cover whole per-org groups, so an
+   *  "are all my members deciding?" test would light up those groups too. */
+  const [decidingGroupIdentity, setDecidingGroupIdentity] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, DecisionErrorKind>>({});
   // Issue #4459 — mirrors `decidingIds`'s own "a set of row ids that's
   // currently true" idiom rather than deriving it from `rowErrors` inline on
@@ -703,8 +709,8 @@ export default function ApprovalsInbox() {
   /** True only while THIS group's own batch is in flight — a single-card decide
    *  elsewhere still disables the buttons (via `busy`) without claiming the
    *  group is the thing being submitted. */
-  const groupIsDeciding = (group: ApprovalGroup): boolean =>
-    busy && group.members.every((member) => decidingIds.has(member.id));
+  const groupIsDeciding = (group: Pick<ApprovalGroup, 'identity'>): boolean =>
+    busy && decidingGroupIdentity === group.identity;
 
   const setDecisionError = (id: string, kind: DecisionErrorKind) => {
     setRowErrors((current) => ({ ...current, [id]: kind }));
@@ -941,9 +947,13 @@ export default function ApprovalsInbox() {
    * server actually decided are removed.
    */
   const decideGroup = async (
-    group: ApprovalGroup,
+    /** A per-org header passes its live group; the cross-org panel passes the
+     *  FROZEN set its approver reviewed, under its own `xorg` identity — so
+     *  error and deciding state can never land on a per-org header. */
+    group: Pick<ApprovalGroup, 'identity' | 'members'>,
     decision: 'approve' | 'deny',
     reason?: string,
+    scope: ApprovalBatchScope = 'same_org',
   ) => {
     if (busy) return;
     const ids = group.members.map((member) => member.id);
@@ -970,6 +980,7 @@ export default function ApprovalsInbox() {
     }
 
     setDecidingIds(new Set(ids));
+    setDecidingGroupIdentity(group.identity);
     clearRowErrors(ids);
     setGroupErrors((current) => {
       const next = { ...current };
@@ -978,11 +989,13 @@ export default function ApprovalsInbox() {
     });
 
     try {
-      const outcome = await decideIntentApprovalBatch(
-        ids,
-        decision,
-        reason?.trim() || undefined,
-      );
+      const trimmedReason = reason?.trim() || undefined;
+      // Only a cross-org call passes the 4th argument, so the same-org call
+      // stays exactly what it was before scopes existed.
+      const outcome =
+        scope === 'cross_org'
+          ? await decideIntentApprovalBatch(ids, decision, trimmedReason, 'cross_org')
+          : await decideIntentApprovalBatch(ids, decision, trimmedReason);
       if (outcome.outcome === 'needs_device') {
         setGroupError(group.identity, 'noApproverDevice');
         return;
@@ -1022,6 +1035,10 @@ export default function ApprovalsInbox() {
       // that grew between render and submit.
       if (outcome.outcome === 'batch_too_large') {
         setGroupError(group.identity, 'batchTooLarge');
+        return;
+      }
+      if (outcome.outcome === 'batch_scope_not_permitted') {
+        setGroupError(group.identity, 'batchScopeNotPermitted');
         return;
       }
 
@@ -1077,6 +1094,7 @@ export default function ApprovalsInbox() {
       else setGroupError(group.identity, kind);
     } finally {
       setDecidingIds(new Set());
+      setDecidingGroupIdentity(null);
     }
   };
 
@@ -1381,10 +1399,11 @@ export default function ApprovalsInbox() {
   const filteredApprovals = approvals
     .filter((approval) => orgFilter === '' || (approval.orgId ?? '') === orgFilter)
     .filter((approval) => matchesSearch(approval, searchQuery.trim()));
-  const visibleSections = buildSections(
-    clusterByOrg(sortRows(filteredApprovals, sortOrder)),
-    driftedIds,
-  );
+  const visibleRows = clusterByOrg(sortRows(filteredApprovals, sortOrder));
+  const visibleSections = buildSections(visibleRows, driftedIds);
+  // Same rows, same drift set: a filter, a search or a drifted card shapes the
+  // cross-org panels exactly as it shapes the per-org groups below them.
+  const crossOrgGroups = buildCrossOrgGroups(visibleRows, driftedIds);
   const clearFilters = () => {
     setOrgFilter('');
     setSearchQuery('');
@@ -1554,6 +1573,25 @@ export default function ApprovalsInbox() {
               })}
             </p>
           )}
+        </div>
+      )}
+
+      {/* Cross-org batches sit ABOVE the org-first list rather than inside it:
+          org stays the outermost grouping of the list itself. */}
+      {!loading && !loadError && crossOrgGroups.length > 0 && (
+        <div className="space-y-3" data-testid="cross-org-batches">
+          {crossOrgGroups.map((group) => (
+            <CrossOrgBatchPanel
+              key={group.identity}
+              group={group}
+              busy={busy}
+              deciding={groupIsDeciding(group)}
+              error={groupErrors[group.identity]}
+              onDecide={(frozen, decision, reason) =>
+                decideGroup(frozen, decision, reason, 'cross_org')
+              }
+            />
+          ))}
         </div>
       )}
 
