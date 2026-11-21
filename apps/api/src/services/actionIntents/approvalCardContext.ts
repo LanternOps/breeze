@@ -3,9 +3,10 @@
  *
  * `buildApprovalDescription` (aiGuardrails.ts) builds its headline from tool
  * input alone, so a ticket reads `ticket #2aad0601...` and a device
- * `on device 8f14580d...`. The intent service already swaps a device NAME into
- * the label it stores for the queue and the push (approvalDeviceName.ts,
- * #5363); the chat `approval_required` event carried the raw stub. This module
+ * `on device 8f14580d...`. The intent service swaps a device NAME and a ticket
+ * NUMBER into the label it stores for the queue and the push
+ * (approvalDeviceName.ts, #5363; approvalTicketNumber.ts); the chat
+ * `approval_required` event carried the raw stub. This module
  * gives the chat card the same naming for devices and adds it for tickets:
  *
  *  - `resolveApprovalTicketContext` reads the ticket's number, subject and the
@@ -37,21 +38,12 @@ export type ApprovalTicketReach = Pick<AuthContext, 'orgCondition' | 'allowedSit
 /** Shape-only UUID guard, as in approvalDeviceName.ts: `tickets.id` is a uuid, so junk would raise 22P02. */
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** `manage_tickets` actions whose handler acts on `expectedTicketId` and never reads `ticketId` (aiToolsTicketing.ts). */
-const COMMENT_REWRITE_ACTIONS = new Set<unknown>(['edit_comment', 'delete_comment']);
-
 /**
- * The ticket THIS call acts on. For most `manage_tickets` actions that is
- * `ticketId`, the argument every `ticket #<id>...` stub is built from. A
- * comment edit or delete acts on `expectedTicketId` instead, so that is the one
- * named: a `ticketId` sent alongside it is ignored by the handler and must not
- * put a different ticket on the card (same mapping as intentRowTarget.ts).
+ * The ticket THIS call acts on (`expectedTicketId` for a comment edit or
+ * delete). Lives with the stored label's number read so the card and the label
+ * cannot drift on which ticket a call names.
  */
-export function argumentTicketId(toolName: string, input: Record<string, unknown>): string | null {
-  if (toolName !== 'manage_tickets') return null;
-  const raw = COMMENT_REWRITE_ACTIONS.has(input.action) ? input.expectedTicketId : input.ticketId;
-  return typeof raw === 'string' && UUID_SHAPE.test(raw) ? raw : null;
-}
+export { argumentTicketId } from './approvalTicketNumber';
 
 /**
  * The ticket's number, subject and requester, or `null` when it cannot be

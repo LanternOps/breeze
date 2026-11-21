@@ -4746,6 +4746,16 @@ export function buildApprovalDescription(
       } else if (action === 'draft') {
         const kindLabel = input.kind === 'resolution_note' ? 'resolution note' : 'reply';
         parts.push(`Store AI ${kindLabel} draft on ticket #${shortTicketId}`);
+      } else if (action === 'edit_comment' || action === 'delete_comment') {
+        // #11674: these act on `expectedTicketId` and never read `ticketId`
+        // (intentRowTarget.ts), so the stub names that ticket. Never the
+        // replacement text, and not public/internal: the input does not say.
+        const commentTicketId = typeof input.expectedTicketId === 'string'
+          ? `${input.expectedTicketId.slice(0, 8)}...`
+          : 'unknown';
+        parts.push(action === 'edit_comment'
+          ? `Edit a comment on ticket #${commentTicketId} (replaces its text)`
+          : `Delete a comment on ticket #${commentTicketId}`);
       } else {
         parts.push(humanizeToolAction(toolName, action));
       }

@@ -1,6 +1,7 @@
 import { flowBuiltinTierFor, isFlowBuiltin, isTenantToolName, remediationTriggerSchema, type RemediationTrigger, AI_APPROVAL_TIMEOUT_MAX_MINUTES, AI_APPROVAL_TIMEOUT_MIN_MINUTES } from '@breeze/shared';
-import { buildActionLabel, describePax8Action, describePax8Submit, hasDeviceIdStub } from './actionLabel';
+import { buildActionLabel, describePax8Action, describePax8Submit, hasDeviceIdStub, hasTicketIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
+import { argumentTicketId, resolveApprovalTicketNumber } from './approvalTicketNumber';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { isMcpOriginIntent } from '../mcpIntentEligibility';
@@ -2286,6 +2287,16 @@ export async function createActionIntent(
       labelDeviceName = await resolveApprovalDeviceName(argDeviceId, orgId);
     }
   }
+  // #11674: the same for a ticket. "ticket #2aad0601..." becomes
+  // "ticket T-2026-0001" in the label the /approvals queue and the push show.
+  // The number only (never subject, requester or text), org-pinned, and read
+  // only when the label carries the stub of the ticket THIS call acts on
+  // (`expectedTicketId` for a comment edit or delete). A flow step's label
+  // names no ticket, so it costs no read.
+  const labelTicketId = flowRunFacts ? null : argumentTicketId(input.toolName, input.input);
+  const labelTicketNumber = labelTicketId && labelReason && hasTicketIdStub(labelReason, labelTicketId)
+    ? await resolveApprovalTicketNumber(labelTicketId, orgId)
+    : null;
   // Tool catalog W04 (#5219), spec §6.5 card copy: a flow step reads
   // "Flow <name>" / "Step <id>: <tool>" — both from the server run.
   const actionLabel = flowRunFacts
@@ -2295,6 +2306,8 @@ export async function createActionIntent(
       input: input.input,
       reason: labelReason,
       deviceHostname: labelDeviceName,
+      ticketId: labelTicketId,
+      ticketNumber: labelTicketNumber,
     });
   const expiresAt = computeExpiresAt(input.source, approvalScope, input.chatApprovalWindowMs);
   const requestingClientLabel = flowRunFacts
