@@ -413,6 +413,26 @@ If a wake cannot be sent, Breeze returns a specific reason rather than failing s
 - **Every wake that is sent is followed up.** Breeze records the attempt and, within about 12 minutes, resolves it as **came online** (the device has checked in since the wake), **timed out** (the relay sent the packet but the device did not check in within 10 minutes), **send failed** (the relay never confirmed sending it) or **unknown** (the outcome could not be established, for example because the attempt was checked too late to tell when the device came back, or the agent was reinstalled meanwhile). Closed attempts are kept for 90 days by default (`WAKE_ATTEMPT_RETENTION_DAYS`).
 - **Docked laptops are reachable.** A wake targets the MAC addresses the device reports now plus those it reported in the last 30 days (up to eight), so a laptop's dock or USB network adapter is still tried after it is unplugged. A historical MAC that another device in the organization reported more recently is left out.
 
+#### Wake-on-LAN policy and readiness (v0.130.0+)
+
+A **Wake on LAN** tab in [Configuration Policies](/features/configuration-policies/) decides when the Wake button shows for an offline device, and reports how ready each device is to wake. It is read-only: Breeze reads each device's Wake-on-LAN readiness but does not change BIOS, network adapter or Windows settings. Devices with no Wake-on-LAN policy behave exactly as before (the Wake button shows on every offline device).
+
+<Steps>
+
+1. Open a configuration policy and go to the **Wake on LAN** tab.
+2. Under **When the Wake button shows**, choose:
+   - **Always** (the default): Wake shows on every offline device. Devices that keep timing out are flagged in the status panel but never hidden.
+   - **Only when verified ready**: Wake shows only on devices that report ready, or that a past wake has proven by coming online. Expect the button to be hidden on most devices at first. A device that is not yet proven can still be sent one **test wake** from the status panel.
+3. Assign the policy as usual. The setting follows the normal policy hierarchy (partner, organization, site, device group, device).
+
+</Steps>
+
+The **Device status** panel on the tab counts the devices the policy governs by state (**Ready**, **Needs reboot**, **Not configured**, **Unproven**, **No wired adapter**, **Virtual machine**, **Agent update required** and others), lists the reasons for each device (for example "Fast Startup is on", "Adapter magic packet wake is off" or "Energy-Efficient Ethernet is on"), and shows the last wake attempt. From each row you can **Send test wake**, or **Allow wake again** on a device that was flagged after repeated timeouts; both are audited. On a very large fleet the panel scans the first 5,000 devices and says so.
+
+<Aside type="note">
+  Readiness reporting needs the 0.130.0 agent on Windows; older agents show **Agent update required**. The agent reads Fast Startup and, for each wired adapter, magic-packet wake and Energy-Efficient Ethernet, only while a Wake-on-LAN policy applies to the device. Dell PCs also report their BIOS Wake-on-LAN and Deep Sleep Control settings. Other makes report **Unproven** with "Firmware settings cannot be read yet" until a wake proves them. Laptops wake only on AC power, and Modern Standby support varies by model, so a laptop that reports ready may still not come online. Changing BIOS or adapter settings from Breeze is not available yet.
+</Aside>
+
 ### Pluggable Remote-Desktop Launcher
 
 By default, **Connect → Desktop** opens the built-in Breeze WebRTC desktop session. MSPs that standardise on a third-party tool (RustDesk, ScreenConnect, TeamViewer, AnyDesk, and similar) can configure Breeze to hand off to that tool instead, per partner.
