@@ -31,6 +31,7 @@ import { readFile } from 'node:fs/promises';
 import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { createOrganization, createPartner } from './db-utils';
+import { RESTORE_PORTAL_USERS_LEGACY_ENTRA_SQL } from './fixtures/portalUsersLegacyEntraColumns';
 
 const MIGRATION = '2027-01-28-210000-portal-identity-final-backfill.sql';
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
@@ -44,7 +45,13 @@ async function inRolledBackTx(body: (tx: Tx, notices: string[]) => Promise<void>
   const notices: string[] = [];
   const client = postgres(DATABASE_URL, { max: 1, onnotice: (n) => { notices.push(`${n.severity}: ${n.message}`); } });
   try {
-    await client.begin(async (tx) => { await body(tx as unknown as Tx, notices); throw new Rollback(); });
+    await client.begin(async (tx) => {
+      // W10 PR-B dropped the legacy portal_users Entra objects this file reads;
+      // put them back inside the rolled-back transaction (fixture header).
+      await (tx as unknown as Tx).unsafe(RESTORE_PORTAL_USERS_LEGACY_ENTRA_SQL);
+      await body(tx as unknown as Tx, notices);
+      throw new Rollback();
+    });
   } catch (error) {
     if (!(error instanceof Rollback)) throw error;
   } finally {
@@ -170,6 +177,14 @@ describe(MIGRATION, () => {
       expect(rows).toEqual([{ portal_user_id: mismatched, subject: 'identity-oid' }]);
       expect(notices.some((n) => /WARNING: portal_users: 1 legacy Entra pair\(s\) disagree/.test(n))).toBe(true);
       expect(notices.some((n) => /WARNING: portal_users: 1 row\(s\) have only one of entra_oid\/entra_tenant_id/.test(n))).toBe(true);
+    });
+  });
+
+  it('on a database that already ran the W10 drop, it skips cleanly (fresh-install / skipped-version replay)', async () => {
+    await inRolledBackTx(async (tx, notices) => {
+      await tx.unsafe('ALTER TABLE public.portal_users DROP COLUMN entra_oid, DROP COLUMN entra_tenant_id');
+      await tx.unsafe(await loadMigration());
+      expect(notices.some((n) => /final backfill skipped \(portal_users\.entra_\* already dropped\)/.test(n))).toBe(true);
     });
   });
 

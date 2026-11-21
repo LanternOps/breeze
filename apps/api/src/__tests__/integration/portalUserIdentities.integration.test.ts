@@ -92,15 +92,6 @@ async function seedEntraLogin(orgId: string, ids: { tid?: string; oid?: string }
   return { id: row.id as string, tid, oid };
 }
 
-/**
- * The legacy `portal_users.entra_*` pair, read in raw SQL (W10: the columns
- * left the Drizzle schema and nothing writes them; PR-B drops them).
- */
-async function legacyPair(portalUserId: string): Promise<{ entra_tenant_id: string | null; entra_oid: string | null }> {
-  const [row] = await admin().execute(sql`SELECT entra_tenant_id, entra_oid FROM portal_users WHERE id = ${portalUserId}`);
-  return row;
-}
-
 async function seedIdentity(orgId: string, portalUserId: string, tid: string, oid: string) {
   const [row] = await admin()
     .insert(portalUserIdentities)
@@ -331,7 +322,7 @@ const exchangeClaims = (tid: string, oid: string) =>
   }) as unknown as ClientAiEntraClaims;
 
 describe('resolveAndMintClientSession dual-writes portal_user_identities', () => {
-  it('first exchange creates login (browser_access none) + identity atomically; no legacy entra_* column is written (W10)', async () => {
+  it('first exchange creates login (browser_access none) + identity atomically', async () => {
     const tid = await mapTenant(fx.orgId, fx.partnerId);
     const oid = randomUUID();
 
@@ -345,7 +336,6 @@ describe('resolveAndMintClientSession dual-writes portal_user_identities', () =>
     expect(identities[0]).toMatchObject({
       orgId: fx.orgId, provider: 'entra', issuer: entraIss(tid), subject: oid, entraTenantId: tid, linkedVia: 'jit',
     });
-    expect(await legacyPair(login.id)).toEqual({ entra_tenant_id: null, entra_oid: null });
   });
 
   it('release B: the identity (tid, oid) resolves to the login that holds it; no JIT', async () => {
@@ -355,7 +345,7 @@ describe('resolveAndMintClientSession dual-writes portal_user_identities', () =>
     // denied (provisioning_failed; the savepoint rollback is still pinned by
     // clientAiExchange.test.ts). Release B makes the identity the source of
     // truth (spec §5.2): the token resolves to the identity's login, and
-    // (W10) the legacy columns are neither read nor written.
+    // (W10) the legacy columns are gone.
     const tid = await mapTenant(fx.orgId, fx.partnerId);
     const oid = randomUUID();
     const holder = await seedEntraLogin(fx.orgId);
@@ -367,7 +357,6 @@ describe('resolveAndMintClientSession dual-writes portal_user_identities', () =>
     expect(outcome).toMatchObject({ kind: 'resolved', audit: { actorId: holder.id, details: { provisioned: false } } });
     const [{ n: after }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_users`);
     expect(after).toBe(before);
-    expect(await legacyPair(holder.id)).toEqual({ entra_tenant_id: null, entra_oid: null });
   });
 });
 
@@ -376,7 +365,7 @@ describe('resolveAndMintClientSession dual-writes portal_user_identities', () =>
 // ---------------------------------------------------------------------------
 
 describe('resolveAndMintClientSession reads portal_user_identities (release B)', () => {
-  it('JIT writes the identity and NO legacy entra_* column (W10: the D4 writer fence is gone); the identity finds the login', async () => {
+  it('JIT writes the identity; the identity finds the login', async () => {
     const tid = await mapTenant(fx.orgId, fx.partnerId);
     const oid = randomUUID();
 
@@ -385,7 +374,6 @@ describe('resolveAndMintClientSession reads portal_user_identities (release B)',
 
     const [login] = await admin().select().from(portalUsers).where(eq(portalUsers.orgId, fx.orgId));
     expect(login).toMatchObject({ authMethod: 'entra' });
-    expect(await legacyPair(login.id)).toEqual({ entra_tenant_id: null, entra_oid: null });
     expect(await withSystemDbAccessContext(() => findPortalUserIdByEntraIdentity(db, { tid, oid })))
       .toEqual({ portalUserId: login.id, orgId: fx.orgId, identityId: expect.any(String), disabledAt: null });
 
@@ -481,7 +469,7 @@ describe('external-identity readers use portal_user_identities (release B)', () 
     expect(without.map((r) => r.id)).toEqual([plain.id]);
   });
 
-  it('an account with an identity row is identity-managed even when entra_oid is NULL (capability, resend, invite, invite-contacts)', async () => {
+  it('an account with an identity row is identity-managed (capability, resend, invite, invite-contacts)', async () => {
     const env = await setupTestEnvironment({ scope: 'partner' });
     const orgId = env.organization.id;
     const token = await mfaTokenFor(env);
@@ -489,7 +477,6 @@ describe('external-identity readers use portal_user_identities (release B)', () 
     const plain = await seedPasswordLogin(orgId);
     const linked = await seedPasswordLogin(orgId);
     await seedIdentity(orgId, linked.id, randomUUID(), randomUUID());
-    expect((await legacyPair(linked.id)).entra_oid).toBeNull();
 
     // Capability consume (accept-invite / reset facts).
     const cap = (u: { id: string; email: string; authEpoch: number }) => validatePortalCapability('invite', {
@@ -666,7 +653,6 @@ describe('linkPortalUserIdentity google + findPortalUserIdByIdentity (W7)', () =
     })).resolves.toEqual({ kind: 'linked' });
     const [after] = await admin().select().from(portalUsers).where(eq(portalUsers.id, login.id));
     expect(after).toMatchObject({ passwordHash: null, authMethod: 'password' });
-    expect(await legacyPair(login.id)).toEqual({ entra_tenant_id: null, entra_oid: null });
   });
 
   it('findPortalUserIdByIdentity finds google and entra identities; the entra wrapper is unchanged', async () => {

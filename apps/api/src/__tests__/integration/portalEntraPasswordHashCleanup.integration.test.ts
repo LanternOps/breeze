@@ -74,14 +74,13 @@ type Row = {
   auth_method: string;
   auth_epoch: number;
   status: string;
-  entra_oid: string | null;
   // Raw text so equality is exact; drizzle's raw execute does not map dates.
   updated_at: string;
 };
 
 async function snapshot(): Promise<Map<string, Row>> {
   const rows = await getTestDb().execute<Row>(sql`
-    SELECT id, password_hash, auth_method, auth_epoch, status, entra_oid, updated_at::text AS updated_at
+    SELECT id, password_hash, auth_method, auth_epoch, status, updated_at::text AS updated_at
       FROM portal_users
      ORDER BY id
   `);
@@ -170,10 +169,9 @@ describe('portal_users: clear password_hash on auth_method = entra rows', () => 
       const was = before.get(id)!;
       const now = after.get(id)!;
       expect(now.password_hash).toBeNull();
-      // Nothing but the hash (and updated_at) moves: sign-in method, the
-      // Entra identity, account status and the session generation stay.
+      // Nothing but the hash (and updated_at) moves: sign-in method, account
+      // status and the session generation stay.
       expect(now.auth_method).toBe('entra');
-      expect(now.entra_oid).toBe(was.entra_oid);
       expect(now.status).toBe(was.status);
       expect(now.auth_epoch).toBe(was.auth_epoch);
       expect(now.updated_at).not.toBe(was.updated_at);

@@ -13,11 +13,12 @@
  * wrapper `findPortalUserIdByEntraIdentity` (the add-in exchange's lookup) and
  * `listIdentityProvidersByUser` (the portal-user list).
  *
- * Release C (W10 #11387): the legacy `portal_users.entra_*` columns are neither
- * read nor written (the W3 D4 writer fence, the legacy refusals and the daily
- * drift report are gone); the final backfill
+ * Release C (W10 #11387): the legacy `portal_users.entra_*` columns are gone.
+ * PR-A stopped every read and write (the W3 D4 writer fence, the legacy
+ * refusals and the daily drift report), and its final backfill
  * (2027-01-28-210000-portal-identity-final-backfill.sql) gave every legacy pair
- * its identity row, and the drop migration ships one release later.
+ * its identity row. PR-B dropped them one release later
+ * (2027-01-28-220000-portal-users-drop-entra-columns.sql).
  *
  * W8 (#11385, plan D1/D3): an identity can be DISABLED (blockers), never
  * deleted, so its `(issuer, subject)` stays reserved. The readers return its

@@ -4,11 +4,11 @@ import { describe, expect, it } from 'vitest';
 
 /**
  * Portal registration W10 (#11387, plan D5), spec §6 invariants 9 and 10:
- * `portal_users.browser_access` has no column default, and W10 PR-B drops the
- * W2 BEFORE INSERT fill trigger (`portal_users_browser_access_fill`) that
- * derived it for writers that omitted it. After the drop an omitted value is a
- * NOT NULL error. That is the intended loud failure: browser access is never
- * granted by default.
+ * `portal_users.browser_access` has no column default, and W10 dropped the W2
+ * BEFORE INSERT fill trigger (`portal_users_browser_access_fill`) that derived
+ * it for writers that omitted it (2027-01-28-220000-portal-users-drop-entra-
+ * columns.sql). An omitted value is a NOT NULL error. That is the intended loud
+ * failure: browser access is never granted by default.
  *
  * Drizzle inserts are covered by tsc: the schema field has no `.default`, so
  * an insert that omits it does not compile. This census covers raw SQL. Every
@@ -22,6 +22,9 @@ const TRIGGER_FIXTURES: Record<string, string> = {
   // replay of the W2 migration, which then backfills and installs the trigger.
   'apps/api/src/__tests__/integration/portalAccountFoundationsMigration.integration.test.ts':
     'W2 replay: rows written before browser_access exists / the fill trigger under test',
+  // Proves the omitted-value insert now fails 23502 after the trigger drop (inv. 9).
+  'apps/api/src/__tests__/integration/portalEntraColumnsDrop.integration.test.ts':
+    'W10 drop: the deliberate omitted-browser_access insert that must fail NOT NULL',
 };
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..', '..');

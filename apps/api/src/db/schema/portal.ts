@@ -136,12 +136,11 @@ export const portalUsers = pgTable('portal_users', {
   email: varchar('email', { length: 255 }).notNull(),
   name: varchar('name', { length: 255 }),
   passwordHash: text('password_hash'),
-  // The legacy Entra columns `entra_oid` / `entra_tenant_id` (and their
-  // partial unique index portal_users_entra_identity_uniq) are deliberately
-  // NOT declared: external identity lives only in portal_user_identities
-  // (portal registration W10, identities release C). Release N stopped every
-  // read and write; the drop migration follows one release later. Do not
-  // re-add them — __tests__/portalIdentityFacts.contract.test.ts pins raw SQL.
+  // External identity lives only in portal_user_identities. The legacy
+  // `entra_oid` / `entra_tenant_id` columns and their partial unique index were
+  // dropped by portal registration W10 (2027-01-28-220000-portal-users-drop-
+  // entra-columns.sql); __tests__/portalIdentityFacts.contract.test.ts keeps
+  // them from coming back in raw SQL.
   authMethod: text('auth_method').notNull().default('password'), // 'password' | 'entra' | 'google' (SQL CHECK portal_users_auth_method_check); only 'password' is password-eligible
   // Durable generation snapshotted by portal and client-AI sessions. Redis
   // deletion is cleanup; live authorization compares this column instead.
@@ -183,10 +182,9 @@ export const portalUsers = pgTable('portal_users', {
   // The DB has NO column default, and no Drizzle `.default` either, so every
   // insert must name it (tsc refuses one that does not). Production writers
   // pass it via services/portalAccountState.ts. The W2 BEFORE INSERT fill
-  // trigger `portal_users_browser_access_fill` (2027-01-22-230200-portal-
-  // account-foundations.sql), which served pre-W2 binaries during a rolling
-  // deploy, is dropped by W10 PR-B; after it an omitted value is a NOT NULL
-  // error, never a default grant.
+  // trigger that served pre-W2 binaries was dropped by W10
+  // (2027-01-28-220000-portal-users-drop-entra-columns.sql): an omitted value
+  // is a NOT NULL error, never a default grant.
   browserAccess: text('browser_access').$type<PortalBrowserAccess>().notNull(),
   // Who disabled the account (portal registration W8, plan D2): set iff
   // status = 'disabled' (SQL CHECK portal_users_disabled_by_status_chk, plus
@@ -212,8 +210,7 @@ export const portalUsers = pgTable('portal_users', {
  * Release A (W2): backfilled from portal_users.entra_* and dual-written by the
  * AI for Office exchange. Release B (W3): every read of external identity
  * comes from this table (services/portalUserIdentities.ts). Release C (W10):
- * nothing reads or writes the legacy columns any more, and they are dropped
- * one release later.
+ * the legacy columns are gone (dropped one release after the last reader).
  *
  * The real tenancy constraint lives in SQL only — the composite FK
  * `portal_user_identities_user_org_fk` (portal_user_id, org_id) →

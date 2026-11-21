@@ -20,6 +20,7 @@ import { readFile } from 'node:fs/promises';
 import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { createOrganization, createPartner } from './db-utils';
+import { RESTORE_PORTAL_USERS_LEGACY_ENTRA_SQL, RESTORE_PORTAL_USERS_FILL_TRIGGER_SQL } from './fixtures/portalUsersLegacyEntraColumns';
 
 const MIGRATION = '2027-01-22-230200-portal-account-foundations.sql';
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
@@ -36,7 +37,13 @@ async function inRolledBackTx(body: (tx: Tx, notices: string[]) => Promise<void>
     onnotice: (n) => { notices.push(`${n.severity}: ${n.message}`); },
   });
   try {
-    await client.begin(async (tx) => { await body(tx as unknown as Tx, notices); throw new Rollback(); });
+    await client.begin(async (tx) => {
+      // W10 PR-B dropped the legacy portal_users Entra objects this file reads;
+      // put them back inside the rolled-back transaction (fixture header).
+      await (tx as unknown as Tx).unsafe(RESTORE_PORTAL_USERS_LEGACY_ENTRA_SQL + RESTORE_PORTAL_USERS_FILL_TRIGGER_SQL);
+      await body(tx as unknown as Tx, notices);
+      throw new Rollback();
+    });
   } catch (error) {
     if (!(error instanceof Rollback)) throw error;
   } finally {

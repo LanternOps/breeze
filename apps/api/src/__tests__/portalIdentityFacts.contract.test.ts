@@ -63,11 +63,12 @@ const CALL_SITES: Record<string, { fact: Fact; reason: string }> = {
 };
 
 /**
- * Identities release C, code half (W10 #11387, PR-A): NO production file may
- * read or write the legacy `portal_users.entra_oid` / `entra_tenant_id`
- * columns any more — the W3 D4 writer fence, the legacy refusals and the drift
- * report are gone, and PR-B drops the columns. Drizzle access is impossible
- * (the fields left the schema, so tsc refuses it); this scan pins raw SQL.
+ * Identities release C (W10 #11387): NO production file may name the legacy
+ * `portal_users.entra_oid` / `entra_tenant_id` columns or their index. PR-A
+ * removed every read and write (the W3 D4 writer fence, the legacy refusals,
+ * the drift report), and PR-B dropped the objects. Drizzle access is
+ * impossible, because the fields left the schema and tsc refuses it. This scan
+ * pins raw SQL.
  */
 const LEGACY_ENTRA_COLUMN_USERS: Record<string, string> = {};
 
