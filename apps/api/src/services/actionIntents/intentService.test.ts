@@ -324,6 +324,12 @@ vi.mock('./actionLabel', async (importOriginal) => {
 const ticketNumberMock = vi.hoisted(() => ({
   resolveApprovalTicketNumber: vi.fn(async (_ticketId: string, _orgId: string, _reach: unknown): Promise<string | null> => null),
 }));
+// The caller's site/device check behind the approval-label device name. The
+// real module imports the full schema index, which this harness cannot load.
+const siteScopeMock = vi.hoisted(() => ({
+  deviceInSiteScope: vi.fn(async (_auth: unknown, _deviceId: string): Promise<boolean> => true),
+}));
+vi.mock('../../routes/tickets/siteScope', () => ({ deviceInSiteScope: siteScopeMock.deviceInSiteScope }));
 vi.mock('./approvalTicketNumber', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./approvalTicketNumber')>();
   return { ...actual, resolveApprovalTicketNumber: ticketNumberMock.resolveApprovalTicketNumber };
@@ -419,6 +425,9 @@ function makeAuth(overrides?: {
     partnerId: overrides?.partnerId ?? null,
     scope: 'organization' as const,
     accessibleOrgIds: [ORG_ID],
+    // Every real AuthContext carries one; the approval-label reads (#11674)
+    // keep the id stub for a principal without it.
+    orgCondition: () => undefined,
     ...('allowedSiteIds' in (overrides ?? {}) ? { allowedSiteIds: overrides!.allowedSiteIds } : {}),
     ...('allowedDeviceIds' in (overrides ?? {}) ? { allowedDeviceIds: overrides!.allowedDeviceIds } : {}),
   } as unknown as Parameters<typeof createActionIntent>[0];
@@ -1978,6 +1987,28 @@ describe('createActionIntent — approval headline device name (#5363)', () => {
     expect(labels).toHaveLength(1);
     expect(labels[0]).toContain('on KIT');
     expect(labels[0]).not.toContain('on device');
+  });
+
+  it('keeps the stub when the device is outside the filing caller\'s site scope (#11674 review)', async () => {
+    dbState.selectDevicesResults.push([{ hostname: 'kit', displayName: 'KIT' }]);
+    queueFanout('intent-5363-out-of-site');
+    siteScopeMock.deviceInSiteScope.mockResolvedValueOnce(false);
+    const auth = makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] });
+
+    await createActionIntent(auth, restartInput());
+
+    expect(siteScopeMock.deviceInSiteScope).toHaveBeenCalledWith(auth, DEVICE_ID);
+    expect(persistedApprovalLabels()[0]).toBe(`Restart service "Spooler" on device ${DEVICE_ID.slice(0, 8)}...`);
+  });
+
+  it('names the device when it is inside the filing caller\'s site scope', async () => {
+    dbState.selectDevicesResults.push([{ hostname: 'kit', displayName: 'KIT' }]);
+    queueFanout('intent-5363-in-site');
+    siteScopeMock.deviceInSiteScope.mockResolvedValueOnce(true);
+
+    await createActionIntent(makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] }), restartInput());
+
+    expect(persistedApprovalLabels()[0]).toContain('on KIT');
   });
 
   it('falls back to the hostname when the device has no display name', async () => {

@@ -163,7 +163,8 @@ describe('resolveApprovalTicketNumber', () => {
 
   it('names a device-bound ticket whose device is in the caller\'s site scope', async () => {
     dbState.rows = [{ ticketNumber: 'TTAVKZRCGR', internalNumber: 'T-2026-0001', deviceId: DEVICE_ID }];
-    await expect(resolveApprovalTicketNumber(TICKET_ID, ORG_ID, reach())).resolves.toBe('T-2026-0001');
+    const siteRestricted = reach({ allowedSiteIds: ['44444444-2222-4333-8444-555566667777'] });
+    await expect(resolveApprovalTicketNumber(TICKET_ID, ORG_ID, siteRestricted)).resolves.toBe('T-2026-0001');
     expect(deviceInSiteScope).toHaveBeenCalledTimes(1);
   });
 

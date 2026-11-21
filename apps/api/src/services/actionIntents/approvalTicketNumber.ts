@@ -27,11 +27,11 @@
 import { and, eq, isNull, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { tickets } from '../../db/schema/portal';
-import type { AuthContext } from '../../middleware/auth';
 import { captureException } from '../sentry';
+import { deviceInCallerReach, hasCallerOrgReach, type ApprovalCallerReach } from './approvalDeviceName';
 
-/** The slice of the filing caller's auth the read is cut to. */
-export type ApprovalTicketReach = Pick<AuthContext, 'orgCondition' | 'allowedSiteIds' | 'allowedDeviceIds'>;
+/** The slice of the filing caller's auth the read is cut to (the same reach the device name uses). */
+export type ApprovalTicketReach = ApprovalCallerReach;
 
 /** Shape-only UUID guard, as in approvalDeviceName.ts: `tickets.id` is a uuid, so junk would raise 22P02. */
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -69,7 +69,7 @@ export async function readApprovalTicketInReach<T extends { deviceId: string | n
   contextLabel: string,
   select: (where: SQL) => PromiseLike<T[]>,
 ): Promise<T | null> {
-  if (typeof reach?.orgCondition !== 'function') return null;
+  if (!hasCallerOrgReach(reach)) return null;
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const conditions: SQL[] = [eq(tickets.id, ticketId), eq(tickets.orgId, orgId), isNull(tickets.deletedAt)];
@@ -77,13 +77,9 @@ export async function readApprovalTicketInReach<T extends { deviceId: string | n
       if (reachCondition) conditions.push(reachCondition);
       const [ticket] = await select(and(...conditions) as SQL);
       if (!ticket) return null;
-      if (ticket.deviceId) {
-        // Loaded here rather than at the top: siteScope.ts imports the full
-        // schema index, and the intent service must not pull that in just to
-        // build a label. Only a device-bound ticket needs it.
-        const { deviceInSiteScope } = await import('../../routes/tickets/siteScope');
-        if (!(await deviceInSiteScope(reach, ticket.deviceId))) return null;
-      }
+      // A device-bound ticket follows its device's site/device scope
+      // (`deviceInSiteScope`, via the device name's shared check).
+      if (ticket.deviceId && !(await deviceInCallerReach(reach, ticket.deviceId))) return null;
       return ticket;
     }, contextLabel),
   );

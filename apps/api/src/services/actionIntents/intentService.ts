@@ -2279,12 +2279,14 @@ export async function createActionIntent(
   // left the raw stub as the mobile takeover's headline, so resolve the
   // device THESE arguments name. One indexed, org-pinned read, and only when
   // the label really carries this call's stub — no read at all for the many
-  // tools whose description never mentions a device.
+  // tools whose description never mentions a device. #11674: the name follows
+  // the FILING principal's site scope (`auth`: org condition, site allowlist,
+  // exact-device ceiling); a device outside it keeps the stub.
   let labelDeviceName = scopedDeviceHostname;
   if (!labelDeviceName && labelReason) {
     const argDeviceId = argumentDeviceId(input.input);
     if (argDeviceId && hasDeviceIdStub(labelReason, argDeviceId)) {
-      labelDeviceName = await resolveApprovalDeviceName(argDeviceId, orgId);
+      labelDeviceName = await resolveApprovalDeviceName(argDeviceId, orgId, auth);
     }
   }
   // #11674: the same for a ticket. "ticket #2aad0601..." becomes
