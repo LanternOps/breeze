@@ -264,6 +264,9 @@ describe('DeviceHeaderFacts', () => {
       });
       render(<DeviceHeaderFacts device={device({ model: 'OptiPlex 7060', serialNumber: '4XK9P2', lanIp: '10.0.4.21' })} />);
       const more = await screen.findByTestId('device-facts-more');
+      // The toggle is always in the DOM (it reserves its width); wait for every
+      // fact to land and the row to fold before reading it.
+      await waitFor(() => expect(more).toHaveTextContent('3 more'));
       // 150+120+110+200 + 60 ("3 more") fits 760; adding the contact (200) does not.
       for (const id of ['device-fact-model', 'device-fact-serial', 'device-fact-ip', 'device-fact-warranty']) {
         expect(screen.getByTestId(id)).toBeVisible();

@@ -16,6 +16,13 @@ vi.mock('../shared/Toast', () => ({
 }));
 
 vi.mock('./time/DeviceTimeSection', () => ({ default: () => null }));
+// The warranty section fetches on its own and is tested in DeviceWarrantyCard.test.tsx.
+// Stubbed so its fetch cannot consume a mockImplementationOnce meant for a save here.
+vi.mock('./DeviceWarrantyCard', () => ({
+  default: ({ purchase }: { purchase?: import('react').ReactNode }) => (
+    <section data-testid="device-warranty"><dl>{purchase}</dl></section>
+  ),
+}));
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
 

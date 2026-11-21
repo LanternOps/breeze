@@ -18,6 +18,7 @@ import { asList } from '@/lib/asList';
 import { parseDateOnly } from '@/lib/dateOnly';
 import { FactPopover, type FactTone } from '../shared/FactPopover';
 import { CopyButton } from './networkDevice/CopyButton';
+import { dedupeResponsibleContacts } from '@/lib/contactResponsibilityDedupe';
 import {
   contactDisplayName,
   useContactResponsibilities,
@@ -177,8 +178,6 @@ const roleRank = (role: string) => {
   return i === -1 ? CONTACT_ROLE_ORDER.length : i;
 };
 
-const digits = (v: string | null | undefined) => (v ? v.replace(/\D/g, '') : '');
-
 /**
  * Responsibilities in the chip's order (role rank, primary first), each role's
  * contacts de-duplicated: the same person entered twice (same email, or same
@@ -189,15 +188,11 @@ function orderedResponsibilities(items: Responsibility[]): Responsibility[] {
     .filter((r) => r.contacts.length > 0)
     .sort((a, b) => roleRank(a.role) - roleRank(b.role))
     .map((r) => {
-      const seen = new Set<string>();
-      const contacts = [...r.contacts]
-        .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary))
-        .filter((c) => {
-          const keys = [c.email?.trim().toLowerCase(), digits(c.phone || c.mobile)].filter(Boolean) as string[];
-          if (keys.some((k) => seen.has(k))) return false;
-          keys.forEach((k) => seen.add(k));
-          return true;
-        });
+      // Primary first, then one entry per person — the same rule the Details
+      // tab's contacts card uses.
+      const contacts = dedupeResponsibleContacts(
+        [...r.contacts].sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary)),
+      );
       return { ...r, contacts };
     });
 }
