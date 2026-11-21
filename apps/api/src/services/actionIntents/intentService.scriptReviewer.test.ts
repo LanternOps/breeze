@@ -421,6 +421,20 @@ describe('createActionIntent — script_reviewer autonomy (#5612 W04)', () => {
     expect(auditState.audits.map((a) => a.action)).not.toContain('ai.script.unattended_run');
   });
 
+  it('an MCP-filed proposal run is never lane-approved: the evaluator is not called and it waits for a human', async () => {
+    // The MCP route decides unattended MCP proposal runs against the partner's
+    // MCP ceiling; a call it refused is filed here and must not be approved
+    // by the lane instead.
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    const snap = await createActionIntent(makeUserAuth(), proposalRunInput({ source: 'mcp_api' }));
+    expect(scriptLaneState.evaluateScriptReviewerAutonomy).not.toHaveBeenCalled();
+    const inserted = dbState.insertedActionIntentValues[0]!;
+    expect(inserted.status).toBeUndefined();
+    expect(inserted.decidedVia).toBeUndefined();
+    expect(inserted.result).toEqual({ scriptLaneRefusal: 'mcp_origin' });
+    expect(snap.approvalRequestIds.length).toBeGreaterThan(0);
+  });
+
   it('a missing proposal is a proposal_not_runnable breadcrumb and the evaluator is never called', async () => {
     dbState.insertActionIntentsResults.push(echoInsertedIntent());
     scriptLaneState.loadProposalForRelease.mockResolvedValue(null as never);

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
   proposal: null as Record<string, unknown> | null,
@@ -64,6 +64,13 @@ const EFFECTIVE = {
 };
 
 const refusal = (deviceIds: string[] = ['dev-1']) => mcpUnattendedProposalRefusal('p1', 'org-1', deviceIds);
+
+// The gate lazy-imports the lane modules (to break an import cycle); load them
+// once here so the first test does not pay the transform inside its timeout.
+beforeAll(async () => {
+  await import('../actionIntents/scriptReviewerAutonomy');
+  await import('../deviceRecovery/restoreCheckpoint');
+}, 60_000);
 
 beforeEach(() => {
   state.proposal = { ...PROPOSAL };

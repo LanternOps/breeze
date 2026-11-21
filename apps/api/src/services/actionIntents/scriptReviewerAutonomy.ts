@@ -74,7 +74,12 @@ export type ScriptReviewerRefusal =
   | 'lane_open'
   | 'hourly_cap'
   | 'requester_unauthorized'
-  | 'device_unavailable';
+  | 'device_unavailable'
+  // An MCP-filed intent (source 'mcp_api'): MCP proposal runs are governed by
+  // the partner's MCP unattended proposal ceiling, decided on the MCP route
+  // (scriptProposals/mcpUnattendedCeiling.ts). A run that gate refused is
+  // filed for a human; this lane must not approve it instead.
+  | 'mcp_origin';
 
 export type ScriptReviewerDecision =
   | { granted: true; evidence: ScriptReviewerEvidence }

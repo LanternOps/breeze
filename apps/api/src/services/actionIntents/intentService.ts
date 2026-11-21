@@ -2708,7 +2708,12 @@ export async function createActionIntent(
         ? (input.input as { proposalId?: unknown }).proposalId
         : undefined;
       let scriptLaneDecision: ScriptReviewerDecision | null = null;
-      if (!autonomyGranted && !planGranted && typeof proposalIdArg === 'string') {
+      if (!autonomyGranted && !planGranted && typeof proposalIdArg === 'string' && input.source === 'mcp_api') {
+        // MCP proposal runs answer to the partner's MCP ceiling, decided on the
+        // MCP route before the call is filed here; a call filed here is one
+        // that gate refused, so it waits for a human.
+        scriptLaneDecision = { granted: false, reason: 'mcp_origin' };
+      } else if (!autonomyGranted && !planGranted && typeof proposalIdArg === 'string') {
         const proposal = await loadProposalForRelease(db, proposalIdArg, orgId);
         const review = proposal ? await latestCompletedReview(db, proposal.id) : null;
         scriptLaneDecision = proposal
