@@ -181,6 +181,23 @@ const EXPECTED_FENCED: Readonly<Record<string, readonly string[]>> = {
   send_endpoint_message: ['sessionUsername', 'hostname', 'title', 'body'],
   // aiToolsSentinelOne.ts dispatches no command, so discovery above never reaches it.
   get_s1_threats: ['threatName', 'processName', 'filePath', 'deviceName'],
+  // None of the tools below dispatches a command, so discovery above never reaches them.
+  // A backed-up mailbox or drive item: the subject, folder path and mailbox address come from
+  // the cloud tenant (an email's subject is whatever its sender typed).
+  search_c2c_items: ['subjectOrName', 'parentPath', 'userEmail', 'externalId', 'storagePath', 'metadata', 'configName'],
+  // USB descriptor strings and the event's free-form details are reported by the agent.
+  get_peripheral_activity: ['vendor', 'product', 'serialNumber', 'peripheralType', 'sourceEventId', 'details'],
+  // The user's own name and email; event descriptions/details can quote another user's text.
+  get_user_risk_detail: ['name', 'email', 'description', 'details'],
+  // Watched service/process names and the check's details blob are agent-reported.
+  get_service_monitoring_status: ['name', 'details'],
+  // A run's ledger error echoes tool output; its report, findings and proposals are model text
+  // written from device data; the agent name is typed by another user.
+  get_ai_agent_run: [
+    'errorMessage', 'summary', 'resultSummary', 'deviceHostname', 'agentName',
+    'verifyDetail', 'actTargetName', 'reason', 'intentError', 'downgradeReason',
+    'ticketProposal', 'alertVerdict', 'sweep', 'narrative', 'fleetDesign', 'patch', 'analysis',
+  ],
 };
 
 describe('contract: pinned fences for high-risk tools', () => {

@@ -1160,6 +1160,14 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_fleet_health: new Set(['label', 'detail']),
   // Anomaly rows carry metric names and free-form baseline/evidence JSON from the agent's collectors.
   manage_device_anomalies: new Set(['metricName', 'evidence', 'baselineSummary']),
+  // Watched service/process names (and change-log service names) and the check's details blob are agent-reported.
+  get_service_monitoring_status: new Set(['name', 'details']),
+  // USB descriptor strings (vendor, product, serial), the peripheral type, event id and details blob are
+  // agent-reported (routes/agents/peripherals.ts).
+  get_peripheral_activity: new Set(['vendor', 'product', 'serialNumber', 'peripheralType', 'sourceEventId', 'details']),
+  // The user's own name and email; risk-event descriptions and details can quote text another user typed
+  // (a training-assignment reason) or a signal's source data.
+  get_user_risk_detail: new Set(['name', 'email', 'description', 'details']),
   // Full-control W17 (#6788): a verification reason and a VSS writer's name, state and error come from the machine;
   // an unparseable agent reply is shown raw, and `error` can carry a hostname or a failed command's text. All are
   // fenced as data, never instructions.
@@ -1167,6 +1175,9 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_vss_status: new Set(['name', 'state', 'lastError', 'raw', 'error']),
   // A C2C config's name and target addresses are typed by a person or filled from a mailbox directory.
   manage_c2c_configs: new Set(['name', 'targetUsers']),
+  // A backed-up mailbox/drive item: subject, folder path, ids and metadata come from the cloud tenant (an email
+  // subject is whatever its sender typed); the config name is fenced as in manage_c2c_configs.
+  search_c2c_items: new Set(['subjectOrName', 'parentPath', 'userEmail', 'externalId', 'storagePath', 'metadata', 'configName']),
   // A recovery console reports these, and the columns accept any JSON (`bmrProgressSchema`).
   list_bmr_recoveries: new Set(['failureReason', 'warnings', 'error']),
   // Device, computer and customer names, and a provider's label, come from agents and vendors.
@@ -1197,6 +1208,14 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
     'expectedCriterion', 'detail', 'rendering', 'resolvedModel',
   ]),
   get_fleet_design: new Set(['markdown', 'agentName', 'siteName', 'unavailable']),
+  // A run's ledger errorMessage echoes tool output; its report, trace details and the profile projections
+  // (ticketProposal … analysis) are model text written from device data; resultSummary is a step's compacted result,
+  // fenced only if the step's own tool is registered; the agent name is typed by staff, the hostname by the device.
+  get_ai_agent_run: new Set([
+    'errorMessage', 'summary', 'resultSummary', 'deviceHostname', 'agentName',
+    'verifyDetail', 'actTargetName', 'reason', 'intentError', 'downgradeReason',
+    'ticketProposal', 'alertVerdict', 'sweep', 'narrative', 'fleetDesign', 'patch', 'analysis',
+  ]),
   // Full-control W11 (#6781, quorum QW10): every free-text field the security policy tools return, nested included.
   // Device-reported (hostnames, local admin usernames, password-policy rule text, encryption volume labels, audit
   // deviations), staff-authored (policy, review, rule and signer-group names, descriptions, notes, exclusions,
