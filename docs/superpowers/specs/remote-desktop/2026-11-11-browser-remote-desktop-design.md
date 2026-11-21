@@ -1,6 +1,6 @@
 ---
 title: In-browser remote desktop — a WebRTC desktop session in a dashboard tab, for technicians the native viewer cannot serve (Linux first)
-status: approved 2026-11-21 (Gate A) — r2 with D1–D7 approved as recommended; implementation plan pending (Gate B)
+status: approved 2026-11-21 (Gate A) — r2 with D1–D7 approved as recommended; implementation plan approved (Gate B) 2026-11-21, PR #12344; §6.2/§6.4 amended at plan approval
 date: 2026-11-11
 related: "#9557 (Linux viewer has no WebRTC); PR #11642 (WebKit settings + documented limitation, merged); #3410, #7415 (WebSocket fallback, service-mode refusal message); precedents: in-browser VNC page, web terminal"
 ---
@@ -35,7 +35,7 @@ input to a screen it isn't showing. Audio is in scope only once its negotiation 
 | F5 | The viewer redeems the code at `POST /desktop-ws/connect/exchange` with a plain `fetch` (no auth retry) for a JWT with audience `breeze-viewer`, scoped to one session, 2 h lifetime. | `apps/viewer/src/lib/api.ts:57-70`; `apps/api/src/routes/desktopWs.ts:1784-1851`; `apps/api/src/services/jwt.ts:15`, `:353-375` |
 | F6 | The dashboard has no WebRTC code. No file under `apps/web/src` references `RTCPeerConnection`. The web terminal is WebSocket + xterm. | search of `apps/web/src`; `apps/web/src/components/remote/RemoteTerminal.tsx:20`, `:337` |
 | F7 | The in-browser VNC page is a thin Astro page (`Layout` + `AuthOverlay` + `ToastContainer` + one `client:only` React island). Its URL carries only the tunnel id, and the page mints its own one-time WebSocket ticket with the dashboard's session. | `apps/web/src/pages/remote/vnc/[tunnelId].astro:14-27`; `apps/web/src/lib/remoteTunnelUrls.ts:1-3`; `apps/web/src/components/remote/VncViewerPage.tsx:52` |
-| F8 | 7 of the viewer's 58 non-test source files import `@tauri-apps/*`: `App.tsx`, `components/DesktopViewer.tsx`, `components/QuitConfirm.tsx`, `components/UpdateIndicator.tsx`, `lib/clipboardIO.ts`, `lib/devicePrefs.ts`, `lib/updateActions.ts`. `lib/webrtc.ts` and the input, keymap, ICE and stats modules do not. | search of `apps/viewer/src` |
+| F8 | 8 of the viewer's 62 non-test source files import `@tauri-apps/*` (on `main` at `e8ba47ef00`): `App.tsx`, `components/DesktopViewer.tsx`, `components/QuitConfirm.tsx`, `components/UpdateIndicator.tsx`, `lib/clipboardIO.ts`, `lib/devicePrefs.ts`, `lib/nativeSessionEnd.ts` (added by #12129, after this table was first verified), `lib/updateActions.ts`. `lib/webrtc.ts` and the input, keymap, ICE and stats modules do not. | search of `apps/viewer/src` |
 | F9 | `DesktopViewer.tsx` (3,203 lines, the video and input component) calls Tauri for the window title (`:879`, `:1250`), one-window-per-device registration (`:1349-1380`, `:2852`), saving screenshots (`:2766`), and the clipboard read behind **paste-as-keystrokes**, which is an input path (`:2192-2210`). | `apps/viewer/src/components/DesktopViewer.tsx` |
 | F10 | The viewer already has seams a host adapter can use. Clipboard goes through `LocalClipboardIO`, preferences through `PrefsStore`, and Keyboard Lock through `navigator.keyboard`, with a silent no-op where it is missing. | `apps/viewer/src/lib/clipboardSync.ts:58-64`; `apps/viewer/src/lib/devicePrefs.ts:22-25`; `apps/viewer/src/lib/keyboardLock.ts:1-24` |
 | F11 | The viewer has no i18n. No file in `apps/viewer/src` imports an i18n library; its UI strings are English literals. | search of `apps/viewer/src` |
@@ -49,7 +49,7 @@ The scoping comment on #9557 was a read-only code read. Checked against `main`:
 
 - **No new auth path needed.** Correct (F4, F5). A tab can mint and redeem the same code. §6 does both inside the
   tab so the code never crosses a boundary.
-- **About 7 of ~60 viewer files touch Tauri.** Correct: 7 of 58 (F8).
+- **About 7 of ~60 viewer files touch Tauri.** Correct at the time; 8 of 62 on current `main` (F8).
 - **None of them are in streaming or input.** Wrong. `lib/webrtc.ts` and the input libraries are Tauri-free, but
   `DesktopViewer.tsx`, which owns the video element and all input handling, imports `invoke` at line 2. Its
   paste-as-keystrokes path reads the clipboard through the Tauri plugin before typing it into the remote (F9). Every
@@ -400,8 +400,8 @@ One place that says what the tab does at each lifecycle point. Each rule needs a
    as Connect Desktop does today when minting fails (`ConnectDesktopButton.tsx:553-561`). A failed exchange is never
    retried with the same code; a retry is a new mint. An aborted transaction ends any session it created.
 6. The viewer token is passed to the shared component in memory only, never in `localStorage`, `sessionStorage`, a
-   cookie or a URL. The session id and the signed-in user id may be kept in `sessionStorage` (per tab, not
-   credentials). They are discarded when the signed-in user differs.
+   cookie or a URL. Nothing about the session is kept in `sessionStorage` (amended 2026-11-21: there is no resume,
+   §6.2).
 
 **Why mint and redeem in the same page.** The code travels only from one response body to the next request body:
 
@@ -425,22 +425,17 @@ code to the issuing user agent is optional weak hardening (§5.6).
 
 ### 6.2 Reload, restored tab, or Connect again
 
-Unloading the page closes the peer. The agent treats a closed or failed peer as the end of the session and reports
-it at once (`session_webrtc.go:678-688`). The API ends the session unless the viewer marked a reconnect first
-(`agentWs.ts:3880-3900`; the viewer marks it before closing its old peer, `DesktopViewer.tsx:1020-1027`). A page
-being unloaded cannot be relied on to finish that asynchronous mark (inferred). **Resume after reload is therefore
-best effort, not a guarantee.**
+*Amended 2026-11-21 at plan approval: no resume after reload.* Closing or reloading the tab ends the session (§6.4),
+as the native viewer does on window close since #12129. A reload or restore therefore never continues the old
+session.
 
 The contract:
 
-1. After any reload or restore, the page shows the ready state. It never connects on load.
-2. On Connect, if `sessionStorage` holds a session id for the same signed-in user, the page tries to **resume**: mint
-   a code for that session (allowed only while it is `pending`, `connecting` or `active`, `sessions.ts:877`), exchange
-   it, and re-offer through the existing reconnect path (`desktopWs.ts:1870-1879`). The offer route refuses ended
-   sessions (`desktopWs.ts:1963-1971`).
-3. If resume is refused because the session ended, the page says so ("The previous session ended") and offers
-   **Start a new session** as a separate, explicit action. **It never silently replaces a session.**
-4. *Not checked:* whether a resumed start re-prompts the end user in consent mode. This is a lab-leg item.
+1. While connected, a reload or close asks first (`beforeunload`, §5.6).
+2. After any reload or restore, the page shows the ready state. It never connects on load, and it keeps no session id
+   from before the reload.
+3. On Connect, the page runs a new launch transaction (§6.1), which creates a new session. **It never silently
+   replaces a session:** the previous one was already ended by the close, and the new one starts only on the click.
 
 ### 6.3 Sign-out and account change
 
@@ -452,13 +447,17 @@ The contract:
   removal, and for a change of signed-in user id on token refresh, and treats either as sign-out.
 - **Teardown on sign-out:** release held keys, stop clipboard sync and drop any pending clipboard data, stop all
   tracks and the audio element, close the peer, end the session with the API (best effort, using the viewer token),
-  then clear the viewer token and the `sessionStorage` entries.
+  then clear the viewer token.
 - *Not checked:* whether a dashboard sign-out ends the user's live remote sessions server-side. The browser host does
   not rely on it.
 
 ### 6.4 Tab closed or browser crashed
 
-Cleanup comes from **peer loss**, not from the lease.
+*Amended 2026-11-21 at plan approval.* **Closing the tab ends the session explicitly**, as the native viewer does on
+window close since #12129: on `pagehide` while connected, the browser host sends End to the viewer-token hang-up route
+(`POST /desktop-ws/:id/viewer/end`, #11931) as a `keepalive` request, with the token in the `Authorization` header.
+Session history then records an operator end. That request is best effort. When it does not get out (a crash, a lost
+network, a browser that drops it), cleanup comes from **peer loss**, not from the lease:
 
 - When the peer goes `disconnected`, the agent releases held input at once and allows 20 s to recover. When it is
   `failed` or `closed`, the agent stops the session immediately. Either way it reports the stop to the API
@@ -467,8 +466,8 @@ Cleanup comes from **peer loss**, not from the lease.
 - The revocation lease does **not** detect a missing viewer. The agent renews it over its own command socket
   (`heartbeat.go:1587-1591`; `agentWs.ts:3591`). Its timings (60 s TTL, 25 s renew, 90 s agent grace,
   `apps/api/src/services/remoteRevocationLease.ts:51-61`) bound a lost control plane, not a lost viewer.
-- A closed tab with no reconnect mark therefore ends the session as soon as the agent sees the peer close, or within
-  about 20 s of a silent network loss. The lab leg measures both.
+- So a closed tab ends the session at once through End, or, if End did not get out, as soon as the agent sees the
+  peer close, or within about 20 s of a silent network loss. The lab leg measures all three.
 
 ## 7. Tenancy and data
 
@@ -523,7 +522,7 @@ Rigor: full. This touches remote-session auth flow and code that ships to techni
 | Package (unit) | All viewer library tests move with their modules and are collected by the package's own job. A host contract test with a fake host covers clipboard denied, prefs unavailable, Keyboard Lock missing and screenshot failure. A guard test makes sure the package has no `@tauri-apps/*` import. | new package job, modelled on `test-document-ui` (`ci.yml:1554-1585`) |
 | Native viewer | The existing `apps/viewer` tests still pass (`ci.yml:1477`). A manual smoke of the Tauri viewer on **Windows, macOS and Linux** after each W2 step and W3 covers deep link, stream, input, paste-as-keystrokes, clipboard both ways, screenshot, quit prompt, one window per device, WebSocket fallback, and the VNC switch. | CI and manual |
 | Browser host (unit) | Preflight against recorded offer SDPs (Chromium with H.264, Firefox without, Firefox with OpenH264 offering Baseline only). Each watchdog row in §5.8, including missing stats and track replacement. The input gate before the first frame. Terminal failure releases input, does not reconnect, and ends the session. The `isTrusted` filter. Transport policy (no WebSocket, no VNC switch). | `test-web` |
-| Lifecycle (unit) | Every rule in §6. The single flight aborts a stale transaction. Partial failure at each step ends the created session. The exchange is never retried and never goes through the 401 retry. A reload shows ready, never connects. A failed resume offers a new session and never replaces silently. Sign-out in the same tab and in another tab tears down. The token is never written to storage, a URL or telemetry. | `test-web` |
+| Lifecycle (unit) | Every rule in §6. The single flight aborts a stale transaction. Partial failure at each step ends the created session. The exchange is never retried and never goes through the 401 retry. A reload shows ready, never connects, and Connect creates a new session. Tab close sends one keepalive End. Sign-out in the same tab and in another tab tears down. The token is never written to storage, a URL or telemetry. | `test-web` |
 | API | Attribution: web origin, each Tauri origin, missing, `null`, foreign, and a legacy token without the claim. The claim survives the descendant mint and verify. It appears in `session_offer_submitted`. `no-store` on the code and exchange responses. Existing single-use, TTL and live-authorization tests are unchanged. | `test-api` |
 | Web components | Menu shows with no third-party tools. Third-party default kept. Linux default. Disabled item in an unsupported browser. Failed hand-off card. RDS choice carried in the fragment, never a credential. Everything hidden with the flag off. | `test-web` |
 | E2E (Playwright, `data-testid`) | Flag off: no session calls. Flag on: the page renders, the unsupported state appears in a browser without H.264, Connect is required, and no request URL contains a connect code. Playwright's bundled Chromium may lack H.264 (inferred; its docs point to the `chrome` channel for proprietary codecs), so the supported path needs the `chrome` channel or stays manual. No agent streams in CI. | e2e job |
@@ -547,7 +546,7 @@ against them. Any failure blocks W7 until it is fixed and re-run. Filing an issu
 | Clipboard | Text and image both ways while focused. Nothing syncs while unfocused. |
 | Audio (after W3) | Audio plays after the toggle. |
 | Auth | The session's `session_offer_submitted` row has `exchangeOrigin: browser` (needs W4). A user without MFA or `remote:access` cannot start. Sign-out in another tab ends the session. |
-| Cleanup | Closing the tab ends the session at the API within the agent's peer-loss window (§6.4). Reload shows ready and follows §6.2, and whether consent re-prompts is recorded. A second tab for the same device replaces the first, and the first says so. 10 minutes as a hidden tab and the session survives. |
+| Cleanup | Closing the tab ends the session at the API, recorded as an operator end; without End, within the agent's peer-loss window (§6.4). Reload asks first, then shows ready and follows §6.2; Connect starts a new session. A second tab for the same device replaces the first, and the first says so. 10 minutes as a hidden tab and the session survives. |
 | Unsupported | Debian Firefox ESR (default prefs) and a fresh Ubuntu Firefox profile get the message, never a blank picture or live input. |
 | CSP | The connected-session check records no violations. |
 
@@ -658,6 +657,9 @@ No review point was rejected.
 
 **Approved 2026-11-21 (Todd): D1 (a), D2 (a), D3 (a), D4 (b), D5 (a), D6 (b), D7 (a).** The option text below is kept
 as the record of what was considered.
+
+**Amended 2026-11-21 at plan approval (Gate B):** §6.2 and §6.4 now say that closing the tab ends the session, as the
+native viewer does since #12129, and that there is no resume after reload.
 
 Notes added at approval, from a read-only review of two early community PRs against this spec (#12329 for W1,
 #12330 for W4; both closed by their author pending this approval, neither run by us):
