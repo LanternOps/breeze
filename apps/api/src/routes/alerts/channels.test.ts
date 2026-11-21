@@ -10,7 +10,7 @@ import { Hono } from 'hono';
 // partnerWideAccess.ts is a dependency-free leaf and intentionally NOT mocked
 // (per CLAUDE.md / the repo's app-layer-gate testing convention).
 
-const { authRef, insertedRef, insertedConfigRef, existingRowRef, updateSetRef, configTableMarker } = vi.hoisted(() => ({
+const { authRef, insertedRef, insertedConfigRef, existingRowRef, updateSetRef, configTableMarker, routingRulesMarker, routingUpdateRef } = vi.hoisted(() => ({
   authRef: {
     current: {
       scope: 'organization' as string,
@@ -32,6 +32,9 @@ const { authRef, insertedRef, insertedConfigRef, existingRowRef, updateSetRef, c
   // Identity marker so the shared db mock can tell `db.insert(notificationChannels)`
   // apart from `db.insert(notificationChannelConfigs)`.
   configTableMarker: { __table: 'notification_channel_configs' },
+  // #12002: DELETE strips the channel id from notification_routing_rules.
+  routingRulesMarker: { __table: 'notification_routing_rules', id: { name: 'id' }, channelIds: { name: 'channel_ids' } },
+  routingUpdateRef: { set: undefined as Record<string, unknown> | undefined, where: undefined as unknown, rows: [] as { id: string }[] },
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -105,9 +108,14 @@ vi.mock('../../db', () => {
     },
     onConflictDoUpdate: () => Promise.resolve(undefined),
   };
+  const routingBuilder: any = {
+    set: (vals: Record<string, unknown>) => { routingUpdateRef.set = vals; return routingBuilder; },
+    where: (cond: unknown) => { routingUpdateRef.where = cond; return routingBuilder; },
+    returning: () => Promise.resolve(routingUpdateRef.rows),
+  };
   const dbMock: any = {
     insert: (table: unknown) => (table === configTableMarker ? configBuilder : builder),
-    update: () => builder,
+    update: (table: unknown) => (table === routingRulesMarker ? routingBuilder : builder),
     delete: () => ({ where: () => Promise.resolve(undefined) }),
     select: () => builder,
     // Tests run the callback synchronously against the same mock — there is
@@ -135,6 +143,7 @@ vi.mock('../../db/schema', () => ({
     createdAt: { name: 'created_at' },
   },
   notificationChannelConfigs: configTableMarker,
+  notificationRoutingRules: routingRulesMarker,
   organizations: { id: { name: 'id' }, partnerId: { name: 'partner_id' } },
   partners: { id: { name: 'id' }, settings: { name: 'settings' } },
   // Referenced (unused) by ./helpers' unrelated exports; not exercised here.
@@ -166,8 +175,11 @@ vi.mock('../../services/notificationChannelSecrets', () => ({
   ),
 }));
 
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { channelsRoutes } from './channels';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
+import { writeRouteAudit } from '../../services/auditEvents';
 
 function makeApp() {
   const app = new Hono();
@@ -213,6 +225,9 @@ describe('notification channels — partner-wide gating (#2130)', () => {
     insertedConfigRef.current = undefined;
     existingRowRef.current = undefined;
     updateSetRef.current = undefined;
+    routingUpdateRef.set = undefined;
+    routingUpdateRef.where = undefined;
+    routingUpdateRef.rows = [];
   });
 
   describe('PUT /alerts/channels/:id', () => {
@@ -423,6 +438,28 @@ describe('notification channels — partner-wide gating (#2130)', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as { success: boolean };
       expect(body.success).toBe(true);
+    });
+
+    it('removes the channel from every routing rule that sends to it and names those rules in the audit (#12002)', async () => {
+      setPartnerAuth('all');
+      existingRowRef.current = { ...PARTNER_WIDE_CHANNEL };
+      routingUpdateRef.rows = [{ id: 'rule-a' }, { id: 'default-row' }];
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      expect(routingUpdateRef.set).toMatchObject({ updatedAt: expect.any(Date) });
+      const dialect = new PgDialect();
+      const strip = dialect.sqlToQuery(routingUpdateRef.set!.channelIds as SQL);
+      expect(strip.sql).toMatch(/ - \$\d+::text$/);
+      expect(strip.params).toContain(CHANNEL_ID);
+      const match = dialect.sqlToQuery(routingUpdateRef.where as SQL);
+      expect(match.sql).toMatch(/^jsonb_exists\(/);
+      expect(match.params).toContain(CHANNEL_ID);
+      expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'notification_channel.delete',
+        details: { routingRuleIds: ['rule-a', 'default-row'] },
+      }));
     });
   });
 

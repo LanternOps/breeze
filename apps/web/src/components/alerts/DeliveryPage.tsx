@@ -36,7 +36,7 @@ export default function DeliveryPage() {
     <div><h1 className="text-xl font-semibold tracking-tight">{t('deliveryPage.title')}</h1><p className="text-muted-foreground">{t('deliveryPage.subtitle')}</p></div>
     {state(channels, 'channels')}
     {channels.status === 'success' && <>
-      <ChannelsSection {...props} channels={channels.data} />
+      <ChannelsSection {...props} channels={channels.data} routingRules={routing.data} />
       {channels.inherited.length > 0 && <section data-testid="delivery-inherited-channels" className="space-y-3">
         <h2 className="text-lg font-semibold">{t('deliveryPage.sections.inheritedChannels')}</h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{channels.inherited.map(channel => <div key={channel.id}

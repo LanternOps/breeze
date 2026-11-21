@@ -4,13 +4,14 @@ import { Plus } from 'lucide-react';
 import NotificationChannelList, { type NotificationChannel } from '../NotificationChannelList';
 import NotificationChannelForm, { type NotificationChannelFormValues } from '../NotificationChannelForm';
 import { ActionError } from '../../../lib/runAction';
-import { runChannelDelete, runChannelSave, runChannelTest } from './deliveryActions';
+import { runChannelDelete, runChannelSave, runChannelTest, type RoutingRule } from './deliveryActions';
 import { formSecretValue } from '../../../lib/redactedSecret';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
-export default function ChannelsSection({ channels, currentOrgId, isPartnerScope, defaultOwnerScope, onChanged, onUnauthorized }: {
+export default function ChannelsSection({ channels, routingRules = [], currentOrgId, isPartnerScope, defaultOwnerScope, onChanged, onUnauthorized }: {
   channels: NotificationChannel[];
+  routingRules?: RoutingRule[];
   currentOrgId: string | null;
   isPartnerScope: boolean;
   defaultOwnerScope: 'organization' | 'partner';
@@ -23,6 +24,7 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const [channelOwnerScope, setChannelOwnerScope] = useState<'organization' | 'partner'>('organization');
+  const usedBy = selectedChannel ? routingRules.filter((rule) => rule.channelIds.includes(selectedChannel.id)) : [];
   const handleCreate = () => {
     setChannelOwnerScope(defaultOwnerScope);
     setSelectedChannel(null);
@@ -354,6 +356,14 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
             <p className="mt-2 text-sm text-muted-foreground">
               {t('notificationChannelsPage.deleteChannelConfirm', { name: selectedChannel.name })}
             </p>
+            {usedBy.length > 0 && (
+              <p data-testid="channel-delete-routing-usage" className="mt-2 text-sm text-warning">
+                {t('notificationChannelsPage.usedByRoutingRules', {
+                  count: usedBy.length,
+                  names: usedBy.map((rule) => (rule.isDefault ? t('deliveryPage.routing.everythingElse') : rule.name)).join(', '),
+                })}
+              </p>
+            )}
             <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"

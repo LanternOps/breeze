@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { and, eq, sql, desc, inArray, isNull, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { extractRowCount } from '../../db/rowCount';
-import { notificationChannelConfigs, notificationChannels, organizations, partners } from '../../db/schema';
+import { notificationChannelConfigs, notificationChannels, notificationRoutingRules, organizations, partners } from '../../db/schema';
 import {
   notificationChannelWithConfigColumns,
   writeNotificationChannelConfig,
@@ -420,9 +420,22 @@ channelsRoutes.delete(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
-    await db
-      .delete(notificationChannels)
-      .where(eq(notificationChannels.id, channelId));
+    // A rule left pointing at a deleted channel still matches and then delivers
+    // nowhere; with the id gone, an emptied rule is skipped by resolveDelivery (#12002).
+    const routingRuleIds = await db.transaction(async (tx) => {
+      const rules = await tx
+        .update(notificationRoutingRules)
+        .set({
+          channelIds: sql`${notificationRoutingRules.channelIds} - ${channelId}::text`,
+          updatedAt: new Date(),
+        })
+        .where(sql`jsonb_exists(${notificationRoutingRules.channelIds}, ${channelId}::text)`)
+        .returning({ id: notificationRoutingRules.id });
+      await tx
+        .delete(notificationChannels)
+        .where(eq(notificationChannels.id, channelId));
+      return rules.map((rule) => rule.id);
+    });
 
     writeRouteAudit(c, {
       orgId: channel.orgId,
@@ -430,6 +443,7 @@ channelsRoutes.delete(
       resourceType: 'notification_channel',
       resourceId: channel.id,
       resourceName: channel.name,
+      details: { routingRuleIds },
     });
 
     return c.json({ success: true });
