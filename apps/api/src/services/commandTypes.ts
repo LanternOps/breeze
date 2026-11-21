@@ -256,6 +256,9 @@ export const CommandTypes = {
 } as const;
 
 
+/** `capture_pprof` profile values; `all` = heap + goroutine + goroutineleak (never cpu). */
+export const CAPTURE_PPROF_PROFILES = ['heap', 'goroutine', 'goroutineleak', 'cpu', 'all'] as const;
+
 export type CommandType = typeof CommandTypes[keyof typeof CommandTypes];
 
 /**

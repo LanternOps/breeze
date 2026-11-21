@@ -48,7 +48,7 @@ concurrency:
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.26.11'
+  GO_VERSION: '1.27.4'
 
 jobs:
   seed-pnpm:
@@ -232,16 +232,18 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/go/bin/golangci-lint
-          key: golangci-lint-v2.12.2-${{ runner.os }}
+          key: golangci-lint-v2.15.0-go${{ env.GO_VERSION }}-${{ runner.os }}
 
       # Keep the version in lockstep with ci.yml's lint-agent job; the key
       # carries it, so a bump there needs the same bump here and in the key.
+      # The key also carries GO_VERSION: golangci-lint refuses a module newer
+      # than the Go that built it, so a toolchain bump must miss this cache.
       - name: Install golangci-lint
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           attempts=3
           for attempt in $(seq 1 "${attempts}"); do
-            if go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2; then
+            if go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0; then
               echo "golangci-lint installed (attempt ${attempt})."
               exit 0
             fi
@@ -258,7 +260,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/go/bin/golangci-lint
-          key: golangci-lint-v2.12.2-${{ runner.os }}
+          key: golangci-lint-v2.15.0-go${{ env.GO_VERSION }}-${{ runner.os }}
 
   # The binary ci.yml's security-audit and security.yml's npm-audit restore
   # through the restore-osv-scanner composite. With it cached, an outage of the

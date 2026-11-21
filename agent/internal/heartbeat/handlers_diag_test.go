@@ -3,6 +3,8 @@ package heartbeat
 import (
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"runtime/pprof"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/collectors"
+	"github.com/breeze-rmm/agent/internal/wire"
 )
 
 // newTestHeartbeatForDiag returns a zero-value Heartbeat for exercising
@@ -105,13 +108,13 @@ func TestHandleCapturePprofGoroutineOnly(t *testing.T) {
 func TestHandleCapturePprofRejectsUnknownProfile(t *testing.T) {
 	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{
 		ID: "c4", Type: "capture_pprof",
-		Payload: map[string]any{"profile": "cpu"},
+		Payload: map[string]any{"profile": "bogus"},
 	})
 	if res.Status != "failed" {
 		t.Fatalf("status = %q, want failed for unknown profile", res.Status)
 	}
-	if res.Error == "" {
-		t.Error("expected a descriptive error for an unknown profile")
+	if !strings.Contains(res.Error, "must be heap, goroutine, goroutineleak, cpu, or all") {
+		t.Errorf("error = %q, want the accepted-profile list", res.Error)
 	}
 }
 
@@ -271,7 +274,7 @@ func TestHandleCapturePprofValidationDoesNotConsumeSlot(t *testing.T) {
 
 	res := handleCapturePprof(h, Command{
 		ID: "v1", Type: "capture_pprof",
-		Payload: map[string]any{"profile": "cpu"},
+		Payload: map[string]any{"profile": "bogus"},
 	})
 	if res.Status != "failed" {
 		t.Fatalf("invalid profile: status = %q, want failed", res.Status)
@@ -318,5 +321,176 @@ func TestHeartbeatPayloadAgentRuntimeWireKey(t *testing.T) {
 	}
 	if _, ok := m["agentRuntime"]; ok {
 		t.Error("nil AgentRuntime must be omitted (omitempty) so old-server compat is preserved")
+	}
+}
+
+// setCapturePprofCPUDuration overrides the CPU capture window and restores it
+// on cleanup.
+func setCapturePprofCPUDuration(t testing.TB, d time.Duration) {
+	t.Helper()
+	prev := capturePprofCPUDurationNs.Swap(int64(d))
+	t.Cleanup(func() { capturePprofCPUDurationNs.Store(prev) })
+}
+
+// The CPU tests deliberately skip t.Parallel(): only one CPU profile can run
+// per process.
+
+func TestHandleCapturePprofCPUOnly(t *testing.T) {
+	setCapturePprofCPUDuration(t, 50*time.Millisecond)
+	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{
+		ID: "cpu1", Type: "capture_pprof",
+		Payload: map[string]any{"profile": "cpu"},
+	})
+	if res.Status != "completed" {
+		t.Fatalf("status = %q (error: %q), want completed", res.Status, res.Error)
+	}
+	result := decodeDiagResult(t, res.Stdout)
+	assertValidPprofBlob(t, result, "cpuProfileBase64")
+	if n, _ := result["cpuProfileBytes"].(float64); n <= 0 {
+		t.Errorf("cpuProfileBytes = %v, want > 0", result["cpuProfileBytes"])
+	}
+	for _, k := range []string{"heapProfileBase64", "goroutineProfileBase64", "goroutineleakProfileBase64"} {
+		if _, present := result[k]; present {
+			t.Errorf("%s should not be present for profile=cpu", k)
+		}
+	}
+}
+
+func TestHandleCapturePprofCPUBusy(t *testing.T) {
+	setCapturePprofCPUDuration(t, 50*time.Millisecond)
+	if err := pprof.StartCPUProfile(io.Discard); err != nil {
+		t.Fatalf("StartCPUProfile: %v", err)
+	}
+	defer pprof.StopCPUProfile()
+
+	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{
+		ID: "cpu2", Type: "capture_pprof",
+		Payload: map[string]any{"profile": "cpu"},
+	})
+	if res.Status != "failed" {
+		t.Fatalf("status = %q, want failed while a CPU profile is running", res.Status)
+	}
+	if !strings.Contains(res.Error, "CPU profile already running") {
+		t.Errorf("error = %q, want it to mention the running CPU profile", res.Error)
+	}
+}
+
+func TestHandleCapturePprofCPUCancelled(t *testing.T) {
+	setCapturePprofCPUDuration(t, time.Hour)
+	h := newTestHeartbeatForDiag(t)
+	h.stopChan = make(chan struct{})
+	close(h.stopChan)
+
+	res := handleCapturePprof(h, Command{
+		ID: "cpu4", Type: "capture_pprof",
+		Payload: map[string]any{"profile": "cpu"},
+	})
+	if res.Status != "failed" || !strings.Contains(res.Error, "cancelled") {
+		t.Fatalf("status = %q, error = %q, want a failed cancelled capture", res.Status, res.Error)
+	}
+	// The profile was stopped: a new one can start.
+	if err := pprof.StartCPUProfile(io.Discard); err != nil {
+		t.Fatalf("StartCPUProfile after cancel: %v", err)
+	}
+	pprof.StopCPUProfile()
+}
+
+func TestHandleCapturePprofCPUSizeCap(t *testing.T) {
+	setCapturePprofCPUDuration(t, 50*time.Millisecond)
+	orig := maxProfileBytes
+	maxProfileBytes = 1
+	defer func() { maxProfileBytes = orig }()
+
+	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{
+		ID: "cpu3", Type: "capture_pprof",
+		Payload: map[string]any{"profile": "cpu"},
+	})
+	if res.Status != "failed" {
+		t.Fatalf("status = %q, want failed when CPU profile exceeds size cap", res.Status)
+	}
+	if !strings.Contains(res.Error, "exceeds the 1 byte result cap") {
+		t.Errorf("error = %q, want size-cap message", res.Error)
+	}
+}
+
+func TestHandleCapturePprofGoroutineLeakOnly(t *testing.T) {
+	if pprof.Lookup("goroutineleak") == nil {
+		t.Fatal("goroutineleak profile not available in this Go toolchain")
+	}
+	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{
+		ID: "gl1", Type: "capture_pprof",
+		Payload: map[string]any{"profile": "goroutineleak"},
+	})
+	if res.Status != "completed" {
+		t.Fatalf("status = %q (error: %q), want completed", res.Status, res.Error)
+	}
+	result := decodeDiagResult(t, res.Stdout)
+	assertValidPprofBlob(t, result, "goroutineleakProfileBase64")
+	for _, k := range []string{"heapProfileBase64", "goroutineProfileBase64", "cpuProfileBase64"} {
+		if _, present := result[k]; present {
+			t.Errorf("%s should not be present for profile=goroutineleak", k)
+		}
+	}
+}
+
+func TestHandleCapturePprofAllExcludesCPU(t *testing.T) {
+	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{ID: "all1", Type: "capture_pprof"})
+	if res.Status != "completed" {
+		t.Fatalf("status = %q (error: %q), want completed", res.Status, res.Error)
+	}
+	result := decodeDiagResult(t, res.Stdout)
+	for _, k := range []string{"heapProfileBase64", "goroutineProfileBase64", "goroutineleakProfileBase64"} {
+		assertValidPprofBlob(t, result, k)
+	}
+	if _, present := result["cpuProfileBase64"]; present {
+		t.Error("cpuProfileBase64 should not be present for profile=all")
+	}
+}
+
+// TestHandleCapturePprofAllFitsResultBudget verifies "all" stays inside the
+// command result budget when every profile it carries hits maxProfileBytes,
+// so adding a profile to "all" cannot silently push it past the server cap.
+func TestHandleCapturePprofAllFitsResultBudget(t *testing.T) {
+	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{ID: "all", Type: "capture_pprof"})
+	if res.Status != "completed" {
+		t.Fatalf("status = %q (error: %q), want completed", res.Status, res.Error)
+	}
+	worst := len(res.Stdout)
+	for k, v := range decodeDiagResult(t, res.Stdout) {
+		if strings.HasSuffix(k, "ProfileBase64") {
+			worst += base64.StdEncoding.EncodedLen(maxProfileBytes) - len(v.(string))
+		}
+	}
+	if worst > wire.CommandResultBudget {
+		t.Fatalf("worst-case all result is %d bytes, over the %d byte budget", worst, wire.CommandResultBudget)
+	}
+}
+
+// TestHandleCapturePprofIntervalRunsFromFinish verifies the slot is held while
+// a capture runs and the interval restarts when it finishes.
+func TestHandleCapturePprofIntervalRunsFromFinish(t *testing.T) {
+	h := newTestHeartbeatForDiag(t)
+	setCapturePprofCPUDuration(t, 100*time.Millisecond)
+	prev := setCapturePprofMinInterval(20 * time.Millisecond)
+	t.Cleanup(func() { setCapturePprofMinInterval(prev) })
+	goroutine := Command{ID: "g", Type: "capture_pprof", Payload: map[string]any{"profile": "goroutine"}}
+
+	done := make(chan string)
+	go func() {
+		done <- handleCapturePprof(h, Command{ID: "cpu", Type: "capture_pprof", Payload: map[string]any{"profile": "cpu"}}).Status
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if res := handleCapturePprof(h, goroutine); !strings.Contains(res.Error, "rate-limited") {
+		t.Fatalf("capture during a cpu capture: status = %q (error: %q), want rate-limited", res.Status, res.Error)
+	}
+	if status := <-done; status != "completed" {
+		t.Fatalf("cpu capture status = %q, want completed", status)
+	}
+	if res := handleCapturePprof(h, goroutine); !strings.Contains(res.Error, "rate-limited") {
+		t.Fatalf("capture right after the cpu capture finished: status = %q (error: %q), want rate-limited", res.Status, res.Error)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if res := handleCapturePprof(h, goroutine); res.Status != "completed" {
+		t.Fatalf("capture after the interval: status = %q (error: %q), want completed", res.Status, res.Error)
 	}
 }

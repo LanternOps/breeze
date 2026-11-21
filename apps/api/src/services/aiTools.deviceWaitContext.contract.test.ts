@@ -96,7 +96,8 @@ const DEVICE_WAIT_TOOLS: Readonly<Record<string, WaitEntry>> = {
   get_vss_status: { file: 'aiToolsBackupVerification.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
   registry_operations: { file: 'aiToolsScripts.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
   set_agent_log_level: { file: 'aiToolsAgentLogs.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
-  capture_agent_pprof: { file: 'aiToolsAgentLogs.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
+  // A cpu capture runs 30 s on the agent and waits up to 60 s.
+  capture_agent_pprof: { file: 'aiToolsAgentLogs.ts', disposition: 'self-managed', maxWaitMs: 60_000 },
   manage_startup_items: { file: 'aiToolsPerformance.ts', disposition: 'bounded', maxWaitMs: 30_000, why: ONE_30S_COMMAND },
   analyze_boot_performance: {
     file: 'aiToolsPerformance.ts', disposition: 'bounded', maxWaitMs: 15_000,
