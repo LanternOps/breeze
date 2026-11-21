@@ -1,3 +1,6 @@
+---
+tracking_issue: LanternOps/breeze#12369
+---
 # Learned Networks and the Network Gate — Plan Index
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended)
@@ -37,6 +40,10 @@ lives on GitHub (feature-lifecycle); the wave issue is the source of truth for s
 | W05 | W10 | [Docs, release notes and the two-router lab proof](2026-11-21-learned-networks-w05-docs-lab-proof.md) | W04 | discovery gate proven |
 | W06a | W11 | [Agent: guarded SNMP poll and network checks](2026-11-21-learned-networks-w06a-agent-guarded-probes.md) | W02c | agent release |
 | W06b | W12 | [API and web: SNMP polling, monitors and the asset probe follow the gate](2026-11-21-learned-networks-w06b-api-other-producers.md) | W03c, **W06a released** | feature closes |
+
+Tracking issue: #12369. Wave issues, in table order: #12370 (W01a), #12371 (W01b), #12372 (W02a),
+#12373 (W02b), #12374 (W02c), #12375 (W03a), #12376 (W03b), #12377 (W03c), #12378 (W04), #12379 (W05),
+#12380 (W06a), #12381 (W06b).
 
 The feature tool accepts wave keys of the form `W01` only, so the tracking issue numbers the twelve
 PRs W01 to W12 ("GitHub wave" above, the key to pass to `start_wave` and `complete_wave`), and each
