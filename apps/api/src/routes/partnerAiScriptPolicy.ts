@@ -36,6 +36,14 @@ import { toScriptPolicyDto } from './ai/scriptPolicy';
  * (`routes/ai/scriptPolicy.ts`'s `requireLaneGrant`) and needs
  * `approvals:decide` plus a fresh, resource-bound step-up grant.
  */
+
+/** Rolls the ceiling save back when its step-up grant does not consume. */
+class StepUpGrantRefused extends Error {
+  constructor() {
+    super('step-up grant refused');
+  }
+}
+
 const RISK_TIER_RANK: Record<'low' | 'medium', number> = { low: 0, medium: 1 };
 const STEP_UP_REQUIRED_BODY = { error: 'Step-up required', code: 'STEP_UP_REQUIRED' } as const;
 const protectedResourcesSchema = z.object({
@@ -303,12 +311,17 @@ partnerAiScriptPolicyRoutes.put(
       .limit(1);
     const previous: McpUnattendedProposalCeiling = existing?.mcpUnattendedProposalMaxRisk ?? 'none';
 
+    // A raise needs a step-up grant bound to this partner and value. It is
+    // CONSUMED inside the save transaction, after the compare-and-set
+    // succeeds: a save that loses the race (409) leaves the grant usable for
+    // the retry, and a grant that fails to consume rolls the save back.
+    let grantBinding: StepUpGrantBinding | null = null;
     if (mcpCeilingRank(next) > mcpCeilingRank(previous) && ENABLE_2FA) {
       if (!stepUpGrant) return c.json(STEP_UP_REQUIRED_BODY, 403);
       const epochs = await getUserEpochs(auth.user.id);
       const sid = auth.token?.sid;
       if (!epochs || !sid) return c.json({ error: 'Service temporarily unavailable' }, 503);
-      const binding: StepUpGrantBinding = {
+      grantBinding = {
         userId: auth.user.id,
         operation: 'ai_partner_mcp_proposal_ceiling',
         authEpoch: epochs.authEpoch,
@@ -316,7 +329,6 @@ partnerAiScriptPolicyRoutes.put(
         sid,
         resourceDigest: partnerMcpProposalCeilingResourceDigest({ partnerId, mcpUnattendedProposalMaxRisk: next }),
       };
-      if (!(await consumeStepUpGrant(stepUpGrant, binding))) return c.json(STEP_UP_REQUIRED_BODY, 403);
     }
 
     // Compare-and-set on the value this request checked: a concurrent save
@@ -344,6 +356,9 @@ partnerAiScriptPolicyRoutes.put(
             .onConflictDoNothing({ target: aiScriptPolicies.partnerId })
             .returning();
         if (!saved) return undefined;
+        if (grantBinding && !(await consumeStepUpGrant(stepUpGrant!, grantBinding))) {
+          throw new StepUpGrantRefused();
+        }
         await db.insert(auditLogs).values({
           orgId: null,
           partnerId,
@@ -360,6 +375,7 @@ partnerAiScriptPolicyRoutes.put(
         return saved;
       }));
     } catch (err) {
+      if (err instanceof StepUpGrantRefused) return c.json(STEP_UP_REQUIRED_BODY, 403);
       console.error('[partnerAiScriptPolicy] MCP proposal ceiling save failed', err);
       return c.json({ error: 'Failed to save partner script policy' }, 500);
     }

@@ -637,6 +637,8 @@ describe('PUT /mcp-proposal-ceiling', () => {
     casQueue = [[]];
     const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'low', stepUpGrant: 'grant-1' });
     expect(res.status).toBe(409);
+    // The losing save never consumes the grant, so the retry can still use it.
+    expect(consumeStepUpGrant).not.toHaveBeenCalled();
   });
 
   it('rolls the change back when the audit row cannot be written', async () => {
@@ -649,12 +651,16 @@ describe('PUT /mcp-proposal-ceiling', () => {
     expect(casWrites).toHaveLength(0);
   });
 
-  it('a grant that does not match the value 403s and writes nothing', async () => {
+  it('a grant that does not match the value 403s, rolls the save back and writes no audit row', async () => {
     selectQueue = [[partnerPolicyRow()]];
+    casQueue = [saved('medium')];
     consumeStepUpGrant.mockResolvedValue(false);
     const res = await ceilingReq({ mcpUnattendedProposalMaxRisk: 'medium', stepUpGrant: 'grant-for-low' });
     expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+    expect(txRolledBack).toBe(1);
     expect(casWrites).toHaveLength(0);
+    expect(auditLog).toHaveLength(0);
   });
 
   it('lowering needs no grant but still audits', async () => {
