@@ -322,7 +322,7 @@ vi.mock('./actionLabel', async (importOriginal) => {
 // (approvalTicketNumber.test.ts); here it is a spy, so these tests assert what
 // createActionIntent asks for and what it stores. `argumentTicketId` stays real.
 const ticketNumberMock = vi.hoisted(() => ({
-  resolveApprovalTicketNumber: vi.fn(async (_ticketId: string, _orgId: string): Promise<string | null> => null),
+  resolveApprovalTicketNumber: vi.fn(async (_ticketId: string, _orgId: string, _reach: unknown): Promise<string | null> => null),
 }));
 vi.mock('./approvalTicketNumber', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./approvalTicketNumber')>();
@@ -2051,17 +2051,20 @@ describe('createActionIntent — approval headline ticket number (#11674)', () =
     ticketNumberMock.resolveApprovalTicketNumber.mockResolvedValue(null);
   });
 
-  it('resolves this call\'s ticket in the intent org and stores the number in the label', async () => {
+  it('resolves this call\'s ticket in the intent org, cut to the filing caller\'s reach, and stores the number', async () => {
     guardrailSays(NOTE_DESCRIPTION);
     ticketNumberMock.resolveApprovalTicketNumber.mockResolvedValueOnce('T-2026-0001');
     queueFanout('intent-11674-named');
+    // Site-restricted caller: the read must get THIS auth, so the resolver can
+    // apply its site/device scope (approvalTicketNumber.test.ts covers the cut).
+    const auth = makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] });
 
-    await createActionIntent(makeAuth(), baseInput({
+    await createActionIntent(auth, baseInput({
       toolName: 'manage_tickets',
       input: { action: 'comment', ticketId: TICKET_ID, content: 'Rebooted the print server.' },
     }));
 
-    expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledWith(TICKET_ID, ORG_ID);
+    expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledWith(TICKET_ID, ORG_ID, auth);
     const labels = persistedApprovalLabels();
     expect(labels).toEqual(['Post internal note on ticket T-2026-0001']);
     // The number only: never the comment text the tool input carries.
@@ -2091,7 +2094,7 @@ describe('createActionIntent — approval headline ticket number (#11674)', () =
     }));
 
     expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledTimes(1);
-    expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledWith(OPERATIVE_TICKET_ID, ORG_ID);
+    expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledWith(OPERATIVE_TICKET_ID, ORG_ID, expect.anything());
     expect(persistedApprovalLabels()).toEqual(['Edit a comment on ticket T-2026-0042 (replaces its text)']);
   });
 

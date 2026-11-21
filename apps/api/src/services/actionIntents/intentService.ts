@@ -2289,13 +2289,17 @@ export async function createActionIntent(
   }
   // #11674: the same for a ticket. "ticket #2aad0601..." becomes
   // "ticket T-2026-0001" in the label the /approvals queue and the push show.
-  // The number only (never subject, requester or text), org-pinned, and read
-  // only when the label carries the stub of the ticket THIS call acts on
+  // The number only (never subject, requester or text), pinned to the intent's
+  // org and cut to the FILING principal's reach (`auth`: org condition, and
+  // site/device scope for a device-bound ticket), because that principal can
+  // read this label back from its own approval row. A ticket outside that
+  // reach, or a principal with no org condition, keeps the stub. Read only
+  // when the label carries the stub of the ticket THIS call acts on
   // (`expectedTicketId` for a comment edit or delete). A flow step's label
   // names no ticket, so it costs no read.
   const labelTicketId = flowRunFacts ? null : argumentTicketId(input.toolName, input.input);
   const labelTicketNumber = labelTicketId && labelReason && hasTicketIdStub(labelReason, labelTicketId)
-    ? await resolveApprovalTicketNumber(labelTicketId, orgId)
+    ? await resolveApprovalTicketNumber(labelTicketId, orgId, auth)
     : null;
   // Tool catalog W04 (#5219), spec §6.5 card copy: a flow step reads
   // "Flow <name>" / "Step <id>: <tool>" — both from the server run.
