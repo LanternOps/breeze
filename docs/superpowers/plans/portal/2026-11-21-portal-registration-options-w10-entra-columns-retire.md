@@ -34,6 +34,7 @@ PR-A and PR-B must not ship in the same release. G1 can only be met against v0.1
 | D4 | **The drift report (job, script, schedule, worker entry) is retired in PR-A, not PR-B.** Under N it reads the columns, it would raise `portal_identity_drift` daily (D1), and an N worker would fail on it after the drop. A boot-time cleanup (`jobs/retiredQueues.ts`) removes the queue's repeatable and its delayed/waiting jobs. It stays through PR-B for upgrades that skip N. | Codex Q2. Removing a repeatable's code leaves its key in Redis. |
 | D5 | **The fields leave the Drizzle schema in PR-A.** `db:check-drift` is ledger-only (`scripts/check-drift.ts` header), so a DB column with no schema field is not drift. `browserAccess` loses `.default('none')`, so tsc refuses every Drizzle insert that omits it. The trigger it relied on goes in PR-B. | tsc is the census. A source scan covers raw SQL. |
 | D6 | **Export policy: `included` → `retiring` in PR-A, removed in PR-B.** `retiring` = excluded, may be absent, so an N+1 → N rollback keeps organization export working. Both columns stop being exported in N. The values remain in `portal_user_identities.subject` / `entra_tenant_id`, which are exported. | W08 D11. |
+| D8 | **Fail closed on the one leftover that loses a refusal (security review, quorum round 2).** After the D3 insert, the migration `RAISE EXCEPTION`s when a complete legacy pair has no identity reserving its exact `(issuer, subject)`. The file then rolls back whole and retries at the next boot. That can only happen when the login already holds a *different* Entra identity, so the backfill cannot reserve the pair. Until now, the legacy index refused a JIT login for that subject. From N on, the exchange would mint a fresh active login, and contact linking by verified address could bind it to the same contact even when the MSP disabled the original. Which Entra object is the right owner is a human call: the HINT names the preflight query and the two remedies. The other leftovers are WARN only, because they lose nothing: **(a)** a pair whose key another login's identity holds (the subject resolves only to that login, since `(issuer, subject)` is unique, and JIT never runs for it); **(b)** a half-populated row (the partial index never covered `(NULL, oid)`). This is a deliberate exception to #6472's "never raise on tenant data": the set is expected to be empty, because the daily drift job has raised Sentry on any non-zero since v0.128, and G1 requires zero. The alternative is a silent loss of a fail-closed. PR-B stays report-only (D2), because after N the same shapes come from deliberate removals. | Codex xhigh round 2 agreed and narrowed the gate from "mismatched" to "unreserved complete pair". |
 | D7 | **The legacy refusals go with the reads.** These are `signInProviders.legacyKeyHeld` (D11 pre-consumption refusal) and `linkPortalUserIdentity`'s legacy pre-check. The identity table's two unique keys still refuse every real conflict through `ON CONFLICT DO NOTHING`. Only a drifted holder lost its refusal, and D3 removes that class. | — |
 
 ## Global Constraints
@@ -46,7 +47,7 @@ PR-A and PR-B must not ship in the same release. G1 can only be met against v0.1
 
 ## Review Focus
 
-1. **A person whose legacy pair has no identity row (never-backfilled drift).** Under N they must reach their original account, disabled or not, and never get a fresh login. Pinned by Task 2 `portalIdentityFinalBackfill.integration.test.ts` "backfills a never-backfilled pair, so the JIT exchange finds the original (disabled) account".
+1. **A person whose legacy pair has no identity row (never-backfilled drift).** Under N they must reach their original account, disabled or not, and never get a fresh login. When that cannot be repaired automatically, the upgrade must refuse (D8). Pinned by Task 2 `portalIdentityFinalBackfill.integration.test.ts` "backfills a never-backfilled pair onto the login …" and "FAILS CLOSED (plan D8) …".
 2. **An MSP removal under N, then the drop.** It must not come back. Pinned by Task 6 "a removed identity is never resurrected by the drop" (D2).
 3. **A rolling deploy.** A v0.130 instance must still work against N's data, and an N instance against N+1's schema. Pinned by the schema-field removal (tsc), the empty `LEGACY_ENTRA_COLUMN_USERS` scan, and Task 6 "re-apply is a no-op; the drop never raises".
 4. **A writer that omits `browser_access` after the trigger is gone.** It must fail loudly (NOT NULL), never default to `granted`. Pinned by Task 6 "an insert without browser_access fails 23502".
@@ -70,8 +71,13 @@ PR-A and PR-B must not ship in the same release. G1 can only be met against v0.1
 - Schema: drop `entraOid` / `entraTenantId` from `portalUsers` and `.default('none')` from `browserAccess`. Red: tsc.
 
 **Task 2 — the final backfill (D3).**
-- Create `apps/api/migrations/2027-01-28-210000-portal-identity-final-backfill.sql`: the W3 §4 insert, then `RAISE WARNING` counts for the left-over buckets (`mismatched`, `halfPopulated`, a still-missing pair blocked by an identity key held elsewhere).
-- Test `__tests__/integration/portalIdentityFinalBackfill.integration.test.ts` (rolled-back transaction, notices captured). It covers: a never-backfilled pair is inserted `migrated`; JIT through `exchangeClientAiToken` then finds the disabled original and is denied; a pair whose `(issuer, subject)` is held elsewhere is skipped with a WARNING; re-apply inserts 0.
+- Create `apps/api/migrations/2027-01-28-210000-portal-identity-final-backfill.sql`. It runs the W3 §4 insert, then `RAISE WARNING` counts for the left-over buckets (`mismatched`, `halfPopulated`, and a still-missing pair blocked by an identity key held elsewhere). Then it raises `RAISE EXCEPTION` for an unreserved complete pair (D8).
+- Test `__tests__/integration/portalIdentityFinalBackfill.integration.test.ts` (rolled-back transaction, notices captured). It covers:
+  - a never-backfilled pair is inserted `migrated`, and the identity lookup reaches the disabled original;
+  - a pair whose `(issuer, subject)` is held elsewhere is skipped with a WARNING;
+  - an unreserved pair refuses the file and nothing changes (D8);
+  - mismatched-held-elsewhere and half rows only WARN;
+  - re-apply inserts 0.
 
 **Task 3 — remove reads and writes.** Each hit is classified in the PR body.
 - `services/clientAiExchange.ts` JIT insert.

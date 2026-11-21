@@ -697,27 +697,6 @@ describe('service', () => {
     expect((await readRequest(requestId)).status).toBe('pending');
   });
 
-  it('approve entra refuses when a login holds the (tid, oid) on its legacy entra_* columns (IDENTITY_LINKED, no 23505)', async () => {
-    const { org, decider, ctx } = await serviceFixture();
-    const otherPartner = await createPartner();
-    const otherOrg = await createOrganization({ partnerId: otherPartner.id });
-    const tid = await provenTid(org.id);
-    const oid = randomUUID();
-    // Drift: a legacy login with entra_* set and no identity row.
-    await sys(() => db.insert(portalUsers).values({
-      orgId: otherOrg.id, email: `legacy-${randomUUID()}@example.test`, authMethod: 'entra',
-      status: 'active', browserAccess: 'none',
-    }));
-    const email = `drift-${randomUUID()}@example.test`;
-    const requestId = requestIdOf(await createPortalAccessRequest({ source: 'entra', orgId: org.id, email, name: null, tid, oid }));
-
-    const err = await rejectionOf(withDbAccessContext(ctx, () =>
-      approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: decider.id })));
-    expect(err).toMatchObject({ code: 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', httpStatus: 409 });
-    expect(await loginsFor(org.id, email)).toEqual([]);
-    expect((await readRequest(requestId)).status).toBe('pending');
-  });
-
   describe("approve entra re-checks the org's proven tenant (inv. 4: a request outlives a displacement)", () => {
     const TENANT_CHANGED = {
       code: 'PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN',

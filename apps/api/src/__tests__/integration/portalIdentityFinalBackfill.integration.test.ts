@@ -13,7 +13,11 @@
  *    or not, instead of letting JIT mint a fresh active login;
  *  - a pair whose (issuer, subject) is linked to another login is skipped and
  *    counted with a WARNING, never refused;
- *  - mismatched / half-populated rows are counted, never touched;
+ *  - FAIL CLOSED (plan D8): a complete legacy pair that no identity reserves
+ *    (its login already holds a different Entra identity) refuses the whole
+ *    file, because from release N nothing else would refuse a JIT login for it;
+ *  - a mismatched pair whose key another login holds, and a half-populated
+ *    row, are only counted (no refusal is lost);
  *  - a re-apply inserts nothing; the file elects system scope first.
  *
  * Run:
@@ -123,11 +127,36 @@ describe(MIGRATION, () => {
     });
   });
 
-  it('counts mismatched and half-populated rows and changes neither', async () => {
+  it('FAILS CLOSED (plan D8) when a login holds a legacy pair no identity reserves and a different Entra identity of its own — nothing is changed', async () => {
+    const orgId = await newOrg();
+    const tid = randomUUID();
+    await inRolledBackTx(async (tx) => {
+      const mismatched = await seedLegacyLogin(tx, orgId, { tid, oid: 'legacy-oid' });
+      await seedIdentity(tx, orgId, mismatched, tid, 'identity-oid');
+      const neverBackfilled = await seedLegacyLogin(tx, orgId, { tid: randomUUID(), oid: randomUUID() });
+
+      let error: { code?: string; message?: string; hint?: string } | null = null;
+      try {
+        await tx.savepoint(async (sp) => { await sp.unsafe(await loadMigration()); });
+      } catch (e) {
+        error = e as typeof error;
+      }
+      expect(error).toMatchObject({ code: 'P0001' });
+      expect(error!.message).toMatch(/final backfill refused: 1 portal_users row\(s\) hold a legacy Entra pair/);
+      expect(error!.hint).toMatch(/2026-11-21-100000-portal-entra-columns-drop-preflight\.sql/);
+      // The whole file rolled back: not even the repairable row was backfilled.
+      const [row] = await tx<{ n: number }[]>`SELECT count(*)::int AS n FROM portal_user_identities WHERE portal_user_id = ${neverBackfilled}`;
+      expect(row!.n).toBe(0);
+    });
+  });
+
+  it('only WARNs (never refuses) a mismatched pair whose key another login holds, and a half-populated row: neither loses a refusal', async () => {
     const orgId = await newOrg();
     const tid = randomUUID();
     await inRolledBackTx(async (tx, notices) => {
-      const mismatched = await seedLegacyLogin(tx, orgId, { tid, oid: 'legacy-oid' });
+      const holder = await seedLegacyLogin(tx, orgId);
+      await seedIdentity(tx, orgId, holder, tid, 'held-oid');
+      const mismatched = await seedLegacyLogin(tx, orgId, { tid, oid: 'held-oid' });
       await seedIdentity(tx, orgId, mismatched, tid, 'identity-oid');
       const half = await seedLegacyLogin(tx, orgId, { tid: null, oid: randomUUID() });
 

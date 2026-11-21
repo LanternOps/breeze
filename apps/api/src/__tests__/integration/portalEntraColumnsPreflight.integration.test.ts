@@ -43,7 +43,7 @@ async function login(id: string, pair: { oid: string | null; tid: string | null 
 }
 async function identity(portalUserId: string, oid: string, linkedVia = 'jit', createdAt = new Date()) {
   await db.execute(sql`INSERT INTO portal_user_identities (org_id, portal_user_id, provider, issuer, subject, entra_tenant_id, linked_via, created_at)
-    VALUES (${orgId}, ${portalUserId}, 'entra', ${entraIssuer(tid)}, ${oid}, ${tid}, ${linkedVia}, ${createdAt})`);
+    VALUES (${orgId}, ${portalUserId}, 'entra', ${entraIssuer(tid)}, ${oid}, ${tid}, ${linkedVia}, ${createdAt.toISOString()}::timestamptz)`);
 }
 
 beforeEach(async () => {

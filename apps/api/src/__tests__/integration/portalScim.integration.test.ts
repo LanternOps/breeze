@@ -498,21 +498,6 @@ describe('PUT, PATCH atomicity and DELETE aftermath (review)', () => {
     expect((await create(token, oid, userName)).res.status).toBe(201);
     expect(await readAccount(accountId)).toMatchObject({ status: 'disabled', disabledBy: 'msp' });
   });
-
-  it('a legacy entra_* holder in another org: 409 and zero rows in this org (the create rolls back)', async () => {
-    const a = await seedOrg();
-    const b = await seedOrg();
-    const oid = randomUUID();
-    // Org A holds the person on the legacy columns only (no identity row).
-    await admin().insert(portalUsers).values({
-      orgId: a.org.id, email: `legacy-${randomUUID().slice(0, 8)}@customer.test`, authMethod: 'entra', status: 'active',
-      browserAccess: 'none',
-    });
-    const res = await call(b.token, 'POST', '/Users', userBody(oid, `pat-${randomUUID().slice(0, 8)}@customer.test`));
-    expect(res.status).toBe(409);
-    expect(await countRows(portalUsers, b.org.id)).toBe(0);
-    expect(await countRows(portalUserIdentities, b.org.id)).toBe(0);
-  });
 });
 
 describe('tenant change (review)', () => {
