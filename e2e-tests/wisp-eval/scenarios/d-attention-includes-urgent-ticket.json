@@ -4,8 +4,13 @@
   "issue": 11677,
   "expect": "known-red",
   "door": "wisp",
-  "note": "the world's own urgent ticket (the invoice one) is no test: once an assessment has run, its summary carries that ticket into the answer (5 of 5 runs on 2026-11-10/11, no tool call). A ticket that arrives after the assessment is invisible until the next one, because the standing state carries no ticket counts",
+  "note": "the world's own urgent ticket (the invoice one) is no test: once an assessment has run, its summary carries that ticket into the answer (5 of 5 runs on 2026-11-10/11, no tool call). A ticket that arrives after the assessment used to be invisible until the next one. Since #11677 the standing state carries open-ticket counts and the newest urgent/high subjects, offline devices and approvals waiting, read per turn through the chat tools' own reach, so the answer should name the ticket with no tool call. The API caches those facts 60 s per grant and user, so the scenario first waits out a read the previous scenario's last turn may have cached; it waits before planting, so no assessment has time to wake on the new ticket",
   "steps": [
+    {
+      "name": "facts-cache",
+      "type": "sleep",
+      "sec": 61
+    },
     {
       "name": "new-ticket",
       "type": "shell",

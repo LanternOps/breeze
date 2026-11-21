@@ -70,7 +70,8 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'services/dnsThreatAlerts.ts': { guards: 1, reason: 'DNS threat alerts' },
   'services/offlineEffectsStore.ts': { guards: 2, reason: 'offline event and offline alert plan (no alerts, notifications or tickets for parked devices)' },
   // --- AI tools (model-visible device and org lookups) ----------------------
-  'services/aiToolsDevice.ts': { guards: 2, reason: 'query_devices and the tag vocabulary' },
+  'services/aiToolsDevice.ts': { guards: 1, reason: 'the tag vocabulary (query_devices reads through deviceListReachConditions, aiToolsSiteScope.ts)' },
+  'services/aiToolsSiteScope.ts': { guards: 1, reason: 'deviceListReachConditions: the query_devices list reach, shared with the Wisp standing state offline count (#11677)' },
   'services/aiToolsOrgs.ts': { guards: 2, reason: 'organization and site listings' },
   'services/aiToolsAgentMgmt.ts': { guards: 2, reason: 'device verifier and agent-version rollup' },
   'services/aiToolsPeripherals.ts': { guards: 1, reason: 'partner-wide peripheral policy fan-out' },

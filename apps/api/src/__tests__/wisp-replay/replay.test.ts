@@ -237,6 +237,7 @@ import { backOnlineFixture, PARTNER_MBP } from './fixtures/backOnline';
 import { checkBackFixture } from './fixtures/checkBack';
 import { dontRebootFixture } from './fixtures/dontReboot';
 import { needsAttentionFixture } from './fixtures/needsAttention';
+import { NEW_TICKET_SUBJECT, newUrgentTicketFixture } from './fixtures/newUrgentTicket';
 import { noopDispatchFixture } from './fixtures/noopDispatch';
 import { stillLookingFixture } from './fixtures/stillLooking';
 import { specialistVerdictFixture } from './fixtures/specialistVerdict';
@@ -244,6 +245,7 @@ import { specialistVerdictFixture } from './fixtures/specialistVerdict';
 const FIXTURES: ReplayFixture[] = [
   stillLookingFixture,
   needsAttentionFixture,
+  newUrgentTicketFixture,
   checkBackFixture,
   dontRebootFixture,
   noopDispatchFixture,
@@ -333,5 +335,14 @@ describe('Wisp replay regression suite (#10432)', () => {
     expect(parsed.trigger).toMatchObject({ event: 'device_online', subjectId: PARTNER_MBP });
     expect(parsed.delayMinutes).toBeUndefined();
     expect(checkIn.isError || checkIn.unverified).toBe(false);
+  }, 30_000);
+
+  it('"what needs my attention?" names the ticket no assessment has seen, the offline device and the approvals waiting, with no tool call (#11677)', async () => {
+    const trace = await replayClean(newUrgentTicketFixture);
+    const turn = trace.turns[0]!;
+    expect(turn.toolCalls.map((c) => c.tool)).toEqual([]);
+    expect(turn.assistantText).toContain(NEW_TICKET_SUBJECT);
+    expect(turn.assistantText).toMatch(/PC-07 at Juniper Legal is offline/);
+    expect(turn.assistantText).toMatch(/Approvals waiting for you: 1/);
   }, 30_000);
 });

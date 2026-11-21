@@ -70,6 +70,9 @@ const facts = (over: Partial<StandingStateFacts> = {}): StandingStateFacts => ({
   recentAssessments: [],
   pictureUpdatedAt: null,
   userActions: [],
+  tickets: { urgent: 0, high: 0, other: 1, unassignedUrgentHigh: 0, pastResponse: 0, top: [] },
+  offlineDevices: { count: 0, top: [] },
+  approvals: { pending: 0 },
   ...over,
 });
 
@@ -137,6 +140,31 @@ describe('standingStateForTurn', () => {
     h.loadStandingStateFacts.mockResolvedValue(facts({ concerns: { high: 2, medium: 0, low: 0, top: [] } }));
     const out = await dispatched(later(2 * 60_000));
     expect(out?.block).toContain('Concerns open: 2 high');
+  });
+
+  it('a ticket that arrives returns the block again; the same ticket an hour older does not (#11677)', async () => {
+    await dispatched(NOW);
+    const ticket = {
+      priority: 'urgent' as const, orgName: 'Org A', number: 'T-9', subject: 'Server closet AC failed',
+      createdAt: new Date('2027-02-01T12:01:00Z'), assigned: false, responseDueAt: new Date('2027-02-01T13:01:00Z'), responded: false,
+    };
+    const withTicket = facts({ tickets: { urgent: 1, high: 0, other: 1, unassignedUrgentHigh: 1, pastResponse: 0, top: [ticket] } });
+    h.loadStandingStateFacts.mockResolvedValue(withTicket);
+    const out = await dispatched(later(2 * 60_000));
+    expect(out?.block).toContain('Open tickets: 1 urgent · 0 high · 1 other (1 urgent/high unassigned)');
+    expect(out?.block).toContain('"Server closet AC failed"');
+    expect(await dispatched(later(30 * 60_000))).toBeNull();
+  });
+
+  it('a device going offline or a new approval waiting returns the block again (#11677)', async () => {
+    await dispatched(NOW);
+    h.loadStandingStateFacts.mockResolvedValue(facts({ offlineDevices: { count: 1, top: [{ name: 'PC-07', orgName: 'Org A', lastSeenAt: new Date('2027-02-01T11:00:00Z') }] } }));
+    expect((await dispatched(later(2 * 60_000)))?.block).toContain('Offline devices: 1');
+    h.loadStandingStateFacts.mockResolvedValue(facts({
+      offlineDevices: { count: 1, top: [{ name: 'PC-07', orgName: 'Org A', lastSeenAt: new Date('2027-02-01T11:00:00Z') }] },
+      approvals: { pending: 1 },
+    }));
+    expect((await dispatched(later(4 * 60_000)))?.block).toContain('Approvals waiting on you: 1');
   });
 
   it('a new user action returns the block again (#11611)', async () => {
