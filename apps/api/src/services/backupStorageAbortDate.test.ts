@@ -44,6 +44,7 @@ interface StoreResponse {
   /** The body as it comes off the wire, one Buffer per chunk. */
   chunks: Buffer[];
   statusCode?: number;
+  endpoint?: string;
 }
 
 /** A real backup-store client whose transport answers every request with `res`. `bodies` holds each body stream it handed out. */
@@ -51,7 +52,7 @@ function storeClientWith(res: StoreResponse): { client: S3Client; bodies: Readab
   const { client } = buildS3StorageClient({
     bucket: 'backups',
     region: 'us-east-1',
-    endpoint: 'https://s3.storage.example.test',
+    endpoint: res.endpoint ?? 'https://s3.storage.example.test',
     accessKey: 'AKIDEXAMPLE',
     secretKey: 'secret',
   });
@@ -215,6 +216,14 @@ describe('backup storage client: body rewrite is narrow and lossless', () => {
     }
   });
 
+  it('drops a whitespace-padded valid date the SDK would otherwise reject', async () => {
+    const client = storeClient({}, withAbortDateElement(CREATE_BODY, '</InitiateMultipartUploadResult>', ` ${HTTP_DATE}\n`));
+
+    const out = await client.send(new CreateMultipartUploadCommand({ Bucket: 'backups', Key: 'snapshots/s1/data.bin' }));
+
+    expect(out.UploadId).toBe('upload-123');
+  });
+
   it('handles a bad header and a bad body element together', async () => {
     const client = storeClient(
       { 'x-amz-abort-date': GO_TIME_STRING, 'x-amz-abort-rule-id': 'abort-incomplete' },
@@ -306,15 +315,24 @@ describe('backup storage client: body rewrite is narrow and lossless', () => {
       expect(out.Key).toBe(key);
     });
 
-    it('an over-cap body with a bad element is not rewritten (the SDK error surfaces unchanged)', async () => {
+    it('an over-cap body with a bad element is not rewritten (the SDK error surfaces unchanged), and the skip is logged', async () => {
       restoreCap = __setAbortDateBodyCapForTests(64);
-      const { client } = storeClientWith({
-        chunks: [Buffer.from(withAbortDateElement(CREATE_BODY, '</InitiateMultipartUploadResult>', BODY_GO_TIME_STRING))],
-      });
+      __resetAbortDateWarningForTests();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const { client } = storeClientWith({
+          chunks: [Buffer.from(withAbortDateElement(CREATE_BODY, '</InitiateMultipartUploadResult>', BODY_GO_TIME_STRING))],
+        });
 
-      await expect(
-        client.send(new CreateMultipartUploadCommand({ Bucket: 'backups', Key: 'snapshots/s1/data.bin' })),
-      ).rejects.toThrow(/Invalid RFC7231 date-time value/);
+        await expect(
+          client.send(new CreateMultipartUploadCommand({ Bucket: 'backups', Key: 'snapshots/s1/data.bin' })),
+        ).rejects.toThrow(/Invalid RFC7231 date-time value/);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0]?.[0])).toContain('over the');
+        expect(JSON.stringify(warn.mock.calls[0])).toContain('s3.storage.example.test');
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it('skips buffering when content-length already exceeds the cap', async () => {
@@ -339,18 +357,23 @@ describe('stripUnparseableAbortDateElements', () => {
     expect(out.xml).toBe(CREATE_BODY.replace('</InitiateMultipartUploadResult>', '  \n</InitiateMultipartUploadResult>'));
   });
 
-  it('keeps an IMF-fixdate, including one padded with whitespace', () => {
-    for (const value of [HTTP_DATE, ` ${HTTP_DATE}\n`]) {
+  it('keeps an exact IMF-fixdate, with or without fractional seconds', () => {
+    for (const value of [HTTP_DATE, 'Fri, 13 Nov 2026 18:06:18.123 GMT']) {
       const xml = `<R><AbortDate>${value}</AbortDate></R>`;
       expect(stripUnparseableAbortDateElements(xml)).toEqual({ xml, dropped: [] });
     }
   });
 
+  it('drops a valid date padded with whitespace (the SDK does not trim element text)', () => {
+    const xml = `<R><AbortDate> ${HTTP_DATE}\n</AbortDate></R>`;
+    expect(stripUnparseableAbortDateElements(xml)).toEqual({ xml: '<R></R>', dropped: [` ${HTTP_DATE}\n`] });
+  });
+
   it('drops empty, self-closing and attributed elements, and every bad one in the document', () => {
-    const xml = `<R><AbortDate></AbortDate><AbortDate/><AbortDate x="1">2026-11-23</AbortDate><AbortDate>${HTTP_DATE}</AbortDate></R>`;
+    const xml = `<R><AbortDate></AbortDate><AbortDate/><AbortDate x="1"/><AbortDate x="1">2026-11-23</AbortDate><AbortDate>${HTTP_DATE}</AbortDate></R>`;
     const out = stripUnparseableAbortDateElements(xml);
     expect(out.xml).toBe(`<R><AbortDate>${HTTP_DATE}</AbortDate></R>`);
-    expect(out.dropped).toEqual(['', '', '2026-11-23']);
+    expect(out.dropped).toEqual(['', '', '', '2026-11-23']);
   });
 
   it('stays linear on a hostile body of unterminated openers (the body comes from a tenant-chosen endpoint)', () => {
@@ -371,7 +394,7 @@ describe('stripUnparseableAbortDateElements', () => {
     expect(stripUnparseableAbortDateElements(xml)).toEqual({ xml, dropped: [] });
   });
 
-  it('warns once per process for the body, naming the source and the command', async () => {
+  it('warns once per store host for the body, naming the source, the host and the command', async () => {
     __resetAbortDateWarningForTests();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
@@ -383,6 +406,13 @@ describe('stripUnparseableAbortDateElements', () => {
       expect(String(warn.mock.calls[0]?.[0])).toContain('body');
       expect(JSON.stringify(warn.mock.calls[0])).toContain(BODY_GO_TIME_STRING);
       expect(JSON.stringify(warn.mock.calls[0])).toContain('CreateMultipartUploadCommand');
+      expect(JSON.stringify(warn.mock.calls[0])).toContain('s3.storage.example.test');
+
+      // A second store is not hidden behind the first one's warning.
+      const other = storeClientWith({ endpoint: 'https://other-store.example.test', chunks: [Buffer.from(body)] }).client;
+      await other.send(new CreateMultipartUploadCommand({ Bucket: 'backups', Key: 'snapshots/s1/data.bin' }));
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(warn.mock.calls[1])).toContain('other-store.example.test');
     } finally {
       warn.mockRestore();
     }

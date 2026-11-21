@@ -102,30 +102,37 @@ function isImfFixdate(value: string): boolean {
   return date.getUTCFullYear() === year && date.getUTCMonth() === month && date.getUTCDate() === day;
 }
 
-// Once per process: a store that sends a malformed value sends it on every
-// multipart create, so a per-response line would be noise, but the first one
-// keeps the store's non-conformance visible after the symptom is gone.
-let abortDateWarned = false;
+// Once per kind of event per store host: a store that sends a malformed value
+// sends it on every multipart create, so a per-response line would be noise,
+// but the first one per host keeps each store's non-conformance visible after
+// the symptom is gone, and one store's warning never hides another's. The set
+// is bounded; when full it is cleared, which at worst repeats a line.
+const ABORT_DATE_WARNED_MAX = 1024;
+const abortDateWarned = new Set<string>();
 
-/** Test seam: re-arms the once-per-process warnings (header and body). */
+function warnOncePerHost(kind: string, host: string | undefined, message: string, fields: Record<string, unknown>): void {
+  const key = `${kind}|${host ?? ''}`;
+  if (abortDateWarned.has(key)) return;
+  if (abortDateWarned.size >= ABORT_DATE_WARNED_MAX) abortDateWarned.clear();
+  abortDateWarned.add(key);
+  console.warn(`[guardedS3Client] ${message} (logged once per store host)`, { host: host ?? null, ...fields });
+}
+
+/** Test seam: re-arms the once-per-host warnings (header and body). */
 export function __resetAbortDateWarningForTests(): void {
-  abortDateWarned = false;
-  abortDateBodyWarned = false;
+  abortDateWarned.clear();
 }
 
 /** Removes an `x-amz-abort-date` header (any case) whose value is not an IMF-fixdate. Mutates `headers`. */
-export function dropUnparseableAbortDate(headers: Record<string, string | undefined>): void {
+export function dropUnparseableAbortDate(headers: Record<string, string | undefined>, host?: string): void {
   for (const name of Object.keys(headers)) {
     if (name.toLowerCase() !== ABORT_DATE_HEADER) continue;
     const value = headers[name];
     if (typeof value === 'string' && isImfFixdate(value)) continue;
     delete headers[name];
-    if (!abortDateWarned) {
-      abortDateWarned = true;
-      console.warn('[guardedS3Client] dropped an x-amz-abort-date response header that is not an HTTP-date (logged once per process)', {
-        value: String(value).slice(0, 120),
-      });
-    }
+    warnOncePerHost('header', host, 'dropped an x-amz-abort-date response header that is not an HTTP-date', {
+      value: String(value).slice(0, 120),
+    });
   }
 }
 
@@ -145,7 +152,10 @@ const ABORT_DATE_BODY_COMMANDS: ReadonlySet<string> = new Set(['CreateMultipartU
 
 // Both commands answer with small documents: an InitiateMultipartUploadResult
 // is a few hundred bytes and a ListPartsResult tops out at 1,000 parts of a
-// few hundred bytes each. A body over this is passed through untouched.
+// few hundred bytes each. A body over this is passed through untouched (and
+// logged). This bounds the rewrite's own copy only; it is not a memory limit
+// for the response, which the SDK's throw-200 middleware buffers in full for
+// these commands anyway.
 const DEFAULT_ABORT_DATE_BODY_CAP_BYTES = 4 * 1024 * 1024;
 let abortDateBodyCapBytes = DEFAULT_ABORT_DATE_BODY_CAP_BYTES;
 
@@ -156,25 +166,27 @@ export function __setAbortDateBodyCapForTests(bytes: number): number {
   return previous;
 }
 
-// Linear: every quantified run (`[^<>]*`, `[^<]*`, `\s*`) stops at the next
-// `<`, so an attempt starting at one `<AbortDate` never scans past the next
-// tag opener, and the spans attempts scan do not overlap. (`[^>]*` in the
+// Linear: every quantified run (`[^<>]*`, `[^<]*`) stops at the next `<`, so
+// an attempt starting at one `<AbortDate` never scans past the next tag
+// opener, and the spans attempts scan do not overlap. (`[^>]*` in the
 // attribute part would be quadratic on a body of unterminated openers.) The
 // body comes from a tenant-chosen endpoint, so no pattern here may backtrack
-// super-linearly; the "stays linear" test pins this.
-const ABORT_DATE_ELEMENT = /<AbortDate(?:\s[^<>]*)?>([^<]*)<\/AbortDate>|<AbortDate\s*\/>/g;
-
-let abortDateBodyWarned = false;
+// super-linearly; the "stays linear" test pins this. A CDATA-wrapped value is
+// not matched (no store is known to send one); the SDK error then surfaces
+// unchanged.
+const ABORT_DATE_ELEMENT = /<AbortDate(?:\s[^<>]*)?>([^<]*)<\/AbortDate>|<AbortDate(?:\s[^<>]*)?\/>/g;
 
 /**
- * Removes every `<AbortDate>` element whose text (trimmed) is not an
- * IMF-fixdate, including empty and self-closing ones. Everything else in the
- * document is returned unchanged. Pure; exported for tests.
+ * Removes every `<AbortDate>` element whose text is not exactly an
+ * IMF-fixdate, including empty and self-closing ones. The text is not
+ * trimmed: the SDK parses it as-is, so a padded date fails there too.
+ * Everything else in the document is returned unchanged. Pure; exported for
+ * tests.
  */
 export function stripUnparseableAbortDateElements(xml: string): { xml: string; dropped: string[] } {
   const dropped: string[] = [];
   const out = xml.replace(ABORT_DATE_ELEMENT, (element: string, text: string | undefined) => {
-    if (text !== undefined && isImfFixdate(text.trim())) return element;
+    if (text !== undefined && isImfFixdate(text)) return element;
     dropped.push(text ?? '');
     return '';
   });
@@ -189,8 +201,8 @@ function chunkToBuffer(chunk: unknown): Buffer {
   return Buffer.from(String(chunk), 'utf8');
 }
 
-/** Replays `head`, then whatever is left of `rest`, as one byte stream. */
-function replayStream(head: Buffer[], rest: AsyncIterator<unknown>): Readable {
+/** Replays `head`, then whatever is left of `rest` (read from `source`), as one byte stream. */
+function replayStream(head: Buffer[], rest: AsyncIterator<unknown>, source: Readable): Readable {
   async function* replay(): AsyncGenerator<Buffer> {
     try {
       yield* head;
@@ -203,7 +215,13 @@ function replayStream(head: Buffer[], rest: AsyncIterator<unknown>): Readable {
       await rest.return?.();
     }
   }
-  return Readable.from(replay(), { objectMode: false });
+  const stream = Readable.from(replay(), { objectMode: false });
+  // A generator destroyed before it starts never runs its `finally`, which
+  // would leave the response socket open; close the source explicitly.
+  stream.once('close', () => {
+    if (!source.destroyed) source.destroy();
+  });
+  return stream;
 }
 
 /**
@@ -223,7 +241,7 @@ async function bufferUpTo(body: Readable, cap: number): Promise<{ bytes: Buffer 
     const chunk = chunkToBuffer(next.value);
     chunks.push(chunk);
     size += chunk.length;
-    if (size > cap) return { passthrough: replayStream(chunks, it) };
+    if (size > cap) return { passthrough: replayStream(chunks, it, body) };
   }
 }
 
@@ -252,27 +270,34 @@ interface RawResponse {
  * untouched when the status is not 2xx, the body is not a Node stream or byte
  * array, it is over the cap, or there is nothing to remove.
  */
-async function dropUnparseableAbortDateFromBody(response: RawResponse, commandName: string): Promise<void> {
+async function dropUnparseableAbortDateFromBody(response: RawResponse, commandName: string, host: string | undefined): Promise<void> {
   const status = response.statusCode ?? 0;
   if (status < 200 || status >= 300) return;
   const headers = response.headers ?? {};
   const cap = abortDateBodyCapBytes;
+  // Skipping is safe (the SDK sees the store's answer as-is), but it means a
+  // bad <AbortDate> would still fail the call, so each skip is logged.
+  const skipped = (reason: string): void =>
+    warnOncePerHost(`skip:${reason}`, host, `left a multipart response body unchecked for <AbortDate>: ${reason}`, {
+      command: commandName,
+      capBytes: cap,
+    });
   const declared = Number(headerValue(headers, 'content-length'));
-  if (Number.isFinite(declared) && declared > cap) return;
+  if (Number.isFinite(declared) && declared > cap) return skipped('body is over the size cap');
 
   let bytes: Buffer;
   if (response.body instanceof Uint8Array) {
     bytes = chunkToBuffer(response.body);
-    if (bytes.length > cap) return;
+    if (bytes.length > cap) return skipped('body is over the size cap');
   } else if (response.body instanceof Readable) {
     const read = await bufferUpTo(response.body, cap);
     if ('passthrough' in read) {
       response.body = read.passthrough;
-      return;
+      return skipped('body is over the size cap');
     }
     bytes = read.bytes;
   } else {
-    return;
+    return skipped('body is not a Node stream or byte array');
   }
 
   // latin1 maps every byte to one code unit and back, so the rest of the
@@ -286,13 +311,10 @@ async function dropUnparseableAbortDateFromBody(response: RawResponse, commandNa
   const rewritten = Buffer.from(xml, 'latin1');
   response.body = Readable.from(rewritten, { objectMode: false });
   setHeader(headers, 'content-length', String(rewritten.length));
-  if (!abortDateBodyWarned) {
-    abortDateBodyWarned = true;
-    console.warn('[guardedS3Client] dropped an <AbortDate> element from a multipart response body that is not an HTTP-date (logged once per process)', {
-      command: commandName,
-      value: Buffer.from(dropped[0] ?? '', 'latin1').toString('utf8').slice(0, 120),
-    });
-  }
+  warnOncePerHost('body', host, 'dropped an <AbortDate> element from a multipart response body that is not an HTTP-date', {
+    command: commandName,
+    value: Buffer.from(dropped[0] ?? '', 'latin1').toString('utf8').slice(0, 120),
+  });
 }
 
 // A deserialize-step middleware, typed structurally: @smithy/types is not a
@@ -303,13 +325,15 @@ type DeserializeHandler = (args: unknown) => Promise<{ response: unknown }>;
 const tolerateAbortDateMiddleware = ((next: DeserializeHandler, context: { commandName?: string } | undefined) => async (args: unknown) => {
   const result = await next(args);
   const response = result.response as RawResponse | undefined;
+  const hostname = (args as { request?: { hostname?: unknown } } | undefined)?.request?.hostname;
+  const host = typeof hostname === 'string' ? hostname : undefined;
   const headers = response?.headers;
   if (headers && typeof headers === 'object') {
-    dropUnparseableAbortDate(headers);
+    dropUnparseableAbortDate(headers, host);
   }
   const commandName = context?.commandName;
   if (response && commandName && ABORT_DATE_BODY_COMMANDS.has(commandName)) {
-    await dropUnparseableAbortDateFromBody(response, commandName);
+    await dropUnparseableAbortDateFromBody(response, commandName, host);
   }
   return result;
 }) as unknown as Parameters<S3Client['middlewareStack']['addRelativeTo']>[0];

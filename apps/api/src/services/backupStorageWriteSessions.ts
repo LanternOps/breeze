@@ -1084,9 +1084,9 @@ function storageResponseFacts(err: unknown): { statusCode?: number; responseHead
   if (typeof statusCode === 'number') facts.statusCode = statusCode;
   if (headers && typeof headers === 'object') {
     facts.responseHeaderNames = Object.keys(headers)
-      .slice(0, LOGGED_RESPONSE_HEADER_NAMES_MAX)
       .map((name) => name.slice(0, LOGGED_RESPONSE_HEADER_NAME_LENGTH_MAX))
-      .sort();
+      .sort()
+      .slice(0, LOGGED_RESPONSE_HEADER_NAMES_MAX);
   }
   return facts;
 }

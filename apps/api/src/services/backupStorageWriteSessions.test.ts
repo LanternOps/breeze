@@ -433,6 +433,20 @@ describe('logStorageFailure', () => {
     }
   });
 
+  it('picks the names it keeps by sorted order, not arrival order', () => {
+    const names = Array.from({ length: 50 }, (_, i) => `h-${String(49 - i).padStart(2, '0')}`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      logStorageFailure('delete failed', 'session-1', Object.assign(new Error('boom'), {
+        $response: { statusCode: 500, headers: Object.fromEntries(names.map((n) => [n, 'v'])) },
+      }));
+      const fields = warn.mock.calls[0]?.[1] as { responseHeaderNames: string[] };
+      expect(fields.responseHeaderNames).toEqual([...names].sort().slice(0, 40));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('keeps the old shape for an error with no response', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
