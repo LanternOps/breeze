@@ -83,6 +83,16 @@ const (
 	vtblAddToSnapshotSet      = 37
 	vtblDoSnapshotSet         = 38
 	vtblGetSnapshotProperties = 42
+	vtblQuery                 = 43
+)
+
+// IVssEnumObject vtable index (`vss.h`): 3=Next.
+const vtblEnumNext = 3
+
+// VSS_OBJECT_TYPE values (`vss.h`) for IVssBackupComponents::Query.
+const (
+	vssObjectNone     = 1
+	vssObjectSnapshot = 3
 )
 
 // IVssAsync vtable indices (`vss.h`): 3=Cancel, 4=Wait, 5=QueryStatus.
@@ -176,6 +186,14 @@ type vssSnapshotProp struct {
 	Status               int32        // 120
 	_                    int32        // 124 (padding)
 } // 128 bytes
+
+// vssObjectProp mirrors VSS_OBJECT_PROP: a VSS_OBJECT_TYPE then a union whose
+// largest member is VSS_SNAPSHOT_PROP. Query (#12295) fills one per Next call.
+type vssObjectProp struct {
+	Type uint32 // 0
+	_    uint32 // 4 (padding)
+	Snap vssSnapshotProp
+} // 136 bytes
 
 // ---------------------------------------------------------------------------
 // WindowsProvider
@@ -965,7 +983,9 @@ func (p *WindowsProvider) getSnapshotDeviceName(bc uintptr, snapID windows.GUID)
 	defer freeSnapshotProperties(&prop)
 
 	if prop.SnapshotDeviceObject == 0 {
-		return "", fmt.Errorf("snapshot device name is nil")
+		// Windows 11 returns S_OK with an all-zero VSS_SNAPSHOT_PROP here
+		// (#12295), while Query reports the same snapshot correctly.
+		return querySnapshotDeviceName(bc, snapID)
 	}
 	// A non-nil pointer to an empty string is just as unusable: the caller
 	// prefixes paths with this, so "" would turn C:\Users into a bogus
@@ -975,6 +995,42 @@ func (p *WindowsProvider) getSnapshotDeviceName(bc uintptr, snapID windows.GUID)
 		return "", fmt.Errorf("snapshot device name is empty")
 	}
 	return name, nil
+}
+
+// querySnapshotDeviceName finds snapID's device by enumerating every snapshot
+// with IVssBackupComponents::Query and IVssEnumObject::Next.
+func querySnapshotDeviceName(bc uintptr, snapID windows.GUID) (string, error) {
+	var null windows.GUID
+	var enum uintptr
+	// Query(QueriedObjectId, eQueriedObjectType, eReturnedObjectsType, ppEnum).
+	if _, err := callVtable(bc, vtblQuery,
+		uintptr(unsafe.Pointer(&null)), vssObjectNone, vssObjectSnapshot,
+		uintptr(unsafe.Pointer(&enum)),
+	); err != nil {
+		return "", fmt.Errorf("vss: query snapshots: %w", err)
+	}
+	defer callVtable(enum, vtblRelease) //nolint:errcheck
+	for {
+		var obj vssObjectProp
+		var fetched uint32
+		// Next returns S_FALSE (1) with fetched == 0 at the end.
+		if _, err := callVtable(enum, vtblEnumNext, 1,
+			uintptr(unsafe.Pointer(&obj)), uintptr(unsafe.Pointer(&fetched)),
+		); err != nil {
+			return "", fmt.Errorf("vss: enumerate snapshots: %w", err)
+		}
+		if fetched != 1 {
+			return "", fmt.Errorf("vss: snapshot %s has no device name in GetSnapshotProperties or Query", snapID.String())
+		}
+		name := ""
+		if obj.Type == vssObjectSnapshot && obj.Snap.SnapshotID == snapID {
+			name = utf16PtrToString(obj.Snap.SnapshotDeviceObject)
+		}
+		freeSnapshotProperties(&obj.Snap)
+		if name != "" {
+			return name, nil
+		}
+	}
 }
 
 // freeSnapshotProperties releases the strings VSS allocated inside a
