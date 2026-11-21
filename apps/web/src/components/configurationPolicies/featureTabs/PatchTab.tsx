@@ -265,6 +265,21 @@ export default function PatchTab({
   );
   const [ringSubmitting, setRingSubmitting] = useState(false);
   const [ringEditorError, setRingEditorError] = useState<string>();
+  // #12305: the form holds unsaved input, so a stray click outside the dialog
+  // is ignored and every other way out asks first.
+  const [ringEditorDirty, setRingEditorDirty] = useState(false);
+  const requestCloseRingEditor = () => {
+    if (
+      ringEditorDirty &&
+      !window.confirm(
+        i18n.t(
+          "policies:configurationPolicies.featureTabs.patchTab.discardRingChangesConfirm",
+        ),
+      )
+    )
+      return;
+    setRingEditorOpen(false);
+  };
   const fetchRings = useCallback(async () => {
     setRingsLoading(true);
     setRingsError(undefined);
@@ -1196,7 +1211,8 @@ export default function PatchTab({
       {/* Inline ring editor */}
       <Dialog
         open={ringEditorOpen}
-        onClose={() => setRingEditorOpen(false)}
+        onClose={requestCloseRingEditor}
+        dismissOnBackdrop={!ringEditorDirty}
         title={
           ringEditorMode === "edit"
             ? i18n.t(
@@ -1223,7 +1239,7 @@ export default function PatchTab({
           <button
             type="button"
             aria-label={i18n.t("common:actions.close")}
-            onClick={() => setRingEditorOpen(false)}
+            onClick={requestCloseRingEditor}
             className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             {i18n.t(
@@ -1243,7 +1259,8 @@ export default function PatchTab({
             }
             onSubmit={handleRingEditorSubmit}
             existingRingOrders={rings.map((ring) => ring.ringOrder)}
-            onCancel={() => setRingEditorOpen(false)}
+            onCancel={requestCloseRingEditor}
+            onDirtyChange={setRingEditorDirty}
             loading={ringSubmitting}
             submitLabel={
               ringEditorMode === "edit"

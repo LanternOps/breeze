@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useForm, useFieldArray, Controller, type UseFormRegisterReturn } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -150,6 +150,8 @@ type UpdateRingFormProps = {
    * `defaultValues.ringOrder`) defaults to one past the highest (#9565).
    */
   existingRingOrders?: number[];
+  /** Called with whether the form differs from its starting values (#12305). */
+  onDirtyChange?: (dirty: boolean) => void;
 };
 
 /** max(existing order) + 1, clamped to the schema range; 0 with no rings. */
@@ -296,6 +298,7 @@ export default function UpdateRingForm({
   loading,
   usage,
   existingRingOrders,
+  onDirtyChange,
 }: UpdateRingFormProps) {
   const { t } = useTranslation('patches');
   const ringSchema = useMemo(() => makeRingSchema(t), [t]);
@@ -354,13 +357,17 @@ export default function UpdateRingForm({
     watch,
     setValue,
     control,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = useForm<z.input<RingSchema>, unknown, z.output<RingSchema>>({
     resolver: zodResolver(ringSchema),
     defaultValues: initialValues,
   });
 
   const { fields, append, remove } = useFieldArray({ control, name: 'categoryRules' });
+
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
 
   const watchCategoryRules = watch('categoryRules') ?? [];
   const usedCategories = watchCategoryRules.map((r) => r.category);

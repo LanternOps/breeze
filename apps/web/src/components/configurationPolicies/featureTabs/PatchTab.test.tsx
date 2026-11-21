@@ -536,6 +536,89 @@ describe('PatchTab', () => {
       expect((screen.getByLabelText(/rollout order/i) as HTMLInputElement).value).toBe('4');
     });
 
+    // #12305: a partner lost a long ring form to one click outside the dialog.
+    describe('unsaved changes guard (#12305)', () => {
+      const backdrop = () => document.querySelector('.dialog-backdrop') as HTMLElement;
+      const nameInput = () => screen.getByPlaceholderText('e.g. Pilot, Broad') as HTMLInputElement;
+
+      async function openAndType() {
+        render(<PatchTab {...baseProps} />);
+        fireEvent.click(await screen.findByRole('button', { name: /new ring/i }));
+        fireEvent.change(nameInput(), { target: { value: 'Pilot' } });
+        await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+      }
+
+      it('still closes an untouched form on a backdrop click, with no prompt', async () => {
+        const confirmSpy = vi.spyOn(window, 'confirm');
+        render(<PatchTab {...baseProps} />);
+        fireEvent.click(await screen.findByRole('button', { name: /new ring/i }));
+
+        fireEvent.click(backdrop());
+
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        expect(confirmSpy).not.toHaveBeenCalled();
+        confirmSpy.mockRestore();
+      });
+
+      it('ignores a backdrop click once the form has changes, and keeps what was typed', async () => {
+        const confirmSpy = vi.spyOn(window, 'confirm');
+        await openAndType();
+
+        fireEvent.click(backdrop());
+
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+        expect(nameInput().value).toBe('Pilot');
+        expect(confirmSpy).not.toHaveBeenCalled();
+        confirmSpy.mockRestore();
+      });
+
+      it.each([
+        ['Escape', () => fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })],
+        ['the close button', () => fireEvent.click(screen.getByRole('button', { name: /^close$/i }))],
+        ['Cancel', () => fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }))],
+      ])('asks before %s discards changes: no keeps the form, yes closes it', async (_label, dismiss) => {
+        const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+        await openAndType();
+
+        dismiss();
+        expect(confirmSpy).toHaveBeenCalledTimes(1);
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+        expect(nameInput().value).toBe('Pilot');
+
+        confirmSpy.mockReturnValue(true);
+        dismiss();
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        confirmSpy.mockRestore();
+      });
+
+      it('opens an existing ring for edit as unchanged, so a backdrop click still closes it', async () => {
+        const confirmSpy = vi.spyOn(window, 'confirm');
+        const ring = {
+          id: 'ring-1', name: 'Pilot', description: null, enabled: true, ringOrder: 1, deferralDays: 3,
+          deadlineDays: 7, gracePeriodHours: 4,
+          categoryRules: [{ category: 'security', autoApprove: true }],
+          appRules: [{ source: 'third_party', packageId: 'Mozilla.Firefox', displayName: 'Firefox', action: 'block' }],
+        };
+        fetchMock.mockResolvedValue({
+          ok: true, status: 200, json: vi.fn().mockResolvedValue({ data: [ring] }),
+        } as unknown as Response);
+        render(
+          <PatchTab
+            {...baseProps}
+            existingLink={{ id: 'link-1', featureType: 'patch', featurePolicyId: 'ring-1', inlineSettings: { sources: ['os'] } }}
+          />
+        );
+        fireEvent.click(await screen.findByTestId('patch-edit-ring'));
+        expect(await screen.findByText('Firefox')).toBeInTheDocument();
+
+        fireEvent.click(backdrop());
+
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        expect(confirmSpy).not.toHaveBeenCalled();
+        confirmSpy.mockRestore();
+      });
+    });
+
     it('surfaces an error when inline ring create fails', async () => {
       fetchMock.mockImplementation((_url: any, opts: any) => {
         if (opts?.method === 'POST') {
