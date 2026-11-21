@@ -136,3 +136,39 @@ describe('dropUnparseableAbortDate', () => {
     }
   });
 });
+
+/**
+ * A store can also put `<AbortDate>` in the XML BODY of CreateMultipartUpload
+ * / ListParts, in Go's `time.Time.String()` form, with no header at all. The
+ * SDK deserializes every body member, AbortDate included, before it applies
+ * header bindings, so stripping only the header never reached this case. The
+ * production error message matches this mechanism exactly; the store's raw
+ * response has not been captured.
+ */
+const BODY_GO_TIME_STRING = '2026-11-23 18:17:53.781592214 +0000 UTC m=+1616448.187502702';
+
+function withAbortDateElement(body: string, closingTag: string, value: string): string {
+  return body.replace(closingTag, `  <AbortDate>${value}</AbortDate>\n${closingTag}`);
+}
+
+describe('backup storage client: <AbortDate> in the response body the SDK cannot parse', () => {
+  it('CreateMultipartUpload returns the upload id when the body carries a Go time string and there is no header', async () => {
+    const client = storeClient({}, withAbortDateElement(CREATE_BODY, '</InitiateMultipartUploadResult>', BODY_GO_TIME_STRING));
+
+    const out = await client.send(new CreateMultipartUploadCommand({ Bucket: 'backups', Key: 'snapshots/s1/data.bin' }));
+
+    expect(out.UploadId).toBe('upload-123');
+    expect(out.Bucket).toBe('backups');
+    expect(out.AbortDate).toBeUndefined();
+  });
+
+  it('ListParts returns its parts when the body carries a Go time string and there is no header', async () => {
+    const client = storeClient({}, withAbortDateElement(LIST_PARTS_BODY, '</ListPartsResult>', BODY_GO_TIME_STRING));
+
+    const out = await client.send(new ListPartsCommand({ Bucket: 'backups', Key: 'snapshots/s1/data.bin', UploadId: 'upload-123' }));
+
+    expect(out.Parts?.map((p) => p.PartNumber)).toEqual([1]);
+    expect(out.UploadId).toBe('upload-123');
+    expect(out.AbortDate).toBeUndefined();
+  });
+});
