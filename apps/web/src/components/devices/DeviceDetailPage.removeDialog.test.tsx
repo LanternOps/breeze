@@ -26,42 +26,35 @@ vi.mock('../../services/deviceActions', () => ({
   fetchRemovalConfig: vi.fn(async () => ({ uninstallDrainWindowHours: 72 })),
 }));
 
-// Two callers, two call SHAPES — that is the whole contract under test:
-//   * DeviceSettingsModal's Danger Zone fires `onAction('decommission', device)`
-//     with NO third argument. It has no dialog of its own, so the PAGE owes it one.
+// Two call SHAPES — that is the whole contract under test:
+//   * A caller with no dialog of its own fires `onAction('decommission', device)`
+//     with NO third argument, so the PAGE owes it one. (The Device Settings
+//     modal's Danger Zone was that caller until it was retired; the gate keys on
+//     the ABSENCE of `opts`, so it holds for any future caller that omits it.)
 //   * DeviceActions' kebab already asked the question in its own
 //     RemoveDeviceDialog and fires `onAction('decommission', device, choice)`.
 //     That path must execute straight through — a second dialog would be a bug.
-// DeviceSettingsModal itself is stubbed rather than driven: W03 is editing the
-// real component on another branch. The stub reproduces its exact call shape;
-// the gate being pinned here keys on the ABSENCE of `opts`, so it holds for any
-// caller that omits it, not just this one.
 vi.mock('./DeviceDetails', () => ({
   default: ({ device, onAction }: {
     device: { hostname: string };
     onAction: (action: string, device: unknown, opts?: { uninstallAgent?: boolean }) => void;
   }) => (
-    <button
-      type="button"
-      data-testid="kebab-remove-with-choice"
-      onClick={() => onAction('decommission', device, { uninstallAgent: false })}
-    >
-      Kebab Remove
-    </button>
-  ),
-}));
-vi.mock('./DeviceSettingsModal', () => ({
-  default: ({ device, onAction }: {
-    device: { hostname: string };
-    onAction?: (action: string, device: unknown) => void;
-  }) => (
-    <button
-      type="button"
-      data-testid="settings-decommission"
-      onClick={() => onAction?.('decommission', device)}
-    >
-      Settings Decommission
-    </button>
+    <>
+      <button
+        type="button"
+        data-testid="kebab-remove-with-choice"
+        onClick={() => onAction('decommission', device, { uninstallAgent: false })}
+      >
+        Kebab Remove
+      </button>
+      <button
+        type="button"
+        data-testid="remove-without-choice"
+        onClick={() => onAction('decommission', device)}
+      >
+        Remove without a choice
+      </button>
+    </>
   ),
 }));
 vi.mock('./ChangeSiteModal', () => ({ default: () => null }));
@@ -84,7 +77,7 @@ async function advanceUndoWindow() {
 // one Remove surface that still could not choose "leave the agent installed",
 // and it defaulted to uninstall silently. DevicesPage has always split gate from
 // execute; the detail page now does too.
-describe('DeviceDetailPage — Settings → Remove goes through RemoveDeviceDialog (#3987)', () => {
+describe('DeviceDetailPage — a Remove with no choice goes through RemoveDeviceDialog (#3987)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({
@@ -101,7 +94,7 @@ describe('DeviceDetailPage — Settings → Remove goes through RemoveDeviceDial
   it('opens the agent-choice dialog and removes nothing until it is confirmed', async () => {
     render(<DeviceDetailPage deviceId={DEVICE_ID} />);
 
-    fireEvent.click(await screen.findByTestId('settings-decommission'));
+    fireEvent.click(await screen.findByTestId('remove-without-choice'));
 
     expect(await screen.findByTestId('remove-choice-uninstall')).toBeChecked();
     expect(screen.getByText('Remove alpha-01?')).toBeInTheDocument();
@@ -119,7 +112,7 @@ describe('DeviceDetailPage — Settings → Remove goes through RemoveDeviceDial
   it('forwards uninstallAgent: false when the operator chooses to leave the agent', async () => {
     render(<DeviceDetailPage deviceId={DEVICE_ID} />);
 
-    fireEvent.click(await screen.findByTestId('settings-decommission'));
+    fireEvent.click(await screen.findByTestId('remove-without-choice'));
     fireEvent.click(await screen.findByTestId('remove-choice-leave'));
 
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -138,7 +131,7 @@ describe('DeviceDetailPage — Settings → Remove goes through RemoveDeviceDial
   it('cancelling the dialog removes nothing', async () => {
     render(<DeviceDetailPage deviceId={DEVICE_ID} />);
 
-    fireEvent.click(await screen.findByTestId('settings-decommission'));
+    fireEvent.click(await screen.findByTestId('remove-without-choice'));
     await screen.findByTestId('detail-remove-confirm');
 
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }));

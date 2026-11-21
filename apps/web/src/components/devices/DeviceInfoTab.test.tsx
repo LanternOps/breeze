@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceInfoTab from './DeviceInfoTab';
@@ -520,7 +520,9 @@ describe('DeviceInfoTab — display name inline edit', () => {
       expect(body).toEqual({ displayName: null });
     });
 
-    await waitFor(() => expect(screen.getByText('Not set')).toBeInTheDocument());
+    // Scoped to the display-name row: the purchase-date row also says "Not set".
+    const row = screen.getByTitle('Edit display name').closest('div') as HTMLElement;
+    await waitFor(() => expect(within(row).getByText('Not set')).toBeInTheDocument());
   });
 
   it('whitespace-only input is treated as clearing (trimmed → null)', async () => {

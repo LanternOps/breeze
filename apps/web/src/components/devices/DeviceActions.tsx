@@ -8,7 +8,7 @@ import {
   RotateCw,
   RefreshCw,
   Monitor,
-  Settings,
+  Pencil,
   Power,
   Shield,
   MoreHorizontal,
@@ -1169,9 +1169,9 @@ export default function DeviceActions({
                 testId: "device-action-move-org",
               })}
             {sheetItem({
-              action: "settings",
-              label: t("deviceActions.deviceSettings"),
-              icon: <Settings className="h-4 w-4" />,
+              action: "edit-details",
+              label: t("deviceActions.editDetails"),
+              icon: <Pencil className="h-4 w-4" />,
             })}
             <hr className="my-1" />
             {removeOrRestoreMenuItems}
@@ -1463,13 +1463,13 @@ export default function DeviceActions({
               )}
               <button
                 type="button"
-                onClick={() => handleAction("settings")}
+                onClick={() => handleAction("edit-details")}
                 role="menuitem"
                 tabIndex={-1}
                 className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
               >
-                <Settings className="h-4 w-4" />
-                {t("deviceActions.deviceSettings")}{" "}
+                <Pencil className="h-4 w-4" />
+                {t("deviceActions.editDetails")}{" "}
               </button>
               <hr className="my-1" />
               {removeOrRestoreMenuItems}

@@ -41,7 +41,6 @@ vi.mock('./DeviceDetails', () => ({
 }));
 const { applyOrgSwitchMock } = vi.hoisted(() => ({ applyOrgSwitchMock: vi.fn() }));
 vi.mock('@/lib/orgSwitch', () => ({ applyOrgSwitch: applyOrgSwitchMock }));
-vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('./ChangeSiteModal', () => ({ default: () => null }));
 // The real dialog pulls in the org store, which needs more of stores/auth than this suite mocks.
 vi.mock('./MoveDeviceOrgDialog', () => ({ default: () => null }));

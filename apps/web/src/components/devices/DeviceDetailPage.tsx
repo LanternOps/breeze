@@ -4,7 +4,6 @@ import { ArrowLeft } from "lucide-react";
 import { showToast } from "../shared/Toast";
 import DeviceDetails from "./DeviceDetails";
 import ActiveSessionsBanner from "../remote/ActiveSessionsBanner";
-import DeviceSettingsModal from "./DeviceSettingsModal";
 import ChangeSiteModal from "./ChangeSiteModal";
 import RemoveDeviceDialog from "./RemoveDeviceDialog";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
@@ -91,14 +90,14 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [actionInProgress, setActionInProgress] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   // #3987: Remove has to ask what happens to the agent before it runs.
-  // DeviceActions asks in its own dialog and passes the answer down;
-  // DeviceSettingsModal's Danger Zone button has no dialog at all, so the
-  // page owes that caller one. Set = "asked, not yet answered".
+  // DeviceActions asks in its own dialog and passes the answer down; any
+  // caller that fires Remove without an answer (the retired Device Settings
+  // modal's Danger Zone was one) gets the page's dialog. Set = "asked, not
+  // yet answered".
   const [pendingRemove, setPendingRemove] = useState<Device | null>(null);
   // #5023: same gate, for the one action that is worse than Remove. Every
-  // trigger on this page (kebab, settings Danger Zone) fired Delete
+  // trigger on this page (kebab, the since-retired settings Danger Zone) fired Delete
   // permanently on a single click, straight into a 5-second undo toast, while
   // the bulk version of the same operation makes the operator type the device
   // count. Nothing is restorable afterwards, so it gets asked about first.
@@ -131,10 +130,16 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
     };
   }, []);
 
-  const fetchDevice = useCallback(async () => {
+  // `silent` refetches in place: no full-page spinner, and a failure keeps
+  // the device on screen. Used after an edit in the Details tab, so the
+  // header picks up the new name/tags without unmounting the tab.
+  const fetchDevice = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
     try {
-      setLoading(true);
-      setError(undefined);
+      if (!silent) {
+        setLoading(true);
+        setError(undefined);
+      }
 
       const response = await fetchWithAuth(`/devices/${deviceId}`);
       if (!response.ok) {
@@ -291,15 +296,23 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
       );
       setDevice(transformedDevice);
     } catch (err) {
+      if (silent) {
+        console.error("[DeviceDetailPage] refresh after edit failed", err);
+        return;
+      }
       setError(
         err instanceof Error
           ? err.message
           : t("deviceDetailPage.failedToFetchDevice"),
       );
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [deviceId]);
+
+  const refreshDevice = useCallback(() => {
+    void fetchDevice({ silent: true });
+  }, [fetchDevice]);
 
   useEffect(() => {
     fetchDevice();
@@ -643,9 +656,12 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
           setScriptPickerOpen(true);
           break;
 
-        case "settings":
-          setSettingsOpen(true);
-          break;
+        case "edit-details":
+          // The Details tab is the one place a device's record (name, role,
+          // tags, purchase date, custom fields) is edited; DeviceDetails
+          // follows the hash.
+          window.location.hash = "details";
+          return;
 
         case "change-site":
           setChangeSiteOpen(true);
@@ -932,13 +948,7 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
         workingOrgId={currentOrgId}
         onSwitchToDeviceOrg={handleSwitchToDeviceOrg}
         onAction={handleAction}
-      />
-      <DeviceSettingsModal
-        device={device}
-        isOpen={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        onSaved={fetchDevice}
-        onAction={handleAction}
+        onDeviceUpdated={refreshDevice}
       />
       {pendingRemove && (
         <RemoveDeviceDialog

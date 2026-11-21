@@ -3,7 +3,6 @@ import {
   Monitor,
   Cpu,
   Shield,
-  Tag,
   Info,
   ListChecks,
   Pencil,
@@ -48,9 +47,14 @@ import { Trans, useTranslation } from "react-i18next";
 import "../../lib/i18n";
 import { formatHardwareIdentityValue } from "./hardwareIdentity";
 import { dropdownChoiceLabel } from "../../lib/customFieldChoice";
+import DeviceTagsCard from "./DeviceTagsCard";
+import PurchaseDateRow from "./PurchaseDateRow";
 
 type DeviceInfoTabProps = {
   deviceId: string;
+  /** A record field was saved; the page refetches so its header (name,
+   *  tags) matches. The Details tab is the one place these fields are edited. */
+  onSaved?: () => void;
 };
 
 type CustomFieldDef = {
@@ -140,6 +144,8 @@ type DeviceInfo = {
   deviceFunction?: string | null;
   deviceFunctionSource?: string | null;
   tags?: string[];
+  purchaseDate?: string | null;
+  purchaseDateSource?: "manual" | "vendor" | null;
   customFields?: Record<string, unknown>;
   tccPermissions?: TCCPermissions | null;
   desktopAccess?: DesktopAccessState | null;
@@ -650,7 +656,7 @@ const statusColors: Record<string, string> = {
   updating: "bg-info/15 text-info border-info/30",
 };
 
-export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
+export default function DeviceInfoTab({ deviceId, onSaved }: DeviceInfoTabProps) {
   // `remote` is loaded for the desktop-access copy shared with ConnectDesktopButton.
   const { t } = useTranslation(["devices", "remote"]);
   const [info, setInfo] = useState<DeviceInfo | null>(null);
@@ -738,6 +744,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           : prev,
       );
       setEditingRole(false);
+      onSaved?.();
     } catch (err) {
       if (err instanceof ActionError) {
         if (err.status === 401) return;
@@ -778,6 +785,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         prev ? { ...prev, displayName: payload.displayName } : prev,
       );
       setEditingDisplayName(false);
+      onSaved?.();
     } catch (err) {
       if (err instanceof ActionError) {
         if (err.status === 401) return; // auth redirect handles UX
@@ -826,6 +834,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
           : prev,
       );
       setEditingField(null);
+      onSaved?.();
     } catch (err) {
       if (err instanceof ActionError) {
         if (err.status === 401) return;
@@ -1060,6 +1069,19 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         <InfoRow
           label={t("deviceInfoTab.model")}
           value={formatHardwareIdentityValue(hw?.model)}
+        />
+        <PurchaseDateRow
+          deviceId={deviceId}
+          value={info?.purchaseDate ?? null}
+          source={info?.purchaseDateSource ?? null}
+          onSaved={(purchaseDate) => {
+            setInfo((prev) =>
+              prev
+                ? { ...prev, purchaseDate, purchaseDateSource: purchaseDate ? "manual" : null }
+                : prev,
+            );
+            onSaved?.();
+          }}
         />
       </Section>
 
@@ -1592,24 +1614,14 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         />
       )}
 
-      {tags.length > 0 && (
-        <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <div className="flex items-center gap-2 mb-4">
-            <Tag className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">{t("deviceInfoTab.tags")}</h2>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {tags.map((tag) => (
-              <span
-                key={tag}
-                className="inline-flex items-center rounded-full border bg-muted/40 px-3 py-1 text-xs font-medium text-muted-foreground"
-              >
-                {tag}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
+      <DeviceTagsCard
+        deviceId={deviceId}
+        tags={tags}
+        onSaved={(next) => {
+          setInfo((prev) => (prev ? { ...prev, tags: next } : prev));
+          onSaved?.();
+        }}
+      />
 
       {applicableFields.length > 0 && (
         <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-2">

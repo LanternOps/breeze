@@ -618,7 +618,7 @@ describe('DeviceActions — phone width (#9028)', () => {
     expect(sheet.contains(runScript)).toBe(true);
     expect(runScript).toHaveAttribute('aria-disabled', 'true');
     expect(runScript).toHaveTextContent('Device is offline');
-    for (const name of [/connect desktop/i, /remote tools/i, /^reboot/i, /shut ?down/i, /device settings/i, /remove/i]) {
+    for (const name of [/connect desktop/i, /remote tools/i, /^reboot/i, /shut ?down/i, /edit details/i, /remove/i]) {
       expect(screen.getAllByRole('menuitem', { name }).length).toBeGreaterThan(0);
     }
   });

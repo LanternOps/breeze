@@ -171,6 +171,9 @@ type DeviceDetailsProps = {
   workingOrgId?: string | null;
   /** Switch the working org to this device's org and stay on the record. */
   onSwitchToDeviceOrg?: () => void;
+  /** A field was saved in the Details tab; the page refetches the device in
+   *  place so the header reflects it. */
+  onDeviceUpdated?: () => void;
 };
 
 // Sub-line record links: foreground colour plus a quiet resting underline, so
@@ -362,6 +365,7 @@ export default function DeviceDetails({
   metricsSampledAt,
   workingOrgId,
   onSwitchToDeviceOrg,
+  onDeviceUpdated,
 }: DeviceDetailsProps) {
   // #9027: the record is in another org than the one the user is working in
   // (fleet view has no working org, so it never shows the cue).
@@ -1099,7 +1103,7 @@ export default function DeviceDetails({
 
       {activeTab === "details" && (
         <div className="space-y-8">
-          <DeviceInfoTab deviceId={device.id} />
+          <DeviceInfoTab deviceId={device.id} onSaved={onDeviceUpdated} />
           <DeviceAssetRecord device={device} />
         </div>
       )}
