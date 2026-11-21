@@ -156,10 +156,13 @@ export function __setAbortDateBodyCapForTests(bytes: number): number {
   return previous;
 }
 
-// Linear: `[^>]*` and `[^<]*` cannot cross the delimiters that end them, and
-// a match can only start at a literal `<AbortDate`. The body comes from a
-// tenant-chosen endpoint, so no pattern here may backtrack super-linearly.
-const ABORT_DATE_ELEMENT = /<AbortDate(?:\s[^>]*)?>([^<]*)<\/AbortDate>|<AbortDate\s*\/>/g;
+// Linear: every quantified run (`[^<>]*`, `[^<]*`, `\s*`) stops at the next
+// `<`, so an attempt starting at one `<AbortDate` never scans past the next
+// tag opener, and the spans attempts scan do not overlap. (`[^>]*` in the
+// attribute part would be quadratic on a body of unterminated openers.) The
+// body comes from a tenant-chosen endpoint, so no pattern here may backtrack
+// super-linearly; the "stays linear" test pins this.
+const ABORT_DATE_ELEMENT = /<AbortDate(?:\s[^<>]*)?>([^<]*)<\/AbortDate>|<AbortDate\s*\/>/g;
 
 let abortDateBodyWarned = false;
 

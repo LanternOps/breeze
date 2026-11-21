@@ -353,6 +353,19 @@ describe('stripUnparseableAbortDateElements', () => {
     expect(out.dropped).toEqual(['', '', '2026-11-23']);
   });
 
+  it('stays linear on a hostile body of unterminated openers (the body comes from a tenant-chosen endpoint)', () => {
+    // ~1 MiB of `<AbortDate x` with no `>` anywhere: a pattern whose attribute
+    // part can run past the next `<` rescans the rest of the body from every
+    // opener (quadratic). Linear matching finishes in milliseconds.
+    for (const unit of ['<AbortDate x', '<AbortDate x>a', '<AbortDate   ']) {
+      const xml = unit.repeat(Math.ceil((1024 * 1024) / unit.length));
+      const started = performance.now();
+      const out = stripUnparseableAbortDateElements(xml);
+      expect(performance.now() - started, JSON.stringify(unit)).toBeLessThan(1000);
+      expect(out.dropped).toEqual([]);
+    }
+  });
+
   it('does not touch an element merely named like it, or escaped text', () => {
     const xml = '<R><AbortDateRule>x</AbortDateRule><Key>&lt;AbortDate&gt;x&lt;/AbortDate&gt;</Key></R>';
     expect(stripUnparseableAbortDateElements(xml)).toEqual({ xml, dropped: [] });
