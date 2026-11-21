@@ -146,7 +146,7 @@ describe('standingStateForTurn', () => {
     await dispatched(NOW);
     const ticket = {
       priority: 'urgent' as const, orgName: 'Org A', number: 'T-9', subject: 'Server closet AC failed',
-      createdAt: new Date('2027-02-01T12:01:00Z'), assigned: false, responseDueAt: new Date('2027-02-01T13:01:00Z'), responded: false,
+      createdAt: new Date('2027-02-01T12:01:00Z'), assigned: false, responseDueAt: new Date('2027-02-01T13:01:00Z'), responded: false, slaPaused: false,
     };
     const withTicket = facts({ tickets: { urgent: 1, high: 0, other: 1, unassignedUrgentHigh: 1, pastResponse: 0, top: [ticket] } });
     h.loadStandingStateFacts.mockResolvedValue(withTicket);
@@ -236,6 +236,28 @@ describe('standingStateForTurn', () => {
     expect(h.resolveGrantCeiling).toHaveBeenCalledTimes(1);
     await turn(later(61_000));
     expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(2);
+  });
+
+  it('the cache is per reach too: one user\'s sessions with different reach never share facts (#11677)', async () => {
+    const reach = (over: Record<string, unknown>) => ({ user: { id: 'u1' }, partnerId: 'p1', scope: 'partner', accessibleOrgIds: ['o1', 'o2'], ...over }) as unknown as AuthContext;
+    const call = (a: AuthContext, ms: number) => standingStateForTurn({ grantId: GRANT, revisionId: REV, sessionId: SESSION, auth: a, now: later(ms) });
+    await call(reach({}), 0);
+    // The same reach, listed in another order: one read.
+    await call(reach({ accessibleOrgIds: ['o2', 'o1'] }), 1_000);
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(1);
+    // Narrower org reach, a site allowlist, a device allowlist: each its own read.
+    await call(reach({ accessibleOrgIds: ['o1'] }), 2_000);
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(2);
+    await call(reach({ allowedSiteIds: ['s1'] }), 3_000);
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(3);
+    await call(reach({ allowedDeviceIds: ['d1'] }), 4_000);
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(4);
+    await call(reach({ accessibleOrgIds: null }), 5_000);
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(5);
+    // forgetStandingStateFacts still drops every reach of the grant.
+    forgetStandingStateFacts(GRANT);
+    await call(reach({}), 6_000);
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(6);
   });
 
   it('the cache is per user and per revision: one caller\'s narrowed facts never serve another', async () => {

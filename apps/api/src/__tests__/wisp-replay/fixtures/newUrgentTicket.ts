@@ -67,7 +67,7 @@ export const newUrgentTicketFixture: ReplayFixture = {
       urgent: 1, high: 0, other: 2, unassignedUrgentHigh: 1, pastResponse: 0,
       top: [{
         priority: 'urgent', orgName: 'Harbor Dental', number: 'T-2027-0006', subject: NEW_TICKET_SUBJECT,
-        createdAt: minutesAgo(1), assigned: false, responseDueAt: minutesAgo(-59), responded: false,
+        createdAt: minutesAgo(1), assigned: false, responseDueAt: minutesAgo(-59), responded: false, slaPaused: false,
       }],
     },
     offlineDevices: { count: 1, top: [{ name: 'PC-07', orgName: 'Juniper Legal', lastSeenAt: minutesAgo(180) }] },

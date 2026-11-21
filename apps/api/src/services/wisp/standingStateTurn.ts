@@ -133,8 +133,24 @@ function factsFingerprint(facts: StandingStateFacts): string {
 /** The fingerprint of the paused block, which carries no facts. */
 const PAUSED_FINGERPRINT = 'paused';
 
+/**
+ * #11677: what the facts are cut by besides the grant: the caller's org reach
+ * and its site and exact-device allowlists (sorted, so order does not matter).
+ * Two sessions of one user with different reach never share a cached read.
+ */
+function reachKey(auth: AuthContext): string {
+  const sorted = (ids: readonly string[] | null | undefined) => (ids == null ? null : [...ids].sort());
+  return createHash('sha256').update(JSON.stringify([
+    auth.partnerId ?? null,
+    auth.scope ?? null,
+    sorted(auth.accessibleOrgIds),
+    sorted(auth.allowedSiteIds),
+    sorted(auth.allowedDeviceIds),
+  ])).digest('hex').slice(0, 32);
+}
+
 async function cachedFacts(input: { grantId: string; revisionId: string; auth: AuthContext }, now: Date): Promise<TurnFacts> {
-  const key = `${input.grantId}:${input.revisionId}:${input.auth.user.id}`;
+  const key = `${input.grantId}:${input.revisionId}:${input.auth.user.id}:${reachKey(input.auth)}`;
   const hit = factsCache.get(key);
   if (hit && now.getTime() - hit.readAt < STANDING_FACTS_TTL_MS) return hit.facts;
 

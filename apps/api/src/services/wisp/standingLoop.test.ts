@@ -181,9 +181,9 @@ describe('renderStandingStateBlock (per-turn snapshot)', () => {
       tickets: {
         urgent: 2, high: 1, other: 3, unassignedUrgentHigh: 2, pastResponse: 1,
         top: [
-          { priority: 'urgent', orgName: 'Northwind Dental', number: 'T-2027-0006', subject: 'Server closet AC failed', createdAt: at('11:56'), assigned: false, responseDueAt: at('13:00'), responded: false },
-          { priority: 'urgent', orgName: 'Harbor Legal', number: 'T-2027-0004', subject: 'Invoice "payment" today', createdAt: at('10:00'), assigned: true, responseDueAt: at('11:00'), responded: false },
-          { priority: 'high', orgName: null, number: null, subject: 'X-ray slow', createdAt: at('09:00', '2027-01-30'), assigned: false, responseDueAt: at('11:00'), responded: true },
+          { priority: 'urgent', orgName: 'Northwind Dental', number: 'T-2027-0006', subject: 'Server closet AC failed', createdAt: at('11:56'), assigned: false, responseDueAt: at('13:00'), responded: false, slaPaused: false },
+          { priority: 'urgent', orgName: 'Harbor Legal', number: 'T-2027-0004', subject: 'Invoice "payment" today', createdAt: at('10:00'), assigned: true, responseDueAt: at('11:00'), responded: false, slaPaused: false },
+          { priority: 'high', orgName: null, number: null, subject: 'X-ray slow', createdAt: at('09:00', '2027-01-30'), assigned: false, responseDueAt: at('11:00'), responded: true, slaPaused: false },
         ],
       },
       offlineDevices: { count: 1, top: [{ name: 'HL-MBP', orgName: 'Harbor Legal', lastSeenAt: at('11:00', '2027-01-29') }] },
@@ -192,7 +192,7 @@ describe('renderStandingStateBlock (per-turn snapshot)', () => {
 
     it('counts them and names the urgent and high tickets, the offline devices, and the approvals waiting', () => {
       const lines = renderStandingStateBlock(facts(attention), NOW).split('\n');
-      expect(lines).toContain('Open tickets: 2 urgent · 1 high · 3 other (2 urgent/high unassigned, 1 past response target)');
+      expect(lines).toContain('Open tickets: 2 urgent · 1 high · 3 other (2 urgent/high unassigned, 1 urgent/high past response target)');
       expect(lines).toContain('- urgent · Northwind Dental · 4m · T-2027-0006 · unassigned: "Server closet AC failed"');
       // A quote inside the subject cannot end its own quote.
       expect(lines).toContain('- urgent · Harbor Legal · 2h · T-2027-0004 · past response target: "Invoice \'payment\' today"');
@@ -219,6 +219,12 @@ describe('renderStandingStateBlock (per-turn snapshot)', () => {
       expect(none).not.toContain('Open tickets');
       expect(none).not.toContain('Offline devices');
       expect(none).not.toContain('Approvals waiting');
+    });
+
+    it('a ticket whose SLA is paused is never headlined as past its response target', () => {
+      const out = renderStandingStateBlock(facts({ tickets: { ...attention.tickets!, top: [{ ...attention.tickets!.top[1]!, slaPaused: true }] } }), NOW);
+      const line = out.split('\n').find((l) => l.startsWith('- urgent'))!;
+      expect(line).toBe('- urgent · Harbor Legal · 2h · T-2027-0004: "Invoice \'payment\' today"');
     });
 
     it('a device that never checked in says so', () => {
@@ -471,7 +477,7 @@ describe('renderStandingStateBlock (per-turn snapshot)', () => {
       ['a resolution outcome', (text) => ({ userActions: [{ kind: 'resolved_concern', at: at('11:00'), text: 's', outcome: text, byViewer: true }] })],
       ['a dismissed concern summary', (text) => ({ userActions: [{ kind: 'dismissed_concern', at: at('11:00'), text }] })],
       ...(['subject', 'orgName', 'number'] as const).map((key): [string, (text: string) => Partial<StandingStateFacts>] => [`a ticket ${key} (#11677)`, (text) => ({
-        tickets: { urgent: 1, high: 0, other: 0, unassignedUrgentHigh: 1, pastResponse: 0, top: [{ priority: 'urgent', orgName: 'Org A', number: 'T-1', subject: 's', createdAt: at('11:00'), assigned: false, responseDueAt: null, responded: false, [key]: text }] },
+        tickets: { urgent: 1, high: 0, other: 0, unassignedUrgentHigh: 1, pastResponse: 0, top: [{ priority: 'urgent', orgName: 'Org A', number: 'T-1', subject: 's', createdAt: at('11:00'), assigned: false, responseDueAt: null, responded: false, slaPaused: false, [key]: text }] },
       })]),
       ...(['name', 'orgName'] as const).map((key): [string, (text: string) => Partial<StandingStateFacts>] => [`an offline device ${key} (#11677)`, (text) => ({
         offlineDevices: { count: 1, top: [{ name: 'PC-1', orgName: 'Org A', lastSeenAt: at('11:00'), [key]: text }] },
@@ -778,13 +784,20 @@ describe('loadStandingStateFacts', () => {
       h.results.wisp_grants = [[grantRow()]];
       h.results.tickets = [
         [{ priority: 'urgent', n: 2, unassigned: 1, pastResponse: 1 }, { priority: 'high', n: 1, unassigned: 1, pastResponse: 0 }, { priority: 'normal', n: 3, unassigned: 3, pastResponse: 2 }],
-        [{ orgId: 'o2', number: 'T-6', subject: 'Server closet AC failed', priority: 'urgent', createdAt: at('11:56'), assignedTo: null, responseDueAt: at('13:00'), firstResponseAt: null }],
+        [
+          { orgId: 'o2', number: 'T-6', subject: 'Server closet AC failed', priority: 'urgent', createdAt: at('11:56'), assignedTo: null, responseDueAt: at('13:00'), firstResponseAt: null, slaPausedAt: null },
+          { orgId: 'o2', number: 'T-7', subject: 'Waiting on vendor', priority: 'high', createdAt: at('10:00'), assignedTo: 'u9', responseDueAt: at('11:00'), firstResponseAt: null, slaPausedAt: at('10:30') },
+        ],
       ];
       h.results.organizations = [[{ id: 'o2', name: 'Northwind Dental' }]];
       const out = await loadStandingStateFacts(ceiling(), auth(), NOW);
       expect(out?.tickets).toEqual({
-        urgent: 2, high: 1, other: 3, unassignedUrgentHigh: 2, pastResponse: 3,
-        top: [{ priority: 'urgent', orgName: 'Northwind Dental', number: 'T-6', subject: 'Server closet AC failed', createdAt: at('11:56'), assigned: false, responseDueAt: at('13:00'), responded: false }],
+        // A normal ticket past its target is not counted: only urgent and high ones are.
+        urgent: 2, high: 1, other: 3, unassignedUrgentHigh: 2, pastResponse: 1,
+        top: [
+          { priority: 'urgent', orgName: 'Northwind Dental', number: 'T-6', subject: 'Server closet AC failed', createdAt: at('11:56'), assigned: false, responseDueAt: at('13:00'), responded: false, slaPaused: false },
+          { priority: 'high', orgName: 'Northwind Dental', number: 'T-7', subject: 'Waiting on vendor', createdAt: at('10:00'), assigned: true, responseDueAt: at('11:00'), responded: false, slaPaused: true },
+        ],
       });
       const [counts, top] = ticketReads();
       for (const read of [counts!, top!]) {

@@ -128,7 +128,11 @@ export type StandingStateFacts = StandingLoopFacts & {
     high: number;
     other: number;
     unassignedUrgentHigh: number;
-    /** Never answered and past the response target, any priority. */
+    /**
+     * Urgent or high, never answered, SLA not paused, and past the response
+     * target. Not low/normal ones: their crossing a deadline as time passes
+     * would re-send the block (standingStateTurn.ts fingerprint).
+     */
     pastResponse: number;
     top: StandingTicket[];
   } | null;
@@ -151,6 +155,8 @@ export type StandingTicket = {
   assigned: boolean;
   responseDueAt: Date | null;
   responded: boolean;
+  /** The SLA clock is paused: never past its response target while so. */
+  slaPaused: boolean;
 };
 
 /**
@@ -257,6 +263,7 @@ type OpenTicketRead = {
     assignedTo: string | null;
     responseDueAt: Date | string | null;
     firstResponseAt: Date | string | null;
+    slaPausedAt: Date | string | null;
   }>;
 };
 
@@ -284,6 +291,7 @@ async function readOpenTickets(readAuth: AuthContext, now: Date): Promise<OpenTi
       assignedTo: tickets.assignedTo,
       responseDueAt: tickets.responseDueAt,
       firstResponseAt: tickets.firstResponseAt,
+      slaPausedAt: tickets.slaPausedAt,
     })
     .from(tickets)
     .where(and(where, inArray(tickets.priority, [...URGENT_HIGH])))
@@ -487,8 +495,10 @@ function ticketFacts(read: OpenTicketRead, names: Map<string, string>): NonNulla
     if (row.priority === 'urgent') out.urgent += n;
     else if (row.priority === 'high') out.high += n;
     else out.other += n;
-    if (urgentOrHigh) out.unassignedUrgentHigh += Number(row.unassigned);
-    out.pastResponse += Number(row.pastResponse);
+    if (urgentOrHigh) {
+      out.unassignedUrgentHigh += Number(row.unassigned);
+      out.pastResponse += Number(row.pastResponse);
+    }
   }
   const top = read.top.flatMap((t): StandingTicket[] => {
     const createdAt = asDate(t.createdAt);
@@ -503,6 +513,7 @@ function ticketFacts(read: OpenTicketRead, names: Map<string, string>): NonNulla
       assigned: t.assignedTo != null,
       responseDueAt: asDate(t.responseDueAt),
       responded: t.firstResponseAt != null,
+      slaPaused: t.slaPausedAt != null,
     }];
   });
   return { ...out, top };
@@ -623,7 +634,7 @@ const minutesBetween = (from: Date, to: Date): number => Math.max(0, Math.floor(
 function ticketCountsLine(t: NonNullable<StandingStateFacts['tickets']>): string {
   const extra = [
     ...(t.unassignedUrgentHigh > 0 ? [`${t.unassignedUrgentHigh} urgent/high unassigned`] : []),
-    ...(t.pastResponse > 0 ? [`${t.pastResponse} past response target`] : []),
+    ...(t.pastResponse > 0 ? [`${t.pastResponse} urgent/high past response target`] : []),
   ];
   return `Open tickets: ${t.urgent} urgent · ${t.high} high · ${t.other} other${extra.length > 0 ? ` (${extra.join(', ')})` : ''}`;
 }
@@ -635,7 +646,7 @@ function ticketLine(t: StandingTicket, now: Date): string {
     age(minutesBetween(t.createdAt, now)),
     ...(t.number ? [oneLine(t.number, TICKET_NUMBER_MAX_CHARS)] : []),
     ...(t.assigned ? [] : ['unassigned']),
-    ...(!t.responded && t.responseDueAt !== null && t.responseDueAt.getTime() <= now.getTime() ? ['past response target'] : []),
+    ...(!t.responded && !t.slaPaused && t.responseDueAt !== null && t.responseDueAt.getTime() <= now.getTime() ? ['past response target'] : []),
   ];
   return `- ${parts.join(' · ')}: ${quoted(t.subject, TICKET_SUBJECT_MAX_CHARS)}`;
 }
