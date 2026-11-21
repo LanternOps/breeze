@@ -23,20 +23,24 @@ One plan document per wave. Each wave is one PR on its own branch
 `feature/<parent#>-learned-networks/wave-<sub-issue#>` with `Closes #<sub-issue#>` in the PR body. State
 lives on GitHub (feature-lifecycle); the wave issue is the source of truth for status, never this index.
 
-| Wave | Plan | Depends on | Ships |
-|---|---|---|---|
-| W01a | [Schema and tenancy: five tables, new columns, RLS, registrations, org-merge fold, device-move cleanup](2026-11-21-learned-networks-w01a-schema-tenancy.md) | — | schema only, no behavior |
-| W01b | [Learning: heartbeat ingest, digest, WAN history, kill switch, last-seen batch, retention](2026-11-21-learned-networks-w01b-learning-ingest.md) | W01a | API learns (nothing sends yet) |
-| W02a | [Agent: attachment report in the heartbeat](2026-11-21-learned-networks-w02a-agent-attachment-report.md) | wire contract C1; promoted only after W01b is deployed | agent release, networks start appearing |
-| W02b | [Agent spike: a fresh layer-2 answer from the gateway on Windows, macOS and Linux](2026-11-21-learned-networks-w02b-agent-fresh-proof-spike.md) | — (starts day one) | `gatewayproof` package + lab evidence. **Gate.** |
-| W02c | [Agent: guarded discovery scan (select, prove, bind, watch, re-prove)](2026-11-21-learned-networks-w02c-agent-guarded-scan.md) | W02a, W02b passed | agent release |
-| W03a | [API: the gate, the shared command builder, the attempt record, result verification](2026-11-21-learned-networks-w03a-gate-dispatch-verify.md) | W01b | inert (no site can be gated yet) |
-| W03b | [API: saved SNMP credentials follow fingerprints (grants)](2026-11-21-learned-networks-w03b-snmp-grants.md) | W03a | inert |
-| W03c | [API: network routes (list, assign, unassign, rename, ignore, merge, stop requiring)](2026-11-21-learned-networks-w03c-network-routes.md) | W03b, **W02c released** | **the switch**: sites can be gated |
-| W04 | [Web: Networks tab, profile form, Profiles notice, Jobs and Assets changes](2026-11-21-learned-networks-w04-web.md) | W03c | admin-visible surface |
-| W05 | [Docs, release notes and the two-router lab proof](2026-11-21-learned-networks-w05-docs-lab-proof.md) | W04 | discovery gate proven |
-| W06a | [Agent: guarded SNMP poll and network checks](2026-11-21-learned-networks-w06a-agent-guarded-probes.md) | W02c | agent release |
-| W06b | [API and web: SNMP polling, monitors and the asset probe follow the gate](2026-11-21-learned-networks-w06b-api-other-producers.md) | W03c, **W06a released** | feature closes |
+| Wave | GitHub wave | Plan | Depends on | Ships |
+|---|---|---|---|---|
+| W01a | W01 | [Schema and tenancy: five tables, new columns, RLS, registrations, org-merge fold, device-move cleanup](2026-11-21-learned-networks-w01a-schema-tenancy.md) | — | schema only, no behavior |
+| W01b | W02 | [Learning: heartbeat ingest, digest, WAN history, kill switch, last-seen batch, retention](2026-11-21-learned-networks-w01b-learning-ingest.md) | W01a | API learns (nothing sends yet) |
+| W02a | W03 | [Agent: attachment report in the heartbeat](2026-11-21-learned-networks-w02a-agent-attachment-report.md) | wire contract C1; promoted only after W01b is deployed | agent release, networks start appearing |
+| W02b | W04 | [Agent spike: a fresh layer-2 answer from the gateway on Windows, macOS and Linux](2026-11-21-learned-networks-w02b-agent-fresh-proof-spike.md) | — (starts day one) | `gatewayproof` package + lab evidence. **Gate.** |
+| W02c | W05 | [Agent: guarded discovery scan (select, prove, bind, watch, re-prove)](2026-11-21-learned-networks-w02c-agent-guarded-scan.md) | W02a, W02b passed | agent release |
+| W03a | W06 | [API: the gate, the shared command builder, the attempt record, result verification](2026-11-21-learned-networks-w03a-gate-dispatch-verify.md) | W01b | inert (no site can be gated yet) |
+| W03b | W07 | [API: saved SNMP credentials follow fingerprints (grants)](2026-11-21-learned-networks-w03b-snmp-grants.md) | W03a | inert |
+| W03c | W08 | [API: network routes (list, assign, unassign, rename, ignore, merge, stop requiring)](2026-11-21-learned-networks-w03c-network-routes.md) | W03b, **W02c released** | **the switch**: sites can be gated |
+| W04 | W09 | [Web: Networks tab, profile form, Profiles notice, Jobs and Assets changes](2026-11-21-learned-networks-w04-web.md) | W03c | admin-visible surface |
+| W05 | W10 | [Docs, release notes and the two-router lab proof](2026-11-21-learned-networks-w05-docs-lab-proof.md) | W04 | discovery gate proven |
+| W06a | W11 | [Agent: guarded SNMP poll and network checks](2026-11-21-learned-networks-w06a-agent-guarded-probes.md) | W02c | agent release |
+| W06b | W12 | [API and web: SNMP polling, monitors and the asset probe follow the gate](2026-11-21-learned-networks-w06b-api-other-producers.md) | W03c, **W06a released** | feature closes |
+
+The feature tool accepts wave keys of the form `W01` only, so the tracking issue numbers the twelve
+PRs W01 to W12 ("GitHub wave" above, the key to pass to `start_wave` and `complete_wave`), and each
+wave issue's title starts with its plan key. The plan key (W01a …) is what every plan document uses.
 
 The spec suggested six waves (§14). They are kept as W01 to W06; three are split so that each PR has one
 reviewable risk (tenancy, agent-shipped code, the switch).
@@ -65,7 +69,8 @@ a new file that sorts after everything on `origin/main` and says so in its PR.
 
 **Product rules from the spec**
 
-- A site that has never been gated behaves exactly as before, through every producer (§5, anti-goal 5).
+- A site that has never been gated selects agents and sends the same commands as before, through every
+  producer (§5, anti-goal 5). The only changes that reach such a site are the two in plan call 13.
 - Nothing here ever changes a device's site (O6).
 - Fail closed: a gated site with no assigned network, no eligible agent, or a learner that is switched
   off does not scan. It never falls back to unrestricted (§5, §8.1).

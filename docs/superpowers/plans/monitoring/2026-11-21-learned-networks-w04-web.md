@@ -737,7 +737,7 @@ it('PATCH and POST carry networkId, null for Any');
 | `confirm.unassignKeepsGate` | {{site}} still requires a network after this. |
 | `confirm.unassign` | Unassign |
 | `confirm.stopRequiringTitle` | Stop requiring a network for {{site}}? |
-| `confirm.stopRequiringBody` | Scans for {{site}} may again run from any of its agents, wherever they are. Saved SNMP credentials stay limited to the networks they were entered for. |
+| `confirm.stopRequiringBody` | Scans for {{site}} may again run from any of its agents, wherever they are. Profiles with saved SNMP credentials will not run until the credentials are entered again. |
 | `confirm.stopRequiring` | Stop requiring |
 | `merge.title` | Merge a network into {{network}} |
 | `merge.source` / `merge.chooseSource` | Network to merge in / Choose a network |
