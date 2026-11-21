@@ -333,6 +333,14 @@ export default function ApprovalsInbox() {
   // `clearRowErrors` drops both together, and the `batch_not_homogeneous`
   // branch in `decideGroup` adds to both together.
   const [driftedIds, setDriftedIds] = useState<ReadonlySet<string>>(() => new Set());
+  /** Cards the server refused for a CROSS-ORG batch only (another partner's
+   *  org, an org this session cannot reach, …). They leave the cross-org
+   *  panel but stay in their per-org group with no row error: those reasons
+   *  say nothing about whether the card is a good same-org batch. Never
+   *  written by a same-org decision, never read by `buildSections`. */
+  const [crossOrgDriftedIds, setCrossOrgDriftedIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [groupErrors, setGroupErrors] = useState<Record<string, GroupErrorKind>>({});
   const [denyingId, setDenyingId] = useState<string | null>(null);
   const [denyReason, setDenyReason] = useState('');
@@ -1013,7 +1021,16 @@ export default function ApprovalsInbox() {
         // old whole-group banner when the server didn't name any offending
         // ids (defensive — should not happen after the `offending` plumbing
         // fix in `authenticator.ts`/`intentApprovals.ts`).
-        if (outcome.offending.length > 0) {
+        if (outcome.offending.length > 0 && scope === 'cross_org') {
+          // Cross-org refusal: drop the offending cards from the cross-org
+          // panel only. The survivors re-form as a smaller panel whose
+          // reviewed set no longer matches, so it asks for a fresh review.
+          setCrossOrgDriftedIds((current) => {
+            const next = new Set(current);
+            for (const id of outcome.offending) next.add(id);
+            return next;
+          });
+        } else if (outcome.offending.length > 0) {
           setRowErrors((current) => {
             const next = { ...current };
             for (const id of outcome.offending) next[id] = 'driftedFromBatch';
@@ -1403,7 +1420,11 @@ export default function ApprovalsInbox() {
   const visibleSections = buildSections(visibleRows, driftedIds);
   // Same rows, same drift set: a filter, a search or a drifted card shapes the
   // cross-org panels exactly as it shapes the per-org groups below them.
-  const crossOrgGroups = buildCrossOrgGroups(visibleRows, driftedIds);
+  // Cross-org panels also skip what a cross-org batch alone refused.
+  const crossOrgGroups = buildCrossOrgGroups(
+    visibleRows,
+    crossOrgDriftedIds.size === 0 ? driftedIds : new Set([...driftedIds, ...crossOrgDriftedIds]),
+  );
   const clearFilters = () => {
     setOrgFilter('');
     setSearchQuery('');

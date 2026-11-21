@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ApprovalsInbox from './ApprovalsInbox';
 import { fetchWithAuth } from '../../stores/auth';
+import { AssertionChallengeError } from '../../stores/authenticator';
 
 // Only the WebAuthn ceremony is stubbed; `decideIntentApprovalBatch` stays REAL
 // so these cases prove the scope reaches both the challenge and the decide.
@@ -232,5 +233,80 @@ describe('ApprovalsInbox — cross-org batch panel', () => {
     await waitFor(() => expect(screen.queryByTestId('approval-row-a1')).not.toBeInTheDocument());
     expect(await screen.findByTestId(`cross-org-batch-changed-${KEY}`)).toBeInTheDocument();
     expect(screen.getByTestId(`cross-org-batch-approve-${KEY}`)).toBeDisabled();
+  });
+
+  describe('a cross-org-only refusal (batch_not_homogeneous with offending ids)', () => {
+    // org-1's two cards form a per-org group; the server refuses them for the
+    // CROSS-ORG batch only (say, org-1 belongs to another partner). They are
+    // still a perfectly good same-org batch.
+    const APPROVALS = [
+      agentCard('a1', 'org-1'),
+      agentCard('a2', 'org-1'),
+      agentCard('b1', 'org-2'),
+      agentCard('c1', 'org-3'),
+    ];
+    const PER_ORG_GROUP = 'approval-group-org-1--manage_patches--install';
+
+    const expectPerOrgGroupIntactAndPanelReformed = async () => {
+      // The re-formed panel needs a fresh review before it can act again.
+      expect(await screen.findByTestId(`cross-org-batch-changed-${KEY}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`cross-org-batch-approve-${KEY}`)).toBeDisabled();
+      expect(screen.getByTestId(`cross-org-batch-summary-${KEY}`)).toHaveTextContent(
+        '2 manage_patches:install requests across 2 organizations',
+      );
+
+      // The refused cards keep their per-org "Approve all" group and carry no
+      // "decide it on its own" error.
+      expect(screen.getByTestId(PER_ORG_GROUP)).toBeInTheDocument();
+      expect(screen.getByTestId('approval-group-approve-org-1--manage_patches--install')).toHaveTextContent(
+        'Approve all (2)',
+      );
+      expect(screen.queryByTestId('approval-error-a1')).toBeNull();
+      expect(screen.queryByTestId('approval-error-a2')).toBeNull();
+
+      // Re-review freezes the smaller set, and Approve sends exactly that.
+      fireEvent.click(screen.getByTestId(`cross-org-batch-rereview-${KEY}`));
+      expect(screen.queryByTestId('cross-org-batch-member-a1')).toBeNull();
+      expect(screen.getByTestId('cross-org-batch-member-b1')).toBeInTheDocument();
+      expect(screen.getByTestId(`cross-org-batch-approve-${KEY}`)).toBeEnabled();
+    };
+
+    it('refused at the CHALLENGE (approve): only the cross-org panel drops the offending cards', async () => {
+      routeFetch(APPROVALS);
+      authenticatorMock.getBatchApprovalAssertion.mockRejectedValueOnce(
+        new AssertionChallengeError('batch_not_homogeneous', 422, 'batch_not_homogeneous', ['a1', 'a2']),
+      );
+      render(<ApprovalsInbox />);
+
+      fireEvent.click(await screen.findByTestId(`cross-org-batch-review-${KEY}`));
+      fireEvent.click(screen.getByTestId(`cross-org-batch-approve-${KEY}`));
+
+      await expectPerOrgGroupIntactAndPanelReformed();
+
+      authenticatorMock.getBatchApprovalAssertion.mockReturnValue(new Promise(() => {}));
+      fireEvent.click(screen.getByTestId(`cross-org-batch-approve-${KEY}`));
+      await waitFor(() =>
+        expect(authenticatorMock.getBatchApprovalAssertion).toHaveBeenLastCalledWith(
+          '/mobile/approvals',
+          ['b1', 'c1'],
+          'approved',
+          'cross_org',
+        ),
+      );
+    });
+
+    it('refused at the DECIDE (deny): same — the per-org group keeps its cards', async () => {
+      routeFetch(APPROVALS, {
+        status: 422,
+        payload: { error: 'batch_not_homogeneous', offending: ['a1', 'a2'] },
+      });
+      render(<ApprovalsInbox />);
+
+      fireEvent.click(await screen.findByTestId(`cross-org-batch-review-${KEY}`));
+      fireEvent.click(screen.getByTestId(`cross-org-batch-deny-${KEY}`));
+      fireEvent.click(screen.getByTestId(`cross-org-batch-deny-confirm-${KEY}`));
+
+      await expectPerOrgGroupIntactAndPanelReformed();
+    });
   });
 });
