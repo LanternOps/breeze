@@ -1,9 +1,9 @@
 ---
-status: draft (spec-drafted, revised after one independent review: AGREE WITH CHANGES on full default, alwaysLoad core and call_tool re-entering the auth path; the reviewer's blocker on approval continuation is now §3.4). Awaiting Todd's Gate A on the Open Decisions in §7.
+status: APPROVED 2026-11-21 (Todd, Gate A) — every Open Decision in §7 resolved to its recommended option. One independent review round (Codex gpt-6-astra xhigh, read-only, 2026-11-08) folded in. Plan: docs/superpowers/plans/ai-mcp/<to be written>
 date: 2026-11-08
-tracking_issue: (none yet; file under the AI/MCP epic when Gate A passes)
+tracking_issue: (register after the plan; supersedes/absorbs #6144 "[MCP] tools/list ships ~206 full schemas" — link both ways)
 covers: "External MCP server tools/list size: progressive disclosure (search / inspect / execute) for API-key and OAuth clients that have no tool search of their own"
-related: "#6151 (A-W04 tool search in chat), #10065 (W19 lazy tool index), #6156 (per-grant MCP domains), #6157 (stateless 2026-07-28 era), #6158 (Tier 3 intents over MCP), #6159 (MCP Apps), #6160 (Tasks), #6407 (tools/list pagination), #7429 (per-endpoint tool-search capability), #9596 (small-model profiles, sibling spec 2026-11-06)"
+related: "#6151 (A-W04 tool search in chat), #10065 (W19 lazy tool index), #6156 (per-grant MCP domains), #6157 (stateless 2026-07-28 era), #6158 (Tier 3 intents over MCP), #6159 (MCP Apps), #6160 (Tasks), #6407 (tools/list pagination), #7429 (per-endpoint tool-search capability), #9596 (small-model profiles, sibling spec 2026-11-06), #6144 ([MCP] tools/list ships ~206 full schemas)"
 ---
 
 # Progressive disclosure for the external MCP server

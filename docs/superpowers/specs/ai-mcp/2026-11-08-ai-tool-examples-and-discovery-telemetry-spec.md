@@ -1,7 +1,7 @@
 ---
-status: draft (spec-drafted, one independent review round applied 2026-11-08 — AGREE WITH CHANGES on the AI_TOOL_EXAMPLES bridge and the session-keyed table; 14 corrections folded into §1, §3, §4, §7, §8). Awaiting Todd's Gate A on the Open Decisions in §6. Quorum: the independent review round was a Codex gpt-6-astra xhigh read-only pass covering OD1/OD2/OD3.
+status: APPROVED 2026-11-21 (Todd, Gate A) — every Open Decision in §6 resolved to its recommended option. One independent review round (Codex gpt-6-astra xhigh, read-only, 2026-11-08) folded in. Plan: docs/superpowers/plans/ai-mcp/<to be written>
 date: 2026-11-08
-tracking_issue: TBD (register after Gate A)
+tracking_issue: (register after the plan)
 covers: "tool-use input examples on the Breeze AI tool registry; tool-discovery telemetry (ToolSearch queries, results, calls, outcomes) that measures them and feeds description/searchHint tuning and the eval harness"
 sibling: 2026-11-08-programmatic-tool-calling-decision.md (asks this spec for its E1 fan-out and E2 shape-catalogue numbers)
 related: "2026-09-17-agent-tool-efficiency-baseline.md (§10 search cost/accuracy on headless agents), 2026-09-17-agent-tool-efficiency-and-mcp-modernization-design.md (A-W02 searchHint, A-W04 ToolSearch), 2026-11-06-small-model-tool-profiles-spec.md (compactSchemas strips advisory keywords; exposure fingerprint), #6151, #10400, #10411, #10065 (W19 lazy index), #7429 (tool search on BYO endpoints), #3094 (dropped -32602 calls)"
@@ -11,7 +11,7 @@ related: "2026-09-17-agent-tool-efficiency-baseline.md (§10 search cost/accurac
 
 **Scope:** the AI tool registry (`apps/api/src/services/aiTools*.ts`, `aiToolSchemas*.ts`, `aiAgentSdkTools.ts`), the chat stream (`streamingSessionManager.ts`), the tool ledger (`ai_tool_executions`), the eval harness (`services/llm/toolCapture/**`, `services/llm/toolEval/**`, `ai:tool-eval`) and one admin read surface. Two coupled parts: (1) examples attached to tool definitions, (2) telemetry that shows whether tools are found and called correctly, so (1) and the existing `searchHint`/description text can be tuned on evidence. This document records intent and decisions. It contains no plan and no code.
 
-**Evidence:** "verified" means re-read on `origin/main` at `127bb8b543` (2026-11-08), or in the installed packages of the main checkout (`@anthropic-ai/claude-agent-sdk` 0.3.288, `@anthropic-ai/sdk` 0.131.0; `apps/api/package.json` pins `^0.3.296` / `^0.133.0`, not installed here). "Inferred" follows from the code but was not exercised. "Reported" is a number from Anthropic's published material, not measured by us.
+**Evidence:** "verified" means re-read on `origin/main` at `127bb8b543` (2026-11-08), or in the installed packages of the main checkout (`@anthropic-ai/claude-agent-sdk` 0.3.288, `@anthropic-ai/sdk` 0.131.0; `apps/api/package.json` pins `^0.3.296` / `^0.133.0`, not installed here). "Inferred" follows from the code but was not exercised. "Reported" is a number from Anthropic's published material, not measured by us. Re-checked 2026-11-21: `apps/api/package.json` now pins `^0.3.323`; an installed 0.3.323 copy has no `inputExamples` / `input_examples` plumbing in `sdk.d.ts` (grep count 0), so OD1-C (the `AI_TOOL_EXAMPLES=auto` description-suffix bridge) stands and spike 0a is answered.
 
 ## 1. Problem
 
@@ -216,7 +216,7 @@ Options evaluated against `docs/agents/tenancy-rls.md`:
 ## 8. Rollout
 
 1. **Telemetry first, dark.** Migration + observer + `discovery` column + report script ship with no example declared. Two weeks of baseline on the hosted instances give the per-tool schema-invalid and discovery rates examples will be judged against. Reports stay local; only aggregates are quoted in issues or PRs.
-2. **Spikes** (plan task 0): 0a — OD1 on the pinned SDK, record the finding, set `AI_TOOL_EXAMPLES` default accordingly; 0b — capture ToolSearch fixtures with `ai:tool-capture` and fix the observable field list (§3.4). Fixtures committed to the repo are synthesised from the captured shape, never raw.
+2. **Spikes** (plan task 0): 0a — OD1 on the pinned SDK, record the finding, set `AI_TOOL_EXAMPLES` default accordingly (answered 2026-11-21: 0.3.323 has no `inputExamples` plumbing, so the default is `auto` with the suffix bridge); 0b — capture ToolSearch fixtures with `ai:tool-capture` and fix the observable field list (§3.4). Fixtures committed to the repo are synthesised from the captured shape, never raw.
 3. **Wave 1 examples** (OD6-A), gated by the contract test and the eval A/B; deploy; compare against the baseline by `surface_fingerprint`.
 4. **Dashboard section** once the report has stabilised what to show.
 5. **Kill switch:** `AI_TOOL_EXAMPLES=off` removes every advertised example without a deploy of registry code; telemetry has no switch (it is passive and failure-isolated) beyond the existing `AI_TOOL_SEARCH=off`, which removes searches and therefore events.

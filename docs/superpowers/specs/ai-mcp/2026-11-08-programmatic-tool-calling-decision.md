@@ -1,6 +1,6 @@
 ---
 title: Programmatic tool calling for fleet-scale AI work — decision
-status: draft (decision document), revised after independent review 2026-11-08 (AGREE WITH CHANGES; all points folded in). Awaiting Todd's call on the Open Decisions in §8. No plan, no code.
+status: APPROVED 2026-11-21 (Todd, Gate A) — every Open Decision in §8 resolved to its recommended option; OD1(b) (fleet aggregate dimensions + fleet-step flow at the existing 10-device ceiling) is the only build item and gets a plan; OD2 no, OD4 keep 10, OD6 read accelerators only. One independent review round (Codex gpt-6-astra xhigh, read-only, 2026-11-08) folded in. Plan: docs/superpowers/plans/ai-mcp/<to be written>
 date: 2026-11-08
 kind: decision
 sibling: 2026-11-08-ai-tool-examples-and-discovery-telemetry-spec.md (defines the discovery telemetry this decision depends on)
