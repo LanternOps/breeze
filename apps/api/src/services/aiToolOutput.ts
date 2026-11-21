@@ -1332,9 +1332,14 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   manage_startup_items: new Set(['name', 'itemId', 'path', 'error']),
   get_active_users: new Set(['username']),
   // Endpoint messaging history (#8742): a receipt's session name is whatever
-  // the agent posted (up to 256 characters, any shape), and the hostname is
-  // device-reported. Status, surface and error codes are server-side enums.
-  send_endpoint_message: new Set(['sessionUsername', 'hostname']),
+  // the agent posted (up to 256 characters, any shape), the hostname is
+  // device-reported, and a message's title/body were written by whichever user
+  // sent it, not necessarily this session's operator. Status, surface and
+  // error codes are server-side enums.
+  send_endpoint_message: new Set(['sessionUsername', 'hostname', 'title', 'body']),
+  // SentinelOne threat rows carry the vendor- and endpoint-chosen artifact
+  // names list_edr_detections fences, plus the device-reported hostname.
+  get_s1_threats: new Set(['threatName', 'processName', 'filePath', 'deviceName']),
   get_user_experience_metrics: new Set(['username']),
   capture_agent_pprof: new Set(['error']),
   set_agent_log_level: new Set(['error', 'warning']),

@@ -177,7 +177,10 @@ const EXPECTED_FENCED: Readonly<Record<string, readonly string[]>> = {
   remediate_sensitive_data: ['filePath', 'error'],
   get_sensitive_data_overview: ['filePath', 'path', 'error'],
   // The receipt's session name is whatever the agent posted; the hostname is device-reported.
-  send_endpoint_message: ['sessionUsername', 'hostname'],
+  // Title and body were written by whichever user sent the message, who need not be the reader.
+  send_endpoint_message: ['sessionUsername', 'hostname', 'title', 'body'],
+  // aiToolsSentinelOne.ts dispatches no command, so discovery above never reaches it.
+  get_s1_threats: ['threatName', 'processName', 'filePath', 'deviceName'],
 };
 
 describe('contract: pinned fences for high-risk tools', () => {
