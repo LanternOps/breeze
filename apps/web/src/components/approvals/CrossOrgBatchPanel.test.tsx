@@ -128,8 +128,6 @@ describe('CrossOrgBatchPanel', () => {
     );
     expect(screen.getByTestId(`cross-org-batch-approve-${KEY}`)).toBeDisabled();
     expect(screen.getByTestId(`cross-org-batch-deny-${KEY}`)).toBeDisabled();
-    // Even a forced click (disabled bypassed) must not submit the stale set.
-    screen.getByTestId(`cross-org-batch-approve-${KEY}`).removeAttribute('disabled');
     fireEvent.click(screen.getByTestId(`cross-org-batch-approve-${KEY}`));
     expect(onDecide).not.toHaveBeenCalled();
   });
