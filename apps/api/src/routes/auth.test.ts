@@ -325,7 +325,8 @@ vi.mock('../db', () => ({
     transaction: vi.fn()
   },
   withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
-  runOutsideDbContext: vi.fn((fn: () => any) => fn())
+  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+  getCurrentDbAccessContext: vi.fn(() => undefined)
 }));
 
 // advanceUserEpochs/revokeAllRefreshFamilies stay REAL (they just issue
@@ -2550,7 +2551,7 @@ describe('auth routes', () => {
       vi.mocked(verifyToken).mockResolvedValue({
         sub: 'user-123', email: 'test@example.com', roleId: null, orgId: null,
         partnerId: null, scope: 'system', type: 'refresh', mfa: false,
-        iat: 123456, jti: 'refresh-jti-orphan'
+        iat: 123456, jti: 'refresh-jti-orphan', fam: 'family-id-mock'
       });
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -2579,6 +2580,70 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
+      // Reached the resolver (the token carries a family), and ended the session.
+      expect(revokeFamily).toHaveBeenCalledWith('family-id-mock', 'tenant-axis-lost');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('refuses a system session refresh once the platform admin holds a tenant membership', async () => {
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123', email: 'test@example.com', roleId: null, orgId: null,
+        partnerId: null, scope: 'system', type: 'refresh', mfa: false,
+        iat: 123456, jti: 'refresh-jti-admin', fam: 'family-id-mock'
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'user-123', email: 'test@example.com', status: 'active', isPlatformAdmin: true }]) }) })
+        } as any)
+        // The user-wide lookup now finds a partner membership.
+        .mockReturnValue({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-new', roleId: 'role-new', isPlatformAdmin: true }]) }) })
+        } as any);
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=admin-refresh-token; breeze_csrf_token=test-csrf-token'
+        }
+      });
+
+      expect(res.status).toBe(401);
+      expect(revokeFamily).toHaveBeenCalledWith('family-id-mock', 'tenant-axis-lost');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('refuses (and revokes) a system session whose admin gained a membership on an inactive tenant', async () => {
+      vi.mocked(verifyToken).mockResolvedValue({
+        sub: 'user-123', email: 'test@example.com', roleId: null, orgId: null,
+        partnerId: null, scope: 'system', type: 'refresh', mfa: false,
+        iat: 123456, jti: 'refresh-jti-admin-inactive', fam: 'family-id-mock'
+      });
+      vi.mocked(assertActiveTenantContext).mockRejectedValue(new TenantInactiveError('Partner is not active'));
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'user-123', email: 'test@example.com', status: 'active', isPlatformAdmin: true }]) }) })
+        } as any)
+        .mockReturnValue({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-suspended', roleId: 'role-new' }]) }) })
+        } as any);
+
+      const res = await app.request('/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_refresh_token=admin-inactive-refresh-token; breeze_csrf_token=test-csrf-token'
+        }
+      });
+
+      expect(res.status).toBe(401);
+      expect(revokeFamily).toHaveBeenCalledWith('family-id-mock', 'tenant-axis-lost');
       expect(createTokenPair).not.toHaveBeenCalled();
     });
 
@@ -2821,7 +2886,8 @@ describe('auth routes', () => {
         email: 'test@example.com',
         roleId: 'stale-role',
         orgId: 'org-live',
-        partnerId: null,
+        // A stale partner claim is ignored: the org's owner is re-read.
+        partnerId: 'partner-stale',
         scope: 'organization',
         type: 'refresh',
         mfa: false,
@@ -2938,8 +3004,13 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
-      expect(db.select).toHaveBeenCalledTimes(2);
-      expect(revokeFamily).toHaveBeenCalledWith('family-id-mock', 'tenant-membership-lost');
+      expect(revokeFamily).toHaveBeenCalledWith('family-id-mock', 'tenant-axis-lost');
+      expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'auth.refresh.tenant_axis_lost',
+        resourceId: 'family-id-mock',
+        result: 'denied',
+        details: expect.objectContaining({ mintedScope: 'partner' }),
+      }));
       expect(createTokenPair).not.toHaveBeenCalled();
       expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
     });
@@ -2989,6 +3060,11 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
+      expect(assertActiveTenantContext).toHaveBeenCalledWith({
+        scope: 'partner',
+        partnerId: 'partner-old',
+        orgId: null
+      });
       expect(createTokenPair).not.toHaveBeenCalled();
       // An inactive tenant is not a lost membership: the family is left alone.
       expect(revokeFamily).not.toHaveBeenCalled();

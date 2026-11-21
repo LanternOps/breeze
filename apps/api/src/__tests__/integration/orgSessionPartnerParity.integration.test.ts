@@ -24,6 +24,7 @@ import { and, eq } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import {
   configurationPolicies,
+  organizations,
   organizationUsers,
   partnerUsers,
   refreshTokenFamilies,
@@ -557,9 +558,50 @@ describe('refresh re-issues the session\'s own tenant scope', () => {
     expect(await refreshRes.json()).not.toHaveProperty('tokens');
     expect(await familyRevokedAt(cookies)).toBeInstanceOf(Date);
 
-    // The user still holds the partner membership; a retry must not reach it.
+    // The revocation outlasts the membership change: re-adding the org
+    // membership does not revive this session (the partner membership never
+    // could). The user signs in again.
+    await assignUserToOrganization(user.id, fx.orgId, fx.roleId);
     const retry = await refresh(app, cookies, binding);
     expect(retry.status).toBe(401);
+  });
+
+  it('a multi-org user removed from the session\'s org is refused, not moved to their other org', async () => {
+    const home = await seedTenant();
+    const second = await seedTenant();
+    const user = await createPasswordlessUser({
+      partnerId: home.partnerId,
+      orgId: home.orgId,
+      email: `multi-removed-${Date.now()}@example.com`,
+    });
+    await assignUserToOrganization(user.id, home.orgId, home.roleId);
+    await assignUserToOrganization(user.id, second.orgId, second.roleId);
+    const { binding, cookies } = await orgSsoSession(second, user.id, user.email, 'ext-sub-multi-removed');
+
+    await getTestDb().delete(organizationUsers).where(and(
+      eq(organizationUsers.userId, user.id),
+      eq(organizationUsers.orgId, second.orgId),
+    ));
+
+    const refreshRes = await refresh(app, cookies, binding);
+    expect(refreshRes.status).toBe(401);
+    expect(await refreshRes.json()).not.toHaveProperty('tokens');
+    expect(await familyRevokedAt(cookies)).toBeInstanceOf(Date);
+  });
+
+  it('an inactive org refuses refresh without revoking the family', async () => {
+    const fx = await seedTenant();
+    const { user } = await seedDualMembershipUser(fx);
+    const { binding, cookies } = await orgSsoSession(fx, user.id, user.email, 'ext-sub-inactive-org');
+
+    await getTestDb().update(organizations).set({ status: 'suspended' }).where(eq(organizations.id, fx.orgId));
+
+    const refreshRes = await refresh(app, cookies, binding);
+    expect(refreshRes.status).toBe(401);
+    expect(await refreshRes.json()).not.toHaveProperty('tokens');
+    // Not a lost membership: the family stays live, and no partner session
+    // was issued in its place.
+    expect(await familyRevokedAt(cookies)).toBeNull();
   });
 
   it('partner-scope password session refreshes unchanged', async () => {
@@ -629,6 +671,36 @@ describe('refresh re-issues the session\'s own tenant scope', () => {
     expect(denied.status).toBe(401);
     expect(await denied.json()).not.toHaveProperty('tokens');
     expect(await familyRevokedAt(cookies)).toBeInstanceOf(Date);
+  });
+
+  it('a user removed from the session\'s partner is refused, not moved to another partner membership', async () => {
+    const fx = await seedTenant();
+    const other = await seedTenant();
+    const password = 'TwoPartners123!';
+    const firstRole = await createRole({ scope: 'partner', partnerId: fx.partnerId });
+    const secondRole = await createRole({ scope: 'partner', partnerId: other.partnerId });
+    if (!firstRole || !secondRole) throw new Error('partner role fixture failed');
+    const user = await createUser({
+      partnerId: fx.partnerId,
+      orgId: null,
+      email: `two-partners-${Date.now()}@example.com`,
+      password,
+    });
+    await assignUserToPartner(user.id, fx.partnerId, firstRole.id, 'all');
+    const session = await passwordSession(user.email, password);
+    expect(decodeJwt(session.accessToken)).toMatchObject({ scope: 'partner', partnerId: fx.partnerId });
+    // A second partner membership arrives after sign-in.
+    await assignUserToPartner(user.id, other.partnerId, secondRole.id, 'all');
+
+    await getTestDb().delete(partnerUsers).where(and(
+      eq(partnerUsers.userId, user.id),
+      eq(partnerUsers.partnerId, fx.partnerId),
+    ));
+
+    const denied = await refresh(app, session.cookies, session.binding);
+    expect(denied.status).toBe(401);
+    expect(await denied.json()).not.toHaveProperty('tokens');
+    expect(await familyRevokedAt(session.cookies)).toBeInstanceOf(Date);
   });
 
   it('single-membership org password session refreshes unchanged', async () => {

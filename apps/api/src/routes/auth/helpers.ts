@@ -37,7 +37,7 @@ import {
   hashRecoveryCode as hashRecoveryCodeWithKdf,
   hashRecoveryCodes as hashRecoveryCodesWithKdf,
 } from '../../services/recoveryCodeAuth';
-import { assertActiveTenantContext } from '../../services/tenantStatus';
+import { assertActiveTenantContext, TenantInactiveError } from '../../services/tenantStatus';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import type { PublicTokenPayload, UserTokenContext } from './schemas';
 import {
@@ -1875,6 +1875,21 @@ function nonEmptyString(value: unknown): value is string {
 }
 
 /**
+ * Membership reads for a refresh run under system scope even when a caller is
+ * already inside a narrower request context: there, the nested system wrapper
+ * would reuse the ambient context, RLS could hide the membership row, and an
+ * empty read would be taken as a lost membership (revoking a valid family).
+ * Same pattern as services/tenantStatus.ts readAsSystem.
+ */
+function readSessionMembershipAsSystem<T>(fn: () => Promise<T>): Promise<T> {
+  const ambient = dbModule.getCurrentDbAccessContext();
+  if (ambient && ambient.scope !== 'system') {
+    return dbModule.runOutsideDbContext(() => runWithSystemDbAccess(fn));
+  }
+  return runWithSystemDbAccess(fn);
+}
+
+/**
  * Token context for a refresh: the same scope and tenant the session was
  * minted with, re-validated against live state.
  *
@@ -1887,8 +1902,9 @@ function nonEmptyString(value: unknown): value is string {
  * role changes still take effect on refresh.
  *
  * Throws SessionTenantAxisError when the membership on that exact axis is
- * gone, TenantInactiveError when the tenant is no longer active, and
- * NoTenantMembershipError for a system session whose user is no longer a
+ * gone (or a system session's user now holds any membership),
+ * TenantInactiveError when a partner/organization tenant is no longer active,
+ * and NoTenantMembershipError for a system session whose user is no longer a
  * platform admin.
  */
 export async function resolveSessionTokenContextForRefresh(
@@ -1900,9 +1916,20 @@ export async function resolveSessionTokenContextForRefresh(
     // membership. Re-derive and require the same answer: a platform admin who
     // has since gained a membership signs in again rather than keeping
     // system scope that a fresh sign-in would not grant.
-    const context = await resolveCurrentUserTokenContext(userId);
+    let context: UserTokenContext;
+    try {
+      context = await resolveCurrentUserTokenContext(userId);
+    } catch (err) {
+      // The resolver only checks tenant status after finding a membership, so
+      // an inactive tenant here means the admin now holds one: the system
+      // session can never be re-issued, inactive tenant or not.
+      if (err instanceof TenantInactiveError) {
+        throw new SessionTenantAxisError('System session user now holds a tenant membership');
+      }
+      throw err;
+    }
     if (context.scope !== 'system') {
-      throw new SessionTenantAxisError('System session no longer resolves to system scope');
+      throw new SessionTenantAxisError('System session user now holds a tenant membership');
     }
     return context;
   }
@@ -1912,7 +1939,7 @@ export async function resolveSessionTokenContextForRefresh(
       throw new SessionTenantAxisError('Partner session names no partner');
     }
     const partnerId = minted.partnerId;
-    return runWithSystemDbAccess(async () => {
+    return readSessionMembershipAsSystem(async () => {
       const [membership] = await db
         .select({ roleId: partnerUsers.roleId })
         .from(partnerUsers)
@@ -1931,7 +1958,7 @@ export async function resolveSessionTokenContextForRefresh(
       throw new SessionTenantAxisError('Organization session names no organization');
     }
     const orgId = minted.orgId;
-    return runWithSystemDbAccess(async () => {
+    return readSessionMembershipAsSystem(async () => {
       const [membership] = await db
         .select({ roleId: organizationUsers.roleId })
         .from(organizationUsers)

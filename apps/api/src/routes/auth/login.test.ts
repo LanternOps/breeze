@@ -1816,15 +1816,38 @@ describe('POST /refresh — re-issues the session\'s own tenant scope', () => {
   });
 
   it.each([
-    ['the session\'s own membership is gone', () => new SessionTenantAxisError('gone')],
-    ['a system session\'s user is no longer a membership-less platform admin', () => new NoTenantMembershipError('user-1')],
-  ])('refuses and revokes the family when %s', async (_label, makeError) => {
+    [
+      'the session\'s own membership is gone',
+      () => new SessionTenantAxisError('Organization membership for this session is gone'),
+      { scope: 'organization', orgId: 'org-7', partnerId: 'partner-1' },
+      'Organization membership for this session is gone',
+    ],
+    [
+      'a system session\'s user is no longer a platform admin',
+      () => new NoTenantMembershipError('user-1'),
+      { scope: 'system', orgId: null, partnerId: null },
+      'System session user is no longer a platform admin',
+    ],
+  ])('refuses, revokes the family and audits when %s', async (_label, makeError, claims, reason) => {
     vi.mocked(resolveSessionTokenContextForRefresh).mockRejectedValueOnce(makeError());
 
-    const res = await postRefresh({ scope: 'organization', orgId: 'org-7', partnerId: 'partner-1' });
+    const res = await postRefresh(claims);
 
     expect(res.status).toBe(401);
-    expect(revokeFamily).toHaveBeenCalledWith('family-42', 'tenant-membership-lost');
+    expect(revokeFamily).toHaveBeenCalledWith('family-42', 'tenant-axis-lost');
+    expect(recordFailedLogin).toHaveBeenCalledWith('refresh_tenant_axis_lost');
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      actorId: 'user-1',
+      action: 'auth.refresh.tenant_axis_lost',
+      resourceType: 'refresh_token_family',
+      resourceId: 'family-42',
+      result: 'denied',
+      details: expect.objectContaining({
+        mintedScope: claims.scope,
+        reason,
+        familyRevocation: { redis: 'confirmed', database: 'confirmed' },
+      }),
+    }));
     expect(clearRefreshTokenCookie).toHaveBeenCalled();
     expect(issueUserSession).not.toHaveBeenCalled();
     expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
@@ -1853,6 +1876,7 @@ describe('POST /refresh — re-issues the session\'s own tenant scope', () => {
 
     expect(res.status).toBe(401);
     expect(revokeFamily).not.toHaveBeenCalled();
+    expect(recordFailedLogin).toHaveBeenCalledWith('refresh_tenant_inactive');
     expect(issueUserSession).not.toHaveBeenCalled();
   });
 
