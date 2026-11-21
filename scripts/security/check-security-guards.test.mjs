@@ -1,6 +1,9 @@
 // Self-test for two Security Scanning guards that must fail CLOSED (#8283):
 //   - scripts/security/check-go-version-pins.sh  (a deleted pin must not pass)
 //   - scripts/security/run-govulncheck.sh        (an empty scan must not pass)
+// and the Dependabot cooldown rule in check-supply-chain-hardening.sh
+// (--check-dependabot-cooldown: a missing, short or exempting cooldown must
+// not pass).
 //
 // Each case builds a throwaway repo layout (both scripts resolve everything
 // relative to their own location), runs a COPY of the real script, and mutates
@@ -278,7 +281,110 @@ test('govulncheck wrapper propagates a non-zero govulncheck exit', () => {
   assert.notEqual(r.status, 0);
 });
 
+// ------------------------------------------------- Dependabot cooldown check
+// check-supply-chain-hardening.sh --check-dependabot-cooldown <file> runs only
+// the cooldown rule, against a scratch copy of the real .github/dependabot.yml.
+const HARDENING_SCRIPT = 'scripts/security/check-supply-chain-hardening.sh';
+const DEPENDABOT = '.github/dependabot.yml';
+
+function dependabotLayout() {
+  const root = scratch();
+  copyIn(root, HARDENING_SCRIPT);
+  copyIn(root, DEPENDABOT);
+  return root;
+}
+const runCooldown = (root) =>
+  spawnSync('bash', [join(root, HARDENING_SCRIPT), '--check-dependabot-cooldown', join(root, DEPENDABOT)], {
+    encoding: 'utf8',
+  });
+
+// Insert `block` (lines) before the first line equal to `anchor`; returns the
+// 1-based line number of the block's first line in the rewritten file.
+function insertBefore(root, anchor, block) {
+  const p = join(root, DEPENDABOT);
+  const lines = readFileSync(p, 'utf8').split('\n');
+  const at = lines.indexOf(anchor);
+  assert.notEqual(at, -1, `fixture precondition: ${DEPENDABOT} has no line ${JSON.stringify(anchor)}`);
+  lines.splice(at, 0, ...block);
+  writeFileSync(p, lines.join('\n'));
+  return at + 1;
+}
+const GOMOD_ANCHOR = '  - package-ecosystem: "gomod"';
+const NPM_ROOT_COOLDOWN = '      default-days: 3';
+// 1-based line of the first `  - package-ecosystem: "npm"` entry (the root npm entry).
+const npmRootLine = () =>
+  readFileSync(join(REPO_ROOT, DEPENDABOT), 'utf8').split('\n').indexOf('  - package-ecosystem: "npm"') + 1;
+
+test('cooldown check passes on an unmodified copy of dependabot.yml', () => {
+  const r = runCooldown(dependabotLayout());
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('cooldown check fails when an entry loses its cooldown', () => {
+  const root = dependabotLayout();
+  rewriteFile(root, DEPENDABOT, /(package-ecosystem: "gomod"\n(?:.*\n)*?)    cooldown:\n      default-days: 3\n/, '$1');
+  const r = runCooldown(root);
+  assert.notEqual(r.status, 0, 'an entry with no cooldown must not pass');
+  assert.match(r.stderr, /gomod entry \(line \d+\): no cooldown block/);
+});
+
+test('cooldown check fails when default-days is below 3', () => {
+  const root = dependabotLayout();
+  rewriteFile(root, DEPENDABOT, /(package-ecosystem: "docker-compose"\n(?:.*\n)*?)      default-days: 3\n/, '$1      default-days: 1\n');
+  const r = runCooldown(root);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /docker-compose entry \(line \d+\): default-days: 1 at line \d+ is below 3/);
+});
+
+test('cooldown check fails on an entry whose first key is not package-ecosystem', () => {
+  const root = dependabotLayout();
+  const line = insertBefore(root, GOMOD_ANCHOR, [
+    '  - directory: "/apps/portal"',
+    '    package-ecosystem: "npm"',
+    '    schedule:',
+    '      interval: "weekly"',
+    '',
+  ]);
+  const r = runCooldown(root);
+  assert.notEqual(r.status, 0, 'a reordered entry with no cooldown must not fold into the entry above');
+  assert.match(r.stderr, new RegExp(`npm entry \\(line ${line}\\): no cooldown block`));
+});
+
+test('cooldown check fails on an entry with no package-ecosystem key', () => {
+  const root = dependabotLayout();
+  const line = insertBefore(root, GOMOD_ANCHOR, [
+    '  - directory: "/apps/portal"',
+    '    schedule:',
+    '      interval: "weekly"',
+    '',
+  ]);
+  const r = runCooldown(root);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, new RegExp(`\\(unknown ecosystem\\) entry \\(line ${line}\\): no cooldown block`));
+});
+
+for (const [key, value] of [['semver-patch-days', 0], ['semver-minor-days', 1], ['semver-major-days', 2]]) {
+  test(`cooldown check fails when ${key} is below 3 next to default-days: 3`, () => {
+    const root = dependabotLayout();
+    rewriteFile(root, DEPENDABOT, new RegExp(`^${NPM_ROOT_COOLDOWN}$`, 'm'), `${NPM_ROOT_COOLDOWN}\n      ${key}: ${value}`);
+    const r = runCooldown(root);
+    assert.notEqual(r.status, 0, `${key}: ${value} must not pass`);
+    assert.match(r.stderr, new RegExp(`npm entry \\(line ${npmRootLine()}\\): ${key}: ${value} at line \\d+ is below 3`));
+  });
+}
+
+for (const key of ['exclude', 'include']) {
+  test(`cooldown check fails on a cooldown ${key} list`, () => {
+    const root = dependabotLayout();
+    rewriteFile(root, DEPENDABOT, new RegExp(`^${NPM_ROOT_COOLDOWN}$`, 'm'), `${NPM_ROOT_COOLDOWN}\n      ${key}:\n        - "left-pad"`);
+    const r = runCooldown(root);
+    assert.notEqual(r.status, 0, `a cooldown ${key} list must not pass`);
+    assert.match(r.stderr, new RegExp(`npm entry \\(line ${npmRootLine()}\\): cooldown ${key}: at line \\d+ is not allowed`));
+  });
+}
+
 test('fixture precondition: scripts exist in the real repo', () => {
   assert.ok(existsSync(join(REPO_ROOT, PIN_SCRIPT)));
   assert.ok(existsSync(join(REPO_ROOT, VULN_SCRIPT)));
+  assert.ok(existsSync(join(REPO_ROOT, HARDENING_SCRIPT)));
 });

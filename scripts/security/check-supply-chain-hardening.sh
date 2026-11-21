@@ -86,6 +86,84 @@ if [[ "${1:-}" == "--require-openssl-upgrade" ]]; then
   exit 0
 fi
 
+# Every Dependabot updates entry carries an explicit cooldown of at least 3
+# days. Every ecosystem this file uses (npm, gomod, github-actions, cargo,
+# docker, docker-compose) supports `cooldown.default-days`; an ecosystem that
+# does not would need a named exemption here rather than a silent skip.
+# scripts/security/check-security-guards.test.mjs drives this through
+# --check-dependabot-cooldown against fixture files.
+check_dependabot_cooldown() {
+  local file="$1"
+  local report entry_count missing
+  [[ -r "$file" ]] || fail "cannot read $file"
+  # Plain POSIX awk (CI runs Debian mawk, macOS ships BSD awk): no gawk-only
+  # features. An entry starts at ANY `  - ` list item under `updates:`, so a
+  # reordered entry cannot fold into the one above it; its ecosystem comes from
+  # whichever of its lines carries `package-ecosystem:`. Inside `cooldown:`,
+  # every `*-days` value must be a whole number >= 3, and `include:` /
+  # `exclude:` (which narrow the cooldown to, or exempt, named packages) are
+  # rejected. Anything unexpected inside the block (a blank line, a comment)
+  # ends it, which fails safe: a later default-days is then not counted.
+  report="$(
+    awk '
+      function problem(msg) { problems[++nproblems] = msg }
+      function finish(   i, label) {
+        if (!open) return
+        entries++
+        label = (eco == "" ? "(unknown ecosystem)" : eco) " entry (line " start ")"
+        if (!has_cooldown) problem("no cooldown block")
+        else if (default_days == "") problem("cooldown has no default-days")
+        for (i = 1; i <= nproblems; i++) printf "%s: %s\n", label, problems[i]
+        open = 0; nproblems = 0
+      }
+      /^updates:[[:space:]]*$/ { in_updates = 1; next }
+      in_updates && /^[^[:space:]#]/ { finish(); in_updates = 0 }
+      !in_updates { next }
+      {
+        line = $0
+        if (line ~ /^  - /) {
+          finish()
+          open = 1; start = NR; eco = ""; has_cooldown = 0; default_days = ""; in_cooldown = 0
+          line = "    " substr(line, 5)
+        }
+        if (!open) next
+        if (in_cooldown && line !~ /^      /) in_cooldown = 0
+        if (in_cooldown) {
+          if (line ~ /^      [A-Za-z-]+-days:/) {
+            key = line; sub(/^      /, "", key); sub(/:.*$/, "", key)
+            val = line; sub(/^[^:]*:[[:space:]]*/, "", val); sub(/[[:space:]]*#.*$/, "", val); sub(/[[:space:]]*$/, "", val)
+            if (val !~ /^[0-9]+$/ || val + 0 < 3) problem(key ": " val " at line " NR " is below 3")
+            if (key == "default-days") default_days = val
+          } else if (line ~ /^      (include|exclude):/) {
+            key = line; sub(/^      /, "", key); sub(/:.*$/, "", key)
+            problem("cooldown " key ": at line " NR " is not allowed (it limits which packages the cooldown covers)")
+          }
+          next
+        }
+        if (line ~ /^    package-ecosystem:/) {
+          eco = line; sub(/^    package-ecosystem:[[:space:]]*/, "", eco); sub(/[[:space:]]*#.*$/, "", eco); gsub(/"/, "", eco)
+        } else if (line ~ /^    cooldown:[[:space:]]*(#.*)?$/) {
+          has_cooldown = 1; in_cooldown = 1
+        }
+      }
+      END { finish(); printf "entries=%d\n", entries }
+    ' "$file"
+  )"
+  entry_count="$(sed -n 's/^entries=//p' <<<"$report")"
+  [[ "${entry_count:-0}" -gt 0 ]] ||
+    fail "$file has no updates entries the cooldown check could parse"
+  missing="$(grep -v '^entries=' <<<"$report" || true)"
+  [[ -z "$missing" ]] ||
+    fail "every Dependabot updates entry must keep a cooldown of at least 3 days with no exemptions: $(awk 'NR > 1 { printf "; " } { printf "%s", $0 }' <<<"$missing")"
+}
+
+if [[ "${1:-}" == "--check-dependabot-cooldown" ]]; then
+  [[ -n "${2:-}" && -f "${2:-}" && -r "${2:-}" ]] || fail "--check-dependabot-cooldown needs a readable dependabot.yml"
+  check_dependabot_cooldown "$2"
+  echo "Dependabot cooldown check passed."
+  exit 0
+fi
+
 extract_yaml_job() {
   local job="$1"
   local workflow="$2"
@@ -641,41 +719,7 @@ require_single_workspace_setting blockExoticSubdeps
 require_grep '^blockExoticSubdeps:[[:space:]]*true[[:space:]]*(#.*)?$' pnpm-workspace.yaml \
   "pnpm-workspace.yaml must set blockExoticSubdeps: true"
 
-# Every Dependabot updates entry carries an explicit cooldown of at least 3
-# days. Every ecosystem this file uses (npm, gomod, github-actions, cargo,
-# docker, docker-compose) supports `cooldown.default-days`; an ecosystem that
-# does not would need a named exemption here rather than a silent skip.
-[[ -r .github/dependabot.yml ]] || fail "cannot read .github/dependabot.yml"
-DEPENDABOT_COOLDOWN_REPORT="$(
-  awk '
-    function finish() {
-      if (eco == "") return
-      entries++
-      if (days == "" || days + 0 < 3) {
-        printf "%s (line %d)\n", eco, start
-      }
-    }
-    /^  - package-ecosystem:/ {
-      finish()
-      eco = $0; sub(/^  - package-ecosystem:[[:space:]]*/, "", eco); gsub(/"/, "", eco)
-      start = NR; days = ""; in_cooldown = 0
-      next
-    }
-    /^    cooldown:[[:space:]]*$/ { in_cooldown = 1; next }
-    in_cooldown && /^      default-days:[[:space:]]*[0-9]+[[:space:]]*(#.*)?$/ {
-      days = $0; sub(/^      default-days:[[:space:]]*/, "", days); sub(/[[:space:]#].*$/, "", days)
-      next
-    }
-    in_cooldown && !/^      / { in_cooldown = 0 }
-    END { finish(); printf "entries=%d\n", entries }
-  ' .github/dependabot.yml
-)"
-DEPENDABOT_ENTRY_COUNT="$(sed -n 's/^entries=//p' <<<"$DEPENDABOT_COOLDOWN_REPORT")"
-[[ "${DEPENDABOT_ENTRY_COUNT:-0}" -gt 0 ]] ||
-  fail ".github/dependabot.yml has no package-ecosystem entries the cooldown check could parse"
-DEPENDABOT_MISSING_COOLDOWN="$(grep -v '^entries=' <<<"$DEPENDABOT_COOLDOWN_REPORT" || true)"
-[[ -z "$DEPENDABOT_MISSING_COOLDOWN" ]] ||
-  fail "every Dependabot updates entry must set cooldown.default-days >= 3; missing or lower on: $(tr '\n' ' ' <<<"$DEPENDABOT_MISSING_COOLDOWN")"
+check_dependabot_cooldown .github/dependabot.yml
 
 require_grep "severity: 'HIGH,CRITICAL'" .github/workflows/security.yml \
   "Trivy must fail on HIGH and CRITICAL vulnerabilities"
