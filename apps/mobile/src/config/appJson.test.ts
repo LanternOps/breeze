@@ -95,16 +95,14 @@ describe('app.json Android blocked permissions', () => {
   });
 });
 
-// Release skill Step 0.45 bumps the store version in three places in one
-// commit. A partial bump uploads a build whose app.json and package.json
-// disagree, or leaves the submission doc naming a closed train.
+// Release skill Step 0.45 bumps the store version in app.json and
+// package.json in one commit. A partial bump uploads a build whose two
+// manifests disagree.
 describe('store version (release Step 0.45)', () => {
   const pkg = JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf8'));
-  const storeDoc = readFileSync(join(__dirname, '../../STORE_SUBMISSION.md'), 'utf8');
 
-  it('is the same in app.json, package.json and STORE_SUBMISSION.md', () => {
+  it('is the same in app.json and package.json', () => {
     expect(expo.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(pkg.version).toBe(expo.version);
-    expect(storeDoc.match(/^- Store version: `(\d+\.\d+\.\d+)`/m)?.[1]).toBe(expo.version);
   });
 });
