@@ -1,6 +1,6 @@
 ---
 title: In-browser remote desktop — a WebRTC desktop session in a dashboard tab, for technicians the native viewer cannot serve (Linux first)
-status: draft r2 2026-11-11 — revised after an independent design review; awaiting Todd's approval (Gate A)
+status: approved 2026-11-21 (Gate A) — r2 with D1–D7 approved as recommended; implementation plan pending (Gate B)
 date: 2026-11-11
 related: "#9557 (Linux viewer has no WebRTC); PR #11642 (WebKit settings + documented limitation, merged); #3410, #7415 (WebSocket fallback, service-mode refusal message); precedents: in-browser VNC page, web terminal"
 ---
@@ -655,6 +655,25 @@ No review point was rejected.
 - Translated in-session strings in the native viewer, which would need a locale source.
 
 ## 16. Decisions for the maintainer
+
+**Approved 2026-11-21 (Todd): D1 (a), D2 (a), D3 (a), D4 (b), D5 (a), D6 (b), D7 (a).** The option text below is kept
+as the record of what was considered.
+
+Notes added at approval, from a read-only review of two early community PRs against this spec (#12329 for W1,
+#12330 for W4; both closed by their author pending this approval, neither run by us):
+
+- **Eighth Tauri file.** `apps/viewer/src/lib/nativeSessionEnd.ts` also imports Tauri and stays in the viewer. The
+  "7 of 58" count in §1 missed it.
+- **`protocol.ts` and `parseDeepLink`.** §5.2 keeps `parseDeepLink` in the viewer. W1 must either split it out of
+  `protocol.ts` before moving that file, or move the file whole and keep the parser out of the package's public
+  exports. Whichever is chosen, the web app must not be able to import the deep-link parser.
+- **No-Tauri guard moves up to W1.** The test that fails when the shared package imports `@tauri-apps/*` lands with
+  the package, not in W2b.
+- **One dashboard origin.** `exchangeOrigin` (§5.5) matches a single configured web origin for v1. A deployment or
+  lab stack that serves the dashboard from a second origin records `unknown`; the W6 audit check must run on a stack
+  whose web origin is the configured one.
+- **Viewer bundle is not built in PR CI.** W1's "no behaviour change" needs a maintainer-run `vite build` size and
+  CSS comparison against `main`, plus the three-OS native smoke, before merge.
 
 **D1. Should the browser session be offered on every OS, or only on Linux?**
 - (a) Every OS. The default on Linux within the built-in path, and a menu item plus the failed-hand-off card
