@@ -147,6 +147,26 @@ describe('MonitorsTab', () => {
     expect(removeMock).not.toHaveBeenCalled();
   });
 
+  // #12307: the monitor definition must be reachable from the policy tab.
+  it('links each attached monitor name to its editor, but not a deleted one', async () => {
+    const deletedMonitorId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    render(<MonitorsTab {...baseProps} existingLink={{
+      id: 'link-1', featureType: 'monitors', featurePolicyId: null,
+      inlineSettings: { items: [{ monitorId: 'm1', enabled: true }, { monitorId: deletedMonitorId, enabled: true }] },
+    }} />);
+
+    const link = await screen.findByTestId('monitors-tab-item-link-m1');
+    expect(link.getAttribute('href')).toBe('/alerts/monitors/m1');
+    expect(link.textContent).toBe('High CPU');
+    await screen.findByTestId(`monitors-tab-item-deleted-${deletedMonitorId}`);
+    expect(screen.queryByTestId(`monitors-tab-item-link-${deletedMonitorId}`)).toBeNull();
+  });
+
+  it('explains that monitor definitions live under Alerts, Monitors', async () => {
+    render(<MonitorsTab {...baseProps} />);
+    expect((await screen.findByTestId('monitors-tab-help')).textContent).toMatch(/Alerts.*Monitors/);
+  });
+
   it.each(['cumulative', 'replace'] as const)('last detachment saves an empty %s link', async (inheritance) => {
     render(<MonitorsTab {...baseProps} existingLink={{ id: 'link-1', featureType: 'monitors',
       featurePolicyId: null, inlineSettings: {

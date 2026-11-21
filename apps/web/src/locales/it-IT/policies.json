@@ -818,6 +818,7 @@
         "overridesLabel": "Override:",
         "failedToLoadMonitors": "Impossibile caricare i monitor",
         "createMonitor": "Crea monitor",
+        "helpText": "Le definizioni dei monitor si trovano in Avvisi > Monitor. Questa scheda sceglie quali monitor si applicano a questa policy e permette di sostituire il valore di un monitor.",
         "notAttachable": "Questo monitor non può essere associato a questa policy. Le policy del partner possono usare solo monitor validi per tutto il partner.",
         "monitorDeleted": "Monitor eliminato",
         "recommended": {
