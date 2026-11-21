@@ -1,8 +1,5 @@
 import { ne, sql, type AnyColumn, type SQL } from 'drizzle-orm';
-// The two schema files, not the schema index: aiToolsSiteScope.ts imports this
-// module, and the index would pull every schema file into each AI tool's graph.
-import { devices } from '../../db/schema/devices';
-import { organizations } from '../../db/schema/orgs';
+import { devices, organizations } from '../../db/schema';
 import { UNASSIGNED_POOL_ORG_TYPE } from './orgType';
 
 /**

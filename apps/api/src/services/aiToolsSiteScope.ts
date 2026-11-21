@@ -25,7 +25,6 @@ import { eq, inArray, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
 import { normalizeSiteAllowlist } from './siteAllowlist';
-import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 /**
  * The caller's site allowlist under the one normalization rule (#6790):
@@ -158,6 +157,10 @@ export async function resolveSiteAllowedDeviceIds(
  * in system DB context must add its own explicit org list.
  */
 export async function deviceListReachConditions(auth: AuthContext): Promise<SQL[] | null> {
+  // Lazy: selectorPredicate.ts imports the whole schema index, and a static
+  // import here would put it in the graph of every module importing these
+  // helpers (and of their tests' partial schema mocks).
+  const { notParkedDeviceCondition } = await import('./unassignedPool/selectorPredicate');
   const conditions: SQL[] = [];
   const orgCondition = auth.orgCondition(devices.orgId);
   if (orgCondition) conditions.push(orgCondition);
