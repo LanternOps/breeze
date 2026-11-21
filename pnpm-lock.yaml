@@ -279,8 +279,8 @@ importers:
         specifier: ^2.18.0
         version: 2.18.1
       semver:
-        specifier: ^7.8.5
-        version: 7.8.5
+        specifier: ^7.8.6
+        version: 7.8.6
       ssh2-sftp-client:
         specifier: ^12.1.1
         version: 12.1.1
@@ -1417,8 +1417,8 @@ importers:
   packages/extension-sdk:
     dependencies:
       semver:
-        specifier: ^7.7.4
-        version: 7.8.5
+        specifier: ^7.8.6
+        version: 7.8.6
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -3261,6 +3261,12 @@ packages:
 
   '@hono/node-server@2.1.8':
     resolution: {integrity: sha512-jdf7FHh6A1lzjpHHQUgxsg2GeER2vMetnAOfeActzcoli6jamlK+NAwL6Dsr5Fl3BS3tYUQzCdtZjU8Qxv7bEA==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      hono: ^4 || ^5.0.0-0
+
+  '@hono/node-server@2.1.9':
+    resolution: {integrity: sha512-Sk4NQd3GFY0WZWCzndwFMPwJhtD0y9qjsQ+pjID0/03nK9pxyBCUoUHCho8QYBLBVhi0ssL8UkNPHqbgSOFPIQ==}
     engines: {node: '>=20'}
     peerDependencies:
       hono: ^4 || ^5.0.0-0
@@ -5510,7 +5516,7 @@ packages:
   '@tailwindcss/vite@4.3.5':
     resolution: {integrity: sha512-BCNiY0a1ZjdOHVqw7kyb7U72BwfMF3dfUuN+tQsLWky/J5JOI/r7abibglXfygrZhVO/3u3V+E25kkKTeMkXaQ==}
     peerDependencies:
-      vite: '>=8.3.3'
+      vite: '>=6.4.2'
 
   '@tanstack/query-core@5.107.1':
     resolution: {integrity: sha512-PSyAik11oQBEVOiVy5hjZWHmoUqOXqK1WYy4v55mcxozEfKaQgpUMsgnXhWjuESzSht8JfzqMS1m6M/9CpNgvg==}
@@ -8041,8 +8047,8 @@ packages:
   exponential-backoff@3.1.3:
     resolution: {integrity: sha512-ZgEeZXj30q+I0EN+CbSSpIyPaJ5HVQD18Z1m+u1FXbAeT94mr1zw50q4q6jiiC447Nl/YTcIYSAftiGqetwXCA==}
 
-  express-rate-limit@8.7.4:
-    resolution: {integrity: sha512-LKBXzX700wz3zAGNNmVnjRI5mEbYkLv7UbMI4+9Xa+JPcg2UZh6AgY/2CZh9RrJjFM5ttC/N1lD+KzyFoZITCw==}
+  express-rate-limit@8.7.5:
+    resolution: {integrity: sha512-wi+v38cx2EqD0JnhE/e74o5tFqKWUOAPFJIgyEiqJ8v2MNpoOAA3kI2hXYOI+YM+HE5yqbdAlVxm2GqOIeYOgA==}
     engines: {node: '>= 16'}
     peerDependencies:
       express: '>= 4.11'
@@ -8905,6 +8911,9 @@ packages:
   jose@6.2.17:
     resolution: {integrity: sha512-wOuK9V1yujQFH5S0ZWmLcDZN7+IKh9bUCC2ZPCf2HDlol3WWHy+PPyNjEI75FXRLMp3vDKQcupP59xhVU95hcg==}
 
+  jose@6.2.18:
+    resolution: {integrity: sha512-doV4thUwgkrycJH4yLeqwTGIIZphHl+pk7CPReuMIhYhncmgzdko85MaCG4YQFTxqMFr1/oEH32tZuKKovcDEg==}
+
   jose@6.2.3:
     resolution: {integrity: sha512-YYVDInQKFJfR/xa3ojUTl8c2KoTwiL1R5Wg9YCydwH0x0B9grbzlg5HC7mMjCtUJjbQ/YnGEZIhI5tCgfTb4Hw==}
 
@@ -9683,6 +9692,10 @@ packages:
 
   minimatch@11.0.8:
     resolution: {integrity: sha512-nFQuYSTVrGvysVBps5Ih+0BdnYFN/Cj3C816r6+p7yK+FHrVLGE4O4N9AFwykrlNlvM2HYt+Rad1Uiro6h88Ig==}
+    engines: {node: 20 || >=22}
+
+  minimatch@11.0.9:
+    resolution: {integrity: sha512-KCFkfyjqerNlSstjlhIGNXIKZGA/6O4V4RlhZ+Dsr621SPPw0mzlypE9D9ZOoPiVefHID+j7/XuMMlqfD/F60Q==}
     engines: {node: 20 || >=22}
 
   minipass@7.1.3:
@@ -10923,8 +10936,8 @@ packages:
   rope-sequence@1.3.4:
     resolution: {integrity: sha512-UT5EDe2cu2E/6O4igUr5PSFs23nvvukicWHx6GnOPlHAiiYbzNuCRQCuiUdHJQcqKalLKlrYJnjY0ySGsXNQXQ==}
 
-  router@2.2.0:
-    resolution: {integrity: sha512-nLTrUKm2UyiL7rlhapu/Zl45FwNgkZGaCpZbIHajDYgwlJCOzLSk+cIPAnsEqV955GjILJnKbdQC1nVPz+gAYQ==}
+  router@2.3.0:
+    resolution: {integrity: sha512-bpowRfGjEPe8t9R6fJIzhwmyCGAXwKvxBUsgJm+bJukwdcWmUXbMo7p22w7aYmQBPQTUMNqMV39YX0kMou3z8w==}
     engines: {node: '>= 18'}
 
   run-applescript@7.1.0:
@@ -10983,10 +10996,6 @@ packages:
 
   semifies@1.0.0:
     resolution: {integrity: sha512-xXR3KGeoxTNWPD4aBvL5NUpMTT7WMANr3EWnaS190QVkY52lqqcVRD7Q05UVbBhiWDGWMlJEUam9m7uFFGVScw==}
-
-  semver@6.3.1:
-    resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
-    hasBin: true
 
   semver@6.3.2:
     resolution: {integrity: sha512-GYrCADwpu6yV5OAvchkQ27Z5wwMxWAEMg5NNWjyHh/5DboFFqbdbvYNIvZouQpxXyeMPoTOh0vdPYKlf0ZswdQ==}
@@ -11920,7 +11929,7 @@ packages:
       '@vitest/ui': 4.1.12
       happy-dom: '>=21.0.4 <22.0.0'
       jsdom: '*'
-      vite: '>=8.3.3'
+      vite: '>=6.4.2'
     peerDependenciesMeta:
       '@edge-runtime/vm':
         optional: true
@@ -13638,7 +13647,7 @@ snapshots:
       babel-plugin-polyfill-corejs2: 0.4.17(@babel/core@7.29.13)
       babel-plugin-polyfill-corejs3: 0.13.0(@babel/core@7.29.13)
       babel-plugin-polyfill-regenerator: 0.6.8(@babel/core@7.29.13)
-      semver: 6.3.1
+      semver: 6.3.2
     transitivePeerDependencies:
       - supports-color
 
@@ -14653,6 +14662,10 @@ snapshots:
     dependencies:
       hono: 4.13.18
 
+  '@hono/node-server@2.1.9(hono@4.13.18)':
+    dependencies:
+      hono: 4.13.18
+
   '@hono/node-ws@1.3.1(patch_hash=b4b72f402e69a3a8dabfa42c13383019cadf0fea6c580e8f08e662a327e8a454)(@hono/node-server@2.1.8(hono@4.13.18))(hono@4.13.18)':
     dependencies:
       '@hono/node-server': 2.1.8(hono@4.13.18)
@@ -14877,7 +14890,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.32.1(zod@4.6.7)':
     dependencies:
-      '@hono/node-server': 2.1.8(hono@4.13.18)
+      '@hono/node-server': 2.1.9(hono@4.13.18)
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       content-type: 1.0.5
@@ -14886,9 +14899,9 @@ snapshots:
       eventsource: 3.0.7
       eventsource-parser: 3.1.1
       express: 5.3.0
-      express-rate-limit: 8.7.4(express@5.3.0)
+      express-rate-limit: 8.7.5(express@5.3.0)
       hono: 4.13.18
-      jose: 6.2.17
+      jose: 6.2.18
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
@@ -15873,7 +15886,7 @@ snapshots:
       metro: 0.84.5
       metro-config: 0.84.5
       metro-core: 0.84.5
-      semver: 7.8.5
+      semver: 7.8.6
     optionalDependencies:
       '@react-native-community/cli': 12.1.1
       '@react-native/metro-config': 0.86.3(@babel/core@7.29.13)
@@ -17591,7 +17604,7 @@ snapshots:
       '@typescript-eslint/visitor-keys': 8.65.0
       debug: 4.4.3
       minimatch: 10.2.6
-      semver: 7.8.5
+      semver: 7.8.6
       tinyglobby: 0.2.17
       ts-api-utils: 2.5.0(typescript@5.9.3)
       typescript: 5.9.3
@@ -19175,7 +19188,7 @@ snapshots:
     dependencies:
       '@one-ini/wasm': 0.1.1
       commander: 10.0.1
-      minimatch: 11.0.8
+      minimatch: 11.0.9
       semver: 7.8.6
     optional: true
 
@@ -19638,7 +19651,7 @@ snapshots:
 
   exponential-backoff@3.1.3: {}
 
-  express-rate-limit@8.7.4(express@5.3.0):
+  express-rate-limit@8.7.5(express@5.3.0):
     dependencies:
       debug: 4.4.3
       express: 5.3.0
@@ -19670,7 +19683,7 @@ snapshots:
       proxy-addr: 2.0.8
       qs: 6.17.1
       range-parser: 1.3.0
-      router: 2.2.0
+      router: 2.3.0
       send: 1.2.1
       serve-static: 2.2.1
       statuses: 2.0.2
@@ -20095,7 +20108,7 @@ snapshots:
       fs.realpath: 1.0.0
       inflight: 1.0.6
       inherits: 2.0.4
-      minimatch: 11.0.8
+      minimatch: 11.0.9
       once: 1.4.0
       path-is-absolute: 1.0.1
     optional: true
@@ -20788,6 +20801,8 @@ snapshots:
 
   jose@6.2.17: {}
 
+  jose@6.2.18: {}
+
   jose@6.2.3: {}
 
   joycon@3.1.1: {}
@@ -20902,7 +20917,7 @@ snapshots:
       lodash.isstring: 4.0.1
       lodash.once: 4.1.1
       ms: 2.1.3
-      semver: 7.8.5
+      semver: 7.8.6
 
   jspdf-autotable@5.0.8(jspdf@4.2.1):
     dependencies:
@@ -22075,6 +22090,12 @@ snapshots:
       '@isaacs/nonrecursive-glob-match': 1.1.0
       brace-expansion: 5.0.13
 
+  minimatch@11.0.9:
+    dependencies:
+      '@isaacs/nonrecursive-glob-match': 1.1.0
+      brace-expansion: 5.0.13
+    optional: true
+
   minipass@7.1.3: {}
 
   mkcert@3.2.0:
@@ -22999,7 +23020,7 @@ snapshots:
       react-native: 0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1)
       react-native-is-edge-to-edge: 1.3.1(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
       react-native-worklets: 0.13.1(@babel/core@7.29.13)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1)
-      semver: 7.8.5
+      semver: 7.8.6
 
   react-native-safe-area-context@5.11.1(react-native@0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1))(react@19.3.1):
     dependencies:
@@ -23040,7 +23061,7 @@ snapshots:
       convert-source-map: 2.0.0
       react: 19.3.1
       react-native: 0.86.3(@babel/core@7.29.13)(@react-native-community/cli@12.1.1)(@react-native/metro-config@0.86.3(@babel/core@7.29.13))(@types/react@19.3.0)(react@19.3.1)
-      semver: 7.8.5
+      semver: 7.8.6
       whatwg-fetch: 3.6.20
     transitivePeerDependencies:
       - supports-color
@@ -23074,7 +23095,7 @@ snapshots:
       react-refresh: 0.14.2
       regenerator-runtime: 0.13.11
       scheduler: 0.27.0
-      semver: 7.8.5
+      semver: 7.8.6
       stacktrace-parser: 0.1.11
       tinyglobby: 0.2.17
       whatwg-fetch: 3.6.20
@@ -23474,7 +23495,7 @@ snapshots:
 
   rope-sequence@1.3.4: {}
 
-  router@2.2.0:
+  router@2.3.0:
     dependencies:
       debug: 4.4.3
       depd: 2.0.0
@@ -23564,8 +23585,6 @@ snapshots:
 
   semifies@1.0.0: {}
 
-  semver@6.3.1: {}
-
   semver@6.3.2: {}
 
   semver@7.8.5: {}
@@ -23640,7 +23659,7 @@ snapshots:
     dependencies:
       '@img/colour': 1.1.0
       detect-libc: 2.1.2
-      semver: 7.8.5
+      semver: 7.8.6
     optionalDependencies:
       '@img/sharp-darwin-arm64': 0.35.5
       '@img/sharp-darwin-x64': 0.35.5
