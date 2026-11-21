@@ -106,6 +106,15 @@ describe('DeviceHeaderFacts', () => {
     expect(chip).toHaveFocus();
   });
 
+  it('"Warranty details" opens the Details tab, where warranty now lives', async () => {
+    route({ warranty: json(EXPIRING) });
+    const onOpenTab = vi.fn();
+    render(<DeviceHeaderFacts device={device()} onOpenTab={onOpenTab} />);
+    fireEvent.click(await screen.findByTestId('device-fact-warranty'));
+    fireEvent.click(screen.getByRole('button', { name: 'Warranty details' }));
+    expect(onOpenTab).toHaveBeenCalledWith('details');
+  });
+
   it('hides the warranty chip when the status is unknown', async () => {
     route({ warranty: json({ warranty: { id: 'w', deviceId: 'dev-1', manufacturer: 'DELL', serialNumber: 'X', status: 'unknown', warrantyStartDate: null, warrantyEndDate: null, entitlements: [], dataSource: null, lastSyncAt: null, lastSyncError: null } }) });
     render(<DeviceHeaderFacts device={device()} />);

@@ -49,6 +49,7 @@ import { formatHardwareIdentityValue } from "./hardwareIdentity";
 import { dropdownChoiceLabel } from "../../lib/customFieldChoice";
 import DeviceTagsCard from "./DeviceTagsCard";
 import PurchaseDateRow from "./PurchaseDateRow";
+import DeviceWarrantyCard from "./DeviceWarrantyCard";
 
 type DeviceInfoTabProps = {
   deviceId: string;
@@ -1070,19 +1071,6 @@ export default function DeviceInfoTab({ deviceId, onSaved }: DeviceInfoTabProps)
           label={t("deviceInfoTab.model")}
           value={formatHardwareIdentityValue(hw?.model)}
         />
-        <PurchaseDateRow
-          deviceId={deviceId}
-          value={info?.purchaseDate ?? null}
-          source={info?.purchaseDateSource ?? null}
-          onSaved={(purchaseDate) => {
-            setInfo((prev) =>
-              prev
-                ? { ...prev, purchaseDate, purchaseDateSource: purchaseDate ? "manual" : null }
-                : prev,
-            );
-            onSaved?.();
-          }}
-        />
       </Section>
 
       <div className="rounded-lg border bg-card p-6 shadow-xs">
@@ -1198,6 +1186,29 @@ export default function DeviceInfoTab({ deviceId, onSaved }: DeviceInfoTabProps)
           />
         </dl>
       </div>
+
+      {/* Warranty is administrative, so it lives here rather than on the
+          Hardware tab, as one section with the purchase date (the vendor
+          ship date often doubles as both). */}
+      <DeviceWarrantyCard
+        deviceId={deviceId}
+        purchaseDate={info?.purchaseDate ?? null}
+        purchase={
+          <PurchaseDateRow
+            deviceId={deviceId}
+            value={info?.purchaseDate ?? null}
+            source={info?.purchaseDateSource ?? null}
+            onSaved={(purchaseDate) => {
+              setInfo((prev) =>
+                prev
+                  ? { ...prev, purchaseDate, purchaseDateSource: purchaseDate ? "manual" : null }
+                  : prev,
+              );
+              onSaved?.();
+            }}
+          />
+        }
+      />
 
       <Section
         title={t("deviceInfoTab.operatingSystem")}

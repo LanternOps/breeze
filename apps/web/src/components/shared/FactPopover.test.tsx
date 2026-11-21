@@ -42,6 +42,20 @@ describe('FactPopover', () => {
     expect(panel).toHaveAttribute('tabindex', '-1');
   });
 
+  it('activating a link or button in the panel closes it (the action takes the user elsewhere)', () => {
+    render(<Two />);
+    fireEvent.click(screen.getByTestId('b'));
+    fireEvent.click(screen.getByRole('link', { name: 'link b' }));
+    expect(screen.queryByTestId('b-panel')).not.toBeInTheDocument();
+  });
+
+  it('a click on plain panel text does not close it', () => {
+    render(<Two />);
+    fireEvent.click(screen.getByTestId('b'));
+    fireEvent.click(screen.getByText(/panel b/));
+    expect(screen.getByTestId('b-panel')).toBeInTheDocument();
+  });
+
   it('Escape closes the open panel and returns focus to its chip', () => {
     render(<Two />);
     fireEvent.click(screen.getByTestId('a'));

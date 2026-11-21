@@ -109,6 +109,13 @@ describe('DeviceInfoTab — purchase date', () => {
     await waitFor(() => expect(patchBodies()).toEqual([{ purchaseDate: null }]));
   });
 
+  it('sits in the Warranty & purchase section, not in System', async () => {
+    load({ purchaseDate: '2023-03-01', purchaseDateSource: 'manual' });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const row = await screen.findByTestId('device-purchase-date');
+    expect(row.closest('[data-testid="device-warranty"]')).not.toBeNull();
+  });
+
   it('says when the date came from the manufacturer', async () => {
     load({ purchaseDate: '2023-03-01', purchaseDateSource: 'vendor' });
     render(<DeviceInfoTab deviceId={deviceId} />);

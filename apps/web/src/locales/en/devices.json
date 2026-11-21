@@ -2681,7 +2681,11 @@
       "import": "Imported",
       "importVendorEarlier": "Imported (vendor reports earlier end date)",
       "provider": "Vendor API"
-    }
+    },
+    "sectionTitle": "Warranty & purchase",
+    "coverage": "Coverage",
+    "coverageStarts": "Coverage starts",
+    "coverageEnds": "Coverage ends"
   },
   "devicesPage": {
     "accessDenied": "You don't have permission to view devices.",

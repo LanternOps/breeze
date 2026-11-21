@@ -2681,7 +2681,11 @@
       "import": "İçe aktarıldı",
       "importVendorEarlier": "İçe aktarıldı (üretici daha erken bir bitiş tarihi bildiriyor)",
       "provider": "Üretici API"
-    }
+    },
+    "sectionTitle": "Garanti ve satın alma",
+    "coverage": "Kapsam",
+    "coverageStarts": "Kapsam başlangıcı",
+    "coverageEnds": "Kapsam bitişi"
   },
   "devicesPage": {
     "accessDenied": "Cihazları görüntüleme izniniz yok.",

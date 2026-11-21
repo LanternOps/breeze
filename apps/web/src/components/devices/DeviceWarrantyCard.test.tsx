@@ -441,3 +441,59 @@ describe('DeviceWarrantyCard — date-only warranty dates', () => {
     expect(screen.getAllByText(fmt(2024, 12, 8)).length).toBeGreaterThan(0);
   });
 });
+
+// Warranty is administrative, so it lives on the Details tab as one
+// "Warranty & purchase" section with the purchase date as its first row.
+describe('DeviceWarrantyCard — Warranty & purchase section on Details', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const purchaseRow = <div data-testid="purchase-slot">Purchase date row</div>;
+
+  it('puts the purchase date first and drops the coverage start when it is the purchase date', async () => {
+    fetchWithAuthMock.mockImplementation(async () =>
+      jsonResponse(warrantyPayload({ status: 'active', warrantyStartDate: '2024-12-08', warrantyEndDate: '2027-12-08',
+        entitlements: [{ provider: 'dell', serviceLevelDescription: 'ProSupport Plus', entitlementType: 'INITIAL', startDate: '2024-12-08', endDate: '2027-12-08' }] })),
+    );
+    render(<DeviceWarrantyCard deviceId={deviceId} purchaseDate="2024-12-08" purchase={purchaseRow} />);
+    const section = await screen.findByTestId('device-warranty');
+    expect(section.querySelector('dl')!.firstElementChild).toBe(screen.getByTestId('purchase-slot'));
+    expect(screen.getByText('Warranty & purchase')).toBeInTheDocument();
+    expect(screen.queryByText('Coverage starts')).toBeNull();
+    expect(screen.getByText('Coverage ends')).toBeInTheDocument();
+    expect(screen.getByText('ProSupport Plus')).toBeInTheDocument();
+    // Manufacturer and serial already sit in the System section above.
+    expect(screen.queryByText('ABC123')).toBeNull();
+    // One entitlement is the Coverage row; the table is only for several.
+    expect(screen.queryByRole('table')).toBeNull();
+  });
+
+  it('keeps the coverage start when it differs from the purchase date', async () => {
+    fetchWithAuthMock.mockImplementation(async () =>
+      jsonResponse(warrantyPayload({ status: 'active', warrantyStartDate: '2025-01-15', warrantyEndDate: '2028-01-15' })),
+    );
+    render(<DeviceWarrantyCard deviceId={deviceId} purchaseDate="2024-12-08" purchase={purchaseRow} />);
+    await screen.findByTestId('device-warranty');
+    expect(screen.getByText('Coverage starts')).toBeInTheDocument();
+  });
+
+  it('with no warranty on file still shows the purchase date and offers a lookup', async () => {
+    fetchWithAuthMock.mockImplementation(async (_url, init) =>
+      init?.method === 'POST' ? jsonResponse({ success: true }) : jsonResponse({ warranty: null }),
+    );
+    render(<DeviceWarrantyCard deviceId={deviceId} purchaseDate={null} purchase={purchaseRow} />);
+    const section = await screen.findByTestId('device-warranty');
+    expect(screen.getByTestId('purchase-slot')).toBeInTheDocument();
+    expect(section).toHaveTextContent('No warranty on file');
+    fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
+    await waitFor(() =>
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(`/devices/${deviceId}/warranty/refresh`, expect.objectContaining({ method: 'POST' })),
+    );
+  });
+
+  it('a failed warranty load keeps the purchase date row editable', async () => {
+    fetchWithAuthMock.mockImplementation(async () => jsonResponse({}, false));
+    render(<DeviceWarrantyCard deviceId={deviceId} purchaseDate={null} purchase={purchaseRow} />);
+    await screen.findByTestId('device-warranty');
+    expect(screen.getByTestId('purchase-slot')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
+  });
+});

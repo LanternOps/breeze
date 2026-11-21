@@ -1,6 +1,7 @@
 // A header fact that opens a small read-only panel: a non-modal disclosure,
 // not a dialog. No focus trap. One panel is open at a time; Escape, an outside
-// click, or keyboard focus leaving the chip and its panel closes it, and
+// click, activating a link or button in the panel, or keyboard focus leaving
+// the chip and its panel closes it, and
 // Escape hands focus back to the chip. Edits never happen in the panel — it
 // links to the place the record is edited.
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
@@ -107,6 +108,11 @@ export function FactPopover({
           id={panelId}
           data-testid={`${testId}-panel`}
           tabIndex={-1}
+          // A link or button in the panel takes the user somewhere else (a
+          // tab, a page, a call), so the panel closes behind it.
+          onClick={(e) => {
+            if ((e.target as Element).closest('a, button')) setOpen(false);
+          }}
           className={`absolute ${alignRight ? 'right-0' : 'left-0'} top-full z-40 mt-1.5 w-72 max-w-[calc(100vw-2rem)] rounded-lg border bg-popover p-3 text-sm text-popover-foreground shadow-lg outline-hidden`}
         >
           {panel}

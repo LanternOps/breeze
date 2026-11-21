@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Cpu, HardDrive, MemoryStick, Network } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
-import DeviceWarrantyCard from "./DeviceWarrantyCard";
 import AssetCircuitCard from "./AssetCircuitCard";
 import StorageHealthSection from "./hardware/StorageHealthSection";
 import { formatNumber } from "@/lib/i18n/format";
@@ -704,8 +703,6 @@ export default function DeviceHardwareInventory({
           off Overview, where a workstation showed a "Mark as WAN" link for
           every virtual adapter). */}
       <AssetCircuitCard subject="device" id={deviceId} />
-
-      <DeviceWarrantyCard deviceId={deviceId} />
     </div>
   );
 }

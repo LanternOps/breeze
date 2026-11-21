@@ -31,7 +31,7 @@ import type { Device } from './DeviceList';
 type Props = {
   device: Device;
   /** Opens a device tab (the warranty panel links to its full record). */
-  onOpenTab?: (tab: 'hardware') => void;
+  onOpenTab?: (tab: 'details') => void;
 };
 
 // ── Load stability ───────────────────────────────────────────────────────
@@ -424,7 +424,7 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
                 </dl>
               )}
               {onOpenTab && (
-                <button type="button" onClick={() => onOpenTab('hardware')} className={PANEL_LINK}>
+                <button type="button" onClick={() => onOpenTab('details')} className={PANEL_LINK}>
                   {t('deviceHeaderFacts.warrantyDetails')}
                 </button>
               )}

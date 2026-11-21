@@ -4,7 +4,6 @@ import DeviceHardwareInventory from './DeviceHardwareInventory';
 
 // #5351 — per-slot memory inventory on the device Hardware tab.
 
-vi.mock('./DeviceWarrantyCard', () => ({ default: () => null }));
 vi.mock('./AssetCircuitCard', () => ({ default: () => null }));
 vi.mock('./hardware/StorageHealthSection', () => ({ default: () => null }));
 

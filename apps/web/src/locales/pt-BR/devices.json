@@ -2681,7 +2681,11 @@
       "import": "Importado",
       "importVendorEarlier": "Importado (o fabricante informa uma data de término anterior)",
       "provider": "API do fabricante"
-    }
+    },
+    "sectionTitle": "Garantia e compra",
+    "coverage": "Cobertura",
+    "coverageStarts": "Início da cobertura",
+    "coverageEnds": "Fim da cobertura"
   },
   "devicesPage": {
     "accessDenied": "Você não tem permissão para visualizar dispositivos.",
