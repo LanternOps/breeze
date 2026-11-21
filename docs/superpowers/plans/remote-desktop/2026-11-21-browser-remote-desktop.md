@@ -127,7 +127,7 @@ Spec §5.2, §12 W1, §16 notes. **Outcome:** the diff is moves and import paths
 | A2 | Every non-Tauri module in `apps/viewer/src/lib/` (incl. `transports/`) moves with its test as a 100% rename. Stays in the viewer: `App.tsx`, all components, `clipboardIO.ts`, `devicePrefs.ts`, `nativeSessionEnd.ts`, `updateActions.ts`, `updateStatus.ts`, `deepLinkGate.ts`, and tests that import component source with `?raw` | meets (89 renames; `nativeSessionEnd.ts` kept) |
 | A3 | `parseDeepLink` is not importable from the package. **Preferred:** split `protocol.ts`, moving `buildWsUrl` and the connection param types to the package (`src/protocol.ts`) and keeping `parseDeepLink` in `apps/viewer/src/lib/deepLink.ts`. **Accepted alternative:** move the file whole and drop `parseDeepLink` from `src/index.ts` and `exports`. | **misses**: moved whole, re-exported from the barrel, and `App.tsx` imports it from the package |
 | A4 | No-Tauri guard test in the package: `src/__tests__/noTauriImports.test.ts` reads every file under `src/` and fails on `@tauri-apps/`. A second assertion fails if `index.ts` exports `parseDeepLink`. | **misses** |
-| A5 | CI job `test-remote-desktop-ui` (vitest + typecheck), copied from `test-document-ui` (`ci.yml:1610-1641`), in `ci-success` `needs`, both result branches, `ci-area-gating.test.mjs`, `ci-gate.test.mjs` count, and `queue-selection.mjs` (unit map, prefix map, and the viewer area also covering the package) | meets (inventory matches `git grep test-document-ui -- .github scripts docs`) |
+| A5 | CI job `test-remote-desktop-ui` (vitest + typecheck), copied from `test-document-ui` (`ci.yml:1610-1641`), in `ci-success` `needs`, both result branches, `ci-area-gating.test.mjs`, `ci-gate.test.mjs` count, and `queue-selection.mjs` (unit map, prefix map, and the viewer area also covering the package) | meets on reading, not run: the inventory matches `git grep test-document-ui -- .github scripts docs`, and the `ci-gate.test.mjs` count of 28 holds because `THINNABLE` derives from `JOB_CLASSES` in `queue-selection.mjs` (`ci-gate-thin.mjs:15`, `:29`), which the PR edits |
 | A6 | `packages/remote-desktop-ui/**` added to `scripts/release/binary-affecting-paths.txt`, with the coverage test updated | meets |
 | A7 | `@source "../../../packages/remote-desktop-ui/src";` in `apps/viewer/src/index.css` (`displayScaling.ts` builds class strings) | meets |
 | A8 | noVNC stays a lazy chunk: `transports/vnc` is a subpath export, not in the barrel | meets |
@@ -324,12 +324,13 @@ Spec §5.5, §5.6, §16 "one dashboard origin". **Outcome:** API tests pass, a n
 | B6 | The new describe block in `desktopWs.test.ts` does not separate the `#8947` comment from its describe (`concurrent second offer (#8947)`) | **misses**: inserted between them |
 | B7 | PR body states the origin precedence correctly: `passkeys.ts` reads `WEBAUTHN_ORIGIN` first (`apps/api/src/services/passkeys.ts:152-154`); `exchangeOrigin` deliberately uses `PUBLIC_APP_URL` then `DASHBOARD_URL`, as `config/tunnelOrigin.ts:127-128` does | **misses** (body says it matches `passkeys.ts`) |
 | B8 | No new env var, table, column or migration | meets |
+| B9 | The new `services/exchangeOrigin.ts` passes the services contract suites in `apps/api/src/__tests__/` (for example `parkedFanout.contract.test.ts`, which discovers only files that read `devices` or carry device-exclusion helpers) | not checked by run. By reading, the file is not discovered (it reads no tables); run `cd apps/api && npx vitest run src/__tests__/parkedFanout.contract.test.ts` to confirm |
 
 ### Maintainer verification
 
 - [ ] Steps 1–4 of "Contributor PRs".
 - [ ] `cd apps/api && npx vitest run src/services/exchangeOrigin.test.ts src/services/jwt.test.ts src/routes/desktopWs.test.ts src/routes/desktopWs_utils_http.test.ts src/routes/remote/sessions.test.ts` passes. Then `NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit -p apps/api; echo exit=$?` (check the exit code; never pipe it to `tail`).
-- [ ] **Native label check on a stack built from the PR:** start a session from the Windows, macOS and Linux viewers. Each `session_offer_submitted` row has `exchangeOrigin: 'viewer'`. This depends on each Tauri webview sending exactly `tauri://localhost` (macOS, Linux) or `http://tauri.localhost` (Windows). If one does not, the PR is still correct (it records `unknown`), but file the finding before W6.
+- [ ] **Native label check on a stack built from the PR:** start a WebRTC session from the Windows and macOS viewers. Each `session_offer_submitted` row has `exchangeOrigin: 'viewer'`. This depends on each Tauri webview sending exactly `http://tauri.localhost` (Windows) or `tauri://localhost` (macOS). The Linux viewer is **not observable through this row**: it never submits a WebRTC offer (no WebRTC, F1). If one OS records `unknown`, the PR is still correct, but file the finding before W6.
 - [ ] CI: `test-api`, `typecheck`, `CI Success`.
 
 **Rollback:** revert. Tokens without the claim already verify as `unknown`.
@@ -362,16 +363,20 @@ D4 (b), §9. Proposed name: `BREEZE_BROWSER_DESKTOP_ENABLED` (§17 leaves the na
 - Modify: `docker-compose.yml` and `deploy/docker-compose.prod.yml` (`BREEZE_BROWSER_DESKTOP_ENABLED: ${BREEZE_BROWSER_DESKTOP_ENABLED:-false}` in the api env block, beside `BREEZE_OEM_UPDATES_ENABLED`)
 - Modify: `.env.example` and `deploy/.env.example` (commented `# BREEZE_BROWSER_DESKTOP_ENABLED=false` with a one-line note)
 - Modify: `apps/docs/src/content/docs/deploy/environment.mdx` (row: default `false`, "Not available yet. Turns on remote desktop in the browser for testing; removed in a later release.")
+- Modify: `apps/docs/src/content/docs/deploy/upgrades.mdx` (the release's "new `api` mappings" row, as `BREEZE_OEM_UPDATES_ENABLED` has at `:509`: "Nothing. Leave it unset.")
+- `apps/api/src/data/docsIndex.json` carries environment-docs text but is built by `scripts/build-docs-index.ts`; no workflow was found that enforces its freshness (*not checked* beyond a grep), so regenerate it only if the release process does
 - Modify: `apps/web/src/stores/featuresStore.ts` (`browserDesktop: boolean` in `Features`, default `false` in `DEFAULT_FEATURES`, closed when `/config` is unreachable)
 - Test: `apps/api/src/routes/config.test.ts`, `apps/api/src/config/validate.test.ts`, `apps/web/src/stores/featuresStore.test.ts`
 
 **Interfaces:** produces `features.browserDesktop: boolean` on `GET /api/v1/config`, read on the web through `useFeaturesStore`. W5d and W5e read nothing else.
 
-- [ ] **Step 1: Write the failing tests:** `config exposes features.browserDesktop false by default`, `config exposes true when BREEZE_BROWSER_DESKTOP_ENABLED=true`, `validate rejects a non-boolean BREEZE_BROWSER_DESKTOP_ENABLED`, `featuresStore defaults browserDesktop to false and keeps it false when /config fails`.
+- [ ] **Step 1: Write the failing tests:** `config exposes features.browserDesktop false by default`, `config exposes true when BREEZE_BROWSER_DESKTOP_ENABLED=true`, `validate rejects a non-boolean BREEZE_BROWSER_DESKTOP_ENABLED`, `featuresStore defaults browserDesktop to false and keeps it false when /config fails`, `featuresStore reads browserDesktop true from /config` (guards against a parser that drops the new field while fetch-mocked tests pass).
 - [ ] **Step 2: Run and see them fail.** `cd apps/api && npx vitest run src/routes/config.test.ts src/config/validate.test.ts`; `cd apps/web && npx vitest run src/stores/featuresStore.test.ts`
 - [ ] **Step 3: Implement** every file above.
 - [ ] **Step 4: Run them, plus the compose contracts:** `cd apps/api && npx vitest run src/config/envComposeParity.test.ts src/config/envReadComposeCoverage.test.ts src/system/connections/envInventory.test.ts`. All green.
 - [ ] **Step 5: Commit.** `feat(remote): BREEZE_BROWSER_DESKTOP_ENABLED rollout flag on GET /config, default off (Refs #9557)`
+
+**Turning it on in a worktree stack** (W5d step 5, W5e step 5): add `BREEZE_BROWSER_DESKTOP_ENABLED=true` to the worktree's `.env.stack` (compose reads it last, `scripts/dev/wt-stack/compose.ts:21`; the api gets it through the `x-api-env` anchor in `docker-compose.yml`), then restart the api container. The stack's API source is baked, so a code change needs `pnpm wt-stack up --rebuild`.
 
 CI: `test-api`, `test-web`, `docs-check`. **Rollback:** revert. Nothing reads the flag yet.
 
@@ -567,10 +572,12 @@ CI: `test-api`, `test-web`, `docs-check`. **Rollback:** revert. Nothing reads th
 **States** (`data-testid` on each root): `browser-desktop-disabled` (flag off: **no** session, code or exchange call) | `browser-desktop-checking` | `browser-desktop-unsupported` (with the variant: `no-h264` | `decode` | `present`) | `browser-desktop-ready` (`browser-desktop-connect` button; `browser-desktop-unofficial-notice` when `engine === 'other'`) | `browser-desktop-connecting` | `browser-desktop-connected` | `browser-desktop-ended` (reasons: `operator`, `replaced` ("Opened in another tab"), `signed-out`, `media`, `failed`; actions `browser-desktop-connect-again`, `browser-desktop-back`) | `browser-desktop-resume-refused` ("The previous session ended", action `browser-desktop-start-new`).
 Unsupported actions (§5.9): `browser-desktop-download-viewer` (existing `getViewerDownloadInfo`), `browser-desktop-copy-link`, `browser-desktop-back`.
 
+**Same-document navigation.** `Layout.astro` renders `<ClientRouter />` (`:3`, `:46`), so a link click or browser Back can swap the document without `beforeunload` or `pagehide`. Rules: the "Back to device" link carries `data-astro-reload`; the island runs the W5b teardown (end the session, close the peer, release input) on `astro:before-swap` and on React unmount, exactly once.
+
 **Telemetry (§5.6):** on mount the island calls `Sentry.getReplay()?.stop()` (no replay while the remote screen is on the page). The video element carries the `sentry-block` class. The shared Sentry config is not loosened.
 
 - [ ] **Step 1: Failing tests:**
-  - `BrowserDesktopPage`: `flag off renders disabled and makes no fetch to /remote/sessions, /desktop-connect-code or /connect/exchange`; `failed preflight renders unsupported with no session calls`; `ready never connects without a click` (mount, run timers, assert no create call); `reload with a stored session shows ready, not connecting`; `Connect runs the launch transaction once`; `resume-refused shows Start a new session; only that click creates`; `onEnded(media decode) shows the decoding variant`; `engine other shows the unofficial notice`; `Copy link copies location.href` (the URL carries only the device id and the optional `#ws=`).
+  - `BrowserDesktopPage`: `flag off renders disabled and makes no fetch to /remote/sessions, /desktop-connect-code or /connect/exchange`; `failed preflight renders unsupported with no session calls`; `ready never connects without a click` (mount, run timers, assert no create call); `reload with a stored session shows ready, not connecting`; `Connect runs the launch transaction once`; `resume-refused shows Start a new session; only that click creates`; `onEnded(media decode) shows the decoding variant`; `engine other shows the unofficial notice`; `unmount while connected runs teardown once (endDesktopSession called once)`; `astro:before-swap while connected runs the same teardown`; `Back link has data-astro-reload`; `Copy link copies location.href` (the URL carries only the device id and the optional `#ws=`).
   - `remoteDesktopUrls`: `fragment carries ws only`, `unknown keys ignored`, `non-integer ws ignored`.
   - `desktopPageScripts.test.ts`: the `.astro` source imports exactly `Layout`, `AuthOverlay`, `ToastContainer`, `BrowserDesktopPage` and `tServer`, and uses no `DashboardLayout`.
   - `remoteDesktopImports.test.ts`: no file under `apps/web/src` imports `@breeze/remote-desktop-ui/transports/vnc` or names `parseDeepLink`.
@@ -580,7 +587,10 @@ Unsupported actions (§5.9): `browser-desktop-download-viewer` (existing `getVie
 - [ ] **Step 4: Run them and see them pass,** plus `src/lib/__tests__/no-silent-mutations.test.ts` and the locale tests under `src/locales/`.
 - [ ] **Step 5: E2E, by hand** (no blocking CI job collects new specs): with a worktree stack (`worktree-stack` skill), run `pnpm wt-stack test -- tests/remote-desktop-browser.spec.ts` twice:
   - flag off: `browser-desktop-disabled`, and no request to the session routes (`page.on('request')`);
-  - flag on: the page renders `ready`, Connect is required, no request URL contains a connect code, and Playwright's bundled Chromium (which may lack H.264, *inferred*) or a Firefox project shows `browser-desktop-unsupported`.
+  - flag on, preflight forced to pass (`page.addInitScript` stubs `RTCRtpReceiver.getCapabilities` and `RTCPeerConnection.prototype.createOffer` to return the Chromium H.264 fixture): the page renders `ready`, no session call happens before the click, and after Connect no request URL contains a connect code;
+  - flag on, preflight forced to fail (the init script returns the no-H.264 fixture): `browser-desktop-unsupported`, and no session call.
+
+  `e2e-tests/playwright.config.ts` has only a `chromium` project, and whether its build decodes H.264 is *not checked*, so both outcomes are forced rather than left to the browser.
   
   Attach the output to the PR. The supported streaming path stays manual (Task 9 step 5).
 - [ ] **Step 6: Image build.** `docker build -f apps/web/Dockerfile .` succeeds. `release-build-check` runs on the PR because `apps/web/Dockerfile` changed. Confirm it is green.
@@ -683,8 +693,8 @@ Spec §9, §11. **Outcome:** the flag is gone from code, compose and env docs; t
 
 **Files:** every file in W5 Task 1, reversed: `env.ts`, `validate.ts`, `internalEnvVars.ts`, `routes/config.ts`, both compose files, both `.env.example` files, `environment.mdx`, `featuresStore.ts`. Also: `BrowserDesktopPage.tsx` (drop the `disabled` state), `connectMenuModel.ts` (`browser.flag` becomes always on, or the field is removed), and the tests that pinned flag-off behaviour (inverted, not deleted: "flag off" assertions become "always available" ones). Docs: `apps/docs/src/content/docs/features/remote-access.mdx:715-717` and `deploy/binaries.mdx:349` point to the browser session. Add a new section "Remote desktop in a browser" to `remote-access.mdx` covering every bullet in spec §11. Add an `upgrades.mdx` note that the variable is gone, and the release note.
 
-- [ ] **Step 1: Failing test:** `rg -n BREEZE_BROWSER_DESKTOP_ENABLED --hidden -g '!docs/superpowers/**'` returns matches. Turn that into the assertion `config does not expose features.browserDesktop` in `config.test.ts`.
-- [ ] **Step 2–4:** remove, then `cd apps/api && npx vitest run src/routes/config.test.ts src/config/` and `cd apps/web && npx vitest run src/components/remote src/stores/featuresStore.test.ts`; the `rg` returns only the release note. `pnpm --filter @breeze/docs build` (or the `docs-check` job) passes.
+- [ ] **Step 1: Failing tests:** in `apps/api/src/routes/config.test.ts`, `config does not expose features.browserDesktop` (`expect(body.features).not.toHaveProperty('browserDesktop')`); in `BrowserDesktopPage.test.tsx`, `renders ready with no feature flag loaded` (the store mocked with no `browserDesktop` field). Both fail on main after W5.
+- [ ] **Step 2–4:** remove (including the `upgrades.mdx` note that the variable is gone), then `cd apps/api && npx vitest run src/routes/config.test.ts src/config/` and `cd apps/web && npx vitest run src/components/remote src/stores/featuresStore.test.ts`; the `rg` returns only the release note. `pnpm --filter @breeze/docs build` (or the `docs-check` job) passes.
 - [ ] **Step 5: Commit.** `feat(remote): remote desktop in the browser is generally available; remove the rollout flag (Refs #9557)`
 
 **Rollback:** after W7 there is no runtime switch. A rollback is a revert of W7 (the flag returns, default off) plus a redeploy. Say so in the W7 PR.
@@ -713,6 +723,7 @@ D3 (a): after W7. Add a `remoteDesktopViewer` namespace to all 8 web locales, bu
 **Q1. When the tab closes or reloads mid-session, should the browser host end the session explicitly, as the native viewer has since #12129?**
 - (a) As the approved spec: no explicit end. Cleanup comes from peer loss (§6.4), and Connect after a reload tries a best-effort resume (§6.2). *Pro:* matches the approved text; a reload can sometimes resume. *Con:* session history records a dropped connection, not an operator end; resume rarely succeeds anyway (§6.2 says so).
 - (b) Send End on `pagehide` with a `keepalive` request to `POST /desktop-ws/:id/viewer/end` using the viewer token, and drop resume: a reload shows `ready`, and Connect starts a new session. *Pro:* the same deterministic end reason as the native viewer; one less stored id; the `beforeunload` prompt already warns before a reload. *Con:* changes §6.2; a reload can never keep the session.
+- Either way, a same-document navigation (`ClientRouter`) runs the teardown (Task 8), so it never leaves a live session behind.
 - **Recommend (b).** The native viewer's close behaviour changed after the spec was written, and the end-reason work (#11839, #11931) assumes an explicit hang-up. If (b) is chosen, Task 6 drops `resumeSessionId` and `tabSession.ts`, Task 7's `sessionEnd` sends the keepalive End, and W6's Cleanup row checks the recorded reason.
 
 **Q2. On Linux, the primary click must call `window.open` before any `await`, or the popup blocker steps in, but today's flow re-fetches the device before choosing a route. Which way?**
@@ -740,3 +751,4 @@ D3 (a): after W7. Add a `remoteDesktopViewer` namespace to all 8 web locales, bu
 
 - Spec coverage: §5.1 (W5e), §5.2 (W1, W2b), §5.3 (W2a, W5b, W5c Task 7), §5.4 (W5b Task 2), §5.5 (W4), §5.6 (W4 `no-store`, W5b `isTrusted`, W5d telemetry and scripts, W5e CSP), §5.7 (unchanged endpoints; W6 auth row), §5.8 (W5b Task 3, W5c Tasks 4–5), §5.9 (W5d), §5.10 (W3), §5.11 (W5e), §5.12 (W5d), §6.1–§6.4 (W5c Tasks 6–7, W5b Task 2, Q1), §7 (no tables), §8 (W5d, W5e, W2c, W8), §9 (W5a, W7), §10 (each wave; W6), §11 (W5a env row, W7 docs), §16 notes (W1 A3, A4, A9; W4 B1; W1 bundle comparison).
 - Nothing in this plan adds a table, a column, a setting, or an auth path.
+- Departures from the approved spec, both for Gate B: (1) Q1, if (b) is chosen, replaces §6.2's best-effort resume with an explicit end on close; (2) §5.3's `connect` host capability becomes a `connection` prop variant (`deepLink` | `authorized`, W2a and W5b), so the browser hands the component an already exchanged credential. §17 leaves the interface to the builder; the code still never leaves the page.
