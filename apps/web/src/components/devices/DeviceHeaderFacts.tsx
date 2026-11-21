@@ -1,6 +1,6 @@
 // The device header's identity strip: the facts a tech needs before acting on
 // a device, on every tab. A fact earns a place here only if it (1) changes the
-// next move — fix, RMA, call someone, bill it — (2) fits in about three words,
+// next move — fix, RMA, call someone — (2) fits in about three words,
 // and (3) is not already on the page. Anything else belongs in a named section
 // of the Details tab, never as another card at the bottom of Overview.
 //
@@ -10,7 +10,7 @@
 // The row must not move the page as it loads (see "Load stability" below): it
 // is one fixed-height line, and the facts that need a fetch appear together.
 import { useEffect, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, MapPin, Network, Receipt, ShieldCheck, UserRound } from 'lucide-react';
+import { ChevronDown, MapPin, Network, Phone, ShieldAlert, ShieldCheck, ShieldX, UserRound } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
@@ -24,16 +24,14 @@ import {
   type Responsibility,
   type ResponsibleContact,
 } from '../shared/useContactResponsibilities';
-import { useDeviceBilling } from './useDeviceBilling';
-import { listContracts } from '../../lib/api/contracts';
 import { isPlacementResponse, type PlacementFields } from './PhysicalPlacementCard';
 import type { WarrantyData } from './DeviceWarrantyCard';
 import type { Device } from './DeviceList';
 
 type Props = {
   device: Device;
-  /** Opens a device tab (the warranty and billing panels link to their full record). */
-  onOpenTab?: (tab: 'hardware' | 'details') => void;
+  /** Opens a device tab (the warranty panel links to its full record). */
+  onOpenTab?: (tab: 'hardware') => void;
 };
 
 // ── Load stability ───────────────────────────────────────────────────────
@@ -94,6 +92,14 @@ export function modelLabel(manufacturer?: string | null, model?: string | null):
 
 type KnownWarranty = Pick<WarrantyData, 'status' | 'warrantyStartDate' | 'warrantyEndDate' | 'dataSource'>;
 
+// Shape carries the state too, so it never rests on colour alone.
+const WARRANTY_ICON: Record<string, ReactNode> = {
+  active: <ShieldCheck />,
+  subscription_active: <ShieldCheck />,
+  expiring: <ShieldAlert />,
+  expired: <ShieldX />,
+};
+
 const WARRANTY_TONE: Record<string, FactTone> = {
   active: 'neutral',
   subscription_active: 'neutral',
@@ -121,22 +127,6 @@ function formatDay(value: string | null): string | null {
   const d = parseDateOnly(value);
   if (isNaN(d.getTime())) return value;
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-}
-
-// ── Billing ──────────────────────────────────────────────────────────────
-
-/**
- * Whether the org bills anything by contract. "Uncovered" only means something
- * when the org has active contracts that miss this device; for an org (or a
- * partner) that does not bill by contract every device is uncovered, and an
- * amber chip on all of them would be noise. Fetched only once the device is
- * known to be uncovered; unknown (null) shows nothing.
- */
-async function loadOrgHasActiveContracts(orgId: string): Promise<boolean | null> {
-  const body = await listContracts({ orgId, status: 'active', limit: 1 })
-    .then(async (res) => (res.ok ? ((await res.json()) as { data?: unknown } | null) : null))
-    .catch(() => null);
-  return body && Array.isArray(body.data) ? body.data.length > 0 : null;
 }
 
 // ── Placement ────────────────────────────────────────────────────────────
@@ -182,21 +172,46 @@ async function loadLinkedNetworkAssets(query: string): Promise<LinkedNetworkAsse
 // the person on site, then escalation; billing and portal contacts last.
 const CONTACT_ROLE_ORDER = ['technical', 'site', 'escalation', 'admin', 'after_hours', 'billing', 'portal'];
 
-function pickContact(items: Responsibility[]): { role: string; contact: ResponsibleContact } | null {
-  const rank = (role: string) => {
-    const i = CONTACT_ROLE_ORDER.indexOf(role);
-    return i === -1 ? CONTACT_ROLE_ORDER.length : i;
-  };
-  for (const r of [...items].sort((a, b) => rank(a.role) - rank(b.role))) {
-    const named = [...r.contacts]
-      .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary))
-      .find((c) => contactDisplayName(c));
-    if (named) return { role: r.role, contact: named };
+const roleRank = (role: string) => {
+  const i = CONTACT_ROLE_ORDER.indexOf(role);
+  return i === -1 ? CONTACT_ROLE_ORDER.length : i;
+};
+
+const digits = (v: string | null | undefined) => (v ? v.replace(/\D/g, '') : '');
+
+/**
+ * Responsibilities in the chip's order (role rank, primary first), each role's
+ * contacts de-duplicated: the same person entered twice (same email, or same
+ * phone however it is formatted) is listed once.
+ */
+function orderedResponsibilities(items: Responsibility[]): Responsibility[] {
+  return [...items]
+    .filter((r) => r.contacts.length > 0)
+    .sort((a, b) => roleRank(a.role) - roleRank(b.role))
+    .map((r) => {
+      const seen = new Set<string>();
+      const contacts = [...r.contacts]
+        .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary))
+        .filter((c) => {
+          const keys = [c.email?.trim().toLowerCase(), digits(c.phone || c.mobile)].filter(Boolean) as string[];
+          if (keys.some((k) => seen.has(k))) return false;
+          keys.forEach((k) => seen.add(k));
+          return true;
+        });
+      return { ...r, contacts };
+    });
+}
+
+function pickContact(ordered: Responsibility[]): { role: string; contact: ResponsibleContact } | null {
+  for (const r of ordered) {
+    const reachable = r.contacts.find((c) => contactDisplayName(c));
+    if (reachable) return { role: r.role, contact: reachable };
   }
   return null;
 }
 
-const PANEL_LINK = 'font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground';
+// min-h-6: links in the panels are pointer targets too (24px floor).
+const PANEL_LINK = 'inline-flex min-h-6 items-center font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground';
 
 function ContactLinks({ contact }: { contact: ResponsibleContact }) {
   const phone = contact.phone || contact.mobile;
@@ -214,8 +229,9 @@ type Fact = { key: string; rank: number; node: ReactNode };
 
 // Lower rank stays visible longer when the line is short: an alert first (it
 // is the reason to look), then the identifiers a tech pastes, then context.
+// (Billing coverage is not a header fact; it lives in the Details tab's
+// Asset record.)
 const RANK = {
-  billing: 0,
   warrantyAlert: 1,
   model: 2,
   serial: 3,
@@ -312,24 +328,18 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
   const placement = useKeyedLoad(device.id, loadPlacement, null);
   const assets = useKeyedLoad(networkAssetsQuery(device.id, device.orgId || undefined), loadLinkedNetworkAssets, NO_ASSETS);
   const contacts = useContactResponsibilities({ orgId: device.orgId, siteId: device.siteId || undefined, deviceId: device.id });
-  const billing = useDeviceBilling(device.id);
   const [expanded, setExpanded] = useState(false);
 
   const model = modelLabel(device.manufacturer, device.model);
   const serial = device.serialNumber?.trim() || null;
   const ip = device.lanIp?.trim() || null;
-  // Error is tested before `uncovered`, so a coverage failure never reads as "not billed".
-  const uncovered = billing.allowed && !billing.hidden && !billing.loading && !billing.error && billing.data?.uncovered === true;
-  const orgBillsByContract = useKeyedLoad(uncovered && device.orgId ? device.orgId : null, loadOrgHasActiveContracts, null);
 
   // Settled = answered, failed, or never asked (no permission, nothing to ask).
   const settled =
     warranty.settled &&
     placement.settled &&
     assets.settled &&
-    orgBillsByContract.settled &&
-    (!contacts.canRead || !device.orgId || contacts.failed || contacts.items !== null) &&
-    (!billing.allowed || billing.hidden || !billing.loading);
+    (!contacts.canRead || !device.orgId || contacts.failed || contacts.items !== null);
   const [deadlineFor, setDeadlineFor] = useState<string | null>(null);
   useEffect(() => {
     const timer = setTimeout(() => setDeadlineFor(device.id), REVEAL_DEADLINE_MS);
@@ -342,8 +352,8 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
   const warrantyFact = shown(warranty.value, null);
   const placementFact = shown(placement.value, null);
   const assetFacts = shown(assets.value, NO_ASSETS);
-  const picked = revealed && contacts.canRead && !contacts.failed && contacts.items ? pickContact(contacts.items) : null;
-  const notBilled = revealed && uncovered && orgBillsByContract.value === true;
+  const responsibilities = revealed && contacts.canRead && !contacts.failed && contacts.items ? orderedResponsibilities(contacts.items) : [];
+  const picked = pickContact(responsibilities);
   const placementText = placementFact
     ? [
         placementFact.room,
@@ -379,7 +389,7 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
       rank: RANK.ip,
       node: (
         <span data-testid="device-fact-ip" className="inline-flex items-center gap-1">
-          <span className="sr-only">{t('deviceHeaderFacts.lanIp')}</span>
+          <span className="text-xs font-medium">{t('deviceHeaderFacts.lanIp')}</span>
           <span className="font-mono text-foreground">{ip}</span>
           <CopyButton compact value={ip} label={t('deviceHeaderFacts.lanIp')} testId="device-fact-ip-copy" />
         </span>
@@ -403,7 +413,7 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
         <FactPopover
           testId="device-fact-warranty"
           tone={WARRANTY_TONE[warranty.status]}
-          icon={<ShieldCheck />}
+          icon={WARRANTY_ICON[warranty.status]}
           panel={
             <div className="space-y-2">
               <p className="font-medium">{t('deviceWarrantyCard.compactTitle')} · {statusLabel}</p>
@@ -428,72 +438,62 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
   }
   if (picked) {
     const roleLabel = t(/* i18n-dynamic */ `contactResponsibilities:roles.${picked.role}`, { defaultValue: picked.role });
-    const name = contactDisplayName(picked.contact) as string;
+    // A person's name (or email). A bare phone number is not a name: it reads
+    // as a phone field, so a nameless contact shows its role and a call button.
+    const name = picked.contact.name?.trim() || picked.contact.email?.trim() || null;
+    const phone = picked.contact.phone || picked.contact.mobile;
     facts.push({
       key: 'contact',
       rank: RANK.contact,
       node: (
-        <FactPopover
-          testId="device-fact-contact"
-          icon={<UserRound />}
-          label={`${roleLabel}: ${name}`}
-          panel={
-            <div className="space-y-3">
-              <ul className="space-y-2.5">
-                {contacts.items!.filter((r) => r.contacts.length > 0).map((r) => (
-                  <li key={r.role}>
-                    <p className="text-xs font-medium text-muted-foreground">
-                      {t(/* i18n-dynamic */ `contactResponsibilities:roles.${r.role}`, { defaultValue: r.role })}
-                    </p>
-                    <ul className="mt-0.5 space-y-1.5">
-                      {r.contacts.map((c) => (
-                        <li key={c.contactId}>
-                          {c.name && <p className="font-medium">{c.name}{c.title && <span className="font-normal text-muted-foreground"> · {c.title}</span>}</p>}
-                          <ContactLinks contact={c} />
-                        </li>
-                      ))}
-                    </ul>
-                  </li>
-                ))}
-              </ul>
-              {device.orgId && (
-                <a href={`/organizations/${device.orgId}#contacts`} className={PANEL_LINK}>
-                  {t('deviceHeaderFacts.manageContacts')}
-                </a>
-              )}
-            </div>
-          }
-        >
-          <span className="text-muted-foreground">{roleLabel}</span> {name}
-        </FactPopover>
-      ),
-    });
-  }
-  if (notBilled) {
-    facts.push({
-      key: 'billing',
-      rank: RANK.billing,
-      node: (
-        <FactPopover
-          testId="device-fact-billing"
-          tone="warning"
-          icon={<Receipt />}
-          panel={
-            <div className="space-y-2">
-              <p>{t('deviceBillingCard.uncovered')}</p>
-              <div className="flex flex-wrap gap-x-4">
-                <a href="/contracts" className={PANEL_LINK}>{t('deviceBillingCard.viewContracts')}</a>
-                {onOpenTab && (
-                  <button type="button" onClick={() => onOpenTab('details')} className={PANEL_LINK}>
-                    {t('deviceHeaderFacts.billingDetails')}
-                  </button>
+        <span className="inline-flex min-w-0 items-center gap-0.5">
+          <FactPopover
+            testId="device-fact-contact"
+            icon={<UserRound />}
+            label={name ? `${roleLabel}: ${name}` : roleLabel}
+            panel={
+              <div className="space-y-3">
+                <ul className="space-y-2.5">
+                  {responsibilities.map((r) => (
+                    <li key={r.role}>
+                      <p data-testid="device-fact-contact-role" className="text-xs font-medium text-muted-foreground">
+                        {t(/* i18n-dynamic */ `contactResponsibilities:roles.${r.role}`, { defaultValue: r.role })}
+                        <span className="font-normal"> · {t(/* i18n-dynamic */ `contactResponsibilities:scope.${r.level}`, { defaultValue: r.level })}</span>
+                      </p>
+                      <ul className="mt-0.5 space-y-1.5">
+                        {r.contacts.map((c) => (
+                          <li key={c.contactId}>
+                            {c.name && <p className="font-medium">{c.name}{c.title && <span className="font-normal text-muted-foreground"> · {c.title}</span>}</p>}
+                            <ContactLinks contact={c} />
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+                {device.orgId && (
+                  <a href={`/organizations/${device.orgId}#contacts`} className={PANEL_LINK}>
+                    {t('deviceHeaderFacts.manageContacts')}
+                  </a>
                 )}
               </div>
-            </div>
-          }
-        >
-          {t('deviceHeaderFacts.notBilled')}
-        </FactPopover>
+            }
+          >
+            <span className="text-muted-foreground group-hover:text-foreground group-aria-expanded:text-foreground">{roleLabel}</span>
+            {name && <> {name}</>}
+          </FactPopover>
+          {phone && (
+            <a
+              href={`tel:${phone}`}
+              data-testid="device-fact-contact-call"
+              aria-label={t('deviceHeaderFacts.call', { name: name ?? roleLabel })}
+              title={phone}
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Phone className="h-3.5 w-3.5" aria-hidden="true" />
+            </a>
+          )}
+        </span>
       ),
     });
   }
@@ -505,7 +505,7 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
         <span data-testid="device-fact-placement" className="inline-flex items-center gap-1.5" title={t('physicalPlacementCard.title')}>
           <MapPin className={ICON} aria-hidden="true" />
           <span className="sr-only">{t('physicalPlacementCard.title')}: </span>
-          {placementText}
+          <span className="text-foreground">{placementText}</span>
         </span>
       ),
     });
@@ -519,7 +519,7 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
         <a
           href={`/devices/network/${asset.id}`}
           data-testid="device-network-asset-link"
-          className="inline-flex items-center gap-1.5 hover:text-foreground"
+          className="inline-flex min-h-6 items-center gap-1.5 hover:text-foreground"
         >
           <Network className={ICON} aria-hidden="true" />
           <span>{t('deviceDetails.networkAsset')}</span>

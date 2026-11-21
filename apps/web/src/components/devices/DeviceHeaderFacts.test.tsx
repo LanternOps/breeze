@@ -56,7 +56,7 @@ function route(routes: Routes) {
 }
 
 /** Every source has been asked (not necessarily answered). */
-const fetched = () => waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.length).toBeGreaterThanOrEqual(5));
+const fetched = () => waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.length).toBeGreaterThanOrEqual(4));
 /** Every source has answered and the row has revealed its fetched facts. */
 const settle = async () => {
   await fetched();
@@ -113,56 +113,61 @@ describe('DeviceHeaderFacts', () => {
     expect(screen.queryByTestId('device-fact-warranty')).not.toBeInTheDocument();
   });
 
-  it('picks the technical contact before site and billing, falling back to email or phone for a nameless contact', async () => {
+  it('picks the technical contact before site and billing; a nameless contact shows its role and a call button, not a number as a name', async () => {
     route({
       contacts: json({ responsibilities: [
-        { role: 'billing', level: 'organization', contacts: [{ contactId: 'c1', name: 'Kerri Castellini', email: 'k@example.com', phone: null, mobile: null, title: null, isPrimary: true }] },
+        { role: 'billing', level: 'organization', contacts: [
+          { contactId: 'c1', name: 'Kerri Castellini', email: 'k@example.com', phone: null, mobile: null, title: null, isPrimary: true },
+          // The same person entered twice: one entry, not two.
+          { contactId: 'c3', name: 'Kerri Castellini', email: 'K@Example.com', phone: null, mobile: null, title: null, isPrimary: false },
+        ] },
         { role: 'site', level: 'site', contacts: [{ contactId: 'c2', name: null, email: null, phone: '7037750035', mobile: null, title: null, isPrimary: false }] },
       ] }),
     });
     render(<DeviceHeaderFacts device={device()} />);
     const chip = await screen.findByTestId('device-fact-contact');
     // No technical contact → the site (local) contact wins over billing.
-    expect(chip).toHaveTextContent('7037750035');
+    expect(chip).toHaveTextContent('Local contact');
+    expect(chip).not.toHaveTextContent('7037750035');
+    const call = screen.getByTestId('device-fact-contact-call');
+    expect(call).toHaveAttribute('href', 'tel:7037750035');
+    expect(call).toHaveAccessibleName(/Call Local contact/);
+
     fireEvent.click(chip);
     const panel = screen.getByTestId('device-fact-contact-panel');
+    // Same order as the chip: the local contact's role comes before billing.
+    const headings = within(panel).getAllByTestId('device-fact-contact-role').map((h) => h.textContent);
+    expect(headings[0]).toMatch(/^Local contact/);
+    expect(headings[1]).toMatch(/^Billing/);
+    // Where the assignment comes from.
+    expect(headings[0]).toContain('This site');
+    expect(headings[1]).toContain('Entire organization');
+    expect(within(panel).getAllByText('Kerri Castellini')).toHaveLength(1);
     expect(within(panel).getByRole('link', { name: '7037750035' })).toHaveAttribute('href', 'tel:7037750035');
-    expect(within(panel).getByRole('link', { name: 'k@example.com' })).toHaveAttribute('href', 'mailto:k@example.com');
   });
 
-  it('shows "Not billed" only when the device is uncovered — never on error or not-billable', async () => {
+  it('never shows billing in the header (it lives on the Details tab) and does not fetch it', async () => {
     route({ billing: json({ data: { uncovered: true, notBillable: false, lines: [], deviceRole: 'workstation' } }) });
-    const { unmount } = render(<DeviceHeaderFacts device={device()} />);
-    expect(await screen.findByTestId('device-fact-billing')).toBeInTheDocument();
-    unmount();
-
-    for (const billing of [json({}, 500), json({ data: { uncovered: false, notBillable: true, notBillableReason: 'decommissioned', lines: [] } })]) {
-      vi.clearAllMocks();
-      route({ billing });
-      const r = render(<DeviceHeaderFacts device={device()} />);
-      await settle();
-      expect(screen.queryByTestId('device-fact-billing')).not.toBeInTheDocument();
-      r.unmount();
-    }
-  });
-
-  it('shows no "Not billed" chip when the org has no active contracts (a partner that does not bill by contract)', async () => {
-    route({
-      billing: json({ data: { uncovered: true, notBillable: false, lines: [], deviceRole: 'workstation' } }),
-      contracts: json({ data: [] }),
-    });
-    render(<DeviceHeaderFacts device={device()} />);
-    await waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.some(([u]) => String(u).startsWith('/contracts'))).toBe(true));
+    render(<DeviceHeaderFacts device={device({ model: 'OptiPlex 7060' })} />);
     await settle();
     expect(screen.queryByTestId('device-fact-billing')).not.toBeInTheDocument();
+    const urls = vi.mocked(fetchWithAuth).mock.calls.map(([u]) => String(u));
+    expect(urls.some((u) => u.includes('/billing') || u.startsWith('/contracts'))).toBe(false);
   });
 
-  it('does not request billing without contracts:read', async () => {
-    can.mockImplementation((resource: string) => resource !== 'contracts');
-    route({});
+  it('marks warranty state by shape as well as colour, with a non-text-contrast amber', async () => {
+    route({ warranty: json(EXPIRING) });
     render(<DeviceHeaderFacts device={device()} />);
-    await waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.length).toBeGreaterThanOrEqual(4));
-    expect(vi.mocked(fetchWithAuth).mock.calls.some(([u]) => String(u).includes('/billing'))).toBe(false);
+    const chip = await screen.findByTestId('device-fact-warranty');
+    const icon = chip.querySelector('svg');
+    expect(icon?.getAttribute('class')).toMatch(/lucide-shield-alert/);
+    expect(icon?.closest('span')).toHaveClass('text-warning-strong');
+  });
+
+  it('labels the LAN IP visibly, like the serial', () => {
+    route({});
+    render(<DeviceHeaderFacts device={device({ lanIp: '10.0.4.21' })} />);
+    expect(within(screen.getByTestId('device-fact-ip')).getByText('LAN IP')).not.toHaveClass('sr-only');
   });
 
   it('shows physical placement only when something is set', async () => {

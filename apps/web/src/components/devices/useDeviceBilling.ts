@@ -9,8 +9,8 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 export type DeviceBillingError = { code?: string; groupName?: string };
 
 /**
- * "Who pays for this box?" for one device — shared by DeviceBillingCard and
- * the header's "Not billed" chip. `allowed` false or `hidden` true means the
+ * "Who pays for this box?" for one device (DeviceBillingCard, in the Details
+ * tab's Asset record). `allowed` false or `hidden` true means the
  * caller renders nothing. Callers must test `error` before `data.uncovered`
  * so a coverage failure never reads as "not billed" (Decision 6).
  */

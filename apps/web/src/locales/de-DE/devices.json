@@ -5212,10 +5212,9 @@
     "warrantyStatus": "Garantie: {{status}}",
     "warrantyDetails": "Garantiedetails",
     "manageContacts": "Kontakte verwalten",
-    "notBilled": "Nicht abgerechnet",
-    "billingDetails": "Abrechnungsdetails",
     "more": "{{count}} weitere",
-    "showLess": "Weniger anzeigen"
+    "showLess": "Weniger anzeigen",
+    "call": "{{name}} anrufen"
   },
   "deviceAssetRecord": {
     "title": "Asset-Datensatz",

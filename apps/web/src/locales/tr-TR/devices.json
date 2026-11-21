@@ -5212,10 +5212,9 @@
     "warrantyStatus": "Garanti: {{status}}",
     "warrantyDetails": "Garanti ayrıntıları",
     "manageContacts": "Kişileri yönet",
-    "notBilled": "Faturalanmıyor",
-    "billingDetails": "Faturalama ayrıntıları",
     "more": "{{count}} tane daha",
-    "showLess": "Daha az göster"
+    "showLess": "Daha az göster",
+    "call": "{{name}} kişisini ara"
   },
   "deviceAssetRecord": {
     "title": "Varlık kaydı",
