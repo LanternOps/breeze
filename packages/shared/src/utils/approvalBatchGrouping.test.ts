@@ -4,6 +4,8 @@ import {
   APPROVAL_BATCH_GROUP_SEPARATOR,
   approvalBatchGroupKey,
   approvalBatchGroupParts,
+  approvalCrossOrgBatchKey,
+  isCrossOrgBatchEligible,
   normalizeApprovalBatchAction,
 } from './approvalBatchGrouping';
 
@@ -92,5 +94,39 @@ describe('approvalBatchGroupParts', () => {
     expect(
       approvalBatchGroupParts({ orgId: null, actionToolName: 'run_script', action: 7 }),
     ).toEqual(['', 'run_script', '']);
+  });
+});
+
+describe('cross-org batch scope (#12288 follow-up)', () => {
+  const patch = { orgId: 'org-1', actionToolName: 'manage_patches', action: 'install' };
+
+  it('is eligible only for allowlisted (tool, action) pairs', () => {
+    expect(isCrossOrgBatchEligible(patch)).toBe(true);
+    expect(isCrossOrgBatchEligible({ ...patch, action: ' Install ' })).toBe(true);
+    expect(isCrossOrgBatchEligible({ ...patch, action: 'uninstall' })).toBe(false);
+    expect(isCrossOrgBatchEligible({ ...patch, action: null })).toBe(false);
+    expect(isCrossOrgBatchEligible({ ...patch, actionToolName: 'manage_services' })).toBe(false);
+  });
+
+  it('keys by (tool, action) only, so two orgs share a cross-org key', () => {
+    expect(approvalCrossOrgBatchKey(patch)).toBe(
+      approvalCrossOrgBatchKey({ ...patch, orgId: 'org-2' }),
+    );
+    expect(approvalCrossOrgBatchKey(patch)).toBe(
+      ['manage_patches', 'install'].join(APPROVAL_BATCH_GROUP_SEPARATOR),
+    );
+  });
+
+  it('never collides with a same-org key', () => {
+    expect(approvalCrossOrgBatchKey(patch)).not.toBe(approvalBatchGroupKey(patch));
+    expect(approvalCrossOrgBatchKey(patch)).not.toBe(
+      approvalBatchGroupKey({ ...patch, orgId: null }),
+    );
+  });
+
+  it('keeps a different action in a different cross-org group', () => {
+    expect(approvalCrossOrgBatchKey(patch)).not.toBe(
+      approvalCrossOrgBatchKey({ ...patch, action: 'scan' }),
+    );
   });
 });

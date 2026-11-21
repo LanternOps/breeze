@@ -5,6 +5,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { isInteractiveUserSession, type AuthContext } from '../../middleware/auth';
 import { approvalRequests } from '../../db/schema/approvals';
 import { actionIntents, type ActionIntent } from '../../db/schema/actionIntents';
+import { organizations } from '../../db/schema/orgs';
 import { isAgentIntentDecideAuthorized } from '../actionIntents/intentApprovers';
 import {
   assertApprovalAssurance,
@@ -16,6 +17,9 @@ import { decideApprovalRequest, type DecideApprovalResult } from './decideApprov
 import {
   APPROVAL_BATCH_MAX,
   approvalBatchGroupKey,
+  approvalCrossOrgBatchKey,
+  isCrossOrgBatchEligible,
+  type ApprovalBatchScope,
   type ApprovalProof,
   type RiskTier,
 } from '@breeze/shared';
@@ -73,9 +77,18 @@ export const BATCH_MAX = APPROVAL_BATCH_MAX;
  * `mobile-assertion:<id>:<userId>` and never loads an approval row by it, so a
  * synthetic id here is safe by construction rather than by convention.
  */
-export function batchAssertionKey(ids: string[], decision: 'approved' | 'denied'): string {
+export function batchAssertionKey(
+  ids: string[],
+  decision: 'approved' | 'denied',
+  scope: ApprovalBatchScope = 'same_org',
+): string {
   const canonical = [...new Set(ids)].sort().join(',');
-  return `batch-${decision}-${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
+  const digest = createHash('sha256').update(canonical, 'utf8').digest('hex');
+  // The scope is part of the namespace: a challenge minted for a same-org set
+  // can never be redeemed by a cross-org decide of the same ids, or vice versa.
+  // `same_org` keeps its historical shape so an in-flight challenge survives a
+  // deploy.
+  return scope === 'cross_org' ? `batch-xorg-${decision}-${digest}` : `batch-${decision}-${digest}`;
 }
 
 /** One loaded, validated batch member. */
@@ -90,11 +103,29 @@ export type BatchLoadResult =
 
 export type BatchRowResult = { id: string; httpStatus: number; body: Record<string, unknown> };
 
+/**
+ * Cross-org batches need the caller's session to check partner ownership and
+ * org reach per row, so the scope travels with the auth that proves them.
+ */
+export type BatchLoadOptions =
+  | { scope?: 'same_org' }
+  | { scope: 'cross_org'; auth: Pick<AuthContext, 'scope' | 'partnerId' | 'canAccessOrg'> };
+
 export type DecideApprovalBatchResult =
   | { ok: true; results: BatchRowResult[] }
   | { ok: false; httpStatus: number; body: Record<string, unknown> };
 
 const RISK_TIER_ORDER: RiskTier[] = ['low', 'medium', 'high', 'critical'];
+
+/**
+ * A cross-org batch is only offered from a PARTNER session: the session's
+ * partner is the one whose authenticator policy governs the single ceremony,
+ * so every row must provably belong to it. An org-scoped session can only
+ * ever reach one org anyway, so it loses nothing.
+ */
+export function crossOrgBatchPermitted(auth: Pick<AuthContext, 'scope' | 'partnerId'>): boolean {
+  return auth.scope === 'partner' && typeof auth.partnerId === 'string' && auth.partnerId.length > 0;
+}
 
 /**
  * `(orgId, actionToolName, normalized action)` — the whole homogeneity key, for
@@ -121,6 +152,13 @@ export function batchGroupKey(row: BatchRow): string {
   });
 }
 
+/** `(actionToolName, normalized action)` for one loaded member — the cross-org
+ *  key, from the same raw `action_arguments` field {@link batchGroupKey} uses. */
+export function crossOrgBatchGroupKey(row: BatchRow): string {
+  const args = row.approval.actionArguments as Record<string, unknown> | null;
+  return approvalCrossOrgBatchKey({ actionToolName: row.approval.actionToolName, action: args?.action });
+}
+
 /**
  * Load and validate the batch server-side. NOTHING here trusts the client's
  * claim about what these ids are: the rows and their linked intents are read
@@ -140,7 +178,12 @@ export function batchGroupKey(row: BatchRow): string {
 export async function loadHomogeneousBatch(
   userId: string,
   approvalRequestIds: string[],
+  options: BatchLoadOptions = {},
 ): Promise<BatchLoadResult> {
+  const crossOrg = options.scope === 'cross_org' ? options.auth : null;
+  if (crossOrg && !crossOrgBatchPermitted(crossOrg)) {
+    return { ok: false, httpStatus: 403, body: { error: 'batch_scope_not_permitted' } };
+  }
   // De-duplicate but keep the caller's order, so results come back in the
   // order the cards were selected.
   const ids = [...new Set(approvalRequestIds)];
@@ -206,13 +249,56 @@ export async function loadHomogeneousBatch(
     rows.push({ approval: found.approval, intent });
   }
 
+  // Cross-org: the rules the same-org key gets for free by pinning ONE org.
+  // Each failing row is offending on its own, so the client can deselect it
+  // and keep the rest of the set.
+  let candidates = rows;
+  if (crossOrg) {
+    const orgIds = [...new Set(rows.map((r) => r.intent.orgId).filter((id): id is string => !!id))];
+    const owners = orgIds.length === 0
+      ? []
+      : await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db
+              .select({ id: organizations.id, partnerId: organizations.partnerId })
+              .from(organizations)
+              .where(inArray(organizations.id, orgIds)),
+          ),
+        );
+    const ownerByOrg = new Map(owners.map((o) => [o.id, o.partnerId]));
+    candidates = rows.filter((row) => {
+      const ok =
+        // Agent runs only: a flow is customer-defined automation, and its
+        // effect is not the same thing in every org.
+        row.intent.requestingAgentRunId != null &&
+        isCrossOrgBatchEligible({
+          actionToolName: row.approval.actionToolName,
+          action: (row.approval.actionArguments as Record<string, unknown> | null)?.action,
+        }) &&
+        // Known, non-critical tiers only — enforced HERE rather than left to
+        // the assurance ladder, because a deny (and an approve under an
+        // opted-out policy) never reaches the L4 dead end.
+        RISK_TIER_ORDER.includes(row.approval.riskTier as RiskTier) &&
+        row.approval.riskTier !== 'critical' &&
+        // Every org must be owned by the SESSION's partner (one identity can
+        // hold memberships in several partners, and the ceremony runs under
+        // this session's partner policy) and still reachable by the session.
+        !!row.intent.orgId &&
+        ownerByOrg.get(row.intent.orgId) === crossOrg.partnerId &&
+        crossOrg.canAccessOrg(row.intent.orgId);
+      if (!ok) offending.push(row.approval.id);
+      return ok;
+    });
+  }
+
   // One group, decided by the FIRST eligible row — every row outside it is
   // reported so the client can deselect precisely.
-  const anchor = rows[0];
+  const groupKey = crossOrg ? crossOrgBatchGroupKey : batchGroupKey;
+  const anchor = candidates[0];
   if (anchor) {
-    const anchorKey = batchGroupKey(anchor);
-    for (const row of rows) {
-      if (batchGroupKey(row) !== anchorKey) offending.push(row.approval.id);
+    const anchorKey = groupKey(anchor);
+    for (const row of candidates) {
+      if (groupKey(row) !== anchorKey) offending.push(row.approval.id);
     }
   }
 
@@ -246,6 +332,8 @@ export async function loadHomogeneousBatch(
 export interface DecideApprovalBatchInput {
   approvalRequestIds: string[];
   decision: 'approved' | 'denied';
+  /** Defaults to `same_org`. */
+  scope?: ApprovalBatchScope;
   reason?: string;
   proof?: ApprovalProof;
 }
@@ -261,7 +349,12 @@ export async function decideApprovalBatch(
     return { ok: false, httpStatus: 403, body: { error: 'human_decision_required' } };
   }
 
-  const loaded = await loadHomogeneousBatch(auth.user.id, input.approvalRequestIds);
+  const scope: ApprovalBatchScope = input.scope ?? 'same_org';
+  const loaded = await loadHomogeneousBatch(
+    auth.user.id,
+    input.approvalRequestIds,
+    scope === 'cross_org' ? { scope, auth } : {},
+  );
   if (!loaded.ok) return loaded;
 
   // ONE ceremony for the whole set, at the HIGHEST risk tier present — a
@@ -274,7 +367,7 @@ export async function decideApprovalBatch(
   let assurance: AssuranceDecision;
   try {
     assurance = await assertApprovalAssurance({
-      approvalId: batchAssertionKey(loaded.ids, input.decision),
+      approvalId: batchAssertionKey(loaded.ids, input.decision, scope),
       userId: auth.user.id,
       riskTier: loaded.maxRiskTier,
       proof: input.proof,

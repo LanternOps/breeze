@@ -706,6 +706,10 @@ const BATCH_ID_CAP = 200;
 const batchTargetSchema = z.object({
   approvalRequestIds: z.array(z.string().min(1)).min(1).max(BATCH_ID_CAP),
   decision: z.enum(['approved', 'denied']),
+  // Omitted = `same_org`, so existing callers (web, mobile) are unchanged.
+  // `cross_org` must be sent to BOTH routes: it is folded into the challenge
+  // key, so a challenge minted under one scope never verifies under the other.
+  scope: z.enum(['same_org', 'cross_org']).optional(),
 });
 const batchDecideSchema = batchTargetSchema.extend({
   reason: z.string().max(500).optional(),
@@ -737,11 +741,16 @@ approvalRoutes.post(
     }
     const userId = auth.user.id;
     const { approvalRequestIds, decision } = c.req.valid('json');
+    const scope = c.req.valid('json').scope ?? 'same_org';
 
-    const loaded = await loadHomogeneousBatch(userId, approvalRequestIds);
+    const loaded = await loadHomogeneousBatch(
+      userId,
+      approvalRequestIds,
+      scope === 'cross_org' ? { scope, auth } : {},
+    );
     if (!loaded.ok) return c.json(loaded.body, loaded.httpStatus as 422);
 
-    const challengeKey = batchAssertionKey(loaded.ids, decision);
+    const challengeKey = batchAssertionKey(loaded.ids, decision, scope);
 
     // Identical device query to the single-card challenge route: the caller's
     // active platform approver devices (the userId predicate is
@@ -801,6 +810,7 @@ approvalRoutes.post('/batch/decide', zValidator('json', batchDecideSchema), asyn
   const outcome = await decideApprovalBatch(auth, {
     approvalRequestIds: body.approvalRequestIds,
     decision: body.decision,
+    scope: body.scope,
     reason: body.reason,
     proof: body.proof,
   });

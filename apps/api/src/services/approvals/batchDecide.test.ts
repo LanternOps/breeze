@@ -43,6 +43,17 @@ vi.mock('../../db/schema/devices', () => ({
   devices: { id: 'id', orgId: 'org_id', hostname: 'hostname' },
 }));
 
+// Real shared helpers, but the cross-org allowlist predicate is spy-able so a
+// test can widen it and prove the (tool, action) group check stands on its own.
+vi.mock('@breeze/shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@breeze/shared')>();
+  return { ...actual, isCrossOrgBatchEligible: vi.fn(actual.isCrossOrgBatchEligible) };
+});
+
+vi.mock('../../db/schema/orgs', () => ({
+  organizations: { id: 'id', partnerId: 'partner_id' },
+}));
+
 // Same allowlist-of-one rule as the real helper (middleware/auth.ts).
 vi.mock('../../middleware/auth', () => ({
   isInteractiveUserSession: (auth: any) => auth?.principal?.kind === 'user_session',
@@ -117,9 +128,10 @@ vi.mock('../authenticatorAssurance', () => ({
 import { db } from '../../db';
 import { approvalRequests } from '../../db/schema/approvals';
 import { actionIntents } from '../../db/schema/actionIntents';
+import { organizations } from '../../db/schema/orgs';
 import { assertApprovalAssurance, StepUpRequiredError } from '../authenticatorAssurance';
 import { isAgentIntentDecideAuthorized } from '../actionIntents/intentApprovers';
-import { approvalBatchGroupKey } from '@breeze/shared';
+import { approvalBatchGroupKey, isCrossOrgBatchEligible } from '@breeze/shared';
 import { serialize } from './decideApprovalRequest';
 import {
   BATCH_MAX,
@@ -200,6 +212,8 @@ function mockDb(opts: {
   /** Per-row pre-fetch overrides, keyed by approval id. Defaults to the row
    *  from `batchRows` (i.e. nothing changed between load and decide). */
   prefetchById?: Record<string, unknown>;
+  /** Cross-org batches read each intent org's owning partner. */
+  orgs?: Array<{ id: string; partnerId: string }>;
 }) {
   const byId = new Map(
     opts.batchRows.map((r) => [(r.approval as { id: string }).id, r]),
@@ -226,6 +240,9 @@ function mockDb(opts: {
                 return [override ?? byId.get(id)!.approval];
               },
             };
+          }
+          if (table === organizations) {
+            return { where: async () => opts.orgs ?? [] };
           }
           if (table === actionIntents) {
             return {
@@ -285,6 +302,15 @@ beforeEach(() => {
 });
 
 describe('batchAssertionKey', () => {
+  it('folds the cross_org scope into the key, so a signature cannot cross scopes', () => {
+    const same = batchAssertionKey(['a', 'b'], 'approved');
+    const xorg = batchAssertionKey(['a', 'b'], 'approved', 'cross_org');
+    expect(batchAssertionKey(['a', 'b'], 'approved', 'same_org')).toBe(same);
+    expect(xorg).toMatch(/^batch-xorg-approved-[0-9a-f]{64}$/);
+    expect(xorg).not.toBe(same);
+    expect(batchAssertionKey(['b', 'a'], 'approved', 'cross_org')).toBe(xorg);
+  });
+
   it('is stable under id ORDER and duplicates, and varies with the decision', () => {
     const a = batchAssertionKey(['b', 'a', 'c'], 'approved');
     const b = batchAssertionKey(['c', 'a', 'b', 'a'], 'approved');
@@ -776,5 +802,175 @@ describe('batchGroupKey cross-equivalence with the inbox DTO (#4457)', () => {
       batchGroupKey({ approval: services, intent } as any),
     );
     expect(inboxKey(patches, intent)).not.toBe(inboxKey(services, intent));
+  });
+});
+
+describe('decideApprovalBatch — cross_org scope', () => {
+  const PARTNER = 'partner-123';
+  const ORGS = ['org-a', 'org-b', 'org-c'];
+  const XAUTH = {
+    ...AUTH,
+    scope: 'partner',
+    partnerId: PARTNER,
+    canAccessOrg: (id: string) => ORGS.includes(id),
+  } as any;
+  const ownedOrgs = ORGS.map((id) => ({ id, partnerId: PARTNER }));
+
+  function patchRow(n: number, orgId: string, over: { intent?: Record<string, unknown>; approval?: Record<string, unknown> } = {}) {
+    const args = { action: 'install', deviceIds: [`dev-${n}`], patchIds: [`patch-${n}`] };
+    return {
+      approval: buildApproval(n, {
+        actionToolName: 'manage_patches',
+        actionArguments: args,
+        actionLabel: `Install patches on dev-${n}`,
+        riskTier: 'high',
+        ...over.approval,
+      }),
+      intent: buildIntent(n, {
+        orgId,
+        actionName: 'manage_patches',
+        arguments: args,
+        requestingAgentRunId: `run-${orgId}`,
+        ...over.intent,
+      }),
+    };
+  }
+
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => `appr-${i + 1}`);
+
+  it('approves patch installs across three orgs of the caller\'s partner with ONE ceremony', async () => {
+    const batchRows = [patchRow(1, 'org-a'), patchRow(2, 'org-b'), patchRow(3, 'org-c')];
+    mockDb({ batchRows, orgs: ownedOrgs });
+    mockDecideTx();
+
+    const res = await decideApprovalBatch(XAUTH, {
+      approvalRequestIds: ids(3),
+      decision: 'approved',
+      scope: 'cross_org',
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.results.map((r) => r.httpStatus)).toEqual([200, 200, 200]);
+    expect(vi.mocked(assertApprovalAssurance)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(assertApprovalAssurance)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalId: batchAssertionKey(ids(3), 'approved', 'cross_org'),
+        riskTier: 'high',
+        partnerId: PARTNER,
+      }),
+    );
+  });
+
+  it('still refuses the same cross-org set under the default same_org scope', async () => {
+    mockDb({ batchRows: [patchRow(1, 'org-a'), patchRow(2, 'org-b')], orgs: ownedOrgs });
+    const res = await decideApprovalBatch(XAUTH, { approvalRequestIds: ids(2), decision: 'approved' });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.body).toEqual({ error: 'batch_not_homogeneous', offending: ['appr-2'] });
+  });
+
+  async function expectRefused(batchRows: ReturnType<typeof patchRow>[], offending: string[], orgs = ownedOrgs, auth = XAUTH) {
+    mockDb({ batchRows, orgs });
+    mockDecideTx();
+    const res = await decideApprovalBatch(auth, {
+      approvalRequestIds: batchRows.map((r) => (r.approval as { id: string }).id),
+      decision: 'approved',
+      scope: 'cross_org',
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.httpStatus).toBe(422);
+    expect(res.body).toEqual({ error: 'batch_not_homogeneous', offending });
+    expect(vi.mocked(assertApprovalAssurance)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  }
+
+  it('422s a (tool, action) that is not on the cross-org allowlist', async () => {
+    const svc = (n: number, orgId: string) => ({
+      approval: buildApproval(n),
+      intent: buildIntent(n, { orgId }),
+    });
+    await expectRefused([svc(1, 'org-a'), svc(2, 'org-b')], ['appr-1', 'appr-2']);
+  });
+
+  it('422s a different action in the same tool', async () => {
+    const scan = { action: 'scan', deviceIds: ['dev-2'] };
+    await expectRefused(
+      [patchRow(1, 'org-a'), patchRow(2, 'org-b', { approval: { actionArguments: scan }, intent: { arguments: scan } })],
+      ['appr-2'],
+    );
+  });
+
+  it('422s two allowlisted but DIFFERENT actions — the group key holds without the allowlist', async () => {
+    // One per row; both are consumed by the eligibility pass.
+    vi.mocked(isCrossOrgBatchEligible).mockReturnValueOnce(true).mockReturnValueOnce(true);
+    const scan = { action: 'scan', deviceIds: ['dev-2'] };
+    await expectRefused(
+      [patchRow(1, 'org-a'), patchRow(2, 'org-b', { approval: { actionArguments: scan }, intent: { arguments: scan } })],
+      ['appr-2'],
+    );
+  });
+
+  it('422s a row whose org belongs to ANOTHER partner (multi-partner identity)', async () => {
+    await expectRefused(
+      [patchRow(1, 'org-a'), patchRow(2, 'org-b')],
+      ['appr-2'],
+      [{ id: 'org-a', partnerId: PARTNER }, { id: 'org-b', partnerId: 'partner-other' }],
+      { ...XAUTH, canAccessOrg: () => true },
+    );
+  });
+
+  it('422s a row whose org no longer resolves at all', async () => {
+    await expectRefused([patchRow(1, 'org-a'), patchRow(2, 'org-b')], ['appr-2'], [{ id: 'org-a', partnerId: PARTNER }]);
+  });
+
+  it('422s a row in an org the session cannot access', async () => {
+    await expectRefused(
+      [patchRow(1, 'org-a'), patchRow(2, 'org-b')],
+      ['appr-2'],
+      ownedOrgs,
+      { ...XAUTH, canAccessOrg: (id: string) => id === 'org-a' },
+    );
+  });
+
+  it('422s a FLOW-originated row (agent runs only across orgs)', async () => {
+    await expectRefused(
+      [patchRow(1, 'org-a'), patchRow(2, 'org-b', { intent: { requestingAgentRunId: null, requestingFlowRunId: 'flow-1', source: 'flow' } })],
+      ['appr-2'],
+    );
+  });
+
+  it('422s a critical row and an unrecognised tier before any ceremony', async () => {
+    await expectRefused(
+      [
+        patchRow(1, 'org-a'),
+        patchRow(2, 'org-b', { approval: { riskTier: 'critical' } }),
+        patchRow(3, 'org-c', { approval: { riskTier: 'extreme' } }),
+      ],
+      ['appr-2', 'appr-3'],
+    );
+  });
+
+  it('applies the critical exclusion to a cross-org DENY as well', async () => {
+    mockDb({ batchRows: [patchRow(1, 'org-a'), patchRow(2, 'org-b', { approval: { riskTier: 'critical' } })], orgs: ownedOrgs });
+    const res = await decideApprovalBatch(XAUTH, { approvalRequestIds: ids(2), decision: 'denied', scope: 'cross_org' });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.body).toEqual({ error: 'batch_not_homogeneous', offending: ['appr-2'] });
+  });
+
+  it('403s a cross_org batch from a non-partner session without loading anything', async () => {
+    mockDb({ batchRows: [patchRow(1, 'org-a'), patchRow(2, 'org-b')], orgs: ownedOrgs });
+    const res = await decideApprovalBatch({ ...XAUTH, scope: 'organization' }, {
+      approvalRequestIds: ids(2),
+      decision: 'approved',
+      scope: 'cross_org',
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.httpStatus).toBe(403);
+    expect(res.body).toEqual({ error: 'batch_scope_not_permitted' });
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
   });
 });
