@@ -63,6 +63,8 @@ vi.mock('./FlowDocumentTab', () => ({
     </div>
   ),
 }));
+const toast = vi.hoisted(() => ({ showToast: vi.fn() }));
+vi.mock('../../shared/Toast', () => toast);
 vi.mock('../FlowEnableDialog', () => ({
   FlowEnableDialog: ({ flow, onEnabled, onClose }: { flow: { preApprovalEligibility: unknown }; onEnabled: (r: unknown) => void; onClose: () => void }) => (
     <div data-testid="mock-enable" data-eligibility={JSON.stringify(flow.preApprovalEligibility)}>
@@ -195,6 +197,84 @@ describe('FlowEditorPage', () => {
     await waitFor(() => expect(api.disableFlow).toHaveBeenCalledWith(ID));
     await waitFor(() => expect(screen.getByTestId('mock-form')).toHaveAttribute('data-readonly', 'false'));
     expect(screen.getByTestId('flow-editor-save')).toBeInTheDocument();
+  });
+
+  describe('a failed Disable and edit', () => {
+    async function openConfirm() {
+      api.getFlow.mockResolvedValue({ flow: flow({ status: 'enabled' }), validation });
+      render(<FlowEditorPage flowId={ID} />);
+      fireEvent.click(await screen.findByTestId('flow-editor-disable-and-edit'));
+      fireEvent.click(await screen.findByTestId('flow-editor-disable-confirm'));
+    }
+
+    it('keeps the editor read-only, saves nothing, and lets the person retry (ActionError already toasted)', async () => {
+      api.disableFlow.mockRejectedValueOnce(new ActionError('boom', 500, undefined, {}));
+      await openConfirm();
+      await waitFor(() => expect(api.disableFlow).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(screen.queryByTestId('flow-editor-disable-confirm')).toBeNull());
+      expect(screen.getByTestId('mock-form')).toHaveAttribute('data-readonly', 'true');
+      expect(screen.queryByTestId('flow-editor-save')).toBeNull();
+      expect(api.updateFlowDraft).not.toHaveBeenCalled();
+      expect(api.createFlowDraft).not.toHaveBeenCalled();
+      expect(toast.showToast).not.toHaveBeenCalled(); // runAction already toasted it
+      // Try again: the button is still offered and a second confirm disables.
+      api.disableFlow.mockResolvedValueOnce({ ok: true, cancelledRuns: 0 });
+      api.getFlow.mockResolvedValue({ flow: flow({ status: 'disabled' }), validation });
+      fireEvent.click(screen.getByTestId('flow-editor-disable-and-edit'));
+      fireEvent.click(await screen.findByTestId('flow-editor-disable-confirm'));
+      await waitFor(() => expect(api.disableFlow).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.getByTestId('mock-form')).toHaveAttribute('data-readonly', 'false'));
+    });
+
+    it('toasts a non-ActionError failure and stays read-only', async () => {
+      api.disableFlow.mockRejectedValueOnce(new Error('network down'));
+      await openConfirm();
+      await waitFor(() => expect(toast.showToast).toHaveBeenCalledTimes(1));
+      expect(screen.getByTestId('mock-form')).toHaveAttribute('data-readonly', 'true');
+      expect(api.updateFlowDraft).not.toHaveBeenCalled();
+    });
+
+    it('a 401 is quiet: no extra toast, still read-only', async () => {
+      api.disableFlow.mockRejectedValueOnce(new ActionError('unauthorized', 401, undefined, {}));
+      await openConfirm();
+      await waitFor(() => expect(screen.queryByTestId('flow-editor-disable-confirm')).toBeNull());
+      expect(toast.showToast).not.toHaveBeenCalled();
+      expect(screen.getByTestId('mock-form')).toHaveAttribute('data-readonly', 'true');
+    });
+  });
+
+  describe('validation on a pristine new flow', () => {
+    const invalid = { valid: false, effectiveTier: null, steps: [], issues: [{ code: 'too_small', severity: 'error', message: 'Too small: expected string to have >=1 characters' }] };
+
+    it('a pristine new flow shows no validation issues', async () => {
+      api.validateFlowDraftDocument.mockResolvedValue(invalid);
+      render(<FlowEditorPage />);
+      await screen.findByTestId('mock-form');
+      await waitFor(() => expect(api.validateFlowDraftDocument).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.queryByTestId('flow-issue-too_small')).toBeNull();
+      expect(screen.queryByText(/Too small/)).toBeNull();
+    });
+
+    it('issues appear after the first edit', async () => {
+      api.validateFlowDraftDocument.mockResolvedValue(invalid);
+      render(<FlowEditorPage />);
+      fireEvent.click(await screen.findByTestId('mock-form-rename'));
+      expect(await screen.findByTestId('flow-issue-too_small', {}, { timeout: 2000 })).toBeInTheDocument();
+    });
+
+    it('Save on an invalid pristine form shows the issues and does not call the API', async () => {
+      api.validateFlowDraftDocument.mockResolvedValue(invalid);
+      render(<FlowEditorPage />);
+      await screen.findByTestId('mock-form');
+      await waitFor(() => expect(api.validateFlowDraftDocument).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 50));
+      fireEvent.click(screen.getByTestId('flow-editor-save'));
+      expect(await screen.findByTestId('flow-issue-too_small')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('flow-editor-save-enable'));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(api.createFlowDraft).not.toHaveBeenCalled();
+    });
   });
 
   it('cancelling Disable and edit leaves the flow enabled and read-only', async () => {

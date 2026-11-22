@@ -107,6 +107,10 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
   const [tab, setTab] = useHashTab<EditorTab>(EDITOR_TABS, 'form');
   const [owner, setOwner] = useState<'organization' | 'partner'>(() => (canManagePartnerWide && !currentOrgId ? 'partner' : 'organization'));
 
+  // A new flow shows no validation issues until the person edits or presses Save.
+  const [touched, setTouched] = useState(false);
+  // Whether the document has been edited (Save pressed on an untouched form does not count).
+  const [edited, setEdited] = useState(false);
   const [saving, setSaving] = useState(false);
   // Held across a whole Save / Save-and-enable, including the navigation or reload that follows a create.
   const [busy, setBusy] = useState(false);
@@ -190,7 +194,7 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
   const saveValidation = saveError?.kind === 'invalid' && saveError.text === editor.text ? saveError.validation : null;
   // After a failed validate, the loaded document's issues no longer describe the text: show none.
   const validation = saveValidation ?? (live.error ? null : (live.validation ?? loadedState.validation));
-  const issues = validation?.issues ?? [];
+  const issues = isNew && !touched ? [] : (validation?.issues ?? []);
 
   const stepsForList = parsedDoc && Array.isArray((parsedDoc as { steps?: unknown }).steps)
     ? ((parsedDoc as FlowDocumentV1).steps)
@@ -282,6 +286,11 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
   };
 
   const start = (action: Pending) => {
+    if (isNew && !edited) {
+      setTouched(true);
+      // Never edited and already known invalid: show the issues instead of sending a doomed create.
+      if (live.validation?.valid === false) return;
+    }
     if (isShadow && dirty && !shadowAcknowledged) {
       setShadowPending(action);
       return;
@@ -338,10 +347,14 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
 
   const onFormChange = (values: FlowFormValues) => {
     setSavedNotice(false);
+    setTouched(true);
+    setEdited(true);
     setEditor((e) => (e ? withFormValues(e, values) : e));
   };
   const onTextChange = (text: string) => {
     setSavedNotice(false);
+    setTouched(true);
+    setEdited(true);
     setEditor((e) => (e ? withText(e, text) : e));
   };
 
