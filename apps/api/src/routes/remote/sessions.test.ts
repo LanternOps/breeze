@@ -1717,7 +1717,7 @@ describe('remote sessions — site-scope enforcement', () => {
     );
   });
 
-  describe('POST /sessions/:id/desktop-connect-code — Cache-Control (#9557 W4)', () => {
+  describe('POST /sessions/:id/desktop-connect-code: Cache-Control (#9557 W4)', () => {
     const connectCodeRequest = () => app.request(`/remote/sessions/${SESSION_ID}/desktop-connect-code`, {
       method: 'POST',
       headers: { Authorization: 'Bearer t' },

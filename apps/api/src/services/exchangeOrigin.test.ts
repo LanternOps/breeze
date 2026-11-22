@@ -51,7 +51,7 @@ describe('classifyExchangeOrigin', () => {
     expect(classifyExchangeOrigin('https://other.example.com')).toBe('unknown');
   });
 
-  it('labels no origin "browser" when no dashboard URL is configured', () => {
+  it('labels a localhost origin "unknown" when no dashboard URL is configured', () => {
     vi.stubEnv('PUBLIC_APP_URL', '');
     expect(classifyExchangeOrigin('http://localhost:4321')).toBe('unknown');
   });

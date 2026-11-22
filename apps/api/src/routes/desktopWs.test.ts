@@ -984,10 +984,7 @@ describe('viewer reconnect hold (#10542)', () => {
   });
 });
 
-// #8947: one viewer window posted two offers ~250 ms apart; both were accepted
-// and dispatched, and the first peer was orphaned. The real start-intent and
-// in-flight-marker code runs here against an in-memory Redis.
-describe('POST /:id/viewer/offer — the audit records where the viewer token was exchanged (#9557 W4)', () => {
+describe('POST /:id/viewer/offer: the audit records where the viewer token was exchanged (#9557 W4)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     primeHappyPath();
@@ -1022,6 +1019,9 @@ describe('POST /:id/viewer/offer — the audit records where the viewer token wa
   });
 });
 
+// #8947: one viewer window posted two offers ~250 ms apart; both were accepted
+// and dispatched, and the first peer was orphaned. The real start-intent and
+// in-flight-marker code runs here against an in-memory Redis.
 describe('POST /:id/viewer/offer — concurrent second offer (#8947)', () => {
   const IN_FLIGHT_COMMAND = `desk-start-${SESSION_ID}-99999999-9999-4999-8999-999999999999`;
   let store: Map<string, string>;
