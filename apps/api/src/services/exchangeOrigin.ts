@@ -9,8 +9,9 @@ import { TAURI_ORIGINS } from './corsOrigins';
 export type ExchangeOrigin = 'browser' | 'viewer' | 'unknown';
 
 // The dashboard's own origin, not the CORS allowlist (which may hold other
-// origins). PUBLIC_APP_URL then DASHBOARD_URL is the precedence passkeys.ts and
-// config/tunnelOrigin.ts already use for "the web app's origin".
+// origins). PUBLIC_APP_URL then DASHBOARD_URL, as config/tunnelOrigin.ts uses.
+// Not the passkeys.ts order: WEBAUTHN_ORIGIN is a passkey setting, not where the
+// dashboard is served.
 function dashboardOrigin(): string | null {
   const raw = (process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL)?.trim();
   if (!raw) return null;
