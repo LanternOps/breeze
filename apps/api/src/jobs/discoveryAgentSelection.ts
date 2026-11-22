@@ -102,18 +102,7 @@ export async function loadSiteDiscoveryAgentCandidates(
   const withAgent = rows.filter((row): row is typeof row & { agentId: string } => Boolean(row.agentId));
   if (withAgent.length === 0) return [];
 
-  const addressRows = await db
-    .select({ deviceId: deviceNetwork.deviceId, ipAddress: deviceNetwork.ipAddress })
-    .from(deviceNetwork)
-    .where(and(inArray(deviceNetwork.deviceId, withAgent.map((row) => row.deviceId)), isNotNull(deviceNetwork.ipAddress)));
-
-  const addressesByDevice = new Map<string, string[]>();
-  for (const row of addressRows) {
-    if (!row.ipAddress) continue;
-    const list = addressesByDevice.get(row.deviceId) ?? [];
-    list.push(row.ipAddress);
-    addressesByDevice.set(row.deviceId, list);
-  }
+  const addressesByDevice = await loadDeviceAddresses(withAgent.map((row) => row.deviceId));
 
   return withAgent.map((row) => ({
     deviceId: row.deviceId,
@@ -121,6 +110,24 @@ export async function loadSiteDiscoveryAgentCandidates(
     label: deviceLabel(row),
     addresses: addressesByDevice.get(row.deviceId) ?? [],
   }));
+}
+
+/** Known interface addresses (device_network, any family) per device, for subnet-match ranking. */
+export async function loadDeviceAddresses(deviceIds: readonly string[]): Promise<Map<string, string[]>> {
+  const addressesByDevice = new Map<string, string[]>();
+  if (deviceIds.length === 0) return addressesByDevice;
+  const addressRows = await db
+    .select({ deviceId: deviceNetwork.deviceId, ipAddress: deviceNetwork.ipAddress })
+    .from(deviceNetwork)
+    .where(and(inArray(deviceNetwork.deviceId, [...deviceIds]), isNotNull(deviceNetwork.ipAddress)));
+
+  for (const row of addressRows) {
+    if (!row.ipAddress) continue;
+    const list = addressesByDevice.get(row.deviceId) ?? [];
+    list.push(row.ipAddress);
+    addressesByDevice.set(row.deviceId, list);
+  }
+  return addressesByDevice;
 }
 
 export type PinnedDiscoveryAgentResolution =
