@@ -887,6 +887,7 @@
         "notifyHelp": "Für jedes Gerät, an das das Skript nicht gesendet werden konnte, eine Mitteilung an die folgenden Kanäle senden. Pro Ausführung werden höchstens 20 Mitteilungen gesendet.",
         "noChannels": "Fügen Sie einen Benachrichtigungskanal hinzu, um „Benachrichtigen“ zu verwenden."
       }
-    }
+    },
+    "enableOpenFailed": "Der Entwurf wurde gespeichert, aber der Aktivierungsdialog konnte nicht geöffnet werden. Öffnen Sie den Ablauf, um ihn zu aktivieren."
   }
 }

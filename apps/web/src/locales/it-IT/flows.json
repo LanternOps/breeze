@@ -887,6 +887,7 @@
         "notifyHelp": "Invia un avviso ai canali sottostanti per ogni dispositivo a cui non è stato possibile inviare lo script. Vengono inviati al massimo 20 avvisi per esecuzione.",
         "noChannels": "Aggiungi un canale di notifica per usare Notifica."
       }
-    }
+    },
+    "enableOpenFailed": "La bozza è stata salvata, ma non è stato possibile aprire la finestra di abilitazione. Apri il flusso per abilitarlo."
   }
 }

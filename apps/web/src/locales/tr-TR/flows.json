@@ -887,6 +887,7 @@
         "notifyHelp": "Betiğin gönderilemediği her cihaz için aşağıdaki kanallara bir bildirim gönderin. Çalıştırma başına en fazla 20 bildirim gönderilir.",
         "noChannels": "Bildir seçeneğini kullanmak için bir bildirim kanalı ekleyin."
       }
-    }
+    },
+    "enableOpenFailed": "Taslak kaydedildi, ancak etkinleştirme penceresi açılamadı. Etkinleştirmek için akışı açın."
   }
 }

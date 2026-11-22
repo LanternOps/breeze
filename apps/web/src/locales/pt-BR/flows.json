@@ -887,6 +887,7 @@
         "notifyHelp": "Envia um aviso aos canais abaixo para cada dispositivo ao qual o script não pôde ser enviado. No máximo 20 avisos são enviados por execução.",
         "noChannels": "Adicione um canal de notificação para usar Notificar."
       }
-    }
+    },
+    "enableOpenFailed": "O rascunho foi salvo, mas não foi possível abrir a caixa de diálogo de ativação. Abra o fluxo para ativá-lo."
   }
 }

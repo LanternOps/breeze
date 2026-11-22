@@ -99,6 +99,18 @@ describe('FlowFormView', () => {
     expect(screen.queryByTestId('flow-form-target-choose')).toBeNull();
   });
 
+  it('a failed picker list is reported, and the other list still loads', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      url.startsWith('/scripts') ? new Response('{}', { status: 403 }) : json({ data: [{ id: CHANNEL, name: 'Ops', type: 'email' }] }),
+    );
+    render(<Harness initial={base} onValues={() => {}} />);
+    expect(await screen.findByTestId('flow-form-lists-failed')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('flow-form-onfailure-notify')).not.toBeDisabled());
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
   it('read-only renders every field disabled', () => {
     render(<FlowFormView values={{ ...base, name: 'x' }} onChange={vi.fn()} partnerWide={false} issues={[]} readOnly />);
     expect(screen.getByTestId('flow-form-name')).toBeDisabled();

@@ -404,6 +404,21 @@ describe('flows completion W01e: draft create, update, delete and validate clien
     expect(mocks.showToast).not.toHaveBeenCalled();
   });
 
+  it('every other delete refusal is toasted, a stale version included', async () => {
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(409, { error: 'version_conflict' }));
+    await expect(deleteFlowDraft('f1', 1)).rejects.toBeInstanceOf(ActionError);
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(409, { error: 'flow_not_draft' }));
+    await expect(deleteFlowDraft('f1', 1)).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast.mock.calls.map(([arg]) => arg.type)).toEqual(['error', 'error']);
+    expect(mocks.showToast.mock.calls[0][0].message).toBe(lookup('enable.versionConflict'));
+  });
+
+  it('an unmapped save failure is toasted', async () => {
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(500, { error: 'boom' }));
+    await expect(updateFlowDraft('f1', { document: doc, expectedVersion: 1 })).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).toHaveBeenCalledTimes(1);
+  });
+
   it('a delete 409 flow_has_history carries automationId', async () => {
     const body = { error: 'flow_has_history', conversionId: 'c1', automationId: 'a1' };
     mocks.fetchWithAuth.mockResolvedValueOnce(json(409, body));

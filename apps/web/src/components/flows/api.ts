@@ -182,6 +182,10 @@ const FLOW_ERROR_KEYS: Record<string, string> = {
   already_terminal: 'flows:runDetail.alreadyTerminal',
   partner_wide_forbidden: 'flows:enable.partnerWideForbidden',
   interactive_session_required: 'flows:enable.interactiveRequired',
+  // Flows completion W01e: draft routes.
+  version_conflict: 'flows:enable.versionConflict',
+  slug_unavailable: 'flows:enable.slugUnavailable',
+  slug_conflict: 'flows:enable.slugUnavailable',
 };
 
 function flowFriendly(code: string): string | undefined {
@@ -331,9 +335,12 @@ const DRAFT_INLINE_CODES = new Set([
 ]);
 
 function suppressDraftToast(status: number, code: string | undefined, body?: unknown): boolean {
-  if (status === 422) return true;
-  const token = errorToken(code, body);
-  return token !== undefined && DRAFT_INLINE_CODES.has(token);
+  return isDraftInlineFailure(status, errorToken(code, body));
+}
+
+/** True for a create/update failure the client does not toast, so the caller must render it. */
+export function isDraftInlineFailure(status: number, token: string | undefined): boolean {
+  return status === 422 || (token !== undefined && DRAFT_INLINE_CODES.has(token));
 }
 
 /** JSON init for a draft call; the org lives in the body, never the ambient switcher. */
@@ -378,7 +385,9 @@ export async function deleteFlowDraft(flowId: string, expectedVersion: number): 
     request: () => fetchWithAuth(`${BASE}/${encodeURIComponent(flowId)}`, draftInit('DELETE', { expectedVersion })),
     errorFallback: i18n.t('flows:errors.deleteFailed'),
     successMessage: i18n.t('flows:toast.draftDeleted'),
-    suppressErrorToast: suppressDraftToast,
+    // Only `flow_has_history` is rendered inline (the detail page links the Job);
+    // every other refusal, a stale version included, is toasted.
+    suppressErrorToast: (_status, code, body) => errorToken(code, body) === 'flow_has_history',
     friendly: flowFriendly,
   });
 }

@@ -20,7 +20,11 @@ const api = vi.hoisted(() => ({
   disableFlow: vi.fn(),
   validateFlowDraftDocument: vi.fn(),
 }));
-vi.mock('../api', () => api);
+vi.mock('../api', async () => ({
+  ...api,
+  // The real classifier, so the inline-versus-toast split under test is the shipped one.
+  isDraftInlineFailure: (await vi.importActual<typeof import('../api')>('../api')).isDraftInlineFailure,
+}));
 const nav = vi.hoisted(() => ({ navigateTo: vi.fn().mockResolvedValue('soft') }));
 vi.mock('@/lib/navigation', () => nav);
 const gate = vi.hoisted(() => ({ value: { enabled: true, loaded: true } }));
@@ -259,6 +263,51 @@ describe('FlowEditorPage', () => {
     fireEvent.click(screen.getByTestId('flow-editor-save'));
     await waitFor(() => expect(api.updateFlowDraft).toHaveBeenCalledTimes(1));
     expect(api.updateFlowDraft.mock.calls[0][1].document.steps[0].timeoutSec).toBe(600);
+  });
+
+  it('saving from the Document tab sends the typed document whole, fields the form cannot show included', async () => {
+    api.updateFlowDraft.mockImplementation(async (_id: string, body: { document: unknown }) => ({ flow: flow({ definitionVersion: 4 }, body.document), validation }));
+    render(<FlowEditorPage flowId={ID} />);
+    fireEvent.click(await screen.findByTestId('flow-editor-tab-document'));
+    const typed = { ...compileFlowForm(values), limits: { monthlyRuns: 7 }, notices: { channelId: '55555555-5555-4555-8555-555555555555' } };
+    fireEvent.change(screen.getByTestId('mock-doc'), { target: { value: JSON.stringify(typed) } });
+    fireEvent.click(screen.getByTestId('flow-editor-save'));
+    await waitFor(() => expect(api.updateFlowDraft).toHaveBeenCalledTimes(1));
+    expect(api.updateFlowDraft.mock.calls[0][1].document).toEqual(typed);
+  });
+
+  it('a 422 without a machine token still says the save failed', async () => {
+    api.updateFlowDraft.mockRejectedValue(new ActionError('Request failed (422)', 422, undefined, {}));
+    render(<FlowEditorPage flowId={ID} />);
+    fireEvent.click(await screen.findByTestId('mock-form-rename'));
+    fireEvent.click(screen.getByTestId('flow-editor-save'));
+    expect(await screen.findByTestId('flow-editor-save-error')).toHaveTextContent('Request failed (422)');
+  });
+
+  it('an owner refusal shows the server message inline', async () => {
+    api.createFlowDraft.mockRejectedValue(new ActionError('owner_invalid', 400, undefined, { error: 'owner_invalid', message: 'Organization context required' }));
+    render(<FlowEditorPage />);
+    fireEvent.click(await screen.findByTestId('mock-form-rename'));
+    fireEvent.click(screen.getByTestId('flow-editor-save'));
+    expect(await screen.findByTestId('flow-editor-error-owner_invalid')).toHaveTextContent('Organization context required');
+  });
+
+  it('a save after the flow was enabled elsewhere says so inline', async () => {
+    api.updateFlowDraft.mockRejectedValue(new ActionError('flow_not_draft', 409, undefined, { error: 'flow_not_draft' }));
+    render(<FlowEditorPage flowId={ID} />);
+    fireEvent.click(await screen.findByTestId('mock-form-rename'));
+    fireEvent.click(screen.getByTestId('flow-editor-save'));
+    expect(await screen.findByTestId('flow-editor-error-flow_not_draft')).toBeInTheDocument();
+  });
+
+  it('a failed validate hides the loaded issues instead of showing them as current', async () => {
+    const stale = { ...validation, valid: false, issues: [{ code: 'tool_not_found', severity: 'error', message: 'old' }] };
+    api.getFlow.mockResolvedValue({ flow: flow(), validation: stale });
+    api.validateFlowDraftDocument.mockRejectedValue(new ActionError('Organization not found', 400, 'owner_invalid', { error: 'owner_invalid' }));
+    render(<FlowEditorPage flowId={ID} />);
+    expect(await screen.findByTestId('flow-issue-tool_not_found')).toBeInTheDocument();
+    expect(await screen.findByTestId('flow-editor-validate-error', {}, { timeout: 2000 })).toBeInTheDocument();
+    expect(screen.queryByTestId('flow-issue-tool_not_found')).toBeNull();
   });
 
   it('a JSON parse error blocks save', async () => {

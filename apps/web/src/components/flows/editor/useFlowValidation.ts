@@ -30,7 +30,12 @@ export function useFlowValidation(
   const key = document === null ? null : JSON.stringify([document, owner.ownerScope ?? null, owner.orgId ?? null, flowId ?? null]);
 
   useEffect(() => {
-    if (key === null) return;
+    if (key === null) {
+      // Unparsable text: drop any in-flight answer for the previous document.
+      seq.current += 1;
+      setPending(false);
+      return;
+    }
     const [doc, ownerScope, orgId, id] = JSON.parse(key) as [unknown, ValidationOwner['ownerScope'] | null, string | null, string | null];
     const mine = ++seq.current;
     setPending(true);

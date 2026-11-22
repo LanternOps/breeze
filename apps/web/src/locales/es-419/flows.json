@@ -887,6 +887,7 @@
         "notifyHelp": "Envía un aviso a los canales de abajo por cada dispositivo al que no se pudo enviar el script. Se envían como máximo 20 avisos por ejecución.",
         "noChannels": "Agrega un canal de notificación para usar Notificar."
       }
-    }
+    },
+    "enableOpenFailed": "El borrador se guardó, pero no se pudo abrir el diálogo de habilitación. Abre el flujo para habilitarlo."
   }
 }

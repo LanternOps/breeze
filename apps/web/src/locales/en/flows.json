@@ -887,6 +887,7 @@
         "notifyHelp": "Send a notice to the channels below for each device the script couldn't be sent to. At most 20 notices are sent per run.",
         "noChannels": "Add a notification channel to use Notify."
       }
-    }
+    },
+    "enableOpenFailed": "The draft was saved, but the enable dialog could not open. Open the flow to enable it."
   }
 }

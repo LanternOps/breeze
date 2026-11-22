@@ -887,6 +887,7 @@
         "notifyHelp": "Envoyer un avis aux canaux ci-dessous pour chaque appareil auquel le script n'a pas pu être envoyé. Au plus 20 avis sont envoyés par exécution.",
         "noChannels": "Ajoutez un canal de notification pour utiliser Notifier."
       }
-    }
+    },
+    "enableOpenFailed": "Le brouillon a été enregistré, mais la boîte de dialogue d'activation n'a pas pu s'ouvrir. Ouvrez le flux pour l'activer."
   }
 }

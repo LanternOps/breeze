@@ -32,12 +32,13 @@ export function targetForTrigger(trigger: FlowFormTrigger, target: FlowFormTarge
   return target.kind === 'trigger_device' ? { kind: 'target', target: { type: 'all' } } : target;
 }
 
+/** A picker list; throws on a failed or unrecognized response, so an empty picker always means "none". */
 async function readList<T>(path: string, keys: string[]): Promise<T[]> {
   const res = await fetchWithAuth(path);
-  if (!res.ok) return [];
+  if (!res.ok) throw new Error(`${path} answered ${res.status}`);
   const body = (await res.json()) as Record<string, unknown>;
   for (const k of keys) if (Array.isArray(body[k])) return body[k] as T[];
-  return [];
+  throw new Error(`${path} returned an unexpected shape`);
 }
 
 /**
@@ -56,18 +57,19 @@ export function FlowFormView({ values, onChange, partnerWide, issues, readOnly =
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
+    void Promise.allSettled([
       readList<ScriptOption>('/scripts', ['data', 'scripts']),
       readList<ChannelOption>('/alerts/channels', ['data', 'channels']),
-    ])
-      .then(([s, c]) => {
-        if (cancelled) return;
-        setScripts(s);
-        setChannels(c);
-      })
-      .catch(() => {
-        if (!cancelled) setListsFailed(true);
-      });
+    ]).then(([s, c]) => {
+      if (cancelled) return;
+      if (s.status === 'fulfilled') setScripts(s.value);
+      if (c.status === 'fulfilled') setChannels(c.value);
+      const failures = [s, c].filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+      if (failures.length > 0) {
+        console.error('[FlowFormView] could not load picker lists', failures.map((f) => f.reason));
+        setListsFailed(true);
+      }
+    });
     return () => {
       cancelled = true;
     };

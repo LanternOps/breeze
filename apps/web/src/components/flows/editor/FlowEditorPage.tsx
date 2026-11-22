@@ -21,7 +21,7 @@ import { useFlowsGate } from '../../../stores/featuresStore';
 import { useOrgStore } from '../../../stores/orgStore';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { showToast } from '../../shared/Toast';
-import { createFlowDraft, disableFlow, getFlow, updateFlowDraft, type EnableFlowResult } from '../api';
+import { createFlowDraft, disableFlow, getFlow, isDraftInlineFailure, updateFlowDraft, type EnableFlowResult } from '../api';
 import { FlowEnableDialog } from '../FlowEnableDialog';
 import { FlowIssuesPanel } from '../FlowIssuesPanel';
 import { FlowStepList } from '../FlowStepList';
@@ -184,7 +184,8 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
   const isShadow = flow?.convertedFrom?.state === 'shadow';
 
   const saveValidation = saveError?.kind === 'invalid' && saveError.text === editor.text ? saveError.validation : null;
-  const validation = saveValidation ?? live.validation ?? loadedState.validation;
+  // After a failed validate, the loaded document's issues no longer describe the text: show none.
+  const validation = saveValidation ?? (live.error ? null : (live.validation ?? loadedState.validation));
   const issues = validation?.issues ?? [];
 
   const stepsForList = parsedDoc && Array.isArray((parsedDoc as { steps?: unknown }).steps)
@@ -214,11 +215,16 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
         return null;
       }
       const body = errorBody(err);
-      const code = body.error ?? err.code;
+      // The same token order runAction's suppression uses (`code`, then `error`).
+      const code = err.code ?? body.error;
       if (code === 'version_conflict') setSaveError({ kind: 'conflict' });
       else if (err.status === 422 && code === 'invalid') setSaveError({ kind: 'invalid', validation: body.validation ?? null, text: editor.text });
-      else if (code) setSaveError({ kind: 'code', code, message: body.message });
-      // Anything unmapped was already toasted by runAction.
+      else if (isDraftInlineFailure(err.status, code)) {
+        // Not toasted by the client (see api.ts): say it here. `err.message` is
+        // runAction's message, already mapped to copy for the known tokens.
+        setSaveError({ kind: 'code', code: code ?? 'unknown', message: body.message ?? err.message });
+      }
+      // Anything else was toasted by runAction.
       return null;
     } finally {
       setSaving(false);
@@ -249,8 +255,15 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
       setEnableTarget(fresh);
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
-      showToast({ type: 'error', message: t('errors.loadFailed') });
-      if (result.created) void navigateTo(`/flows/${result.flow.id}/edit`);
+      // The save itself succeeded (and was toasted); only opening the dialog failed.
+      console.error('[FlowEditorPage] could not reload the flow to open the enable dialog', err);
+      showToast({ type: 'error', message: t('flowEditor.enableOpenFailed') });
+      if (result.created) {
+        void navigateTo(`/flows/${result.flow.id}/edit`);
+      } else {
+        setSavedNotice(true);
+        setSavedThisSession(true);
+      }
     }
   };
 
