@@ -29,7 +29,7 @@ func prove(ctx context.Context, iface Interface, gateway netip.Addr) (net.Hardwa
 	if err != nil {
 		return nil, err
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	tracef(ctx, "mech=af_packet")
 	return exchange(ctx, c, encodeRequest(srcMAC, iface.Source, gateway), func(frame []byte) (net.HardwareAddr, bool) {
 		return decodeReply(frame, srcMAC, iface.Source, gateway)
@@ -51,7 +51,7 @@ func openPacketConn(ifindex int) (*packetConn, error) {
 		return nil, fmt.Errorf("open AF_PACKET socket: %w", err)
 	}
 	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: proto, Ifindex: ifindex}); err != nil {
-		unix.Close(fd)
+		_ = unix.Close(fd)
 		return nil, fmt.Errorf("bind AF_PACKET socket: %w", err)
 	}
 	return &packetConn{fd: fd, ifindex: ifindex, buf: make([]byte, 1514)}, nil
