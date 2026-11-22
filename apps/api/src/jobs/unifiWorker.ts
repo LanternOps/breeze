@@ -143,6 +143,10 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<voi
         hostsSeen: 0,
         fatalError: MULTI_KEY_REFUSAL,
         byMapping: new Map(),
+        keyResults: [],
+        uncertainHostIds: 'all',
+        protectedDeviceIds: new Set(),
+        allKeysSucceeded: false,
       }),
     );
     return;
@@ -153,13 +157,13 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<voi
   //    connection idle-in-transaction. A key that does not decrypt is a failed
   //    run, never a silent skip.
   const key = keys[0]!;
-  let collected: CollectedSync;
-  if (key.apiKey === null) {
-    collected = { hostsSeen: 0, fatalError: key.decryptError, byMapping: new Map() };
-  } else {
-    const client = createUnifiClient({ baseUrl, apiKey: key.apiKey });
-    collected = await collectSyncData(client, prep.mappings);
-  }
+  const collected: CollectedSync = await collectSyncData([{
+    id: key.id,
+    label: key.label,
+    client: key.apiKey === null ? null : createUnifiClient({ baseUrl, apiKey: key.apiKey }),
+    decryptError: key.apiKey === null ? key.decryptError : undefined,
+    lastSeenHostIds: key.lastSeenHostIds,
+  }], prep.mappings);
 
   // 3) Short DB context(s): persist the run + device reconciliation, then status.
   try {

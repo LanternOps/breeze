@@ -6,6 +6,7 @@ import { unifiSiteMappings, unifiDevices, unifiSyncRuns, discoveredAssets } from
 import { buildClassificationWrite, type ClassificationWrite } from '../discoveredAssetClassification';
 import type { DbExecutor } from './unifiConnectionService';
 import { ispMetricsKey, type UnifiClient, type UnifiDeviceDto, type UnifiIspMetrics } from './unifiClient';
+import { mergeKeyReads, readKeys, type FailedKeyRead, type KeyRead, type SiteRead } from './unifiKeyMerge';
 import { canonicalMac, canonicalAssetMac } from './unifiMac';
 import { countUnmappedSites } from './unifiMappingHosts';
 
@@ -246,56 +247,177 @@ interface MappingFetch {
   /** Why this mapping is incomplete. Marks the run partial. */
   error?: string;
 }
+
+/** One key's outcome in a sync run (#11808 D6). `hostIds` is that key's reach, for its snapshot. */
+export interface KeyRunResult {
+  keyId: string;
+  label: string;
+  status: 'success' | 'failed' | 'skipped';
+  authFailure: boolean;
+  hostsSeen: number | null;
+  sitesSeen: number | null;
+  /** Hosts this key reached this run. null = not recorded (a failure, or a hosts-only run). */
+  hostIds: string[] | null;
+  error: string | null;
+}
+
 export interface CollectedSync {
   hostsSeen: number;
-  fatalError?: string; // an account-wide read failed → the whole sync is a failure, nothing is written
+  fatalError?: string; // every key failed (or there is none) → the whole sync is a failure, nothing is written
   metricsError?: string; // the ISP-metrics read failed → devices still sync, wan_metrics untouched, run partial
-  /** Listed sites with no mapping row. Absent when /v1/sites was not read (no mappings, or a fatal error first)
-   * or returned an incomplete list (dropped or hostless rows). */
+  /** Listed sites with no mapping row. Absent when /v1/sites was not read (no mappings, or a fatal error first),
+   * returned an incomplete list (dropped or hostless rows), or some key failed. */
   sitesUnmapped?: number;
   byMapping: Map<string, MappingFetch>;
+  keyResults: KeyRunResult[];
+  /** Hosts a failed key may reach, or whose device coverage is incomplete (D5). 'all' = any host. */
+  uncertainHostIds: Set<string> | 'all';
+  /** Device ids reported under two hosts (D4): neither written nor swept this run. */
+  protectedDeviceIds: Set<string>;
+  allKeysSucceeded: boolean;
+  /** Some, not all, keys failed: the run's headline error, e.g. `1 of 3 API keys failed: "Macera" (key rejected)`. */
+  keyFailureSummary?: string;
+}
+
+export interface SyncKeyInput {
+  id: string;
+  label: string;
+  /** null when the key did not decrypt: a failed key, never a silent skip. */
+  client: UnifiClient | null;
+  decryptError?: string;
+  /** The hosts this key reached on its last successful run (D5(a)); null = never recorded. */
+  lastSeenHostIds: string[] | null;
+}
+
+export const NO_ENABLED_KEY = 'No enabled API key on this connection';
+const MAX_STORED_ERROR = 500;
+const clip = (text: string, max = MAX_STORED_ERROR) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+function distinctSiteCount(siteRead: SiteRead | undefined): number | null {
+  if (!siteRead) return null;
+  return new Set(siteRead.sites.map((s) => JSON.stringify([s.hostId, s.id]))).size;
+}
+
+function toKeyRunResult(read: KeyRead): KeyRunResult {
+  if (!read.ok) {
+    return {
+      keyId: read.keyId,
+      label: read.label,
+      status: read.skipped ? 'skipped' : 'failed',
+      authFailure: read.authFailure,
+      hostsSeen: read.hosts?.length ?? null,
+      sitesSeen: distinctSiteCount(read.siteRead),
+      hostIds: null,
+      error: clip(read.error),
+    };
+  }
+  // Reach errs to a superset: hosts, the hosts its sites name (an unknown
+  // console appears only there) and the hosts its devices came back under.
+  // A hosts-only run (no site read) records none, so it never narrows the snapshot.
+  let hostIds: string[] | null = null;
+  if (read.siteRead) {
+    const reach = new Set(read.hosts.map((h) => h.id));
+    for (const s of read.siteRead.sites) if (s.hostId) reach.add(s.hostId);
+    for (const hostId of read.devicesByHost?.keys() ?? []) reach.add(hostId);
+    hostIds = [...reach];
+  }
+  return {
+    keyId: read.keyId,
+    label: read.label,
+    status: 'success',
+    authFailure: false,
+    hostsSeen: read.hosts.length,
+    sitesSeen: distinctSiteCount(read.siteRead),
+    hostIds,
+    error: null,
+  };
+}
+
+/** A failed key in a run summary: why, in a few words. */
+function failureReason(read: FailedKeyRead): string {
+  if (read.authFailure) return 'key rejected';
+  if (read.skipped) return `skipped: ${read.error}`;
+  return clip(read.error, 160);
 }
 
 // Phase 1 — network only, NO database access. Pulled out of the DB context so the
 // worker doesn't pin a pooled connection idle-in-transaction across UniFi HTTP
 // (which can sleep up to ~30s on a 429). See unifiWorker.processSyncIntegration.
+//
+// Every enabled key is read (#11808) and the reads are merged (unifiKeyMerge).
+// A key that fails bounds its damage to the hosts it may reach (plan D5): those
+// mappings get no devices and no stale sweep; every other mapping syncs as usual.
+// With one key, the result is the single-key engine's, unchanged.
 export async function collectSyncData(
-  client: UnifiClient,
+  keys: SyncKeyInput[],
   mappings: Array<{ id: string; unifiHostId: string; unifiSiteId: string }>,
+  opts: { now?: () => number; budgetMs?: number } = {},
 ): Promise<CollectedSync> {
   const byMapping = new Map<string, MappingFetch>();
-  let hosts: Awaited<ReturnType<UnifiClient['listHosts']>>;
-  try {
-    hosts = await client.listHosts();
-  } catch (err) {
-    return { hostsSeen: 0, fatalError: (err as Error).message, byMapping };
-  }
-  if (mappings.length === 0) return { hostsSeen: hosts.length, byMapping };
-
-  // One read of each account-wide payload per run instead of one per mapping
-  // (#10491: rate-limit exposure once each read is paged). Host type does not
-  // filter sync: a network-server host's devices sync just like a console's.
-  let siteRead: Awaited<ReturnType<UnifiClient['listSitesForSync']>>;
-  try {
-    siteRead = await client.listSitesForSync();
-  } catch (err) {
-    return { hostsSeen: hosts.length, fatalError: `UniFi /v1/sites read failed: ${(err as Error).message}`, byMapping };
+  if (keys.length === 0) {
+    return {
+      hostsSeen: 0, fatalError: NO_ENABLED_KEY, byMapping, keyResults: [],
+      uncertainHostIds: 'all', protectedDeviceIds: new Set(), allKeysSucceeded: false,
+    };
   }
 
-  let devicesByHost: Awaited<ReturnType<UnifiClient['listDevicesByHost']>>;
-  try {
-    devicesByHost = await client.listDevicesByHost();
-  } catch (err) {
-    return { hostsSeen: hosts.length, fatalError: `UniFi /v1/devices read failed: ${(err as Error).message}`, byMapping };
+  // One read of each account-wide payload per key per run instead of one per
+  // mapping (#10491). No mappings: hosts only. Host type does not filter sync:
+  // a network-server host's devices sync just like a console's.
+  const reads = await readKeys(keys, { mode: mappings.length === 0 ? 'hosts' : 'sync', now: opts.now, budgetMs: opts.budgetMs });
+  const merged = mergeKeyReads(reads);
+  const keyResults = reads.map(toKeyRunResult);
+  const failed = merged.failedKeys;
+  const base = {
+    hostsSeen: merged.hosts.length,
+    byMapping,
+    keyResults,
+    protectedDeviceIds: merged.conflictingDeviceIds,
+    allKeysSucceeded: failed.length === 0,
+  };
+
+  if (failed.length === reads.length) {
+    // One key: its own message, as before. Several: each key's.
+    const fatalError = reads.length === 1
+      ? failed[0]!.error
+      : clip(`All ${reads.length} API keys failed: ${failed.map((f) => `"${f.label}": ${f.error}`).join('; ')}`);
+    return { ...base, uncertainHostIds: 'all', fatalError };
+  }
+  const keyFailureSummary = failed.length > 0
+    ? clip(`${failed.length} of ${reads.length} API keys failed: ${failed.map((f) => `"${f.label}" (${failureReason(f)})`).join(', ')}`)
+    : undefined;
+
+  // D5(a): a failed key may reach the hosts its own site read listed this run;
+  // without one, its last successful run's snapshot; without that, any host.
+  const lastSeenById = new Map(keys.map((k) => [k.id, k.lastSeenHostIds]));
+  const failedReach = failed.map((f) => {
+    const hostIds = new Set((f.hosts ?? []).map((h) => h.id));
+    if (f.siteRead) {
+      for (const s of f.siteRead.sites) if (s.hostId) hostIds.add(s.hostId);
+      return { label: f.label, reach: hostIds as Set<string> | 'all' };
+    }
+    const snapshot = lastSeenById.get(f.keyId);
+    if (!snapshot) return { label: f.label, reach: 'all' as const };
+    for (const h of snapshot) hostIds.add(h);
+    return { label: f.label, reach: hostIds as Set<string> | 'all' };
+  });
+  let uncertainHostIds: Set<string> | 'all' = new Set(merged.coverageGapHostIds);
+  for (const { reach } of failedReach) {
+    if (reach === 'all') {
+      uncertainHostIds = 'all';
+      break;
+    }
+    for (const h of reach) uncertainHostIds.add(h);
   }
 
-  let metricsBySite: Awaited<ReturnType<UnifiClient['listIspMetricsBySite']>> | undefined;
-  let metricsError: string | undefined;
-  try {
-    metricsBySite = await client.listIspMetricsBySite();
-  } catch (err) {
-    metricsError = `UniFi ISP metrics read failed: ${(err as Error).message}`;
-  }
+  if (mappings.length === 0) return { ...base, uncertainHostIds, keyFailureSummary };
+
+  // Sync mode: at least one key read sites, so the merged site read exists.
+  const siteRead = merged.siteRead!;
+  const devicesByHost = merged.devicesByHost ?? new Map<string, UnifiDeviceDto[]>();
+  const metricsBySite = merged.metricsBySite;
+  const labelById = new Map(keys.map((k) => [k.id, k.label]));
+  const failedLabels = failed.map((f) => `"${f.label}"`).join(', ');
 
   const siteIdsByHost = new Map<string, Set<string>>();
   for (const site of siteRead.sites) {
@@ -309,6 +431,25 @@ export async function collectSyncData(
     const metrics = metricsBySite
       ? (metricsBySite.get(ispMetricsKey(m.unifiHostId, m.unifiSiteId)) ?? metricsBySite.get(m.unifiSiteId) ?? null)
       : undefined;
+    // D5: an uncertain host gets no devices and no sweep; its WAN sample still applies.
+    const reachedBy = failedReach.find(({ reach }) => reach === 'all' || reach.has(m.unifiHostId));
+    if (reachedBy) {
+      byMapping.set(m.id, {
+        mappingId: m.id,
+        metrics,
+        error: `site ${m.unifiSiteId}: API key "${reachedBy.label}" failed this run and may reach host ${m.unifiHostId}, so its devices were not synced`,
+      });
+      continue;
+    }
+    const gapKeyId = merged.coverageGapKeyIds.get(m.unifiHostId)?.[0];
+    if (gapKeyId) {
+      byMapping.set(m.id, {
+        mappingId: m.id,
+        metrics,
+        error: `site ${m.unifiSiteId}: API key "${labelById.get(gapKeyId) ?? gapKeyId}" returned no device list for host ${m.unifiHostId}, so its devices were not synced`,
+      });
+      continue;
+    }
     // Dropped rows can conceal another customer's site. An unkeyed row makes
     // every host's count uncertain; a keyed dropped row affects that host only.
     if (siteRead.rowsWithoutHostId > 0) {
@@ -332,7 +473,9 @@ export async function collectSyncData(
       byMapping.set(m.id, {
         mappingId: m.id,
         metrics: undefined,
-        error: `site ${m.unifiSiteId}: UniFi site ${m.unifiSiteId} is not listed on host ${m.unifiHostId} by /v1/sites; its devices were not synced`,
+        error: failed.length > 0
+          ? `site ${m.unifiSiteId}: UniFi site ${m.unifiSiteId} is not listed on host ${m.unifiHostId} by any working API key (failed: ${failedLabels}); its devices were not synced`
+          : `site ${m.unifiSiteId}: UniFi site ${m.unifiSiteId} is not listed on host ${m.unifiHostId} by /v1/sites; its devices were not synced`,
       });
       continue;
     }
@@ -343,6 +486,20 @@ export async function collectSyncData(
         mappingId: m.id,
         metrics,
         error: `site ${m.unifiSiteId}: UniFi host ${m.unifiHostId} runs ${hostSites.size} sites and Site Manager /v1/devices does not say which site a device is on; its devices were not synced`,
+      });
+      continue;
+    }
+    // Strict site-count rule (Gate B, ahead of #12264): every key that sees the
+    // host must list the same number of its sites. A key restricted to some of
+    // a console's sites may still return all of its devices, so a key that sees
+    // fewer sites than another is evidence the host runs more than one.
+    const counts = merged.hostSiteCounts.get(m.unifiHostId);
+    if (counts && new Set(counts.values()).size > 1) {
+      const detail = [...counts].map(([keyId, n]) => `"${labelById.get(keyId) ?? keyId}": ${n}`).join(', ');
+      byMapping.set(m.id, {
+        mappingId: m.id,
+        metrics,
+        error: `site ${m.unifiSiteId}: API keys disagree on how many sites UniFi host ${m.unifiHostId} runs (${detail}), and Site Manager /v1/devices does not say which site a device is on; its devices were not synced`,
       });
       continue;
     }
@@ -362,11 +519,11 @@ export async function collectSyncData(
       byMapping.set(m.id, { mappingId: m.id, devices, metrics });
     }
   }
-  // A dropped or hostless /v1/sites row hides a site of unknown host: the count
-  // would only be a lower bound, so it is not recorded.
+  // A dropped or hostless /v1/sites row hides a site of unknown host, and a
+  // failed key may hide sites: the count would only be a lower bound.
   const siteListComplete = siteRead.rowsWithoutHostId === 0 && siteRead.hostsWithDroppedRows.size === 0;
-  const sitesUnmapped = siteListComplete ? countUnmappedSites(siteRead.sites, mappings) : undefined;
-  return { hostsSeen: hosts.length, metricsError, sitesUnmapped, byMapping };
+  const sitesUnmapped = base.allKeysSucceeded && siteListComplete ? countUnmappedSites(siteRead.sites, mappings) : undefined;
+  return { ...base, metricsError: merged.metricsError, sitesUnmapped, uncertainHostIds, keyFailureSummary };
 }
 
 // Phase 2 — database only. Persists the run ledger, reconciles devices/assets,
@@ -412,6 +569,13 @@ export async function applySyncData(
       if (collected.metricsError) {
         anySiteFailed = true;
         result.error = collected.metricsError;
+      }
+      // D4: a device id reported under two hosts (a console mid-move between
+      // scopes) is neither written nor swept, and the run is partial.
+      if (collected.protectedDeviceIds.size > 0) {
+        anySiteFailed = true;
+        const ids = [...collected.protectedDeviceIds];
+        result.error = clip(`${ids.length} UniFi device(s) were reported under two hosts and were left as they were this run: ${ids.join(', ')}`);
       }
       for (const mapping of mappings) {
         const fetched = collected.byMapping.get(mapping.id);
@@ -529,6 +693,7 @@ export async function applySyncData(
         .where(eq(unifiDevices.integrationId, integration.id));
 
       for (const row of allForIntegration) {
+        if (collected.protectedDeviceIds.has(row.unifiDeviceId)) continue;
         if (!seenDeviceIds.has(row.unifiDeviceId) && !failedMappingIds.has(row.mappingId)) {
           await db
             .update(unifiDevices)
@@ -538,6 +703,11 @@ export async function applySyncData(
         }
       }
 
+      // Some keys failed (D6): the run is partial, and which keys failed is the headline.
+      if (collected.keyFailureSummary) {
+        anySiteFailed = true;
+        result.error = collected.keyFailureSummary;
+      }
       result.status = anySiteFailed ? 'partial' : 'success';
     } catch (err) {
       result.status = 'failed';
@@ -564,19 +734,19 @@ export async function applySyncData(
   return result;
 }
 
-// Convenience wrapper that runs both phases against a single db/client. Used by
-// unit tests; the worker calls collectSyncData / applySyncData separately so the
-// network phase runs OUTSIDE the DB context.
+// Convenience wrapper that runs both phases against a single db and the given
+// keys. Used by unit tests; the worker calls collectSyncData / applySyncData
+// separately so the network phase runs OUTSIDE the DB context.
 export async function syncIntegration(
-  deps: { db: DbExecutor; client: UnifiClient },
+  deps: { db: DbExecutor; keys: SyncKeyInput[] },
   integration: { id: string; partnerId: string },
   trigger: 'scheduled' | 'manual',
 ): Promise<SyncRunResult> {
-  const { db, client } = deps;
+  const { db, keys } = deps;
   const mappings = await db
     .select()
     .from(unifiSiteMappings)
     .where(eq(unifiSiteMappings.integrationId, integration.id));
-  const collected = await collectSyncData(client, mappings);
+  const collected = await collectSyncData(keys, mappings);
   return applySyncData(db, integration, trigger, mappings, collected);
 }
