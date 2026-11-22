@@ -814,8 +814,12 @@ function runIdentity(io, repository, run, attempt) {
   return job ? parseIdentity(jobLog(io, repository, job.id)) : null;
 }
 
+// Main by its full name. The checkout fetches tags too, and git resolves a short
+// name to a tag before a remote-tracking branch.
+const MAIN = 'refs/remotes/origin/main';
+
 function isOnMain(io, sha) {
-  try { io.git(['merge-base', '--is-ancestor', sha, 'origin/main']); return true; } catch (error) {
+  try { io.git(['merge-base', '--is-ancestor', sha, MAIN]); return true; } catch (error) {
     // Exit 1 is the answer "no". Anything else says nothing about the run.
     if (error?.status === 1) return false;
     throw new GateError('selection_ancestry', `ancestry check for ${sha} failed: ${failureText(error)}`);
@@ -825,7 +829,7 @@ function isOnMain(io, sha) {
 // The commits main itself has pointed at: its first-parent line. A commit that a
 // merge brought in through another parent is in main's history, but was a branch's.
 function mainLine(io) {
-  try { return new Set(nonEmptyLines(io.git(['rev-list', '--first-parent', 'origin/main']))); }
+  try { return new Set(nonEmptyLines(io.git(['rev-list', '--first-parent', MAIN]))); }
   catch (error) { throw new GateError('selection_ancestry', `listing main failed: ${failureText(error)}`); }
 }
 
@@ -1077,9 +1081,9 @@ function pinFailure(io, workflowSha) {
   // The checkout normally wrote this ref; fetching it here means the answer does
   // not depend on that. A failed fetch leaves what is local, and no ref is not pinned.
   let fetchNote = '';
-  try { io.git(['fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main']); }
+  try { io.git(['fetch', '--no-tags', '--quiet', 'origin', `+refs/heads/main:${MAIN}`]); }
   catch (error) { fetchNote = ` (fetching main failed: ${failureText(error)})`; }
-  try { io.git(['merge-base', '--is-ancestor', workflowSha, 'origin/main']); return null; } catch (error) {
+  try { io.git(['merge-base', '--is-ancestor', workflowSha, MAIN]); return null; } catch (error) {
     // Exit 1 is the answer "no". Anything else means the check could not run.
     const why = error?.status === 1 ? 'not an ancestor of origin/main' : `ancestry check failed: ${failureText(error)}`;
     return `${workflowSha}: ${why}${fetchNote}`;

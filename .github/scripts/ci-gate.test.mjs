@@ -1090,7 +1090,7 @@ test('verify: pins itself by ancestry, before waiting for anything', () => {
   assert.equal(waited, false);
   assert.match(gateLines(io)[0], /^ci-gate: verdict=fail reason=not_pinned /);
   const ancestry = io.gitCalls.find(args => args[0] === 'merge-base');
-  assert.deepEqual(ancestry, ['merge-base', '--is-ancestor', WORKFLOW_SHA, 'origin/main']);
+  assert.deepEqual(ancestry, ['merge-base', '--is-ancestor', WORKFLOW_SHA, 'refs/remotes/origin/main']);
   // An unusable sha cannot be ancestry-checked at all.
   const bad = verifyIo();
   assert.equal(runVerify(bad, { env: { GITHUB_WORKFLOW_SHA: '' } }), 1);
@@ -3336,7 +3336,7 @@ test('stacked queue entry: the same entry is thin-eligible but for its base, so 
   const git = r.io.git;
   const asked = [];
   r.io.git = args => {
-    if (args[0] === 'rev-list' && args[1] === '--first-parent' && args[2] === 'origin/main') { asked.push('origin/main'); return `${git(args)}\n${r.parent}\n`; }
+    if (args[0] === 'rev-list' && args[1] === '--first-parent' && args[2] === 'refs/remotes/origin/main') { asked.push('origin/main'); return `${git(args)}\n${r.parent}\n`; }
     if (args[0] === 'merge-base' && args[1] === '--is-ancestor' && args[2] === r.parent && args[3] === r.entryA) { asked.push(args[3]); return ''; }
     return git(args);
   };
@@ -3427,7 +3427,7 @@ for (const shape of ['parent', 'chain']) {
     const base = r.anchor.base_sha;
     const touched = new Set(calls.filter(args => args.some(arg => arg.includes(base))).map(args => args[0]));
     assert.deepEqual([...touched], [], 'no git command names the base');
-    assert.ok(calls.some(args => args[0] === 'rev-list' && args[1] === '--first-parent' && args[2] === 'origin/main'));
+    assert.ok(calls.some(args => args[0] === 'rev-list' && args[1] === '--first-parent' && args[2] === 'refs/remotes/origin/main'));
     assert.deepEqual(calls.filter(args => ['show', 'ls-tree', 'diff'].includes(args[0])), []);
   });
 }
@@ -3457,6 +3457,43 @@ test('trustedRecord: a listing of main that could not run is an error, not an an
     r.io.git = args => { if (args[0] === 'rev-list' && args[1] === '--first-parent') throw Object.assign(Error('no origin/main'), { status: 128 }); return git(args); };
     assert.throws(() => r.trust(), error => error instanceof gate.GateError && error.code === 'selection_ancestry');
   }
+});
+
+// The gate's checkout fetches tags, and git resolves a short name to a tag before
+// a remote-tracking branch. So the gate names main in full.
+const tagNamedLikeMain = (r, sha) => {
+  r.inOrigin('tag', 'origin/main', sha);
+  execFileSync('git', ['fetch', '--quiet', 'origin', '+refs/tags/*:refs/tags/*'], { cwd: r.clone, stdio: 'ignore' });
+  const short = execFileSync('git', ['rev-parse', 'origin/main'], { cwd: r.clone, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  assert.equal(short, sha, 'in this clone the short name now means the tag');
+};
+
+test('trustedRecord: a tag named origin/main does not say what main is', () => {
+  const r = stackRig();
+  r.addStackEvidence();
+  tagNamedLikeMain(r, r.parent);
+  let ran = 0;
+  r.io.runIsolated = () => { ran++; throw Error('ran'); };
+  assert.deepEqual(r.trust(), { reason: 'anchor_base_not_on_main' });
+  assert.equal(ran, 0);
+  // Control: without the tag's help nothing changes for a base that is main's.
+  const plain = rigWithEvidence();
+  tagNamedLikeMain(plain, plain.headSha);
+  assert.equal(plain.trust().base_sha, plain.baseSha);
+});
+
+test('trustedRecord and verify: a tag named origin/main does not put a workflow sha on main', () => {
+  // An identity line naming a commit main never had, with a tag that would vouch for it.
+  const r = trustRig();
+  r.addAnchor({ identity: `2026-11-06T16:30:13.0Z ci-gate-identity: workflow_ref=${PINNED_REF} workflow_sha=${r.headSha} gate_run=900 gate_attempt=1\n` });
+  r.addCi();
+  tagNamedLikeMain(r, r.headSha);
+  assert.equal(r.trust().reason, 'anchor_not_pinned');
+  const v = gateRemote(realPolicyFiles(), { 'docs/guide.md': '# x\n' });
+  fakeActions(v.io, v.headSha, docsOnlyJobs());
+  tagNamedLikeMain(v, v.headSha);
+  assert.equal(gate.verify(v.io, remoteEnv(v, { GITHUB_WORKFLOW_SHA: v.headSha })), 1);
+  assert.match(lineOf(v)[0], /reason=not_pinned /);
 });
 
 test('trustedRecord: a commit a merge brought into main\'s history was never main, and is anchor_base_not_on_main', () => {
