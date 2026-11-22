@@ -2881,6 +2881,103 @@ export async function authorizeAssignmentTarget(
   }
 }
 
+/** Key for {@link authorizeAssignmentTargets} results: `${level}:${targetId}`. */
+export function assignmentTargetKey(level: ConfigAssignmentLevel, targetId: string): string {
+  return `${level}:${targetId}`;
+}
+
+/**
+ * Set-based {@link authorizeAssignmentTarget} for read models that check many
+ * targets at once (the policy list's applies-to summary, #12306). Same rules,
+ * same fail-closed outcomes, keyed by {@link assignmentTargetKey}; but at most
+ * three statements however many targets are passed (device sites, device-group
+ * sites, device-group membership), and none for an unrestricted caller.
+ *
+ * KEEP IN LOCKSTEP with `authorizeAssignmentTarget` above: a rule changed there
+ * must change here. configPolicyAppliesToSummary.integration.test.ts checks the
+ * two agree on real rows.
+ */
+export async function authorizeAssignmentTargets(
+  auth: AuthContext,
+  targets: ReadonlyArray<{ level: ConfigAssignmentLevel; targetId: string }>,
+): Promise<Map<string, boolean>> {
+  const result = new Map<string, boolean>();
+  if (targets.length === 0) return result;
+
+  const allowedDevices = auth.allowedDeviceIds ? new Set(auth.allowedDeviceIds) : null;
+  const siteRestricted = !!(auth.allowedSiteIds && auth.canAccessSite);
+  if (!siteRestricted && !allowedDevices) {
+    for (const t of targets) result.set(assignmentTargetKey(t.level, t.targetId), true);
+    return result;
+  }
+  const canAccessSite = siteRestricted ? auth.canAccessSite! : () => true;
+
+  const groupIds = new Set<string>();
+  const deviceIds = new Set<string>();
+  for (const t of targets) {
+    const key = assignmentTargetKey(t.level, t.targetId);
+    if (result.has(key)) continue;
+    switch (t.level) {
+      case 'site':
+        result.set(key, !allowedDevices && canAccessSite(t.targetId));
+        break;
+      case 'device_group':
+        groupIds.add(t.targetId);
+        break;
+      case 'device':
+        if (allowedDevices && !allowedDevices.has(t.targetId)) result.set(key, false);
+        else deviceIds.add(t.targetId);
+        break;
+      // 'partner', 'organization', and anything unknown: denied, no query.
+      default:
+        result.set(key, false);
+    }
+  }
+
+  if (groupIds.size > 0) {
+    const ids = [...groupIds];
+    const groups = await db
+      .select({ id: deviceGroups.id, siteId: deviceGroups.siteId })
+      .from(deviceGroups)
+      .where(inArray(deviceGroups.id, ids));
+    // Unknown (or not legible) group, or one with no single site: denied.
+    const siteOk = new Set(groups.filter((g) => canAccessSite(g.siteId)).map((g) => g.id));
+    let membersInScope: Set<string> | null = null;
+    if (allowedDevices && siteOk.size > 0) {
+      // Every member must be in scope, and an EMPTY group is denied (#6096 I8):
+      // a group with no membership row never appears here, so it stays denied.
+      const allowed = [...allowedDevices];
+      const rows = await db
+        .select({
+          groupId: deviceGroupMemberships.groupId,
+          allInScope: allowed.length > 0
+            ? sql<boolean>`bool_and(${inArray(deviceGroupMemberships.deviceId, allowed)})`
+            : sql<boolean>`false`,
+        })
+        .from(deviceGroupMemberships)
+        .where(inArray(deviceGroupMemberships.groupId, [...siteOk]))
+        .groupBy(deviceGroupMemberships.groupId);
+      membersInScope = new Set(rows.filter((r) => r.allInScope === true).map((r) => r.groupId));
+    }
+    for (const id of ids) {
+      const ok = siteOk.has(id) && (membersInScope === null || membersInScope.has(id));
+      result.set(assignmentTargetKey('device_group', id), ok);
+    }
+  }
+
+  if (deviceIds.size > 0) {
+    const ids = [...deviceIds];
+    const rows = await db
+      .select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
+      .where(inArray(devices.id, ids));
+    const ok = new Set(rows.filter((d) => canAccessSite(d.siteId)).map((d) => d.id));
+    for (const id of ids) result.set(assignmentTargetKey('device', id), ok.has(id));
+  }
+
+  return result;
+}
+
 /**
  * Fetch a single assignment's identity (level + targetId) scoped to its policy.
  * Used by the REST delete route to re-run the site-axis check against the
