@@ -249,7 +249,7 @@ A request expires if the agent does not complete it in time. Breeze refuses a re
 
 ## Billing Coverage
 
-The device **Overview** tab carries a **Billing** card answering "which contract line bills this device?". It needs **Contracts read** access and a partner-scoped login, so techs without billing access do not see it at all. It shows one of four things:
+The device **Details** tab carries a **Billing** card, in its **Asset record** section, answering "which contract line bills this device?". It needs **Contracts read** access and a partner-scoped login, so techs without billing access do not see it at all. It shows one of four things:
 
 - **Covered** -- one row per active contract line that bills the device, with the contract name, the line description, and *why* it matches: **Org-wide**, **This site**, **Role: Server**, or **Group: VIP Laptops**. Two contracts can both bill the same device; both rows show.
 - **Not billed by any line** -- no active contract line reaches this device.
@@ -400,11 +400,11 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 | **VPN** | Active VPN/overlay clients (only when at least one is active — see above). |
 | **Agent** | Agent, watchdog and helper (Breeze Assist) versions, status, last seen, enrollment date, system uptime, logged-in user. A warning appears here when agent updates are withheld from the device. A **Breeze Assist** row (v0.125.0+) reads **Installed**, **Not deployed**, or **Unavailable** with the reason; see [Breeze Assist availability](/agents/helper/#enabling--disabling-helper-chat). |
 | **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
-| **Tags** and **Custom Fields** | Organizational metadata, when present. |
+| **Tags** and **Custom Fields** | Organizational metadata. Tags always show (**No tags** when empty) and are edited with the **Edit tags** pencil button. |
 
-The device's **Overview** tab also has a **Responsible contacts** card: who to contact about this device for each role (billing, technical, escalation and so on), resolved from its device group, site or organization. See [Responsible contacts](/reference/organizations-and-sites/#responsible-contacts).
+The device's **Details** tab also has a **Responsible contacts** card, in its **Asset record** section: who to contact about this device for each role (billing, technical, escalation and so on), resolved from its device group, site or organization. See [Responsible contacts](/reference/organizations-and-sites/#responsible-contacts).
 
-The device **Overview** tab also has a **Physical placement** card (v0.125.0+) for the room, rack, rack unit and height (rack unit and height are whole numbers from 1 to 100). **Add** or **Edit** needs `devices:write` and an MFA check; clearing every field removes the placement. Discovered network assets have the same card on their detail page; an asset that is linked to a managed device shows the device's placement read-only, with a link to the device. The API is `GET`/`PUT`/`DELETE /devices/:id/placement` and `/discovery/assets/:id/placement`.
+The device **Details** tab also has a **Physical placement** card (v0.125.0+), in its **Asset record** section, for the room, rack, rack unit and height (rack unit and height are whole numbers from 1 to 100). **Add** or **Edit** needs `devices:write` and an MFA check; clearing every field removes the placement. Discovered network assets have the same card on their detail page; an asset that is linked to a managed device shows the device's placement read-only, with a link to the device. The API is `GET`/`PUT`/`DELETE /devices/:id/placement` and `/discovery/assets/:id/placement`.
 
 ### System Restore tab
 
