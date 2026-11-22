@@ -115,7 +115,7 @@ function link(over: Record<string, unknown> = {}, vendor: Record<string, unknown
         dell: {
           enabled: true,
           categories: { bios: true, driver: true },
-          blockedUpdateIds: [],
+          blockedUpdateIds: [] as string[],
           ...vendor,
         },
       },

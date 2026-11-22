@@ -1388,6 +1388,8 @@
         "blockedLabel": "Engellenen güncellemeler",
         "blockedPlaceholder": "Güncelleme kimlikleri, virgülle ayrılmış",
         "blockedHelp": "Breeze burada listelenen bir güncellemeyi asla yüklemez.",
+        "blockedUnsupported": "{{vendor}}, güncellemelerin tek tek engellenmesini desteklemez. Güncellemelerini durdurmak için kategoriyi veya üreticiyi kapatın.",
+        "blockedStoredUnsupported": "Bu ilke {{vendor}} güncellemelerini ({{ids}}) engelliyor. {{vendor}} bunu desteklemediği için bu ilkeyle hiçbir {{vendor}} güncellemesi çalışmaz. Kaydetmek engellenen güncellemeleri kaldırır.",
         "executeRequired": "Üretici güncellemelerini açmak, kategori eklemek, gece yeniden başlatmalarını açmak veya bir güncellemenin engelini kaldırmak için devices.execute izni ve MFA gerekir. Bu izne sahip birinden bu değişikliği kaydetmesini isteyin.",
         "gateClosedRefusal": "Seçilen güncelleme kategorilerinden biri henüz kullanılamıyor, bu nedenle ilke kaydedilmedi. Kategoriyi kaldırıp yeniden kaydedin.",
         "invalid": "Zamanlamayı kontrol edin: pencere 1 ile 8 tam saat arasında, telafi 0 ile 14 gece arasında olmalı ve başlangıç saati HH:MM biçiminde olmalıdır.",

@@ -1388,6 +1388,8 @@
         "blockedLabel": "Aggiornamenti bloccati",
         "blockedPlaceholder": "ID degli aggiornamenti, separati da virgole",
         "blockedHelp": "Breeze non installa mai un aggiornamento elencato qui.",
+        "blockedUnsupported": "{{vendor}} non supporta il blocco dei singoli aggiornamenti. Per interromperne gli aggiornamenti, disattiva la categoria o il produttore.",
+        "blockedStoredUnsupported": "Questo criterio blocca gli aggiornamenti {{vendor}} {{ids}}, che {{vendor}} non supporta, quindi con questo criterio non viene eseguito alcun aggiornamento {{vendor}}. Il salvataggio rimuove gli aggiornamenti bloccati.",
         "executeRequired": "Per attivare gli aggiornamenti dei produttori, aggiungere una categoria, attivare i riavvii notturni o sbloccare un aggiornamento servono l’autorizzazione devices.execute e MFA. Chiedi a chi ce l’ha di salvare questa modifica.",
         "gateClosedRefusal": "Una delle categorie di aggiornamento selezionate non è ancora disponibile, quindi la policy non è stata salvata. Rimuovila e salva di nuovo.",
         "invalid": "Controlla la pianificazione: la finestra va da 1 a 8 ore intere, il recupero da 0 a 14 notti e l’ora di inizio è nel formato HH:MM.",
