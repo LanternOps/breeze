@@ -116,7 +116,6 @@
       "failedToUpdatePolicy": "Failed to update policy",
       "overview": "Overview",
       "complianceStatus": "Compliance Status",
-      "assignments": "Assignments",
       "loadingPolicy": "Loading policy...",
       "backToList": "Back to list",
       "configurationPolicies": "Configuration Policies",
@@ -140,7 +139,9 @@
       "removeConfiguration": "Remove configuration",
       "complianceStatus2": "compliance_status",
       "assignments2": "assignments",
-      "gatedFeatureTitle": "Not available on MSP-managed policies. Set this feature on a policy managed by one organization."
+      "gatedFeatureTitle": "Not available on MSP-managed policies. Set this feature on a policy managed by one organization.",
+      "appliesToDrawerTitle": "Applies to",
+      "detailsSaved": "Policy details saved"
     },
     "configPolicyList": {
       "archived": "Archived",
@@ -1546,6 +1547,17 @@
       "default": {
         "label": "Breeze Defaults"
       }
+    },
+    "appliesToStrip": {
+      "heading": "Applies to",
+      "unknownState": "Unknown",
+      "notAppliedWarning": "Not applied to any device. This policy applies to nothing until you choose where it applies.",
+      "notAppliedNeutral": "Not applied yet",
+      "inUseCount_one": "In use through {{count}} policy",
+      "inUseCount_other": "In use through {{count}} policies",
+      "moreTargets_one": "{{count}} more target",
+      "moreTargets_other": "{{count}} more targets",
+      "assignButton": "Assign"
     }
   },
   "software": {
