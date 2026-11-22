@@ -33,6 +33,11 @@ vi.mock('../../services/learnedNetworks/scanCommand', async (importOriginal) => 
   spies.build.mockImplementation(actual.buildDiscoveryScanCommand);
   return { ...actual, buildDiscoveryScanCommand: spies.build };
 });
+const enqueueResults = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => 'queued'));
+vi.mock('../../jobs/discoveryWorker', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../jobs/discoveryWorker')>()),
+  enqueueDiscoveryResults: enqueueResults,
+}));
 vi.mock('../../services/snmpSecrets', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/snmpSecrets')>();
   spies.decryptCommunities.mockImplementation(actual.decryptSnmpCommunities);
@@ -40,7 +45,8 @@ vi.mock('../../services/snmpSecrets', async (importOriginal) => {
   return { ...actual, decryptSnmpCommunities: spies.decryptCommunities, decryptSnmpCredentials: spies.decryptCredentials };
 });
 
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { processOrphanedCommandResult } from '../../routes/agentWs';
 import { __testables, processResults } from '../../jobs/discoveryWorker';
 import { lockSitesForNetworkGate } from '../../services/learnedNetworks/siteLock';
 import {
@@ -428,6 +434,102 @@ describe('dispatch and results', () => {
     expect(relay.dispatchCommandToAgent).not.toHaveBeenCalled();
     expect(await job(jobId)).toMatchObject({ status: 'failed', networkDispatch: null,
       errors: { code: 'no_agent_on_network', reason: 'agents_need_update' } });
+  });
+
+  /** Drive the orphaned-result handler as the live WS loop does: inside the agent's org context. */
+  const asAgent = (orgId: string, agentId: string, deviceId: string, result: Record<string, unknown>) =>
+    withDbAccessContext(
+      { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], currentPartnerId: null },
+      () => processOrphanedCommandResult(agentId, deviceId, { type: 'command_result', ...result } as never),
+    );
+
+  /** N1 = {G1} on a gated site; LAPTOP-JS eligible behind G1; one guarded dispatch recorded and sent. */
+  async function guardedDispatch() {
+    const t = await seedSite();
+    const { networkIds, gatewayIds } = await gateSite(t.orgId, t.siteId, [[G1]]);
+    const g1 = gatewayIds[0]![0]!; const n1 = networkIds[0]!;
+    const agent = await seedAgent({ ...t, hostname: 'LAPTOP-JS', behind: [g1] });
+    const profileId = await seedProfile(t);
+    const jobId = await seedJob(t.orgId, t.siteId, profileId);
+    expect((await __testables.processDispatchScan(dispatchData(t, profileId, jobId))).dispatched).toBe(true);
+    expect(await job(jobId)).toMatchObject({ status: 'running', networkDispatch: { mode: 'guarded', allowedGatewayIds: [g1] } });
+    return { t, n1, g1, agent, profileId, jobId };
+  }
+  const completed = (jobId: string, verifiedNetwork?: unknown) => ({
+    commandId: jobId, status: 'completed',
+    result: { jobId, hosts: [{ ip: '192.168.1.20', assetType: 'printer', methods: ['ping'] }], hostsScanned: 1, hostsDiscovered: 1,
+      ...(verifiedNetwork ? { verifiedNetwork } : {}) },
+  });
+
+  // Task 9
+  it('refusal that arrives right after the send is recorded with its code', async () => {
+    const t = await seedSite();
+    const { gatewayIds } = await gateSite(t.orgId, t.siteId, [[G1]]);
+    const g1 = gatewayIds[0]![0]!;
+    const agent = await seedAgent({ ...t, hostname: 'LAPTOP-JS', behind: [g1] });
+    const profileId = await seedProfile(t);
+    const jobId = await seedJob(t.orgId, t.siteId, profileId);
+    relay.dispatchCommandToAgent.mockImplementationOnce(async (agentId) => {
+      await asAgent(t.orgId, agentId, agent.deviceId,
+        { commandId: jobId, status: 'failed', errorCode: 'network_mismatch', error: 'no expected gateway' });
+      return { status: 'sent', via: 'local' };
+    });
+
+    expect((await __testables.processDispatchScan(dispatchData(t, profileId, jobId))).dispatched).toBe(true);
+    expect(await job(jobId)).toMatchObject({ status: 'failed', agentId: agent.agentId,
+      errors: { code: 'network_mismatch' }, networkDispatch: { mode: 'guarded', allowedGatewayIds: [g1] } });
+  });
+
+  // Task 9
+  it('a guarded result whose fingerprint is not in the attempt is discarded', async () => {
+    const { t, agent, jobId } = await guardedDispatch();
+    const n2 = await insertNetwork(t.orgId, t.siteId, [G3]);   // assigned after the send: allowed now, not in the attempt
+    enqueueResults.mockClear();
+
+    await asAgent(t.orgId, agent.agentId, agent.deviceId, completed(jobId, verifiedFor(n2.networkId, n2.gatewayIds[0]!, G3)));
+
+    expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { code: 'network_unverified' } });
+    expect(enqueueResults).not.toHaveBeenCalled();
+  });
+
+  // Task 9
+  it('a guarded result whose fingerprint was unassigned after the send is discarded', async () => {
+    const { t, n1, g1, agent, jobId } = await guardedDispatch();
+    await admin(sql`UPDATE learned_networks SET site_id = NULL WHERE id = ${n1}::uuid`);   // the site stays gated
+    enqueueResults.mockClear();
+
+    await asAgent(t.orgId, agent.agentId, agent.deviceId, completed(jobId, verifiedFor(n1, g1, G1)));
+
+    expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { code: 'network_unverified' } });
+    expect(enqueueResults).not.toHaveBeenCalled();
+  });
+
+  // Task 9
+  it('an unrestricted result that arrives after the site became gated is discarded', async () => {
+    const t = await seedSite();
+    const agent = await seedAgent({ ...t, hostname: 'DESKTOP-01' });
+    const profileId = await seedProfile(t);
+    const jobId = await seedJob(t.orgId, t.siteId, profileId);
+    expect((await __testables.processDispatchScan(dispatchData(t, profileId, jobId))).dispatched).toBe(true);
+    await gateSite(t.orgId, t.siteId, [[G1]]);
+    enqueueResults.mockClear();
+
+    await asAgent(t.orgId, agent.agentId, agent.deviceId, completed(jobId));
+
+    expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { code: 'network_unverified' } });
+    expect(enqueueResults).not.toHaveBeenCalled();
+  });
+
+  // Task 9 (control: the same path admits a matching guarded result)
+  it('a guarded result behind its recorded fingerprint is enqueued with it', async () => {
+    const { t, n1, g1, agent, jobId } = await guardedDispatch();
+    enqueueResults.mockClear();
+
+    await asAgent(t.orgId, agent.agentId, agent.deviceId, completed(jobId, verifiedFor(n1, g1, G1)));
+
+    expect(await job(jobId)).toMatchObject({ status: 'running' });
+    expect(enqueueResults).toHaveBeenCalledTimes(1);
+    expect(enqueueResults.mock.calls[0]![9]).toEqual(verifiedFor(n1, g1, G1));
   });
 
   // Task 7
