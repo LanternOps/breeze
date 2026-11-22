@@ -2128,6 +2128,20 @@ test('baseRevisionIO: the PR head comes from refs/pull, which needs no pull-requ
   assert.throws(() => baseIo.prHead('7 --upload-pack=x'));
 });
 
+test('baseRevisionIO: only the ref named exactly refs/pull/<n>/head is the PR head', () => {
+  const r = trustRig();
+  r.inOrigin('update-ref', 'refs/pull/7/head', r.headSha);
+  // ls-remote matches a pattern against the tail of every ref name, and lists
+  // branches before pull refs.
+  r.inOrigin('update-ref', 'refs/heads/x/refs/pull/7/head', r.baseSha);
+  r.inOrigin('update-ref', 'refs/heads/y/refs/pull/8/head', r.baseSha);
+  const listed = r.io.git(['ls-remote', 'origin', 'refs/pull/7/head']).trim().split('\n');
+  assert.deepEqual(listed, [`${r.baseSha}\trefs/heads/x/refs/pull/7/head`, `${r.headSha}\trefs/pull/7/head`], 'the branch is listed too, and first');
+  const baseIo = gate.baseRevisionIO(r.io, r.baseSha);
+  assert.equal(baseIo.prHead(7), r.headSha);
+  assert.equal(baseIo.prHead(8), '', 'a branch alone is no pull request');
+});
+
 // ── The shadow line in verify ────────────────────────────────────────────
 
 // ── W05a (#10749): select publishes the trusted selection ────────────────
@@ -3401,6 +3415,17 @@ test('plain queue entry: select reads policy only from the queue base or its his
   for (const revision of new Set(seen.revisions)) assert.ok(revision === r.merge || isAncestor(revision, r.baseSha), `read ${revision}`);
 });
 
+test('select: a branch named like the pull request\'s head ref does not change the head the entry is judged by', () => {
+  const r = queueEntryRig({ headFiles: { 'apps/web/src/plain.ts': 'export {};\n' }, baseFiles: { ...realPolicyFiles(), ...selectionPolicyFiles(), [CI_PATH]: thinCi } });
+  r.addAnchor({ anchor: { files: ['apps/web/src/plain.ts'], policy_digest: queueSelection.policyDigest(gate.createGateIO({ cwd: r.origin, env: { PATH: process.env.PATH } }), r.baseSha) } });
+  r.addCi({ attempts: [prRunJobs(['apps/web/src/plain.ts'])] });
+  r.inOrigin('update-ref', 'refs/heads/x/refs/pull/7/head', r.baseSha);
+  gate.select(r.io, selectOf(r)({ THIN_QUEUE: 'shadow' }));
+  assert.equal(fieldOf(selectionLineOf(r), 'head'), r.headSha);
+  const value = publishedIn(r);
+  assert.deepEqual([value.mode, value.reason], ['shadow', ''], selectionLineOf(r));
+});
+
 for (const shape of ['parent', 'chain']) {
   test(`stacked queue entry, ${shape} shape: select reads policy only from the queue base or its history`, () => {
     const r = stackRig({ shape });
@@ -3476,9 +3501,9 @@ test('trustedRecord: a tag named origin/main does not say what main is', () => {
   r.io.runIsolated = () => { ran++; throw Error('ran'); };
   assert.deepEqual(r.trust(), { reason: 'anchor_base_not_on_main' });
   assert.equal(ran, 0);
-  // Control: without the tag's help nothing changes for a base that is main's.
+  // Control: a tag on unrelated history takes nothing away from a base that is main's.
   const plain = rigWithEvidence();
-  tagNamedLikeMain(plain, plain.headSha);
+  tagNamedLikeMain(plain, plain.inOrigin('commit-tree', `${plain.baseSha}^{tree}`, '-m', 'unrelated history'));
   assert.equal(plain.trust().base_sha, plain.baseSha);
 });
 

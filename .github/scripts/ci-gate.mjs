@@ -977,7 +977,11 @@ export function baseRevisionIO(io, baseSha) {
     // `pull-requests` scope, and whether the pulls API works without one is not checked.
     prHead(pr) {
       if (!Number.isSafeInteger(pr) || pr <= 0) throw new GateError('invalid_repository', 'invalid PR');
-      return io.git(['ls-remote', 'origin', `refs/pull/${pr}/head`]).match(/^([a-f\d]{40})\t/)?.[1] ?? '';
+      // ls-remote matches its pattern against the tail of every ref name, so a branch
+      // named x/refs/pull/7/head is listed too, and first. Only the exact name counts.
+      const ref = `refs/pull/${pr}/head`;
+      const sha = nonEmptyLines(io.git(['ls-remote', 'origin', ref])).map(line => line.split('\t')).find(([, name]) => name === ref)?.[0];
+      return isSha(sha) ? sha : '';
     },
     recordSource(head, pr) {
       const stats = {};
