@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceDetailPage from './DeviceDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('../../hooks/useEventStream', () => ({ useEventStream: () => ({ subscribe: vi.fn() }) }));
@@ -47,12 +48,14 @@ describe('DeviceDetailPage — the Details tab is where the record is edited', (
     window.location.hash = '';
   });
 
-  it('"Edit details" opens the Details tab instead of a settings modal', async () => {
+  it('"Edit details" opens the Details tab and no dialog', async () => {
     vi.mocked(fetchWithAuth).mockImplementation(async () => deviceResponse(null));
     render(<DeviceDetailPage deviceId={DEVICE_ID} />);
     fireEvent.click(await screen.findByTestId('edit-details'));
     expect(window.location.hash).toBe('#details');
     expect(screen.queryByRole('dialog')).toBeNull();
+    // The reveal runs a frame later; let it land here, not in the next test.
+    await waitFor(() => expect(document.activeElement).toBe(document.getElementById('device-tab-details')));
   });
 
   it('a save in the Details tab refreshes the header without unmounting the tab', async () => {
@@ -67,6 +70,42 @@ describe('DeviceDetailPage — the Details tab is where the record is edited', (
     await waitFor(() => expect(screen.getByTestId('name')).toHaveTextContent('Front Desk'));
     // Same element: the page refetched in place, no loading spinner swap.
     expect(screen.getByTestId('saved')).toBe(before);
+  });
+
+  it('a refresh that fails after a save keeps the device on screen and says the page may be out of date', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(fetchWithAuth).mockImplementation(async () => deviceResponse(null));
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    const before = await screen.findByTestId('saved');
+
+    vi.mocked(fetchWithAuth).mockImplementation(async () => new Response('{}', { status: 500 }));
+    fireEvent.click(before);
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' })));
+    // Not the full-page error, not the spinner: the saved edit is still there to work with.
+    expect(screen.getByTestId('saved')).toBe(before);
+    expect(screen.getByTestId('name')).toHaveTextContent('alpha-01');
+    expect(errorLog).toHaveBeenCalled();
+    errorLog.mockRestore();
+  });
+
+  it('two saves in a row: an older refresh that lands last does not put old data back', async () => {
+    vi.mocked(fetchWithAuth).mockImplementation(async () => deviceResponse(null));
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    const saved = await screen.findByTestId('saved');
+
+    const pending: Array<(response: Response) => void> = [];
+    vi.mocked(fetchWithAuth).mockImplementation(() => new Promise<Response>((resolve) => pending.push(resolve)));
+    fireEvent.click(saved);
+    fireEvent.click(saved);
+    await waitFor(() => expect(pending).toHaveLength(2));
+
+    pending[1]!(deviceResponse('After second save'));
+    await waitFor(() => expect(screen.getByTestId('name')).toHaveTextContent('After second save'));
+    pending[0]!(deviceResponse('After first save'));
+    // Give the stale response every chance to be applied.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByTestId('name')).toHaveTextContent('After second save');
   });
 
   describe('choosing it while already on the Details tab', () => {

@@ -1,8 +1,9 @@
 /**
  * Overview blocks are ordered by triage value (#9029), and Overview ENDS at
- * the performance graphs. Contacts, warranty, billing, placement and WAN live
- * in the header facts row (DeviceHeaderFacts) or the Details tab's Asset
- * record (DeviceAssetRecord) — never as another card below the graphs.
+ * the performance graphs. Contacts, warranty, billing and placement live in
+ * the header facts row (DeviceHeaderFacts) and/or on the Details tab (the
+ * "Warranty & purchase" section, DeviceAssetRecord); WAN/circuit is on the
+ * Hardware tab. None is a card below the graphs.
  */
 import '@/lib/i18n';
 import { render, screen } from '@testing-library/react';

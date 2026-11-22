@@ -1,5 +1,5 @@
 import TopologyEntry from '../topology/TopologyEntry';
-import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
+import { useState, useEffect, useReducer, useRef, useCallback, type ReactNode } from "react";
 import { useHashState } from "@/lib/useHashState";
 import { eventLogFilterFromHash, type EventLogFilter } from "@/lib/deviceEventLogLink";
 import { usePermissions } from "@/lib/permissions";
@@ -84,6 +84,7 @@ import WispTalkButton from "@/components/wisp/WispTalkButton";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import DeviceHeaderFacts from "./DeviceHeaderFacts";
 import DeviceAssetRecord from "./DeviceAssetRecord";
+import { DEVICE_WARRANTY_SECTION_ID, revealDeviceTab } from "./revealDeviceTab";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
 import PossibleReplacementBanner from "./PossibleReplacementBanner";
 import { navigateTo } from "@/lib/navigation";
@@ -429,6 +430,10 @@ export default function DeviceDetails({
     activityUserToggled.current = false;
     setActivityCollapsed(true);
   }, [device.id]);
+
+  // Placement and warranty are header facts whose records are edited on the
+  // Details tab; a save there bumps this so the header reloads them.
+  const [factsVersion, bumpFactsVersion] = useReducer((n: number) => n + 1, 0);
 
   const switchTab = (tab: Tab) => {
     window.location.hash = tab;
@@ -968,16 +973,24 @@ export default function DeviceDetails({
               )}
             </div>
           </div>
-          {/* Identity strip: model, serial, LAN IP, warranty, contact, and
-              "Not billed" only when uncovered (see DeviceHeaderFacts for the
-              test a fact must pass to live here). A full-width line of the
-              header, not part of the title column: beside the 2xl action
-              cluster that column is too narrow and the row stacked into seven
-              lines. Below 2xl it sits between the title and the actions; at
-              2xl it wraps under both. Indented to the title text (icon 3.5rem
-              + gap 1rem) from md. */}
+          {/* Identity strip: model, serial, LAN IP, warranty, contact,
+              placement and linked network assets (see DeviceHeaderFacts for
+              the test a fact must pass to live here). A full-width line of
+              the header, not part of the title column, which is too narrow
+              beside the 2xl action cluster. Below 2xl it sits between the
+              title and the actions; at 2xl it wraps under both. Indented to
+              the title text (icon 3.5rem + gap 1rem) from md. */}
           <div className="order-2 -mt-2 empty:hidden md:pl-[4.5rem] 2xl:order-3 2xl:mt-0 2xl:basis-full">
-            <DeviceHeaderFacts device={device} onOpenTab={(tab) => switchTab(tab)} />
+            <DeviceHeaderFacts
+              device={device}
+              factsVersion={factsVersion}
+              onOpenTab={(tab) => {
+                // Its only link is "Warranty details": land on that section,
+                // also when the Details tab is already open.
+                switchTab(tab);
+                revealDeviceTab(tab, DEVICE_WARRANTY_SECTION_ID);
+              }}
+            />
           </div>
           <div className="order-3 2xl:order-2 2xl:max-w-[70%] 2xl:shrink-0">
             <DeviceActions
@@ -1012,9 +1025,11 @@ export default function DeviceDetails({
           <div data-testid="device-overview-main" className="min-w-0 flex-1 space-y-6">
             {/* #9029: blocks run in triage order — (1) state + what is open,
                 (2) health, (3) reliability, (4) the performance chart — and
-                Overview ENDS there. Contacts, warranty, billing and placement
-                are header facts (DeviceHeaderFacts) with their full records on
-                the Details tab (DeviceAssetRecord); WAN/circuit is on Hardware.
+                Overview ENDS there. Contacts, warranty and placement surface
+                as header facts (DeviceHeaderFacts). Full records are on the
+                Details tab: warranty in DeviceInfoTab's "Warranty & purchase"
+                section; contacts, placement and billing in DeviceAssetRecord.
+                WAN/circuit is on Hardware.
                 DeviceDetails.overviewOrder.test.tsx holds the allowlist. */}
             <DeviceOverviewState
               deviceId={device.id}
@@ -1103,8 +1118,8 @@ export default function DeviceDetails({
 
       {activeTab === "details" && (
         <div className="space-y-8">
-          <DeviceInfoTab deviceId={device.id} onSaved={onDeviceUpdated} />
-          <DeviceAssetRecord device={device} />
+          <DeviceInfoTab deviceId={device.id} onSaved={onDeviceUpdated} onWarrantyChanged={bumpFactsVersion} />
+          <DeviceAssetRecord device={device} onPlacementSaved={bumpFactsVersion} />
         </div>
       )}
 

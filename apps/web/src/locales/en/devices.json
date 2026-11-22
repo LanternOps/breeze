@@ -886,6 +886,7 @@
   },
   "deviceDetailPage": {
     "failedToFetchDevice": "Failed to fetch device",
+    "refreshAfterEditFailed": "Saved, but this page couldn't refresh. Reload to see the change everywhere.",
     "movedToOrg": "{{hostname}} moved to {{orgName}}",
     "online": "online",
     "offline": "offline",
@@ -5207,7 +5208,8 @@
     "manageContacts": "Manage contacts",
     "more": "{{count}} more",
     "showLess": "Show less",
-    "call": "Call {{name}}"
+    "call": "Call {{name}}",
+    "loadFailed": "Some details didn't load"
   },
   "deviceAssetRecord": {
     "title": "Asset record",

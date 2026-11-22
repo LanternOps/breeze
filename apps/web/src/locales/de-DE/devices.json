@@ -887,6 +887,7 @@
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} wurde nach {{orgName}} verschoben",
     "failedToFetchDevice": "Gerät konnte nicht abgerufen werden",
+    "refreshAfterEditFailed": "Gespeichert, aber die Seite konnte nicht aktualisiert werden. Laden Sie sie neu, um die Änderung überall zu sehen.",
     "online": "online",
     "offline": "offline",
     "rebootToSafeMode": "Im abgesicherten Modus neu starten",
@@ -5207,7 +5208,8 @@
     "manageContacts": "Kontakte verwalten",
     "more": "{{count}} weitere",
     "showLess": "Weniger anzeigen",
-    "call": "{{name}} anrufen"
+    "call": "{{name}} anrufen",
+    "loadFailed": "Einige Details konnten nicht geladen werden"
   },
   "deviceAssetRecord": {
     "title": "Asset-Datensatz",

@@ -887,6 +887,7 @@
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} foi movido para {{orgName}}",
     "failedToFetchDevice": "Falha ao buscar o dispositivo",
+    "refreshAfterEditFailed": "Salvo, mas não foi possível atualizar esta página. Recarregue para ver a alteração em todos os lugares.",
     "online": "online",
     "offline": "offline",
     "rebootToSafeMode": "Reiniciar no modo de segurança",
@@ -5207,7 +5208,8 @@
     "manageContacts": "Gerenciar contatos",
     "more": "mais {{count}}",
     "showLess": "Mostrar menos",
-    "call": "Ligar para {{name}}"
+    "call": "Ligar para {{name}}",
+    "loadFailed": "Alguns detalhes não foram carregados"
   },
   "deviceAssetRecord": {
     "title": "Registro do ativo",

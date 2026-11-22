@@ -887,6 +887,7 @@
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} è stato spostato in {{orgName}}",
     "failedToFetchDevice": "Impossibile recuperare il dispositivo",
+    "refreshAfterEditFailed": "Salvato, ma non è stato possibile aggiornare la pagina. Ricaricala per vedere la modifica ovunque.",
     "online": "online",
     "offline": "offline",
     "rebootToSafeMode": "Riavvia in modalità provvisoria",
@@ -5207,7 +5208,8 @@
     "manageContacts": "Gestisci contatti",
     "more": "{{count}} in più",
     "showLess": "Mostra meno",
-    "call": "Chiama {{name}}"
+    "call": "Chiama {{name}}",
+    "loadFailed": "Alcuni dettagli non sono stati caricati"
   },
   "deviceAssetRecord": {
     "title": "Scheda asset",

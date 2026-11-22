@@ -1,9 +1,9 @@
-// #3205 W06: "who pays for this box?" as a CARD, not a tab (the bar already
-// carries 28 behind OverflowTabs and the panel is at most a handful of rows).
+// #3205 W06: "who pays for this box?" as a CARD, not a tab (the tab bar is
+// already long and the panel is at most a handful of rows).
 // It lives in the Details tab's Asset record. Coverage is deliberately not a
 // header fact: it is a billing gap, not something that changes a tech's next
 // move on the device. Read-only, so no runAction; the loading/error/retry
-// triad is the read convention (DeviceWarrantyCard.tsx:101-110, ContractDetail.tsx:336-341).
+// triad is the read convention (as in DeviceWarrantyCard and ContractDetail).
 import { type ReactNode } from 'react';
 import { Receipt } from 'lucide-react';
 import { useTranslation } from 'react-i18next';

@@ -6,6 +6,9 @@ import { overflowTabId } from "../shared/OverflowTabs";
 // so the lookup still lands on the tab bar.
 const DEVICE_TAB_PREFIX = "device-tab-";
 
+/** DOM id of the Details tab's "Warranty & purchase" section (DeviceWarrantyCard). */
+export const DEVICE_WARRANTY_SECTION_ID = "device-warranty";
+
 function prefersReducedMotion(): boolean {
   return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 }
@@ -19,13 +22,19 @@ function prefersReducedMotion(): boolean {
  * way the tab's button is scrolled to the top of the viewport, with the tab's
  * content right below it, and takes keyboard focus.
  *
- * Deferred a frame: the actions menu returns focus to its trigger and closes
- * after the action runs, which would undo a synchronous focus.
+ * With `sectionId`, that section of the tab is the target instead, when it is
+ * on the page by the next frame (it must be focusable: `tabIndex={-1}`). A
+ * section that is still loading falls back to the tab's button.
+ *
+ * Deferred a frame: the actions menu or popover returns focus to its trigger
+ * and closes after the action runs, which would undo a synchronous focus.
  */
-export function revealDeviceTab(tab: string): void {
+export function revealDeviceTab(tab: string, sectionId?: string): void {
   window.location.hash = tab;
   window.requestAnimationFrame(() => {
-    const target = document.getElementById(overflowTabId(tab, DEVICE_TAB_PREFIX));
+    const target =
+      (sectionId ? document.getElementById(sectionId) : null) ??
+      document.getElementById(overflowTabId(tab, DEVICE_TAB_PREFIX));
     if (!target) return;
     // Focus first without scrolling: a plain focus() jumps instantly and
     // would cancel the smooth scroll.

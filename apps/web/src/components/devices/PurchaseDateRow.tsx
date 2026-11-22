@@ -1,6 +1,8 @@
-// Purchase date, edited in place in the Details tab's System section. It feeds
-// the Hardware Lifecycle report. A vendor-sourced date (the manufacturer's ship
-// date) says so; saving any date makes it manual, and clearing sends null.
+// Purchase date, edited in place as the first row of the Details tab's
+// "Warranty & purchase" section (DeviceWarrantyCard's `purchase` slot). It
+// feeds the Hardware Lifecycle report. A vendor-sourced date (the
+// manufacturer's ship date) says so; saving any date makes it manual, and
+// clearing sends null.
 import { useState } from 'react';
 import { Check, Loader2, Pencil, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -27,7 +29,14 @@ export default function PurchaseDateRow({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const cancel = () => {
+    setError(null);
+    setEditing(false);
+  };
+
   const save = async () => {
+    // Enter can fire again while the request is out; the buttons are disabled, the key is not.
+    if (saving) return;
     const next = draft || null;
     if (next === value) {
       setEditing(false);
@@ -72,7 +81,7 @@ export default function PurchaseDateRow({
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') void save();
-                  if (e.key === 'Escape') setEditing(false);
+                  if (e.key === 'Escape') cancel();
                 }}
                 autoFocus
                 className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -89,7 +98,7 @@ export default function PurchaseDateRow({
               </button>
               <button
                 type="button"
-                onClick={() => setEditing(false)}
+                onClick={cancel}
                 aria-label={t('deviceInfoTab.cancel')}
                 title={t('deviceInfoTab.cancel')}
                 className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted"

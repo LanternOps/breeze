@@ -887,6 +887,7 @@
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} se movió a {{orgName}}",
     "failedToFetchDevice": "No se pudo recuperar el dispositivo",
+    "refreshAfterEditFailed": "Se guardó, pero esta página no se pudo actualizar. Vuelve a cargarla para ver el cambio en todas partes.",
     "online": "en línea",
     "offline": "desconectado",
     "rebootToSafeMode": "Reiniciar en modo seguro",
@@ -5207,7 +5208,8 @@
     "manageContacts": "Administrar contactos",
     "more": "{{count}} más",
     "showLess": "Mostrar menos",
-    "call": "Llamar a {{name}}"
+    "call": "Llamar a {{name}}",
+    "loadFailed": "Algunos detalles no se cargaron"
   },
   "deviceAssetRecord": {
     "title": "Registro del activo",

@@ -12,11 +12,11 @@ export type DeviceBillingError = { code?: string; groupName?: string };
  * "Who pays for this box?" for one device (DeviceBillingCard, in the Details
  * tab's Asset record). `allowed` false or `hidden` true means the
  * caller renders nothing. Callers must test `error` before `data.uncovered`
- * so a coverage failure never reads as "not billed" (Decision 6).
+ * so a coverage failure never reads as "not billed".
  */
 export function useDeviceBilling(deviceId: string) {
   const { can } = usePermissions();
-  // Decision 8: the gate is checked BEFORE the component fetches, so a tech
+  // The gate is checked BEFORE the component fetches, so a tech
   // without billing access sees no card and issues no request — rather than a
   // request that 403s and an error state for a permission they never had.
   const allowed = can('contracts', 'read');

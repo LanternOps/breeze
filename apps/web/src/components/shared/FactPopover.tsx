@@ -1,9 +1,8 @@
 // A header fact that opens a small read-only panel: a non-modal disclosure,
 // not a dialog. No focus trap. One panel is open at a time; Escape, an outside
 // click, activating a link or button in the panel, or keyboard focus leaving
-// the chip and its panel closes it, and
-// Escape hands focus back to the chip. Edits never happen in the panel — it
-// links to the place the record is edited.
+// the chip and its panel closes it, and Escape hands focus back to the chip.
+// Edits never happen in the panel — it links to the place the record is edited.
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 
@@ -20,7 +19,7 @@ const TONE_CLASS: Record<FactTone, string> = {
   danger: 'text-destructive',
 };
 
-/** Closes whichever panel is open, so opening one closes the other. */
+/** Closes whichever panel is open, so opening one closes any other. */
 let closeOpenPanel: (() => void) | null = null;
 
 const PANEL_WIDTH_PX = 288; // w-72
@@ -48,7 +47,7 @@ export function FactPopover({
   const rootRef = useRef<HTMLSpanElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   // Panel opens left-aligned under the chip unless that would run past the
-  // viewport's right edge (a chip at the end of a wrapped row), then right-aligned.
+  // viewport's right edge (a chip near the row's right end), then right-aligned.
   const [alignRight, setAlignRight] = useState(false);
 
   useLayoutEffect(() => {
@@ -85,7 +84,9 @@ export function FactPopover({
       className="relative inline-flex min-w-0"
       onBlur={(e) => {
         // Keyboard focus left the chip and its panel. A click on panel text
-        // focuses the panel (tabIndex -1), so it never counts as leaving.
+        // focuses the panel (tabIndex -1), so it never counts as leaving. A
+        // null relatedTarget (focus went nowhere) is left to the
+        // outside-mousedown handler.
         if (open && e.relatedTarget && !rootRef.current?.contains(e.relatedTarget as Node)) setOpen(false);
       }}
     >

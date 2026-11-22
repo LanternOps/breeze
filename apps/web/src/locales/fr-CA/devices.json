@@ -887,6 +887,7 @@
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} a été déplacé vers {{orgName}}",
     "failedToFetchDevice": "Impossible de récupérer l’appareil",
+    "refreshAfterEditFailed": "Enregistré, mais cette page n’a pas pu être actualisée. Rechargez-la pour voir la modification partout.",
     "online": "en ligne",
     "offline": "hors ligne",
     "rebootToSafeMode": "Redémarrer en mode sans échec",
@@ -5207,7 +5208,8 @@
     "manageContacts": "Gérer les contacts",
     "more": "{{count}} de plus",
     "showLess": "Afficher moins",
-    "call": "Appeler {{name}}"
+    "call": "Appeler {{name}}",
+    "loadFailed": "Certains détails n'ont pas pu être chargés"
   },
   "deviceAssetRecord": {
     "title": "Fiche de l’actif",

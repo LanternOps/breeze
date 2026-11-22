@@ -93,15 +93,12 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
   const [actionInProgress, setActionInProgress] = useState(false);
   // #3987: Remove has to ask what happens to the agent before it runs.
   // DeviceActions asks in its own dialog and passes the answer down; any
-  // caller that fires Remove without an answer (the retired Device Settings
-  // modal's Danger Zone was one) gets the page's dialog. Set = "asked, not
-  // yet answered".
+  // caller that fires Remove without an answer gets the page's dialog.
+  // Set = "asked, not yet answered".
   const [pendingRemove, setPendingRemove] = useState<Device | null>(null);
-  // #5023: same gate, for the one action that is worse than Remove. Every
-  // trigger on this page (kebab, the since-retired settings Danger Zone) fired Delete
-  // permanently on a single click, straight into a 5-second undo toast, while
-  // the bulk version of the same operation makes the operator type the device
-  // count. Nothing is restorable afterwards, so it gets asked about first.
+  // #5023: same gate for Delete permanently. Nothing is restorable afterwards
+  // and the bulk version makes the operator type the device count, so a single
+  // delete is asked about before the undo toast.
   const [pendingPermanentDelete, setPendingPermanentDelete] =
     useState<Device | null>(null);
   // #11153: the API refused a permanent delete because the agent never
@@ -131,11 +128,18 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
     };
   }, []);
 
+  // Each fetch takes a number; only the newest may apply its result, so two
+  // refreshes in a row cannot land out of order and put older data back.
+  const fetchSeq = useRef(0);
+
   // `silent` refetches in place: no full-page spinner, and a failure keeps
-  // the device on screen. Used after an edit in the Details tab, so the
-  // header picks up the new name/tags without unmounting the tab.
+  // the device on screen (the edit itself was saved) with a warning that the
+  // page may be out of date. Used after an edit in the Details tab, so the
+  // header picks up the new display name without unmounting the tab.
   const fetchDevice = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = opts?.silent === true;
+    const seq = ++fetchSeq.current;
+    const superseded = () => seq !== fetchSeq.current;
     try {
       if (!silent) {
         setLoading(true);
@@ -292,13 +296,16 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
             : null,
       };
 
+      if (superseded()) return;
       setMetricsSampledAt(
         typeof latestMetrics?.timestamp === "string" ? latestMetrics.timestamp : null,
       );
       setDevice(transformedDevice);
     } catch (err) {
+      if (superseded()) return;
       if (silent) {
         console.error("[DeviceDetailPage] refresh after edit failed", err);
+        showToast({ type: "warning", message: t("deviceDetailPage.refreshAfterEditFailed") });
         return;
       }
       setError(

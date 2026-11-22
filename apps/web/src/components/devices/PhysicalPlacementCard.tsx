@@ -29,6 +29,8 @@ type PhysicalPlacementCardProps = {
   id: string;
   /** Name of the managed device a linked discovered asset defers to (link label only). */
   linkedDeviceName?: string | null;
+  /** The placement was saved or removed (the device header shows it too). */
+  onSaved?: () => void;
 };
 
 type FormState = { room: string; rack: string; rackUnit: string; heightU: string };
@@ -77,7 +79,7 @@ function validate(form: FormState, t: (key: string) => string): { errors: FormEr
   return { errors, body: { room: room || null, rack: rack || null, rackUnit, heightU } };
 }
 
-export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }: PhysicalPlacementCardProps) {
+export default function PhysicalPlacementCard({ subject, id, linkedDeviceName, onSaved }: PhysicalPlacementCardProps) {
   const { t } = useTranslation('devices');
   const { can } = usePermissions();
   const canWrite = can('devices', 'write');
@@ -161,6 +163,7 @@ export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }:
         setData(next);
         setEditing(false);
       }
+      onSaved?.();
     } catch (err) {
       handleActionError(err, t('physicalPlacementCard.toasts.saveFailed'));
       // Stale view (lost a race, or the asset was linked meanwhile): re-read the truth.

@@ -102,7 +102,8 @@ describe('DeviceWarrantyCard — refresh feedback (#1723)', () => {
       return jsonResponse(warrantyPayload({ lastSyncAt: syncStamp }));
     });
 
-    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    const onChanged = vi.fn();
+    render(<DeviceWarrantyCard deviceId={deviceId} onChanged={onChanged} />);
     const refreshBtn = await screen.findByRole('button', { name: /refresh/i });
     fireEvent.click(refreshBtn);
 
@@ -110,6 +111,8 @@ describe('DeviceWarrantyCard — refresh feedback (#1723)', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /checking/i })).toBeInTheDocument();
     });
+    // Queued is not changed: nothing new to show yet.
+    expect(onChanged).not.toHaveBeenCalled();
 
     // Worker stamps a newer lastSyncAt; the poll detects it and the card settles
     // back to "Refresh" on its own (no manual reload). Default poll is 2s.
@@ -124,6 +127,8 @@ describe('DeviceWarrantyCard — refresh feedback (#1723)', () => {
     expect(showToastMock).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'success', message: 'Warranty information updated.' })
     );
+    // The new result is reported once, so the header's warranty chip can follow.
+    expect(onChanged).toHaveBeenCalledTimes(1);
   }, 12000);
 
   it('surfaces an error toast when the worker reports a failure (lastSyncError) despite advancing lastSyncAt', async () => {

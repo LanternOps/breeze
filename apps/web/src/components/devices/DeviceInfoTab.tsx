@@ -53,9 +53,11 @@ import DeviceWarrantyCard from "./DeviceWarrantyCard";
 
 type DeviceInfoTabProps = {
   deviceId: string;
-  /** A record field was saved; the page refetches so its header (name,
-   *  tags) matches. The Details tab is the one place these fields are edited. */
+  /** A record field was saved; the page refetches the device so the header's
+   *  display name matches. The Details tab is the one place these fields are edited. */
   onSaved?: () => void;
+  /** A warranty lookup or refresh produced a new result. */
+  onWarrantyChanged?: () => void;
 };
 
 type CustomFieldDef = {
@@ -657,7 +659,7 @@ const statusColors: Record<string, string> = {
   updating: "bg-info/15 text-info border-info/30",
 };
 
-export default function DeviceInfoTab({ deviceId, onSaved }: DeviceInfoTabProps) {
+export default function DeviceInfoTab({ deviceId, onSaved, onWarrantyChanged }: DeviceInfoTabProps) {
   // `remote` is loaded for the desktop-access copy shared with ConnectDesktopButton.
   const { t } = useTranslation(["devices", "remote"]);
   const [info, setInfo] = useState<DeviceInfo | null>(null);
@@ -1193,6 +1195,7 @@ export default function DeviceInfoTab({ deviceId, onSaved }: DeviceInfoTabProps)
       <DeviceWarrantyCard
         deviceId={deviceId}
         purchaseDate={info?.purchaseDate ?? null}
+        onChanged={onWarrantyChanged}
         purchase={
           <PurchaseDateRow
             deviceId={deviceId}

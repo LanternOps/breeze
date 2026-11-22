@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { DEVICE_WARRANTY_SECTION_ID } from './revealDeviceTab';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
@@ -41,6 +42,8 @@ type DeviceWarrantyCardProps = {
   purchaseDate?: string | null;
   /** The editable purchase-date row, rendered first in the section. */
   purchase?: ReactNode;
+  /** A lookup or refresh produced a new result (the device header shows warranty too). */
+  onChanged?: () => void;
   /** Override the refresh poll timeout (ms). Test seam only — defaults to
    *  REFRESH_POLL_TIMEOUT_MS in production. */
   pollTimeoutMs?: number;
@@ -142,6 +145,7 @@ export default function DeviceWarrantyCard({
   compact = false,
   purchaseDate = null,
   purchase,
+  onChanged,
   pollTimeoutMs = REFRESH_POLL_TIMEOUT_MS,
 }: DeviceWarrantyCardProps) {
   const { t } = useTranslation('devices');
@@ -230,6 +234,7 @@ export default function DeviceWarrantyCard({
       const next = await fetchWarranty();
       const advanced = !!next?.lastSyncAt && next.lastSyncAt !== previousSyncAt;
       if (advanced) {
+        onChanged?.();
         if (mountedRef.current) {
           setRefreshing(false);
           if (next?.lastSyncError && !isProviderNotConfigured(next.lastSyncError)) {
@@ -406,7 +411,9 @@ export default function DeviceWarrantyCard({
   }
 
   // Details tab: "Warranty & purchase". Manufacturer and serial are not
-  // repeated here — the System section above shows them.
+  // repeated here — the System section above shows them. Nor is a coverage
+  // start on the same calendar day as the purchase date (date part only): the
+  // purchase row already says it.
   const startIsPurchase =
     !!warranty.warrantyStartDate && !!purchaseDate &&
     warranty.warrantyStartDate.slice(0, 10) === purchaseDate.slice(0, 10);
@@ -503,7 +510,15 @@ function WarrantySection({ title, badge, action, children }: {
   children: ReactNode;
 }) {
   return (
-    <section data-testid="device-warranty" aria-labelledby="device-warranty-title" className="rounded-lg border bg-card p-6 shadow-xs">
+    // id + tabIndex: the header's "Warranty details" link scrolls here and
+    // moves focus to it (revealDeviceTab).
+    <section
+      id={DEVICE_WARRANTY_SECTION_ID}
+      tabIndex={-1}
+      data-testid="device-warranty"
+      aria-labelledby="device-warranty-title"
+      className="rounded-lg border bg-card p-6 shadow-xs focus:outline-hidden"
+    >
       <div className="mb-4 flex items-center gap-2">
         <ShieldCheck className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
         <h2 id="device-warranty-title" className="text-sm font-semibold">{title}</h2>

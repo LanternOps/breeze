@@ -10,12 +10,13 @@
 // The row must not move the page as it loads (see "Load stability" below): it
 // is one fixed-height line, and the facts that need a fetch appear together.
 import { useEffect, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, MapPin, Network, Phone, ShieldAlert, ShieldCheck, ShieldX, UserRound } from 'lucide-react';
+import { ChevronDown, MapPin, Network, Phone, ShieldAlert, ShieldCheck, ShieldX, TriangleAlert, UserRound } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { asList } from '@/lib/asList';
 import { parseDateOnly } from '@/lib/dateOnly';
+import { formatDate } from '@/lib/dateTimeFormat';
 import { FactPopover, type FactTone } from '../shared/FactPopover';
 import { CopyButton } from './networkDevice/CopyButton';
 import { dedupeResponsibleContacts } from '@/lib/contactResponsibilityDedupe';
@@ -33,42 +34,82 @@ type Props = {
   device: Device;
   /** Opens a device tab (the warranty panel links to its full record). */
   onOpenTab?: (tab: 'details') => void;
+  /**
+   * Bumped by the page when a record a fact summarises was edited elsewhere on
+   * it (placement saved, warranty looked up). Warranty and placement reload in
+   * place: the old value stays until the new one lands.
+   */
+  factsVersion?: number;
 };
 
 // ── Load stability ───────────────────────────────────────────────────────
 //
-// Each fact fetches on its own. Rendered as they land, the row grew from one
-// line to two and pushed the tabs down, and late chips slid in mid-row. Now:
+// Each fact fetches on its own. Rendered as each lands, the row would grow to
+// two lines, push the tabs down, and slide late chips in mid-row. So:
 //  - every source reports when it has SETTLED (answered, failed, or was never
 //    asked), so "still loading" is never confused with "nothing to show";
 //  - the fetched facts appear together once all have settled, or after
 //    REVEAL_DEADLINE_MS so one slow endpoint never holds back the rest;
 //  - the row is a single fixed-height line (useOneLine), so anything late can
 //    only fold behind "N more", never push the page down.
+//
+// A source that FAILED is not one with nothing to show: a 500 on warranty must
+// not read as "no warranty". Failures are logged and surface as one "didn't
+// load" fact with a Retry.
 
 const REVEAL_DEADLINE_MS = 1000;
 
-type Settled<T> = { value: T; settled: boolean };
+type Loaded<T> = { ok: true; value: T } | { ok: false };
 
 /**
- * Loads once per `key` (the request's identity); a null key means the source
- * is not asked, which counts as settled. `load` must resolve, never reject,
- * and be a stable module-level function.
+ * GET `url` as JSON. A 401, 403 or 404 is an answer ("not yours to see", "no
+ * such record") and loads as null, so a restricted user gets no warning. Any
+ * other error status, a network error, or a body that is not JSON is a failed
+ * load.
  */
-function useKeyedLoad<T>(key: string | null, load: (key: string) => Promise<T>, empty: T): Settled<T> {
-  const [state, setState] = useState<{ key: string; value: T } | null>(null);
+async function getJson(url: string, what: string): Promise<Loaded<unknown>> {
+  try {
+    const res = await fetchWithAuth(url);
+    if (res.ok) return { ok: true, value: (await res.json()) as unknown };
+    if (res.status === 401 || res.status === 403 || res.status === 404) return { ok: true, value: null };
+    console.error(`[DeviceHeaderFacts] ${what} did not load`, `HTTP ${res.status}`);
+  } catch (err) {
+    console.error(`[DeviceHeaderFacts] ${what} did not load`, err);
+  }
+  return { ok: false };
+}
+
+type Settled<T> = { value: T; settled: boolean; failed: boolean };
+
+/**
+ * Loads once per `key` (the request's identity) and again whenever `version`
+ * changes. A reload keeps the last value on screen until the new one lands, so
+ * a chip never blinks out; a failed reload keeps it too, flagged `failed`. A
+ * null key means the source is not asked, which counts as settled. `load` must
+ * resolve, never reject, and be a stable module-level function; `empty` must
+ * be a stable value.
+ */
+function useKeyedLoad<T>(key: string | null, load: (key: string) => Promise<Loaded<T>>, empty: T, version = 0): Settled<T> {
+  const [state, setState] = useState<{ key: string; value: T; failed: boolean } | null>(null);
   useEffect(() => {
     if (key === null) return;
     let cancelled = false;
-    void load(key).then((value) => {
-      if (!cancelled) setState({ key, value });
+    void load(key).then((result) => {
+      if (cancelled) return;
+      setState((prev) => ({
+        key,
+        value: result.ok ? result.value : prev?.key === key ? prev.value : empty,
+        failed: !result.ok,
+      }));
     });
     return () => {
       cancelled = true;
     };
-  }, [key, load]);
-  if (key === null) return { value: empty, settled: true };
-  return state?.key === key ? { value: state.value, settled: true } : { value: empty, settled: false };
+  }, [key, load, empty, version]);
+  if (key === null) return { value: empty, settled: true, failed: false };
+  return state?.key === key
+    ? { value: state.value, settled: true, failed: state.failed }
+    : { value: empty, settled: false, failed: false };
 }
 
 // ── Model ────────────────────────────────────────────────────────────────
@@ -108,35 +149,37 @@ const WARRANTY_TONE: Record<string, FactTone> = {
   expired: 'danger',
 };
 
-async function loadWarranty(deviceId: string): Promise<KnownWarranty | null> {
-  const body = await fetchWithAuth(`/devices/${deviceId}/warranty`)
-    // The route wraps the record: { warranty: {...} | null }.
-    .then(async (res) => (res.ok ? ((await res.json()) as { warranty?: Partial<WarrantyData> | null } | null)?.warranty ?? null : null))
-    .catch(() => null);
-  // "unknown" does not change the next move; the Hardware tab holds the lookup.
-  if (!body || typeof body.status !== 'string' || !(body.status in WARRANTY_TONE)) return null;
+async function loadWarranty(deviceId: string): Promise<Loaded<KnownWarranty | null>> {
+  const res = await getJson(`/devices/${deviceId}/warranty`, 'warranty');
+  if (!res.ok) return res;
+  // The route wraps the record: { warranty: {...} | null }.
+  const body = (res.value as { warranty?: Partial<WarrantyData> | null } | null)?.warranty ?? null;
+  // "unknown" does not change the next move; the Details tab's "Warranty &
+  // purchase" section holds the lookup.
+  if (!body || typeof body.status !== 'string' || !(body.status in WARRANTY_TONE)) return { ok: true, value: null };
   return {
-    status: body.status,
-    warrantyStartDate: body.warrantyStartDate ?? null,
-    warrantyEndDate: body.warrantyEndDate ?? null,
-    dataSource: body.dataSource ?? null,
+    ok: true,
+    value: {
+      status: body.status,
+      warrantyStartDate: body.warrantyStartDate ?? null,
+      warrantyEndDate: body.warrantyEndDate ?? null,
+      dataSource: body.dataSource ?? null,
+    },
   };
 }
 
+/** A date-only value in the app's date locale (the Details tab formats it the same way). */
 function formatDay(value: string | null): string | null {
   if (!value) return null;
-  const d = parseDateOnly(value);
-  if (isNaN(d.getTime())) return value;
-  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  return formatDate(parseDateOnly(value), { year: 'numeric', month: 'short', day: 'numeric', fallback: value });
 }
 
 // ── Placement ────────────────────────────────────────────────────────────
 
-async function loadPlacement(deviceId: string): Promise<PlacementFields | null> {
-  const body = await fetchWithAuth(`/devices/${deviceId}/placement`)
-    .then(async (res) => (res.ok ? ((await res.json()) as unknown) : null))
-    .catch(() => null);
-  return isPlacementResponse(body) ? body.placement : null;
+async function loadPlacement(deviceId: string): Promise<Loaded<PlacementFields | null>> {
+  const res = await getJson(`/devices/${deviceId}/placement`, 'placement');
+  if (!res.ok) return res;
+  return { ok: true, value: isPlacementResponse(res.value) ? res.value.placement : null };
 }
 
 // ── Linked network assets (#3261 Task 4) ─────────────────────────────────
@@ -152,19 +195,19 @@ function networkAssetsQuery(deviceId: string, orgId?: string): string {
   return params.toString();
 }
 
-async function loadLinkedNetworkAssets(query: string): Promise<LinkedNetworkAsset[]> {
-  return fetchWithAuth(`/discovery/assets?${query}`)
-    .then(async (res) => {
-      if (!res.ok) return NO_ASSETS;
-      const raw = asList<Record<string, unknown>>(await res.json(), 'assets');
-      return raw
-        .filter((a) => typeof a?.id === 'string')
-        .map((a) => ({
-          id: a.id as string,
-          label: String(a.label || a.hostname || a.ipAddress || a.id),
-        }));
-    })
-    .catch(() => NO_ASSETS);
+async function loadLinkedNetworkAssets(query: string): Promise<Loaded<LinkedNetworkAsset[]>> {
+  const res = await getJson(`/discovery/assets?${query}`, 'linked network assets');
+  if (!res.ok) return res;
+  if (res.value === null) return { ok: true, value: NO_ASSETS };
+  return {
+    ok: true,
+    value: asList<Record<string, unknown>>(res.value, 'assets')
+      .filter((a) => typeof a?.id === 'string')
+      .map((a) => ({
+        id: a.id as string,
+        label: String(a.label || a.hostname || a.ipAddress || a.id),
+      })),
+  };
 }
 
 // ── Contacts ─────────────────────────────────────────────────────────────
@@ -179,22 +222,15 @@ const roleRank = (role: string) => {
 };
 
 /**
- * Responsibilities in the chip's order (role rank, primary first), each role's
- * contacts de-duplicated: the same person entered twice (same email, or same
- * phone however it is formatted) is listed once.
+ * Responsibilities in the chip's order (by role rank), each role's contacts
+ * primary first and listed once per person: the same list, in the same order,
+ * as the Details tab's contacts card (dedupeResponsibleContacts).
  */
 function orderedResponsibilities(items: Responsibility[]): Responsibility[] {
-  return [...items]
+  return items
     .filter((r) => r.contacts.length > 0)
     .sort((a, b) => roleRank(a.role) - roleRank(b.role))
-    .map((r) => {
-      // Primary first, then one entry per person — the same rule the Details
-      // tab's contacts card uses.
-      const contacts = dedupeResponsibleContacts(
-        [...r.contacts].sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary)),
-      );
-      return { ...r, contacts };
-    });
+    .map((r) => ({ ...r, contacts: dedupeResponsibleContacts(r.contacts) }));
 }
 
 function pickContact(ordered: Responsibility[]): { role: string; contact: ResponsibleContact } | null {
@@ -231,10 +267,12 @@ const RANK = {
   model: 2,
   serial: 3,
   ip: 4,
-  contact: 5,
-  warranty: 6,
-  placement: 7,
-  networkAsset: 8,
+  // A failed load may be hiding a warranty alert, so it outranks the context facts.
+  loadFailed: 5,
+  contact: 6,
+  warranty: 7,
+  placement: 8,
+  networkAsset: 9,
 } as const;
 
 const MORE = 'more';
@@ -317,12 +355,13 @@ function useOneLine(facts: Fact[]) {
 
 const ICON = 'h-3.5 w-3.5 shrink-0 text-muted-foreground';
 
-export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
-  const { t } = useTranslation(['devices', 'contactResponsibilities']);
-  const warranty = useKeyedLoad(device.id, loadWarranty, null);
-  const placement = useKeyedLoad(device.id, loadPlacement, null);
-  const assets = useKeyedLoad(networkAssetsQuery(device.id, device.orgId || undefined), loadLinkedNetworkAssets, NO_ASSETS);
-  const contacts = useContactResponsibilities({ orgId: device.orgId, siteId: device.siteId || undefined, deviceId: device.id });
+export default function DeviceHeaderFacts({ device, onOpenTab, factsVersion = 0 }: Props) {
+  const { t } = useTranslation(['devices', 'contactResponsibilities', 'common']);
+  const [retries, retry] = useReducer((n: number) => n + 1, 0);
+  const warranty = useKeyedLoad(device.id, loadWarranty, null, factsVersion + retries);
+  const placement = useKeyedLoad(device.id, loadPlacement, null, factsVersion + retries);
+  const assets = useKeyedLoad(networkAssetsQuery(device.id, device.orgId || undefined), loadLinkedNetworkAssets, NO_ASSETS, retries);
+  const contacts = useContactResponsibilities({ orgId: device.orgId, siteId: device.siteId || undefined, deviceId: device.id, reloadKey: retries });
   const [expanded, setExpanded] = useState(false);
 
   const model = modelLabel(device.manufacturer, device.model);
@@ -349,6 +388,7 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
   const assetFacts = shown(assets.value, NO_ASSETS);
   const responsibilities = revealed && contacts.canRead && !contacts.failed && contacts.items ? orderedResponsibilities(contacts.items) : [];
   const picked = pickContact(responsibilities);
+  const loadFailed = revealed && (warranty.failed || placement.failed || assets.failed || (contacts.canRead && contacts.failed && !contacts.unavailable));
   const placementText = placementFact
     ? [
         placementFact.room,
@@ -391,12 +431,29 @@ export default function DeviceHeaderFacts({ device, onOpenTab }: Props) {
       ),
     });
   }
+  if (loadFailed) {
+    facts.push({
+      key: 'load-failed',
+      rank: RANK.loadFailed,
+      node: (
+        <span data-testid="device-fact-load-failed" className="inline-flex items-center gap-1.5">
+          <TriangleAlert className={ICON} aria-hidden="true" />
+          <span>{t('deviceHeaderFacts.loadFailed')}</span>
+          <button type="button" onClick={retry} className={PANEL_LINK}>
+            {t('common:actions.retry')}
+          </button>
+        </span>
+      ),
+    });
+  }
   if (warrantyFact) {
     const warranty = warrantyFact;
     const end = formatDay(warranty.warrantyEndDate);
     const start = formatDay(warranty.warrantyStartDate);
     const statusKey = warranty.status === 'subscription_active' ? 'appleCareSubscription' : warranty.status;
     const statusLabel = t(/* i18n-dynamic */ `deviceWarrantyCard.status.${statusKey}`);
+    // A subscription's stored end date is its next renewal, not an expiry
+    // (#1320), so the chip shows status only; likewise with no end date.
     const chipText =
       warranty.status === 'subscription_active' || !end
         ? t('deviceHeaderFacts.warrantyStatus', { status: statusLabel })

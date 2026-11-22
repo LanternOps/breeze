@@ -1,9 +1,10 @@
 import '@/lib/i18n';
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceHeaderFacts, { factsToFold } from './DeviceHeaderFacts';
+import ContactResponsibilitiesCard from '../shared/ContactResponsibilitiesCard';
 import { fetchWithAuth } from '../../stores/auth';
 import type { Device } from './DeviceList';
 
@@ -14,8 +15,6 @@ vi.mock('@/lib/permissions', () => ({ usePermissions: () => ({ can }) }));
 vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can }) }));
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-// GET /devices/:id/warranty wraps the record: { warranty: {...} | null } (as DeviceWarrantyCard reads it).
-
 const device = (over: Partial<Device> = {}): Device => ({
   id: 'dev-1',
   hostname: 'adrianna',
@@ -41,19 +40,25 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+// GET /devices/:id/warranty wraps the record: { warranty: {...} | null } (as DeviceWarrantyCard reads it).
 const EXPIRING = { warranty: { id: 'w', deviceId: 'dev-1', manufacturer: 'Dell', serialNumber: 'X', status: 'expiring', warrantyStartDate: '2023-03-01', warrantyEndDate: '2026-12-15', entitlements: [], dataSource: 'provider', lastSyncAt: null, lastSyncError: null } };
+
+/** A Response body reads once; a route is asked again on a reload or a retry. */
+const fresh = async (r: Response | Promise<Response>) => (await r).clone();
 
 function route(routes: Routes) {
   vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
-    if (url.includes('/warranty')) return routes.warranty ?? json({}, 404);
-    if (url.includes('/contact-responsibilities')) return routes.contacts ?? json({ responsibilities: [] });
-    if (url.includes('/billing')) return routes.billing ?? json({}, 500);
-    if (url.startsWith('/contracts')) return routes.contracts ?? json({ data: [{ id: 'k1', status: 'active' }] });
-    if (url.includes('/placement')) return routes.placement ?? json({}, 404);
-    if (url.includes('/discovery/assets')) return routes.assets ?? json({ assets: [] });
+    if (url.includes('/warranty')) return fresh(routes.warranty ?? json({}, 404));
+    if (url.includes('/contact-responsibilities')) return fresh(routes.contacts ?? json({ responsibilities: [] }));
+    if (url.includes('/billing')) return fresh(routes.billing ?? json({}, 500));
+    if (url.startsWith('/contracts')) return fresh(routes.contracts ?? json({ data: [{ id: 'k1', status: 'active' }] }));
+    if (url.includes('/placement')) return fresh(routes.placement ?? json({}, 404));
+    if (url.includes('/discovery/assets')) return fresh(routes.assets ?? json({ assets: [] }));
     return json({}, 404);
   });
 }
+
+const placed = (rack: string) => json({ authority: { kind: 'device', id: 'dev-1', linked: false }, placement: { room: 'Server room', rack, rackUnit: 12, heightU: 1 } });
 
 /** Every source has been asked (not necessarily answered). */
 const fetched = () => waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.length).toBeGreaterThanOrEqual(4));
@@ -106,13 +111,33 @@ describe('DeviceHeaderFacts', () => {
     expect(chip).toHaveFocus();
   });
 
-  it('"Warranty details" opens the Details tab, where warranty now lives', async () => {
+  it('"Warranty details" asks the page to open the Details tab', async () => {
     route({ warranty: json(EXPIRING) });
     const onOpenTab = vi.fn();
     render(<DeviceHeaderFacts device={device()} onOpenTab={onOpenTab} />);
     fireEvent.click(await screen.findByTestId('device-fact-warranty'));
     fireEvent.click(screen.getByRole('button', { name: 'Warranty details' }));
     expect(onOpenTab).toHaveBeenCalledWith('details');
+  });
+
+  it.each([
+    ['expiring', 'Warranty ends Dec 15, 2026', 'lucide-shield-alert'],
+    ['expired', 'Warranty expired Dec 15, 2026', 'lucide-shield-x'],
+    ['active', 'Warranty to Dec 15, 2026', 'lucide-shield-check'],
+    // A subscription's end date is its next renewal, not an expiry: status only.
+    ['subscription_active', 'Warranty: AppleCare Subscription', 'lucide-shield-check'],
+  ])('words the %s warranty chip', async (status, text, icon) => {
+    route({ warranty: json({ warranty: { ...EXPIRING.warranty, status } }) });
+    render(<DeviceHeaderFacts device={device()} />);
+    const chip = await screen.findByTestId('device-fact-warranty');
+    expect(chip).toHaveTextContent(text);
+    expect(chip.querySelector('svg')?.getAttribute('class')).toContain(icon);
+  });
+
+  it('shows status only when the warranty has no end date', async () => {
+    route({ warranty: json({ warranty: { ...EXPIRING.warranty, status: 'active', warrantyEndDate: null } }) });
+    render(<DeviceHeaderFacts device={device()} />);
+    expect(await screen.findByTestId('device-fact-warranty')).toHaveTextContent('Warranty: Active');
   });
 
   it('hides the warranty chip when the status is unknown', async () => {
@@ -122,7 +147,7 @@ describe('DeviceHeaderFacts', () => {
     expect(screen.queryByTestId('device-fact-warranty')).not.toBeInTheDocument();
   });
 
-  it('picks the technical contact before site and billing; a nameless contact shows its role and a call button, not a number as a name', async () => {
+  it('picks the site contact before billing when there is no technical contact; a nameless contact shows its role and a call button, not a number as a name', async () => {
     route({
       contacts: json({ responsibilities: [
         { role: 'billing', level: 'organization', contacts: [
@@ -159,7 +184,7 @@ describe('DeviceHeaderFacts', () => {
     route({ billing: json({ data: { uncovered: true, notBillable: false, lines: [], deviceRole: 'workstation' } }) });
     render(<DeviceHeaderFacts device={device({ model: 'OptiPlex 7060' })} />);
     await settle();
-    expect(screen.queryByTestId('device-fact-billing')).not.toBeInTheDocument();
+    expect(screen.getByTestId('device-header-facts')).not.toHaveTextContent(/bill/i);
     const urls = vi.mocked(fetchWithAuth).mock.calls.map(([u]) => String(u));
     expect(urls.some((u) => u.includes('/billing') || u.startsWith('/contracts'))).toBe(false);
   });
@@ -180,9 +205,15 @@ describe('DeviceHeaderFacts', () => {
   });
 
   it('shows physical placement only when something is set', async () => {
-    route({ placement: json({ authority: { kind: 'device', id: 'dev-1', linked: false }, placement: { room: 'Server room', rack: 'A', rackUnit: 12, heightU: 1 } }) });
-    render(<DeviceHeaderFacts device={device()} />);
-    expect(await screen.findByTestId('device-fact-placement')).toHaveTextContent('Server room');
+    route({ placement: placed('A') });
+    const { unmount } = render(<DeviceHeaderFacts device={device()} />);
+    expect(await screen.findByTestId('device-fact-placement')).toHaveTextContent('Server room, Rack A, U12');
+    unmount();
+
+    route({ placement: json({ authority: { kind: 'device', id: 'dev-1', linked: false }, placement: { room: null, rack: null, rackUnit: null, heightU: null } }) });
+    render(<DeviceHeaderFacts device={device({ model: 'OptiPlex 7060' })} />);
+    await settle();
+    expect(screen.queryByTestId('device-fact-placement')).not.toBeInTheDocument();
   });
 
   it('links a discovered network asset', async () => {
@@ -192,6 +223,126 @@ describe('DeviceHeaderFacts', () => {
     expect(link).toHaveAttribute('href', '/devices/network/na-1');
     // A bare asset name in the header reads as noise; say what it is, visibly.
     expect(within(link).getByText('Network asset')).not.toHaveClass('sr-only');
+  });
+
+  it('lists the same people, in the same order, as the Details tab contacts card', async () => {
+    const c = (contactId: string, over: Record<string, unknown>) => ({ contactId, name: null, email: null, phone: null, mobile: null, title: null, isPrimary: false, ...over });
+    route({
+      contacts: json({ responsibilities: [{ role: 'technical', level: 'site', contacts: [
+        c('x', { phone: '555-0100' }),
+        c('alice', { name: 'Alice', email: 'alice@example.com', phone: '555 0100' }),
+        c('bob', { name: 'Bob', email: 'bob@example.com', phone: '555-0100', isPrimary: true }),
+        c('alice-2', { name: 'Alice', email: 'ALICE@example.com', title: 'IT lead' }),
+      ] }] }),
+    });
+    render(<DeviceHeaderFacts device={device()} />);
+    const chip = await screen.findByTestId('device-fact-contact');
+    expect(chip).toHaveTextContent('Bob');
+    fireEvent.click(chip);
+    // The header puts the title on the name's line ("Alice · IT lead").
+    const inHeader = within(screen.getByTestId('device-fact-contact-panel')).getAllByText(/^(Alice|Bob)$/).map((el) => el.textContent?.split(' · ')[0]);
+
+    render(<ContactResponsibilitiesCard orgId="org-1" siteId="site-1" deviceId="dev-1" />);
+    const card = await screen.findByTestId('contact-responsibilities-card');
+    const inCard = (await within(card).findAllByText(/^(Alice|Bob)$/)).map((el) => el.textContent);
+
+    expect(inHeader).toEqual(['Bob', 'Alice']);
+    expect(inCard).toEqual(inHeader);
+    // The bare number is Bob's line too; it is not a third entry in either place.
+    expect(within(card).getAllByRole('listitem').filter((li) => li.className.includes('text-sm'))).toHaveLength(2);
+  });
+
+  it('asks for no contacts, and still settles, without permission to read them', async () => {
+    can.mockReturnValue(false);
+    route({ warranty: json(EXPIRING) });
+    render(<DeviceHeaderFacts device={device()} />);
+    expect(await screen.findByTestId('device-fact-warranty')).toBeInTheDocument();
+    expect(screen.getByTestId('device-header-facts')).not.toHaveAttribute('aria-busy', 'true');
+    const urls = vi.mocked(fetchWithAuth).mock.calls.map(([u]) => String(u));
+    expect(urls.some((u) => u.includes('/contact-responsibilities'))).toBe(false);
+  });
+
+  // ── A failed load is not "nothing to show" ──
+
+  describe('when a fact fails to load', () => {
+    let errorLog: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    });
+    afterEach(() => errorLog.mockRestore());
+
+    it.each([
+      ['a server error', () => json({}, 500)],
+      ['a body that is not JSON', () => new Response('<html>', { status: 200 })],
+    ])('says so and logs it: %s on warranty', async (_label, response) => {
+      route({ warranty: response(), placement: placed('A') });
+      render(<DeviceHeaderFacts device={device()} />);
+      const failed = await screen.findByTestId('device-fact-load-failed');
+      expect(failed).toHaveTextContent("Some details didn't load");
+      // The facts that did load are still shown.
+      expect(screen.getByTestId('device-fact-placement')).toBeInTheDocument();
+      expect(screen.getByTestId('device-header-facts')).not.toHaveAttribute('aria-busy', 'true');
+      expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('warranty'), expect.anything());
+    });
+
+    it('says so when the request itself fails', async () => {
+      route({ placement: Promise.reject(new TypeError('Failed to fetch')) });
+      render(<DeviceHeaderFacts device={device()} />);
+      expect(await screen.findByTestId('device-fact-load-failed')).toBeInTheDocument();
+    });
+
+    it.each(['contacts', 'assets'] as const)('says so when %s fail', async (source) => {
+      route({ [source]: json({}, 500), warranty: json(EXPIRING) });
+      render(<DeviceHeaderFacts device={device()} />);
+      expect(await screen.findByTestId('device-fact-load-failed')).toBeInTheDocument();
+      expect(screen.getByTestId('device-fact-warranty')).toBeInTheDocument();
+      expect(screen.getByTestId('device-header-facts')).not.toHaveAttribute('aria-busy', 'true');
+    });
+
+    // "Not yours to see" and "no such record" are answers, not failures: a
+    // restricted user must not get a permanent warning in every device header.
+    it.each([403, 404])('treats a %i as nothing to show', async (status) => {
+      route({ warranty: json({}, status), placement: json({}, status), assets: json({}, status), contacts: json({}, status) });
+      render(<DeviceHeaderFacts device={device({ model: 'OptiPlex 7060' })} />);
+      await settle();
+      expect(screen.queryByTestId('device-fact-load-failed')).not.toBeInTheDocument();
+      expect(errorLog.mock.calls.filter((call: unknown[]) => String(call[0]).includes('DeviceHeaderFacts'))).toEqual([]);
+    });
+
+    it('Retry asks again and shows what comes back', async () => {
+      let attempts = 0;
+      route({});
+      const routed = vi.mocked(fetchWithAuth).getMockImplementation()!;
+      vi.mocked(fetchWithAuth).mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url.includes('/warranty')) return (attempts++ === 0 ? json({}, 503) : json(EXPIRING));
+        return routed(url, init);
+      });
+      render(<DeviceHeaderFacts device={device()} />);
+      fireEvent.click(within(await screen.findByTestId('device-fact-load-failed')).getByRole('button', { name: 'Retry' }));
+      expect(await screen.findByTestId('device-fact-warranty')).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByTestId('device-fact-load-failed')).not.toBeInTheDocument());
+    });
+  });
+
+  // ── Edited elsewhere on the page ──
+
+  it('reloads warranty and placement in place when the page says a fact changed', async () => {
+    route({ placement: placed('B') });
+    const view = render(<DeviceHeaderFacts device={device()} factsVersion={0} />);
+    expect(await screen.findByTestId('device-fact-placement')).toHaveTextContent('Rack B');
+
+    const next = deferred<Response>();
+    route({ placement: next.promise, warranty: json(EXPIRING) });
+    view.rerender(<DeviceHeaderFacts device={device()} factsVersion={1} />);
+    // The old value stays, and the row does not go back to loading, until the new one lands.
+    await waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.filter(([u]) => String(u).includes('/placement'))).toHaveLength(2));
+    expect(screen.getByTestId('device-fact-placement')).toHaveTextContent('Rack B');
+    expect(screen.getByTestId('device-header-facts')).not.toHaveAttribute('aria-busy', 'true');
+
+    next.resolve(placed('C'));
+    await waitFor(() => expect(screen.getByTestId('device-fact-placement')).toHaveTextContent('Rack C'));
+    // A warranty looked up meanwhile shows too.
+    expect(screen.getByTestId('device-fact-warranty')).toBeInTheDocument();
   });
 
   // ── Load stability: the row must not grow or reshuffle as each fetch lands ──

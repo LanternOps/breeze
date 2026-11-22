@@ -887,6 +887,7 @@
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} {{orgName}} kuruluşuna taşındı",
     "failedToFetchDevice": "Cihaz getirilemedi",
+    "refreshAfterEditFailed": "Kaydedildi, ancak bu sayfa yenilenemedi. Değişikliği her yerde görmek için sayfayı yeniden yükleyin.",
     "online": "çevrimiçi",
     "offline": "çevrimdışı",
     "rebootToSafeMode": "Güvenli Modda Yeniden Başlat",
@@ -5207,7 +5208,8 @@
     "manageContacts": "Kişileri yönet",
     "more": "{{count}} tane daha",
     "showLess": "Daha az göster",
-    "call": "{{name}} kişisini ara"
+    "call": "{{name}} kişisini ara",
+    "loadFailed": "Bazı ayrıntılar yüklenemedi"
   },
   "deviceAssetRecord": {
     "title": "Varlık kaydı",
