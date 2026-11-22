@@ -3,7 +3,9 @@
  * (POST /flows/validate).
  *
  * The same catalog-aware validation `validate_flow` and `saveDraftFlow` run.
- * With a `flowId`, it answers exactly what saving that draft would answer:
+ * With a `flowId`, its validation is the one saving that draft would return
+ * (it is a read, so a selected-access partner user still gets the validation
+ * where a save would answer `partner_wide_forbidden`):
  *  - the same reach rule as `updateDraft` (services/flows/service.ts): an org
  *    token can read a partner-wide flow through the SELECT-only policy but can
  *    never update it, so it gets `flow_not_found`, before any owner lookup or

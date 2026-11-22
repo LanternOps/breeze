@@ -115,6 +115,7 @@ describe('deleteDraftFlow against a real database (W01b #12435)', () => {
     const id = await seedFlow({ orgId: org.id }, 'race');
 
     // Tab 1 enables and holds its transaction open (the row stays locked FOR UPDATE).
+    // If enableFlow throws before `enabled()`, `enable` rejects and the race below fails instead of hanging.
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     let enabled!: () => void;
@@ -125,17 +126,57 @@ describe('deleteDraftFlow against a real database (W01b #12435)', () => {
       await held;
       return r;
     });
-    await enabledInTx;
+    await Promise.race([enabledInTx, enable.then(() => { throw new Error('enable finished before signalling'); })]);
 
     // Tab 2 deletes while tab 1 is still open: it must wait on the row lock, not read the old draft.
     let settled = false;
     const del = withDbAccessContext(ctx, () => deleteDraftFlow(auth, id, 1)).finally(() => { settled = true; });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(settled).toBe(false);
-
-    release();
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(settled).toBe(false);
+    } finally {
+      release();
+    }
     expect((await enable).ok).toBe(true);
     expect(await del).toEqual({ ok: false, error: 'flow_has_history' });
+    expect(await flowExists(id)).toBe(true);
+  });
+
+  it('an enable after a committed delete is flow_not_found', async () => {
+    const { org, ctx, auth } = await orgFixture();
+    const id = await seedFlow({ orgId: org.id }, 'deleted_first');
+    expect(await withDbAccessContext(ctx, () => deleteDraftFlow(auth, id, 1))).toEqual({ ok: true });
+    expect(await withDbAccessContext(ctx, () => enableFlow(auth, id, { expectedVersion: 1, preApprovedStepIds: [] })))
+      .toEqual({ ok: false, error: 'flow_not_found' });
+  });
+
+  it('a draft-status flow with a publication row is flow_has_history and survives', async () => {
+    const { org, user, ctx, auth } = await orgFixture();
+    const id = await seedFlow({ orgId: org.id }, 'published_once');
+    await withDbAccessContext(SYSTEM_CTX, () => db.insert(flowVersions).values({
+      flowId: id, orgId: org.id, partnerId: null, publicationSeq: 1, definitionVersion: 1, definition: DEFINITION, effectiveTier: 1,
+      stepPins: [], preApprovals: [], enabledByUserId: user.id,
+    }));
+    expect(await withDbAccessContext(ctx, () => deleteDraftFlow(auth, id, 1))).toEqual({ ok: false, error: 'flow_has_history' });
+    expect(await flowExists(id)).toBe(true);
+  });
+
+  it("a converted Job's draft is flow_has_history with its conversion and Job ids, and survives", async () => {
+    const { org, ctx, auth } = await orgFixture();
+    const id = await seedFlow({ orgId: org.id }, 'converted_draft');
+    const { automationId, conversionId } = await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [automation] = await db.insert(automations).values({
+        orgId: org.id, partnerId: null, name: `Converted ${randomUUID().slice(0, 8)}`, enabled: true,
+        trigger: { type: 'manual' }, actions: [], onFailure: 'stop',
+      } as never).returning({ id: automations.id });
+      const [conversion] = (await db.execute(sql`
+        INSERT INTO flow_automation_conversions (org_id, partner_id, automation_id, flow_id, fidelity, source_digest, source_snapshot, document_digest)
+        VALUES (${org.id}, ${null}, ${automation!.id}, ${id}, 'exact', ${'a'.repeat(64)}, '{}', ${'b'.repeat(64)})
+        RETURNING id`)) as unknown as Array<{ id: string }>;
+      return { automationId: automation!.id, conversionId: conversion!.id };
+    });
+    expect(await withDbAccessContext(ctx, () => deleteDraftFlow(auth, id, 1)))
+      .toEqual({ ok: false, error: 'flow_has_history', conversionId, automationId });
     expect(await flowExists(id)).toBe(true);
   });
 
