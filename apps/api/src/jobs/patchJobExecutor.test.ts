@@ -106,6 +106,7 @@ vi.mock('../services/redis', () => ({
 vi.mock('../services/patchEligibility', () => ({
   resolveApprovedPatchesForDevice: vi.fn(),
   areAllPendingPatchesManagedByVendorLane: vi.fn(async () => false),
+  resolveDevicePatchEvaluationConfig: vi.fn(),
 }));
 
 vi.mock('../services/patchRebootHandler', () => ({
@@ -146,7 +147,11 @@ import {
   PatchCompletionCheckError,
   __testOnly,
 } from './patchJobExecutor';
-import { resolveApprovedPatchesForDevice, areAllPendingPatchesManagedByVendorLane } from '../services/patchEligibility';
+import {
+  resolveApprovedPatchesForDevice,
+  areAllPendingPatchesManagedByVendorLane,
+  resolveDevicePatchEvaluationConfig,
+} from '../services/patchEligibility';
 import { queueCommandForExecution } from '../services/commandQueue';
 import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
 import { evaluateRebootPolicy, executeReboot } from '../services/patchRebootHandler';
@@ -2858,10 +2863,15 @@ describe('a job that names its patches installs only those', () => {
     { patchId: A, externalId: 'KB5000001', requiresReboot: false },
     { patchId: B, externalId: 'KB5000002', requiresReboot: false },
   ];
+  const NO_POLICY = { ringId: null, categoryRules: [], autoApprove: {}, deferralDays: 0 };
+  const LIVE_RING = 'bbbbbbbb-0000-4000-8000-00000000000b';
 
   let insertedRows: any[];
 
-  function primeJob(patchesJson: Record<string, unknown>, opts: { dispatches: boolean } = { dispatches: true }) {
+  function primeJob(
+    patchesJson: Record<string, unknown>,
+    opts: { dispatches: boolean; ringRow?: Record<string, unknown> | null } = { dispatches: true },
+  ) {
     const select = vi.mocked(db.select)
       // 1. patch job row
       .mockImplementationOnce(() => createSelectChain([{
@@ -2873,6 +2883,10 @@ describe('a job that names its patches installs only those', () => {
       }]) as any)
       // 2. device-in-org check
       .mockImplementationOnce(() => createSelectChain([{ id: 'device-1' }]) as any);
+    // 2b. the ring's FOR SHARE read (only when the config names a ring)
+    if (opts.ringRow !== undefined) {
+      select.mockImplementationOnce(() => createLockChain(opts.ringRow ? [opts.ringRow] : []) as any);
+    }
     // 3. patch records for the install command (only read on the dispatch path)
     if (opts.dispatches) {
       select.mockImplementationOnce(() => createWhereSelectChain(
@@ -2881,6 +2895,15 @@ describe('a job that names its patches installs only those', () => {
     }
     // Anything after that is checkAndFinalizeJob: no job row → no-op.
     vi.mocked(db.select).mockImplementation(() => createSelectChain([]) as any);
+  }
+
+  function createLockChain(rows: any[]) {
+    const chain: any = {};
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.limit = vi.fn(() => chain);
+    chain.for = vi.fn(() => Promise.resolve(rows));
+    return chain;
   }
 
   /** The resolver honours its arguments: a requested list narrows, none returns everything eligible. */
@@ -2916,6 +2939,8 @@ describe('a job that names its patches installs only those', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     insertedRows = [];
+    // A device with no patch policy: manual approvals only.
+    vi.mocked(resolveDevicePatchEvaluationConfig).mockResolvedValue(NO_POLICY as any);
     vi.mocked(db.insert).mockImplementation(() => ({
       values: vi.fn((v: any) => { insertedRows.push(v); return Promise.resolve(); }),
     }) as any);
@@ -3000,6 +3025,83 @@ describe('a job that names its patches installs only those', () => {
     expect(captureException).toHaveBeenCalled();
   });
 
+  it('judges the list under the device\'s live evaluation config, passed whole', async () => {
+    const live = {
+      ringId: null, categoryRules: [], autoApprove: {}, deferralDays: 0,
+      sources: ['os'], ringAppRules: [], ringReferenceInvalid: true,
+    };
+    vi.mocked(resolveDevicePatchEvaluationConfig).mockResolvedValueOnce(live as any);
+    primeJob({ patchIds: [A] }, { dispatches: false });
+    argumentKeyedResolver([]);
+
+    const result = await run();
+
+    expect(resolveDevicePatchEvaluationConfig).toHaveBeenCalledWith('device-1');
+    expect(vi.mocked(resolveApprovedPatchesForDevice).mock.calls[0]![2]).toEqual(live);
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Requested patches are not eligible' });
+  });
+
+  it('a resolved ring goes through the locking read and takes its deferral and partner from it', async () => {
+    vi.mocked(resolveDevicePatchEvaluationConfig).mockResolvedValueOnce({
+      ringId: LIVE_RING, ringPartnerId: null, categoryRules: [], autoApprove: { enabled: true }, deferralDays: 0,
+    } as any);
+    primeJob({ patchIds: [A] }, { dispatches: true, ringRow: { deferralDays: 7, partnerId: 'partner-9', enabled: true } });
+    argumentKeyedResolver();
+    queuedDispatch();
+
+    const result: any = await run();
+
+    expect(vi.mocked(resolveApprovedPatchesForDevice).mock.calls[0]![2]).toMatchObject({
+      ringId: LIVE_RING, deferralDays: 7, ringPartnerId: 'partner-9', autoApprove: { enabled: true },
+    });
+    expect(result).toMatchObject({ kind: 'queued', patchCount: 1 });
+    const payload = (vi.mocked(dispatchDeviceCommand).mock.calls[0]![0] as unknown as { payload: Record<string, unknown> }).payload;
+    expect(payload.evaluationRingId).toBe(LIVE_RING);
+  });
+
+  it.each([
+    ['disabled', { deferralDays: 0, partnerId: 'partner-9', enabled: false }],
+    ['missing', null],
+  ])('a resolved ring %s at the locking read skips the device with ring_unavailable', async (_label, ringRow) => {
+    vi.mocked(resolveDevicePatchEvaluationConfig).mockResolvedValueOnce({
+      ringId: LIVE_RING, categoryRules: [], autoApprove: {}, deferralDays: 0,
+    } as any);
+    primeJob({ patchIds: [A] }, { dispatches: false, ringRow });
+    argumentKeyedResolver();
+
+    const result = await run();
+
+    expect(resolveApprovedPatchesForDevice).not.toHaveBeenCalled();
+    expect(dispatchDeviceCommand).not.toHaveBeenCalled();
+    expect(insertedRows).toContainEqual(expect.objectContaining({ status: 'skipped', errorMessage: 'ring_unavailable' }));
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Update ring deleted or disabled' });
+  });
+
+  it('a failure resolving the live config installs nothing and skips the device', async () => {
+    vi.mocked(resolveDevicePatchEvaluationConfig).mockRejectedValueOnce(new Error('db down'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    primeJob({ patchIds: [A] }, { dispatches: false });
+    argumentKeyedResolver();
+
+    const result = await run();
+
+    expect(resolveApprovedPatchesForDevice).not.toHaveBeenCalled();
+    expect(dispatchDeviceCommand).not.toHaveBeenCalled();
+    expect(insertedRows).toContainEqual(expect.objectContaining({ status: 'skipped', errorMessage: 'error_resolving_patches' }));
+    expect(result).toEqual({ kind: 'error', error: 'Failed to resolve patches' });
+  });
+
+  it('no ring resolved: the command carries no evaluationRingId', async () => {
+    primeJob({ patchIds: [A] });
+    argumentKeyedResolver();
+    queuedDispatch();
+
+    await run();
+
+    const payload = (vi.mocked(dispatchDeviceCommand).mock.calls[0]![0] as unknown as { payload: Record<string, unknown> }).payload;
+    expect(payload).not.toHaveProperty('evaluationRingId');
+  });
+
   it('a job without patchIds keeps today\'s behaviour: every eligible patch, resolver called with three arguments', async () => {
     primeJob({ ringId: null, autoApprove: {} });
     argumentKeyedResolver();
@@ -3008,7 +3110,11 @@ describe('a job that names its patches installs only those', () => {
     const result: any = await run();
 
     expect(vi.mocked(resolveApprovedPatchesForDevice).mock.calls[0]).toHaveLength(3);
+    expect(resolveDevicePatchEvaluationConfig).not.toHaveBeenCalled();
+    expect(vi.mocked(resolveApprovedPatchesForDevice).mock.calls[0]![2]).toEqual(expect.objectContaining({ ringId: null, autoApprove: {} }));
     expect(dispatchedPatchIds()).toEqual([A, B]);
+    const payload = (vi.mocked(dispatchDeviceCommand).mock.calls[0]![0] as unknown as { payload: Record<string, unknown> }).payload;
+    expect(Object.keys(payload).sort()).toEqual(['patchIds', 'patchJobId', 'patches']);
     expect(result).toMatchObject({ kind: 'queued', patchCount: 2 });
   });
 });

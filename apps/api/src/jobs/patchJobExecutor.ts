@@ -29,8 +29,13 @@ import {
 import { ringFeatureUpdatesSchema, DEFAULT_RING_FEATURE_UPDATES, type RingFeatureUpdates } from '@breeze/shared/validators';
 // W02 (#5748): the DB-facing resolver moved to patchEligibility.ts. A job
 // without `patches.patchIds` resolves exactly as before (golden-fixture parity
-// test there); one with it narrows to those patches.
-import { resolveApprovedPatchesForDevice, areAllPendingPatchesManagedByVendorLane } from '../services/patchEligibility';
+// test there); one with it narrows to those patches, under the device's live
+// evaluation config.
+import {
+  resolveApprovedPatchesForDevice,
+  areAllPendingPatchesManagedByVendorLane,
+  resolveDevicePatchEvaluationConfig,
+} from '../services/patchEligibility';
 import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
 import {
   deliveryTtlMs,
@@ -1299,7 +1304,27 @@ async function prepareDeviceExecution(
     }
   }
 
-  const ringConfig: RingConfig = {
+  // A job that names its patches was approved against the device's CURRENT
+  // patch policy and ring: the AI path and the intent's effect digest
+  // (manage_patches:install) both judge through `resolvePatchInstallEligibility`,
+  // which reads `resolveDevicePatchEvaluationConfig`. So it is judged under that
+  // same config here, not the job row (which carries no ring snapshot). The
+  // config is used whole: an invalid ring reference keeps `ringReferenceInvalid`
+  // and the evaluator denies every candidate, as the resolver does. A resolved
+  // ring still goes through the locking read below (#8909).
+  let liveConfig: RingConfig | undefined;
+  if (requestedPatchIds) {
+    try {
+      // Savepoint: the catch writes the skipped row on this same transaction (#11225).
+      liveConfig = { ...(await dbModule.withDbTransaction(() => resolveDevicePatchEvaluationConfig(deviceId))) };
+    } catch (err) {
+      console.error(`[PatchJobExecutor] Failed to resolve the patch policy for device ${deviceId}:`, err instanceof Error ? err.message : err);
+      await markDeviceSkipped(patchJobId, deviceId, 'error_resolving_patches');
+      return { kind: 'error', error: 'Failed to resolve patches' };
+    }
+  }
+
+  const ringConfig: RingConfig = liveConfig ?? {
     ringId: patchesConfig?.ringId ?? null,
     categoryRules: jobCategoryRules,
     autoApprove: patchesConfig?.autoApprove ?? {},
@@ -1360,10 +1385,9 @@ async function prepareDeviceExecution(
     // A requested list excludes superseded patches. The AI path judged these
     // ids with `resolvePatchInstallEligibility`, which excludes them, and the
     // intent's effect digest (manage_patches:install) pinned that verdict at
-    // approval. Installing a patch the approver saw as `superseded` would
-    // contradict it. (The two verdicts are not identical: the digest reads the
-    // device's live ring, this job reads its own frozen config.) Jobs without
-    // a list keep their historical no-exclusion behaviour.
+    // approval; with the live config above this is the same evaluation.
+    // Installing a patch the approver saw as `superseded` would contradict it.
+    // Jobs without a list keep their historical no-exclusion behaviour.
     approvedPatches = await dbModule.withDbTransaction(() => requestedPatchIds
       ? resolveApprovedPatchesForDevice(deviceId, orgId, ringConfig, { patchIds: requestedPatchIds, excludeSuperseded: true })
       : resolveApprovedPatchesForDevice(deviceId, orgId, ringConfig));
@@ -1474,7 +1498,17 @@ async function prepareDeviceExecution(
   const res = await dispatchDeviceCommand({
     deviceId,
     type: 'install_patches',
-    payload: { patchJobId, patchIds, patches: patchRecords, ...restorePointPayloadField(restorePoint) },
+    payload: {
+      patchJobId,
+      patchIds,
+      patches: patchRecords,
+      ...restorePointPayloadField(restorePoint),
+      // Server-side only, like patchJobId (the agent reads neither). A job
+      // that names its patches stores no ring, so the ring its eligibility
+      // was judged under rides on the command; the ring delete-time sweep
+      // (services/updateRingQueuedWork.ts) finds a queued install by it.
+      ...(requestedPatchIds && ringConfig.ringId ? { evaluationRingId: ringConfig.ringId } : {}),
+    },
     expectedOrgId: patchJob.orgId,
     offlinePolicy: offline.policy,
   });
