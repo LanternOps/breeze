@@ -843,7 +843,11 @@ describe('AlertsPage — dismiss', () => {
       const url = String(input);
       const method = init?.method ?? 'GET';
       if (url.startsWith('/alerts?') && method === 'GET') {
-        return Promise.resolve(makeJsonResponse({ data: rows }));
+        // Like the API: no status param hides dismissed; a status param
+        // selects exactly that status (#12324 moved this filter server-side).
+        const status = new URLSearchParams(url.split('?')[1]).get('status');
+        const data = (rows as Array<{ status: string }>).filter((r) => (status ? r.status === status : r.status !== 'dismissed'));
+        return Promise.resolve(makeJsonResponse({ data, pagination: { page: 1, limit: 25, total: data.length } }));
       }
       if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
@@ -895,11 +899,14 @@ describe('AlertsPage — dismiss', () => {
   });
 
   it('hides a dismissed alert from the default view, and shows it without a Dismiss button under the Dismissed filter', async () => {
-    dismissMock([{ ...activeAlert, status: 'dismissed' }]);
+    // A second, open alert keeps the list on screen: the default view now comes
+    // from the server, and a scope whose only alerts are dismissed shows the
+    // empty state.
+    dismissMock([{ ...activeAlert, status: 'dismissed' }, { ...activeAlert, id: 'other-open', title: 'Disk almost full' }]);
     render(<AlertsPage />);
 
     // Default "All Status" view excludes dismissed alerts entirely.
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await screen.findByText('Disk almost full');
     expect(screen.queryByText('High CPU on SRV-01')).not.toBeInTheDocument();
 
     // Select the Dismissed filter: the row now shows, but with no Dismiss action
@@ -914,21 +921,24 @@ describe('AlertsPage — dismiss', () => {
 });
 
 
+// #12324: the device filter is applied by GET /alerts (`deviceFilter`), not by
+// resolving ids through /filters/preview and filtering the loaded page.
 describe('AlertsPage complete device filter scope (RMM-QA-153)', () => {
-  it.each([401, 403, 503])('blocks captured bulk dismiss on %s, hides device-less alerts and retries with idsOnly', async status => {
+  it.each([403, 422, 503])('blocks captured bulk dismiss on %s, hides the previous rows and retries the filtered list', async status => {
     vi.clearAllMocks();
-    let previews = 0;
+    let filtered = 0;
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url.startsWith('/alerts') && (!init?.method || init.method === 'GET')) {
-        return makeJsonResponse({ data: [activeAlert, { ...activeAlert, id: 'no-device', deviceId: null, title: 'Organization alert' }] });
+      if (url.startsWith('/alerts?') && (!init?.method || init.method === 'GET')) {
+        if (!new URLSearchParams(url.split('?')[1]).get('deviceFilter')) {
+          return makeJsonResponse({ data: [activeAlert, { ...activeAlert, id: 'no-device', deviceId: null, title: 'Organization alert' }], pagination: { page: 1, limit: 25, total: 2 } });
+        }
+        filtered++;
+        // The server applies the filter: only the matching device's alert.
+        return filtered === 1 ? makeJsonResponse({}, false, status)
+          : makeJsonResponse({ data: [activeAlert], pagination: { page: 1, limit: 25, total: 1 } });
       }
-      if (url === '/filters/preview') {
-        previews++;
-        expect(JSON.parse(init!.body as string)).toEqual(expect.objectContaining({ idsOnly: true }));
-        return previews === 1 ? makeJsonResponse({}, false, status)
-          : makeJsonResponse({ data: { totalCount: 1, deviceIds: ['device-1'] } });
-      }
+      if (url === '/filters/preview') throw new Error('the page no longer resolves the device filter itself');
       return makeJsonResponse({ data: [] });
     });
     render(<AlertsPage />);
@@ -947,7 +957,24 @@ describe('AlertsPage complete device filter scope (RMM-QA-153)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await screen.findByText(activeAlert.title);
     expect(screen.queryByText('Organization alert')).not.toBeInTheDocument();
-    expect(previews).toBe(2);
+    expect(filtered).toBe(2);
+  });
+
+  it('a 401 on the filtered list hands off to the login redirect', async () => {
+    vi.clearAllMocks();
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith('/alerts?')) {
+        return new URLSearchParams(url.split('?')[1]).get('deviceFilter')
+          ? makeJsonResponse({}, false, 401)
+          : makeJsonResponse({ data: [activeAlert], pagination: { page: 1, limit: 25, total: 1 } });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+    render(<AlertsPage />);
+    await screen.findByText(activeAlert.title);
+    fireEvent.click(screen.getByTestId('apply-device-filter'));
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/login', { replace: true }));
   });
 });
 
