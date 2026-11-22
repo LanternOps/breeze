@@ -495,4 +495,38 @@ describe('notification channels — partner-wide gating (#2130)', () => {
       expect(body.name).toBe('Fleet Webhook');
     });
   });
+
+  describe('POST /alerts/channels (email recipients, #12148)', () => {
+    const postEmailChannel = (recipients: unknown) => {
+      setPartnerAuth('all');
+      return makeApp().request('/alerts/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerScope: 'partner',
+          name: 'On-call email',
+          type: 'email',
+          config: { recipients },
+          enabled: true,
+        }),
+      });
+    };
+
+    it('400s an email channel with an empty recipients list and saves nothing', async () => {
+      const res = await postEmailChannel([]);
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; details: string[] };
+      expect(body.error).toBe('Invalid email channel configuration');
+      expect(body.details).toEqual(['At least one recipient is required']);
+      expect(insertedRef.current).toBeUndefined();
+    });
+
+    it('201s an email channel with a valid recipient', async () => {
+      const res = await postEmailChannel(['ops@example.com']);
+
+      expect(res.status).toBe(201);
+      expect(insertedRef.current?.type).toBe('email');
+    });
+  });
 });
