@@ -124,6 +124,21 @@ describe('Reply-To at ingest (real driver, system context)', () => {
     await expect(asSystem(() => requesterReplyAddress(ticket))).resolves.toBe('jane.home@customer.test');
   });
 
+  it("an unverified sender's Reply-To is not stored on the quarantined row", async () => {
+    // A forged From naming a real customer plus an attacker Reply-To: if staff
+    // convert this row from the review queue, replies must not reach the attacker.
+    const email = buildEmail({
+      from: fx.janeEmail,
+      replyTo: 'attacker@evil.test',
+      senderAuth: { spf: 'fail', dkim: 'fail', dmarc: 'fail', verified: false },
+    });
+    await asSystem(() => processInboundEmail(email));
+
+    const row = await inboundRow(email.providerMessageId);
+    expect(row.parseStatus).toBe('quarantined');
+    expect(row.replyToAddress).toBeNull();
+  });
+
   it.each([
     ['a connected mailbox', () => fx.mailbox.toUpperCase()],
     ['a partner inbound domain', () => `other@${fx.domain}`],

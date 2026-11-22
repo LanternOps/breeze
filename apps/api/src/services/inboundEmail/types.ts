@@ -82,8 +82,8 @@ export interface NormalizedInboundEmail {
    *  address that is not the mailbox the message was delivered to
    *  (normalizeReplyTo). Untrusted: it is where customer mail about a ticket this
    *  message creates goes (stored as ticket_email_inbound.reply_to_address), never
-   *  an identity. Ingest clears it again when it names one of the partner's own
-   *  addresses (replyToGuard.ts). Absent on jobs queued by an earlier release. */
+   *  an identity. Ingest keeps it only for a verified sender, and clears it when it
+   *  names one of the partner's own addresses (replyToGuard.ts). */
   replyTo?: string;
   /** The SMTP envelope sender (MAIL FROM), when the provider reports it. Used only
    *  for loop handling; never an identity. */

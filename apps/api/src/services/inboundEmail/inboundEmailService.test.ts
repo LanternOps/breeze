@@ -817,6 +817,30 @@ describe('processInboundEmail', () => {
       expect(inboundOf()[0]!.replyToAddress).toBeNull();
     });
 
+    // An unverified From is spoofable: a quarantined message naming a real
+    // customer in From and an attacker in Reply-To would, once staff convert it
+    // from the review queue, have every reply sent to the attacker. Reply-To is
+    // only kept for a sender the gate verified.
+    it.each([
+      ['quarantined', false],
+      ['ignored', true],
+    ] as const)('an unverified sender\'s Reply-To is not stored (%s)', async (status, dropUnverifiedSenders) => {
+      resolveMock.mockResolvedValue('p-1');
+      state.selectRows['ticket_email_inbound'] = [];
+      state.selectRows['tickets'] = [];
+      loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders });
+      await processInboundEmail(email({
+        replyTo: 'attacker@evil.example',
+        senderAuth: { spf: 'fail', dkim: 'fail', dmarc: 'fail', verified: false },
+      }));
+
+      const log = inboundOf();
+      expect(log).toHaveLength(1);
+      expect(log[0]!.parseStatus).toBe(status);
+      expect(log[0]!.replyToAddress).toBeNull();
+      expect(guardedReplyToMock).not.toHaveBeenCalled();
+    });
+
     it('never stores an unguarded Reply-To on a row with no partner', async () => {
       resolveMock.mockResolvedValue(null);
       await processInboundEmail(email({ replyTo: 'colleague@customer.com' }));

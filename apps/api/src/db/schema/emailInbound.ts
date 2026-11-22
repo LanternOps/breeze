@@ -19,8 +19,8 @@ export const ticketEmailInbound = pgTable('ticket_email_inbound', {
   provider: varchar('provider', { length: 50 }).notNull(),
   providerMessageId: text('provider_message_id').notNull(),
   fromAddress: text('from_address'),
-  // The message's validated Reply-To (exactly one address, never one of the
-  // partner's own). Customer mail for a ticket goes to its creating row's
+  // The message's validated Reply-To (verified senders only; exactly one
+  // address, never one of the partner's own). Customer mail for a ticket goes to its creating row's
   // reply_to_address, else from_address (requesterReplyAddress.ts).
   replyToAddress: text('reply_to_address'),
   toAddress: text('to_address'),

@@ -293,12 +293,6 @@ export async function processInboundEmail(
       return;
     }
 
-    // (1b.5) Reply-To (email-first replies W1): where customer mail about a ticket
-    // this message creates goes (requesterReplyAddress.ts). Cleared when it names
-    // one of our own addresses; the reply then goes to From.
-    const replyTo = await guardedReplyTo(bound, partnerId);
-    if (replyTo) n = { ...n, replyTo };
-
     // (1c) Self-loop DROP (spec §5). If the SENDER is on our own inbound domain
     // (`tickets.<domain>`), this is almost certainly our own outbound mail — a reply
     // we sent, or an autoresponse that bounced — looping back in. Ingesting it would
@@ -480,6 +474,15 @@ export async function processInboundEmail(
       }
       return;
     }
+
+    // Reply-To (email-first replies W1): where customer mail about a ticket this
+    // message creates goes (requesterReplyAddress.ts). Kept only from here on, for
+    // a sender the gate above verified: an unverified From is spoofable, and a
+    // quarantined row converted from the review queue would otherwise send every
+    // reply to whatever Reply-To the forger chose. Cleared when it names one of
+    // our own addresses; the reply then goes to From.
+    const replyTo = await guardedReplyTo(bound, partnerId);
+    if (replyTo) n = { ...n, replyTo };
 
     // Resolve sender identity lazily so token binding and unmatched fallthrough
     // reuse the same partner-scoped lookups.
