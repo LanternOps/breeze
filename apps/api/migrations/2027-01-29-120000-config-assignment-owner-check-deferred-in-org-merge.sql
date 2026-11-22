@@ -13,7 +13,8 @@
 -- 1. breeze_serialize_config_policy_assignment_owner_updates(), copied verbatim
 --    from 2027-01-12-200200-config-assignment-partner-device-group-targets.sql,
 --    plus one gate before the final validation: when breeze.org_merge = 'on'
---    (set only by the org merge transaction, orgMergeGucContract.test.ts) and
+--    (only services/orgMerge.ts sets it; orgMergeGucContract.test.ts pins
+--    that for the API sources) and
 --    the statement moved owners on configuration_policies, sites, device_groups
 --    or devices without changing any row id, it still takes every advisory
 --    lock but returns before validating. organizations stays ungated.
@@ -158,8 +159,9 @@ BEGIN
   -- triggers (INITIALLY DEFERRED), which re-check every assignment of each
   -- moved row at COMMIT, while the locks above are still held. The merge moves
   -- a policy and its targets in separate statements, so the state at the end
-  -- of each one is necessarily mixed. An id change queues no row check, so it
-  -- keeps the immediate validation below.
+  -- of each one is necessarily mixed. A statement that changes any row id is
+  -- not deferred: the row check reads assignments by NEW.id and would miss
+  -- those of the old id, so it keeps the immediate validation below.
   IF current_setting('breeze.org_merge', true) = 'on'
      AND TG_TABLE_NAME IN ('configuration_policies', 'sites', 'device_groups', 'devices')
      AND NOT EXISTS (

@@ -1332,7 +1332,8 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
   // different orgs and abort the merge with 23503
   // (config_policy_assignments_target_owner_fk). One policy per assignment
   // level, a parent/child family, a child of a partner-wide parent and a
-  // feature link, so every owner-update trigger path is exercised at once.
+  // feature link, so the policy, site, device-group and device owner-update
+  // paths are all exercised in one merge.
   it('#12490: moves loser-owned policies applied inside the loser at every assignment level', async () => {
     const p = {
       orgLevel: randomUUID(),
@@ -1428,38 +1429,106 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
   }, 180_000);
 
   // #12490, the other half: the merge flag DEFERS the owner check to commit; it
-  // never skips it. An end state where an org-owned policy is left behind while
-  // its target moved must still be refused.
-  // Both with and without SET CONSTRAINTS ALL DEFERRED: the row check is
-  // INITIALLY DEFERRED, so the flag alone cannot pull it ahead of the locks.
-  it.each([
-    ['with SET CONSTRAINTS ALL DEFERRED', true],
-    ['with the flag alone', false],
-  ])('#12490: under the merge flag a policy/target owner mismatch is still refused at commit (%s)', async (_label, deferAll) => {
-    const policyId = randomUUID();
-    await query(sql`
-      INSERT INTO configuration_policies (id, org_id, name) VALUES (${policyId}::uuid, ${f.loser}::uuid, ${`Stranded ${f.suffix}`})`);
-    await query(sql`
-      INSERT INTO config_policy_assignments (config_policy_id, level, target_id)
-      VALUES (${policyId}::uuid, 'site', ${f.siteL2}::uuid)`);
+  // never skips it. Each case leaves an org-owned policy and its target in
+  // different orgs at commit, which must still be refused. Every case runs both
+  // with SET CONSTRAINTS ALL DEFERRED and with the flag alone, because the row
+  // check is INITIALLY DEFERRED and must not depend on the caller deferring.
+  // `atCommit` pins WHEN the refusal lands: after the statement (deferred) for
+  // an owner move, and at the statement for an id change, which the row check
+  // cannot follow (it reads assignments by NEW.id).
+  type MismatchCase = {
+    name: string;
+    level: 'site' | 'device_group' | 'device';
+    seedTarget: () => Promise<string>;
+    move: (targetId: string, policyId: string) => SQL;
+    atCommit: boolean;
+  };
+  const mismatchCases: MismatchCase[] = [
+    {
+      name: 'site moves, policy stays',
+      level: 'site',
+      seedTarget: async () => f.siteL2,
+      move: (targetId) => sql`UPDATE sites SET org_id = ${f.survivor}::uuid WHERE id = ${targetId}::uuid`,
+      atCommit: true,
+    },
+    {
+      name: 'device group moves, policy stays',
+      level: 'device_group',
+      seedTarget: async () => {
+        const id = randomUUID();
+        await query(sql`INSERT INTO device_groups (id, org_id, name) VALUES (${id}::uuid, ${f.loser}::uuid, ${`Empty ${f.suffix}`})`);
+        return id;
+      },
+      move: (targetId) => sql`UPDATE device_groups SET org_id = ${f.survivor}::uuid WHERE id = ${targetId}::uuid`,
+      atCommit: true,
+    },
+    {
+      name: 'device moves, policy stays',
+      level: 'device',
+      // A fresh device with no children: the fixture's deviceL carries
+      // deliberately colliding rows that a bare move would trip over.
+      seedTarget: async () => {
+        const deviceId = randomUUID();
+        await query(sql`
+          INSERT INTO devices (id, org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version)
+          VALUES (${deviceId}::uuid, ${f.loser}::uuid, ${f.siteL2}::uuid, ${`agent-fresh-${f.suffix}`}, ${`fresh-${f.suffix}`}, 'windows', '11', 'x64', '1.0.0')`);
+        return deviceId;
+      },
+      move: (targetId) => sql`
+        UPDATE devices SET org_id = ${f.survivor}::uuid, site_id = ${f.siteS}::uuid WHERE id = ${targetId}::uuid`,
+      atCommit: true,
+    },
+    {
+      name: 'policy moves, target stays',
+      level: 'site',
+      seedTarget: async () => f.siteL2,
+      move: (_targetId, policyId) => sql`UPDATE configuration_policies SET org_id = ${f.survivor}::uuid WHERE id = ${policyId}::uuid`,
+      atCommit: true,
+    },
+    {
+      name: 'site id changes with its owner',
+      level: 'site',
+      seedTarget: async () => f.siteL2,
+      move: (targetId) => sql`UPDATE sites SET id = ${randomUUID()}::uuid, org_id = ${f.survivor}::uuid WHERE id = ${targetId}::uuid`,
+      atCommit: false,
+    },
+  ];
+  describe.each(mismatchCases)('#12490: under the merge flag, $name', (c) => {
+    it.each([
+      ['with SET CONSTRAINTS ALL DEFERRED', true],
+      ['with the flag alone', false],
+    ])('is still refused with 23503 (%s)', async (_label, deferAll) => {
+      const policyId = randomUUID();
+      await query(sql`
+        INSERT INTO configuration_policies (id, org_id, name) VALUES (${policyId}::uuid, ${f.loser}::uuid, ${`Stranded ${f.suffix}`})`);
+      const targetId = await c.seedTarget();
+      await query(sql`
+        INSERT INTO config_policy_assignments (config_policy_id, level, target_id)
+        VALUES (${policyId}::uuid, ${c.level}::config_assignment_level, ${targetId}::uuid)`);
 
-    let caught: unknown;
-    try {
-      await withSystemDbAccessContext(async () => {
-        await db.execute(sql`SELECT set_config('breeze.org_merge', 'on', true)`);
-        if (deferAll) await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
-        // Accepted at statement end: the check is deferred, not skipped.
-        await db.execute(sql`UPDATE sites SET org_id = ${f.survivor}::uuid WHERE id = ${f.siteL2}::uuid`);
-      });
-    } catch (err) {
-      caught = err;
-    }
-    const node = (caught as { cause?: { code?: string; constraint_name?: string } } | undefined);
-    const pg = node?.cause ?? (caught as { code?: string; constraint_name?: string } | undefined);
-    expect(pg?.code).toBe('23503');
-    expect(pg?.constraint_name).toBe('config_policy_assignments_target_owner_fk');
-    expect(await orgIdOf('sites', 'id', f.siteL2)).toBe(f.loser);
-  }, 60_000);
+      let statementAccepted = false;
+      let caught: unknown;
+      try {
+        await withSystemDbAccessContext(async () => {
+          await db.execute(sql`SELECT set_config('breeze.org_merge', 'on', true)`);
+          if (deferAll) await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+          await db.execute(c.move(targetId, policyId));
+          statementAccepted = true;
+        });
+      } catch (err) {
+        caught = err;
+      }
+      const pg = (caught as { cause?: { code?: string; constraint_name?: string } } | undefined)?.cause
+        ?? (caught as { code?: string; constraint_name?: string } | undefined);
+      expect(pg?.code).toBe('23503');
+      expect(pg?.constraint_name).toBe('config_policy_assignments_target_owner_fk');
+      expect(statementAccepted).toBe(c.atCommit);
+      // Rolled back: nothing moved.
+      expect(await orgIdOf('configuration_policies', 'id', policyId)).toBe(f.loser);
+      expect(await orgIdOf('sites', 'id', f.siteL2)).toBe(f.loser);
+      expect(await orgIdOf('devices', 'id', f.deviceL)).toBe(f.loser);
+    }, 60_000);
+  });
 
   it('a merge appends survivor ownership lineage for each loser device; loser lineage goes with loser erasure (#8203)', async () => {
     await orgMergeModule.executeOrgMerge({
