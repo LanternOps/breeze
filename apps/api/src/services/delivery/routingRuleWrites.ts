@@ -5,7 +5,7 @@
  * removed to inherit. Default rows cannot be reordered; their channels may be
  * emptied to mean inbox only). One body, two callers.
  */
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { escalationPolicies, notificationRoutingRules } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
@@ -100,4 +100,29 @@ export async function upsertDefaultRow(
     })
     .returning();
   return row!;
+}
+
+/**
+ * Strips a deleted channel from the routing rules this caller may write, the
+ * same set the routing routes would let it edit (#12002). Row-level security
+ * alone is not that boundary: a partner-wide rule can name an org-owned
+ * channel, and a caller without the partner-wide capability must not rewrite it.
+ */
+export async function removeChannelFromWritableRoutingRules(
+  executor: DbExecutor,
+  channelId: string,
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'partnerOrgAccess' | 'orgCondition'>,
+): Promise<string[]> {
+  const orgOwned = and(isNotNull(notificationRoutingRules.orgId), auth.orgCondition(notificationRoutingRules.orgId));
+  const partnerWide = !canManagePartnerWidePolicies(auth) ? undefined
+    // System scope edits any partner's rules through the routing routes and usually has no partnerId.
+    : auth.scope === 'system' ? isNull(notificationRoutingRules.orgId)
+    : auth.partnerId ? and(isNull(notificationRoutingRules.orgId), eq(notificationRoutingRules.partnerId, auth.partnerId))
+    : undefined;
+  const rules = await executor
+    .update(notificationRoutingRules)
+    .set({ channelIds: sql`${notificationRoutingRules.channelIds} - ${channelId}::text`, updatedAt: new Date() })
+    .where(and(sql`jsonb_exists(${notificationRoutingRules.channelIds}, ${channelId}::text)`, or(orgOwned, partnerWide)))
+    .returning({ id: notificationRoutingRules.id });
+  return rules.map((rule) => rule.id);
 }

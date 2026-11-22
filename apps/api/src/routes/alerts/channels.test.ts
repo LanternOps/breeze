@@ -20,6 +20,7 @@ const { authRef, insertedRef, insertedConfigRef, existingRowRef, updateSetRef, c
       orgId: 'org-1' as string | null,
       accessibleOrgIds: null as string[] | null,
       canAccessOrg: (_id: string) => true as boolean,
+      orgCondition: (_column: unknown) => undefined as unknown,
     },
   },
   insertedRef: { current: undefined as Record<string, unknown> | undefined },
@@ -33,7 +34,13 @@ const { authRef, insertedRef, insertedConfigRef, existingRowRef, updateSetRef, c
   // apart from `db.insert(notificationChannelConfigs)`.
   configTableMarker: { __table: 'notification_channel_configs' },
   // #12002: DELETE strips the channel id from notification_routing_rules.
-  routingRulesMarker: { __table: 'notification_routing_rules', id: { name: 'id' }, channelIds: { name: 'channel_ids' } },
+  routingRulesMarker: {
+    __table: 'notification_routing_rules',
+    id: { name: 'id' },
+    orgId: { name: 'org_id' },
+    partnerId: { name: 'partner_id' },
+    channelIds: { name: 'channel_ids' },
+  },
   routingUpdateRef: { set: undefined as Record<string, unknown> | undefined, where: undefined as unknown, rows: [] as { id: string }[] },
 }));
 
@@ -176,7 +183,7 @@ vi.mock('../../services/notificationChannelSecrets', () => ({
 }));
 
 import { PgDialect } from 'drizzle-orm/pg-core';
-import type { SQL } from 'drizzle-orm';
+import { eq, type SQL } from 'drizzle-orm';
 import { channelsRoutes } from './channels';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -199,6 +206,7 @@ function setPartnerAuth(partnerOrgAccess: 'all' | 'selected' | 'none') {
     orgId: null,
     accessibleOrgIds: ['org-1'],
     canAccessOrg: () => true,
+    orgCondition: (column: unknown) => eq(column as never, 'org-1'),
   } as typeof authRef.current;
 }
 
@@ -453,12 +461,34 @@ describe('notification channels — partner-wide gating (#2130)', () => {
       const strip = dialect.sqlToQuery(routingUpdateRef.set!.channelIds as SQL);
       expect(strip.sql).toMatch(/ - \$\d+::text$/);
       expect(strip.params).toContain(CHANNEL_ID);
+      // The mocked schema columns are plain objects, so they bind as $n params.
+      // Full partner org access: org-owned rules in reach plus this partner's partner-wide rules.
       const match = dialect.sqlToQuery(routingUpdateRef.where as SQL);
-      expect(match.sql).toMatch(/^jsonb_exists\(/);
-      expect(match.params).toContain(CHANNEL_ID);
+      expect(match.sql).toBe('(jsonb_exists($1, $2::text) and (($3 is not null and $4 = $5) or ($6 is null and $7 = $8)))');
+      expect(match.params).toEqual([
+        { name: 'channel_ids' }, CHANNEL_ID,
+        { name: 'org_id' }, { name: 'org_id' }, 'org-1',
+        { name: 'org_id' }, { name: 'partner_id' }, PARTNER_ID,
+      ]);
       expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         action: 'notification_channel.delete',
         details: { routingRuleIds: ['rule-a', 'default-row'] },
+      }));
+    });
+
+    it('leaves partner-wide routing rules alone when the caller lacks full partner org access (#12002)', async () => {
+      setPartnerAuth('selected');
+      existingRowRef.current = { ...PARTNER_WIDE_CHANNEL, orgId: 'org-1', partnerId: null };
+      routingUpdateRef.rows = [{ id: 'org-rule' }];
+
+      const res = await makeApp().request(`/alerts/channels/${CHANNEL_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      const match = new PgDialect().sqlToQuery(routingUpdateRef.where as SQL);
+      expect(match.sql).toBe('(jsonb_exists($1, $2::text) and ($3 is not null and $4 = $5))');
+      expect(match.params).toEqual([{ name: 'channel_ids' }, CHANNEL_ID, { name: 'org_id' }, { name: 'org_id' }, 'org-1']);
+      expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: { routingRuleIds: ['org-rule'] },
       }));
     });
   });

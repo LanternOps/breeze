@@ -64,7 +64,7 @@ vi.mock('./aiToolsSiteScope', () => ({
 // ---- imports (after mocks) -----------------------------------------------
 
 import { PgDialect } from 'drizzle-orm/pg-core';
-import type { SQL } from 'drizzle-orm';
+import { eq, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerAlertTools } from './aiToolsAlerts';
@@ -696,7 +696,7 @@ describe('manage_notification_channels — partner-wide gating (#2130)', () => {
     });
     const deleteWhereMock = vi.fn().mockResolvedValue(undefined);
     mocks.dbDelete.mockReturnValue({ where: deleteWhereMock });
-    mocks.dbUpdate.mockReturnValue({ set: () => ({ where: vi.fn().mockResolvedValue(undefined) }) });
+    mocks.dbUpdate.mockReturnValue({ set: () => ({ where: () => ({ returning: vi.fn().mockResolvedValue([]) }) }) });
 
     const result = JSON.parse(
       await handler(
@@ -709,24 +709,38 @@ describe('manage_notification_channels — partner-wide gating (#2130)', () => {
     expect(mocks.dbDelete).toHaveBeenCalled();
   });
 
-  it('delete: removes the channel from every routing rule that sends to it before deleting it (#12002)', async () => {
+  function mockChannelDelete(channel: Record<string, unknown>, strippedRuleIds: string[] = []) {
     mocks.dbSelect.mockReturnValueOnce({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
-          limit: vi.fn().mockResolvedValue([PARTNER_WIDE_CHANNEL]),
+          limit: vi.fn().mockResolvedValue([channel]),
         })),
       })),
     });
     const order: string[] = [];
-    const setMock = vi.fn();
-    const whereMock = vi.fn();
+    const strip = { set: undefined as { channelIds: SQL; updatedAt: unknown } | undefined, where: undefined as SQL | undefined };
     mocks.dbUpdate.mockReturnValue({
-      set: (vals: unknown) => {
-        setMock(vals);
-        return { where: (cond: unknown) => { whereMock(cond); order.push('strip'); return Promise.resolve(undefined); } };
+      set: (vals: { channelIds: SQL; updatedAt: unknown }) => {
+        strip.set = vals;
+        return {
+          where: (cond: SQL) => {
+            strip.where = cond;
+            order.push('strip');
+            return { returning: () => Promise.resolve(strippedRuleIds.map((id) => ({ id }))) };
+          },
+        };
       },
     });
     mocks.dbDelete.mockReturnValue({ where: () => { order.push('delete'); return Promise.resolve(undefined); } });
+    return { order, strip };
+  }
+
+  const ORG_CHANNEL = { ...PARTNER_WIDE_CHANNEL, id: 'chan-org', orgId: 'org-1', partnerId: null };
+  const orgOneOnly = (column: Parameters<AuthContext['orgCondition']>[0]) => eq(column, 'org-1');
+  const dialect = new PgDialect();
+
+  it('delete: removes the channel from every routing rule that sends to it before deleting it (#12002)', async () => {
+    const { order, strip } = mockChannelDelete(PARTNER_WIDE_CHANNEL);
 
     const result = JSON.parse(
       await handler(
@@ -738,13 +752,47 @@ describe('manage_notification_channels — partner-wide gating (#2130)', () => {
     expect(result).toEqual({ success: true, message: `Channel "${PARTNER_WIDE_CHANNEL.name}" deleted` });
     expect(mocks.dbUpdate).toHaveBeenCalledWith(notificationRoutingRules);
     expect(order).toEqual(['strip', 'delete']);
-    const dialect = new PgDialect();
-    const strip = dialect.sqlToQuery((setMock.mock.calls[0]![0] as { channelIds: SQL }).channelIds);
-    expect(strip.sql).toBe('"notification_routing_rules"."channel_ids" - $1::text');
-    expect(strip.params).toEqual([PARTNER_WIDE_CHANNEL.id]);
-    expect((setMock.mock.calls[0]![0] as { updatedAt: unknown }).updatedAt).toBeInstanceOf(Date);
-    const match = dialect.sqlToQuery(whereMock.mock.calls[0]![0] as SQL);
-    expect(match.sql).toBe('jsonb_exists("notification_routing_rules"."channel_ids", $1::text)');
+    const set = dialect.sqlToQuery(strip.set!.channelIds);
+    expect(set.sql).toBe('"notification_routing_rules"."channel_ids" - $1::text');
+    expect(set.params).toEqual([PARTNER_WIDE_CHANNEL.id]);
+    expect(strip.set!.updatedAt).toBeInstanceOf(Date);
+    // Full partner org access: org-owned rules plus this partner's partner-wide rules.
+    const match = dialect.sqlToQuery(strip.where!);
+    expect(match.sql).toBe(
+      '(jsonb_exists("notification_routing_rules"."channel_ids", $1::text) and ("notification_routing_rules"."org_id" is not null or ("notification_routing_rules"."org_id" is null and "notification_routing_rules"."partner_id" = $2)))',
+    );
+    expect(match.params).toEqual([PARTNER_WIDE_CHANNEL.id, PARTNER_ID]);
+  });
+
+  it.each([
+    ['a partner user without full org access', () => ({ ...makePartnerAuth('selected', PARTNER_ID), orgCondition: orgOneOnly })],
+    ['an org user, whose token also carries the partner id', () => ({ ...makeAuth('org-1'), partnerId: PARTNER_ID, orgCondition: orgOneOnly })],
+  ])('delete by %s strips the channel only from rules of orgs it can reach, never partner-wide rules (#12002)', async (_label, auth) => {
+    const { strip } = mockChannelDelete(ORG_CHANNEL);
+
+    const result = JSON.parse(
+      await handler({ action: 'delete', channelId: ORG_CHANNEL.id }, auth() as unknown as AuthContext) as string,
+    );
+
+    expect(result.success).toBe(true);
+    const match = dialect.sqlToQuery(strip.where!);
+    expect(match.sql).toBe(
+      '(jsonb_exists("notification_routing_rules"."channel_ids", $1::text) and ("notification_routing_rules"."org_id" is not null and "notification_routing_rules"."org_id" = $2))',
+    );
+    expect(match.params).toEqual([ORG_CHANNEL.id, 'org-1']);
+  });
+
+  it('delete by system scope strips the channel from partner-wide rules of any partner (#12002)', async () => {
+    const { strip } = mockChannelDelete(PARTNER_WIDE_CHANNEL);
+    const systemAuth = { ...makeAuth('org-1'), scope: 'system', orgId: null, accessibleOrgIds: null } as unknown as AuthContext;
+
+    const result = JSON.parse(await handler({ action: 'delete', channelId: PARTNER_WIDE_CHANNEL.id }, systemAuth) as string);
+
+    expect(result.success).toBe(true);
+    const match = dialect.sqlToQuery(strip.where!);
+    expect(match.sql).toBe(
+      '(jsonb_exists("notification_routing_rules"."channel_ids", $1::text) and ("notification_routing_rules"."org_id" is not null or "notification_routing_rules"."org_id" is null))',
+    );
     expect(match.params).toEqual([PARTNER_WIDE_CHANNEL.id]);
   });
 });
