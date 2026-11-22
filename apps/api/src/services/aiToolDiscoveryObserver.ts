@@ -262,3 +262,20 @@ export function createToolDiscoveryObserver(opts: {
     },
   };
 }
+
+/**
+ * The two ai_tool_executions columns every chat-hook insert stamps (#12421
+ * W01): `discovery` from the session's observer at insert time (provisional;
+ * the turn flush reconciles it by `toolUseId`), `unknown` for a session that
+ * does not observe; and the SDK's tool-use id, `null` when it sent none.
+ */
+export function executionDiscoveryStamp(
+  session: { discovery?: ToolDiscoveryObserver | null },
+  toolName: string,
+  toolUseId: string | undefined,
+): { discovery: ToolDiscovery; toolUseId: string | null } {
+  return {
+    discovery: session.discovery?.discoveryOf(toolName) ?? 'unknown',
+    toolUseId: toolUseId ?? null,
+  };
+}
