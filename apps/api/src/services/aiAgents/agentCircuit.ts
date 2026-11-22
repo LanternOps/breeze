@@ -20,8 +20,15 @@
  * classification, but deliberately never flips `state` back to `closed` —
  * only `resetCircuit` does that.
  */
-import { and, eq, sql } from 'drizzle-orm';
-import type { AgentRunVerdict, AiAgentRecipients, AiAgentRunProfile, AiAgentRunStatus } from '@breeze/shared';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
+import type {
+  AgentRunVerdict,
+  AiAgentOpenCircuitDto,
+  AiAgentRecipients,
+  AiAgentRunProfile,
+  AiAgentRunStatus,
+} from '@breeze/shared';
 import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import {
   db,
@@ -356,6 +363,54 @@ export async function getCircuitState(orgId: string, agentId: string): Promise<A
 }
 
 /**
+ * #12347 — every OPEN circuit for `agentIds`, grouped per agent, for the
+ * settings list (`GET /ai/agents`) in ONE query for the whole page.
+ *
+ * Deliberately NOT system-scoped, unlike every other read in this module: it
+ * runs on the request path under the caller's own RLS context, AND pins
+ * `orgCondition` (the caller's `auth.orgCondition`) — the "defended twice"
+ * posture `loadLastRuns` in routes/aiAgents.ts documents. A partner-wide
+ * agent's circuits belong to many orgs, and the caller may only learn about
+ * the ones in orgs it can reach. The org join supplies the name the card
+ * shows, so a partner on "All organizations" can tell which org is paused.
+ */
+export async function listOpenCircuits(
+  orgCondition: (column: PgColumn) => SQL | undefined,
+  agentIds: string[],
+): Promise<Map<string, AiAgentOpenCircuitDto[]>> {
+  if (agentIds.length === 0) return new Map();
+  const rows = await db
+    .select({
+      agentId: aiAgentCircuitState.agentId,
+      orgId: aiAgentCircuitState.orgId,
+      orgName: organizations.name,
+      openedAt: aiAgentCircuitState.openedAt,
+      openedReason: aiAgentCircuitState.openedReason,
+      consecutiveFailures: aiAgentCircuitState.consecutiveFailures,
+    })
+    .from(aiAgentCircuitState)
+    .innerJoin(organizations, eq(organizations.id, aiAgentCircuitState.orgId))
+    .where(and(
+      eq(aiAgentCircuitState.state, 'open'),
+      inArray(aiAgentCircuitState.agentId, agentIds),
+      orgCondition(aiAgentCircuitState.orgId),
+    ));
+  const byAgent = new Map<string, AiAgentOpenCircuitDto[]>();
+  for (const row of rows) {
+    const list = byAgent.get(row.agentId) ?? [];
+    list.push({
+      orgId: row.orgId,
+      orgName: row.orgName,
+      openedAt: row.openedAt ? row.openedAt.toISOString() : null,
+      openedReason: row.openedReason,
+      consecutiveFailures: row.consecutiveFailures,
+    });
+    byAgent.set(row.agentId, list);
+  }
+  return byAgent;
+}
+
+/**
  * The ONLY way an open circuit closes (wave-6 quorum: "manual MFA reset
  * only"). Called from the MFA-gated `POST /:id/circuit/reset` route — same
  * system-context reasoning as `getCircuitState` (the route has already
@@ -386,6 +441,25 @@ export async function resetCircuit(
       .returning();
     return row ? toSnapshot(row) : defaultSnapshot(orgId, agentId);
   });
+}
+
+/**
+ * #12347 — what the run that tripped the circuit actually did, for the stored
+ * `opened_reason`. Before this the reason repeated only the threshold, so an
+ * admin looking at an open circuit could not tell a model outage from a turn
+ * ceiling from a run that flagged a problem.
+ *
+ * Built ONLY from values that cannot carry tenant or model text, by
+ * construction: the `increment` path is reached solely by a `failed` run whose
+ * `errorCode` is on `INCREMENT_FAILURE_ERROR_CODES` (a closed allowlist of
+ * machine tokens) or by a `completed` run with a `needs_attention` verdict,
+ * which gets a fixed literal. The run's free-text error message is never read.
+ */
+function describeTriggeringOutcome(to: AiAgentRunStatus, errorCode: string | null): string {
+  if (to === 'failed' && errorCode !== null && INCREMENT_FAILURE_ERROR_CODES.has(errorCode)) {
+    return `last failure: ${errorCode}`;
+  }
+  return 'last run: needs_attention verdict';
 }
 
 interface JustOpened {
@@ -506,7 +580,8 @@ export async function recordRunTerminal(
         state: 'open',
         openedAt: new Date(),
         openedReason:
-          `${upserted.consecutiveFailures} consecutive terminal failures (threshold ${threshold})`,
+          `${upserted.consecutiveFailures} consecutive terminal failures (threshold ${threshold}); `
+          + describeTriggeringOutcome(to, errorCode),
         lastTransitionAt: new Date(),
       })
       .where(and(

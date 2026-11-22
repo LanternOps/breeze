@@ -18,6 +18,7 @@ const state = vi.hoisted(() => ({
   insertValues: [] as Record<string, unknown>[],
   updateSets: [] as Record<string, unknown>[],
   updateWheres: [] as unknown[],
+  selectWheres: [] as unknown[],
   selectCount: 0,
   insertCount: 0,
   updateCount: 0,
@@ -31,6 +32,7 @@ function resetDbState(): void {
   state.insertValues = [];
   state.updateSets = [];
   state.updateWheres = [];
+  state.selectWheres = [];
   state.selectCount = 0;
   state.insertCount = 0;
   state.updateCount = 0;
@@ -41,7 +43,11 @@ vi.mock('../../db', () => {
     state.selectCount += 1;
     const builder: Record<string, unknown> = {
       from: vi.fn(() => builder),
-      where: vi.fn(() => builder),
+      innerJoin: vi.fn(() => builder),
+      where: vi.fn((w: unknown) => {
+        state.selectWheres.push(w);
+        return builder;
+      }),
       limit: vi.fn(() => builder),
       then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
         Promise.resolve()
@@ -141,6 +147,7 @@ import {
   getCircuitState,
   isCircuitOpen,
   isTerminalRunStatus,
+  listOpenCircuits,
   recordRunTerminal,
   resetCircuit,
 } from './agentCircuit';
@@ -570,6 +577,44 @@ describe('recordRunTerminal', () => {
     );
   });
 
+  // #12347: the stored reason used to repeat only the threshold, so an admin
+  // looking at an open circuit could not tell WHAT failed. It now names the
+  // triggering run's error code — an allowlisted machine token, never the
+  // run's error message (which can carry model output or tenant text).
+  it.each([
+    ['llm_unavailable'],
+    ['wall_clock_exceeded'],
+    ['sdk_error'],
+  ])('records the triggering error code (%s) in the opened reason', async (errorCode) => {
+    state.selectQueue.push([agentRow()]);
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    state.insertReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'closed' })]);
+    state.updateReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'open', openedAt: new Date() })]);
+    resolveEffectiveAgentSystemMock.mockResolvedValue(resolvedPolicy(3));
+
+    await recordRunTerminal(run, 'failed', errorCode, null);
+
+    expect(state.updateSets[0]).toMatchObject({
+      state: 'open',
+      openedReason: `3 consecutive terminal failures (threshold 3); last failure: ${errorCode}`,
+    });
+  });
+
+  it('names a needs_attention verdict as the trigger when the last run completed but flagged a problem', async () => {
+    state.selectQueue.push([agentRow()]);
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    state.insertReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'closed' })]);
+    state.updateReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'open', openedAt: new Date() })]);
+    resolveEffectiveAgentSystemMock.mockResolvedValue(resolvedPolicy(3));
+
+    await recordRunTerminal(run, 'completed', null, 'needs_attention');
+
+    expect(state.updateSets[0]).toMatchObject({
+      state: 'open',
+      openedReason: '3 consecutive terminal failures (threshold 3); last run: needs_attention verdict',
+    });
+  });
+
   it('a rejected publishEvent does not stop the notification or audit log from firing', async () => {
     state.selectQueue.push([agentRow()]);
     state.selectQueue.push([{ partnerId: PARTNER_ID }]);
@@ -708,6 +753,60 @@ describe('getCircuitState', () => {
     expect(snapshot.state).toBe('open');
     expect(snapshot.consecutiveFailures).toBe(5);
     expect(snapshot.openedAt).toBe('2026-08-27T12:00:00.000Z');
+  });
+});
+
+// #12347 — the settings list's batched read of open circuits. Request-path:
+// it runs under the caller's own RLS context (never system scope) AND pins
+// the caller's org condition, the same "defended twice" posture the list
+// route's `loadLastRuns` documents.
+describe('listOpenCircuits', () => {
+  const OTHER_ORG_ID = '00000000-0000-4000-8000-0000000000c9';
+
+  it('touches no DB when there are no agent ids', async () => {
+    const result = await listOpenCircuits(() => undefined, []);
+    expect(result.size).toBe(0);
+    expect(state.selectCount).toBe(0);
+  });
+
+  it('reads only OPEN rows for the listed agents, pinned to the caller org condition', async () => {
+    state.selectQueue.push([]);
+    const { eq } = await import('drizzle-orm');
+    const orgCondition = vi.fn((column: Parameters<typeof eq>[0]) => eq(column, OTHER_ORG_ID));
+
+    await listOpenCircuits(orgCondition, [AGENT_ID]);
+
+    expect(orgCondition).toHaveBeenCalledTimes(1);
+    const where = dialect.sqlToQuery(state.selectWheres[0] as SQL);
+    expect(where.params).toEqual(expect.arrayContaining(['open', AGENT_ID, OTHER_ORG_ID]));
+    expect(where.sql).toContain('"state"');
+    expect(where.sql).toContain('"org_id"');
+  });
+
+  it('groups rows per agent and serialises openedAt', async () => {
+    state.selectQueue.push([
+      {
+        agentId: AGENT_ID, orgId: ORG_ID, orgName: 'Org A',
+        openedAt: new Date('2026-11-17T07:03:02.000Z'),
+        openedReason: '3 consecutive terminal failures (threshold 3); last failure: llm_unavailable',
+        consecutiveFailures: 3,
+      },
+      {
+        agentId: AGENT_ID, orgId: OTHER_ORG_ID, orgName: 'Org B',
+        openedAt: null, openedReason: null, consecutiveFailures: 4,
+      },
+    ]);
+
+    const result = await listOpenCircuits(() => undefined, [AGENT_ID]);
+
+    expect(result.get(AGENT_ID)).toEqual([
+      {
+        orgId: ORG_ID, orgName: 'Org A', openedAt: '2026-11-17T07:03:02.000Z',
+        openedReason: '3 consecutive terminal failures (threshold 3); last failure: llm_unavailable',
+        consecutiveFailures: 3,
+      },
+      { orgId: OTHER_ORG_ID, orgName: 'Org B', openedAt: null, openedReason: null, consecutiveFailures: 4 },
+    ]);
   });
 });
 
