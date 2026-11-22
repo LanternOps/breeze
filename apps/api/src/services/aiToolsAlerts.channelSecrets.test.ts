@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   emitAlertStateFeedback: vi.fn().mockResolvedValue(undefined),
   resolveSiteAllowedDeviceIds: vi.fn().mockResolvedValue(null),
   deviceIdSiteDenied: vi.fn().mockReturnValue(false),
+  createAuditLogAsync: vi.fn(),
 }));
 
 vi.mock('../db', () => {
@@ -59,6 +60,11 @@ vi.mock('./mlFeedbackEmitters', () => ({
 vi.mock('./aiToolsSiteScope', () => ({
   resolveSiteAllowedDeviceIds: mocks.resolveSiteAllowedDeviceIds,
   deviceIdSiteDenied: mocks.deviceIdSiteDenied,
+}));
+
+vi.mock('./auditService', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  createAuditLogAsync: mocks.createAuditLogAsync,
 }));
 
 // ---- imports (after mocks) -----------------------------------------------
@@ -794,6 +800,22 @@ describe('manage_notification_channels — partner-wide gating (#2130)', () => {
       '(jsonb_exists("notification_routing_rules"."channel_ids", $1::text) and ("notification_routing_rules"."org_id" is not null or "notification_routing_rules"."org_id" is null))',
     );
     expect(match.params).toEqual([PARTNER_WIDE_CHANNEL.id]);
+  });
+
+  it('delete: the audit entry names the routing rules the channel was removed from (#12002)', async () => {
+    mockChannelDelete(PARTNER_WIDE_CHANNEL, ['rule-a', 'default-row']);
+
+    await handler({ action: 'delete', channelId: PARTNER_WIDE_CHANNEL.id }, makePartnerAuth('all', PARTNER_ID));
+
+    expect(mocks.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: null,
+      partnerId: PARTNER_ID,
+      action: 'notification_channel.delete',
+      resourceType: 'notification_channel',
+      resourceId: PARTNER_WIDE_CHANNEL.id,
+      resourceName: PARTNER_WIDE_CHANNEL.name,
+      details: expect.objectContaining({ routingRuleIds: ['rule-a', 'default-row'] }),
+    }));
   });
 });
 

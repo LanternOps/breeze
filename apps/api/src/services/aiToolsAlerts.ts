@@ -13,6 +13,7 @@ import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { alerts, devices, notificationChannels } from '../db/schema';
 import { selectNotificationChannelsWithConfig, writeNotificationChannelConfig } from './notificationChannelConfig';
 import { removeChannelFromWritableRoutingRules } from './delivery/routingRuleWrites';
+import { auditToolWrite } from './aiToolsSecurityPolicyShared';
 import { eq, and, desc, sql, inArray, ne, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -831,7 +832,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           );
         }
 
-        const [existing] = await db.select({ id: notificationChannels.id, name: notificationChannels.name, orgId: notificationChannels.orgId }).from(notificationChannels).where(and(...conditions)).limit(1);
+        const [existing] = await db.select({ id: notificationChannels.id, name: notificationChannels.name, orgId: notificationChannels.orgId, partnerId: notificationChannels.partnerId }).from(notificationChannels).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Notification channel not found or access denied' });
 
         // Partner-wide channels are administrable only with the partner-wide
@@ -840,9 +841,19 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Modifying a partner-wide notification channel requires full partner org access (orgAccess must be "all")' });
         }
 
-        await db.transaction(async (tx) => {
-          await removeChannelFromWritableRoutingRules(tx, existing.id, auth);
+        const routingRuleIds = await db.transaction(async (tx) => {
+          const ruleIds = await removeChannelFromWritableRoutingRules(tx, existing.id, auth);
           await tx.delete(notificationChannels).where(eq(notificationChannels.id, existing.id));
+          return ruleIds;
+        });
+        auditToolWrite(auth, {
+          orgId: existing.orgId,
+          partnerId: existing.partnerId,
+          action: 'notification_channel.delete',
+          resourceType: 'notification_channel',
+          resourceId: existing.id,
+          resourceName: existing.name,
+          details: { routingRuleIds },
         });
         return JSON.stringify({ success: true, message: `Channel "${existing.name}" deleted` });
       }
