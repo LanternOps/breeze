@@ -139,7 +139,7 @@ describe('GET /effective/:deviceId policyOwners', () => {
     tableResults.set('devices', [{ siteId: 'site-1' }]);
     app = new Hono();
     app.use('*', async (c, next) => {
-      c.set('auth', { scope: 'partner', partnerId: 'partner-1' });
+      c.set('auth', { scope: 'partner', partnerId: 'partner-1' } as never);
       await next();
     });
     app.route('/', resolutionRoutes);
