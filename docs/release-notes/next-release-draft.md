@@ -42,6 +42,8 @@ Lab checks owed before the next tag:
 
 - **Analysis investigations from Wisp chat** (#11844 W06, #11850). Wisp can run a sandboxed analysis across a whole customer, a site or chosen devices, bring the result and its files back to the conversation, and continue from an earlier step with that step's files. Chains stop at 8 continuations deep, 12 runs or $6.00 by default; the grant's daily budget (200 ¢ on Pro) usually stops first, so a partner admin raises it for long investigations. The run card shows the step, goal, findings, cost and files; the run page lists the chain and the device scope. Hosted only, behind the existing AI workspace and Wisp switches; no new env var.
 
+- **Jobs to Flows conversion census: three more counts** (#12439, part of #12433). `apps/api/scripts/automationConversionCensus.ts` now also prints `byClass.C` (config-policy automations that are not retired, total and enabled), `notFormShapedEnabledUnswitchedS` (enabled Jobs not yet moved whose converted flow the editor opens read-only on the Document tab) and `webhookScriptJobs` (enabled Jobs not yet moved that have a webhook trigger and run a script or command). The census still prints aggregates only, never an id or a name. Nothing changes for users.
+
 ## Migrations
 
 - `2027-01-24-170000-portal-access-requests-google-hosted-domain.sql`: adds nullable `portal_access_requests.google_hosted_domain` and the CHECK `portal_access_requests_google_hd_chk` (validated in the same file when no Google request lacks a domain, which is every existing database). DDL only; fast.

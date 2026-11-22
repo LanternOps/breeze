@@ -32,7 +32,7 @@ export interface ConversionCensus {
   /**
    * M, A, P and S partition the `automations` rows that are not retired. C is
    * the `config_policy_automations` rows that are not retired, read from that
-   * table only (never `config_policy_feature_links`).
+   * table only, never joined to its feature links (plan P10).
    */
   byClass: Record<AutomationClass | 'C', { total: number; enabled: number }>;
   /** S rows that a compliance policy remediates through (never converted in W06). */

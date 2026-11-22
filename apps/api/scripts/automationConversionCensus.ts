@@ -4,10 +4,15 @@
 //
 //   cd apps/api && DATABASE_URL=... npx tsx scripts/automationConversionCensus.ts
 //
-// The output is aggregates only: class counts, fidelity and finding counts,
-// compliance-remediation targets, switched counts and the oldest switch age —
-// never an id, a name or any other row content. Only these numbers ever leave
-// the host; nothing about a customer is printed or committed.
+// The output is aggregates only: class counts (M, A, P, S, and C for
+// config-policy automations that are not retired), fidelity and finding
+// counts, compliance-remediation targets, switched counts, enabled unswitched
+// S rows, how many of those the flow editor cannot open in its form
+// (`notFormShapedEnabledUnswitchedS`) and how many are webhook Jobs that run a
+// script or command (`webhookScriptJobs`), context errors and the oldest
+// switch age — never an id, a name or any other row content. Only these
+// numbers ever leave the host; nothing about a customer is printed or
+// committed.
 
 import { closeDb } from '../src/db';
 import { conversionCensus } from '../src/services/flows/conversion/census';
