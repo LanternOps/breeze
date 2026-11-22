@@ -92,7 +92,7 @@ const lost = (over: Record<string, unknown> = {}) => ({
   type: 'system', subtype: 'session_writes_lost', uuid: 'u1', session_id: 'sdk-1',
   error_code: 'ENOSPC', lost: ['transcript'], transcript_session_ids: ['sdk-1'], ...over,
 });
-const lostLines = () => errorSpy.mock.calls.filter((c) => String(c[0]).includes('session_writes_lost'));
+const lostLines = () => errorSpy.mock.calls.filter((c: unknown[]) => String(c[0]).includes('session_writes_lost'));
 const model = () => makeResolvedModel('anthropic_byok');
 const settle = () => new Promise((r) => setTimeout(r, 25));
 
