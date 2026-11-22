@@ -322,16 +322,18 @@ export interface ResolvedDeviceAutomations {
 }
 
 /**
- * Resolves automations for a device via the hierarchy, naming the policy whose
- * assignment won. `null` when the device is unknown or nothing is assigned —
- * callers treat that as "skip this device", never as "no constraint applies".
+ * The assignment that wins `featureType` for a device: the closest assignment
+ * whose active policy carries the feature link (own or inherited through the
+ * effective view), whatever that link's list holds. Deliberately joins NO
+ * child table — a link with an empty list is a candidate like any other, so
+ * an empty closer list overrides a broader one (#12488). `null` when no
+ * assigned policy carries the feature.
  */
-export async function resolveAutomationAssignmentForDevice(
-  deviceId: string, executor: DbExecutor = db,
-): Promise<ResolvedDeviceAutomations | null> {
-  const hierarchy = await loadDeviceHierarchy(deviceId, executor);
-  if (!hierarchy) return null;
-
+async function resolveListFeatureWinner(
+  hierarchy: DeviceHierarchy,
+  featureType: 'automation' | 'compliance',
+  executor: DbExecutor,
+): Promise<{ featureLinkId: string; policyId: string; policyName: string } | null> {
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
@@ -342,12 +344,13 @@ export async function resolveAutomationAssignmentForDevice(
   // hierarchy on top of RLS.
   const rows = await executor
     .select({
-      automation: configPolicyAutomations,
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
       assignmentLevel: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
       assignmentId: configPolicyAssignments.id,
       policyId: configurationPolicies.id,
+      policyName: configurationPolicies.name,
     })
     .from(configPolicyAssignments)
     .innerJoin(
@@ -362,36 +365,55 @@ export async function resolveAutomationAssignmentForDevice(
       configPolicyEffectiveFeatureLinks,
       and(
         eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyEffectiveFeatureLinks.featureType, 'automation')
+        eq(configPolicyEffectiveFeatureLinks.featureType, featureType)
       )
-    )
-    .innerJoin(
-      configPolicyAutomations,
-      and(eq(configPolicyAutomations.featureLinkId, configPolicyEffectiveFeatureLinks.id),
-        or(isNull(configPolicyAutomations.retiredAt), sql`EXISTS (SELECT 1 FROM ${monitorConversions}
-          WHERE ${monitorConversions.sourceTable} = 'config_policy_automations'
-            AND ${monitorConversions.sourceId} = ${configPolicyAutomations.id}
-            AND ${monitorConversions.revertedAt} IS NULL
-            AND ${monitorConversions.sourceState}->>'workflowId' IS NOT NULL)`))
     )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
       configPolicyAssignments.level,
       configPolicyAssignments.priority,
-      configPolicyAssignments.createdAt,
-      asc(configPolicyAutomations.sortOrder)
+      configPolicyAssignments.createdAt
     );
 
   if (rows.length === 0) return null;
+  const winner = sortByHierarchy(rows)[0]!;
+  return { featureLinkId: winner.featureLinkId, policyId: winner.policyId, policyName: winner.policyName };
+}
 
-  const sorted = sortByHierarchy(rows);
-  const winner = sorted[0]!;
-  const winning = sorted.filter((r) => r.assignmentId === winner.assignmentId);
+/**
+ * Resolves automations for a device via the hierarchy, naming the policy whose
+ * assignment won. `null` when the device is unknown or no assigned policy
+ * carries the Automations feature — callers treat that as "skip this device",
+ * never as "no constraint applies". A winning policy whose Automations list is
+ * empty (or holds only retired rows with no live conversion) returns its id
+ * and `automations: []`: the closest policy wins whole (#12488).
+ */
+export async function resolveAutomationAssignmentForDevice(
+  deviceId: string, executor: DbExecutor = db,
+): Promise<ResolvedDeviceAutomations | null> {
+  const hierarchy = await loadDeviceHierarchy(deviceId, executor);
+  if (!hierarchy) return null;
 
-  return {
-    configPolicyId: winner.policyId,
-    automations: winning.map((r) => r.automation),
-  };
+  const winner = await resolveListFeatureWinner(hierarchy, 'automation', executor);
+  if (!winner) return null;
+
+  // Retired rows stay only while a live monitor conversion carries their
+  // workflow (policyWorkflowApplies keys on them); the run paths drop every
+  // retired row (resolveAutomationsForDeviceWithPolicy). Same caller context.
+  const automations = await executor
+    .select()
+    .from(configPolicyAutomations)
+    .where(and(
+      eq(configPolicyAutomations.featureLinkId, winner.featureLinkId),
+      or(isNull(configPolicyAutomations.retiredAt), sql`EXISTS (SELECT 1 FROM ${monitorConversions}
+        WHERE ${monitorConversions.sourceTable} = 'config_policy_automations'
+          AND ${monitorConversions.sourceId} = ${configPolicyAutomations.id}
+          AND ${monitorConversions.revertedAt} IS NULL
+          AND ${monitorConversions.sourceState}->>'workflowId' IS NOT NULL)`),
+    ))
+    .orderBy(asc(configPolicyAutomations.sortOrder));
+
+  return { configPolicyId: winner.policyId, automations };
 }
 
 export async function resolveAutomationsForDeviceWithPolicy(
@@ -1141,7 +1163,9 @@ export async function resolveComplianceRulesForDevice(
 
 /**
  * `resolveComplianceRulesForDevice`, naming the policy whose assignment won.
- * `null` when the device is unknown or no compliance rules reach it. The
+ * `null` when the device is unknown or no assigned policy carries the
+ * Compliance feature. A winning policy with an empty Compliance list returns
+ * its id and `rules: []` — the closest policy wins whole (#12488). The
  * compliance-alert reconcile uses it to say which policy took over.
  */
 export async function resolveComplianceAssignmentForDevice(
@@ -1150,64 +1174,16 @@ export async function resolveComplianceAssignmentForDevice(
   const hierarchy = await loadDeviceHierarchy(deviceId);
   if (!hierarchy) return null;
 
-  const targetConditions = buildTargetConditions(hierarchy);
-  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+  const winner = await resolveListFeatureWinner(hierarchy, 'compliance', db);
+  if (!winner) return null;
 
-  // #2930 — the ownership predicate below admits partner-owned rows; #4673 W01
-  // makes RLS agree, via the SELECT-only `*_partner_wide_select` branch keyed on
-  // breeze_current_partner_id(). So this runs in the CALLER'S OWN context (W03
-  // deleted the system-context escape). Self-tenanted by this device's own
-  // hierarchy on top of RLS.
-  const rows = await db
-    .select({
-      complianceRule: configPolicyComplianceRules,
-      assignmentLevel: configPolicyAssignments.level,
-      assignmentPriority: configPolicyAssignments.priority,
-      assignmentCreatedAt: configPolicyAssignments.createdAt,
-      assignmentId: configPolicyAssignments.id,
-      policyId: configurationPolicies.id,
-      policyName: configurationPolicies.name,
-    })
-    .from(configPolicyAssignments)
-    .innerJoin(
-      configurationPolicies,
-      and(
-        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition(hierarchy)
-      )
-    )
-    .innerJoin(
-      configPolicyEffectiveFeatureLinks,
-      and(
-        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyEffectiveFeatureLinks.featureType, 'compliance')
-      )
-    )
-    .innerJoin(
-      configPolicyComplianceRules,
-      eq(configPolicyComplianceRules.featureLinkId, configPolicyEffectiveFeatureLinks.id)
-    )
-    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
-    .orderBy(
-      configPolicyAssignments.level,
-      configPolicyAssignments.priority,
-      configPolicyAssignments.createdAt,
-      asc(configPolicyComplianceRules.sortOrder)
-    );
+  const rules = await db
+    .select()
+    .from(configPolicyComplianceRules)
+    .where(eq(configPolicyComplianceRules.featureLinkId, winner.featureLinkId))
+    .orderBy(asc(configPolicyComplianceRules.sortOrder));
 
-  if (rows.length === 0) return null;
-
-  const sorted = sortByHierarchy(rows);
-  const winner = sorted[0]!;
-
-  return {
-    configPolicyId: winner.policyId,
-    configPolicyName: winner.policyName,
-    rules: sorted
-      .filter((r) => r.assignmentId === winner.assignmentId)
-      .map((r) => r.complianceRule),
-  };
+  return { configPolicyId: winner.policyId, configPolicyName: winner.policyName, rules };
 }
 
 /**
