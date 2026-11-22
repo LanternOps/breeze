@@ -131,7 +131,7 @@ export async function loadDeviceAddresses(deviceIds: readonly string[]): Promise
 }
 
 export type PinnedDiscoveryAgentResolution =
-  | { ok: true; agentId: string; label: string }
+  | { ok: true; agentId: string; deviceId: string; label: string }
   /** `agentId` is set when the pinned device is known, so the failed job records it. */
   | { ok: false; agentId: string | null; message: string };
 
@@ -197,5 +197,5 @@ export async function resolvePinnedDiscoveryAgent(
     };
   }
 
-  return { ok: true, agentId: device.agentId, label };
+  return { ok: true, agentId: device.agentId, deviceId: device.deviceId, label };
 }

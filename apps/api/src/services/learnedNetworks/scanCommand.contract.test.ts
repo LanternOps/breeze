@@ -46,9 +46,9 @@ const CLASSES: Record<string, Class> = {
 
 /**
  * Producers not yet moved onto the builder. They count as classified and the construction check skips them.
- * Task 7 removes `jobs/discoveryWorker.ts`; Task 13 removes `services/aiToolsNetwork.ts`.
+ * Task 13 removes `services/aiToolsNetwork.ts`.
  */
-const PENDING = new Set<string>(['jobs/discoveryWorker.ts', 'services/aiToolsNetwork.ts']);
+const PENDING = new Set<string>(['services/aiToolsNetwork.ts']);
 
 /** Strips `//` and block comments, leaving string and template contents (and their `//`) alone. */
 function stripComments(source: string): string {

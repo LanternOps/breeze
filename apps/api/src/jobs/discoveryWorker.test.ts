@@ -129,6 +129,39 @@ vi.mock('./networkBaselineWorker', () => ({
   getNetworkBaselineQueue: vi.fn()
 }));
 
+// Learned networks (#12369 W03a): the site lock is a no-op and the gate's reads see a site that is not gated, so
+// the real gate decides (row 1 included) and every case below takes today's unrestricted path. The phase-3
+// profile read returns the phase-1 row, and the attempt record is the 'running' write through the same mocked
+// update chain (its real SQL is proven in discoveryNetworkGate.integration.test.ts).
+const networkGateMock = vi.hoisted(() => ({ phase1Profile: null as unknown }));
+vi.mock('../services/learnedNetworks/siteLock', () => ({ lockSitesForNetworkGate: vi.fn(async () => {}) }));
+vi.mock('../services/learnedNetworks/siteNetworks', () => ({
+  loadSiteGateState: vi.fn(async () => ({ gated: false, assignedNetworkIds: [] })),
+  loadNetworkSiteId: vi.fn(async () => null),
+  loadNetworkGateways: vi.fn(async () => []),
+}));
+vi.mock('../services/learnedNetworks/snmpGrants', () => ({ loadUsableGrantGateways: vi.fn(async () => []) }));
+vi.mock('../services/learnedNetworks/gate', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/learnedNetworks/gate')>();
+  return {
+    ...actual,
+    gateProfileFromRow: (row: Parameters<typeof actual.gateProfileFromRow>[0]) => {
+      networkGateMock.phase1Profile = row;
+      return actual.gateProfileFromRow(row);
+    },
+  };
+});
+vi.mock('../services/learnedNetworks/attempt', () => ({
+  loadProfileForDispatch: vi.fn(async () => networkGateMock.phase1Profile),
+  recordDispatchAttempt: vi.fn(async (_jobId: string, record: { agentId: string }) => {
+    const now = new Date();
+    await (mockDb.update as unknown as (table: unknown) => { set: (v: unknown) => { where: (w: unknown) => Promise<unknown> } })({})
+      .set({ networkDispatch: record, agentId: record.agentId, status: 'running', startedAt: now, updatedAt: now })
+      .where({});
+    return true;
+  }),
+}));
+
 import { db } from '../db';
 import { buildApprovalDecision } from '../services/assetApproval';
 import { inferAssetTypeFromVendor, lookupMacVendor } from '../services/macVendorLookup';
@@ -1030,7 +1063,7 @@ describe('processDispatchScan (wave 3.5b #4084 — dispatch via facade)', () => 
     siteId: 'site-1',
     agentId: 'agent-1',
   };
-  const JOB_ROW_SCHEDULED = { status: 'scheduled' };
+  const JOB_ROW_SCHEDULED = { status: 'scheduled', orgId: 'org-1', siteId: 'site-1' };
   const PROFILE_ROW = { id: 'profile-1', orgId: DATA.orgId, siteId: DATA.siteId };
   const VALID_AGENT_ROW = { agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', status: 'online' };
 

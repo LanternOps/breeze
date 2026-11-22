@@ -161,6 +161,25 @@ vi.mock('./networkBaselineWorker', () => ({
   getNetworkBaselineQueue: vi.fn(),
 }));
 
+// Learned networks (#12369 W03a): the site lock, the gate (a site that is not gated), the phase-3 profile read and
+// the attempt record, each logging the depth it ran at.
+vi.mock('../services/learnedNetworks/siteLock', () => ({
+  lockSitesForNetworkGate: vi.fn(async () => { ctxState.events.push(`lock@depth${ctxState.depth}`); }),
+}));
+vi.mock('../services/learnedNetworks/gate', () => ({
+  evaluateDiscoveryGate: vi.fn(async () => { ctxState.events.push(`gate@depth${ctxState.depth}`); return { kind: 'unrestricted' }; }),
+  gateProfileFromRow: (row: { id: string; orgId: string; siteId: string }) => ({
+    id: row.id, orgId: row.orgId, siteId: row.siteId, networkId: null, snmpGrantMode: 'unrestricted', hasSavedSnmpSecrets: false,
+  }),
+}));
+vi.mock('../services/learnedNetworks/attempt', () => ({
+  loadProfileForDispatch: vi.fn(async () => {
+    ctxState.events.push(`profileForShare@depth${ctxState.depth}`);
+    return { id: 'profile-1', orgId: 'org-1', siteId: 'site-1' };
+  }),
+  recordDispatchAttempt: vi.fn(async () => { ctxState.events.push(`recordAttempt@depth${ctxState.depth}`); return true; }),
+}));
+
 const { __testables, enqueueDiscoveryScanAfterCommit } = await import('./discoveryWorker');
 
 /** A `.select().from().where().limit()` chain that logs the depth it ran at. */
@@ -197,7 +216,7 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
     siteId: 'site-1',
     agentId: 'agent-1',
   };
-  const JOB_ROW_SCHEDULED = { status: 'scheduled' };
+  const JOB_ROW_SCHEDULED = { status: 'scheduled', orgId: DATA.orgId, siteId: DATA.siteId };
   const PROFILE_ROW = { id: 'profile-1', orgId: DATA.orgId, siteId: DATA.siteId };
   const VALID_AGENT_ROW = { agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', status: 'online' };
 
@@ -216,7 +235,7 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
     });
   });
 
-  it('reads profile + validates the requested agent in-context, but checks connectivity, dispatches and flips status OUTSIDE it', async () => {
+  it('reads profile + validates the requested agent in-context, records the attempt in a second context, and dispatches OUTSIDE both', async () => {
     // Requested-agent path: profile select, then validateRequestedAgentForDiscovery's
     // devices select — exactly two selects, both inside phase 1.
     mockDb.select
@@ -228,20 +247,26 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
     const result = await __testables.processDispatchScan(DATA);
 
     expect(result).toEqual({ dispatched: true, agentId: 'agent-1', durationMs: expect.any(Number) });
-    // Phase 1 (profile + agent-validation reads) shares ONE context; the
-    // connectivity check and the WS dispatch run after it closes; the final
-    // status flip to 'running' gets its own short context.
+    // Phase 1 (profile + agent-validation reads, under the site lock) shares ONE
+    // context; the connectivity check runs after it closes; phase 3 re-decides
+    // and records the attempt (the 'running' write) in its own short context
+    // BEFORE the WS dispatch, which runs with no context (#12369 W03a).
     expect(ctxState.events).toEqual([
       'ctx:enter',
       'jobStatusSelect@depth1',
       'profileSelect@depth1',
+      'lock@depth1',
+      'gate@depth1',
       'agentValidateSelect@depth1',
       'ctx:exit',
       'isAgentConnected@depth0',
-      'wsDispatch@depth0',
       'ctx:enter',
-      'statusUpdate@depth1',
+      'lock@depth1',
+      'profileForShare@depth1',
+      'gate@depth1',
+      'recordAttempt@depth1',
       'ctx:exit',
+      'wsDispatch@depth0',
     ]);
   });
 
@@ -280,6 +305,8 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
       'ctx:enter',
       'jobStatusSelect@depth1',
       'profileSelect@depth1',
+      'lock@depth1',
+      'gate@depth1',
       'agentValidateSelect@depth1',
       'ctx:exit',
       'isAgentConnected@depth0',
@@ -311,9 +338,17 @@ describe('processDispatchScan DB-context scoping (final-review fix, #4084/#1105)
       'ctx:enter',
       'jobStatusSelect@depth1',
       'profileSelect@depth1',
+      'lock@depth1',
+      'gate@depth1',
       'agentValidateSelect@depth1',
       'ctx:exit',
       'isAgentConnected@depth0',
+      'ctx:enter',
+      'lock@depth1',
+      'profileForShare@depth1',
+      'gate@depth1',
+      'recordAttempt@depth1',
+      'ctx:exit',
       'wsDispatch@depth0',
       'ctx:enter',
       'markJobFailed@depth1',

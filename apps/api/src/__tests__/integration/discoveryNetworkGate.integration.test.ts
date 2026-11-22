@@ -8,10 +8,40 @@
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql, type SQL } from 'drizzle-orm';
 
+// Seams (plan "Integration proofs"): the relay is replaced, so "no command sent" means dispatchCommandToAgent was
+// not called; the topology snapshot is skipped; the builder and the decrypt helpers are pass-through spies.
+const relay = vi.hoisted(() => ({
+  isAgentConnectedAnywhere: vi.fn(async (_agentId: string) => true),
+  dispatchCommandToAgent: vi.fn(async (_agentId: string, _command: { id: string; type: string; payload: Record<string, unknown> }) =>
+    ({ status: 'sent' as const, via: 'local' as const })),
+}));
+const spies = vi.hoisted(() => ({ build: vi.fn(), decryptCommunities: vi.fn(), decryptCredentials: vi.fn() }));
+vi.mock('../../services/agentCommandRelay', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/agentCommandRelay')>()),
+  isAgentConnectedAnywhere: relay.isAgentConnectedAnywhere,
+  dispatchCommandToAgent: relay.dispatchCommandToAgent,
+}));
+vi.mock('../../services/topology/discoveryDispatch', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/topology/discoveryDispatch')>()),
+  prepareDiscoveryTopologyDispatch: vi.fn(async () => null),
+}));
+vi.mock('../../services/learnedNetworks/scanCommand', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/learnedNetworks/scanCommand')>();
+  spies.build.mockImplementation(actual.buildDiscoveryScanCommand);
+  return { ...actual, buildDiscoveryScanCommand: spies.build };
+});
+vi.mock('../../services/snmpSecrets', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/snmpSecrets')>();
+  spies.decryptCommunities.mockImplementation(actual.decryptSnmpCommunities);
+  spies.decryptCredentials.mockImplementation(actual.decryptSnmpCredentials);
+  return { ...actual, decryptSnmpCommunities: spies.decryptCommunities, decryptSnmpCredentials: spies.decryptCredentials };
+});
+
 import { db, withSystemDbAccessContext } from '../../db';
+import { __testables } from '../../jobs/discoveryWorker';
 import { lockSitesForNetworkGate } from '../../services/learnedNetworks/siteLock';
 import {
   explainGuardedAgent, explainNoEligibleAgent, loadEligibleGuardedAgents,
@@ -139,8 +169,19 @@ async function seedJob(orgId: string, siteId: string, profileId: string): Promis
   return j!.id;
 }
 
-// Referenced by later describes; kept in one place so every test reads the same fixtures.
-void seedProfile; void seedJob;
+type JobRow = { status: string; agentId: string | null; errors: Record<string, unknown> | null; networkDispatch: Record<string, unknown> | null;
+  networkId: string | null; crossNetworkAssetUpdates: number | null };
+async function job(jobId: string): Promise<JobRow> {
+  const [row] = await admin<{ status: string; agent_id: string | null; errors: Record<string, unknown> | null;
+    network_dispatch: Record<string, unknown> | null; network_id: string | null; cross_network_asset_updates: number | null }>(sql`
+    SELECT status, agent_id, errors, network_dispatch, network_id, cross_network_asset_updates
+      FROM discovery_jobs WHERE id = ${jobId}::uuid`);
+  return { status: row!.status, agentId: row!.agent_id, errors: row!.errors, networkDispatch: row!.network_dispatch,
+    networkId: row!.network_id, crossNetworkAssetUpdates: row!.cross_network_asset_updates };
+}
+
+const dispatchData = (t: Scope, profileId: string, jobId: string) =>
+  ({ type: 'dispatch-scan' as const, jobId, profileId, orgId: t.orgId, siteId: t.siteId });
 
 /** A device id that sorts before any random v4 id: lets a test pin which agent would rank first. */
 const lowDeviceId = () => `00000000-0000-4000-8000-${randomUUID().slice(-12)}`;
@@ -356,5 +397,109 @@ describe('gate reads', () => {
     expect(all.map((g) => g.gatewayId).sort()).toEqual([gatewayIds[0]![0]!, gatewayIds[1]![0]!].sort());
     const narrowed = await sys(() => loadUsableGrantGateways({ orgId: t.orgId, profileId, siteId: t.siteId, networkId: networkIds[1]! }));
     expect(narrowed).toEqual([{ networkId: networkIds[1], gatewayId: gatewayIds[1]![0], address: G3.address, mac: G3.mac }]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Dispatch and results (E8, E9, E10)
+// ---------------------------------------------------------------------------------------------------------
+
+describe('dispatch and results', () => {
+  beforeEach(() => {
+    relay.dispatchCommandToAgent.mockClear();
+    relay.dispatchCommandToAgent.mockImplementation(async () => ({ status: 'sent', via: 'local' }));
+    relay.isAgentConnectedAnywhere.mockClear();
+    spies.build.mockClear(); spies.decryptCommunities.mockClear(); spies.decryptCredentials.mockClear();
+  });
+
+  // Task 7
+  it('gated site with no eligible agent sends no command', async () => {
+    const t = await seedSite();
+    const { gatewayIds } = await gateSite(t.orgId, t.siteId, [[G1]]);
+    const g2 = (await unassignedNetwork(t.orgId, [G2])).gatewayIds[0]!;
+    await seedAgent({ ...t, hostname: 'LAPTOP-JS', behind: [g2] });
+    await seedAgent({ ...t, hostname: 'DESKTOP-01', version: '0.128.0', behind: [gatewayIds[0]![0]!] });
+    const profileId = await seedProfile(t);
+    const jobId = await seedJob(t.orgId, t.siteId, profileId);
+
+    const r = await __testables.processDispatchScan(dispatchData(t, profileId, jobId));
+
+    expect(r.dispatched).toBe(false);
+    expect(relay.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(await job(jobId)).toMatchObject({ status: 'failed', networkDispatch: null,
+      errors: { code: 'no_agent_on_network', reason: 'agents_need_update' } });
+  });
+
+  // Task 7
+  it('ungated site: worker scan unchanged', async () => {
+    for (const version of ['0.128.0', 'dev']) {
+      const t = await seedSite();
+      const { agentId } = await seedAgent({ ...t, hostname: 'DESKTOP-01', version });
+      const profileId = await seedProfile({ ...t, withSecrets: true });
+      const jobId = await seedJob(t.orgId, t.siteId, profileId);
+
+      await __testables.processDispatchScan(dispatchData(t, profileId, jobId));
+
+      const [sentTo, cmd] = relay.dispatchCommandToAgent.mock.calls.at(-1)!;
+      expect(sentTo).toBe(agentId);
+      expect(cmd.type).toBe('network_discovery');
+      expect(Object.keys(cmd.payload).sort()).toEqual(['concurrency', 'deepScan', 'excludeIps', 'identifyOS', 'jobId', 'methods',
+        'portRanges', 'resolveHostnames', 'snmpCommunities', 'snmpCredentials', 'subnets', 'timeout']);
+      expect(cmd.payload.snmpCommunities).toEqual(['public-fixture']);
+      expect(await job(jobId)).toMatchObject({ status: 'running', agentId,
+        networkDispatch: { version: 1, mode: 'unrestricted', agentId, allowedGatewayIds: [], allowedNetworkIds: [] } });
+    }
+  });
+
+  // Task 7
+  it('a bound credentialed profile is sent only guarded, behind a granted fingerprint', async () => {
+    // (a) site not gated; a grant on G1 of a network that is not assigned to the site: fails closed (contract note 1).
+    const a = await seedSite();
+    const loose = await unassignedNetwork(a.orgId, [G1]);
+    await seedAgent({ ...a, hostname: 'LAPTOP-JS', behind: [loose.gatewayIds[0]!] });
+    const profileA = await seedProfile({ ...a, withSecrets: true, grantMode: 'bound', grantGatewayIds: [loose.gatewayIds[0]!] });
+    const jobA = await seedJob(a.orgId, a.siteId, profileA);
+
+    expect((await __testables.processDispatchScan(dispatchData(a, profileA, jobA))).dispatched).toBe(false);
+    expect(await job(jobA)).toMatchObject({ status: 'failed', errors: { code: 'credentials_need_reentry' } });
+    expect(spies.build).not.toHaveBeenCalled();
+    expect(spies.decryptCommunities).not.toHaveBeenCalled();
+    expect(spies.decryptCredentials).not.toHaveBeenCalled();
+    expect(relay.dispatchCommandToAgent).not.toHaveBeenCalled();
+
+    // (b) gated with N1 = {G1, G3}; the grant is on G1 only. DESKTOP-01 (behind G3) would rank first by id.
+    const b = await seedSite();
+    const { networkIds, gatewayIds } = await gateSite(b.orgId, b.siteId, [[G1, G3]]);
+    const [g1, g3] = gatewayIds[0]!;
+    const laptop = await seedAgent({ ...b, hostname: 'LAPTOP-JS', behind: [g1!] });
+    await seedAgent({ ...b, hostname: 'DESKTOP-01', behind: [g3!], deviceId: lowDeviceId() });
+    const profileB = await seedProfile({ ...b, withSecrets: true, grantMode: 'bound', grantGatewayIds: [g1!] });
+    const jobB = await seedJob(b.orgId, b.siteId, profileB);
+
+    expect((await __testables.processDispatchScan(dispatchData(b, profileB, jobB))).dispatched).toBe(true);
+    expect(relay.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+    const [sentTo, cmd] = relay.dispatchCommandToAgent.mock.calls[0]!;
+    expect(sentTo).toBe(laptop.agentId);
+    expect(cmd.type).toBe('network_discovery_guarded');
+    expect((cmd.payload.expectedNetwork as { gateways: Array<{ gatewayId: string }> }).gateways.map((g) => g.gatewayId)).toEqual([g1]);
+    expect(await job(jobB)).toMatchObject({ status: 'running', agentId: laptop.agentId,
+      networkDispatch: { mode: 'guarded', deviceId: laptop.deviceId, allowedGatewayIds: [g1], allowedNetworkIds: networkIds } });
+  });
+
+  // Task 7
+  it('a guarded pinned agent that is not eligible fails naming it, with no fallback', async () => {
+    const t = await seedSite();
+    const { gatewayIds } = await gateSite(t.orgId, t.siteId, [[G1]]);
+    const g1 = gatewayIds[0]![0]!;
+    const desktop = await seedAgent({ ...t, hostname: 'DESKTOP-01', status: 'offline', behind: [g1] });
+    await seedAgent({ ...t, hostname: 'LAPTOP-JS', behind: [g1] });
+    const profileId = await seedProfile({ ...t, pinnedDeviceId: desktop.deviceId });
+    const jobId = await seedJob(t.orgId, t.siteId, profileId);
+
+    expect((await __testables.processDispatchScan(dispatchData(t, profileId, jobId))).dispatched).toBe(false);
+    expect(relay.dispatchCommandToAgent).not.toHaveBeenCalled();
+    const row = await job(jobId);
+    expect(row).toMatchObject({ status: 'failed', errors: { code: 'agent_not_eligible', reason: 'offline' } });
+    expect(String(row.errors?.message)).toContain('"DESKTOP-01"');
   });
 });

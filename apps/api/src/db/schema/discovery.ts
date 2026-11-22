@@ -21,7 +21,7 @@ import { organizations, sites, partners } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
 import { alerts } from './alerts';
-import type { NetworkBaselineScanSchedule, NetworkBaselineAlertSettings } from '@breeze/shared';
+import type { DiscoveryJobError, NetworkBaselineScanSchedule, NetworkBaselineAlertSettings } from '@breeze/shared';
 
 export const discoveredAssetTypeEnum = pgEnum('discovered_asset_type', [
   'workstation',
@@ -160,7 +160,7 @@ export const discoveryJobs = pgTable('discovery_jobs', {
   hostsScanned: integer('hosts_scanned'),
   hostsDiscovered: integer('hosts_discovered'),
   newAssets: integer('new_assets'),
-  errors: jsonb('errors'),
+  errors: jsonb('errors').$type<DiscoveryJobError>(),
   // M2 D7 dispatch authorization snapshot (secret-free, bounded; see
   // services/topology/discoveryDispatch.ts). All three set together or none.
   topologyDispatch: jsonb('topology_dispatch').$type<Record<string, unknown>>(),
