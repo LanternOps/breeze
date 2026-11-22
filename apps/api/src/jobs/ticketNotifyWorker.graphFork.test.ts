@@ -42,6 +42,7 @@ vi.mock('../db/schema', () => ({
   tickets: { id: 'id' },
   partners: { id: 'id', slug: 'slug', name: 'name', settings: 'settings' },
   organizations: { id: 'id', name: 'name' },
+  ticketComments: { id: 'id', ticketId: 'ticketId', content: 'content', isPublic: 'isPublic', deletedAt: 'deletedAt' },
   userNotifications: {},
   users: { id: 'id', partnerId: 'partner_id', status: 'status', email: 'email' },
   mobileDevices: { userId: 'user_id', fcmToken: 'fcm_token', apnsToken: 'apns_token', platform: 'platform', status: 'status', notificationsEnabled: 'notifications_enabled', quietHours: 'quiet_hours' },
@@ -124,18 +125,16 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
-  it('does NOT append the comment body on the Graph path even when fullMessageReply is on', async () => {
-    // fullMessageReply is gated on `!graphMailbox`: a connected-M365 reply goes to a
-    // recipient set we have not validated, so the actual comment TEXT must never ride
-    // it. With a mailbox connected the comment is not even loaded - this proves the
-    // guard by making a distinctive comment body available (4th select) and asserting
-    // it never reaches the Graph send. Removing the `!graphMailbox` guard would append
-    // it and fail here.
+  it('appends the comment body on the Graph path when fullMessageReply is on, to the requester only', async () => {
+    // Email-first replies W1 inverted this test (it was "does NOT append ... on the
+    // Graph path"). The `!graphMailbox` gate is gone because the Graph draft's
+    // recipients are now replaced with exactly payload.to (sendThreadedReply), so
+    // the text rides the connected-mailbox lane like the platform lane.
     selectMock
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-1', ticketNumber: 'KQ-1', subject: 'Printer', submitterEmail: 'cust@x.com' }]) // getTicket
       .mockResolvedValueOnce([{ slug: 'acme', settings: { ticketing: { inbound: { fullMessageReply: true } } } }]) // partner: fullMessageReply ON
       .mockResolvedValueOnce([{ name: 'Acme Org' }]) // compose: getOrgName
-      .mockResolvedValue([{ content: 'SECRET-GRAPH-COMMENT-BODY', isPublic: true, deletedAt: null }]); // comment (only read if the guard were removed)
+      .mockResolvedValue([{ content: 'GRAPH-COMMENT-BODY', isPublic: true, deletedAt: null }]); // comment
     resolveMailboxMock.mockResolvedValue({ ...MAILBOX, originalMessageId: 'orig-1' });
 
     await handleTicketEvent({
@@ -144,8 +143,9 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
     } as never);
 
     expect(sendThreadedMock).toHaveBeenCalledTimes(1);
-    const html = (sendThreadedMock.mock.calls[0]! as unknown as unknown[])[2] as string;
-    expect(html).not.toContain('SECRET-GRAPH-COMMENT-BODY');
+    const call = sendThreadedMock.mock.calls[0]! as unknown as unknown[];
+    expect(call[2] as string).toContain('GRAPH-COMMENT-BODY');
+    expect(call[3]).toEqual({ to: 'cust@x.com' });
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 

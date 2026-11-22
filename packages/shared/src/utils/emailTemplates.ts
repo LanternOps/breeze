@@ -451,12 +451,19 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
  * the same partner-editable template. A partner's saved override applies to every
  * variant; the locked blocks around the body still state each variant's facts. */
 export const EMAIL_TEMPLATE_VARIANTS = {
+  // The reply text itself rides in the email (rendered before the button).
+  ticket_comment_notification: ['with_reply'],
   payment_failed: ['confirm', 'update', 'nsf', 'returned', 'expired'],
   autopay_enrolled: ['pending_verification', 'verified'],
   autopay_stopped: ['msp', 'request_withdrawn'],
 } as const satisfies Partial<Record<EmailTemplateId, readonly string[]>>;
 
 const VARIANT_DEFAULTS: Record<string, Partial<EmailTemplateFieldDefaults>> = {
+  // Email-first replies (Refs #8758): the reply text is in the email, so no
+  // "sign in to the portal" and no email-only hint. Subject and button inherited.
+  'ticket_comment_notification:with_reply': { heading: 'New reply on your ticket',
+    html: `<p>{{cta_button}}</p>
+<p>Reply to this email to answer.</p>` },
   'payment_failed:confirm': { subject: 'Confirm your payment for invoice {{invoice_number}}',
     heading: 'Your bank needs you to confirm this payment', buttonLabel: 'Confirm payment' },
   'payment_failed:update': { subject: 'Action needed for invoice {{invoice_number}}: update your payment method',

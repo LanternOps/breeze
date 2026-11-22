@@ -278,6 +278,40 @@ describe('renderPartnerEmail text body and variants', () => {
     const custom = { subject: 'Custom {{invoice_number}}', heading: null, buttonLabel: null, html: null };
     expect(renderPartnerEmail({ id: 'payment_failed', variant: 'confirm', custom, vars: { invoice_number: 'INV-7' } }).subject).toBe('Custom INV-7');
   });
+
+  // Email-first replies W1 (Refs #8758).
+  const REPLY = '<div class="reply">Your driver was reinstalled.</div>';
+  const commentVars = { ticket_number: 'KQ-1', ticket_subject: 'Printer', requester_name: 'Jane', portal_url: 'https://portal.example.test/t/1', email_only_hint: 'HINT-TEXT' };
+
+  it('with_reply variant drops the sign-in copy and places bodyBeforeCta before the CTA', () => {
+    const out = renderPartnerEmail({
+      id: 'ticket_comment_notification', variant: 'with_reply', vars: commentVars,
+      ctaUrl: 'https://portal.example.test/t/1', bodyBeforeCta: REPLY,
+    });
+    expect(out.html).not.toMatch(/Sign in to the portal/i);
+    expect(out.html).not.toContain('HINT-TEXT');
+    expect(out.html).toContain('Reply to this email to answer.');
+    expect(out.heading).toBe('New reply on your ticket');
+    expect(out.subject).toBe('[KQ-1] New reply: Printer');
+    const reply = out.html.indexOf(REPLY);
+    const cta = out.html.indexOf('https://portal.example.test/t/1');
+    expect(reply).toBeGreaterThan(-1);
+    expect(cta).toBeGreaterThan(reply);
+  });
+
+  it('custom template still carries the reply text before the CTA', () => {
+    // Review focus 3: a partner template that says "Sign in to the portal" keeps
+    // saying it, but the reply text still appears, ahead of the button.
+    const custom = { subject: null, heading: null, buttonLabel: null, html: '<p>Sign in to the portal</p>{{cta_button}}' };
+    const out = renderPartnerEmail({
+      id: 'ticket_comment_notification', variant: 'with_reply', custom, vars: commentVars,
+      ctaUrl: 'https://portal.example.test/t/1', bodyBeforeCta: REPLY,
+    });
+    const reply = out.html.indexOf(REPLY);
+    expect(reply).toBeGreaterThan(-1);
+    expect(out.html.indexOf('https://portal.example.test/t/1')).toBeGreaterThan(reply);
+    expect(out.html.indexOf('Sign in to the portal')).toBeLessThan(reply);
+  });
 });
 
 // R11: names and labels are inserted literally. A string replacement would expand `$&`,
