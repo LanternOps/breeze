@@ -82,9 +82,9 @@ export async function persistTurnDiscovery(write: TurnDiscoveryWrite): Promise<T
   for (const e of write.events) noteToolSearch(e.empty ? 'empty' : 'hit');
 
   const { sessionId, orgId } = write;
-  const rows = buildRows(write);
   let reconciled = 0;
   try {
+    const rows = buildRows(write);
     await withDbAccessContext({ scope: 'organization', orgId, accessibleOrgIds: [orgId] }, () =>
       withDbTransaction(async () => {
         await db.insert(aiToolSearchEvents).values(rows);
@@ -104,7 +104,7 @@ export async function persistTurnDiscovery(write: TurnDiscoveryWrite): Promise<T
         }
       }),
     );
-    return { ok: true, rows: rows.length, reconciled };
+    return { ok: true, rows: write.events.length + 1, reconciled };
   } catch (err) {
     // OUTSIDE both wrappers. safeErrorMessage: Drizzle's message carries the
     // statement's parameters, i.e. the query text.

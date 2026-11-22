@@ -56,6 +56,8 @@ export function parseArgs(argv: string[]): DiscoveryCliArgs {
   const values = new Map<string, string>();
   for (let i = 0; i < argv.length; i += 2) {
     const flag = argv[i]!;
+    // pnpm forwards the literal `--` of `pnpm … ai:discovery-report -- --days 7`.
+    if (flag === '--') { i -= 1; continue; }
     if (!known.has(flag)) throw new UsageError(`Unknown option: ${flag}`);
     const value = argv[i + 1];
     if (!value || value.startsWith('--')) throw new UsageError(`Missing value for ${flag}`);
@@ -80,19 +82,33 @@ function resolveOut(out: string, reportsDir: string): string {
   return resolved;
 }
 
-async function pruneOld(dir: string, cutoffMs: number): Promise<void> {
+function isNotFound(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === 'ENOENT';
+}
+
+/**
+ * Delete report and candidate files older than the cutoff. Per-org files hold
+ * users' search queries, so a failure is reported (never swallowed); a file
+ * that vanished meanwhile is not a failure.
+ */
+async function pruneOld(dir: string, cutoffMs: number, warn: (text: string) => void): Promise<void> {
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    if (!isNotFound(err)) warn(`prune: cannot read ${dir}: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      await pruneOld(full, cutoffMs);
-    } else if ((await stat(full)).mtimeMs < cutoffMs) {
-      await rm(full, { force: true });
+    try {
+      if (entry.isDirectory()) {
+        await pruneOld(full, cutoffMs, warn);
+      } else if ((await stat(full)).mtimeMs < cutoffMs) {
+        await rm(full, { force: true });
+      }
+    } catch (err) {
+      if (!isNotFound(err)) warn(`prune: cannot remove ${full}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }
@@ -128,8 +144,9 @@ export async function runCli(argv: string[], deps: DiscoveryCliDeps): Promise<nu
       await mkdir(candidatesDir, { recursive: true });
       await writeFile(path.join(candidatesDir, `${date}.json`), JSON.stringify(report.candidates, null, 2) + '\n');
     }
-    await pruneOld(deps.reportsDir, now.getTime() - REPORT_RETENTION_DAYS * DAY_MS);
     deps.io.out(markdown);
+    // After the report is out: a prune problem is warned about, never fails the run.
+    await pruneOld(deps.reportsDir, now.getTime() - REPORT_RETENTION_DAYS * DAY_MS, deps.io.err);
     return 0;
   } catch (error) {
     deps.io.err(error instanceof Error ? error.message : String(error));
@@ -171,8 +188,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     try {
       code = await runCli(process.argv.slice(2), await defaultDeps());
     } finally {
-      const { closeDb } = await import('../../../db');
-      await closeDb();
+      try {
+        const { closeDb } = await import('../../../db');
+        await closeDb();
+      } catch (error) {
+        // Logged; the report's own exit code stands.
+        console.error('closeDb failed:', error instanceof Error ? error.message : String(error));
+      }
     }
     process.exit(code);
   })().catch((error: unknown) => {

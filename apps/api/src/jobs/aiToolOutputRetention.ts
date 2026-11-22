@@ -95,6 +95,7 @@ import { extractRowCount } from '../db/rowCount';
 import { aiDataPolicies, organizations, type AiDataPolicyRow } from '../db/schema';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
 import { mergeAiDataPolicies } from '../services/aiDataPolicy';
+import { safeErrorMessage } from '../services/aiModels/safeDbError';
 import { LIVE_SESSION_MAX_DEFER_MS, LIVE_SESSION_QUIET_MS } from '../services/aiTranscriptRetentionPredicates';
 import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
@@ -406,8 +407,9 @@ export async function blankAgedToolSearchInputs(
            AND m.role = 'assistant'
            AND m.created_at < ${utcWallTime(cutoffIso)}
            AND jsonb_typeof(m.content_blocks) = 'array'
+           -- AND order is not guaranteed: never hand jsonb_array_elements a non-array.
            AND EXISTS (
-             SELECT 1 FROM jsonb_array_elements(m.content_blocks) b
+             SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(m.content_blocks) = 'array' THEN m.content_blocks ELSE '[]'::jsonb END) b
               WHERE b->>'type' = 'tool_use' AND b->>'name' = 'ToolSearch' AND b->'input' <> '{}'::jsonb
            )
          LIMIT ${opts.batchSize}
@@ -508,23 +510,27 @@ export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTran
     // 180-day ceiling). A failure here counts the org failed but does not
     // keep its tool outputs from being scrubbed below.
     let discoveryFailed = false;
-    try {
-      const events = await deleteAgedSearchEvents(orgId, days, opts);
-      const inputs = await blankAgedToolSearchInputs(orgId, searchEventAgeDays(days), opts);
-      summary.searchEventsDeleted += events.deleted;
-      summary.toolSearchInputsBlanked += inputs.deleted;
-      for (const [target, result] of [
-        ['ai_tool_search_events', events], ['ai_messages.tool_search_input', inputs],
-      ] as const) {
+    // Each pass is accounted as soon as it returns, so a later failure never
+    // hides rows an earlier one already removed.
+    for (const [target, pass, add] of [
+      ['ai_tool_search_events', () => deleteAgedSearchEvents(orgId, days, opts),
+        (n: number) => { summary.searchEventsDeleted += n; }],
+      ['ai_messages.tool_search_input', () => blankAgedToolSearchInputs(orgId, searchEventAgeDays(days), opts),
+        (n: number) => { summary.toolSearchInputsBlanked += n; }],
+    ] as const) {
+      if (discoveryFailed) break;
+      try {
+        const result = await pass();
+        add(result.deleted);
         if (result.hasMore) {
           summary.incomplete = true;
           warnOnRetentionBacklog(LOG, `ai_tool_output.${target}`, result, `org=${orgId}`);
         }
+      } catch (err) {
+        console.error(`${LOG} Failed to remove tool-discovery telemetry (${target}) for org ${orgId}:`, safeErrorMessage(err));
+        discoveryFailed = true;
+        summary.orgsFailed += 1;
       }
-    } catch (err) {
-      console.error(`${LOG} Failed to remove tool-discovery telemetry for org ${orgId}:`, err);
-      discoveryFailed = true;
-      summary.orgsFailed += 1;
     }
     if (days === null) { summary.orgsKeptForever += 1; continue; }
     try {

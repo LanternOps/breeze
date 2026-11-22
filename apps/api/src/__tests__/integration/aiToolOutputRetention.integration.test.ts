@@ -488,6 +488,36 @@ describe('aiToolOutputRetention: tool search events (#12421 W01)', () => {
     expect((await message(aged)).contentBlocks).toEqual(agedRow.contentBlocks);
   });
 
+  it('odd content_blocks shapes never fail the pass; two ToolSearch blocks in one row are both blanked and the row counts once', async () => {
+    const sessionId = await insertSession(orgId, null);
+    const nullRow = await insertAssistant(sessionId, daysAgo(31), null as unknown as unknown[]);
+    const objectRow = await insertAssistant(sessionId, daysAgo(31), { type: 'text', text: 'not an array' } as unknown as unknown[]);
+    const emptyRow = await insertAssistant(sessionId, daysAgo(31), []);
+    const two = [
+      { type: 'tool_use', id: 'toolu_s1', name: 'ToolSearch', input: { query: 'first' } },
+      { type: 'text', text: 'between' },
+      { type: 'tool_use', id: 'toolu_s2', name: 'ToolSearch', input: { query: 'second' } },
+      { type: 'tool_use', id: 'toolu_c1', name: 'mcp__breeze__manage_services', input: { action: 'restart' } },
+    ];
+    const twoRow = await insertAssistant(sessionId, daysAgo(31), two);
+    const before = {
+      nullRow: (await message(nullRow)).contentBlocks,
+      objectRow: (await message(objectRow)).contentBlocks,
+      emptyRow: (await message(emptyRow)).contentBlocks,
+    };
+
+    const summary = await runAiToolOutputRetention({ ...OPTS, deleteTranscript: vi.fn() });
+
+    expect(summary.orgsFailed).toBe(0);
+    expect(summary.toolSearchInputsBlanked).toBe(1);
+    expect((await message(twoRow)).contentBlocks).toEqual([
+      { ...two[0], input: {} }, two[1], { ...two[2], input: {} }, two[3],
+    ]);
+    expect((await message(nullRow)).contentBlocks).toEqual(before.nullRow);
+    expect((await message(objectRow)).contentBlocks).toEqual(before.objectRow);
+    expect((await message(emptyRow)).contentBlocks).toEqual(before.emptyRow);
+  });
+
   it('never touches another org\'s rows', async () => {
     const partner = await createPartner();
     const otherOrg = (await createOrganization({ partnerId: partner.id, name: 'Other Org' })).id;

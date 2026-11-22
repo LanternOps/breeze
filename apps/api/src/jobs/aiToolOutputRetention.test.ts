@@ -307,6 +307,20 @@ describe('runAiToolOutputRetention: tool search events (#12421 W01)', () => {
     expect(m.execute).not.toHaveBeenCalled();
   });
 
+  it('a blanking failure after the event delete still reports the deleted events', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
+    m.execute.mockImplementation(async (q: unknown) => {
+      const s = JSON.stringify(q);
+      if (s.includes('ai_tool_search_events')) return rows([], 4);
+      if (s.includes('ToolSearch')) throw new Error('boom');
+      if (s.includes('ai_run_artifacts') || s.includes('action_intents')) return rows([], 0);
+      return rows([{ scrubbed: 0, cleared: [] }]);
+    });
+    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    expect(summary).toMatchObject({ searchEventsDeleted: 4, orgsFailed: 1, incomplete: true });
+    expect(m.recordRetentionRun).toHaveBeenCalledWith('ai_tool_output_retention', { rowsDeleted: 4, incomplete: true });
+  });
+
   it('a failing discovery pass counts the org failed but its tool outputs are still scrubbed', async () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
     m.execute.mockImplementation(async (q: unknown) => {

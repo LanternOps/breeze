@@ -2445,6 +2445,15 @@ export class StreamingSessionManager {
         || session.pendingTurnToolExecutionCount > 0
       ) {
         await this.settleSdkTurn(session, null);
+      } else if (session.discovery) {
+        // #12421 W01: a turn with nothing to bill (e.g. it only searched, no
+        // reservation) skips settlement, but its discovery state must still be
+        // flushed — otherwise this turn's searches leak into the next one.
+        const roundTrips = session.pendingTurnRoundTrips ?? newRoundTripTally();
+        if (roundTrips.builtinCalls.size > 0 || roundTrips.workCalls.size > 0 || roundTrips.anonymous > 0) {
+          session.pendingTurnRoundTrips = newRoundTripTally();
+          await this.flushTurnDiscovery(session, { aborted: true, tally: roundTrips });
+        }
       }
       // #11968: a turn that ended without a `result` still flags the session
       // for an input refusal it never corrected (no-op when nothing is held).
@@ -2641,13 +2650,20 @@ export class StreamingSessionManager {
       });
       if (!outcome.ok) {
         console.error('[StreamingSessionManager] tool discovery write failed:', outcome.error);
-        captureException(new Error('ai_tool_discovery_write_failed'), undefined, {
+        captureException(new Error(`ai_tool_discovery_write_failed: ${outcome.error}`), undefined, {
           org_id: session.orgId,
           cas_label: 'streamingSessionManager.flushTurnDiscovery',
         });
       }
     } catch (err) {
-      console.error('[StreamingSessionManager] tool discovery flush threw:', safeErrorMessage(err));
+      const message = safeErrorMessage(err);
+      console.error('[StreamingSessionManager] tool discovery flush threw:', message);
+      try {
+        captureException(new Error(`ai_tool_discovery_flush_threw: ${message}`), undefined, {
+          org_id: session.orgId,
+          cas_label: 'streamingSessionManager.flushTurnDiscovery',
+        });
+      } catch { /* the console line above stands */ }
     }
   }
 

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -49,6 +49,24 @@ afterEach(async () => {
 });
 
 describe('discovery-report CLI', () => {
+  it('skips the lone -- pnpm forwards before the script flags', async () => {
+    expect(await runCli(['--', '--days', '7'], deps())).toBe(0);
+    expect(load.mock.calls[0]![0]).toMatchObject({ days: 7 });
+  });
+
+  it('a prune error never fails a run whose report was written, and is warned about', async () => {
+    const locked = path.join(dir, 'locked');
+    await mkdir(locked);
+    await chmod(locked, 0o000);
+    try {
+      expect(await runCli(['--days', '7'], deps())).toBe(0);
+      expect(out.join('\n')).not.toBe('');
+      expect(err.join('\n')).toMatch(/prune/i);
+    } finally {
+      await chmod(locked, 0o700);
+    }
+  });
+
   it('--days abc exits 2 with usage', async () => {
     expect(await runCli(['--days', 'abc'], deps())).toBe(2);
     expect(err.join('\n')).toMatch(/--days/);

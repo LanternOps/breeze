@@ -709,6 +709,33 @@ describe('discovery telemetry (#12421 W01)', () => {
     expect(writes()[0]!.events[0]).toMatchObject({ toolUseId: 'toolu_s1', empty: true, resultToolNames: [] });
   });
 
+  it('an aborted search-only turn with no reservation or tokens still flushes, so its state never reaches the next turn', async () => {
+    mockSdkQuery([
+      // No usage (no tokens) and no budget reservation: the no-result settle is skipped.
+      { type: 'assistant', message: { id: 'msg_1', content: [{ type: 'tool_use', id: 'toolu_s1', name: 'ToolSearch', input: { query: 'restart a service' } }] } },
+      searchResult('toolu_s1', ['set_device_context']),
+    ]);
+    const session = await manager.getOrCreate(
+      'sess-disc-abort-bare', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(writes()).toHaveLength(1);
+    expect(writes()[0]).toMatchObject({ turn: { aborted: true, searches: 1, searchOnlyRoundTrips: 1 } });
+    // The aborted turn's results are now "loaded earlier", not "searched this turn".
+    expect(session.discovery?.discoveryOf('set_device_context')).toBe('loaded_earlier');
+  });
+
+  it('a processor that ends after a settled turn writes no extra empty turn row', async () => {
+    mockSdkQuery(SEARCHING_TURN);
+    const session = await manager.getOrCreate(
+      'sess-disc-once', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(writes()).toHaveLength(1);
+  });
+
   it('a session whose surface did not opt into the full chat registry has discovery null and writes nothing', async () => {
     mockSdkQuery(SEARCHING_TURN);
     const staticSession = await manager.getOrCreate(
