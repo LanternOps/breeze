@@ -19,13 +19,19 @@ import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   configPolicyAssignments,
   configurationPolicies,
+  deviceGroupMemberships,
   deviceGroups,
 } from '../../db/schema';
 import { loadAppliesToSummaries } from '../../services/configPolicyAppliesTo';
+import {
+  assignmentTargetKey,
+  authorizeAssignmentTarget,
+  authorizeAssignmentTargets,
+} from '../../services/configurationPolicy';
 import { loadPolicyOwners } from '../../routes/configurationPolicies/resolution';
 import type { EffectiveConfiguration } from '../../services/configurationPolicy';
 import { buildDbAccessContext, type AuthContext } from '../../middleware/auth';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createDevice, createOrganization, createPartner, createSite } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -69,6 +75,16 @@ function partnerAuth(partnerId: string, orgIds: string[]): AuthContext {
   } as unknown as AuthContext;
 }
 
+/** An org user limited to `siteIds`, optionally also to exact devices. */
+function restrictedOrgAuth(orgId: string, partnerId: string, siteIds: string[], deviceIds?: string[]): AuthContext {
+  return {
+    ...orgAuth(orgId, partnerId),
+    allowedSiteIds: siteIds,
+    canAccessSite: (siteId: string | null | undefined) => !!siteId && siteIds.includes(siteId),
+    ...(deviceIds ? { allowedDeviceIds: deviceIds } : {}),
+  } as unknown as AuthContext;
+}
+
 const createdPolicies: string[] = [];
 const createdGroups: string[] = [];
 
@@ -80,6 +96,7 @@ afterEach(async () => {
       await db.delete(configurationPolicies).where(inArray(configurationPolicies.id, createdPolicies));
     }
     if (createdGroups.length > 0) {
+      await db.delete(deviceGroupMemberships).where(inArray(deviceGroupMemberships.groupId, createdGroups));
       await db.delete(deviceGroups).where(inArray(deviceGroups.id, createdGroups));
     }
   });
@@ -104,11 +121,17 @@ async function seedPolicy(owner: { orgId: string | null; partnerId: string | nul
   });
 }
 
-async function seedGroup(orgId: string, name: string) {
+async function seedGroup(orgId: string, name: string, siteId: string | null = null) {
   return withDbAccessContext(SYSTEM_CTX, async () => {
-    const [group] = await db.insert(deviceGroups).values({ orgId, name }).returning();
+    const [group] = await db.insert(deviceGroups).values({ orgId, name, siteId }).returning();
     createdGroups.push(group!.id);
     return group!.id;
+  });
+}
+
+async function addMembers(groupId: string, orgId: string, deviceIds: string[]) {
+  await withDbAccessContext(SYSTEM_CTX, async () => {
+    await db.insert(deviceGroupMemberships).values(deviceIds.map((deviceId) => ({ groupId, orgId, deviceId })));
   });
 }
 
@@ -116,11 +139,12 @@ async function assign(
   configPolicyId: string,
   level: 'partner' | 'organization' | 'site' | 'device_group' | 'device',
   targetId: string,
+  priority = 0,
 ) {
   return withDbAccessContext(SYSTEM_CTX, async () => {
     const [row] = await db
       .insert(configPolicyAssignments)
-      .values({ configPolicyId, level, targetId, priority: 0 })
+      .values({ configPolicyId, level, targetId, priority })
       .returning();
     return row!.id;
   });
@@ -298,5 +322,197 @@ describe('loadPolicyOwners under forced RLS', () => {
       () => loadPolicyOwners(effective([orgPolicy, partnerPolicy])),
     );
     expect(asOtherOrg).toEqual({});
+  });
+});
+
+describe('display order and window under real SQL (Strix, PR #12512)', () => {
+  it('orders targets by level, then priority, then age, whatever order they were written in', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id, name: 'Acme' });
+    const site = await createSite({ orgId: org!.id, name: 'Main office' });
+    const late = await createDevice({ orgId: org!.id, siteId: site!.id, hostname: 'late' });
+    const early = await createDevice({ orgId: org!.id, siteId: site!.id, hostname: 'early' });
+    const first = await createDevice({ orgId: org!.id, siteId: site!.id, hostname: 'first' });
+    const policyId = await seedPolicy({ orgId: org!.id, partnerId: null });
+    // Written device-first; within devices, priority beats age ('late' is
+    // written before 'early', so it is older).
+    await assign(policyId, 'device', late.id, 5);
+    await assign(policyId, 'device', early.id, 5);
+    await assign(policyId, 'device', first.id, 1);
+    const ctx = orgDbContext(org!.id);
+    const auth = orgAuth(org!.id, partner.id);
+
+    const devicesOnly = await withDbAccessContext(ctx, async () =>
+      (await loadAppliesToSummaries(auth, [policyId])).get(policyId));
+    expect(devicesOnly!.targets.map((t) => t.name)).toEqual(['first', 'late', 'early']);
+
+    // A later organization row outranks every device row.
+    await assign(policyId, 'organization', org!.id, 9);
+    const withOrg = await withDbAccessContext(ctx, async () =>
+      (await loadAppliesToSummaries(auth, [policyId])).get(policyId));
+    expect(withOrg!.assignmentCount).toBe(4);
+    expect(withOrg!.targets.map((t) => t.name)).toEqual(['Acme', 'first', 'late']);
+  });
+
+  it('reads at most 50 rows per policy but counts them all', async () => {
+    // A site-restricted caller: the 50 leading rows (priority 0) target a
+    // device outside their sites, the trailing ones a device inside. The window
+    // never reaches the listable rows, so targets stay empty while the count
+    // covers every row.
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const allowedSite = await createSite({ orgId: org!.id, name: 'Allowed' });
+    const otherSite = await createSite({ orgId: org!.id, name: 'Other' });
+    const hidden: string[] = [];
+    for (let i = 0; i < 50; i += 1) {
+      hidden.push((await createDevice({ orgId: org!.id, siteId: otherSite!.id })).id);
+    }
+    const visible: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      visible.push((await createDevice({ orgId: org!.id, siteId: allowedSite!.id, hostname: `visible-${i}` })).id);
+    }
+    const policyId = await seedPolicy({ orgId: org!.id, partnerId: null });
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      await db.insert(configPolicyAssignments).values([
+        ...hidden.map((targetId) => ({ configPolicyId: policyId, level: 'device' as const, targetId, priority: 0 })),
+        ...visible.map((targetId, i) => ({ configPolicyId: policyId, level: 'device' as const, targetId, priority: 1 + i })),
+      ]);
+    });
+    const ctx = orgDbContext(org!.id);
+    const limited = restrictedOrgAuth(org!.id, partner.id, [allowedSite!.id]);
+
+    const summary = await withDbAccessContext(ctx, async () =>
+      (await loadAppliesToSummaries(limited, [policyId])).get(policyId));
+    expect(summary!.assignmentCount).toBe(55);
+    expect(summary!.targets).toEqual([]);
+
+    // Control: drop one leading row and the 50-row window reaches a listable row.
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      await db.delete(configPolicyAssignments).where(eq(configPolicyAssignments.targetId, hidden[0]!));
+    });
+    const after = await withDbAccessContext(ctx, async () =>
+      (await loadAppliesToSummaries(limited, [policyId])).get(policyId));
+    expect(after!.assignmentCount).toBe(54);
+    expect(after!.targets.map((t) => t.name)).toEqual(['visible-0']);
+  });
+});
+
+describe('site-restricted caller under forced RLS (Strix, PR #12512)', () => {
+  async function fixture() {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id, name: 'Acme' });
+    const sibling = await createOrganization({ partnerId: partner.id, name: 'Sibling Co' });
+    const siteA = await createSite({ orgId: org!.id, name: 'Site A' });
+    const siteB = await createSite({ orgId: org!.id, name: 'Site B' });
+    const siblingSite = await createSite({ orgId: sibling!.id, name: 'Sibling site' });
+    const devA = await createDevice({ orgId: org!.id, siteId: siteA!.id, hostname: 'dev-a' });
+    const devA2 = await createDevice({ orgId: org!.id, siteId: siteA!.id, hostname: 'dev-a2' });
+    const devB = await createDevice({ orgId: org!.id, siteId: siteB!.id, hostname: 'dev-b' });
+    const devS = await createDevice({ orgId: sibling!.id, siteId: siblingSite!.id, hostname: 'sibling-device' });
+    const groupA = await seedGroup(org!.id, 'Group A', siteA!.id);
+    const groupMixed = await seedGroup(org!.id, 'Group mixed', siteA!.id);
+    const groupEmpty = await seedGroup(org!.id, 'Group empty', siteA!.id);
+    const groupB = await seedGroup(org!.id, 'Group B', siteB!.id);
+    const groupOrgWide = await seedGroup(org!.id, 'Group org-wide', null);
+    const groupS = await seedGroup(sibling!.id, 'Sibling group', siblingSite!.id);
+    await addMembers(groupA, org!.id, [devA.id]);
+    await addMembers(groupMixed, org!.id, [devA.id, devA2.id]);
+    await addMembers(groupB, org!.id, [devB.id]);
+    await addMembers(groupS, sibling!.id, [devS.id]);
+    return {
+      partner, org: org!, sibling: sibling!, siteA: siteA!, siteB: siteB!, siblingSite: siblingSite!,
+      devA, devA2, devB, devS, groupA, groupMixed, groupEmpty, groupB, groupOrgWide, groupS,
+    };
+  }
+
+  it("never shows a sibling org's or another site's target, and still counts it", async () => {
+    const f = await fixture();
+    // Partner-owned, so it may target the sibling org (the owner trigger
+    // refuses that on an org policy); an org request context reads it through
+    // the SELECT-only partner-wide policy.
+    const policyId = await seedPolicy({ orgId: null, partnerId: f.partner.id });
+    // Refused rows lead in display order, so they would take the slots if
+    // authorization were skipped.
+    await assign(policyId, 'organization', f.org.id);
+    await assign(policyId, 'site', f.siteB.id);
+    await assign(policyId, 'site', f.siblingSite.id);
+    await assign(policyId, 'device_group', f.groupB);
+    await assign(policyId, 'device_group', f.groupS);
+    await assign(policyId, 'device_group', f.groupOrgWide);
+    await assign(policyId, 'device', f.devB.id);
+    await assign(policyId, 'device', f.devS.id);
+    await assign(policyId, 'device_group', f.groupA, 5);
+    await assign(policyId, 'device', f.devA.id, 5);
+
+    const limited = restrictedOrgAuth(f.org.id, f.partner.id, [f.siteA.id]);
+    const orgRequestCtx = buildDbAccessContext({
+      scope: 'organization', orgId: f.org.id, accessibleOrgIds: [f.org.id], partnerId: f.partner.id, userId: null,
+    });
+    const summary = await withDbAccessContext(orgRequestCtx, async () =>
+      (await loadAppliesToSummaries(limited, [policyId])).get(policyId));
+
+    expect(summary!.assignmentCount).toBe(10);
+    expect(summary!.targets.map((t) => [t.level, t.name])).toEqual([
+      ['device_group', 'Group A'],
+      ['device', 'dev-a'],
+    ]);
+    const shown = JSON.stringify(summary);
+    for (const hiddenId of [f.sibling.id, f.siblingSite.id, f.groupS, f.devS.id, f.siteB.id, f.groupB, f.devB.id]) {
+      expect(shown).not.toContain(hiddenId);
+    }
+    expect(shown).not.toContain('Sibling');
+  });
+
+  it('the batch authorizer agrees with the single-target one on real rows', async () => {
+    const f = await fixture();
+    const targets = [
+      { level: 'partner' as const, targetId: f.partner.id },
+      { level: 'organization' as const, targetId: f.org.id },
+      { level: 'site' as const, targetId: f.siteA.id },
+      { level: 'site' as const, targetId: f.siteB.id },
+      { level: 'site' as const, targetId: f.siblingSite.id },
+      { level: 'device_group' as const, targetId: f.groupA },
+      { level: 'device_group' as const, targetId: f.groupMixed },
+      { level: 'device_group' as const, targetId: f.groupEmpty },
+      { level: 'device_group' as const, targetId: f.groupB },
+      { level: 'device_group' as const, targetId: f.groupOrgWide },
+      { level: 'device_group' as const, targetId: f.groupS },
+      { level: 'device_group' as const, targetId: randomUUID() },
+      { level: 'device' as const, targetId: f.devA.id },
+      { level: 'device' as const, targetId: f.devA2.id },
+      { level: 'device' as const, targetId: f.devB.id },
+      { level: 'device' as const, targetId: f.devS.id },
+      { level: 'device' as const, targetId: randomUUID() },
+    ];
+    const callers: Array<[string, AuthContext]> = [
+      ['unrestricted', orgAuth(f.org.id, f.partner.id)],
+      ['site-restricted', restrictedOrgAuth(f.org.id, f.partner.id, [f.siteA.id])],
+      ['site+device-restricted', restrictedOrgAuth(f.org.id, f.partner.id, [f.siteA.id], [f.devA.id])],
+      ['device-restricted, no site list', { ...orgAuth(f.org.id, f.partner.id), allowedDeviceIds: [f.devA.id] } as unknown as AuthContext],
+      ['empty device list', restrictedOrgAuth(f.org.id, f.partner.id, [f.siteA.id], [])],
+    ];
+
+    for (const [label, caller] of callers) {
+      const { batch, single } = await withDbAccessContext(orgDbContext(f.org.id), async () => {
+        const batchResult = await authorizeAssignmentTargets(caller, targets);
+        const singleResult = new Map<string, boolean>();
+        for (const t of targets) {
+          singleResult.set(
+            assignmentTargetKey(t.level, t.targetId),
+            (await authorizeAssignmentTarget(caller, t.level, t.targetId)).valid,
+          );
+        }
+        return { batch: batchResult, single: singleResult };
+      });
+      expect(Object.fromEntries(batch), label).toEqual(Object.fromEntries(single));
+    }
+
+    // The fixture must exercise both outcomes on the restricted group path.
+    const deviceScoped = await withDbAccessContext(orgDbContext(f.org.id), () =>
+      authorizeAssignmentTargets(restrictedOrgAuth(f.org.id, f.partner.id, [f.siteA.id], [f.devA.id]), targets));
+    expect(deviceScoped.get(assignmentTargetKey('device_group', f.groupA))).toBe(true);
+    expect(deviceScoped.get(assignmentTargetKey('device_group', f.groupMixed))).toBe(false);
+    expect(deviceScoped.get(assignmentTargetKey('device_group', f.groupEmpty))).toBe(false);
+    expect(deviceScoped.get(assignmentTargetKey('device', f.devA.id))).toBe(true);
   });
 });

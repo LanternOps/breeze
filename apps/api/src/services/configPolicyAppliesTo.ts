@@ -17,15 +17,21 @@
  *    RLS context reads. "Not applied" keys off them, so a site-restricted tech
  *    who may not list an organization-level row is never told the policy
  *    applies nowhere.
- *  - `targets` keeps only rows that `authorizeAssignmentTarget` admits (the
- *    same filter `GET /:id/assignments` applies) AND whose name resolves in the
+ *  - `targets` keeps only rows that `authorizeAssignmentTargets` admits (the
+ *    set-based form of the filter `GET /:id/assignments` applies) AND whose name resolves in the
  *    caller's context. A partner row needs no name. Everything else counts only
  *    toward the "+N" the web derives from `assignmentCount - targets.length`.
+ *
+ * STATEMENT BUDGET. The list route calls this for a whole page inside the
+ * request transaction, so the statement count is fixed, never per policy or
+ * per row: one windowed assignment read, one child count, at most three
+ * authorization reads, and at most four name reads in each of two rounds
+ * (configPolicyAppliesTo.queryBudget.test.ts pins it).
  *
  * Kept out of `getConfigPolicy` / `listConfigPolicies` (plan D3): those also
  * feed AI tools, whose outputs must not grow.
  */
-import { and, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import {
   APPLIES_TO_SUMMARY_TARGET_LIMIT,
   TARGET_LEVEL_ORDER,
@@ -44,7 +50,7 @@ import {
   sites,
 } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
-import { authorizeAssignmentTarget, policyAccessCondition } from './configurationPolicy';
+import { assignmentTargetKey, authorizeAssignmentTargets, policyAccessCondition } from './configurationPolicy';
 
 type NamedLevel = Exclude<ConfigPolicyTargetLevel, 'partner'>;
 
@@ -56,45 +62,48 @@ const levelsMatchDbEnum: AssertSameLevels<ConfigPolicyTargetLevel, DbAssignmentL
 void levelsMatchDbEnum;
 
 /**
- * The most assignment rows examined (authorized, then named) per policy to fill
- * `targets`. Past it, `targets` may hold fewer than the limit; every row still
- * counts toward `assignmentCount`, so the web's "+N" stays honest.
+ * The most assignment rows read (then authorized and named) per policy to fill
+ * `targets`; the bound is applied in SQL, so a policy on thousands of devices
+ * still returns at most this many rows. Past it, `targets` may hold fewer than
+ * the limit; every row still counts toward `assignmentCount`, so the web's "+N"
+ * stays honest.
  */
 const MAX_ROWS_EXAMINED_PER_POLICY = 50;
 
-interface AssignmentRow {
+/** One row of the bounded window, carrying its policy's totals. */
+interface WindowRow {
   id: string;
   configPolicyId: string;
   level: ConfigPolicyTargetLevel;
   targetId: string;
-  priority: number;
   roleFilter: string[] | null;
   osFilter: string[] | null;
-  createdAt: Date;
+  /** 1-based display position within the policy. */
+  rn: number;
+  /** Every legible assignment row of the policy, not just the window. */
+  total: number;
+  /** Whether any legible row of the policy is partner-level. */
+  anyPartner: boolean;
 }
-
-const LEVEL_RANK = new Map<ConfigPolicyTargetLevel, number>(
-  TARGET_LEVEL_ORDER.map((level, index) => [level, index]),
-);
 
 /**
- * Ordered in JS, not SQL: `ORDER BY level` would follow the enum's declaration
- * order, which is a schema detail this contract should not lean on.
+ * Display order as a SQL rank, built from TARGET_LEVEL_ORDER rather than
+ * `ORDER BY level`: the enum's declaration order is a schema detail this
+ * contract should not lean on.
  */
-function compareAssignments(a: AssignmentRow, b: AssignmentRow): number {
-  const levelDiff = (LEVEL_RANK.get(a.level) ?? Number.MAX_SAFE_INTEGER)
-    - (LEVEL_RANK.get(b.level) ?? Number.MAX_SAFE_INTEGER);
-  if (levelDiff !== 0) return levelDiff;
-  if (a.priority !== b.priority) return a.priority - b.priority;
-  const ageDiff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
-  if (ageDiff !== 0) return ageDiff;
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
+const LEVEL_RANK_SQL = sql.join(
+  [
+    sql`case ${configPolicyAssignments.level}::text`,
+    ...TARGET_LEVEL_ORDER.map((level, index) => sql`when ${level} then ${sql.raw(String(index))}`),
+    sql`else ${sql.raw(String(TARGET_LEVEL_ORDER.length))} end`,
+  ],
+  sql` `,
+);
 
 /** One select per level present; ids not returned are not legible to the caller. */
 async function lookupTargetNames(idsByLevel: Map<NamedLevel, Set<string>>): Promise<Map<string, string>> {
   const names = new Map<string, string>();
-  const key = (level: NamedLevel, id: string) => `${level}:${id}`;
+  const key = assignmentTargetKey;
 
   for (const [level, idSet] of idsByLevel) {
     const ids = [...idSet];
@@ -149,19 +158,41 @@ export async function loadAppliesToSummaries(
     summaries.set(id, { assignmentCount: 0, allOrganizations: false, targets: [], childPolicyCount: 0 });
   }
 
-  const assignmentRows = (await db
+  // One bounded read for the whole page (Strix, PR #12512): the window keeps at
+  // most MAX_ROWS_EXAMINED_PER_POLICY rows per policy, in display order, while
+  // the count and the partner flag are window aggregates over EVERY legible row
+  // of the policy, computed before the `rn` filter (D2).
+  const ranked = db
     .select({
       id: configPolicyAssignments.id,
       configPolicyId: configPolicyAssignments.configPolicyId,
       level: configPolicyAssignments.level,
       targetId: configPolicyAssignments.targetId,
-      priority: configPolicyAssignments.priority,
       roleFilter: configPolicyAssignments.roleFilter,
       osFilter: configPolicyAssignments.osFilter,
-      createdAt: configPolicyAssignments.createdAt,
+      rn: sql<number>`row_number() over (partition by ${configPolicyAssignments.configPolicyId} order by ${LEVEL_RANK_SQL}, ${configPolicyAssignments.priority}, ${configPolicyAssignments.createdAt}, ${configPolicyAssignments.id})`.as('rn'),
+      total: sql<number>`count(*) over (partition by ${configPolicyAssignments.configPolicyId})`.as('total'),
+      anyPartner: sql<boolean>`bool_or(${configPolicyAssignments.level} = 'partner') over (partition by ${configPolicyAssignments.configPolicyId})`.as('any_partner'),
     })
     .from(configPolicyAssignments)
-    .where(inArray(configPolicyAssignments.configPolicyId, ids))) as AssignmentRow[];
+    .where(inArray(configPolicyAssignments.configPolicyId, ids))
+    .as('ranked_policy_assignments');
+
+  const windowRows = (await db
+    .select({
+      id: ranked.id,
+      configPolicyId: ranked.configPolicyId,
+      level: ranked.level,
+      targetId: ranked.targetId,
+      roleFilter: ranked.roleFilter,
+      osFilter: ranked.osFilter,
+      rn: ranked.rn,
+      total: ranked.total,
+      anyPartner: ranked.anyPartner,
+    })
+    .from(ranked)
+    .where(lte(ranked.rn, MAX_ROWS_EXAMINED_PER_POLICY))
+    .orderBy(asc(ranked.configPolicyId), asc(ranked.rn))) as WindowRow[];
 
   const childConditions: SQL[] = [inArray(configurationPolicies.parentPolicyId, ids)];
   const accessCond = policyAccessCondition(auth);
@@ -180,59 +211,61 @@ export async function loadAppliesToSummaries(
     if (summary) summary.childPolicyCount = Number(row.count ?? 0);
   }
 
-  // Counts come from every legible row, before any filtering (D2).
-  for (const row of assignmentRows) {
+  // Counts come from every legible row, before any filtering (D2): each window
+  // row carries its policy's totals. Rows are bucketed in SQL display order
+  // (`rn`); the sort makes that independent of driver return order.
+  const rowsByPolicy = new Map<string, WindowRow[]>();
+  for (const row of [...windowRows].sort((a, b) => Number(a.rn) - Number(b.rn))) {
     const summary = summaries.get(row.configPolicyId);
     if (!summary) continue;
-    summary.assignmentCount += 1;
-    if (row.level === 'partner') summary.allOrganizations = true;
-  }
-
-  // Fill `targets` lazily, in at most two rounds. Round 1 takes, per policy,
-  // as many leading rows (in display order) as it has free slots; round 2 takes
-  // the rest of that policy's first MAX_ROWS_EXAMINED_PER_POLICY rows, only for
-  // a policy still short. Each round authorizes its rows, names the admitted
-  // ones, and appends those that resolve. A policy assigned to thousands of
-  // devices therefore costs 3 ids when its leading rows resolve, and never more
-  // than MAX_ROWS_EXAMINED_PER_POLICY authorizations or names, however many of
-  // its rows the caller cannot list. Rows within a policy are consumed in
-  // order, so the kept targets stay in display order.
-  const rowsByPolicy = new Map<string, AssignmentRow[]>();
-  for (const row of [...assignmentRows].sort(compareAssignments)) {
+    summary.assignmentCount = Number(row.total ?? 0);
+    if (row.anyPartner === true) summary.allOrganizations = true;
     const bucket = rowsByPolicy.get(row.configPolicyId);
     if (bucket) bucket.push(row);
     else rowsByPolicy.set(row.configPolicyId, [row]);
   }
+
+  // Authorize every windowed target in one set-based pass (at most three
+  // statements, none for an unrestricted caller), with the same rules
+  // `GET /:id/assignments` applies.
+  const authorized = await authorizeAssignmentTargets(
+    auth,
+    windowRows.map((row) => ({ level: row.level, targetId: row.targetId })),
+  );
+
+  // Name lazily, in at most two rounds. Round 1 takes, per policy, as many
+  // leading admitted rows (in display order) as it has free slots; round 2
+  // takes the rest of the window, only for a policy still short. Each round is
+  // one name read per level for the whole page. A refused row never reaches a
+  // lookup and never takes a slot; rows within a policy are consumed in order,
+  // so the kept targets stay in display order.
   const cursors = new Map<string, number>();
-  // Memoized per distinct target: the device-group and device branches query.
-  const authorized = new Map<string, boolean>();
   const names = new Map<string, string>();
   const namesLookedUp = new Set<string>();
 
   for (let round = 0; round < 2; round += 1) {
-    const taken: AssignmentRow[] = [];
+    const taken: WindowRow[] = [];
     for (const [policyId, rows] of rowsByPolicy) {
       const summary = summaries.get(policyId);
       const free = summary ? APPLIES_TO_SUMMARY_TARGET_LIMIT - summary.targets.length : 0;
-      const start = cursors.get(policyId) ?? 0;
-      const limit = Math.min(rows.length, MAX_ROWS_EXAMINED_PER_POLICY);
-      if (free <= 0 || start >= limit) continue;
-      const end = round === 0 ? Math.min(limit, start + free) : limit;
-      taken.push(...rows.slice(start, end));
-      cursors.set(policyId, end);
+      let cursor = cursors.get(policyId) ?? 0;
+      if (free <= 0 || cursor >= rows.length) continue;
+      let picked = 0;
+      while (cursor < rows.length && (round === 1 || picked < free)) {
+        const row = rows[cursor]!;
+        cursor += 1;
+        if (!authorized.get(assignmentTargetKey(row.level, row.targetId))) continue;
+        taken.push(row);
+        picked += 1;
+      }
+      cursors.set(policyId, cursor);
     }
     if (taken.length === 0) break;
 
-    // Name only what the caller may list; a refused row never reaches a lookup.
     const toName = new Map<NamedLevel, Set<string>>();
     for (const row of taken) {
-      const key = `${row.level}:${row.targetId}`;
-      let ok = authorized.get(key);
-      if (ok === undefined) {
-        ok = (await authorizeAssignmentTarget(auth, row.level, row.targetId)).valid;
-        authorized.set(key, ok);
-      }
-      if (!ok || row.level === 'partner' || namesLookedUp.has(key)) continue;
+      const key = assignmentTargetKey(row.level, row.targetId);
+      if (row.level === 'partner' || namesLookedUp.has(key)) continue;
       namesLookedUp.add(key);
       const bucket = toName.get(row.level) ?? new Set<string>();
       bucket.add(row.targetId);
@@ -244,11 +277,9 @@ export async function loadAppliesToSummaries(
     for (const row of taken) {
       const summary = summaries.get(row.configPolicyId);
       if (!summary || summary.targets.length >= APPLIES_TO_SUMMARY_TARGET_LIMIT) continue;
-      const key = `${row.level}:${row.targetId}`;
-      if (!authorized.get(key)) continue;
       let name: string | null = null;
       if (row.level !== 'partner') {
-        const resolved = names.get(key);
+        const resolved = names.get(assignmentTargetKey(row.level, row.targetId));
         if (resolved === undefined) continue;
         name = resolved;
       }

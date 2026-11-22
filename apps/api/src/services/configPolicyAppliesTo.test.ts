@@ -1,10 +1,13 @@
 /**
  * Unit tests for the applies-to summary read model (#12306, plan W01a A2).
  *
- * The db mock dispatches each `select()` chain on the table passed to `from()`,
- * so the tests do not depend on statement order. RLS and real ordering in SQL
- * are not exercised here; configPolicyAppliesToSummary.integration.test.ts runs
- * the same function against Postgres under forced RLS.
+ * The db mock dispatches each `select()` chain on the table passed to `from()`
+ * (a `.as()` subquery resolves to the table it reads), so the tests do not
+ * depend on statement order. The display order, the per-policy window and the
+ * window totals are computed in SQL, so the fixtures arrive already windowed
+ * (see `windowed`); RLS, the SQL ordering and the 50-row window are exercised by
+ * configPolicyAppliesToSummary.integration.test.ts against Postgres. The
+ * statement budget is pinned by configPolicyAppliesTo.queryBudget.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -33,7 +36,8 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('./configurationPolicy', () => ({
-  authorizeAssignmentTarget: authorizeMock,
+  authorizeAssignmentTargets: authorizeMock,
+  assignmentTargetKey: (level: string, targetId: string) => `${level}:${targetId}`,
   policyAccessCondition: vi.fn(() => undefined),
 }));
 
@@ -58,12 +62,16 @@ const DEVICE_2 = '66666666-6666-4666-8666-666666666666';
 
 const auth = { scope: 'partner' } as never;
 
+const SOURCE = Symbol('source');
+
 function chain(table: unknown) {
-  const result = () => Promise.resolve(tableResults.get(table) ?? []);
+  const source = (table as Record<symbol, unknown> | undefined)?.[SOURCE] ?? table;
+  const result = () => Promise.resolve(tableResults.get(source) ?? []);
   const c: Record<string, unknown> = {};
   for (const m of ['where', 'groupBy', 'orderBy', 'leftJoin', 'innerJoin', 'limit']) {
     c[m] = () => c;
   }
+  c.as = () => ({ [SOURCE]: source });
   c.then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => result().then(resolve, reject);
   return c;
 }
@@ -84,6 +92,36 @@ function assignment(over: Partial<{
   };
 }
 
+/**
+ * What the windowed SQL read returns for these rows, taken as already in
+ * display order: `rn` by position within each policy, and each policy's
+ * `total`/`anyPartner` over all of its rows.
+ */
+function windowed(rows: ReturnType<typeof assignment>[]) {
+  const position = new Map<string, number>();
+  const total = new Map<string, number>();
+  const anyPartner = new Map<string, boolean>();
+  for (const row of rows) {
+    total.set(row.configPolicyId, (total.get(row.configPolicyId) ?? 0) + 1);
+    if (row.level === 'partner') anyPartner.set(row.configPolicyId, true);
+  }
+  return rows.map((row) => {
+    const rn = (position.get(row.configPolicyId) ?? 0) + 1;
+    position.set(row.configPolicyId, rn);
+    return { ...row, rn, total: total.get(row.configPolicyId)!, anyPartner: anyPartner.get(row.configPolicyId) ?? false };
+  });
+}
+
+function setAssignments(rows: ReturnType<typeof assignment>[]) {
+  tableResults.set(configPolicyAssignments, windowed(rows));
+}
+
+/** A batch authorizer that admits a target when `admit(level, targetId)` holds. */
+function admitWhen(admit: (level: string, targetId: string) => boolean) {
+  return async (_auth: unknown, targets: Array<{ level: string; targetId: string }>) =>
+    new Map(targets.map((t) => [`${t.level}:${t.targetId}`, admit(t.level, t.targetId)]));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   tableResults.clear();
@@ -95,7 +133,7 @@ beforeEach(() => {
       return chain(table);
     },
   }));
-  authorizeMock.mockResolvedValue({ valid: true });
+  authorizeMock.mockImplementation(admitWhen(() => true));
 });
 
 describe('loadAppliesToSummaries', () => {
@@ -105,14 +143,15 @@ describe('loadAppliesToSummaries', () => {
     expect(selectMock).not.toHaveBeenCalled();
   });
 
-  it('targets are ordered partner, organization, site, device group, device and capped at 3', async () => {
-    // Returned deliberately out of order: the ordering is the function's job.
-    tableResults.set(configPolicyAssignments, [
-      assignment({ id: 'a-device', level: 'device', targetId: DEVICE }),
-      assignment({ id: 'a-group', level: 'device_group', targetId: GROUP }),
-      assignment({ id: 'a-site', level: 'site', targetId: SITE }),
-      assignment({ id: 'a-org', level: 'organization', targetId: ORG }),
+  it('keeps the SQL display order and caps targets at 3', async () => {
+    // The level/priority/age order is SQL's job (integration-tested); here the
+    // rows arrive in display order and only the first three survive.
+    setAssignments([
       assignment({ id: 'a-partner', level: 'partner', targetId: PARTNER }),
+      assignment({ id: 'a-org', level: 'organization', targetId: ORG }),
+      assignment({ id: 'a-site', level: 'site', targetId: SITE }),
+      assignment({ id: 'a-group', level: 'device_group', targetId: GROUP }),
+      assignment({ id: 'a-device', level: 'device', targetId: DEVICE }),
     ]);
     tableResults.set(organizations, [{ id: ORG, name: 'Acme' }]);
     tableResults.set(sites, [{ id: SITE, name: 'Main office' }]);
@@ -126,31 +165,15 @@ describe('loadAppliesToSummaries', () => {
     expect(summary.targets.map((t) => t.name)).toEqual([null, 'Acme', 'Main office']);
   });
 
-  it('orders by priority, then age, within one level', async () => {
-    tableResults.set(configPolicyAssignments, [
-      assignment({ id: 'late', level: 'device', targetId: DEVICE, priority: 5, createdAt: new Date('2026-03-01T00:00:00Z') }),
-      assignment({ id: 'early', level: 'device', targetId: DEVICE_2, priority: 5, createdAt: new Date('2026-02-01T00:00:00Z') }),
-      assignment({ id: 'first', level: 'device', targetId: DEVICE, priority: 1, createdAt: new Date('2026-04-01T00:00:00Z') }),
-    ]);
-    tableResults.set(devices, [
-      { id: DEVICE, displayName: null, hostname: 'one' },
-      { id: DEVICE_2, displayName: null, hostname: 'two' },
-    ]);
-
-    const summary = (await loadAppliesToSummaries(auth, [POLICY_A])).get(POLICY_A)!;
-    expect(summary.targets.map((t) => t.assignmentId)).toEqual(['first', 'early', 'late']);
-  });
-
   it('assignmentCount counts rows the caller may not list', async () => {
-    tableResults.set(configPolicyAssignments, [
+    setAssignments([
       assignment({ id: 'a-org', level: 'organization', targetId: ORG }),
       assignment({ id: 'a-site', level: 'site', targetId: SITE }),
     ]);
     tableResults.set(organizations, [{ id: ORG, name: 'Acme' }]);
     tableResults.set(sites, [{ id: SITE, name: 'Main office' }]);
     // A site-restricted caller: the organization row is refused.
-    authorizeMock.mockImplementation(async (_auth: unknown, level: string) =>
-      level === 'organization' ? { valid: false, error: 'restricted' } : { valid: true });
+    authorizeMock.mockImplementation(admitWhen((level) => level !== 'organization'));
 
     const summary = (await loadAppliesToSummaries(auth, [POLICY_A])).get(POLICY_A)!;
 
@@ -160,15 +183,14 @@ describe('loadAppliesToSummaries', () => {
   });
 
   it('a refused row fills no slot, so a later listable row still makes the cap', async () => {
-    tableResults.set(configPolicyAssignments, [
+    setAssignments([
       assignment({ id: 'o1', level: 'organization', targetId: ORG }),
       assignment({ id: 'o2', level: 'organization', targetId: PARTNER }),
       assignment({ id: 'o3', level: 'organization', targetId: GROUP }),
       assignment({ id: 'a-site', level: 'site', targetId: SITE }),
     ]);
     tableResults.set(sites, [{ id: SITE, name: 'Main office' }]);
-    authorizeMock.mockImplementation(async (_auth: unknown, level: string) =>
-      level === 'organization' ? { valid: false, error: 'restricted' } : { valid: true });
+    authorizeMock.mockImplementation(admitWhen((level) => level !== 'organization'));
 
     const summary = (await loadAppliesToSummaries(auth, [POLICY_A])).get(POLICY_A)!;
     expect(summary.assignmentCount).toBe(4);
@@ -177,8 +199,8 @@ describe('loadAppliesToSummaries', () => {
     expect(fromCalls).not.toContain(organizations);
   });
 
-  it('authorizes each distinct target once across policies', async () => {
-    tableResults.set(configPolicyAssignments, [
+  it('authorizes the whole page in one batch', async () => {
+    setAssignments([
       assignment({ configPolicyId: POLICY_A, level: 'device_group', targetId: GROUP }),
       assignment({ configPolicyId: POLICY_B, level: 'device_group', targetId: GROUP }),
     ]);
@@ -186,13 +208,16 @@ describe('loadAppliesToSummaries', () => {
 
     const result = await loadAppliesToSummaries(auth, [POLICY_A, POLICY_B]);
     expect(authorizeMock).toHaveBeenCalledTimes(1);
-    expect(authorizeMock).toHaveBeenCalledWith(auth, 'device_group', GROUP);
+    expect(authorizeMock).toHaveBeenCalledWith(auth, [
+      { level: 'device_group', targetId: GROUP },
+      { level: 'device_group', targetId: GROUP },
+    ]);
     expect(result.get(POLICY_A)!.targets).toHaveLength(1);
     expect(result.get(POLICY_B)!.targets).toHaveLength(1);
   });
 
   it('a partner-level row sets allOrganizations and carries name null', async () => {
-    tableResults.set(configPolicyAssignments, [
+    setAssignments([
       assignment({ id: 'a-partner', level: 'partner', targetId: PARTNER, roleFilter: ['server'], osFilter: ['windows'] }),
     ]);
 
@@ -210,10 +235,10 @@ describe('loadAppliesToSummaries', () => {
   });
 
   it('allOrganizations holds even when the caller may not list the partner row', async () => {
-    tableResults.set(configPolicyAssignments, [
+    setAssignments([
       assignment({ level: 'partner', targetId: PARTNER }),
     ]);
-    authorizeMock.mockResolvedValue({ valid: false, error: 'restricted' });
+    authorizeMock.mockImplementation(admitWhen(() => false));
 
     const summary = (await loadAppliesToSummaries(auth, [POLICY_A])).get(POLICY_A)!;
     expect(summary.allOrganizations).toBe(true);
@@ -222,7 +247,7 @@ describe('loadAppliesToSummaries', () => {
   });
 
   it('a device target is named displayName, else hostname', async () => {
-    tableResults.set(configPolicyAssignments, [
+    setAssignments([
       assignment({ id: 'named', level: 'device', targetId: DEVICE, createdAt: new Date('2026-01-01T00:00:00Z') }),
       assignment({ id: 'bare', level: 'device', targetId: DEVICE_2, createdAt: new Date('2026-01-02T00:00:00Z') }),
     ]);
@@ -239,7 +264,7 @@ describe('loadAppliesToSummaries', () => {
   });
 
   it('a target whose name lookup returns nothing is left out of targets but counted', async () => {
-    tableResults.set(configPolicyAssignments, [
+    setAssignments([
       assignment({ id: 'a-org', level: 'organization', targetId: ORG }),
       assignment({ id: 'a-site', level: 'site', targetId: SITE }),
     ]);
@@ -265,7 +290,7 @@ describe('loadAppliesToSummaries', () => {
         }));
       }
     }
-    tableResults.set(configPolicyAssignments, rows);
+    setAssignments(rows);
     tableResults.set(devices, [{ id: DEVICE, displayName: 'Front desk', hostname: 'fd-01' }]);
 
     const result = await loadAppliesToSummaries(auth, [POLICY_A, POLICY_B]);
@@ -275,10 +300,10 @@ describe('loadAppliesToSummaries', () => {
     expect(result.get(POLICY_B)!.assignmentCount).toBe(4);
   });
 
-  it('authorizes and names only the rows needed to fill the cap', async () => {
+  it('names only the rows needed to fill the cap', async () => {
     // A policy assigned to 40 devices, every one listable and named.
     const ids = Array.from({ length: 40 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
-    tableResults.set(configPolicyAssignments, ids.map((id, i) => assignment({
+    setAssignments(ids.map((id, i) => assignment({
       id: `d-${i}`,
       level: 'device',
       targetId: id,
@@ -290,35 +315,37 @@ describe('loadAppliesToSummaries', () => {
 
     expect(summary.assignmentCount).toBe(40);
     expect(summary.targets.map((t) => t.assignmentId)).toEqual(['d-0', 'd-1', 'd-2']);
-    expect(authorizeMock).toHaveBeenCalledTimes(3);
+    expect(authorizeMock).toHaveBeenCalledTimes(1);
     const deviceLookups = inArrayCalls.filter((call) => call.column === devices.id);
     expect(deviceLookups).toHaveLength(1);
     expect(deviceLookups[0]!.values).toEqual(ids.slice(0, 3));
   });
 
-  it('examines at most 50 rows per policy when the caller may list none of them', async () => {
-    // A site-restricted caller and a policy on 120 devices outside their sites.
+  it('names nothing when the caller may list none of the window', async () => {
+    // A site-restricted caller and a policy on 120 devices outside their sites;
+    // the window (rows 1-50 in SQL) arrives, every target is refused.
     const ids = Array.from({ length: 120 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
-    tableResults.set(configPolicyAssignments, ids.map((id, i) => assignment({
+    tableResults.set(configPolicyAssignments, windowed(ids.map((id, i) => assignment({
       id: `d-${i}`,
       level: 'device',
       targetId: id,
-      createdAt: new Date(Date.UTC(2026, 0, 1, 0, i)),
-    })));
-    authorizeMock.mockResolvedValue({ valid: false, error: 'restricted' });
+    }))).slice(0, 50));
+    authorizeMock.mockImplementation(admitWhen(() => false));
 
     const summary = (await loadAppliesToSummaries(auth, [POLICY_A])).get(POLICY_A)!;
 
+    // The count is the window total over all 120 rows, not the 50 read.
     expect(summary.assignmentCount).toBe(120);
     expect(summary.targets).toEqual([]);
-    expect(authorizeMock).toHaveBeenCalledTimes(50);
+    expect(authorizeMock).toHaveBeenCalledTimes(1);
+    expect(authorizeMock.mock.calls[0]![1]).toHaveLength(50);
     expect(fromCalls).not.toContain(devices);
   });
 
   it('keeps looking past rows it cannot name until the cap fills', async () => {
     // The first five targets are not legible; the sixth and seventh are.
     const ids = Array.from({ length: 7 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
-    tableResults.set(configPolicyAssignments, ids.map((id, i) => assignment({
+    setAssignments(ids.map((id, i) => assignment({
       id: `d-${i}`,
       level: 'device',
       targetId: id,
