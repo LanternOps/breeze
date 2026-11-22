@@ -2847,3 +2847,168 @@ describe('a vendor lane is read at execution, not frozen in the job snapshot (#1
     expect(JSON.stringify(firstConfig)).not.toMatch(/vendor|managed|oem/i);
   });
 });
+
+// An AI-initiated install job (manage_patches install) names its patches in
+// `patches.patchIds`. The executor must install only those — still under every
+// eligibility gate — and must never fall back to "every approved patch".
+describe('a job that names its patches installs only those', () => {
+  const A = 'aaaaaaaa-0000-4000-8000-00000000000a';
+  const B = 'aaaaaaaa-0000-4000-8000-00000000000b';
+  const ELIGIBLE = [
+    { patchId: A, externalId: 'KB5000001', requiresReboot: false },
+    { patchId: B, externalId: 'KB5000002', requiresReboot: false },
+  ];
+
+  let insertedRows: any[];
+
+  function primeJob(patchesJson: Record<string, unknown>, opts: { dispatches: boolean } = { dispatches: true }) {
+    const select = vi.mocked(db.select)
+      // 1. patch job row
+      .mockImplementationOnce(() => createSelectChain([{
+        id: 'job-1',
+        orgId: 'org-1',
+        status: 'running',
+        patches: patchesJson,
+        targets: { deviceIds: ['device-1'], deployment: { offlineBehavior: 'queue' } },
+      }]) as any)
+      // 2. device-in-org check
+      .mockImplementationOnce(() => createSelectChain([{ id: 'device-1' }]) as any);
+    // 3. patch records for the install command (only read on the dispatch path)
+    if (opts.dispatches) {
+      select.mockImplementationOnce(() => createWhereSelectChain(
+        ELIGIBLE.map((p) => ({ id: p.patchId, source: 'microsoft', externalId: p.externalId, title: p.externalId })),
+      ) as any);
+    }
+    // Anything after that is checkAndFinalizeJob: no job row → no-op.
+    vi.mocked(db.select).mockImplementation(() => createSelectChain([]) as any);
+  }
+
+  /** The resolver honours its arguments: a requested list narrows, none returns everything eligible. */
+  function argumentKeyedResolver(eligible = ELIGIBLE) {
+    vi.mocked(resolveApprovedPatchesForDevice).mockImplementation((async (
+      _d: string, _o: string, _c: unknown, requested?: { patchIds: string[] },
+    ) => (requested ? eligible.filter((p) => requested.patchIds.includes(p.patchId)) : eligible)) as any);
+  }
+
+  function queuedDispatch() {
+    vi.mocked(dispatchDeviceCommand).mockResolvedValueOnce({
+      ok: true,
+      command: { id: 'cmd-queued' },
+      delivery: 'queued_offline',
+      deliverBy: new Date('2026-12-01T00:00:00.000Z'),
+    } as any);
+  }
+
+  async function run() {
+    createPatchJobDeviceWorker();
+    return shared.processorRefs['patch-job-devices']({
+      data: { type: 'execute-patch-job-device', patchJobId: 'job-1', deviceId: 'device-1', orgId: 'org-1' },
+    });
+  }
+
+  const dispatchedPatchIds = () =>
+    (vi.mocked(dispatchDeviceCommand).mock.calls[0]![0] as unknown as { payload: { patchIds: string[] } }).payload.patchIds;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    shared.processorRef = undefined;
+    shared.processorRefs = {};
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    insertedRows = [];
+    vi.mocked(db.insert).mockImplementation(() => ({
+      values: vi.fn((v: any) => { insertedRows.push(v); return Promise.resolve(); }),
+    }) as any);
+    vi.mocked(db.update).mockImplementation(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() =>
+          Object.assign(Promise.resolve([{ id: 'w0' }]), {
+            returning: vi.fn(() => Promise.resolve([{ id: 'w0' }])),
+          }),
+        ),
+      })),
+    }) as any);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('installs only A when A and B are both approved and outstanding', async () => {
+    primeJob({ patchIds: [A] });
+    argumentKeyedResolver();
+    queuedDispatch();
+
+    const result: any = await run();
+
+    expect(resolveApprovedPatchesForDevice).toHaveBeenCalledWith(
+      'device-1', 'org-1', expect.any(Object), { patchIds: [A], excludeSuperseded: true },
+    );
+    expect(dispatchedPatchIds()).toEqual([A]);
+    expect(result).toMatchObject({ kind: 'queued', patchCount: 1 });
+  });
+
+  it('never dispatches a patch outside the list, even if the resolver returned one', async () => {
+    primeJob({ patchIds: [A] });
+    // A resolver that ignored the list must not widen the install.
+    vi.mocked(resolveApprovedPatchesForDevice).mockResolvedValueOnce(ELIGIBLE as any);
+    queuedDispatch();
+
+    const result: any = await run();
+
+    expect(dispatchedPatchIds()).toEqual([A]);
+    expect(result).toMatchObject({ kind: 'queued', patchCount: 1 });
+  });
+
+  it('a requested patch that is not eligible installs nothing and skips the device with the reason', async () => {
+    primeJob({ patchIds: [A] }, { dispatches: false });
+    // A is not approved: the resolver judges it ineligible; B is approved but not asked for.
+    argumentKeyedResolver([ELIGIBLE[1]!]);
+
+    const result = await run();
+
+    expect(dispatchDeviceCommand).not.toHaveBeenCalled();
+    // Not "nothing approved" and not the vendor-lane question: those describe the whole device.
+    expect(areAllPendingPatchesManagedByVendorLane).not.toHaveBeenCalled();
+    expect(insertedRows).toContainEqual(expect.objectContaining({
+      deviceId: 'device-1', patchId: null, status: 'skipped', errorMessage: 'requested_patches_not_eligible',
+    }));
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Requested patches are not eligible' });
+  });
+
+  it.each([
+    ['a string', A],
+    ['an empty string', ''],
+    ['null', null],
+    ['an object', { 0: A }],
+    ['an empty array', []],
+    ['non-UUID ids', ['KB5000001']],
+    ['one bad id among good ones', [A, 'not-a-uuid']],
+    ['a non-string id', [A, 42]],
+  ])('malformed patchIds (%s) install nothing and skip the device', async (_label, patchIds) => {
+    primeJob({ patchIds }, { dispatches: false });
+    argumentKeyedResolver();
+
+    const result = await run();
+
+    expect(resolveApprovedPatchesForDevice).not.toHaveBeenCalled();
+    expect(dispatchDeviceCommand).not.toHaveBeenCalled();
+    expect(insertedRows).toContainEqual(expect.objectContaining({
+      deviceId: 'device-1', patchId: null, status: 'skipped', errorMessage: 'invalid_patch_ids',
+    }));
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Invalid requested patch list' });
+    expect(captureException).toHaveBeenCalled();
+  });
+
+  it('a job without patchIds keeps today\'s behaviour: every eligible patch, resolver called with three arguments', async () => {
+    primeJob({ ringId: null, autoApprove: {} });
+    argumentKeyedResolver();
+    queuedDispatch();
+
+    const result: any = await run();
+
+    expect(vi.mocked(resolveApprovedPatchesForDevice).mock.calls[0]).toHaveLength(3);
+    expect(dispatchedPatchIds()).toEqual([A, B]);
+    expect(result).toMatchObject({ kind: 'queued', patchCount: 2 });
+  });
+});
