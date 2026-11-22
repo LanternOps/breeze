@@ -151,7 +151,8 @@ vi.mock('../services/learnedNetworks/gate', async (importOriginal) => {
     },
   };
 });
-vi.mock('../services/learnedNetworks/attempt', () => ({
+vi.mock('../services/learnedNetworks/attempt', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/learnedNetworks/attempt')>()),
   loadProfileForDispatch: vi.fn(async () => networkGateMock.phase1Profile),
   recordDispatchAttempt: vi.fn(async (_jobId: string, record: { agentId: string }) => {
     const now = new Date();

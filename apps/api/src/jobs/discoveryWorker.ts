@@ -62,7 +62,7 @@ import {
 } from './discoveryAgentSelection';
 import { prepareDiscoveryTopologyDispatch, type DiscoveryTopologyCommandBlock } from '../services/topology/discoveryDispatch';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
-import type { DiscoveryJobError, ExpectedNetwork, IneligibleReason } from '@breeze/shared';
+import type { DiscoveryJobError, ExpectedNetwork, IneligibleReason, VerifiedNetwork } from '@breeze/shared';
 import { lockSitesForNetworkGate } from '../services/learnedNetworks/siteLock';
 import { evaluateDiscoveryGate, gateProfileFromRow } from '../services/learnedNetworks/gate';
 import {
@@ -70,6 +70,8 @@ import {
 } from '../services/learnedNetworks/eligibility';
 import { buildDiscoveryScanCommand, DISCOVERY_SCAN_FAMILY } from '../services/learnedNetworks/scanCommand';
 import { loadProfileForDispatch, recordDispatchAttempt } from '../services/learnedNetworks/attempt';
+import { attemptFromRecord, verifyDiscoveryResult } from '../services/learnedNetworks/verify';
+import { CROSS_NETWORK_WINDOW_DAYS } from '../services/learnedNetworks/constants';
 import { agentNotEligibleMessage, NO_AGENT_MESSAGES } from '../services/learnedNetworks/messages';
 
 const { db } = dbModule;
@@ -121,6 +123,8 @@ interface ProcessResultsJobData {
   hostsScanned: number;
   hostsDiscovered: number;
   adjacency?: DeviceAdjacency[];
+  /** Learned networks (#12369): set only for a guarded result; processResults verifies it again before storing. */
+  verifiedNetwork?: VerifiedNetwork;
 }
 
 // LLDP/CDP adjacency contract (mirrors the agent payload; see issue #1728).
@@ -1163,7 +1167,12 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
 
   // Check if job was cancelled before processing results
   const [currentJob] = await db
-    .select({ status: discoveryJobs.status })
+    .select({
+      status: discoveryJobs.status,
+      siteId: discoveryJobs.siteId,
+      profileId: discoveryJobs.profileId,
+      networkDispatch: discoveryJobs.networkDispatch,
+    })
     .from(discoveryJobs)
     .where(eq(discoveryJobs.id, data.jobId))
     .limit(1);
@@ -1172,6 +1181,30 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     console.log(`[DiscoveryWorker] Job ${data.jobId} was cancelled — skipping result processing`);
     return { newAssets: 0, updatedAssets: 0, durationMs: Date.now() - startTime };
   }
+
+  // Learned networks (#12369 spec §8.4): verify again in the storing
+  // transaction, under the shared site lock held until the assets are written,
+  // so a result admitted under an older assignment cannot write anything the
+  // current state does not allow. Uncaught on purpose: a failed read fails the
+  // transaction rather than being caught next to a later write.
+  const resultSiteId = currentJob?.siteId ?? data.siteId;
+  await lockSitesForNetworkGate([resultSiteId], 'shared');
+  const verification = await verifyDiscoveryResult({
+    orgId: data.orgId,
+    siteId: resultSiteId,
+    profileId: currentJob?.profileId ?? data.profileId ?? null,
+    attempt: attemptFromRecord(currentJob?.networkDispatch ?? null),
+    verifiedNetwork: data.verifiedNetwork,
+  });
+  if (!verification.ok) {
+    console.warn(`[DiscoveryWorker] Discarding results for job ${data.jobId}: ${verification.error.code}`);
+    await markJobFailed(data.jobId, verification.error);
+    return { newAssets: 0, updatedAssets: 0, durationMs: Date.now() - startTime };
+  }
+  // Set only for a verified guarded result: the network every asset this scan writes is stamped with.
+  const scanNetworkId = verification.networkId;
+  const crossNetworkSince = Date.now() - CROSS_NETWORK_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  let crossNetworkCount = 0;
 
   // ── Resolve profileId ─────────────────────────────────────────────────
   let profileId = data.profileId;
@@ -1341,7 +1374,9 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
         typeSource: discoveredAssets.typeSource,
         detectedTypeSource: discoveredAssets.detectedTypeSource,
         autoLinkSuppressedAt: discoveredAssets.autoLinkSuppressedAt,
-        linkSource: discoveredAssets.linkSource
+        linkSource: discoveredAssets.linkSource,
+        lastNetworkId: discoveredAssets.lastNetworkId,
+        lastSeenAt: discoveredAssets.lastSeenAt
       })
       .from(discoveredAssets)
       .where(
@@ -1429,6 +1464,15 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       // the first insert and by manual moves. A scan re-finding an asset that
       // was moved to a sibling site must not drag it back.
       const updateSet = buildScanUpdateSet(assetData, classification);
+      // A verified guarded scan stamps the sighting with its network (#12369),
+      // and counts an asset it last saw on a different network within the window.
+      if (scanNetworkId) {
+        updateSet.lastNetworkId = scanNetworkId;
+        if (existing.lastNetworkId && existing.lastNetworkId !== scanNetworkId
+          && existing.lastSeenAt && existing.lastSeenAt.getTime() >= crossNetworkSince) {
+          crossNetworkCount++;
+        }
+      }
       await db
         .update(discoveredAssets)
         .set(updateSet)
@@ -1535,7 +1579,8 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
         typeSource: 'auto',
         // #5213 — insert side only. A scan that later re-finds a manual row
         // must not relabel it (see buildScanUpdateSet, which omits `source`).
-        source: 'scan'
+        source: 'scan',
+        ...(scanNetworkId ? { lastNetworkId: scanNetworkId } : {}),
       }).returning({ id: discoveredAssets.id });
       upsertedAssetId = inserted?.id ?? null;
       newCount++;
@@ -1942,6 +1987,8 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       hostsScanned: data.hostsScanned,
       hostsDiscovered: data.hostsDiscovered,
       newAssets: newCount,
+      // The network a verified guarded scan ran on, and its cross-network count (#12369 spec §8.4).
+      ...(scanNetworkId ? { networkId: scanNetworkId, crossNetworkAssetUpdates: crossNetworkCount } : {}),
       updatedAt: new Date()
     })
     .where(eq(discoveryJobs.id, data.jobId));
@@ -2164,6 +2211,7 @@ export async function enqueueDiscoveryResults(
   profileId?: string,
   adjacency?: DeviceAdjacency[],
   meta: QueueActorMeta = DISCOVERY_RESULT_META,
+  verifiedNetwork?: VerifiedNetwork | null,
 ): Promise<string> {
   const queue = getDiscoveryQueue();
   const job = await addUniqueDiscoveryJob(
@@ -2178,7 +2226,8 @@ export async function enqueueDiscoveryResults(
       hosts,
       hostsScanned,
       hostsDiscovered,
-      adjacency
+      adjacency,
+      ...(verifiedNetwork ? { verifiedNetwork } : {}),
     }, meta)),
     `discovery-result-${jobId}`,
     {

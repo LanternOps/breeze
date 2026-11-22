@@ -41,7 +41,7 @@ vi.mock('../../services/snmpSecrets', async (importOriginal) => {
 });
 
 import { db, withSystemDbAccessContext } from '../../db';
-import { __testables } from '../../jobs/discoveryWorker';
+import { __testables, processResults } from '../../jobs/discoveryWorker';
 import { lockSitesForNetworkGate } from '../../services/learnedNetworks/siteLock';
 import {
   explainGuardedAgent, explainNoEligibleAgent, loadEligibleGuardedAgents,
@@ -501,5 +501,128 @@ describe('dispatch and results', () => {
     const row = await job(jobId);
     expect(row).toMatchObject({ status: 'failed', errors: { code: 'agent_not_eligible', reason: 'offline' } });
     expect(String(row.errors?.message)).toContain('"DESKTOP-01"');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// processResults: verify in the storing transaction, stamp the network (Task 11)
+// ---------------------------------------------------------------------------------------------------------
+
+/** A running job with this attempt record, as recordDispatchAttempt writes it. */
+async function runningJob(t: Scope, profileId: string, record: Record<string, unknown> | null): Promise<string> {
+  const jobId = await seedJob(t.orgId, t.siteId, profileId);
+  await admin(sql`UPDATE discovery_jobs SET status = 'running', started_at = now(),
+    network_dispatch = ${record === null ? null : JSON.stringify(record)}::jsonb WHERE id = ${jobId}::uuid`);
+  return jobId;
+}
+
+const guardedRecord = (agentId: string, deviceId: string, networkIds: string[], gatewayIds: string[]) => ({
+  version: 1, mode: 'guarded', agentId, deviceId, allowedNetworkIds: networkIds, allowedGatewayIds: gatewayIds,
+  decidedAt: new Date().toISOString(),
+});
+
+const verifiedFor = (networkId: string, gatewayId: string, g: { address: string; mac: string }) => ({
+  networkId, gatewayId, gatewayAddress: g.address, gatewayMac: g.mac, interfaceName: 'Ethernet',
+});
+
+const host = (ip: string) => ({ ip, assetType: 'printer', methods: ['ping'] });
+
+async function assets(orgId: string) {
+  return admin<{ ip: string; last_network_id: string | null }>(sql`
+    SELECT host(ip_address) AS ip, last_network_id FROM discovered_assets WHERE org_id = ${orgId}::uuid ORDER BY ip_address`);
+}
+
+async function seedAsset(t: Scope, ip: string, lastNetworkId: string | null, seenDaysAgo: number) {
+  await admin(sql`INSERT INTO discovered_assets (org_id, site_id, ip_address, asset_type, last_network_id, last_seen_at)
+    VALUES (${t.orgId}::uuid, ${t.siteId}::uuid, ${ip}::inet, 'printer', ${lastNetworkId}::uuid,
+            now() - make_interval(days => ${seenDaysAgo}))`);
+}
+
+describe('process results', () => {
+  async function guardedScene() {
+    const t = await seedSite();
+    const { networkIds, gatewayIds } = await gateSite(t.orgId, t.siteId, [[G1]]);
+    const agent = await seedAgent({ ...t, hostname: 'LAPTOP-JS', behind: [gatewayIds[0]![0]!] });
+    const profileId = await seedProfile(t);
+    const n1 = networkIds[0]!; const g1 = gatewayIds[0]![0]!;
+    const jobId = await runningJob(t, profileId, guardedRecord(agent.agentId, agent.deviceId, [n1], [g1]));
+    return { t, n1, g1, profileId, jobId };
+  }
+  const resultsFor = (t: Scope, profileId: string, jobId: string, hosts: ReturnType<typeof host>[], verifiedNetwork?: unknown) =>
+    ({ type: 'process-results' as const, jobId, profileId, ...t, hosts, hostsScanned: hosts.length, hostsDiscovered: hosts.length,
+      ...(verifiedNetwork ? { verifiedNetwork: verifiedNetwork as ReturnType<typeof verifiedFor> } : {}) });
+
+  it('a guarded result admitted earlier stores nothing when its fingerprint was unassigned before storing', async () => {
+    const { t, n1, g1, profileId, jobId } = await guardedScene();
+    await admin(sql`UPDATE learned_networks SET site_id = NULL WHERE id = ${n1}::uuid`);
+
+    const out = await sys(() => processResults(resultsFor(t, profileId, jobId, [host('192.168.1.20')], verifiedFor(n1, g1, G1))));
+
+    expect(out).toMatchObject({ newAssets: 0, updatedAssets: 0 });
+    expect(await assets(t.orgId)).toEqual([]);
+    expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { code: 'network_unverified' } });
+  });
+
+  it('a verified guarded result sets the job network and stamps every asset it writes', async () => {
+    const { t, n1, g1, profileId, jobId } = await guardedScene();
+    await seedAsset(t, '192.168.1.21', null, 1);
+
+    const out = await sys(() => processResults(resultsFor(t, profileId, jobId,
+      [host('192.168.1.20'), host('192.168.1.21')], verifiedFor(n1, g1, G1))));
+
+    expect(out).toMatchObject({ newAssets: 1, updatedAssets: 1 });
+    expect(await assets(t.orgId)).toEqual([
+      { ip: '192.168.1.20', last_network_id: n1 },
+      { ip: '192.168.1.21', last_network_id: n1 },
+    ]);
+    expect(await job(jobId)).toMatchObject({ status: 'completed', networkId: n1, crossNetworkAssetUpdates: 0 });
+  });
+
+  it('counts updated assets a guarded scan last saw on another network within 30 days', async () => {
+    const { t, n1, g1, profileId, jobId } = await guardedScene();
+    const n2 = (await unassignedNetwork(t.orgId, [G3])).networkId;
+    await seedAsset(t, '192.168.1.31', n2, 3);
+    await seedAsset(t, '192.168.1.32', n2, 40);
+    await seedAsset(t, '192.168.1.33', n1, 3);
+    await seedAsset(t, '192.168.1.34', null, 3);
+
+    await sys(() => processResults(resultsFor(t, profileId, jobId,
+      ['192.168.1.31', '192.168.1.32', '192.168.1.33', '192.168.1.34'].map(host), verifiedFor(n1, g1, G1))));
+
+    expect(await job(jobId)).toMatchObject({ status: 'completed', networkId: n1, crossNetworkAssetUpdates: 1 });
+    expect((await assets(t.orgId)).every((a) => a.last_network_id === n1)).toBe(true);
+  });
+
+  it('an unrestricted result leaves last_network_id and the job network null', async () => {
+    const t = await seedSite();
+    const agent = await seedAgent({ ...t, hostname: 'DESKTOP-01' });
+    const profileId = await seedProfile(t);
+    const jobId = await runningJob(t, profileId, {
+      version: 1, mode: 'unrestricted', agentId: agent.agentId, deviceId: agent.deviceId,
+      allowedNetworkIds: [], allowedGatewayIds: [], decidedAt: new Date().toISOString(),
+    });
+    await seedAsset(t, '192.168.1.21', null, 1);
+
+    await sys(() => processResults(resultsFor(t, profileId, jobId, [host('192.168.1.20'), host('192.168.1.21')])));
+
+    expect(await assets(t.orgId)).toEqual([
+      { ip: '192.168.1.20', last_network_id: null },
+      { ip: '192.168.1.21', last_network_id: null },
+    ]);
+    expect(await job(jobId)).toMatchObject({ status: 'completed', networkId: null, crossNetworkAssetUpdates: null });
+  });
+
+  it('an unrestricted result that reaches storage after the site became gated stores nothing', async () => {
+    const t = await seedSite();
+    const agent = await seedAgent({ ...t, hostname: 'DESKTOP-01' });
+    const profileId = await seedProfile(t);
+    const jobId = await runningJob(t, profileId, null);
+    await gateSite(t.orgId, t.siteId, [[G1]]);
+
+    await sys(() => processResults(resultsFor(t, profileId, jobId, [host('192.168.1.20')])));
+
+    expect(await assets(t.orgId)).toEqual([]);
+    expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { code: 'network_unverified' } });
+    void agent;
   });
 });
