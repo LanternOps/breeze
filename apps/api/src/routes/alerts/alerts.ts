@@ -3,7 +3,8 @@ import { Hono, type MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { zValidator, formatZodError, isJsonContentType } from '../../lib/validation';
 import { z } from 'zod';
-import { and, or, eq, ne, sql, desc, gte, lte, inArray, isNull, notExists, type SQL } from 'drizzle-orm';
+import { and, or, eq, ne, sql, desc, gte, lte, ilike, inArray, isNull, exists, notExists, type SQL } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import {
   aiAlertVerdicts,
@@ -39,7 +40,9 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
 import { latestVerdictsForAlerts, projectAlertAiVerdictSummary } from '../../services/aiAgents/alertVerdicts';
-import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, unsuppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
+import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, unsuppressAlertSchema, bulkAlertActionSchema, type AlertSeverityValue, type AlertStatusValue } from './schemas';
+import { escapeLikePattern, evaluateFilter, FilterQueryTimeoutError, validateFilter, type FilterConditionGroup } from '../../services/filterEngine';
+import { FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS, reportFilterPreviewTimeout } from '../../services/filterPreviewTimeout';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck, alertSiteScopeCondition } from './helpers';
 import { fillStoredAlertCopy } from './alertCopy';
 import { enrichAlertSubjects } from '../../services/alertSubject';
@@ -237,6 +240,53 @@ export function correlationMetadataCondition(orgIds: string[], alertIds: string[
   )!;
 }
 
+// Hostname/display-name match for `search`. An org-pinned EXISTS rather than a
+// predicate on the joined `devices` row: the count query joins `devices` only
+// for site-restricted callers, so a predicate on the join would break it.
+const searchDevices = alias(devices, 'alert_search_devices');
+
+/** `GET /alerts?search=` predicate. Exported for the compiled-SQL test. */
+export function alertSearchCondition(search: string): SQL {
+  const pattern = `%${escapeLikePattern(search)}%`;
+  return or(
+    ilike(alerts.title, pattern),
+    ilike(alerts.message, pattern),
+    exists(
+      db.select({ one: sql`1` }).from(searchDevices).where(and(
+        eq(searchDevices.id, alerts.deviceId),
+        eq(searchDevices.orgId, alerts.orgId),
+        or(ilike(searchDevices.hostname, pattern), ilike(searchDevices.displayName, pattern)),
+      ))
+    ),
+  )!;
+}
+
+/**
+ * The resolved device filter as ONE bound `uuid[]` parameter. A device filter
+ * can match thousands of devices, and one parameter per id would run into the
+ * protocol's 65,535-parameter limit. The ids come from `devices.id`, so the
+ * array literal holds only UUIDs.
+ */
+function deviceIdsCondition(deviceIds: string[]): SQL {
+  if (deviceIds.length === 0) return sql`false`;
+  return sql`${alerts.deviceId} = ANY(${`{${deviceIds.join(',')}}`}::uuid[])`;
+}
+
+/**
+ * Orgs a device filter is evaluated in: the same org axis the list itself is
+ * narrowed to. A system-scope caller with no `orgId` gets none, matching
+ * `POST /filters/preview`, which the page used for this before #12324.
+ */
+function deviceFilterOrgIds(
+  auth: { scope: string; orgId?: string | null; accessibleOrgIds?: string[] | null },
+  queryOrgId: string | undefined,
+): string[] {
+  if (auth.scope === 'organization') return auth.orgId ? [auth.orgId] : [];
+  if (queryOrgId) return [queryOrgId];
+  if (auth.scope === 'partner') return auth.accessibleOrgIds ?? [];
+  return [];
+}
+
 // GET /alerts - List alerts with filters
 alertsRoutes.get(
   '/',
@@ -296,7 +346,49 @@ alertsRoutes.get(
     }
 
     if (query.severity) {
-      conditions.push(eq(alerts.severity, query.severity));
+      const severities = query.severity.split(',') as AlertSeverityValue[];
+      conditions.push(
+        severities.length === 1 ? eq(alerts.severity, severities[0]!) : inArray(alerts.severity, severities)
+      );
+    }
+
+    if (query.search) {
+      conditions.push(alertSearchCondition(query.search));
+    }
+
+    // #12324 — the advanced device filter, resolved to device ids here and
+    // applied in `conditions` so it filters before the limit. The web used to
+    // resolve it itself and filter the newest page in the browser, which in
+    // the All-organizations view dropped a device's current alerts behind
+    // newer alerts from other orgs.
+    if (query.deviceFilter) {
+      // Same gate as `POST /filters/preview`: a device filter can match on
+      // device attributes (software, hardware, network) an alerts-only role
+      // cannot otherwise read.
+      if (!perms || !hasPermission(perms, PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action)) {
+        return c.json({ error: 'Permission denied' }, 403);
+      }
+      const filter = query.deviceFilter as unknown as FilterConditionGroup;
+      const validation = validateFilter(filter);
+      if (!validation.valid) {
+        return c.json({ error: 'Invalid filter', details: validation.errors }, 400);
+      }
+      const deviceIds: string[] = [];
+      let evaluatingOrgId: string | null = null;
+      try {
+        // Sequential, not Promise.all: each evaluation opens a savepoint on
+        // the request transaction.
+        for (const orgId of deviceFilterOrgIds(auth, query.orgId)) {
+          evaluatingOrgId = orgId;
+          const result = await evaluateFilter(filter, { orgId, allowedSiteIds: auth.allowedSiteIds });
+          deviceIds.push(...result.deviceIds);
+        }
+      } catch (error) {
+        if (!(error instanceof FilterQueryTimeoutError)) throw error;
+        reportFilterPreviewTimeout(evaluatingOrgId);
+        return c.json(FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS);
+      }
+      conditions.push(deviceIdsCondition(deviceIds));
     }
 
     if (query.deviceId) {
@@ -498,6 +590,7 @@ alertsRoutes.get(
         if (orgIds.length === 0) {
           return c.json({
             bySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+            openBySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
             byStatus: { active: 0, acknowledged: 0, resolved: 0, suppressed: 0, dismissed: 0 },
             total: 0
           });
@@ -539,6 +632,19 @@ alertsRoutes.get(
       .leftJoin(devices, eq(alerts.deviceId, devices.id))
       .where(visibleFilter);
 
+    // Open (active + acknowledged) counts by severity: the Alerts page's
+    // summary strip (#12324), which used to count the rows of its own capped
+    // page. `bySeverity` stays active-only for the dashboard KPIs that read it.
+    const openSeverityCounts = await db
+      .select({
+        severity: alerts.severity,
+        count: sql<number>`count(*)`
+      })
+      .from(alerts)
+      .leftJoin(devices, eq(alerts.deviceId, devices.id))
+      .where(and(visibleFilter, inArray(alerts.status, ['active', 'acknowledged'])))
+      .groupBy(alerts.severity);
+
     // Format response
     const bySeverity = {
       critical: 0,
@@ -550,6 +656,11 @@ alertsRoutes.get(
 
     for (const row of severityCounts) {
       bySeverity[row.severity as keyof typeof bySeverity] = Number(row.count);
+    }
+
+    const openBySeverity = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    for (const row of openSeverityCounts) {
+      openBySeverity[row.severity as keyof typeof openBySeverity] = Number(row.count);
     }
 
     const byStatus = {
@@ -566,6 +677,7 @@ alertsRoutes.get(
 
     return c.json({
       bySeverity,
+      openBySeverity,
       byStatus,
       total: Number(totalResult[0]?.count ?? 0)
     });
