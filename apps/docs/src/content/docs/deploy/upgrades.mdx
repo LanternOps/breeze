@@ -418,6 +418,12 @@ The `postgres` service in `docker-compose.yml` gains `PGDATA` and a selectable d
 | The `postgres` mount becomes `${POSTGRES_DATA_VOLUME:-postgres_data}:/var/lib/postgresql/data`, and a second volume, `postgres_data_alt`, is declared. | Nothing. Unset keeps `postgres_data`. Only the [PostgreSQL 16 to 18](#postgresql-16-to-18) procedure sets `POSTGRES_DATA_VOLUME`, and any other volume name makes `docker compose` fail. Never set it to a path, which Compose would bind-mount. |
 | `guided-setup.sh` local-storage mode rewrites either mount form to `./data/postgres`, and treats both volumes as existing data. | Nothing. Fetch the current `guided-setup.sh` as usual. |
 
+### Unreleased — browser remote desktop rollout flag mapped
+
+| Change | Required action |
+|---|---|
+| New `api` mapping `BREEZE_BROWSER_DESKTOP_ENABLED` (`${VAR:-false}`) in both Compose files. | Nothing. Leave it unset. |
+
 ### Unreleased — report-only observation retention settings mapped
 
 Both Compose files gain 8 optional `api` mappings (`${VAR:-}`). Leaving them out of `.env` keeps the built-in default.

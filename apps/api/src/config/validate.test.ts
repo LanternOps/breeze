@@ -3242,6 +3242,12 @@ describe('validateConfig', () => {
     });
   });
 
+  it('validate rejects a non-boolean BREEZE_BROWSER_DESKTOP_ENABLED', () => {
+    withEnv({ ...validEnv, BREEZE_BROWSER_DESKTOP_ENABLED: 'maybe' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_BROWSER_DESKTOP_ENABLED must be a boolean/);
+    });
+  });
+
   it('rejects a non-boolean BREEZE_OEM_UPDATES_ENABLED', () => {
     withEnv({ ...validEnv, BREEZE_OEM_UPDATES_ENABLED: 'maybe' }, () => {
       expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_ENABLED must be a boolean/);

@@ -448,6 +448,8 @@ x-api-env: &api-env
   # Vendor updates (#11065). Dark by default; the manifest gates in code stay
   # closed until a lab wave opens them. DISABLED_LANES stops new runs with no deploy.
   BREEZE_OEM_UPDATES_ENABLED: ${BREEZE_OEM_UPDATES_ENABLED:-false}
+  # Browser remote desktop rollout flag (#9557). Off by default; temporary.
+  BREEZE_BROWSER_DESKTOP_ENABLED: ${BREEZE_BROWSER_DESKTOP_ENABLED:-false}
   BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: ${BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST:-}
   BREEZE_OEM_UPDATES_DISABLED_LANES: ${BREEZE_OEM_UPDATES_DISABLED_LANES:-}
   OEM_UPDATES_MAX_DISPATCH_PER_TICK: ${OEM_UPDATES_MAX_DISPATCH_PER_TICK:-}
