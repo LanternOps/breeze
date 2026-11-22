@@ -328,7 +328,7 @@ export async function deliverDiscoveryResults(d: DiscoveryResultsDelivery): Prom
     ));
   } catch (err) {
     console.error(`[AgentWs] Failed to process discovery results for ${d.agentId}:`, err);
-    captureException(err);
+    captureException(err, undefined, discoveryDeliveryTags(d, 'discovery_enqueue'));
     await markDiscoveryDeliveryFailed(d, {
       errors: { message: err instanceof Error ? err.message : 'Failed to enqueue discovery results' },
     });
@@ -349,8 +349,13 @@ async function markDiscoveryDeliveryFailed(
     'discovery.resultDelivery.markFailed'));
   } catch (dbErr) {
     console.error(`[AgentWs] Additionally failed to mark discovery job ${d.jobId} as failed:`, dbErr);
-    captureException(dbErr, undefined, { command_result_phase: 'discovery_mark_failed' });
+    captureException(dbErr, undefined, discoveryDeliveryTags(d, 'discovery_mark_failed'));
   }
+}
+
+/** Sentry tags that find the job from the event: after the commit, the event is the only record of a lost delivery. */
+function discoveryDeliveryTags(d: DiscoveryResultsDelivery, phase: string): Record<string, string> {
+  return { command_result_phase: phase, discovery_job_id: d.jobId, org_id: d.orgId, site_id: d.siteId, source: d.meta.source };
 }
 
 // #3530: every persistence handler below PROPAGATES its failure. Both

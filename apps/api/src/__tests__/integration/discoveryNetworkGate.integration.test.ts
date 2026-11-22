@@ -1060,6 +1060,20 @@ describe('W13: the baseline comparison is enqueued after the storing transaction
     expect(enqueueComparison).toHaveBeenCalledTimes(1);
   });
 
+  it('a retry does not verify again: a site gated after the scan was stored still gets its comparison', async () => {
+    const { t, jobId, baselineId, hosts, data } = await baselineScene();
+    enqueueComparison.mockRejectedValueOnce(new Error('queue down'));
+    await expect(runDiscoveryWorkerJob(data)).rejects.toThrow('queue down');
+    const first = await jobCompletion(jobId);
+    await gateSite(t.orgId, t.siteId, [[G1]]);   // would reject this unrestricted result if verified again
+
+    await runDiscoveryWorkerJob(data);
+
+    expect(await jobCompletion(jobId)).toEqual(first);
+    expect(enqueueComparison).toHaveBeenCalledTimes(2);
+    expect(enqueueComparison.mock.calls[1]).toEqual([baselineId, jobId, t.orgId, t.siteId, hosts]);
+  });
+
   it('the failed listener still fails a running job', async () => {
     const { jobId, data } = await baselineScene();
     await __testables.recordWorkerJobFailure({ data }, new Error('worker crashed'));
@@ -1250,10 +1264,12 @@ describe('W13: a persisted discovery result is enqueued after its transaction co
       expect(frames.map((f) => JSON.parse(f))).toContainEqual({ type: 'ack', commandId });
     } else {
       expect((await sendHttpResult(fx, commandId, discoveryResultBody(jobId))).status).toBe(200);
-      await settle();
     }
 
-    expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { message: 'queue down' } });
+    // REST delivers after the response, so wait for the failure write rather than a fixed delay.
+    await vi.waitFor(async () => {
+      expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { message: 'queue down' } });
+    }, { timeout: 5_000, interval: 50 });
   });
 
   it.each(['WebSocket', 'REST'] as const)('%s: a failed enqueue does not fail a job that already left running', async (transport) => {
@@ -1265,7 +1281,10 @@ describe('W13: a persisted discovery result is enqueued after its transaction co
     });
 
     if (transport === 'WebSocket') await sendWsResult(fx, commandId, discoveryResultBody(jobId));
-    else { await sendHttpResult(fx, commandId, discoveryResultBody(jobId)); await settle(); }
+    else await sendHttpResult(fx, commandId, discoveryResultBody(jobId));
+    // The enqueue must have run (and failed) before the job is read, or this passes vacuously.
+    await vi.waitFor(() => expect(enqueueResults).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 20 });
+    await settle();
 
     expect(await job(jobId)).toMatchObject({ status: 'cancelled' });
   });

@@ -190,6 +190,8 @@ describe('result handlers propagate persistence failures (#3530)', () => {
       input('network_discovery', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [] } }),
     );
     await expect((outcome as { run: () => Promise<void> }).run()).resolves.toBeUndefined();
-    expect(captureExceptionMock).toHaveBeenCalledWith(markErr, undefined, { command_result_phase: 'discovery_mark_failed' });
+    expect(captureExceptionMock).toHaveBeenCalledWith(markErr, undefined, expect.objectContaining({
+      command_result_phase: 'discovery_mark_failed', discovery_job_id: JOB_ID, source: 'route:agentWs:script-network-scan',
+    }));
   });
 });
