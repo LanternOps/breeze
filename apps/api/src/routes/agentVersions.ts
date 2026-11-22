@@ -15,6 +15,7 @@ import {
 import { platformAdminMiddleware } from "../middleware/platformAdmin";
 import { writeRouteAudit } from "../services/auditEvents";
 import { ServerOnlyReleaseError, syncFromGitHub } from "../services/binarySync";
+import { helperInstallerAssetName } from "../services/helperInstallerAssets";
 import { captureException } from "../services/sentry";
 import { ResponseTooLargeError, SsrfBlockedError } from "../services/urlSafety";
 import { getBinaryEdition } from "../services/binaryEdition";
@@ -31,6 +32,8 @@ import {
   ReleaseManifestAssetLookupError,
   ReleaseManifestSignatureError,
   verifyManifestSignatureAgainstOfficialKeysOnly,
+  darwinMinOsRequired,
+  readManifestAssetMinOs,
 } from "../services/releaseArtifactManifest";
 import { EDITION_HOSTED, EDITION_SELF_HOST } from "../services/releaseAssetTrust";
 import {
@@ -390,15 +393,13 @@ function assetNameFromDownloadUrl(downloadUrl: string): string | null {
 // every agent heartbeat for a correctly-signed row.
 //
 // This function reproduces EXACTLY the filenames binarySync.ts's
-// scanBinaryDir/parseBinaryFilename (agent/watchdog/backup) and
-// USER_HELPER_TARGETS (user-helper) produce for every (component, platform,
-// arch) triple this server can register locally — see the cross-check list
-// in the D1 unit tests. It is the preferred source of truth for those
-// shapes; assetNameFromDownloadUrl(downloadUrl) remains the fallback for
-// every other (component, platform) combination, INCLUDING component=
-// "helper" (see that branch below for why it always falls through) and the
-// GitHub-sourced case, so behavior for BINARY_SOURCE=github rows is
-// unchanged.
+// scanBinaryDir/parseBinaryFilename (agent/watchdog/backup),
+// USER_HELPER_TARGETS (user-helper) and HELPER_TARGETS (helper installers,
+// #11298) produce for every (component, platform, arch) triple this server
+// can register — see the cross-check list in the D1 unit tests. For a
+// GitHub-sourced row those names equal the URL basename, so the result is
+// the same either way; assetNameFromDownloadUrl(downloadUrl) remains the
+// fallback for every shape this function does not recognize.
 export function canonicalReleaseAssetName(
   component: string,
   platform: string,
@@ -423,22 +424,43 @@ export function canonicalReleaseAssetName(
     return `breeze-user-helper-windows-${architecture}.exe`;
   }
 
-  // component="helper" (the Tauri Helper app) has NO canonical raw-binary
-  // name here: its real registration is HELPER_TARGETS
-  // (services/binarySync.ts, ~line 59) — windows -> breeze-helper-windows.msi,
-  // darwin (amd64 AND arm64, same file) -> breeze-helper-macos.dmg, linux ->
-  // breeze-helper-linux.AppImage. That shape is per-OS, not per-arch, and
-  // isn't derivable from (component, platform, arch) alone (darwin/amd64 and
-  // darwin/arm64 both resolve to the SAME asset name). An earlier version of
-  // this function returned "breeze-desktop-helper-darwin-<arch>" for
-  // component="helper" — that is a DIFFERENT artifact (the raw Mach-O binary
-  // bundled inside the agent .pkg, never its own agentVersions row) and,
-  // being non-null, wrongly WON over the correct URL-basename fallback for
-  // real BINARY_SOURCE=github helper rows, which would have 409'd them.
-  // Falling through to the final `return null` below lets
-  // assetNameFromDownloadUrl(downloadUrl) resolve "helper" instead, which is
-  // correct for every helper row that exists today.
+  // component="helper" (the Tauri Breeze Assist app) ships as per-OS
+  // installers, not raw per-arch binaries: HELPER_TARGETS in
+  // services/helperInstallerAssets.ts — windows -> breeze-helper-windows.msi, darwin
+  // (amd64 AND arm64, same file) -> breeze-helper-macos.dmg, linux ->
+  // breeze-helper-linux.AppImage. Both registration paths look the manifest
+  // entry up by exactly that name, so resolve it from the same table rather
+  // than re-deriving it here (#11298). The URL-basename fallback is NOT
+  // enough on its own: it equals the installer name for a GitHub-sourced row,
+  // but a BINARY_SOURCE=local row registered by registerFromOfficialManifest
+  // stores the server route ".../download/helper/{os}/{arch}", whose basename
+  // is the arch — every Assist update was refused with
+  // release_manifest_asset_lookup_failed. (Never resolve this to
+  // "breeze-desktop-helper-darwin-<arch>": that is the raw Mach-O bundled
+  // inside the agent .pkg, a different artifact with no agentVersions row.)
+  if (component === "helper") {
+    return helperInstallerAssetName(goos, architecture);
+  }
+
   return null;
+}
+
+/**
+ * #12169: the minimum OS a registered row's schema-v1 release manifest
+ * records for its asset (resolved the same way validateReleaseManifest
+ * resolves the asset name). Null for any other manifest shape.
+ */
+function manifestMinOsForRow(args: {
+  manifest: string | null | undefined;
+  component: string;
+  platform: string;
+  architecture: string;
+  downloadUrl: string;
+}): string | null {
+  const assetName =
+    canonicalReleaseAssetName(args.component, args.platform, args.architecture) ??
+    assetNameFromDownloadUrl(args.downloadUrl);
+  return assetName ? readManifestAssetMinOs(args.manifest, assetName) : null;
 }
 
 // Server-origin discovery for handing agents a download URL that matches
@@ -730,10 +752,10 @@ agentVersionRoutes.get(
 
     // The pin batch is per-org; the promoted fallback is edition-wide, so it
     // is resolved ONCE for the whole request regardless of org count.
-    const [pinsByOrg, promoted] = await Promise.all([
-      getOrgAgentVersionPinsBatch(allowed),
-      getPromotedAgentVersionForDisplay(),
-    ]);
+    // In sequence: the promoted read opens a savepoint, which is unsafe beside a
+    // sibling on this connection (#11225).
+    const pinsByOrg = await getOrgAgentVersionPinsBatch(allowed);
+    const promoted = await getPromotedAgentVersionForDisplay();
 
     const data: Record<string, string | null> = {};
     for (const orgId of allowed) {
@@ -1007,6 +1029,31 @@ agentVersionRoutes.post(
       );
     }
 
+    // #12169: the floor the (already verified) schema-v1 manifest records for
+    // this asset; null for a per-deployment manifest. A darwin row of a
+    // release that must record one but does not is refused, as the
+    // registration paths and POST /promote refuse it: written as-is, it
+    // would offer the build to every Mac, pinned or promoted, ungated.
+    const createMinOs = manifestMinOsForRow({
+      manifest: data.releaseManifest,
+      component: data.component,
+      platform: data.platform,
+      architecture: data.architecture,
+      downloadUrl: data.downloadUrl,
+    });
+    const createAssetName =
+      canonicalReleaseAssetName(data.component, data.platform, data.architecture) ??
+      assetNameFromDownloadUrl(data.downloadUrl);
+    if (createMinOs === null && createAssetName && darwinMinOsRequired(createAssetName, data.version)) {
+      return c.json(
+        {
+          error: "This darwin release must record its minimum macOS version (minOs) in a signed release manifest",
+          reason: "min_os_missing",
+        },
+        422,
+      );
+    }
+
     // If this version is marked as latest, unset isLatest for other versions
     // with the same platform/architecture/component/edition. Scoped by
     // edition too — otherwise promoting a "self-host" row could demote a
@@ -1042,6 +1089,7 @@ agentVersionRoutes.post(
         isLatest: data.isLatest ?? false,
         component: data.component,
         edition,
+        minOsVersion: createMinOs,
       })
       .returning();
     if (!newVersion) {
@@ -1250,6 +1298,7 @@ agentVersionRoutes.get("/", platformAdminMiddleware, async (c) => {
       isLatest: agentVersions.isLatest,
       fileSize: agentVersions.fileSize,
       releaseNotes: agentVersions.releaseNotes,
+      minOsVersion: agentVersions.minOsVersion,
       createdAt: agentVersions.createdAt,
     })
     .from(agentVersions)
@@ -1311,6 +1360,7 @@ agentVersionRoutes.post(
         releaseManifest: agentVersions.releaseManifest,
         manifestSignature: agentVersions.manifestSignature,
         signingKeyId: agentVersions.signingKeyId,
+        minOsVersion: agentVersions.minOsVersion,
       })
       .from(agentVersions)
       .where(
@@ -1357,6 +1407,19 @@ agentVersionRoutes.post(
       reason: string;
     }> = [];
     for (const row of targetRows) {
+      // #12169: a darwin row of a release that must record its minimum OS but
+      // does not would point Macs at a build the gate cannot judge. Refuse
+      // (fail closed) — e.g. a hosted build whose manifest was not stamped.
+      const rowAssetName = canonicalReleaseAssetName(row.component, row.platform, row.architecture);
+      if (row.minOsVersion == null && rowAssetName && darwinMinOsRequired(rowAssetName, row.version)) {
+        invalidTargets.push({
+          component: row.component,
+          platform: row.platform,
+          architecture: row.architecture,
+          reason: "min_os_missing",
+        });
+        continue;
+      }
       const check = await validateReleaseManifest({
         manifest: row.releaseManifest,
         signature: row.manifestSignature,

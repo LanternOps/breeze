@@ -2,7 +2,6 @@ package helper
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -24,7 +23,7 @@ const idleTimeout = 5 * time.Minute
 // ReadStatus reads and parses the helper_status.yaml file.
 func ReadStatus(configPath string) (*Status, error) {
 	statusPath := statusPathFrom(configPath)
-	data, err := os.ReadFile(statusPath)
+	data, err := readUntrustedFile(statusPath)
 	if err != nil {
 		return nil, fmt.Errorf("read helper status: %w", err)
 	}

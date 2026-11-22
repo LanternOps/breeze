@@ -52,7 +52,27 @@ vi.mock('./sensitiveCommandPayload', () => ({
     payload: c.payload,
   })),
 }));
-vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: vi.fn().mockReturnValue(false) }));
+vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: vi.fn().mockReturnValue(false), isAgentConnected: vi.fn().mockReturnValue(false) }));
+// #4142: scriptDispatch reaches agents through the relay facade. This mock
+// bridges over the agentWs mock above (a local socket send); the facade-outcome
+// tests drive dispatchCommandToAgent directly. The real mapping is pinned in
+// agentCommandRelay.test.ts.
+vi.mock('./agentCommandRelay', async () => {
+  const ws = await import('../routes/agentWs');
+  return {
+    dispatchCommandToAgent: vi.fn(async (agentId: string, frame: unknown) => (
+      vi.mocked(ws.sendCommandToAgent)(agentId, frame as never)
+        ? { status: 'sent', via: 'local' }
+        : { status: 'offline' }
+    )),
+    agentReachability: vi.fn(async (agentId: string) => (
+      vi.mocked(ws.isAgentConnected)(agentId) ? 'connected' : 'absent'
+    )),
+    dispatchDisposition: (o: { status: string }) => (
+      o.status === 'sent' ? 'delivered' : o.status === 'indeterminate' ? 'uncertain' : 'not_delivered'
+    ),
+  };
+});
 vi.mock('./scriptSecretDelivery', () => ({
   AGENT_UPGRADE_REQUIRED_MESSAGE: 'Agent upgrade required: mocked message',
   SECRET_GATE_UNAVAILABLE_MESSAGE: 'Secret gate unavailable: mocked message',

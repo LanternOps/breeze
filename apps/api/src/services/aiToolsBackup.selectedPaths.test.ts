@@ -10,12 +10,23 @@ const actorGate = vi.hoisted(() => ({ refusal: vi.fn(async (): Promise<unknown> 
 vi.mock('./backupRestoreActorGate', () => ({
   restoreIntegrityRefusalForActor: (...args: unknown[]) => actorGate.refusal(...(args as [])),
 }));
-vi.mock('../db', () => ({
-  runOutsideDbContext: vi.fn((fn: any) => fn()),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
-}));
+vi.mock('../db', () => {
+  const db: Record<string, unknown> = { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() };
+  // The selection walk reads each page in a savepoint with a lowered
+  // statement_timeout; its executor reads through the same select mock.
+  db.transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({
+    select: (...args: unknown[]) => (db.select as (...a: unknown[]) => unknown)(...args),
+    execute: async () => [{ prior_ms: 0 }],
+  }));
+  return {
+    runOutsideDbContext: vi.fn((fn: any) => fn()),
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    withDbTransactionIfHeld: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    db,
+  };
+});
 vi.mock('./commandQueue', () => ({ CommandTypes: { BACKUP_RESTORE: 'backup_restore' } }));
 // The org/cross-site restore authorization is covered by
 // aiToolsRestoreAuthorization.test.ts and aiToolsRestoreScope.integration.test.ts;
@@ -75,9 +86,17 @@ function seqSelect(results: Array<unknown[]>) {
   let call = 0;
   mockDb.select.mockImplementation(() => {
     const rows = results[call++] ?? [];
-    // The snapshot-files read is awaited without .limit(), so where() must be
-    // thenable as well as chainable.
-    return { from: () => ({ where: () => Object.assign(Promise.resolve(rows), { limit: () => Promise.resolve(rows) }) }) };
+    // The snapshot-files read is a keyset page (#11026): where().orderBy().limit().
+    const query: Record<string, unknown> = {
+      where: () => Object.assign(Promise.resolve(rows), {
+        limit: () => Promise.resolve(rows),
+        orderBy: () => ({ limit: () => Promise.resolve(rows) }),
+      }),
+    };
+    // The snapshot-files read joins the snapshot and its attestation.
+    query.innerJoin = () => query;
+    query.leftJoin = () => query;
+    return { from: () => query };
   });
 }
 

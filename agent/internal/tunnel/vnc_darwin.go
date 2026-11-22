@@ -5,10 +5,11 @@ package tunnel
 import (
 	"fmt"
 	"net"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const (
@@ -52,7 +53,7 @@ func EnableScreenSharing() error {
 		"-privs", "-all",
 	}
 
-	cmd := exec.Command(kickstartPath, args...)
+	cmd := procspawn.Command(kickstartPath, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if rollbackErr := DisableScreenSharing(); rollbackErr != nil {
@@ -89,14 +90,14 @@ func DisableScreenSharing() error {
 	// supported ephemeral per-session passwords. Idempotent — no-op when unset.
 	// We standardize on ARD authentication (macOS user accounts) so any
 	// legacy password must not linger on upgraded hosts.
-	clearCmd := exec.Command(kickstartPath, "-configure", "-clientopts",
+	clearCmd := procspawn.Command(kickstartPath, "-configure", "-clientopts",
 		"-setvnclegacy", "-vnclegacy", "no")
 	if output, err := clearCmd.CombinedOutput(); err != nil {
 		log.Warn("failed to clear legacy VNC password (older agent residue)",
 			"error", err.Error(), "output", string(output))
 	}
 
-	cmd := exec.Command(kickstartPath, "-deactivate", "-stop")
+	cmd := procspawn.Command(kickstartPath, "-deactivate", "-stop")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("kickstart deactivate failed: %w (output: %s)", err, string(output))

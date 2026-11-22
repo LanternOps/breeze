@@ -743,6 +743,7 @@ export default function IntegrationsPage({
                 const active = item.hash === activeNavHash;
                 return (
                   <li key={item.hash}>
+                    {/* bare-hash-anchor-exempt: onClick preventDefaults and sets the hash via selectNavItem */}
                     <a
                       href={`#${item.hash}`}
                       aria-current={active ? "page" : undefined}

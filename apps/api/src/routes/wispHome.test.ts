@@ -32,9 +32,10 @@ const G_PAUSED = '33333333-3333-4333-8333-333333333333';
 const G_ORG = '44444444-4444-4444-8444-444444444444';
 const auth = { user: { id: 'u1' }, partnerId: PARTNER, scope: 'partner' };
 const future = new Date(Date.now() + 86_400_000);
+const CREATED = new Date('2027-01-22T10:00:00.000Z');
 const grant = (id: string, over: Record<string, unknown> = {}) => ({
   id, partnerId: PARTNER, orgId: null, grantorUserId: 'u1', status: 'active', pausedReason: null,
-  currentRevisionId: 'r1', expiresAt: future, budgetCentsPerDay: 100, floorTickMinutes: 60, ...over,
+  currentRevisionId: 'r1', expiresAt: future, budgetCentsPerDay: 100, floorTickMinutes: 60, createdAt: CREATED, ...over,
 });
 const thread = { id: 'th1', grantId: G_ACTIVE, partnerId: PARTNER };
 const base = { thread: { id: 'th1' }, focusOrgName: null, grant: { id: G_ACTIVE }, wideningAvailable: false };
@@ -63,7 +64,7 @@ describe('GET /wisp/home', () => {
     expect(await res.json()).toEqual({ data: { ...base, ...sections } });
     expect(h.listGrants).toHaveBeenCalledWith({ auth, view: 'mine' });
     expect(h.buildHomeSections).toHaveBeenCalledWith({
-      auth, partnerId: PARTNER, grantId: G_ACTIVE, grantorUserId: 'u1', threadId: 'th1', ceiling: { grantId: G_ACTIVE },
+      auth, partnerId: PARTNER, grantId: G_ACTIVE, grantorUserId: 'u1', threadId: 'th1', grantCreatedAt: CREATED, ceiling: { grantId: G_ACTIVE },
     });
   });
 

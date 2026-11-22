@@ -23,8 +23,9 @@ export type WispThreadPostKind = WispTimelinePostKind;
 
 /**
  * Wisp companion W02a (#10212) — proactive Wisp output (morning brief, concern
- * nudges, digest) kept on the thread as durable posts
- * (migrations/2027-01-06-140000-wisp-thread-posts.sql). Written by
+ * nudges, digest, and since #10992 fired check-ins) kept on the thread as
+ * durable posts (migrations/2027-01-06-140000-wisp-thread-posts.sql; the kind
+ * CHECK is widened by 2027-01-20-130000-wisp-check-ins.sql). Written by
  * `notifyUser` whatever the recipient's channels; read by the thread timeline.
  *
  * Tenancy: partner-anchored / org-optional (the `wisp_thread_links` shape):
@@ -81,7 +82,7 @@ export const wispThreadPosts = pgTable('wisp_thread_posts', {
   orgIdx: index('wisp_thread_posts_org_idx').on(t.orgId).where(sql`org_id IS NOT NULL`),
   concernIdx: index('wisp_thread_posts_concern_idx').on(t.concernId).where(sql`concern_id IS NOT NULL`),
   notificationIdx: index('wisp_thread_posts_notification_idx').on(t.notificationId).where(sql`notification_id IS NOT NULL`),
-  kindChk: check('wisp_thread_posts_kind_chk', sql`${t.kind} IN ('brief','nudge','digest')`),
+  kindChk: check('wisp_thread_posts_kind_chk', sql`${t.kind} IN ('brief','nudge','digest','check_in','specialist_result','first_look','nudge_resolved')`),
 }));
 
 export type WispThreadPostRow = typeof wispThreadPosts.$inferSelect;

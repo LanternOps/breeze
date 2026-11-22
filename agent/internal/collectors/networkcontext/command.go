@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 type CommandRunner interface {
@@ -30,7 +31,7 @@ func (b *outputLimit) Write(p []byte) (int, error) {
 func (boundedRunner) Output(parent context.Context, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	out := &outputLimit{}
 	cmd.Stdout = out
 	cmd.Stderr = io.Discard

@@ -5,6 +5,10 @@ import { requestLikeFromSnapshot, writeAuditEventAsync } from '../auditEvents';
 import { ticketingDb } from './storage';
 import { wakeMapping } from './queue';
 type PauseRow = { id: string; partnerId: string | null };
+// A deferred wake starts as soon as the request settles, so an uncapped resume
+// would fire every row's enqueue at once. The rest are re-armed and due, so the
+// reconciler sweep picks them up.
+const MAX_RESUME_WAKES = 100;
 async function audit(row: PauseRow, action: string) {
   await writeAuditEventAsync(requestLikeFromSnapshot({}), {
     orgId: null,
@@ -56,7 +60,7 @@ export async function resumeTicketingConnection(id: string, auditResume?: (row: 
       )
       .returning({ id: psaTicketMappings.id });
   });
-  for (const row of rows) await wakeMapping(row.id, 'close').catch((error: unknown) => {
+  for (const row of rows.slice(0, MAX_RESUME_WAKES)) await wakeMapping(row.id, 'close').catch((error: unknown) => {
     console.warn('[psa-ticketing] resume wake failed', { connectionId: id, mappingId: row.id, message: error instanceof Error ? error.message : String(error) });
   });
 }

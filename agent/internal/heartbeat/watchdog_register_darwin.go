@@ -3,9 +3,10 @@
 package heartbeat
 
 import (
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 func watchdogExecutableName() string { return "breeze-watchdog" }
@@ -20,7 +21,7 @@ func registerVerifiedWatchdog(stagedPath string) error {
 // waitWatchdogRunning polls launchd for the watchdog job's state.
 func waitWatchdogRunning(timeout time.Duration) bool {
 	return pollWatchdogRunning(timeout, func() bool {
-		out, err := exec.Command("launchctl", "print", "system/"+watchdogLaunchdLabel).Output()
+		out, err := procspawn.Command("launchctl", "print", "system/"+watchdogLaunchdLabel).Output()
 		return err == nil && strings.Contains(string(out), "state = running")
 	})
 }

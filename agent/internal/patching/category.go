@@ -55,3 +55,62 @@ func classifyWindowsUpdateCategory(names []string) string {
 
 	return "application"
 }
+
+// Values of AvailablePatch.ReportedUpdateType. The API's device_patches CHECK
+// allows exactly these, and an API that has never heard of a newer value drops it
+// rather than the scan.
+const (
+	ReportedUpdateTypeDriver     = "driver"
+	ReportedUpdateTypeFirmware   = "firmware"
+	ReportedUpdateTypeQuality    = "quality"
+	ReportedUpdateTypeFeature    = "feature"
+	ReportedUpdateTypeDefinition = "definition"
+	ReportedUpdateTypeOther      = "other"
+)
+
+// reportedWindowsUpdateType is what this device says one Windows Update is, for
+// the API's "one owner per update class" rule (#11073).
+//
+// Only a WUA driver can be a driver or firmware here. The category string cannot
+// do it alone, because a product category can name drivers. A security
+// classification does not change the answer: the API reads the category beside
+// this and leaves such an update with Windows Update.
+//
+// kind comes from ClassifyDriverUpdate, the classifier the Surface lane uses, so
+// the two agree on what firmware is. Its doubtful answers lean to firmware, which
+// here means the stricter delivery test on the API.
+func reportedWindowsUpdateType(updateType, category string, kind DriverKind) string {
+	if updateType == UpdateTypeDriver {
+		if kind == DriverKindFirmware || category == "firmware" {
+			return ReportedUpdateTypeFirmware
+		}
+		return ReportedUpdateTypeDriver
+	}
+	if updateType == UpdateTypeFeature {
+		return ReportedUpdateTypeFeature
+	}
+	switch category {
+	case "security", "system":
+		return ReportedUpdateTypeQuality
+	case "definitions":
+		return ReportedUpdateTypeDefinition
+	case "feature":
+		return ReportedUpdateTypeFeature
+	}
+	return ReportedUpdateTypeOther
+}
+
+// reportedWindowsUpdate is what one scanned update reports: its type, and for a
+// driver the vendor lane that owns it. read is the COM property reader on Windows.
+// A property that cannot be read stays empty: an empty class reads as firmware, and
+// an empty manufacturer has no owner, both the safe direction.
+func reportedWindowsUpdate(updateType, category, title string, read func(property string) (string, error)) (reportedType, owner string) {
+	if updateType != UpdateTypeDriver {
+		return reportedWindowsUpdateType(updateType, category, DriverKindDriver), ""
+	}
+	class, _ := read("DriverClass")
+	model, _ := read("DriverModel")
+	maker, _ := read("DriverManufacturer")
+	u := DriverUpdate{Title: title, DriverClass: class, DriverModel: model, DriverManufacturer: maker}
+	return reportedWindowsUpdateType(updateType, category, ClassifyDriverUpdate(u)), driverUpdateOwner(u)
+}

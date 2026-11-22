@@ -5,12 +5,12 @@ package updater
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/psscript"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -127,8 +127,8 @@ type restartScriptOptions struct {
 // buildRestartScript renders the PowerShell helper script. Extracted from
 // RestartWithHelper so it can be unit-tested for shell-injection safety and
 // for backward-compatible behavior when the user-helper paths are unset
-// (issue #816). Single-quote escaping doubles single quotes, matching the
-// established convention for the agent path.
+// (issue #816). Paths are escaped with psscript.EscapeSingleQuoted, which
+// doubles every PowerShell single-quote character.
 //
 // Error handling: PowerShell's Copy-Item is a non-terminating cmdlet by
 // default — a failed Copy (locked file, ACL denied, disk full) does NOT
@@ -149,8 +149,8 @@ type restartScriptOptions struct {
 //     we've tried and the failure log captures the cause),
 //   - keeps Remove-Item cleanups outside the try/catch so they always run.
 func buildRestartScript(opts restartScriptOptions) string {
-	safeAgent := strings.ReplaceAll(opts.Agent.Temp, "'", "''")
-	safeAgentTarget := strings.ReplaceAll(opts.Agent.Target, "'", "''")
+	safeAgent := psscript.EscapeSingleQuoted(opts.Agent.Temp)
+	safeAgentTarget := psscript.EscapeSingleQuoted(opts.Agent.Target)
 
 	// nil-as-absent: the type system now guarantees both helper paths come as
 	// a single unit, so we cannot land in the half-set state the pre-PR-B
@@ -158,15 +158,15 @@ func buildRestartScript(opts restartScriptOptions) string {
 	hasHelper := opts.UserHelper != nil
 	var safeHelper, safeHelperTarget string
 	if hasHelper {
-		safeHelper = strings.ReplaceAll(opts.UserHelper.Temp, "'", "''")
-		safeHelperTarget = strings.ReplaceAll(opts.UserHelper.Target, "'", "''")
+		safeHelper = psscript.EscapeSingleQuoted(opts.UserHelper.Temp)
+		safeHelperTarget = psscript.EscapeSingleQuoted(opts.UserHelper.Target)
 	}
 
 	hasBackup := opts.Backup != nil
 	var safeBackup, safeBackupTarget string
 	if hasBackup {
-		safeBackup = strings.ReplaceAll(opts.Backup.Temp, "'", "''")
-		safeBackupTarget = strings.ReplaceAll(opts.Backup.Target, "'", "''")
+		safeBackup = psscript.EscapeSingleQuoted(opts.Backup.Temp)
+		safeBackupTarget = psscript.EscapeSingleQuoted(opts.Backup.Target)
 	}
 
 	// The exe lock on a running breeze-backup.exe would otherwise block its
@@ -223,11 +223,23 @@ func buildRestartScript(opts restartScriptOptions) string {
 		// Success path: start the service.
 		"  Start-Service -Name '"+serviceName+"'",
 		"} catch {",
+		// Nothing in this block may abort it before the closing Start-Service.
+		// Under the script-wide 'Stop' preference a failed Out-File (TEMP
+		// unwritable, disk full) would end the script and leave the service
+		// stopped; under 'Continue' it only drops the log (#9751).
+		"  $ErrorActionPreference = 'Continue'",
 		// Failure path: log structured diagnostics. ${env:TEMP} always exists
 		// on Windows (unlike C:\ProgramData\Breeze, which may not exist yet
 		// on a fresh install — see #609 / HardenProgramDataAcl sequencing).
-		"  $stamp = [int][double]::Parse((Get-Date -UFormat %s))",
-		"  $logPath = Join-Path $env:TEMP (\"breeze-update-failure-$stamp.log\")",
+		// Culture-invariant stamp. `[double]::Parse((Get-Date -UFormat %s))`
+		// throws on hosts whose number format rejects "." (PowerShell 5.1
+		// emits a fractional value), which aborted this catch block before
+		// the log and the Start-Service below (#9751).
+		"  $stamp = [DateTime]::UtcNow.Ticks",
+		// The heartbeat reads this file after a swap that did not take
+		// (heartbeat/update_outcome.go): keep the prefix and the
+		// "operation:" / "exception:" lines in step with that parser.
+		"  $logPath = Join-Path $env:TEMP (\""+UpdateHelperFailureLogPrefix+"$stamp.log\")",
 		"  $op = if ($_.InvocationInfo) { $_.InvocationInfo.Line } else { '<unknown>' }",
 		"  $msg = @(",
 		"    \"Breeze update-helper failure at $(Get-Date -Format o)\",",
@@ -313,7 +325,7 @@ func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair, backup *BinaryP
 		"backupTarget", backupTarget,
 	)
 
-	cmd := exec.Command("powershell.exe",
+	cmd := procspawn.Command("powershell.exe",
 		"-NoProfile", "-ExecutionPolicy", "Bypass",
 		"-File", scriptPath,
 	)
@@ -344,7 +356,7 @@ func startWindowsRollbackHelper(journalPath string, operation windowsRollbackOpe
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+	cmd := procspawn.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 	cmd.SysProcAttr = detachedHelperSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(scriptPath)
@@ -386,7 +398,7 @@ func startDetachedServiceRestart(tempPattern string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+	cmd := procspawn.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 	cmd.SysProcAttr = detachedHelperSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(scriptPath)

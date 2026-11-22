@@ -20,8 +20,11 @@ services:
   # PostgreSQL Database for Tests
   postgres-test:
     # pgvector/pgvector is the official postgres image + the vector extension
-    # (drop-in superset of postgres:16).
-    image: pgvector/pgvector:pg16
+    # (a drop-in superset of the stock image for the same major). The default
+    # is the shipped major; BREEZE_TEST_PG_IMAGE runs the stack on another one
+    # (the scheduled Postgres 17/18 workflow, or locally:
+    # `BREEZE_TEST_PG_IMAGE=pgvector/pgvector:pg18 pnpm test-stack up`).
+    image: ${BREEZE_TEST_PG_IMAGE:-pgvector/pgvector:pg16}
     container_name: ${BREEZE_TEST_PG_CONTAINER:-breeze-postgres-test}
     # Durability is pointless for a throwaway tmpfs test DB, and the
     # integration suite's per-test TRUNCATE ... CASCADE makes thousands of
@@ -38,6 +41,11 @@ services:
       POSTGRES_USER: breeze_test
       POSTGRES_PASSWORD: breeze_test
       POSTGRES_DB: breeze_test
+      # Pinned to the tmpfs mount below. The Postgres 18 images moved their
+      # default PGDATA to /var/lib/postgresql/18/docker, outside that mount, so
+      # without this a pg18 stack writes to the container filesystem instead.
+      # scripts/dev/test-stack/composePostgres.test.ts asserts the pairing.
+      PGDATA: /var/lib/postgresql/data
     ports:
       # Different port to avoid conflicts with dev. `pnpm test-stack` passes 0
       # to get an ephemeral host port for per-worktree isolation.
@@ -55,7 +63,7 @@ services:
 
   # Redis for Tests
   redis-test:
-    image: redis:7-alpine
+    image: redis:8-alpine
     container_name: ${BREEZE_TEST_REDIS_CONTAINER:-breeze-redis-test}
     command: redis-server --appendonly no --save ""  # No persistence for speed
     ports:

@@ -1,6 +1,7 @@
 import {
   M365_PERMISSION_PROFILES,
   type CanonicalAppRoleAssignment,
+  type GrantReconciliationMode,
   type M365ApplicationGrant,
 } from '@breeze/shared/m365';
 import { randomUUID } from 'node:crypto';
@@ -99,6 +100,12 @@ export interface CustomerGraphActionsConnectionDto {
   missingGrants: CanonicalAppRoleAssignment[];
   unexpectedGrants: CanonicalAppRoleAssignment[];
   grantsVerifiedAt: string | null;
+  /**
+   * How the stored grants were verified (#12085). `graph_token_only`: only
+   * Microsoft Graph roles were checked (the tenant has not granted
+   * Application.Read.All). Null until a grant observation exists.
+   */
+  grantReconciliationMode: GrantReconciliationMode | null;
   lastVerifiedAt: string | null;
   lastErrorCode: string | null;
 }
@@ -140,6 +147,9 @@ function toConnectionDto(value: ConnectionWithHealth): CustomerGraphActionsConne
     missingGrants: [...health.missingGrants],
     unexpectedGrants: [...health.unexpectedGrants],
     grantsVerifiedAt: iso(value.grantsVerifiedAt),
+    // Observations stored before the column existed were all exact.
+    grantReconciliationMode: value.grantReconciliationMode
+      ?? (value.grantsVerifiedAt === null ? null : 'exact'),
     lastVerifiedAt: iso(value.lastVerifiedAt),
     lastErrorCode: value.lastErrorCode,
   };

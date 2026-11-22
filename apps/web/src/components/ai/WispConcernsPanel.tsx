@@ -241,7 +241,7 @@ export function WispConcernsPanel({
     const expanded = selectedId === c.id;
     const live = c.status === 'open' || c.status === 'snoozed';
     const snoozedUntil = c.recipient?.snoozedUntil ? new Date(c.recipient.snoozedUntil) : null;
-    const quiet = snoozedUntil && snoozedUntil.getTime() > Date.now() ? snoozedUntil : null;
+    const quiet = live && snoozedUntil && snoozedUntil.getTime() > Date.now() ? snoozedUntil : null;
     const created = new Date(c.createdAt);
     return (
       <li

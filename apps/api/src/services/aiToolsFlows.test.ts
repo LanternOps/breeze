@@ -25,7 +25,8 @@ import { isToolEnvGatedOff } from './aiToolEnvGates';
 import { captureException } from './sentry';
 
 const FLOW_ID = '33333333-3333-4333-8333-333333333333';
-const auth = { scope: 'organization', orgId: 'o', user: { id: 'u' } } as unknown as AuthContext;
+// Sessions that cleared MFA: cancel_flow_run is MFA-gated (aiToolMfaGate.ts).
+const auth = { scope: 'organization', orgId: 'o', user: { id: 'u' }, token: { mfa: true } } as unknown as AuthContext;
 
 function tools(): Map<string, AiTool> {
   const m = new Map<string, AiTool>();
@@ -105,6 +106,57 @@ describe('flow AI tools', () => {
     expect(vi.mocked(saveDraftFlow).mock.calls[0]![1]).not.toHaveProperty('aiSessionId');
   });
 
+  // Flows completion W01b (#12435, spec §3.2): an update without expectedVersion
+  // can overwrite a person's save from the editor. Warn now; W3 refuses it.
+  describe('draft_flow expectedVersion staging', () => {
+    const WARNING = {
+      code: 'expected_version_required_soon',
+      message: 'Pass expectedVersion on every update; updates without it will be refused in a later release.',
+    };
+    const saved = { saved: true, flow: { id: FLOW_ID } as never, validation: { valid: true } as never };
+
+    it('draft_flow update without expectedVersion warns', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(saveDraftFlow).mockResolvedValue(saved);
+      const out = await call('draft_flow', { document: { a: 1 }, flowId: FLOW_ID });
+      expect(out).toEqual({ ...saved, reviewPath: `/flows/${FLOW_ID}`, warning: WARNING });
+      // Counted with the bounded tool name only: no flow, org or user id.
+      expect(warn).toHaveBeenCalledTimes(1);
+      const logged = JSON.stringify(warn.mock.calls[0]);
+      expect(logged).toContain('draft_flow');
+      expect(logged).not.toContain(FLOW_ID);
+      expect(logged).not.toContain('"o"');
+      warn.mockRestore();
+    });
+
+    it('draft_flow unversioned update that fails is still counted, and carries no warning', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(saveDraftFlow).mockResolvedValue({ saved: false, error: 'flow_not_found' });
+      expect(await call('draft_flow', { document: {}, flowId: FLOW_ID })).toEqual({ saved: false, error: 'flow_not_found' });
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+
+    it('draft_flow create carries no warning', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(saveDraftFlow).mockResolvedValue(saved);
+      const out = await call('draft_flow', { document: { a: 1 } });
+      expect(out).not.toHaveProperty('warning');
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it('draft_flow update with expectedVersion carries no warning', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(saveDraftFlow).mockResolvedValue(saved);
+      const out = await call('draft_flow', { document: { a: 1 }, flowId: FLOW_ID, expectedVersion: 2 });
+      expect(out).not.toHaveProperty('warning');
+      expect(saveDraftFlow).toHaveBeenCalledWith(auth, expect.objectContaining({ flowId: FLOW_ID, expectedVersion: 2 }));
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+  });
+
   it('get_flow of an invisible id ⇒ flow_not_found', async () => {
     vi.mocked(getFlow).mockResolvedValue(null);
     expect(await call('get_flow', { flowId: FLOW_ID })).toEqual({ error: 'flow_not_found' });
@@ -130,7 +182,7 @@ describe('isToolEnvGatedOff', () => {
 
 // Tool Catalog W04 (#5219, Task A11): run / list / get / cancel flow runs.
 const RUN_ID = '44444444-4444-4444-8444-444444444444';
-const userAuth = { scope: 'organization', orgId: 'o', user: { id: 'u' }, principal: { kind: 'user_session' } } as unknown as AuthContext;
+const userAuth = { scope: 'organization', orgId: 'o', user: { id: 'u' }, principal: { kind: 'user_session' }, token: { mfa: true } } as unknown as AuthContext;
 const apiKeyAuth = { scope: 'organization', orgId: 'o', user: { id: 'u' }, principal: { kind: 'api_key', apiKeyId: 'k' } } as unknown as AuthContext;
 const chatCtx = { captureAnchor: { orgId: 'o', sessionId: '55555555-5555-4555-8555-555555555555' } };
 const callAs = (a: AuthContext, name: string, input: Record<string, unknown>, ctx?: Record<string, unknown>) =>

@@ -301,6 +301,8 @@ describe('DeliverableTemplatesPage', () => {
     expect([...select.options].map((o) => o.value)).toEqual(
       ['', ...MANAGED_EVIDENCE_REPORT_TYPES],
     );
+    // #11018 W2: "SLA", not the humanized "Ticket sla performance".
+    expect([...select.options].find((o) => o.value === 'ticket_sla_performance')?.text).toBe('SLA performance');
   });
 
   it('sends autoEvidenceReportType: null on item create when None is selected', async () => {

@@ -12,10 +12,10 @@ import { captureException } from '../sentry';
 
 export const SCRIPT_REVIEW_ORG_CONCURRENCY = 3;
 
-// Safety TTL on the counter key, well above SCRIPT_REVIEW_TIMEOUT_MS (60 s):
+// Safety TTL on the counter key, well above SCRIPT_REVIEW_TIMEOUT_MS (120 s):
 // if a worker process crashes between acquire and the `finally` release, the
 // key self-heals instead of permanently wedging the org at its cap.
-const CONCURRENCY_KEY_TTL_SECONDS = 90;
+const CONCURRENCY_KEY_TTL_SECONDS = 150;
 
 function concurrencyKey(orgId: string): string {
   return `script-review:concurrency:${orgId}`;

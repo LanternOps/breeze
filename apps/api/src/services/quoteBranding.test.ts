@@ -34,6 +34,17 @@ function source(overrides: Partial<QuoteBrandingSource> = {}): QuoteBrandingSour
 beforeEach(() => { dbRows.next = []; dbRows.i = 0; });
 
 describe('resolveQuoteBranding', () => {
+  // #9673: the org secondary colour (quote PDF headings) overrides the partner's.
+  it("the org's secondary colour overrides the partner's", async () => {
+    queue({ ...basePartner, settings: { branding: { secondaryColor: '#0b1b2d' } } }, { ...baseBrand, secondaryColor: '#654321' });
+    expect((await resolveQuoteBranding(source())).secondaryColor).toBe('#654321');
+  });
+
+  it("the partner's secondary colour applies when the org has none", async () => {
+    queue({ ...basePartner, settings: { branding: { secondaryColor: '#0b1b2d' } } }, { ...baseBrand, secondaryColor: null });
+    expect((await resolveQuoteBranding(source())).secondaryColor).toBe('#0b1b2d');
+  });
+
   it('footer precedence: quote.terms wins over partner + portal footer', async () => {
     queue(basePartner, baseBrand);
     const b = await resolveQuoteBranding(source({ terms: 'quote terms' }));
@@ -222,11 +233,21 @@ describe('resolveQuoteBranding', () => {
       expect(b.pageSize).toBe('a4');
     });
 
-    it('falls back to classic/a4 defaults when the partner is absent and there is no snapshot', async () => {
+    it('falls back to classic / the deployment page size when the partner is absent and there is no snapshot', async () => {
+      vi.stubEnv('BREEZE_REGION', 'eu');
       queue(null, baseBrand);
       const b = await resolveQuoteBranding(source({ presentationSnapshot: null }));
       expect(b.theme).toBe('classic');
       expect(b.pageSize).toBe('a4');
+      vi.unstubAllEnvs();
+    });
+
+    // #12097: a draft from a partner that never chose previews its region default.
+    it('a partner with no page-size choice previews its region default', async () => {
+      vi.stubEnv('BREEZE_REGION', 'eu');
+      queue({ ...basePartner, documentPageSize: null, billingAddressCountry: 'US' }, baseBrand);
+      expect((await resolveQuoteBranding(source({ presentationSnapshot: null }))).pageSize).toBe('letter');
+      vi.unstubAllEnvs();
     });
   });
 });

@@ -36,6 +36,8 @@ export interface GraphMessage {
   bodyPreview?: string;
   hasAttachments?: boolean;
   internetMessageHeaders?: GraphHeader[];
+  /** Set on a delta entry that reports a message left the folder. Carries only the id. */
+  '@removed'?: { reason?: string };
 }
 
 export interface DeltaPage {
@@ -116,6 +118,31 @@ function assertGraphContinuationUrl(url: string): void {
 }
 const DELTA_PREFER = { Prefer: `odata.maxpagesize=${GRAPH_DELTA_PAGE_SIZE}` };
 
+/** `error.code` of a Graph error body. Many Graph errors have no JSON body at all. */
+function graphErrorCode(body: string): string | undefined {
+  try {
+    const code = (JSON.parse(body) as { error?: { code?: unknown } } | null)?.error?.code;
+    return typeof code === 'string' ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether Graph refused the stored delta cursor because it is no longer valid, so
+ * the sweep must clear it and walk again (#10863). Microsoft documents 410 Gone for
+ * this, and also "a 40X-series error with error codes such as syncStateNotFound".
+ * A 401 or 403 keeps its own meaning (the consent is gone), whatever its body says.
+ */
+export function isDeltaCursorExpired(err: unknown): boolean {
+  const { status, graphCode } = (err ?? {}) as { status?: unknown; graphCode?: unknown };
+  if (status === 410) return true;
+  return (
+    typeof status === 'number' && status >= 400 && status < 500 && status !== 401 && status !== 403 &&
+    typeof graphCode === 'string' && graphCode.toLowerCase() === 'syncstatenotfound'
+  );
+}
+
 /** One delta page. Throws GraphSweepBudgetError when the budget ends the request or its body read. */
 async function readDeltaPage(
   url: string,
@@ -126,7 +153,8 @@ async function readDeltaPage(
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     const err = new Error(`Graph delta ${res.status}: ${body.slice(0, 200)}`);
-    (err as Error & { status?: number }).status = res.status;
+    (err as Error & { status?: number; graphCode?: string }).status = res.status;
+    (err as Error & { status?: number; graphCode?: string }).graphCode = graphErrorCode(body);
     throw err;
   }
   try {
@@ -360,7 +388,8 @@ export async function markRead(token: string, mailbox: string, messageId: string
  *   with no error code). These do not fix themselves, so they keep stopping the
  *   mailbox as before.
  *
- * 410 (expired delta token) is handled by the caller before this is consulted.
+ * An expired delta token (isDeltaCursorExpired) is handled by the caller before
+ * this is consulted.
  */
 export type GraphPollErrorKind = 'reauth' | 'transient' | 'fatal';
 

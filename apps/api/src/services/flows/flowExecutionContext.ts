@@ -45,3 +45,15 @@ export async function withFlowExecutionContext<T>(frame: FlowExecutionFrame, fn:
 export function currentFlowExecutionFrame(): FlowExecutionFrame | undefined {
   return storage.getStore();
 }
+
+/**
+ * Runs `fn` with NO flow execution frame, whatever frame the caller is in.
+ * For a deferred publisher that sends events staged earlier by other work
+ * (the alert outbox, #11348): without it, the frame of whichever flow step
+ * happened to start the drain would be stamped onto every event it sends.
+ * Such a publisher passes each event's own staged ancestry as the
+ * `flowRunId` / `flowChainDepth` publish options instead.
+ */
+export function outsideFlowExecutionContext<T>(fn: () => T): T {
+  return storage.exit(fn);
+}

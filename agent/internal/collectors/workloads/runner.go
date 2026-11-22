@@ -9,9 +9,11 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/hosttool"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // This file is the package's only process runner and the only file allowed to
@@ -59,7 +61,7 @@ type cmdRunner func(ctx context.Context, path string, args ...string) (cmdOutput
 // local node's qemu or lxc guest list. The node segment has the same charset
 // validNodeName enforces, so it can never be "..", start with "-" or carry a
 // separator.
-var pveshPathPattern = regexp.MustCompile(`^/nodes/[A-Za-z0-9][A-Za-z0-9-]{0,62}/(qemu|lxc)$`)
+var pveshPathPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^/nodes/[A-Za-z0-9][A-Za-z0-9-]{0,62}/(qemu|lxc)$`) })
 
 // allowedCommand reports whether path+args is one of the read-only commands
 // this package runs:
@@ -72,7 +74,7 @@ func allowedCommand(path string, args []string) bool {
 	case isSystemPowerShell(path):
 		return slices.Equal(args, hypervArgs)
 	case path == proxmoxPvesh:
-		return len(args) == 4 && args[0] == "get" && pveshPathPattern.MatchString(args[1]) &&
+		return len(args) == 4 && args[0] == "get" && pveshPathPattern().MatchString(args[1]) &&
 			args[2] == "--output-format" && args[3] == "json"
 	}
 	return false
@@ -121,7 +123,7 @@ func execBounded(parent context.Context, timeout time.Duration, stdoutLimit int,
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := procspawn.CommandContext(ctx, path, args...)
 	out := &limitBuffer{limit: stdoutLimit}
 	errout := &limitBuffer{limit: maxCmdStderr}
 	cmd.Stdout, cmd.Stderr = out, errout

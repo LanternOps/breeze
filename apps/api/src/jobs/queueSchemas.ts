@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { verifiedNetworkSchema } from '@breeze/shared';
 import { EVENT_SUBSCRIBER_IDS } from '../services/eventSubscriberIds';
 
 export const desktopSessionFinalizationJobDataSchema = z.object({
@@ -101,6 +102,16 @@ export const backupProcessResultSchema = z.object({
   error: z.string().min(1).optional(),
 }).strict();
 
+// #12061: expired-snapshot cleanup runs on its own queue
+// (backupSnapshotCleanupWorker.ts). The same job shape stays in
+// backupQueueJobDataSchema so a job a previous version queued on the shared
+// backup queue still parses there and completes as a no-op.
+export const backupSnapshotCleanupQueueJobDataSchema = z.object({
+  type: z.literal('cleanup-expired-snapshots'),
+  meta: queueActorMetaSchema.optional(),
+}).strict();
+export type BackupSnapshotCleanupQueueJobData = z.infer<typeof backupSnapshotCleanupQueueJobDataSchema>;
+
 export const backupQueueJobDataSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('check-schedules'),
@@ -130,6 +141,13 @@ export const backupQueueJobDataSchema = z.discriminatedUnion('type', [
     // that re-queue and when the wait began (ISO 8601), which bounds it.
     capabilityWaitAttempt: z.number().int().positive().optional(),
     capabilityWaitSince: z.string().datetime().optional(),
+    // #11013, set by the scheduler alone (never on a manual job, nor when the
+    // policy turned runMissedBackupsOnConnect off): how long this job may wait
+    // for an offline device. Absent means an offline device fails the job.
+    catchUpUntil: z.string().datetime().optional(),
+    // #11013: this dispatch was queued because the agent connected, for a job
+    // that is already waiting (backupEnqueue.enqueueBackupCatchUpDispatch).
+    catchUpDispatch: z.literal(true).optional(),
     meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({
@@ -223,6 +241,8 @@ export const discoveryQueueJobDataSchema = z.discriminatedUnion('type', [
     hostsScanned: z.number().int().nonnegative(),
     hostsDiscovered: z.number().int().nonnegative(),
     adjacency: z.array(deviceAdjacencySchema).optional(),
+    // Learned networks (#12369): the fingerprint a guarded result proved, re-verified in the storing transaction.
+    verifiedNetwork: verifiedNetworkSchema.optional(),
     meta: queueActorMetaSchema.optional(),
   }).strict(),
 ]);
@@ -603,6 +623,14 @@ export const scriptVerifyQueueJobDataSchema = z.object({
   attempt: z.number().int().min(1),
 });
 export type ScriptVerifyQueueJobData = z.infer<typeof scriptVerifyQueueJobDataSchema>;
+// #8313 W4: `ticket-import` queue, one job per slice of a run (spec
+// 2026-10-19 §5.8). Only the slice whose seq equals the run's slice_seq runs.
+export const ticketImportSliceJobDataSchema = z.object({
+  runId: z.string().uuid(),
+  partnerId: z.string().uuid(),
+  seq: z.number().int().min(0),
+}).strict();
+export type TicketImportSliceJobData = z.infer<typeof ticketImportSliceJobDataSchema>;
 export type QueueActorMeta = z.infer<typeof queueActorMetaSchema>;
 // Note: NOT named RouteEventJobData/DeliverEventJobData — those canonical
 // interfaces are hand-written in services/eventDispatchQueue.ts (the

@@ -116,10 +116,13 @@ export default function TrustProbationBanner() {
         <p className="mt-1 text-sm text-muted-foreground">
           {CAPABILITY_LABELS[denial.capability]} is temporarily unavailable.
         </p>
+        {/* Restricted copy stays neutral: it never says why (trust-review rule). */}
         <p className="mt-1 text-sm text-foreground">
-          Remote control and script execution unlock after your first card payment settles (about 24 hours) or once we've reviewed your account.
+          {restricted
+            ? 'Your account is under review. Some features are unavailable until the review is complete. Request a review or book a call and we will follow up.'
+            : "Remote control and script execution unlock after your first card payment settles (about 24 hours) or once we've reviewed your account."}
         </p>
-        {status && (
+        {status && !restricted && (
           <ul className="mt-3 grid gap-1 sm:grid-cols-2" aria-label="Verification checklist">
             {CHECKLIST_ITEMS.map(({ key, label }) => {
               const complete = status.checklist[key] === true;

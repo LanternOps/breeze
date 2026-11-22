@@ -32,6 +32,9 @@
     "networkMonitor": "Rede",
     "jobs": "Jobs",
     "flows": "Fluxos",
+    "previewTag": "Prévia",
+    "automations": "Automações",
+    "automationsSections": "Seções de automações",
     "monitoring": "Monitoramento",
     "networkDiscovery": "Descoberta de Rede",
     "edr": "EDR",
@@ -803,6 +806,7 @@
         "devices": "Dispositivos",
         "scripts": "Scripts",
         "alerts": "Alertas",
+        "pages": "Páginas",
         "users": "Usuários",
         "settings": "Configurações",
         "recent-devices": "Dispositivos recentes",
@@ -822,7 +826,9 @@
         "wispHome": "Abrir o Wisp",
         "wispHomeDescription": "Ir para a sua página inicial do Wisp"
       },
-      "numberHint": "{{mod}}1–9 para abrir"
+      "numberHint": "{{mod}}1–9 para abrir",
+      "thisCustomerOnly": "Somente este cliente",
+      "partnerWide": "Todo o parceiro"
     },
     "notifications": {
       "title": "Notificações",
@@ -834,6 +840,8 @@
       "unread_other": "{{count}} não lidas",
       "markAllRead": "Marcar todas como lidas",
       "markAllUnread": "Marcar todas como não lidas",
+      "muteSound": "Silenciar som de aprovações",
+      "unmuteSound": "Ativar som de aprovações",
       "confirmClear": "Confirmar limpeza",
       "clearAll": "Limpar tudo",
       "loading": "Carregando notificações…",
@@ -903,7 +911,20 @@
       },
       "charKeysOn": "Os atalhos de tecla única estão ativados.",
       "charKeysOff": "Os atalhos de tecla única estão desativados. Apenas atalhos com Ctrl/Cmd funcionam.",
-      "charKeysManage": "Alterar nas configurações do perfil"
+      "charKeysManage": "Alterar nas configurações do perfil",
+      "queueTitle": "Fila de chamados",
+      "queueHint": "Na página de chamados, fora de um campo de texto.",
+      "queue": {
+        "next": "Próximo chamado",
+        "previous": "Chamado anterior",
+        "open": "Abrir o chamado (após resolver: o próximo sugerido)",
+        "toggleBulk": "Adicionar à seleção em massa ou remover dela",
+        "assignMe": "Atribuir a mim",
+        "reply": "Escrever uma resposta",
+        "internal": "Escrever uma nota interna",
+        "resolve": "Resolver com uma nota",
+        "back": "Voltar para a fila"
+      }
     }
   },
   "migrationBanner": {
@@ -1448,6 +1469,10 @@
           "deviceOnline": {
             "description": "Acionado quando um dispositivo conecta.",
             "label": "Dispositivo online"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Acionado quando um dispositivo recém-registrado parece ser uma reinstalação de um registro de dispositivo existente e inativo.",
+            "label": "Possível reinstalação de dispositivo"
           },
           "deviceReinstalled": {
             "description": "Acionado quando uma máquina reinstalada é vinculada novamente ao registro de dispositivo existente.",
@@ -2453,6 +2478,7 @@
           "invalidTimeRange": "A hora inicial deve ser anterior à hora final.",
           "searchFailed": "Falha ao pesquisar logs",
           "saveFailed": "Falha ao salvar consulta",
+          "savedQueriesFailed": "Não foi possível carregar as consultas salvas.",
           "noRowsExport": "Não há linhas para exportar."
         },
         "savePrompt": "Nome desta consulta salva:",
@@ -2472,10 +2498,14 @@
         },
         "searchFleetLogs": "Pesquisar Logs da Frota",
         "saveQuery": "Salvar Consulta",
+        "usingSavedFilters": "Esta pesquisa usa os filtros salvos.",
+        "customSearch": "Pesquisa personalizada",
+        "savedQueries": "Consultas salvas",
         "exportCsv": "Exportar CSV",
         "resultsTitle": "Resultados da Pesquisa",
         "loading": "Carregando...",
         "resultsCount": "{{shown}} exibido(s) de {{total}} no total",
+        "resultsCountWithoutTotal": "{{shown}} exibidos",
         "table": {
           "timestamp": "Data/hora",
           "level": "Nível",
@@ -2485,6 +2515,7 @@
         "unknownSite": "Local desconhecido",
         "empty": "Nenhum log correspondeu aos filtros atuais.",
         "pageCount": "Página {{page}} de {{totalPages}}",
+        "currentPage": "Página {{page}}",
         "previous": "Anterior"
       }
     },
@@ -2935,5 +2966,8 @@
   "featureLock": {
     "lockedLabel": "Bloqueado",
     "upgrade": "Ver planos"
+  },
+  "inheritChoice": {
+    "inherit": "Herdar — {{value}} ({{source}})"
   }
 }

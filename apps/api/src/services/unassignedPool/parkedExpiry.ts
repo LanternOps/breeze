@@ -22,16 +22,16 @@
  */
 import { NetworkIsolationUnresolvedError } from '../networkIsolation/lifecycle';
 import { sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runAfterDbContextExit, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { devicePoolAssignmentEvents } from '../../db/schema';
 import { decommissionDeviceInTransaction } from '../deviceDecommission';
-import { DeviceLifecycleError, purgeRemovedDevice } from '../deviceLifecycle';
+import { DeviceLifecycleError, purgeRemovedDevice, type PurgeResult } from '../deviceLifecycle';
 import { createAuditLog } from '../auditService';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
 import { invalidateOrgDeviceCount } from '../agentOrgRateLimit';
 import { getRedis } from '../redis';
 import { captureException } from '../sentry';
-import { disconnectAgent } from '../../routes/agentWs';
+import { evictAgentSockets } from '../agentCommandRelayEvict';
 import { isUnassignedPoolOrgType } from './orgType';
 import { lockPartnerHoldingArea } from './holdingAreaLock';
 import { lockDeviceForAssignment, type LockedParkedDevice } from './assignParkedDeviceSteps';
@@ -86,6 +86,42 @@ const inSystemTransaction = <T>(fn: (tx: Parameters<Parameters<typeof db.transac
 function report(label: string, deviceId: string, err: unknown): void {
   console.error(`${LOG_PREFIX} post-commit ${label} failed for ${deviceId}:`, err);
   captureException(err);
+}
+
+/**
+ * Close the expired device's live agent socket on whichever instance holds it
+ * (#4142: the relay facade, this process first), so the hourly job needs no
+ * local socket map and runs on any role.
+ *
+ * The decommission has already committed in its own detached transaction, so
+ * the eviction waits only for the CALLER's context to settle (an incident
+ * action runs inside a request), because the facade refuses to relay from a
+ * held DB context. It runs on rollback too: the caller's outcome does not undo
+ * the committed decommission. Fire-and-forget (`awaitAck: false`): nothing
+ * audits the close, and a socket the facade could not close is reported. The
+ * agent's next reconnect meets the decommissioned device either way.
+ */
+function scheduleDecommissionEviction(deviceId: string, agentId: string): void {
+  runAfterDbContextExit('parked device agent socket eviction', async () => {
+    try {
+      const outcomes = await evictAgentSockets(
+        [{ agentId, code: 4041, reason: 'Device decommissioned' }],
+        { awaitAck: false },
+      );
+      const outcome = outcomes.get(agentId);
+      if (outcome?.status === 'unavailable' || outcome?.status === 'close_failed') {
+        const detail = outcome.status === 'unavailable' ? outcome.reason : outcome.via;
+        report('agent disconnect', deviceId, new Error(`agent socket eviction ${outcome.status}:${detail}`));
+      } else if (outcome?.status === 'indeterminate') {
+        // The enqueue's result is unknown: the job may well run. Logged, not
+        // reported, as in tenantLifecycle's sever.
+        console.warn(`${LOG_PREFIX} agent socket eviction unconfirmed for ${deviceId}`);
+      }
+    } catch (err) {
+      // evictAgentSockets never rejects; this is a contract violation.
+      report('agent disconnect', deviceId, err);
+    }
+  });
 }
 
 export async function expireParkedDevice(
@@ -220,11 +256,7 @@ export async function expireParkedDevice(
   } catch (err) {
     report('audit', device.id, err);
   }
-  try {
-    disconnectAgent(device.agentId, 4041, 'Device decommissioned');
-  } catch (err) {
-    report('agent disconnect', device.id, err);
-  }
+  scheduleDecommissionEviction(device.id, device.agentId);
   invalidateOrgDeviceCount(getRedis(), device.orgId).catch((err: unknown) => report('device-count cache invalidation', device.id, err));
 
   return { expired: true, deviceId, ledgerEventId: result.ledgerEventId, uninstallQueued: result.uninstallQueued };
@@ -237,6 +269,8 @@ export type ParkedPurgeSkip =
   | 'NOT_DUE'
   /** A `device_remove` uninstall is still collectable; comes back on a later run. */
   | 'UNINSTALL_PENDING'
+  /** #11153 — the agent never confirmed it was uninstalled; never forced. */
+  | 'UNINSTALL_NOT_CONFIRMED'
   /** Another purge refusal (for example a backup snapshot under hold). */
   | 'REFUSED'
   /** The source (or target) of an open reattach intent (#8318 §6.5). */
@@ -244,7 +278,14 @@ export type ParkedPurgeSkip =
   | 'isolation_unresolved';
 
 export type ParkedPurgeOutcome =
-  | { purged: true; deviceId: string; hostname: string; holdingOrgId: string }
+  | {
+      purged: true;
+      deviceId: string;
+      hostname: string;
+      holdingOrgId: string;
+      /** #11153 — the uninstall state that allowed the purge, for the audit row. */
+      uninstallState: PurgeResult['uninstallState'];
+    }
   | { purged: false; deviceId: string; reason: ParkedPurgeSkip };
 
 export async function purgeExpiredParkedDevice(input: {
@@ -278,7 +319,8 @@ export async function purgeExpiredParkedDevice(input: {
         return { purged: false, deviceId, reason: 'IN_REATTACH' };
       }
 
-      await purgeRemovedDevice(tx, device.id);
+      // No `force`: an unattended purge never orphans an unconfirmed agent (#11153).
+      const purged = await purgeRemovedDevice(tx, device.id);
       await tx.insert(devicePoolAssignmentEvents).values({
         partnerId,
         deviceId: device.id,
@@ -288,7 +330,13 @@ export async function purgeExpiredParkedDevice(input: {
         toOrgId: null,
         parkedAt: device.createdAt,
       });
-      return { purged: true, deviceId, hostname: device.hostname, holdingOrgId: device.orgId };
+      return {
+        purged: true,
+        deviceId,
+        hostname: device.hostname,
+        holdingOrgId: device.orgId,
+        uninstallState: purged.uninstallState,
+      };
     });
   } catch (err) {
     // Caught outside the transaction, so the refusal still rolled it back.
@@ -299,7 +347,10 @@ export async function purgeExpiredParkedDevice(input: {
       return { purged: false, deviceId, reason: 'isolation_unresolved' };
     }
     if (err instanceof DeviceLifecycleError) {
-      return { purged: false, deviceId, reason: err.code === 'UNINSTALL_PENDING' ? 'UNINSTALL_PENDING' : 'REFUSED' };
+      const reason: ParkedPurgeSkip = err.code === 'UNINSTALL_PENDING' || err.code === 'UNINSTALL_NOT_CONFIRMED'
+        ? err.code
+        : 'REFUSED';
+      return { purged: false, deviceId, reason };
     }
     throw err;
   }

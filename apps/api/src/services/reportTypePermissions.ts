@@ -129,11 +129,20 @@ export function reportTypeHiddenByPermission(
  * undefined (no predicate; `and()` drops it) when the caller holds them all.
  * partnerOwnedVisibility.scan.test.ts requires every scope that applies
  * `reportAudienceCondition` to apply this too.
+ *
+ * `exceptManagedEvidence` is for the customer portal only (#11018). A portal user
+ * holds no permission set, so `granted: null` hides every gated type. A managed
+ * evidence type is different: the MSP publishes each run by delivering its
+ * occurrence, and the customer never generates one. Only that closed registry is
+ * exempt, so every business type stays excluded.
  */
 export function reportTypePermissionCondition(
   granted: GrantedReportPermissions,
   typeColumn: AnyColumn,
+  options?: { exceptManagedEvidence?: boolean },
 ): SQL<unknown> | undefined {
-  const missing = reportTypesMissingPermission(granted);
+  const missing = reportTypesMissingPermission(granted).filter(
+    (type) => !(options?.exceptManagedEvidence && reportTypeDef(type).execution === 'managed_evidence'),
+  );
   return missing.length > 0 ? notInArray(typeColumn, missing) : undefined;
 }

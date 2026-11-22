@@ -5,13 +5,14 @@
  * timeline viewing, and report generation.
  * - create_incident (Tier 2): Create a new security incident
  * - execute_containment (Tier 3): Execute containment actions on a device
+ * - release_containment (Tier 3, four-eyes): Release a network isolation through the isolation service
  * - collect_evidence (Tier 2; Tier 3 supervised when evidenceTypes includes screenshot): Collect forensic evidence from a device
  * - get_incident_timeline (Tier 1): View full incident timeline
  * - generate_incident_report (Tier 1): Generate structured incident report
  */
 
 import { db } from '../db';
-import { startNetworkIsolationSchema } from '@breeze/shared';
+import { releaseNetworkIsolationSchema, startNetworkIsolationSchema } from '@breeze/shared';
 import { devices, incidents, incidentEvidence, incidentActions } from '../db/schema';
 import { randomUUID } from 'node:crypto';
 import { eq, and, desc, gte, ilike, inArray, lte, count, sql, SQL } from 'drizzle-orm';
@@ -392,6 +393,89 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
         actionType: input.actionType,
         note: 'The action completes, fails or times out from the device result; the incident is marked contained only when the device reports success.',
       });
+    },
+  });
+
+  // ============================================
+  // release_containment — Tier 3 FOUR-EYES (network-isolation W13, #10101)
+  // ============================================
+  //
+  // Lifts a network isolation. It runs ONLY as an approved four-eyes release:
+  // the release path recomputes the pinned effect digest over the episode's
+  // {orgId, deviceId, isolationId, generation} and hands the handler that
+  // binding (`context.verifiedIsolationRelease`). The handler never builds or
+  // queues a command — `releaseNetworkIsolation` alone writes the tombstone,
+  // queues `release_containment`, and re-checks the binding under the episode
+  // lock (an extend or org move after approval is `approval_mismatch`).
+
+  registerTool({
+    tier: 3 as AiToolTier,
+    deviceArgs: ['deviceId'],
+    domain: 'monitoring',
+    searchHint: 'release or lift a network isolation on a contained device (un-isolate)',
+    definition: {
+      name: 'release_containment',
+      description:
+        'Release (lift) the network isolation of a device. Needs four-eyes approval: a second person approves, or the only eligible approver verifies with Touch ID / Windows Hello. Name the isolation episode to release.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          deviceId: { type: 'string', description: 'UUID of the isolated device' },
+          isolationId: {
+            type: 'string',
+            description: 'UUID of the isolation episode (the episode id network isolation returned)',
+          },
+          reason: { type: 'string', maxLength: 2000, description: 'Why the isolation can be lifted' },
+        },
+        required: ['deviceId', 'isolationId', 'reason'],
+      },
+    },
+    handler: async (input, auth, context) => {
+      if (typeof input.deviceId !== 'string' || !input.deviceId) return JSON.stringify({ error: 'deviceId is required' });
+      if (typeof input.isolationId !== 'string' || !input.isolationId) return JSON.stringify({ error: 'isolationId is required' });
+      if (typeof input.reason !== 'string' || !input.reason.trim()) {
+        return JSON.stringify({ error: 'reason is required to release a network isolation' });
+      }
+      const parsed = releaseNetworkIsolationSchema.safeParse({ reason: input.reason });
+      if (!parsed.success) return JSON.stringify({ error: 'Invalid release input: reason' });
+
+      // Fail closed outside an approved release: a direct chat, MCP, flow or
+      // script-builder call carries no verified binding, and the binding is
+      // never taken from the input.
+      const binding = context?.verifiedIsolationRelease;
+      if (!context?.actionIntentId || !binding) {
+        return JSON.stringify({
+          error: 'Releasing a network isolation runs only from an approved four-eyes release; nothing was sent to the device',
+          code: 'approval_required',
+        });
+      }
+      if (binding.deviceId !== input.deviceId.toLowerCase() || binding.isolationId !== input.isolationId.toLowerCase()) {
+        return JSON.stringify({ error: 'approval_mismatch' });
+      }
+
+      try {
+        const { releaseNetworkIsolation } = await import('./networkIsolation/service');
+        const result = await releaseNetworkIsolation(auth, input.deviceId, input.isolationId, parsed.data,
+          { kind: 'ai', approvalBinding: binding });
+        if ('error' in result) return JSON.stringify(result);
+        // Scalars only: the model has no use for the episode's allowlist
+        // snapshot or the agent's last report.
+        const { id, state, desiredState, generation, releaseKind, releaseConfirmedAt } = result.episode;
+        // The service answers an already-confirmed release without queuing anything.
+        const alreadyReleased = Boolean(releaseConfirmedAt);
+        return JSON.stringify({
+          success: true,
+          commandId: result.commandId,
+          episode: { id, state, desiredState, generation, releaseKind },
+          ...(alreadyReleased
+            ? { alreadyReleased: true, note: 'The device had already confirmed this release; nothing new was sent.' }
+            : { note: 'The device lifts its rules when it receives the command or its next heartbeat; the episode reads released once the device confirms.' }),
+        });
+      } catch (error) {
+        // A failed un-contain is operationally important: report it, then answer generically.
+        captureException(error, undefined, { phase: 'release_containment', deviceId: input.deviceId, isolationId: input.isolationId });
+        return JSON.stringify({ error: `Failed to release network isolation: ${sanitizeThrownToolError('incident', error)}` });
+      }
     },
   });
 

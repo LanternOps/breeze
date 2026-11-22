@@ -59,12 +59,52 @@ function allowedSiteIds(
  * who can see nothing has not observed a healthy fleet, and reporting full
  * coverage off zero devices is an affirmative false assurance.
  */
-function emptyHealthSummary() {
+export function emptyHealthSummary() {
   return {
     verification: { total: 0, passedLast24h: 0, failedLast24h: 0, partialLast24h: 0, coveragePercent: null },
     readiness: { averageScore: 0, lowReadinessCount: 0, criticalDevicesAtRisk: 0 },
     escalations: { verificationFailures: 0, criticalVerificationFailures: 0 },
   };
+}
+
+/** The verdict the summary route and the `manage_backup_verification` tool both report. */
+export function verificationHealthStatus(summary: Awaited<ReturnType<typeof getBackupHealthSummary>>): 'critical' | 'degraded' | 'healthy' | 'unknown' {
+  if (summary.escalations.criticalVerificationFailures > 0) return 'critical';
+  if (summary.readFailed) return 'unknown';
+  return summary.readiness.lowReadinessCount > 0 ? 'degraded' : 'healthy';
+}
+
+/** The fleet roll-up the readiness route and the `manage_backup_verification` tool both report. */
+export function summarizeRecoveryReadiness(rows: ReadonlyArray<{ readinessScore: number }>) {
+  return {
+    devices: rows.length,
+    averageScore: rows.length > 0
+      ? Math.round((rows.reduce((sum, row) => sum + row.readinessScore, 0) / rows.length) * 10) / 10
+      : 0,
+    lowReadiness: rows.filter((row) => row.readinessScore < BACKUP_LOW_READINESS_THRESHOLD).length,
+    highReadiness: rows.filter((row) => row.readinessScore >= BACKUP_HIGH_READINESS_THRESHOLD).length,
+  };
+}
+
+/**
+ * Sorts a failed `runBackupVerification` into what its caller may repeat. The
+ * service throws plain `Error`s, so validation is told apart by message; anything
+ * else stays generic and is the caller's to log. Shared by POST /verify and the
+ * `manage_backup_verification` tool so the two cannot disagree on what leaks.
+ */
+export function classifyVerificationRunError(error: unknown): { message: string; code: 'VALIDATION' | 'DISPATCH' | 'INTERNAL'; status: number } {
+  const message = error instanceof Error ? error.message : 'Verification failed to start';
+  if (error instanceof BackupVerificationDispatchError) {
+    return { message, code: 'DISPATCH', status: error.statusCode };
+  }
+  const isValidation = error instanceof Error && (
+    message.includes('not found') ||
+    message.includes('does not belong') ||
+    message.includes('required')
+  );
+  return isValidation
+    ? { message, code: 'VALIDATION', status: 400 }
+    : { message: 'Internal server error', code: 'INTERNAL', status: 500 };
 }
 
 backupVerificationRoutes.get('/health', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), zValidator('query', backupHealthQuerySchema), async (c) => {
@@ -86,11 +126,7 @@ backupVerificationRoutes.get('/health', requirePermission(PERMISSIONS.ORGS_READ.
 
   return c.json({
     data: {
-      status: summary.escalations.criticalVerificationFailures > 0
-        ? 'critical'
-        : summary.readiness.lowReadinessCount > 0
-          ? 'degraded'
-          : 'healthy',
+      status: verificationHealthStatus(summary),
       ...summary
     }
   });
@@ -147,19 +183,11 @@ backupVerificationRoutes.post(
       }
     }, 201);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Verification failed to start';
-    if (error instanceof BackupVerificationDispatchError) {
-      return c.json({ error: message }, error.statusCode as any);
-    }
-    const isValidation = error instanceof Error && (
-      message.includes('not found') ||
-      message.includes('does not belong') ||
-      message.includes('required')
-    );
-    if (!isValidation) {
+    const classified = classifyVerificationRunError(error);
+    if (classified.code === 'INTERNAL') {
       console.error('[backupVerification] Unexpected error in POST /verify:', error);
     }
-    return c.json({ error: isValidation ? message : 'Internal server error' }, isValidation ? 400 : 500);
+    return c.json({ error: classified.message }, classified.status as any);
   }
 });
 
@@ -211,18 +239,9 @@ backupVerificationRoutes.get('/recovery-readiness', requirePermission(PERMISSION
     rows = rows.filter((row) => row.deviceId === query.deviceId);
   }
 
-  const summary = {
-    devices: rows.length,
-    averageScore: rows.length > 0
-      ? Math.round((rows.reduce((sum, row) => sum + row.readinessScore, 0) / rows.length) * 10) / 10
-      : 0,
-    lowReadiness: rows.filter((row) => row.readinessScore < BACKUP_LOW_READINESS_THRESHOLD).length,
-    highReadiness: rows.filter((row) => row.readinessScore >= BACKUP_HIGH_READINESS_THRESHOLD).length
-  };
-
   return c.json({
     data: {
-      summary,
+      summary: summarizeRecoveryReadiness(rows),
       devices: await attachDeviceNames(orgId, rows)
     }
   });

@@ -51,6 +51,10 @@ x-api-env: &api-env
   # #8839 — agent request bodies are received before the org DB context opens.
   AGENT_BODY_RECEIVE_TIMEOUT_MS: ${AGENT_BODY_RECEIVE_TIMEOUT_MS:-}
   AGENT_BODY_RECEIVE_TOTAL_TIMEOUT_MS: ${AGENT_BODY_RECEIVE_TOTAL_TIMEOUT_MS:-}
+  # Alert worker / agent ingest tuning (optional; empty reads as unset and the code applies its own defaults).
+  ALERT_WORKER_CONCURRENCY: ${ALERT_WORKER_CONCURRENCY:-}
+  ALERT_WORKER_STAGGER_WINDOW_MS: ${ALERT_WORKER_STAGGER_WINDOW_MS:-}
+  AGENT_CONNECTIONS_MAX_PER_DEVICE: ${AGENT_CONNECTIONS_MAX_PER_DEVICE:-}
   DB_WEDGED_BACKEND_SCAN_DISABLED: ${DB_WEDGED_BACKEND_SCAN_DISABLED:-}
   DB_WEDGED_BACKEND_SCAN_INTERVAL_MS: ${DB_WEDGED_BACKEND_SCAN_INTERVAL_MS:-}
   DB_WEDGED_BACKEND_MIN_AGE_MS: ${DB_WEDGED_BACKEND_MIN_AGE_MS:-}
@@ -163,8 +167,11 @@ x-api-env: &api-env
   # every agent with the legacy heartbeat payload, as an older API would.
   HEARTBEAT_RETAIN_STATE_ENABLED: ${HEARTBEAT_RETAIN_STATE_ENABLED:-true}
   AGENT_ECH_ENABLED: ${AGENT_ECH_ENABLED:-true}
+  TPM_ATTESTATION_ENABLED: ${TPM_ATTESTATION_ENABLED:-false}
   NETWORK_ISOLATION_ENABLED: ${NETWORK_ISOLATION_ENABLED:-false}
+  LEARNED_NETWORKS_INGEST_ENABLED: ${LEARNED_NETWORKS_INGEST_ENABLED:-}
   NETWORK_ISOLATION_ENABLED_PARTNER_IDS: ${NETWORK_ISOLATION_ENABLED_PARTNER_IDS:-}
+  NETWORK_ISOLATION_TOKEN_SIGNING_KEY: ${NETWORK_ISOLATION_TOKEN_SIGNING_KEY:-}
   # #10190 prompt host kill switch. `-default` (no colon) on purpose: unset
   # passes "default" (the code default), while an explicit empty value passes
   # '' (the kill switch: nothing enabled). `:-` would turn unset into ''.
@@ -190,6 +197,10 @@ x-api-env: &api-env
   # already-mounted api_data volume instead. Mapped here explicitly (not just
   # set in .env) per the compose-interpolation rule above.
   RECOVERY_MEDIA_WORK_DIR: ${RECOVERY_MEDIA_WORK_DIR:-/data/recovery-work}
+  # Server-side directory for local backup destinations: <root>/<org id>/<config id>,
+  # provisioned by the operator in both api and worker. Unset = server-side local
+  # access off. See docs: backup/storage, "Local destinations on the API server".
+  BACKUP_LOCAL_ROOT: ${BACKUP_LOCAL_ROOT:-}
   # Backup GC per-object grace (ms). Lab/test knob only; leave unset in production (48h).
   BACKUP_GC_GRACE_MS: ${BACKUP_GC_GRACE_MS:-}
   # Backup storage reclamation (D18, #5429). All optional; unset = default. Production floors apply.
@@ -198,6 +209,11 @@ x-api-env: &api-env
   BACKUP_RESTORE_PIN_LINGER_MS: ${BACKUP_RESTORE_PIN_LINGER_MS:-}
   BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS: ${BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS:-}
   BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS: ${BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS:-}
+  # Backup sweep tuning (worker role; optional, blank = default).
+  BACKUP_GC_LIVE_SET_MAX_BYTES: ${BACKUP_GC_LIVE_SET_MAX_BYTES:-}
+  BACKUP_GC_MAX_DELETES_PER_RUN: ${BACKUP_GC_MAX_DELETES_PER_RUN:-}
+  BACKUP_SNAPSHOT_CLEANUP_CRON: ${BACKUP_SNAPSHOT_CLEANUP_CRON:-}
+  BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS: ${BACKUP_SNAPSHOT_CLEANUP_TIME_BUDGET_MS:-}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_JSON: ${LOG_JSON:-true}
   # Agent diagnostic log retention (worker role; all optional, see .env.example).
@@ -208,6 +224,9 @@ x-api-env: &api-env
   AI_TOOL_OUTPUT_RETENTION_CRON: ${AI_TOOL_OUTPUT_RETENTION_CRON:-}
   AI_TOOL_OUTPUT_RETENTION_BATCH_SIZE: ${AI_TOOL_OUTPUT_RETENTION_BATCH_SIZE:-}
   AI_TOOL_OUTPUT_RETENTION_MAX_BATCHES: ${AI_TOOL_OUTPUT_RETENTION_MAX_BATCHES:-}
+  AI_TRANSCRIPT_RETENTION_BATCH_SIZE: ${AI_TRANSCRIPT_RETENTION_BATCH_SIZE:-}
+  AI_TRANSCRIPT_RETENTION_MAX_BATCHES: ${AI_TRANSCRIPT_RETENTION_MAX_BATCHES:-}
+  AI_TRANSCRIPT_RETENTION_ENFORCE: ${AI_TRANSCRIPT_RETENTION_ENFORCE:-}
   AI_TRANSCRIPT_SWEEPER_CRON: ${AI_TRANSCRIPT_SWEEPER_CRON:-}
   AI_TRANSCRIPT_SWEEPER_ENABLED: ${AI_TRANSCRIPT_SWEEPER_ENABLED:-}
   AI_TRANSCRIPT_SWEEPER_GRACE_HOURS: ${AI_TRANSCRIPT_SWEEPER_GRACE_HOURS:-}
@@ -268,6 +287,22 @@ x-api-env: &api-env
   # for self-host/droplet deploys to enable it. Same compose-interpolation gap
   # class as IS_HOSTED / RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS.
   CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
+  # Customer portal "Sign in with Microsoft" (the portal's own Entra app). Off
+  # unless both the client ID and secret are set; the callback base is optional
+  # (defaults to the origin of PUBLIC_URL). See .env.example.
+  PORTAL_ENTRA_CLIENT_ID: ${PORTAL_ENTRA_CLIENT_ID:-}
+  PORTAL_ENTRA_CLIENT_SECRET: ${PORTAL_ENTRA_CLIENT_SECRET:-}
+  PORTAL_ENTRA_CALLBACK_BASE_URL: ${PORTAL_ENTRA_CALLBACK_BASE_URL:-}
+  # Customer portal "Sign in with Google" (the portal's own Google OAuth client).
+  # Off unless both the client ID and secret are set; the callback base is
+  # optional (defaults to the origin of PUBLIC_URL). See .env.example.
+  PORTAL_GOOGLE_CLIENT_ID: ${PORTAL_GOOGLE_CLIENT_ID:-}
+  PORTAL_GOOGLE_CLIENT_SECRET: ${PORTAL_GOOGLE_CLIENT_SECRET:-}
+  PORTAL_GOOGLE_CALLBACK_BASE_URL: ${PORTAL_GOOGLE_CALLBACK_BASE_URL:-}
+  # Customer-portal self-registration kill switch (portal registration W6); unset = on.
+  PORTAL_SELF_REGISTRATION_ENABLED: ${PORTAL_SELF_REGISTRATION_ENABLED:-}
+  # Directory deprovisioning (portal registration W8); unset = report only.
+  PORTAL_DIRECTORY_DEPROVISION_ENFORCE: ${PORTAL_DIRECTORY_DEPROVISION_ENFORCE:-}
   # Optional customer Graph-read onboarding. The executor is intentionally
   # not part of this generic Compose stack: deploy it separately with a
   # workload identity, private ingress, and controlled HTTPS egress.
@@ -390,6 +425,21 @@ x-api-env: &api-env
   BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: ${BREEZE_AI_ARTIFACT_CAPTURE_ENABLED:-false}
   # Wisp (hosted only; wispEnabled() in config/env.ts). Default false.
   BREEZE_WISP_ENABLED: ${BREEZE_WISP_ENABLED:-false}
+  # Vendor updates (#11065). Dark by default; the manifest gates in code stay
+  # closed until a lab wave opens them. DISABLED_LANES stops new runs with no deploy.
+  BREEZE_OEM_UPDATES_ENABLED: ${BREEZE_OEM_UPDATES_ENABLED:-false}
+  BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: ${BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST:-}
+  BREEZE_OEM_UPDATES_DISABLED_LANES: ${BREEZE_OEM_UPDATES_DISABLED_LANES:-}
+  # Scheduled runs and overnight reboots started per 10-minute tick. Empty keeps the default.
+  OEM_UPDATES_MAX_DISPATCH_PER_TICK: ${OEM_UPDATES_MAX_DISPATCH_PER_TICK:-}
+  # Vendor canary (#11065 observe-first): partner UUIDs (at most 3) that run
+  # best-guess vendor code at its code-table stage. Empty = off for everyone.
+  # DISABLED is a feature:vendor kill switch (recreate api + worker to apply).
+  BREEZE_VENDOR_CANARY_PARTNER_IDS: ${BREEZE_VENDOR_CANARY_PARTNER_IDS:-}
+  BREEZE_VENDOR_CANARY_DISABLED: ${BREEZE_VENDOR_CANARY_DISABLED:-}
+  # Lab only: opens closed gates for the listed device ids. The API refuses to
+  # boot with it set under NODE_ENV=production, so the prod template omits it.
+  BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: ${BREEZE_OEM_UPDATES_LAB_DEVICE_IDS:-}
   # EDR response actions (#8167): server-wide kill switch, default on. Each
   # EDR connection must still opt in (off by default).
   BREEZE_EDR_ACTIONS_ENABLED: ${BREEZE_EDR_ACTIONS_ENABLED:-}
@@ -439,6 +489,7 @@ x-api-env: &api-env
   OAUTH_ISSUER: ${OAUTH_ISSUER:-}
   OAUTH_RESOURCE_URL: ${OAUTH_RESOURCE_URL:-}
   OAUTH_AUTH_EPOCH_ENFORCE_AFTER: ${OAUTH_AUTH_EPOCH_ENFORCE_AFTER:-}
+  OAUTH_REFRESH_ROTATION_GRACE_MS: ${OAUTH_REFRESH_ROTATION_GRACE_MS:-}
   EVENT_PERMISSION_EPOCH_MODE: ${EVENT_PERMISSION_EPOCH_MODE:?Set EVENT_PERMISSION_EPOCH_MODE to compat or enforce}
   OAUTH_COOKIE_SECRET: ${OAUTH_COOKIE_SECRET:-}
   OAUTH_JWKS_PRIVATE_JWK: ${OAUTH_JWKS_PRIVATE_JWK:-}
@@ -472,6 +523,7 @@ x-api-env: &api-env
   # present only in .env is inert unless it is listed here.
   AUTH_REFRESH_RATE_LIMIT: ${AUTH_REFRESH_RATE_LIMIT:-}
   AUTH_REFRESH_RATE_WINDOW_SECONDS: ${AUTH_REFRESH_RATE_WINDOW_SECONDS:-}
+  USER_RATE_LIMIT_PER_MINUTE: ${USER_RATE_LIMIT_PER_MINUTE:-}
   # Per-source-IP agent enrollment limit (#7472). Empty === default 10 per 60s.
   AGENT_ENROLL_RATE_LIMIT: ${AGENT_ENROLL_RATE_LIMIT:-}
   AGENT_ENROLL_RATE_WINDOW_SECONDS: ${AGENT_ENROLL_RATE_WINDOW_SECONDS:-}
@@ -494,6 +546,9 @@ x-api-env: &api-env
   HP_WARRANTY_ENABLED: ${HP_WARRANTY_ENABLED:-}
   IP_CLASSIFY_PROVIDER: ${IP_CLASSIFY_PROVIDER:-}
   IP_CLASSIFY_API_KEY: ${IP_CLASSIFY_API_KEY:-}
+  IP_CLASSIFY_TOR_LIST_URL: ${IP_CLASSIFY_TOR_LIST_URL:-}
+  IP_CLASSIFY_HOSTING_ASN_URL: ${IP_CLASSIFY_HOSTING_ASN_URL:-}
+  IP_CLASSIFY_ASN_DB_URL: ${IP_CLASSIFY_ASN_DB_URL:-}
   MCP_LLM_PROVIDER: ${MCP_LLM_PROVIDER:-}
   MCP_LLM_BASE_URL: ${MCP_LLM_BASE_URL:-}
   MCP_LLM_MODEL: ${MCP_LLM_MODEL:-}
@@ -503,6 +558,7 @@ x-api-env: &api-env
   NVD_API_KEY: ${NVD_API_KEY:-}
   PARTNER_MEETING_URL: ${PARTNER_MEETING_URL:-}
   PARTNER_TRUST_MODE: ${PARTNER_TRUST_MODE:-}
+  PARTNER_TRUST_FRAUD_FLAGS_ENABLED: ${PARTNER_TRUST_FRAUD_FLAGS_ENABLED:-}
   SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-}
   STRIPE_ACCOUNT_CACHE_REFRESH_ENABLED: ${STRIPE_ACCOUNT_CACHE_REFRESH_ENABLED:-}
   JWT_SIGNING_KEYRING: ${JWT_SIGNING_KEYRING:-}
@@ -532,6 +588,17 @@ x-api-env: &api-env
   MIGRATION_WINDOW_DEFAULT_WRITES_PER_HOUR: ${MIGRATION_WINDOW_DEFAULT_WRITES_PER_HOUR:-}
   MIGRATION_WINDOW_MAX_WRITES_PER_HOUR: ${MIGRATION_WINDOW_MAX_WRITES_PER_HOUR:-}
   TICKET_IMPORT_MAX_BYTES_PER_HOUR: ${TICKET_IMPORT_MAX_BYTES_PER_HOUR:-}
+  TICKET_IMPORT_WORKER_CONCURRENCY: ${TICKET_IMPORT_WORKER_CONCURRENCY:-}
+  TICKET_IMPORT_GLOBAL_CONCURRENCY: ${TICKET_IMPORT_GLOBAL_CONCURRENCY:-}
+  TICKET_IMPORT_LEASE_MS: ${TICKET_IMPORT_LEASE_MS:-}
+  TICKET_IMPORT_SLICE_MS: ${TICKET_IMPORT_SLICE_MS:-}
+  TICKET_IMPORT_SOURCE_CONCURRENCY: ${TICKET_IMPORT_SOURCE_CONCURRENCY:-}
+  TICKET_IMPORT_SOURCE_TIMEOUT_MS: ${TICKET_IMPORT_SOURCE_TIMEOUT_MS:-}
+  TICKET_IMPORT_MAX_CLOCK_SKEW_MS: ${TICKET_IMPORT_MAX_CLOCK_SKEW_MS:-}
+  TICKET_IMPORT_MAX_ISSUES_PER_RUN: ${TICKET_IMPORT_MAX_ISSUES_PER_RUN:-}
+  TICKET_IMPORT_MAX_TICKET_BYTES: ${TICKET_IMPORT_MAX_TICKET_BYTES:-}
+  TICKET_IMPORT_MAX_TICKET_ARTICLES: ${TICKET_IMPORT_MAX_TICKET_ARTICLES:-}
+  TICKET_IMPORT_MAX_TICKET_READ_BYTES: ${TICKET_IMPORT_MAX_TICKET_READ_BYTES:-}
   PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT: ${PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT:-}
   AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: ${AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET:-}
   # Offline work queue (#5128). TTL vars are per delivery class, in hours;
@@ -746,6 +813,7 @@ x-api-env: &api-env
   REDIS_MEMORY_CAPTURE_THROTTLE_MS: ${REDIS_MEMORY_CAPTURE_THROTTLE_MS:-}
   # Startup + agent-fleet behaviour
   AUTO_MIGRATE: ${AUTO_MIGRATE:-}
+  MIGRATION_LOCK_TIMEOUT_MS: ${MIGRATION_LOCK_TIMEOUT_MS:-}
   AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}
   AGENT_EDITION_AUTO_MIGRATE_ENABLED: ${AGENT_EDITION_AUTO_MIGRATE_ENABLED:-}
   # Caller verification (#6354): exact true only, default ON (link tier). Workstation tier is dark (default off).
@@ -786,6 +854,10 @@ x-api-env: &api-env
   DNS_SECURITY_RETENTION_DAYS_DEFAULT: ${DNS_SECURITY_RETENTION_DAYS_DEFAULT:-}
   DNS_SECURITY_RETENTION_BATCH_SIZE: ${DNS_SECURITY_RETENTION_BATCH_SIZE:-}
   DNS_SECURITY_RETENTION_MAX_BATCHES: ${DNS_SECURITY_RETENTION_MAX_BATCHES:-}
+  ALERT_RETENTION_DAYS: ${ALERT_RETENTION_DAYS:-}
+  ALERT_RETENTION_BATCH_SIZE: ${ALERT_RETENTION_BATCH_SIZE:-}
+  ALERT_RETENTION_MAX_BATCHES: ${ALERT_RETENTION_MAX_BATCHES:-}
+  ALERT_RETENTION_ENFORCE: ${ALERT_RETENTION_ENFORCE:-}
   SECURITY_SWEEP_MAX_DEVICES: ${SECURITY_SWEEP_MAX_DEVICES:-}
   SECURITY_SWEEP_MAX_ACTIVE_PER_ORG: ${SECURITY_SWEEP_MAX_ACTIVE_PER_ORG:-}
   SECURITY_SWEEP_PUMP_INTERVAL_MS: ${SECURITY_SWEEP_PUMP_INTERVAL_MS:-}
@@ -802,6 +874,42 @@ x-api-env: &api-env
   IP_HISTORY_RETENTION_BATCH_SIZE: ${IP_HISTORY_RETENTION_BATCH_SIZE:-}
   IP_HISTORY_RETENTION_DAYS: ${IP_HISTORY_RETENTION_DAYS:-}
   IP_HISTORY_RETENTION_MAX_BATCHES: ${IP_HISTORY_RETENTION_MAX_BATCHES:-}
+  HISTORY_RETENTION_BATCH_SIZE: ${HISTORY_RETENTION_BATCH_SIZE:-}
+  HISTORY_RETENTION_MAX_BATCHES: ${HISTORY_RETENTION_MAX_BATCHES:-}
+  AI_AGENT_RUN_RETENTION_DAYS: ${AI_AGENT_RUN_RETENTION_DAYS:-}
+  AI_AGENT_RUN_RETENTION_ENFORCE: ${AI_AGENT_RUN_RETENTION_ENFORCE:-}
+  PATCH_JOB_RESULT_RETENTION_DAYS: ${PATCH_JOB_RESULT_RETENTION_DAYS:-}
+  PATCH_JOB_RESULT_RETENTION_ENFORCE: ${PATCH_JOB_RESULT_RETENTION_ENFORCE:-}
+  SECURITY_POSTURE_SNAPSHOT_RETENTION_DAYS: ${SECURITY_POSTURE_SNAPSHOT_RETENTION_DAYS:-}
+  SECURITY_POSTURE_SNAPSHOT_RETENTION_ENFORCE: ${SECURITY_POSTURE_SNAPSHOT_RETENTION_ENFORCE:-}
+  CIS_BASELINE_RESULT_RETENTION_DAYS: ${CIS_BASELINE_RESULT_RETENTION_DAYS:-}
+  CIS_BASELINE_RESULT_RETENTION_ENFORCE: ${CIS_BASELINE_RESULT_RETENTION_ENFORCE:-}
+  AUTOMATION_RUN_RETENTION_DAYS: ${AUTOMATION_RUN_RETENTION_DAYS:-}
+  AUTOMATION_RUN_RETENTION_ENFORCE: ${AUTOMATION_RUN_RETENTION_ENFORCE:-}
+  REPORT_RUN_RETENTION_DAYS: ${REPORT_RUN_RETENTION_DAYS:-}
+  REPORT_RUN_RETENTION_ENFORCE: ${REPORT_RUN_RETENTION_ENFORCE:-}
+  USER_NOTIFICATION_READ_RETENTION_DAYS: ${USER_NOTIFICATION_READ_RETENTION_DAYS:-}
+  USER_NOTIFICATION_READ_RETENTION_ENFORCE: ${USER_NOTIFICATION_READ_RETENTION_ENFORCE:-}
+  USER_NOTIFICATION_RETENTION_DAYS: ${USER_NOTIFICATION_RETENTION_DAYS:-}
+  USER_NOTIFICATION_RETENTION_ENFORCE: ${USER_NOTIFICATION_RETENTION_ENFORCE:-}
+  REMOTE_SESSION_RETENTION_DAYS: ${REMOTE_SESSION_RETENTION_DAYS:-}
+  REMOTE_SESSION_RETENTION_ENFORCE: ${REMOTE_SESSION_RETENTION_ENFORCE:-}
+  SUPPORT_SESSION_RETENTION_DAYS: ${SUPPORT_SESSION_RETENTION_DAYS:-}
+  SUPPORT_SESSION_RETENTION_ENFORCE: ${SUPPORT_SESSION_RETENTION_ENFORCE:-}
+  AUTH_SESSION_RETENTION_DAYS: ${AUTH_SESSION_RETENTION_DAYS:-}
+  AUTH_SESSION_RETENTION_ENFORCE: ${AUTH_SESSION_RETENTION_ENFORCE:-}
+  NETWORK_CHANGE_EVENT_RETENTION_DAYS: ${NETWORK_CHANGE_EVENT_RETENTION_DAYS:-}
+  NETWORK_CHANGE_EVENT_RETENTION_ENFORCE: ${NETWORK_CHANGE_EVENT_RETENTION_ENFORCE:-}
+  SSO_SESSION_RETENTION_DAYS: ${SSO_SESSION_RETENTION_DAYS:-}
+  C2C_CONSENT_SESSION_RETENTION_DAYS: ${C2C_CONSENT_SESSION_RETENTION_DAYS:-}
+  TUNNEL_SESSION_RETENTION_DAYS: ${TUNNEL_SESSION_RETENTION_DAYS:-}
+  UNIFI_SYNC_RUN_RETENTION_DAYS: ${UNIFI_SYNC_RUN_RETENTION_DAYS:-}
+  FLEET_REMEDIATION_RUN_RETENTION_DAYS: ${FLEET_REMEDIATION_RUN_RETENTION_DAYS:-}
+  TICKET_IMPORT_RUN_RETENTION_DAYS: ${TICKET_IMPORT_RUN_RETENTION_DAYS:-}
+  TOPOLOGY_DIAGNOSTIC_RUN_RETENTION_DAYS: ${TOPOLOGY_DIAGNOSTIC_RUN_RETENTION_DAYS:-}
+  AUDIT_BASELINE_RESULT_RETENTION_DAYS: ${AUDIT_BASELINE_RESULT_RETENTION_DAYS:-}
+  PERIPHERAL_POLICY_DELIVERY_EVENT_RETENTION_DAYS: ${PERIPHERAL_POLICY_DELIVERY_EVENT_RETENTION_DAYS:-}
+  ML_FEEDBACK_EVENT_RETENTION_DAYS: ${ML_FEEDBACK_EVENT_RETENTION_DAYS:-}
   LOGIN_ACCOUNT_LOCKOUT_MAX: ${LOGIN_ACCOUNT_LOCKOUT_MAX:-}
   LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS: ${LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS:-}
   LOG_FORWARDING_MAX_JOB_BYTES: ${LOG_FORWARDING_MAX_JOB_BYTES:-}
@@ -826,6 +934,14 @@ x-api-env: &api-env
   RESTORE_POINT_ATTEMPT_RETENTION_BATCH_SIZE: ${RESTORE_POINT_ATTEMPT_RETENTION_BATCH_SIZE:-}
   RESTORE_POINT_ATTEMPT_RETENTION_DAYS: ${RESTORE_POINT_ATTEMPT_RETENTION_DAYS:-}
   RESTORE_POINT_ATTEMPT_RETENTION_MAX_BATCHES: ${RESTORE_POINT_ATTEMPT_RETENTION_MAX_BATCHES:-}
+  WAKE_ATTEMPT_RETENTION_BATCH_SIZE: ${WAKE_ATTEMPT_RETENTION_BATCH_SIZE:-}
+  WAKE_ATTEMPT_RETENTION_DAYS: ${WAKE_ATTEMPT_RETENTION_DAYS:-}
+  WAKE_ATTEMPT_RETENTION_MAX_BATCHES: ${WAKE_ATTEMPT_RETENTION_MAX_BATCHES:-}
+  SCRIPT_EXECUTION_OUTPUT_RETENTION_DAYS: ${SCRIPT_EXECUTION_OUTPUT_RETENTION_DAYS:-}
+  SCRIPT_EXECUTION_RETENTION_DAYS: ${SCRIPT_EXECUTION_RETENTION_DAYS:-}
+  SCRIPT_EXECUTION_RETENTION_BATCH_SIZE: ${SCRIPT_EXECUTION_RETENTION_BATCH_SIZE:-}
+  SCRIPT_EXECUTION_RETENTION_MAX_BATCHES: ${SCRIPT_EXECUTION_RETENTION_MAX_BATCHES:-}
+  SCRIPT_EXECUTION_RETENTION_ENFORCE: ${SCRIPT_EXECUTION_RETENTION_ENFORCE:-}
   SCREENSHOT_MAX_BYTES: ${SCREENSHOT_MAX_BYTES:-}
   SCREENSHOT_MAX_BYTES_PER_DEVICE: ${SCREENSHOT_MAX_BYTES_PER_DEVICE:-}
   SCREENSHOT_MAX_PER_DEVICE: ${SCREENSHOT_MAX_PER_DEVICE:-}
@@ -839,6 +955,30 @@ x-api-env: &api-env
   USER_RISK_RETENTION_BATCH_SIZE: ${USER_RISK_RETENTION_BATCH_SIZE:-}
   USER_RISK_RETENTION_DAYS: ${USER_RISK_RETENTION_DAYS:-}
   USER_RISK_RETENTION_MAX_BATCHES: ${USER_RISK_RETENTION_MAX_BATCHES:-}
+  AGENT_HEALTH_OBSERVATION_RETENTION_DAYS: ${AGENT_HEALTH_OBSERVATION_RETENTION_DAYS:-}
+  AGENT_HEALTH_OBSERVATION_RETENTION_BATCH_SIZE: ${AGENT_HEALTH_OBSERVATION_RETENTION_BATCH_SIZE:-}
+  AGENT_HEALTH_OBSERVATION_RETENTION_MAX_BATCHES: ${AGENT_HEALTH_OBSERVATION_RETENTION_MAX_BATCHES:-}
+  AGENT_HEALTH_OBSERVATION_RETENTION_ENFORCE: ${AGENT_HEALTH_OBSERVATION_RETENTION_ENFORCE:-}
+  SOFTWARE_INVENTORY_OBSERVATION_RETENTION_DAYS: ${SOFTWARE_INVENTORY_OBSERVATION_RETENTION_DAYS:-}
+  SOFTWARE_INVENTORY_OBSERVATION_RETENTION_BATCH_SIZE: ${SOFTWARE_INVENTORY_OBSERVATION_RETENTION_BATCH_SIZE:-}
+  SOFTWARE_INVENTORY_OBSERVATION_RETENTION_MAX_BATCHES: ${SOFTWARE_INVENTORY_OBSERVATION_RETENTION_MAX_BATCHES:-}
+  SOFTWARE_INVENTORY_OBSERVATION_RETENTION_ENFORCE: ${SOFTWARE_INVENTORY_OBSERVATION_RETENTION_ENFORCE:-}
+  DEVICE_COMMAND_RETENTION_DAYS: ${DEVICE_COMMAND_RETENTION_DAYS:-}
+  DEVICE_COMMAND_RETENTION_BATCH_SIZE: ${DEVICE_COMMAND_RETENTION_BATCH_SIZE:-}
+  DEVICE_COMMAND_RETENTION_MAX_BATCHES: ${DEVICE_COMMAND_RETENTION_MAX_BATCHES:-}
+  DEVICE_COMMAND_RETENTION_ENFORCE: ${DEVICE_COMMAND_RETENTION_ENFORCE:-}
+  FILESYSTEM_SNAPSHOT_RETENTION_DAYS: ${FILESYSTEM_SNAPSHOT_RETENTION_DAYS:-}
+  FILESYSTEM_SNAPSHOT_RETENTION_BATCH_SIZE: ${FILESYSTEM_SNAPSHOT_RETENTION_BATCH_SIZE:-}
+  FILESYSTEM_SNAPSHOT_RETENTION_MAX_BATCHES: ${FILESYSTEM_SNAPSHOT_RETENTION_MAX_BATCHES:-}
+  FILESYSTEM_SNAPSHOT_RETENTION_ENFORCE: ${FILESYSTEM_SNAPSHOT_RETENTION_ENFORCE:-}
+  NETWORK_MONITOR_RESULT_RETENTION_DAYS: ${NETWORK_MONITOR_RESULT_RETENTION_DAYS:-}
+  NETWORK_MONITOR_RESULT_RETENTION_BATCH_SIZE: ${NETWORK_MONITOR_RESULT_RETENTION_BATCH_SIZE:-}
+  NETWORK_MONITOR_RESULT_RETENTION_MAX_BATCHES: ${NETWORK_MONITOR_RESULT_RETENTION_MAX_BATCHES:-}
+  NETWORK_MONITOR_RESULT_RETENTION_ENFORCE: ${NETWORK_MONITOR_RESULT_RETENTION_ENFORCE:-}
+  DEVICE_SESSION_RETENTION_DAYS: ${DEVICE_SESSION_RETENTION_DAYS:-}
+  DEVICE_SESSION_RETENTION_BATCH_SIZE: ${DEVICE_SESSION_RETENTION_BATCH_SIZE:-}
+  DEVICE_SESSION_RETENTION_MAX_BATCHES: ${DEVICE_SESSION_RETENTION_MAX_BATCHES:-}
+  DEVICE_SESSION_RETENTION_ENFORCE: ${DEVICE_SESSION_RETENTION_ENFORCE:-}
 
 services:
   binaries-init:
@@ -970,7 +1110,6 @@ services:
   worker:
     image: ${BREEZE_API_IMAGE_REF:?Set BREEZE_API_IMAGE_REF to a digest-pinned image ref}
     platform: ${DOCKER_PLATFORM:-linux/amd64}
-    container_name: breeze-worker
     restart: unless-stopped
     profiles: ["worker-split"]
     command: ["node", "dist/worker.cjs"]
@@ -983,6 +1122,8 @@ services:
     environment:
       <<: *api-env
       BREEZE_ROLE: worker        # hardcoded — never variable-driven
+      # 1 GB V8 heap cap, worker only (#11237); override with WORKER_NODE_OPTIONS.
+      NODE_OPTIONS: ${WORKER_NODE_OPTIONS:---max-old-space-size=1024}
     volumes:
       - api_data:/data
     secrets:
@@ -1023,6 +1164,9 @@ services:
       PUBLIC_ABUSE_CONTACT: ${PUBLIC_ABUSE_CONTACT:-}
       PUBLIC_SECURITY_CONTACT: ${PUBLIC_SECURITY_CONTACT:-}
       PUBLIC_SECURITY_POLICY_URL: ${PUBLIC_SECURITY_POLICY_URL:-}
+      # Network Proxy host mode (#11300): the dashboard CSP frame-src must allow
+      # the tunnel origin, and the image is built without it.
+      TUNNEL_ORIGIN_TEMPLATE: ${TUNNEL_ORIGIN_TEMPLATE:-}
     depends_on:
       api:
         condition: service_healthy
@@ -1073,8 +1217,65 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-breeze}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-breeze}
+      # Pinned to the volume mount below. Postgres 18 images moved the default
+      # data directory to /var/lib/postgresql/18/docker, outside that mount, and
+      # without this line they refuse to start on this file. This is the
+      # Postgres 16/17 default, so existing volumes stay exactly where they are.
+      # Already running 18 with your volume mounted at /var/lib/postgresql?
+      # Read the PostgreSQL section of the upgrade guide before taking this line.
+      # The entrypoint below refuses to start if you take it with that mount.
+      PGDATA: /var/lib/postgresql/data
+    # Wraps the image entrypoint. If PGDATA holds no database but one exists
+    # next to it (the upstream 18 layout keeps it in /var/lib/postgresql/18/docker)
+    # or inside it, starting would initialise a new EMPTY database that the API
+    # then migrates, and Breeze would come up looking freshly installed. Refuse
+    # instead and name the PGDATA that finds the existing data. Fresh installs
+    # and a PGDATA that already holds a database go straight to the image
+    # entrypoint. `$$` escapes Compose interpolation; the command passes
+    # through, so overlays that set `command: postgres -c ...` still work.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        case "$${1:-}" in postgres|-*)
+          pgdata="$${PGDATA:-}"
+          if [ -n "$$pgdata" ] && [ ! -s "$$pgdata/PG_VERSION" ]; then
+            parent="$$(dirname "$$pgdata")"
+            pick=""
+            others=""
+            # The parent itself, one or two levels below it (upstream
+            # <major>/docker, tianon/postgres-upgrade <major>/data), and the
+            # same below PGDATA (a whole-file upgrade over such a volume).
+            for found in "$$parent/PG_VERSION" "$$parent"/*/PG_VERSION "$$parent"/*/*/PG_VERSION "$$pgdata"/*/PG_VERSION "$$pgdata"/*/*/PG_VERSION; do
+              [ -s "$$found" ] || continue
+              dir="$$(dirname "$$found")"
+              if [ -z "$$pick" ] || { [ "$$(cat "$$found")" = "$${PG_MAJOR:-}" ] && [ "$$(cat "$$pick/PG_VERSION")" != "$${PG_MAJOR:-}" ]; }; then
+                [ -n "$$pick" ] && others="$$others $$pick"
+                pick="$$dir"
+              else
+                others="$$others $$dir"
+              fi
+            done
+            if [ -n "$$pick" ]; then
+              echo "postgres: refusing to start. PGDATA=$$pgdata holds no database, but a PostgreSQL $$(cat "$$pick/PG_VERSION") database exists at $$pick." >&2
+              [ -z "$$others" ] || echo "postgres: other databases found:$$others" >&2
+              echo "postgres: starting now would create a new, EMPTY database and Breeze would come up as a fresh install. Nothing has been changed." >&2
+              echo "postgres: to start on the existing data, set PGDATA: $$pick on the postgres service in docker-compose.yml (keep your volume mount), or move that data into $$pgdata." >&2
+              echo "postgres: see https://docs.breezermm.com/deploy/upgrades/#already-running-18-with-the-upstream-volume-layout" >&2
+              exit 1
+            fi
+          fi
+        esac
+        exec docker-entrypoint.sh "$$@"
+      - postgres-entrypoint
+    command: ['postgres']
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # POSTGRES_DATA_VOLUME picks which declared volume holds the database:
+      # postgres_data (unset, the default) or postgres_data_alt. The PostgreSQL
+      # major-version runbook restores into the other slot so the old volume
+      # stays untouched as the rollback. Any other volume name fails `docker
+      # compose`; never set it to a path (that would bind-mount a host directory).
+      - ${POSTGRES_DATA_VOLUME:-postgres_data}:/var/lib/postgresql/data
     healthcheck:
       <<: *healthcheck
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-breeze} -d ${POSTGRES_DB:-breeze}']
@@ -1273,6 +1474,9 @@ volumes:
   caddy_config:
   api_data:
   postgres_data:
+  # Second database slot, used only when POSTGRES_DATA_VOLUME selects it (see
+  # the postgres service).
+  postgres_data_alt:
   redis_data:
 
 secrets:

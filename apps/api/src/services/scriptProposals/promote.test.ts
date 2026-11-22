@@ -42,6 +42,70 @@ beforeEach(() => {
   loadProposalRunApprovalMethod.mockResolvedValue('supervised_self');
 });
 
+// #10954: a person signs a `review_failed` proposal in place of a verified run.
+describe('promoteProposalToLibrary — human override', () => {
+  const failedProposal = { ...baseProposal, status: 'review_failed', acknowledgedPatterns: [], decidedBy: null, decidedAt: null };
+  const failedReview = { ...review, status: 'failed', riskTier: null };
+  const override = { acknowledgedPatterns: ['PowerShell HKLM write'], decisionNote: 'Approved by a person. Review failure: x' };
+  const input = { name: 'Restart spooler', ownerScope: 'organization' as const };
+
+  it('promotes from review_failed, signed by the caller, and never cites the failed review', async () => {
+    const r = await promoteProposalToLibrary({
+      auth: auth('organization'), proposal: failedProposal as never, review: failedReview, input, override,
+    });
+
+    expect(r).toEqual({ ok: true, scriptId: 'script-1', versionId: 'ver-1' });
+    expect(transitionProposal).toHaveBeenCalledWith(TX, failedProposal.id, ['review_failed'], 'promoted', expect.objectContaining({
+      decidedBy: USER, decidedAt: expect.any(Date), decisionNote: override.decisionNote, acknowledgedPatterns: override.acknowledgedPatterns,
+    }));
+    const [, , values, opts] = insertScriptRow.mock.calls[0]!;
+    expect(values).toMatchObject({ acknowledgedSecurityPatterns: override.acknowledgedPatterns });
+    expect(opts).toMatchObject({
+      securityAcknowledgedBy: USER,
+      provenance: {
+        origin: 'ai_proposal', proposalId: failedProposal.id, reviewId: null, reviewedAt: null,
+        approvedBy: USER, approvedAt: expect.any(Date), approvalMethod: 'direct_ui', createdBy: USER,
+        changelog: expect.stringContaining('without a passing AI review'),
+      },
+    });
+    // There was no run to copy a method from.
+    expect(loadProposalRunApprovalMethod).not.toHaveBeenCalled();
+  });
+
+  it('refuses every other state, including verified', async () => {
+    for (const status of ['verified', 'reviewed', 'scan_rejected', 'promoted']) {
+      const r = await promoteProposalToLibrary({
+        auth: auth('organization'), proposal: { ...failedProposal, status } as never, review: failedReview, input, override,
+      });
+      expect(r).toMatchObject({ ok: false, status: 409, error: 'proposal_not_review_failed' });
+    }
+    expect(insertScriptRow).not.toHaveBeenCalled();
+  });
+
+  it('a lost CAS writes no script', async () => {
+    transitionProposal.mockResolvedValueOnce(false);
+    const r = await promoteProposalToLibrary({
+      auth: auth('organization'), proposal: failedProposal as never, review: failedReview, input, override,
+    });
+    expect(r).toMatchObject({ ok: false, status: 409, error: 'proposal_not_review_failed' });
+    expect(insertScriptRow).not.toHaveBeenCalled();
+  });
+
+  it('the normal path still refuses review_failed', async () => {
+    const r = await promoteProposalToLibrary({
+      auth: auth('organization'), proposal: failedProposal as never, review: failedReview, input,
+    });
+    expect(r).toMatchObject({ ok: false, status: 409, error: 'proposal_not_verified' });
+  });
+
+  it('a proposal run under the override and saved normally does not cite its failed review', async () => {
+    await promoteProposalToLibrary({
+      auth: auth('organization'), proposal: baseProposal as never, review: failedReview, input,
+    });
+    expect(insertScriptRow.mock.calls[0]![3]).toMatchObject({ provenance: { reviewId: null, reviewedAt: null } });
+  });
+});
+
 describe('promoteProposalToLibrary', () => {
   it('refuses a proposal that is not verified (D5/D12)', async () => {
     const r = await promoteProposalToLibrary({

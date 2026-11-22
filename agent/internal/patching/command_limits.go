@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const (
@@ -30,7 +32,7 @@ func commandOutputWithTimeout(timeout time.Duration, name string, args ...string
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	output, err := cmd.Output()
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("%s timed out: %w", name, ctx.Err())
@@ -42,7 +44,7 @@ func runCmdOutputWithTimeout(cmd *exec.Cmd, timeout time.Duration) ([]byte, erro
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	timeoutCmd := exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+	timeoutCmd := procspawn.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
 	timeoutCmd.Env = cmd.Env
 	timeoutCmd.Dir = cmd.Dir
 	output, err := timeoutCmd.Output()
@@ -56,7 +58,7 @@ func commandCombinedOutputWithTimeout(timeout time.Duration, name string, args .
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("%s timed out: %w", name, ctx.Err())
@@ -68,7 +70,7 @@ func runCmdCombinedOutputWithTimeout(cmd *exec.Cmd, timeout time.Duration) ([]by
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	timeoutCmd := exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+	timeoutCmd := procspawn.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
 	timeoutCmd.Env = cmd.Env
 	timeoutCmd.Dir = cmd.Dir
 	output, err := timeoutCmd.CombinedOutput()

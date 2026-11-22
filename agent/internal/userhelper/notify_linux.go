@@ -3,9 +3,8 @@
 package userhelper
 
 import (
-	"os/exec"
-
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // showNotificationOS uses notify-send for desktop notifications on Linux.
@@ -21,7 +20,7 @@ func showNotificationOS(req ipc.NotifyRequest) bool {
 		args = append([]string{"-i", req.Icon}, args...)
 	}
 
-	cmd := exec.Command("notify-send", args...)
+	cmd := procspawn.Command("notify-send", args...)
 	if err := cmd.Run(); err != nil {
 		log.Warn("notification failed", "error", err)
 		return false

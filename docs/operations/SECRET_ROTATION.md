@@ -234,6 +234,8 @@ The registry currently covers:
 - Automation webhook trigger secrets.
 - PSA, Huntress, SentinelOne, DNS filter, backup private-key, and organization
   log-forwarding secrets.
+- Ticket import source credentials (`ticket_import_sources.credentials_encrypted`,
+  bound to the source's row id).
 
 ### Validation
 

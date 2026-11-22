@@ -18,6 +18,7 @@ vi.mock('../../services/catalogEnrichmentService', () => ({ enrichCatalogItem, p
 const { styleRows } = vi.hoisted(() => ({ styleRows: { value: [] as Array<{ style: string | null }> } }));
 vi.mock('../../db', () => ({
   db: { select: () => ({ from: () => ({ where: () => ({ limit: async () => styleRows.value }) }) }) },
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
 }));
 
 // Auth middleware stubs: inject an auth context and pass through.

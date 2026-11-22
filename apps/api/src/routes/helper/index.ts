@@ -11,7 +11,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
 import { eq, and, desc, sql, asc, isNull } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import { aiSessions, aiMessages, devices } from '../../db/schema';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
@@ -38,6 +38,7 @@ import { getEffectiveAiBudget } from '../../services/effectiveSettings';
 import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { helperAuth, helperDbAccessContext, type HelperDevice } from '../../middleware/helperAuth';
+import { toolExposureRefusal } from '../../services/aiModels/sessionToolExposure';
 import type { ActiveSession } from '../../services/streamingSessionManager';
 import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
 import { LlmNotConfiguredError } from '../../services/llm/llmAvailability';
@@ -480,13 +481,18 @@ helperRoutes.post(
           model,
           allowedTools,
           mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[8],
-          // Device-initiated: the ledger attributes no Breeze user.
-          { budgetReservationId, ledgerUserId: null },
+          // Device-initiated: the ledger attributes no Breeze user. #11395: the
+          // per-level factory registers the Breeze registry, so a tool profile
+          // narrows it; client-declared tools are the client's own set.
+          { budgetReservationId, ledgerUserId: null, ...(clientTools.length === 0 ? { registersBreezeServer: true } : {}) },
         );
       } catch (err) {
         if (err instanceof LlmUnavailableError) {
           return { kind: 'refused', response: c.json({ error: 'ai_unavailable' }, 503) };
         }
+        // #11396: the model's tool profile cannot serve the helper (too small a window, or a dropped floor tool).
+        const refusal = toolExposureRefusal(err);
+        if (refusal) return { kind: 'refused', response: c.json(refusal, 409) };
         return { kind: 'failed', error: err };
       }
 
@@ -619,13 +625,14 @@ helperRoutes.post(
     // place a client tool's output is recorded. Generic: output = whatever the
     // client posted (its output, or an { error } payload).
     try {
-      await db.insert(aiMessages).values({
+      // Savepoint so a failed insert rolls back and the request transaction survives (#11203).
+      await withDbTransaction(async () => db.insert(aiMessages).values({
         sessionId,
         role: 'tool_result',
         toolName: toolName ?? null,
         toolOutput: error !== undefined ? { error } : (output ?? null),
         toolUseId,
-      });
+      }));
     } catch (err) {
       console.error('[Helper] Failed to persist tool_result message:', err);
     }

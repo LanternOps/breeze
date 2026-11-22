@@ -277,6 +277,27 @@ describe('AiChatMessages auto-scroll anchoring (#1713)', () => {
     expect(onIntentDecided).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards ticketContext to the approval card (#11674)', () => {
+    approvalDialog.props.length = 0;
+    const ticketContext = { ticketNumber: 'T-2026-0001', subject: 'X-ray workstation is really slow' };
+
+    render(
+      <AiChatMessages
+        {...baseProps}
+        messages={[{ id: '1', role: 'user', content: 'reply to Dana' }] as never}
+        pendingApproval={{
+          executionId: 'e1',
+          toolName: 'manage_tickets',
+          input: { action: 'comment', isPublic: true, content: 'Hi' },
+          description: 'Post PUBLIC comment on ticket T-2026-0001',
+          ticketContext,
+        }}
+      />,
+    );
+
+    expect(approvalDialog.props.at(-1)!.ticketContext).toEqual(ticketContext);
+  });
+
   it('remounts the approval card for each new execution so decide state cannot leak', () => {
     // pendingApproval is REPLACED in place by every approval_required event.
     // Without key={executionId} React reconciles the same instance and the
@@ -757,6 +778,17 @@ describe('chat kit units (Wisp companion W01)', () => {
     expect(prose.className).toContain('break-words');
   });
 
+  // #11678 §7: @tailwindcss/typography adds open/close quotes to
+  // `blockquote p`, so a drafted customer message that carries its own quotes
+  // rendered ““…””. jsdom computes no ::before/::after content, so this pins
+  // the overrides that turn the plugin's quotes off.
+  it('assistant blockquotes get no added quotation marks (#11678)', () => {
+    const { getByTestId } = view([u('u1'), a('a1', '> "We have started on your printer."')]);
+    const prose = getByTestId('ai-msg-assistant').querySelector('.prose') as HTMLElement;
+    expect(prose.className).toContain('[&_blockquote_p:first-of-type]:before:content-none');
+    expect(prose.className).toContain('[&_blockquote_p:last-of-type]:after:content-none');
+  });
+
   it('layout=panel has no max-w-3xl wrapper and no dividers', () => {
     // Dividers are opt-in per surface (showTimeDividers); the docked panel never
     // opts in (AiChatSidebar.wispHome.test pins that it passes no flag).
@@ -771,6 +803,16 @@ describe('chat kit units (Wisp companion W01)', () => {
     const { getByTestId, queryByText } = view([], { emptyState: <div data-testid="custom-empty">hello</div> });
     expect(getByTestId('custom-empty')).toBeTruthy();
     expect(queryByText('Check server health')).toBeNull();
+  });
+
+  it('the panel empty state anchors at the top (no void under the header); the page layout keeps it at the bottom', () => {
+    const panel = view([], { emptyState: <div data-testid="custom-empty">hello</div> });
+    const wrap = panel.getByTestId('custom-empty').parentElement!.parentElement as HTMLElement;
+    expect(wrap.className).toContain('justify-start');
+    expect(wrap.className).not.toContain('justify-end');
+    panel.unmount();
+    const page = view([], { emptyState: <div data-testid="custom-empty">hello</div>, layout: 'page' });
+    expect((page.getByTestId('custom-empty').parentElement!.parentElement as HTMLElement).className).toContain('justify-end');
   });
 
   it('without emptyState the quick actions still render', () => {
@@ -940,5 +982,48 @@ describe('timed extras and Load earlier (Wisp companion W02b)', () => {
     stampGeometry(el, { scrollHeight: 1600, clientHeight: 300, scrollTop: 0 });
     rerender(<AiChatMessages {...baseProps} messages={[u('u0', -60), ...newer] as never} hasEarlier onLoadEarlier={onLoadEarlier} />);
     expect(el.scrollTop).toBe(0);
+  });
+});
+
+describe('transcript removed by retention (#4342 W4)', () => {
+  it('shows the dated banner instead of the quick-action empty state', () => {
+    const { getByTestId, queryByText } = render(
+      <AiChatMessages {...baseProps} messages={[]} transcriptPurgedAt="2027-02-01T03:15:00.000Z" />,
+    );
+    const banner = getByTestId('ai-chat-transcript-purged');
+    expect(banner).toHaveTextContent(/Transcript removed by retention on/);
+    expect(banner).toHaveTextContent(/2027/);
+    expect(queryByText(/Ask about your devices/)).toBeNull();
+  });
+
+  it('renders unchanged when transcriptPurgedAt is null', () => {
+    const { queryByTestId } = render(<AiChatMessages {...baseProps} messages={[]} transcriptPurgedAt={null} />);
+    expect(queryByTestId('ai-chat-transcript-purged')).toBeNull();
+  });
+});
+
+describe('a reply the technician stopped (#11676)', () => {
+  it('keeps the partial text and marks it stopped', () => {
+    const { getByTestId, getByText } = render(
+      <AiChatMessages
+        {...baseProps}
+        messages={[
+          { id: 'u1', role: 'user', content: 'Write me a checklist' },
+          { id: 'a1', role: 'assistant', content: 'Step 1: confirm the system', isStreaming: false, stopped: true },
+        ] as never}
+      />,
+    );
+    expect(getByText('Step 1: confirm the system')).toBeInTheDocument();
+    expect(getByTestId('ai-msg-stopped')).toHaveTextContent('Stopped');
+  });
+
+  it('shows no marker on a reply that finished on its own', () => {
+    const { queryByTestId } = render(
+      <AiChatMessages
+        {...baseProps}
+        messages={[{ id: 'a1', role: 'assistant', content: 'All done.', isStreaming: false }] as never}
+      />,
+    );
+    expect(queryByTestId('ai-msg-stopped')).toBeNull();
   });
 });

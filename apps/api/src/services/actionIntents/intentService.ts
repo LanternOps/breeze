@@ -1,6 +1,7 @@
 import { flowBuiltinTierFor, isFlowBuiltin, isTenantToolName, remediationTriggerSchema, type RemediationTrigger, AI_APPROVAL_TIMEOUT_MAX_MINUTES, AI_APPROVAL_TIMEOUT_MIN_MINUTES } from '@breeze/shared';
-import { buildActionLabel, describePax8Action, describePax8Submit, hasDeviceIdStub } from './actionLabel';
+import { buildActionLabel, describePax8Action, describePax8Submit, hasDeviceIdStub, hasTicketIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
+import { argumentTicketId, resolveApprovalTicketNumber } from './approvalTicketNumber';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { isMcpOriginIntent } from '../mcpIntentEligibility';
@@ -68,6 +69,7 @@ import {
   type IntentTargetScope,
   type ResolveIntentApproversDiagnostics,
 } from './intentApprovers';
+import { mayHavePartnerWideEffect, PARTNER_LEVEL_APPROVER_NOTE } from './partnerWideEffect';
 import { isSoleOperatorSelfApprovalForbidden } from './selfApprovalPolicy';
 import { computeEffectDigestOutcome, EffectDigestUnresolvableError, type EffectDigestOutcome } from './effectDigest';
 import { DIAGNOSE_CONNECTIVITY_TOOL_NAME, requiresPinnedEffectDigest } from './pinnedEffectPolicy';
@@ -642,6 +644,17 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
       case 'void': return 'Voids the invoice. It will no longer be payable.';
       case 'record_payment': return 'Records a payment against the invoice.';
       case 'void_payment': return 'Voids a recorded payment, reopening the invoice balance.';
+      default: return null;
+    }
+  },
+  // Full-control W17 (#6788).
+  manage_backup_verification: (input) =>
+    nonEmptyString(input.action) === 'run' ? 'Queues a backup check on the machine. It uses device and storage resources while it runs.' : null,
+  manage_c2c_configs: (input) => {
+    switch (nonEmptyString(input.action)) {
+      case 'create': return 'Chooses whose mail is copied, where it is stored and on what schedule.';
+      case 'update': return 'Changes whose mail is copied, where it is stored or on what schedule.';
+      case 'delete': return 'Deletes the config. Refused while backup history depends on it.';
       default: return null;
     }
   },
@@ -2243,13 +2256,21 @@ export async function createActionIntent(
     : runScriptGroupNote
       ? `${buildTargetSummary(input.toolName, input.input)} [${runScriptGroupNote}]`
       : buildTargetSummary(input.toolName, input.input);
-  const impactSummary = externalTool
+  const baseImpactSummary = externalTool
     ? `Calls ${input.toolName} on ${externalTool.sourceName} with arguments: ${
         Object.keys(input.input).length > 0 ? Object.keys(input.input).sort().join(', ') : '(none)'
       }`
     : invokedFlow
     ? `Starts flow "${invokedFlow.flowName}" with inputs: ${flowInputKeys()}. Its own sensitive steps still wait for approval.`
     : buildImpactSummary(input.toolName, input.input, guardrail);
+  // Approver scope on a partner-wide intent. The summary is the risk line on every
+  // approval surface, so it says who can approve whichever path filed this.
+  let requirePartnerAxis = false;
+  if (mayHavePartnerWideEffect(input.toolName, input.input)) {
+    const { intentRequiresPartnerAxisApprover } = await import('./partnerAxisApprover');
+    requirePartnerAxis = await intentRequiresPartnerAxisApprover({ actionName: input.toolName, arguments: input.input, orgId });
+  }
+  const impactSummary = requirePartnerAxis ? `${baseImpactSummary} ${PARTNER_LEVEL_APPROVER_NOTE}` : baseImpactSummary;
   // What the approver READS. `targetSummary` stays the audit signature.
   const labelReason = input.actionLabel ?? guardrail.description ?? null;
   // #5106 turned "on device 6eae0f70..." into "on <name>" using the SCOPED
@@ -2258,14 +2279,30 @@ export async function createActionIntent(
   // left the raw stub as the mobile takeover's headline, so resolve the
   // device THESE arguments name. One indexed, org-pinned read, and only when
   // the label really carries this call's stub — no read at all for the many
-  // tools whose description never mentions a device.
+  // tools whose description never mentions a device. #11674: the name follows
+  // the FILING principal's site scope (`auth`: org condition, site allowlist,
+  // exact-device ceiling); a device outside it keeps the stub.
   let labelDeviceName = scopedDeviceHostname;
   if (!labelDeviceName && labelReason) {
     const argDeviceId = argumentDeviceId(input.input);
     if (argDeviceId && hasDeviceIdStub(labelReason, argDeviceId)) {
-      labelDeviceName = await resolveApprovalDeviceName(argDeviceId, orgId);
+      labelDeviceName = await resolveApprovalDeviceName(argDeviceId, orgId, auth);
     }
   }
+  // #11674: the same for a ticket. "ticket #2aad0601..." becomes
+  // "ticket T-2026-0001" in the label the /approvals queue and the push show.
+  // The number only (never subject, requester or text), pinned to the intent's
+  // org and cut to the FILING principal's reach (`auth`: org condition, and
+  // site/device scope for a device-bound ticket), because that principal can
+  // read this label back from its own approval row. A ticket outside that
+  // reach, or a principal with no org condition, keeps the stub. Read only
+  // when the label carries the stub of the ticket THIS call acts on
+  // (`expectedTicketId` for a comment edit or delete). A flow step's label
+  // names no ticket, so it costs no read.
+  const labelTicketId = flowRunFacts ? null : argumentTicketId(input.toolName, input.input);
+  const labelTicketNumber = labelTicketId && labelReason && hasTicketIdStub(labelReason, labelTicketId)
+    ? await resolveApprovalTicketNumber(labelTicketId, orgId, auth)
+    : null;
   // Tool catalog W04 (#5219), spec §6.5 card copy: a flow step reads
   // "Flow <name>" / "Step <id>: <tool>" — both from the server run.
   const actionLabel = flowRunFacts
@@ -2275,6 +2312,8 @@ export async function createActionIntent(
       input: input.input,
       reason: labelReason,
       deviceHostname: labelDeviceName,
+      ticketId: labelTicketId,
+      ticketNumber: labelTicketNumber,
     });
   const expiresAt = computeExpiresAt(input.source, approvalScope, input.chatApprovalWindowMs);
   const requestingClientLabel = flowRunFacts
@@ -2422,6 +2461,7 @@ export async function createActionIntent(
           ? FLOW_TOOL_APPROVER_PERMISSION
           : undefined,
     requireOrgWideGovernance,
+    ...(requirePartnerAxis ? { requirePartnerAxis } : {}),
     onDiagnostics: (diagnostics) => {
       governanceDiagnostics = diagnostics;
     },
@@ -2608,7 +2648,7 @@ export async function createActionIntent(
       // effect_digest NULL, which both release paths treat as "nothing to
       // check", not a failure. The `unresolved` cases are audited after
       // commit — they are intents that SHOULD have been pinned and weren't.
-      const effectDigestOutcome = await computeEffectDigestOutcome(input.toolName, input.input, db);
+      const effectDigestOutcome = await computeEffectDigestOutcome(input.toolName, input.input, db, { intentOrgId: orgId });
       // A tool whose pin is MANDATORY (effectDigest.ts's
       // requiresPinnedEffectDigest) never stores a NULL digest: refuse the
       // proposal instead of inheriting the legacy "nothing to check" fallback.
@@ -3928,6 +3968,15 @@ const DECISION_STATUSES: ReadonlySet<ActionIntentStatus> = new Set<ActionIntentS
  * approved/executing/completed/failed/rejected/expired/cancelled), so a
  * caller only needs to special-case `pending_approval` to detect "still
  * waiting" vs. "a decision (or a worker) already moved this."
+ *
+ * #12098: when the time runs out it reads the row once more before
+ * returning. The last poll can be up to 3 s old by then, and a decision made
+ * during that last sleep would otherwise come back as `pending_approval`. A
+ * settled wait (`signal`) returns without that read: the caller asked it to
+ * stop now. `pending_approval` is still not proof the intent is undecided
+ * (a decision can land right after this read); a caller that is about to call
+ * the intent expired must settle it with `closeOutUndecidedIntent`
+ * (./intentExpiry.ts) first.
  */
 export async function waitForIntentDecision(
   intentId: string,
@@ -3938,9 +3987,9 @@ export async function waitForIntentDecision(
   let pollInterval = 500;
   let lastStatus: ActionIntentStatus = 'pending_approval';
 
-  while (Date.now() - startTime < timeoutMs) {
-    if (signal?.aborted) return lastStatus;
-
+  // One poll. `found: false` means the row is gone and the wait should stop
+  // with what it last saw; a read error keeps the previous status.
+  const poll = async (): Promise<{ found: boolean }> => {
     try {
       const [row] = await withSystemDbAccessContext(() =>
         db
@@ -3949,18 +3998,26 @@ export async function waitForIntentDecision(
           .where(eq(actionIntents.id, intentId))
           .limit(1),
       );
-
-      if (!row) return lastStatus;
+      if (!row) return { found: false };
       lastStatus = row.status;
-      if (lastStatus !== 'pending_approval') return lastStatus;
     } catch (err) {
       console.error(`[intentService] waitForIntentDecision poll error for intent ${intentId}:`, err);
     }
+    return { found: true };
+  };
+
+  while (Date.now() - startTime < timeoutMs) {
+    if (signal?.aborted) return lastStatus;
+    if (!(await poll()).found) return lastStatus;
+    if (lastStatus !== 'pending_approval') return lastStatus;
 
     await new Promise((resolve) => setTimeout(resolve, pollInterval));
     pollInterval = Math.min(pollInterval * 1.5, 3000);
   }
 
+  // #12098: out of time. Read once more, so a decision made during the last
+  // sleep is returned rather than reported as still pending.
+  if (!signal?.aborted) await poll();
   return lastStatus;
 }
 

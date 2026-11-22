@@ -13,6 +13,7 @@
 import { Job, Queue, UnrecoverableError, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
 import { hydrateSnapshotFileIndex } from '../services/backupSnapshotFileIndex';
+import { cleanStaleManifestSpools } from '../services/backupManifestSpool';
 import { attachWorkerObservability } from './workerObservability';
 import { isReusableState } from '../services/bullmqUtils';
 import { captureException } from '../services/sentry';
@@ -34,7 +35,14 @@ type HydrationJobData = {
     | 'authenticate'
     | 'exchange'
     | 'manual'
-    | 'brokered_read';
+    | 'brokered_read'
+    // #11026: someone browsed the snapshot, or asked for a selective restore
+    // of it, and it has no index to list.
+    | 'browse'
+    // #11026: someone asked for its file list to be built again.
+    | 'rebuild';
+  /** Rebuild even an index that is already complete (#11026 rebuild). */
+  force?: boolean;
 };
 
 /**
@@ -42,11 +50,16 @@ type HydrationJobData = {
  * referenced older snapshots): a brokered storage read authorizes objects by
  * exact index membership. `result_brokered_read` is the eager request made
  * when a backup result lands on a destination brokered reads can serve.
+ * Browsing lists every file, so a full snapshot needs its index too.
  */
 const FULL_INDEX_REASONS: ReadonlySet<HydrationJobData['reason']> = new Set([
   'brokered_read',
   'result_brokered_read',
+  'browse',
+  'rebuild',
 ]);
+
+export type SnapshotFileIndexHydrationReason = HydrationJobData['reason'];
 
 let queue: Queue<HydrationJobData> | null = null;
 let worker: Worker<HydrationJobData> | null = null;
@@ -72,6 +85,7 @@ export function hydrationJobId(snapshotDbId: string): string {
 export async function enqueueSnapshotFileIndexHydration(
   snapshotDbId: string,
   reason: HydrationJobData['reason'],
+  opts?: { force?: boolean },
 ): Promise<string> {
   const q = getQueue();
   const jobId = hydrationJobId(snapshotDbId);
@@ -92,7 +106,8 @@ export async function enqueueSnapshotFileIndexHydration(
     });
     console.log(`[BackupSnapshotFileIndexWorker] Removed stale ${state} job ${jobId}; re-enqueuing`);
   }
-  const job = await q.add('hydrate', { snapshotDbId, reason }, { jobId, ...JOB_OPTIONS });
+  const data: HydrationJobData = { snapshotDbId, reason, ...(opts?.force ? { force: true } : {}) };
+  const job = await q.add('hydrate', data, { jobId, ...JOB_OPTIONS });
   return job.id!;
 }
 
@@ -107,6 +122,7 @@ async function processHydrationJob(job: Job<HydrationJobData>): Promise<{ status
   // snapshot (no referenced older snapshots), which the other reasons skip.
   const outcome = await hydrateSnapshotFileIndex(job.data.snapshotDbId, {
     includeUnreferenced: FULL_INDEX_REASONS.has(job.data.reason),
+    ...(job.data.force === true ? { force: true } : {}),
   });
   if (outcome.status === 'failed' && !outcome.retryable) {
     // A non-retryable failure (bad manifest, unverifiable provenance, drifted
@@ -126,6 +142,11 @@ async function processHydrationJob(job: Job<HydrationJobData>): Promise<{ status
   if (outcome.status === 'failed' && outcome.retryable) {
     throw new Error(`snapshot file-index hydration failed (retryable): ${outcome.failure}: ${outcome.reason}`);
   }
+  if (outcome.status === 'skipped' && outcome.reason === 'superseded') {
+    // Not an error (a newer claim, an org move or a newer result won), but a
+    // run that kept losing its claim would otherwise leave no trace.
+    console.warn(`[BackupSnapshotFileIndexWorker] Hydration of snapshot ${job.data.snapshotDbId} was superseded (reason: ${job.data.reason})`);
+  }
   return { status: outcome.status };
 }
 
@@ -137,6 +158,11 @@ function createWorker(): Worker<HydrationJobData> {
 }
 
 export async function initializeBackupSnapshotFileIndexWorker(): Promise<void> {
+  // A run killed mid-hydration leaves its manifest spool behind (#11026).
+  // Not awaited: a slow or failing sweep must never hold the worker back.
+  void cleanStaleManifestSpools().catch((error) => {
+    console.warn('[BackupSnapshotFileIndexWorker] Could not sweep stale manifest spools:', error);
+  });
   worker = createWorker();
   attachWorkerObservability(worker, 'backupSnapshotFileIndexWorker');
   worker.on('error', (error) => {

@@ -51,11 +51,47 @@ var errVerifyTimeBudget = errors.New("verification time budget exhausted")
 var budgetContext = context.WithTimeoutCause
 
 // runContext derives the context a verify/test-restore run works under.
-func (o VerifyOptions) runContext(ctx context.Context) (context.Context, context.CancelFunc) {
+// endRun ends the run early with a cause (a lost storage session, see
+// endsVerifyRun); context.Cause(runCtx) then reports whichever of that, the
+// time budget or the caller's cancel came first. stop releases both.
+func (o VerifyOptions) runContext(ctx context.Context) (runCtx context.Context, endRun context.CancelCauseFunc, stop context.CancelFunc) {
+	parent, stopParent := ctx, context.CancelFunc(func() {})
 	if o.TimeBudget > 0 {
-		return budgetContext(ctx, o.TimeBudget, errVerifyTimeBudget)
+		parent, stopParent = budgetContext(ctx, o.TimeBudget, errVerifyTimeBudget)
 	}
-	return context.WithCancel(ctx)
+	runCtx, endRun = context.WithCancelCause(parent)
+	return runCtx, endRun, func() {
+		endRun(context.Canceled)
+		stopParent()
+	}
+}
+
+// ResultCodeStorageSessionLost is the VerifyResult/TestRestoreResult Code of a
+// run that stopped because its brokered storage session ended (the server
+// revoked it, or it expired): the files it did not reach were never looked
+// at, which is not evidence that anything is wrong with them.
+const ResultCodeStorageSessionLost = "storage_session_lost"
+
+// endsVerifyRun reports whether a file check's error ends the whole verify or
+// test-restore run instead of failing one file: the brokered storage session
+// ended (providers.ErrStorageSessionUnavailable), so no later read through it
+// can succeed. Walking the rest of the manifest then failed every remaining
+// file instantly, one WARN each: 484,767 "failed" files for a backup that was
+// fine. Unlike the upload pool's endsRun this does not include
+// providers.ErrDestinationRefused: only the brokered WRITER tracks store
+// refusals, so a read never answers with it. Callers check ctx first: a stop
+// closes the session too, and a stop is not a session loss.
+func endsVerifyRun(err error) bool {
+	return errors.Is(err, providers.ErrStorageSessionUnavailable)
+}
+
+// sessionLostCause returns the cause that ended runCtx when it was a lost
+// storage session, else nil.
+func sessionLostCause(runCtx context.Context) error {
+	if cause := context.Cause(runCtx); cause != nil && endsVerifyRun(cause) {
+		return cause
+	}
+	return nil
 }
 
 // verifyDownloadConcurrency is how many objects a verify or test-restore run
@@ -397,6 +433,9 @@ type fileCheckOutcome struct {
 	warnings []string
 	// code is the integrity failure code of a failed check ("" otherwise).
 	code string
+	// endsRun is set (with state fileNotChecked) when the check met an error
+	// that ends the whole run (endsVerifyRun); the caller ends the run with it.
+	endsRun error
 }
 
 // countUnchecked returns how many content-bearing entries never reached a
@@ -452,6 +491,14 @@ func logInterruptedDownload(phase, backupPath string, dlErr error) {
 	}
 	log.Debug("download interrupted by the run ending; file left unchecked", "phase", phase,
 		"backupPath", backupPath, "error", dlErr.Error())
+}
+
+// sessionLostMessage explains a run that stopped because its storage session
+// ended. The counts come first: the server's list view keeps only the first
+// 200 characters of the reason.
+func sessionLostMessage(kind string, cause error, verified, failed, contentFiles int) string {
+	return fmt.Sprintf("%s stopped: the storage session ended before every file was checked; checked %d of %d files (%d ok, %d failed), the remaining %d were not verified (%v)",
+		kind, verified+failed, contentFiles, verified, failed, contentFiles-verified-failed, cause)
 }
 
 // timeBudgetMessage explains a run that stopped at its time budget.

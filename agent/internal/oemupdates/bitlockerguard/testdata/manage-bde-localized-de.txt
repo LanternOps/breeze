@@ -1,0 +1,12 @@
+BitLocker-Laufwerkverschlüsselung: Konfigurationstool, Version 10.0.22621
+Copyright (C) 2013 Microsoft Corporation. Alle Rechte vorbehalten.
+
+Volume "C:" [Windows]
+Alle Schlüsselschutzvorrichtungen
+
+    TPM:
+      ID: {00000000-0000-4000-8000-000000000001}
+      PCR-Validierungsprofil:
+        7, 11
+        (Verwendet sicheren Start für die Integritätsüberprüfung)
+

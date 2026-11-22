@@ -7,13 +7,9 @@
  * `routes/monitors.ts` re-imports and re-exports `buildMonitorCommand` from
  * here so route behavior/exports are unchanged.
  *
- * This extraction does NOT make `monitorWorker` closure-clean of the agent
- * socket graph: `jobs/monitorWorker.ts` still reaches `routes/agentWs.ts`
- * through `services/agentCommandRelay.ts` (a value import of
- * `isAgentConnected`/`sendCommandToAgent`), so `monitorWorker` remains
- * `socket-owner` per the Task 5 placement classification, not `global`.
- * Clearing that path requires making `agentCommandRelay`'s `routes/agentWs`
- * dependency a lazy import — filed as a follow-up, not done here.
+ * `monitorWorker` is `global`: it reaches agents only through the role-safe
+ * `services/agentCommandRelay.ts` facade (#4141/#4142), whose `routes/agentWs`
+ * access is a guarded dynamic import.
  */
 
 const MONITOR_TYPE_TO_COMMAND: Record<string, string> = {

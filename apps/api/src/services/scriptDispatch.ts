@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { canonicalizeScriptParameters, hasVariableTokens } from '@breeze/shared';
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransactionIfHeld } from '../db';
 import {
   buildRestorePointRequest,
   discardRestorePointRequest,
@@ -29,7 +29,7 @@ import {
   toAgentCommandFrame,
   encryptSensitivePayloadFields,
 } from './sensitiveCommandPayload';
-import { sendCommandToAgent } from '../routes/agentWs';
+import { dispatchCommandToAgent, dispatchDisposition } from './agentCommandRelay';
 import { captureException } from './sentry';
 import { isParkedDevice, PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE } from './unassignedPool/deliveryEligibility';
 import { createAuditLogAsync } from './auditService';
@@ -196,6 +196,9 @@ export type ScriptDeliveryOutcome =
   | 'claim_lost'
   | 'decrypt_failed'
   | 'send_failed'
+  // #4142: the relay could not confirm the frame reached the agent. The claim
+  // is kept; the result or the stale reaper settles the row. Not a failure.
+  | 'indeterminate'
   | 'no_agent';
 
 export type DispatchScriptResult =
@@ -688,10 +691,10 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   const discardPendingExecution = async (reason: string) => {
     if (!executionId) return;
     try {
-      const deleted = await db
+      const deleted = await withDbTransactionIfHeld(() => db
         .delete(scriptExecutions)
         .where(and(eq(scriptExecutions.id, executionId), eq(scriptExecutions.status, 'pending')))
-        .returning({ id: scriptExecutions.id });
+        .returning({ id: scriptExecutions.id }));
       if (deleted.length === 0) {
         console.warn(
           '[scriptDispatch] execution row was not pending at discard time; leaving it alone',
@@ -894,30 +897,35 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
           deviceId: device.id,
           payload: deliverPayload,
         });
-        let sent: boolean;
-        try {
-          // #8318 §6.4: to the agent_id read IN the claim, not `device.agentId`
-          // read before it (a reattach or re-enroll may have committed since).
-          sent = deliverable
-            ? sendCommandToAgent(claimed.agentId, toAgentCommandFrame(deliverable))
-            : false;
-        } catch (sendErr) {
-          // The claim already flipped the row to 'sent'. Hand it back to
-          // 'pending' before propagating, or it could never be claimed again
-          // and would sit until the stale reaper failed it as "no response
-          // from agent" (#3445 review). Best effort: a release failure must not
-          // replace the original error.
-          await releaseClaimedCommandDelivery(commandId, claimed.executedAt).catch((releaseErr) => {
-            console.error('[scriptDispatch] failed to release claim after a send threw', {
+        // #4142: through the relay facade, which never rejects by contract and
+        // answers for an agent on another instance. delivered -> as before;
+        // uncertain -> the frame may be out, so KEEP the claim (never release,
+        // never retry) and let the agent's result or the reaper settle it;
+        // not_delivered -> hand the claim back, as the old `false` did.
+        let disposition: 'delivered' | 'uncertain' | 'not_delivered' = 'not_delivered';
+        if (deliverable) {
+          try {
+            // #8318 §6.4: to the agent_id read IN the claim, not `device.agentId`
+            // read before it (a reattach or re-enroll may have committed since).
+            disposition = dispatchDisposition(
+              await dispatchCommandToAgent(claimed.agentId, toAgentCommandFrame(deliverable)),
+            );
+          } catch (sendErr) {
+            // Contract violation (the facade never rejects). The frame may
+            // already be on the wire, so releasing the claim could let a second
+            // delivery race the first: KEEP the claim, report, and propagate.
+            // The row stays 'sent'; the agent's result or the stale reaper
+            // settles it.
+            console.error('[scriptDispatch] relay facade rejected; keeping the delivery claim', {
               commandId,
               deviceId: device.id,
-              error: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
+              error: sendErr instanceof Error ? sendErr.message : String(sendErr),
             });
-            captureException(releaseErr);
-          });
-          throw sendErr;
+            captureException(sendErr);
+            throw sendErr;
+          }
         }
-        if (sent) {
+        if (disposition === 'delivered') {
           delivered = true;
           deliveryOutcome = 'sent';
           executedAt = claimed.executedAt;
@@ -946,6 +954,13 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
               captureException(runningErr);
             }
           }
+        } else if (disposition === 'uncertain') {
+          // The relay could not tell us whether the frame reached the agent.
+          // Not delivered as far as we can report, not failed either: the claim
+          // stays (no release, no retry) and the execution is NOT stamped
+          // running. The agent's result (handleScriptResult accepts
+          // pending/queued/running) or the stale reaper settles it.
+          deliveryOutcome = 'indeterminate';
         } else {
           // We had a claimed command and a connected agent and still failed to
           // reach it — operationally different from the normal "no agent

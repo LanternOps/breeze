@@ -4,7 +4,10 @@
 // recovery can restore the full machine state.
 package systemstate
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // SystemStateManifest describes all collected system state artifacts.
 type SystemStateManifest struct {
@@ -138,8 +141,9 @@ type NICInfo struct {
 
 // Collector is the platform-specific system state collector.
 type Collector interface {
-	// CollectState gathers system state artifacts into stagingDir.
-	CollectState(stagingDir string) (*SystemStateManifest, error)
+	// CollectState gathers system state artifacts into stagingDir. ctx carries
+	// the collection deadline; a step it cuts short is named in IncompleteSteps.
+	CollectState(ctx context.Context, stagingDir string) (*SystemStateManifest, error)
 	// CollectHardwareProfile captures hardware info without full state collection.
-	CollectHardwareProfile() (*HardwareProfile, error)
+	CollectHardwareProfile(ctx context.Context) (*HardwareProfile, error)
 }

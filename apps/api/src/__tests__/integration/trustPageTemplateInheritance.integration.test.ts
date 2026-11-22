@@ -146,6 +146,31 @@ describe('trust page partner template inheritance', () => {
     await expect(publish(s, 0, null)).rejects.toMatchObject({ status: 409, code: 'TEMPLATE_CHANGED' });
   });
 
+  it('a draft build reports the template revision it resolved; with no template, or a frozen config, it reports null (#9087)', async () => {
+    const page = await freshPage(s);
+    expect((await sys(() => buildSnapshotForPage(page, { config: 'draft' }))).templateRevision).toBeNull();
+    const rev1 = await saveTemplate(s, 0, { showManagedBy: false });
+    const draft = await sys(() => buildSnapshotForPage(page, { config: 'draft' }));
+    expect(draft.templateRevision).toBe(rev1);
+    expect((await sys(() => buildSnapshotForPage(page, { config: draft.config }))).templateRevision).toBeNull();
+  });
+
+  it('publish 409s TEMPLATE_CHANGED when the template is saved between editor load and publish (#9087)', async () => {
+    const rev1 = await saveTemplate(s, 0, { showManagedBy: false });
+    const page = await freshPage(s);
+    // What GET /trust-page hands the editor.
+    const loaded = (await sys(() => resolveTrustPageSettings(page))).template?.revision ?? null;
+    expect(loaded).toBe(rev1);
+    await saveTemplate(s, rev1, { showManagedBy: true });
+
+    await expect(publish(s, 0, loaded)).rejects.toMatchObject({ status: 409, code: 'TEMPLATE_CHANGED' });
+    const after = await reloadPage(page.id);
+    expect(after.publicationRevision).toBe(0);
+    expect(after.publishedAt).toBeNull();
+    const snaps = await sys(() => db.select({ id: trustPageSnapshots.id }).from(trustPageSnapshots).where(eq(trustPageSnapshots.trustPageId, page.id)));
+    expect(snaps).toHaveLength(0);
+  });
+
   it('the template is frozen at publish: a later template edit does not change the next refresh', async () => {
     const rev1 = await saveTemplate(s, 0, { showManagedBy: false });
     await freshPage(s);

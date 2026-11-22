@@ -129,6 +129,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'system_cleanup (status)', description: 'Read the progress and result of a native cleanup run', category: 'Files, Disk & Registry' },
       // Logs & Audit
       { name: 'query_audit_log', description: 'Search audit logs', category: 'Logs & Audit' },
+      { name: 'get_audit_retention', description: 'An organization\'s audit-log retention policy: configured or not, retention days, last cleanup', category: 'Logs & Audit' },
       { name: 'query_change_log', description: 'Device change log search', category: 'Logs & Audit' },
       { name: 'search_logs', description: 'Event log search', category: 'Logs & Audit' },
       { name: 'get_log_trends', description: 'Log trend analysis', category: 'Logs & Audit' },
@@ -189,6 +190,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_dr_plans', description: 'List disaster recovery plans', category: 'Backup & Recovery' },
       { name: 'get_dr_plan_details', description: 'Disaster recovery plan details', category: 'Backup & Recovery' },
       // Full-control W03 (#6757)
+      // Full-control W17 (#6788): verification, recovery and backup-health reads, and which mailboxes a C2C config covers.
+      { name: 'manage_backup_verification (health/list/readiness)', description: 'See backup verification results and how recoverable each device is', category: 'Backup & Recovery' },
+      { name: 'list_bmr_recoveries (list/get)', description: 'See where a bare-metal recovery has got to', category: 'Backup & Recovery' },
+      { name: 'get_backup_health', description: 'See backup health per device, from Breeze and connected backup providers', category: 'Backup & Recovery' },
+      { name: 'manage_c2c_configs (list)', description: 'See which mailboxes each cloud-to-cloud backup config covers', category: 'Backup & Recovery' },
       { name: 'manage_backup_profiles (list/get)', description: 'List or read backup profiles (what each one backs up)', category: 'Backup & Recovery' },
       { name: 'get_dr_execution_status', description: 'Disaster recovery execution status', category: 'Backup & Recovery' },
       // Monitoring & Analytics
@@ -301,12 +307,24 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'list_concerns', description: 'List the loose ends Wisp is tracking inside the delegation grant', category: 'AI Governance' },
       // Wisp thread links (W08 #9914): offered only when Wisp is on, and only under a delegation grant.
       { name: 'list_links', description: 'List the objects linked to the Wisp thread that you can still see', category: 'AI Governance' },
+      // Wisp check-in timers (#10991 W03): offered only when Wisp is on, and only under a delegation grant.
+      { name: 'list_check_ins', description: 'List the follow-up check-ins Wisp has scheduled on its thread', category: 'AI Governance' },
       // Other
       { name: 'query_custom_fields', description: 'Custom field definitions and values', category: 'Other' },
       { name: 'manage_tags (list)', description: 'List all device tags', category: 'Other' },
       { name: 'manage_saved_filters (list/get)', description: 'List and view saved filters', category: 'Other' },
       // Endpoint messaging (#8742 W02)
       { name: 'send_endpoint_message (list/get)', description: 'List sent end-user messages and their delivery status', category: 'Ticketing' },
+      // Full-control W18 (#6789): organization, user and role reads. User and role writes are deliberately not AI tools.
+      { name: 'get_org_summary', description: 'One organization at a glance: devices online, open alerts and tickets, contracts, invoices, sites, contact, portal users (sections you lack permission for are omitted)', category: 'Integrations' },
+      { name: 'get_account_readiness', description: 'Setup readiness for up to 50 organizations: contacts, billing address, policy, pending portal invites, overdue invoices, integrations, backup', category: 'Integrations' },
+      { name: 'list_portal_users', description: 'An organization\'s customer-portal logins and their status (active, pending setup, disabled)', category: 'Integrations' },
+      { name: 'list_users', description: 'Breeze staff logins with role, MFA status and last login (full partner access)', category: 'Integrations' },
+      { name: 'get_user', description: 'One Breeze login with its role and organization and site access', category: 'Integrations' },
+      { name: 'list_roles (list/get/users/effective_permissions)', description: 'Breeze roles, one role\'s permissions, who holds it and its effective (inherited) permissions', category: 'Integrations' },
+      // Full-control W18 PR B (#6789): the reads of the two org-admin writers.
+      { name: 'manage_org_portal_settings (get)', description: 'An organization\'s customer portal settings: which sections customers see, support contact, welcome text, logo and colours', category: 'Integrations' },
+      { name: 'manage_report_recipients (list)', description: 'The contacts a scheduled report is emailed to', category: 'Fleet Operations' },
     ],
   },
   {
@@ -333,6 +351,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_notification_channels (test)', description: 'Test notification channel', category: 'Alerts & Notifications' },
       // Backup & Recovery (full-control W03, #6757)
       { name: 'manage_dr_plan (create_plan/update_plan/add_group/update_group)', description: 'Create or edit a disaster recovery plan and its groups (refused while the plan is running)', category: 'Backup & Recovery' },
+      // Full-control W17 (#6788): runs a read-only command on the machine.
+      { name: 'get_vss_status', description: 'Read the Volume Shadow Copy writers on a Windows device, live (read-only)', category: 'Backup & Recovery' },
       { name: 'manage_backup_profiles (create)', description: 'Create an organization backup profile (a partner-wide profile needs approval)', category: 'Backup & Recovery' },
       { name: 'configure_backup_sla (create/update)', description: 'Create or change a backup SLA (RPO/RTO targets and breach alerts)', category: 'Backup & Recovery' },
       // Monitoring & Analytics (#5290 W03)
@@ -445,8 +465,12 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'create_watch', description: 'Ask Wisp to check something on a schedule', category: 'AI Governance' },
       // Wisp thread links (W08 #9914): links one object you can see to the thread.
       { name: 'link_entity', description: 'Link a ticket, device, quote or other object to the Wisp thread', category: 'AI Governance' },
+      // Wisp check-in timers (#10991 W03): a follow-up on the grant's own thread; notifies the grantor, runs nothing.
+      { name: 'schedule_check_in', description: 'Ask Wisp to check back on its thread in 1 minute to 7 days', category: 'AI Governance' },
+      { name: 'cancel_check_in', description: 'Cancel a check-in Wisp scheduled on its thread', category: 'AI Governance' },
       // Wisp specialists (W07a #9913): sweeps and sandbox analysis run on the call.
-      { name: 'launch_specialist (sweep/analysis)', description: 'Ask Wisp to hand a sweep or sandbox analysis to a specialist agent', category: 'AI Governance' },
+      // #10406: so does Wisp's own assessment of one org, or of the orgs with open alerts.
+      { name: 'launch_specialist (sweep/analysis/device_troubleshooting/assessment)', description: 'Ask Wisp to hand a sweep, a sandbox analysis, a device investigation or an assessment of open alerts to a specialist agent', category: 'AI Governance' },
     ],
   },
   {
@@ -479,6 +503,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'security_scan (quarantine/remove/restore)', description: 'Threat management actions', category: 'Security & Compliance' },
       { name: 'ioc_hunt (sweep/import_iocs)', description: 'Run a detect-only IOC sweep in one organization (second approver above 25 devices) or import IOCs as detection rules', category: 'Security & Compliance' },
       { name: 'edr_endpoint_action (isolate/unisolate)', description: 'EDR network isolation or release through the linked vendor (release needs a second approver)', category: 'Security & Compliance' },
+      // Network-isolation W13 (#10101): four-eyes; isolating (execute_containment) stays supervised.
+      { name: 'release_containment', description: 'Lift a Breeze network isolation from a device (needs a second approver)', category: 'Security & Compliance' },
       { name: 'manage_software_policy (create/update/delete)', description: 'Software policy management', category: 'Security & Compliance' },
       { name: 'remediate_software_violation', description: 'Remediate software violations', category: 'Security & Compliance' },
       // Files, Disk & Registry
@@ -508,6 +534,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_hyperv_vm (start/stop/force_stop/pause/resume/save)', description: 'Change a Hyper-V VM\'s power state', category: 'Backup & Recovery' },
       { name: 'manage_hyperv_checkpoints (create/delete/apply)', description: 'Create a checkpoint; deleting or applying one needs a second approver', category: 'Backup & Recovery' },
       { name: 'manage_dr_plan (delete_group)', description: 'Delete a group from a disaster recovery plan', category: 'Backup & Recovery' },
+      // Full-control W17 (#6788): a check runs on the machine; a C2C config chooses whose mail is copied, where and when.
+      { name: 'manage_backup_verification (run)', description: 'Queue a backup integrity check or test restore on a device', category: 'Backup & Recovery' },
+      { name: 'manage_c2c_configs (create/update/delete)', description: 'Create, change or delete a cloud-to-cloud backup config (whose mail is copied, where and when)', category: 'Backup & Recovery' },
       { name: 'manage_backup_profiles (update/delete)', description: 'Change or delete a backup profile (may be partner-wide)', category: 'Backup & Recovery' },
       { name: 'restore_snapshot', description: 'Restore a backup snapshot (second approver)', category: 'Backup & Recovery' },
       { name: 'restore_as_vm', description: 'Restore a snapshot as a new VM or disk image (second approver)', category: 'Backup & Recovery' },
@@ -564,6 +593,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_contracts (generate_invoice)', description: 'Generate a contract\'s due invoice and, when the contract auto-issues, issue and email it; two people approve, and a changed total refuses (not offered to AI agents)', category: 'Billing' },
       { name: 'manage_accounting_sync (link_mapping/unlink_mapping/sync_mapping)', description: 'Link, unlink or re-sync a customer or item with QuickBooks or Xero; linking and syncing overwrite the provider\'s record (not offered to AI agents)', category: 'Billing' },
       { name: 'manage_accounting_sync (push/push_bulk)', description: 'Push invoices (up to 10) into QuickBooks or Xero; two people approve, and they stay in the books (not offered to AI agents)', category: 'Billing' },
+      // Full-control W18 PR B (#6789).
+      { name: 'manage_org_portal_settings (update)', description: 'Change an organization\'s customer portal sections, support contact, text, logo or colours; customers see it at once. Never custom CSS or a sensitive flag (not offered to AI agents)', category: 'Integrations' },
+      { name: 'manage_org_portal_settings (set_sensitive_access)', description: 'Show or hide per-device patch and vulnerability detail, rack placement, the hours balance, network alerts or trust page editing in a customer\'s portal; two people approve (not offered to AI agents)', category: 'Integrations' },
+      { name: 'manage_report_recipients (add/remove/convert)', description: 'Add, remove or convert a scheduled report\'s email recipients; add and convert also need the report export permission (not offered to AI agents)', category: 'Fleet Operations' },
       { name: 'manage_ticket_routing_rules (create/update/reorder/delete)', description: 'Create, change, reorder or delete ticket routing rules', category: 'Ticketing' },
       // Full-control W06 (#6776): PSA configuration. Partner-wide configuration, customer-visible forms,
       // terminal inbox actions and the permanent attachment delete need approval; the four hard deletes
@@ -613,6 +646,14 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // request for one becomes the wisp_specialist_request approval card.
       { name: 'launch_specialist (operator_recipe/patch_plan/remediation_research/bulk_ticket_reply)', description: 'Ask Wisp to hand an AI task, patch plan, remediation research or one reply to a set of tickets to a specialist', category: 'AI Governance' },
       { name: 'wisp_specialist_request', description: 'Approve a specialist an assessment asked Wisp to run (raised only by the Wisp coordinator)', category: 'AI Governance' },
+      // Full-control W16 PR A (#6786): the two launches, supervised as a recorded exception (Decision 1).
+      { name: 'run_patch_plan', description: 'Run an organization\'s patch agent now. It uses AI credits and may notify people; each install it proposes is its own approval (not offered to AI agents)', category: 'AI Governance' },
+      { name: 'create_operator_task', description: 'Start an AI task that gets a stopped service running again on one device. It uses AI credits; each change it makes asks for approval (not offered to AI agents)', category: 'AI Governance' },
+      { name: 'manage_ai_agent_schedules (create/update)', description: 'Create a partner baseline schedule for every organization or one organization\'s tighter override, or change one; an update may only turn act mode off (not offered to AI agents)', category: 'AI Governance' },
+      { name: 'manage_fleet_designs (run)', description: 'Run a Fleet Design for an organization. It uses AI credits and may notify people; it applies nothing (not offered to AI agents)', category: 'AI Governance' },
+      { name: 'manage_fleet_designs (document)', description: 'Write a Fleet Design up as a document; linking it as deliverable evidence also needs the contracts permission (not offered to AI agents)', category: 'AI Governance' },
+      { name: 'manage_ai_agent_schedules (delete)', description: 'Delete a schedule; two people approve. Deleting a baseline deletes every organization\'s override and cannot be undone (not offered to AI agents)', category: 'AI Governance' },
+      { name: 'manage_fleet_designs (apply/rollback)', description: 'Apply a Fleet Design\'s functions and monitoring to devices, or roll an apply back; two people approve, and either refuses if anything it touches changed after approval (not offered to AI agents)', category: 'AI Governance' },
       // Wisp memory (W03 #9909): human-only — a person confirms or retracts on the memory page; never agent-callable.
       { name: 'confirm_memory', description: 'A person confirms a Wisp memory block', category: 'AI Governance' },
       { name: 'retract_memory', description: 'A person retracts a Wisp memory block', category: 'AI Governance' },
@@ -734,6 +775,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Tier 2 without a screenshot; a screenshot (or unreadable evidenceTypes) needs approval (tier 3 supervised)
   { toolName: 'collect_evidence', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'execute_containment', tier: 3, permission: 'devices.execute + alerts.write', category: 'Security & Compliance' },
+  { toolName: 'release_containment', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_isolate_device', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_threat_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'sync_huntress_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
@@ -748,6 +790,12 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Backup & Recovery
   { toolName: 'configure_backup_sla', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
   { toolName: 'configure_vault', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
+  // Full-control W17 (#6788): `tier` is the registry tier; the per-action classes are in TIER_DEFINITIONS.
+  { toolName: 'manage_backup_verification', tier: 1, permission: 'organizations.read / devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'get_vss_status', tier: 2, permission: 'devices.execute', category: 'Backup & Recovery' },
+  { toolName: 'list_bmr_recoveries', tier: 1, permission: 'backup.read', category: 'Backup & Recovery' },
+  { toolName: 'get_backup_health', tier: 1, permission: 'backup.read', category: 'Backup & Recovery' },
+  { toolName: 'manage_c2c_configs', tier: 1, permission: 'organizations.read / organizations.write', category: 'Backup & Recovery' },
   { toolName: 'trigger_vault_sync', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'execute_dr_plan', tier: 3, permission: 'devices.execute', category: 'Backup & Recovery' },
   { toolName: 'manage_dr_plan', tier: 2, permission: 'devices.write', category: 'Backup & Recovery' },
@@ -779,8 +827,16 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'resolve_concern', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Wisp thread links (W08 #9914)
   { toolName: 'link_entity', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  // Wisp check-in timers (#10991 W03)
+  { toolName: 'schedule_check_in', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  { toolName: 'cancel_check_in', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Wisp specialists (W07a #9913): sweeps/analysis run on the call; other kinds ask first.
   { toolName: 'launch_specialist', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  // Full-control W16 PR A (#6786).
+  { toolName: 'run_patch_plan', tier: 3, permission: 'ai_agents.write', category: 'AI Governance' },
+  { toolName: 'create_operator_task', tier: 3, permission: 'ai_agents.write', category: 'AI Governance' },
+  { toolName: 'manage_ai_agent_schedules', tier: 1, permission: 'ai_agents.write (+ MFA)', category: 'AI Governance' },
+  { toolName: 'manage_fleet_designs', tier: 1, permission: 'ai_agents.read / ai_agents.write / devices.write / documents.write', category: 'AI Governance' },
   // Other
   { toolName: 'export_dataset', tier: 1, permission: 'devices.read', category: 'Other' },
   // Endpoint messaging (#8742 W02)
@@ -860,6 +916,17 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_contract_documents', tier: 1, permission: 'agreements.read / agreements.write', category: 'Billing' },
   { toolName: 'manage_contracts', tier: 2, permission: 'contracts.read / contracts.write / contracts.manage', category: 'Billing' },
   { toolName: 'manage_accounting_sync', tier: 1, permission: 'accounting.read / accounting.manage (+ organizations.write + catalog.write, or invoices.write)', category: 'Billing' },
+  // Full-control W18 (#6789): all tier 1.
+  { toolName: 'get_org_summary', tier: 1, permission: 'organizations.read', category: 'Integrations' },
+  { toolName: 'get_account_readiness', tier: 1, permission: 'organizations.read', category: 'Integrations' },
+  { toolName: 'list_portal_users', tier: 1, permission: 'organizations.read', category: 'Integrations' },
+  { toolName: 'list_users', tier: 1, permission: 'users.read', category: 'Integrations' },
+  { toolName: 'get_user', tier: 1, permission: 'users.read', category: 'Integrations' },
+  { toolName: 'list_roles', tier: 1, permission: 'users.read', category: 'Integrations' },
+  // Full-control W18 PR B (#6789).
+  { toolName: 'manage_org_portal_settings', tier: 1, permission: 'organizations.read / organizations.write', category: 'Integrations' },
+  { toolName: 'manage_report_recipients', tier: 1, permission: 'reports.read / reports.write (+ reports.export to add or convert)', category: 'Fleet Operations' },
+  { toolName: 'get_audit_retention', tier: 1, permission: 'audit.read', category: 'Logs & Audit' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -887,6 +954,22 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
     acknowledge_related: 'alerts.acknowledge',
     feedback: 'alerts.read',
     rca_feedback: 'alerts.read',
+  },
+  // Full-control W17 (#6788)
+  manage_backup_verification: {
+    health: 'organizations.read',
+    list: 'organizations.read',
+    readiness: 'organizations.read',
+    run: 'devices.execute',
+  },
+  get_vss_status: 'devices.execute',
+  list_bmr_recoveries: 'backup.read',
+  get_backup_health: 'backup.read',
+  manage_c2c_configs: {
+    list: 'organizations.read',
+    create: 'organizations.write',
+    update: 'organizations.write',
+    delete: 'organizations.write',
   },
   manage_device_anomalies: {
     list: 'devices.read',
@@ -925,6 +1008,26 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   list_ai_agent_schedules: 'ai_agents.read',
   list_fleet_designs: 'ai_agents.read',
   get_fleet_design: 'ai_agents.read',
+  // Full-control W18 (#6789).
+  get_org_summary: 'organizations.read',
+  get_account_readiness: 'organizations.read',
+  list_portal_users: 'organizations.read',
+  list_users: 'users.read',
+  get_user: 'users.read',
+  list_roles: 'users.read',
+  // Full-control W18 PR B (#6789).
+  manage_org_portal_settings: {
+    get: 'organizations.read',
+    update: 'organizations.write',
+    set_sensitive_access: 'organizations.write',
+  },
+  manage_report_recipients: {
+    list: 'reports.read',
+    add: 'reports.write + reports.export',
+    remove: 'reports.write',
+    convert: 'reports.write + reports.export',
+  },
+  get_audit_retention: 'audit.read',
   // Full-control W11 (#6781): the permission each action needs (access-review, compliance and PAM writes also need your MFA session).
   get_security_compliance: 'devices.read',
   manage_security_recommendations: { list: 'devices.read', complete: 'devices.write', dismiss: 'devices.write' },
@@ -1238,8 +1341,28 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Wisp thread links (W08 #9914)
   link_entity: 'ai_sessions.use',
   list_links: 'ai_sessions.use',
+  // Wisp check-in timers (#10991 W03)
+  schedule_check_in: 'ai_sessions.use',
+  list_check_ins: 'ai_sessions.use',
+  cancel_check_in: 'ai_sessions.use',
   // Wisp specialists (W07a #9913); wisp_specialist_request is the approval card.
   launch_specialist: 'ai_sessions.use',
+  // Full-control W16 PR A (#6786).
+  run_patch_plan: 'ai_agents.write',
+  create_operator_task: 'ai_agents.write',
+  manage_ai_agent_schedules: {
+    create: 'ai_agents.write',
+    update: 'ai_agents.write',
+    delete: 'ai_agents.write',
+  },
+  manage_fleet_designs: {
+    run: 'ai_agents.write',
+    preview: 'devices.write (+ scripts.write with automation refs)',
+    applied: 'ai_agents.read',
+    apply: 'devices.write (+ scripts.write with automation refs)',
+    rollback: 'devices.write',
+    document: 'documents.write',
+  },
   wisp_specialist_request: 'ai_sessions.use',
   generate_report: {
     list: 'reports.read',

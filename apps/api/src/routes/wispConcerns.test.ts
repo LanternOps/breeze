@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   markAnswered: vi.fn(),
   recordFeedback: vi.fn(),
   recordHumanBlock: vi.fn(),
+  forgetStandingStateFacts: vi.fn(),
   writeRouteAudit: vi.fn(),
   captureException: vi.fn(),
   /** Results handed to successive `await db.select()…` chains, in order. */
@@ -87,6 +88,7 @@ vi.mock('../services/wisp/memoryService', async (importOriginal) => ({
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAudit }));
 vi.mock('../services/sentry', () => ({ captureException: h.captureException }));
+vi.mock('../services/wisp/standingStateTurn', () => ({ forgetStandingStateFacts: h.forgetStandingStateFacts }));
 
 import { wispRoutes } from './wisp';
 import { CeilingViolationError, GrantInactiveError } from '../services/wisp/grantAuthority';
@@ -475,6 +477,26 @@ describe('POST /wisp/concerns/:id/resolve', () => {
     expect(h.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'wisp.concern.resolved', resourceId: CONCERN_ID, orgId: ORG, partnerId: PARTNER,
     }));
+  });
+
+  // #11611: the grant's next chat turn reads the user's action, not a cached
+  // pre-action snapshot.
+  it.each([
+    ['snooze', () => ({ grantId: GRANT_ID, until: daysAhead(2) })],
+    ['dismiss', () => ({ grantId: GRANT_ID })],
+    ['resolve', () => ({ grantId: GRANT_ID, outcome: 'Replied to the customer' })],
+  ])('%s drops the grant\'s cached standing-state facts after the write', async (verb, body) => {
+    h.dbResults.push([grantRow()]);
+    const res = await post(buildApp(), `/wisp/concerns/${CONCERN_ID}/${verb}`, body());
+    expect(res.status).toBe(200);
+    expect(h.forgetStandingStateFacts).toHaveBeenCalledWith(GRANT_ID);
+    expect(h.forgetStandingStateFacts.mock.invocationCallOrder[0]!).toBeGreaterThan(h.markAnswered.mock.invocationCallOrder[0]!);
+  });
+
+  it('a refused mutation keeps the cache', async () => {
+    h.dbResults.push([grantRow({ grantorUserId: OTHER_USER })]);
+    await post(buildApp(), `/wisp/concerns/${CONCERN_ID}/resolve`, { grantId: GRANT_ID, outcome: 'x' });
+    expect(h.forgetStandingStateFacts).not.toHaveBeenCalled();
   });
 
   it('a non-owner of the grant → 404, even as partner admin', async () => {

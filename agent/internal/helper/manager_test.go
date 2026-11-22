@@ -21,6 +21,14 @@ func (m *mockEnumerator) ActiveSessions() []SessionInfo {
 	return append([]SessionInfo(nil), m.sessions...)
 }
 
+// isolateFromHostHelper points mgr at a binary path under dir that does not
+// exist, so tests never read a Breeze Helper installed on the developer's
+// machine (CI runners have none, which hid this).
+func isolateFromHostHelper(mgr *Manager, dir string) {
+	mgr.binaryPath = filepath.Join(dir, "no-such-helper", "breeze-helper")
+	mgr.binaryVersionFunc = func(string) (string, error) { return "", errBinaryVersionUnsupported }
+}
+
 func TestApplyDisabledStopsRunningHelperAfterRestart(t *testing.T) {
 	tmpDir := t.TempDir()
 	statusPath := filepath.Join(tmpDir, "sessions", "501", "helper_status.yaml")
@@ -43,6 +51,7 @@ func TestApplyDisabledStopsRunningHelperAfterRestart(t *testing.T) {
 
 	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
+	isolateFromHostHelper(mgr, tmpDir)
 	mgr.sessionEnumerator = &mockEnumerator{
 		sessions: []SessionInfo{{Key: "501", Username: "alice", UID: 501}},
 	}
@@ -480,6 +489,7 @@ func TestInstalledVersionSessionStatus(t *testing.T) {
 
 	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
+	isolateFromHostHelper(mgr, tmpDir)
 	mgr.sessions["100"] = newSessionState("100", tmpDir)
 
 	if got := mgr.InstalledVersion(); got != "0.113.0" {
@@ -497,6 +507,7 @@ func TestInstalledVersionLegacyFallback(t *testing.T) {
 
 	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
+	isolateFromHostHelper(mgr, tmpDir)
 
 	if got := mgr.InstalledVersion(); got != "0.111.1" {
 		t.Fatalf("InstalledVersion() fallback = %q, want %q", got, "0.111.1")
@@ -517,6 +528,7 @@ func TestInstalledVersionLegacyFallbackIgnoredWhenSessionsDirExists(t *testing.T
 
 	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
+	isolateFromHostHelper(mgr, tmpDir)
 
 	// With sessions dir present, legacy root status must not be read to prevent stale update loops
 	if got := mgr.InstalledVersion(); got != "" {
@@ -528,6 +540,7 @@ func TestInstalledVersionEmptyWhenNoStatus(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr := New(context.Background(), nil, nil, "", WithMachineInstallOwner(true))
 	mgr.baseDir = tmpDir
+	isolateFromHostHelper(mgr, tmpDir)
 	mgr.sessions["100"] = newSessionState("100", tmpDir)
 
 	if got := mgr.InstalledVersion(); got != "" {

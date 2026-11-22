@@ -156,6 +156,8 @@ export type FleetDesignCreatedRefs = {
   scriptId?: string;
   /** W04: the name the script was created under (may carry a rename suffix). */
   scriptName?: string;
+  /** W16 (#6786): on a role_correction row, the role this design applied, for rollback's "still ours" check. */
+  deviceRole?: string;
 };
 
 /** `fleet_design_applied_items.before_image` — state before the apply, for rollback. */

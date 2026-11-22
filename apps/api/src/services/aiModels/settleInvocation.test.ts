@@ -436,6 +436,13 @@ describe('SDK usage snapshot (W05 spike)', () => {
     expect(m.captureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ eventCode: 'ai_usage_snapshot_regressed' }));
   });
 
+  it('a context-window refusal is confirmed: no ai_usage_unconfirmed warning (#10577)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await settleInvocation(base({ usage: [], sdkUsage: { sessionId: 's1', nextSnapshot: null, usageConfirmed: true, usageNote: 'context_window_exceeded' } }));
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('ai_usage_unconfirmed');
+    warn.mockRestore();
+  });
+
   it('any other unconfirmed usage is a structured warning, not a Sentry event', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await settleInvocation(base({ usage: [], sdkUsage: { sessionId: 's1', nextSnapshot: null, usageConfirmed: false, usageNote: 'no_result' } }));
@@ -651,6 +658,20 @@ describe('W09 ledger provenance', () => {
       offeringId: 'off-k', connectionId: 'conn-1', fundingSource: 'partner_key',
       failoverFromOfferingId: 'off-p', failoverHop: 1, failoverCause: 'rate_limited',
     });
+  });
+
+  it('#11395: toNewInvocations records the tool exposure the turn ran under; none → NULL', () => {
+    const binding = turnBindingFrom(makeResolvedModel('platform'));
+    const base = {
+      binding, orgId: 'org-1', userId: null, sessionId: null, agentRunId: null, sourceRef: null,
+      usage: [], outcome: noUsageOutcome(binding.wireModel),
+    };
+    const [constrained] = toNewInvocations({ ...base, toolExposure: { profile: 'minimal', fingerprint: '0123456789abcdef' } }, priceUsage(binding, []));
+    expect(constrained).toMatchObject({ toolProfile: 'minimal', toolExposureFingerprint: '0123456789abcdef' });
+    const [identity] = toNewInvocations({ ...base, toolExposure: { profile: 'full', fingerprint: 'full' } }, priceUsage(binding, []));
+    expect(identity).toMatchObject({ toolProfile: 'full', toolExposureFingerprint: 'full' });
+    const [none] = toNewInvocations(base, priceUsage(binding, []));
+    expect(none).toMatchObject({ toolProfile: null, toolExposureFingerprint: null });
   });
 
   it('a turn with no failover writes hop 0 and no cause', () => {

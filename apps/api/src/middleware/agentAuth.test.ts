@@ -686,6 +686,28 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 
+  // #8318 T1 — the attestation routes run Redis round-trips (rate limit,
+  // challenge store and GETDEL) and open their own org-scoped transaction.
+  it.each(['challenge', 'complete'])('skips the request-long org wrap for the self-managed attestation/%s route', async (action) => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    const c = createContext({ token: VALID_TOKEN, path: `/api/v1/agents/agent-1/attestation/${action}` });
+    const next = vi.fn().mockResolvedValue(undefined);
+    await agentAuthMiddleware(c, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  it('keeps the request DB context for another attestation/* path', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/attestation/other' });
+    const next = vi.fn().mockResolvedValue(undefined);
+    await agentAuthMiddleware(c, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the request DB context for another prompt-identity/* path', async () => {
     buildSelectMock([makeDevice()]);
     vi.mocked(getAgentTenantState).mockResolvedValue('active');

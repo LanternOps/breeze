@@ -14,8 +14,8 @@ interface BreadcrumbItem {
   /** Extra context for assistive tech (rendered as `aria-description`). */
   description?: string;
   /**
-   * Handles a plain left click instead of following `href` (e.g. pop history
-   * so list filters and scroll survive). Modifier/middle clicks still open
+   * Handles a plain left click instead of following `href` (e.g. soft-navigate
+   * through the router). Modifier/middle clicks still open
    * `href` normally, so the crumb stays a real link.
    */
   onClick?: () => void;

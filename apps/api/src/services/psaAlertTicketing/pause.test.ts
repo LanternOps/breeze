@@ -49,6 +49,13 @@ describe('pause and resume', () => {
     );
     expect(h.wake).toHaveBeenCalledWith('mapping', 'close');
   });
+  // The re-armed rows are due, so the reconciler sweep picks up the remainder.
+  it('wakes a bounded number of rows on resume', async () => {
+    update([{ id: 'connection', partnerId: 'partner' }]);
+    update(Array.from({ length: 101 }, (_, i) => ({ id: `mapping-${i}` })));
+    await resumeTicketingConnection('connection');
+    expect(h.wake).toHaveBeenCalledTimes(100);
+  });
 });
 
 it('logs mapping wake failure after resume while retaining a successful resume', async () => {

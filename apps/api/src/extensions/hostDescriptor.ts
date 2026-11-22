@@ -62,7 +62,7 @@ export const HOST_SERVER_SDK_VERSION = '1.0.0';
 export const HOST_BREEZE_VERSION = '0.1.0';
 
 /** @see packages/extension-web-sdk/package.json "version" */
-export const HOST_WEB_SDK_VERSION = '1.0.0';
+export const HOST_WEB_SDK_VERSION = '1.1.0';
 
 export const HOST_DESCRIPTOR: ExtensionHostDescriptor = Object.freeze({
   apiVersions: Object.freeze([HOST_API_VERSION]),

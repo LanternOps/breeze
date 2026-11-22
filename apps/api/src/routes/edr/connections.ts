@@ -19,6 +19,8 @@ import { decryptEdrSecret, encryptEdrSecret } from '../../services/edrProviders/
 import { validateVendorUrl } from '../../services/edrProviders/guardedFetch';
 import { buildEdrAdapterContext } from '../../services/edrProviders/context';
 import { capabilitySnapshot } from '../../services/edrProviders/capabilities';
+import { clearTenantInstallerMaterial } from '../../services/edrProviders/installerMaterial';
+import { ensureBuiltinPackage, isBuiltinProvider } from '../../services/builtinDeploymentPackages';
 import type { EdrProviderAdapter } from '../../services/edrProviders/types';
 import { enqueueEdrSync } from '../../jobs/edrProviderSync';
 import { readLastEdrHintAt } from '../../services/edrProviders/hints';
@@ -112,6 +114,21 @@ function pushSupported(provider: string): boolean {
     return typeof a.registerPush === 'function' && typeof a.verifyWebhook === 'function';
   } catch {
     return false;
+  }
+}
+
+/**
+ * Provision the vendor's built-in software package. A no-op for a provider with
+ * no installer and while a package is unreleased. Non-fatal, like the legacy
+ * integrations: the connection is saved and the next inventory run tries again.
+ */
+async function provisionBuiltinPackage(provider: string, partnerId: string): Promise<void> {
+  if (!isBuiltinProvider(provider)) return;
+  try {
+    await ensureBuiltinPackage({ provider, partnerId });
+  } catch (error) {
+    console.error('[edrProvider] failed to provision the built-in deployment package:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
@@ -227,6 +244,8 @@ edrConnectionRoutes.post(
       throw error;
     }
     if (!created) return c.json({ error: 'Failed to store the EDR connection' }, 500);
+
+    await provisionBuiltinPackage(adapter.key, gate.partnerId);
 
     let syncJobId: string | null = null;
     let syncWarning: string | null = null;
@@ -421,6 +440,9 @@ edrConnectionRoutes.patch(
           .where(and(eq(edrConnections.id, id), eq(edrConnections.partnerId, gate.partnerId)))
           .returning({ id: edrConnections.id });
         if (!row) return null;
+        // In this transaction: once the new key commits, no link fetched with the
+        // old one (or from the old console URL) can be dispatched.
+        if (retest) await clearTenantInstallerMaterial(tx, { connectionId: id });
         const connection = await loadConnection(id, gate.partnerId);
         return connection ? { kind: 'updated' as const, connection } : null;
       }));
@@ -438,6 +460,8 @@ edrConnectionRoutes.patch(
       writeRouteAudit(c, vendorRootMismatchAudit('edr.connection.update.rejected', id, gate.partnerId, updated.mismatch));
       return c.json(updated.mismatch, 409);
     }
+
+    if (retest) await provisionBuiltinPackage(existing.provider, gate.partnerId);
 
     writeRouteAudit(c, {
       orgId: null,

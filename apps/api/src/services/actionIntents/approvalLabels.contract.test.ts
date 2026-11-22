@@ -25,6 +25,28 @@ describe('approval card labels (#9657)', () => {
     },
   );
 
+  // W17 (#6788): what the approver is signing, and where it goes. Copied from the plan's approval copy.
+  it('W17 backup verification and C2C config writes state what they do', () => {
+    const device = '0123456789abcdef';
+    expect(buildApprovalDescription('manage_backup_verification', 'run', { deviceId: device, verificationType: 'integrity' }))
+      .toBe('Run a backup integrity check on device 01234567.... Queues a command on the machine.');
+    expect(buildApprovalDescription('manage_backup_verification', 'run', { deviceId: device, verificationType: 'test_restore' }))
+      .toBe('Run a backup test restore check on device 01234567.... Queues a command on the machine.');
+    expect(buildApprovalDescription('manage_backup_verification', 'run', { deviceId: device }))
+      .toBe('Run a backup integrity check on device 01234567.... Queues a command on the machine.');
+    expect(buildApprovalDescription('manage_c2c_configs', 'create', {
+      name: 'Finance', backupScope: 'mail', targetUsers: ['a@example.test', 'b@example.test'], schedule: { frequency: 'daily' },
+    })).toBe('Create cloud-to-cloud backup config Finance: mail for 2 users, schedule daily.');
+    expect(buildApprovalDescription('manage_c2c_configs', 'create', { name: 'All', backupScope: 'files' }))
+      .toBe('Create cloud-to-cloud backup config All: files for 0 users, schedule none.');
+    expect(buildApprovalDescription('manage_c2c_configs', 'update', { configId: device, targetUsers: ['a@example.test'], isActive: true, action: 'update', orgId: device }))
+      .toBe('Update cloud-to-cloud backup config 01234567...: targetUsers, isActive.');
+    expect(buildApprovalDescription('manage_c2c_configs', 'update', { configId: device, name: 'Renamed' }))
+      .toBe('Update cloud-to-cloud backup config 01234567...: name.');
+    expect(buildApprovalDescription('manage_c2c_configs', 'delete', { configId: device }))
+      .toBe('Delete cloud-to-cloud backup config 01234567.... Refused if it has backup history.');
+  });
+
   it('names the specific action for the finance and M365 write tools', () => {
     expect(buildApprovalDescription('manage_invoices', 'void', {})).toBe('Void invoice');
     expect(buildApprovalDescription('manage_invoices', 'record_payment', {})).toBe('Record invoice payment');
@@ -61,5 +83,32 @@ describe('W15 Pax8 approval consequences', () => {
     expect(buildApprovalDescription('manage_pax8_subscriptions', 'unlink', {})).toContain('staged changes on this subscription will be refused');
     expect(buildApprovalDescription('manage_pax8_subscriptions', 'sync', {})).toContain('every organization');
     expect(buildApprovalDescription('manage_pax8_orders', 'preflight', {})).toContain('sends the staged order content to Pax8');
+  });
+});
+
+// #11674: a comment edit or delete acts on `expectedTicketId` (intentRowTarget.ts),
+// so its headline names that ticket, by an id stub the intent service swaps for
+// the ticket number. Never the comment text (aiGuardrails.ts `manage_tickets`).
+describe('comment edit and delete headlines (#11674)', () => {
+  const OPERATIVE = '7c1e9d02-aaaa-4bbb-8ccc-ddddeeeeffff';
+  const STRAY = '2aad0601-1111-4222-8333-444455556666';
+
+  it('edit_comment names the expectedTicketId ticket and says the text is replaced', () => {
+    const label = buildApprovalDescription('manage_tickets', 'edit_comment', {
+      action: 'edit_comment', commentId: STRAY, expectedTicketId: OPERATIVE, ticketId: STRAY, content: 'secret replacement text',
+    });
+    expect(label).toBe('Edit a comment on ticket #7c1e9d02... (replaces its text)');
+    expect(label).not.toContain('secret');
+  });
+
+  it('delete_comment names the expectedTicketId ticket', () => {
+    expect(buildApprovalDescription('manage_tickets', 'delete_comment', {
+      action: 'delete_comment', commentId: STRAY, expectedTicketId: OPERATIVE, ticketId: STRAY,
+    })).toBe('Delete a comment on ticket #7c1e9d02...');
+  });
+
+  it('never names a stray ticketId when expectedTicketId is missing', () => {
+    expect(buildApprovalDescription('manage_tickets', 'delete_comment', { action: 'delete_comment', ticketId: STRAY }))
+      .toBe('Delete a comment on ticket #unknown');
   });
 });

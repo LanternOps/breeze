@@ -38,8 +38,14 @@ vi.mock('./entityRefs', () => ({ resolveEntityRef: shared.resolveEntityRef, isRe
 vi.mock('./threads', () => ({ seedContextForSession: shared.seedContextForSession }));
 
 import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
+import { db } from '../../db';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { resolveWritableToolOrgId, WRITE_ORG_AMBIGUOUS_ERROR } from '../aiToolWriteOrg';
+import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { CeilingViolationError, GrantInactiveError, type GrantCeiling } from './grantAuthority';
 import {
+  WISP_ACTION_NOT_DELEGABLE_MESSAGE,
+  WISP_PARTNER_ID_AS_ORG_MESSAGE,
   WISP_REFUSAL_MESSAGES,
   WispSessionUnavailableError,
   enforceWispCeiling,
@@ -49,6 +55,7 @@ import {
   targetOrgIdFor,
   unreachableWispAuth,
   wispSeedForSession,
+  wispSessionToolFilter,
 } from './chatCeiling';
 
 const ORG_A = '00000000-0000-4000-8000-00000000000a';
@@ -159,6 +166,14 @@ describe('enforceWispCeiling', () => {
     });
   });
 
+  it('manage_monitor_definitions describe passes the permission gate on alerts:read, and refuses without it (#11431)', async () => {
+    await expect(enforce('manage_monitor_definitions', { action: 'describe', kind: 'offline' })).resolves.toMatchObject({ ok: true });
+    shared.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['devices:read']) }));
+    await expect(enforce('manage_monitor_definitions', { action: 'describe' })).resolves.toMatchObject({
+      ok: false, refusal: { detail: 'permission' },
+    });
+  });
+
   it('a never-delegable or non-allowlisted tool is refused with detail "tool"', async () => {
     shared.resolveGrantCeiling.mockResolvedValue(ceiling({ toolAllowlist: new Set(['manage_alerts']) }));
     await expect(enforce('get_device_details', {})).resolves.toMatchObject({ ok: false, refusal: { detail: 'tool' } });
@@ -210,6 +225,81 @@ describe('enforceWispCeiling', () => {
     if (!r.ok) return;
     expect(r.toolAuth.accessibleOrgIds).toEqual([ORG_A, ORG_B]);
     expect(r.toolAuth.wispGrant).toEqual({ grantId: 'g-1', grantRevisionId: 'r-1', sessionId: 's-1' });
+  });
+});
+
+// #11433 (US prod 2026-11-08): Wisp offered "Fleet Design runs for the top few
+// orgs" and every `manage_fleet_designs run` was refused at 0 ms with
+// WISP_REFUSAL_MESSAGES.tool, under a *:* grant that denied nothing. The chat
+// gate and the release (releaseCeiling.ts) both run this function with the
+// call's own input, so both see the action.
+describe('manage_fleet_designs under a Wisp grant (#11433)', () => {
+  const REPORT_RUN = '00000000-0000-4000-8000-0000000000f1';
+  const fleet = (o: Partial<GrantCeiling> = {}) => ceiling({
+    permissionKeys: new Set(['ai_agents:write', 'ai_agents:read', 'devices:write', 'documents:write']), ...o,
+  });
+  beforeEach(() => { shared.resolveGrantCeiling.mockResolvedValue(fleet()); });
+
+  it('a run for an org inside the ceiling passes the ceiling, gated on ai_agents:write in that org', async () => {
+    const r = await enforce('manage_fleet_designs', { action: 'run', orgId: ORG_B });
+    expect(r).toMatchObject({ ok: true, permissionKeys: ['ai_agents:write'] });
+    if (!r.ok) return;
+    expect(r.toolAuth.canAccessOrg(ORG_B)).toBe(true);
+    expect(r.toolAuth.canAccessOrg(ORG_C)).toBe(false);
+  });
+
+  it.each([
+    ['preview', 'devices:write'],
+    ['applied', 'ai_agents:read'],
+    ['document', 'documents:write'],
+  ])('%s passes on its own permission (%s)', async (action, key) => {
+    const r = await enforce('manage_fleet_designs', { action, reportRunId: REPORT_RUN });
+    expect(r.ok, action).toBe(true);
+    if (!r.ok) return;
+    expect(r.permissionKeys).toContain(key);
+  });
+
+  it.each(['apply', 'rollback'])('%s stays refused with detail "tool" even for a *:* grantor, saying where it is done', async (action) => {
+    shared.resolveGrantCeiling.mockResolvedValue(fleet({ permissionKeys: new Set(['*:*']) }));
+    await expect(enforce('manage_fleet_designs', { action, reportRunId: REPORT_RUN })).resolves.toEqual({
+      ok: false, refusal: { code: 'wisp_outside_ceiling', detail: 'tool', message: WISP_ACTION_NOT_DELEGABLE_MESSAGE },
+    });
+  });
+
+  it('a run for an org outside the ceiling is refused with detail "org"', async () => {
+    await expect(enforce('manage_fleet_designs', { action: 'run', orgId: ORG_C })).resolves.toMatchObject({
+      ok: false, refusal: { detail: 'org' },
+    });
+  });
+
+  it('a run whose grant lacks ai_agents:write is refused with detail "permission"', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(fleet({ permissionKeys: new Set(['ai_agents:read']) }));
+    await expect(enforce('manage_fleet_designs', { action: 'run', orgId: ORG_A })).resolves.toMatchObject({
+      ok: false, refusal: { detail: 'permission' },
+    });
+  });
+
+  it('a report-keyed action reaches only the orgs where its own permission holds (the report lookup uses this reach)', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(fleet({
+      orgTerms: new Map([[ORG_B, { permissionKeys: new Set(['ai_agents:read']), siteIds: null }]]),
+    }));
+    const r = await enforce('manage_fleet_designs', { action: 'document', reportRunId: REPORT_RUN });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.toolAuth.canAccessOrg(ORG_A)).toBe(true);
+    expect(r.toolAuth.canAccessOrg(ORG_B)).toBe(false);
+  });
+
+  it('a call with no action never passes', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(fleet({ permissionKeys: new Set(['*:*']) }));
+    await expect(enforce('manage_fleet_designs', { orgId: ORG_A })).resolves.toMatchObject({ ok: false });
+  });
+
+  it('a revision pinned while the whole tool was on the floor keeps refusing run until the grant is refreshed', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(fleet({ deniedTools: new Set(['manage_fleet_designs']) }));
+    await expect(enforce('manage_fleet_designs', { action: 'run', orgId: ORG_A })).resolves.toEqual({
+      ok: false, refusal: { code: 'wisp_outside_ceiling', detail: 'tool', message: WISP_REFUSAL_MESSAGES.tool },
+    });
   });
 });
 
@@ -275,6 +365,19 @@ describe('helpers', () => {
     expect(await wispSeedForSession(grant, null, liveCeiling)).toBe('seed');
     expect(shared.seedContextForSession).toHaveBeenCalledWith('t-1', liveCeiling, null);
     expect(shared.resolveGrantCeiling).not.toHaveBeenCalled();
+  });
+
+  it("passes the turn's model through so the seed names it (#10391), alone or beside the viewing entity", async () => {
+    const live = ceiling();
+    shared.seedContextForSession.mockResolvedValueOnce('seed');
+    await wispSeedForSession(grant, null, live, undefined, 'claude-sonnet-5-5');
+    expect(shared.seedContextForSession).toHaveBeenLastCalledWith('t-1', live, null, { model: 'claude-sonnet-5-5' });
+
+    const viewing = { ref: { kind: 'device', id: ORG_C, orgId: ORG_A }, orgId: ORG_A, label: 'x', status: null, href: '/' };
+    shared.resolveEntityRef.mockResolvedValueOnce(viewing);
+    shared.seedContextForSession.mockResolvedValueOnce('seed');
+    await wispSeedForSession(grant, null, live, { type: 'device', id: ORG_C, hostname: 'h' }, 'claude-sonnet-5-5');
+    expect(shared.seedContextForSession).toHaveBeenLastCalledWith('t-1', live, null, { viewing, model: 'claude-sonnet-5-5' });
   });
 
   it.each(['record', 'device', 'alert'] as const)('a %s page context resolves viewing with the caller and live ceiling', async (type) => {
@@ -378,5 +481,173 @@ describe('lookupWispGrant', () => {
     shared.selectError = new Error('db down');
     await expect(lookupWispGrant('s-1')).rejects.toThrow('db down');
     expect(WispSessionUnavailableError).toBeDefined();
+  });
+});
+
+describe('wispSessionToolFilter (#10430)', () => {
+  const snapshot = (o: Record<string, unknown> = {}) => ({
+    version: 1, permissionKeys: ['*:*'], orgIds: [ORG_A], siteIds: null, toolAllowlist: null, deniedTools: [], ...o,
+  });
+
+  it('refuses a tool in the pinned revision\'s deniedTools and admits the rest', async () => {
+    shared.selectRows = [{ ceilingSnapshot: snapshot({ deniedTools: ['list_alerts'] }) }];
+    const admit = await wispSessionToolFilter(grant);
+    expect(admit('list_alerts')).toBe(false);
+    expect(admit('query_devices')).toBe(true);
+    expect(shared.captureException).not.toHaveBeenCalled();
+  });
+
+  it('refuses the agent deny floor even when the snapshot predates a registry entry', async () => {
+    shared.selectRows = [{ ceilingSnapshot: snapshot() }];
+    const admit = await wispSessionToolFilter(grant);
+    expect(admit('list_operator_tasks')).toBe(false);
+    expect(admit('launch_specialist')).toBe(true);
+  });
+
+  it('offers manage_fleet_designs (its run and reads are delegable), unless the pinned snapshot denies it (#11433)', async () => {
+    shared.selectRows = [{ ceilingSnapshot: snapshot() }];
+    expect((await wispSessionToolFilter(grant))('manage_fleet_designs')).toBe(true);
+    shared.selectRows = [{ ceilingSnapshot: snapshot({ deniedTools: ['manage_fleet_designs'] }) }];
+    expect((await wispSessionToolFilter(grant))('manage_fleet_designs')).toBe(false);
+  });
+
+  it('applies the pinned allowlist', async () => {
+    shared.selectRows = [{ ceilingSnapshot: snapshot({ toolAllowlist: ['query_devices'] }) }];
+    const admit = await wispSessionToolFilter(grant);
+    expect(admit('query_devices')).toBe(true);
+    expect(admit('list_alerts')).toBe(false);
+  });
+
+  it.each([
+    ['a missing revision row', []],
+    ['a malformed snapshot', [{ ceilingSnapshot: { version: 2 } }]],
+  ])('falls back to the agent deny floor and reports %s', async (_label, rows) => {
+    shared.selectRows = rows;
+    const admit = await wispSessionToolFilter(grant);
+    expect(admit('list_operator_tasks')).toBe(false);
+    expect(admit('query_devices')).toBe(true);
+    expect(shared.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates a DB error', async () => {
+    shared.selectError = new Error('db down');
+    await expect(wispSessionToolFilter(grant)).rejects.toThrow('db down');
+  });
+});
+
+// #11432: a partner-wide Wisp chat could not write without the model guessing
+// an org. Only a thread focused on the org the call is checked and filed in may
+// default an org-less write; nothing else picks a tenant (#6667).
+describe('the thread focus as the write default (#11432)', () => {
+  const writes = ceiling({ permissionKeys: new Set(['devices:read', 'devices:write']) });
+  const create = { action: 'create', name: 'Baseline Monitoring' };
+
+  it('a thread focused on the session org makes it the write default, so a create with no orgId resolves there', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(writes);
+    shared.selectRows = [{ focusOrgId: ORG_A }];
+    const result = await enforce('manage_configuration_policy', create);
+    expect(result).toMatchObject({ ok: true, writeDefaultOrgId: ORG_A });
+    if (!result.ok) return;
+    expect(result.toolAuth.aiWriteDefaultOrgId).toBe(ORG_A);
+    expect(resolveWritableToolOrgId(result.toolAuth)).toEqual({ orgId: ORG_A });
+  });
+
+  it('an unfocused (partner-wide) thread sets no default: the create stays ambiguous', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(writes);
+    shared.selectRows = [{ focusOrgId: null }];
+    const result = await enforce('manage_configuration_policy', create);
+    expect(result).toMatchObject({ ok: true, writeDefaultOrgId: null });
+    if (!result.ok) return;
+    expect(result.toolAuth.aiWriteDefaultOrgId).toBeUndefined();
+    expect(resolveWritableToolOrgId(result.toolAuth)).toEqual({ error: WRITE_ORG_AMBIGUOUS_ERROR });
+  });
+
+  it('a focus that is not the session org (moved after the session began) sets no default', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(writes);
+    shared.selectRows = [{ focusOrgId: ORG_B }];
+    const result = await enforce('manage_configuration_policy', create);
+    expect(result).toMatchObject({ ok: true, writeDefaultOrgId: null });
+    if (!result.ok) return;
+    expect(result.toolAuth.aiWriteDefaultOrgId).toBeUndefined();
+  });
+
+  it('reads the focus of THIS grant\'s thread, keyed by thread and partner', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(writes);
+    shared.selectRows = [{ focusOrgId: ORG_A }];
+    await enforce('manage_configuration_policy', create);
+    const chain = vi.mocked(db.select).mock.results[0]!.value as { where: ReturnType<typeof vi.fn> };
+    const { sql, params } = new PgDialect().sqlToQuery(chain.where.mock.calls[0]![0]);
+    expect(sql).toMatch(/"wisp_threads"\."id" = \$\d+ and "wisp_threads"\."partner_id" = \$\d+/);
+    expect(params).toEqual(['t-1', 'p-1']);
+  });
+
+  it('a read-only call reads no thread: a failed lookup must never deny a query', async () => {
+    shared.selectError = new Error('connection refused');
+    await expect(enforce('get_device_details', { deviceId: 'd' })).resolves.toMatchObject({ ok: true, writeDefaultOrgId: null });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('a call that names its org, and a tenant tool, read no thread', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(writes);
+    await expect(enforce('manage_configuration_policy', { ...create, orgId: ORG_B })).resolves.toMatchObject({ ok: true, writeDefaultOrgId: null });
+    await enforceWispCeiling({
+      grant, toolName: 'hudu__get_asset', input: {}, sessionOrgId: ORG_A, sessionId: 's-1', toolAuth: auth(),
+      permissionRequirement: { resource: 'devices', action: 'read' },
+    });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('a thread read failure propagates, so the caller fails closed', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(writes);
+    shared.selectError = new Error('connection refused');
+    await expect(enforce('manage_configuration_policy', create)).rejects.toThrow('connection refused');
+  });
+
+  it('narrowAuthToCeiling sets the default only for an org inside the narrowed reach', () => {
+    expect(narrowAuthToCeiling(auth(), ceiling(), 's-1', [], ORG_A).aiWriteDefaultOrgId).toBe(ORG_A);
+    expect(narrowAuthToCeiling(auth(), ceiling(), 's-1', [], ORG_C).aiWriteDefaultOrgId).toBeUndefined();
+    expect(narrowAuthToCeiling(auth(), ceiling(), 's-1', [], null).aiWriteDefaultOrgId).toBeUndefined();
+  });
+
+  it('the partner id passed as orgId is refused with a message that names both owners', async () => {
+    await expect(enforce('manage_configuration_policy', { ...create, orgId: 'p-1' })).resolves.toEqual({
+      ok: false, refusal: { code: 'wisp_outside_ceiling', detail: 'org', message: WISP_PARTNER_ID_AS_ORG_MESSAGE },
+    });
+    expect(WISP_PARTNER_ID_AS_ORG_MESSAGE).toContain('ownerScope: "partner"');
+  });
+});
+
+// #11432 decision 3: a partner-owned object (ownerScope "partner") is written
+// under the grantor's full partner org access. A partner-wide grant whose
+// grantor still has it keeps it through the ceiling; anything narrower loses it.
+describe('partner-owned writes under a partner-wide grant (#11432)', () => {
+  const partnerCreate = { action: 'create', ownerScope: 'partner', name: 'Baseline Monitoring' };
+
+  it('a partner-wide grant that reaches every ceiling org passes the full-partner-access gate', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['devices:write']) }));
+    const result = await enforce('manage_configuration_policy', partnerCreate);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.toolAuth.partnerOrgAccess).toBe('all');
+    expect(canManagePartnerWidePolicies(result.toolAuth)).toBe(true);
+  });
+
+  it('loses it when the grantor\'s term in one org lacks the write, or the grant is not partner-wide', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(ceiling({
+      permissionKeys: new Set(['devices:write']),
+      orgTerms: new Map([[ORG_B, { permissionKeys: new Set(['devices:read']), siteIds: null }]]),
+    }));
+    const narrower = await enforce('manage_configuration_policy', partnerCreate);
+    expect(narrower.ok).toBe(true);
+    if (!narrower.ok) return;
+    expect(narrower.toolAuth.partnerOrgAccess).toBe('selected');
+    expect(canManagePartnerWidePolicies(narrower.toolAuth)).toBe(false);
+
+    shared.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['devices:write']), partnerWide: false, scopeOrgId: ORG_A }));
+    const orgGrant = await enforce('manage_configuration_policy', partnerCreate);
+    expect(orgGrant.ok).toBe(true);
+    if (!orgGrant.ok) return;
+    expect(orgGrant.toolAuth.partnerOrgAccess).toBe('selected');
+    expect(canManagePartnerWidePolicies(orgGrant.toolAuth)).toBe(false);
   });
 });

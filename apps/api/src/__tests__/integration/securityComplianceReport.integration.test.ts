@@ -3,7 +3,7 @@ import './setup';
 import { describe, expect, it } from 'vitest';
 
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { devices, deviceVulnerabilities, securityStatus, vulnerabilities } from '../../db/schema';
+import { devices, deviceVulnerabilities, securityStatus, sites, vulnerabilities } from '../../db/schema';
 import { generateSecurityCompliancePostureReport } from '../../services/securityComplianceReport';
 import { siteScopeFingerprint, type OrgReportExecutionAuthority } from '../../services/siteScope';
 import { loadOpenVulnerabilityCounts } from '../../services/securityComplianceReportVulnerabilities';
@@ -185,5 +185,52 @@ describe('security compliance report vulnerability isolation', () => {
     expect(hostnames).toContain('posture-live');
     expect(hostnames).not.toContain('posture-decom');
     expect((result.summary as { deviceCount: number }).deviceCount).toBe(1);
+  });
+
+  // #12044: a site filter leaves managed devices out of the PDF's "N devices
+  // in scope"; the summary says how many, counted over the managed population
+  // (decommissioned devices and other orgs excluded) under the caller's RLS.
+  runDb('counts the managed devices a site filter leaves out', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const other = await setupTestEnvironment({ scope: 'organization' });
+    const stamp = Date.now();
+    const device = (orgId: string, siteId: string, name: string, status: 'online' | 'decommissioned' = 'online') => ({
+      orgId, siteId, agentId: `${name}-${stamp}`, hostname: name, osType: 'windows' as const, osVersion: '11', architecture: 'x86_64', agentVersion: 'test', status,
+    });
+    // Separate system transactions: one transaction taking org then partner
+    // export locks trips the partner-export lock hierarchy.
+    const branchSiteId = await withSystemDbAccessContext(async () => {
+      const [branch] = await db.insert(sites).values({ orgId: env.organization.id, name: 'Branch' }).returning({ id: sites.id });
+      return branch!.id;
+    });
+    await withSystemDbAccessContext(() => db.insert(devices).values([
+      device(env.organization.id, env.site.id, 'hq-1'),
+      device(env.organization.id, branchSiteId, 'branch-1'),
+      device(env.organization.id, branchSiteId, 'branch-2'),
+      device(env.organization.id, branchSiteId, 'branch-decom', 'decommissioned'),
+    ]));
+    await withSystemDbAccessContext(() => db.insert(devices).values([device(other.organization.id, other.site.id, 'other-org-1')]));
+
+    const run = (config: Record<string, unknown>) => withDbAccessContext(
+      { scope: 'organization', orgId: env.organization.id, accessibleOrgIds: [env.organization.id], userId: env.user.id },
+      async () => {
+        const scope = { version: 1 as const, kind: 'unrestricted' as const, orgId: env.organization.id };
+        return generateSecurityCompliancePostureReport(env.organization.id, { includeCis: false, ...config }, {
+          principalKind: 'user',
+          scope,
+          principalUserId: env.user.id,
+          capturedAt: new Date(),
+          fingerprint: siteScopeFingerprint(scope),
+        });
+      },
+    );
+
+    const filtered = (await run({ sites: [branchSiteId] })).summary as { deviceCount: number; excludedBySiteFilterCount?: number };
+    expect(filtered.deviceCount).toBe(2);
+    expect(filtered.excludedBySiteFilterCount).toBe(1); // hq-1; not the decommissioned device, not the other org's
+
+    const unfiltered = (await run({})).summary as Record<string, unknown>;
+    expect(unfiltered.deviceCount).toBe(3);
+    expect(unfiltered).not.toHaveProperty('excludedBySiteFilterCount');
   });
 });

@@ -309,6 +309,33 @@ describe('W03 backup/DR writes in the agent catalog (#6757)', () => {
   });
 });
 
+/** W17 (#6788): backup verification, VSS and recovery reads are agent-reachable; every W17 agent write is a proposal.
+ * manage_c2c_configs is human-only: list returns target mailboxes and its writes choose what is copied. */
+describe('W17 backup tools in the agent catalog (#6788)', () => {
+  it.each(['manage_backup_verification', 'get_vss_status', 'list_bmr_recoveries', 'get_backup_health'])(
+    '%s is agent-reachable under backup_recovery',
+    (name) => {
+      expect(listAgentReachableTools()).toContain(name);
+      expect(listUnreachableRegisteredTools()).not.toContain(name);
+      expect(TOOL_CAPABILITY[name]).toBe('backup_recovery');
+    },
+  );
+
+  it('manage_c2c_configs is never offered to an agent', () => {
+    expect(listAgentReachableTools()).not.toContain('manage_c2c_configs');
+    expect(listUnreachableRegisteredTools()).toContain('manage_c2c_configs');
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).not.toContain('manage_c2c_configs');
+  });
+
+  it('run is tier 3 and not pre-authorisable; the reads are read-only operations', () => {
+    const op = (tool: string, action: string) => buildAgentToolCatalog().tools.find((t) => t.name === tool)!.operations.find((o) => o.key === `${tool}:${action}`)!;
+    for (const action of ['health', 'list', 'readiness']) expect(op('manage_backup_verification', action)).toMatchObject({ tier: 1, readOnly: true });
+    expect(op('manage_backup_verification', 'run').tier).toBe(3);
+    expect(POLICY_DECIDABLE_TIER3.map((e) => e.key)).not.toContain('manage_backup_verification:run');
+    for (const action of ['list', 'get']) expect(op('list_bmr_recoveries', action)).toMatchObject({ tier: 1, readOnly: true });
+  });
+});
+
 /** Spec 2026-09-23 W07 (#6777): the alert-triage tools in the agent catalog. An agent reads correlations
  * and anomalies and can propose the anomaly / reliability writes (released as the approver). The
  * correlation GROUP writes are human-only: a supervised release rebuilds the approver's auth and drops

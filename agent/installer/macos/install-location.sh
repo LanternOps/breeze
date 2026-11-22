@@ -289,3 +289,101 @@ reload_launch_agent() {
     done
     load_launch_agent "$domain" "$label" "$plist"
 }
+
+# Network-isolation recovery (#10099). The recovery binary is a separate,
+# versioned, root-only executable the LaunchDaemons run when the agent cannot
+# (spec §3.6). Both functions do nothing unless the pkg staged a recovery binary
+# in pkg-staging/isolation-recovery/<version>/.
+#
+# postinstall calls them under `if !`, which turns `set -e` off inside them, so
+# every step that can fail stops the function itself.
+
+# stage_isolation_recovery <src> <tmp-dir>: build a complete version directory.
+stage_isolation_recovery() {
+    mkdir "$2" &&
+        cp "$1" "$2/breeze-isolation-recovery" &&
+        chown -R root:wheel "$2" &&
+        chmod 0755 "$2" "$2/breeze-isolation-recovery" || return 1
+    xattr -d com.apple.quarantine "$2/breeze-isolation-recovery" 2>/dev/null || true
+}
+
+# install_isolation_recovery <staged-dir> <install-root>: copy each staged
+# <version>/breeze-isolation-recovery to <install-root>/<version>/ as
+# root:wheel 0755, and print the installed path. An existing version
+# directory is never touched: an unresolved episode's jobs run the file inside
+# it, and the agent adopts new versions only while nothing is isolated.
+install_isolation_recovery() {
+    local staged="$1" root="$2" src version dest tmp installed=""
+    for src in "$staged"/*/breeze-isolation-recovery; do
+        [ -f "$src" ] || continue
+        version=$(basename "$(dirname "$src")") || return 1
+        case "$version" in
+            "" | .* | *[!0-9A-Za-z.+-]*)
+                echo "Refusing isolation recovery version '$version': not a version" >&2
+                return 1
+                ;;
+        esac
+        if [ -L "$root" ] || { [ -e "$root" ] && [ ! -d "$root" ]; }; then
+            echo "Refusing to install into $root: not a real directory" >&2
+            return 1
+        fi
+        mkdir -p "$root" && chown root:wheel "$root" && chmod 0755 "$root" || return 1
+        dest="$root/$version"
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            if [ -L "$dest" ] || [ ! -f "$dest/breeze-isolation-recovery" ]; then
+                echo "Refusing to use $dest: it holds no recovery binary" >&2
+                return 1
+            fi
+            echo "Isolation recovery $version is already installed; leaving it untouched" >&2
+        else
+            tmp="$root/.$version.pkg-new"
+            rm -rf "$tmp" || return 1
+            if ! stage_isolation_recovery "$src" "$tmp" || ! mv "$tmp" "$dest"; then
+                rm -rf "$tmp"
+                echo "Could not install isolation recovery $version" >&2
+                return 1
+            fi
+            echo "Installed isolation recovery $version" >&2
+        fi
+        installed="$dest/breeze-isolation-recovery"
+    done
+    printf '%s\n' "$installed"
+}
+
+# load_isolation_recovery_daemon <recovery> <template> <plist> <data-dir>: on
+# the first install only, render the com.breeze.isolation LaunchDaemon for
+# <recovery> and load it into the system domain. An existing plist is left
+# alone: it may be pinned to an unresolved episode's recovery path.
+load_isolation_recovery_daemon() {
+    local recovery="$1" template="$2" plist="$3" data_dir="$4" tmp
+    [ -n "$recovery" ] || return 0
+    if [ -e "$plist" ] || [ -L "$plist" ]; then
+        echo "The isolation recovery daemon is already installed; leaving it untouched"
+        return 0
+    fi
+    if [ ! -f "$template" ]; then
+        echo "Warning: no isolation recovery daemon template at $template" >&2
+        return 1
+    fi
+    # Both values are installer-chosen paths; '|', '&' and '\' would break the
+    # substitution, so refuse them rather than escape them.
+    case "$recovery$data_dir" in
+        *'|'* | *'&'* | *\\*)
+            echo "Refusing to render the isolation recovery daemon for $recovery" >&2
+            return 1
+            ;;
+    esac
+    # A plist left behind would read as "already installed" on every later
+    # install, so a failure at any step removes it.
+    tmp="$plist.pkg-new"
+    if ! sed -e "s|__RECOVERY_PATH__|$recovery|g" -e "s|__DATA_DIR__|$data_dir|g" "$template" > "$tmp" ||
+        [ ! -s "$tmp" ] || ! chown root:wheel "$tmp" || ! chmod 0644 "$tmp" || ! mv -f "$tmp" "$plist"; then
+        rm -f "$tmp"
+        echo "Warning: could not write $plist" >&2
+        return 1
+    fi
+    if ! bootstrap_system_daemon com.breeze.isolation "$plist"; then
+        rm -f "$plist"
+        return 1
+    fi
+}

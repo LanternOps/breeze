@@ -27,6 +27,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/wingpt"
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // virtdisk.h constants — used only by the calls below (the struct layouts
@@ -129,7 +130,7 @@ func vhdxKey(path string) string {
 var _ WinSystem = (*winSystemWindows)(nil)
 
 func (w *winSystemWindows) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	return procspawn.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 func (w *winSystemWindows) LookPath(name string) (string, error) { return exec.LookPath(name) }

@@ -317,7 +317,12 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     expect(payload.partnerId).toBe(partner.id);
     expect(payload.orgId).toBeNull();
     expect(payload.roleId).toBe(role.id);
-    expect(payload.mfa).toBe(false);
+    // The tech holds no Breeze factor and this partner does not require MFA,
+    // so the SSO session is policy-admitted exactly like a password login
+    // (#11889). Before the fix it was mfa:false, and every MFA-gated route
+    // answered 403 MFA_REQUIRED until an IdP MFA assertion was configured.
+    expect(payload.mfa).toBe(true);
+    expect(payload.mfa_src).toBe('policy');
     expect(payload.sub).toBe(user.id);
 
     // The identity link + last-login stamp were persisted under system
@@ -878,7 +883,8 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     const payload = decodeJwt((await exchangeRes.json()).accessToken);
     expect(payload.scope).toBe('organization');
     expect(payload.orgId).toBe(org.id);
-    expect(payload.partnerId).toBeNull();
+    // #12246: the org session carries its org's owning partner, like password login.
+    expect(payload.partnerId).toBe(partner.id);
     expect(payload.sub).toBe(user.id);
   });
 

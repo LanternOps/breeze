@@ -5,15 +5,16 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
+import { POLICY_FILES, isPolicyPath } from './ci-policy.mjs';
+import { CORE, loadSuiteMap, suiteOfTest, suitesForChange } from './integration-suites.mjs';
+import { RELATED_JOBS, relatedPlan } from './related-tests.mjs';
+
 // W4: advisory only. These selections must never replace the classifier outputs.
-export const POLICY_FILES = [
-  '.github/scripts/classify-pr-paths.sh', '.github/scripts/integration-floor-paths.txt',
-  '.github/scripts/path-reader-map.txt', '.github/scripts/qemu-gate-paths.txt',
-  '.github/scripts/queue-selection.mjs', '.github/flaky-tests.json', '.github/workflows/ci.yml',
-];
+// The policy manifest lives in ci-policy.mjs (W02); re-exported for W4's callers.
+export { POLICY_FILES };
 export const MAX_BASE_AGE_HOURS = 12;
 export const MAX_DELTA_MERGES = 40;
-const CLASSIFIER_KEYS = ['code', 'docs', 'agent', 'app', 'api', 'web', 'portal', 'addins', 'm365', 'rust',
+export const CLASSIFIER_KEYS = ['code', 'docs', 'agent', 'app', 'api', 'web', 'portal', 'addins', 'm365', 'rust',
   'topology_browser', 'agent_code', 'integration', 'path_readers', 'reader_tests'];
 const AREAS = ['api', 'web', 'portal', 'addins', 'm365', 'rust', 'agent_code'];
 const PATH_AREAS = { viewer: 'apps/viewer/', mobile: 'apps/mobile/', shared: 'packages/shared/', document_ui: 'packages/document-ui/' };
@@ -58,12 +59,18 @@ export function nonGatingJobs(workflow) {
 }
 
 // Recursive descent, never eval: the grammar deliberately has no arbitrary JS/shell.
+// The W05 thin clause, !contains(needs.changes.outputs.thin_skip, ',<id>,'), parses
+// to an atom that is always true here: what the gate's selection skips never feeds
+// back into computing a selection.
+const THIN_CLAUSE = /^!contains\(needs\.changes\.outputs\.thin_skip, ',([a-z0-9-]+),'\)$/;
 export function parseIfExpression(expression) {
-  const tokens = expression.match(/needs\.changes\.outputs\.\w+\s*==\s*'true'|&&|\|\||[()]|\S+/g) ?? [];
+  const tokens = expression.match(/needs\.changes\.outputs\.\w+\s*==\s*'true'|!contains\(needs\.changes\.outputs\.thin_skip, ',[a-z0-9-]+,'\)|&&|\|\||[()]|\S+/g) ?? [];
   let pos = 0;
   const atom = () => {
     const token = tokens[pos++];
     if (token === '(') { const value = or(); if (tokens[pos++] !== ')') throw Error('Missing )'); return value; }
+    const thin = token?.match(THIN_CLAUSE)?.[1];
+    if (thin) return { thin };
     const key = token?.match(/^needs\.changes\.outputs\.(\w+)\s*==\s*'true'$/)?.[1];
     if (!key) throw Error(`Unsupported condition: ${expression}`);
     return { key };
@@ -76,6 +83,7 @@ export function parseIfExpression(expression) {
 }
 export function evaluateIf(tree, flags) {
   if (typeof tree === 'string') tree = parseIfExpression(tree);
+  if (tree.thin) return true;
   if (tree.key) return truth(flags[tree.key]);
   return tree.op === 'and' ? evaluateIf(tree.left, flags) && evaluateIf(tree.right, flags)
     : evaluateIf(tree.left, flags) || evaluateIf(tree.right, flags);
@@ -145,7 +153,52 @@ function areas(paths, flags) {
   return new Set([...AREAS.filter(key => truth(flags[key])), ...Object.entries(PATH_AREAS)
     .filter(([, prefix]) => paths.some(p => p.startsWith(prefix))).map(([key]) => key)]);
 }
-export function computeSelection({ P, delta, full, workflow, classify, floor, integrationConfig, playwrightConfigs }) {
+// ── W07b3 / W07c (#10751): shadow fields beside the selection ─────────────
+//
+// Both are logged only. The job-level selection never reads them, and neither
+// throws: anything doubtful is 'all' (suites) or 'full:<why>' (related).
+
+// The integration suites a thin entry would run, from the suite map at the
+// queue base: S(O) ∪ (S(P) ∩ S(Δ)) ∪ the suites of P's own integration tests,
+// where S is suitesForChange. A floor path anywhere, or 'all' on any side, is
+// every suite.
+export function integrationSuites({ suiteMap, P, delta, overlap, floor, ownTests }) {
+  try {
+    if (typeof suiteMap !== 'string' || !suiteMap.trim()) return { suites: 'all', reason: 'map_missing' };
+    const map = loadSuiteMap(suiteMap);
+    const floorPath = unique([...P, ...delta]).find(path => onFloor(floor, path));
+    if (floorPath) return { suites: 'all', reason: `floor:${floorPath}` };
+    const side = {};
+    for (const [label, paths] of [['o', overlap], ['p', P], ['delta', delta]]) {
+      const selected = suitesForChange(map, paths, { floor });
+      if (selected.suites === 'all') return { suites: 'all', reason: `${label}:${selected.reason}` };
+      side[label] = selected.suites;
+    }
+    const chosen = new Set([CORE, ...side.o, ...side.p.filter(suite => side.delta.includes(suite)), ...ownTests.map(test => suiteOfTest(map, test))]);
+    return { suites: [CORE, ...map.suites.filter(suite => suite !== CORE)].filter(suite => chosen.has(suite)), reason: 'mapped' };
+  } catch (error) {
+    return { suites: 'all', reason: `map_error:${String(error?.message ?? error).split('\n')[0].slice(0, 200)}` };
+  }
+}
+
+// Per related-capable unit job the entry runs, what a `vitest related` run over
+// P ∪ Δ would be: 'related', or 'full:<why>' (related-tests.mjs relatedPlan).
+// Known gap: the gate has no tree for the entry, so it passes no `exists` and
+// cannot see a deleted path (the test-job line, which has the tree, can). An
+// enforcing caller must pass `exists` over the tree it runs in.
+export function unitRelated(thinJobs, changed, floor) {
+  const jobs = thinJobs.filter(job => Object.hasOwn(RELATED_JOBS, job));
+  if (!jobs.length) return null;
+  return Object.fromEntries(jobs.map(job => {
+    try { return [job, relatedPlan(job, changed, { floor }).reason]; } catch { return [job, 'full:error']; }
+  }));
+}
+
+// integration-floor-paths.txt: `#` starts a comment; a trailing `/` is a prefix.
+const floorRules = text => text.split('\n').map(l => l.split('#')[0].trim()).filter(Boolean);
+const onFloor = (rules, path) => rules.some(rule => rule.endsWith('/') ? path.startsWith(rule) : path === rule);
+
+export function computeSelection({ P, delta, full, workflow, classify, floor, integrationConfig, playwrightConfigs, suiteMap }) {
   const jobs = workflowJobs(workflow);
   const full_jobs = Object.entries(jobs).filter(([, j]) => j.condition?.includes('needs.changes.outputs.') && evaluateIf(j.condition, full)).map(([n]) => n);
   if (!P.length) return { mode: 'full', reason: 'empty_change_set', full_jobs, thin_jobs: full_jobs,
@@ -156,15 +209,16 @@ export function computeSelection({ P, delta, full, workflow, classify, floor, in
   const overlap = P.filter(p => delta.includes(p));
   const pAreas = areas(P, pFlags), dAreas = areas(delta, dFlags), allAreas = areas(union, combined);
   const unitAreas = new Set([...pAreas].filter(a => dAreas.has(a)).concat([...areas(overlap, overlap.length ? classify(overlap) : {})]));
-  const ownJobs = new Set(), unrun_own_tests = [];
+  const ownJobs = new Set(), unrun_own_tests = [], ownIntegrationTests = [];
   for (const path of P.filter(ownTest)) {
     const routed = routeOwnTest(path, { workflow, integrationConfig, playwrightConfigs });
     if (routed.unrun) unrun_own_tests.push(path);
     else if (!routed.jobs.length) return { mode: 'full', reason: 'unrouted_own_test', full_jobs, thin_jobs: full_jobs, overlap, unrun_own_tests };
     routed.jobs.forEach(job => ownJobs.add(job));
+    if (routed.jobs.includes('integration-test')) ownIntegrationTests.push(path);
   }
-  const floorHit = floor.split('\n').map(l => l.split('#')[0].trim()).filter(Boolean)
-    .some(rule => union.some(p => rule.endsWith('/') ? p.startsWith(rule) : p === rule));
+  const floorList = floorRules(floor);
+  const floorHit = union.some(p => onFloor(floorList, p));
   const integration = ownJobs.has('integration-test') || floorHit ||
     (unitAreas.has('api') && truth(classifyPaths(P, true).integration) && truth(classifyPaths(delta, true).integration));
   const never = nonGatingJobs(workflow);
@@ -185,10 +239,12 @@ export function computeSelection({ P, delta, full, workflow, classify, floor, in
   return { mode: 'shadow', reason: '', overlap, thin_jobs, full_jobs, unrun_own_tests,
     flags: { ...combined, integration: String(integration), path_readers: dFlags.path_readers, reader_tests: dFlags.reader_tests },
     reader_tests: dFlags.reader_tests ?? '', would_skip: full_jobs.filter(j => !thin_jobs.includes(j)),
-    would_add: thin_jobs.filter(j => !full_jobs.includes(j)) };
+    would_add: thin_jobs.filter(j => !full_jobs.includes(j)),
+    integration_suites: integration ? integrationSuites({ suiteMap, P, delta, overlap, floor: floorList, ownTests: ownIntegrationTests }) : null,
+    unit_related: unitRelated(thin_jobs, union, floorList) };
 }
 
-const policyPath = path => POLICY_FILES.includes(path) || /^\.github\/(?:workflows|scripts|actions)\//.test(path);
+const policyPath = isPolicyPath;
 export function fallbackReason(f) {
   if (f.error) return 'error';
   if (f.event !== 'merge_group') return 'not_merge_group';
@@ -226,11 +282,16 @@ function policyAtBase(io, tree) {
     if (!match) throw Error('Unsupported policy tree entry');
     return [match[2], match[1]];
   }));
-  return POLICY_FILES.every(path => io.exists(path) ? io.git(['hash-object', '--', path]).trim() === blobs[path] : !blobs[path]);
+  // The gate's base-revision io answers from the revision; the default hashes the working tree.
+  const blobOf = io.blob ?? (path => io.git(['hash-object', '--', path]).trim());
+  return POLICY_FILES.every(path => io.exists(path) ? blobOf(path) === blobs[path] : !blobs[path]);
 }
-function selectionContext(io, workflow) {
+export function selectionContext(io, workflow) {
   const configs = unique([...workflow.matchAll(/--config=([\w.-]+)/g)].map(m => m[1]));
-  return { workflow, floor: io.read('.github/scripts/integration-floor-paths.txt'),
+  // The suite map only feeds a shadow field: unreadable means every suite, never an error.
+  let suiteMap;
+  try { suiteMap = io.read('.github/scripts/integration-suites.txt'); } catch { suiteMap = undefined; }
+  return { workflow, floor: io.read('.github/scripts/integration-floor-paths.txt'), suiteMap,
     integrationConfig: io.read('apps/api/vitest.integration.config.ts'),
     playwrightConfigs: Object.fromEntries(configs.map(name => [name, io.read(`e2e-tests/${name}`)])),
     classify: (paths, pr = false) => Object.fromEntries(lines(io.exec('bash',
@@ -255,8 +316,11 @@ export function shadowCore(io, input) {
     // entry diff is checked against the record's P below (entry_outside_p).
     out.head = String(io.prHead(out.pr)).trim();
     if (!sha(out.head)) return stop('no_head_sha');
-    const { records, stats } = io.records(out.head, out.pr);
+    // The pinned gate injects a source of trusted records (W02d). A source may
+    // say why it has none, and that reason is the fallback.
+    const { records, stats, reason: noRecord } = (io.recordSource ?? io.records)(out.head, out.pr);
     out.record_stats = stats;
+    if (noRecord) return stop(noRecord);
     out.invalid_records = records.filter(r => !validateRecord(r, out.head)).length;
     const record = pickRecord(records, out.head);
     if (!record) return stop('no_valid_record');
@@ -339,7 +403,8 @@ export function createIO({ cwd = process.cwd(), env = process.env } = {}) {
     append: (path, text) => appendFileSync(resolve(cwd, path), text),
     remove: path => rmSync(resolve(cwd, path), { recursive: true, force: true }),
     temp: () => mkdtempSync(join(tmpdir(), 'queue-provenance-')),
-    now: () => Date.now(), stdout: text => process.stdout.write(text + '\n'), stderr: text => process.stderr.write(text + '\n'),
+    now: () => Date.now(), sleep: ms => new Promise(done => setTimeout(done, ms)),
+    stdout: text => process.stdout.write(text + '\n'), stderr: text => process.stderr.write(text + '\n'),
   };
   io.git = args => {
     // Sparse/partial checkout can lazily fetch blobs. Authenticate only this
@@ -404,12 +469,14 @@ export function readRecords(io, { repository, head, pr }) {
   }
   return { records, stats };
 }
+export const SHADOW_FIELDS = ['pr', 'head', 'B', 'parent', 'age_h', 'merges', 'p', 'delta', 'overlap', 'thin_jobs', 'full_jobs',
+  'would_skip', 'would_add', 'invalid_records', 'unrun_own_tests', 'policy_digest', 'reader_tests', 'error', 'record_stats',
+  // W07b3 / W07c (#10751), shadow only: never read by any selection.
+  'integration_suites', 'unit_related'];
 export function shadow(io, input, { output, summary } = {}) {
   const out = shadowCore(io, input);
-  const fields = ['pr', 'head', 'B', 'parent', 'age_h', 'merges', 'p', 'delta', 'overlap', 'thin_jobs', 'full_jobs',
-    'would_skip', 'would_add', 'invalid_records', 'unrun_own_tests', 'policy_digest', 'reader_tests', 'error', 'record_stats'];
   const log = `queue-selection: mode=${out.mode} reason=${out.reason} ` +
-    fields.map(key => `${key}=${JSON.stringify(out[key] ?? null)}`).join(' ');
+    SHADOW_FIELDS.map(key => `${key}=${JSON.stringify(out[key] ?? null)}`).join(' ');
   io.stdout(log);
   if (out.error) io.stderr(`queue-selection error: ${JSON.stringify(out.error)}`);
   if (out.reason === 'error' || out.reason === 'no_valid_record') {
@@ -421,11 +488,167 @@ export function shadow(io, input, { output, summary } = {}) {
   if (summary) io.append(summary, `### Queue selection (shadow only)\n\n\`\`\`text\n${log}\n\`\`\`\n`);
   return out;
 }
+// ── W05 (#10749): consume, the changes job reading the CI Gate's selection ──
+//
+// The pinned CI Gate decides at the start of its run which jobs this queue entry
+// may skip and publishes that as an artifact. This reads it into one output,
+// thin_skip (",a,b," or ''), which the thinnable jobs' `if:` and CI Success read.
+// It is advice: the gate judges the entry against its own copy of the list, so a
+// wrong read can only skip a job the gate still requires, which ejects the entry.
+// It can never pass one. Any doubt is full (thin_skip ''). Always exits 0.
+//
+// This module runs from the candidate's tree and imports no gate code. The step
+// names the producer (GATE_WORKFLOW, GATE_SELECTION_ARTIFACT, GATE_SELECTION_FILE),
+// and queue-selection.test.mjs pins those, the keys and the checks below to the
+// gate's own definitions.
+export const CONSUME_POLL_MS = 10_000;
+export const CONSUME_RUN_MS = 60_000; // the gate run is created with the entry
+export const CONSUME_TOTAL_MS = 180_000; // the gate publishes ~12 s after it starts
+export const GATE_SELECTION_KEYS = Object.freeze(['schema', 'repository', 'head_sha', 'base_sha', 'head_ref', 'policy_digest',
+  'gate_run', 'gate_attempt', 'source_attempt', 'mode', 'reason', 'thin_skip', 'would_skip', 'thin_queue']);
+const JOB_ID = /^[a-z0-9-]+$/;
+const logValue = value => JSON.stringify(value ?? null).replaceAll('##[', '#\\u0023[');
+const firstLine = error => String(error?.message ?? error).split('\n')[0].slice(0, 300);
+// execFileSync's message names only the command; what gh printed says why it failed.
+const cause = error => {
+  const stderr = String(error?.stderr ?? '').trim();
+  return stderr ? `${firstLine(error)}: ${firstLine(stderr)}` : firstLine(error);
+};
+
+// What THIN_SKIP holds: '' for none, else ",a,b," so ',<id>,' cannot match part of another id.
+export function skipValue(list) {
+  for (const job of list) if (typeof job !== 'string' || !JOB_ID.test(job)) throw Error(`thin_skip: not a job id: ${JSON.stringify(job)}`);
+  const jobs = [...new Set(list)].sort();
+  return jobs.length ? `,${jobs.join(',')},` : '';
+}
+
+// Why a published selection is not usable for this entry, or null.
+export function gateSelectionProblem(value, expected) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'not an object';
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...GATE_SELECTION_KEYS].sort())) return 'keys';
+  if (value.schema !== 1) return 'schema';
+  for (const [key, want] of Object.entries(expected)) if (value[key] !== want) return key;
+  if (typeof value.repository !== 'string' || typeof value.head_ref !== 'string' || typeof value.thin_queue !== 'string') return 'strings';
+  if (!sha(value.head_sha) || !sha(value.base_sha)) return 'shas';
+  if (![value.gate_run, value.gate_attempt, value.source_attempt].every(n => Number.isSafeInteger(n) && n > 0)) return 'run or attempt';
+  if (!['thin', 'shadow', 'full'].includes(value.mode)) return 'mode';
+  if (typeof value.reason !== 'string' || !/^\w*$/.test(value.reason)) return 'reason';
+  const names = list => Array.isArray(list) && list.every(name => typeof name === 'string');
+  if (!names(value.thin_skip) || !value.thin_skip.every(job => JOB_ID.test(job))) return 'thin_skip';
+  if (!names(value.would_skip)) return 'would_skip';
+  if (value.policy_digest !== null && !/^[a-f\d]{64}$/.test(value.policy_digest)) return 'policy_digest';
+  return null;
+}
+
+function ghJson(io, args) {
+  const text = io.gh(args);
+  try { return JSON.parse(text); } catch { throw Error(`gh ${args[1] ?? args[0]}: not JSON`); }
+}
+
+// The run the org ruleset started for this entry: found repository-wide (the
+// ruleset's workflow id is not listed under the repository's workflows), at the
+// gate's path, for this exact head, under an id the repository does not list. A
+// copy of the gate a PR enabled for itself runs under a listed id.
+function pinnedGateRun(io, { repository, head, workflow, listed }) {
+  const page = ghJson(io, ['api', `repos/${repository}/actions/runs?event=merge_group&head_sha=${head}&per_page=100`]);
+  if (!Array.isArray(page?.workflow_runs)) throw Error('workflow runs: no list in the response');
+  return page.workflow_runs.filter(run => run.path === workflow && run.event === 'merge_group' && run.head_sha === head &&
+    Number.isSafeInteger(run.workflow_id) && !listed.has(run.workflow_id) && Number.isSafeInteger(run.id) && run.id > 0)
+    .sort((a, b) => b.id - a.id)[0] ?? null;
+}
+
+async function consumeCore(io, env, out, started) {
+  if (!['enforce', 'shadow'].includes(env.THIN_QUEUE)) return { reason: 'thin_disabled' };
+  const repository = env.GITHUB_REPOSITORY ?? '', head = env.HEAD_SHA, base = env.BASE_SHA;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repository) || !sha(head) || !sha(base)) throw Error('invalid repository, head or base');
+  const workflow = env.GATE_WORKFLOW ?? '', name = env.GATE_SELECTION_ARTIFACT ?? '', file = env.GATE_SELECTION_FILE ?? '';
+  if (!/^\.github\/workflows\/[\w.-]+\.ya?ml$/.test(workflow) || !/^[\w.-]+$/.test(name) || !/^[\w.-]+\.json$/.test(file)) {
+    throw Error('invalid GATE_WORKFLOW, GATE_SELECTION_ARTIFACT or GATE_SELECTION_FILE');
+  }
+  // One probe per poll until the deadline. A call that fails (a 5xx) is retried at the
+  // next poll; only a failure at the deadline is the answer, and it is `error`.
+  const poll = async (deadline, probe) => {
+    for (;;) {
+      let failure = null;
+      try {
+        const value = probe();
+        if (value) return value;
+      } catch (error) { failure = error; }
+      if (io.now() - started >= deadline) {
+        if (failure) throw failure;
+        return null;
+      }
+      await io.sleep(CONSUME_POLL_MS);
+    }
+  };
+  let listed = null;
+  const found = await poll(CONSUME_RUN_MS, () => {
+    if (!listed) {
+      const pages = ghJson(io, ['api', `repos/${repository}/actions/workflows?per_page=100`, '--paginate', '--slurp']);
+      if (!Array.isArray(pages) || !pages.every(page => Array.isArray(page?.workflows))) throw Error('workflows: no list in the response');
+      const workflows = pages.flatMap(page => page.workflows);
+      // With no listed entry at the gate's path to tell it from, an unlisted id proves nothing.
+      if (!workflows.some(entry => entry.path === workflow)) return { unverifiable: true };
+      listed = new Set(workflows.map(entry => entry.id));
+    }
+    return pinnedGateRun(io, { repository, head, workflow, listed });
+  });
+  if (found?.unverifiable) return { reason: 'no_gate_run', detail: `no listed workflow at ${workflow}` };
+  if (!found) return { reason: 'no_gate_run' };
+  const run = found;
+  out.gate_run = run.id;
+  // Attempt 1's artifact only: a re-run of the gate re-publishes attempt 1's list.
+  const ready = await poll(CONSUME_TOTAL_MS, () => ghJson(io,
+    ['api', `repos/${repository}/actions/runs/${run.id}/artifacts?name=${name}&per_page=100`, '--paginate', '--slurp'])
+    .flatMap(page => page?.artifacts ?? []).some(artifact => artifact.name === name && !artifact.expired));
+  if (!ready) return { reason: 'no_gate_selection' };
+  const dir = io.temp();
+  let text;
+  try {
+    io.gh(['run', 'download', String(run.id), '--repo', repository, '--name', name, '--dir', dir]);
+    text = io.read(join(dir, file));
+  } finally {
+    try { io.remove(dir); } catch { /* a leftover temp dir changes nothing */ }
+  }
+  let value;
+  try { value = JSON.parse(text); } catch { return { reason: 'gate_selection_invalid', detail: 'not JSON' }; }
+  const why = gateSelectionProblem(value, { repository, head_sha: head, base_sha: base, head_ref: env.HEAD_REF ?? '',
+    gate_run: run.id, gate_attempt: 1, source_attempt: 1 });
+  if (why) return { reason: 'gate_selection_invalid', detail: `selection ${why}` };
+  if (value.mode === 'thin') return { mode: 'thin', reason: value.reason, thin_skip: skipValue(value.thin_skip) };
+  if (value.mode === 'shadow') return { reason: 'gate_shadow', would_skip: skipValue(value.thin_skip) };
+  return { reason: `gate:${value.reason}` };
+}
+
+export async function consume(io, env, { output } = {}) {
+  const started = io.now();
+  const out = { mode: 'full', reason: '', gate_run: null, thin_skip: '' };
+  try {
+    Object.assign(out, await consumeCore(io, env, out, started));
+  } catch (error) {
+    Object.assign(out, { mode: 'full', reason: 'error', thin_skip: '', detail: cause(error) });
+  }
+  if (out.mode !== 'thin') out.thin_skip = '';
+  const waited = Math.max(0, Math.round((io.now() - started) / 1000));
+  const line = `queue-thin: mode=${out.mode} reason=${out.reason} gate_run=${logValue(out.gate_run)} waited_s=${waited} ` +
+    `thin_skip=${logValue(out.thin_skip)}${out.would_skip === undefined ? '' : ` would_skip=${logValue(out.would_skip)}`}` +
+    `${out.detail === undefined ? '' : ` detail=${logValue(out.detail)}`}`;
+  try { io.stdout(line); } catch { /* the outputs below still decide */ }
+  if (output) {
+    try { io.append(output, `thin_skip=${out.thin_skip}\nselection_mode=${out.mode}\nselection_reason=${out.reason}\n`); } catch (error) {
+      // No outputs means thin_skip is '' downstream: everything runs.
+      try { io.stderr(`queue-thin: outputs not written: ${firstLine(error)}`); } catch { /* nothing left to tell */ }
+    }
+  }
+  return 0;
+}
+
 export function runCLI(io, args, env) {
+  if (args[0] === 'consume') return consume(io, env, { output: env.GITHUB_OUTPUT });
   if (args[0] === 'record') return record(io, { event: env.EVENT_NAME, ciSuccess: env.CI_SUCCESS_RESULT,
     headSha: env.HEAD_SHA, mergeSha: env.MERGE_SHA, pr: env.PR_NUMBER, runId: env.GITHUB_RUN_ID,
     runAttempt: env.GITHUB_RUN_ATTEMPT, selection: JSON.parse(env.FULL_SELECTION) });
-  if (args[0] !== 'shadow') throw Error('Usage: queue-selection.mjs record|shadow');
+  if (args[0] !== 'shadow') throw Error('Usage: queue-selection.mjs record|shadow|consume');
   const input = { event: env.EVENT_NAME, headRef: env.HEAD_REF, headSha: env.HEAD_SHA, baseSha: env.BASE_SHA, full: {} };
   try {
     input.full = JSON.parse(env.FULL_SELECTION);
@@ -439,6 +662,7 @@ export function runCLI(io, args, env) {
   return shadow(io, input, { output: env.GITHUB_OUTPUT, summary: env.GITHUB_STEP_SUMMARY });
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try { runCLI(createIO(), process.argv.slice(2), process.env); }
-  catch (error) { process.stderr.write(`queue-selection: ${String(error.message)}\n`); process.exitCode = 1; }
+  // consume returns a promise; record and shadow return a value or throw.
+  Promise.resolve().then(() => runCLI(createIO(), process.argv.slice(2), process.env))
+    .catch(error => { process.stderr.write(`queue-selection: ${String(error.message)}\n`); process.exitCode = 1; });
 }

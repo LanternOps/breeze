@@ -15,7 +15,7 @@ cleanup from the verify-email completion response.
 ## Setup
 ```bash
 cp live-signup/.env.example live-signup/.env   # fill RESEND_API_KEY + SYNTHETIC_TEST_TOKEN
-cd e2e-tests && pnpm install --ignore-workspace && npx playwright install chromium
+cd e2e-tests && npm ci && npx playwright install chromium
 ```
 `SYNTHETIC_TEST_TOKEN` must match the `SYNTHETIC_TEST_TOKEN` set on each region's API.
 

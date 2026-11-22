@@ -29,6 +29,13 @@
  *       library tagging in config delivery;
  *     - `software_compliance_status`: remediation in flight for the old
  *       install blocks auto-remediation; the worker re-derives the rest.
+ *     - `device_oem_update_status`: the old install's vendor tool version,
+ *       owed reboot and armed not-returned monitor (#11065); the next run
+ *       rebuilds the row, and run history stays in `device_commands`.
+ *       Alerts are history (§5.1), so an open not-returned alert stays open
+ *       for a person to resolve. `takeover_state` has no writer yet; the
+ *       release sweep (#11065 W07) must decide whether a same-OS reattach
+ *       keeps it before it writes one.
  * - Interactive sessions the old OS reported as active are closed.
  *
  * Kept as history: inventory projections that every report replaces (disks,
@@ -51,6 +58,8 @@ export const installStateHandler: BoundaryHandler = {
     'peripheral_policy_device_states',
     'device_software_inventory_state',
     'device_time_status',
+    'device_wake_status',
+    'device_oem_update_status',
     'device_filesystem_scan_state',
     'onedrive_device_state',
     'software_compliance_status',
@@ -88,6 +97,10 @@ export const installStateHandler: BoundaryHandler = {
       DELETE FROM device_software_inventory_state WHERE device_id = ${d}::uuid RETURNING device_id`));
     const timeStatus = rowCount(await db.execute(sql`
       DELETE FROM device_time_status WHERE device_id = ${d}::uuid RETURNING device_id`));
+    const wakeStatus = rowCount(await db.execute(sql`
+      DELETE FROM device_wake_status WHERE device_id = ${d}::uuid RETURNING device_id`));
+    const oemUpdateStatus = rowCount(await db.execute(sql`
+      DELETE FROM device_oem_update_status WHERE device_id = ${d}::uuid RETURNING device_id`));
     const scanState = rowCount(await db.execute(sql`
       DELETE FROM device_filesystem_scan_state WHERE device_id = ${d}::uuid RETURNING device_id`));
     const onedrive = rowCount(await db.execute(sql`
@@ -110,6 +123,8 @@ export const installStateHandler: BoundaryHandler = {
       'peripheral_policy_device_states.reset': peripheral,
       'device_software_inventory_state.deleted': softwareGate,
       'device_time_status.deleted': timeStatus,
+      'device_wake_status.deleted': wakeStatus,
+      'device_oem_update_status.deleted': oemUpdateStatus,
       'device_filesystem_scan_state.deleted': scanState,
       'onedrive_device_state.deleted': onedrive,
       'software_compliance_status.deleted': compliance,

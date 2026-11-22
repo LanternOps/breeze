@@ -3,7 +3,46 @@ package websocket
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
+
+// #11840: the remaining-time form of the deadlines must reach the caller,
+// together with the receipt reading it is measured from.
+func TestHandleRevocationLeaseMessageCarriesRemainingDurations(t *testing.T) {
+	var got RevocationLeaseMessage
+	c := &Client{OnRevocationLease: func(msg RevocationLeaseMessage) { got = msg }}
+	raw, err := json.Marshal(map[string]any{
+		"type":             "revocation_lease",
+		"sessionId":        "s1",
+		"expiresAt":        1234,
+		"expiresInMs":      60000,
+		"hardDeadline":     5678,
+		"hardDeadlineInMs": 3600000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	c.handleRevocationLeaseMessage("revocation_lease", raw)
+	after := time.Now()
+
+	if got.ExpiresInMs != 60000 || got.HardDeadlineInMs != 3600000 {
+		t.Fatalf("remaining durations not carried: %#v", got)
+	}
+	if got.ExpiresAtUnixMs != 1234 || got.HardDeadlineUnixMs != 5678 {
+		t.Fatalf("absolute deadlines must still be carried for older consumers: %#v", got)
+	}
+	if got.ReceivedAt.Before(before) || got.ReceivedAt.After(after) {
+		t.Fatalf("ReceivedAt = %v, want the moment the frame was read", got.ReceivedAt)
+	}
+
+	// An older API sends no remaining form: zero, so the absolute form governs.
+	raw, _ = json.Marshal(map[string]any{"type": "revocation_lease", "sessionId": "s2", "expiresAt": 1234})
+	c.handleRevocationLeaseMessage("revocation_lease", raw)
+	if got.ExpiresInMs != 0 || got.HardDeadlineInMs != 0 {
+		t.Fatalf("an older answer must carry no remaining durations: %#v", got)
+	}
+}
 
 // The renewal answer is also the agent's fence resync channel, so
 // the client must surface the generation/phase fields and must no longer

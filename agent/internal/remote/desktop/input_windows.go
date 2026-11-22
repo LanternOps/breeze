@@ -21,6 +21,7 @@ var (
 	getSystemMetrics = user32.NewProc("GetSystemMetrics")
 	vkKeyScanW       = user32.NewProc("VkKeyScanW")
 	getKeyState      = user32.NewProc("GetKeyState")
+	getAsyncKeyState = user32.NewProc("GetAsyncKeyState")
 )
 
 const (
@@ -172,6 +173,16 @@ func (h *WindowsInputHandler) refreshScreenMetrics() {
 	h.cachedVX, h.cachedVY = int(vx), int(vy)
 	h.cachedCW, h.cachedCH = int(cw), int(ch)
 	h.metricsValid = h.cachedCW > 0 && h.cachedCH > 0
+}
+
+// RefreshScreenGeometry re-reads the virtual-screen metrics after a display
+// mode change (#11754). Without it a click (SendMouseClick only reads them
+// when unset) or a drag already in progress normalises against the old
+// virtual-screen size until the next mouse-down.
+func (h *WindowsInputHandler) RefreshScreenGeometry() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.refreshScreenMetrics()
 }
 
 // screenToAbsolute converts screen coordinates to the normalized 0–65535
@@ -387,6 +398,17 @@ func (h *WindowsInputHandler) sendModifierKey(mod string, up bool) {
 	if ret == 0 {
 		slog.Debug("SendInput failed", "flags", ki.dwFlags)
 	}
+}
+
+// ResetModifierState releases every modifier key Windows reports down:
+// "Release stuck keys" for a modifier no held record names (issue #9595).
+func (h *WindowsInputHandler) ResetModifierState() error {
+	h.ensureInputDesktop()
+	releases := winStuckModifiers(func(vk uint16) bool {
+		r, _, _ := getAsyncKeyState.Call(uintptr(vk))
+		return r&0x8000 != 0
+	})
+	return releaseStuckModifiers(releases, sendKeybdInput)
 }
 
 // vkToScanCode uses MapVirtualKeyW to derive the hardware scan code for a VK.

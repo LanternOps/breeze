@@ -1,34 +1,44 @@
 name: Tauri apt cache
 description: >
-  Restore (never save; the seed workflow on main saves) the cached .deb set for the Tauri
-  system dependencies. The single place the cache key is computed, shared by
-  the CI rust-check job (restore) and the seeding workflow (seed). See #9753.
+  Restore (never save; the seed workflow on main saves) the cached apt closure for
+  the Tauri system dependencies: .debs plus the indexes they came from. The single
+  place the cache key is computed, shared by the CI rust-check job (restore) and
+  the seeding workflow (seed). See #9753, #9847.
+inputs:
+  closure:
+    description: >
+      Closure id from `tauri-apt.sh plan`, passed by the seed to look for that exact
+      entry. Left empty by CI, which takes the newest closure through restore-keys.
+    required: false
+    default: ''
 outputs:
   cache-hit:
-    description: "'true' when the exact key was restored"
+    description: "'true' when the exact key was restored (only possible with a closure id)"
     value: ${{ steps.cache.outputs.cache-hit }}
   dir:
-    description: Directory holding the cached .deb files
+    description: Directory holding the restored closure (archives/ and lists/)
     value: ${{ runner.temp }}/tauri-debs
 runs:
   using: composite
   steps:
     # ImageOS is a runner env var, not an expression-context value, so surface
     # it through a step output for the cache key. The key deliberately omits
-    # ImageVersion: `ubuntu-latest` serves several image patch levels at once,
-    # the seed job saves under only the one it lands on, and a key that
-    # includes the patch level makes every run on another image miss (#9847).
-    # The .deb closure depends on the distro release (ImageOS) and the package
-    # list, not the runner patch level. If a cached closure ever fails to
-    # install on a different image, CI falls back to the network path.
+    # ImageVersion: `ubuntu-latest` serves several image patch levels at once and
+    # the seed runs on only one of them. The closure itself carries no dependency
+    # on the seed's image (`tauri-apt.sh` resolves against an empty dpkg status).
     - name: Resolve runner image for apt cache key
       id: image
       shell: bash
       run: echo "id=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
 
+    # Keys are immutable, so a fixed key would freeze the closure on the day it was
+    # first saved while images keep moving past it. Each closure gets its own entry
+    # (the id hashes every package version) and restore-keys takes the newest.
     - name: Cache Tauri apt packages
       id: cache
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/tauri-debs
-        key: tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}
+        key: tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}-${{ inputs.closure }}
+        restore-keys: |
+          tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}-

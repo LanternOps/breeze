@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assertInTransaction,
   hasDbAccessContext,
+  withDbTransactionIfHeld,
   __runInDbContextForTests as runInDbContextForTests,
 } from './index';
 
@@ -29,5 +30,15 @@ describe('assertInTransaction (#3205 W04)', () => {
     runInDbContextForTests(() => {
       expect(() => assertInTransaction('generateDueInvoice')).not.toThrow();
     });
+  });
+});
+
+describe('withDbTransactionIfHeld (#11225)', () => {
+  it('runs fn with no context held, and opens none', async () => {
+    await expect(withDbTransactionIfHeld(async () => hasDbAccessContext())).resolves.toBe(false);
+  });
+
+  it('propagates a failure for the caller to catch', async () => {
+    await expect(withDbTransactionIfHeld(async () => { throw new Error('boom'); })).rejects.toThrow('boom');
   });
 });

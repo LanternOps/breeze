@@ -32,6 +32,8 @@ export const securityProviderEnum = pgEnum('security_provider', [
   'withsecure',
   // CylancePROTECT / Aurora Endpoint Defense (#9178).
   'cylance',
+  // Trend Micro Apex One / Worry-Free / Vision One (#8171).
+  'trend_micro',
   'other',
   // Failed collection / not collected (#8538) — distinct from 'other', which
   // is a real attribution for an unmapped product.

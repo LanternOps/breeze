@@ -1,0 +1,7 @@
+{
+  "_source": "doc-derived: a consumer Lenovo has root\\wmi but no Lenovo_BiosSetting class; Get-CimInstance reports HRESULT 0x80041010 (WBEM_E_INVALID_CLASS).",
+  "settings": [],
+  "passwordState": null,
+  "classes": [],
+  "error": {"step": "settings", "fqid": "HRESULT 0x80041010,Microsoft.Management.Infrastructure.CimCmdlets.GetCimInstanceCommand", "native": "InvalidClass"}
+}

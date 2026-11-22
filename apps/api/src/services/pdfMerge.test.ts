@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import { mergeUploadedContractPdfs, PdfMergeError, MAX_MERGED_PAGES } from './pdfMerge';
+import { pdfWithExpandingStreams } from './__fixtures__/expandingPdf';
 
 async function makePdf(pageCount: number): Promise<Buffer> {
   const doc = await PDFDocument.create();
@@ -80,6 +81,30 @@ describe('mergeUploadedContractPdfs', () => {
     await expect(
       mergeUploadedContractPdfs(main, [{ afterMarker: 'MSA — attached below', data: encrypted }]),
     ).rejects.toMatchObject({ status: 422, code: 'CONTRACT_PDF_UNREADABLE' });
+  });
+
+  it('throws a typed PdfMergeError when an upload inflates past the read limit', async () => {
+    const main = await makePdf(1);
+    const upload = pdfWithExpandingStreams([{ inflatesTo: 64 * 1024 * 1024 }]);
+    await expect(
+      mergeUploadedContractPdfs(main, [{ afterMarker: 'MSA — attached below', data: upload }]),
+    ).rejects.toMatchObject({ status: 422, code: 'CONTRACT_PDF_TOO_LARGE' });
+  });
+
+  it('throws a typed PdfMergeError when the main document inflates past the read limit', async () => {
+    const main = pdfWithExpandingStreams([{ inflatesTo: 64 * 1024 * 1024 }]);
+    await expect(
+      mergeUploadedContractPdfs(main, [{ afterMarker: 'MSA — attached below', data: await makePdf(1) }]),
+    ).rejects.toMatchObject({ status: 422, code: 'CONTRACT_PDF_TOO_LARGE' });
+  });
+
+  it('merges uploads that use object streams', async () => {
+    const main = await makePdf(1);
+    const merged = await mergeUploadedContractPdfs(main, [
+      { afterMarker: 'MSA — attached below', data: await makePdf(2) },
+      { afterMarker: 'SOW — attached below', data: pdfWithExpandingStreams([{ inflatesTo: 1024 * 1024 }]) },
+    ]);
+    expect(await pageCountOf(merged)).toBe(4);
   });
 
   it('throws a typed PdfMergeError when the aggregate page count exceeds the cap', async () => {

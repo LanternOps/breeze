@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { selfHostAllowsPrivateNetwork } from '../config/env';
@@ -19,8 +19,11 @@ import {
 } from '../services/monitoringIntegrationTest';
 import { PERMISSIONS } from '../services/permissions';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
+import { sendDiscordTestNotification } from '../services/chatIntegrationTest';
 import { safeFetch } from '../services/urlSafety';
 import { urlOriginChanged } from '../services/credentialOriginBinding';
+import { rateLimiter } from '../services/rate-limit';
+import { getRedis } from '../services/redis';
 
 export const integrationRoutes = new Hono();
 const requireIntegrationRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -120,6 +123,74 @@ function requestedOrgId(c: { req: { query: (key: string) => string | undefined }
   return c.req.query('orgId');
 }
 
+/**
+ * #12102: a test action makes one outbound request (up to 15 s) from the API's
+ * shared egress address. Repeated failing tests (a revoked webhook, a dead
+ * monitoring host) can get that address throttled or blocked by the provider,
+ * which breaks every other tenant's delivery to it. Each test is charged to a
+ * per-user and a per-org bucket; the limits leave room for a person clicking
+ * Test a few times in a row. Plain saves are not throttled (no outbound call).
+ */
+const TEST_ACTION_WINDOW_SECONDS = 60;
+const TEST_ACTION_BUCKETS = [
+  { scope: 'user', limit: 5 },
+  { scope: 'org', limit: 10 },
+] as const;
+
+async function throttleTestAction(
+  c: Context,
+  orgId: string,
+  audit: { action: string; resourceName: string },
+): Promise<Response | null> {
+  const auth = c.get('auth') as AuthContext;
+  const redis = getRedis();
+  if (!redis) {
+    // rateLimiter fails closed without Redis. Say so rather than calling an
+    // outage "too many requests" (and auditing it as a throttled user).
+    writeRouteAudit(c, {
+      orgId,
+      action: audit.action,
+      resourceType: 'integration',
+      resourceName: audit.resourceName,
+      details: { outcome: 'throttle_unavailable' },
+    });
+    return c.json({
+      success: false,
+      error: 'Test notifications are temporarily unavailable. Try again shortly.',
+    }, 503);
+  }
+  for (const bucket of TEST_ACTION_BUCKETS) {
+    const subject = bucket.scope === 'user' ? auth.user.id : orgId;
+    // refundOnReject: a rejected click does not extend the wait, so honouring
+    // Retry-After works. Raw volume is still bounded by the global per-IP limit.
+    const rate = await rateLimiter(
+      redis,
+      `integration-test:${bucket.scope}:${subject}`,
+      bucket.limit,
+      TEST_ACTION_WINDOW_SECONDS,
+      1,
+      { refundOnReject: true },
+    );
+    if (!rate.allowed) {
+      const retryAfter = Math.max(1, Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000));
+      writeRouteAudit(c, {
+        orgId,
+        action: audit.action,
+        resourceType: 'integration',
+        resourceName: audit.resourceName,
+        details: { outcome: 'rate_limited', bucket: bucket.scope },
+      });
+      c.header('Retry-After', String(retryAfter));
+      return c.json({
+        success: false,
+        code: 'RATE_LIMITED',
+        error: `Too many test requests. Try again in ${retryAfter} seconds.`,
+      }, 429);
+    }
+  }
+  return null;
+}
+
 function protectSettings(
   body: Record<string, unknown>,
   existing: Record<string, unknown> | undefined,
@@ -183,13 +254,69 @@ for (const provider of ['slack', 'teams', 'discord'] as const) {
       orgResult.orgId,
     );
     if (!protectedBody.ok) return c.json({ error: protectedBody.error }, protectedBody.status);
-    const updated = { ...existing, [provider]: protectedBody.value };
-    communicationSettings.set(orgResult.orgId, updated);
 
+    // #12102: a test request exercises the submitted settings without saving
+    // them. It used to store the body (including `test: true` and an unsaved,
+    // possibly invalid URL) while auditing only `.test`; Save is the one
+    // action that persists, and it writes the `.save` audit row.
     if (body.test === true) {
-      return c.json({ success: true, message: `${provider} test notification queued.` });
+      // #12054: this used to answer "test notification queued." without
+      // sending or queueing anything. Report the outcome of a real attempt.
+      if (provider !== 'discord') {
+        // The Slack (workspace/channel) and Teams (app registration) fields
+        // stored here carry no webhook or bot token, so there is nothing a test
+        // could deliver to. Say so instead of claiming success.
+        const label = provider === 'slack' ? 'Slack' : 'Teams';
+        writeRouteAudit(c, {
+          orgId: orgResult.orgId,
+          action: `integration.${provider}.test`,
+          resourceType: 'integration',
+          resourceName: provider,
+          details: { outcome: 'unsupported' },
+        });
+        return c.json({
+          success: false,
+          error: `${label} test notifications cannot be sent from these settings. To deliver alerts to ${label}, `
+            + `add a ${label} notification channel in Settings > Notification Channels and test it there.`,
+        }, 422);
+      }
+
+      const webhook = openStoredIntegrationSecret(
+        protectedBody.value.webhookUrl,
+        `communication.${provider}`,
+        orgResult.orgId,
+        ['webhookUrl'],
+        'Discord webhook URL',
+      );
+      // Charged only when there is a webhook to send to, as /monitoring/test
+      // is charged only once its credentials resolve.
+      if (webhook.ok) {
+        const throttled = await throttleTestAction(c, orgResult.orgId, {
+          action: `integration.${provider}.test`,
+          resourceName: provider,
+        });
+        if (throttled) return throttled;
+      }
+      const result = webhook.ok
+        ? await sendDiscordTestNotification(webhook.value, { fetch: safeFetch })
+        : { ok: false as const, kind: 'invalid' as const, message: webhook.error };
+
+      writeRouteAudit(c, {
+        orgId: orgResult.orgId,
+        action: `integration.${provider}.test`,
+        resourceType: 'integration',
+        resourceName: provider,
+        details: { outcome: result.ok ? 'ok' : (!webhook.ok && webhook.unreadable ? 'secret_unreadable' : result.kind) },
+      });
+
+      if (!result.ok) {
+        return c.json({ success: false, error: result.message }, result.kind === 'unreachable' ? 502 : 400);
+      }
+      return c.json({ success: true, message: result.message });
     }
 
+    const updated = { ...existing, [provider]: protectedBody.value };
+    communicationSettings.set(orgResult.orgId, updated);
     writeRouteAudit(c, {
       orgId: orgResult.orgId,
       action: `integration.${provider}.save`,
@@ -282,7 +409,7 @@ function resolveMaskedMonitoringSecrets(
 
   const resolved: Record<string, unknown> = { ...config };
   for (const field of maskedTopLevelFields) {
-    const opened = openStoredMonitoringSecret(storedRecord[field], orgId, [provider, field], `${provider} ${field}`);
+    const opened = openStoredIntegrationSecret(storedRecord[field], 'monitoring', orgId, [provider, field], `${provider} ${field}`);
     if (!opened.ok) return opened;
     resolved[field] = opened.value;
   }
@@ -302,8 +429,9 @@ function resolveMaskedMonitoringSecrets(
           ? storedEndpoints.find((s) => !!s && typeof s === 'object' && (s as Record<string, unknown>).id === id)
           : undefined;
         const storedUrl = stored ? (stored as Record<string, unknown>).url : undefined;
-        const opened = openStoredMonitoringSecret(
+        const opened = openStoredIntegrationSecret(
           storedUrl,
+          'monitoring',
           orgId,
           ['webhooks', 'endpoints', `id:${JSON.stringify(id ?? '')}`, 'url'],
           'webhook endpoint URL',
@@ -318,8 +446,9 @@ function resolveMaskedMonitoringSecrets(
   return { ok: true, config: resolved };
 }
 
-function openStoredMonitoringSecret(
+function openStoredIntegrationSecret(
   sealed: unknown,
+  family: string,
   orgId: string,
   path: readonly string[],
   label: string,
@@ -331,7 +460,7 @@ function openStoredMonitoringSecret(
   // decryptSecret THROWS on an AAD mismatch, a retired key id or corrupt
   // ciphertext; it only returns null for an empty input, excluded above.
   try {
-    const plaintext = decryptSecret(sealed, { aad: integrationSettingsSecretAad('monitoring', orgId, path) });
+    const plaintext = decryptSecret(sealed, { aad: integrationSettingsSecretAad(family, orgId, path) });
     if (!plaintext) return { ok: false, error: `Stored ${label} could not be read; re-enter it and save` };
     return { ok: true, value: plaintext };
   } catch (err) {
@@ -341,7 +470,7 @@ function openStoredMonitoringSecret(
     // rotation, or a swapped blob). Name and message only — never the value.
     const name = err instanceof Error ? err.name : 'Error';
     const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[integrations] monitoring secret ${path.join('.')} unreadable for org ${orgId}: ${name}: ${message}`);
+    console.warn(`[integrations] ${family} secret ${path.join('.')} unreadable for org ${orgId}: ${name}: ${message}`);
     return { ok: false, error: `Stored ${label} could not be read; re-enter it and save`, unreadable: true };
   }
 }
@@ -381,6 +510,12 @@ integrationRoutes.post('/monitoring/test', requireScope('organization', 'partner
     }
     return c.json({ error: secrets.error }, 400);
   }
+
+  const throttled = await throttleTestAction(c, orgResult.orgId, {
+    action: 'integration.monitoring.test',
+    resourceName: provider,
+  });
+  if (throttled) return throttled;
 
   const result = await testMonitoringProvider(
     { provider, config: secrets.config, endpointId, allowPrivateNetwork: selfHostAllowsPrivateNetwork() },

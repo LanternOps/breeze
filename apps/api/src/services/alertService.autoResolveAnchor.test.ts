@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   select: vi.fn(), update: vi.fn(), trigger: vi.fn(), recovery: vi.fn(),
   closed: vi.fn(), open: vi.fn(), advance: vi.fn(), observation: vi.fn(), capture: vi.fn(),
 }));
+vi.mock('./alertLifecycle/resolve', async (importOriginal) =>
+  (await import('../testUtils/alertLifecycleMock')).legacyLifecycleModule(await importOriginal()));
 vi.mock('../db', () => ({ db: { select: mocks.select, update: mocks.update } }));
 vi.mock('./alertLifecycle/cursor', async () => ({
   ...await vi.importActual<typeof import('./alertLifecycle/cursor')>('./alertLifecycle/cursor'),

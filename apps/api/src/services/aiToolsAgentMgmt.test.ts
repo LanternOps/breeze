@@ -430,6 +430,29 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
     expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
 
+  it('refuses a held Mac with the floor in the error (#12169)', async () => {
+    vi.mocked(resolvePinnedUpgradeTarget).mockImplementation((async (args: {
+      deviceOs: { platform: string; reportedOsVersion: string | null; storedOsVersion: string | null };
+      onOsHold?: (hold: unknown) => void;
+    }) => {
+      expect(args.deviceOs).toEqual({ platform: 'macos', reportedOsVersion: null, storedOsVersion: 'darwin 12.7.6' });
+      args.onOsHold?.({
+        component: 'agent', blockedVersion: '0.140.0', reason: 'os_below_minimum', requiredOs: '13.0', reportedOs: '12.7.6',
+      });
+      return null;
+    }) as never);
+    mockSelectSequence([
+      [onlineDeviceRow()],
+      [{ id: DEVICE_ID }],
+      [{ ...deviceOrgRow(DEVICE_ID, ORG_ID), osType: 'macos', architecture: 'arm64', osVersion: 'darwin 12.7.6' }],
+    ]);
+
+    const result = JSON.parse(await tool.handler({ deviceIds: [DEVICE_ID] }, makeAuth()));
+
+    expect(result.errors[DEVICE_ID]).toMatch(/macOS 12\.7\.6 is below macOS 13\.0.*0\.140\.0/);
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
+  });
+
   // W04-D13 — the AI makes no release decision: an explicit targetVersion is
   // accepted for a device ONLY when it equals what the default path resolves.
   const sanctionedMsg = /not this device's sanctioned version/i;

@@ -5,10 +5,11 @@ package terminal
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"syscall"
 	"unsafe"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // start starts the PTY session (Unix implementation using native pty)
@@ -29,7 +30,7 @@ func (s *Session) start() error {
 	// Create the shell command as a login shell (-l) so that
 	// profile scripts are sourced and readline/line editing is
 	// fully initialised — matching what SSH and terminal emulators do.
-	cmd := exec.Command(s.Shell, "-l")
+	cmd := procspawn.Command(s.Shell, "-l")
 
 	// Build environment. Systemd services have a very minimal env, so
 	// ensure HOME/USER/LOGNAME/SHELL are set — bash/zsh need these to
@@ -75,6 +76,7 @@ func (s *Session) start() error {
 		Setsid:  true,
 		Setctty: true,
 	}
+	procspawn.Prepare(cmd)
 
 	// Start the command
 	if err := cmd.Start(); err != nil {

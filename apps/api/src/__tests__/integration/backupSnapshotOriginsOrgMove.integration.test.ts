@@ -23,6 +23,7 @@ import './setup';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, afterAll } from 'vitest';
+import { Readable } from 'node:stream';
 import { Hono } from 'hono';
 import { eq, sql } from 'drizzle-orm';
 import postgres from 'postgres';
@@ -153,11 +154,11 @@ async function seed() {
     }],
   ]);
   const deps = {
-    fetchManifestBytes: async ({ key }: { key: string }) => {
+    openManifest: async ({ key }: { key: string }) => {
       const id = key.split('/')[1]!;
       const manifest = manifests.get(id);
       if (!manifest) throw new Error(`no manifest for ${key}`);
-      return new TextEncoder().encode(JSON.stringify(manifest));
+      return Readable.from([Buffer.from(JSON.stringify(manifest), 'utf8')]);
     },
   };
 

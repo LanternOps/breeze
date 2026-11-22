@@ -363,6 +363,24 @@ func handleScheduleReboot(h *Heartbeat, cmd Command) tools.CommandResult {
 	var promptIgnored []string
 	opts.Prompt, promptIgnored = rebootPromptTextFromPayload(cmd.Payload)
 
+	// Deadline action (#11065 W06). Absent is today's force. Strict, unlike the
+	// prompt text: an action this agent does not know must fail the command,
+	// never quietly become "force the restart at the deadline". A hold also
+	// needs the window close itself, not the now+delay fallback.
+	rawAction, actionPresent := cmd.Payload["deadlineAction"]
+	actionStr, isString := rawAction.(string)
+	if actionPresent && !isString {
+		return tools.NewErrorResult(fmt.Errorf("deadlineAction must be a string, got %T", rawAction), time.Since(start).Milliseconds())
+	}
+	action, err := patching.ParseDeadlineAction(actionStr, actionPresent)
+	if err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if action == patching.DeadlineActionHold && tools.GetPayloadString(cmd.Payload, "deadline", "") == "" {
+		return tools.NewErrorResult(fmt.Errorf("deadlineAction hold needs a deadline"), time.Since(start).Milliseconds())
+	}
+	opts.DeadlineAction = action
+
 	if err := h.rebootMgr.ScheduleWithOptions(delay, deadline, reason, source, opts); err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { DATASET_ADAPTERS, EXPORT_DATASETS } from './aiToolsExportDatasets';
+import type { AnalysisSensitiveGate } from '../db/schema/aiAgents';
 
 const searchFleetLogs = vi.fn();
 vi.mock('./logSearch', () => ({ searchFleetLogs: (...a: unknown[]) => searchFleetLogs(...a) }));
@@ -51,27 +52,10 @@ vi.mock('./reportGenerationService', () => ({
 }));
 vi.mock('./aiToolsFleet', () => ({ aiLiveReportAuthority: async () => ({ scope: { kind: 'live_v1' } }) }));
 
-const readCustomFieldDefinitions = vi.fn(async () => [] as Array<Record<string, unknown>>);
-vi.mock('./aiToolsDevice', () => ({
-  readCustomFieldDefinitions: () => readCustomFieldDefinitions(),
-  customFieldDefinitionConditions: () => [],
-}));
-
-const verifyDeviceAccess = vi.fn(async (deviceId: string) =>
-  ({ device: { id: deviceId, hostname: `host-${deviceId}`, customFields: { tier: 'gold' } } }) as
-    | { device: { id: string; hostname: string; customFields: Record<string, unknown> } }
-    | { error: string });
-vi.mock('./aiTools', () => ({ verifyDeviceAccess: (id: string) => verifyDeviceAccess(id) }));
-
-const readDeviceFindings = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
-const readCatalog = vi.fn(async (..._a: unknown[]) => [] as Array<Record<string, unknown>>);
-const readFindingSoftware = vi.fn(async (..._a: unknown[]) => new Map<string, unknown>());
-vi.mock('./aiToolsVulnerability', () => ({
-  readDeviceFindings: (...a: unknown[]) => readDeviceFindings(...a),
-  readCatalog: (...a: unknown[]) => readCatalog(...a),
-  readFindingSoftware: (...a: unknown[]) => readFindingSoftware(...a),
-  normStatus: (v: unknown) => (typeof v === 'string' ? v : 'open'),
-}));
+/** W02: every request carries the run's frozen grants and a fresh notes array (adapters push into it). */
+function reqDefaults() {
+  return { exportGrants: { datasets: [...EXPORT_DATASETS] as string[], sensitiveGates: [] as AnalysisSensitiveGate[] }, notes: [] as string[] };
+}
 
 const auth = { orgId: 'org-1', accessibleOrgIds: ['org-1'], allowedSiteIds: null, canAccessSite: undefined } as never;
 const siteAuth = { orgId: 'org-1', accessibleOrgIds: ['org-1'], allowedSiteIds: ['site-1'], canAccessSite: () => true } as never;
@@ -86,22 +70,18 @@ describe('dataset adapters', () => {
     generateDeviceInventoryReport.mockReset();
     readDeviceInventoryRows.mockClear();
     readSoftwareInventoryRows.mockClear();
-    readCustomFieldDefinitions.mockReset();
-    readCustomFieldDefinitions.mockResolvedValue([]);
     dbSelect.mockReset();
-    verifyDeviceAccess.mockClear();
-    readDeviceFindings.mockReset();
-    readDeviceFindings.mockResolvedValue([]);
-    readCatalog.mockReset();
-    readCatalog.mockResolvedValue([]);
-    readFindingSoftware.mockReset();
-    readFindingSoftware.mockResolvedValue(new Map());
   });
 
   it('covers every dataset named in the spec', () => {
     expect(Object.keys(DATASET_ADAPTERS).sort()).toEqual([...EXPORT_DATASETS].sort());
     expect(EXPORT_DATASETS).toContain('event_logs');
     expect(EXPORT_DATASETS).toContain('custom_fields');
+  });
+
+  it('EXPORT_DATASET_REQUIREMENTS has exactly one entry per EXPORT_DATASETS member', async () => {
+    const { EXPORT_DATASET_REQUIREMENTS } = await import('./aiToolsExportPermissions');
+    expect(Object.keys(EXPORT_DATASET_REQUIREMENTS).sort()).toEqual([...EXPORT_DATASETS].sort());
   });
 
   it('every adapter declares the tier of its source tool and never above 2', () => {
@@ -116,7 +96,7 @@ describe('dataset adapters', () => {
       allowedDeviceIds: ['d1', 'd2'], allowedSiteIds: ['site-1'], canAccessSite: (id: string) => id === 'site-1',
     } as never;
     const request = { auth: agentAuth, orgId: 'org-1', filters: {}, deviceIds: null,
-      runTargets: ['d1', 'd3'], siteId: 'site-1', pageSize: 500 };
+      runTargets: ['d1', 'd3'], siteId: 'site-1', pageSize: 500, ...reqDefaults() };
 
     it('uses scoped rows without human report authority and intersects every device ceiling', async () => {
       const pager = await DATASET_ADAPTERS[dataset].createPager({ ...request, deviceIds: ['d1', 'd2', 'd3'] });
@@ -172,7 +152,7 @@ describe('dataset adapters', () => {
       .mockResolvedValueOnce({ results: [{ log: { id: 'b', timestamp: new Date(0), level: 'info', category: 'system', source: 's', eventId: '2', message: 'm2', deviceId: 'd1' }, device: null, site: null }], nextCursor: null, hasMore: false });
 
     const pager = await DATASET_ADAPTERS.event_logs.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
+      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500, ...reqDefaults(),
     });
 
     const first = await pager(null);
@@ -188,21 +168,32 @@ describe('dataset adapters', () => {
   it('event_logs passes the requested device set through to the builder', async () => {
     searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
     const pager = await DATASET_ADAPTERS.event_logs.createPager({
-      auth, orgId: 'org-1', filters: { level: ['error'] }, deviceIds: ['d1', 'd2'], runTargets: null, siteId: null, pageSize: 500,
+      auth, orgId: 'org-1', filters: { level: ['error'] }, deviceIds: ['d1', 'd2'], runTargets: null, siteId: null, pageSize: 500, ...reqDefaults(),
     });
     await pager(null);
     expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ deviceIds: ['d1', 'd2'], level: ['error'] });
   });
 
-  it('event_logs resolves and passes canReadSensitiveCategory through to the builder', async () => {
-    canReadSensitiveEventLogCategory.mockResolvedValue(true);
+  it('event_logs reads security rows only when the run holds the frozen security_events gate, and notes it otherwise', async () => {
     searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
-    const pager = await DATASET_ADAPTERS.event_logs.createPager({
-      auth, orgId: 'org-1', filters: { category: ['security'] }, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
-    });
-    await pager(null);
-    expect(canReadSensitiveEventLogCategory).toHaveBeenCalledWith(auth);
+    const base = { auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500 };
+    const heldReq = { ...base, exportGrants: { datasets: ['event_logs'], sensitiveGates: ['security_events' as const] }, notes: [] as string[] };
+    await (await DATASET_ADAPTERS.event_logs.createPager(heldReq))(null);
     expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ canReadSensitiveCategory: true });
+    expect(heldReq.notes).toEqual([]);
+    const notHeldReq = { ...base, exportGrants: { datasets: ['event_logs'], sensitiveGates: [] as AnalysisSensitiveGate[] }, notes: [] as string[] };
+    await (await DATASET_ADAPTERS.event_logs.createPager(notHeldReq))(null);
+    expect(searchFleetLogs.mock.calls[1]![1]).toMatchObject({ canReadSensitiveCategory: false });
+    expect(notHeldReq.notes).toEqual(['Security-category event logs are not in this export: this run does not hold the security_events gate (devices:execute).']);
+    // The RBAC check always denied a run principal (it has no role); the frozen gate replaces it.
+    expect(canReadSensitiveEventLogCategory).not.toHaveBeenCalled();
+  });
+
+  it('event_logs notes nothing when it exports nothing (an empty device set)', async () => {
+    resolveSiteAllowedDeviceIds.mockResolvedValue([]);
+    const r = { auth: siteAuth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500, ...reqDefaults() };
+    expect(await (await DATASET_ADAPTERS.event_logs.createPager(r))(null)).toEqual({ rows: [], nextCursor: null });
+    expect(r.notes).toEqual([]);
   });
 
   it('event_logs surfaces a clean pager error instead of an uncaught throw when a caller without the permission requests only the sensitive category', async () => {
@@ -210,7 +201,7 @@ describe('dataset adapters', () => {
     const { SensitiveEventLogAccessError } = await import('./eventLogSensitivity');
     searchFleetLogs.mockImplementation(() => { throw new SensitiveEventLogAccessError(); });
     const pager = await DATASET_ADAPTERS.event_logs.createPager({
-      auth, orgId: 'org-1', filters: { category: ['security'] }, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
+      auth, orgId: 'org-1', filters: { category: ['security'] }, deviceIds: null, runTargets: null, siteId: null, pageSize: 500, ...reqDefaults(),
     });
     await expect(pager(null)).rejects.toThrow(SensitiveEventLogAccessError);
   });
@@ -224,7 +215,7 @@ describe('dataset adapters', () => {
       nextCursor: null, hasMore: false,
     });
     const pager = await DATASET_ADAPTERS.event_logs.createPager({
-      auth: siteAuth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
+      auth: siteAuth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500, ...reqDefaults(),
     });
     const page = await pager(null);
     expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: ['d-in-scope'] });
@@ -234,7 +225,7 @@ describe('dataset adapters', () => {
   it('event_logs yields an empty artifact when a site-restricted caller has zero in-scope devices', async () => {
     resolveSiteAllowedDeviceIds.mockResolvedValue([]);
     const pager = await DATASET_ADAPTERS.event_logs.createPager({
-      auth: siteAuth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
+      auth: siteAuth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500, ...reqDefaults(),
     });
     const page = await pager(null);
     expect(page).toEqual({ rows: [], nextCursor: null });
@@ -250,7 +241,7 @@ describe('dataset adapters', () => {
       rowCount: 1,
     });
     const pager = await DATASET_ADAPTERS.device_inventory.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 500,
+      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 500, ...reqDefaults(),
     });
     const page = await pager(null);
     expect(generateDeviceInventoryReport.mock.calls[0]![1]).toMatchObject({
@@ -265,7 +256,7 @@ describe('dataset adapters', () => {
       rowCount: 1,
     });
     const pager = await DATASET_ADAPTERS.device_inventory.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: ['d1'], siteId: null, pageSize: 500,
+      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: ['d1'], siteId: null, pageSize: 500, ...reqDefaults(),
     });
     const page = await pager(null);
     expect(generateDeviceInventoryReport.mock.calls[0]![1]).toMatchObject({
@@ -294,26 +285,12 @@ describe('dataset adapters', () => {
     });
 
     const pager = await DATASET_ADAPTERS.device_inventory.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: ['device-a'], runTargets: null, siteId: null, pageSize: 500,
+      auth, orgId: 'org-1', filters: {}, deviceIds: ['device-a'], runTargets: null, siteId: null, pageSize: 500, ...reqDefaults(),
     });
     const page = await pager(null);
 
     expect(page.rows).toHaveLength(1);
     expect(page.rows[0]).toMatchObject({ deviceId: 'device-a', hostname: 'shared-host' });
-  });
-
-  it('custom_fields includes partner-wide definitions via the shared reader', async () => {
-    readCustomFieldDefinitions.mockResolvedValue([
-      { id: 'def-partner', name: 'Contract tier', fieldKey: 'tier', type: 'text' },
-    ]);
-    const pager = await DATASET_ADAPTERS.custom_fields.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 500,
-    });
-    const page = await pager(null);
-    expect(readCustomFieldDefinitions).toHaveBeenCalledTimes(1);
-    expect(page.rows).toEqual([
-      expect.objectContaining({ deviceId: 'd1', fieldKey: 'tier', fieldName: 'Contract tier', value: 'gold' }),
-    ]);
   });
 
   // --- agent_logs: orders and pages on the RECEIPT-time keyset (created_at,
@@ -334,7 +311,7 @@ describe('dataset adapters', () => {
   it('agent_logs orders by (created_at, id) — the same keyset search_agent_logs and its index use', async () => {
     const orderBy = mockAgentLogsSelect([]);
     const pager = await DATASET_ADAPTERS.agent_logs.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
+      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500, ...reqDefaults(),
     });
     await pager(null);
     const dialect = new PgDialect();
@@ -352,7 +329,7 @@ describe('dataset adapters', () => {
     };
     mockAgentLogsSelect([row]);
     const pager = await DATASET_ADAPTERS.agent_logs.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 1,
+      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 1, ...reqDefaults(),
     });
 
     const first = await pager(null);
@@ -367,211 +344,11 @@ describe('dataset adapters', () => {
   it('agent_logs narrows a site-restricted caller to its in-scope devices, empty when none', async () => {
     resolveSiteAllowedDeviceIds.mockResolvedValue([]);
     const pager = await DATASET_ADAPTERS.agent_logs.createPager({
-      auth: siteAuth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
+      auth: siteAuth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500, ...reqDefaults(),
     });
     const page = await pager(null);
     expect(page).toEqual({ rows: [], nextCursor: null });
     expect(dbSelect).not.toHaveBeenCalled();
-  });
-
-  // --- metrics: per-device fan-out over a raw deviceMetrics select, paced at
-  // EXPORT_DEVICE_CONCURRENCY and gated by the adapter's own verifyDeviceAccess ---
-
-  function mockMetricsSelect(rows: unknown[]) {
-    const orderBy = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) });
-    dbSelect.mockReturnValue({
-      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ orderBy }) }),
-    });
-  }
-
-  // NOTE: exactly one deviceId per test here, deliberately. `runWithConcurrency`
-  // resolves this adapter's `getVerifyDeviceAccess()` dynamic import() in
-  // parallel across devices; under this test file's mocked `./aiTools`, two+
-  // concurrent FIRST resolutions of the same dynamic import race Vite's SSR
-  // module runner and can silently load the real (unmocked) module instead —
-  // every other adapter test in this file has the same one-device constraint.
-  // (Confirmed by direct reproduction during #5775's review: priming the
-  // import ahead of time does NOT avoid the race.) A consequence for THIS
-  // adapter specifically: how a >1-device EXPORT_DEVICE_CONCURRENCY batch
-  // interacts with per-device intra-batch pagination (one device exhausting
-  // early while a sibling in the same batch still pages, and the batch not
-  // advancing until every entry is `done`) is exercised by hand-tracing the
-  // closure logic below, not by a unit test — that needs either a real-DB
-  // integration test or a from-scratch mock of aiTools.ts's whole import
-  // graph, both out of scope for this file's existing single-device pattern.
-
-  it('metrics reads a device\'s samples, gated by verifyDeviceAccess', async () => {
-    mockMetricsSelect([
-      { timestamp: new Date('2026-02-15T10:00:00.000Z'), cpuPercent: 50, ramPercent: 60, ramUsedMb: 4096, diskPercent: 70, diskUsedGb: 100 },
-    ]);
-    const pager = await DATASET_ADAPTERS.metrics.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 500,
-    });
-    const page = await pager(null);
-    expect(verifyDeviceAccess).toHaveBeenCalledWith('d1');
-    expect(page.rows).toEqual([
-      expect.objectContaining({ deviceId: 'd1', cpuPercent: 50, hostname: 'host-d1' }),
-    ]);
-    expect(page.nextCursor).toBeNull(); // the one device fits in the first EXPORT_DEVICE_CONCURRENCY batch
-  });
-
-  // NOTE: `mockMetricsSelect` above returns the SAME page from every
-  // `db.select()` call — fine for the single-page tests, but a per-device
-  // pagination test needs a DIFFERENT page per call, so it builds its own
-  // sequenced select mock rather than reusing that helper.
-  function mockMetricsPagedSelect(pages: Array<Array<Record<string, unknown>>>) {
-    let call = 0;
-    const limit = vi.fn().mockImplementation(async () => {
-      const page = pages[Math.min(call, pages.length - 1)];
-      call += 1;
-      return page;
-    });
-    const orderBy = vi.fn().mockReturnValue({ limit });
-    const where = vi.fn().mockReturnValue({ orderBy });
-    dbSelect.mockReturnValue({ from: vi.fn().mockReturnValue({ where }) });
-    return { where };
-  }
-
-  it('metrics paginates WITHIN a device via a timestamp cursor instead of hard-capping at pageSize (#5775)', async () => {
-    const { where } = mockMetricsPagedSelect([
-      [
-        { timestamp: new Date('2026-02-15T10:02:00.000Z'), cpuPercent: 3, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
-        { timestamp: new Date('2026-02-15T10:01:00.000Z'), cpuPercent: 2, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
-      ],
-      [
-        { timestamp: new Date('2026-02-15T10:00:00.000Z'), cpuPercent: 1, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
-      ],
-    ]);
-    const pager = await DATASET_ADAPTERS.metrics.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 2,
-    });
-
-    // First call comes back FULL (2 of 2) — more samples may exist for this
-    // device, so the pager must NOT report done via a null nextCursor.
-    const first = await pager(null);
-    expect(first.rows.map((r) => r.cpuPercent)).toEqual([3, 2]);
-    expect(first.nextCursor).not.toBeNull();
-
-    // Second call re-queries the SAME device (not the next one — there is no
-    // next device) using a timestamp cursor older than the last row seen.
-    const second = await pager(first.nextCursor);
-    expect(second.rows.map((r) => r.cpuPercent)).toEqual([1]);
-    expect(second.nextCursor).toBeNull(); // short page: device exhausted, no more devices queued
-
-    // The device gate runs once per device, not once per page.
-    expect(verifyDeviceAccess).toHaveBeenCalledTimes(1);
-
-    expect(where).toHaveBeenCalledTimes(2);
-    const dialect = new PgDialect();
-    // The cursored page must keep BOTH bounds: the `since` (hoursBack) floor
-    // AND the new `before` ceiling — a refactor that swapped rather than
-    // appended the cursor condition would silently widen the export past its
-    // requested time window without any test catching it.
-    const secondWhereSql = dialect.sqlToQuery(where.mock.calls[1]![0] as SQL).sql;
-    expect(secondWhereSql).toContain('"timestamp" >');
-    expect(secondWhereSql).toContain('"timestamp" <');
-  });
-
-  it('metrics marks a device done only after a SHORT page, even when its sample count is an exact multiple of pageSize', async () => {
-    // A device with exactly 2×pageSize samples: the first two pages both come
-    // back FULL and must NOT be treated as the exhaustion signal — only a page
-    // shorter than pageSize may set `done`. This is the boundary the "full
-    // page" vs. "short page" distinction hinges on; a `<=` instead of `<`
-    // comparison would stop one page early and silently drop the last page.
-    const { where } = mockMetricsPagedSelect([
-      [
-        { timestamp: new Date('2026-02-15T10:03:00.000Z'), cpuPercent: 4, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
-        { timestamp: new Date('2026-02-15T10:02:00.000Z'), cpuPercent: 3, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
-      ],
-      [
-        { timestamp: new Date('2026-02-15T10:01:00.000Z'), cpuPercent: 2, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
-        { timestamp: new Date('2026-02-15T10:00:00.000Z'), cpuPercent: 1, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
-      ],
-      [], // exhaustion signal: a page shorter than pageSize (here, empty)
-    ]);
-    const pager = await DATASET_ADAPTERS.metrics.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 2,
-    });
-
-    const first = await pager(null);
-    expect(first.rows.map((r) => r.cpuPercent)).toEqual([4, 3]);
-    expect(first.nextCursor).not.toBeNull();
-
-    const second = await pager(first.nextCursor);
-    expect(second.rows.map((r) => r.cpuPercent)).toEqual([2, 1]);
-    expect(second.nextCursor).not.toBeNull(); // still full — not yet exhausted
-
-    const third = await pager(second.nextCursor);
-    expect(third.rows).toEqual([]);
-    expect(third.nextCursor).toBeNull(); // short (empty) page: NOW exhausted
-
-    expect(where).toHaveBeenCalledTimes(3);
-    expect(verifyDeviceAccess).toHaveBeenCalledTimes(1);
-  });
-
-  it('metrics excludes a device verifyDeviceAccess denies, without failing the whole export', async () => {
-    verifyDeviceAccess.mockImplementationOnce(async () => ({ error: 'not found' }));
-    mockMetricsSelect([{ timestamp: new Date('2026-02-15T10:00:00.000Z'), cpuPercent: 1 }]);
-    const pager = await DATASET_ADAPTERS.metrics.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: ['d-denied'], runTargets: null, siteId: null, pageSize: 500,
-    });
-    const page = await pager(null);
-    expect(page.rows).toEqual([]);
-  });
-
-  // --- vulnerabilities: per-device findings joined against the catalog ---
-
-  it('vulnerabilities joins findings to the catalog per requested device', async () => {
-    readDeviceFindings.mockImplementation(async (..._a: unknown[]) => {
-      const opts = _a[1] as { deviceId?: string };
-      return [{ id: 'f1', deviceId: opts.deviceId, vulnerabilityId: 'v1', status: 'open', riskScore: '80' }];
-    });
-    readCatalog.mockResolvedValue([
-      { id: 'v1', cveId: 'CVE-2026-1', severity: 'critical', cvssScore: '9.8', knownExploited: true, epssScore: '0.9', patchAvailable: true },
-    ]);
-    const pager = await DATASET_ADAPTERS.vulnerabilities.createPager({
-      auth, orgId: 'org-1', filters: { status: 'open' }, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 500,
-    });
-    const page = await pager(null);
-    expect(verifyDeviceAccess).toHaveBeenCalledWith('d1');
-    expect(page.rows).toEqual([
-      expect.objectContaining({ deviceId: 'd1', cveId: 'CVE-2026-1', severity: 'critical', knownExploited: true }),
-    ]);
-  });
-
-  // #9532 — an exported finding names the affected software, flat (one column
-  // each) so an analysis script can group by product without unpacking.
-  it('vulnerabilities rows carry the linked software, null when unlinked', async () => {
-    readDeviceFindings.mockResolvedValue([
-      { id: 'f1', deviceId: 'd1', vulnerabilityId: 'v1', status: 'open', riskScore: '80' },
-      { id: 'f2', deviceId: 'd1', vulnerabilityId: 'v1', status: 'open', riskScore: '70' },
-    ]);
-    readCatalog.mockResolvedValue([
-      { id: 'v1', cveId: 'CVE-2026-1', severity: 'high', cvssScore: '8.8', knownExploited: false, epssScore: null, patchAvailable: true },
-    ]);
-    readFindingSoftware.mockResolvedValue(new Map([
-      ['f1', { vulnerabilityId: 'v1', software: { name: 'Google Chrome', version: '129.0', vendor: 'Google LLC' } }],
-      ['f2', { vulnerabilityId: 'v1', software: null }],
-    ]));
-    const pager = await DATASET_ADAPTERS.vulnerabilities.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 500,
-    });
-    const page = await pager(null);
-    expect(readFindingSoftware).toHaveBeenCalledWith('org-1', ['f1', 'f2'], auth);
-    expect(page.rows).toEqual([
-      expect.objectContaining({ id: 'f1', softwareName: 'Google Chrome', softwareVersion: '129.0', softwareVendor: 'Google LLC' }),
-      expect.objectContaining({ id: 'f2', softwareName: null, softwareVersion: null, softwareVendor: null }),
-    ]);
-  });
-
-  it('vulnerabilities drops findings whose CVE is not in the catalog rather than exporting a partial row', async () => {
-    readDeviceFindings.mockResolvedValue([{ id: 'f1', deviceId: 'd1', vulnerabilityId: 'v-missing', status: 'open', riskScore: null }]);
-    readCatalog.mockResolvedValue([]); // catalog lookup came back empty
-    const pager = await DATASET_ADAPTERS.vulnerabilities.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 500,
-    });
-    const page = await pager(null);
-    expect(page.rows).toEqual([]);
   });
 });
 
@@ -594,7 +371,7 @@ describe('dataset adapters — analysis run frame', () => {
     searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
     const pager = await DATASET_ADAPTERS.event_logs.createPager({
       auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: ['d1', 'd2'],
-      siteId: null, pageSize: 500,
+      siteId: null, pageSize: 500, ...reqDefaults(),
     } as never);
     await pager(null);
     expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: ['d1', 'd2'] });
@@ -605,7 +382,7 @@ describe('dataset adapters — analysis run frame', () => {
     searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
     const pager = await DATASET_ADAPTERS.event_logs.createPager({
       auth: siteAuth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: ['d1', 'd2'],
-      siteId: null, pageSize: 500,
+      siteId: null, pageSize: 500, ...reqDefaults(),
     } as never);
     await pager(null);
     // d1 is in the frame but outside the caller's sites; d3 is in the sites but
@@ -617,7 +394,7 @@ describe('dataset adapters — analysis run frame', () => {
     resolveSiteAllowedDeviceIds.mockResolvedValue(['d9']);
     const pager = await DATASET_ADAPTERS.event_logs.createPager({
       auth: siteAuth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: ['d1'],
-      siteId: null, pageSize: 500,
+      siteId: null, pageSize: 500, ...reqDefaults(),
     } as never);
     expect(await pager(null)).toEqual({ rows: [], nextCursor: null });
     expect(searchFleetLogs).not.toHaveBeenCalled();
@@ -626,11 +403,57 @@ describe('dataset adapters — analysis run frame', () => {
   it('event_logs is unrestricted when there is no run frame (direct chat / MCP)', async () => {
     searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
     const pager = await DATASET_ADAPTERS.event_logs.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
+      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500, ...reqDefaults(),
     } as never);
     await pager(null);
     // An absent frame means "no run", NOT "no devices" — the pre-W04 behaviour
     // for every chat-path export has to be preserved exactly.
+    expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: null });
+  });
+  // W02 Task 8: an exact-device set on the auth (a run admitted with no
+  // devices carries `allowedDeviceIds: []`) is "no devices", never "no frame".
+  const req = (over: Record<string, unknown>) => ({
+    auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500, ...reqDefaults(), ...over,
+  }) as never;
+
+  it('event_logs exports nothing for a run whose exact-device set is empty and that has no frame', async () => {
+    const pager = await DATASET_ADAPTERS.event_logs.createPager(req({ auth: { ...(auth as object), allowedDeviceIds: [] }, runTargets: null }));
+    expect(await pager(null)).toEqual({ rows: [], nextCursor: null });
+    expect(searchFleetLogs).not.toHaveBeenCalled();
+  });
+
+  it('event_logs exports nothing for an empty exact-device set even with an empty frame', async () => {
+    const pager = await DATASET_ADAPTERS.event_logs.createPager(req({ auth: { ...(auth as object), allowedDeviceIds: [] }, runTargets: [] }));
+    expect(await pager(null)).toEqual({ rows: [], nextCursor: null });
+    expect(searchFleetLogs).not.toHaveBeenCalled();
+  });
+
+  it('event_logs narrows to the exact-device set when the run carries one and no frame', async () => {
+    searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager(req({ auth: { ...(auth as object), allowedDeviceIds: ['d1', 'd2'] }, runTargets: null }));
+    await pager(null);
+    expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: ['d1', 'd2'] });
+  });
+
+  it('event_logs intersects the exact-device set with the run frame', async () => {
+    searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager(req({ auth: { ...(auth as object), allowedDeviceIds: ['d1', 'd2'] }, runTargets: ['d2', 'd3'] }));
+    await pager(null);
+    expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: ['d2'] });
+  });
+
+  it('event_logs intersects the exact-device set with the site axis', async () => {
+    resolveSiteAllowedDeviceIds.mockResolvedValue(['d2', 'd3']);
+    searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager(req({ auth: { ...(siteAuth as object), allowedDeviceIds: ['d1', 'd2'] }, runTargets: null }));
+    await pager(null);
+    expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: ['d2'] });
+  });
+
+  it('an unrestricted caller (no exact-device set, no site axis, no frame) is still unrestricted', async () => {
+    searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager(req({ runTargets: null }));
+    await pager(null);
     expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: null });
   });
 });

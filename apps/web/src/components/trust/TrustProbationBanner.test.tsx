@@ -77,6 +77,18 @@ describe('TrustProbationBanner', () => {
     expect(screen.getByText('Installer distribution is temporarily unavailable.')).toBeInTheDocument();
   });
 
+  it('gives a restricted partner neutral review copy, not the probation unlock path or checklist', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(response({ ...status, trustState: 'restricted' }));
+    render(<TrustProbationBanner />);
+    dispatch(deny({ error: 'TRUST_RESTRICTED', capability: 'remote_control', reason: 'restricted' }));
+
+    expect(await screen.findByText(/Your account is under review/)).toBeInTheDocument();
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    expect(screen.queryByText(/unlock after your first card payment/)).toBeNull();
+    expect(screen.queryByLabelText('Verification checklist')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Request review' })).toBeInTheDocument();
+  });
+
   it('requests a review through runAction and flips the button after success', async () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(response(status))

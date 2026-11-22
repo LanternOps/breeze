@@ -1,4 +1,14 @@
 import { beforeEach, expect, it, vi } from 'vitest';
+// Partner billing master switch: tests flip billingSwitch.enabled to simulate billing_enabled=false.
+const billingSwitch = vi.hoisted(() => ({ enabled: true }));
+vi.mock('../billingEnabled', () => {
+  const assertOn = async (_id: unknown, make: (m: string, s: 404, c: 'BILLING_DISABLED') => Error) => {
+    if (!billingSwitch.enabled) throw make('Not found', 404, 'BILLING_DISABLED');
+  };
+  return { assertBillingEnabledForOrg: assertOn, assertBillingEnabledForPartner: assertOn,
+    isBillingEnabledForPartner: async () => billingSwitch.enabled };
+});
+beforeEach(() => { billingSwitch.enabled = true; });
 const h = vi.hoisted(() => ({
   active: vi.fn(),
   resolve: vi.fn(),
@@ -341,6 +351,15 @@ it('exclusion fences outstanding action-required money and cannot be removed whi
   });
   expect(f.inv.autopayExcluded).toBe(true);
 });
+it('billing off: re-including an invoice answers 404 BILLING_DISABLED, excluding stays allowed', async () => {
+  const f = fixture({ state: 'excluded_by_msp' });
+  billingSwitch.enabled = false;
+  await expect(setInvoiceAutopayExcluded(f.tx, invoice.id, false, actor)).rejects.toMatchObject({
+    status: 404, code: 'BILLING_DISABLED', message: 'Not found',
+  });
+  expect(h.notice).not.toHaveBeenCalled();
+  expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor)).toMatchObject({ status: 'excluded' });
+});
 it('never replans a client skip on MSP reinclusion', async () => {
   const f = fixture({ state: 'skipped_by_client', clientSkippedAt: new Date() });
   await setInvoiceAutopayExcluded(f.tx, invoice.id, false, actor);
@@ -451,6 +470,18 @@ it('reincludes an invoice excluded before issuance using its existing issuance s
     }),
   ]);
   expect(h.notice).toHaveBeenCalledExactlyOnceWith(f.tx, issued!.id);
+});
+
+it('plans an invoice as not_needed/charging_disabled while billing is off, without a notice', async () => {
+  const f = fixture();
+  f.inv.status = 'draft';
+  f.data.set(invoiceAutopaySchedules, []);
+  billingSwitch.enabled = false;
+  f.inv.status = 'sent';
+  expect(await planAutopayForInvoice(f.tx, invoice.id)).toMatchObject({
+    state: 'not_needed', eligible: false, ineligibleReason: 'charging_disabled',
+  });
+  expect(h.notice).not.toHaveBeenCalled();
 });
 
 it.each([

@@ -245,6 +245,11 @@ vi.mock('./intentApprovers', () => ({
       .includes(toolName),
 }));
 
+const partnerAxisState = vi.hoisted(() => ({ required: vi.fn(async (): Promise<boolean> => true) }));
+vi.mock('./partnerAxisApprover', () => ({
+  intentRequiresPartnerAxisApprover: partnerAxisState.required,
+}));
+
 vi.mock('../../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
 }));
@@ -311,6 +316,23 @@ vi.mock('./actionLabel', async (importOriginal) => {
   // (#5363), and a mock that returns only `buildActionLabel` would hand it
   // `undefined` at call time.
   return { ...actual, buildActionLabel: vi.fn(actual.buildActionLabel) };
+});
+
+// #11674: the ticket-number read has its own org-pin and projection suite
+// (approvalTicketNumber.test.ts); here it is a spy, so these tests assert what
+// createActionIntent asks for and what it stores. `argumentTicketId` stays real.
+const ticketNumberMock = vi.hoisted(() => ({
+  resolveApprovalTicketNumber: vi.fn(async (_ticketId: string, _orgId: string, _reach: unknown): Promise<string | null> => null),
+}));
+// The caller's site/device check behind the approval-label device name. The
+// real module imports the full schema index, which this harness cannot load.
+const siteScopeMock = vi.hoisted(() => ({
+  deviceInSiteScope: vi.fn(async (_auth: unknown, _deviceId: string): Promise<boolean> => true),
+}));
+vi.mock('../../routes/tickets/siteScope', () => ({ deviceInSiteScope: siteScopeMock.deviceInSiteScope }));
+vi.mock('./approvalTicketNumber', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./approvalTicketNumber')>();
+  return { ...actual, resolveApprovalTicketNumber: ticketNumberMock.resolveApprovalTicketNumber };
 });
 
 vi.mock('drizzle-orm', () => ({
@@ -403,6 +425,9 @@ function makeAuth(overrides?: {
     partnerId: overrides?.partnerId ?? null,
     scope: 'organization' as const,
     accessibleOrgIds: [ORG_ID],
+    // Every real AuthContext carries one; the approval-label reads (#11674)
+    // keep the id stub for a principal without it.
+    orgCondition: () => undefined,
     ...('allowedSiteIds' in (overrides ?? {}) ? { allowedSiteIds: overrides!.allowedSiteIds } : {}),
     ...('allowedDeviceIds' in (overrides ?? {}) ? { allowedDeviceIds: overrides!.allowedDeviceIds } : {}),
   } as unknown as Parameters<typeof createActionIntent>[0];
@@ -639,6 +664,64 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Audit §1.1: org-wide governance fan-out excludes site-restricted approvers
 // ---------------------------------------------------------------------------
+
+describe('createActionIntent: partner-axis approvers for a partner-wide intent', () => {
+  const SCHEDULE_ID = '00000000-0000-4000-8000-0000000000b1';
+  const scheduleDelete = () => baseInput({
+    toolName: 'manage_ai_agent_schedules',
+    input: { action: 'delete', scheduleId: SCHEDULE_ID },
+    idempotencyKey: 'key-schedule-delete',
+  });
+
+  beforeEach(() => {
+    partnerAxisState.required.mockReset();
+    partnerAxisState.required.mockResolvedValue(true);
+    // A schedule delete carries a mandatory digest; without one the raise refuses before the insert.
+    effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'pinned', digest: 'f'.repeat(64) });
+    dbState.insertActionIntentsResults.push([makeIntentRow()]);
+  });
+
+  it('asks the resolver for the partner axis, and the stored summary says so', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-baseline' }]);
+
+    await createActionIntent(makeAuth(), scheduleDelete()).catch(() => undefined);
+
+    expect(partnerAxisState.required).toHaveBeenCalledWith({
+      actionName: 'manage_ai_agent_schedules',
+      arguments: { action: 'delete', scheduleId: SCHEDULE_ID },
+      orgId: ORG_ID,
+    });
+    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
+      ORG_ID, expect.objectContaining({ requirePartnerAxis: true }),
+    );
+    expect(dbState.insertedActionIntentValues.at(-1)?.impactSummary).toContain('This needs a partner-level approver.');
+  });
+
+  it("an override delete keeps today's approver set and summary", async () => {
+    partnerAxisState.required.mockResolvedValue(false);
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-override' }]);
+
+    await createActionIntent(makeAuth(), scheduleDelete()).catch(() => undefined);
+
+    expect(intentApproversState.resolveIntentApprovers.mock.lastCall?.[1]).not.toHaveProperty('requirePartnerAxis');
+    expect(dbState.insertedActionIntentValues.at(-1)?.impactSummary).not.toContain('partner-level');
+  });
+
+  it('never consults the predicate for an action outside the registry', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-ord' }]);
+
+    await createActionIntent(
+      makeAuth(),
+      baseInput({ toolName: 'manage_ai_agents', input: { action: 'list', orgId: ORG_ID }, idempotencyKey: 'key-other' }),
+    ).catch(() => undefined);
+
+    expect(partnerAxisState.required).not.toHaveBeenCalled();
+    expect(intentApproversState.resolveIntentApprovers.mock.lastCall?.[1]).not.toHaveProperty('requirePartnerAxis');
+  });
+});
 
 describe('createActionIntent — org-wide governance fan-out filter', () => {
   const govInput = () => baseInput({
@@ -1906,6 +1989,28 @@ describe('createActionIntent — approval headline device name (#5363)', () => {
     expect(labels[0]).not.toContain('on device');
   });
 
+  it('keeps the stub when the device is outside the filing caller\'s site scope (#11674 review)', async () => {
+    dbState.selectDevicesResults.push([{ hostname: 'kit', displayName: 'KIT' }]);
+    queueFanout('intent-5363-out-of-site');
+    siteScopeMock.deviceInSiteScope.mockResolvedValueOnce(false);
+    const auth = makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] });
+
+    await createActionIntent(auth, restartInput());
+
+    expect(siteScopeMock.deviceInSiteScope).toHaveBeenCalledWith(auth, DEVICE_ID);
+    expect(persistedApprovalLabels()[0]).toBe(`Restart service "Spooler" on device ${DEVICE_ID.slice(0, 8)}...`);
+  });
+
+  it('names the device when it is inside the filing caller\'s site scope', async () => {
+    dbState.selectDevicesResults.push([{ hostname: 'kit', displayName: 'KIT' }]);
+    queueFanout('intent-5363-in-site');
+    siteScopeMock.deviceInSiteScope.mockResolvedValueOnce(true);
+
+    await createActionIntent(makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] }), restartInput());
+
+    expect(persistedApprovalLabels()[0]).toContain('on KIT');
+  });
+
   it('falls back to the hostname when the device has no display name', async () => {
     dbState.selectDevicesResults.push([{ hostname: 'kit-01', displayName: null }]);
     queueFanout('intent-5363-hostname');
@@ -1942,6 +2047,101 @@ describe('createActionIntent — approval headline device name (#5363)', () => {
     const label = persistedApprovalLabels()[0];
     expect(label).toContain(`on device ${OTHER_ORG_ID.slice(0, 8)}...`);
     expect(label).not.toContain('KIT');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #11674 — the stored approval label names the ticket by NUMBER
+//
+// The /approvals queue and the mobile push render `action_label`. It said
+// `ticket #<8 hex>...` while the chat card already said `ticket T-2026-0001`.
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — approval headline ticket number (#11674)', () => {
+  const TICKET_ID = '2aad0601-1111-4222-8333-444455556666';
+  const OPERATIVE_TICKET_ID = '7c1e9d02-aaaa-4bbb-8ccc-ddddeeeeffff';
+  const NOTE_DESCRIPTION = `Post internal note on ticket #${TICKET_ID.slice(0, 8)}...`;
+
+  function queueFanout(id: string) {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id }));
+    dbState.insertApprovalRequestsResults.push([{ id: `approval-${id}` }]);
+  }
+
+  function persistedApprovalLabels(): string[] {
+    const rows = dbState.insertedApprovalRequestsValues[0] as Array<{ actionLabel: string }> | undefined;
+    return (rows ?? []).map((r) => r.actionLabel);
+  }
+
+  function guardrailSays(description: string) {
+    guardrailMock.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, description });
+  }
+
+  beforeEach(() => {
+    ticketNumberMock.resolveApprovalTicketNumber.mockReset();
+    ticketNumberMock.resolveApprovalTicketNumber.mockResolvedValue(null);
+  });
+
+  it('resolves this call\'s ticket in the intent org, cut to the filing caller\'s reach, and stores the number', async () => {
+    guardrailSays(NOTE_DESCRIPTION);
+    ticketNumberMock.resolveApprovalTicketNumber.mockResolvedValueOnce('T-2026-0001');
+    queueFanout('intent-11674-named');
+    // Site-restricted caller: the read must get THIS auth, so the resolver can
+    // apply its site/device scope (approvalTicketNumber.test.ts covers the cut).
+    const auth = makeAuth({ allowedSiteIds: ['44444444-4444-4444-8444-444444444444'] });
+
+    await createActionIntent(auth, baseInput({
+      toolName: 'manage_tickets',
+      input: { action: 'comment', ticketId: TICKET_ID, content: 'Rebooted the print server.' },
+    }));
+
+    expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledWith(TICKET_ID, ORG_ID, auth);
+    const labels = persistedApprovalLabels();
+    expect(labels).toEqual(['Post internal note on ticket T-2026-0001']);
+    // The number only: never the comment text the tool input carries.
+    expect(labels[0]).not.toContain('Rebooted');
+  });
+
+  it('keeps the stub when the ticket cannot be resolved (foreign, missing, or a failed read)', async () => {
+    guardrailSays(NOTE_DESCRIPTION);
+    queueFanout('intent-11674-missing');
+
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'manage_tickets',
+      input: { action: 'comment', ticketId: TICKET_ID, content: 'x' },
+    }));
+
+    expect(persistedApprovalLabels()).toEqual([NOTE_DESCRIPTION]);
+  });
+
+  it('names the expectedTicketId of a comment edit, never a stray ticketId', async () => {
+    guardrailSays(`Edit a comment on ticket #${OPERATIVE_TICKET_ID.slice(0, 8)}... (replaces its text)`);
+    ticketNumberMock.resolveApprovalTicketNumber.mockResolvedValueOnce('T-2026-0042');
+    queueFanout('intent-11674-edit');
+
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'manage_tickets',
+      input: { action: 'edit_comment', commentId: TICKET_ID, ticketId: TICKET_ID, expectedTicketId: OPERATIVE_TICKET_ID, content: 'new text' },
+    }));
+
+    expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledTimes(1);
+    expect(ticketNumberMock.resolveApprovalTicketNumber).toHaveBeenCalledWith(OPERATIVE_TICKET_ID, ORG_ID, expect.anything());
+    expect(persistedApprovalLabels()).toEqual(['Edit a comment on ticket T-2026-0042 (replaces its text)']);
+  });
+
+  it('skips the read when the label carries no stub for this call\'s ticket', async () => {
+    // A caller-supplied label naming some OTHER ticket keeps its stub, and costs no read.
+    guardrailSays(NOTE_DESCRIPTION);
+    queueFanout('intent-11674-other');
+
+    await createActionIntent(makeAuth(), baseInput({
+      toolName: 'manage_tickets',
+      input: { action: 'comment', ticketId: TICKET_ID, content: 'x' },
+      actionLabel: `Post internal note on ticket #${OPERATIVE_TICKET_ID.slice(0, 8)}...`,
+    }));
+
+    expect(ticketNumberMock.resolveApprovalTicketNumber).not.toHaveBeenCalled();
+    expect(persistedApprovalLabels()).toEqual([`Post internal note on ticket #${OPERATIVE_TICKET_ID.slice(0, 8)}...`]);
   });
 });
 
@@ -2199,6 +2399,77 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
     );
   });
 
+  // Network-isolation W13 (#10101, ai.mdx "Approving your own request when you
+  // are the only approver"): the AI release of a containment is four-eyes, and
+  // a sole operator keeps the WebAuthn self-approval fallback — one
+  // requester-owned row carrying the pinned episode digest. (Real
+  // selfApprovalPolicy and pinnedEffectPolicy; the decide-time assurance gate is
+  // tool-agnostic.)
+  describe('release_containment (W13 #10101)', () => {
+    const releaseInput = {
+      deviceId: '11111111-1111-4111-8111-111111111111',
+      isolationId: '33333333-3333-4333-8333-333333333333',
+      reason: 'Incident contained and cleaned',
+    };
+    const fourEyes = {
+      tier: 3, allowed: true, requiresApproval: true,
+      description: 'Release network isolation', approvalScope: 'four_eyes',
+    } as const;
+
+    it('a sole operator gets one requester-owned row carrying the pinned episode digest', async () => {
+      guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'pinned', digest: 'f'.repeat(64) });
+      intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-release-solo', actionName: 'release_containment' }));
+      dbState.insertApprovalRequestsResults.push([{ id: 'approval-release-solo' }]);
+
+      const snapshot = await createActionIntent(makeAuth(), baseInput({
+        toolName: 'release_containment', input: releaseInput, idempotencyKey: 'key-release-solo',
+      }));
+
+      expect(snapshot.status).toBe('pending_approval');
+      expect(snapshot.requesterApprovalRequestId).toBe('approval-release-solo');
+      expect(snapshot.fanOutUserIds).toEqual([REQUESTER_ID]);
+      expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+        actionName: 'release_containment', approvalScope: 'four_eyes', effectDigest: 'f'.repeat(64),
+      });
+      expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ details: expect.objectContaining({ soleOperator: true }) }),
+      );
+    });
+
+    it('with another eligible approver, the requester cannot self-approve: the row goes to the second person', async () => {
+      guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'pinned', digest: 'f'.repeat(64) });
+      intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID, APPROVER_1]);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-release-pair', actionName: 'release_containment' }));
+      dbState.insertApprovalRequestsResults.push([{ id: 'approval-release-pair' }]);
+
+      const snapshot = await createActionIntent(makeAuth(), baseInput({
+        toolName: 'release_containment', input: releaseInput, idempotencyKey: 'key-release-pair',
+      }));
+
+      expect(snapshot.requesterApprovalRequestId).toBeNull();
+      const inserted = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
+      expect(inserted.map((r) => r.userId)).toEqual([APPROVER_1]);
+    });
+
+    it.each(['missing_arg', 'target_absent'] as const)(
+      'refuses to create the approval when the episode cannot be pinned (%s)', async (reason) => {
+        guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+        effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'unresolved', reason });
+        // Everything else would succeed: the refusal is the mandatory pin alone.
+        intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+        dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: `intent-release-${reason}`, actionName: 'release_containment' }));
+        dbState.insertApprovalRequestsResults.push([{ id: `approval-release-${reason}` }]);
+
+        await expect(createActionIntent(makeAuth(), baseInput({
+          toolName: 'release_containment', input: releaseInput, idempotencyKey: `key-release-${reason}`,
+        }))).rejects.toMatchObject({ code: 'effect_digest_unresolvable' });
+        expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+      });
+  });
+
   it('persists approvalScope and classificationVersion on the inserted row', async () => {
     guardrailMock.checkGuardrails.mockReturnValue({
       tier: 3,
@@ -2275,6 +2546,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       'run_script',
       { scriptId: 'script-1', deviceIds: ['device-1'] },
       db,
+      { intentOrgId: ORG_ID },
     );
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBe('d'.repeat(64));
   });
@@ -2299,6 +2571,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       'run_script',
       { scriptId: 'script-1', deviceIds: ['device-1'] },
       db,
+      { intentOrgId: ORG_ID },
     );
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBe('e'.repeat(64));
   });
@@ -2315,7 +2588,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       baseInput({ toolName: 'm365_send_mail', input: { to: ['a@example.com'] }, idempotencyKey: 'key-fe-unpinnable' }),
     );
 
-    expect(computeEffectDigestOutcome).toHaveBeenCalledWith('m365_send_mail', { to: ['a@example.com'] }, db);
+    expect(computeEffectDigestOutcome).toHaveBeenCalledWith('m365_send_mail', { to: ['a@example.com'] }, db, { intentOrgId: ORG_ID });
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBeNull();
     // `not_applicable` is the expected, correct case — it must NOT pollute the
     // unpinned signal.
@@ -2778,6 +3051,50 @@ describe('waitForIntentDecision', () => {
     dbState.selectActionIntentsResults.push([]);
     const result = await waitForIntentDecision('missing-intent', 5000);
     expect(result).toBe('pending_approval');
+  });
+
+  // #12098: a decision made during the last sleep (after the last poll)
+  // used to come back as pending_approval.
+  it('reads once more when the time runs out, returning a decision made during the last sleep', async () => {
+    vi.useFakeTimers();
+    try {
+      // Polls at t=0 and t=500, then the 750 ms sleep outlasts the 1200 ms
+      // budget: the third read is the closing one.
+      dbState.selectActionIntentsResults.push(
+        [{ status: 'pending_approval' }],
+        [{ status: 'pending_approval' }],
+        [{ status: 'approved' }],
+      );
+      const promise = waitForIntentDecision('intent-1', 1200);
+      await vi.advanceTimersByTimeAsync(2000);
+      await expect(promise).resolves.toBe('approved');
+      expect(dbState.selectActionIntentsResults).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes the one closing read on a zero budget', async () => {
+    dbState.selectActionIntentsResults.push([{ status: 'rejected' }]);
+    await expect(waitForIntentDecision('intent-1', 0)).resolves.toBe('rejected');
+    expect(dbState.selectActionIntentsResults).toHaveLength(0);
+  });
+
+  it('skips the closing read when the wait is settled during a sleep', async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      dbState.selectActionIntentsResults.push([{ status: 'pending_approval' }], [{ status: 'approved' }]);
+      const promise = waitForIntentDecision('intent-1', 5000, controller.signal);
+      await vi.advanceTimersByTimeAsync(100);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(promise).resolves.toBe('pending_approval');
+      // The queued second read was never taken.
+      expect(dbState.selectActionIntentsResults).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

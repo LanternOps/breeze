@@ -391,12 +391,12 @@ export async function syncManagedSoftwarePolicy(
  * package is added from the Built-in packages panel of the software catalog.
  */
 function catalogMissingMessage(vendors: VendorKey[]): string {
-  const labels = (orgSource: 'edr_mapping' | 'tenant_var') =>
-    vendors.filter((key) => getVendor(key).orgSource === orgSource).map((key) => getVendor(key).label).join(', ');
+  const labels = (wanted: (orgSource: ReturnType<typeof getVendor>['orgSource']) => boolean) =>
+    vendors.filter((key) => wanted(getVendor(key).orgSource)).map((key) => getVendor(key).label).join(', ');
   const parts: string[] = [];
-  const edr = labels('edr_mapping');
+  const edr = labels((orgSource) => orgSource !== 'tenant_var');
   if (edr) parts.push(`${edr} cannot be enabled until its integration is connected for this partner.`);
-  const builtin = labels('tenant_var');
+  const builtin = labels((orgSource) => orgSource === 'tenant_var');
   if (builtin) {
     parts.push(`${builtin} cannot be enabled until its client is added to this partner's software catalog (Software → Catalog → Built-in packages).`);
   }

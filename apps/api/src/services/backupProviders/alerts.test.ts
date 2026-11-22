@@ -60,6 +60,9 @@ describe('computeProviderCondition', () => {
     ['in_progress, fresh success', { status: 'in_progress', lastSuccessAt: hoursAgo(3), errorsCount: 0 }, null],
     ['not_started, 60h old success', { status: 'not_started', lastSuccessAt: hoursAgo(60), errorsCount: 0 }, 'stale'],
     ['unknown, fresh success', { status: 'unknown', lastSuccessAt: hoursAgo(3), errorsCount: 0 }, null],
+    // Parked on purpose by an operator: uncovered, but never pages anyone.
+    ['paused, 10-day-old success', { status: 'paused', lastSuccessAt: hoursAgo(240), errorsCount: 0 }, null],
+    ['paused, never succeeded', { status: 'paused', lastSuccessAt: null, errorsCount: 0 }, null],
   ];
 
   it.each(cases)('%s', (_label, input, expected) => {

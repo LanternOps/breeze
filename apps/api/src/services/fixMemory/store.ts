@@ -708,17 +708,20 @@ export async function deleteDeviceFixOutcomes(
   assertSystemScope('deleteDeviceFixOutcomes');
   const deleted = await tx.execute(sql`
     DELETE FROM fix_outcomes WHERE device_id = ${deviceId}
-    RETURNING partner_id, signature_version, signature_key, os_type, fix_identity, counted_at`) as Iterable<{
+    RETURNING partner_id, signature_version, signature_key, os_type, fix_identity, counted_at, recount_requested_at`) as Iterable<{
       partner_id: string; signature_version: number | null; signature_key: string | null; os_type: string | null;
-      fix_identity: string | null; counted_at: Date | string | null;
+      fix_identity: string | null; counted_at: Date | string | null; recount_requested_at: Date | string | null;
     }>;
   const rows = [...deleted];
   const identities = new Map<string, IdentityKey>();
   for (const r of rows) {
-    // Uncounted rows never fed an aggregate. Counted-but-unsigned rows never did
-    // either: loadContributions only reads rows with a full identity, and such a
-    // row is still waiting on recomputeForOutcome. Neither leaves anything stale.
-    if (r.counted_at === null || r.signature_version === null || !r.signature_key || !r.os_type || !r.fix_identity) continue;
+    // Uncounted rows never fed an aggregate, unless a recount is still pending:
+    // a late agent result re-opens a counted attempt (#7279) and leaves its old
+    // count in the aggregate until that recount runs. Counted-but-unsigned rows
+    // never fed one either: loadContributions only reads rows with a full
+    // identity, and such a row is still waiting on recomputeForOutcome.
+    if (!r.counted_at && !r.recount_requested_at) continue;
+    if (r.signature_version === null || !r.signature_key || !r.os_type || !r.fix_identity) continue;
     const id: IdentityKey = {
       partnerId: r.partner_id, signatureVersion: r.signature_version, signatureKey: r.signature_key,
       osType: r.os_type, fixIdentity: r.fix_identity,
@@ -742,22 +745,32 @@ export async function deleteDeviceFixOutcomes(
   return { deleted: rows.length, identitiesMarked: keys.length };
 }
 
-/** Counted outcomes waiting for an aggregate recount (re-vote, or the inline script hook's terminal verdict). */
+/**
+ * Outcomes waiting for an aggregate recount: a re-vote, the inline script
+ * hook's terminal verdict, or a late agent result that re-opened a counted
+ * attempt (#7279, scriptTerminalHook lateResultWrites). The re-opened row is
+ * uncounted again, so uncounted rows are selected too: recomputeForOutcome
+ * recomputes their identity (dropping what they used to contribute) and clears
+ * the request, so they never spin.
+ */
 export async function recountRequestedOutcomeIds(limit: number): Promise<string[]> {
-  // Active (uncounted) rows are excluded: transitionOutcome recomputes when they
-  // go terminal, so selecting them would only spin every sweep.
   const rows = await db.select({ id: fixOutcomes.id }).from(fixOutcomes)
-    .where(and(isNotNull(fixOutcomes.recountRequestedAt), isNotNull(fixOutcomes.countedAt)))
+    .where(isNotNull(fixOutcomes.recountRequestedAt))
     .orderBy(asc(fixOutcomes.recountRequestedAt)).limit(limit);
   return rows.map((r) => r.id);
 }
 
 /**
- * Recount one counted outcome's identity. The outcome row is locked FIRST
+ * Recount one outcome's identity. The outcome row is locked FIRST
  * (global order: outcome row -> identity lock), so a concurrent re-vote's
  * UPDATE waits until this recount commits and then re-requests another; the
  * unconditional clear below can therefore never swallow a vote that landed
- * after our read. `hooks.afterRecompute` exists only for the interleaving test.
+ * after our read. The same lock orders it against a late-result reconcile
+ * (#7279): one that commits first is read here (uncounted, so its old count is
+ * dropped); one that waits re-checks its CAS on the row this commits and
+ * leaves a fresh request. An uncounted row is recomputed too, so a re-opened
+ * attempt's earlier count leaves the aggregate. `hooks.afterRecompute` exists
+ * only for the interleaving tests.
  */
 export async function recomputeForOutcome(
   outcomeId: string,
@@ -766,11 +779,11 @@ export async function recomputeForOutcome(
 ): Promise<void> {
   assertSystemScope('recomputeForOutcome');
   const [locked] = await db.select().from(fixOutcomes).where(eq(fixOutcomes.id, outcomeId)).limit(1).for('update');
-  if (!locked || !locked.countedAt) return;
+  if (!locked) return;
   const o = await fillOutcomeSignature(locked, now);
   if (o.signatureVersion !== null && o.signatureKey && o.osType && o.fixIdentity) {
     await recomputeIdentity({ partnerId: o.partnerId, signatureVersion: o.signatureVersion, signatureKey: o.signatureKey, osType: o.osType, fixIdentity: o.fixIdentity }, now);
-  } else {
+  } else if (locked.countedAt) {
     // The signature still couldn't be resolved (e.g. the source alert/anomaly
     // row is gone by the time the sweeper ran). There is nothing left to retry
     // against, so clearing the request below is the best available action —

@@ -8,6 +8,7 @@ import {
   getBuiltinPackage,
   installArgsCarryPlaceholders,
   type BuiltinPackageKey,
+  type BuiltinProvider,
 } from '../builtinDeploymentPackages';
 import { getVendor, listVendors, type VendorKey } from './securityAgentVendors';
 
@@ -19,8 +20,8 @@ import { getVendor, listVendors, type VendorKey } from './securityAgentVendors';
  */
 
 /**
- * One catalog row a vendor installs from. EDR vendors have exactly one (their
- * integration package, `builtinPackageKey` null). Tenant-variable vendors have
+ * One catalog row a vendor installs from. EDR vendors, framework ones included,
+ * have exactly one (their integration package, `builtinPackageKey` null). Tenant-variable vendors have
  * one per OS they support and the link selects (#6958 D1: a `software_versions`
  * row has one `is_latest` per catalog, so each OS is its own catalog row), and
  * the generator writes one rule per row.
@@ -85,7 +86,7 @@ export async function readOwnerCatalog(
   const enabledAgents = settings.agents.filter((agent) => agent.enabled);
   const providers = enabledAgents
     .map((agent) => getVendor(agent.vendor).integrationProvider)
-    .filter((provider): provider is 'huntress' | 'sentinelone' => provider !== null);
+    .filter((provider): provider is BuiltinProvider => provider !== null);
   const tenantVarAgents = enabledAgents.filter((agent) => {
     const vendor = getVendor(agent.vendor);
     return vendor.orgSource === 'tenant_var' && vendor.enableable;

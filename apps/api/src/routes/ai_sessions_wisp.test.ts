@@ -258,7 +258,7 @@ describe('POST /ai/sessions — wispGrantId (Wisp W04 Task 3)', () => {
     expect(getOrCreateThread).toHaveBeenCalledWith(GRANT_ID);
     expect(resolveGrantCeiling).toHaveBeenCalledWith(GRANT_ID, 'r1');
     // The creating caller's auth rides along so the seed's links honour its token scope.
-    expect(seedContextForSession).toHaveBeenCalledWith('t1', CEILING, expect.objectContaining({ user: expect.anything() }));
+    expect(seedContextForSession).toHaveBeenCalledWith('t1', CEILING, expect.objectContaining({ user: expect.anything() }), { model: 'claude-sonnet-4-6' });
     expect(h.inserted).toHaveLength(1);
     const values = h.inserted[0]!;
     expect(values).toMatchObject({ orgId: ORG_A, wispGrantId: GRANT_ID, wispGrantRevisionId: 'r1' });

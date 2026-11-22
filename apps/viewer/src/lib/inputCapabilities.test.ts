@@ -139,11 +139,21 @@ describe('input capabilities — reliable input (W2b) and extended input (W2c)',
     expect(gate.snapshot()).toEqual({
       typeText: true,
       releasesHeldInput: true,
+      releaseHeldOnRequest: false,
       reliableInput: true,
       inputEpoch: 3,
       geoEpoch: 4,
       extended: { keyCodes: false, extraButtons: false, horizontalWheel: false },
     });
+  });
+
+  it('records releaseHeldOnRequest (#9595) and clears it on release', () => {
+    const gate = createInputCapabilitiesGate();
+    gate.arm();
+    gate.apply({ type: 'input_capabilities', releasesHeldInput: true, releaseHeldOnRequest: true });
+    expect(gate.snapshot().releaseHeldOnRequest).toBe(true);
+    gate.release();
+    expect(gate.snapshot().releaseHeldOnRequest).toBe(false);
   });
 
   it('treats reliableInput with an invalid epoch as legacy', () => {

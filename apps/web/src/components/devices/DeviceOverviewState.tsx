@@ -118,6 +118,7 @@ export default function DeviceOverviewState({
           </span>
         )}
         {openAlerts > 0 ? (
+          // bare-hash-anchor-exempt: goTo() preventDefaults and sets location.hash itself
           <a
             href="#alerts"
             data-testid="device-overview-open-alerts"
@@ -128,6 +129,7 @@ export default function DeviceOverviewState({
             {t("deviceOverviewState.openAlerts", { count: openAlerts })}
           </a>
         ) : previewHasAlerts || (loadFailed && alertCount === undefined) ? (
+          // bare-hash-anchor-exempt: goTo() preventDefaults and sets location.hash itself
           <a
             href="#alerts"
             data-testid="device-overview-open-alerts"
@@ -143,6 +145,7 @@ export default function DeviceOverviewState({
           )
         )}
         {openTickets > 0 && (
+          // bare-hash-anchor-exempt: goTo() preventDefaults and sets location.hash itself
           <a
             href="#tickets"
             data-testid="device-overview-open-tickets"

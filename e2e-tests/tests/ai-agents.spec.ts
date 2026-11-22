@@ -1,6 +1,7 @@
 import type { BrowserContext, Page, Request } from '@playwright/test';
 import { test, expect } from '../fixtures';
 import { AiAgentsPage } from '../pages/AiAgentsPage';
+import { waitForLoginFormReady } from '../pages/hydration';
 
 /**
  * `/settings/ai-agents` — the four-step guided create flow (`AgentCreateFlow.tsx`,
@@ -48,6 +49,7 @@ async function readAccessToken(page: Page): Promise<string> {
       const email = process.env.E2E_ADMIN_EMAIL;
       const password = process.env.E2E_ADMIN_PASSWORD;
       if (!email || !password) throw new Error('E2E_ADMIN_EMAIL/E2E_ADMIN_PASSWORD are not set');
+      await waitForLoginFormReady(page);
       await page.getByTestId('login-email-input').fill(email);
       await page.getByTestId('login-password-input').fill(password);
       // A context with no auth-binding cookie yet gets a 428

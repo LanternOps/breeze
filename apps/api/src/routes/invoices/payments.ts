@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { recordPaymentSchema } from '@breeze/shared';
+import { idempotencyKeySchema, recordPaymentSchema } from '@breeze/shared';
 import { recordPayment, listPayments, voidPayment } from '../../services/invoiceService';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { invoiceActorFrom, handleServiceError } from './invoices';
@@ -20,8 +20,30 @@ invoicePaymentRoutes.get('/:id/payments', scopes, readPerm, zValidator('param', 
   catch (err) { return handleServiceError(c, err); }
 });
 invoicePaymentRoutes.post('/:id/payments', scopes, sendPerm, zValidator('param', idParam), zValidator('json', recordPaymentSchema), async (c) => {
+  // #3803: the idempotency key may come as the conventional Idempotency-Key
+  // header or as the body's `idempotencyKey`; both are validated alike, and two
+  // that disagree are refused rather than one silently winning.
+  const body = c.req.valid('json');
+  let idempotencyKey = body.idempotencyKey;
+  const headerKey = c.req.header('Idempotency-Key');
+  if (headerKey !== undefined) {
+    const parsed = idempotencyKeySchema.safeParse(headerKey);
+    if (!parsed.success) {
+      return c.json({ error: 'Idempotency-Key must be 1-255 visible ASCII characters with no whitespace', code: 'INVALID_IDEMPOTENCY_KEY' }, 400);
+    }
+    if (idempotencyKey !== undefined && idempotencyKey !== parsed.data) {
+      return c.json({ error: 'The Idempotency-Key header and the body idempotencyKey differ', code: 'IDEMPOTENCY_KEY_MISMATCH' }, 400);
+    }
+    idempotencyKey = parsed.data;
+  }
   try {
-    const { invoice, audit } = await recordPayment(c.req.valid('param').id, c.req.valid('json'), invoiceActorFrom(c));
+    const { invoice, audit, replayed } = await recordPayment(c.req.valid('param').id, { ...body, idempotencyKey }, invoiceActorFrom(c));
+    // A replay recorded nothing, so it writes no audit entry: the request that
+    // recorded the payment wrote that one.
+    if (replayed) {
+      c.header('Idempotent-Replayed', 'true');
+      return c.json({ data: invoice });
+    }
     writeRouteAudit(c, {
       orgId: audit.orgId,
       action: 'invoice.payment.recorded',

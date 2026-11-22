@@ -356,6 +356,7 @@
     "tabs": {
       "compliance": "Compliance",
       "patches": "Patches",
+      "vendorUpdates": "Hersteller-Updates",
       "jobs": "Jobs",
       "updateRings": "Updateringe"
     },
@@ -486,9 +487,11 @@
     "rebootDone": "Abgeschlossen",
     "rebootNotRequired": "—",
     "skipReasons": {
+      "no_approved_patches": "Übersprungen: Keines der ausstehenden Updates dieses Geräts ist freigegeben.",
       "ring_deleted": "Vor der Verteilung abgebrochen: Der Update-Ring wurde gelöscht.",
       "ring_disabled": "Vor der Verteilung abgebrochen: Der Update-Ring wurde deaktiviert.",
-      "ring_unavailable": "Übersprungen: Der Update-Ring wurde gelöscht oder deaktiviert, bevor dieses Gerät an der Reihe war."
+      "ring_unavailable": "Übersprungen: Der Update-Ring wurde gelöscht oder deaktiviert, bevor dieses Gerät an der Reihe war.",
+      "all_managed_by_vendor_updates": "Übersprungen: Alle ausstehenden Updates dieses Geräts werden von Hersteller-Updates verwaltet, eine Freigabe ist nicht nötig."
     },
     "errors": {
       "load": "Patch-Job konnte nicht geladen werden"
@@ -673,5 +676,38 @@
       "hold_one": "{{count}} Tag Verzögerung",
       "hold_other": "{{count}} Tage Verzögerung"
     }
+  },
+  "vendorUpdates": {
+    "description": "Das Update-Tool des jeweiligen Herstellers, per Konfigurationsrichtlinie nach Zeitplan am Laufen gehalten. Geräte, die keine solche Richtlinie erreicht, erscheinen als „Nicht verwaltet“.",
+    "loadError": "Hersteller-Updates konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "pickOrganization": "Wählen Sie eine Organisation aus, um deren Hersteller-Updates zu sehen.",
+    "loading": "Hersteller-Updates werden geladen",
+    "empty": "Kein Gerät entspricht diesem Filter.",
+    "vendorFilter": "Hersteller",
+    "allVendors": "Alle Hersteller",
+    "state": {
+      "upToDate": "Auf dem neuesten Stand",
+      "overdue": "Überfällig",
+      "failing": "Fehlgeschlagen",
+      "notSupported": "Nicht unterstützt",
+      "notManaged": "Nicht verwaltet",
+      "waitingForReboot": "Wartet auf Neustart",
+      "rebootOverdue": "Neustart überfällig"
+    },
+    "columns": {
+      "device": "Gerät",
+      "organization": "Organisation",
+      "site": "Standort",
+      "vendor": "Hersteller",
+      "state": "Status",
+      "lastRun": "Letzte Ausführung",
+      "lastSuccess": "Letzter Erfolg"
+    },
+    "never": "Nie",
+    "scheduleNotHandedBack": "Breeze konnte den Zeitplan des Hersteller-Tools nicht zurückgeben",
+    "range": "{{from}}–{{to}} von {{total}}",
+    "previous": "Zurück",
+    "next": "Weiter"
   }
 }

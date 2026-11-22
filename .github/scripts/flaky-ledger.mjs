@@ -22,7 +22,9 @@
 //     `foo.integration.test.ts` covers `foo.ts`, `foo.service.ts`, …;
 //   - vitest-integration additionally: any changed non-test file under
 //     apps/api/src/, unless the entry declares `covers` (repo paths — files,
-//     or directories as prefixes), which is then used instead;
+//     or directories as prefixes), which is then used instead; and any change
+//     under apps/api/migrations/ or apps/api/src/db/ (`schemaRoots`), whatever
+//     the entry's `covers`: a migration-only PR touches every integration test;
 //   - go: any file under the package's directory;
 //   - `covers` on any other entry only adds paths.
 //
@@ -156,10 +158,12 @@ const underPath = (f, c) => {
   return f === dir || f.startsWith(`${dir}/`);
 };
 
-// `paths`: { prefix, sourceRoot? } for vitest (package dir, e.g. `apps/api/`;
-// `sourceRoot` for vitest-integration), or { goModule, goDir } for go; plus an
-// optional `covers` Map(id → repo paths). Unmappable → touched (blocks).
+// `paths`: { prefix, sourceRoot?, schemaRoots? } for vitest (package dir, e.g.
+// `apps/api/`; `sourceRoot` and `schemaRoots` for vitest-integration), or
+// { goModule, goDir } for go; plus an optional `covers` Map(id → repo paths).
+// Unmappable → touched (blocks).
 export function failureTouched(failure, changed, paths = {}) {
+  if (paths.schemaRoots && [...changed].some((f) => paths.schemaRoots.some((r) => underPath(f, r)))) return true;
   const covers = paths.covers?.get(failure.id);
   if (covers && [...changed].some((f) => covers.some((c) => underPath(f, c)))) return true;
   if (failure.pkg) {

@@ -2,11 +2,13 @@ import type { AlertOwnerKind } from '@breeze/shared';
 import nodemailer, { type Transporter } from 'nodemailer';
 import { Resend } from 'resend';
 import { captureException } from './sentry';
+import { recordEmailSendFailure, recordEmailSendSuccess, recordResendQuotaHeaders } from './emailMetrics';
 import {
   escapeHtml,
   getSupportEmail,
   renderButton,
   renderLayout,
+  renderLinkRow,
 } from './emailLayout';
 import type { PartnerLaneMailPurpose, PlatformMailPurpose } from './emailDomains/mailPurposes';
 import { platformFallbackFrom, resolveSender } from './emailDomains/senderResolution';
@@ -163,6 +165,117 @@ export interface PortalInviteEmailParams {
   partnerName?: string;
   /** Partner-saved template override; null/absent uses code defaults. */
   custom?: PartnerEmailCustom | null;
+  /**
+   * Portal registration W4 (#11381), spec §5.5: the invitation-bound "Sign in
+   * with Microsoft" link (the invite link with `&method=microsoft`), present
+   * only when Microsoft is effective for the org. It becomes the primary button.
+   */
+  microsoftUrl?: string;
+  /**
+   * Portal registration W7 (#11384) D12: the invitation-bound "Sign in with
+   * Google" link (the invite link with `&method=google`), present only when
+   * Google is effective for the org. A primary button: the only one when
+   * Microsoft is absent, the second when it is present.
+   */
+  googleUrl?: string;
+  /**
+   * Whether the org's effective policy allows password sign-in. False
+   * (`sso_only`): the email never offers a password.
+   */
+  passwordAllowed: boolean;
+}
+
+/**
+ * A decision on a portal access request (portal registration W3, #11380, OD3),
+ * sent to the person who asked. Partner lane, `support` stream, like the
+ * invite: `partnerId` must come from a row the call site already read or from
+ * the verified auth context, never from request input (§8.1).
+ */
+export interface PortalAccessDecisionEmailParams {
+  to: string | string[];
+  orgName?: string;
+  partnerId: string | null;
+  partnerName?: string;
+}
+
+export interface PortalAccessApprovedEmailParams extends PortalAccessDecisionEmailParams {
+  /** The portal sign-in page, built with `buildPortalUrl` at the call site. */
+  loginUrl: string;
+}
+
+export type PortalAccessDeclinedEmailParams = PortalAccessDecisionEmailParams;
+
+/**
+ * Portal registration W6 (#11383): the two mails of the self-registration
+ * flow. Partner lane, `support` stream; `partnerId` comes from the org row the
+ * caller read, never from request input. There is deliberately NO `name`:
+ * nothing the requester typed may appear in a mail sent to an address they
+ * may not own.
+ */
+export interface PortalSelfRegistrationLinkEmailParams {
+  to: string;
+  verifyUrl: string;
+  orgName: string;
+  partnerId: string | null;
+  partnerName: string | null;
+}
+
+export interface PortalSelfRegistrationExistingAccountEmailParams {
+  to: string;
+  loginUrl: string;
+  forgotPasswordUrl: string;
+  orgName: string;
+  partnerId: string | null;
+  partnerName: string | null;
+}
+
+/**
+ * Portal registration W4 (#11381, plan D7): another organization proved the
+ * Microsoft tenant one of this partner's orgs was linked to, so the link was
+ * removed. Platform mail from Breeze to the partner's active admins; it never
+ * names the organization that proved the tenant.
+ */
+export interface PortalEntraTenantDisplacedEmailParams {
+  to: string | string[];
+  partnerName: string;
+  orgName: string;
+  tenantId: string;
+}
+
+export type PortalDomainVerificationLostReason =
+  | 'record_missing'
+  | 'not_in_directory'
+  | 'tenant_not_proven'
+  | 'connection_missing'
+  | 'stale'
+  | 'displaced';
+
+/**
+ * Portal registration W5 (#11382): a customer org's domain stopped being
+ * verified. Platform mail from Breeze to the partner's active admins.
+ */
+export interface PortalDomainVerificationLostEmailParams {
+  to: string | string[];
+  partnerName: string;
+  orgName: string;
+  domain: string;
+  reason: PortalDomainVerificationLostReason;
+}
+
+/**
+ * Portal registration W8 (#11385, plan D12): a directory deprovisioning run
+ * was held for the MSP's approval. Platform mail from Breeze to the partner's
+ * active admins. Counts only — it never names the people affected.
+ */
+export interface PortalDirectoryHeldEmailParams {
+  to: string | string[];
+  partnerName: string;
+  orgName: string;
+  source: 'entra' | 'google';
+  /** Distinct portal accounts the held run would act on. */
+  affected: number;
+  /** The org's Portal tab in the dashboard, or null when no dashboard URL is configured. */
+  portalTabUrl: string | null;
 }
 
 export interface VerificationEmailParams {
@@ -420,6 +533,18 @@ export class EmailService {
    * declares a purpose, or the classification G5 depends on leaks away.
    */
   async deliverRaw(message: RawEmailMessage): Promise<void> {
+    // Exactly one breeze_email_send_total sample per call; the error is
+    // rethrown untouched.
+    try {
+      await this.sendViaProvider(message);
+    } catch (err) {
+      recordEmailSendFailure('platform', this.provider, err instanceof EmailTransportError ? err.providerErrorName : undefined);
+      throw err;
+    }
+    recordEmailSendSuccess('platform', this.provider);
+  }
+
+  private async sendViaProvider(message: RawEmailMessage): Promise<void> {
     const { to, cc, subject, html, text, from, replyTo, headers, attachments } = message;
     const sender = from;
 
@@ -428,7 +553,7 @@ export class EmailService {
         throw new Error('Resend transport is not initialized');
       }
 
-      const { error } = await this.resend.emails.send({
+      const { error, headers: responseHeaders } = await this.resend.emails.send({
         from: sender,
         to,
         cc,
@@ -443,6 +568,8 @@ export class EmailService {
           contentType: a.contentType
         }))
       });
+      // Error responses carry it too, which is when it matters most.
+      recordResendQuotaHeaders(responseHeaders);
       if (error) {
         // Text unchanged; the SDK's own name/statusCode now ride along so the
         // partner lane can classify without regex-matching prose.
@@ -461,12 +588,10 @@ export class EmailService {
         throw new Error('Mailgun config is not initialized');
       }
 
-      // `cc` is deliberately NOT forwarded: sendViaMailgun supports it, this
-      // call has never passed it, and W01 is byte-identical by construction.
-      // Fixing it is its own issue (plan index amendment 6).
       await sendViaMailgun(this.mailgunConfig, {
         from: sender,
         to,
+        cc,
         subject,
         html,
         text,
@@ -625,6 +750,91 @@ export class EmailService {
       purpose: 'portal.invite',
       partnerId: params.partnerId,
       partnerName: params.partnerName ?? null,
+    });
+  }
+
+  async sendPortalAccessApproved(params: PortalAccessApprovedEmailParams): Promise<void> {
+    const template = buildPortalAccessApprovedTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'portal.access_request.approved',
+      partnerId: params.partnerId,
+      partnerName: params.partnerName ?? null,
+    });
+  }
+
+  async sendPortalAccessDeclined(params: PortalAccessDeclinedEmailParams): Promise<void> {
+    const template = buildPortalAccessDeclinedTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'portal.access_request.declined',
+      partnerId: params.partnerId,
+      partnerName: params.partnerName ?? null,
+    });
+  }
+
+  async sendPortalSelfRegistrationLink(params: PortalSelfRegistrationLinkEmailParams): Promise<void> {
+    const template = buildPortalSelfRegistrationLinkTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'portal.self_registration.verify',
+      partnerId: params.partnerId,
+      partnerName: params.partnerName,
+    });
+  }
+
+  async sendPortalSelfRegistrationExistingAccount(params: PortalSelfRegistrationExistingAccountEmailParams): Promise<void> {
+    const template = buildPortalSelfRegistrationExistingAccountTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'portal.self_registration.existing_account',
+      partnerId: params.partnerId,
+      partnerName: params.partnerName,
+    });
+  }
+
+  async sendPortalEntraTenantDisplaced(params: PortalEntraTenantDisplacedEmailParams): Promise<void> {
+    const template = buildPortalEntraTenantDisplacedTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'partner.portal_entra_tenant.displaced',
+    });
+  }
+
+  async sendPortalDomainVerificationLost(params: PortalDomainVerificationLostEmailParams): Promise<void> {
+    const template = buildPortalDomainVerificationLostTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'partner.portal_domain_verification.lost',
+    });
+  }
+
+  async sendPortalDirectoryHeld(params: PortalDirectoryHeldEmailParams): Promise<void> {
+    const template = buildPortalDirectoryHeldTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'partner.portal_directory.held',
     });
   }
 }
@@ -1086,6 +1296,18 @@ function buildPasswordResetTemplate(params: PasswordResetEmailParams): EmailTemp
   return { subject, html, text };
 }
 
+/**
+ * The portal invite. Which sign-in methods it offers follows the org's
+ * effective policy (W4 #11381, spec §5.5; W7 #11384 D12):
+ *  - password only (no SSO method): unchanged — one "Set your password" button;
+ *  - one SSO method and password: "Sign in with Microsoft" or "Sign in with
+ *    Google" is the button, and "Or set a password" a secondary link;
+ *  - both SSO methods: two primary buttons, Microsoft then Google, then the
+ *    password link when allowed;
+ *  - `sso_only`: the SSO button(s) only; no password line, link or wording.
+ * The subject never changes. A partner's custom button label was written for
+ * the password button, so it never relabels an SSO one.
+ */
 export function buildPortalInviteTemplate(params: PortalInviteEmailParams): EmailTemplate {
   const orgName = params.orgName?.trim();
   const inviter = params.inviterName?.trim();
@@ -1094,30 +1316,253 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
     ? `<p style="${BODY_PARA}">${escapeHtml(customMessage)}</p>`
     : '';
   const custom = params.custom ?? null;
+  // The SSO buttons, in display order (an empty URL is absent).
+  const ssoButtons = [
+    params.microsoftUrl ? { url: params.microsoftUrl, label: 'Sign in with Microsoft', provider: 'Microsoft' } : null,
+    params.googleUrl ? { url: params.googleUrl, label: 'Sign in with Google', provider: 'Google' } : null,
+  ].filter((b): b is { url: string; label: string; provider: string } => b !== null);
+  const [firstSso, ...moreSso] = ssoButtons;
+  const passwordOnly = !firstSso && params.passwordAllowed;
+  // No password and no SSO URL (a caller that offers neither): the plain
+  // invite link; its page offers what the org allows.
+  const primary = firstSso
+    ? {
+      url: firstSso.url,
+      label: firstSso.label,
+      preheader: `Sign in with ${ssoButtons.map((b) => b.provider).join(' or ')} to access your support portal.`,
+    }
+    : passwordOnly
+      ? { url: params.inviteUrl, label: undefined, preheader: 'Set your password to access your support portal.' }
+      : { url: params.inviteUrl, label: 'Accept your invite', preheader: 'Accept your invite to access your support portal.' };
+  const passwordSecondary = Boolean(firstSso) && params.passwordAllowed;
   const rendered = renderPartnerEmail({
     id: 'portal_invite',
-    custom,
+    custom: !passwordOnly && custom ? { ...custom, buttonLabel: null } : custom,
     vars: {
       requester_name: inviter ?? '',
       partner_name: params.partnerName ?? '',
-      invite_url: params.inviteUrl,
+      // A custom body's `{{invite_url}}` is the link that works for this invitee.
+      invite_url: params.passwordAllowed ? params.inviteUrl : primary.url,
       org_name: orgName ?? '',
     },
-    ctaUrl: params.inviteUrl,
+    ctaUrl: primary.url,
+    ctaLabel: primary.label,
+    ...(moreSso.length > 0 ? { extraCtas: moreSso.map(({ label, url }) => ({ label, url })) } : {}),
     footer: supportFooter(params.supportEmail, 'Need help? Contact'),
-    preheader: 'Set your password to access your support portal.',
+    preheader: primary.preheader,
     bodyBeforeCta: messageBlock,
-    bodyAfterCta: '',
+    bodyAfterCta: passwordSecondary ? renderLinkRow([{ label: 'Or set a password', url: params.inviteUrl }]) : '',
   });
   const support = getSupportEmail(params.supportEmail);
+  const actionLines = firstSso
+    ? [...ssoButtons.map((b) => `${b.label}: ${b.url}`), passwordSecondary ? `Or set a password: ${params.inviteUrl}` : null]
+    : [passwordOnly ? `Set your password: ${params.inviteUrl}` : `Accept your invite: ${params.inviteUrl}`];
   const text = [
     orgName ? `You're invited to the ${orgName} support portal.` : `You're invited to your support portal.`,
     customMessage || null,
-    `Set your password: ${params.inviteUrl}`,
+    ...actionLines,
     'This invite link expires in 7 days.',
     support ? `Need help? Contact ${support}.` : null
   ].filter(Boolean).join('\n');
   return { subject: rendered.subject, html: rendered.html, text };
+}
+
+/**
+ * Portal access request approved (W3 #11380, OD3): an SSO-origin or add-in
+ * request now has browser access. One button to the portal sign-in page. No
+ * support footer: the platform support address is not the customer's IT
+ * provider.
+ */
+export function buildPortalAccessApprovedTemplate(params: PortalAccessApprovedEmailParams): EmailTemplate {
+  const orgName = params.orgName?.trim();
+  const subject = orgName ? `You can now sign in to the ${orgName} portal` : 'You can now sign in to your portal';
+  const lead = orgName
+    ? `Your request for access to the ${orgName} portal was approved.`
+    : 'Your request for portal access was approved.';
+  const html = renderLayout({
+    title: subject,
+    preheader: lead,
+    heading: 'You can now sign in',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      ${renderButton('Sign in', params.loginUrl)}
+    `,
+    brandName: params.partnerName?.trim() || undefined,
+  });
+  const text = [lead, `Sign in: ${params.loginUrl}`].join('\n');
+  return { subject, html, text };
+}
+
+/**
+ * Self-registration verify link (W6 #11383): the only copy that proves the
+ * address is the requester's. No requester-typed text; `orgName` comes from
+ * the org row.
+ */
+export function buildPortalSelfRegistrationLinkTemplate(params: PortalSelfRegistrationLinkEmailParams): EmailTemplate {
+  const orgName = params.orgName.trim();
+  const subject = `Confirm your request for access to ${orgName}'s portal`;
+  const lead = `Someone, hopefully you, asked for access to ${orgName}'s customer portal with this address. Confirm within 30 minutes:`;
+  const ignore = "If you didn't ask for this, ignore this email.";
+  const html = renderLayout({
+    title: subject,
+    preheader: lead,
+    heading: 'Confirm your request',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      ${renderButton('Confirm my request', params.verifyUrl)}
+      <p style="${BODY_PARA}">${escapeHtml(ignore)}</p>
+    `,
+    brandName: params.partnerName?.trim() || undefined,
+  });
+  const text = [lead, `Confirm my request: ${params.verifyUrl}`, ignore].join('\n');
+  return { subject, html, text };
+}
+
+/** Self-registration for an address that already has a portal account (W6 #11383). */
+export function buildPortalSelfRegistrationExistingAccountTemplate(params: PortalSelfRegistrationExistingAccountEmailParams): EmailTemplate {
+  const orgName = params.orgName.trim();
+  const subject = `You already have an account for ${orgName}'s portal`;
+  const lead = `You already have an account for ${orgName}'s customer portal. Sign in, or reset your password if you have forgotten it. If you can't sign in, contact your IT provider.`;
+  const html = renderLayout({
+    title: subject,
+    preheader: lead,
+    heading: 'You already have an account',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      ${renderButton('Sign in', params.loginUrl)}
+      ${renderLinkRow([{ label: 'Reset your password', url: params.forgotPasswordUrl }])}
+    `,
+    brandName: params.partnerName?.trim() || undefined,
+  });
+  const text = [lead, `Sign in: ${params.loginUrl}`, `Reset your password: ${params.forgotPasswordUrl}`].join('\n');
+  return { subject, html, text };
+}
+
+/** Portal access request declined (W3 #11380, spec §5.10): neutral, no link. */
+export function buildPortalAccessDeclinedTemplate(params: PortalAccessDeclinedEmailParams): EmailTemplate {
+  const orgName = params.orgName?.trim();
+  const subject = 'Your portal access request';
+  const copy = orgName
+    ? `Your request for access to the ${orgName} portal was not approved. If you think this is a mistake, contact your IT provider.`
+    : 'Your request for portal access was not approved. If you think this is a mistake, contact your IT provider.';
+  const html = renderLayout({
+    title: subject,
+    preheader: 'An update on your portal access request.',
+    heading: subject,
+    body: `<p style="${BODY_PARA}">${escapeHtml(copy)}</p>`,
+    brandName: params.partnerName?.trim() || undefined,
+  });
+  return { subject, html, text: copy };
+}
+
+/**
+ * Microsoft tenant link removed (portal registration W4 #11381, plan D7): sent
+ * after commit to the displaced partner's active admins. A notice, not a call
+ * to action: no link, and the org that proved the tenant is never named.
+ * Breeze-branded (platform mail to MSP staff), same idiom as
+ * partnerTrustPartnerMail.ts.
+ */
+export function buildPortalEntraTenantDisplacedTemplate(params: PortalEntraTenantDisplacedEmailParams): EmailTemplate {
+  const orgName = params.orgName.trim();
+  const subject = `Microsoft tenant link removed from ${orgName}`;
+  const lead = `${orgName} was linked to the Microsoft tenant ${params.tenantId}. An administrator of that tenant proved it for another organization in Breeze, so the link was removed from ${orgName}.`;
+  const impact = `Microsoft sign-in to the ${orgName} portal and Breeze AI for Office no longer work for that tenant, and people signed in through it were signed out.`;
+  const next = "If you didn't expect this, contact the tenant's administrator.";
+  const why = `You're receiving this because you administer ${params.partnerName} in Breeze.`;
+  const html = renderLayout({
+    title: subject,
+    preheader: `The Microsoft tenant link was removed from ${orgName}.`,
+    heading: 'Microsoft tenant link removed',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(impact)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(next)}</p>
+      <p style="${MUTED_PARA}">${escapeHtml(why)}</p>
+    `,
+    footer: supportFooter(undefined, 'Need help? Contact'),
+  });
+  const text = [lead, impact, next, why].join('\n');
+  return { subject, html, text };
+}
+
+const PORTAL_DOMAIN_LOST_REASON_TEXT: Record<PortalDomainVerificationLostReason, string> = {
+  record_missing: 'the DNS verification record was not found on two consecutive daily checks',
+  not_in_directory: "the domain is no longer a verified domain in the customer's Microsoft 365 or Google Workspace directory",
+  tenant_not_proven: "the organization's Microsoft Entra tenant is no longer proven",
+  connection_missing: 'the Microsoft 365 or Google Workspace connection used to verify it was removed',
+  stale: 'it could not be re-checked for 7 days',
+  displaced: "another organization proved control of the domain while this organization's evidence no longer checked out",
+};
+
+/**
+ * Domain verification lost (portal registration W5 #11382): sent to the
+ * partner's active admins when a customer org's domain stops being verified.
+ * A notice with no link. Breeze-branded platform mail, same idiom as
+ * buildPortalEntraTenantDisplacedTemplate.
+ */
+export function buildPortalDomainVerificationLostTemplate(params: PortalDomainVerificationLostEmailParams): EmailTemplate {
+  const orgName = params.orgName.trim();
+  const domain = params.domain.trim();
+  const subject = `Domain verification lost: ${domain}`;
+  const lead = `${domain} is no longer verified for ${orgName}, because ${PORTAL_DOMAIN_LOST_REASON_TEXT[params.reason]}.`;
+  const impact = `Portal self-registration and Google sign-in for ${domain} stop until it is verified again under Organization › Domains.`;
+  const why = `You're receiving this because you administer ${params.partnerName} in Breeze.`;
+  const html = renderLayout({
+    title: subject,
+    preheader: `${domain} is no longer verified for ${orgName}.`,
+    heading: 'Domain verification lost',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(impact)}</p>
+      <p style="${MUTED_PARA}">${escapeHtml(why)}</p>
+    `,
+    footer: supportFooter(undefined, 'Need help? Contact'),
+  });
+  const text = [lead, impact, why].join('\n');
+  return { subject, html, text };
+}
+
+const PORTAL_DIRECTORY_NAME: Record<PortalDirectoryHeldEmailParams['source'], string> = {
+  entra: 'Microsoft Entra',
+  google: 'Google Workspace',
+};
+
+/**
+ * Directory deprovisioning run held (portal registration W8 #11385, plan
+ * D8a/D12): sent once per held run, after commit, to the partner's active
+ * admins. Names the org, the directory and the count, and links to the org's
+ * Portal tab — never the people (the panel lists them to an authorized MSP
+ * user). Breeze-branded platform mail, same idiom as
+ * buildPortalDomainVerificationLostTemplate.
+ */
+export function buildPortalDirectoryHeldTemplate(params: PortalDirectoryHeldEmailParams): EmailTemplate {
+  const orgName = params.orgName.trim();
+  const directory = PORTAL_DIRECTORY_NAME[params.source];
+  const accounts = `${params.affected} portal account${params.affected === 1 ? '' : 's'}`;
+  const subject = `Portal sign-ins held for your review: ${orgName}`;
+  const lead = `${orgName}'s ${directory} directory reports ${accounts} whose people were disabled or removed there. Breeze has held these sign-in changes for your review instead of applying them.`;
+  const impact = 'Until your team applies or dismisses them, those people can still sign in to the customer portal.';
+  const where = params.portalTabUrl
+    ? 'Review them on the organization\'s Portal tab.'
+    : `Review them under Settings › Organizations › ${orgName} › Portal.`;
+  const why = `You're receiving this because you administer ${params.partnerName} in Breeze.`;
+  const html = renderLayout({
+    title: subject,
+    preheader: `${accounts} held for your review in ${orgName}.`,
+    heading: 'Portal sign-ins held for your review',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(impact)}</p>
+      <p style="${BODY_PARA}">${escapeHtml(where)}</p>
+      ${params.portalTabUrl ? renderButton('Review held changes', params.portalTabUrl) : ''}
+      <p style="${MUTED_PARA}">${escapeHtml(why)}</p>
+    `,
+    footer: supportFooter(undefined, 'Need help? Contact'),
+  });
+  const text = [lead, impact, where, params.portalTabUrl ? `Review held changes: ${params.portalTabUrl}` : null, why]
+    .filter((line): line is string => line !== null)
+    .join('\n');
+  return { subject, html, text };
 }
 
 function buildVerificationTemplate(params: VerificationEmailParams): EmailTemplate {

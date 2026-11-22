@@ -267,6 +267,49 @@ describe('InvoiceDetail', () => {
     expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject({ amount: 50, method: 'check' });
   });
 
+  // #3803: a re-click after a failure whose outcome is unknown must not record
+  // the payment twice, so a retry of the same payment carries the same key.
+  it('reuses one idempotency key across retries of a payment and starts a new one after success or an edit', async () => {
+    const postResponses = [json({ error: 'timeout' }, false), json({ data: { id: 'pay-1' } }), json({ data: { id: 'pay-2' } }), json({ data: { id: 'pay-3' } })];
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input.endsWith('/payments') && opts?.method === 'POST') return postResponses.shift()!;
+      if (input.endsWith('/payments')) return json({ data: [] });
+      return json({ data: {} });
+    });
+    const postedKeys = () => fetchMock.mock.calls
+      .filter((c) => String(c[0]).endsWith('/payments') && (c[1] as RequestInit)?.method === 'POST')
+      .map((c) => JSON.parse((c[1] as RequestInit).body as string).idempotencyKey as string | undefined);
+    // Settled = the request finished: a failure leaves the amount and re-enables
+    // submit; a success clears the amount.
+    const submit = async (expectedPosts: number, outcome: 'fails' | 'succeeds') => {
+      fireEvent.click(screen.getByTestId('invoice-payment-submit'));
+      fireEvent.click(await screen.findByTestId('invoice-payment-confirm'));
+      await waitFor(() => expect(postedKeys()).toHaveLength(expectedPosts));
+      if (outcome === 'fails') await waitFor(() => expect(screen.getByTestId('invoice-payment-submit')).toBeEnabled());
+      else await waitFor(() => expect(screen.getByTestId('invoice-payment-amount')).toHaveValue(null));
+    };
+
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-form')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('invoice-payment-amount'), { target: { value: '40' } });
+    await submit(1, 'fails'); // fails: the outcome is unknown to the client
+    await submit(2, 'succeeds'); // the retry of the SAME payment
+    const [first, retry] = postedKeys();
+    expect(first).toEqual(expect.any(String));
+    expect(retry).toBe(first);
+
+    // The retry succeeded and cleared the form: the next payment is a new one.
+    fireEvent.change(screen.getByTestId('invoice-payment-amount'), { target: { value: '40' } });
+    await submit(3, 'succeeds');
+    expect(postedKeys()[2]).not.toBe(first);
+
+    // An edited payment is a different payment, so it gets a different key.
+    fireEvent.change(screen.getByTestId('invoice-payment-amount'), { target: { value: '30' } });
+    await submit(4, 'succeeds');
+    expect(new Set(postedKeys().slice(2)).size).toBe(2);
+  });
+
   it('blocks recording a payment larger than the balance before the confirm dialog', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.endsWith('/payments')) return json({ data: [] });

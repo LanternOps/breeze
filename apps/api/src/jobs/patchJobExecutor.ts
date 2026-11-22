@@ -29,7 +29,7 @@ import {
 import { ringFeatureUpdatesSchema, DEFAULT_RING_FEATURE_UPDATES, type RingFeatureUpdates } from '@breeze/shared/validators';
 // W02 (#5748): the DB-facing resolver moved to patchEligibility.ts; the call
 // below and its behaviour are unchanged (golden-fixture parity test there).
-import { resolveApprovedPatchesForDevice } from '../services/patchEligibility';
+import { resolveApprovedPatchesForDevice, areAllPendingPatchesManagedByVendorLane } from '../services/patchEligibility';
 import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
 import {
   deliveryTtlMs,
@@ -44,6 +44,9 @@ import {
 } from '../services/patchJobFinalizer';
 import { captureException } from '../services/sentry';
 import { RING_UNAVAILABLE_SKIP_REASON } from '../services/updateRingQueuedWork';
+
+/** Job-history skip reason: every pending update was left to a vendor lane (#11243). Web label: patchJobDetail.skipReasons. */
+const ALL_MANAGED_BY_VENDOR_SKIP_REASON = 'all_managed_by_vendor_updates';
 import {
   buildRestorePointRequest,
   discardRestorePointRequest,
@@ -1322,7 +1325,9 @@ async function prepareDeviceExecution(
   // 1. Resolve approved patches
   let approvedPatches;
   try {
-    approvedPatches = await resolveApprovedPatchesForDevice(deviceId, orgId, ringConfig);
+    // Savepoint: the catch writes the skipped row on this same transaction (#11225).
+    approvedPatches = await dbModule.withDbTransaction(() =>
+      resolveApprovedPatchesForDevice(deviceId, orgId, ringConfig));
   } catch (err) {
     console.error(`[PatchJobExecutor] Failed to resolve patches for device ${deviceId}:`, err instanceof Error ? err.message : err);
     await markDeviceSkipped(patchJobId, deviceId, 'error_resolving_patches');
@@ -1331,6 +1336,22 @@ async function prepareDeviceExecution(
 
   // 2. No approved patches → skip
   if (approvedPatches.length === 0) {
+    // #11243: every pending update left to a vendor lane is not "nothing approved".
+    let allVendorManaged = false;
+    try {
+      // Isolated: this runs inside the device transaction, so the read needs its
+      // own savepoint for the catch below to contain a failure (CLAUDE.md).
+      allVendorManaged = await dbModule.withSystemDbAccessContextIsolated(() =>
+        areAllPendingPatchesManagedByVendorLane(deviceId, orgId, ringConfig));
+    } catch (err) {
+      // Reason refinement only: fall back to the generic reason, never fail the device.
+      console.warn(`[PatchJobExecutor] vendor-lane skip classification failed for device ${deviceId}:`, err instanceof Error ? err.message : err);
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, { patchJobId, deviceId });
+    }
+    if (allVendorManaged) {
+      await markDeviceSkipped(patchJobId, deviceId, ALL_MANAGED_BY_VENDOR_SKIP_REASON);
+      return { kind: 'skipped', skipped: true, reason: 'All pending updates are managed by vendor updates' };
+    }
     await markDeviceSkipped(patchJobId, deviceId, 'no_approved_patches');
     return { kind: 'skipped', skipped: true, reason: 'No approved patches' };
   }

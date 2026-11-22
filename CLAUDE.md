@@ -34,6 +34,7 @@ Full contract, the six tenancy shapes, and the cascade/export registration table
 
 - API connects as unprivileged `breeze_app`. Every tenant-scoped table has RLS enabled + forced + policies **in the same migration that creates it**. No app-layer-only fallback.
 - **DB context helpers** (`apps/api/src/db/index.ts`): `withDbAccessContext` on the request path; `withSystemDbAccessContext` for background/seeds (call `runOutsideDbContext` first if inside a request). Bare pool in request code is forbidden.
+- **A catch around a query must wrap the query in `withDbTransaction`, with the catch outside it.** Otherwise the failure is rethrown when the request transaction ends, and the caught 4xx or degraded 200 becomes a 500. Raw `SAVEPOINT` does not work with postgres.js, and never start `withDbTransaction` beside siblings in a `Promise.all` (`docs/agents/tenancy-rls.md`).
 - Every composite FK referencing an `org_id` column is `DEFERRABLE INITIALLY IMMEDIATE` (org merge defers constraints).
 - **A new `org_id` table is not done until it is registered** in `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts`, and `CORE_TENANT_EXPORT_POLICY` — plus the device/ticket lists when it has those columns. RLS coverage does not imply cascade coverage. Code review caught this 0/5 times; contract tests 5/5. Grep, don't judge.
 - **Adding a column** to an org-cascade table needs an export-policy classification; any `json`/`jsonb`/`bytea` column is `excludedOpen`.

@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { Readable } from 'node:stream';
 import { and, eq } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import { attestSnapshotForTest } from './restoreIntegrityFixture';
@@ -19,7 +20,7 @@ import {
 } from '../../db/schema';
 import { runInRecoveryOrgContext } from '../../routes/backup/bmr';
 import { hydrateSnapshotFileIndex } from '../../services/backupSnapshotFileIndex';
-import { fetchBackupObjectBytes } from '../../services/backupSnapshotStorage';
+import { MANIFEST_STREAM_MAX_BYTES, openBackupObjectStream } from '../../services/backupSnapshotStorage';
 import { normalizeStorageIdentity } from '../../services/backupStorageIdentity';
 import { generateRecoveryToken, hashRecoveryToken } from '../../services/recoveryBootstrap';
 import { getAuthenticatedRecoveryDownloadTarget } from '../../services/recoveryDownloadService';
@@ -38,6 +39,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 const tempDirs: string[] = [];
 
 afterAll(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -99,12 +101,15 @@ async function seedIncrementalOverRecordedRootOrigin(destination: Destination, o
     ],
   });
   if (destination.provider === 'local') {
+    // The API reads the destination from <BACKUP_LOCAL_ROOT>/<org id>/<config id>;
+    // the test uses its storage root as BACKUP_LOCAL_ROOT.
+    const objectRoot = join(destination.storageRoot, org.id, config.id);
     for (const key of [originFileKey, ownFileKey]) {
-      const abs = join(destination.storageRoot, key);
+      const abs = join(objectRoot, key);
       await mkdir(join(abs, '..'), { recursive: true });
       await writeFile(abs, `content for ${key}`, 'utf8');
     }
-    await writeFile(join(destination.storageRoot, 'snapshots', currentId, 'manifest.json'), manifestBytes, 'utf8');
+    await writeFile(join(objectRoot, 'snapshots', currentId, 'manifest.json'), manifestBytes, 'utf8');
   }
   await attestSnapshotForTest(currentDbId, {
     manifestSha256: createHash('sha256').update(manifestBytes, 'utf8').digest('hex'),
@@ -113,11 +118,11 @@ async function seedIncrementalOverRecordedRootOrigin(destination: Destination, o
 
   const outcome = await hydrateSnapshotFileIndex(currentDbId, {
     deps: {
-      fetchManifestBytes: destination.provider === 'local'
-        ? (args) => fetchBackupObjectBytes(args)
+      openManifest: destination.provider === 'local'
+        ? (args) => openBackupObjectStream({ ...args, maxBytes: MANIFEST_STREAM_MAX_BYTES })
         : async ({ key }) => {
           if (key !== `snapshots/${currentId}/manifest.json`) throw new Error(`unexpected manifest key ${key}`);
-          return Buffer.from(manifestBytes, 'utf8');
+          return Readable.from([Buffer.from(manifestBytes, 'utf8')]);
         },
     },
   });
@@ -188,6 +193,7 @@ describe('recovery download of an external reference whose origin recorded its f
   runDb('local: streams the origin object from <root>/snapshots/<origin>/files/...', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'recovery-8665-'));
     tempDirs.push(storageRoot);
+    vi.stubEnv('BACKUP_LOCAL_ROOT', storageRoot);
     const fixture = await seedIncrementalOverRecordedRootOrigin(
       { provider: 'local', storageRoot },
       (originId) => `snapshots/${originId}`,

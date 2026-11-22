@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, or } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import { customFieldWriteConflict } from '../services/customFields/writeErrors';
 import {
   canEditField,
@@ -211,21 +211,25 @@ customFieldRoutes.post(
 
     let field;
     try {
-      [field] = await db
-        .insert(customFieldDefinitions)
-        .values({
-          orgId,
-          partnerId,
-          name: payload.name,
-          fieldKey: payload.fieldKey,
-          type: payload.type,
-          options: payload.options,
-          required: payload.required,
-          defaultValue: payload.defaultValue,
-          deviceTypes: payload.deviceTypes,
-          scriptWrite: payload.scriptWrite
-        })
-        .returning();
+      // Savepoint so the caught constraint violation cannot poison the request
+      // transaction and turn the 409 into a 500 at commit (#11203).
+      [field] = await withDbTransaction(async () =>
+        db
+          .insert(customFieldDefinitions)
+          .values({
+            orgId,
+            partnerId,
+            name: payload.name,
+            fieldKey: payload.fieldKey,
+            type: payload.type,
+            options: payload.options,
+            required: payload.required,
+            defaultValue: payload.defaultValue,
+            deviceTypes: payload.deviceTypes,
+            scriptWrite: payload.scriptWrite
+          })
+          .returning()
+      );
     } catch (err) {
       // Both mapped conditions are the caller's own to fix and neither is a
       // server fault, so neither may surface as a 500. The mapping itself lives

@@ -6,6 +6,7 @@ import {
   buildCompiledAutomation,
   computeCompiledHash,
 } from './monitorCompiler';
+import { validateConditions } from '../alertConditions';
 import type { MonitorDefinitionRow } from '../../db/schema/monitorDefinitions';
 
 const def = {
@@ -59,6 +60,16 @@ describe('monitor compiler builders (#5289)', () => {
     expect(Array.isArray(t.conditions)).toBe(false);
     expect(t.cooldownMinutes).toBe(30);
     expect(t.autoResolve).toBe(true);
+  });
+
+  it('a monitor that inherits compiles the built-in into the NOT NULL template columns (#10765)', () => {
+    const t = buildCompiledTemplate({ ...def, cooldownMinutes: null, autoResolve: null });
+    expect(t.cooldownMinutes).toBe(5);
+    expect(t.autoResolve).toBe(false);
+    // An explicit 0 / false is a real override, never treated as inherit.
+    const explicit = buildCompiledTemplate({ ...def, cooldownMinutes: 0, autoResolve: false });
+    expect(explicit.cooldownMinutes).toBe(0);
+    expect(explicit.autoResolve).toBe(false);
   });
 
   it('a cpu-kind template carries the general monitor category', () => {
@@ -145,5 +156,61 @@ describe('monitor compiler builders (#5289)', () => {
       condition: { durationMinutes: 15, value: 80, operator: 'gt' },
     });
     expect(h1).toBe(h2);
+  });
+});
+
+describe('monitor compiler recovery condition (alert re-arm W3)', () => {
+  const eventLogDef = {
+    ...def,
+    kind: 'event_log',
+    condition: { category: 'application', level: 'warning', sourcePattern: 'APCPBEAgent', messagePattern: 'On Battery', countThreshold: 1, windowMinutes: 60 },
+    autoResolve: true,
+  } as MonitorDefinitionRow;
+
+  it('compiles the recovery condition through toAlertCondition', () => {
+    const t = buildCompiledTemplate({
+      ...eventLogDef,
+      autoResolveConditions: { category: 'application', level: 'info', sourcePattern: 'APCPBEAgent', messagePattern: 'Power Restored', windowMinutes: 60 },
+    });
+    expect(t.autoResolveConditions).toEqual({
+      type: 'event_log',
+      category: 'application',
+      level: 'info',
+      sourcePattern: 'APCPBEAgent',
+      messagePattern: 'Power Restored',
+      countThreshold: 1,
+      windowMinutes: 60,
+    });
+  });
+
+  it('the compiled recovery condition is one the evaluator accepts', () => {
+    const t = buildCompiledTemplate({
+      ...eventLogDef,
+      autoResolveConditions: { category: 'application', level: 'info', windowMinutes: 60 },
+    });
+    expect(validateConditions(t.autoResolveConditions)).toEqual([]);
+  });
+
+  it('passes a type-bearing legacy leaf through unchanged', () => {
+    const raw = { type: 'event_log', category: 'application', level: 'info', countThreshold: 1, windowMinutes: 60 };
+    expect(buildCompiledTemplate({ ...eventLogDef, autoResolveConditions: raw }).autoResolveConditions).toEqual(raw);
+  });
+
+  it('passes a legacy group with logic through unchanged', () => {
+    const raw = { logic: 'or', conditions: [{ type: 'threshold', metric: 'cpuPercent', operator: 'lt', value: 50 }] };
+    expect(buildCompiledTemplate({ ...def, autoResolveConditions: raw }).autoResolveConditions).toEqual(raw);
+  });
+
+  it('a stored value that fits neither shape never blocks a recompile', () => {
+    // A row saved before validation existed (#10935). Throwing here would make
+    // the whole monitor uneditable, including the edit that repairs it.
+    const stored = { conditions: [{ type: 'event_log' }] };
+    expect(buildCompiledTemplate({ ...eventLogDef, autoResolveConditions: stored }).autoResolveConditions).toEqual(stored);
+    const wrongKind = { category: 'application', level: 'info', windowMinutes: 60 };
+    expect(buildCompiledTemplate({ ...def, autoResolveConditions: wrongKind }).autoResolveConditions).toEqual(wrongKind);
+  });
+
+  it('no recovery condition stays null', () => {
+    expect(buildCompiledTemplate(eventLogDef).autoResolveConditions).toBeNull();
   });
 });

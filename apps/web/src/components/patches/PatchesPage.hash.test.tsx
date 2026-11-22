@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 
@@ -24,6 +24,7 @@ vi.mock('../../lib/authScope', () => {
 import PatchesPage from './PatchesPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { orgSwitchKeptHash } from '../../lib/orgSwitch';
+import { useFeaturesStore } from '../../stores/featuresStore';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 const json = (payload: unknown, ok = true, status = ok ? 200 : 500) =>
@@ -40,8 +41,14 @@ const activeTabText = () =>
 describe('PatchesPage hash grammar (#9791 C)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useFeaturesStore.setState({
+      loaded: false,
+      configOk: false,
+      features: { ...useFeaturesStore.getState().features, vendorUpdates: false },
+    });
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
+      if (url === '/config') return json({ features: { vendorUpdates: false } });
       if (url === '/update-rings') return json({ data: [] });
       if (url.startsWith('/patches?')) return json({ data: [] });
       if (url.startsWith('/patches/compliance')) {
@@ -118,6 +125,121 @@ describe('PatchesPage hash grammar (#9791 C)', () => {
     render(<PatchesPage />);
     await waitFor(() => expect(activeTabText().trim()).toMatch(/^patches$/i));
     expect(orgSwitchKeptHash()).toBe('patches');
+  });
+
+  describe('the Vendor updates tab (#11074)', () => {
+    const fleetCalls = () => fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.startsWith('/oem-updates/fleet'));
+
+    beforeEach(() => {
+      const compliance = fetchMock.getMockImplementation();
+      fetchMock.mockImplementation(async (input, init) => (String(input) === '/config'
+        ? json({ features: { vendorUpdates: true } })
+        : String(input).startsWith('/oem-updates/fleet')
+        ? json({
+            counts: { up_to_date: 0, overdue: 0, failing: 0, not_supported: 0, not_managed: 2, waiting_for_reboot: 0, reboot_overdue: 0 },
+            total: 0,
+            devices: [],
+          })
+        : compliance!(input, init)));
+    });
+
+    it('#vendor-updates selects the tab and loads the fleet', async () => {
+      window.history.replaceState({}, '', '/patches#vendor-updates');
+      render(<PatchesPage />);
+      await waitFor(() => expect(activeTabText().trim()).toMatch(/vendor updates/i));
+      await waitFor(() => expect(fleetCalls().length).toBeGreaterThan(0));
+      expect(screen.queryByRole('combobox', { name: 'Compliance status filter' })).toBeNull();
+      expect(window.location.hash).toBe('#vendor-updates');
+    });
+
+    it('a deep link keeps its filter, and the page does not rewrite it away', async () => {
+      window.history.replaceState({}, '', '/patches#vendor-updates&state=overdue');
+      render(<PatchesPage />);
+      await waitFor(() => expect(fleetCalls().some((u) => u.includes('state=overdue'))).toBe(true));
+      expect(window.location.hash).toBe('#vendor-updates&state=overdue');
+    });
+
+    it('offers the tab and its filter to an org switch', async () => {
+      window.history.replaceState({}, '', '/patches#vendor-updates&state=failing');
+      render(<PatchesPage />);
+      await waitFor(() => expect(activeTabText().trim()).toMatch(/vendor updates/i));
+      expect(orgSwitchKeptHash()).toBe('vendor-updates&state=failing');
+    });
+
+    it('a deep link survives /config still being in flight, then selects the tab (#11249)', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        if (String(input) === '/config') { await gate; return json({ features: { vendorUpdates: true } }); }
+        return base(input, init);
+      });
+      window.history.replaceState({}, '', '/patches#vendor-updates&state=overdue');
+      render(<PatchesPage />);
+      await screen.findByRole('combobox', { name: 'Compliance status filter' });
+      expect(activeTabText()).toMatch(/compliance/i);
+      expect(window.location.hash).toBe('#vendor-updates&state=overdue');
+      expect(fleetCalls()).toEqual([]);
+
+      release();
+      await waitFor(() => expect(activeTabText().trim()).toMatch(/vendor updates/i));
+      await waitFor(() => expect(fleetCalls().some((u) => u.includes('state=overdue'))).toBe(true));
+      expect(window.location.hash).toBe('#vendor-updates&state=overdue');
+    });
+
+    it('does not load the fleet on the other tabs', async () => {
+      window.history.replaceState({}, '', '/patches');
+      render(<PatchesPage />);
+      await screen.findByRole('combobox', { name: 'Compliance status filter' });
+      expect(fleetCalls()).toEqual([]);
+    });
+
+    it('clicking the tab writes the hash', async () => {
+      window.history.replaceState({}, '', '/patches');
+      render(<PatchesPage />);
+      await screen.findByRole('combobox', { name: 'Compliance status filter' });
+      fireEvent.click(await screen.findByRole('button', { name: /vendor updates/i }));
+      await waitFor(() => expect(window.location.hash).toBe('#vendor-updates'));
+    });
+  });
+
+  describe('the Vendor updates tab with the feature off (#11249)', () => {
+    const fleetCalls = () => fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.startsWith('/oem-updates/fleet'));
+    const tabLabels = () => screen.getAllByRole('button').map((b) => b.textContent ?? '');
+
+    it('renders no Vendor updates tab', async () => {
+      window.history.replaceState({}, '', '/patches');
+      render(<PatchesPage />);
+      await screen.findByRole('combobox', { name: 'Compliance status filter' });
+      await waitFor(() => expect(useFeaturesStore.getState().loaded).toBe(true));
+      expect(tabLabels().some((l) => /vendor updates/i.test(l))).toBe(false);
+      expect(tabLabels().some((l) => /jobs/i.test(l))).toBe(true);
+    });
+
+    it('#vendor-updates falls back to the default tab, with no fleet query and no error', async () => {
+      window.history.replaceState({}, '', '/patches#vendor-updates&state=overdue');
+      render(<PatchesPage />);
+      await screen.findByRole('combobox', { name: 'Compliance status filter' });
+      await waitFor(() => expect(useFeaturesStore.getState().loaded).toBe(true));
+      expect(activeTabText()).toMatch(/compliance/i);
+      expect(fleetCalls()).toEqual([]);
+      expect(screen.queryByRole('alert')).toBeNull();
+      // the page shows the default tab but never rewrites the URL
+      expect(window.location.hash).toBe('#vendor-updates&state=overdue');
+    });
+
+    it('a failed /config also hides the tab and never reads the fleet', async () => {
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => (String(input) === '/config' ? json({}, false, 500) : base(input, init)));
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      window.history.replaceState({}, '', '/patches#vendor-updates');
+      render(<PatchesPage />);
+      await screen.findByRole('combobox', { name: 'Compliance status filter' });
+      await waitFor(() => expect(useFeaturesStore.getState().loaded).toBe(true));
+      expect(tabLabels().some((l) => /vendor updates/i.test(l))).toBe(false);
+      expect(fleetCalls()).toEqual([]);
+      errSpy.mockRestore();
+    });
   });
 
   it('legacy #patches/<id> still selects the patches tab (RF4)', async () => {

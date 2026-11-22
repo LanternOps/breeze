@@ -5,7 +5,8 @@ import { analyzeMigrationDml, findUnscopedMigrationDml, escapeRegExp } from './m
 
 /**
  * Guard for issue #4518: a migration that writes rows without first electing
- * system scope is not portable off a superuser/BYPASSRLS connection.
+ * system scope is not portable off a superuser/BYPASSRLS connection when it is
+ * applied outside autoMigrate (raw replay, `psql -f`). See SINCE #8991 below.
  *
  * THE CLASS. `public.breeze_current_scope()` defaults to 'none'
  * (`0012-tenant-rls-deny-default.sql`), and once a table is
@@ -35,16 +36,25 @@ import { analyzeMigrationDml, findUnscopedMigrationDml, escapeRegExp } from './m
  * cannot silently rot when the next table is forced dynamically. Setting system
  * scope is harmless on a table without RLS.
  *
- * EVIDENCE (local, PG16, A/B with the RLS attribute as the sole variable —
- * `apps/api/scripts/check-migrations-nonsuperuser.ts` against a fresh database):
+ * EVIDENCE (local, PG16, measured before #8991, A/B with the RLS attribute as
+ * the sole variable — `apps/api/scripts/check-migrations-nonsuperuser.ts`
+ * against a fresh database):
  *   - migration role WITH BYPASSRLS: full set applies, OK.
  *   - same role NOBYPASSRLS: aborts at
  *     `2026-05-22-snmp-multi-vendor-templates.sql` with 42501 "new row violates
  *     row-level security policy for table snmp_templates".
  * So every deployment alive today migrates as superuser or BYPASSRLS — nothing
- * in the field is silently no-op'ing right now. The 122 baseline files below
- * are the debt that has to be paid before a plain (non-BYPASSRLS) owner role
- * can ever run this migration set, and the guard is what stops it growing.
+ * in the field is silently no-op'ing right now.
+ *
+ * SINCE #8991, `autoMigrate` elects system scope itself for every file
+ * (`migrationSessionSql` in `autoMigrate.ts`), so a plain (non-BYPASSRLS)
+ * owner role can apply the whole set, including the 122 baseline files below.
+ * CI's `check-migrations-nonsuperuser` job now migrates as exactly that role.
+ * The per-file rule still holds, because migrations are also replayed raw,
+ * outside autoMigrate (`__tests__/integration/replayMigration.ts`, a manual
+ * `psql -f` during recovery), and there a file has only its own election.
+ * The baseline lists the files that are not self-contained in that sense, and
+ * this guard keeps that list from growing.
  *
  * NOT COVERED: a forced table read as a SELECT source (`INSERT INTO a SELECT …
  * FROM forced_b`) filters silently the same way, but the target-side rule here

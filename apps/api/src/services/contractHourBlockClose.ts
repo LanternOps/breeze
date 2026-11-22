@@ -14,6 +14,7 @@ import { assertInTransaction, db, runOutsideDbContext, withSystemDbAccessContext
 import { contractHourPeriods, contractLines, contracts, timeEntries } from '../db/schema';
 import { addContractLine, createManualInvoice } from './invoiceService';
 import { buildAutomationEligibleOrgPredicate } from './tenantStatus';
+import { billingEnabledOrgPredicate, isBillingDisabledError } from './billingEnabled';
 import { captureException } from './sentry';
 import type { InvoiceActor } from './invoiceTypes';
 import { ContractServiceError } from './contractTypes';
@@ -262,6 +263,9 @@ export async function runHourBlockCloseOutSweep(asOf: Date = new Date()): Promis
         eq(contractLines.lineType, 'hour_block'),
         or(ne(contracts.status, 'active'), isNotNull(contractLines.hourBlockRetiredAt)),
         buildAutomationEligibleOrgPredicate(contracts.orgId),
+        // BRZ-8807 D2-A: billing off defers the close-out — no ledger row, no hour
+        // period, no overage invoice; the periods close once billing is back on.
+        billingEnabledOrgPredicate(contracts.orgId),
         sql`EXISTS (
           SELECT 1 FROM contract_billing_periods p
           WHERE p.contract_id = ${contractLines.contractId}
@@ -312,6 +316,8 @@ export async function runHourBlockCloseOutSweep(asOf: Date = new Date()): Promis
         return n;
       }));
     } catch (err) {
+      // Switched off after the selection: the transaction rolled back, so defer.
+      if (isBillingDisabledError(err)) continue;
       errors += 1;
       console.error('[contractHourBlocks] close-out failed', `contractId=${contractId}`, err instanceof Error ? err.message : err);
       captureException(err instanceof Error ? err : new Error(String(err)));

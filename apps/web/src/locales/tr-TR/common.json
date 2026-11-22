@@ -32,6 +32,9 @@
     "networkMonitor": "Ağ",
     "jobs": "İşler",
     "flows": "Akışlar",
+    "previewTag": "Önizleme",
+    "automations": "Otomasyonlar",
+    "automationsSections": "Otomasyon bölümleri",
     "monitoring": "İzleme",
     "networkDiscovery": "Ağ Keşfi",
     "edr": "EDR",
@@ -803,6 +806,7 @@
         "devices": "Cihazlar",
         "scripts": "Komut Dosyaları",
         "alerts": "Uyarılar",
+        "pages": "Sayfalar",
         "users": "Kullanıcılar",
         "settings": "Ayarlar",
         "recent-devices": "Son açılan cihazlar",
@@ -822,7 +826,9 @@
         "wispHome": "Wisp’i aç",
         "wispHomeDescription": "Wisp ana sayfanıza gidin"
       },
-      "numberHint": "Açmak için {{mod}}1–9"
+      "numberHint": "Açmak için {{mod}}1–9",
+      "thisCustomerOnly": "Yalnızca bu müşteri",
+      "partnerWide": "Tüm iş ortağı"
     },
     "notifications": {
       "title": "Bildirimler",
@@ -834,6 +840,8 @@
       "unread_other": "{{count}} okunmamış",
       "markAllRead": "Tümünü okundu olarak işaretle",
       "markAllUnread": "Tümünü okunmadı olarak işaretle",
+      "muteSound": "Onay sesini kapat",
+      "unmuteSound": "Onay sesini aç",
       "confirmClear": "Temizlemeyi onaylayın",
       "clearAll": "Tümünü temizle",
       "loading": "Bildirimler yükleniyor…",
@@ -903,7 +911,20 @@
       },
       "charKeysOn": "Tek tuşlu kısayollar açık.",
       "charKeysOff": "Tek tuşlu kısayollar kapalı. Yalnızca Ctrl/Cmd kısayolları çalışır.",
-      "charKeysManage": "Profil ayarlarından değiştir"
+      "charKeysManage": "Profil ayarlarından değiştir",
+      "queueTitle": "Bilet kuyruğu",
+      "queueHint": "Biletler sayfasında, bir metin alanının dışında.",
+      "queue": {
+        "next": "Sonraki bilet",
+        "previous": "Önceki bilet",
+        "open": "Bileti aç (çözümden sonra: önerilen sonraki bilet)",
+        "toggleBulk": "Toplu seçime ekle veya çıkar",
+        "assignMe": "Bana ata",
+        "reply": "Yanıt yaz",
+        "internal": "Dahili not yaz",
+        "resolve": "Notla çöz",
+        "back": "Kuyruğa dön"
+      }
     }
   },
   "migrationBanner": {
@@ -1448,6 +1469,10 @@
           "deviceOnline": {
             "description": "Bir cihaz bağlandığında tetiklenir.",
             "label": "Cihaz Çevrimiçi"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Yeni kaydedilen bir cihaz, mevcut ve sessiz bir cihaz kaydının yeniden kurulumu gibi göründüğünde tetiklenir.",
+            "label": "Olası Cihaz Yeniden Kurulumu"
           },
           "deviceReinstalled": {
             "description": "Yeniden kurulan bir makine mevcut cihaz kaydına yeniden bağlandığında tetiklenir.",
@@ -2453,6 +2478,7 @@
           "invalidTimeRange": "Başlangıç zamanı, bitiş zamanından önce olmalıdır.",
           "searchFailed": "Günlüklerde arama yapılamadı",
           "saveFailed": "Sorgu kaydedilemedi",
+          "savedQueriesFailed": "Kaydedilen sorgular yüklenemedi.",
           "noRowsExport": "Dışa aktarılacak satır yok."
         },
         "savePrompt": "Bu kaydedilen sorguya ad verin:",
@@ -2472,10 +2498,14 @@
         },
         "searchFleetLogs": "Filo Kayıtlarını Ara",
         "saveQuery": "Sorguyu Kaydet",
+        "usingSavedFilters": "Bu arama kayıtlı filtreleri kullanır.",
+        "customSearch": "Özel arama",
+        "savedQueries": "Kayıtlı sorgular",
         "exportCsv": "CSV'yi dışa aktar",
         "resultsTitle": "Arama Sonuçları",
         "loading": "Yükleniyor...",
         "resultsCount": "{{shown}} toplam {{total}} içinden gösteriliyor",
+        "resultsCountWithoutTotal": "{{shown}} gösteriliyor",
         "table": {
           "timestamp": "Zaman Damgası",
           "level": "Seviye",
@@ -2485,6 +2515,7 @@
         "unknownSite": "Bilinmeyen site",
         "empty": "Mevcut filtrelerle eşleşen günlük yok.",
         "pageCount": "Sayfa {{page}} / {{totalPages}}",
+        "currentPage": "Sayfa {{page}}",
         "previous": "Önceki"
       }
     },
@@ -2935,5 +2966,8 @@
   "featureLock": {
     "lockedLabel": "Kilitli",
     "upgrade": "Planları gör"
+  },
+  "inheritChoice": {
+    "inherit": "Devral — {{value}} ({{source}})"
   }
 }

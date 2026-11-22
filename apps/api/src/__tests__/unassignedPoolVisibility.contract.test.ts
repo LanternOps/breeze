@@ -72,6 +72,7 @@ const EXECUTION_SITES: Record<string, string> = {
 /** About Quick Support itself, not an enumeration of orgs a person sees. */
 const QUICK_SUPPORT_SPECIFIC: Record<string, string> = {
   'services/quickSupportOrg.ts': 'the Quick Support org helpers themselves',
+  'routes/remote/supportSessions.ts': 'Quick Support routes: matches a session to the caller\'s own partner\'s Quick Support org before revealing or replacing its code (#11836); never lists orgs',
   'services/timeSuggestionService.ts': 'attributes Quick Support session time to the customer org; a parked device never has a session',
   'services/orgArchive.ts': 'protected lifecycle: already refuses both types (NON_ARCHIVABLE_ORG_TYPES)',
   'services/orgMerge.ts': 'protected lifecycle: Quick Support merge refusal; the holding org is refused separately',
@@ -178,8 +179,34 @@ const EPHEMERAL_ONLY: Record<string, string> = {
  * target selector (a FANOUT_MODULES entry, parked guard beside the filter).
  * 75 → 76 (#9635): services/softwarePolicyCoverage.ts, the org device set the
  * Inventory Approve / Deny placement check resolves (parked guard beside it).
+ * 76 → 77 (#11065): jobs/oemUpdatesWorker.ts, the vendor update not-returned
+ * monitor (a FANOUT_MODULES entry, parked guard beside the filter).
+ * 77 → 80 (#11072): services/oemUpdates/candidates.ts, rebootSweep.ts and
+ * releaseSweep.ts, the vendor update scheduler's device selectors (each a
+ * parkedFanoutModules entry, parked guard beside the filter).
+ * 80 → 81 (#11073): services/oemUpdates/laneDelivery.ts, which classes a vendor
+ * lane delivers on a device (a parkedFanoutModules entry, parked guard beside the
+ * filter).
+ * 81 → 82 (#11074): routes/oemUpdates/fleet.ts, the Vendor updates fleet list
+ * (parked guard beside the filter), and services/oemUpdates/overdueSweep.ts,
+ * its alerts (a parkedFanoutModules entry) 82 → 83.
+ * 83 → 82 (#11562): the report generators now take their population from
+ * managedDeviceConditions() in services/managedDeviceScope.ts, so the files that
+ * hand-rolled the ephemeral filter drop out and that one helper (ephemeral filter
+ * and notParkedDeviceCondition() side by side) joins the scan.
+ * 82 → 83 (#8318 wave 2-1): services/reinstallCandidates/index.ts, the SQL
+ * half of the reinstall-target rule (notHiddenOrgType() beside the filter;
+ * hidden-org targets never qualify).
+ * 83 → 84 (#11065 observe-first): services/oemUpdates/observe.ts, the vendor
+ * canary observe sweep (notParkedDeviceCondition() beside the filter).
+ * 84 → 85 (#11677): services/aiToolsSiteScope.ts, deviceListReachConditions —
+ * query_devices' reach moved there to be shared with the Wisp standing state
+ * (notParkedDeviceCondition() beside the filter; a FANOUT module).
+ * 85 → 86 (#12369 W03a): services/learnedNetworks/eligibility.ts, guarded
+ * discovery agent eligibility (notParkedDeviceCondition() beside the filter in
+ * each of its three queries; a parkedFanoutModules entry).
  */
-const EPHEMERAL_DISCOVERED_FILES = 76;
+const EPHEMERAL_DISCOVERED_FILES = 86;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES

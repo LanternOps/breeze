@@ -32,6 +32,9 @@
     "networkMonitor": "Rete",
     "jobs": "Attività",
     "flows": "Flussi",
+    "previewTag": "Anteprima",
+    "automations": "Automazioni",
+    "automationsSections": "Sezioni delle automazioni",
     "monitoring": "Monitoraggio",
     "networkDiscovery": "Rilevamento rete",
     "edr": "EDR",
@@ -803,6 +806,7 @@
         "devices": "Dispositivi",
         "scripts": "Script",
         "alerts": "Avvisi",
+        "pages": "Pagine",
         "users": "Utenti",
         "settings": "Impostazioni",
         "recent-devices": "Dispositivi recenti",
@@ -822,7 +826,9 @@
         "wispHome": "Apri Wisp",
         "wispHomeDescription": "Vai alla tua home di Wisp"
       },
-      "numberHint": "{{mod}}1–9 per aprire"
+      "numberHint": "{{mod}}1–9 per aprire",
+      "thisCustomerOnly": "Solo questo cliente",
+      "partnerWide": "Intero partner"
     },
     "notifications": {
       "title": "Notifiche",
@@ -834,6 +840,8 @@
       "unread_other": "{{count}} non lette",
       "markAllRead": "Segna tutto letto",
       "markAllUnread": "Segna tutto come non letto",
+      "muteSound": "Disattiva suono approvazioni",
+      "unmuteSound": "Attiva suono approvazioni",
       "confirmClear": "Conferma cancellazione",
       "clearAll": "Cancella tutto",
       "loading": "Caricamento notifiche...",
@@ -903,7 +911,20 @@
       },
       "charKeysOn": "Le scorciatoie a tasto singolo sono attive.",
       "charKeysOff": "Le scorciatoie a tasto singolo sono disattivate. Funzionano solo le scorciatoie con Ctrl/Cmd.",
-      "charKeysManage": "Modifica nelle impostazioni del profilo"
+      "charKeysManage": "Modifica nelle impostazioni del profilo",
+      "queueTitle": "Coda ticket",
+      "queueHint": "Nella pagina dei ticket, fuori da un campo di testo.",
+      "queue": {
+        "next": "Ticket successivo",
+        "previous": "Ticket precedente",
+        "open": "Apri il ticket (dopo una risoluzione: il successivo proposto)",
+        "toggleBulk": "Aggiungi o rimuovi dalla selezione multipla",
+        "assignMe": "Assegna a me",
+        "reply": "Scrivi una risposta",
+        "internal": "Scrivi una nota interna",
+        "resolve": "Risolvi con una nota",
+        "back": "Torna alla coda"
+      }
     }
   },
   "migrationBanner": {
@@ -1448,6 +1469,10 @@
           "deviceOnline": {
             "description": "Attivato quando un dispositivo si connette.",
             "label": "Dispositivo online"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Si attiva quando un dispositivo appena registrato sembra una reinstallazione di un record di dispositivo esistente e inattivo.",
+            "label": "Possibile reinstallazione del dispositivo"
           },
           "deviceReinstalled": {
             "description": "Si attiva quando una macchina reinstallata viene ricollegata al record del dispositivo esistente.",
@@ -2453,6 +2478,7 @@
           "invalidTimeRange": "L'ora di inizio deve essere precedente all'ora di fine.",
           "searchFailed": "Impossibile cercare nei log",
           "saveFailed": "Impossibile salvare la query",
+          "savedQueriesFailed": "Impossibile caricare le query salvate.",
           "noRowsExport": "Nessuna riga da esportare."
         },
         "savePrompt": "Dai un nome a questa query salvata:",
@@ -2472,10 +2498,14 @@
         },
         "searchFleetLogs": "Cerca i registri della flotta",
         "saveQuery": "Salva query",
+        "usingSavedFilters": "Questa ricerca usa i filtri salvati.",
+        "customSearch": "Ricerca personalizzata",
+        "savedQueries": "Query salvate",
         "exportCsv": "Esporta CSV",
         "resultsTitle": "Risultati della ricerca",
         "loading": "Caricamento...",
         "resultsCount": "{{shown}} visualizzati su {{total}} totali",
+        "resultsCountWithoutTotal": "{{shown}} visualizzati",
         "table": {
           "timestamp": "Timestamp",
           "level": "Livello",
@@ -2485,6 +2515,7 @@
         "unknownSite": "Sito sconosciuto",
         "empty": "Nessun log corrispondeva ai filtri correnti.",
         "pageCount": "Pagina {{page}} di {{totalPages}}",
+        "currentPage": "Pagina {{page}}",
         "previous": "Precedente"
       }
     },
@@ -2935,5 +2966,8 @@
   "featureLock": {
     "lockedLabel": "Bloccato",
     "upgrade": "Vedi i piani"
+  },
+  "inheritChoice": {
+    "inherit": "Eredita — {{value}} ({{source}})"
   }
 }

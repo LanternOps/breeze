@@ -129,8 +129,13 @@ export const backupVerificationStructuredResultSchema = z.object({
   // manifest, so verification cannot observe them — the agent reads the count
   // off the manifest and refuses `passed` when it is non-zero.
   filesIncomplete: z.number().int().nonnegative().optional(),
+  // Files the run never reached a verdict on: its time budget ran out, or its
+  // storage session ended (code `storage_session_lost`). Not failures.
+  filesUnchecked: z.number().int().nonnegative().optional(),
   warnings: warningListSchema.optional(),
   error: z.string().max(10_000).optional(),
+  // Stable outcome code (e.g. `storage_session_lost`, an integrity failure code).
+  code: z.string().max(64).optional(),
 }).passthrough();
 
 export const vaultSyncStructuredResultSchema = z.object({

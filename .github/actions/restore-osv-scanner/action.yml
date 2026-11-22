@@ -1,0 +1,19 @@
+name: Restore osv-scanner binary
+description: >
+  Restore (never save) the pinned osv-scanner binary into the cache dir that
+  scripts/security/install-osv-scanner.sh reads. The installer re-checks the
+  restored copy against its pinned SHA-256 before using it, and downloads on a
+  miss or a mismatch, so a hit makes a GitHub release-download outage harmless.
+  PR and merge-queue refs cannot share caches and would only evict main's, so
+  only the seed workflow on main saves it (ci-cache-seed.yml, which must save
+  exactly the key and path below). The version in the key must equal the
+  installer's OSV_SCANNER_VERSION (install-osv-scanner.test.mjs). See #11367.
+runs:
+  using: composite
+  steps:
+    # Exact key only: another version's binary would fail the digest check.
+    - name: Restore osv-scanner binary
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/osv-scanner
+        key: osv-scanner-v2.4.0-${{ runner.os }}

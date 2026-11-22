@@ -153,6 +153,7 @@ function makeSignedReleaseArtifactManifest(args: {
   checksum: string;
   size: number;
   release?: string;
+  minOs?: string;
 }) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
@@ -169,6 +170,7 @@ function makeSignedReleaseArtifactManifest(args: {
         platformTrust:
           requiredPlatformTrustFor(args.assetName) ??
           "release-workflow-produced",
+        ...(args.minOs !== undefined ? { minOs: args.minOs } : {}),
       },
     ],
   });
@@ -2126,6 +2128,186 @@ describe("agentVersions routes", () => {
     });
   });
 
+  describe("minimum OS (#12169)", () => {
+    function makeTx() {
+      const updateSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      const txSelect = vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+        }),
+      });
+      return { update: vi.fn().mockReturnValue({ set: updateSet }), select: txSelect };
+    }
+
+    function promote(version: string) {
+      return app.request("/agent-versions/promote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version }),
+      });
+    }
+
+    it("promote refuses a post-threshold darwin row with NULL min_os_version (nothing demoted)", async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          { ...makeValidatedTargetRow({ component: "agent", platform: "macos", architecture: "arm64", version: "0.131.0" }), minOsVersion: null },
+          { ...makeValidatedTargetRow({ component: "agent", platform: "linux", architecture: "amd64", version: "0.131.0" }), minOsVersion: null },
+        ]) as any,
+      );
+
+      const res = await promote("0.131.0");
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.reason).toBe("min_os_missing");
+      expect(body.invalidTargets).toEqual([
+        expect.objectContaining({ component: "agent", platform: "macos", architecture: "arm64", reason: "min_os_missing" }),
+      ]);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it("promote allows a post-threshold darwin row that records its floor", async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          { ...makeValidatedTargetRow({ component: "agent", platform: "macos", architecture: "arm64", version: "0.131.0" }), minOsVersion: "12.0" },
+        ]) as any,
+      );
+      const tx = makeTx();
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx) as any);
+
+      expect((await promote("0.131.0")).status).toBe(200);
+    });
+
+    it("promote allows a pre-threshold darwin row without a floor (rollback to an older release)", async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          { ...makeValidatedTargetRow({ component: "agent", platform: "macos", architecture: "arm64", version: "0.129.0" }), minOsVersion: null },
+        ]) as any,
+      );
+      const tx = makeTx();
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx) as any);
+
+      expect((await promote("0.129.0")).status).toBe(200);
+    });
+
+    it("GET / lists minOsVersion", async () => {
+      vi.mocked(db.select).mockReturnValue(selectResolving([]) as any);
+
+      const res = await app.request("/agent-versions");
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(db.select).mock.calls[0]![0]).toHaveProperty("minOsVersion");
+    });
+
+    it("POST / records min_os_version from a schema-v1 manifest", async () => {
+      const checksum = "e".repeat(64);
+      const signed = makeSignedReleaseArtifactManifest({
+        assetName: "breeze-agent-darwin-arm64",
+        checksum,
+        size: 1234,
+        release: "v0.131.0",
+        minOs: "12.0",
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "ver-1", version: "0.131.0", platform: "macos" }]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "0.131.0",
+          platform: "macos",
+          architecture: "arm64",
+          downloadUrl: "https://github.com/LanternOps/breeze/releases/download/v0.131.0/breeze-agent-darwin-arm64",
+          checksum,
+          fileSize: 1234,
+          releaseManifest: signed.manifest,
+          manifestSignature: signed.signature,
+          signingKeyId: "release-artifact-manifest-ed25519",
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ minOsVersion: "12.0" }));
+    });
+
+    it("POST / refuses a post-threshold darwin row whose manifest records no floor (nothing written)", async () => {
+      const insertValues = vi.fn();
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          withValidManifest({
+            version: "0.131.0",
+            platform: "macos",
+            architecture: "arm64",
+            downloadUrl: "https://s3.example.com/breeze-agent-darwin-arm64",
+            checksum: "c".repeat(64),
+            isLatest: true,
+          }),
+        ),
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).reason).toBe("min_os_missing");
+      expect(insertValues).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it("POST / still accepts a pre-threshold darwin row without a floor", async () => {
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "ver-1", version: "0.129.0", platform: "macos" }]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          withValidManifest({
+            version: "0.129.0",
+            platform: "macos",
+            architecture: "arm64",
+            downloadUrl: "https://s3.example.com/breeze-agent-darwin-arm64",
+            checksum: "c".repeat(64),
+          }),
+        ),
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ minOsVersion: null }));
+    });
+
+    it("POST / records a null floor for a per-deployment manifest", async () => {
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "ver-1", version: "1.0.0", platform: "linux" }]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          withValidManifest({
+            version: "1.0.0",
+            platform: "linux",
+            architecture: "amd64",
+            downloadUrl: "https://s3.example.com/agent-1.0.0",
+            checksum: "c".repeat(64),
+          }),
+        ),
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ minOsVersion: null }));
+    });
+  });
+
   describe("POST /agent-versions", () => {
     it("should create a new version", async () => {
       vi.mocked(db.insert).mockReturnValue({
@@ -2572,14 +2754,15 @@ describe("verifyEd25519ManifestSignature — empty-keyset opt-in (#643)", () => 
 // binarySync.ts's scanBinaryDir/parseBinaryFilename (agent/watchdog/backup)
 // and USER_HELPER_TARGETS (user-helper) produce — every case below is
 // cross-checked against those sources, not invented independently.
-// component="helper" is deliberately always null: its real registration is
-// HELPER_TARGETS (binarySync.ts ~line 59), a per-OS (not per-arch) asset
+// component="helper" resolves through HELPER_TARGETS
+// (services/helperInstallerAssets.ts), a per-OS (not per-arch) installer
 // name (windows -> breeze-helper-windows.msi, darwin (both arches, same
-// file) -> breeze-helper-macos.dmg, linux -> breeze-helper-linux.AppImage) —
-// see the controller-review regression test below for why an earlier
-// version of this function (returning "breeze-desktop-helper-darwin-<arch>"
-// for helper/macos) was WRONG and would have 409'd real
-// BINARY_SOURCE=github helper rows.
+// file) -> breeze-helper-macos.dmg, linux -> breeze-helper-linux.AppImage).
+// It used to be always null, which left a BINARY_SOURCE=local helper row
+// (server-route downloadUrl ending in the arch) looking up "amd64" in the
+// manifest (#11298). It must never be "breeze-desktop-helper-darwin-<arch>"
+// — that is the raw Mach-O inside the agent .pkg, a different artifact (see
+// the GitHub-mode helper roundtrip in agentVersionsLocalModeRoundtrip.test.ts).
 describe("canonicalReleaseAssetName (D1, #3836)", () => {
   const cases: Array<[string, string, string, string | null]> = [
     // agent — windows/linux/darwin, both arches. Also proves "macos" (the DB
@@ -2613,14 +2796,15 @@ describe("canonicalReleaseAssetName (D1, #3836)", () => {
     ["user-helper", "macos", "amd64", null],
     ["user-helper", "linux", "amd64", null],
 
-    // helper — always null (see the describe-block comment above): the real
-    // asset name (breeze-helper-macos.dmg / -windows.msi / -linux.AppImage)
-    // is per-OS, not per-arch, so it must resolve via the URL-basename
-    // fallback instead.
-    ["helper", "macos", "amd64", null],
-    ["helper", "macos", "arm64", null],
-    ["helper", "windows", "amd64", null],
-    ["helper", "linux", "amd64", null],
+    // helper — HELPER_TARGETS installer names (#11298); the one macOS dmg
+    // covers both arches, and targets HELPER_TARGETS does not ship stay null.
+    ["helper", "macos", "amd64", "breeze-helper-macos.dmg"],
+    ["helper", "macos", "arm64", "breeze-helper-macos.dmg"],
+    ["helper", "darwin", "arm64", "breeze-helper-macos.dmg"],
+    ["helper", "windows", "amd64", "breeze-helper-windows.msi"],
+    ["helper", "linux", "amd64", "breeze-helper-linux.AppImage"],
+    ["helper", "windows", "arm64", null],
+    ["helper", "linux", "arm64", null],
 
     // Unknown component/platform/arch — every unrecognized shape falls back
     // to the caller's assetNameFromDownloadUrl, never fabricates a name.
@@ -2864,6 +3048,49 @@ describe("validateReleaseManifest — key-ID-aware dispatch (Task 2, #3836)", ()
       manifest,
       signature,
       signingKeyId: "release-artifact-manifest-ed25519",
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  // #11298: a local-mode helper installer the official manifest does NOT
+  // cover (the public manifest may not list helper installers at all) is
+  // re-signed with the per-deployment key in the legacy single-asset shape,
+  // with the same server-route downloadUrl ending in the arch. That shape
+  // never consults the asset name, so the canonical-name change for helper
+  // must leave it validating exactly as before.
+  it("ACCEPTS a deployment-key-signed helper row with a server-route downloadUrl (#11298 fallback path)", async () => {
+    const deployKey = generateKeyPairSync("ed25519");
+    const downloadUrl = "http://localhost:3001/api/v1/agents/download/helper/windows/amd64";
+    const manifest = JSON.stringify({
+      version: "1.0.0",
+      component: "helper",
+      platform: "windows",
+      arch: "amd64",
+      url: downloadUrl,
+      checksum: "c".repeat(64),
+      size: 4096,
+    });
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: rawPub(deployKey.publicKey).toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      version: "1.0.0",
+      platform: "windows",
+      arch: "amd64",
+      component: "helper",
+      downloadUrl,
+      checksum: "c".repeat(64),
+      fileSize: 4096,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
     });
 
     expect(result).toEqual({ ok: true });

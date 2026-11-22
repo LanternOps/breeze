@@ -141,6 +141,9 @@ vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined })
 vi.mock('./llm/llmEgressProxy', () => ({ getLlmEgressProxy: getLlmEgressProxyMock }));
 vi.mock('./llm/llmEgressRecorder', () => ({ recordLlmEgressEvent: recordLlmEgressEventMock }));
 
+// Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of whichever test reaches it first (#11011).
+vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
+
 import { StreamingSessionManager, buildClaudeSdkChildEnv } from './streamingSessionManager';
 import type { AuthContext } from '../middleware/auth';
 import type { UsableLlmConfig } from './llm/llmConfigResolver';

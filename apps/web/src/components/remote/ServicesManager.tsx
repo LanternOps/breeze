@@ -10,6 +10,7 @@ import {
   AlertCircle,
   Loader2,
   Monitor,
+  BellPlus,
   ChevronLeft
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -485,6 +486,16 @@ export default function ServicesManager({
                           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                         ) : (
                           <>
+                            <a
+                              href={`/alerts/monitors/new#kind=service&serviceName=${encodeURIComponent(service.name)}`}
+                              data-testid="monitor-this-service"
+                              title={t('servicesManager.monitorThis')}
+                              aria-label={t('servicesManager.monitorThis')}
+                              className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+                            >
+                              <BellPlus className="h-4 w-4 text-muted-foreground" />
+                            </a>
+
                             {/* Start Button */}
                             <button
                               type="button"

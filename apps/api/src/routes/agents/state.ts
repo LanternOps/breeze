@@ -9,7 +9,7 @@ import {
 } from '../../db/schema';
 import { updateRegistryStateSchema, updateConfigStateSchema } from './schemas';
 import { normalizeStateValue, parseDate } from './helpers';
-import { sanitizePolicyConfigStateEntries } from './policyProbeSafety';
+import { sanitizePolicyConfigStateEntries, sanitizePolicyRegistryStateEntries } from './policyProbeSafety';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 export const stateRoutes = new Hono();
@@ -19,6 +19,9 @@ stateRoutes.use('*', requireAgentRole);
 stateRoutes.put('/:id/registry-state', zValidator('json', updateRegistryStateSchema), async (c) => {
   const agentId = c.req.param('id');
   const data = c.req.valid('json');
+  // #11976: never persist a credential-store value (HKLM\\SAM, HKLM\\SECURITY),
+  // even if an agent was handed such a probe by an older server.
+  const entries = sanitizePolicyRegistryStateEntries(data.entries);
 
   const [device] = await db
     .select()
@@ -37,7 +40,7 @@ stateRoutes.put('/:id/registry-state', zValidator('json', updateRegistryStateSch
         .where(eq(deviceRegistryState.deviceId, device.id));
     }
 
-    if (data.entries.length === 0) {
+    if (entries.length === 0) {
       return;
     }
 
@@ -45,7 +48,7 @@ stateRoutes.put('/:id/registry-state', zValidator('json', updateRegistryStateSch
     await tx
       .insert(deviceRegistryState)
       .values(
-        data.entries.map((entry) => ({
+        entries.map((entry) => ({
           deviceId: device.id,
           orgId: device.orgId,
           registryPath: entry.registryPath,
@@ -71,7 +74,7 @@ stateRoutes.put('/:id/registry-state', zValidator('json', updateRegistryStateSch
       });
   });
 
-  return c.json({ success: true, count: data.entries.length });
+  return c.json({ success: true, count: entries.length });
 });
 
 stateRoutes.put('/:id/config-state', zValidator('json', updateConfigStateSchema), async (c) => {

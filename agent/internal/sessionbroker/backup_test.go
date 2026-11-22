@@ -182,8 +182,8 @@ func TestStopBackupHelper_ActiveRun_WaitsThenKillsAnyway(t *testing.T) {
 		backup: &backupHelper{
 			process: cmd.Process,
 			session: &Session{SessionID: "backup-stop-active"},
-			activeRuns: map[string]backupRunState{
-				"cmd-1": backupRunExecuting,
+			activeRuns: map[string]*backupRun{
+				"cmd-1": {state: backupRunExecuting},
 			},
 		},
 	}
@@ -225,8 +225,8 @@ func TestStopBackupHelper_ActiveRun_DrainsBeforeGraceReturnsEarly(t *testing.T) 
 	bh := &backupHelper{
 		process: cmd.Process,
 		session: &Session{SessionID: "backup-stop-drain"},
-		activeRuns: map[string]backupRunState{
-			"cmd-1": backupRunExecuting,
+		activeRuns: map[string]*backupRun{
+			"cmd-1": {state: backupRunExecuting},
 		},
 	}
 	b := &Broker{
@@ -607,12 +607,12 @@ func TestStopBackupHelperIfIdle_NilBroker(t *testing.T) {
 // state — pending-ack, executing, or the doomed tombstone) must defer the
 // swap rather than kill a helper mid-job.
 func TestStopBackupHelperIfIdle_ActiveRunBlocks(t *testing.T) {
-	for _, state := range []backupRunState{backupRunPendingAck, backupRunExecuting, backupRunDoomed} {
+	for _, state := range []backupRunState{backupRunPendingAck, backupRunQueued, backupRunExecuting, backupRunDoomed, backupRunRedispatching} {
 		b := &Broker{
 			sessions:   make(map[string]*Session),
 			byIdentity: make(map[string][]*Session),
 			backup: &backupHelper{
-				activeRuns: map[string]backupRunState{"cmd-1": state},
+				activeRuns: map[string]*backupRun{"cmd-1": {state: state}},
 			},
 		}
 		if b.StopBackupHelperIfIdle() {
@@ -685,10 +685,10 @@ func TestActiveBackupRunCount_ReflectsActiveRuns(t *testing.T) {
 		sessions:   make(map[string]*Session),
 		byIdentity: make(map[string][]*Session),
 		backup: &backupHelper{
-			activeRuns: map[string]backupRunState{
-				"cmd-1": backupRunPendingAck,
-				"cmd-2": backupRunExecuting,
-				"cmd-3": backupRunDoomed,
+			activeRuns: map[string]*backupRun{
+				"cmd-1": {state: backupRunPendingAck},
+				"cmd-2": {state: backupRunExecuting},
+				"cmd-3": {state: backupRunDoomed},
 			},
 		},
 	}

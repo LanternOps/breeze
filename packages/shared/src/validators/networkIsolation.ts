@@ -6,6 +6,7 @@ import {
   ISOLATION_MECHANISMS,
   NETWORK_ISOLATION_LIMITS,
   NETWORK_ISOLATION_TTL,
+  isValidDeadManSeconds,
   type IsolationOrderingKey,
 } from '../utils/networkIsolation';
 
@@ -97,11 +98,14 @@ export function truncated(max: number) {
  */
 const breakGlassSecretSchema = z.string().regex(/^[A-Za-z0-9+/]{43}=$/, 'breakGlassSecret must be base64 of 32 bytes');
 
+/** Base64 (standard, padded) of a 32-byte Ed25519 public key; the agent also refuses small-order keys. */
+const releaseTokenPublicKeySchema = z.string().regex(/^[A-Za-z0-9+/]{43}=$/, 'releaseTokenPublicKey must be base64 of 32 bytes');
+
 const desiredBase = {
   isolationId: z.uuid(),
   generation: z.number().int().min(1),
   expiresAt: timestampSchema,
-  deadManSeconds: z.number().int().min(0),
+  deadManSeconds: z.number().int().refine(isValidDeadManSeconds, 'deadManSeconds must be 0 or inside the dead-man bounds'),
   remoteRelay: z.boolean(),
 };
 
@@ -110,6 +114,9 @@ const desiredBase = {
  * - `isolated`: the permits to install (never empty: the control plane is always one). `breakGlassSecret`
  *   travels only until the agent acknowledges it (`break_glass_ack_seq`), only over the agent's TLS
  *   channel, and is never logged or audited (Gate B decision 4 vii).
+ *   `policyRevision` names the containment policy behind any `scope:"any"` permits, and is present
+ *   exactly when there are some: the agent rejects those permits without it, and a changed revision
+ *   always arrives under a new generation.
  * - `released`: the tombstone. No permits and never the secret (strict: the key is rejected).
  */
 export const networkIsolationDesiredSchema = z.discriminatedUnion('desired', [
@@ -118,6 +125,18 @@ export const networkIsolationDesiredSchema = z.discriminatedUnion('desired', [
     desired: z.literal('isolated'),
     allow: z.array(isolationAllowEntrySchema).min(1).max(NETWORK_ISOLATION_LIMITS.maxAllowEntries),
     breakGlassSecret: breakGlassSecretSchema.optional(),
+    policyRevision: z.string().min(1).max(128).regex(/^[\x21-\x7e]+$/).optional(),
+    // Signed offline release token (#10102): only for agents at capability `releaseToken`.
+    releaseTokenPublicKey: releaseTokenPublicKeySchema.optional(),
+    releaseTokenDeviceId: z.uuid().optional(),
+    requireSignedReleaseToken: z.boolean().optional(),
+  }).refine((block) => block.allow.some((entry) => entry.scope === 'any') === (block.policyRevision !== undefined), {
+    message: 'policyRevision is present exactly when the list has a scope:"any" entry',
+    path: ['policyRevision'],
+  }).refine((block) => (block.releaseTokenPublicKey === undefined) === (block.releaseTokenDeviceId === undefined)
+    && (block.requireSignedReleaseToken !== true || block.releaseTokenPublicKey !== undefined), {
+    message: 'releaseTokenPublicKey and releaseTokenDeviceId come together, and requireSignedReleaseToken needs them',
+    path: ['releaseTokenPublicKey'],
   }),
   z.strictObject({
     ...desiredBase,

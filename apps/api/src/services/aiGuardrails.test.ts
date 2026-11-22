@@ -118,6 +118,24 @@ describe('manage_monitors — retired mutations', () => {
   });
 });
 
+// Flows completion W01b (#12435, Decision P20): draft_flow's REST twins
+// (POST /flows, PUT /flows/:id) inherit flows.ts's router-level
+// automations:read, so the tool requires read as well as write.
+describe('draft_flow permissions', () => {
+  it('draft_flow requires automations read and write', () => {
+    const required = requiredPermissionsForTool('draft_flow', { document: {} }) ?? [];
+    expect(required).toEqual(expect.arrayContaining([
+      { resource: 'automations', action: 'write' },
+      { resource: 'automations', action: 'read' },
+    ]));
+    expect(required).toHaveLength(2);
+  });
+
+  it('validate_flow requires automations read only', () => {
+    expect(requiredPermissionsForTool('validate_flow', { document: {} })).toEqual([{ resource: 'automations', action: 'read' }]);
+  });
+});
+
 // ─── Tier escalation for fleet tools ────────────────────────────────────
 
 describe('checkGuardrails — fleet tool tier escalation', () => {
@@ -1132,6 +1150,55 @@ describe('checkGuardrails — billing and proposal action tier escalation', () =
     expect(result.tier).toBe(2);
     expect(result.allowed).toBe(true);
     expect(result.requiresApproval).toBe(false);
+  });
+});
+
+describe('manage_billing_settings:update_org — changing the billing contact needs billing:manage', () => {
+  // PATCH /orgs/:orgId/billing-settings adds billing:manage when the body carries a contact field. The tool must ask
+  // for the same grant on the same condition, in the resolver that approver eligibility and release re-checks read.
+  const orgId = '00000000-0000-4000-8000-000000000001';
+  const INVOICES_WRITE = { resource: 'invoices', action: 'write' };
+  const BILLING_MANAGE = { resource: 'billing', action: 'manage' };
+
+  it.each([
+    [{ billingContactEmail: 'ap@customer.example' }],
+    [{ billingContactEmail: null }],
+    [{ billingContactName: 'Accounts Payable' }],
+    [{ billingContactName: null }],
+    [{ taxExempt: true, billingContactEmail: 'ap@customer.example' }],
+  ])('requires billing:manage when orgPatch carries a contact field (%o)', (orgPatch) => {
+    expect(requiredPermissionsForTool('manage_billing_settings', { action: 'update_org', orgId, orgPatch }))
+      .toEqual([INVOICES_WRITE, BILLING_MANAGE]);
+  });
+
+  it('keeps invoices:write alone for a patch without contact fields', () => {
+    expect(requiredPermissionsForTool('manage_billing_settings', {
+      action: 'update_org', orgId, orgPatch: { taxExempt: true, invoiceTermsDays: 30, billingAddressLine1: '1 High St' },
+    })).toEqual([INVOICES_WRITE]);
+  });
+
+  it('does not add billing:manage to the other actions', () => {
+    expect(requiredPermissionsForTool('manage_billing_settings', {
+      action: 'update_partner', partnerPatch: { billingContactEmail: 'ap@customer.example' },
+    })).toEqual([INVOICES_WRITE]);
+  });
+
+  it('denies an invoices:write-only caller a contact change and admits a non-contact change', async () => {
+    const auth = {
+      user: { id: 'user-1' },
+      token: { roleId: 'partner-billing', scope: 'partner' },
+      partnerId: 'partner-1',
+      orgId: null,
+    } as any;
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'partner-billing' } as any);
+    vi.mocked(hasPermission).mockImplementation((_perms, resource, action) => resource === 'invoices' && action === 'write');
+
+    expect(await checkToolPermission('manage_billing_settings', {
+      action: 'update_org', orgId, orgPatch: { billingContactEmail: 'someone-else@example.test' },
+    }, auth)).toContain('requires billing.manage');
+    expect(await checkToolPermission('manage_billing_settings', {
+      action: 'update_org', orgId, orgPatch: { taxId: 'TAX-1' },
+    }, auth)).toBeNull();
   });
 });
 

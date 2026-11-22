@@ -114,6 +114,19 @@ vi.mock('./importAttachments', async (orig) => ({
   isReservationPending: vi.fn(async () => true),
 }));
 
+// #8313 W4b: the requester resolution of a `{ createContact }` requester,
+// scripted; its own reads, lock and writes run against Postgres in
+// ticketImportContacts.integration.test.ts.
+const people = vi.hoisted(() => ({
+  resolution: { kind: 'created', contactId: 'c-new' } as { kind: string; contactId?: string; reason?: string },
+}));
+vi.mock('./importPeople', () => ({
+  resolveImportRequester: vi.fn(async (input: unknown) => {
+    h.writes.push(['resolveImportRequester', input]);
+    return people.resolution;
+  }),
+}));
+
 vi.mock('../ticketExternalRefs', () => ({
   TicketExternalRefConflictError: class TicketExternalRefConflictError extends Error {},
   upsertTicketExternalRef: vi.fn(async (input: unknown) => { h.writes.push(['upsertTicketExternalRef', input]); }),
@@ -183,6 +196,7 @@ const run = (t: ImportedTicket, extra: Omit<ImportTicketOptions, 'partnerId'> = 
 const statusWrites = () => h.writes.filter((w) => w[0] === 'changeTicketStatus').map((w) => w[2]);
 
 beforeEach(() => {
+  people.resolution = { kind: 'created', contactId: 'c-new' };
   h.answers.clear();
   h.fallback.clear();
   h.log.length = 0;
@@ -388,7 +402,7 @@ describe('importTicket — a ticket merged in Breeze (#8972) is skipped, final, 
       outcome: 'skipped',
       skip: { reason: 'merged_in_breeze', mergedIntoTicketId: SURVIVOR },
       commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false,
-      attachmentsWritten: 0, attachmentsSkipped: [], attachmentBytes: 0,
+      attachmentsWritten: 0, attachmentsSkipped: [], attachmentBytes: 0, contactsCreated: 0, requesterResolution: null,
       requesterChanged: false, orgChanged: false, commentsChangedInSource: [], commentsMissingInSource: [],
     });
     expect(h.log).toEqual(['ref', 'storedTicket']);
@@ -610,5 +624,76 @@ describe('importTicket: a skipped reservation another run stored meanwhile (W1 r
     await expect(run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f9', filename: 'lost.pdf', inline: false }] }] }), { fetchAttachment }))
       .rejects.toThrow();
     expect(h.writes.map((w) => w[0])).not.toContain('deleteObjectKeys');
+  });
+});
+
+describe('importTicket — a `{ createContact }` requester (W4b, spec 2026-10-19 §5.3 item 6, §5.13)', () => {
+  const request = { name: 'Maya Quinn', email: 'maya@customer.example', sourceUserKey: '812' };
+  const withContact = (overrides: Partial<ImportedTicket> = {}) => ticket({ requester: { createContact: request }, ...overrides });
+  const ledger = { people: { sourceId: 'src-1', runId: 'run-1' } };
+  const createInput = () => h.writes.find((w) => w[0] === 'createTicket')![1] as Record<string, unknown>;
+
+  beforeEach(() => {
+    h.fallback.set('statusRow', [{ status: 'new' }]);
+  });
+
+  it('refuses the variant without options.people (400) before anything is read, charged or written', async () => {
+    await expect(run(withContact())).rejects.toMatchObject({ code: 'MIGRATION_IMPORT_INVALID', status: 400 });
+    expect(h.log).toEqual([]);
+    expect(h.charges).toEqual([]);
+    expect(h.writes).toEqual([]);
+  });
+
+  it('resolves it in the header transaction, before the create, charged one more unit; a created contact is the requester', async () => {
+    const result = await run(withContact(), ledger);
+    // Header: create + ref + the contact (+ the status, the last transaction).
+    expect(h.locks).toBe(1);
+    expect(h.charges).toEqual([4]);
+    expect(h.writes.map((w) => w[0])).toEqual(['resolveImportRequester', 'createTicket', 'upsertTicketExternalRef', 'changeTicketStatus']);
+    expect(h.writes[0]![1]).toEqual({ orgId: ORG, sourceId: 'src-1', request });
+    // The snapshot is kept beside the contact (F37): a removed contact falls back to it.
+    expect(createInput()).toMatchObject({ requesterContactId: 'c-new', submitterName: 'Maya Quinn', submitterEmail: 'maya@customer.example' });
+    expect(result).toMatchObject({ outcome: 'created', contactsCreated: 1, requesterResolution: 'created' });
+  });
+
+  it('a reused contact (this import\'s link, or one email match) is the requester and counts no creation', async () => {
+    for (const kind of ['linked', 'matched']) {
+      h.writes.length = 0;
+      people.resolution = { kind, contactId: 'c-old' };
+      const result = await run(withContact(), ledger);
+      expect(createInput()).toMatchObject({ requesterContactId: 'c-old' });
+      expect(result).toMatchObject({ contactsCreated: 0, requesterResolution: kind });
+    }
+  });
+
+  it('several matches stay display-only: the snapshot alone, named by the email when the source has no name', async () => {
+    people.resolution = { kind: 'display_only', reason: 'shared_mailbox' };
+    const result = await run(ticket({ requester: { createContact: { email: request.email, sourceUserKey: '812' } } }), ledger);
+    expect(createInput()).not.toHaveProperty('requesterContactId');
+    expect(createInput()).toMatchObject({ submitterName: 'maya@customer.example', submitterEmail: 'maya@customer.example' });
+    expect(result).toMatchObject({ contactsCreated: 0, requesterResolution: 'display_only' });
+  });
+
+  it('a resume never resolves the requester (§5.9): no contact, no unit, and a changed email is report-only', async () => {
+    answer('ref', [{ ticketId: TICKET, externalNumber: '#41023', externalUrl: null }]);
+    answer('storedTicket', [storedRow({ submitterEmail: 'Maya@Customer.example' })]);
+    answer('feedRow', [], [ours]);
+    const same = await run(withContact(), ledger);
+    expect(h.writes.some((w) => w[0] === 'resolveImportRequester')).toBe(false);
+    expect(h.charges).toEqual([]);
+    expect(same).toMatchObject({ outcome: 'resumed', contactsCreated: 0, requesterResolution: null, requesterChanged: false });
+
+    answer('ref', [{ ticketId: TICKET, externalNumber: '#41023', externalUrl: null }]);
+    answer('storedTicket', [storedRow({ submitterEmail: 'old@customer.example' })]);
+    answer('feedRow', [], [ours]);
+    const moved = await run(withContact(), ledger);
+    expect(moved).toMatchObject({ requesterChanged: true, contactsCreated: 0 });
+  });
+
+  it('the other variants never resolve anything and report no resolution', async () => {
+    const result = await run(ticket(), ledger);
+    expect(h.writes.some((w) => w[0] === 'resolveImportRequester')).toBe(false);
+    expect(h.charges).toEqual([3]);
+    expect(result).toMatchObject({ contactsCreated: 0, requesterResolution: null });
   });
 });

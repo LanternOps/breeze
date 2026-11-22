@@ -23,7 +23,7 @@ func stubCollectSystemStateOpts(t *testing.T, got *[]systemstate.CollectOptions)
 	}
 	orig := collectSystemState
 	t.Cleanup(func() { collectSystemState = orig })
-	collectSystemState = func(opts systemstate.CollectOptions) (*systemstate.SystemStateManifest, string, error) {
+	collectSystemState = func(_ context.Context, opts systemstate.CollectOptions) (*systemstate.SystemStateManifest, string, error) {
 		*got = append(*got, opts)
 		return &systemstate.SystemStateManifest{
 			Platform: "test",
@@ -33,6 +33,35 @@ func stubCollectSystemStateOpts(t *testing.T, got *[]systemstate.CollectOptions)
 				Checksum:  "348c658682ae8701d3e9d21f191872491cf15e6acbb1681770b1cb787c1cf7ff",
 			}},
 		}, stagingDir, nil
+	}
+}
+
+// #11201: the collector's deadlines hang off the run's context, so cancelling
+// the run reaches whatever step system state is in.
+func TestRunBackupContext_SystemStateRunsUnderTheRunsContext(t *testing.T) {
+	srcDir := t.TempDir()
+	createTempFile(t, srcDir, "a.txt", "alpha")
+
+	type ctxKey struct{}
+	var got any
+	orig := collectSystemState
+	t.Cleanup(func() { collectSystemState = orig })
+	collectSystemState = func(ctx context.Context, _ systemstate.CollectOptions) (*systemstate.SystemStateManifest, string, error) {
+		got = ctx.Value(ctxKey{})
+		return nil, "", errors.New("collector stubbed out")
+	}
+
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           newMockProvider(),
+		Paths:              []string{srcDir},
+		SystemStateEnabled: true,
+	})
+	ctx := context.WithValue(context.Background(), ctxKey{}, "run")
+	if _, err := mgr.RunBackupContext(ctx, nil); err != nil {
+		t.Fatalf("RunBackupContext: %v", err)
+	}
+	if got != "run" {
+		t.Errorf("collector context value = %v, want the run's context", got)
 	}
 }
 

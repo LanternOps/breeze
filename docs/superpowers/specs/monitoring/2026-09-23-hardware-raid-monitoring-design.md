@@ -823,7 +823,7 @@ rebuild = warning), and the agent-local `tool_dirs` override.
     ZFS mirror on the same box if `zfsutils` installs cleanly.
   - Vendor CLIs: parser fixtures captured from real boxes (`storcli64 /call show all J`,
     `perccli64 …`, `ssacli ctrl all show config detail`, `omreport storage … -fmt ssv`, `arcconf
-    GETCONFIG 1 AL`, `MegaCli64 -PDList -aALL`). Todd to supply captures from OliveTech-managed Dell /
+    GETCONFIG 1 AL`, `MegaCli64 -PDList -aALL`). Todd to supply captures from self-managed Dell /
     HPE servers where available; the plan ships with the public-domain samples otherwise and marks
     each source `fixture-only` in the docs until a real capture lands.
 - Needs an **agent release** (agent-shipped code): note on the feature issue.
@@ -858,7 +858,7 @@ via feature-lifecycle after the plans are written.
 - **Template interpolation** may not accept arbitrary context keys (§9.2) — small extension if so.
 - **Fixtures vs reality**: until real captures exist, ssacli/arcconf/omreport parsers are proven only
   on documentation samples. Marked in the docs; W06 lists which sources have real captures.
-- **Open**: Todd to name any OliveTech-managed Dell/HPE box for output captures (fixtures-only
+- **Open**: Todd to name any self-managed Dell/HPE box for output captures (fixtures-only
   otherwise, per 2026-09-23).
 
 ## 16. Advisor quorum record

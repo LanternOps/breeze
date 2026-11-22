@@ -1,0 +1,19 @@
+{
+  "id": "denied-approval-closes-tool-row",
+  "title": "Denying an approval card closes the chat's tool call, not left pending",
+  "issue": 11678,
+  "expect": "pass",
+  "door": "wisp",
+  "steps": [
+    { "name": "deny", "type": "say", "approve": "deny", "maxSec": 120,
+      "text": "List the services on NW-FS-01 with execute_command (list_services). Ask me to approve it first." }
+  ],
+  "checks": [
+    { "kind": "card_matches", "step": "deny", "pattern": ".", "precondition": true,
+      "note": "an approval card appeared, so Deny had something to act on" },
+    { "kind": "tool_called", "tool": "execute_command", "step": "deny", "status": "rejected",
+      "note": "#11678 §1: the denied call's ai_tool_executions row is closed as rejected" },
+    { "kind": "tool_not_called", "tool": "execute_command", "step": "deny", "status": "pending",
+      "note": "#11678 §1: the 2026-11-10 pass found the row still pending 30 minutes after Deny" }
+  ]
+}

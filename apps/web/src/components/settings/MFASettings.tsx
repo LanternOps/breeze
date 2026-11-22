@@ -8,6 +8,27 @@ import { Dialog } from '../shared/Dialog';
 
 const DIGIT_COUNT = 6;
 
+/**
+ * #10650: the existing-factor proof for removing the authenticator app. A
+ * passkey assertion, or a code from the authenticator itself (never SMS or a
+ * recovery code — `/auth/mfa/step-up` refuses those for `remove_totp`).
+ */
+export type TotpRemovalProof = { method: 'passkey' } | { method: 'totp'; code: string };
+
+/**
+ * #4413 verdict of `onEnable`. `false` (or a throw) = the write was rejected;
+ * `undefined`/`true` = initial enrollment succeeded (codes were issued).
+ * #10650 adds two: `'backup-added'` = the authenticator was added as a backup
+ * beside a passkey (the server issues NO recovery codes, so no dialog), and
+ * `'not-sent'` = the passkey confirmation never completed, so the request
+ * never went out and the typed code is still unspent. `'restart'` = the
+ * server says the account changed under the staged setup, so this QR can
+ * never be confirmed: back to the status card (the parent shows why).
+ */
+export type MfaEnableVerdict = void | boolean | 'backup-added' | 'not-sent' | 'restart';
+
+type MfaManageIntent = 'recovery_codes' | 'disable_mfa' | 'remove_totp';
+
 type MFASettingsProps = {
   children?: ReactNode;
   enabled?: boolean;
@@ -37,12 +58,12 @@ type MFASettingsProps = {
    * factor. The grant that comes back stands in for the password on that
    * action only; the existing-factor proof the view also asks for is unchanged.
    */
-  onSsoReauthManage?: (intent: 'recovery_codes' | 'disable_mfa') => void | Promise<void>;
+  onSsoReauthManage?: (intent: MfaManageIntent) => void | Promise<void>;
   /**
    * #4045: the parent picked up a management grant from the redirect fragment
    * for this action, so reopen the view the user left from.
    */
-  ssoResumeView?: 'recovery' | 'disable';
+  ssoResumeView?: 'recovery' | 'disable' | 'remove-totp';
   /**
    * #4018: is the parent still holding the single-use SSO re-auth grant that
    * the terminal `/mfa/enable` call has to present?
@@ -56,6 +77,26 @@ type MFASettingsProps = {
    * any caller that does not pass it are unaffected.
    */
   ssoReauthGrantAvailable?: boolean;
+  /**
+   * #10650: an authenticator app is enrolled — as the primary or as the backup
+   * beside a primary passkey (`GET /users/me`). `mfaMethod` alone names only
+   * the primary. Absent = unknown, read as "not enrolled": the UI offers no
+   * authenticator proof it cannot vouch for, and the server stays authoritative.
+   */
+  totpEnrolled?: boolean;
+  /**
+   * #10650: the live policy allows authenticator apps (`GET
+   * /auth/mfa/enrollment-options`). Absent = unknown, read as allowed: the add
+   * flow is offered and `/auth/mfa/setup` answers 403 if policy says no.
+   */
+  totpAllowed?: boolean;
+  /** #10650: how many passkeys the account holds. A TOTP primary with passkeys
+   *  removes the authenticator on its own (promoting a passkey) rather than
+   *  switching MFA off, which the API refuses while passkeys survive. */
+  passkeyCount?: number;
+  /** #10650: remove the authenticator app without switching MFA off. Same
+   *  verdict contract as `onDisable`. */
+  onRemoveTotp?: (currentPassword: string, proof: TotpRemovalProof) => void | boolean | Promise<void | boolean>;
   phoneVerified?: boolean;
   phoneLast4?: string;
   smsAllowed?: boolean;
@@ -78,9 +119,15 @@ type MFASettingsProps = {
    * collapse on every outcome, discarding a secret the server will never
    * re-issue.
    */
-  onEnable?: (code: string, currentPassword: string) => void | boolean | Promise<void | boolean>;
+  onEnable?: (code: string, currentPassword: string) => MfaEnableVerdict | Promise<MfaEnableVerdict>;
   onDisable?: (code: string, currentPassword: string) => void | boolean | Promise<void | boolean>;
-  onGenerateRecoveryCodes?: (currentPassword: string, currentFactorCode: string) => void | boolean | Promise<void | boolean>;
+  /** `proofMethod: 'totp'` = a passkey-primary account proving with its
+   *  authenticator backup instead of the passkey (#10650). */
+  onGenerateRecoveryCodes?: (
+    currentPassword: string,
+    currentFactorCode: string,
+    proofMethod?: 'totp',
+  ) => void | boolean | Promise<void | boolean>;
   onSendRecoveryStepUpCode?: () => void | boolean | Promise<void | boolean>;
   onRequestSetup?: (currentPassword: string) => Promise<boolean> | boolean;
   onVerifyPhone?: (phoneNumber: string, currentPassword: string) => Promise<{ success: boolean; error?: string }>;
@@ -96,6 +143,7 @@ type MFAView =
   | 'confirm-password-setup'
   | 'setup'
   | 'disable'
+  | 'remove-totp'
   | 'recovery'
   | 'phone-verify'
   | 'sms-setup'
@@ -111,6 +159,10 @@ export default function MFASettings({
   ssoSetupReady = false,
   ssoResumeView,
   ssoReauthGrantAvailable = true,
+  totpEnrolled,
+  totpAllowed,
+  passkeyCount = 0,
+  onRemoveTotp,
   phoneVerified = false,
   phoneLast4,
   smsAllowed = false,
@@ -162,6 +214,12 @@ export default function MFASettings({
   const [disablePassword, setDisablePassword] = useState('');
   const [recoveryPassword, setRecoveryPassword] = useState('');
   const [recoveryFactorCode, setRecoveryFactorCode] = useState('');
+  // #10650: a passkey-primary account with an authenticator backup may prove
+  // the rotation with a code instead (its passkey may be the thing it lost).
+  const [recoveryUsesTotp, setRecoveryUsesTotp] = useState(false);
+  const [removeProofMethod, setRemoveProofMethod] = useState<'passkey' | 'totp'>('passkey');
+  const [removeCode, setRemoveCode] = useState('');
+  const [removePassword, setRemovePassword] = useState('');
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const phoneInputRefs = useRef<Array<HTMLInputElement | null>>([]);
 
@@ -179,6 +237,17 @@ export default function MFASettings({
   // is nothing the user can type that would fix it — so the enable action is
   // withheld and replaced by a fresh IdP round-trip.
   const needsSsoReVerify = isPasswordless && !ssoReauthGrantAvailable;
+  // #10650: the Authenticator-row states. Only an explicit `true` counts as
+  // enrolled, and only an explicit `false` as disallowed.
+  const hasTotpBackup = currentMethod === 'passkey' && totpEnrolled === true;
+  const canAddTotpBackup = enabled && currentMethod === 'passkey' && totpEnrolled !== true;
+  const totpBackupDisallowed = canAddTotpBackup && totpAllowed === false;
+  const totpPrimaryWithPasskeys = currentMethod === 'totp' && passkeyCount > 0;
+  // Enrollment from a passkey primary adds a backup: the server confirms it
+  // with a passkey assertion and issues no recovery codes.
+  const isBackupEnrollment = enabled && currentMethod === 'passkey';
+  const recoveryNeedsCode = currentMethod === 'totp' || currentMethod === 'sms'
+    || (hasTotpBackup && recoveryUsesTotp);
 
   // The parent consumed an `#ssoReauthGrant=` fragment and already ran
   // /mfa/setup with it. Open the QR view directly. Deliberately keyed on the
@@ -321,33 +390,47 @@ export default function MFASettings({
     }
     // `undefined` (a handler that only sets `errorMessage`) counts as success;
     // only an explicit `false` or a throw is a rejection.
-    let succeeded = true;
+    let verdict: MfaEnableVerdict;
     try {
       setIsSubmitting(true);
-      succeeded = (await onEnable?.(code, currentPassword)) !== false;
+      verdict = await onEnable?.(code, currentPassword);
     } catch {
       // Parent handler surfaces errors via the errorMessage prop.
-      succeeded = false;
+      verdict = false;
     } finally {
       setIsSubmitting(false);
-      // Clear the digits either way: on success they are spent, on failure the
-      // user needs an empty field for the NEXT 30-second code.
+    }
+    // #10650: the passkey confirmation never completed, so nothing reached the
+    // server and the typed code is unspent. Keep it, and the view, for a retry
+    // — and do not claim the code was rejected: it was never checked.
+    if (verdict === 'not-sent') return;
+    if (verdict === 'restart') {
       resetDigits();
-      setEnrollCodeRejected(!succeeded);
-      if (succeeded) {
-        // Clear the plaintext password as soon as the flow that needs it ends.
-        setCurrentPassword('');
-        // #4414: /auth/mfa/enable is the only moment the recovery codes exist
-        // in plaintext. Show them once, here — the regenerate action is the
-        // only other way to see any, and it destroys these.
-        setView({ kind: 'recovery-issued' });
-      } else {
-        // #4413: stay on the QR. Leaving this view discards a secret the server
-        // will not re-issue, so a mistyped digit would cost a whole re-
-        // enrollment — and the password collected at the gate has to survive
-        // with it, or the retry is refused for an entirely different reason.
-        focusIndex(0);
-      }
+      setEnrollCodeRejected(false);
+      setCurrentPassword('');
+      setView('status');
+      return;
+    }
+    const succeeded = verdict !== false;
+    // Clear the digits either way: on success they are spent, on failure the
+    // user needs an empty field for the NEXT 30-second code.
+    resetDigits();
+    setEnrollCodeRejected(!succeeded);
+    if (succeeded) {
+      // Clear the plaintext password as soon as the flow that needs it ends.
+      setCurrentPassword('');
+      // #4414: /auth/mfa/enable is the only moment the recovery codes exist
+      // in plaintext. Show them once, here — the regenerate action is the
+      // only other way to see any, and it destroys these.
+      // #10650: a backup add issues none (the account keeps its set), so
+      // there is nothing to show — back to the status card.
+      setView(verdict === 'backup-added' ? 'status' : { kind: 'recovery-issued' });
+    } else {
+      // #4413: stay on the QR. Leaving this view discards a secret the server
+      // will not re-issue, so a mistyped digit would cost a whole re-
+      // enrollment — and the password collected at the gate has to survive
+      // with it, or the retry is refused for an entirely different reason.
+      focusIndex(0);
     }
   };
 
@@ -377,6 +460,49 @@ export default function MFASettings({
     }
   };
 
+  const resetRemoveTotpView = () => {
+    setRemoveProofMethod('passkey');
+    setRemoveCode('');
+    setRemovePassword('');
+  };
+
+  const openRemoveTotp = () => {
+    resetRemoveTotpView();
+    setLocalError(undefined);
+    setLocalSuccess(undefined);
+    setView('remove-totp');
+  };
+
+  const removeProofReady = removeProofMethod === 'passkey' || removeCode.length === DIGIT_COUNT;
+
+  const handleRemoveTotpSubmit = async () => {
+    if (isLoading || isSubmitting || !removeProofReady
+      || (isPasswordless ? needsSsoReVerify : !removePassword)) {
+      return;
+    }
+    const proof: TotpRemovalProof = removeProofMethod === 'totp'
+      ? { method: 'totp', code: removeCode }
+      : { method: 'passkey' };
+    let succeeded = true;
+    try {
+      setIsSubmitting(true);
+      succeeded = (await onRemoveTotp?.(removePassword, proof)) !== false;
+    } catch {
+      // Parent handler surfaces errors via the errorMessage prop.
+      succeeded = false;
+    } finally {
+      setIsSubmitting(false);
+      // A code is single-use per time step, so a retry needs the next one. The
+      // password survives a failure (as in enrollment, #4413) and is cleared
+      // with the view.
+      setRemoveCode('');
+      if (succeeded) {
+        resetRemoveTotpView();
+        setView('status');
+      }
+    }
+  };
+
   const handleRegenerateCodes = async () => {
     if (isPasswordless ? needsSsoReVerify : !recoveryPassword) {
       setLocalError(isPasswordless
@@ -385,7 +511,7 @@ export default function MFASettings({
       setConfirmRegenerateOpen(false);
       return;
     }
-    if ((currentMethod === 'totp' || currentMethod === 'sms') && recoveryFactorCode.length !== DIGIT_COUNT) {
+    if (recoveryNeedsCode && recoveryFactorCode.length !== DIGIT_COUNT) {
       setLocalError(t('mFASettings.currentMfaCodeRequired', { defaultValue: 'A current MFA code is required' }));
       setConfirmRegenerateOpen(false);
       return;
@@ -394,7 +520,10 @@ export default function MFASettings({
     try {
       setIsSubmitting(true);
       setLocalError(undefined);
-      if ((await onGenerateRecoveryCodes?.(recoveryPassword, recoveryFactorCode)) !== false) {
+      const verdict = hasTotpBackup && recoveryUsesTotp
+        ? await onGenerateRecoveryCodes?.(recoveryPassword, recoveryFactorCode, 'totp')
+        : await onGenerateRecoveryCodes?.(recoveryPassword, recoveryFactorCode);
+      if (verdict !== false) {
         setView({ kind: 'recovery-issued' });
       }
     } catch {
@@ -408,6 +537,22 @@ export default function MFASettings({
       setConfirmRegenerateOpen(false);
     }
   };
+
+  const recoveryProofToggle = hasTotpBackup && (
+    <button
+      type="button"
+      data-testid={recoveryUsesTotp ? 'mfa-recovery-use-passkey' : 'mfa-recovery-use-totp'}
+      onClick={() => {
+        setRecoveryUsesTotp(!recoveryUsesTotp);
+        setRecoveryFactorCode('');
+        setLocalError(undefined);
+      }}
+      disabled={isLoading}
+      className="text-sm text-primary underline underline-offset-4 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      {recoveryUsesTotp ? t('stepUpPrompt.usePasskeyInstead') : t('stepUpPrompt.switchToAuthenticatorCode')}
+    </button>
+  );
 
   // #5319: the same clipboard failure modes as the recovery codes (insecure
   // context, permissions policy, no user gesture) apply here, and a silent
@@ -704,21 +849,58 @@ export default function MFASettings({
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">{t('mFASettings.authenticatorApp')}</span>
-              {currentMethod === 'totp' ? (
-                <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">
-                  {t('mFASettings.enabled')}</span>
+              {currentMethod === 'totp' || hasTotpBackup ? (
+                <span data-testid="mfa-authenticator-status" className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">
+                  {hasTotpBackup ? t('mFASettings.backup') : t('mFASettings.enabled')}</span>
               ) : (
-                <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                  {t('mFASettings.disabled')}</span>
+                <span data-testid="mfa-authenticator-status" className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                  {totpBackupDisallowed
+                    ? t('mFASettings.notAvailable')
+                    : canAddTotpBackup ? t('mFASettings.notSetUp') : t('mFASettings.disabled')}</span>
               )}
             </div>
             <p className="text-xs text-muted-foreground">
               {currentMethod === 'totp'
                 ? t('mFASettings.yourAccountIsProtectedWithAnAuthenticatorApp')
-                : t('mFASettings.useAnAuthenticatorAppToGenerateVerificationCodesRecommen')}
+                : hasTotpBackup
+                  ? t('mFASettings.totpBackupActiveHint')
+                  : totpBackupDisallowed
+                    ? t('mFASettings.totpPolicyDisallowed')
+                    : canAddTotpBackup
+                      ? t('mFASettings.totpBackupAddHint')
+                      : t('mFASettings.useAnAuthenticatorAppToGenerateVerificationCodesRecommen')}
             </p>
           </div>
-          {currentMethod === 'totp' ? (
+          {/* #10650: the API refuses /mfa/disable while passkeys survive, so a
+              TOTP primary with passkeys — like a passkey primary's backup —
+              removes the authenticator on its own instead. */}
+          {hasTotpBackup || totpPrimaryWithPasskeys ? (
+            <button
+              type="button"
+              data-testid={hasTotpBackup ? 'mfa-totp-backup-remove-start' : 'mfa-totp-remove-start'}
+              onClick={openRemoveTotp}
+              disabled={isLoading}
+              className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {t('common:actions.remove')}</button>
+          ) : canAddTotpBackup ? (
+            totpBackupDisallowed ? null : (
+              <button
+                type="button"
+                data-testid="mfa-totp-backup-start"
+                onClick={() => {
+                  setCurrentPassword('');
+                  setLocalError(undefined);
+                  setLocalSuccess(undefined);
+                  setEnrollCodeRejected(false);
+                  setView('confirm-password-setup');
+                }}
+                disabled={isLoading}
+                className="h-9 rounded-md border px-3 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {t('mFASettings.addBackup')}</button>
+            )
+          ) : currentMethod === 'totp' ? (
             <button
               type="button"
               onClick={() => {
@@ -824,6 +1006,8 @@ export default function MFASettings({
               type="button"
               data-testid="mfa-recovery-regenerate-start"
               onClick={() => {
+                setRecoveryUsesTotp(false);
+                setRecoveryFactorCode('');
                 setView('recovery');
                 setLocalError(undefined);
                 setLocalSuccess(undefined);
@@ -865,7 +1049,7 @@ export default function MFASettings({
     </div>
   );
 
-  const renderSsoManageButton = (intent: 'recovery_codes' | 'disable_mfa', testId: string) => (
+  const renderSsoManageButton = (intent: MfaManageIntent, testId: string) => (
     <button
       type="button"
       data-testid={testId}
@@ -1065,6 +1249,15 @@ export default function MFASettings({
           </p>
         )}
 
+        {/* #10650: adding a backup beside a passkey is confirmed with that
+            passkey, and the browser prompt appears only on Verify. Say so
+            before it does, not after. */}
+        {isBackupEnrollment && !needsSsoReVerify && (
+          <p data-testid="mfa-totp-backup-passkey-note" className="text-sm text-muted-foreground">
+            {t('mFASettings.totpBackupVerifyNote')}
+          </p>
+        )}
+
         <div className="flex flex-wrap items-center justify-end gap-3">
           <button
             type="button"
@@ -1093,7 +1286,9 @@ export default function MFASettings({
               disabled={isLoading || code.length !== DIGIT_COUNT}
               className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isLoading ? t('mFASettings.verifying') : t('mFASettings.verifyAndEnable')}
+              {isLoading
+                ? t('mFASettings.verifying')
+                : isBackupEnrollment ? t('mFASettings.confirmBackupButton') : t('mFASettings.verifyAndEnable')}
             </button>
           )}
         </div>
@@ -1171,6 +1366,110 @@ export default function MFASettings({
     );
   }
 
+  // #10650: remove the authenticator app WITHOUT switching MFA off — the
+  // backup beside a passkey primary, or a TOTP primary whose passkey is then
+  // promoted. Proven by the user at the keyboard (password or IdP grant) AND
+  // an existing factor: a passkey by default, or a code from the
+  // authenticator itself for the user whose passkey is the thing they lost.
+  if (view === 'remove-totp') {
+    return (
+      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+        {children}
+        <div className="space-y-1">
+          <h2 className="text-lg font-semibold">{t('mFASettings.removeTotpTitle')}</h2>
+          <p className="text-sm text-muted-foreground">
+            {hasTotpBackup
+              ? t('mFASettings.removeTotpBackupDescription')
+              : t('mFASettings.removeTotpPrimaryDescription')}
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          {removeProofMethod === 'passkey' ? (
+            <p data-testid="mfa-totp-remove-passkey-note" className="text-sm text-muted-foreground">
+              {t('mFASettings.removeTotpConfirmWithPasskey')}
+            </p>
+          ) : (
+            <>
+              <label className="text-sm font-medium" htmlFor="mfa-totp-remove-code">
+                {t('stepUpPrompt.authenticatorCode')}
+              </label>
+              <input
+                id="mfa-totp-remove-code"
+                data-testid="mfa-totp-remove-code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={DIGIT_COUNT}
+                value={removeCode}
+                onChange={e => setRemoveCode(e.target.value.replace(/\D/g, '').slice(0, DIGIT_COUNT))}
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                disabled={isLoading}
+              />
+            </>
+          )}
+          <button
+            type="button"
+            data-testid={removeProofMethod === 'passkey' ? 'mfa-totp-remove-use-code' : 'mfa-totp-remove-use-passkey'}
+            onClick={() => {
+              setRemoveProofMethod(removeProofMethod === 'passkey' ? 'totp' : 'passkey');
+              setRemoveCode('');
+              setLocalError(undefined);
+            }}
+            disabled={isLoading}
+            className="block text-sm text-primary underline underline-offset-4 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {removeProofMethod === 'passkey'
+              ? t('stepUpPrompt.switchToAuthenticatorCode')
+              : t('stepUpPrompt.usePasskeyInstead')}
+          </button>
+        </div>
+
+        {isPasswordless ? renderSsoManageProof() : (
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="mfa-totp-remove-password">
+              {t('mFASettings.currentPassword')}</label>
+            <input
+              id="mfa-totp-remove-password"
+              data-testid="mfa-totp-remove-password"
+              type="password"
+              autoComplete="current-password"
+              value={removePassword}
+              onChange={e => setRemovePassword(e.target.value)}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              disabled={isLoading}
+            />
+          </div>
+        )}
+
+        {renderError()}
+
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              resetRemoveTotpView();
+              setLocalError(undefined);
+              setView('status');
+            }}
+            className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+          >
+            {t('mFASettings.cancel')}</button>
+          {needsSsoReVerify ? renderSsoManageButton('remove_totp', 'mfa-totp-remove-sso-reauth') : (
+            <button
+              type="button"
+              data-testid="mfa-totp-remove-submit"
+              onClick={() => { void handleRemoveTotpSubmit(); }}
+              disabled={isLoading || !removeProofReady || (!isPasswordless && !removePassword)}
+              className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isLoading ? t('mFASettings.removing') : t('mFASettings.removeTotpTitle')}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   if (view === 'recovery') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
@@ -1180,10 +1479,12 @@ export default function MFASettings({
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="mfa-recovery-factor-code">
             {currentMethod === 'passkey'
-              ? t('mFASettings.currentPasskeyRequired', { defaultValue: 'Your current passkey will be requested' })
+              ? recoveryUsesTotp && hasTotpBackup
+                ? t('stepUpPrompt.authenticatorCode')
+                : t('mFASettings.currentPasskeyRequired', { defaultValue: 'Your current passkey will be requested' })
               : t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
           </label>
-          {currentMethod !== 'passkey' && (
+          {recoveryNeedsCode && (
             <input
               id="mfa-recovery-factor-code"
               data-testid="mfa-recovery-factor-code"
@@ -1207,6 +1508,7 @@ export default function MFASettings({
               {t('mFASettings.sendVerificationCode', { defaultValue: 'Send verification code' })}
             </button>
           )}
+          {recoveryProofToggle}
         </div>
 
         {isPasswordless ? renderSsoManageProof() : (
@@ -1234,6 +1536,7 @@ export default function MFASettings({
             onClick={() => {
               setRecoveryPassword('');
               setRecoveryFactorCode('');
+              setRecoveryUsesTotp(false);
               setView('status');
             }}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
@@ -1251,8 +1554,7 @@ export default function MFASettings({
               data-testid="mfa-recovery-regenerate"
               onClick={() => setConfirmRegenerateOpen(true)}
               disabled={isLoading || (!isPasswordless && !recoveryPassword) || (
-                (currentMethod === 'totp' || currentMethod === 'sms')
-                && recoveryFactorCode.length !== DIGIT_COUNT
+                recoveryNeedsCode && recoveryFactorCode.length !== DIGIT_COUNT
               )}
               className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
             >

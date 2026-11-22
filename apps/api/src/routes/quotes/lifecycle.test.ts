@@ -470,6 +470,51 @@ describe('POST /:id/images — from URL (JSON body)', () => {
   });
 });
 
+describe('POST /:id/images owns its DB context', () => {
+  const PERMS = ['quotes:read', 'quotes:write'];
+  let depth = 0;
+  const seen: Record<string, number> = {};
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    depth = 0;
+    for (const k of Object.keys(seen)) delete seen[k];
+    withAuthDbAccessContextMock.mockImplementation(async (_auth: unknown, fn: () => Promise<unknown>) => {
+      depth += 1;
+      try { return await fn(); } finally { depth -= 1; }
+    });
+    vi.mocked(getQuote).mockImplementation(async () => { seen.read = depth; return { quote: { orgId: 'org-1' } } as never; });
+    vi.mocked(writeQuoteImage).mockImplementation(async () => { seen.write = depth; return { id: 'img-9', byteSize: 3, sha256: 'x' } as never; });
+  });
+
+  afterEach(() => {
+    withAuthDbAccessContextMock.mockImplementation(async (_auth: unknown, fn: () => Promise<unknown>) => fn());
+  });
+
+  it('a URL copy reads and writes in short contexts and downloads outside them', async () => {
+    vi.mocked(fetchRemoteImage).mockImplementation(async () => {
+      seen.fetch = depth;
+      return { mime: 'image/png', buffer: Buffer.from([1, 2, 3]) };
+    });
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'https://cdn.example.com/a.png' }),
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual({ read: 1, fetch: 0, write: 1 });
+  });
+
+  it('a file upload reads and writes in short contexts', async () => {
+    vi.mocked(sniffImageMime).mockReturnValue('image/png');
+    const body = new FormData();
+    body.append('file', new File([new Uint8Array([1, 2, 3])], 'a.png', { type: 'image/png' }));
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, { method: 'POST', body });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual({ read: 1, write: 1 });
+  });
+});
+
 describe('POST /:id/images — multipart file upload', () => {
   const PERMS = ['quotes:read', 'quotes:write'];
 

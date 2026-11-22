@@ -3,6 +3,8 @@ import { z } from 'zod';
 export const TOOL_SOURCE_SLUG_RE = /^[a-z][a-z0-9]{1,23}$/;
 export const SOURCE_TOOL_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 export const QUALIFIED_TOOL_NAME_MAX = 64;
+export const TOOL_SOURCE_SLUG_MESSAGE =
+  'Slug must be 2-24 characters: lowercase letters and numbers only, starting with a letter (no hyphens or underscores)';
 export const RESERVED_TOOL_SOURCE_SLUGS: ReadonlySet<string> = new Set(['mcp', 'breeze', 'core', 'flow', 'ext']);
 
 const httpsUrl = z.string().url().refine((u) => u.startsWith('https://'), 'must be an https URL');
@@ -22,7 +24,7 @@ export const TOOL_SOURCE_KINDS = ['mcp', 'openapi'] as const;
 
 const sourceCore = z.object({
   name: z.string().min(1).max(120),
-  slug: z.string().regex(TOOL_SOURCE_SLUG_RE).refine((s) => !RESERVED_TOOL_SOURCE_SLUGS.has(s), 'reserved slug'),
+  slug: z.string().regex(TOOL_SOURCE_SLUG_RE, TOOL_SOURCE_SLUG_MESSAGE).refine((s) => !RESERVED_TOOL_SOURCE_SLUGS.has(s), 'reserved slug'),
   kind: z.enum(TOOL_SOURCE_KINDS),
   // For an `openapi` source this is the API BASE url — the origin the
   // credential is pinned to (`credentialOriginFor(endpointUrl)`), and the only
@@ -31,7 +33,7 @@ const sourceCore = z.object({
   // W2: the OpenAPI document URL. Only read; the credential travels with it
   // only when it shares `endpointUrl`'s origin.
   specUrl: httpsUrl.optional(),
-  rateLimitPerMinute: z.number().int().min(1).max(6000).default(120),
+  rateLimitPerMinute: z.number().int().min(1).max(6000),
   ownerScope: z.enum(['organization', 'partner']).optional(),
   orgId: z.string().uuid().optional(),
 });
@@ -52,8 +54,11 @@ function kindSpecUrlRule(v: { kind?: string; specUrl?: string }, ctx: z.Refineme
 // 200 that changed nothing. (`.strict()` cannot be used here: the auth union
 // on the other side of the intersection owns `authKind`/`authConfig`.)
 const updateOnly = { kind: z.never({ message: 'kind cannot be changed after creation' }).optional() };
+// The default belongs to create only: zod's `.partial()` still applies a
+// `.default()` to an omitted key, so a PATCH without the field would reset it.
+const createOnlyDefaults = { rateLimitPerMinute: sourceCore.shape.rateLimitPerMinute.default(120) };
 
-export const createToolSourceSchema = z.intersection(sourceCore, toolSourceAuthConfigSchema).superRefine(kindSpecUrlRule);
+export const createToolSourceSchema = z.intersection(sourceCore.extend(createOnlyDefaults), toolSourceAuthConfigSchema).superRefine(kindSpecUrlRule);
 export const updateToolSourceSchema = z.intersection(
   sourceCore.omit({ slug: true, kind: true, ownerScope: true, orgId: true }).partial().extend(updateOnly),
   z.union([toolSourceAuthConfigSchema, z.object({})]),
@@ -68,7 +73,7 @@ const sourceCoreWithHttp = sourceCore.extend({
   specUrl: httpOrHttpsUrl.optional(),
 });
 export const createToolSourceSchemaWithHttp = z
-  .intersection(sourceCoreWithHttp, toolSourceAuthConfigSchema)
+  .intersection(sourceCoreWithHttp.extend(createOnlyDefaults), toolSourceAuthConfigSchema)
   .superRefine(kindSpecUrlRule);
 export const updateToolSourceSchemaWithHttp = z.intersection(
   sourceCoreWithHttp.omit({ slug: true, kind: true, ownerScope: true, orgId: true }).partial().extend(updateOnly),

@@ -67,6 +67,14 @@ describe('device row reset (§5.5 capability columns)', () => {
     expect(missing, 'a new *ProtocolVersion column must join INSTALL_BOUNDARY_RESET_COLUMNS').toEqual([]);
   });
 
+  it('keeps the possible-replacement flag: it is row history, not install state (#8318 §7.3)', () => {
+    const reset = Object.keys(INSTALL_BOUNDARY_RESET_COLUMNS);
+    for (const key of ['possibleReplacementOfDeviceId', 'possibleReplacementReason', 'possibleReplacementDetectedAt']) {
+      expect(getTableColumns(devices), key).toHaveProperty(key);
+      expect(reset, key).not.toContain(key);
+    }
+  });
+
   it('resets each column to its "not declared" value', () => {
     const columns = getTableColumns(devices) as Record<string, { notNull: boolean }>;
     for (const [key, value] of Object.entries(INSTALL_BOUNDARY_RESET_COLUMNS)) {

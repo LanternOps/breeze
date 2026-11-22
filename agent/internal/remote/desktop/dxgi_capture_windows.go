@@ -53,25 +53,28 @@ func (c *dxgiCapturer) captureFromGDIFallbackLocked() (*image.RGBA, error) {
 	}
 
 	// Reattach/recreate fallback periodically if secure desktop capture yields
-	// no frame for an extended stretch.
-	if c.gdiNoFrameCount >= 15 && now.Sub(c.lastGDIRepair) >= 500*time.Millisecond {
+	// no frame for an extended stretch — but not while the fallback is
+	// waiting out its capture-thread recycle backoff (gdiFallbackRepairDue):
+	// replacing it there is one more OS thread the backoff exists to prevent.
+	//
+	// No switchToInputDesktop here any more: the GDI fallback's own thread
+	// follows the input desktop (gdiThreadState), so moving THIS thread does
+	// nothing for GDI capture. Recreating the fallback gives it a fresh
+	// thread, which is the repair that can still help.
+	carry := c.gdiFallback.repairCarry()
+	if gdiFallbackRepairDue(c.gdiNoFrameCount, c.lastGDIRepair, carry, now) {
 		c.lastGDIRepair = now
-		_ = c.switchToInputDesktop()
-		// Carry the swallowed capture error onto the replacement. Recreating the
-		// fallback otherwise resets it to nil, and LastCaptureError is the only
-		// channel by which a GDI failure reaches the technician (#5284) — a
-		// repair that discards the diagnosis hands StartSession an error-less
-		// capturer and puts the generic "no frame after N attempts" message
-		// back. Today the startup probe gives up long before this threshold, so
-		// this is guarding the invariant rather than a live bug; keeping it here
-		// means the two thresholds can be tuned independently without silently
-		// re-breaking the diagnostic.
-		var carried error
-		if c.gdiFallback != nil {
-			carried = c.gdiFallback.LastCaptureError()
-			_ = c.gdiFallback.Close()
-		}
-		c.gdiFallback = &gdiCapturer{config: c.config, lastCaptureErr: carried}
+		// The replacement inherits the swallowed capture error and the
+		// recycler (gdiRepairCarry). Recreating the fallback otherwise resets
+		// both: LastCaptureError is the only channel by which a GDI failure
+		// reaches the technician (#5284), and a fresh recycler restarts the
+		// backoff and the Warn throttle on every repair.
+		follows, followsSince := c.gdiFollowsDesktop, c.gdiFollowsSince
+		c.closeGDIFallbackLocked()
+		replacement := &gdiCapturer{config: c.config}
+		replacement.book.adoptRepairCarry(carry)
+		c.setGDIFallbackLocked(replacement)
+		c.gdiFollowsDesktop, c.gdiFollowsSince = follows, followsSince
 		slog.Info("Recreated GDI fallback after repeated no-frame samples",
 			"count", c.gdiNoFrameCount)
 	}
@@ -95,6 +98,21 @@ func (c *dxgiCapturer) LastCaptureError() error {
 		return nil
 	}
 	return fallback.LastCaptureError()
+}
+
+// CaptureWarning implements captureWarningReporter by delegating to the GDI
+// fallback, the only capturer here that can deliver a frame without confirming
+// it was taken on the input desktop.
+//
+// It reads the fallback through gdiFallbackView rather than under c.mu, and
+// gdiCapturer.CaptureWarning takes no lock either, so a wedged capture does
+// not block the metrics line that calls this.
+func (c *dxgiCapturer) CaptureWarning() error {
+	fallback := c.gdiFallbackView.Load()
+	if fallback == nil {
+		return nil
+	}
+	return fallback.CaptureWarning()
 }
 
 // Capture acquires the next desktop frame via DXGI.
@@ -172,7 +190,7 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 			// the full composed output including dialog content.
 			slog.Info("On Secure Desktop after DXGI error, using GDI capture",
 				"desktop", dname)
-			c.gdiFallback = &gdiCapturer{config: c.config}
+			c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
 			c.gdiNoFrameCount = 0
 			return c.captureFromGDIFallbackLocked()
 		}
@@ -475,7 +493,7 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 			c.secureDesktopFlag.Store(true)
 			slog.Info("On Secure Desktop after DXGI error (GPU), using GDI capture",
 				"desktop", dname)
-			c.gdiFallback = &gdiCapturer{config: c.config}
+			c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
 			return 0, nil // Caller falls through to CPU Capture() path
 		}
 
@@ -605,3 +623,4 @@ func (c *dxgiCapturer) GetD3D11Context() uintptr {
 }
 
 var _ lastCaptureErrorReporter = (*dxgiCapturer)(nil)
+var _ captureWarningReporter = (*dxgiCapturer)(nil)

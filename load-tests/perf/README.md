@@ -23,7 +23,8 @@ Idle CPU, p50/p99, request mix, event-loop and pool figures are recorded in the 
 
 | File | Purpose |
 |---|---|
-| `run-perf.sh` | One measured run: stack up, lab setup, idle sample, simulator under the sampler, acceptance check, hardware fingerprint, KPI record, stack down |
+| `run-perf.sh` | One measured run: stack up (dev images rebuilt from the checkout, `wt-stack up --rebuild`, so a persistent runner never measures an image from another commit), lab setup, idle sample, simulator under the sampler, acceptance check, hardware fingerprint, KPI record, stack down |
+| `storm-measured.sh` | Decides whether a failed storm report measured anything (every fault fired, every event ran its window, every failing gate has data); the workflow keeps only such a miss warn-only |
 | `sample.sh` | Every 10 s, scrapes `/metrics/scrape` inside the API container and reads `xact_commit` from Postgres into a CSV |
 | `kpi.mjs` | Pure record builder and comparator (no I/O) |
 | `cli.mjs` | `build` and `compare` subcommands over the files |
@@ -43,6 +44,19 @@ The script needs no root `.env`. It generates a throwaway one with random secret
 
 On macOS the record has `hardware.baselineGrade: false`: the figures describe the Docker VM, not fixed hardware. The comparator will not compare it with a baseline-grade record, so a local macOS run is for looking at numbers only.
 
+## Runner prerequisites
+
+A self-hosted runner for `perf.yml` needs:
+
+- Docker Engine with Compose v2
+- Go, at the version in `agent/go.mod`
+- Node, installed by the workflow's setup steps
+- `jq` and `openssl`
+- `build-essential`
+- `libpcap-dev` (the agent build imports `gopacket/pcap`; without it the build fails on `pcap.h`)
+
+After the simulator exits, `run-perf.sh` keeps the sampler running for `TAIL_SECONDS` (default `INTERVAL + 10`) so a sample lands after the window end; the comparator rejects a run without one.
+
 ## CLI
 
 ```bash
@@ -59,8 +73,11 @@ Exit codes: `0` pass, `1` regression (with `--confirm`, only if the confirm run 
 `.github/workflows/perf.yml` runs on a dedicated self-hosted runner labelled `breeze-perf`. It never runs on pull requests, because this is a public repository.
 
 - **Nightly** (cron): runs only when the repository variable `PERF_NIGHTLY_ENABLED` is `true`. Measures `nightly-200`, compares with `baselines/nightly-200.json`, and runs a confirm run on a regression. On failure a second job opens or comments on the single open issue labelled `perf-regression`.
-- **Storm suite** (#8642, `storm` job, after the KPI job): `run-perf.sh --storm storm-suite` runs `load-tests/agentsim/storm.sh storm-suite` (400 agents, admission `enforce`, caddy port pinned) with `--gate-heartbeat-p95 1s --gate-pool-min-ratio 0.8 --gate-pool-recovery 30s` (values in the workflow `env`). **Warn-only** (`continue-on-error`) until the repository variable `PERF_GATES_ENFORCE` is `true`; flip it on or after 2026-10-31. Report: artifact `perf-storm-*`, `storm/storm.json`.
+- **Storm suite** (#8642, `storm` job, after the KPI job): `run-perf.sh --storm storm-suite` runs `load-tests/agentsim/storm.sh storm-suite` (400 agents, admission `enforce`, caddy port pinned) with `--gate-heartbeat-p95 1s --gate-pool-min-ratio 0.8 --gate-pool-recovery 30s` (values in the workflow `env`). **Warn-only** until the repository variable `PERF_GATES_ENFORCE` is `true` (flip it on or after 2026-10-31), and only for a measured gate miss: exit 3 is a `::warning::` and a green job only when `storm-measured.sh` confirms every fault step ran, every planned event ran its whole window, and every failing gate has data. Any other failure (the stack did not start, the simulator never ran its window, agents never reached the API) fails the job and files the nightly issue (#11623). Report: artifact `perf-storm-*`, `storm/storm.json`.
+- **Workspace ownership**: each self-hosted job ends with an `if: always()` step that chowns the workspace back to the runner user, because the lab stack's containers write as root into bind mounts of the checkout and would otherwise make the next run's `actions/checkout` fail to clean it. If a checkout is already wedged (`not a git repository`), delete `_work/<repo>/<repo>` on the runner.
 - **Manual dispatch**: same measurement, no issue filed. With input `inject=slow-heartbeat` it runs a clean run, applies `inject/slow-heartbeat.patch` to the throwaway checkout, runs again, and compares the two with `--expect regression`. That job **passes only if the gate goes red**, naming both agent cost and heartbeat p95. It needs no committed baseline and is the self-test that the gate can fail.
+
+**Inject acceptance allowance.** The injected run blocks the API event loop on purpose, and the proxy answers a few requests with 502 while it is blocked. Acceptance normally demands zero non-2xx outside crawl-config, which would invalidate the run before the comparator could prove the gate goes red. So `run-perf.sh --label inject` (and only that label) calls `check-acceptance.sh report --allow-non2xx 20`; the acceptance line prints `(relaxed allowance: 20)`. Clean, nightly and storm runs keep the zero default. The self-test is about the gate, not the simulator's acceptance. The non-2xx counts are recorded in the KPI record's `notes` (for example `3 × 502 on POST /agents/:id/heartbeat`) and echoed in the compare summary, so they are never hidden. The comparator step is unchanged: `--expect regression` still needs both `agentCostCpuMsPerAgentMin` and `heartbeatP95Ms`.
 
 ## Reading a red
 
@@ -69,6 +86,14 @@ Exit codes: `0` pass, `1` regression (with `--confirm`, only if the confirm run 
 3. Check which KPI regressed and whether the confirm run agreed. A first-run regression the confirm run did not repeat passes with a warning.
 4. Exit 2 is not a regression: read the `invalid run:` line in the log (restart, hardware mismatch, failed acceptance).
 5. For a real regression, bisect the commits since the last green run. The `perf-regression` issue collects the nightly failures.
+
+### Runner disk low (not a regression)
+
+If the first step, `Runner disk precheck`, fails with `runner disk low: N GB free, need at least 10 GB`, the runner's disk is nearly full and nothing was measured. The cause is on the runner, not in the code; do not bisect. A full disk used to surface as "run was invalid" with no comparator summary (#11623).
+
+- Each job clears leftovers of a previous cancelled or timed-out run (wt-stack compose projects named `breeze-wt-*`, their volumes and networks) and, on low disk, reclaims once more before failing. Docker images are kept because runs reuse them.
+- Each job ends with an `if: always()` teardown (so also on cancel and timeout): compose down with volumes, `docker volume prune -a`, `docker builder prune -a --keep-storage 2GB`, and `go clean -cache` once the Go build cache passes 4 GB. This runs after the measurement, never inside it. The `breeze-perf` runner is dedicated to this gate, which is why unused volumes and networks are pruned host-wide. The precheck measures the smaller of the workspace disk and Docker's data root, and fails closed if free space cannot be read. A green teardown step does not prove the cleanup worked; it emits a `::warning::` if a `breeze-wt-*` project is still present.
+- If the precheck still fails, free the disk by hand: `docker system df`, then remove old volumes and build cache, and check the Go build cache and `_work` under the runner home. The threshold is `PERF_MIN_FREE_GB` in `perf.yml`.
 
 ## Regenerate the slowdown patch
 

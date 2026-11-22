@@ -24,7 +24,8 @@ vi.mock('../../services/scriptProposals/queries', () => ({
   loadLatestReview: vi.fn(async () => null),
 }));
 vi.mock('../../services/scriptProposals/promote', () => ({ promoteProposalToLibrary: vi.fn() }));
-vi.mock('../../services/auditEvents', () => ({
+vi.mock('../../services/auditEvents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/auditEvents')>()),
   writeAuditEventAsync: (...a: unknown[]) => writeAuditEventAsync(...a),
 }));
 const TX = { tx: true };

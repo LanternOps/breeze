@@ -61,6 +61,12 @@ export const serviceCatalogItems = pgTable('service_catalog_items', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [
   check('service_catalog_items_one_owner_chk', sql`(${t.orgId} IS NULL) <> (${t.partnerId} IS NULL)`),
+  // Mirrors 2027-01-19-100000-service-catalog-item-config.sql. A service line only exists inside a pillar.
+  check('service_catalog_items_grouping_chk', sql`(
+    (${t.pillar} IS NULL OR btrim(${t.pillar}) <> '')
+    AND (${t.serviceLine} IS NULL OR btrim(${t.serviceLine}) <> '')
+    AND (${t.serviceLine} IS NULL OR ${t.pillar} IS NOT NULL)
+  )`),
   index('service_catalog_items_catalog_idx').on(t.catalogId),
   index('service_catalog_items_partner_idx').on(t.partnerId),
   index('service_catalog_items_org_idx').on(t.orgId),

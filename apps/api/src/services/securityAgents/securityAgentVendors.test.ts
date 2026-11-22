@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { SECURITY_AGENT_VENDOR_KEYS } from '@breeze/shared/validators';
-import { getVendor, listVendors, vendorForCatalogPackage } from './securityAgentVendors';
+import { SECURITY_AGENT_STATUS_VENDORS } from '../../db/schema/securityAgents';
+import { EDR_INSTALLER_PROVIDER_KEYS, EDR_PROVIDER_LABELS } from '../edrProviders/providerKeys';
+import { getVendor, listVendors, vendorForCatalogPackage, vendorForIntegrationProvider } from './securityAgentVendors';
 import {
   BUILTIN_TENANT_VAR_PACKAGES,
   builtinPackageKeysForVendor,
@@ -9,7 +11,7 @@ import {
 } from '../builtinDeploymentPackages';
 
 describe('security agent vendor registry (#6960)', () => {
-  it('has exactly the four vendor keys the inline-settings schema accepts', () => {
+  it('has exactly the vendor keys the inline-settings schema accepts', () => {
     expect(listVendors().map((v) => v.key).sort()).toEqual([...SECURITY_AGENT_VENDOR_KEYS].sort());
   });
 
@@ -60,6 +62,41 @@ describe('security agent vendor registry (#6960)', () => {
   it('the registry is frozen', () => {
     expect(Object.isFrozen(listVendors())).toBe(true);
     expect(Object.isFrozen(getVendor('huntress'))).toBe(true);
+  });
+});
+
+describe('EDR framework vendors (#8170)', () => {
+  const framework = () => listVendors().filter((vendor) => vendor.orgSource === 'edr_framework');
+
+  it('are exactly the EDR providers that can supply an installer, with the framework registry\'s label and key', () => {
+    expect(framework().map((vendor) => vendor.key).sort()).toEqual([...EDR_INSTALLER_PROVIDER_KEYS].sort());
+    for (const vendor of framework()) {
+      expect(vendor.label).toBe(EDR_PROVIDER_LABELS[vendor.key as keyof typeof EDR_PROVIDER_LABELS]);
+      expect(vendor.integrationProvider).toBe(vendor.key);
+    }
+  });
+
+  it('Bitdefender: dormant, Windows only, connected from the EDR integrations sub-tab', () => {
+    const vendor = getVendor('bitdefender');
+    expect(vendor.enableable).toBe(false);
+    expect(vendor.platforms).toEqual({ windows: 'supported', macos: 'requires_mdm', linux: 'unsupported' });
+    expect(vendor.catalogRef).toBe('builtin:bitdefender');
+    expect(vendor.detectionRuleName).toBe('Bitdefender Endpoint Security Tools*');
+    expect(vendor.setupPath).toBe('/integrations#edr');
+  });
+
+  it('maps the catalog row back to the vendor, any OS', () => {
+    expect(vendorForIntegrationProvider('bitdefender')).toBe('bitdefender');
+    expect(vendorForCatalogPackage({ integrationProvider: 'bitdefender' })).toEqual({ vendor: 'bitdefender', platform: null });
+  });
+
+  it('an enableable vendor must be one the coverage table admits (read this before flipping a vendor on)', () => {
+    // security_agent_device_status_vendor_chk names its vendors. A vendor outside
+    // it can be enabled but its coverage rows are refused: the compliance pass
+    // reports the failure and carries on, so coverage is silently empty. Widen
+    // the CHECK by migration in the change that flips `enableable`.
+    const admitted = SECURITY_AGENT_STATUS_VENDORS as readonly string[];
+    expect(listVendors().filter((vendor) => vendor.enableable && !admitted.includes(vendor.key)).map((vendor) => vendor.key)).toEqual([]);
   });
 });
 

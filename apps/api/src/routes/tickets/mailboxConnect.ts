@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
+import { getDomain } from 'tldts';
 import { zValidator } from '../../lib/validation';
 import {
   authMiddleware,
@@ -41,6 +42,7 @@ import {
   restoreVerifiedConnection,
   setConnectedMailboxStatus,
   updateGmailHandling,
+  updateTrustedArcSealers,
   type MailboxConnection,
 } from '../../services/ticketMailbox/connectionService';
 import {
@@ -99,6 +101,30 @@ const idParam = z.object({ id: z.string().uuid() });
 const gmailHandlingBody = z.object({
   label: z.string().max(HANDLED_LABEL_MAX_LENGTH * 4).nullable(),
   archive: z.boolean(),
+}).strict();
+
+// Trusted ARC sealers (#10862): lowercase domains as they appear in an ARC-Seal's d=.
+const ARC_SEALER_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+// Mail providers that seal every customer's mail with one shared d=: trusting one
+// would trust mail any of their customers can send, so it is never a gateway here.
+// Exchange's own seal (d=microsoft.com) sits on the same chain as the gateway's,
+// which makes it the easy wrong value to copy.
+const SHARED_PROVIDER_SEALERS = new Set([
+  'microsoft.com', 'outlook.com', 'office365.com', 'onmicrosoft.com',
+  'google.com', 'gmail.com', 'googlemail.com',
+]);
+const trustedArcSealersBody = z.object({
+  sealers: z.array(
+    z.string().max(253).regex(ARC_SEALER_RE).refine(
+      // getDomain is null for a public suffix or an IP: nobody's sealing domain, and
+      // a mistake here would mean trusting more than one operator.
+      (sealer) => getDomain(sealer, { allowPrivateDomains: true }) !== null,
+      'Must be a domain name',
+    ).refine(
+      (sealer) => !SHARED_PROVIDER_SEALERS.has(getDomain(sealer, { allowPrivateDomains: true }) ?? sealer),
+      'A mail provider\'s shared sealing domain cannot be a trusted gateway',
+    ),
+  ).max(10).refine((sealers) => new Set(sealers).size === sealers.length, 'Duplicate sealer'),
 }).strict();
 
 type CallbackQuery = z.infer<typeof callbackQuery>;
@@ -867,6 +893,40 @@ mailboxRoutes.patch(
       details: { provider: 'gmail', enabled: label !== null, archive: body.archive },
     });
     return c.json({ ok: true, gmailHandling: { label, archive: body.archive, error: null, errorAt: null } });
+  },
+);
+
+// Edit a Microsoft 365 mailbox's trusted ARC sealers (#10862). This decides whose
+// verdict lets external mail become a ticket, so it has the same gates as the
+// connection itself and is audited with the list it set.
+mailboxRoutes.patch(
+  '/connections/:id/trusted-arc-sealers',
+  authMiddleware,
+  partnerScopes,
+  requireMailboxAdmin,
+  requireMfa(),
+  zValidator('param', idParam),
+  zValidator('json', trustedArcSealersBody),
+  async (c) => {
+    const auth = c.get('auth');
+    if (!canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+    const resolved = resolvePartnerId(auth);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const { id } = c.req.valid('param');
+    const { sealers } = c.req.valid('json');
+    const updated = await updateTrustedArcSealers(id, resolved.partnerId, sealers);
+    if (!updated) return c.json({ error: 'Microsoft 365 mailbox connection not found' }, 404);
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ticket_mailbox.trusted_arc_sealers_updated',
+      resourceType: 'ticket_mailbox_connection',
+      resourceId: id,
+      resourceName: updated.mailboxAddress,
+      details: { provider: 'm365', sealers },
+    });
+    return c.json({ ok: true, trustedArcSealers: sealers });
   },
 );
 

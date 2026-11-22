@@ -280,6 +280,7 @@ describe('bodyLimitForPath', () => {
       'agent-ingest': '/api/v1/agents/agent-1/software',
       'agent-hardware-health': '/api/v1/agents/agent-1/hardware-health',
       'agent-time-status': '/api/v1/agents/agent-1/time-status',
+      'agent-wake-status': '/api/v1/agents/agent-1/wake-status',
       'agent-workloads': '/api/v1/agents/agent-1/workloads',
       'edr-webhook': '/api/v1/webhooks/edr/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e',
       'flow-webhook': '/api/v1/webhooks/flows/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e',
@@ -333,6 +334,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     note: string;
   }
 > = {
+  'portalScim.ts': {
+    paths: ['/api/v1/scim/portal/v2/Users'],
+    globalMaxSize: 1 * MB,
+    note: 'tighter than the gate — 64 KiB SCIM User / PatchOp body (portal registration W9 #11386); the SCIM error body answers 413.',
+  },
   'devPush.ts': {
     paths: ['/api/v1/dev/push'],
     globalMaxSize: 150 * MB,
@@ -393,6 +399,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     globalMaxSize: 5 * MB,
     note: 'carved out — 5MB agent inventory ingest (#3516); warranty-info kept at its declared 1MB.',
   },
+  'agents/attestation.ts': {
+    paths: ['/api/v1/agents/agent-1/attestation/challenge', '/api/v1/agents/agent-1/attestation/complete'],
+    globalMaxSize: 1 * MB,
+    note: 'tighter than the gate — 16 KiB TPM attestation bodies (#8318 T1).',
+  },
   'agents/connections.ts': {
     paths: ['/api/v1/agents/agent-1/connections'],
     globalMaxSize: 5 * MB,
@@ -413,10 +424,20 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     globalMaxSize: 2 * MB,
     note: 'carved out — 2MB hardware/RAID snapshot ingest (#6856); route and gate agree at 2MB.',
   },
+  'agents/oemUpdates.ts': {
+    paths: ['/api/v1/agents/agent-1/oem-updates/verification'],
+    globalMaxSize: 1 * MB,
+    note: 'tighter than the gate — 4 KiB vendor update verification report (#11065).',
+  },
   'agents/timeStatus.ts': {
     paths: ['/api/v1/agents/agent-1/time-status'],
     globalMaxSize: 512 * 1024,
     note: 'Time status route and global gate both enforce 512 KiB.',
+  },
+  'agents/wakeStatus.ts': {
+    paths: ['/api/v1/agents/agent-1/wake-status'],
+    globalMaxSize: 64 * 1024,
+    note: 'Wake status route and global gate both enforce 64 KiB (#10838).',
   },
   'agents/workloads.ts': {
     paths: ['/api/v1/agents/agent-1/workloads'],

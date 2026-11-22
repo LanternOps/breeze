@@ -170,7 +170,7 @@ pub fn show_consent_window(
         CONSENT_WINDOW_LABEL,
         WebviewUrl::App("index.html#consent".into()),
     )
-    .title("Remote Session Request")
+    .title(crate::native_string("native.consent.title"))
     .inner_size(380.0, 300.0)
     .center()
     .decorations(false)
@@ -244,7 +244,7 @@ pub fn show_banner_window(app: &AppHandle, req: &BannerShowRequest) {
         BANNER_WINDOW_LABEL,
         WebviewUrl::App("index.html#banner".into()),
     )
-    .title("Remote Session Active")
+    .title(crate::native_string("native.banner.title"))
     .inner_size(BANNER_W, BANNER_H)
     .decorations(false)
     .always_on_top(true)
@@ -347,6 +347,40 @@ pub fn place_card(work_area: Rect, size: Size, index: usize) -> Position {
     Position { x: x.clamp(work_area.x, max_x), y: y.clamp(work_area.y, max_y) }
 }
 
+/// Where the live-chat window goes: bottom-right of the work area, whole frame
+/// inside it. `outer` is the window's OUTER size (title bar and borders
+/// included): the chat window is decorated, so placing it by its client size
+/// left the reply box and Send button under the taskbar (#12312).
+pub fn place_chat_window(work_area: Rect, outer: Size) -> Position {
+    place_card(work_area, outer, 0)
+}
+
+/// Client size of the live-chat window, in logical pixels.
+pub const CHAT_W: f64 = 380.0;
+pub const CHAT_H: f64 = 520.0;
+/// Frame assumed when the real one cannot be measured. Windows 11 at 100%
+/// measured 16 x 39 around the client area; the height is rounded up.
+pub const CHAT_FRAME_FALLBACK_W: f64 = 16.0;
+pub const CHAT_FRAME_FALLBACK_H: f64 = 48.0;
+
+/// The outer size to place the chat window by. A measured frame smaller than
+/// the client area is not a frame: Linux/X11 reports about 0x0 until the
+/// window is mapped, and placing by that leaves only a corner on screen.
+pub fn chat_outer_size(measured: Option<Size>) -> Size {
+    match measured {
+        Some(m) if m.width >= CHAT_W && m.height >= CHAT_H => m,
+        _ => Size { width: CHAT_W + CHAT_FRAME_FALLBACK_W, height: CHAT_H + CHAT_FRAME_FALLBACK_H },
+    }
+}
+
+/// A logical position on a monitor of scale `monitor_scale`, in physical
+/// pixels. Work areas are in their own monitor's logical pixels, and a window
+/// converts a logical position with the scale of the monitor it is on now,
+/// which differs on a mixed-DPI desktop.
+pub fn to_physical(p: Position, monitor_scale: f64) -> (i32, i32) {
+    ((p.x * monitor_scale).round() as i32, (p.y * monitor_scale).round() as i32)
+}
+
 // ---------------------------------------------------------------------------
 // Prompt cards (#10190): windows
 // ---------------------------------------------------------------------------
@@ -425,7 +459,7 @@ pub fn show_prompt_window(app: &AppHandle, plan: &super::prompt::WindowPlan) -> 
     }
     let size = prompt_window_size(plan.presentation);
     let builder = WebviewWindowBuilder::new(app, plan.label.clone(), WebviewUrl::App(plan.url.clone().into()))
-        .title("Notification from your IT provider")
+        .title(crate::native_string("native.notification.title"))
         .inner_size(size.width, size.height)
         .decorations(false)
         .always_on_top(true)
@@ -580,6 +614,11 @@ pub fn publish_prompt_identity(app: &AppHandle) {
 
 /// The logical work area of the monitor holding the cursor (else the primary).
 fn cursor_work_area(app: &AppHandle) -> Option<Rect> {
+    cursor_work_area_scaled(app).map(|(area, _)| area)
+}
+
+/// [`cursor_work_area`] with that monitor's scale factor.
+fn cursor_work_area_scaled(app: &AppHandle) -> Option<(Rect, f64)> {
     let monitor = app
         .cursor_position()
         .ok()
@@ -589,7 +628,7 @@ fn cursor_work_area(app: &AppHandle) -> Option<Rect> {
     let area = monitor.work_area();
     let pos = area.position.to_logical::<f64>(scale);
     let size = area.size.to_logical::<f64>(scale);
-    Some(Rect { x: pos.x, y: pos.y, width: size.width, height: size.height })
+    Some((Rect { x: pos.x, y: pos.y, width: size.width, height: size.height }, scale))
 }
 
 /// Create the small dedicated card window for an endpoint message (#8293).
@@ -621,7 +660,7 @@ pub fn show_message_window(
         label,
         WebviewUrl::App(window_url(&view.message_id).into()),
     )
-    .title("Message from your IT provider")
+    .title(crate::native_string("native.message.title"))
     .inner_size(CARD_W, CARD_H)
     .decorations(false)
     .always_on_top(plan.always_on_top)
@@ -695,10 +734,8 @@ pub fn show_chat_window(app: &AppHandle, conversation_id: &str, user_initiated: 
         return Ok(());
     }
 
-    const CHAT_W: f64 = 380.0;
-    const CHAT_H: f64 = 520.0;
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(window_url(conversation_id).into()))
-        .title("Chat with your IT provider")
+        .title(crate::native_string("native.chat.title"))
         .inner_size(CHAT_W, CHAT_H)
         .min_inner_size(300.0, 360.0)
         .decorations(true)
@@ -706,12 +743,29 @@ pub fn show_chat_window(app: &AppHandle, conversation_id: &str, user_initiated: 
         .focused(true)
         // In the taskbar so a new message can flash it.
         .skip_taskbar(false)
-        .resizable(true);
-    let builder = match primary_bottom_right(app, CHAT_W, CHAT_H) {
-        Some((x, y)) => builder.position(x, y),
-        None => builder.center(),
-    };
-    builder.build().map(|_| ()).map_err(|e| format!("create chat window: {}", e))
+        .resizable(true)
+        // Built hidden: the outer (decorated) size is only known once the
+        // window exists, and it must be placed before the user sees it.
+        .visible(false);
+    let window = builder.build().map_err(|e| format!("create chat window: {}", e))?;
+    match cursor_work_area_scaled(app) {
+        Some((work_area, monitor_scale)) => {
+            let scale = window.scale_factor().unwrap_or(1.0);
+            let measured = window.outer_size().ok().map(|s| {
+                let s = s.to_logical::<f64>(scale);
+                Size { width: s.width, height: s.height }
+            });
+            let p = place_chat_window(work_area, chat_outer_size(measured));
+            let (x, y) = to_physical(p, monitor_scale);
+            let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+        }
+        None => {
+            let _ = window.center();
+        }
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+    Ok(())
 }
 
 /// Push the current view to the chat window (no-op when it is not open).
@@ -755,6 +809,72 @@ mod tests {
             && p.y >= wa.y
             && p.x + size.width <= wa.x + wa.width + 1e-9
             && p.y + size.height <= wa.y + wa.height + 1e-9
+    }
+
+    /// #12312: the chat window has a native title bar, so its outer size is
+    /// larger than the 380x520 client area. Lab numbers (Windows 11, 1920x1080,
+    /// 100% scale): outer 396x559, work area 1920x1032. The old placement put
+    /// the top at y=496, so the bottom (1055) sat under the taskbar.
+    #[test]
+    fn place_chat_window_keeps_the_whole_frame_above_the_taskbar() {
+        let wa = Rect { x: 0.0, y: 0.0, width: 1920.0, height: 1032.0 };
+        let outer = Size { width: 396.0, height: 559.0 };
+        let p = place_chat_window(wa, outer);
+        assert_eq!(p, Position { x: 1920.0 - 396.0 - CARD_MARGIN, y: 1032.0 - 559.0 - CARD_MARGIN });
+        assert!(inside(wa, outer, p), "{p:?}");
+        assert_ne!(p.y, 496.0, "the old full-monitor placement");
+        // Taskbar on top or on the left, and a second monitor left of the primary.
+        for wa in [
+            Rect { x: 0.0, y: 48.0, width: 1920.0, height: 1032.0 },
+            Rect { x: 62.0, y: 0.0, width: 1858.0, height: 1080.0 },
+            Rect { x: -1280.0, y: 40.0, width: 1280.0, height: 984.0 },
+        ] {
+            assert!(inside(wa, outer, place_chat_window(wa, outer)), "{wa:?}");
+        }
+        // A work area smaller than the window: the top-left corner stays on screen.
+        let small = Rect { x: 0.0, y: 0.0, width: 360.0, height: 500.0 };
+        assert_eq!(place_chat_window(small, outer), Position { x: 0.0, y: 0.0 });
+    }
+
+    #[test]
+    fn chat_outer_size_falls_back_when_the_measured_frame_is_smaller_than_the_client_area() {
+        let fallback = Size { width: CHAT_W + CHAT_FRAME_FALLBACK_W, height: CHAT_H + CHAT_FRAME_FALLBACK_H };
+        // Windows 11 at 100%: a real frame is used as measured.
+        let real = Size { width: 396.0, height: 559.0 };
+        assert_eq!(chat_outer_size(Some(real)), real);
+        // Linux/X11 reports about 0x0 for a window that has not been mapped
+        // yet; placing by that would leave only a corner on screen.
+        assert_eq!(chat_outer_size(Some(Size { width: 0.0, height: 0.0 })), fallback);
+        assert_eq!(chat_outer_size(Some(Size { width: 396.0, height: 100.0 })), fallback);
+        assert_eq!(chat_outer_size(None), fallback);
+    }
+
+    /// The work area is in the target monitor's logical pixels, so the
+    /// position must be converted with THAT monitor's scale, not the scale of
+    /// the monitor the window was created on.
+    #[test]
+    fn to_physical_uses_the_given_monitor_scale() {
+        assert_eq!(to_physical(Position { x: 1508.0, y: 457.0 }, 1.0), (1508, 457));
+        assert_eq!(to_physical(Position { x: 1000.0, y: 500.5 }, 1.5), (1500, 751));
+        assert_eq!(to_physical(Position { x: -1280.0, y: 40.0 }, 2.0), (-2560, 80));
+    }
+
+    /// Wiring guard: the pure placement tests above cannot notice the window
+    /// going back to client-size or full-monitor placement.
+    #[test]
+    fn show_chat_window_places_the_outer_frame_in_the_work_area_before_showing() {
+        let src = include_str!("desktop.rs").split("\nmod tests {").next().unwrap();
+        let start = src.find("pub fn show_chat_window").expect("show_chat_window");
+        let end = src[start..].find("\n}\n").map(|i| i + start).expect("fn end");
+        let body = &src[start..end];
+        for needle in [".visible(false)", "outer_size()", "chat_outer_size(", "place_chat_window(", "cursor_work_area_scaled(", "to_physical(", ".show()"] {
+            assert!(body.contains(needle), "show_chat_window must contain {needle}");
+        }
+        assert!(!body.contains("primary_bottom_right"), "full-monitor placement put the window under the taskbar (#12312)");
+        let placed = body.find("set_position(").expect("set_position");
+        // The last `.show()`: the first is the early return for a window that already exists.
+        let shown = body.rfind(".show()").unwrap();
+        assert!(placed < shown, "the window is placed before the user sees it");
     }
 
     #[test]

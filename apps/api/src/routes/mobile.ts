@@ -2,10 +2,10 @@ import { isDeviceOwned } from '../services/alertOwner';
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { DEFAULT_ALERT_COOLDOWN_MINUTES, scriptParametersSchema } from '@breeze/shared';
+import { scriptParametersSchema } from '@breeze/shared';
 import { and, asc, desc, eq, gte, ilike, inArray, like, ne, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import {
   aiSessions,
   alerts,
@@ -28,10 +28,11 @@ import {
   buildAcknowledgeAlertCas,
   buildResolveAlertCas,
 } from '../services/alertService';
+import { lifecycleForAlert } from '../services/alertLifecycle/resolve';
 import { writeRouteAudit } from '../services/auditEvents';
 import { publishEvent } from '../services/eventBus';
 import { escapeLike } from '../utils/sql';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { canAccessSite, hasPermission, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { dispatchWake } from '../services/wakeOnLan';
 import { executeScriptOnDevices } from '../services/scriptExecution';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
@@ -60,6 +61,7 @@ import { alertSiteScopeByDeviceIds, alertTopologySiteGate } from './alerts/helpe
 import { topologySessionAccessCondition } from '../services/topology/aiSessionAccess';
 
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { wakeFailureStatus } from '../services/wakeFailureStatus';
 export const mobileRoutes = new Hono();
 const requireMobileAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireMobileAlertAcknowledge = requirePermission(PERMISSIONS.ALERTS_ACKNOWLEDGE.resource, PERMISSIONS.ALERTS_ACKNOWLEDGE.action);
@@ -142,7 +144,8 @@ async function loadDeviceDetailsV1Fields(deviceIds: string[], allowedSiteIds?: s
   }
 
   try {
-    const networkRows = await db
+    // Savepoint so a failed statement rolls back and the request transaction survives (#11203).
+    const networkRows = await withDbTransaction(async () => db
       .select({
         deviceId: deviceNetwork.deviceId,
         ipAddress: deviceNetwork.ipAddress,
@@ -151,7 +154,7 @@ async function loadDeviceDetailsV1Fields(deviceIds: string[], allowedSiteIds?: s
         interfaceName: deviceNetwork.interfaceName
       })
       .from(deviceNetwork)
-      .where(and(inArray(deviceNetwork.deviceId, deviceIds), sql`${deviceNetwork.ipAddress} IS NOT NULL`));
+      .where(and(inArray(deviceNetwork.deviceId, deviceIds), sql`${deviceNetwork.ipAddress} IS NOT NULL`)));
 
     const candidatesByDevice = new Map<string, LanIpCandidate[]>();
     for (const row of networkRows) {
@@ -173,13 +176,14 @@ async function loadDeviceDetailsV1Fields(deviceIds: string[], allowedSiteIds?: s
 
   let openAlertCountByDevice: Map<string, number> | null = new Map();
   try {
-    const alertCountRows = await db
+    // Savepoint so a failed statement rolls back and the request transaction survives (#11203).
+    const alertCountRows = await withDbTransaction(async () => db
       .select({ deviceId: alerts.deviceId, count: sql<number>`count(*)::int` })
       .from(alerts)
       // A site-owned topology alert counts on its origin device only when its
       // OWNING topology site is in the caller's scope (M3-D6).
       .where(and(inArray(alerts.deviceId, deviceIds), inArray(alerts.status, OPEN_ALERT_STATUSES), alertTopologySiteGate(allowedSiteIds)))
-      .groupBy(alerts.deviceId);
+      .groupBy(alerts.deviceId));
     for (const row of alertCountRows) {
       if (isDeviceOwned(row)) openAlertCountByDevice.set(row.deviceId, Number(row.count));
     }
@@ -190,11 +194,12 @@ async function loadDeviceDetailsV1Fields(deviceIds: string[], allowedSiteIds?: s
 
   let openTicketCountByDevice: Map<string, number> | null = new Map();
   try {
-    const ticketCountRows = await db
+    // Savepoint so a failed statement rolls back and the request transaction survives (#11203).
+    const ticketCountRows = await withDbTransaction(async () => db
       .select({ deviceId: tickets.deviceId, count: sql<number>`count(*)::int` })
       .from(tickets)
       .where(and(inArray(tickets.deviceId, deviceIds), inArray(tickets.status, OPEN_TICKET_STATUSES)))
-      .groupBy(tickets.deviceId);
+      .groupBy(tickets.deviceId));
     for (const row of ticketCountRows) {
       // tickets.deviceId is nullable in general, but inArray(...) above
       // already excludes NULL rows (`NULL IN (...)` is never true in SQL) —
@@ -1259,23 +1264,9 @@ mobileRoutes.post(
     }
     try {
       if (alert.ruleId && isDeviceOwned(alert)) {
-        const [rule] = await db
-          .select()
-          .from(alertRules)
-          .where(eq(alertRules.id, alert.ruleId))
-          .limit(1);
-
-        if (rule) {
-          const [template] = await db
-            .select()
-            .from(alertTemplates)
-            .where(eq(alertTemplates.id, rule.templateId))
-            .limit(1);
-
-          const overrides = (rule.overrideSettings as Record<string, unknown> | null) ?? null;
-          const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-            template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
-          await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
+        const lifecycle = await lifecycleForAlert(alert);
+        if (lifecycle) {
+          await setCooldown(alert.ruleId, alert.deviceId, lifecycle.cooldownMinutes, alert.subjectKey ?? undefined);
         }
       }
     } catch (error) {
@@ -1510,13 +1501,30 @@ mobileRoutes.post(
     // the single-transaction behaviour they had under the request tx.
     const { action } = data;
     if (action !== 'run_script') {
-      return withAuthDbAccessContext(auth, async () => {
+      const outcome = await withAuthDbAccessContext(auth, async () => {
         const target = await resolveQuickActionTarget(deviceId, auth, permissions);
         if (!target.ok) {
           return c.json({ error: target.error }, target.status);
         }
         return runNonScriptQuickAction(c, auth, target.device, action);
       });
+      if (outcome instanceof Response) return outcome;
+
+      // A prepared wake: its attempt and command have committed, so a fast
+      // relay result can find them.
+      const wake = await outcome.deliver();
+      if (!wake.ok) {
+        return c.json({ error: wake.message, code: wake.code }, wakeFailureStatus(wake.code));
+      }
+      return c.json({
+        action: 'wake',
+        commandId: wake.commandId,
+        wakeAttemptId: wake.wakeAttemptId,
+        relay: { deviceId: wake.relayDeviceId, hostname: wake.relayHostname },
+        network: wake.network,
+        broadcast: wake.broadcast,
+        macs: wake.macs,
+      }, 202);
     }
 
     // run_script: the target read commits on its own, then the service creates
@@ -1645,17 +1653,9 @@ async function runNonScriptQuickAction(
       userAgent: c.req.header('user-agent'),
     });
     if (!wake.ok) {
-      return c.json({ error: wake.message, code: wake.code }, 412);
+      return c.json({ error: wake.message, code: wake.code }, wakeFailureStatus(wake.code));
     }
-    return c.json({
-      action: 'wake',
-      commandId: wake.commandId,
-      wakeAttemptId: wake.wakeAttemptId,
-      relay: { deviceId: wake.relayDeviceId, hostname: wake.relayHostname },
-      network: wake.network,
-      broadcast: wake.broadcast,
-      macs: wake.macs,
-    }, 202);
+    return wake;
   }
 
   let cmdResult;
@@ -1897,6 +1897,13 @@ mobileRoutes.get(
 
     const orgFilter = orgCheck.orgIds === null ? undefined : inArray;
     const perms = c.get('permissions') as UserPermissions | undefined;
+    // Each result group needs the permission of the screen that opens it: the
+    // alert inbox (alerts:read) and AI conversations (ai_sessions:use). A
+    // caller without one of them still gets the other groups.
+    const canReadAlerts = !!perms
+      && hasPermission(perms, PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
+    const canUseAi = !!perms
+      && hasPermission(perms, PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action);
     const allowedDeviceIds = perms?.allowedSiteIds && auth.orgId
       ? await resolveSiteAllowedDeviceIds(auth.orgId, perms)
       : null;
@@ -1922,8 +1929,11 @@ mobileRoutes.get(
       or(ilike(alerts.title, term), ilike(alerts.message, term))
     );
 
+    // AI conversations are private to the user who started them, as in the
+    // conversation list and the session detail route that opens a result.
     const sessionWhere = and(
       orgCheck.orgIds === null ? sql`true` : inArray(aiSessions.orgId, orgCheck.orgIds),
+      eq(aiSessions.userId, auth.user.id),
       gte(aiSessions.lastActivityAt, thirtyDaysAgo),
       ilike(aiSessions.title, term),
       // Topology M4-D2: a session pinned to an unreadable site never matches.
@@ -1951,7 +1961,7 @@ mobileRoutes.get(
         .where(deviceWhere)
         .orderBy(desc(devices.lastSeenAt))
         .limit(perKind),
-      db
+      canReadAlerts ? db
         .select({
           id: alerts.id,
           orgId: alerts.orgId,
@@ -1971,8 +1981,8 @@ mobileRoutes.get(
         .leftJoin(devices, eq(alerts.deviceId, devices.id))
         .where(alertWhere)
         .orderBy(desc(alerts.triggeredAt))
-        .limit(perKind),
-      db
+        .limit(perKind) : Promise.resolve([]),
+      canUseAi ? db
         .select({
           id: aiSessions.id,
           orgId: aiSessions.orgId,
@@ -1985,7 +1995,7 @@ mobileRoutes.get(
         .from(aiSessions)
         .where(sessionWhere)
         .orderBy(desc(aiSessions.lastActivityAt))
-        .limit(perKind)
+        .limit(perKind) : Promise.resolve([])
     ]);
 
     const severityRank: Record<string, number> = {

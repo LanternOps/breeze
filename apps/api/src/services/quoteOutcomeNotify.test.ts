@@ -17,6 +17,8 @@ vi.mock('../db', () => {
     db: makeChain(),
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    withDbTransaction: (fn: () => unknown) => fn(),
+    withDbTransactionIfHeld: (fn: () => unknown) => fn(),
   };
 });
 

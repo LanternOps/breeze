@@ -1053,6 +1053,31 @@ describe('DevicePatchStatusTab', () => {
     expect(installAuto.getAttribute('aria-label')).toContain('next scheduled patch run');
   });
 
+  // #11073, spec 4.6: says who owns it, not that a policy blocked it.
+  it('shows a patch a vendor lane delivers as managed by Vendor updates', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        data: {
+          compliancePercent: 0,
+          approvalEvaluation: { available: true, ring: { id: 'ring-1', name: 'Workstations Ring' } },
+          pending: [{
+            id: 'driver-1', title: 'Dell Inc. - Display', source: 'microsoft', category: 'driver', status: 'pending',
+            approvalStatus: 'pending', installFailure: null,
+            effectiveApproval: { state: 'excluded', reason: 'managed_by_vendor_updates', holdUntil: null }
+          }],
+          installed: []
+        }
+      })
+    );
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" timezone="UTC" />);
+
+    const badge = await screen.findByTestId('device-patch-driver-1-approval');
+    expect(badge.textContent).toBe('Managed by Vendor updates');
+    expect(badge.getAttribute('title')).toContain('scheduled patch runs skip it');
+    expect(badge.getAttribute('title')).not.toContain('Workstations Ring');
+  });
+
   it('explains a held-back patch when the policy links an invalid update ring', async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeJsonResponse({

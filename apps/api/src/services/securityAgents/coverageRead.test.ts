@@ -96,3 +96,20 @@ describe('readSecurityAgentCoverage — installer_missing deep link (#9247)', ()
     expect(rows.map((r) => r.setupPath)).toEqual([null, null]);
   });
 });
+
+describe('setup path for framework-vendor reasons (#8170)', () => {
+  it.each(['tenant_ambiguous', 'installer_link_missing'])("%s links to the vendor's integration setup, with no policy read", async (reasonCode) => {
+    queued.length = 0;
+    queued.push([], [{ total: 1 }], [row({ vendor: 'bitdefender', reasonCode, policyId: 'policy-1' })]);
+    const out = await readSecurityAgentCoverage(SCOPE, Q);
+    expect(out.rows[0]!.setupPath).toBe('/integrations#edr');
+    expect(queued).toEqual([]);
+  });
+
+  it('org_not_mapped keeps no setup link', async () => {
+    queued.length = 0;
+    queued.push([], [{ total: 1 }], [row({ vendor: 'bitdefender', reasonCode: 'org_not_mapped' })]);
+    const out = await readSecurityAgentCoverage(SCOPE, Q);
+    expect(out.rows[0]!.setupPath).toBeNull();
+  });
+});

@@ -152,6 +152,34 @@ export function tightenCspConnectSrc(csp: string, connectSrcDirective: string): 
   return directives.join('; ');
 }
 
+/**
+ * Network Proxy host mode (#11300). The build-time Astro CSP's frame-src
+ * (astro.config.mjs) cannot carry the per-deployment tunnel origin, because the
+ * web image is built once for every region. Add each source of the env-resolved
+ * frame-src (lib/csp.ts) that the incoming directive lacks. Widen, never
+ * replace: build-time sources (a baked PUBLIC_DOCS_URL) must survive.
+ */
+export function widenCspFrameSrc(csp: string, frameSrcDirective: string): string {
+  const directives = csp
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  const index = directives.findIndex((directive) => /^frame-src(\s|$)/i.test(directive));
+  if (index === -1) {
+    directives.push(frameSrcDirective);
+    return directives.join('; ');
+  }
+
+  const sources = directives[index]!.split(/\s+/);
+  for (const source of frameSrcDirective.trim().split(/\s+/).slice(1)) {
+    if (!sources.includes(source)) sources.push(source);
+  }
+  directives[index] = sources.join(' ');
+
+  return directives.join('; ');
+}
+
 const HTML_CONTENT_TYPE = /^text\/html\b/i;
 
 /**
@@ -223,12 +251,15 @@ export const onRequest = defineMiddleware(async (context, next) => {
     if (existingCsp) {
       headers.set(
         'Content-Security-Policy',
-        tightenCspConnectSrc(
-          relaxExistingCsp(existingCsp, {
-            allowInlineScript: allowUnsafeInlineScript,
-            allowInlineStyle: allowUnsafeInlineStyle
-          }),
-          resolveConnectSrcDirective({ isDev: import.meta.env.DEV })
+        widenCspFrameSrc(
+          tightenCspConnectSrc(
+            relaxExistingCsp(existingCsp, {
+              allowInlineScript: allowUnsafeInlineScript,
+              allowInlineStyle: allowUnsafeInlineStyle
+            }),
+            resolveConnectSrcDirective({ isDev: import.meta.env.DEV })
+          ),
+          resolveFrameSrcDirective({})
         )
       );
     } else {
@@ -274,6 +305,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
       patchedCsp = `${patchedCsp}; style-src-attr 'unsafe-inline'`;
     }
     patchedCsp = tightenCspConnectSrc(patchedCsp, resolveConnectSrcDirective({ isDev: import.meta.env.DEV }));
+    patchedCsp = widenCspFrameSrc(patchedCsp, resolveFrameSrcDirective({}));
     headers.set('Content-Security-Policy', patchedCsp);
   }
   setDefaultReferrerPolicy(headers);

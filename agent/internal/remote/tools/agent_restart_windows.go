@@ -3,9 +3,10 @@
 package tools
 
 import (
-	"os/exec"
 	"strings"
 	"syscall"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const agentServiceName = "BreezeAgent"
@@ -15,7 +16,7 @@ func isAgentService(name string) bool {
 }
 
 func spawnDelayedRestart() error {
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
+	cmd := procspawn.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
 		"Start-Sleep -Seconds 3; Restart-Service -Name BreezeAgent")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
@@ -29,6 +30,6 @@ func spawnDelayedRestart() error {
 }
 
 func runAgentRestartNow() error {
-	return exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
+	return procspawn.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
 		"Restart-Service -Name BreezeAgent").Run()
 }

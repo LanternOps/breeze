@@ -31,17 +31,48 @@ type winCodeKey struct {
 // winCodeKeys maps DOM KeyboardEvent.code to the physical key for the keys
 // that the key-name (VK) path cannot express or gets wrong (spec gotcha K11):
 // left/right modifiers, the extended navigation cluster, Numpad Enter and
-// Divide, F13–F24, ContextMenu, the ISO and JIS extra keys, and media keys.
+// Divide, F13–F24, ContextMenu, the ISO and JIS extra keys, media keys, and
+// (#3920) the whole printable typing block.
+//
+// The typing block is here because the key-name path resolves punctuation
+// through US-layout VK_OEM_* codes, and those codes sit on different keys
+// under other layouts: the ' key typed ² on French AZERTY, - typed ç on
+// Spanish, and the )° key typed nothing. A viewer only sends a code in
+// "Physical keys" mode, whose contract is that the remote layout interprets
+// the position, so a scancode is exactly right there; "Type what I see"
+// sends no code and keeps the key-name path.
 //
 // Deliberately absent:
-//   - letters, digits and punctuation: a scancode is a position, so KeyA on an
-//     AZERTY remote would type "q". The VK path keeps today's behaviour.
+//   - Enter, Space, Tab, Backspace, Escape, F1–F12: their VKs are the same on
+//     every layout, so the key-name path is already right.
 //   - CapsLock, NumLock, ScrollLock: driven by lock-state sync, and NumLock's
 //     scancode collides with Pause's E1 sequence.
 //   - Pause: an E1 sequence that one KEYBDINPUT cannot carry.
 //
 // A code not in this table falls back to the key name, never an error.
 var winCodeKeys = map[string]winCodeKey{
+	// Printable typing block, set-1 scancodes by row (#3920).
+	"Backquote": {0x29, false},
+	"Digit1":    {0x02, false}, "Digit2": {0x03, false}, "Digit3": {0x04, false},
+	"Digit4": {0x05, false}, "Digit5": {0x06, false}, "Digit6": {0x07, false},
+	"Digit7": {0x08, false}, "Digit8": {0x09, false}, "Digit9": {0x0A, false},
+	"Digit0": {0x0B, false}, "Minus": {0x0C, false}, "Equal": {0x0D, false},
+
+	"KeyQ": {0x10, false}, "KeyW": {0x11, false}, "KeyE": {0x12, false},
+	"KeyR": {0x13, false}, "KeyT": {0x14, false}, "KeyY": {0x15, false},
+	"KeyU": {0x16, false}, "KeyI": {0x17, false}, "KeyO": {0x18, false},
+	"KeyP": {0x19, false}, "BracketLeft": {0x1A, false}, "BracketRight": {0x1B, false},
+
+	"KeyA": {0x1E, false}, "KeyS": {0x1F, false}, "KeyD": {0x20, false},
+	"KeyF": {0x21, false}, "KeyG": {0x22, false}, "KeyH": {0x23, false},
+	"KeyJ": {0x24, false}, "KeyK": {0x25, false}, "KeyL": {0x26, false},
+	"Semicolon": {0x27, false}, "Quote": {0x28, false}, "Backslash": {0x2B, false},
+
+	"KeyZ": {0x2C, false}, "KeyX": {0x2D, false}, "KeyC": {0x2E, false},
+	"KeyV": {0x2F, false}, "KeyB": {0x30, false}, "KeyN": {0x31, false},
+	"KeyM": {0x32, false}, "Comma": {0x33, false}, "Period": {0x34, false},
+	"Slash": {0x35, false},
+
 	"ShiftLeft":    {0x2A, false},
 	"ShiftRight":   {0x36, false},
 	"ControlLeft":  {0x1D, false},

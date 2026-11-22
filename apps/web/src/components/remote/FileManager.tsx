@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Folder,
+  FolderPlus,
   File,
   Upload,
   Download,
@@ -31,6 +32,7 @@ import { formatNumber } from '@/lib/i18n/format';
 import { cn, leftPxClass, topPxClass, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo as navigateToPage } from '@/lib/navigation';
+import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { buildBreadcrumbs, getParentPath, isPathRoot, joinRemotePath } from './filePathUtils';
 import {
   copyFiles,
@@ -42,11 +44,12 @@ import {
 } from './fileOperations';
 import FolderPickerDialog from './FolderPickerDialog';
 import DeleteConfirmDialog from './DeleteConfirmDialog';
+import NewFolderDialog from './NewFolderDialog';
 import TrashView from './TrashView';
 import FileActivityPanel from './FileActivityPanel';
 import type { FileActivity } from './FileActivityPanel';
 import { useTranslation } from 'react-i18next';
-import { AGENT_MAX_FILE_READ_BYTES } from '@breeze/shared';
+import { AGENT_MAX_FILE_READ_BYTES, ERROR_CODES } from '@breeze/shared';
 import { i18n } from '@/lib/i18n';
 import '@/lib/i18n';
 
@@ -102,6 +105,36 @@ export type FileManagerProps = {
 function isAbortError(error: unknown): boolean {
   return typeof error === 'object' && error !== null
     && (error as { name?: unknown }).name === 'AbortError';
+}
+
+// runAction replaces the API's text with the `errors:<CODE>` translation. For
+// these codes that translation is generic ("Unable to reach the device's
+// agent"), so keep the agent's own reason, such as a denied system path. An
+// unverified failure also keeps its text: that warning is what stops a retry.
+const AGENT_REASON_CODES: ReadonlySet<string> = new Set([
+  ERROR_CODES.AGENT_COMMAND_REJECTED,
+  ERROR_CODES.AGENT_EXECUTION_FAILED,
+]);
+
+function isUnverifiedBody(body: unknown): boolean {
+  return typeof body === 'object' && body !== null
+    && (body as { unverified?: unknown }).unverified === true;
+}
+
+// The API's text for a device that is plainly offline. DEVICE_OFFLINE also covers
+// a device that is updating or quarantined; the translation calls those "offline"
+// too, which sends a technician looking for a network fault, so any other text
+// under this code names the real state and is kept.
+const PLAIN_OFFLINE_TEXT = 'The device is offline.';
+
+function agentReason(code: string, _message: string, body?: unknown): string | undefined {
+  const error = typeof body === 'object' && body !== null
+    ? (body as { error?: unknown }).error
+    : undefined;
+  if (typeof error !== 'string' || !error) return undefined;
+  if (AGENT_REASON_CODES.has(code) || isUnverifiedBody(body)) return error;
+  if (code === ERROR_CODES.DEVICE_OFFLINE && error !== PLAIN_OFFLINE_TEXT) return error;
+  return undefined;
 }
 
 // Get file icon based on extension
@@ -169,6 +202,8 @@ export default function FileManager({
   const [showFolderPicker, setShowFolderPicker] = useState(false);
   const [folderPickerMode, setFolderPickerMode] = useState<'copy' | 'move'>('copy');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [creatingFolder, setCreatingFolder] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
   const [operationLoading, setOperationLoading] = useState(false);
@@ -658,6 +693,42 @@ export default function FileManager({
     }
   }, [deviceId, selectedItems, currentPath, fetchDirectory, addActivity]);
 
+  // Create a folder in the current directory
+  const handleCreateFolder = useCallback(async (name: string) => {
+    const path = joinRemotePath(currentPath, name);
+    const fallback = t('fileManager.errors.createFolder');
+    setCreatingFolder(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/system-tools/devices/${deviceId}/files/mkdir`, {
+          method: 'POST',
+          body: JSON.stringify({ path }),
+        }),
+        errorFallback: fallback,
+        successMessage: t('fileManager.newFolder.created', { name }),
+        friendly: agentReason,
+      });
+      addActivity('mkdir', [path], 'success');
+      setShowNewFolder(false);
+      fetchDirectory(currentPath);
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      handleActionError(err, fallback);
+      const message = err instanceof Error ? err.message : fallback;
+      if (err instanceof ActionError && isUnverifiedBody(err.body)) {
+        // The folder may exist by now, so the listing is the way to find out.
+        addActivity('mkdir', [path], 'unverified', message);
+        setShowNewFolder(false);
+        fetchDirectory(currentPath);
+      } else {
+        // The dialog stays open so the name can be corrected and retried.
+        addActivity('mkdir', [path], 'failure', message);
+      }
+    } finally {
+      setCreatingFolder(false);
+    }
+  }, [deviceId, currentPath, fetchDirectory, addActivity, t]);
+
   // Handle context menu
   const handleContextMenu = useCallback((e: React.MouseEvent, entry: FileEntry) => {
     e.preventDefault();
@@ -808,6 +879,17 @@ export default function FileManager({
           >
             <Trash2 className="h-4 w-4" />
             {t('fileManager.trash')}
+          </button>
+
+          <button
+            type="button"
+            data-testid="file-manager-new-folder"
+            onClick={() => setShowNewFolder(true)}
+            disabled={loading || error !== null}
+            className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+          >
+            <FolderPlus className="h-4 w-4" />
+            {t('fileManager.newFolder.action')}
           </button>
 
           <button
@@ -1244,6 +1326,15 @@ export default function FileManager({
       )}
 
       {/* Dialogs */}
+      <NewFolderDialog
+        open={showNewFolder}
+        parentPath={currentPath}
+        existingNames={entries.map(e => e.name)}
+        osType={osType}
+        busy={creatingFolder}
+        onSubmit={handleCreateFolder}
+        onClose={() => setShowNewFolder(false)}
+      />
       <FolderPickerDialog
         open={showFolderPicker}
         title={folderPickerMode === 'copy' ? t('fileManager.copyTo') : t('fileManager.moveTo')}

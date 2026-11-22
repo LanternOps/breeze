@@ -17,6 +17,41 @@ export function isOpsAlertingConfigured(): boolean {
   return Boolean(process.env.OPS_ALERT_WEBHOOK_URL?.trim() || process.env.OPS_ALERT_EMAIL?.trim());
 }
 
+/**
+ * Collapses a tenant-controlled string to a single line: control characters
+ * (CR, LF, NUL, ...), U+2028/2029, line/paragraph separators and invisible
+ * format characters (zero-width, bidi overrides) become a space, whitespace
+ * runs collapse, and the result is trimmed and length-capped. No markdown or
+ * HTML escaping — callers add what their medium needs. Without this a value
+ * like "x\nRisk: none" forges a `Field: value` line in newline-delimited text.
+ */
+export function singleLine(value: string, maxLength = 80): string {
+  const flat = String(value)
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (flat.length <= maxLength) return flat;
+  return `${flat.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+/**
+ * Neutralises a tenant-controlled string (partner or org name, anything a
+ * customer typed) before it is interpolated into an ops alert, which Discord
+ * renders as markdown. Flattens to a single line (see singleLine),
+ * backslash-escapes markdown control characters, breaks URL schemes and
+ * @-mentions so nothing autolinks or pings, and caps the length.
+ */
+export function opsText(value: string, maxLength = 80): string {
+  const flat = singleLine(value, Number.MAX_SAFE_INTEGER);
+  const escaped = flat
+    .replace(/[\\*_`~|>#[\]()<]/g, '\\$&')
+    .replace(/([a-z][a-z0-9+.-]*):\/\//gi, '$1:\u200b//')
+    .replace(/@/g, '@\u200b');
+  if (escaped.length <= maxLength) return escaped;
+  // Do not cut between a backslash and the character it escapes.
+  return `${escaped.slice(0, maxLength - 1).replace(/(?<!\\)\\$/, '')}…`;
+}
+
 function formatContent(msg: OpsAlertMessage): string {
   const label = process.env.OPS_ALERT_LABEL?.trim();
   const title = label ? `[${label}] ${msg.title}` : msg.title;
@@ -30,7 +65,7 @@ async function sendWebhook(url: string, msg: OpsAlertMessage): Promise<boolean> 
     const response = await safeFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'User-Agent': 'Breeze-RMM/1.0' },
-      body: JSON.stringify({ content: formatContent(msg) }),
+      body: JSON.stringify({ content: formatContent(msg), allowed_mentions: { parse: [] } }),
       signal: controller.signal,
       redirect: 'error',
     });

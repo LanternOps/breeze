@@ -30,6 +30,9 @@ const (
 	// written for a different job, dispatched base or destination and was
 	// discarded instead of resumed.
 	warnJournalDiscardedOtherRun = "journal_discarded_other_run"
+	// warnJournalCheckpointingDisabled: a torn checkpoint could not be repaired,
+	// so the run resumed from it but records no new progress.
+	warnJournalCheckpointingDisabled = "journal_checkpointing_disabled"
 )
 
 // NewAttestationEnvelope builds and encodes a format-1 statement for

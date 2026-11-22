@@ -1,0 +1,6 @@
+
+Checking for updates...
+Determining available updates...
+No update information found. Please check the update filter settings.
+Execution completed.
+The program exited with return code: 500

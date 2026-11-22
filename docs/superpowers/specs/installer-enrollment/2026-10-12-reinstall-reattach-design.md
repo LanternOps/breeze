@@ -933,6 +933,60 @@ enroll and in the hardware report.
 - **Conventions:** every mutation goes through `runAction`, and every element the E2E tests touch
   has a `data-testid`.
 
+### Decided in wave 2-2
+
+Choices the sections above leave open, made when the API half of the action shipped:
+
+- **The server decides the evidence level.** The body has no `evidenceLevel`; every request is
+  `hint` until wave T2, so `confirmTargetName` is always required. It is compared trimmed and
+  case-insensitively with the locked target row (400 `confirm_target_name_required` /
+  `confirm_target_name_mismatch`), after the access rule, so it is no hostname oracle.
+- **OS change.** `os_changed` (409) when the two rows' `os_type` differ and
+  `acknowledgeOsChange` is not set.
+- **Reachability before any lock.** Before its transaction the request reads the requester and
+  where both devices are. A device that does not exist, is in another partner, or is outside the
+  requester's reach answers one 404 `device_not_found`, the same body either way, and its row is
+  never locked. Reach is: any org of the partner for a full partner admin; the live reachable orgs
+  for a technician limited to selected orgs, except that a parked source still ends as 403
+  `full_admin_required`. The check runs again under the row locks, where it is authoritative.
+  `partner_mismatch` remains only for a device that moved partner during the request.
+- **The target's install travels as an opaque version.** The candidates read never returns the
+  target's `agent_id` or `install_incarnation`. It returns `targetVersion`, an HMAC-SHA256 over
+  `targetDeviceId:agentId:installIncarnation` keyed by a key derived from the deployment's
+  secret-encryption keyring (`getSecretDerivedKeyMaterials`, as the topology cursors are). The
+  request carries it back and the service recomputes it from the locked target row, compared in
+  constant time under every retained key, so key rotation does not strand an open dialog. A
+  target that re-enrolled or was reattached since answers 409 `target_changed`.
+- **The step-up binding.** `device_reattach` is bound to `{ sourceDeviceId, targetDeviceId,
+  targetVersion, evidenceLevel, restoreDecommissioned }`, so through `targetVersion` it still
+  covers the target's agent id and incarnation. After the refusals and the version check, the
+  service locks the actor's assurance and live session, validates the grant, and only then
+  consumes it (GETDEL). A grant bound to another pair or install answers 403 `STEP_UP_REQUIRED`
+  and stays unspent; a missing grant answers the same, after every other refusal.
+  - **Fail closed.** The step-up argument is required and explicit: `grant`, or `not_required`,
+    which the route passes only when the deployment has two-factor authentication off (as the
+    pre-assignment routes do). Anything else is refused. The only `step_up_grant_ref` ever
+    recorded is a verified, consumed grant id.
+  - **Lock order.** The `users` row (`lockActorAssurance`, FOR SHARE) and the session's refresh
+    family come after the holding-area lock and both device rows, not first as
+    `stepUpActorAssurance.ts` suggests. This is `assignParkedDevice`'s order. The grant can only be
+    judged once the locked rows have passed every refusal, and every path that writes an intent
+    takes the holding-area lock and device rows first (§6.4). Factor resets lock `users` alone and
+    never a device row, so there is no cycle.
+- **The answer is 202** with the `requested` intent; the rebind finishes asynchronously.
+- **The candidates read** is `GET /devices/:id/reinstall-candidates`. It returns the detection's
+  own ranking, every qualifying candidate instead of the best, with the comparison fields and the
+  opaque `targetVersion`. Candidates are listed only to partner users, in orgs and sites they
+  reach. An organization user, or a technician lacking a candidate's org, gets
+  `reviewPending: true` and nothing else; `reviewPending` is true only when visibility hid a
+  candidate. The source's open intent is shown only when its target is in an org the viewer
+  reaches. A parked source is a 404 to anyone but a full partner admin until wave H.
+- **The badge** reads `devices.last_reattached_at`, now a public device field. The audit actions
+  `device.reinstall_suspected` and `device.reinstall.*` have activity-feed labels; the web feed's
+  allow-list is wave 2-3.
+- **Restoring a removed record** is not admitted against capacity at request; confirm does it
+  (`device_limit_reached`, §6.4).
+
 ## 9. Holding-area triage by technicians limited to selected orgs
 
 Today the holding area is a full-partner-admin surface: listing, assigning, the deploy-key switch
@@ -1141,6 +1195,37 @@ flagged by the #2764 collision path can be reattached from the banner.
   moves on.
 - **Separate from #7433:** this does not deliver non-exportable agent keys.
 
+**Decided in wave T1 (the agent part), where this section was open:**
+- **Package and pin.** `agent/internal/tpmattest`, `github.com/google/go-tpm` v0.9.8. The
+  agent builds with `CGO_ENABLED=0` for Windows, Linux and macOS (amd64 and arm64).
+  `go-tpm-tools` enters `go.mod` only for the simulator tests.
+- **Both keys are transient primaries in the endorsement hierarchy**: the EK from
+  `tpm2.RSAEKTemplate`, and the AK as a restricted RSA-2048 signing key (RSASSA-SHA256, noDA).
+  They are flushed after each attempt, so nothing persists in the TPM. On Linux the agent uses
+  `/dev/tpmrm0` only, never the exclusive `/dev/tpm0`.
+- **Off by default, switched by the server** (added in review of #11957). The API pushes
+  `configUpdate.tpm_attestation_enabled` on every heartbeat (`TPM_ATTESTATION_ENABLED`, default
+  `false`); an older API sends nothing and the switch stays off. While off, the agent touches no
+  TPM: no probe, no keys, and `tpmAvailable` is omitted. Turning it on starts an attempt right
+  away instead of waiting for the next hardware send.
+- **When.** Attestation rides on the hardware send (startup, every 24 h, manual refresh). It runs
+  once per process and again after 7 days, in the background with a 3-minute bound. A failure is
+  retried at the next hardware send, never within the attempt: the two POSTs are sent once (a
+  retried challenge spends the hourly budget, a retried completion finds its challenge consumed).
+  The agent keeps no local state: the server refreshes the
+  time for the same EK, and a reinstall attests on its first start. The route's loop deferral
+  (a server `Retry-After`) is checked before any key is created.
+- **Every TPM call runs under a deadline** (the probe 15 s, an attempt 3 minutes), in its own
+  goroutine, because go-tpm's commands take no context. A TPM that hangs is abandoned: the
+  hardware send goes on without `tpmAvailable`, and the one stuck call holds the TPM so no further
+  TPM work starts, and no goroutines pile up, until it returns.
+- **`tpmAvailable`** is sent with the hardware report: false for no TPM 2.0 (none, TPM 1.2, TBS
+  not found, disabled or not running, or `Tbs.dll` missing). It is omitted when the probe cannot
+  tell (a permission error, a hung TPM), so the server keeps what it had. On Windows `Tbs.dll` is
+  loaded from System32 before go-tpm asks for it by name.
+- **Tests.** The flow is tested against the TCG reference simulator (`-tags tpmsim`, cgo). A
+  `-tags tpmreal` test runs it on the machine's own TPM.
+
 ### 12.2 API (collection)
 
 - **Challenge:** `POST /agents/:id/attestation/challenge` validates the AK attributes (restricted,
@@ -1155,6 +1240,54 @@ flagged by the #2764 collision path can be reattached from the banner.
 
 **Review gate.** `MakeCredential` (KDFa, RSA-OAEP with label `IDENTITY`, AES-CFB, HMAC) gets
 Go-generated test vectors and an **independent review before merge** (#8318).
+
+**Decided in wave T1 (the API part), where this section was open:**
+- **The wire.** The challenge takes the EK's and the AK's `TPMT_PUBLIC` (base64) and answers
+  `credentialBlob` and `encryptedSecret`: the buffers of `TPM2B_ID_OBJECT` and
+  `TPM2B_ENCRYPTED_SECRET` without their size, as `TPM2_ActivateCredential` takes them. The secret
+  is 32 random bytes; the seed is 32, the EK's OAEP digest size (Part 1 rev 1.83 B.10.3, as
+  tpm2-tools and go-tpm's `tpm2.CreateCredential`), and derives the EK's AES-128 key (changed in
+  review of #11956 from go-tpm's legacy 16-byte seed, which TPMs also accept).
+- **The EK is checked against the RSA-2048 default template**: attributes `0x000300b2`, the
+  `PolicySecret(TPM_RH_ENDORSEMENT)` policy, AES-128-CFB, a null scheme. The AK must be SHA-256
+  named, restricted, sign, fixedTPM, fixedParent and sensitiveDataOrigin, and not decrypt, with no
+  symmetric algorithm and an RSASSA or RSAPSS scheme over SHA-256. The EK certificate is not sent:
+  TOFU needs none.
+- **The baseline is the SHA-256 of the EK's DER SubjectPublicKeyInfo**, hex. It names the key, not
+  its TPM encoding.
+- **The challenge** lives in Redis, single use (`GETDEL`, consumed by a wrong answer too), bound to
+  the device and agent that asked, with the secret kept as its SHA-256 and compared in constant
+  time. A device may ask for 6 an hour. Both routes are main-agent only and closed to a parked
+  device until T2. They self-manage their DB context (no Redis round-trip inside a held
+  transaction): the completion opens one org-scoped transaction after the `GETDEL`. A wrong answer
+  to the agent's own live challenge is audited as `device.tpm_attestation.failed`, a tampering
+  signal; an unknown or expired challenge is not.
+- **The first baseline is kept** (changed in review of #11956). T1 checks no EK certificate, so a
+  completed activation shows possession of a key shaped like the default EK, not that it lives in
+  a TPM. A different proven EK on the same row (a board swap, an fTPM reset, or a stolen agent
+  token presenting a software key) therefore never replaces the baseline: it is held in
+  `tpm_ek_mismatch_sha256` / `tpm_ek_mismatch_at` and audited (`device.tpm_baseline.mismatch`) for
+  an operator's review. T2 adds the path that accepts a mismatch as the new baseline (a human
+  action, audited), and a reattach compares against the baseline only. A first baseline is
+  audited (`device.tpm_baseline.recorded`); a refresh of the baseline EK is not, and leaves a held
+  mismatch in place. Both audit rows are written in the baseline's transaction, and that
+  transaction locks the device row `FOR NO KEY UPDATE` first, so two concurrent first completions
+  with different EKs serialize: one records the baseline, the other a mismatch.
+- **A baseline is not proof of genuine hardware** (maintainer condition on this rule, #11956).
+  Without an EK certificate check it proves only that the device holds that key. T2's reattach
+  evidence and the `/devices/tpm-coverage` wording must not present it as a genuine TPM unless T2
+  validates the EK certificate.
+- **A server-side switch** gates the whole feature: `TPM_ATTESTATION_ENABLED` (API env, default
+  `false`), pushed to agents on every heartbeat as `configUpdate.tpm_attestation_enabled`. While
+  off, agents touch no TPM and both routes answer 403 `TPM_ATTESTATION_DISABLED`. It stays off
+  until T2 needs baselines.
+- **`tpm_available`** is a third column, reported by the hardware report (a non-boolean is dropped,
+  never a 400). It tells "no TPM" from "not attested yet" for the metric.
+- **Generic reads** never return either EK hash (`DEVICE_HARDWARE_READ_COLUMNS`): device detail,
+  the hardware route and the AI device tool read every other column.
+- **The coverage metric** is `GET /devices/tpm-coverage[?orgId=]`: `{ devices, attested, noTpm,
+  notAttested, ekMismatch }` over the caller's device-list scope, decommissioned and parked
+  devices left out. `ekMismatch` counts attested devices holding a mismatch for review.
 
 ## 13. Decisions confirmed in review
 

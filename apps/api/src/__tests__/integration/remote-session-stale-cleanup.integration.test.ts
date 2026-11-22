@@ -109,6 +109,7 @@ async function insertStaleSession(
     type,
     status: 'pending',
     createdAt: new Date(Date.now() - 10 * 60_000),
+    lastStartAttemptAt: new Date(Date.now() - 10 * 60_000),
   }).returning({ id: remoteSessions.id });
   if (!session) throw new Error('session fixture missing');
   return session;
@@ -143,12 +144,12 @@ describe('DELETE /remote/sessions/stale — caller-owned stale claim', () => {
 
     const now = Date.now();
     const rows = await db.insert(remoteSessions).values([
-      { deviceId: device.id, orgId: env.organization.id, userId: env.user.id, type: 'desktop', status: 'pending', createdAt: new Date(now - 6 * 60_000) },
-      { deviceId: device.id, orgId: env.organization.id, userId: env.user.id, type: 'terminal', status: 'connecting', createdAt: new Date(now - 3 * 60_000) },
-      { deviceId: device.id, orgId: env.organization.id, userId: env.user.id, type: 'desktop', status: 'pending', createdAt: new Date(now - 60_000) },
-      { deviceId: device.id, orgId: env.organization.id, userId: env.user.id, type: 'terminal', status: 'connecting', createdAt: new Date(now - 60_000) },
-      { deviceId: device.id, orgId: env.organization.id, userId: env.user.id, type: 'desktop', status: 'active', createdAt: new Date(now - 60 * 60_000) },
-      { deviceId: device.id, orgId: env.organization.id, userId: otherUser.id, type: 'desktop', status: 'pending', createdAt: new Date(now - 60 * 60_000) },
+      { deviceId: device.id, orgId: env.organization.id, userId: env.user.id, type: 'desktop', status: 'pending', createdAt: new Date(now - 6 * 60_000), lastStartAttemptAt: new Date(now - 6 * 60_000) },
+      { deviceId: device.id, orgId: env.organization.id, userId: env.user.id, type: 'terminal', status: 'connecting', createdAt: new Date(now - 3 * 60_000), lastStartAttemptAt: new Date(now - 3 * 60_000) },
+      { deviceId: device.id, orgId: env.organization.id, userId: env.user.id, type: 'desktop', status: 'pending', createdAt: new Date(now - 60_000), lastStartAttemptAt: new Date(now - 60_000) },
+      { deviceId: device.id, orgId: env.organization.id, userId: env.user.id, type: 'terminal', status: 'connecting', createdAt: new Date(now - 60_000), lastStartAttemptAt: new Date(now - 60_000) },
+      { deviceId: device.id, orgId: env.organization.id, userId: env.user.id, type: 'desktop', status: 'active', createdAt: new Date(now - 60 * 60_000), lastStartAttemptAt: new Date(now - 60 * 60_000) },
+      { deviceId: device.id, orgId: env.organization.id, userId: otherUser.id, type: 'desktop', status: 'pending', createdAt: new Date(now - 60 * 60_000), lastStartAttemptAt: new Date(now - 60 * 60_000) },
     ]).returning({ id: remoteSessions.id });
 
     const response = await app().request('/remote/sessions/stale', {
@@ -210,6 +211,7 @@ describe('DELETE /remote/sessions/stale — caller-owned stale claim', () => {
       type: 'desktop',
       status: 'pending',
       createdAt: new Date(Date.now() - 10 * 60_000),
+      lastStartAttemptAt: new Date(Date.now() - 10 * 60_000),
     }).returning({ id: remoteSessions.id });
     if (!session) throw new Error('session fixture missing');
 
@@ -228,7 +230,7 @@ describe('DELETE /remote/sessions/stale — caller-owned stale claim', () => {
       await tx`SELECT id FROM remote_sessions WHERE id = ${session.id}::uuid FOR UPDATE`;
       locked(backend.pid);
       await releasePromise;
-      await tx`UPDATE remote_sessions SET created_at = now() WHERE id = ${session.id}::uuid`;
+      await tx`UPDATE remote_sessions SET last_start_attempt_at = now() WHERE id = ${session.id}::uuid`;
     });
 
     try {
@@ -258,10 +260,10 @@ describe('DELETE /remote/sessions/stale — caller-owned stale claim', () => {
       const response = await cleanup;
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ cleaned: 0, ids: [] });
-      const [persisted] = await db.select({ status: remoteSessions.status, createdAt: remoteSessions.createdAt })
+      const [persisted] = await db.select({ status: remoteSessions.status, lastStartAttemptAt: remoteSessions.lastStartAttemptAt })
         .from(remoteSessions).where(eq(remoteSessions.id, session.id));
       expect(persisted?.status).toBe('pending');
-      expect(persisted!.createdAt.getTime()).toBeGreaterThan(Date.now() - 60_000);
+      expect(persisted!.lastStartAttemptAt.getTime()).toBeGreaterThan(Date.now() - 60_000);
       expect(await getTestRedis().get(`viewer-session-revoked:${session.id}`)).toBeNull();
     } finally {
       release();

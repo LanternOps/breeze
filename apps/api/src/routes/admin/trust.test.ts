@@ -29,6 +29,19 @@ vi.mock('../../services/auditService', () => ({
 
 vi.mock('../../services/partnerTrustEvidenceCard', () => ({ buildEvidenceCard }));
 
+const readOfflineClassifierStatus = vi.hoisted(() => vi.fn());
+const readPromotionBlockers = vi.hoisted(() => vi.fn());
+vi.mock('../../services/ipClassifyOffline', () => ({ readOfflineClassifierStatus }));
+vi.mock('../../services/partnerTrustBlockers', () => ({ readPromotionBlockers }));
+
+// #11952: an admin restrict closes the partner's open checkouts, like an auto-restrict.
+const closeOpenCheckoutsAfterRestrict = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../../services/partnerTrustPromotion', () => ({ closeOpenCheckoutsAfterRestrict }));
+
+// billing#51: restricted rows carry their restorable fraud-flag restriction.
+const loadFraudRestoreEpisodes = vi.hoisted(() => vi.fn(async () => new Map()));
+vi.mock('../../services/partnerTrustFraudFlags', () => ({ loadFraudRestoreEpisodes }));
+
 vi.mock('../../services/partnerTrustPartnerMail', () => ({
   sendTrustApprovedEmail: vi.fn(async () => 0),
 }));
@@ -102,6 +115,10 @@ describe('admin partner trust routes', () => {
       trustReviewRequestedAt: null,
     };
     state.queueRows = [];
+    readOfflineClassifierStatus.mockResolvedValue(null);
+    readPromotionBlockers.mockResolvedValue(new Map());
+    delete process.env.IP_CLASSIFY_PROVIDER;
+    delete process.env.IP_CLASSIFY_API_KEY;
   });
 
   it('returns 404 for an unknown partner', async () => {
@@ -194,6 +211,45 @@ describe('admin partner trust routes', () => {
     expect(writeTrust).toHaveBeenCalledWith('p-1', 'restricted', 'admin:restrict', auth.user.id, 'probation');
   });
 
+  // #11952: a manual restrict used to leave every open checkout payable; only
+  // the auto-restrict path asked billing to expire them.
+  it('closes open checkouts after an admin restrict lands', async () => {
+    state.trust = { trustState: 'probation', probationEnrollments: 0, trustReviewRequestedAt: null };
+    const response = await buildApp().request('/admin/partners/p-1/trust/restrict', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'confirmed abuse' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(closeOpenCheckoutsAfterRestrict).toHaveBeenCalledExactlyOnceWith('p-1', 'admin:restrict');
+  });
+
+  it('does not close checkouts when the restrict CAS loses (no state change)', async () => {
+    state.trust = { trustState: 'probation', probationEnrollments: 0, trustReviewRequestedAt: null };
+    writeTrust.mockResolvedValueOnce(0 as never);
+    const response = await buildApp().request('/admin/partners/p-1/trust/restrict', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'confirmed abuse' }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(closeOpenCheckoutsAfterRestrict).not.toHaveBeenCalled();
+  });
+
+  it('never closes checkouts on a promote', async () => {
+    state.trust = { trustState: 'restricted', probationEnrollments: 0, trustReviewRequestedAt: null };
+    const response = await buildApp().request('/admin/partners/p-1/trust/promote', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'manual approval', override: true }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(closeOpenCheckoutsAfterRestrict).not.toHaveBeenCalled();
+  });
+
   it('rejects promote when the MFA step-up is not satisfied (403)', async () => {
     state.trust = { trustState: 'restricted', probationEnrollments: 0, trustReviewRequestedAt: null };
     const response = await buildApp(authNoMfa).request('/admin/partners/p-1/trust/promote', {
@@ -284,6 +340,102 @@ describe('admin partner trust routes', () => {
     expect(JSON.parse(Buffer.from(body.nextCursor, 'base64url').toString('utf8'))).toEqual({
       trustChangedAt: changedAt.toISOString(),
       id: '22222222-2222-4222-8222-222222222222',
+    });
+  });
+
+  it('attaches the restorable billing fraud flag restriction to restricted rows only', async () => {
+    const base = {
+      plan: 'pro', status: 'active', trustReason: 'x', trustChangedAt: null, trustReviewRequestedAt: null,
+      createdAt: new Date('2026-08-30T12:00:00.000Z'), signupIp: null, signupIpClass: 'unknown', signupIpAsn: null, deviceCount: 0,
+    };
+    state.queueRows = [
+      { ...base, id: '44444444-4444-4444-8444-444444444444', name: 'Flagged MSP', slug: 'flagged', trustState: 'restricted' },
+      { ...base, id: '55555555-5555-4555-8555-555555555555', name: 'Probation MSP', slug: 'probation', trustState: 'probation' },
+    ];
+    const episode = {
+      partnerId: '44444444-4444-4444-8444-444444444444',
+      restrictingFlagId: '66666666-6666-4666-8666-666666666666',
+      previousTrustState: 'trusted',
+      restrictedAt: '2026-11-18T10:00:00.000Z',
+      flags: [{ id: '66666666-6666-4666-8666-666666666666', kind: 'test_kind', stripeObjectId: 'obj_test_1', outcome: 'restricted', flaggedAt: null }],
+    };
+    loadFraudRestoreEpisodes.mockResolvedValueOnce(new Map([[episode.partnerId, episode]]));
+
+    const response = await buildApp().request('/admin/trust/queue?limit=10');
+    const body = await response.json() as { partners: Array<Record<string, unknown>> };
+
+    expect(response.status).toBe(200);
+    expect(loadFraudRestoreEpisodes).toHaveBeenCalledWith(['44444444-4444-4444-8444-444444444444']);
+    expect(body.partners[0]!.fraudFlagRestore).toEqual(episode);
+    expect(body.partners[1]!.fraudFlagRestore).toBeNull();
+  });
+
+  describe('classifier and blockers (#11698)', () => {
+    const probationRow = {
+      id: '22222222-2222-4222-8222-222222222222',
+      name: 'Probation MSP',
+      slug: 'probation-msp',
+      plan: 'pro',
+      status: 'active',
+      trustState: 'probation',
+      trustReason: 'signup',
+      trustChangedAt: null,
+      trustReviewRequestedAt: null,
+      createdAt: new Date('2026-08-30T12:00:00.000Z'),
+      signupIp: '203.0.113.10',
+      signupIpClass: 'unknown',
+      signupIpAsn: 64501,
+      signupIpClassSource: 'offline',
+      deviceCount: 1,
+    };
+    const restrictedRow = {
+      ...probationRow,
+      id: '33333333-3333-4333-8333-333333333333',
+      trustState: 'restricted',
+      signupIpClassSource: null,
+    };
+    const offlineStatus = {
+      tor: { source: 'download', entries: 1200, updatedAt: '2026-11-11T00:00:00.000Z', lastError: null },
+      hosting: { source: 'snapshot', entries: 700, updatedAt: '2026-11-11T00:00:00.000Z', lastError: 'HTTP 503' },
+      asn: { source: 'unavailable', entries: 0, updatedAt: null, lastError: 'timed out' },
+      reportedAt: '2026-11-11T00:05:00.000Z',
+    };
+
+    it('reports the offline classifier with its data status when no provider is configured', async () => {
+      readOfflineClassifierStatus.mockResolvedValue(offlineStatus);
+
+      const response = await buildApp().request('/admin/trust/queue');
+      const body = await response.json() as { classifier: unknown };
+      expect(response.status).toBe(200);
+      expect(body.classifier).toEqual({ active: 'offline', offline: offlineStatus });
+    });
+
+    it('reports a keyed provider without offline status', async () => {
+      process.env.IP_CLASSIFY_PROVIDER = 'ipinfo';
+      process.env.IP_CLASSIFY_API_KEY = 'k';
+
+      const response = await buildApp().request('/admin/trust/queue');
+      const body = await response.json() as { classifier: unknown };
+      expect(body.classifier).toEqual({ active: 'ipinfo', offline: null });
+      expect(readOfflineClassifierStatus).not.toHaveBeenCalled();
+    });
+
+    it('returns each row\'s classification source and, for probation rows, the recorded blockers', async () => {
+      state.queueRows = [probationRow, restrictedRow];
+      readPromotionBlockers.mockResolvedValue(new Map([
+        [probationRow.id, { blockers: ['card_not_settled'], evaluatedAt: '2026-11-11T00:00:00.000Z' }],
+        [restrictedRow.id, { blockers: ['too_young'], evaluatedAt: '2026-11-11T00:00:00.000Z' }],
+      ]));
+
+      const response = await buildApp().request('/admin/trust/queue');
+      const body = await response.json() as { partners: Array<Record<string, unknown>> };
+      expect(readPromotionBlockers).toHaveBeenCalledWith([probationRow.id]);
+      expect(body.partners[0]).toMatchObject({
+        signupIpClassSource: 'offline',
+        promotionBlockers: { blockers: ['card_not_settled'], evaluatedAt: '2026-11-11T00:00:00.000Z' },
+      });
+      // A restricted partner is held by its restriction, not by promotion blockers.
+      expect(body.partners[1]).toMatchObject({ signupIpClassSource: null, promotionBlockers: null });
     });
   });
 

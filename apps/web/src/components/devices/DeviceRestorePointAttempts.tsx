@@ -6,6 +6,7 @@ import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { deviceScriptsHash } from '@/lib/deviceScriptsLink';
 import RestorePointBadge from '../restorePoints/RestorePointBadge';
+import HashLink from '../shared/HashLink';
 
 /**
  * Device "System Restore" tab (#4609 W08): every System Restore checkpoint
@@ -182,12 +183,12 @@ export default function DeviceRestorePointAttempts({ deviceId }: { deviceId: str
                   <td className="py-2 pr-4">
                     <span>{triggerLabel(a.trigger)}</span>
                     {a.trigger === 'script' && a.scriptExecutionId && (
-                      <a
-                        href={`#${deviceScriptsHash(a.scriptExecutionId)}`}
+                      <HashLink
+                        hash={deviceScriptsHash(a.scriptExecutionId)}
                         className="ml-2 text-xs text-primary hover:underline"
                       >
                         {t('list.viewScriptRun')}
-                      </a>
+                      </HashLink>
                     )}
                   </td>
                   <td className="py-2">

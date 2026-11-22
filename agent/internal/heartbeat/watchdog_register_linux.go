@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 func watchdogExecutableName() string { return "breeze-watchdog" }
@@ -26,6 +28,6 @@ func registerVerifiedWatchdog(stagedPath string) error {
 // waitWatchdogRunning polls `systemctl is-active breeze-watchdog`.
 func waitWatchdogRunning(timeout time.Duration) bool {
 	return pollWatchdogRunning(timeout, func() bool {
-		return exec.Command("systemctl", "is-active", "--quiet", "breeze-watchdog").Run() == nil
+		return procspawn.Command("systemctl", "is-active", "--quiet", "breeze-watchdog").Run() == nil
 	})
 }

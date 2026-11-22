@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CALENDAR_SCOPES,
+  DIRECTORY_DOMAIN_SCOPES,
   DIRECTORY_SCOPES,
   GMAIL_INBOUND_SCOPES,
   GMAIL_USER_SCOPES,
@@ -16,6 +17,7 @@ describe('GOOGLE_DWD_SCOPES_CSV', () => {
       ...GMAIL_INBOUND_SCOPES,
       ...CALENDAR_SCOPES,
       ...LICENSING_SCOPES,
+      ...DIRECTORY_DOMAIN_SCOPES,
     ]);
   });
 
@@ -30,5 +32,23 @@ describe('GOOGLE_DWD_SCOPES_CSV', () => {
   it('has no duplicate scopes', () => {
     const scopes = GOOGLE_DWD_SCOPES_CSV.split(',');
     expect(new Set(scopes).size).toBe(scopes.length);
+  });
+
+  it('GOOGLE_DWD_SCOPES_CSV includes admin.directory.domain.readonly exactly once', () => {
+    const scopes = GOOGLE_DWD_SCOPES_CSV.split(',');
+    expect(scopes.filter((s) => s === 'https://www.googleapis.com/auth/admin.directory.domain.readonly')).toHaveLength(1);
+  });
+});
+
+describe('DIRECTORY_SCOPES', () => {
+  it('DIRECTORY_SCOPES is unchanged (six scopes, no domain scope)', () => {
+    expect([...DIRECTORY_SCOPES]).toEqual([
+      'https://www.googleapis.com/auth/admin.directory.user',
+      'https://www.googleapis.com/auth/admin.directory.user.security',
+      'https://www.googleapis.com/auth/admin.directory.user.alias',
+      'https://www.googleapis.com/auth/admin.directory.group',
+      'https://www.googleapis.com/auth/admin.directory.group.member',
+      'https://www.googleapis.com/auth/admin.directory.device.mobile.action',
+    ]);
   });
 });

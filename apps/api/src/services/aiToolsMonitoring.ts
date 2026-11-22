@@ -5,7 +5,10 @@
  * Each tool wraps existing DB schema with org-scoped isolation.
  */
 
-import { db } from '../db';
+import { pgErrorCode } from '@breeze/shared/pgErrors';
+import { db, withDbTransactionIfHeld } from '../db';
+
+const PG_UNDEFINED_TABLE = '42P01';
 import {
   networkMonitors,
   networkMonitorResults,
@@ -561,18 +564,18 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         if (changeLogDeviceCondition) changeLogConditions.push(changeLogDeviceCondition);
         let changeLogNames: { subject: string }[] = [];
         try {
-          changeLogNames = await db
+          changeLogNames = await withDbTransactionIfHeld(() => db
             .select({ subject: deviceChangeLog.subject })
             .from(deviceChangeLog)
             .where(and(...changeLogConditions))
             .groupBy(deviceChangeLog.subject)
-            .limit(1000);
+            .limit(1000));
         } catch (err) {
           // Tolerate missing-table environments (older self-hosted schemas) as
           // an empty source; any other DB error must surface as a tool error
           // (via safeHandler / the aiAgentSdkTools catch), not a silent empty.
-          const msg = err instanceof Error ? err.message : String(err);
-          if (!msg.includes('does not exist')) throw err;
+          // The SQLSTATE, not the message: Drizzle wraps the driver error (#11225).
+          if (pgErrorCode(err) !== PG_UNDEFINED_TABLE) throw err;
         }
 
         // Source 2: Distinct service/process names from check results
@@ -583,7 +586,7 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         if (checkNameDeviceCondition) checkNameConditions.push(checkNameDeviceCondition);
         let checkNames: { name: string; watchType: string }[] = [];
         try {
-          checkNames = await db
+          checkNames = await withDbTransactionIfHeld(() => db
             .select({
               name: serviceProcessCheckResults.name,
               watchType: serviceProcessCheckResults.watchType,
@@ -591,12 +594,11 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
             .from(serviceProcessCheckResults)
             .where(and(...checkNameConditions))
             .groupBy(serviceProcessCheckResults.name, serviceProcessCheckResults.watchType)
-            .limit(500);
+            .limit(500));
         } catch (err) {
           // Same policy as the change-log source: only missing-table errors are
           // tolerated as an empty source; everything else surfaces as a tool error.
-          const msg = err instanceof Error ? err.message : String(err);
-          if (!msg.includes('does not exist')) throw err;
+          if (pgErrorCode(err) !== PG_UNDEFINED_TABLE) throw err;
         }
 
         const seen = new Set<string>();

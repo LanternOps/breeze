@@ -76,6 +76,7 @@ import { businessCalendarRoutes } from './routes/businessCalendars';
 import { ticketRoutingRuleRoutes } from './routes/tickets/routingRules';
 import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTemplates';
 import { ticketFormRoutes } from './routes/tickets/forms';
+import { serviceCatalogRoutes } from './routes/tickets/serviceCatalog';
 import { tenantVariableRoutes } from './routes/tenantVariables';
 import { orgRoutes } from './routes/orgs';
 import { orgMergeRoutes } from './routes/orgMerge';
@@ -96,6 +97,7 @@ import { trustPageDeclarationRoutes } from './routes/trustPageDeclarations';
 import { trustPageContentRoutes } from './routes/trustPageContent';
 import { trustPageAccessRoutes } from './routes/trustPageAccess';
 import { trustAccessPublicRoutes } from './routes/trustAccessPublic';
+import { portalScimRoutes } from './routes/portalScim';
 import { trustPageTemplateRoutes } from './routes/trustPageTemplate';
 import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
@@ -119,6 +121,7 @@ import { apiKeyRoutes } from './routes/apiKeys';
 import { servicePrincipalRoutes } from './routes/servicePrincipals';
 import { partnerServicePrincipalRoutes } from './routes/partnerServicePrincipals';
 import { migrationWindowRoutes } from './routes/migrationWindows';
+import { ticketImportRoutes } from './routes/ticketImports';
 import { partnerApiRoutes } from './routes/partnerApi';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
@@ -134,6 +137,7 @@ import { policyRoutes } from './routes/policyManagement';
 import { configPolicyRoutes } from './routes/configurationPolicies';
 import { psaRoutes } from './routes/psa';
 import { patchRoutes } from './routes/patches/index';
+import { oemUpdatesFleetRoutes } from './routes/oemUpdates/fleet';
 import { thirdPartyCatalogRoutes } from './routes/thirdPartyCatalog';
 import { patchPolicyRoutes } from './routes/patchPolicies';
 import { updateRingRoutes } from './routes/updateRings';
@@ -180,6 +184,7 @@ import { integrationRoutes } from './routes/integrations';
 import { partnerRoutes } from './routes/partner';
 import { partnerTrustRoutes } from './routes/partnerTrust';
 import { partnerSendingDomainsRoutes } from './routes/partnerSendingDomains';
+import { partnerDeviceCapacityRoutes } from './routes/partnerDeviceCapacity';
 import { networkKnownGuestsRoutes } from './routes/networkKnownGuests';
 import { tagRoutes } from './routes/tags';
 import { customFieldRoutes } from './routes/customFields';
@@ -287,6 +292,11 @@ import {
   stopDbPoolHealthMonitor,
 } from './db/dbPoolHealthMonitor';
 import { getWedgedBackendMinAgeMs } from './db/wedgedBackends';
+import {
+  startReadOnlySessionRecovery,
+  stopReadOnlySessionRecovery,
+} from './db/readOnlySessionRecovery';
+import { stopDeferredWrites } from './db/deferUntilWritable';
 import { startRedisMemoryMonitor, stopRedisMemoryMonitor } from './services/redisMemoryMonitor';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuardWithExemptions } from './middleware/partnerGuard';
@@ -324,6 +334,7 @@ import { reconcileDecommissionedDynamicMemberships } from './jobs/decommissioned
 import { registerAllEventSubscribers } from './services/eventSubscribers';
 import { registerTopologyPhysicalAuthorities } from './services/topology/physicalAuthorities';
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
+import { warmBreezeToolSurface } from './services/aiAgentSdkTools';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { getClusterCacheBus } from './services/clusterCacheBus';
@@ -332,9 +343,12 @@ import { shutdownChatRunBridge } from './services/workspace/chatRunBridge';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
 import { shutdownEventDispatchQueue } from './services/eventDispatchQueue';
 import {
+  claimAgentCommandRelayShard,
   initializeAgentCommandRelayWorker,
+  releaseAgentCommandRelayClaim,
   shutdownAgentCommandRelayWorker,
 } from './jobs/agentCommandRelayWorker';
+import { shutdownAgentCommandRelayQueue } from './services/agentCommandRelay';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { wispEnabled } from './config/env';
 import { installWispGrantHooks } from './services/wisp/grantLifecycle';
@@ -353,6 +367,8 @@ import { CORS_MIDDLEWARE_OPTIONS } from './services/corsPolicy';
 import { validateConfig } from './config/validate';
 import { startTurnPreflight } from './services/system/connections/turnPreflight';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
+import { observeReadOnlyProbeResult, TRANSACTION_READ_ONLY_PROBE_SQL } from './db/readOnlyDatabase';
+import { installReadOnlyLogThrottle } from './db/readOnlyLogThrottle';
 import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
@@ -363,7 +379,13 @@ import {
   attributeExtensionError,
   extensionRootsSnapshot,
 } from './extensions/faultAttribution';
-import { syncBinaries } from './services/binarySync';
+import {
+  isBinarySyncDeferred,
+  scheduleGithubSyncRetry,
+  stopDeferredBinarySyncRetry,
+  stopGithubSyncRetry,
+  syncBinaries
+} from './services/binarySync';
 import { syncBuiltinYaraPack } from './services/yaraBuiltinPack';
 import { startRegularMsiCacheWarmer } from './services/installerBuilder';
 import * as dbModule from './db';
@@ -378,6 +400,7 @@ import {
 } from './services/readiness';
 import { createReadinessHandler } from './routes/readiness';
 import { dbSaturationResponse } from './middleware/dbSaturationResponse';
+import { httpExceptionResponse } from './middleware/httpExceptionResponse';
 import { resolveReadinessTiming } from './config/readinessConfig';
 
 const { db } = dbModule;
@@ -449,6 +472,8 @@ let warnedWorkersNeverStarted = false;
 
 const readiness = createReadinessEvaluator({
   checkDb: () => checkDatabaseConnectivity(),
+  checkDbReadOnly: () => checkDatabaseReadOnly(),
+  binarySyncPending: () => isBinarySyncDeferred(),
   checkRedis: () => checkRedisConnectivity(),
   workerRegistry: workerReadinessRegistry,
   workersInitialized: () => {
@@ -819,6 +844,10 @@ api.route('/trust/attestation', trustPageAttestationRoutes);
 // Gated-document access flow (Trust Center W2, no auth): before /trust so its paths are never read as slugs.
 api.route('/trust/access', trustAccessPublicRoutes);
 api.route('/trust', trustPagePublicRoutes);
+// Portal Entra SCIM provisioning (W9 #11386): public, authenticated by an org's
+// SCIM bearer token inside the router (uniform 401). partnerGuard skips the path;
+// the global limiter meters it in its own 'scim' bucket.
+api.route('/scim/portal/v2', portalScimRoutes);
 // Public, token-gated agreement signing (#9075 W2b, no auth). Mounted with the
 // other public surfaces, before every root-mounted router and before the
 // auth-gated /contracts router, so no `.use('*')` auth middleware can run ahead
@@ -896,6 +925,7 @@ api.route('/business-calendars', businessCalendarRoutes);
 api.route('/ticket-routing-rules', ticketRoutingRuleRoutes);
 api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
+api.route('/', serviceCatalogRoutes);
 api.route('/', tenantVariableRoutes);
 // Self-contained autopay auth must run before the broad org/portal routers.
 api.route('/autopay/public', publicAutopayRoutes);
@@ -943,6 +973,8 @@ api.route('/service-principals', servicePrincipalRoutes);
 api.route('/partner-service-principals', partnerServicePrincipalRoutes);
 // Ticket migration windows (#8313): partner-wide admin grants of import mode.
 api.route('/migration-windows', migrationWindowRoutes);
+// Ticket import framework (#8313 W4): sources, mappings and import runs.
+api.route('/ticket-imports', ticketImportRoutes);
 api.route('/partner-api', partnerApiRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
@@ -1014,6 +1046,7 @@ api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
 api.route('/patches', patchRoutes);
+api.route('/oem-updates', oemUpdatesFleetRoutes);
 api.route('/third-party-catalog', thirdPartyCatalogRoutes);
 api.route('/patch-policies', patchPolicyRoutes);
 api.route('/update-rings', updateRingRoutes);
@@ -1103,6 +1136,8 @@ api.route('/partner/ai/data-policy', partnerAiDataPolicyRoutes);
 // mount below, the same ordering `/partner/trust` relies on — Hono matches in
 // registration order, so a later specific mount is never reached.
 api.route('/partner/sending-domains', partnerSendingDomainsRoutes);
+// Read-only device admission status for Settings → Plan. Also above `/partner`.
+api.route('/partner/device-capacity', partnerDeviceCapacityRoutes);
 api.route('/partner', partnerRoutes);
 api.route('/internal/synthetic', internalSyntheticRoutes);
 api.route('/partner/known-guests', networkKnownGuestsRoutes);
@@ -1231,19 +1266,7 @@ app.notFound((c) => {
 app.onError((err, c) => {
   // Handle HTTPException properly (e.g., 401, 403, etc.)
   if (err instanceof HTTPException) {
-    // A typed HTTPException may carry a machine-readable `code` (e.g.
-    // `lease_unavailable`) that callers switch on. This handler builds the body
-    // itself instead of delegating to `err.getResponse()`, so the code has to
-    // be copied across explicitly or it is silently dropped.
-    const typedCode = (err as { code?: unknown }).code;
-    return c.json(
-      {
-        error: err.message || 'Request failed',
-        message: err.message,
-        ...(typeof typedCode === 'string' && typedCode ? { code: typedCode } : {})
-      },
-      err.status
-    );
+    return httpExceptionResponse(err, c);
   }
 
   // W08 (#8147): a pool-acquire timeout (#8229/#8243) or an RLS prologue
@@ -1327,6 +1350,9 @@ async function initializeWorkers(): Promise<void> {
         captureException(error instanceof Error ? error : new Error(String(error)));
       },
     });
+    // #4134: no relay consumer starts, so give up the shard claimed before
+    // serving; producers then answer `offline` instead of enqueuing unread.
+    await releaseAgentCommandRelayClaim();
     return;
   }
 
@@ -1430,6 +1456,20 @@ async function checkDatabaseConnectivity(): Promise<boolean> {
   }
 }
 
+/**
+ * #11731: reachable but read-only (a provider's `default_transaction_read_only
+ * = on`, or a standby). `select 1` still succeeds there, so readiness needs
+ * this to report `db-read-only` instead of claiming a healthy database.
+ * Throws on failure; the readiness evaluator reports it and treats the
+ * answer as unknown. A read-only answer also sets the pool flag that gates
+ * the read-only log throttle (#11741).
+ */
+async function checkDatabaseReadOnly(): Promise<boolean> {
+  return runWithSystemDbAccess(async () =>
+    observeReadOnlyProbeResult(await db.execute(sql.raw(TRANSACTION_READ_ONLY_PROBE_SQL))),
+  );
+}
+
 async function checkRedisConnectivity(): Promise<boolean> {
   try {
     const redis = getRedis();
@@ -1486,7 +1526,15 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // shutting down.
   stopDbPoolHealthMonitor();
   stopWedgedBackendMonitor();
+  stopReadOnlySessionRecovery();
+  // #11741: deferred startup writes (CIS catalog seed, patch-settings repair)
+  // must not retry against a pool that is draining.
+  stopDeferredWrites();
   stopRedisMemoryMonitor();
+  // #11731: a deferred binary registration must not start against a pool
+  // that is draining. Nor must a network retry of the boot sync (#11641).
+  stopDeferredBinarySyncRetry();
+  stopGithubSyncRetry();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
     auditRetryInterval = null;
@@ -1581,6 +1629,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
         shutdownEventDispatchWorker,
         shutdownEventDispatchQueue,
         shutdownAgentCommandRelayWorker,
+        // #4134: per-instance producer handles (shared connection; hygiene).
+        shutdownAgentCommandRelayQueue,
       ],
     },
     // 3b. W05: the cluster cache subscriber owns its own duplicate connection.
@@ -1694,6 +1744,11 @@ async function bootstrap(): Promise<void> {
     console.error('[boot] BREEZE_ROLE=worker cannot run the API entrypoint (dist/index.cjs) — use dist/worker.cjs');
     process.exit(78); // EX_CONFIG
   }
+
+  // #11741: one line per source per minute for read-only database errors
+  // (SQLSTATE 25006) instead of a stack per failed write. First, so every
+  // later path that can log one goes through it.
+  installReadOnlyLogThrottle();
 
   console.log(`Breeze API starting on port ${port}...`);
   // #7024: BREEZE_VERSION edited without new image digests — say so at boot.
@@ -1811,6 +1866,11 @@ async function bootstrap(): Promise<void> {
     // record the running version after. Report-only; never blocks boot.
     upgradeChecks: true,
   });
+
+  // #11741: pooled sessions opened while the database was read-only keep that
+  // default after it becomes writable; recycle them instead of waiting out
+  // max_lifetime. One pooled `select` per interval while all is well.
+  startReadOnlySessionRecovery();
   // Migrations may have changed role_permissions (W02 seeded agreements:* and
   // back-filled it onto every role holding the equivalent contracts grant), and
   // the permission resolver caches UserPermissions for CACHE_TTL = 5 minutes
@@ -1979,6 +2039,10 @@ async function bootstrap(): Promise<void> {
       throw err;
     }
     console.error('[startup] Binary sync failed (non-fatal in github mode):', err);
+    // #11641: a network failure is retried in the background with backoff
+    // (logged per attempt, explicit error when the retries run out). Not
+    // inline: the server only starts listening after this returns.
+    scheduleGithubSyncRetry(err);
   }
 
   // #6263 W03b: upsert the built-in YARA pack from this release's signed
@@ -2056,6 +2120,11 @@ async function bootstrap(): Promise<void> {
   const clusterCacheOutcome = startupChecks.redisOk ? await getClusterCacheBus().start() : 'unavailable';
   if (clusterCacheOutcome === 'subscribed') console.log('[clusterCache] subscriber subscribed');
   else console.warn(`[clusterCache] subscriber ${clusterCacheOutcome}: hot-path caches on this instance are TTL-only until it subscribes`);
+
+  // #4134: take this instance's relay shard before any agent socket can name
+  // it in a presence lease (producers answer `offline` for a shard without an
+  // owner). The consumer itself starts in initializeWorkers(). Never throws.
+  if (breezeRole() !== 'worker' && startupChecks.redisOk) await claimAgentCommandRelayShard();
 
   // W08: start sampling only after migrations and boot work, so their stalls
   // never enter the controller's history. Admission never affects /ready.
@@ -2269,6 +2338,21 @@ async function bootstrap(): Promise<void> {
   initializeDeviceEventHandlers();
 
   await initializeWorkers();
+
+  // #11004: build the static AI tool surface (~340 Zod tool declarations, their
+  // registry metadata and one throwaway SDK MCP server) now, so the first AI
+  // chat message after a restart does not pay for it on the request path. CPU
+  // only, no I/O.
+  try {
+    const warmed = warmBreezeToolSurface();
+    console.log(`[startup] AI tool surface warmed: ${warmed.tools} chat tools in ${warmed.ms}ms`);
+  } catch (error) {
+    // The template is not cached on failure, so every AI session retries the
+    // same build — and a deterministic failure (e.g. a tool with no registry
+    // description) fails each one until it is fixed.
+    console.error('[startup] AI tool surface warm-up failed; AI chat sessions will retry the build and fail the same way until this is fixed:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  }
 
   // Periodically retry failed audit writes. The in-process queue is bounded
   // (10k entries) and per-entry attempts are capped (3) with exponential

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,19 +38,23 @@ func tmutilDeleteSnapshotsArgs() []string {
 // snapshotDatePattern is deliberately exact: the captured value is passed
 // straight back as an argv token, so a line that does not match this shape is
 // dropped rather than sanitised.
-var snapshotDatePattern = regexp.MustCompile(`^com\.apple\.TimeMachine\.(\d{4}-\d{2}-\d{2}-\d{6})(?:\.local)?$`)
+var snapshotDatePattern = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`^com\.apple\.TimeMachine\.(\d{4}-\d{2}-\d{2}-\d{6})(?:\.local)?$`)
+})
 
 func parseTmutilSnapshots(stdout string) []string {
 	dates := make([]string, 0, 8)
 	for _, line := range strings.Split(stdout, "\n") {
-		if match := snapshotDatePattern.FindStringSubmatch(strings.TrimSpace(line)); match != nil {
+		if match := snapshotDatePattern().FindStringSubmatch(strings.TrimSpace(line)); match != nil {
 			dates = append(dates, match[1])
 		}
 	}
 	return dates
 }
 
-var brewFreedPattern = regexp.MustCompile(`This operation would free approximately ([0-9.,]+\s*[kKMGTP]?B) of disk space`)
+var brewFreedPattern = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`This operation would free approximately ([0-9.,]+\s*[kKMGTP]?B) of disk space`)
+})
 
 // parseBrewCleanupDryRun reads the single trailing summary line of
 // `brew cleanup --prune=all -n`. brew prints NOTHING at all when there is
@@ -59,7 +64,7 @@ func parseBrewCleanupDryRun(output string) (int64, bool) {
 	if trimmed == "" {
 		return 0, true
 	}
-	if match := brewFreedPattern.FindStringSubmatch(trimmed); match != nil {
+	if match := brewFreedPattern().FindStringSubmatch(trimmed); match != nil {
 		return parseDecimalSize(match[1])
 	}
 	if strings.HasPrefix(trimmed, "Error:") || strings.Contains(trimmed, "Error: ") {

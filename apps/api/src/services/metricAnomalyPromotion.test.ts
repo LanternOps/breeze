@@ -7,6 +7,7 @@ const {
   shouldProduceMlOutputMock,
   publishEventMock,
   resolveDeviceSiteIdMock,
+  createSourcedAlertMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   insertMock: vi.fn(),
@@ -14,6 +15,7 @@ const {
   shouldProduceMlOutputMock: vi.fn(),
   publishEventMock: vi.fn(),
   resolveDeviceSiteIdMock: vi.fn(),
+  createSourcedAlertMock: vi.fn(),
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -51,6 +53,12 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('./eventBus', () => ({
   publishEvent: publishEventMock,
+}));
+
+// #11348 — the alert goes through the shared create path, which stages
+// `alert.triggered` on the row and publishes it after COMMIT.
+vi.mock('./alertService', () => ({
+  createSourcedAlert: createSourcedAlertMock,
 }));
 
 vi.mock('./mlFeatureFlags', () => ({
@@ -110,11 +118,11 @@ describe('metric anomaly promotion service', () => {
     resolveDeviceSiteIdMock.mockResolvedValue('site-1');
   });
 
-  it('creates an alert, links the anomaly, and publishes alert.triggered', async () => {
+  it('creates the alert through the shared create path (alert.triggered after COMMIT) and links the anomaly', async () => {
     selectMock.mockReturnValueOnce(chain([anomaly]));
     selectMock.mockReturnValueOnce(chain([])); // dedupe siblings lookup
     selectMock.mockReturnValueOnce(chain([])); // incident agent_run_id lookup — no incident row yet
-    insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
+    createSourcedAlertMock.mockResolvedValueOnce('44444444-4444-4444-8444-444444444444');
     updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: '44444444-4444-4444-8444-444444444444' }]));
 
     const result = await promoteMetricAnomalyToAlert({
@@ -130,21 +138,49 @@ describe('metric anomaly promotion service', () => {
       created: true,
     });
     expect(shouldProduceMlOutputMock).toHaveBeenCalledWith(anomaly.orgId, 'ml.anomalies.create_alerts');
-    expect(insertMock).toHaveBeenCalledWith(expect.anything());
     expect(updateMock).toHaveBeenCalledWith(expect.anything());
-    expect(publishEventMock).toHaveBeenCalledWith(
-      'alert.triggered',
-      anomaly.orgId,
-      expect.objectContaining({
-        alertId: '44444444-4444-4444-8444-444444444444',
-        ruleId: null,
-        deviceId: anomaly.deviceId,
-        source: 'metric-anomaly',
+    // #11348 — no raw insert and no inline publish: both ran inside the
+    // caller's transaction, so `process-alert` could read before COMMIT.
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(publishEventMock).not.toHaveBeenCalled();
+    expect(createSourcedAlertMock).toHaveBeenCalledTimes(1);
+    expect(createSourcedAlertMock).toHaveBeenCalledWith({
+      deviceId: anomaly.deviceId,
+      orgId: anomaly.orgId,
+      severity: 'medium',
+      title: 'Metric anomaly promoted: spike on cpu_percent',
+      message: expect.stringContaining('cpu_percent spike was promoted from ML anomaly detection.'),
+      context: {
+        source: 'metric_anomaly',
         anomalyId: anomaly.id,
-      }),
-      'metric-anomaly-promotion',
-      expect.objectContaining({ userId: 'user-1', siteId: 'site-1' }),
-    );
+        metricName: 'cpu_percent',
+        metricType: 'system',
+        anomalyType: 'spike',
+        observedValue: 97.3,
+        baselineValue: 45.1,
+        confidence: 0.87,
+        score: 8,
+        modelVersion: 'metric-anomalies-v1',
+        agentRunId: null,
+      },
+      publisher: 'metric-anomaly-promotion',
+      eventPayload: { anomalyId: anomaly.id },
+      triggeredAt: expect.any(Date),
+    });
+  });
+
+  it('throws and links nothing when the alert create produces no row', async () => {
+    selectMock.mockReturnValueOnce(chain([anomaly]));
+    selectMock.mockReturnValueOnce(chain([])); // dedupe siblings lookup
+    selectMock.mockReturnValueOnce(chain([])); // incident lookup
+    createSourcedAlertMock.mockResolvedValueOnce(null);
+
+    await expect(promoteMetricAnomalyToAlert({
+      orgId: anomaly.orgId,
+      deviceId: anomaly.deviceId,
+      anomalyId: anomaly.id,
+    })).rejects.toThrow('Failed to create alert for metric anomaly');
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   // Wave 6 PR 4 (#3828 Task 3) — promotion linkage read: when the canonical
@@ -155,7 +191,7 @@ describe('metric anomaly promotion service', () => {
     selectMock.mockReturnValueOnce(chain([anomaly]));
     selectMock.mockReturnValueOnce(chain([])); // dedupe siblings lookup
     selectMock.mockReturnValueOnce(chain([{ agentRunId: 'run-from-anomaly-trigger' }])); // incident lookup
-    insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
+    createSourcedAlertMock.mockResolvedValueOnce('44444444-4444-4444-8444-444444444444');
     updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: '44444444-4444-4444-8444-444444444444' }]));
 
     await promoteMetricAnomalyToAlert({
@@ -165,9 +201,7 @@ describe('metric anomaly promotion service', () => {
       actorUserId: 'user-1',
     });
 
-    expect(insertMock).toHaveBeenCalledWith(expect.anything());
-    const insertedChain = insertMock.mock.results[0]!.value as { values: ReturnType<typeof vi.fn> };
-    expect(insertedChain.values).toHaveBeenCalledWith(
+    expect(createSourcedAlertMock).toHaveBeenCalledWith(
       expect.objectContaining({
         context: expect.objectContaining({ agentRunId: 'run-from-anomaly-trigger' }),
       }),
@@ -178,7 +212,7 @@ describe('metric anomaly promotion service', () => {
     selectMock.mockReturnValueOnce(chain([anomaly]));
     selectMock.mockReturnValueOnce(chain([])); // dedupe siblings lookup
     selectMock.mockReturnValueOnce(chain([])); // incident lookup — no row
-    insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
+    createSourcedAlertMock.mockResolvedValueOnce('44444444-4444-4444-8444-444444444444');
     updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: '44444444-4444-4444-8444-444444444444' }]));
 
     await promoteMetricAnomalyToAlert({
@@ -188,8 +222,7 @@ describe('metric anomaly promotion service', () => {
       actorUserId: 'user-1',
     });
 
-    const insertedChain = insertMock.mock.results[0]!.value as { values: ReturnType<typeof vi.fn> };
-    expect(insertedChain.values).toHaveBeenCalledWith(
+    expect(createSourcedAlertMock).toHaveBeenCalledWith(
       expect.objectContaining({
         context: expect.objectContaining({ agentRunId: null }),
       }),
@@ -234,6 +267,7 @@ describe('metric anomaly promotion service', () => {
       created: false,
     });
     // No new alert and no second alert.triggered event for the duplicate row.
+    expect(createSourcedAlertMock).not.toHaveBeenCalled();
     expect(insertMock).not.toHaveBeenCalled();
     expect(publishEventMock).not.toHaveBeenCalled();
     // The duplicate row is still linked + marked promoted.
@@ -255,6 +289,7 @@ describe('metric anomaly promotion service', () => {
       created: false,
     });
     expect(shouldProduceMlOutputMock).not.toHaveBeenCalled();
+    expect(createSourcedAlertMock).not.toHaveBeenCalled();
     expect(insertMock).not.toHaveBeenCalled();
     expect(updateMock).not.toHaveBeenCalled();
     expect(publishEventMock).not.toHaveBeenCalled();
@@ -272,6 +307,7 @@ describe('metric anomaly promotion service', () => {
     });
 
     expect(result).toMatchObject({ status: 'disabled' });
+    expect(createSourcedAlertMock).not.toHaveBeenCalled();
     expect(insertMock).not.toHaveBeenCalled();
     expect(updateMock).not.toHaveBeenCalled();
     expect(publishEventMock).not.toHaveBeenCalled();
@@ -282,7 +318,7 @@ describe('metric anomaly promotion service', () => {
     selectMock.mockReturnValueOnce(chain([])); // dedupe siblings lookup
     shouldProduceMlOutputMock.mockResolvedValue(false);
     selectMock.mockReturnValueOnce(chain([])); // incident agent_run_id lookup — no incident row yet
-    insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
+    createSourcedAlertMock.mockResolvedValueOnce('44444444-4444-4444-8444-444444444444');
     updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: '44444444-4444-4444-8444-444444444444' }]));
 
     const result = await promoteMetricAnomalyToAlert({
@@ -299,16 +335,15 @@ describe('metric anomaly promotion service', () => {
       created: true,
     });
     expect(shouldProduceMlOutputMock).not.toHaveBeenCalled();
-    expect(insertMock).toHaveBeenCalledWith(expect.anything());
+    expect(createSourcedAlertMock).toHaveBeenCalledTimes(1);
     expect(updateMock).toHaveBeenCalledWith(expect.anything());
-    expect(publishEventMock).toHaveBeenCalled();
   });
 
   it('writes the anomaly episode id into the new alert context, never the alerts.episode_id column', async () => {
     selectMock.mockReturnValueOnce(chain([anomaly]));
     selectMock.mockReturnValueOnce(chain([])); // dedupe siblings
     selectMock.mockReturnValueOnce(chain([])); // incident agent_run_id lookup
-    insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
+    createSourcedAlertMock.mockResolvedValueOnce('44444444-4444-4444-8444-444444444444');
     updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted', linkedAlertId: '44444444-4444-4444-8444-444444444444' }]));
 
     await promoteMetricAnomalyToAlert({
@@ -320,28 +355,27 @@ describe('metric anomaly promotion service', () => {
       episodeId: '55555555-5555-4555-8555-555555555555',
     });
 
-    const insertedChain = insertMock.mock.results[0]!.value as { values: ReturnType<typeof vi.fn> };
-    const values = insertedChain.values.mock.calls[0]![0] as Record<string, unknown>;
-    expect(values.context).toMatchObject({
+    const params = createSourcedAlertMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(params.context).toMatchObject({
       source: 'metric_anomaly',
       anomalyId: anomaly.id,
       episodeId: '55555555-5555-4555-8555-555555555555',
     });
     // alerts.episode_id is the MONITOR breach episode (#5290) — never ours.
-    expect(values).not.toHaveProperty('episodeId');
+    // createSourcedAlert's `episodeId` param writes that column.
+    expect(params).not.toHaveProperty('episodeId');
   });
 
   it('omits context.episodeId when no episode is given (per-row route unchanged)', async () => {
     selectMock.mockReturnValueOnce(chain([anomaly]));
     selectMock.mockReturnValueOnce(chain([]));
     selectMock.mockReturnValueOnce(chain([]));
-    insertMock.mockReturnValueOnce(chain([{ id: '44444444-4444-4444-8444-444444444444' }]));
+    createSourcedAlertMock.mockResolvedValueOnce('44444444-4444-4444-8444-444444444444');
     updateMock.mockReturnValueOnce(chain([{ ...anomaly, status: 'promoted' }]));
 
     await promoteMetricAnomalyToAlert({ orgId: anomaly.orgId, deviceId: anomaly.deviceId, anomalyId: anomaly.id });
 
-    const insertedChain = insertMock.mock.results[0]!.value as { values: ReturnType<typeof vi.fn> };
-    const values = insertedChain.values.mock.calls[0]![0] as { context: Record<string, unknown> };
-    expect(values.context).not.toHaveProperty('episodeId');
+    const params = createSourcedAlertMock.mock.calls[0]![0] as { context: Record<string, unknown> };
+    expect(params.context).not.toHaveProperty('episodeId');
   });
 });

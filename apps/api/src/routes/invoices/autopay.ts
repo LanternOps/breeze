@@ -13,6 +13,7 @@ import { requireBillingStepUp } from '../billingStepUp';
 import { PERMISSIONS } from '../../services/permissions';
 import { db } from '../../db';
 import { requireAutopayEnabled } from '../../services/autopay/autopayGate';
+import { assertAutopayBillingEnabledForPartner } from '../../services/autopay/billingGate';
 import { setInvoiceAutopayExcluded } from '../../services/autopay/invoiceControls';
 import { invoiceActorFrom, handleServiceError } from './invoices';
 export const invoiceAutopayRoutes = new Hono();
@@ -56,6 +57,7 @@ invoiceAutopayRoutes.post('/:id/autopay/charge-now',
         const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
         if (!invoice) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
         requireInvoiceAccess(actor, invoice);
+        await assertAutopayBillingEnabledForPartner(invoice.partnerId);
         const [schedule] = await db.select().from(invoiceAutopaySchedules)
           .where(eq(invoiceAutopaySchedules.invoiceId, invoice.id)).limit(1);
         if (!schedule?.eligible) throw new InvoiceServiceError('Invoice has no eligible notice', 409, 'INVALID_STATE');

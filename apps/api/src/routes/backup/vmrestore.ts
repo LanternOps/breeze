@@ -78,7 +78,7 @@ async function markRestoreJobFailed(orgId: string, restoreJobId: string, error: 
         status: 'failed',
         completedAt: now,
         updatedAt: now,
-        targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object('error', ${error})`,
+        targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object('error', ${error}::text)`,
       })
       .where(eq(restoreJobs.id, restoreJobId));
   });
@@ -349,7 +349,8 @@ vmRestoreRoutes.post(
         responseRow = dispatchResult.restoreJob;
       }
     } catch (err) {
-      const error = err instanceof Error ? err.message : 'Failed to dispatch restore command to agent';
+      // A fixed message: target_config is tenant-readable, the raw error goes to the log.
+      const error = 'Failed to dispatch restore command to agent';
       console.error('[BMR] Failed to dispatch VM restore command:', err);
       recordBackupDispatchFailure('manual_restore', 'enqueue_failed');
       await markRestoreJobFailed(orgId, restoreJob.id, error);
@@ -516,7 +517,8 @@ vmRestoreRoutes.post(
         responseRow = dispatchResult.restoreJob;
       }
     } catch (err) {
-      const error = err instanceof Error ? err.message : 'Failed to dispatch instant boot command to agent';
+      // A fixed message: target_config is tenant-readable, the raw error goes to the log.
+      const error = 'Failed to dispatch instant boot command to agent';
       console.error('[BMR] Failed to dispatch instant boot command:', err);
       recordBackupDispatchFailure('manual_restore', 'enqueue_failed');
       await markRestoreJobFailed(orgId, restoreJob.id, error);

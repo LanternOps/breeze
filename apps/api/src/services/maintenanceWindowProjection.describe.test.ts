@@ -70,6 +70,39 @@ describe('describeMaintenanceSchedule (#10397)', () => {
     expect(out.summary).toBe('Day 1 of each month at 03:30 for 4h (UTC)');
   });
 
+  // #9574: the description reads back the configured day.
+  it('weekly opens on the configured weekday', () => {
+    const s = settings({ dayOfWeek: 'thu', windowStart: '21:00' });
+    const out = describeMaintenanceSchedule(s, NOW)!;
+    expect(out.opensOn).toBe('Thursday');
+    // NOW is Wednesday 2026-10-28; the next Thursday is the 29th.
+    expect(out.nextWindow!.startsAt).toBe('2026-10-29T21:00:00.000Z');
+    expect(out.summary).toBe('Every Thursday at 21:00 for 2h (UTC)');
+    expect(isInMaintenanceWindow(s, new Date(out.nextWindow!.startsAt)).active).toBe(true);
+  });
+
+  it('monthly names the configured day and says what happens in shorter months', () => {
+    const s = settings({ recurrence: 'monthly', dayOfMonth: 31, windowStart: '03:30' });
+    const out = describeMaintenanceSchedule(s, NOW)!;
+    // The 31st is the configured day even while the governing occurrence was 30 September.
+    expect(out.opensOn).toBe('day 31 of each month (the last day in shorter months)');
+    expect(out.nextWindow!.startsAt).toBe('2026-10-31T03:30:00.000Z');
+    expect(out.summary).toBe('Day 31 of each month (the last day in shorter months) at 03:30 for 2h (UTC)');
+  });
+
+  it('monthly day 15 names day 15', () => {
+    const out = describeMaintenanceSchedule(settings({ recurrence: 'monthly', dayOfMonth: 15, windowStart: '01:00' }), NOW)!;
+    expect(out.opensOn).toBe('day 15 of each month');
+    expect(out.nextWindow!.startsAt).toBe('2026-11-15T01:00:00.000Z');
+  });
+
+  it('adds the short-month note from day 29, not before', () => {
+    expect(describeMaintenanceSchedule(settings({ recurrence: 'monthly', dayOfMonth: 28 }), NOW)!.opensOn)
+      .toBe('day 28 of each month');
+    expect(describeMaintenanceSchedule(settings({ recurrence: 'monthly', dayOfMonth: 29 }), NOW)!.opensOn)
+      .toBe('day 29 of each month (the last day in shorter months)');
+  });
+
   it('daily opens every day', () => {
     const out = describeMaintenanceSchedule(settings({ recurrence: 'daily', windowStart: '13:00' }), NOW)!;
     expect(out.opensOn).toBe('every day');

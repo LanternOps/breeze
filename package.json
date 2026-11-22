@@ -15,11 +15,12 @@
     "agents-md": "node scripts/agents/build-agents-md.mjs",
     "test:agents-md": "node --test scripts/agents/build-agents-md.test.mjs",
     "test:docs-automation": "node --test .github/scripts/docs-automation-retirement.test.mjs",
-    "test:workflow-security": "node --test .github/scripts/check-workflow-security.test.mjs scripts/security/pin-github-actions.test.mjs scripts/release/attest-macos-pkg.test.mjs && node .github/scripts/check-workflow-security.mjs",
+    "test:workflow-security": "node --test .github/scripts/check-workflow-security.test.mjs scripts/security/pin-github-actions.test.mjs scripts/release/attest-macos-pkg.test.mjs scripts/release/macho-min-os.test.mjs agent/installer/macos/os-floor.test.mjs && node .github/scripts/check-workflow-security.mjs",
     "pin:github-actions": "node scripts/security/pin-github-actions.mjs",
     "test:override-floors": "node --test scripts/security/check-override-floors.test.mjs",
     "check:override-floors": "node scripts/security/check-override-floors.mjs",
-    "test:npm-audit-exceptions": "node --test scripts/security/check-npm-audit.test.mjs",
+    "test:npm-audit-exceptions": "node --test scripts/security/check-npm-audit.test.mjs scripts/security/lockfile-scope.test.mjs",
+    "test:osv-scanner-install": "node --test scripts/security/install-osv-scanner.test.mjs",
     "test:security-guards": "node --test scripts/security/check-security-guards.test.mjs",
     "test:release-trust-allowlist": "node --test scripts/security/check-release-trust-allowlist.test.mjs",
     "test:release-lineage": "node --test scripts/release/check-release-lineage.test.mjs scripts/release/release-image-manifest.test.mjs scripts/release/verify-release-images.test.mjs scripts/release/release-image-consumers.test.mjs scripts/release/notarize-submit.test.mjs scripts/check-migration-immutability.test.mjs scripts/release/release-path-policy.test.mjs scripts/release/server-only-ledger.test.mjs scripts/release/check-server-only-eligibility.test.mjs scripts/release/check-server-only-eligibility.refusals.test.mjs scripts/release/check-server-only-eligibility.acceptance.test.mjs scripts/release/release-workflow-server-only.test.mjs scripts/release/binary-affecting-paths.coverage.test.mjs",
@@ -124,8 +125,7 @@
     },
     "patchedDependencies": {
       "postgres@3.4.9": "patches/postgres@3.4.9.patch",
-      "@hono/node-ws@1.3.1": "patches/@hono__node-ws@1.3.1.patch",
-      "expo-modules-jsi@57.1.1": "patches/expo-modules-jsi@57.1.1.patch"
+      "@hono/node-ws@1.3.1": "patches/@hono__node-ws@1.3.1.patch"
     },
     "allowUnusedPatches": true
   }

@@ -3,17 +3,17 @@
 package systemstate
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
 
 // CollectHardwareProfile captures hardware info from /proc, /sys, and lsblk.
-func (c *LinuxCollector) CollectHardwareProfile() (*HardwareProfile, error) {
+func (c *LinuxCollector) CollectHardwareProfile(ctx context.Context) (*HardwareProfile, error) {
 	hw := &HardwareProfile{}
 
 	// CPU from /proc/cpuinfo
@@ -27,7 +27,7 @@ func (c *LinuxCollector) CollectHardwareProfile() (*HardwareProfile, error) {
 	}
 
 	// Disks from lsblk -J
-	if out, err := exec.Command("lsblk", "-J", "-b", "-o", "NAME,SIZE,MODEL,TYPE,MOUNTPOINT,FSTYPE,LABEL").Output(); err == nil {
+	if out, err := collectorCommand(ctx, "lsblk", "-J", "-b", "-o", "NAME,SIZE,MODEL,TYPE,MOUNTPOINT,FSTYPE,LABEL").Output(); err == nil {
 		hw.Disks = parseLsblkJSON(out)
 	}
 

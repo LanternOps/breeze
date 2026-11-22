@@ -132,6 +132,16 @@ import { registerTenantVariableTools } from './aiToolsTenantVariables';
 import { registerSupportSessionTools } from './aiToolsSupportSessions';
 import { registerPax8Tools } from './aiToolsPax8';
 import { registerPax8OrderTools } from './aiToolsPax8Orders';
+import { registerBackupVerificationTools } from './aiToolsBackupVerification';
+import { registerBackupRecoveryReadTools } from './aiToolsBackupRecoveryReads';
+import { registerC2CConfigTools } from './aiToolsC2CConfigs';
+import { registerOrgAdminReadTools } from './aiToolsOrgAdminReads';
+import { registerIdentityReadTools } from './aiToolsIdentityReads';
+import { registerOrgPortalSettingsTool } from './aiToolsOrgPortalSettings';
+import { registerReportRecipientsTool } from './aiToolsReportRecipients';
+import { registerAiAgentLaunchTools } from './aiToolsAiAgentLaunch';
+import { registerAiAgentScheduleTool } from './aiToolsAiAgentSchedules';
+import { registerFleetDesignTool } from './aiToolsFleetDesigns';
 import { registerBillingProfileTools } from './aiToolsBillingProfiles';
 import { registerBillingSettingsTools } from './aiToolsBillingSettings';
 import { registerContractTemplateTools } from './aiToolsContractTemplates';
@@ -163,6 +173,7 @@ import { registerTicketRoutingTools } from './aiToolsTicketRouting';
 import { registerWispMemoryTools } from './wisp/memoryTools';
 import { registerWispConcernTools } from './wisp/concernTools';
 import { registerWispLinkTools } from './wisp/linkTools';
+import { registerWispCheckInTools } from './wisp/checkInTools';
 import { registerWispTools } from './aiToolsWisp';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
@@ -172,11 +183,15 @@ import { m365ToolSearchHints, m365ToolTiers, registerM365Tools } from './aiTools
 import { googleToolSearchHints, googleToolTiers } from './aiToolsGoogle';
 import { authorizeTopologyAiToolCall, isTopologyAiToolName, topologyAiAliasScope, type TopologyToolBinding } from './topology/aiToolGate';
 import { applyHelperDeviceScope } from './helperToolFilter';
+import { COMPACT_TOOL_DESCRIPTIONS } from './aiToolCompactDescriptions';
 // ============================================
 // Shared Types
 // ============================================
 
 export type AiToolTier = 1 | 2 | 3 | 4;
+
+/** What `AiTool.validateBeforeFiling` returns: the call may be filed, or the handler's own refusal. */
+export type PreFilingVerdict = { ok: true } | { ok: false; error: string };
 
 export interface AiTool {
   definition: Anthropic.Tool;
@@ -213,6 +228,22 @@ export interface AiTool {
     auth: AuthContext,
     context?: ToolExecutionContext,
   ) => Promise<string>;
+  /**
+   * #11432: the refusal this tool's handler would return for `input` under
+   * `auth`, judged BEFORE an approval card or action intent is filed, so a
+   * person is never asked to approve a call that can only fail (an approved
+   * create that then ended "orgId is required"). The chat pre-tool gate
+   * (`createGatedSessionPreToolUse`, after RBAC and the rate limit) calls it
+   * under the auth the handler will run with: the session's tool auth, cut to
+   * the Wisp ceiling under a grant.
+   *
+   * Pure and synchronous: input and auth only, no I/O. Return `{ ok: true }`
+   * for anything it cannot judge from those alone (a row named by id, an input
+   * the schema refuses) and leave that to the handler. The handler keeps its
+   * own check as the backstop, so share one helper between them rather than
+   * restating the rule.
+   */
+  validateBeforeFiling?: (input: Record<string, unknown>, auth: AuthContext) => PreFilingVerdict;
   /**
    * Names of the tool's input properties that carry a device id (each a string
    * or string[]). When set, the central dispatch gates every supplied id
@@ -475,6 +506,23 @@ registerSupportSessionTools(aiTools);
 registerBillingProfileTools(aiTools);
 registerPax8Tools(aiTools);
 registerPax8OrderTools(aiTools);
+// Full-control W17 (#6788): backup verification, VSS, recovery reads and C2C configs.
+registerBackupVerificationTools(aiTools);
+registerBackupRecoveryReadTools(aiTools);
+registerC2CConfigTools(aiTools);
+// Full-control W18 PR A (#6789): org admin reads (summary, readiness, audit retention, portal users) and the
+// read-only identity directory (Breeze logins, roles). No identity write is a tool (W18-1).
+registerOrgAdminReadTools(aiTools);
+registerIdentityReadTools(aiTools);
+// Full-control W18 PR B (#6789): the two supervised org-admin writers (portal settings with a four-eyes sensitive
+// action, report recipients).
+registerOrgPortalSettingsTool(aiTools);
+registerReportRecipientsTool(aiTools);
+// Full-control W16 PR A (#6786): the two supervised launch tools (patch-plan run, service-recovery operator task).
+registerAiAgentLaunchTools(aiTools);
+// Full-control W16 PR B (#6786): the schedule and Fleet Design multiplexers, each with four-eyes actions.
+registerAiAgentScheduleTool(aiTools);
+registerFleetDesignTool(aiTools);
 registerBillingSettingsTools(aiTools);
 registerContractTemplateTools(aiTools);
 registerDeviceBillingTools(aiTools);
@@ -523,6 +571,8 @@ registerWispMemoryTools(aiTools);
 registerWispConcernTools(aiTools);
 // Wisp W08 thread links: same posture — inert without auth.wispGrant.
 registerWispLinkTools(aiTools);
+// Wisp check-in timers (#10991 W03): same posture — inert without auth.wispGrant.
+registerWispCheckInTools(aiTools);
 // Wisp W07 specialists: launch_specialist (inert without auth.wispGrant) and
 // the human-only approval carrier wisp_specialist_request.
 registerWispTools(aiTools);
@@ -645,6 +695,34 @@ export function getToolSearchHint(toolName: string): string | undefined {
   return aiTools.get(toolName)?.searchHint
     ?? m365ToolSearchHints[toolName]
     ?? googleToolSearchHints[toolName];
+}
+
+/** #11395: the curated compact description a constrained tool profile advertises, if the tool has one. */
+export function getToolCompactDescription(toolName: string): string | undefined {
+  return Object.hasOwn(COMPACT_TOOL_DESCRIPTIONS, toolName) ? COMPACT_TOOL_DESCRIPTIONS[toolName] : undefined;
+}
+
+const COMPACT_DESCRIPTION_MAX = 200;
+
+/**
+ * #11395: what a constrained profile advertises for a registry tool: its
+ * curated compact description, else `shortenToolDescription` of the full one
+ * (a `custom` pick has no curated entry).
+ */
+export function compactDescriptionFor(toolName: string, fullDescription: string): string {
+  return getToolCompactDescription(toolName) ?? shortenToolDescription(fullDescription);
+}
+
+/**
+ * #11395: a description that already fits in 200 chars is kept whole (so no
+ * approval or consent note is cut from it); a longer one becomes its first
+ * sentence, capped at 200. Used directly by servers whose tools are not the
+ * registry's (the script builder), which must never borrow a chat entry.
+ */
+export function shortenToolDescription(fullDescription: string): string {
+  if (fullDescription.length <= COMPACT_DESCRIPTION_MAX) return fullDescription;
+  const first = fullDescription.match(/^.*?[.!?](?=\s|$)/s)?.[0] ?? fullDescription;
+  return first.length <= COMPACT_DESCRIPTION_MAX ? first : `${first.slice(0, COMPACT_DESCRIPTION_MAX - 1).trimEnd()}…`;
 }
 
 export function getToolAlwaysLoad(toolName: string): boolean {
@@ -819,13 +897,21 @@ export async function executeTool(
   // Wisp W04 (w00 A24): a chat session attached to a thread also reads that
   // thread's attachments — the key is added ONLY when the capture scope
   // carries one, so every other anchor keeps its exact shape.
+  //
+  // #11845: a Wisp chat session's grant pin rides on the `read_artifact`
+  // anchor only (never `run_flow`'s); the handler turns it into the
+  // analysis-output read scope against the live ceiling.
   const writeAnchor = toolName === 'read_artifact' || toolName === 'run_flow' ? captureContextFrom(auth, opts, toolName) : null;
   const wispThreadId = opts?.capture?.wispThreadId;
-  const captureAnchor = writeAnchor && wispThreadId ? { ...writeAnchor, wispThreadId } : writeAnchor;
+  const wispGrant = toolName === 'read_artifact' ? opts?.capture?.wispGrant : undefined;
+  const captureAnchor = writeAnchor
+    ? { ...writeAnchor, ...(wispThreadId ? { wispThreadId } : {}), ...(wispGrant ? { wispGrant } : {}) }
+    : null;
   let handlerContext = captureAnchor ? { ...opts?.context, captureAnchor } : opts?.context;
-  // `run_flow` trusts the anchor's session id, so a caller-supplied anchor is
-  // dropped when the server computed none (no chat session => run_flow refuses).
-  if (toolName === 'run_flow' && !captureAnchor && handlerContext?.captureAnchor) {
+  // `run_flow` and `read_artifact` trust the anchor's session id, so a
+  // caller-supplied anchor is dropped when the server computed none (no chat
+  // session => both refuse).
+  if ((toolName === 'run_flow' || toolName === 'read_artifact') && !captureAnchor && handlerContext?.captureAnchor) {
     const { captureAnchor: _dropped, ...rest } = handlerContext;
     handlerContext = rest;
   }

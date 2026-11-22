@@ -218,6 +218,24 @@ describe('executeRunScriptAction — offline policy', () => {
     },
   );
 
+  // #4142: the relay could not confirm delivery. The claim is kept and nothing
+  // retries, so neither "device offline" nor "will retry" would be true.
+  it('reports an unconfirmed delivery as neither offline nor retrying', async () => {
+    dispatchMock.mockResolvedValue({ ...queuedDispatch(), deliveryOutcome: 'indeterminate' });
+
+    const result = await executeRunScriptAction(
+      { type: 'run_script', scriptId: 'script-1' },
+      0,
+      buildContext(),
+    );
+
+    expect(result.outcome.status).toBe('queued');
+    const message = (result.outcome as { message?: string }).message;
+    expect(message).not.toContain('offline');
+    expect(message).not.toContain('retry');
+    expect(message).toBe('Queued — delivery to the agent is unconfirmed; the step completes when the agent reports, or times out');
+  });
+
   it("skip reproduces today's failure message byte-for-byte", async () => {
     dispatchMock.mockResolvedValue({
       ok: false,

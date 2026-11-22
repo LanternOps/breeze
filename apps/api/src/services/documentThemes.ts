@@ -18,6 +18,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { explicitDocumentPageSize, resolvePartnerDocumentPageSize, type PartnerPageSizeInput } from '@breeze/shared/documents';
+import { breezeRegion } from '../config/env';
 
 export type DocumentThemeId = 'classic' | 'condensed';
 export type DocumentPageSize = 'letter' | 'a4';
@@ -107,6 +109,45 @@ export function resolveThemeId(raw: string | null | undefined): DocumentThemeId 
 
 export function resolvePageSize(raw: string | null | undefined): DocumentPageSize {
   return raw === 'letter' ? 'letter' : 'a4';
+}
+
+/**
+ * #12097: the page size a partner that has no country on file prints on —
+ * A4 on the EU deployment, Letter elsewhere (the pre-#12097 column default).
+ */
+export function deploymentDefaultPageSize(): DocumentPageSize {
+  return breezeRegion() === 'eu' ? 'a4' : 'letter';
+}
+
+/**
+ * #12097: the partner's document page size — its explicit choice, else its
+ * region default (billing letterhead country → company-details country →
+ * deployment). Every reader of `partners.document_page_size` goes through
+ * this; the column alone is NULL for a partner that never chose. Pass a row
+ * carrying `documentPageSize`, `billingAddressCountry` and `settings`.
+ */
+export function resolvePartnerPageSize(partner: PartnerPageSizeInput | null | undefined): DocumentPageSize {
+  return resolvePartnerDocumentPageSize(partner, deploymentDefaultPageSize()).pageSize;
+}
+
+/**
+ * #12097: the page-size fields a partner-settings response carries.
+ * `documentPageSize` stays the size documents print on (never null, so a
+ * client that only reads it keeps working); `documentPageSizeChoice` is the
+ * stored choice (null = follow the region default); `documentPageSizeFallback`
+ * is the deployment default the Billing → Documents form needs to show the
+ * region default live while the country is being edited.
+ */
+export function partnerPageSizeWire(partner: PartnerPageSizeInput): {
+  documentPageSize: DocumentPageSize;
+  documentPageSizeChoice: DocumentPageSize | null;
+  documentPageSizeFallback: DocumentPageSize;
+} {
+  return {
+    documentPageSize: resolvePartnerPageSize(partner),
+    documentPageSizeChoice: explicitDocumentPageSize(partner.documentPageSize),
+    documentPageSizeFallback: deploymentDefaultPageSize(),
+  };
 }
 
 export function pdfPageSize(size: DocumentPageSize): 'LETTER' | 'A4' {

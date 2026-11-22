@@ -21,7 +21,9 @@ describe('custom field definition query extraction', () => {
     const mod = await import('./aiToolsDevice');
     expect(typeof mod.readCustomFieldDefinitions).toBe('function');
     expect(typeof mod.customFieldDefinitionConditions).toBe('function');
-  }, 15000);
+  // 60s: the cold import of the whole tool graph measured 17.4s on a loaded CI
+  // shard (#12091); it is the import, not the assertions, that is slow.
+  }, 60000);
 
   it('builds one predicate per axis so partner-wide definitions survive', async () => {
     // org axis + partner axis = two OR-ed predicates; an org-only `eq` would be one.

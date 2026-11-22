@@ -247,9 +247,10 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
     return null;
   }
 
-  // Create alert. Routed through createSourcedAlert so a failed publish rolls
-  // the row back instead of leaving a silent alert the dedupe above would then
-  // treat as "already open" forever (#5325).
+  // Create alert. Routed through createSourcedAlert, whose alert outbox
+  // publishes alert.triggered after COMMIT and retries a failed publish, so the
+  // dedupe above never treats a silent alert as "already open" forever (#5325,
+  // #10926).
   const alertId = await createSourcedAlert({
     deviceId,
     orgId: device.orgId,

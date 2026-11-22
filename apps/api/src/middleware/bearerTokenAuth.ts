@@ -404,6 +404,15 @@ function unauthorized(c: Context, opts: { message: string }): HTTPException {
   return new HTTPException(401, opts);
 }
 
+// Verified against jose 6.x: only the JWKS fetch/parse paths throw these; no token
+// content can trigger them. Re-check on a jose major bump. Deliberately excludes
+// ERR_JWKS_MULTIPLE_MATCHING_KEYS: a kid-less token can trigger it, so it stays 401.
+const JWKS_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
+  'ERR_JOSE_GENERIC',
+  'ERR_JWKS_TIMEOUT',
+  'ERR_JWKS_INVALID',
+]);
+
 export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   if (!OAUTH_ISSUER || !OAUTH_RESOURCE_URL) {
     throw new HTTPException(500, { message: 'OAuth not configured: OAUTH_ISSUER and OAUTH_RESOURCE_URL must be set' });
@@ -436,8 +445,12 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     // jose throws errors with codes like ERR_JWS_*, ERR_JWT_*, ERR_JWKS_NO_MATCHING_KEY.
     // Anything else (no code, or non-jose code) is almost certainly a network/IO problem
     // talking to the JWKS endpoint - fail loud (503) rather than silently 401-ing every request.
+    // The exceptions: jose reports JWKS endpoint trouble (non-200 response,
+    // unparseable body -> ERR_JOSE_GENERIC; fetch timeout; malformed key set)
+    // with ERR_ codes too, but those mean the issuer is unavailable, not that
+    // the token is bad - 503 keeps clients from discarding valid tokens.
     const isJoseError = typeof code === 'string' && code.startsWith('ERR_');
-    if (!isJoseError) {
+    if (!isJoseError || JWKS_UNAVAILABLE_CODES.has(code)) {
       console.error('[oauth] jwt verification failed for non-token reason (jwks fetch?)', e);
       throw new HTTPException(503, { message: 'oauth verification temporarily unavailable' });
     }

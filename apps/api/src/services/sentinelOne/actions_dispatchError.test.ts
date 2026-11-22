@@ -66,6 +66,8 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: <T>(fn: () => T): T => fn(),
   withDbAccessContext: <T>(_ctx: unknown, fn: () => T): T => fn(),
   withSystemDbAccessContext: <T>(fn: () => T): T => fn(),
+  withDbTransaction: <T>(fn: () => T): T => fn(),
+  withDbTransactionIfHeld: <T>(fn: () => T): T => fn(),
   assertOutsideHeldDbContext: vi.fn(),
 }));
 

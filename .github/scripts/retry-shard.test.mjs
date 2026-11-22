@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { budgetSkipReason, decide, goRetryCommand, ledgerRunner, parseFailures } from './retry-shard.mjs';
+import { budgetSkipReason, buildReport, decide, goRetryCommand, lastTestFile, ledgerPaths, ledgerRunner, noRetryReason, parseFailures } from './retry-shard.mjs';
 
 // Whole-shard retry (W1, #10744). The merge queue has no retry, so one flaky
 // test ejects the PR and rebuilds every entry behind it. The wrapper re-runs a
@@ -16,6 +16,8 @@ import { budgetSkipReason, decide, goRetryCommand, ledgerRunner, parseFailures }
 const SCRIPT = fileURLToPath(new URL('./retry-shard.mjs', import.meta.url));
 const fixture = (name) => readFileSync(new URL(`./fixtures/retry-shard/${name}`, import.meta.url), 'utf8');
 const ids = (r) => r.failures.map((f) => f.id);
+// The schema-1 fields of a flake report; schema 2 keeps their meaning.
+const V1 = (r) => ({ label: r.label, attempts: r.attempts, flaky: r.flaky, quarantined: r.quarantined, exitCode: r.exitCode });
 
 const AGENT = 'github.com/breeze-rmm/agent';
 
@@ -468,7 +470,7 @@ test('CLI vitest: fail then pass → exit 0, report attempts 2, flaky warning, s
   assert.equal(r.status, 0, r.stderr);
   assert.equal(readFileSync(join(cwd, 'count'), 'utf8'), '2');
   const report = JSON.parse(readFileSync(join(cwd, 'flake-report-api-3.json'), 'utf8'));
-  assert.deepEqual(report, {
+  assert.deepEqual(V1(report), {
     label: 'api-3',
     attempts: 2,
     flaky: ['src/a.test.ts > suite > flaky one'],
@@ -507,7 +509,7 @@ test('CLI vitest: fails twice → exit 1, report attempts 2, nothing flaky', () 
   const r = cli(['--runner', 'vitest', '--label', 'api-1', '--', process.execPath, '-e', script], { cwd });
   assert.equal(r.status, 1);
   const report = JSON.parse(readFileSync(join(cwd, 'flake-report-api-1.json'), 'utf8'));
-  assert.deepEqual(report, { label: 'api-1', attempts: 2, flaky: [], quarantined: [], exitCode: 1 });
+  assert.deepEqual(V1(report), { label: 'api-1', attempts: 2, flaky: [], quarantined: [], exitCode: 1 });
 });
 
 // A fake `go` on PATH: records argv, emits -json events, writes a coverprofile.
@@ -559,7 +561,7 @@ test('CLI go: adds -json, re-prints Output, retries the whole shard uncached, ke
   assert.doesNotMatch(r.stdout, /"Action"/);
   assert.match(r.stdout, /^::warning title=Flaky test::p\/b\.TestB$/m);
   const report = JSON.parse(readFileSync(join(root, 'flake-report-agent.json'), 'utf8'));
-  assert.deepEqual(report, { label: 'agent', attempts: 2, flaky: ['p/b.TestB'], quarantined: [], exitCode: 0 });
+  assert.deepEqual(V1(report), { label: 'agent', attempts: 2, flaky: ['p/b.TestB'], quarantined: [], exitCode: 0 });
 });
 
 // A failure that needs the other packages running beside it: TestB fails only
@@ -593,7 +595,7 @@ test('CLI go: a failure that reproduces on every full-shard run stays red', () =
   assert.equal(r.status, 1, r.stdout);
   assert.doesNotMatch(r.stdout, /Flaky test/);
   const report = JSON.parse(readFileSync(join(root, 'flake-report-agent.json'), 'utf8'));
-  assert.deepEqual(report, { label: 'agent', attempts: 2, flaky: [], quarantined: [], exitCode: 1 });
+  assert.deepEqual(V1(report), { label: 'agent', attempts: 2, flaky: [], quarantined: [], exitCode: 1 });
 });
 
 test('CLI go: a data race fails the job on attempt 1 with an ::error annotation, no retry', () => {
@@ -613,7 +615,7 @@ test('CLI go: a data race fails the job on attempt 1 with an ::error annotation,
   assert.match(r.stdout, /^::error title=Data race::/m);
   assert.doesNotMatch(r.stdout, /Flaky test|Retrying test shard/);
   const report = JSON.parse(readFileSync(join(root, 'flake-report-agent-race.json'), 'utf8'));
-  assert.deepEqual(report, { label: 'agent-race', attempts: 1, flaky: [], quarantined: [], exitCode: 1 });
+  assert.deepEqual(V1(report), { label: 'agent-race', attempts: 1, flaky: [], quarantined: [], exitCode: 1 });
 });
 
 test('CLI go: interleaved -json events print as one block per package, like plain go test', () => {
@@ -667,7 +669,7 @@ test('CLI go: a package that hit -timeout fails on attempt 1 with an ::error ann
   assert.match(r.stdout, /^::error title=Test timeout::agent-race: /m);
   assert.doesNotMatch(r.stdout, /Flaky test|Retrying test shard/);
   const report = JSON.parse(readFileSync(join(root, 'flake-report-agent-race.json'), 'utf8'));
-  assert.deepEqual(report, { label: 'agent-race', attempts: 1, flaky: [], quarantined: [], exitCode: 1 });
+  assert.deepEqual(V1(report), { label: 'agent-race', attempts: 1, flaky: [], quarantined: [], exitCode: 1 });
 });
 
 // The clock is real here but needs no sleep: a node child takes far longer
@@ -681,7 +683,7 @@ test('CLI vitest: a retry that would overrun --budget-minutes is skipped (::erro
   assert.match(r.stdout, /^::error title=Retry skipped::api-4: /m);
   assert.doesNotMatch(r.stdout, /Flaky test|Retrying test shard/);
   const report = JSON.parse(readFileSync(join(cwd, 'flake-report-api-4.json'), 'utf8'));
-  assert.deepEqual(report, { label: 'api-4', attempts: 1, flaky: [], quarantined: [], exitCode: 1 });
+  assert.deepEqual(V1(report), { label: 'api-4', attempts: 1, flaky: [], quarantined: [], exitCode: 1 });
 });
 
 test('CLI vitest: a retry that fits --budget-minutes runs as usual', () => {
@@ -745,7 +747,7 @@ test('CLI vitest: a base-ledger test failing twice, untouched → exit 0, quaran
   });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const report = JSON.parse(readFileSync(join(root, 'flake-report-api-2.json'), 'utf8'));
-  assert.deepEqual(report, { label: 'api-2', attempts: 2, flaky: [], quarantined: [vitestEntry.id], exitCode: 0 });
+  assert.deepEqual(V1(report), { label: 'api-2', attempts: 2, flaky: [], quarantined: [vitestEntry.id], exitCode: 0 });
   assert.match(r.stdout, /^::warning title=Quarantined test::src\/a\.test\.ts > suite > flaky one$/m);
 });
 
@@ -873,4 +875,280 @@ test('ci.yml: every flake-report upload overwrites (a "re-run failed jobs" attem
     assert.match(s, /uses: actions\/upload-artifact@/);
     assert.match(s, /^\s+overwrite: true$/m, s);
   }
+});
+
+// ── Flake report schema 2 (W06a, #10750) ─────────────────────────────────
+// The shepherd classifies a merge-queue failure from this report. Schema 1
+// named no failing test when both attempts failed, so it could not tell a
+// flake (different tests each attempt) from a real break (the same test).
+
+const attempt = (code, failures, extra = {}) => ({
+  code,
+  failures,
+  buildFailed: false,
+  raceDetected: false,
+  timedOut: false,
+  unattributed: false,
+  ...extra,
+});
+
+const ENV = {
+  GITHUB_RUN_ID: '42451439098',
+  GITHUB_RUN_ATTEMPT: '1',
+  GITHUB_JOB: 'test-web',
+  GITHUB_SHA: 'c5e2ad9f61f07778d619156fbc70cadf1eb6c694',
+  GITHUB_EVENT_NAME: 'merge_group',
+  GITHUB_REF: 'refs/heads/gh-readonly-queue/main/pr-11312-4514157ba45f374f45027ccbdabd3a86ffe0ae5c',
+};
+
+test("report v2 lists both attempts' failure ids when both fail", () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  const logPath = join(cwd, 'two-failures.txt');
+  writeFileSync(logPath, fixture('vitest-two-failures.txt'));
+  const script = `process.stdout.write(require('fs').readFileSync(${JSON.stringify(logPath)}, 'utf8'));process.exit(1)`;
+  const r = cli(['--runner', 'vitest', '--label', 'api-5', '--', process.execPath, '-e', script], { cwd, env: ENV });
+  assert.equal(r.status, 1);
+  const report = JSON.parse(readFileSync(join(cwd, 'flake-report-api-5.json'), 'utf8'));
+  const expected = ids(parseFailures('vitest', fixture('vitest-two-failures.txt')));
+  assert.equal(expected.length, 2);
+  assert.equal(report.schema, 2);
+  assert.equal(report.runner, 'vitest');
+  assert.equal(report.noRetry, null);
+  assert.deepEqual(report.first.failures, expected);
+  assert.deepEqual(report.second.failures, expected);
+  assert.equal(report.first.code, 1);
+  assert.equal(report.second.code, 1);
+  assert.equal(report.first.truncated, false);
+  assert.deepEqual(report.provenance, {
+    runId: '42451439098',
+    runAttempt: '1',
+    job: 'test-web',
+    sha: 'c5e2ad9f61f07778d619156fbc70cadf1eb6c694',
+    event: 'merge_group',
+    ref: 'refs/heads/gh-readonly-queue/main/pr-11312-4514157ba45f374f45027ccbdabd3a86ffe0ae5c',
+  });
+  assert.deepEqual(V1(report), { label: 'api-5', attempts: 2, flaky: [], quarantined: [], exitCode: 1 });
+});
+
+test('noRetry names why no retry happened', () => {
+  const ok = [{ id: 'src/a.test.ts > t', file: 'src/a.test.ts', pkg: null }];
+  const rows = [
+    [attempt(null, ok), {}, 'signal'],
+    [attempt(1, ok, { buildFailed: true }), {}, 'build_failed'],
+    [attempt(1, ok, { raceDetected: true }), {}, 'race'],
+    [attempt(1, ok, { timedOut: true }), {}, 'go_timeout'],
+    [attempt(2, []), {}, 'no_parsed_failures'],
+    [attempt(1, ok), { budgetSkipped: true }, 'budget'],
+    // A stall is killed by the wrapper (code null), but says so, not `signal`.
+    [attempt(null, [], { stalled: true }), {}, 'stalled'],
+  ];
+  for (const [first, opts, want] of rows) assert.equal(noRetryReason(first, opts), want, want);
+  // A retry happened (or attempt 1 passed): nothing to explain.
+  assert.equal(noRetryReason(attempt(1, ok)), null);
+  assert.equal(noRetryReason(attempt(0, [])), null);
+});
+
+test('noRetry reaches the CLI report: nothing parsed, and a budget skip', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  const crash = cli(['--runner', 'vitest', '--label', 'integration-2', '--', process.execPath, '-e', 'process.exit(2)'], { cwd });
+  assert.equal(crash.status, 2);
+  const a = JSON.parse(readFileSync(join(cwd, 'flake-report-integration-2.json'), 'utf8'));
+  assert.equal(a.noRetry, 'no_parsed_failures');
+  assert.equal(a.second, null);
+  assert.deepEqual(a.first.failures, []);
+  const skip = cli(['--runner', 'vitest', '--label', 'api-6', '--budget-minutes', '0.0001', '--', process.execPath, '-e', FLAKY_VITEST], { cwd });
+  assert.equal(skip.status, 1);
+  const b = JSON.parse(readFileSync(join(cwd, 'flake-report-api-6.json'), 'utf8'));
+  assert.equal(b.noRetry, 'budget');
+  assert.deepEqual(b.first.failures, ['src/a.test.ts > suite > flaky one']);
+});
+
+test("v1 fields unchanged: flaky/quarantined/exitCode are the verdict's for every decide row", () => {
+  const qf = { id: 'src/services/foo.test.ts > foo > flaky', file: 'src/services/foo.test.ts', pkg: null };
+  const other = { id: 'src/services/bar.test.ts > bar > real', file: 'src/services/bar.test.ts', pkg: null };
+  const q = { quarantine: new Set([qf.id]), changedFiles: new Set(['apps/api/src/other.ts']), paths: { prefix: 'apps/api/' } };
+  const rows = [
+    { first: attempt(1, [qf]), second: attempt(0, []) },
+    { first: attempt(1, [qf]), second: attempt(1, [qf]) },
+    { first: attempt(1, [qf]), second: attempt(null, []) },
+    { first: attempt(2, []), second: null },
+    { first: attempt(null, [qf]), second: null },
+    { first: attempt(1, [qf], { raceDetected: true }), second: null },
+    { first: attempt(1, [qf], { timedOut: true }), second: null },
+    { first: attempt(1, [qf], { buildFailed: true }), second: null },
+    { first: attempt(1, [qf]), second: attempt(1, [qf]), ...q },
+    { first: attempt(1, [qf, other]), second: attempt(1, [qf]), ...q },
+    { first: attempt(1, [qf]), second: attempt(1, [qf, other]), ...q },
+  ];
+  for (const row of rows) {
+    const verdict = decide(row);
+    const report = buildReport({
+      label: 'api-1',
+      runner: 'vitest',
+      attempts: row.second ? 2 : 1,
+      verdict,
+      first: row.first,
+      second: row.second,
+      noRetry: null,
+      env: {},
+    });
+    assert.deepEqual(
+      { flaky: report.flaky, quarantined: report.quarantined, exitCode: report.exitCode },
+      { flaky: verdict.flaky, quarantined: verdict.quarantined, exitCode: verdict.exitCode },
+      JSON.stringify(row.first),
+    );
+  }
+});
+
+test('failure ids cap at 200', () => {
+  const many = Array.from({ length: 250 }, (_, i) => ({ id: `src/t${i}.test.ts > t`, file: `src/t${i}.test.ts`, pkg: null }));
+  const verdict = decide({ first: attempt(1, many), second: attempt(1, many) });
+  const report = buildReport({ label: 'api-1', runner: 'vitest', attempts: 2, verdict, first: attempt(1, many), second: attempt(1, many), noRetry: null, env: {} });
+  assert.equal(report.first.failures.length, 200);
+  assert.equal(report.first.truncated, true);
+  assert.equal(report.second.failures.length, 200);
+  assert.equal(report.second.truncated, true);
+  assert.equal(report.first.failures[199], 'src/t199.test.ts > t');
+  const few = buildReport({ label: 'api-1', runner: 'vitest', attempts: 1, verdict, first: attempt(1, many.slice(0, 200)), second: null, noRetry: null, env: {} });
+  assert.equal(few.first.truncated, false);
+  assert.equal(few.second, null);
+});
+
+test('report v2 carries each attempt\'s flags (the shepherd refuses a flake pair on them)', () => {
+  const ok = [{ id: 'src/a.test.ts > t', file: 'src/a.test.ts', pkg: null }];
+  const flags = { unattributed: true, buildFailed: true, raceDetected: true, timedOut: true };
+  const first = attempt(1, ok, flags);
+  const second = attempt(null, ok, flags);
+  const verdict = decide({ first, second: null });
+  const report = buildReport({ label: 'api-1', runner: 'vitest', attempts: 2, verdict, first, second, noRetry: null, env: {} });
+  for (const a of [report.first, report.second]) {
+    assert.deepEqual({ unattributed: a.unattributed, buildFailed: a.buildFailed, raceDetected: a.raceDetected, timedOut: a.timedOut }, flags);
+  }
+  assert.equal(report.second.code, null);
+  // End to end: vitest's Unhandled Errors section marks the attempt unattributed.
+  const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  const script = `console.log('⎯ Unhandled Errors ⎯\\nError: boom\\n⎯ Failed Tests 1 ⎯\\n FAIL  src/a.test.ts > t');process.exit(1)`;
+  const r = cli(['--runner', 'vitest', '--label', 'api-7', '--', process.execPath, '-e', script], { cwd });
+  assert.equal(r.status, 1);
+  const cliReport = JSON.parse(readFileSync(join(cwd, 'flake-report-api-7.json'), 'utf8'));
+  assert.equal(cliReport.first.unattributed, true);
+  assert.equal(cliReport.second.unattributed, true);
+});
+
+test('ledgerPaths is exported for the shepherd: vitest prefixes and the go module mapping', () => {
+  assert.deepEqual(ledgerPaths('vitest-web', {}), { prefix: 'apps/web/' });
+  // A migration or schema change touches every integration test, whatever its covers.
+  assert.deepEqual(ledgerPaths('vitest-integration', {}), { prefix: 'apps/api/', sourceRoot: 'apps/api/src/', schemaRoots: ['apps/api/migrations/', 'apps/api/src/db/'] });
+  const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+  assert.deepEqual(ledgerPaths('go', { repoRoot, goDir: join(repoRoot, 'agent') }), { goModule: AGENT, goDir: 'agent' });
+  assert.equal(ledgerPaths('portal', {}), null);
+});
+
+// ── Stall watchdog (#12113) ──────────────────────────────────────────────
+//
+// vitest's testTimeout/hookTimeout are timers inside the test worker, so they
+// cannot end a run whose worker is not running timers (a synchronous loop, GC
+// thrash, a teardown waiting on a pool). Nothing outside the worker did: a
+// silent run held the job to its limit and named nothing. `--stall-minutes N`
+// kills the whole run after N minutes with no output, names the last test file
+// the output mentioned, and prints a resource heartbeat on the way so a later
+// runner loss leaves a memory/load trail in the log.
+
+test('lastTestFile: the last test file the output names, ANSI stripped', () => {
+  const out = [
+    '\x1b[32m✓\x1b[39m src/__tests__/integration/a.integration.test.ts \x1b[2m(7 tests)\x1b[22m',
+    '\x1b[90mstdout\x1b[2m | src/__tests__/integration/aiAgentNarrative.integration.test.ts\x1b[2m > \x1b[22mnarrative > re-running',
+    '[AiAgentSweepScheduler] schedule occurrence fanned out {',
+    "  occurrenceKey: '2026-08-31T07:00@UTC',",
+  ].join('\n');
+  assert.equal(lastTestFile(out), 'src/__tests__/integration/aiAgentNarrative.integration.test.ts');
+  assert.equal(lastTestFile('services/autopay/charging.integration.test.mts done'), 'services/autopay/charging.integration.test.mts');
+  assert.equal(lastTestFile('no file here'), null);
+  assert.equal(lastTestFile(''), null);
+});
+
+// Prints a vitest-shaped line, starts a grandchild that records its pid (the
+// pnpm → vitest → fork tree), then goes silent forever.
+const SILENT_HANG = `
+const { spawn } = require('child_process');
+const fs = require('fs');
+fs.writeFileSync('runs', String(Number(fs.existsSync('runs') ? fs.readFileSync('runs', 'utf8') : 0) + 1));
+const g = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e6)'], { stdio: 'ignore' });
+fs.writeFileSync('grandchild.pid', String(g.pid));
+console.log('stdout | src/__tests__/integration/stuck.integration.test.ts > suite > the hung one');
+setInterval(() => {}, 1e6);
+`;
+
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+test('CLI --stall-minutes: a silent run is killed with its whole tree, named, not retried, exit 1', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  const started = Date.now();
+  // 0.1 min = 6 s of silence: wide enough that a slow child start on a loaded
+  // host cannot trip it before the child's first line.
+  const r = cli(['--runner', 'vitest', '--label', 'integration-5', '--stall-minutes', '0.1', '--', process.execPath, '-e', SILENT_HANG], { cwd });
+  const pidFile = join(cwd, 'grandchild.pid');
+  const gpid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : null;
+  try {
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.ok(Date.now() - started < 60_000, 'the stall ended the run, not some outer timeout');
+    assert.match(
+      r.stdout,
+      /^::error title=Test stall::integration-5: attempt 1: no test output for 0\.1 min; last test file in the output: src\/__tests__\/integration\/stuck\.integration\.test\.ts; killed the run, not retrying$/m,
+    );
+    // Not retried: a second attempt would only stall again.
+    assert.equal(readFileSync(join(cwd, 'runs'), 'utf8'), '1');
+    const report = JSON.parse(readFileSync(join(cwd, 'flake-report-integration-5.json'), 'utf8'));
+    assert.equal(report.noRetry, 'stalled');
+    assert.equal(report.first.stalled, true);
+    assert.equal(report.attempts, 1);
+    // The grandchild went down with the run, so it cannot hold the job open.
+    assert.ok(gpid, 'the child never started its grandchild');
+    let dead = !alive(gpid);
+    for (let i = 0; i < 50 && !dead; i++) {
+      spawnSync('sleep', ['0.1']);
+      dead = !alive(gpid);
+    }
+    assert.ok(dead, 'grandchild survived the stall kill');
+  } finally {
+    if (gpid && alive(gpid)) process.kill(gpid, 'SIGKILL');
+  }
+});
+
+// Prints at once, then every 100 ms for ~4 s, then passes: output keeps
+// resetting the clock.
+const CHATTY_PASS = `
+let n = 0;
+console.log('stdout | src/a.test.ts > start');
+const t = setInterval(() => {
+  console.log('stdout | src/a.test.ts > tick ' + n);
+  if (++n === 40) { clearInterval(t); process.exit(0); }
+}, 100);
+`;
+
+test('CLI --stall-minutes: steady output never trips it; heartbeat lines carry memory and load', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  // 0.05 min = 3 s: shorter than the run, far longer than any gap in it; the
+  // heartbeat (every 1.5 s) still lands inside the run.
+  const r = cli(['--runner', 'vitest', '--label', 'integration-6', '--stall-minutes', '0.05', '--', process.execPath, '-e', CHATTY_PASS], { cwd });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.doesNotMatch(r.stdout, /Test stall/);
+  assert.match(r.stdout, /^retry-shard: integration-6 heartbeat \+\d+\.\d min, last output \d+ s ago, mem free \d+\/\d+ MiB, load [\d.]+ [\d.]+ [\d.]+$/m);
+  assert.equal(existsSync(join(cwd, 'flake-report-integration-6.json')), false);
+});
+
+test('CLI: rejects a --stall-minutes that is not a positive number', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  for (const v of ['0', '-1', 'abc', '']) {
+    assert.equal(cli(['--runner', 'vitest', '--label', 'x', '--stall-minutes', v, '--', 'true'], { cwd }).status, 2, v);
+  }
+  // The control: a valid value is accepted (an unknown option is also exit 2).
+  assert.equal(cli(['--runner', 'vitest', '--label', 'x', '--stall-minutes', '10', '--', 'true'], { cwd }).status, 0);
 });

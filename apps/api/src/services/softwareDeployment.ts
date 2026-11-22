@@ -1,7 +1,7 @@
 import { cancelledCommandError } from './commandCancelMessage';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { findVariableTokens, isSoftwareFileType, variableToken } from '@breeze/shared';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import {
   deploymentResults,
   devices,
@@ -12,7 +12,9 @@ import {
   softwareInstallMethods,
   softwareVersions,
 } from '../db/schema';
-import { resolveEdrInstaller, type ResolvedInstaller } from './edrInstallerResolver';
+import { resolveEdrInstaller, type EdrResolveError, type ResolvedInstaller } from './edrInstallerResolver';
+import { isBuiltinProvider } from './builtinDeploymentPackages';
+import { isEdrInstallerProviderKey } from './edrProviders/providerKeys';
 import { resolveInstallerVariables, type InstallerVariableContext } from './installerVariables';
 import { buildInstallScriptPayload, type InstallScriptPayload } from './installScriptPayload';
 import {
@@ -38,7 +40,7 @@ import {
 } from './managedSoftwareDispatchPolicy';
 import { getEffectiveSoftwareDownloadPolicy } from './softwareDownloadPolicy';
 import { captureException } from './sentry';
-import { sendCommandToAgent, type AgentCommand } from '../routes/agentWs';
+import type { AgentCommand } from '../routes/agentWs';
 import {
   fingerprintSoftwareInstallMethodDependency,
   fingerprintSoftwareVersionDependency,
@@ -723,16 +725,18 @@ export async function buildAndDispatchSoftwareInstalls(
   // gate. On resolution failure, mark every result failed and return — never
   // dispatch and never silently no-op.
   let resolvedInstaller: ResolvedInstaller | null = null;
-  if (
-    catalogItem.integrationProvider === 'huntress' ||
-    catalogItem.integrationProvider === 'sentinelone'
-  ) {
-    const resolved = await resolveEdrInstaller({
-      provider: catalogItem.integrationProvider,
-      orgId,
-      downloadUrlTemplate: versionRecord.downloadUrl,
-      silentInstallArgsTemplate: versionRecord.silentInstallArgs,
-    });
+  const integrationProvider = catalogItem.integrationProvider;
+  if (integrationProvider != null) {
+    // Any provider without an installer path fails closed: the version row of a
+    // built-in package holds a template, never something to hand an agent.
+    const resolved: ResolvedInstaller | EdrResolveError = isBuiltinProvider(integrationProvider)
+      ? await resolveEdrInstaller({
+          provider: integrationProvider,
+          orgId,
+          downloadUrlTemplate: versionRecord.downloadUrl,
+          silentInstallArgsTemplate: versionRecord.silentInstallArgs,
+        })
+      : { error: `Unsupported integration provider: ${integrationProvider}` };
     if ('error' in resolved) {
       await db
         .update(deploymentResults)
@@ -979,7 +983,7 @@ export async function buildAndDispatchSoftwareInstalls(
   // device either way.
   const failDevice = async (deviceId: string, errorMessage: string) => {
     try {
-      await db
+      await withDbTransactionIfHeld(() => db
         .update(deploymentResults)
         .set({ status: 'failed', errorMessage, completedAt: new Date() })
         .where(
@@ -987,7 +991,7 @@ export async function buildAndDispatchSoftwareInstalls(
             eq(deploymentResults.deploymentId, deploymentId),
             eq(deploymentResults.deviceId, deviceId),
           ),
-        );
+        ));
     } catch (err) {
       console.error(
         `[software-deploy] could not record a gate failure for device ${deviceId} in deployment ${deploymentId}:`,
@@ -1180,9 +1184,8 @@ export async function buildAndDispatchSoftwareInstalls(
     // dispatch for legacy URL-only rows created before #3571 stamped file_type,
     // but it reverses an explicit decision in that PR, so it is left as a
     // separate call rather than smuggled in by a rebase.
-    const effectiveFileType = isSoftwareFileType(versionRecord.fileType)
-      ? versionRecord.fileType
-      : 'exe';
+    const effectiveFileType = resolvedInstaller?.fileType
+      ?? (isSoftwareFileType(versionRecord.fileType) ? versionRecord.fileType : 'exe');
     const detectionRules = stripUnsupportedDetectionClauses(versionRecord.detectionRules, device.agentVersion);
     const payload: AgentCommand['payload'] = {
       deploymentId,
@@ -1200,13 +1203,14 @@ export async function buildAndDispatchSoftwareInstalls(
         version: 1,
         approvedPrivateOrigins,
       },
-      checksum: versionRecord.checksum,
+      // Absent on the resolver = keep the version's; null = the vendor publishes none.
+      checksum: resolvedInstaller?.checksum !== undefined ? resolvedInstaller.checksum : versionRecord.checksum,
       // fileName and fileType are a COUPLED pair, not two independent fields:
       // the agent's validateInstallFileName rejects the command outright when
       // the filename's extension doesn't equal '.' + fileType. Building the
       // fallback name from the same resolved type is what keeps them in step.
       fileName:
-        versionRecord.originalFileName ?? `package.${effectiveFileType}`,
+        resolvedInstaller?.fileName ?? versionRecord.originalFileName ?? `package.${effectiveFileType}`,
       fileType: effectiveFileType,
       silentInstallArgs: deviceSilentInstallArgs,
       softwareName: catalogItem.name,
@@ -1214,6 +1218,9 @@ export async function buildAndDispatchSoftwareInstalls(
       ...(detectionRules ? { detectionRules } : {}),
       ...(successExitCodes ? { successExitCodes } : {}),
       forceReinstall,
+      // Marks a framework provider's install so its result is scrubbed of the link
+      // and file name when stored. Absent on every other payload (byte-identical).
+      ...(integrationProvider != null && isEdrInstallerProviderKey(integrationProvider) ? { integrationProvider } : {}),
       // #6958: present only for a script-enabled version, so every other
       // payload is byte-identical to before.
       ...(preScriptPayload ? { preInstallScript: preScriptPayload } : {}),

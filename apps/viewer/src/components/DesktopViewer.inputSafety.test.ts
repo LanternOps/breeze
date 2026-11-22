@@ -54,7 +54,7 @@ describe('DesktopViewer input safety wiring', () => {
     expect(source).toMatch(/if \(isPasteChord\(ne\)\) \{/);
   });
 
-  it('forgets modifiers a key_press released, at both key_press fallbacks', () => {
+  it('forgets modifiers a key_press released (none, for an agent that keeps them held), at both key_press fallbacks', () => {
     expect(source.match(/forgetModifiersReleasedByKeyPress\((modifiers|pasteModifiers)\);/g)).toHaveLength(2);
   });
 

@@ -74,6 +74,8 @@ describe('permissions catalog routes', () => {
       expect(body.actionLabels.cross_site_restore).toBe('Cross-Site Restore');
       // #4617: the on-behalf customer approval permission carries a label.
       expect(keys).toContain('tickets:record_approval');
+      expect(keys).toContain('tickets:email_review');
+      expect(body.actionLabels.email_review).toBe('Review Inbound Email');
       expect(body.actionLabels.record_approval).toBe('Record Customer Approval');
       expect(body.resourceLabels.workspace).toBe('Workspace');
 

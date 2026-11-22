@@ -6,6 +6,14 @@ version: 2
 # lockfile 2,400+ lines mid-day, cancelled most main CI runs, and caused
 # PR-vs-main merge skew. Spreading the load keeps each day's batch small
 # enough to review and merge calmly.
+#
+# Every entry sets `cooldown.default-days: 3`: a version update waits until the
+# release is 3 days old. It matches pnpm's `minimumReleaseAge` (4320 minutes)
+# in pnpm-workspace.yaml, so an npm bump is not proposed before pnpm will
+# resolve it. Cooldown applies to version updates only; security updates are
+# raised immediately, and an npm security fix released under 3 days ago needs
+# an exact-version minimumReleaseAgeExclude entry (see pnpm-workspace.yaml).
+# scripts/security/check-supply-chain-hardening.sh checks every entry keeps it.
 
 updates:
   # Node.js / pnpm dependencies for the root and all workspaces
@@ -151,6 +159,8 @@ updates:
       tauri:
         patterns:
           - "@tauri-apps/*"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
       - "npm"
@@ -170,6 +180,8 @@ updates:
       time: "09:00"
       timezone: "America/New_York"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
       - "npm"
@@ -226,6 +238,8 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
       - "go"
@@ -250,6 +264,8 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
       - "github-actions"
@@ -287,6 +303,8 @@ updates:
         patterns:
           - "tauri"
           - "tauri-*"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
       - "rust"
@@ -323,6 +341,8 @@ updates:
         patterns:
           - "tauri"
           - "tauri-*"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
       - "rust"
@@ -358,6 +378,25 @@ updates:
       docker-base-images:
         patterns:
           - "*"
+    cooldown:
+      default-days: 3
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(deps):"
+
+  # Compose files at the repo root (incl. docker-compose.monitoring.yml). The
+  # `docker` ecosystem above only reads Dockerfiles. Best effort: Dependabot may
+  # not parse the digest default inside `${X_IMAGE_REF:-image:tag@sha256:...}`,
+  # in which case the monitoring pins are refreshed by hand (#7812).
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 3
     labels:
       - "dependencies"
       - "docker"

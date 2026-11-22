@@ -23,6 +23,7 @@
  */
 import { flowsEnabled } from '../config/env';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { captureException } from './sentry';
@@ -43,6 +44,11 @@ const recordOf = (v: unknown): Record<string, unknown> =>
 // The wrapper forwards the trailing execution context (a two-parameter wrapper
 // would silently drop it, see AiTool.handler): run_flow reads the chat session
 // from it.
+/** The MFA gate (aiToolMfaGate.ts) ahead of the flows kill switch, so the refusal does not depend on it. */
+function mfaGated(name: string, handler: ReturnType<typeof guarded>): ReturnType<typeof guarded> {
+  return async (input, auth, context) => mfaGatedToolError(name, undefined, auth) ?? handler(input, auth, context);
+}
+
 function guarded(name: string, fn: (input: Record<string, unknown>, auth: AuthContext, context?: ToolExecutionContext) => Promise<unknown>) {
   return async (input: Record<string, unknown>, auth: AuthContext, context?: ToolExecutionContext): Promise<string> => {
     if (!flowsEnabled()) return DISABLED;
@@ -56,6 +62,17 @@ function guarded(name: string, fn: (input: Record<string, unknown>, auth: AuthCo
     }
   };
 }
+
+/**
+ * Flows completion W01b (#12435, spec §3.2, plan Decision P7): an update
+ * without `expectedVersion` can overwrite a person's save from the editor. It
+ * is warned for one release and refused from W3. Never change this text
+ * without the W3 refusal's.
+ */
+const EXPECTED_VERSION_WARNING = {
+  code: 'expected_version_required_soon',
+  message: 'Pass expectedVersion on every update; updates without it will be refused in a later release.',
+} as const;
 
 const DOCUMENT_PROP = {
   type: 'object',
@@ -86,15 +103,22 @@ export function registerFlowTools(aiTools: Map<string, AiTool>): void {
     },
     handler: guarded('draft_flow', async (input, auth) => {
       const { saveDraftFlow } = await import('./flows/service');
+      const flowId = str(input.flowId);
+      const expectedVersion = typeof input.expectedVersion === 'number' ? input.expectedVersion : undefined;
+      const unversionedUpdate = flowId !== undefined && expectedVersion === undefined;
+      // Counted so the W3 refusal can be sized; the fixed tool name only, never an id.
+      if (unversionedUpdate) console.warn('[draft_flow] update without expectedVersion', { tool: 'draft_flow' });
       const result = await saveDraftFlow(auth, {
         document: recordOf(input.document),
-        flowId: str(input.flowId),
-        expectedVersion: typeof input.expectedVersion === 'number' ? input.expectedVersion : undefined,
+        flowId,
+        expectedVersion,
         ownerScope: ownerScopeOf(input.ownerScope),
         orgId: str(input.orgId),
         slug: str(input.slug),
       });
-      return result.saved ? { ...result, reviewPath: `/flows/${result.flow.id}` } : result;
+      if (!result.saved) return result;
+      const saved = { ...result, reviewPath: `/flows/${result.flow.id}` };
+      return unversionedUpdate ? { ...saved, warning: EXPECTED_VERSION_WARNING } : saved;
     }),
   });
 
@@ -310,10 +334,10 @@ export function registerFlowTools(aiTools: Map<string, AiTool>): void {
         required: ['runId'],
       },
     },
-    handler: guarded('cancel_flow_run', async (input, auth) => {
+    handler: mfaGated('cancel_flow_run', guarded('cancel_flow_run', async (input, auth) => {
       const { cancelFlowRun } = await import('./flows/runService');
       const runId = str(input.runId);
       return runId ? cancelFlowRun(auth, runId) : { ok: false, error: 'run_not_found' };
-    }),
+    })),
   });
 }

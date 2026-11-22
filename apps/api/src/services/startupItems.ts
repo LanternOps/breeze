@@ -1,6 +1,6 @@
 import type { BootStartupItem } from '../db/schema/devices';
 
-const STARTUP_ITEM_TYPES = new Set<BootStartupItem['type']>([
+export const STARTUP_ITEM_TYPES = new Set<BootStartupItem['type']>([
   'service',
   'run_key',
   'startup_folder',

@@ -174,11 +174,24 @@ func runDesktopHelper() {
 	// captured client. The supervisor builds a fresh client per reconnect
 	// attempt, so a handler closing over one client would stop the first
 	// attempt's client and silently ignore SIGTERM from then on.
+	//
+	// A self-restart request (#11292) takes the same path: the TCC loop asks
+	// for one when the TCC database holds a grant this live process still
+	// reads as denied. The helper then shuts down cleanly and exits 0, and
+	// the LaunchAgent's unconditional KeepAlive starts a fresh copy that
+	// reads the grant. The opt-in is per binary (this one is what the
+	// KeepAlive LaunchAgents run); the TCC loop itself limits the restart to
+	// the user-session context, so the login-window helper never takes it.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	selfRestart := userhelper.EnableSelfRestart()
 	done := make(chan struct{})
 	go func() {
-		<-sigChan
+		select {
+		case <-sigChan:
+		case <-selfRestart:
+			log.Info("desktop helper exiting so launchd starts a fresh copy (stale TCC denial)")
+		}
 		close(done)
 	}()
 
@@ -208,7 +221,16 @@ func runDesktopHelper() {
 }
 
 func desktopHelperRole() ipc.HelperRole {
-	if runtime.GOOS == "darwin" {
+	return desktopHelperRoleFor(runtime.GOOS)
+}
+
+// desktopHelperRoleFor is the desktop helper's role on goos. On macOS and
+// Linux it runs as the logged-in user (on Linux the broker admits a user-role
+// desktop helper only with a spawn ticket, #12117); on Windows it is the
+// SYSTEM helper in the user's session.
+func desktopHelperRoleFor(goos string) ipc.HelperRole {
+	switch goos {
+	case "darwin", "linux":
 		return ipc.HelperRoleUser
 	}
 	return ipc.HelperRoleSystem

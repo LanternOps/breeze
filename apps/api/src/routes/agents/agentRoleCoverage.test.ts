@@ -5,6 +5,7 @@ const MAIN_AGENT_ONLY_TELEMETRY_ROUTES = [
   new URL('./isolationVerify.ts', import.meta.url),
   new URL('./changes.ts', import.meta.url),
   new URL('./connections.ts', import.meta.url),
+  new URL('./oemUpdates.ts', import.meta.url),
 ];
 
 describe('main-agent-only telemetry route invariant', () => {

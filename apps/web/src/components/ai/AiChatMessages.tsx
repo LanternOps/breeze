@@ -21,6 +21,7 @@ import { useTranslation } from "react-i18next";
 // the store, so no cycle.
 import type { ChatRunState, PendingApproval } from "@/stores/processStreamEvent";
 import AiRunCard from "./AiRunCard";
+import TranscriptPurgedNotice from "./TranscriptPurgedNotice";
 import { dividerParts, groupChatUnits, type ChatRow, type ChatUnit, type ToolCall } from "./aiChatGrouping";
 
 /** A caller-rendered item placed in the thread by time (Wisp companion W02b: a thread post). */
@@ -90,6 +91,8 @@ interface AiChatMessagesProps {
   hasEarlier?: boolean;
   /** An earlier page is loading: the button is disabled and shows a spinner. */
   loadingEarlier?: boolean;
+  /** #4342 W4: transcript retention emptied this session; shown in place of the empty state. */
+  transcriptPurgedAt?: string | null;
 }
 
 const NO_EXTRAS: ChatExtra[] = [];
@@ -172,6 +175,7 @@ export default function AiChatMessages({
   onLoadEarlier,
   hasEarlier = false,
   loadingEarlier = false,
+  transcriptPurgedAt = null,
 }: AiChatMessagesProps) {
   const { t, i18n } = useTranslation("ai");
   const quickActions = [
@@ -459,6 +463,11 @@ export default function AiChatMessages({
               </p>
             )}
             <AssistantMarkdown content={unit.msg.content} isStreaming={unit.msg.isStreaming} />
+            {unit.msg.stopped && (
+              <p data-testid="ai-msg-stopped" className="mt-1 text-xs text-muted-foreground">
+                {t("aiChatMessages.stopped")}
+              </p>
+            )}
           </div>
         );
       case "tools":
@@ -478,7 +487,15 @@ export default function AiChatMessages({
               </p>
             )}
             {unit.runs.map((run) => (
-              <AiRunCard key={run.key} runId={run.runId} initialStatus="queued" run={chatRuns[run.runId]} />
+              <AiRunCard
+                key={run.key}
+                runId={run.runId}
+                initialStatus="queued"
+                run={chatRuns[run.runId]}
+                onContinue={onSendQuickAction
+                  ? (id) => onSendQuickAction(t("aiRunCard.continueMessage", { runId: id }))
+                  : undefined}
+              />
             ))}
           </div>
         );
@@ -488,9 +505,18 @@ export default function AiChatMessages({
   };
 
   if (messages.length === 0 && !leading && extras.length === 0 && !showLoadEarlier) {
-    if (emptyState) {
+    if (transcriptPurgedAt) {
       return (
         <div className={layout === "page" ? "flex flex-1 flex-col justify-end px-4 py-6" : "flex flex-1 flex-col justify-end p-3"}>
+          <div className={layout === "page" ? "mx-auto w-full max-w-3xl" : undefined}>
+            <TranscriptPurgedNotice purgedAt={transcriptPurgedAt} testId="ai-chat-transcript-purged" />
+          </div>
+        </div>
+      );
+    }
+    if (emptyState) {
+      return (
+        <div className={layout === "page" ? "flex flex-1 flex-col justify-end px-4 py-6" : "flex flex-1 flex-col justify-start overflow-y-auto p-3"}>
           <div className={layout === "page" ? "mx-auto w-full max-w-3xl" : undefined}>{emptyState}</div>
         </div>
       );
@@ -562,6 +588,7 @@ export default function AiChatMessages({
           description={pendingApproval.description}
           input={pendingApproval.input}
           deviceContext={pendingApproval.deviceContext}
+          ticketContext={pendingApproval.ticketContext}
           onApprove={() => onApprove(pendingApproval.executionId)}
           onReject={() => onReject(pendingApproval.executionId)}
           intentBacked={pendingApproval.intentBacked}
@@ -571,6 +598,7 @@ export default function AiChatMessages({
           approvalWindowMs={pendingApproval.approvalWindowMs}
           approvalExpiresAt={pendingApproval.approvalExpiresAt}
           scriptRunContext={pendingApproval.scriptRunContext}
+          standingInstructionConflict={pendingApproval.standingInstructionConflict}
           resolution={pendingApproval.resolution}
           onIntentDecided={onIntentDecided}
         />
@@ -624,7 +652,7 @@ export default function AiChatMessages({
 /** An assistant reply: prose, no avatar, no bubble (spec D2). */
 function AssistantMarkdown({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
   return (
-    <div className="prose prose-sm max-w-none break-words text-sm text-foreground prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none dark:prose-invert">
+    <div className="prose prose-sm max-w-none break-words text-sm text-foreground prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none [&_blockquote_p:first-of-type]:before:content-none [&_blockquote_p:last-of-type]:after:content-none dark:prose-invert">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

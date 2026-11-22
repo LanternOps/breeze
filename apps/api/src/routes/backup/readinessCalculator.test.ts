@@ -13,6 +13,7 @@ vi.mock('../../services/bareMetalReadinessEvidence', () => ({
 
 import { recomputeRecoveryReadinessForDevice } from './readinessCalculator';
 import { addBackupVerification, backupVerifications, verificationOrgById } from './store';
+import { verificationStuckAfterMs } from './verificationTimeout';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -105,7 +106,7 @@ describe('recomputeRecoveryReadinessForDevice — in-flight verifications (#7495
   const MINUTE_MS = 60 * 1000;
 
   async function scoreWith(
-    rows: Array<{ verificationType: 'integrity' | 'test_restore'; status: 'passed' | 'failed' | 'pending' | 'running'; ageMs: number; restoreTimeSeconds?: number }>
+    rows: Array<{ verificationType: 'integrity' | 'test_restore'; status: 'passed' | 'failed' | 'pending' | 'running'; ageMs: number; restoreTimeSeconds?: number; timeBudgetSeconds?: number }>
   ) {
     const orgId = `org-inflight-${Date.now()}-${Math.random()}`;
     const deviceId = `dev-inflight-${Date.now()}-${Math.random()}`;
@@ -126,7 +127,9 @@ describe('recomputeRecoveryReadinessForDevice — in-flight verifications (#7495
           restoreTimeSeconds: row.restoreTimeSeconds,
           filesVerified: 0,
           filesFailed: row.status === 'failed' ? 1 : 0,
-          details: { source: 'test' },
+          details: row.timeBudgetSeconds === undefined
+            ? { source: 'test' }
+            : { source: 'test', timeBudgetSeconds: row.timeBudgetSeconds },
         }, orgId);
         ids.push(inserted.id);
       }
@@ -166,11 +169,46 @@ describe('recomputeRecoveryReadinessForDevice — in-flight verifications (#7495
   it('a stuck in-flight verification past the timeout counts as failed', async () => {
     const baseline = await scoreWith(history);
     const stuck = await scoreWith([
-      { verificationType: 'integrity', status: 'pending', ageMs: 45 * MINUTE_MS },
+      { verificationType: 'integrity', status: 'pending', ageMs: verificationStuckAfterMs('integrity', {}) + MINUTE_MS },
       ...history,
     ]);
     expect(stuck.readinessScore).toBeLessThan(baseline.readinessScore);
     expect(stuck.riskFactors.some((f) => f.code === 'recent_verification_failure')).toBe(true);
+  });
+
+  // #11813: 45 minutes used to count as stuck (30-minute timeout) although the
+  // command it runs has a two-hour budget; a large snapshot is still healthy.
+  it('an in-flight verification inside its command budget is not charged as failed', async () => {
+    const baseline = await scoreWith(history);
+    const longRunning = await scoreWith([
+      { verificationType: 'integrity', status: 'running', ageMs: 45 * MINUTE_MS },
+      ...history,
+    ]);
+    expect(longRunning.readinessScore).toBe(baseline.readinessScore);
+    expect(longRunning.riskFactors.some((f) => f.code === 'recent_verification_failure')).toBe(false);
+  });
+
+  // The readiness view has no executed_at, so it must allow for a command that
+  // waited up to its 2h undelivered limit before its scaled budget started.
+  // A 6h35m budget delivered 20 minutes late is healthy at 5 hours.
+  it('a verification with a scaled budget is not charged as failed past the 2h base', async () => {
+    const baseline = await scoreWith(history);
+    const scaled = await scoreWith([
+      { verificationType: 'integrity', status: 'running', ageMs: 5 * 60 * MINUTE_MS, timeBudgetSeconds: 395 * 60 },
+      ...history,
+    ]);
+    expect(scaled.readinessScore).toBe(baseline.readinessScore);
+    expect(scaled.riskFactors.some((f) => f.code === 'recent_verification_failure')).toBe(false);
+  });
+
+  it('a verification with a scaled budget past undelivered limit + budget + grace counts as failed', async () => {
+    const baseline = await scoreWith(history);
+    const details = { timeBudgetSeconds: 395 * 60 };
+    const stuck = await scoreWith([
+      { verificationType: 'test_restore', status: 'running', ageMs: verificationStuckAfterMs('test_restore', details) + MINUTE_MS, ...details },
+      ...history,
+    ]);
+    expect(stuck.readinessScore).toBeLessThan(baseline.readinessScore);
   });
 });
 

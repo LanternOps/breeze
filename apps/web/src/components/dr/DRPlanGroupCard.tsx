@@ -8,6 +8,12 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import {
+  DR_STEP_TYPES,
+  isDrStepType,
+  normalizeDrStepType,
+  type DrStepType,
+} from '@breeze/shared';
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 import { DeviceOptionPicker } from '../filters/DeviceOptionPicker';
 import {
@@ -19,19 +25,11 @@ import {
 } from '../../lib/rebuildPaths';
 import '../../lib/i18n';
 
-/** DR step types the dispatcher accepts (`DR_ALLOWED_COMMAND_TYPES` on the
- *  API, plus the W05b non-command `BARE_METAL_REBUILD` step). Order is the
- *  order the selector lists them in. */
-export const DR_STEP_TYPES = [
-  'VM_RESTORE_FROM_BACKUP',
-  'VM_INSTANT_BOOT',
-  'HYPERV_RESTORE',
-  'MSSQL_RESTORE',
-  'BMR_RECOVER',
-  'BARE_METAL_REBUILD',
-] as const;
+/** DR step types the dispatcher accepts — the same shared list the API
+ *  allow-list is built from (#11856). Order is the order the selector lists them in. */
+export { DR_STEP_TYPES };
 
-export type DRStepType = (typeof DR_STEP_TYPES)[number];
+export type DRStepType = DrStepType;
 
 /** The stored "operator left it unset" sentinel (`DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR`
  *  on the API). Dispatch maps it to the rebuild host's own per-OS default
@@ -49,7 +47,13 @@ export const REBUILD_WAIT_TIMEOUT_MIN = 5;
 export const REBUILD_WAIT_TIMEOUT_MAX = 1440;
 
 export function isDRStepType(value: unknown): value is DRStepType {
-  return typeof value === 'string' && (DR_STEP_TYPES as readonly string[]).includes(value);
+  return isDrStepType(value);
+}
+
+/** Maps a stored `commandType` to the editor's step type. Plans saved by an
+ *  earlier editor hold upper-case spellings (#11856), so match case-insensitively. */
+export function normalizeDRStepType(value: unknown): DRStepType | null {
+  return normalizeDrStepType(value);
 }
 
 export type DRGroupForm = {
@@ -133,11 +137,11 @@ export default function DRPlanGroupCard({
   const outputDirOsMismatch =
     outputDirValue !== '' && isAbsoluteRebuildPath(outputDirValue) && !rebuildPathMatchesOs(outputDirValue, hostOs);
   const stepTypeLabels: Record<DRStepType, string> = {
-    VM_RESTORE_FROM_BACKUP: t('dRPlanGroupCard.stepTypes.vmRestoreFromBackup'),
-    VM_INSTANT_BOOT: t('dRPlanGroupCard.stepTypes.vmInstantBoot'),
-    HYPERV_RESTORE: t('dRPlanGroupCard.stepTypes.hypervRestore'),
-    MSSQL_RESTORE: t('dRPlanGroupCard.stepTypes.mssqlRestore'),
-    BMR_RECOVER: t('dRPlanGroupCard.stepTypes.bmrRecover'),
+    vm_restore_from_backup: t('dRPlanGroupCard.stepTypes.vmRestoreFromBackup'),
+    vm_instant_boot: t('dRPlanGroupCard.stepTypes.vmInstantBoot'),
+    hyperv_restore: t('dRPlanGroupCard.stepTypes.hypervRestore'),
+    mssql_restore: t('dRPlanGroupCard.stepTypes.mssqlRestore'),
+    bmr_recover: t('dRPlanGroupCard.stepTypes.bmrRecover'),
     BARE_METAL_REBUILD: t('dRPlanGroupCard.stepTypes.bareMetalRebuild'),
   };
   return (
@@ -212,7 +216,7 @@ export default function DRPlanGroupCard({
                 const value = event.target.value;
                 onChange((current) => ({
                   ...current,
-                  stepType: isDRStepType(value) ? value : '',
+                  stepType: normalizeDRStepType(value) ?? '',
                 }));
               }}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"

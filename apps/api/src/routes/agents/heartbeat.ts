@@ -1,5 +1,6 @@
 import type { HeartbeatEpisodeContext } from '../../services/networkIsolation/reconcile';
 import { topologyHeartbeat, topologyHeartbeatWithoutMaterialization } from '../../services/topology/heartbeat';
+import { hpCmslMode, toWarrantySettingsWire } from '../../services/hpWarrantyGate';
 import { loadAgentTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
 import { Hono } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
@@ -21,6 +22,7 @@ import {
   bareMetalRecoveries,
 } from '../../db/schema';
 import { ownDeviceRowChangedHands, selectOwnDeviceRowForUpdate, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
+import type { OsFloorHoldReason } from '../../services/agentOsFloor';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import type { BatteryStatus, ContainmentDesiredBlock, DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import { ERROR_CODES, isResolvedTerminalIsolationState } from '@breeze/shared';
@@ -62,12 +64,14 @@ import {
   finishOnedriveHelperConfig,
   buildPatchSourceConfigUpdate,
   buildWarrantyConfigUpdate,
+  buildWakeOnLanConfigUpdate,
   getOrgAgentUpdateConfigCached,
   resolvePinnedUpgradeTarget,
   resolvePinnedUpgradeTargets,
   agentAcceptsServedEdition,
   shouldAutoApplyAgentReportedDeviceRole,
   type AgentVersionPins,
+  type UpgradeOsHold,
   type OnedriveConfigPlan,
   type OnedriveConfigUpdate,
   type HelperSettings,
@@ -80,6 +84,7 @@ import {
   buildSettingsDecisionFields,
   retainStateKillSwitchEnabled,
   agentEchEnabled,
+  tpmAttestationEnabled,
   type RemoteManagementDecision,
 } from './heartbeatSettingsDecision';
 import { agentCollectorAbsenceCache, agentCollectorAbsenceKey, deviceHasAgentCollectors } from '../../services/unifi/unifiCollectorService';
@@ -109,16 +114,24 @@ import {
   recordAgentHeartbeat,
   recordAgentHeartbeatEch,
   recordAgentFilterSignatureReport,
+  recordAgentControlPlaneBlockReport,
+  recordNetworkAttachmentReport,
   resolveResponseStatus,
 } from '../metrics';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import {
+  applyNetworkAttachmentChange, noteCaptureTimeSkew, planNetworkAttachmentIngest,
+} from '../../services/learnedNetworks/ingest';
 import { ingestRollbackObservation } from '../../services/agentRollbackResult';
 import {
   editionWithheldDetail,
+  effectiveWatchdogEdition,
   type EditionWithheldContext as SharedEditionWithheldContext,
 } from '../../services/agentEditionCompat';
 import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
 import { parseLogShipping, planLogShippingWrite } from '../../services/logShippingHealth';
 import { parseWatchdogInstall, planWatchdogInstallWrite } from '../../services/watchdogInstallHealth';
+import { parseControlPlaneBlock, planControlPlaneBlockWrite } from '../../services/controlPlaneBlockHealth';
 import {
   agentIdentityAssertionRefused,
   agentIdentityAssertionVersionToSign,
@@ -165,6 +178,29 @@ export function detectWatchdogStateCollapse(
 const warnedEditionWithheldDevices = new Set<string>();
 // Persisted reason code (devices.update_offer_withheld_reason, #6449).
 const EDITION_OFFER_WITHHELD_REASON = 'edition_unconfirmed';
+
+/**
+ * #12169 — the minimum-OS reason (or null) this beat should persist, from the
+ * holds the resolver reported. A hold counts only when the held build is newer
+ * than what the device runs (or the component is missing, i.e. a bootstrap
+ * would have been offered): a Mac already on the held version is not "held".
+ * The agent's own hold wins over a companion's. Dev builds are never offered
+ * an update, so their agent hold does not count.
+ */
+export function osHoldReasonForBeat(
+  holds: readonly UpgradeOsHold[],
+  installed: { agent: string; watchdog: string | null; helper: string | null },
+): OsFloorHoldReason | null {
+  const counts = (hold: UpgradeOsHold): boolean => {
+    if (hold.component === 'agent') {
+      return !installed.agent.startsWith('dev-') && compareAgentVersions(hold.blockedVersion, installed.agent) > 0;
+    }
+    const current = hold.component === 'watchdog' ? installed.watchdog : hold.component === 'helper' ? installed.helper : null;
+    return current === null || compareAgentVersions(hold.blockedVersion, current) > 0;
+  };
+  const counted = holds.filter(counts);
+  return (counted.find((h) => h.component === 'agent') ?? counted[0])?.reason ?? null;
+}
 // Separate dedupe for the far more severe failover-recovery withhold (device
 // stuck OFFLINE, not idling) — its error must not be suppressed by an earlier
 // routine offer-withhold warn for the same device.
@@ -893,6 +929,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       watchdogStatus: data.watchdogState === 'FAILOVER' ? 'failover' : 'connected',
       watchdogLastSeen: now,
       watchdogVersion: data.agentVersion,
+      // #4297 — the watchdog's own edition, written WITH its version so the
+      // pair always describes the same binary. Unconditional: a silent beat
+      // clears a value an earlier build reported (a rollback or reinstall to a
+      // pre-reporting build must not inherit it); readers then fall back to
+      // agentEdition (effectiveWatchdogEdition).
+      watchdogEdition: data.agentEdition ?? null,
       updatedAt: now,
     };
     if (transitioningIntoSilent) {
@@ -903,7 +945,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     try {
       // #8318 §6.4: bound to the authenticated id + agent_id, so a watchdog
       // beat of a superseded install matches 0 rows after a reattach confirm.
-      watchdogRowsUpdated = (await updateOwnDeviceRow(db, agent, watchdogUpdates)).length;
+      watchdogRowsUpdated = (await withDbTransaction(() => updateOwnDeviceRow(db, agent, watchdogUpdates))).length;
     } catch (err) {
       console.error('Failed to update watchdog status:', err);
     }
@@ -951,7 +993,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       shouldLogWatchdogRestartActivity(device.id, restartSignature, now.getTime())
     ) {
       try {
-        await db.insert(agentLogs).values({
+        await withDbTransaction(() => db.insert(agentLogs).values({
           deviceId: device.id,
           orgId: device.orgId,
           timestamp: new Date(),
@@ -967,7 +1009,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
             watchdogState: data.watchdogState ?? null,
           },
           agentVersion: data.agentVersion,
-        });
+        }));
         // Commit to the dedupe cache only after the row landed — a failed
         // insert must stay retryable on the next heartbeat.
         markWatchdogRestartActivityLogged(device.id, restartSignature, now.getTime());
@@ -1000,25 +1042,34 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // failover beat.
     //
     // A SILENT watchdog is NOT evidence of a self-host build the way a silent
-    // main agent is: watchdog edition reporting first ships alongside this
-    // gate, so every watchdog in the field today is silent — including the
-    // hosted fleet's, whose recovery path (#1104) must not be withheld. Fall
-    // back to the device row's agentEdition, written unconditionally from
-    // every MAIN-agent beat: agent and watchdog install and upgrade from the
-    // same lane, so the main agent's build edition identifies the watchdog's.
-    // If both are silent (the stranded pre-telemetry band), the version-band
-    // inference inside the predicate takes over. Known imprecision: a device
-    // whose main agent already reports 'self-host' (transition-capable) but
-    // whose watchdog is still an older self-host build gets a hosted offer
+    // main agent is: watchdog edition reporting first shipped alongside this
+    // gate, so every older watchdog build is silent — including the hosted
+    // fleet's, whose recovery path (#1104) must not be withheld.
+    //
+    // #4297 — this beat's payload IS the watchdog's own report, and it is what
+    // watchdogUpdates just wrote to devices.watchdog_edition, so it goes in as
+    // the watchdog edition. The stored column is deliberately NOT consulted
+    // for a silent beat: it describes an earlier build, and this beat
+    // supersedes it. effectiveWatchdogEdition then falls back to the device
+    // row's agentEdition, written unconditionally from every MAIN-agent beat
+    // — a stated degradation that assumes agent and watchdog install and
+    // upgrade from the same lane. If both are silent (the stranded
+    // pre-telemetry band), the version-band inference inside the predicate
+    // takes over. Known imprecision of the fallback: a device whose main
+    // agent already reports 'self-host' (transition-capable) but whose
+    // watchdog is still an older silent self-host build gets a hosted offer
     // its watchdog refuses — failover-only, self-heals once the watchdog
     // catches up via the main branch.
     // Hoisted so the warn calls below print the value that actually DECIDED
     // (the fallback included) — logging the silent payload as "none" when the
     // stored edition drove the withhold would steer the operator to the wrong
     // remediation.
-    const effectiveWatchdogEdition = data.agentEdition ?? device.agentEdition;
+    const watchdogEditionForGate = effectiveWatchdogEdition({
+      watchdogEdition: data.agentEdition,
+      agentEdition: device.agentEdition,
+    });
     const watchdogAcceptsServedEdition = agentAcceptsServedEdition({
-      reportedEdition: effectiveWatchdogEdition,
+      reportedEdition: watchdogEditionForGate,
       agentVersion: data.agentVersion,
     });
 
@@ -1038,6 +1089,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           architecture: normalizedArch,
           pin: versionPins.watchdog,
           agentId,
+          // #12169: gated, but not persisted from this branch (the main
+          // agent's beat owns the device's withheld reason).
+          deviceOs: { platform: device.osType, reportedOsVersion: data.osVersion ?? null, storedOsVersion: device.osVersion ?? null },
         });
 
         if (targetWatchdog && watchdogAcceptsServedEdition) {
@@ -1051,7 +1105,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           warnEditionOfferWithheld({
             deviceId: device.id,
             role: 'watchdog',
-            reportedEdition: effectiveWatchdogEdition,
+            reportedEdition: watchdogEditionForGate,
             agentVersion: data.agentVersion,
           });
         }
@@ -1084,7 +1138,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // when no watchdog target resolves).
       warnEditionRecoveryWithheld({
         deviceId: device.id,
-        reportedEdition: effectiveWatchdogEdition,
+        reportedEdition: watchdogEditionForGate,
         agentVersion: data.agentVersion,
       });
     } else if (watchdogAcceptsServedEdition) {
@@ -1114,6 +1168,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           architecture: normalizedArch,
           pin: versionPins.agent,
           agentId,
+          // #12169: a recovery binary the Mac's OS is below is held too.
+          deviceOs: { platform: device.osType, reportedOsVersion: data.osVersion ?? null, storedOsVersion: device.osVersion ?? null },
         });
 
         if (targetAgent && compareAgentVersions(targetAgent, device.agentVersion) > 0) {
@@ -1180,6 +1236,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     networkIsolationMechanism: data.securityCapabilities?.networkIsolationMechanism ?? null,
     networkIsolationUnsupportedReason: data.securityCapabilities?.networkIsolationUnsupportedReason ?? null,
     networkIsolationReady: data.securityCapabilities?.networkIsolationReady ?? false,
+    networkIsolationDeadMan: data.securityCapabilities?.networkIsolationDeadMan === true,
     outboundNetworkPolicyVersion: data.securityCapabilities?.outboundNetworkPolicyVersion === 1 ? 1 : 0,
     // #3409 PR4 — same non-sticky contract as the line above: written every
     // beat so a downgrade is detected. PR4c re-checks this at CLAIM time too,
@@ -1269,14 +1326,23 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // the row this beat already loaded), so a steady-state beat — withheld or
   // healthy — adds no column write to the hot path; `since` therefore holds
   // when the episode began, not the last beat.
-  const withholdReason =
+  //
+  // #12169: two writers share this column. This one owns ONLY
+  // `edition_unconfirmed`: it sets it (the edition reason wins over a
+  // minimum-OS hold, since no offer resolves at all while it applies) and
+  // clears only its own code, never an `os_*` hold, which the main branch
+  // writes after the targets resolve (see osHoldReasonForBeat).
+  const editionWithheld = Boolean(
     normalizeAgentArchitecture(device.architecture) &&
-    !agentAcceptsServedEdition({ reportedEdition: data.agentEdition, agentVersion: data.agentVersion })
-      ? EDITION_OFFER_WITHHELD_REASON
-      : null;
-  if ((device.updateOfferWithheldReason ?? null) !== withholdReason) {
-    deviceUpdates.updateOfferWithheldReason = withholdReason;
-    deviceUpdates.updateOfferWithheldSince = withholdReason ? new Date() : null;
+    !agentAcceptsServedEdition({ reportedEdition: data.agentEdition, agentVersion: data.agentVersion }),
+  );
+  const storedWithheldReason = device.updateOfferWithheldReason ?? null;
+  if (editionWithheld && storedWithheldReason !== EDITION_OFFER_WITHHELD_REASON) {
+    deviceUpdates.updateOfferWithheldReason = EDITION_OFFER_WITHHELD_REASON;
+    deviceUpdates.updateOfferWithheldSince = new Date();
+  } else if (!editionWithheld && storedWithheldReason === EDITION_OFFER_WITHHELD_REASON) {
+    deviceUpdates.updateOfferWithheldReason = null;
+    deviceUpdates.updateOfferWithheldSince = null;
   }
 
   // #4073 — close the update-attempt record (stamped by the WS update_status
@@ -1326,6 +1392,57 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     planWatchdogInstallWrite(device, parseWatchdogInstall(data.watchdogInstall), new Date()),
   );
 
+  // #8868 — control-plane block episode. Planned against the already-loaded
+  // `device` row: no extra query, and keys are added to this beat's single
+  // UPDATE only on a transition (new/changed episode, ECH flip, clear, stale)
+  // or at most hourly while an episode stays active. Absent or malformed =
+  // never sets or clears; an active record goes stale after 2 h of beats
+  // without a valid one. A malformed object is counted (never logged with
+  // its values) so contract drift between agent and API is visible.
+  const controlPlaneBlock = parseControlPlaneBlock(data.controlPlaneBlock);
+  if (controlPlaneBlock.status !== 'absent') recordAgentControlPlaneBlockReport(controlPlaneBlock.status);
+  Object.assign(
+    deviceUpdates,
+    planControlPlaneBlockWrite(device, controlPlaneBlock, data.echActive, new Date()),
+  );
+
+  // Learned networks (#12369 W01b, spec §8.1). The planner is pure and runs on the locked `device` row, so a beat
+  // without the field, or with an unchanged report, costs no statement here: an unchanged report only folds its
+  // confirmation into this beat's single device UPDATE. Only a changed report writes the learned tables, in its own
+  // savepoint with the catch outside it, so a learner failure never fails or rolls back the heartbeat; its device
+  // fields are merged only after that savepoint committed, so the next beat retries. The parked and watchdog paths
+  // returned above. A removed device (status decommissioned, inside its uninstall drain) still beats, but the device
+  // write below matches no row for it, so it is treated as carrying no report: it must not learn, and an apply whose
+  // digest is never stored would repeat on every beat.
+  const attachmentsAt = new Date();
+  const attachmentsRaw = device.status === 'decommissioned' || device.status === 'quarantined'
+    ? undefined
+    : data.networkAttachmentsV1;
+  const attachmentPlan = planNetworkAttachmentIngest(device, attachmentsRaw,
+    getTrustedClientIpOrUndefined(c) ?? null, attachmentsAt);
+  if (attachmentPlan.kind === 'apply') {
+    try {
+      await withDbTransaction(() =>
+        applyNetworkAttachmentChange({ id: device.id, orgId: device.orgId }, attachmentPlan, attachmentsAt));
+      Object.assign(deviceUpdates, attachmentPlan.deviceFields);
+      recordNetworkAttachmentReport('apply');
+    } catch (err) {
+      console.error('[heartbeat] learned network ingest failed', {
+        deviceId: device.id, orgId: device.orgId, error: err instanceof Error ? err.name : typeof err,
+      });
+      captureException(err, undefined, { phase: 'learned_network_ingest', deviceId: device.id, orgId: device.orgId });
+      recordNetworkAttachmentReport('apply_failed');
+    }
+  } else if (attachmentPlan.kind === 'confirm') {
+    Object.assign(deviceUpdates, attachmentPlan.deviceFields);
+    recordNetworkAttachmentReport('confirm');
+  } else if (attachmentPlan.reason !== 'absent') {
+    recordNetworkAttachmentReport(attachmentPlan.reason);
+    if (attachmentPlan.reason === 'capture_time_out_of_bounds') {
+      noteCaptureTimeSkew(device.id, attachmentsRaw, attachmentsAt);
+    }
+  }
+
   // #800 Layer C — recovery side. If the asymmetry detector previously
   // set mainAgentSilentSince (watchdog kept reporting while we went
   // dark), clear it now that the main agent is heartbeating again. No
@@ -1368,6 +1485,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // — leave the stored value untouched in that case.
   if (data.watchdogVersion) {
     deviceUpdates.watchdogVersion = data.watchdogVersion;
+    // #4297 — devices.watchdog_edition is the watchdog's own report about the
+    // build at watchdog_version. A different installed version (an upgrade,
+    // rollback or reinstall through the main agent) means that report no
+    // longer describes the binary on disk, so drop it and let readers fall
+    // back to agentEdition until the watchdog next reports. No race with a
+    // concurrent watchdog beat: both beats take the row's FOR NO KEY UPDATE
+    // lock as their first statement (selectOwnDeviceRowForUpdate, above) and
+    // hold it to commit, so `device.watchdogVersion` here is the committed
+    // value this write replaces.
+    if (data.watchdogVersion !== device.watchdogVersion) {
+      deviceUpdates.watchdogEdition = null;
+    }
   }
 
   // Keep devices.backup_version fresh from the agent's heartbeat, mirroring
@@ -1919,7 +2048,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   if (data.ipHistoryUpdate) {
     if (data.ipHistoryUpdate.deviceId && data.ipHistoryUpdate.deviceId !== device.id) {
-      console.warn(`[agents] rejecting mismatched ipHistoryUpdate.deviceId for ${agentId}: sent=${data.ipHistoryUpdate.deviceId} expected=${device.id}`);
+      console.warn(`[agents] rejecting mismatched ipHistoryUpdate.deviceId for ${agentId}: sent=${data.ipHistoryUpdate.deviceId.slice(0, 64)} expected=${device.id}`);
     } else {
       try {
         await processDeviceIPHistoryUpdate(device.id, device.orgId, {
@@ -1964,7 +2093,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   if (data.onedriveDeviceState) {
     const s = data.onedriveDeviceState;
     try {
-      await db.insert(onedriveDeviceState).values({
+      await withDbTransaction(() => db.insert(onedriveDeviceState).values({
         deviceId: device.id,
         orgId: device.orgId,
         signedIn: s.signedIn,
@@ -1991,7 +2120,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           lastReportedAt: new Date(),
           updatedAt: new Date(),
         },
-      });
+      }));
     } catch (err) {
       // Drizzle query errors serialize the bound params — including the
       // signedInUpns jsonb (end-user PII) — into their message. Log/report
@@ -2080,12 +2209,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // every target null: no offer this beat, the same outcome each per-block
   // catch gave (the first failed read aborted the transaction for the rest).
   let upgradeTargets: Map<string, string | null> | null = null;
+  // #12169 — the device's OS for the minimum-OS gate: this beat's value
+  // first, the stored one when the beat omits it.
+  const deviceOs = { platform: device.osType, reportedOsVersion: data.osVersion ?? null, storedOsVersion: device.osVersion ?? null };
+  const osHolds: UpgradeOsHold[] = [];
   if (normalizedArch && acceptsServedEdition) {
     try {
       upgradeTargets = await resolvePinnedUpgradeTargets({
         platform: device.osType,
         architecture: normalizedArch,
         agentId,
+        deviceOs,
+        onOsHold: (hold) => osHolds.push(hold),
         requests: [
           { component: 'agent', pin: versionPins.agent },
           { component: 'helper', pin: null },
@@ -2095,6 +2230,42 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     } catch (err) {
       console.error(`[agents] failed to resolve upgrade targets for ${agentId}:`, err);
       captureException(err);
+    }
+  }
+
+  // #12169 — persist a minimum-OS hold so the device page says why the Mac
+  // stays on its version. Only after a SUCCESSFUL lookup (a failed one must
+  // not clear an existing hold), only while the edition reason does not
+  // apply (it wins, and its own writer owns it), and only on a transition, so
+  // a steady-state beat — held or healthy — adds no statement.
+  if (upgradeTargets !== null) {
+    const desiredOsReason = osHoldReasonForBeat(osHolds, {
+      agent: data.agentVersion,
+      watchdog: data.watchdogVersion ?? device.watchdogVersion ?? null,
+      helper: data.helperVersion ?? null,
+    });
+    const currentWithheldReason =
+      'updateOfferWithheldReason' in deviceUpdates
+        ? ((deviceUpdates.updateOfferWithheldReason as string | null) ?? null)
+        : (device.updateOfferWithheldReason ?? null);
+    if (currentWithheldReason !== EDITION_OFFER_WITHHELD_REASON && currentWithheldReason !== desiredOsReason) {
+      try {
+        await withDbTransaction(() =>
+          updateOwnDeviceRow(
+            db,
+            agent,
+            {
+              updateOfferWithheldReason: desiredOsReason,
+              updateOfferWithheldSince: desiredOsReason ? new Date() : null,
+            },
+            // Same terminal-status guard as the main device flush above.
+            { where: notInArray(devices.status, ['decommissioned', 'quarantined']) },
+          ),
+        );
+      } catch (err) {
+        console.error(`[agents] failed to persist the minimum-OS update hold for ${agentId}:`, err);
+        captureException(err);
+      }
     }
   }
 
@@ -2208,6 +2379,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // connections.
   mergedConfigUpdate.ech_enabled = agentEchEnabled();
 
+  // #8318 T1 — TPM EK attestation switch, ALWAYS sent as true/false for the
+  // same reason: turning it back off must reach agents that saw it on.
+  mergedConfigUpdate.tpm_attestation_enabled = tpmAttestationEnabled();
+
   // Security remediation Wave 6, Task 9 — ALWAYS sent, as true or false.
   //
   // An earlier revision omitted the key when unset/false, mirroring
@@ -2319,7 +2494,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       const topology = resolvedFlags.materialization
         ? await withResolvedTopologyFlags(
           { orgId: agent.orgId, flags: resolvedFlags },
-          () => db.transaction(() => topologyHeartbeat(device, data)),
+          () => withDbTransaction(() => topologyHeartbeat(device, data)),
         )
         : topologyHeartbeatWithoutMaterialization(device, data);
       mergedConfigUpdate.networkContext = topology.config;
@@ -2358,15 +2533,20 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   let containment: ContainmentDesiredBlock = { networkIsolation: null };
   if (isolation) {
     const { buildContainmentHeartbeatBlock, storedContainmentHeartbeatBlock } = isolation;
+    // `device` was read before this beat's capability write, and a capability claim is same-heartbeat
+    // truth: an agent that just dropped below level 3 would reject a block carrying policy permits.
+    // The same holds for the agent version the release-token gate reads (#10102), and for the dead-man
+    // flag: an agent that stopped reporting it would refuse a block carrying a window (#10103).
+    const beatDevice = { ...device, networkIsolationVersion: data.securityCapabilities?.networkIsolationVersion ?? 0, networkIsolationDeadMan: data.securityCapabilities?.networkIsolationDeadMan === true, agentVersion: data.agentVersion ?? device.agentVersion };
     try {
       // A cached absence needs no block build (and no SAVEPOINT / RELEASE).
       containment = isolationContext.row === null
         ? storedContainmentHeartbeatBlock(null)
-        : await withDbTransaction(() => buildContainmentHeartbeatBlock(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, isolationContext));
+        : await withDbTransaction(() => buildContainmentHeartbeatBlock(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, beatDevice, isolationContext));
     } catch (err) {
       console.error('[heartbeat] isolation block failed', { deviceId: device.id, isolationId: isolationContext.row?.id });
       captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
-      containment = storedContainmentHeartbeatBlock(isolationContext.row);
+      containment = storedContainmentHeartbeatBlock(isolationContext.row, beatDevice);
     }
   }
 
@@ -2424,6 +2604,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
               architecture: normalizedArch,
               pin: versionPins.agent,
               agentId,
+              // #12169: never migrate a Mac onto a build its OS is below.
+              deviceOs,
             }),
         }),
         // The service catches everything itself; this catch only exists so a
@@ -2793,7 +2975,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     pamSettings: { uacInterceptionEnabled: boolean } | null;
     patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null;
     featureUpdateSettings: RingFeatureUpdates | null;
-    warrantySettings: { hpCmslEnabled: boolean } | null;
+    warrantySettings: { hpCmslOptedIn: boolean } | null;
+    wakeOnLanSettings: { enabled: boolean; observeVendors?: string[] } | null;
     hardwareMonitoringSettings: Awaited<ReturnType<typeof buildHardwareMonitoringConfigUpdate>> | null;
     timeSyncSettings: Awaited<ReturnType<typeof buildTimeSyncConfigUpdate>> | null;
     workloadInventorySettings: Awaited<ReturnType<typeof buildWorkloadInventoryConfigUpdate>> | null;
@@ -2805,6 +2988,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     patchSourceSettings: null,
     featureUpdateSettings: null,
     warrantySettings: null,
+    wakeOnLanSettings: null,
     hardwareMonitoringSettings: null,
     timeSyncSettings: null,
     workloadInventorySettings: null,
@@ -2984,6 +3168,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         captureException(err);
       }
 
+      // Wake-on-LAN readiness (#10838 W02): an error only omits the block so
+      // the agent keeps its current collection state. The builder's no-policy-set
+      // fallback issues a query (a loaded set needs none), so that path runs in
+      // its own transaction: a failure
+      // is caught outside it and cannot poison the request transaction.
+      try {
+        // observe_vendors (observe-first amendment §1) is resolved for the
+        // authenticated agent's partner: an env and code lookup, no query.
+        policyConfigs.wakeOnLanSettings = beatPolicySet
+          ? await buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts, agent.partnerId)
+          : await withDbTransaction(() => buildWakeOnLanConfigUpdate(scoped.deviceId, policyOpts, agent.partnerId));
+      } catch (err) {
+        console.error(`[agents] failed to build wake_on_lan config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
       // Time sync (index §F.2): an error only omits time_sync_settings.
       try {
         policyConfigs.timeSyncSettings = await buildTimeSyncConfigUpdate(scoped.deviceId, policyOpts);
@@ -3118,6 +3318,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     patchSourceSettings,
     featureUpdateSettings,
     warrantySettings,
+    wakeOnLanSettings,
     hardwareMonitoringSettings,
     timeSyncSettings,
     workloadInventorySettings,
@@ -3152,9 +3353,25 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
   // Snake_case inside the block as well as outside (contract D6): this
   // assembly is where camelCase resolver output becomes wire keys, and the
-  // agent's inner parse accepts either spelling.
+  // agent's inner parse accepts either spelling. The mode is the vendor canary
+  // stage for the agent's partner (#5511 observe-first §1): env and constants
+  // only, no query, and outside the cached resolver so a canary or kill-switch
+  // change applies on the next beat. Every key is always sent.
   if (warrantySettings) {
-    policyConfigUpdate.warranty_settings = { hp_cmsl_enabled: warrantySettings.hpCmslEnabled };
+    policyConfigUpdate.warranty_settings = toWarrantySettingsWire(
+      hpCmslMode(warrantySettings.hpCmslOptedIn, agent.partnerId),
+    );
+  }
+  if (wakeOnLanSettings) {
+    // observe_vendors is always sent, `[]` when off, so a revoked vendor
+    // reaches the agent on the next heartbeat rather than waiting on an
+    // absent key. It grants reads only; writes stay off (W06).
+    policyConfigUpdate.wake_on_lan_settings = {
+      enabled: wakeOnLanSettings.enabled,
+      configure_settings: false,
+      firmware_writes: [],
+      observe_vendors: wakeOnLanSettings.observeVendors ?? [],
+    };
   }
   const hasPolicyConfigUpdate = Object.keys(policyConfigUpdate).length > 0;
 

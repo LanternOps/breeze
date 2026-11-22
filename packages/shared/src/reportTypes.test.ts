@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BUSINESS_REPORT_REQUIRED_PERMISSIONS, BUSINESS_REPORT_TYPES, REPORT_TYPES, isReportType } from './reportTypes';
+import { BUSINESS_REPORT_REQUIRED_PERMISSIONS, BUSINESS_REPORT_TYPES, REPORT_TYPES, REPORT_TYPE_REQUIRED_PERMISSIONS, isReportType } from './reportTypes';
 
 describe('REPORT_TYPES', () => {
   it('lists the 14 shipped types first, in report_type enum order, then the business and later types', () => {
@@ -12,7 +12,13 @@ describe('REPORT_TYPES', () => {
       'ticket_sla_attainment', 'technician_time_billability', 'ar_aging',
       'backup_status', 'ai_usage_by_client',
       'mrr_renewals', 'quote_win_rate', 'client_profitability',
+      'ticket_sla_performance',
     ]);
+  });
+
+  it('ticket_sla_performance is the last REPORT_TYPES entry and not a business type', () => {
+    expect(REPORT_TYPES[REPORT_TYPES.length - 1]).toBe('ticket_sla_performance');
+    expect(BUSINESS_REPORT_TYPES as readonly string[]).not.toContain('ticket_sla_performance');
   });
 
   it('has no duplicates', () => {
@@ -53,5 +59,15 @@ describe('BUSINESS_REPORT_REQUIRED_PERMISSIONS (#3198)', () => {
       client_profitability: [{ resource: 'invoices', action: 'read' }, { resource: 'time_entries', action: 'read' }],
     });
     expect(Object.keys(BUSINESS_REPORT_REQUIRED_PERMISSIONS).sort()).toEqual([...BUSINESS_REPORT_TYPES].sort());
+  });
+});
+
+describe('REPORT_TYPE_REQUIRED_PERMISSIONS (#11018)', () => {
+  it('is every business entry, by reference, plus ticket_sla_performance on tickets:read', () => {
+    for (const type of BUSINESS_REPORT_TYPES) {
+      expect(REPORT_TYPE_REQUIRED_PERMISSIONS[type]).toBe(BUSINESS_REPORT_REQUIRED_PERMISSIONS[type]);
+    }
+    expect(REPORT_TYPE_REQUIRED_PERMISSIONS.ticket_sla_performance).toEqual([{ resource: 'tickets', action: 'read' }]);
+    expect(Object.keys(REPORT_TYPE_REQUIRED_PERMISSIONS).sort()).toEqual([...BUSINESS_REPORT_TYPES, 'ticket_sla_performance'].sort());
   });
 });

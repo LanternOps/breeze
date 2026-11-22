@@ -41,129 +41,6 @@ func assertOrder(t *testing.T, script string, fragments ...string) {
 	}
 }
 
-func TestBuildWindowsUninstallScript(t *testing.T) {
-	base := windowsUninstallScriptOptions{
-		ServiceName:         "BreezeAgent",
-		WatchdogServiceName: "BreezeWatchdog",
-		AgentBinaryPath:     `C:\Program Files\Breeze\breeze-agent.exe`,
-		WatchdogBinaryPath:  `C:\Program Files\Breeze\breeze-watchdog.exe`,
-		ConfigDir:           `C:\ProgramData\Breeze`,
-		RemoveConfig:        true,
-		DelaySeconds:        5,
-	}
-
-	tests := []struct {
-		name        string
-		opts        windowsUninstallScriptOptions
-		wantOrder   []string
-		wantAbsent  []string
-		wantPresent []string
-	}{
-		{
-			name: "full teardown ordering: delay, watchdog re-assert, stop own service, delete registrations, kill processes, remove binaries, config last, self-delete",
-			opts: base,
-			wantOrder: []string{
-				"Start-Sleep -Seconds 5",
-				"sc.exe stop 'BreezeWatchdog'",
-				"sc.exe delete 'BreezeWatchdog'",
-				"Stop-Service -Name 'BreezeAgent' -Force",
-				"sc.exe delete 'BreezeAgent'",
-				"Stop-Process -Force",
-				`Remove-Item -LiteralPath 'C:\Program Files\Breeze\breeze-watchdog.exe' -Force`,
-				`Remove-Item -LiteralPath 'C:\Program Files\Breeze\breeze-agent.exe' -Force`,
-				`Remove-Item -LiteralPath 'C:\ProgramData\Breeze' -Recurse -Force`,
-				"Remove-Item -LiteralPath $PSCommandPath -Force",
-			},
-			// -Path would glob-expand [ ] in install paths into a silent no-op.
-			wantAbsent: []string{"Remove-Item -Path"},
-		},
-		{
-			name: "kill list covers a watchdog-respawned agent and lock-holding siblings",
-			opts: base,
-			wantPresent: []string{
-				"Get-Process -Name 'breeze-agent','breeze-user-helper','breeze-desktop-helper','breeze-watchdog'",
-			},
-		},
-		{
-			name: "removeConfig=false omits config removal but keeps the rest",
-			opts: func() windowsUninstallScriptOptions {
-				o := base
-				o.RemoveConfig = false
-				return o
-			}(),
-			wantAbsent: []string{`'C:\ProgramData\Breeze'`},
-			wantOrder: []string{
-				"Stop-Service -Name 'BreezeAgent'",
-				"sc.exe delete 'BreezeAgent'",
-				"Remove-Item -LiteralPath $PSCommandPath",
-			},
-		},
-		{
-			name: "empty ConfigDir skips config removal even when RemoveConfig is true",
-			opts: func() windowsUninstallScriptOptions {
-				o := base
-				o.ConfigDir = ""
-				return o
-			}(),
-			wantAbsent:  []string{"-Recurse"},
-			wantPresent: []string{"Remove-Item -LiteralPath $PSCommandPath"},
-		},
-		{
-			name: "single quotes in paths are doubled for PowerShell",
-			opts: func() windowsUninstallScriptOptions {
-				o := base
-				o.AgentBinaryPath = `C:\O'Brien\breeze-agent.exe`
-				return o
-			}(),
-			wantPresent: []string{`'C:\O''Brien\breeze-agent.exe'`},
-			wantAbsent:  []string{`'C:\O'Brien`},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			script := buildWindowsUninstallScript(tt.opts)
-			if len(tt.wantOrder) > 0 {
-				assertOrder(t, script, tt.wantOrder...)
-			}
-			for _, frag := range tt.wantPresent {
-				if !strings.Contains(script, frag) {
-					t.Errorf("script missing %q\nscript:\n%s", frag, script)
-				}
-			}
-			for _, frag := range tt.wantAbsent {
-				if strings.Contains(script, frag) {
-					t.Errorf("script unexpectedly contains %q\nscript:\n%s", frag, script)
-				}
-			}
-		})
-	}
-}
-
-// The false-success bug (#2878): the agent must never stop its own service
-// before the ack delay, the watchdog must be re-asserted dead before the
-// agent stops (or it may respawn it), and the service must be deleted before
-// its binary is removed (a still-registered auto-start service with a missing
-// binary is the residual ghost observed in QA).
-func TestBuildWindowsUninstallScript_SelfStopComesAfterDelayAndWatchdog(t *testing.T) {
-	script := buildWindowsUninstallScript(windowsUninstallScriptOptions{
-		ServiceName:         "BreezeAgent",
-		WatchdogServiceName: "BreezeWatchdog",
-		AgentBinaryPath:     `C:\pf\breeze-agent.exe`,
-		WatchdogBinaryPath:  `C:\pf\breeze-watchdog.exe`,
-		DelaySeconds:        7,
-	})
-	assertOrder(t, script,
-		"Start-Sleep -Seconds 7",
-		"sc.exe stop 'BreezeWatchdog'",
-		"Stop-Service -Name 'BreezeAgent'",
-	)
-	assertOrder(t, script,
-		"sc.exe delete 'BreezeAgent'",
-		`Remove-Item -LiteralPath 'C:\pf\breeze-agent.exe'`,
-	)
-}
-
 func TestBuildDarwinUninstallScript(t *testing.T) {
 	base := darwinUninstallScriptOptions{
 		Label:           "com.breeze.agent",
@@ -202,8 +79,9 @@ func TestBuildDarwinUninstallScript(t *testing.T) {
 				o.RemoveConfig = false
 				return o
 			}(),
-			wantOrder:  []string{"rm -f '/usr/local/bin/breeze-agent'"},
-			wantAbsent: []string{"rm -rf"},
+			wantOrder: []string{"rm -f '/usr/local/bin/breeze-agent'"},
+			// The isolation recovery directory is always removed; config is not.
+			wantAbsent: []string{"rm -rf '/Library/Application Support/Breeze'"},
 		},
 		{
 			name: "single quotes in paths are escaped for sh",
@@ -305,6 +183,7 @@ func TestHandleSelfUninstall_ResultContract(t *testing.T) {
 	tests := []struct {
 		name             string
 		prepareErr       error
+		helperReports    bool
 		payload          map[string]any
 		wantStatus       string
 		wantErrFragment  string
@@ -331,6 +210,18 @@ func TestHandleSelfUninstall_ResultContract(t *testing.T) {
 			wantRemoveConfig: false,
 		},
 		{
+			// #11154 (Windows): the detached helper reports the result once
+			// the teardown is verified, so the agent hands it off instead of
+			// acking on hand-off.
+			name:             "helper-reported teardown hands the result off and still schedules shutdown",
+			prepareErr:       nil,
+			helperReports:    true,
+			payload:          map[string]any{},
+			wantStatus:       tools.StatusResultHandedOff,
+			wantShutdown:     true,
+			wantRemoveConfig: true,
+		},
+		{
 			name:             "removeConfig defaults to true",
 			prepareErr:       nil,
 			payload:          map[string]any{},
@@ -343,9 +234,12 @@ func TestHandleSelfUninstall_ResultContract(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var gotRemoveConfig *bool
-			prepareSelfUninstallFn = func(removeConfig bool) error {
-				gotRemoveConfig = &removeConfig
-				return tt.prepareErr
+			prepareSelfUninstallFn = func(req selfUninstallRequest) (bool, error) {
+				gotRemoveConfig = &req.RemoveConfig
+				if req.CommandID != "cmd-1" {
+					t.Errorf("prepare got command id %q, want cmd-1", req.CommandID)
+				}
+				return tt.helperReports, tt.prepareErr
 			}
 			shutdownScheduled := false
 			scheduleSelfUninstallShutdownFn = func(h *Heartbeat) {
@@ -400,22 +294,6 @@ func TestShQuote(t *testing.T) {
 	}
 }
 
-func TestPsQuote(t *testing.T) {
-	tests := []struct {
-		in   string
-		want string
-	}{
-		{"plain", "plain"},
-		{"o'brien", "o''brien"},
-		{`C:\path`, `C:\path`},
-	}
-	for _, tt := range tests {
-		if got := psQuote(tt.in); got != tt.want {
-			t.Errorf("psQuote(%q) = %s, want %s", tt.in, got, tt.want)
-		}
-	}
-}
-
 // Execute the detached script with all endpoint effects replaced by recorders.
 // This proves the acknowledgement delay and optional data policy survive the
 // package cleanup, without invoking launchctl, pkill, pkgutil or rm on the host.
@@ -439,6 +317,9 @@ func TestDarwinUninstallScriptExecutable(t *testing.T) {
 			}
 		}
 		script := buildDarwinUninstallScript(darwinUninstallScriptOptions{Label: "com.breeze.agent", WatchdogLabel: "com.breeze.watchdog", WatchdogProcess: "breeze-watchdog", PlistPath: "/Library/LaunchDaemons/com.breeze.agent.plist", BinaryPath: "/usr/local/bin/breeze-agent", ConfigDir: "/Library/Application Support/Breeze", RemoveConfig: removeConfig, DelaySeconds: 5})
+		// Never consult this host's real isolation journal: if one existed,
+		// the release step would run the installed agent.
+		script = strings.ReplaceAll(script, "/Library/Application Support/Breeze/data", root+"/no-journal")
 		cmd := exec.Command("/bin/sh", "-c", script)
 		cmd.Env = append(os.Environ(), "PATH="+root+":/usr/bin:/bin", "FIXTURE_CALLS="+calls)
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -514,9 +395,9 @@ func TestResolveTrustedOrLegacyBinaryPath(t *testing.T) {
 func TestSelfUninstallRefusedInASupportSession(t *testing.T) {
 	origPrepare, origSchedule := prepareSelfUninstallFn, scheduleSelfUninstallShutdownFn
 	t.Cleanup(func() { prepareSelfUninstallFn, scheduleSelfUninstallShutdownFn = origPrepare, origSchedule })
-	prepareSelfUninstallFn = func(bool) error {
+	prepareSelfUninstallFn = func(selfUninstallRequest) (bool, error) {
 		t.Error("self-uninstall preparation ran in a support session")
-		return nil
+		return false, nil
 	}
 	scheduleSelfUninstallShutdownFn = func(*Heartbeat) { t.Error("self-uninstall shutdown scheduled in a support session") }
 

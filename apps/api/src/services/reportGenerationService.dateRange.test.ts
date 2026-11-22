@@ -78,8 +78,9 @@ describe('report generators honour the configured reporting window (#9562)', () 
   describe('executive summary', () => {
     const SEQ = [
       [{ id: ORG, name: 'Acme Corp' }],
-      [{ total: 5, online: 3, offline: 2 }],
+      [{ status: 'online', count: 3, seen: 3 }, { status: 'offline', count: 2, seen: 0 }],
       [{ total: 4, critical: 1, high: 1, resolved: 3 }],
+      [], // notable critical/high alerts (#12045)
       [{ osType: 'windows', count: 5 }],
       [{ siteName: 'HQ', deviceCount: 5 }],
     ];
@@ -88,20 +89,24 @@ describe('report generators honour the configured reporting window (#9562)', () 
       queueSelects(SEQ);
       await generateExecutiveSummaryReport(ORG, { dateRange: { preset: 'last_30_days' } }, AUTHORITY);
 
-      const [alertWhere, ...rest] = wheresOn('"alerts"');
-      expect(rest).toHaveLength(0);
-      expect(alertWhere!.sql).toContain('"alerts"."triggered_at" >= $');
-      expect(alertWhere!.sql).toContain('"alerts"."triggered_at" <= $');
-      expect(alertWhere!.params).toContain(iso(NOW.getTime() - 30 * DAY));
-      expect(alertWhere!.params).toContain(iso(NOW.getTime()));
+      // Two alert statements: the counts and the named critical/high alerts
+      // (#12045). Both must carry the window.
+      const alertWheres = wheresOn('"alerts"');
+      expect(alertWheres).toHaveLength(2);
+      for (const alertWhere of alertWheres) {
+        expect(alertWhere.sql).toContain('"alerts"."triggered_at" >= $');
+        expect(alertWhere.sql).toContain('"alerts"."triggered_at" <= $');
+        expect(alertWhere.params).toContain(iso(NOW.getTime() - 30 * DAY));
+        expect(alertWhere.params).toContain(iso(NOW.getTime()));
+      }
     });
 
-    it('applies the window to the one query that feeds alerts-in-window AND resolution rate', async () => {
+    it('applies the window to every alert query: the counts, resolution rate and named alerts', async () => {
       queueSelects(SEQ);
       const result = await generateExecutiveSummaryReport(ORG, { dateRange: { preset: 'last_7_days' } }, AUTHORITY);
 
-      expect(wheresOn('"alerts"."triggered_at"')).toHaveLength(1);
-      expect(wheresOn('"alerts"')[0]!.params).toContain(iso(NOW.getTime() - 7 * DAY));
+      expect(wheresOn('"alerts"."triggered_at"')).toHaveLength(2);
+      for (const q of wheresOn('"alerts"')) expect(q.params).toContain(iso(NOW.getTime() - 7 * DAY));
       expect(result.summary!.alerts).toEqual({ total: 4, critical: 1, high: 1, resolved: 3, resolutionRate: 75 });
     });
 
@@ -112,16 +117,18 @@ describe('report generators honour the configured reporting window (#9562)', () 
         { dateRange: { start: '2026-09-01T00:00:00.000Z', end: '2026-09-30T23:59:59.000Z' } },
         AUTHORITY,
       );
-      const [alertWhere] = wheresOn('"alerts"');
-      expect(alertWhere!.params).toContain('2026-09-01T00:00:00.000Z');
-      expect(alertWhere!.params).toContain('2026-09-30T23:59:59.000Z');
+      for (const alertWhere of wheresOn('"alerts"')) {
+        expect(alertWhere.params).toContain('2026-09-01T00:00:00.000Z');
+        expect(alertWhere.params).toContain('2026-09-30T23:59:59.000Z');
+      }
     });
 
     it('leaves alerts unbounded when no window is configured', async () => {
       queueSelects(SEQ);
       await generateExecutiveSummaryReport(ORG, {}, AUTHORITY);
-      const [alertWhere] = wheresOn('"alerts"');
-      expect(alertWhere!.sql).not.toContain('triggered_at');
+      const alertWheres = wheresOn('"alerts"');
+      expect(alertWheres).toHaveLength(2);
+      for (const alertWhere of alertWheres) expect(alertWhere.sql).not.toContain('triggered_at');
     });
   });
 

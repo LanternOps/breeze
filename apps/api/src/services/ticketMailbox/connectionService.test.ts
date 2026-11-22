@@ -144,6 +144,7 @@ import {
   recordTransientPollFailure,
   resetDeltaCursor,
   restoreVerifiedConnection,
+  seedDeltaFloor,
   setConnectedMailboxStatus,
   updateDeltaCursor,
 } from './connectionService';
@@ -427,7 +428,145 @@ describe('ticket mailbox connection service', () => {
     await resetDeltaCursor(snapshot, 'delta-next');
 
     expect(dbMocks.updatedValues[0]).toMatchObject({ deltaLink: 'delta-next', consecutiveTransientFailures: 0, lastTransientFailureAt: null });
-    expect(dbMocks.updatedValues[1]).toEqual({ deltaLink: null, updatedAt: expect.any(Date) });
+    expect(dbMocks.updatedValues[1]).toEqual({
+      deltaLink: null,
+      baselineSkippedCount: expect.anything(),
+      updatedAt: expect.any(Date),
+    });
+    // The walk restarts, so an open baseline's count restarts; a finished one stays.
+    expect(new PgDialect().sqlToQuery(dbMocks.updatedValues[1]!.baselineSkippedCount as SQL).sql.replace(/\s+/g, ' ')).toBe(
+      'CASE WHEN "ticket_mailbox_connections"."baseline_completed_at" IS NULL THEN 0 ELSE "ticket_mailbox_connections"."baseline_skipped_count" END',
+    );
+  });
+
+  // #10863. The real SQL runs in ticketMailboxCursor.rls.integration.test.ts; these
+  // pin the shape of each write without a database.
+  describe('connect baseline (#10863)', () => {
+    const snapshot = {
+      id: CONNECTION_ID, partnerId: PARTNER_ID, tenantId: TENANT_ID, consentAttemptId: ATTEMPT_ID,
+    };
+    const rendered = (value: unknown) => new PgDialect().sqlToQuery(value as SQL);
+
+    it('binding a tenant stamps the connect floor, keeping one a re-consent preserved', async () => {
+      dbMocks.insertResults.push([]);
+      dbMocks.selectResults.push([{ partnerId: PARTNER_ID }]);
+      dbMocks.updateResults.push([{ id: CONNECTION_ID }]);
+
+      await bindVerifiedTenant(CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, TENANT_ID, {
+        microsoftOid: MICROSOFT_OID, breezeUserId: USER_ID,
+      });
+
+      const floor = rendered(dbMocks.updatedValues[0]!.eligibleAfter);
+      expect(floor.sql).toContain('COALESCE("ticket_mailbox_connections"."eligible_after", $1::timestamptz)');
+      expect(new Date(floor.params[0] as string).toISOString()).toBe(floor.params[0]);
+    });
+
+    it('stamps the floor on a bind that lands in error too, so mail before the Re-test is not lost', async () => {
+      dbMocks.insertResults.push([]);
+      dbMocks.selectResults.push([{ partnerId: PARTNER_ID }]);
+      dbMocks.updateResults.push([{ id: CONNECTION_ID }]);
+
+      await bindVerifiedTenant(CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, TENANT_ID, {
+        microsoftOid: MICROSOFT_OID, breezeUserId: USER_ID,
+      }, { status: 'error', lastError: 'Mailbox verification failed' });
+
+      expect(dbMocks.updatedValues[0]!.status).toBe('error');
+      expect(rendered(dbMocks.updatedValues[0]!.eligibleAfter).sql).toContain('COALESCE');
+    });
+
+    it('a reconnect clears the cursor but decides the floor from what the row was', async () => {
+      dbMocks.insertResults.push([{ ...fullRow, status: 'pending_consent', tenantId: null }]);
+
+      await createPendingConnection({
+        partnerId: PARTNER_ID, mailboxAddress: 'support@example.com', displayName: null, createdBy: USER_ID,
+      });
+
+      const conflict = dbMocks.conflictUpdates[0]!;
+      expect(conflict.deltaLink).toBeNull();
+      const floor = rendered(conflict.eligibleAfter).sql;
+      expect(floor).toContain(`"ticket_mailbox_connections"."provider" = 'm365'`);
+      expect(floor).toContain(`"ticket_mailbox_connections"."status" <> 'disabled'`);
+      // Kept as is, or, for a row from before the floor, taken from its last poll.
+      expect(floor.replace(/\s+/g, ' ')).toContain(
+        `THEN COALESCE("ticket_mailbox_connections"."eligible_after", ("ticket_mailbox_connections"."last_polled_at" - interval '5 minutes')) END`,
+      );
+    });
+
+    it('a completed baseline round adds its count and closes; an unfinished one only adds', async () => {
+      const polledAt = new Date('2026-11-04T10:00:00Z');
+      dbMocks.updateResults.push([{ id: CONNECTION_ID }], [{ id: CONNECTION_ID }]);
+
+      await updateDeltaCursor(snapshot, null, 'resume', polledAt, null, { skipped: 7, completed: false });
+      await updateDeltaCursor(snapshot, 'resume', 'delta', polledAt, null, { skipped: 3, completed: true });
+
+      const added = rendered(dbMocks.updatedValues[0]!.baselineSkippedCount);
+      expect(added.sql).toContain('"ticket_mailbox_connections"."baseline_skipped_count" + $1');
+      expect(added.params).toEqual([7]);
+      expect(dbMocks.updatedValues[0]).not.toHaveProperty('baselineCompletedAt');
+      expect(rendered(dbMocks.updatedValues[1]!.baselineSkippedCount).params).toEqual([3]);
+      expect(dbMocks.updatedValues[1]!.baselineCompletedAt).toBe(polledAt);
+    });
+
+    it('a poll outside a baseline leaves the baseline columns alone', async () => {
+      dbMocks.updateResults.push([{ id: CONNECTION_ID }]);
+
+      await updateDeltaCursor(snapshot, 'a', 'b', new Date(), null);
+
+      expect(dbMocks.updatedValues[0]).not.toHaveProperty('baselineSkippedCount');
+      expect(dbMocks.updatedValues[0]).not.toHaveProperty('baselineCompletedAt');
+    });
+
+    it('seeds a floor only on a connected row with neither cursor nor floor', async () => {
+      const at = new Date('2026-11-04T10:00:00Z');
+      dbMocks.updateResults.push([{ eligibleAfter: at, baselineCompletedAt: null }]);
+
+      await expect(seedDeltaFloor(snapshot, at)).resolves.toEqual({ eligibleAfter: at, baselineCompletedAt: null });
+
+      const set = dbMocks.updatedValues[0]!;
+      expect(rendered(set.eligibleAfter).sql).toBe(
+        `COALESCE(("ticket_mailbox_connections"."last_polled_at" - interval '5 minutes'), $1::timestamptz)`,
+      );
+      expect(rendered(set.baselineCompletedAt).sql).toContain('"ticket_mailbox_connections"."last_polled_at" IS NOT NULL');
+      const where = dbMocks.updateWheres[0] as { conditions: unknown[] };
+      expect(where.conditions).toEqual(expect.arrayContaining([
+        { op: 'eq', column: ticketMailboxConnections.status, value: 'connected' },
+        { op: 'eq', column: ticketMailboxConnections.consentAttemptId, value: ATTEMPT_ID },
+      ]));
+      const nullChecks = where.conditions
+        .filter((condition) => !(condition as { op?: string }).op)
+        .map((condition) => rendered(condition).sql);
+      expect(nullChecks).toEqual([
+        '"ticket_mailbox_connections"."delta_link" is null',
+        '"ticket_mailbox_connections"."eligible_after" is null',
+      ]);
+      expect(contextMocks.withSystem).toHaveBeenCalled();
+    });
+
+    it('reports no floor when the seed lands on no row', async () => {
+      dbMocks.updateResults.push([]);
+      await expect(seedDeltaFloor(snapshot, new Date())).resolves.toBeNull();
+    });
+
+    it('exposes the connect baseline on floored m365 rows only', async () => {
+      const base = { mailboxAddress: 'help@example.com', displayName: null, status: 'connected', lastPolledAt: null, lastMessageAt: null, lastError: null };
+      const floor = new Date('2026-11-01T12:00:00Z');
+      const done = new Date('2026-11-01T12:10:00Z');
+      dbMocks.selectResults.push([
+        { ...base, id: 'done', provider: 'm365', eligibleAfter: floor, baselineSkippedCount: 9487, baselineCompletedAt: done },
+        { ...base, id: 'running', provider: 'm365', eligibleAfter: floor, baselineSkippedCount: 200, baselineCompletedAt: null },
+        { ...base, id: 'legacy', provider: 'm365', eligibleAfter: null, baselineSkippedCount: 0, baselineCompletedAt: null },
+        { ...base, id: 'g', provider: 'gmail', eligibleAfter: floor, baselineSkippedCount: 0, baselineCompletedAt: null },
+      ]);
+
+      const result = await listMailboxConnections(PARTNER_ID);
+
+      expect(result.map((r) => r.connectBaseline)).toEqual([
+        { skippedCount: 9487, completedAt: done },
+        { skippedCount: 200, completedAt: null },
+        null,
+        null,
+      ]);
+    });
   });
 
   it('fails closed rather than activating a connection without matching verified ownership', async () => {
@@ -539,18 +678,19 @@ describe('ticket mailbox connection service', () => {
       lastPolledAt: fullRow.lastPolledAt,
       lastMessageAt: fullRow.lastMessageAt,
     };
-    dbMocks.selectResults.push([{ ...publicRow, lastError: null, consentSessionLive: false }]);
+    dbMocks.selectResults.push([{ ...publicRow, lastError: null, consentSessionLive: false, trustedArcSealers: [] }]);
 
     const result = await listMailboxConnections(PARTNER_ID);
 
-    expect(result).toEqual([{ ...publicRow, verificationError: null, transientPollFailures: null, consentExpired: false, gmailHandling: null }]);
+    expect(result).toEqual([{ ...publicRow, verificationError: null, transientPollFailures: null, consentExpired: false, trustedArcSealers: [], gmailHandling: null, connectBaseline: null }]);
     expect(Object.keys(result[0]!)).toEqual([
-      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError', 'transientPollFailures', 'consentExpired', 'gmailHandling',
+      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError', 'transientPollFailures', 'consentExpired', 'trustedArcSealers', 'gmailHandling', 'connectBaseline',
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
       'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError',
       'consecutiveTransientFailures', 'lastTransientFailureAt',
-      'gmailHandledLabel', 'gmailArchiveOnHandle', 'gmailHandledError', 'gmailHandledErrorAt', 'consentSessionLive',
+      'gmailHandledLabel', 'gmailArchiveOnHandle', 'gmailHandledError', 'gmailHandledErrorAt',
+      'eligibleAfter', 'baselineSkippedCount', 'baselineCompletedAt', 'trustedArcSealers', 'consentSessionLive',
     ]);
   });
 
@@ -688,7 +828,7 @@ describe('ticket mailbox connection service', () => {
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
       'id', 'partnerId', 'tenantId', 'mailboxAddress', 'deltaLink',
-      'consentAttemptId',
+      'consentAttemptId', 'eligibleAfter', 'baselineCompletedAt', 'trustedArcSealers',
     ]);
     // #8308: oldest attempt first, never-attempted first of all, id as tie-breaker.
     expect(dbMocks.selectOrders).toHaveLength(1);

@@ -328,3 +328,159 @@ describe("the evidence card's sending domains (W06)", () => {
       .toContain('mail.acme.example');
   });
 });
+
+describe('IP classifier and promotion blockers (#11698)', () => {
+  const offlineStatus = (asn: { source: string; entries: number }, current = false) => ({
+    tor: { source: 'download', entries: 1200, updatedAt: '2026-11-11T00:00:00.000Z', lastError: null },
+    hosting: { source: current ? 'download' : 'snapshot', entries: 700, updatedAt: '2026-11-11T00:00:00.000Z', lastError: current ? null : 'HTTP 503' },
+    asn: { ...asn, updatedAt: null, lastError: null },
+    current,
+    reportedAt: '2026-11-11T00:05:00.000Z',
+  });
+
+  it('shows the offline baseline and warns when it is running Tor-only', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({
+      partners: [row],
+      nextCursor: null,
+      classifier: { active: 'offline', offline: offlineStatus({ source: 'unavailable', entries: 0 }) },
+    }));
+    render(<TrustQueue />);
+
+    const banner = await screen.findByTestId('trust-queue-classifier');
+    expect(banner.textContent).toContain('Offline baseline');
+    expect(banner.textContent).toContain('1,200');
+    expect(screen.getByTestId('trust-queue-classifier-degraded').textContent).toContain('ASN database');
+  });
+
+  it('shows the full offline baseline without the degraded warning', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({
+      partners: [row],
+      nextCursor: null,
+      classifier: { active: 'offline', offline: offlineStatus({ source: 'download', entries: 500000 }, true) },
+    }));
+    render(<TrustQueue />);
+
+    expect((await screen.findByTestId('trust-queue-classifier')).textContent).toContain('500,000');
+    expect(screen.queryByTestId('trust-queue-classifier-degraded')).toBeNull();
+  });
+
+  it('warns when the data is loaded but not current (snapshot or stale), and shows the source error', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({
+      partners: [row],
+      nextCursor: null,
+      classifier: { active: 'offline', offline: offlineStatus({ source: 'download', entries: 500000 }, false) },
+    }));
+    render(<TrustQueue />);
+
+    const degraded = await screen.findByTestId('trust-queue-classifier-degraded');
+    expect(degraded.textContent).toContain('not current');
+    expect(screen.getByTestId('trust-queue-classifier').textContent).toContain('HTTP 503');
+  });
+
+  it('warns when the offline classifier has published no status', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({
+      partners: [row], nextCursor: null, classifier: { active: 'offline', offline: null },
+    }));
+    render(<TrustQueue />);
+
+    expect((await screen.findByTestId('trust-queue-classifier-degraded')).textContent).toContain('No status');
+  });
+
+  it('names a keyed provider when one is configured', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({
+      partners: [row], nextCursor: null, classifier: { active: 'ipinfo', offline: null },
+    }));
+    render(<TrustQueue />);
+
+    expect((await screen.findByTestId('trust-queue-classifier')).textContent).toContain('ipinfo');
+    expect(screen.queryByTestId('trust-queue-classifier-degraded')).toBeNull();
+  });
+
+  it('shows the blockers holding a probation partner and how its signup IP was classified', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({
+      partners: [{
+        ...row,
+        signupIpClass: 'unknown',
+        signupIpClassSource: 'offline',
+        promotionBlockers: { blockers: ['card_not_settled', 'too_young'], evaluatedAt: '2026-11-11T00:00:00.000Z' },
+      }],
+      nextCursor: null,
+      classifier: { active: 'offline', offline: null },
+    }));
+    render(<TrustQueue />);
+
+    const blockers = await screen.findByTestId('trust-queue-blockers-partner-1');
+    expect(blockers.textContent).toContain('Card not settled');
+    expect(blockers.textContent).toContain('Partner younger than 24 hours');
+    expect(blockers.textContent).toContain('as of');
+    expect(screen.getByTestId('trust-queue-ip-source-partner-1').textContent).toContain('offline: nothing found');
+  });
+
+  it('says when a probation partner has not been evaluated yet', async () => {
+    fetchWithAuth.mockResolvedValue(queueResponse());
+    render(<TrustQueue />);
+
+    expect((await screen.findByTestId('trust-queue-blockers-partner-1')).textContent).toContain('Not evaluated yet');
+  });
+});
+
+describe('billing fraud flag restore (billing#51)', () => {
+  const restore = {
+    partnerId: 'partner-1',
+    restrictingFlagId: 'flag-row-1',
+    previousTrustState: 'trusted',
+    restrictedAt: '2026-11-18T10:00:00.000Z',
+    flags: [
+      { id: 'flag-row-1', kind: 'test_kind', stripeObjectId: 'obj_test_1', outcome: 'restricted', flaggedAt: null },
+      { id: 'flag-row-2', kind: 'test_kind', stripeObjectId: 'obj_test_2', outcome: 'already_restricted', flaggedAt: null },
+    ],
+  };
+  const restrictedRow = { ...row, trustState: 'restricted', trustReason: 'auto:test_reason', fraudFlagRestore: restore };
+  const endpoint = '/admin/partners/partner-1/trust/fraud-flag-restore';
+
+  it('restores with one confirmation, sending exactly the restriction\'s flag rows, and drops a row restored to trusted', async () => {
+    fetchWithAuth.mockImplementation((url: string, options?: RequestInit) => {
+      if (!options) return Promise.resolve(queueResponse([restrictedRow]));
+      if (url === endpoint && options.method === 'POST') {
+        return Promise.resolve(jsonResponse({ success: true, trustState: 'trusted', restoredFlagIds: ['flag-row-1', 'flag-row-2'] }));
+      }
+      throw new Error(`Unexpected request: ${options.method} ${url}`);
+    });
+    const prompt = vi.spyOn(window, 'prompt');
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<TrustQueue />);
+    await screen.findByText('Acme MSP');
+    expect(screen.getByTestId('trust-queue-fraud-restore-partner-1').textContent).toContain('trusted');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+
+    await waitFor(() => {
+      const mutation = fetchWithAuth.mock.calls.find(([url]) => url === endpoint);
+      expect(mutation).toBeTruthy();
+      expect(JSON.parse((mutation![1] as RequestInit).body as string)).toEqual({ flagIds: ['flag-row-1', 'flag-row-2'] });
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith({ message: 'Partner restored', type: 'success' });
+    await waitFor(() => expect(screen.queryByText('Acme MSP')).toBeNull());
+  });
+
+  it('does nothing when the confirmation is declined', async () => {
+    fetchWithAuth.mockResolvedValue(queueResponse([restrictedRow]));
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(<TrustQueue />);
+    await screen.findByText('Acme MSP');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+
+    expect(fetchWithAuth.mock.calls.some(([url]) => url === endpoint)).toBe(false);
+  });
+
+  it('offers no Restore for a restriction that did not come from a billing fraud flag', async () => {
+    const otherRestriction = { ...row, trustState: 'restricted', fraudFlagRestore: null };
+    fetchWithAuth.mockResolvedValue(queueResponse([otherRestriction]));
+    render(<TrustQueue />);
+    await screen.findByText('Acme MSP');
+
+    expect(screen.queryByRole('button', { name: 'Restore' })).toBeNull();
+  });
+});

@@ -92,6 +92,12 @@ const DEVICE_AXIS_MARKERS = [
   // judgement the site suite makes about the same call sites.
   'canMutateOrgWideGovernance',
   'hasExactDeviceCeiling',
+  // #11677: list-reach helpers that apply `runFrozenDeviceIds`
+  // (`aiToolsSiteScope.ts`) and `ticketCounterpartScopeCondition`'s
+  // `allowedDeviceIds` arm (`routes/tickets/siteScope.ts`). Exact parity with
+  // the site suite.
+  'deviceListReachConditions',
+  'ticketListReachConditions',
 ] as const;
 
 // ---------------------------------------------------------------- utilities
@@ -202,6 +208,11 @@ const CROSS_FILE_GUARDED_DELEGATES: ReadonlyArray<readonly [string, string]> = [
   // `fleetScope` (deviceScopeCondition + siteScopeCondition) and pins an optional
   // deviceId to the device axis. Behaviour: `timeSync/fleet.test.ts`.
   ['listFleetTimeStatus', join('timeSync', 'fleet.ts')],
+  // `export_dataset`'s set-based adapters (`aiToolsExportDatasets/*.ts`):
+  // resolves the export's device set through the frozen frame,
+  // `allowedDeviceIds` and `deviceSiteDenied`; behaviour pinned by
+  // `aiToolsExportShared.test.ts`.
+  ['exportDeviceSet', 'aiToolsExportShared.ts'],
 ];
 
 /**

@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "lane": "surface",
+  "agentVersion": "0.131.0",
+  "nativeArch": "arm64",
+  "osBuild": "10.0.26100.2314",
+  "smbios": {
+    "manufacturer": "Microsoft Corporation",
+    "model": "Surface Laptop, 7th Edition",
+    "systemSku": "Surface_Laptop_7th_Edition_1950",
+    "family": "Surface",
+    "baseboardProduct": "Surface Laptop"
+  },
+  "bios": { "version": "175.77.235", "releaseDate": "2026-08-14" },
+  "chassis": "laptop",
+  "power": { "acLine": "on", "batteryFlag": 8, "batteryPercent": 87 },
+  "bitlocker": { "protection": "on", "pcr7Bound": true, "activeProtectorEscrowed": true },
+  "pendingReboot": false,
+  "tools": [],
+  "conflicts": [],
+  "errors": [],
+  "truncated": false,
+  "surface": {
+    "windowsUpdate": "ok",
+    "excludeWUDriversInQualityUpdate": { "state": "absent", "value": null },
+    "updates": [
+      {
+        "title": "Qualcomm Technologies, Inc. - Extension - 1.0.4207.6100",
+        "updateId": "3c6c3b5e-0d1e-4a3e-9d0a-6f2f8c1b2a11",
+        "driverManufacturer": "Qualcomm Technologies, Inc.",
+        "driverClass": "Extension",
+        "driverModel": "Qualcomm(R) Adreno(TM) Extension",
+        "driverProvider": "Qualcomm Technologies, Inc.",
+        "laneWouldSelect": "none"
+      },
+      {
+        "title": "Surface - Firmware - 175.77.235",
+        "updateId": "9b0f6a43-1c2d-4e5f-8a7b-0c1d2e3f4a5b",
+        "driverManufacturer": "Surface",
+        "driverClass": "Firmware",
+        "driverModel": "Surface UEFI",
+        "driverProvider": null,
+        "laneWouldSelect": "firmware"
+      }
+    ]
+  }
+}

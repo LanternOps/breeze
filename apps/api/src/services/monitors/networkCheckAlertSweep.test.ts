@@ -50,7 +50,11 @@ vi.mock('drizzle-orm', () => ({
   ),
 }));
 
-vi.mock('../../db', () => ({ db: { select: selectMock } }));
+vi.mock('../../db', () => ({
+  db: { select: selectMock },
+  withDbTransaction: (fn: () => unknown) => fn(),
+  withDbTransactionIfHeld: (fn: () => unknown) => fn(),
+}));
 vi.mock('../../db/schema', () => ({
   networkMonitors: {
     id: 'network_monitors.id',
@@ -203,6 +207,22 @@ describe('evaluateNetworkCheckAlertsForOrg (#6353)', () => {
     expect(evaluateForDeviceMock).not.toHaveBeenCalled();
     // Nothing to detach against either: no monitor got an alert device.
     expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not count detaches rolled back with the savepoint when a later one fails (#11225)', async () => {
+    pushOrgAndChecks([{ id: 'nm-1', assetId: null, monitorId: 'mon-1' }]);
+    selectResults.push([
+      { monitorId: 'mon-1', deviceId: 'device-old-1' },
+      { monitorId: 'mon-1', deviceId: 'device-old-2' },
+    ]);
+    resolveAlertDeviceMock.mockResolvedValue('device-new');
+    detachMock.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('detach failed'));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const result = await evaluateNetworkCheckAlertsForOrg(ORG);
+
+    expect(detachMock).toHaveBeenCalledTimes(2);
+    expect(result.staleEpisodesDetached).toBe(0);
   });
 
   it('detaches the stale open episode on a device that is no longer the alert device, and keeps the current one', async () => {

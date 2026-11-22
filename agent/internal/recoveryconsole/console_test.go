@@ -953,6 +953,35 @@ func TestVersionAtLeast(t *testing.T) {
 	}
 }
 
+// The recovery console never asks the engine to run the restored system's
+// own boot tools.
+func TestConsole_RunsNoRestoredBootTools(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "6002248"}}
+	deps := &fakeDeps{
+		exchangeFn: happyExchange(t),
+		collectFn:  func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			if opts.DryRun {
+				return samplePlan(), nil
+			}
+			return &rebuild.Result{Status: "completed"}, nil
+		},
+	}
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(deps.rebuildCalls) != 2 {
+		t.Fatalf("rebuild calls = %d, want 2", len(deps.rebuildCalls))
+	}
+	for i, opts := range deps.rebuildCalls {
+		if opts.RegenerateInitramfs || opts.RestoredBootTools || opts.ConfirmRestoredBootTools {
+			t.Errorf("call %d: regenerateInitramfs=%v restoredBootTools=%v confirm=%v, want all false",
+				i, opts.RegenerateInitramfs, opts.RestoredBootTools, opts.ConfirmRestoredBootTools)
+		}
+	}
+}
+
 // TestConsole_ExpectSystemStateFollowsBootstrap pins #5412 for the console
 // path: the rebuild.Options it builds must carry ExpectSystemState derived
 // from the bootstrap snapshot (backupType system_image OR an advertised

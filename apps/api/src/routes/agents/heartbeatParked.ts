@@ -28,6 +28,12 @@ export interface ParkedHeartbeatBody {
   role?: 'agent' | 'watchdog';
   watchdogState?: string;
   /**
+   * #4297 — on a WATCHDOG beat, the watchdog's own build edition. Recorded
+   * with `watchdogVersion` so `devices.watchdog_edition` always describes the
+   * build at `devices.watchdog_version`; never read on a main-agent beat.
+   */
+  agentEdition?: 'hosted' | 'self-host';
+  /**
    * #8318 §6.2 — of the capabilities, ONLY `rebindProtocolVersion` is read:
    * a parked device is the typical source of a reattach, so its beat records
    * the capability and carries the signed `rebind` directive.
@@ -135,6 +141,8 @@ export async function respondParkedHeartbeat(
             watchdogStatus: data.watchdogState === 'FAILOVER' ? 'failover' : 'connected',
             watchdogLastSeen: now,
             watchdogVersion: data.agentVersion,
+            // #4297 — paired with watchdogVersion, same as the full beat.
+            watchdogEdition: data.agentEdition ?? null,
           }
         : {
             lastSeenAt: now,

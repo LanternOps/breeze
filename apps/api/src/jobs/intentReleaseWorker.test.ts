@@ -577,6 +577,9 @@ vi.mock('../services/aiAgents/supervisedKeyDemote', () => ({
 const wispReleaseMock = vi.hoisted(() => ({
   checkWispCeilingForRelease: vi.fn(async (_intent: unknown, auth: unknown) => ({ ok: true as const, auth }) as unknown),
 }));
+// W2 (#11085): the specialist step post-back after a release.
+const specialistResultMock = vi.hoisted(() => ({ postSpecialistStepOutcome: vi.fn(async () => ({ posted: false, reason: 'not_a_specialist_run' })) }));
+vi.mock('../services/wisp/specialistResult', () => specialistResultMock);
 vi.mock('../services/wisp/releaseCeiling', () => ({
   checkWispCeilingForRelease: wispReleaseMock.checkWispCeilingForRelease,
 }));
@@ -1717,6 +1720,7 @@ describe('releaseApprovedIntent', () => {
         intent.actionName,
         intent.arguments,
         mockedDb,
+        { intentOrgId: intent.orgId },
       );
       expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
@@ -1861,6 +1865,56 @@ describe('releaseApprovedIntent', () => {
       expect(context.verifiedRunScript).toBe(verifiedRunScript);
       // …and the releasing intent's id rides ALONGSIDE it, not instead of it.
       expect(context.actionIntentId).toBe(intent.id);
+    });
+
+    // Network-isolation W13 (#10101): the release_containment handler refuses
+    // without the episode binding the approval was pinned over, so the worker
+    // must forward it from the matching recompute, by identity.
+    it('forwards the release_containment episode binding from the matching recompute', async () => {
+      const digest = 'c'.repeat(64);
+      const releaseArgs = {
+        deviceId: '11111111-1111-4111-8111-111111111111',
+        isolationId: '33333333-3333-4333-8333-333333333333',
+        reason: 'Incident contained',
+      };
+      const intent = baseIntent({
+        effectDigest: digest, actionName: 'release_containment', arguments: releaseArgs,
+        argumentDigest: computeArgumentDigest(canonicalizeArguments(releaseArgs)),
+      });
+      primeThroughRevalidation(intent);
+      const verifiedIsolationRelease = {
+        orgId: intent.orgId, deviceId: releaseArgs.deviceId, isolationId: releaseArgs.isolationId, generation: 3,
+      };
+      effectDigestMock.computeEffectDigestForRelease.mockResolvedValueOnce({ digest, context: { verifiedIsolationRelease } });
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ success: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(effectDigestMock.computeEffectDigestForRelease).toHaveBeenCalledWith('release_containment', releaseArgs, expect.anything(), { intentOrgId: intent.orgId });
+      const call = aiToolsMock.executeTool.mock.calls[0]!;
+      expect(call.slice(0, 2)).toEqual(['release_containment', releaseArgs]);
+      const context = (call[3] as { context?: ToolExecutionContext }).context!;
+      expect(context.verifiedIsolationRelease).toBe(verifiedIsolationRelease);
+      expect(context.actionIntentId).toBe(intent.id);
+    });
+
+    it('refuses a release_containment intent with no pinned digest before executing (mandatory pin)', async () => {
+      const args = { deviceId: 'd', isolationId: 'i', reason: 'r' };
+      const intent = baseIntent({
+        effectDigest: null, actionName: 'release_containment', arguments: args,
+        argumentDigest: computeArgumentDigest(canonicalizeArguments(args)),
+      });
+      primeThroughRevalidation(intent);
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(effectDigestMock.computeEffectDigestForRelease).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'digest_required' }),
+      );
     });
 
     it('never executes — and never forwards the verified material — when the digest mismatches', async () => {
@@ -5104,6 +5158,37 @@ describe('processIntentReleaseJob', () => {
     // release, which has already committed.
     expect(result).toEqual({ released: true });
     expect(sentryMock.captureException).toHaveBeenCalled();
+  });
+
+  it('W2 #11085: a release hands the intent to the specialist step post-back, after the release', async () => {
+    dbState.selectActionIntentsResults.push([FOUR_EYES_INTENT]);
+    dbState.selectActionIntentsResults.push([FOUR_EYES_INTENT]);
+    let releasedFirst = false;
+    specialistResultMock.postSpecialistStepOutcome.mockImplementationOnce(async () => {
+      releasedFirst = intentServiceMock.transitionIntent.mock.calls.length > 0;
+      return { posted: true } as never;
+    });
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+
+    await expect(processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' })).resolves.toEqual({ released: true });
+    expect(specialistResultMock.postSpecialistStepOutcome).toHaveBeenCalledWith('intent-1');
+    expect(releasedFirst).toBe(true);
+  });
+
+  it('W2 #11085: a failing step post-back never undoes the release', async () => {
+    dbState.selectActionIntentsResults.push([FOUR_EYES_INTENT]);
+    dbState.selectActionIntentsResults.push([FOUR_EYES_INTENT]);
+    specialistResultMock.postSpecialistStepOutcome.mockRejectedValueOnce(new Error('post boom'));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+
+    await expect(processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_approved' })).resolves.toEqual({ released: true });
+    expect(sentryMock.captureException).toHaveBeenCalled();
+  });
+
+  it('W2 #11085: a rejected / expired / cancelled intent posts no step outcome', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+    expect(specialistResultMock.postSpecialistStepOutcome).not.toHaveBeenCalled();
   });
 
   it('dispatches intent_approved to releaseApprovedIntent', async () => {

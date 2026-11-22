@@ -10,7 +10,6 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup"
 	"github.com/breeze-rmm/agent/internal/backup/integrity"
-	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 )
 
@@ -18,7 +17,7 @@ import (
 // serving it plus the stored manifest bytes.
 func integrityWiringSnapshot(t *testing.T) (*backup.BackupManager, string, []byte) {
 	t.Helper()
-	provider := providers.NewLocalProvider(t.TempDir())
+	provider := privateTestLocalProvider(t, t.TempDir())
 	snapshotID := "snap-wiring-1"
 	src := filepath.Join(t.TempDir(), "a.txt")
 	if err := os.WriteFile(src, []byte("alpha"), 0o600); err != nil {
@@ -62,10 +61,10 @@ func TestRestoreCommandsReadTheIntegrityBlock(t *testing.T) {
 			return execBackupRestoreWithProgress(context.Background(), "c1", p, mgr, nil, nil)
 		},
 		"backup_verify": func(p json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
-			return execBackupVerifyContext(context.Background(), "c2", p, mgr, nil, nil)
+			return execBackupVerifyContext(context.Background(), "c2", p, mgr, nil, nil, 0)
 		},
 		"backup_test_restore": func(p json.RawMessage, mgr *backup.BackupManager) backupipc.BackupCommandResult {
-			return execBackupTestRestoreContext(context.Background(), "c3", p, mgr, nil, nil)
+			return execBackupTestRestoreContext(context.Background(), "c3", p, mgr, nil, nil, 0)
 		},
 	}
 	for name, run := range commands {
@@ -120,10 +119,10 @@ func TestRestoreCommandsReadTheIntegrityBlockBeforeStorage(t *testing.T) {
 			return execBackupRestoreWithProgress(context.Background(), "c1", payload, nil, nil, nil)
 		},
 		"backup_verify": func() backupipc.BackupCommandResult {
-			return execBackupVerifyContext(context.Background(), "c2", payload, nil, nil, nil)
+			return execBackupVerifyContext(context.Background(), "c2", payload, nil, nil, nil, 0)
 		},
 		"backup_test_restore": func() backupipc.BackupCommandResult {
-			return execBackupTestRestoreContext(context.Background(), "c3", payload, nil, nil, nil)
+			return execBackupTestRestoreContext(context.Background(), "c3", payload, nil, nil, nil, 0)
 		},
 	} {
 		res := run()

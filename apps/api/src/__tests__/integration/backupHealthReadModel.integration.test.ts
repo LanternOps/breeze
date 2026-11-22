@@ -10,11 +10,13 @@ import {
   backupJobs,
   backupProviderConnections,
   backupProviderCustomers,
+  backupProviderDeviceHistory,
   backupProviderDevices,
   devices,
 } from '../../db/schema';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
+import { verifiedBootableState } from '@breeze/shared';
 import { listBackupHealthRows, summarizeBackupHealth } from '../../services/backupHealthReadModel';
 
 // Three claims that only a real database and real policies can settle:
@@ -186,6 +188,96 @@ describe('backupHealthReadModel against real policies', () => {
     });
   });
 
+  runDb('verified-bootable fields are null for a Cove row and set for an Axcient row with is_healthy true', async () => {
+    const fx = await seedFixture();
+    const at = new Date('2026-11-05T03:12:00.000Z');
+    const [template] = await withSystemDbAccessContext(() =>
+      db
+        .select({
+          connectionId: backupProviderDevices.connectionId,
+          customerId: backupProviderDevices.customerId,
+        })
+        .from(backupProviderDevices)
+        .where(eq(backupProviderDevices.orgId, fx.org.id))
+        .limit(1),
+    );
+    const unique = randomUUID().slice(0, 8);
+    await withSystemDbAccessContext(() =>
+      db.insert(backupProviderDevices).values({
+        connectionId: template!.connectionId,
+        partnerId: fx.partner.id,
+        orgId: fx.org.id,
+        customerId: template!.customerId,
+        provider: 'axcient',
+        vendorDeviceId: `vd-axcient-${unique}`,
+        vendorDeviceName: 'BH-RM-AXCIENT',
+        breezeDeviceId: null,
+        status: 'completed',
+        lastSuccessAt: new Date(),
+        lastSessionAt: new Date(),
+        verifiedBootableAt: at,
+        verifiedBootable: true,
+        verifiedBootableFailedChecks: [],
+      }),
+    );
+
+    const insertAxcient = (name: string, evidence: Partial<typeof backupProviderDevices.$inferInsert>) =>
+      withSystemDbAccessContext(() =>
+        db.insert(backupProviderDevices).values({
+          connectionId: template!.connectionId,
+          partnerId: fx.partner.id,
+          orgId: fx.org.id,
+          customerId: template!.customerId,
+          provider: 'axcient',
+          vendorDeviceId: `vd-${name}-${unique}`,
+          vendorDeviceName: name,
+          breezeDeviceId: null,
+          status: 'completed',
+          lastSuccessAt: new Date(),
+          lastSessionAt: new Date(),
+          ...evidence,
+        }),
+      );
+    await insertAxcient('BH-RM-AXCIENT-FAILED', {
+      verifiedBootableAt: at,
+      verifiedBootable: false,
+      verifiedBootableFailedChecks: ['system_boot', 'check_disk'],
+    });
+    await insertAxcient('BH-RM-AXCIENT-NEVER', {});
+
+    await withDbAccessContext(fx.partnerContext, async () => {
+      const { rows } = await listBackupHealthRows({ orgIds: [fx.org.id] }, { page: { limit: 50 } });
+      const axcient = rows.find((r) => r.name === 'BH-RM-AXCIENT');
+      expect(axcient).toMatchObject({
+        providerKey: 'axcient',
+        verifiedBootable: true,
+        verifiedBootableAt: at.toISOString(),
+        verifiedBootableFailedChecks: [],
+      });
+      expect(verifiedBootableState(axcient!)).toBe('passed');
+
+      const failed = rows.find((r) => r.name === 'BH-RM-AXCIENT-FAILED');
+      expect(failed).toMatchObject({ verifiedBootable: false, verifiedBootableFailedChecks: ['system_boot', 'check_disk'] });
+      expect(verifiedBootableState(failed!)).toBe('failed');
+
+      const never = rows.find((r) => r.name === 'BH-RM-AXCIENT-NEVER');
+      expect(never).toMatchObject({ verifiedBootable: null, verifiedBootableAt: null, verifiedBootableFailedChecks: null });
+      expect(verifiedBootableState(never!)).toBe('never_run');
+
+      const cove = rows.find((r) => r.name === 'BH-RM-UNLINKED');
+      expect(cove).toMatchObject({
+        providerKey: 'cove',
+        verifiedBootable: null,
+        verifiedBootableAt: null,
+        verifiedBootableFailedChecks: null,
+      });
+      expect(verifiedBootableState(cove!)).toBe('not_applicable');
+
+      const breeze = rows.find((r) => r.source === 'breeze' && r.deviceId === fx.deviceOneId);
+      expect(breeze).toMatchObject({ verifiedBootable: null, verifiedBootableAt: null, verifiedBootableFailedChecks: null });
+    });
+  });
+
   runDb('a site-restricted caller loses unlinked provider rows', async () => {
     const fx = await seedFixture();
     await withDbAccessContext(fx.orgContext, async () => {
@@ -250,6 +342,66 @@ describe('backupHealthReadModel against real policies', () => {
     await withDbAccessContext(fx.partnerContext, async () => {
       const { rows } = await listBackupHealthRows({ orgIds: [fx.org.id] }, { page: { limit: 50 } });
       expect(rows.some((r) => r.deviceId === fx.deviceTwoId && r.status === 'no_backups')).toBe(true);
+    });
+  });
+
+  runDb('a provider device re-polled with an unchanged old success shows missed days, not green ones (#12025)', async () => {
+    const fx = await seedFixture();
+    const now = new Date();
+    const stale = new Date(now.getTime() - 200 * 86_400_000);
+    const dayAgo = (n: number) => new Date(now.getTime() - n * 86_400_000).toISOString().slice(0, 10);
+    const [template] = await withSystemDbAccessContext(() =>
+      db
+        .select({ connectionId: backupProviderDevices.connectionId, customerId: backupProviderDevices.customerId })
+        .from(backupProviderDevices)
+        .where(eq(backupProviderDevices.orgId, fx.org.id))
+        .limit(1),
+    );
+    const [device] = await withSystemDbAccessContext(() =>
+      db.insert(backupProviderDevices).values({
+        connectionId: template!.connectionId,
+        partnerId: fx.partner.id,
+        orgId: fx.org.id,
+        customerId: template!.customerId,
+        provider: 'cove',
+        vendorDeviceId: `vd-stale-${randomUUID().slice(0, 8)}`,
+        vendorDeviceName: 'BH-RM-STALE',
+        breezeDeviceId: null,
+        status: 'completed',
+        lastSuccessAt: stale,
+        lastSessionAt: stale,
+      }).returning({ id: backupProviderDevices.id }),
+    );
+    // What the sync stored before the fix: the stale snapshot's `completed`
+    // once per polled day, carrying the same old lastSuccessAt.
+    await withSystemDbAccessContext(() =>
+      db.insert(backupProviderDeviceHistory).values(
+        [3, 2, 1, 0].map((n) => ({
+          providerDeviceId: device!.id,
+          orgId: fx.org.id,
+          day: dayAgo(n),
+          status: 'completed' as const,
+          lastSuccessAt: stale,
+        })),
+      ),
+    );
+
+    await withDbAccessContext(fx.orgContext, async () => {
+      const { rows } = await listBackupHealthRows({ orgIds: [fx.org.id] }, { page: { limit: 50 } });
+      const row = rows.find((r) => r.name === 'BH-RM-STALE');
+      expect(row).toBeDefined();
+      const cells = new Map(row!.history28d.map((c) => [c.day, c.status]));
+      expect(cells.get(dayAgo(3))).toBe('no_backups');
+      expect(cells.get(dayAgo(2))).toBe('no_backups');
+      expect(cells.get(dayAgo(1))).toBe('no_backups');
+      expect(cells.get(dayAgo(0))).toBeNull();
+      expect(row!.history28d.some((c) => c.status === 'completed')).toBe(false);
+      expect(row!.recency).toBe('over_48h');
+
+      // The Status card counts it as overdue; the raw vendor status stays `completed`.
+      const summary = await summarizeBackupHealth({ orgIds: [fx.org.id] }, { sources: ['provider'] });
+      expect(summary.byStatusBucket.overdue).toBeGreaterThanOrEqual(1);
+      expect(summary.byStatus.completed).toBe(summary.byStatusBucket.completed + summary.byStatusBucket.overdue);
     });
   });
 });

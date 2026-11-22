@@ -14,6 +14,7 @@ import {
 import { compileMonitorInTx } from '../../services/monitors/monitorCompiler';
 import { checkAllAutoResolve, evaluateDeviceAlerts, getApplicableRules } from '../../services/alertService';
 import { eventLogHandler } from '../../services/alertConditions/handlers/eventLog';
+import { closedCursorsQuery, readClosedCursors } from '../../services/alertLifecycle/cursor';
 import * as eventBus from '../../services/eventBus';
 import { closeRedis, getRedis, isRedisAvailable } from '../../services/redis';
 import { createOrganization, createPartner, createSite } from './db-utils';
@@ -201,18 +202,43 @@ describe('event-log alert re-arm lifecycle', () => {
     expect(resolutions).toHaveLength(2);
     expect(resolutions.map(([, , payload]) => (payload as { alertId: string }).alertId).sort()).toEqual([aId, b.id].sort());
 
-    const plan = await system(() => db.transaction(async tx => {
-      // Small fixtures favor seq scans; disabling them proves this predicate matches the index.
+    // The re-arm lookup returns the newest closed episode (B, frozen at its
+    // recovery), not A's older one for the same rule and device. Callers pass
+    // every applicable rule id, so the lookup gets more than one.
+    const lookupRuleIds = [ruleId, randomUUID()];
+    const closed = await system(() => readClosedCursors(f.deviceId, lookupRuleIds));
+    const closedB = (await readAlerts()).find(row => row.id === b.id)!;
+    expect([...closed.keys()]).toEqual([ruleId]);
+    expect(closed.get(ruleId)).toEqual({
+      cursors: (closedB.context as { lifecycle: { cursor: unknown } }).lifecycle.cursor,
+      closedAt: closedB.resolvedAt, legacy: false,
+    });
+    expect(Object.values(closed.get(ruleId)!.cursors!)).toEqual([recoveryB]);
+
+    // The lookup's predicate implies alerts_rule_device_subject_closed_idx's,
+    // and the index's key order serves its DISTINCT ON ... ORDER BY.
+    // Seq scans off alone is not enough: on a few rows alerts_rule_id_idx and
+    // alerts_device_triggered_at_idx cost about the same as this index, so the
+    // winner depends on planner stats (#11532). With sorts off too, every other
+    // path pays the enable_* penalty (a seq scan, or a Sort / Incremental Sort
+    // for the ORDER BY), so this index wins regardless of stats. If the
+    // predicate or key order stops matching, the plan grows a Sort or drops the
+    // index, and this fails.
+    // EXPLAIN runs on the superuser test connection, which bypasses RLS. As
+    // breeze_app (observed on PG16), COALESCE(subject_key, '') = '' is not
+    // leakproof (CoalesceExpr is not in contain_leaked_vars' safe list), so it
+    // can be neither an index qual nor a constant pathkey. The index then
+    // serves only rule_id and device_id and no longer matches the ORDER BY, so
+    // every path sorts and no plan is uniquely cheapest. This pins the index's
+    // fit to the query, not the production (RLS) plan.
+    const plan = JSON.stringify(await getTestDb().transaction(async tx => {
       await tx.execute(sql`SET LOCAL enable_seqscan = off`);
-      return tx.execute(sql`EXPLAIN
-        SELECT DISTINCT ON (rule_id) rule_id AS "ruleId", context->'lifecycle'->'cursor' AS "cursor",
-          COALESCE(resolved_at, dismissed_at) AT TIME ZONE 'UTC' AS "closedAt"
-        FROM alerts WHERE device_id = ${f.deviceId}
-          AND rule_id = ANY(${sql.param([ruleId])}::uuid[]) AND rule_id IS NOT NULL
-          AND status IN ('resolved', 'dismissed') AND COALESCE(subject_key, '') = ''
-        ORDER BY rule_id, COALESCE(resolved_at, dismissed_at) DESC`);
+      await tx.execute(sql`SET LOCAL enable_sort = off`);
+      await tx.execute(sql`SET LOCAL enable_incremental_sort = off`);
+      return tx.execute(sql`EXPLAIN ${closedCursorsQuery(f.deviceId, lookupRuleIds)}`);
     }));
-    expect(JSON.stringify(plan)).toContain('alerts_rule_device_subject_closed_idx');
+    expect(plan).toContain('alerts_rule_device_subject_closed_idx');
+    expect(plan).not.toContain('Sort'); // also matches Incremental Sort
   });
 
   it('exists-after-cursor probe stays under 20 ms on a device with 50k event rows', async () => {

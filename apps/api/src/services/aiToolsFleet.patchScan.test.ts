@@ -16,6 +16,8 @@ const { mockAiQueue, mockSelect } = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -44,6 +46,7 @@ const DEV_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 const baseAuth = {
   user: { id: 'u1', email: 'tech@example.com', name: 'Tech' },
+  token: { mfa: true }, // an interactive session that cleared MFA, as the route twin requires
   orgId: null,
   partnerId: 'partner-1',
   scope: 'partner',

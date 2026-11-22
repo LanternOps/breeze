@@ -15,6 +15,7 @@ import { reportOwnerOfScope, runInReportScope, type ReportScope } from '../repor
 import type { ReportGenerationAuthority } from '../siteScope';
 import { NO_ORGS_NOTE, PARTNER_ORG_LIST_NOTE, ratio, rowsOf, SITE_RESTRICTED_NOTE } from './common';
 import { resolveReportOwnerTimezone, resolveReportPeriod, type ResolvedReportPeriod } from './period';
+import { effectiveDueSql, isoInstantSql, slaTicketEligibilitySql } from './ticketSlaSql';
 
 /**
  * R1 — Ticket SLA attainment (`ticket_sla_attainment`, #3198 spec §3.3 R1).
@@ -109,18 +110,12 @@ function outcomesCte(scopePredicate: SQL, period: ResolvedReportPeriod): SQL {
         t.ticket_number, t.internal_number, t.created_at,
         t.first_response_at, t.resolved_at,
         t.response_sla_minutes, t.resolution_sla_minutes,
-        COALESCE(t.response_due_at, t.created_at
-          + (t.response_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS response_due_at,
-        COALESCE(t.resolution_due_at, t.created_at
-          + (t.resolution_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS resolution_due_at,
+        ${effectiveDueSql('response', 't')} AS response_due_at,
+        ${effectiveDueSql('resolution', 't')} AS resolution_due_at,
         COALESCE(t.sla_paused_minutes, 0) AS paused,
         t.sla_breached_at, t.sla_breach_reason
       FROM tickets t
-      WHERE t.deleted_at IS NULL
-        -- #8972 spec §3.6: a merged tombstone's close stamps are merge stamps.
-        AND t.merged_into_ticket_id IS NULL
-        -- #5573 §4.8: the sweep excludes planned work, so the recompute must too.
-        AND t.work_kind = 'support'
+      WHERE ${slaTicketEligibilitySql('t')}
         AND t.created_at >= ${sqlTimestamp(period.start)} AND t.created_at < ${sqlTimestamp(period.end)}
         AND ${scopePredicate}
     ),
@@ -187,10 +182,6 @@ function overallQuery(cte: SQL, scope: ReportScope): SQL {
     FROM outcomes o`;
 }
 
-/** Naive `timestamp` columns hold UTC; render them as ISO instants in SQL so
- *  the output does not depend on the driver's timestamp parser. */
-const iso = (column: SQL) => sql`to_char(${column}, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
-
 function detailQuery(cte: SQL, includeNoSla: boolean): SQL {
   const noSlaFilter = includeNoSla
     ? sql``
@@ -201,12 +192,12 @@ function detailQuery(cte: SQL, includeNoSla: boolean): SQL {
       o.org_id::text AS org_id, org.name AS org_name,
       o.subject, o.priority::text AS priority, o.category,
       o.assigned_to::text AS assigned_to, u.name AS assigned_to_name,
-      ${iso(sql`o.created_at`)} AS created_at,
-      ${iso(sql`o.first_response_at`)} AS first_response_at,
-      ${iso(sql`o.resolved_at`)} AS resolved_at,
+      ${isoInstantSql(sql`o.created_at`)} AS created_at,
+      ${isoInstantSql(sql`o.first_response_at`)} AS first_response_at,
+      ${isoInstantSql(sql`o.resolved_at`)} AS resolved_at,
       o.response_sla_minutes, o.resolution_sla_minutes, o.paused,
       o.response_outcome, o.resolution_outcome,
-      ${iso(sql`o.sla_breached_at`)} AS sla_breached_at, o.sla_breach_reason
+      ${isoInstantSql(sql`o.sla_breached_at`)} AS sla_breached_at, o.sla_breach_reason
     FROM outcomes o
     LEFT JOIN organizations org ON org.id = o.org_id
     LEFT JOIN users u ON u.id = o.assigned_to

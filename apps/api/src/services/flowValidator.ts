@@ -41,6 +41,7 @@ import {
 import { eventDispatchMode, eventDispatchQueueSubscribers } from '../config/env';
 import { checkGuardrails, tierDecidingInputKeys } from './aiGuardrails';
 import { toolInputSchemas } from './aiToolSchemas';
+import { findUnknownInputKeys, formatUnknownKeyFinding } from './aiToolUnknownKeys';
 import { EVENT_TYPES } from './eventBus';
 import type { SubscriberId } from './eventSubscriberIds';
 import { FLOW_OWNED_REFERENCE_FIELDS, isRegisteredCoreTool, loadFlowCatalog, type FlowCatalog, type FlowCatalogEntry } from './flows/catalog';
@@ -546,6 +547,11 @@ export async function revalidateRenderedStep(
     if (!schema) return { ok: false, code: 'tool_unavailable', message: TOOL_UNAVAILABLE_MESSAGE };
     if (pin.tool === 'run_script' && Object.hasOwn(rendered, 'proposalId')) {
       return { ok: false, code: 'input_invalid', message: 'Flows run library scripts only; use scriptId, not proposalId.' };
+    }
+    // #11861: dispatch refuses an argument the tool does not define; say so here first.
+    const unknown = findUnknownInputKeys(schema, rendered)[0];
+    if (unknown) {
+      return { ok: false, code: 'input_invalid', message: `${toPointer(unknown.path) || '/'}: ${formatUnknownKeyFinding({ ...unknown, path: [] })}` };
     }
     const parsed = schema.safeParse(rendered);
     if (!parsed.success) return { ok: false, code: 'input_invalid', message: zodMessage(parsed.error) };

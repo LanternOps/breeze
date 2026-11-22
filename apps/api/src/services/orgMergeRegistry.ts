@@ -549,6 +549,14 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // Singleton config rows (UNIQUE(org_id)) — survivor's config wins:
   audit_retention_policies: { kind: 'keep-survivor' }, // verified: audit_retention_policies.org_id UNIQUE (audit.ts) — every org now gets one seeded by breeze_seed_org_audit_retention (#4824), so both sides of a merge always collide on a plain repoint
   ai_budgets: { kind: 'keep-survivor' }, // verified: ai_budgets.org_id UNIQUE (ai.ts)
+  portal_access_policies: { kind: 'keep-survivor' }, // verified: portal_access_policies_org_uq partial UNIQUE (org_id); spec §5.3 survivor wins
+  // W9 (#11386, plan D1): a SCIM bearer credential bound to the LOSER org and its
+  // proven tenant. Never re-pointed: the merge fences the loser (status 'merging'
+  // → shell), so its tokens stop authenticating, and the MSP creates a token on
+  // the survivor. The identities those tokens managed repoint with
+  // portal_user_identities and stay reserved by (issuer, subject).
+  portal_scim_tokens: { kind: 'leave-for-erasure', note: 'credential bound to the loser org and its proven tenant; the fenced loser stops authenticating it; the MSP mints a new token on the survivor' },
+  portal_access_requests: { kind: 'repoint-dedupe', key: ['email'], keyWhere: "{status} = 'pending'" }, // verified: portal_access_requests_pending_email_uq (org_id, email) WHERE status = 'pending'
   portal_branding: { kind: 'keep-survivor' }, // verified: portal_branding.org_id UNIQUE (portal.ts)
   org_billing_profile_assignments: { kind: 'keep-survivor' }, // org_id UNIQUE
   org_ticket_settings: { kind: 'keep-survivor' }, // verified: org_ticket_settings.org_id UNIQUE (ticketConfig.ts)
@@ -754,6 +762,10 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
     + 'A blind repoint-dedupe DELETE would cascade-delete those values once device_custom_field_values lands (W05). '
     + 'The collision predicate is org_id-equality on both sides, so partner-wide definitions (org_id NULL, #2135) are never touched by an org merge.' },
   pam_signer_groups: { kind: 'custom', note: 're-home pam_rules.match_signer_group_id onto the survivor group with the same name, then delete the duplicate (the FK is ON DELETE RESTRICT — a plain dedupe DELETE raises 23503)' },
+  // Learned networks (#12369 W01a): unlike the block above, every learned-network FK is DEFERRABLE INITIALLY
+  // IMMEDIATE and the fold relies on the merge's SET CONSTRAINTS ALL DEFERRED. The collision is the
+  // non-deferrable unique learned_network_gateways_fingerprint_uniq, resolved per fingerprint in RESOLVE.
+  learned_networks: { kind: 'custom', note: 'fold identical fingerprints (gateway_mac, gateway_address) into the survivor in RESOLVE: re-point device rows and grants to the survivor fingerprint, merge a network whose fingerprints all fold into one survivor network, unassign one that would split; MOVE repoints the rest (learnedNetworks/orgMerge.ts)' },
   // CORRECTED (P2-3 review, #4190): `reports` was a plain `repoint` — correct
   // until P2-3 gave it its FIRST collidable unique index,
   // `reports_source_ai_agent_schedule_uniq (org_id, source_ai_agent_schedule_id)
@@ -1037,6 +1049,8 @@ const REPOINT_TABLES: readonly string[] = [
   // SET CONSTRAINTS ALL DEFERRED lets parents and this row repoint in separate
   // statements; breeze_network_isolation_device_moved skips a merging org.
   "device_network_isolations",
+  "device_oem_policy_side",
+  "device_oem_update_status",
   "device_patches",
   "device_process_samples",
   "device_recovery_keys",
@@ -1050,6 +1064,8 @@ const REPOINT_TABLES: readonly string[] = [
   "device_time_daily",
   "device_time_status",
   "device_vulnerabilities",
+  "device_wake_attempts",
+  "device_wake_status",
   "device_warranty",
   // device_workloads / device_workload_runtimes (#3834): plain repoint — the
   // only unique keys are (device_id, runtime, workload_id) and (device_id,
@@ -1058,6 +1074,9 @@ const REPOINT_TABLES: readonly string[] = [
   "device_workloads",
   "devices",
   "discovery_jobs",
+  // Learned networks (#12369 W01a): grants were re-pointed to the survivor fingerprint by the learned_networks
+  // resolve half, and (profile_id, gateway_id) cannot collide across orgs.
+  "discovery_profile_snmp_grants",
   "discovery_profiles",
   "dns_event_aggregations",
   "dns_filter_integrations",
@@ -1141,6 +1160,12 @@ const REPOINT_TABLES: readonly string[] = [
   "invoice_payments",
   "invoice_stripe_payments",
   "invoices",
+  // Learned networks (#12369 W01a): colliding fingerprints are already gone after the learned_networks resolve
+  // half (CUSTOM_RESOLVE_EXECUTORS), so this repoint cannot hit learned_network_gateways_fingerprint_uniq.
+  // learned_networks itself is moved by its custom MOVE executor (moveLearnedNetworks).
+  "learned_network_devices",
+  "learned_network_gateways",
+  "learned_network_wan_addresses",
   "legacy_labour_pricing_archive",
   "local_vaults",
   "log_correlation_rules",
@@ -1206,7 +1231,6 @@ const REPOINT_TABLES: readonly string[] = [
   "partner_api_idempotency_keys",
   "partner_enrollment_key_idempotency",
   "patch_compliance_reports",
-  "patch_compliance_snapshots",
   "patch_jobs",
   "pax8_company_mappings",
   "pax8_contract_line_links",
@@ -1218,6 +1242,19 @@ const REPOINT_TABLES: readonly string[] = [
   "playbook_executions",
   "plugin_instances",
   "plugins",
+  // W8 (#11385, plan D12). Plain repoint, no dedupe: a run's only org-bearing
+  // unique key is (org_id, source, snapshot_key), and every snapshot_key starts
+  // with the org's own connection id, so the two orgs' runs cannot collide; an
+  // action's (run_id, identity_id) key has no org_id. The composite (x, org_id)
+  // FKs between actions, runs, identities and accounts are DEFERRABLE, covered by
+  // the merge's SET CONSTRAINTS ALL DEFERRED. chain_key keeps the absorbed org's
+  // id, so its held actions refuse at Apply (D8d) and observations reset (D5).
+  "portal_directory_actions",
+  "portal_directory_runs",
+  // Plain repoint, no dedupe: both unique keys ((issuer, subject) and
+  // (portal_user_id, provider)) are org-free, so a re-tenant can never collide,
+  // and the composite (portal_user_id, org_id) FK is deferred by the merge.
+  "portal_user_identities",
   "portal_users",
   "provision_credential_handles",
   "psa_connections",
@@ -1324,6 +1361,11 @@ const REPOINT_TABLES: readonly string[] = [
   "ticket_email_links",
   "ticket_external_refs",
   "ticket_forms",
+  // ticket_import_org_maps (#8313 W4): a source org's target org. Plain
+  // repoint: its unique keys are (source_id, source_org_key) and the fallback's
+  // (source_id), neither of which contains org_id, so the survivor can never
+  // collide. Its composite org FK is DEFERRABLE INITIALLY IMMEDIATE.
+  "ticket_import_org_maps",
   // ticket_links (#7900 W02). Own org_id (shape 1); both legs live in the
   // loser org and both tickets repoint with it, so a plain repoint keeps every
   // link intact. Its unique keys are on ticket ids (globally unique), so no
@@ -1413,6 +1455,10 @@ const REPOINT_TABLES: readonly string[] = [
   // stays behind (leave-for-erasure): the survivor is outside that grant's
   // ceiling, so the wake path skips it, and erasing the loser shell deletes
   // the grant and, by ON DELETE CASCADE, those rows.
+  // Wisp check-in timers W01 (#10992). Partner-level check-ins (org_id NULL)
+  // never match the repoint, and the only unique key is the PK, so a repoint
+  // cannot collide. The thread and grant are partner-axis and stay put.
+  "wisp_check_ins",
   "wisp_concern_recipients",
   "wisp_concerns",
   // Wisp W08a (#9914). Partner-level links (org_id NULL) never match the

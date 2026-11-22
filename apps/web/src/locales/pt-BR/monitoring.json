@@ -43,6 +43,43 @@
       "description": "Anexe os monitores integrados a uma política."
     }
   },
+  "lifecycle": {
+    "autoResolveOn": "Ativado",
+    "autoResolveOff": "Desativado",
+    "rearmLabel": "Rearme",
+    "rearmNewEvidence": "Nova evidência",
+    "rearmAfterDelay": "Após N minutos",
+    "rearmAfterMinutes_one": "Após {{count}} minuto",
+    "rearmAfterMinutes_other": "Após {{count}} minutos",
+    "rearmDelayLabel": "Rearmar após (minutos)",
+    "rearmHelp": "Nova evidência: somente um evento que o alerta fechado ainda não viu o reabre. Após N minutos: eventos mais antigos também podem reabri-lo depois que se passarem N minutos desde o fechamento.",
+    "inheritOption": "Herdar ({{value}}, {{source}})",
+    "inheritOptionPlain": "Herdar",
+    "sources": {
+      "org": "Padrão da organização",
+      "partner": "Padrão do parceiro",
+      "builtin": "Padrão integrado"
+    },
+    "errors": {
+      "cooldown": "Informe um número inteiro de 0 a 1440.",
+      "cooldownOrInherit": "Informe um número inteiro de 0 a 1440 ou deixe em branco para herdar.",
+      "rearmDelay": "Informe um número inteiro de minutos de 1 a 1440."
+    }
+  },
+  "lifecycleDefaults": {
+    "title": "Padrões do ciclo de vida",
+    "descriptionPartner": "O padrão para os monitores de todas as organizações. Uma organização pode substituí-lo, e a configuração própria de um monitor prevalece sobre ambos.",
+    "descriptionOrg": "Substitui o padrão do parceiro para esta organização. Deixe um campo em branco para herdá-lo. A configuração própria de um monitor prevalece sobre este valor.",
+    "readOnly": "Você não tem permissão para alterar o padrão do parceiro.",
+    "saved": "Padrões do ciclo de vida salvos",
+    "saveAction": "Salvar padrões",
+    "overrideCount_one": "{{count}} monitor substitui isto",
+    "overrideCount_other": "{{count}} monitores substituem isto",
+    "errors": {
+      "load": "Não foi possível carregar os padrões do ciclo de vida.",
+      "save": "Não foi possível salvar os padrões do ciclo de vida."
+    }
+  },
   "editor": {
     "attachedToPolicy": "Monitor criado e anexado à política",
     "titleNew": "Novo monitor",
@@ -53,11 +90,22 @@
     },
     "sections": {
       "watch": "O que observar",
-      "noise": "Gravidade e ruído",
+      "lifecycle": "Ciclo de vida do alerta",
       "respond": "Responder",
       "notify": "Notificar",
       "escalate": "Escalonar para uma pessoa",
       "deployed": "Implantado em"
+    },
+    "lifecycle": {
+      "overrides": {
+        "org": "Este monitor substitui o padrão da organização ({{value}})",
+        "partner": "Este monitor substitui o padrão do parceiro ({{value}})",
+        "builtin": "Este monitor substitui o padrão integrado ({{value}})",
+        "unknown": "Este monitor substitui o padrão herdado."
+      },
+      "partnerWideHint": "Uma organização com padrão próprio usa esse em vez do valor herdado exibido aqui.",
+      "inheritedUnavailable": "Não foi possível carregar os valores herdados. Você ainda pode salvar.",
+      "windowWarning": "A janela de eventos ({{window}} min) é menor que o intervalo de espera ({{cooldown}} min). Um novo evento durante o intervalo de espera pode sair da janela antes de o alerta ser reaberto."
     },
     "tabs": {
       "settings": "Configurações",
@@ -175,7 +223,20 @@
     "psaBoardDefault": "Usar o quadro padrão da conexão",
     "psaBoardHelp": "Os chamados de alertas deste monitor são criados neste quadro, em vez do padrão da conexão.",
     "psaBoardReadOnly": "Os chamados de alertas vão para o quadro #{{id}} do PSA",
-    "psaBoardUnavailable": "Não foi possível carregar os quadros do PSA, então a substituição do quadro está indisponível no momento."
+    "psaBoardUnavailable": "Não foi possível carregar os quadros do PSA, então a substituição do quadro está indisponível no momento.",
+    "clearsWhen": {
+      "title": "É resolvido quando",
+      "hint": "É resolvido apenas por um evento registrado depois do evento que disparou o alerta.",
+      "noneHint": "Nenhuma condição de recuperação definida: o alerta é resolvido quando o gatilho deixa de corresponder.",
+      "add": "Adicionar uma condição de recuperação",
+      "removeCondition": "Remover",
+      "keepCustom": "Manter a condição personalizada",
+      "customTitle": "Condição de recuperação personalizada (API)",
+      "customHint": "Esta condição foi definida pela API e não pode ser editada aqui. Salvar a mantém como está.",
+      "replaceCustom": "Substituir",
+      "invalid": "Um dos valores da condição de recuperação não é válido.",
+      "customUnusable": "Esta condição não pode ser avaliada, então os alertas deste monitor não serão resolvidos automaticamente. Substitua-a para corrigir isso."
+    }
   },
   "kinds": {
     "composite": "Composto (todas ou alguma de várias)",

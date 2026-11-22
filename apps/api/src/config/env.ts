@@ -176,6 +176,11 @@ export function preAssignmentEnrollmentEnabled(): boolean {
   return envFlag('PRE_ASSIGNMENT_ENROLLMENT_ENABLED', false);
 }
 
+// Learned-network heartbeat ingest kill switch, default on; off stops learning and confirmations and gated sites then fail closed.
+export function learnedNetworksIngestEnabled(): boolean {
+  return envFlag('LEARNED_NETWORKS_INGEST_ENABLED', true);
+}
+
 // Caller verification (anti-vishing, #6354). Default ON as of W05: enforcement
 // ships with the link tier (SMS/email links, callback attestation,
 // administrative). Any explicit value other than the exact string 'true'
@@ -249,6 +254,13 @@ export function toolSourcesAllowPrivateEgress(): boolean {
 
 export function sweepActEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', false);
+}
+
+// billing#51: the partner-trust-fraud-flags job restricts a partner on a
+// billing fraud flag pulled from this region's BREEZE_BILLING_URL. Default
+// OFF; set per region. It also needs PARTNER_TRUST_MODE=enforce.
+export function billingFraudFlagsEnabled(): boolean {
+  return envFlag('PARTNER_TRUST_FRAUD_FLAGS_ENABLED', false);
 }
 
 export type BreezeRegion = 'eu' | 'us';
@@ -613,6 +625,63 @@ export function ipClassifyProvider(
 
 export function ipClassifyApiKey(source: NodeJS.ProcessEnv = process.env): string {
   return (source.IP_CLASSIFY_API_KEY ?? '').trim();
+}
+
+/**
+ * The classifier in effect: a keyed provider, or the offline baseline
+ * (Tor exit list + hosting ASNs, #11698) when none is configured.
+ */
+export function activeIpClassifier(source: NodeJS.ProcessEnv = process.env): 'offline' | 'ipinfo' | 'ipdata' {
+  const provider = ipClassifyProvider(source);
+  return provider === 'none' ? 'offline' : provider;
+}
+
+export const IP_CLASSIFY_TOR_LIST_DEFAULT_URL = 'https://check.torproject.org/torbulkexitlist';
+/**
+ * Pinned to a commit, not a branch: the hosting list feeds a security gate, so
+ * a change upstream reaches deployments only through a reviewed bump of this
+ * pin. Bump it together with services/ipClassifyData/hostingAsnSnapshot.ts.
+ */
+export const IP_CLASSIFY_HOSTING_ASN_DEFAULT_URL =
+  'https://raw.githubusercontent.com/brianhama/bad-asn-list/b825d2e0e09684842599b75881fc76cb42f0e8c6/bad-asn-list.csv';
+export const IP_CLASSIFY_ASN_DB_DEFAULT_URL = 'https://iptoasn.com/data/ip2asn-combined.tsv.gz';
+
+const warnedIpClassifySourceVars = new Set<string>();
+
+/**
+ * Unset or empty → the default URL; `none`/`off`/`false` → null (download
+ * disabled, the bundled snapshot or nothing is used); any other value must be
+ * an https URL. An invalid value (including plain http) warns once and
+ * disables the download rather than silently using the default the operator
+ * tried to replace.
+ */
+function resolveIpClassifySourceUrl(name: string, raw: string | undefined, fallback: string): string | null {
+  const value = (raw ?? '').trim();
+  if (value === '') return fallback;
+  if (['none', 'off', 'false', '0'].includes(value.toLowerCase())) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'https:') return url.toString();
+  } catch {
+    // fall through to the warning
+  }
+  if (!warnedIpClassifySourceVars.has(name)) {
+    warnedIpClassifySourceVars.add(name);
+    console.warn(`[IPClassify] ${name} is not an https URL; that offline source will not be downloaded`);
+  }
+  return null;
+}
+
+export function ipClassifyTorListUrl(source: NodeJS.ProcessEnv = process.env): string | null {
+  return resolveIpClassifySourceUrl('IP_CLASSIFY_TOR_LIST_URL', source.IP_CLASSIFY_TOR_LIST_URL, IP_CLASSIFY_TOR_LIST_DEFAULT_URL);
+}
+
+export function ipClassifyHostingAsnUrl(source: NodeJS.ProcessEnv = process.env): string | null {
+  return resolveIpClassifySourceUrl('IP_CLASSIFY_HOSTING_ASN_URL', source.IP_CLASSIFY_HOSTING_ASN_URL, IP_CLASSIFY_HOSTING_ASN_DEFAULT_URL);
+}
+
+export function ipClassifyAsnDbUrl(source: NodeJS.ProcessEnv = process.env): string | null {
+  return resolveIpClassifySourceUrl('IP_CLASSIFY_ASN_DB_URL', source.IP_CLASSIFY_ASN_DB_URL, IP_CLASSIFY_ASN_DB_DEFAULT_URL);
 }
 
 // Signup-abuse detection (services/abuseSignals) is a HOSTED-operator concern:

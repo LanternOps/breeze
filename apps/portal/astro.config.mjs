@@ -2,6 +2,7 @@ import { defineConfig } from 'astro/config';
 import react from '@astrojs/react';
 import tailwindcss from '@tailwindcss/vite';
 import node from '@astrojs/node';
+import { zodJitlessAlias } from '../../packages/shared/zodJitlessAlias.mjs';
 
 // Base path the portal is served under. Defaults to `/portal` so the portal can be
 // reverse-proxied behind the main domain (e.g. https://example.com/portal/...) without
@@ -117,6 +118,10 @@ export default defineConfig({
     port: 4322
   },
   vite: {
-    plugins: [tailwindcss(), portalDevBase(PORTAL_BASE)]
+    plugins: [tailwindcss(), portalDevBase(PORTAL_BASE)],
+    resolve: {
+      // Bare `zod` -> jitless shim so no browser entry probes `new Function` (#9972).
+      alias: [zodJitlessAlias]
+    }
   }
 });

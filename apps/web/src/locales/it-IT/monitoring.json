@@ -43,6 +43,43 @@
       "description": "Associa i monitor integrati a una policy."
     }
   },
+  "lifecycle": {
+    "autoResolveOn": "Attivo",
+    "autoResolveOff": "Disattivo",
+    "rearmLabel": "Riarmo",
+    "rearmNewEvidence": "Nuove evidenze",
+    "rearmAfterDelay": "Dopo N minuti",
+    "rearmAfterMinutes_one": "Dopo {{count}} minuto",
+    "rearmAfterMinutes_other": "Dopo {{count}} minuti",
+    "rearmDelayLabel": "Riarma dopo (minuti)",
+    "rearmHelp": "Nuove evidenze: solo un evento che l’avviso chiuso non ha ancora visto lo riapre. Dopo N minuti: anche gli eventi più vecchi possono riaprirlo una volta trascorsi N minuti dalla chiusura.",
+    "inheritOption": "Eredita ({{value}}, {{source}})",
+    "inheritOptionPlain": "Eredita",
+    "sources": {
+      "org": "Predefinito dell’organizzazione",
+      "partner": "Predefinito del partner",
+      "builtin": "Predefinito integrato"
+    },
+    "errors": {
+      "cooldown": "Inserisci un numero intero da 0 a 1440.",
+      "cooldownOrInherit": "Inserisci un numero intero da 0 a 1440 oppure lascia vuoto il campo per ereditarlo.",
+      "rearmDelay": "Inserisci un numero intero di minuti da 1 a 1440."
+    }
+  },
+  "lifecycleDefaults": {
+    "title": "Valori predefiniti del ciclo di vita",
+    "descriptionPartner": "Il predefinito per i monitor di ogni organizzazione. Un’organizzazione può sovrascriverlo, e l’impostazione propria di un monitor prevale su entrambi.",
+    "descriptionOrg": "Sovrascrive il predefinito del partner per questa organizzazione. Lascia vuoto un campo per ereditarlo. L’impostazione propria di un monitor prevale su questo valore.",
+    "readOnly": "Non hai l’autorizzazione per modificare il predefinito del partner.",
+    "saved": "Valori predefiniti del ciclo di vita salvati",
+    "saveAction": "Salva impostazioni predefinite",
+    "overrideCount_one": "{{count}} monitor lo sovrascrive",
+    "overrideCount_other": "{{count}} monitor lo sovrascrivono",
+    "errors": {
+      "load": "Impossibile caricare i valori predefiniti del ciclo di vita.",
+      "save": "Impossibile salvare i valori predefiniti del ciclo di vita."
+    }
+  },
   "editor": {
     "attachedToPolicy": "Monitor creato e collegato alla policy",
     "titleNew": "Nuovo monitor",
@@ -53,11 +90,22 @@
     },
     "sections": {
       "watch": "Cosa monitorare",
-      "noise": "Gravità e rumore",
+      "lifecycle": "Ciclo di vita dell’avviso",
       "respond": "Rispondi",
       "notify": "Notifica",
       "escalate": "Escalation verso una persona",
       "deployed": "Distribuito su"
+    },
+    "lifecycle": {
+      "overrides": {
+        "org": "Questo monitor sovrascrive il predefinito dell’organizzazione ({{value}})",
+        "partner": "Questo monitor sovrascrive il predefinito del partner ({{value}})",
+        "builtin": "Questo monitor sovrascrive il predefinito integrato ({{value}})",
+        "unknown": "Questo monitor sovrascrive il predefinito ereditato."
+      },
+      "partnerWideHint": "Un’organizzazione con un proprio predefinito usa quello al posto del valore ereditato mostrato qui.",
+      "inheritedUnavailable": "Impossibile caricare i valori ereditati. Puoi comunque salvare.",
+      "windowWarning": "La finestra degli eventi ({{window}} min) è più breve del cooldown ({{cooldown}} min). Un nuovo evento durante il cooldown può uscire dalla finestra prima che l’avviso venga riaperto."
     },
     "tabs": {
       "settings": "Impostazioni",
@@ -175,7 +223,20 @@
     "psaBoardDefault": "Usa il board predefinito della connessione",
     "psaBoardHelp": "I ticket di avviso di questo monitor vengono creati in questo board invece che in quello predefinito della connessione.",
     "psaBoardReadOnly": "I ticket di avviso vanno al board PSA #{{id}}",
-    "psaBoardUnavailable": "Impossibile caricare le bacheche PSA, quindi la sostituzione della bacheca non è disponibile al momento."
+    "psaBoardUnavailable": "Impossibile caricare le bacheche PSA, quindi la sostituzione della bacheca non è disponibile al momento.",
+    "clearsWhen": {
+      "title": "Si risolve quando",
+      "hint": "Si risolve solo con un evento registrato dopo l'evento che ha attivato l'avviso.",
+      "noneHint": "Nessuna condizione di ripristino impostata: l'avviso si risolve quando l'attivatore smette di corrispondere.",
+      "add": "Aggiungi una condizione di ripristino",
+      "removeCondition": "Rimuovi",
+      "keepCustom": "Mantieni la condizione personalizzata",
+      "customTitle": "Condizione di ripristino personalizzata (API)",
+      "customHint": "Questa condizione è stata impostata tramite API e non può essere modificata qui. Il salvataggio la mantiene invariata.",
+      "replaceCustom": "Sostituisci",
+      "invalid": "Uno dei valori della condizione di ripristino non è valido.",
+      "customUnusable": "Questa condizione non può essere valutata, quindi gli avvisi di questo monitor non si risolveranno automaticamente. Sostituiscila per correggere il problema."
+    }
   },
   "kinds": {
     "composite": "Composito (tutte o una di più condizioni)",

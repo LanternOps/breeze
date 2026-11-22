@@ -96,6 +96,10 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   // Wisp W08: every link_entity is a durable row on the thread every later
   // session is seeded with (cap 50 per thread).
   link_entity: { limit: 20, windowSeconds: 300 },
+  // Wisp check-ins (#10991 W03): every schedule_check_in is a delayed job and
+  // a notification to the grantor (cap 5 scheduled per thread).
+  schedule_check_in: { limit: 10, windowSeconds: 600 },
+  cancel_check_in: { limit: 20, windowSeconds: 300 },
   // Wisp W07: every launch_specialist admits a run or an Operator task (or a
   // client-facing bulk reply) that spends grant budget.
   launch_specialist: { limit: 10, windowSeconds: 3600 },
@@ -182,6 +186,7 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   assign_security_training: { limit: 10, windowSeconds: 300 },
   // Registration-debt payoff: rate limits for newly-permissioned tools.
   execute_containment: { limit: 5, windowSeconds: 600 },       // mirrors s1_isolate_device
+  release_containment: { limit: 5, windowSeconds: 600 },       // W13 (#10101): same budget as isolating
   collect_evidence: { limit: 10, windowSeconds: 300 },          // mirrors take_screenshot-class dispatch
   remediate_software_violation: { limit: 10, windowSeconds: 600 }, // mirrors apply_cis_remediation
   // Full-control W04 (#6758, quorum QW11): spec wiring checklist item 3 — the
@@ -263,6 +268,12 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   browse_device_event_log: { limit: 15, windowSeconds: 300 },
   manage_tenant_variables: { limit: 20, windowSeconds: 300 },
   manage_support_sessions: { limit: 10, windowSeconds: 300 },
+  // W17 (#6788): the VSS read waits on the machine, so it uses the live event-log limit.
+  manage_backup_verification: { limit: 30, windowSeconds: 300 },
+  get_vss_status: { limit: 15, windowSeconds: 300 },
+  manage_c2c_configs: { limit: 20, windowSeconds: 300 },
+  list_bmr_recoveries: { limit: 40, windowSeconds: 300 },
+  get_backup_health: { limit: 30, windowSeconds: 300 },
   // W14 (#6784, W14-D9): billing writes use the W13 write limit.
   manage_billing_profiles: { limit: 20, windowSeconds: 300 },
   manage_billing_settings: { limit: 20, windowSeconds: 300 },
@@ -276,6 +287,23 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   search_pax8_products: { limit: 30, windowSeconds: 300 },
   manage_pax8_orders: { limit: 30, windowSeconds: 300 },
   manage_pax8_subscriptions: { limit: 10, windowSeconds: 300 },
+  // Full-control W18 PR A (#6789): readiness fans out over up to 50 orgs per call, so it gets half the budget.
+  get_org_summary: { limit: 30, windowSeconds: 300 },
+  get_account_readiness: { limit: 15, windowSeconds: 300 },
+  get_audit_retention: { limit: 30, windowSeconds: 300 },
+  list_portal_users: { limit: 30, windowSeconds: 300 },
+  list_users: { limit: 30, windowSeconds: 300 },
+  get_user: { limit: 30, windowSeconds: 300 },
+  list_roles: { limit: 30, windowSeconds: 300 },
+  // Full-control W18 PR B (#6789): writers that reach customers (the portal) or send report data out (recipients).
+  manage_org_portal_settings: { limit: 15, windowSeconds: 300 },
+  manage_report_recipients: { limit: 20, windowSeconds: 300 },
+  // Full-control W16 PR A (#6786): each call admits a credit-debiting run or an operator task.
+  run_patch_plan: { limit: 5, windowSeconds: 300 },
+  create_operator_task: { limit: 10, windowSeconds: 300 },
+  // Full-control W16 PR B (#6786): a schedule starts recurring credit-debiting runs; a Fleet Design runs or applies.
+  manage_ai_agent_schedules: { limit: 15, windowSeconds: 300 },
+  manage_fleet_designs: { limit: 10, windowSeconds: 300 },
 };
 
 /**

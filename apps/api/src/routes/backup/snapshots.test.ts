@@ -8,11 +8,13 @@ vi.mock('./deviceNames', async (importOriginal) => ({
   attachDeviceNames: (...args: [string, unknown[]]) => attachNamesMock(...args),
 }));
 
-const listDirMock = vi.hoisted(() => vi.fn());
+const { listDirMock, searchMock } = vi.hoisted(() => ({ listDirMock: vi.fn(), searchMock: vi.fn() }));
 vi.mock('../../services/backupSnapshotBrowse', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/backupSnapshotBrowse')>()),
   listSnapshotDirectory: (...args: unknown[]) => listDirMock(...args),
+  searchSnapshotFiles: (...args: unknown[]) => searchMock(...args),
 }));
+import { IndexQueryTimeoutError } from '../../services/backupSnapshotBrowse';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const SNAPSHOT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -22,7 +24,7 @@ let permissionsState: any;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'orderBy', 'returning', 'set']) {
+  for (const method of ['from', 'where', 'limit', 'orderBy', 'returning', 'set', 'leftJoin']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -31,6 +33,17 @@ function chainMock(resolvedValue: unknown = []) {
 const selectMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
 const authorizeResilienceResourcesMock = vi.fn();
+// #11026: work deferred until the request's DB context exits; tests run it
+// explicitly so they can assert it did not run inside the context.
+let afterContextWork: Array<() => unknown> = [];
+const runAfterContext = async () => {
+  const work = afterContextWork;
+  afterContextWork = [];
+  for (const run of work) await run();
+};
+const enqueueHydrationMock = vi.fn(async (..._args: unknown[]) => 'job-1');
+// When set, requirePermission grants only these `resource:action` pairs.
+let grantedPermissions: Set<string> | null = null;
 let authState = {
   principal: { kind: 'user_session' as const },
   user: { id: '11111111-1111-4111-8111-111111111111', email: 'test@example.com', name: 'Test User' },
@@ -48,6 +61,32 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runAfterDbContextExit: (_label: string, work: () => unknown) => { afterContextWork.push(work); },
+}));
+
+const captureExceptionMock = vi.fn();
+vi.mock('../../services/sentry', () => ({ captureException: (...args: unknown[]) => captureExceptionMock(...args) }));
+
+// #11180: the rebuild cooldown's Redis key (SET NX EX), faked with a map so a
+// test can let the TTL "elapse" by deleting the key.
+const redisFake = vi.hoisted(() => {
+  const store = new Map<string, number>();
+  return {
+    store,
+    available: true,
+    set: vi.fn(async (key: string, _v: string, _ex: string, ttl: number, nx: string) => {
+      if (nx === 'NX' && store.has(key)) return null;
+      store.set(key, ttl);
+      return 'OK';
+    }),
+    ttl: vi.fn(async (key: string) => (store.has(key) ? 420 : -2)),
+    del: vi.fn(async (key: string) => (store.delete(key) ? 1 : 0)),
+  };
+});
+vi.mock('../../services/redis', () => ({ getRedis: () => (redisFake.available ? redisFake : null) }));
+
+vi.mock('../../jobs/backupSnapshotFileIndexWorker', () => ({
+  enqueueSnapshotFileIndexHydration: (...args: unknown[]) => enqueueHydrationMock(...args),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -124,7 +163,10 @@ vi.mock('../../middleware/auth', () => ({
     }
     return next();
   }),
-  requirePermission: vi.fn(() => (c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => (c: any, next: any) =>
+    !grantedPermissions || grantedPermissions.has(`${resource}:${action}`)
+      ? next()
+      : c.json({ error: 'Permission denied' }, 403)),
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requireMfa: vi.fn(() => (c: any, next: any) => next()),
 }));
@@ -168,6 +210,16 @@ describe('snapshot routes', () => {
     updateMock.mockReset();
     updateMock.mockImplementation(() => chainMock([]));
     permissionsState = undefined;
+    grantedPermissions = null;
+    afterContextWork = [];
+    enqueueHydrationMock.mockReset();
+    captureExceptionMock.mockReset();
+    redisFake.store.clear();
+    redisFake.available = true;
+    redisFake.set.mockClear();
+    redisFake.ttl.mockClear();
+    redisFake.del.mockClear();
+    enqueueHydrationMock.mockResolvedValue('job-1');
     authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', authState);
@@ -431,6 +483,395 @@ describe('snapshot routes', () => {
       headers: { Authorization: 'Bearer token' },
     });
     expect((await sub.json()).manifestUnavailable).toBe(false);
+  });
+
+  describe('#11026 browse builds the file index on demand', () => {
+    // The row readSnapshotIndexView selects: index columns, attestation, hasRows.
+    const indexRow = (overrides: Record<string, unknown> = {}) => ({
+      id: SNAPSHOT_ID, fileCount: 18000, fileIndexStatus: 'none', fileIndexManifestSha256: null,
+      fileIndexError: null, fileIndexHydratedAt: null, integrityStatus: 'pending', storageIdentity: 's3::endpoint::bucket',
+      attestationStatus: null, attestationManifestSha256: null, hasRows: false, ...overrides,
+    });
+    const browse = () => app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, {
+      method: 'GET', headers: { Authorization: 'Bearer token' },
+    });
+
+    it('a none snapshot with files and no rows reads as building, and requests hydration once, after the context exits', async () => {
+      selectMock.mockReturnValueOnce(chainMock([indexRow()]));
+      listDirMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      const res = await browse();
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.index).toEqual({ state: 'building' });
+      expect(body.manifestUnavailable).toBe(true);
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+      await runAfterContext();
+      expect(enqueueHydrationMock).toHaveBeenCalledTimes(1);
+      expect(enqueueHydrationMock).toHaveBeenCalledWith(SNAPSHOT_ID, 'browse');
+    });
+
+    it('an enqueue that rejects still answers 200 and is logged', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      selectMock.mockReturnValueOnce(chainMock([indexRow()]));
+      listDirMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      enqueueHydrationMock.mockRejectedValueOnce(new Error('redis down'));
+      const res = await browse();
+      expect(res.status).toBe(200);
+      await runAfterContext();
+      expect(consoleError).toHaveBeenCalled();
+      // A queue outage must be visible, not only a log line.
+      expect(captureExceptionMock).toHaveBeenCalledWith(expect.objectContaining({ message: 'redis down' }));
+      consoleError.mockRestore();
+    });
+
+    it('a complete index is ready and requests nothing', async () => {
+      selectMock.mockReturnValueOnce(chainMock([indexRow({ fileIndexStatus: 'complete', fileIndexManifestSha256: 'a'.repeat(64), hasRows: true })]));
+      listDirMock.mockResolvedValueOnce({ entries: [{ name: 'C:', path: '/C:', type: 'directory' }], nextCursor: null });
+      const body = await (await browse()).json();
+      expect(body.index).toEqual({ state: 'ready' });
+      await runAfterContext();
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+    });
+
+    it("another org's snapshot is 404 and requests nothing", async () => {
+      selectMock.mockReturnValueOnce(chainMock([]));
+      const res = await browse();
+      expect(res.status).toBe(404);
+      await runAfterContext();
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+      expect(listDirMock).not.toHaveBeenCalled();
+    });
+
+    it('a site-restricted caller without access is refused and requests nothing', async () => {
+      permissionsState = { allowedSiteIds: [SITE_A] };
+      authorizeResilienceResourcesMock.mockRejectedValueOnce(new ResilienceAuthorizationError(403, 'site_access_denied'));
+      const res = await browse();
+      expect(res.status).toBe(403);
+      await runAfterContext();
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+    });
+
+    it('never returns file_index_error text, only the failure code', async () => {
+      const secret = 'https://storage.example/bucket/snapshots/x/manifest.json?X-Amz-Signature=abc';
+      selectMock.mockReturnValueOnce(chainMock([indexRow({
+        fileIndexStatus: 'failed', fileIndexError: `provider_error: ${secret}`, fileIndexHydratedAt: new Date(Date.now() - 60 * 60 * 1000),
+      })]));
+      listDirMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      const res = await browse();
+      const text = await res.text();
+      expect(text).not.toContain(secret);
+      expect(text).not.toContain('X-Amz');
+      expect(JSON.parse(text).index).toEqual({ state: 'unavailable', failure: 'provider_error', retryable: true, deviceLocal: false });
+    });
+  });
+
+  describe('#11026 statement timeouts and search', () => {
+    const readyRow = () => ({
+      id: SNAPSHOT_ID, fileCount: 5, fileIndexStatus: 'complete', fileIndexManifestSha256: 'a'.repeat(64),
+      fileIndexError: null, fileIndexHydratedAt: new Date(), integrityStatus: 'pending', storageIdentity: 's3::e::b',
+      attestationStatus: null, attestationManifestSha256: null, hasRows: true,
+    });
+    const search = (query: string) => app.request(`/backup/snapshots/${SNAPSHOT_ID}/search?${query}`, {
+      method: 'GET', headers: { Authorization: 'Bearer token' },
+    });
+
+    it('a browse that runs out of time answers 503 index_query_timeout', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      listDirMock.mockRejectedValueOnce(new IndexQueryTimeoutError());
+      const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: 'index_query_timeout' });
+    });
+
+    it('searches the readable index with the query, the limit and the decoded cursor', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      searchMock.mockResolvedValueOnce({
+        entries: [{ name: 'q3.xlsx', path: 'C:/finance/q3.xlsx', type: 'file', sizeBytes: 5 }],
+        nextCursor: 'next-cursor',
+      });
+      const cursor = Buffer.from('C:\\finance\\a.txt', 'utf8').toString('base64url');
+      const res = await search(`q=Q3&limit=20&cursor=${cursor}`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        data: [{ name: 'q3.xlsx', path: 'C:/finance/q3.xlsx', type: 'file', sizeBytes: 5 }],
+        nextCursor: 'next-cursor',
+        index: { state: 'ready' },
+      });
+      expect(searchMock).toHaveBeenCalledWith({ snapshotDbId: SNAPSHOT_ID, query: 'Q3', limit: 20, after: 'C:\\finance\\a.txt' });
+    });
+
+    it('defaults the limit to 50', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      searchMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      await search('q=report');
+      expect(searchMock).toHaveBeenCalledWith(expect.objectContaining({ limit: 50, after: null }));
+    });
+
+    it.each([
+      ['a one-character query', 'q=a'],
+      ['a query over 256 characters', `q=${'a'.repeat(257)}`],
+      ['no query', ''],
+      ['a limit over 100', 'q=ab&limit=101'],
+      ['a limit of 0', 'q=ab&limit=0'],
+      ['a NUL in the query, which Postgres cannot take as text', 'q=ab%00cd'],
+    ])('refuses %s with 400, without searching', async (_name, query) => {
+      const res = await search(query);
+      expect(res.status).toBe(400);
+      expect(searchMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a cursor holding a NUL with 400, without searching', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      const cursor = Buffer.from('C:\\a\u0000b', 'utf8').toString('base64url');
+      const res = await search(`q=ab&cursor=${cursor}`);
+      expect(res.status).toBe(400);
+      expect(searchMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts a 256-character query', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      searchMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      expect((await search(`q=${'a'.repeat(256)}`)).status).toBe(200);
+    });
+
+    it('passes % and _ through untouched: they are matched literally, not as patterns', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      searchMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      await search(`q=${encodeURIComponent('100%_done')}`);
+      expect(searchMock).toHaveBeenCalledWith(expect.objectContaining({ query: '100%_done' }));
+    });
+
+    it('a search that runs out of time answers 503 index_query_timeout', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      searchMock.mockRejectedValueOnce(new IndexQueryTimeoutError());
+      const res = await search('q=report');
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: 'index_query_timeout' });
+    });
+
+    it("another org's snapshot is 404 and is never searched", async () => {
+      selectMock.mockReturnValueOnce(chainMock([]));
+      const res = await search('q=report');
+      expect(res.status).toBe(404);
+      expect(searchMock).not.toHaveBeenCalled();
+    });
+
+    it('a site-restricted caller without access is refused', async () => {
+      permissionsState = { allowedSiteIds: [SITE_A] };
+      authorizeResilienceResourcesMock.mockRejectedValueOnce(new ResilienceAuthorizationError(403, 'site_access_denied'));
+      const res = await search('q=report');
+      expect(res.status).toBe(403);
+      expect(searchMock).not.toHaveBeenCalled();
+    });
+
+    it('needs backup:read', async () => {
+      grantedPermissions = new Set([]);
+      const res = await search('q=report');
+      expect(res.status).toBe(403);
+      expect(searchMock).not.toHaveBeenCalled();
+    });
+
+    it('a snapshot still building its index asks for it, as browse does', async () => {
+      selectMock.mockReturnValueOnce(chainMock([{ ...readyRow(), fileIndexStatus: 'none', fileIndexManifestSha256: null, hasRows: false, fileCount: 18000 }]));
+      searchMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      const body = await (await search('q=report')).json();
+      expect(body.index).toEqual({ state: 'building' });
+      await runAfterContext();
+      expect(enqueueHydrationMock).toHaveBeenCalledWith(SNAPSHOT_ID, 'browse');
+    });
+
+    it('an undecodable cursor is 400', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      const res = await search('q=report&cursor=%20');
+      expect(res.status).toBe(400);
+      expect(searchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('#11026 POST /snapshots/:id/file-index/rebuild', () => {
+    const rebuild = () => app.request(`/backup/snapshots/${SNAPSHOT_ID}/file-index/rebuild`, {
+      method: 'POST', headers: { Authorization: 'Bearer token' },
+    });
+    const failedRow = (error: string) => ({
+      id: SNAPSHOT_ID, fileCount: 5, fileIndexStatus: 'failed', fileIndexManifestSha256: null, fileIndexError: error,
+      fileIndexHydratedAt: new Date(Date.now() - 60 * 60 * 1000), integrityStatus: 'pending', storageIdentity: 's3::e::b',
+      attestationStatus: null, attestationManifestSha256: null, hasRows: false,
+    });
+
+    it('backup:read alone is 403 and enqueues nothing', async () => {
+      grantedPermissions = new Set(['backup:read']);
+      const res = await rebuild();
+      expect(res.status).toBe(403);
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+    });
+
+    it('backup:write is 202 building, enqueues a forced rebuild, and writes an audit record', async () => {
+      grantedPermissions = new Set(['backup:write']);
+      selectMock.mockReturnValueOnce(chainMock([failedRow('manifest_invalid: bad json')]));
+      const res = await rebuild();
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ index: { state: 'building' } });
+      expect(enqueueHydrationMock).toHaveBeenCalledWith(SNAPSHOT_ID, 'rebuild', { force: true });
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'backup.snapshot.file_index.rebuild',
+        resourceId: SNAPSHOT_ID,
+        details: expect.objectContaining({ previousState: 'unavailable', previousFailure: 'manifest_invalid' }),
+      }));
+    });
+
+    it('resets a failed index to none before it enqueues, so the first poll cannot read the stale failure', async () => {
+      selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+      const order: string[] = [];
+      updateMock.mockImplementationOnce(() => { order.push('reset'); return chainMock([]); });
+      enqueueHydrationMock.mockImplementationOnce(async () => { order.push('enqueue'); return 'job-1'; });
+      expect((await rebuild()).status).toBe(202);
+      expect(order).toEqual(['reset', 'enqueue']);
+      const resetChain = updateMock.mock.results[0]!.value as { set: ReturnType<typeof vi.fn> };
+      expect(resetChain.set).toHaveBeenCalledWith({ fileIndexStatus: 'none', fileIndexError: null });
+    });
+
+    it.each(['attestation_failed: no match', 'manifest_differs_from_attestation: digest x'])(
+      'an integrity failure (%s) is 409 attestation_failed and enqueues nothing',
+      async (error) => {
+        selectMock.mockReturnValueOnce(chainMock([failedRow(error)]));
+        const res = await rebuild();
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ code: 'attestation_failed' });
+        expect(enqueueHydrationMock).not.toHaveBeenCalled();
+        expect(writeRouteAuditMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it('a mismatched attestation is 409 attestation_failed', async () => {
+      selectMock.mockReturnValueOnce(chainMock([{ ...failedRow('provider_error: x'), attestationStatus: 'mismatch', attestationManifestSha256: 'a'.repeat(64) }]));
+      expect((await rebuild()).status).toBe(409);
+    });
+
+    it('an unknown snapshot is 404', async () => {
+      selectMock.mockReturnValueOnce(chainMock([]));
+      expect((await rebuild()).status).toBe(404);
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+    });
+
+    it('a queue that cannot take the request is an honest 503, with no audit record', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+      enqueueHydrationMock.mockRejectedValueOnce(new Error('redis down'));
+      const res = await rebuild();
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: 'rebuild_unavailable' });
+      expect(captureExceptionMock).toHaveBeenCalled();
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
+      consoleError.mockRestore();
+    });
+
+    it('a site-restricted caller without access is refused', async () => {
+      permissionsState = { allowedSiteIds: [SITE_A] };
+      authorizeResilienceResourcesMock.mockRejectedValueOnce(new ResilienceAuthorizationError(403, 'site_access_denied'));
+      expect((await rebuild()).status).toBe(403);
+      expect(enqueueHydrationMock).not.toHaveBeenCalled();
+    });
+
+    describe('per-snapshot cooldown (#11180)', () => {
+      const OTHER_ID = '99999999-9999-4999-8999-999999999999';
+
+      it('the first request takes a 10-minute NX key and proceeds', async () => {
+        selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+        expect((await rebuild()).status).toBe(202);
+        expect(redisFake.set).toHaveBeenCalledWith(expect.stringContaining(SNAPSHOT_ID), expect.any(String), 'EX', 600, 'NX');
+      });
+
+      it('a second request inside the window is 429 with Retry-After and a RATE_LIMITED body, and enqueues/audits nothing', async () => {
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        expect((await rebuild()).status).toBe(202);
+        enqueueHydrationMock.mockClear();
+        writeRouteAuditMock.mockClear();
+        const res = await rebuild();
+        expect(res.status).toBe(429);
+        expect(res.headers.get('Retry-After')).toBe('420');
+        expect(await res.json()).toMatchObject({ code: 'RATE_LIMITED', retryAfterSeconds: 420, error: expect.stringMatching(/rebuilt recently/i) });
+        expect(enqueueHydrationMock).not.toHaveBeenCalled();
+        expect(writeRouteAuditMock).not.toHaveBeenCalled();
+      });
+
+      it('a different snapshot is unaffected', async () => {
+        redisFake.store.set(`backup:file-index-rebuild:${OTHER_ID}`, 600);
+        selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+        expect((await rebuild()).status).toBe(202);
+      });
+
+      it('the first request after the TTL elapses is accepted', async () => {
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        expect((await rebuild()).status).toBe(202);
+        expect((await rebuild()).status).toBe(429);
+        redisFake.store.clear(); // TTL elapsed
+        expect((await rebuild()).status).toBe(202);
+      });
+
+      it('a cross-org or unknown snapshot is still 404 and does not take the key', async () => {
+        selectMock.mockReturnValueOnce(chainMock([]));
+        expect((await rebuild()).status).toBe(404);
+        expect(redisFake.set).not.toHaveBeenCalled();
+      });
+
+      it('an integrity-failed snapshot is still 409 and does not take the key', async () => {
+        selectMock.mockReturnValueOnce(chainMock([failedRow('attestation_failed: no match')]));
+        expect((await rebuild()).status).toBe(409);
+        expect(redisFake.set).not.toHaveBeenCalled();
+      });
+
+      it('a refused enqueue (503) releases the key so the person can retry at once', async () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        enqueueHydrationMock.mockRejectedValueOnce(new Error('redis down'));
+        expect((await rebuild()).status).toBe(503);
+        expect(redisFake.store.size).toBe(0);
+        expect((await rebuild()).status).toBe(202);
+        consoleError.mockRestore();
+      });
+
+      it('a failure resetting the index state (500) releases the key too, so the retry is not locked out', async () => {
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        updateMock.mockImplementationOnce(() => { throw new Error('db blip'); });
+        expect((await rebuild()).status).toBe(500);
+        expect(redisFake.store.size).toBe(0);
+        expect((await rebuild()).status).toBe(202);
+      });
+
+      it('a 429 leaves the failed index state untouched (cooldown is taken before the reset)', async () => {
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        expect((await rebuild()).status).toBe(202);
+        expect(updateMock).toHaveBeenCalledTimes(1);
+        updateMock.mockClear();
+        expect((await rebuild()).status).toBe(429);
+        expect(updateMock).not.toHaveBeenCalled();
+      });
+
+      it('falls back to the full window for Retry-After when the key vanished before TTL was read', async () => {
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        redisFake.set.mockResolvedValueOnce(null as never);
+        redisFake.ttl.mockResolvedValueOnce(-2);
+        const res = await rebuild();
+        expect(res.status).toBe(429);
+        expect(res.headers.get('Retry-After')).toBe('600');
+      });
+
+      it('fails open when the Redis call itself errors', async () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+        redisFake.set.mockRejectedValueOnce(new Error('ECONNRESET'));
+        expect((await rebuild()).status).toBe(202);
+        expect(enqueueHydrationMock).toHaveBeenCalled();
+        expect(consoleError).toHaveBeenCalled();
+        consoleError.mockRestore();
+      });
+
+      it('fails open when Redis is unavailable: the rebuild still proceeds', async () => {
+        redisFake.available = false;
+        selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+        expect((await rebuild()).status).toBe(202);
+      });
+    });
   });
 
   it('returns protection fields in snapshot responses', async () => {

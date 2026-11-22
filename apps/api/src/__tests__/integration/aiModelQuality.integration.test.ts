@@ -159,6 +159,22 @@ describe.skipIf(!RUN)('AI model quality view (#7609 W11)', () => {
       });
     });
 
+    it('#11971: a run\'s calls carry its execution session and still count as the run, not a session', async () => {
+      const w = await seedWorld();
+      const done = await seedRun(w, 'completed', 6);
+      const failed = await seedRun(w, 'failed', 1);
+      for (const run of [done, failed]) {
+        // The run's own `type: 'agent'` session, holding its transcript (user prompt + answers).
+        const session = await seedSession(w.orgA, { status: 'closed', userTurns: 1 });
+        await call(w.orgA, w.offO, { surface: 'ai_agents', agent_run_id: run, session_id: session });
+      }
+      const r = await asPartner(w.pA, [w.orgA], () => queryAiQualityBreakdown({ ...RANGE, groupBy: 'surface', accessibleOrgIds: [w.orgA] }));
+      expect(byKey(r.rows).get('ai_agents')).toMatchObject({
+        conversations: 2, sessions: 0, agentRuns: 2, agentRunsCompleted: 1, agentCompletionRate: 0.5,
+        resolvedSessions: 0, medianTurnsToResolution: null,
+      });
+    });
+
     it.runIf(SOURCES.continuation)('a continued session is not resolved; its continuation resolves with the chain\'s turns (W05)', async () => {
       const w = await seedWorld();
       const src = await seedSession(w.orgA, { status: 'closed', userTurns: 3 });
@@ -196,6 +212,20 @@ describe.skipIf(!RUN)('AI model quality view (#7609 W11)', () => {
       await call(w.orgA, w.offS, {});
       const r = await asPartner(w.pA, [w.orgA], () => queryAiQualityBreakdown({ ...RANGE, groupBy: 'prompt_profile', accessibleOrgIds: [w.orgA] }));
       expect(r.rows.map((x) => [x.key, x.invocations]).sort()).toEqual([['claude-small', 2], ['unrecorded', 1]]);
+    });
+
+    it('groups by tool profile with refused tool-call batches and their rate, pre-profile rows as unrecorded (W04 #11397)', async () => {
+      const w = await seedWorld();
+      await call(w.orgA, w.offS, { tool_profile: 'minimal', stop_reason: 'refused_tool_batch' });
+      await call(w.orgA, w.offS, { tool_profile: 'minimal', stop_reason: 'end_turn' });
+      await call(w.orgA, w.offS, { tool_profile: 'full', stop_reason: 'end_turn' });
+      await call(w.orgA, w.offS, {});
+      const r = await asPartner(w.pA, [w.orgA], () => queryAiQualityBreakdown({ ...RANGE, groupBy: 'tool_profile', accessibleOrgIds: [w.orgA] }));
+      const rows = byKey(r.rows);
+      expect([...rows.keys()].sort()).toEqual(['full', 'minimal', 'unrecorded']);
+      expect(rows.get('minimal')).toMatchObject({ invocations: 2, refusedToolBatches: 1, refusedToolBatchRate: 0.5 });
+      expect(rows.get('full')).toMatchObject({ refusedToolBatches: 0, refusedToolBatchRate: 0 });
+      expect(r.totals).toMatchObject({ invocations: 4, refusedToolBatches: 1, refusedToolBatchRate: 0.25 });
     });
 
     it('groups by prompt variant (base keyed surface/profile@base) and honours the surface filter', async () => {

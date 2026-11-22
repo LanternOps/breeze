@@ -62,6 +62,8 @@ vi.mock('../../services/userSession', () => ({
     transitionId: '00000000-0000-4000-8000-0000000000b1',
     generation: 7,
   }),
+  // The org's owning partner (#12246); matches ORG_PARTNER_ID below.
+  resolveOrganizationSessionPartnerId: vi.fn().mockResolvedValue('00000000-0000-4000-8000-0000000000ee'),
   bindIssuedUserSession: vi.fn(),
 }));
 
@@ -123,14 +125,17 @@ import { db } from '../../db';
 import { users, ssoProviders, organizationUsers, partnerUsers, userSsoIdentities } from '../../db/schema';
 import { consumeSsoPendingLink, restoreConsumedSsoPendingLink } from '../../services/ssoPendingLink';
 import { getUserEpochs } from '../../services';
-import { issueUserSession } from '../../services/userSession';
+import { issueUserSession, resolveOrganizationSessionPartnerId } from '../../services/userSession';
 import { beginAuthIssuanceForStoredTransition, cancelAuthIssuance, finishAuthIssuance } from '../../services/authBrowserTransition';
 import { consumeRecoveryCode, RecoveryCodeInvalidError } from '../../services/recoveryCodeAuth';
 import { isDomainVerifiedForOrg, isSsoProvisioningBlocked } from '../../services/ssoDomainVerification';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { auditLogin } from './helpers';
 
 const USER_ID = '00000000-0000-4000-8000-0000000000aa';
 const PROVIDER_ID = '00000000-0000-4000-8000-0000000000bb';
 const ORG_ID = '00000000-0000-4000-8000-0000000000cc';
+const ORG_PARTNER_ID = '00000000-0000-4000-8000-0000000000ee';
 
 const RECORD = {
   userId: USER_ID,
@@ -242,13 +247,17 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
       expiresInSeconds: 900,
       redirectPath: '/dashboard',
     });
+    // #12246: the org session carries its org's owning partner, like password login.
+    expect(resolveOrganizationSessionPartnerId).toHaveBeenCalledWith(expect.anything(), ORG_ID);
     expect(issueUserSession).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: USER_ID, scope: 'organization', orgId: ORG_ID }),
+      expect.objectContaining({ userId: USER_ID, scope: 'organization', orgId: ORG_ID, partnerId: ORG_PARTNER_ID }),
       expect.any(Object),
     );
-    // Provider fixture has trustsIdpMfa: false ⇒ not assured ⇒ no source.
+    // Provider fixture has trustsIdpMfa: false and the user holds no factor
+    // under a not-required policy ⇒ policy-admitted, like a password login
+    // (#11889).
     expect(issueUserSession).toHaveBeenCalledWith(
-      expect.objectContaining({ mfa: false, mfaSrc: undefined }),
+      expect.objectContaining({ mfa: true, mfaSrc: 'policy' }),
       expect.anything(),
     );
     const linked = auditSpy.mock.calls.find(([, p]) => (p as { action?: string }).action === 'sso.identity.linked');
@@ -332,6 +341,14 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
       recoveryCode: 'CORRECT-1',
     });
     expect(retry.ok).toBe(true);
+  });
+
+  it('fails closed (completion_failed) when the provider org has no owning partner row (#12246)', async () => {
+    wire();
+    vi.mocked(resolveOrganizationSessionPartnerId).mockResolvedValueOnce(null);
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome).toEqual({ ok: false, error: 'completion_failed' });
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it('returns link_expired when the record is gone (expired / already consumed / store down)', async () => {
@@ -429,6 +446,107 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     expect(issueUserSession).toHaveBeenCalledOnce();
   });
 
+  // #11889: the no-factor policy arm of the link-completion mint, matched to
+  // the password login and the SSO callback.
+  it('mints mfa:false with no source for an UNENROLLED user when policy REQUIRES MFA and nothing was proven (#11889)', async () => {
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValueOnce({
+      required: true,
+      allowedMethods: { totp: true, sms: true, passkey: true },
+    } as never);
+    wire();
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false, mfaSrc: undefined }),
+      expect.anything(),
+    );
+  });
+
+  it('mints mfa:false for an ENROLLED user whose factor was not proven and no trusted IdP assertion exists (#11889)', async () => {
+    wire({ user: { ...USER_ROW, mfaEnabled: true } });
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false, mfaSrc: undefined }),
+      expect.anything(),
+    );
+  });
+
+  // The policy arm admits a no-factor user only on a policy it could READ.
+  // Simulate the effective-settings read throwing inside getEffectiveMfaPolicy:
+  // the verdict comes from the real combineMfaPolicyFacts with
+  // `settingsUnavailable`, so it honours the failClosed option this mint
+  // passes. Fail-closed (as accept-invite resolves it) mints an unassured
+  // session instead of a policy-admitted one.
+  it('mints mfa:false for an UNENROLLED user when the MFA policy settings cannot be read', async () => {
+    const { combineMfaPolicyFacts } = await vi.importActual<typeof import('../../services/mfaPolicy')>('../../services/mfaPolicy');
+    vi.mocked(getEffectiveMfaPolicy).mockImplementationOnce(async (_input, opts) => combineMfaPolicyFacts({
+      roleForceMfa: false,
+      security: undefined,
+      settingsUnavailable: true,
+      failClosed: opts?.failClosed === true,
+      failClosedMethods: opts?.failClosedMethods === true,
+    }));
+    wire();
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false, mfaSrc: undefined }),
+      expect.anything(),
+    );
+    expect(getEffectiveMfaPolicy).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: USER_ROW.id }),
+      { failClosed: true },
+    );
+  });
+
+  // An IdP assertion never substitutes for a factor the user does not have
+  // when policy REQUIRES one, on this path as on the callback.
+  it('mints mfa:false for an UNENROLLED user under a required policy despite a trusted IdP assertion (#11889)', async () => {
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValueOnce({
+      required: true,
+      allowedMethods: { totp: true, sms: true, passkey: true },
+    } as never);
+    wire({
+      record: { ...RECORD, idpMfaAsserted: true },
+      provider: { ...PROVIDER_ROW, trustsIdpMfa: true },
+    });
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false, mfaSrc: undefined }),
+      expect.anything(),
+    );
+  });
+
+  it('assures an ENROLLED user from a trusted IdP assertion (mfaSrc idp) without a ceremony factor (#11889)', async () => {
+    wire({
+      record: { ...RECORD, idpMfaAsserted: true },
+      provider: { ...PROVIDER_ROW, trustsIdpMfa: true },
+      user: { ...USER_ROW, mfaEnabled: true },
+    });
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true, mfaSrc: 'idp' }),
+      expect.anything(),
+    );
+  });
+
+  it('sources an ENROLLED user\'s ceremony-verified factor as factor, ahead of a trusted IdP assertion', async () => {
+    wire({
+      record: { ...RECORD, idpMfaAsserted: true },
+      provider: { ...PROVIDER_ROW, trustsIdpMfa: true },
+      user: { ...USER_ROW, mfaEnabled: true },
+    });
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: true, expectedUserId: USER_ID });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true, mfaSrc: 'factor' }),
+      expect.anything(),
+    );
+  });
+
   it('mints mfa:true when the ceremony verified a Breeze-held factor, regardless of IdP amr', async () => {
     wire();
     const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: true, expectedUserId: USER_ID });
@@ -454,6 +572,33 @@ describe('finalizeSsoPendingLink — audit tenancy (#9377)', () => {
     wire({ record: PARTNER_RECORD, provider: PARTNER_PROVIDER_ROW, identity: opts.identity });
     tableRows.set(partnerUsers, [[{ roleId: 'role-p', roleScope: 'partner' }]]);
   };
+
+  // #11889: the partner login audit's `mfa` records a presented factor or a
+  // trusted IdP assertion, as the password login audit does — never policy
+  // admission.
+  it('audits a policy-admitted partner completion with mfa:false (#11889)', async () => {
+    wirePartner();
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+    expect(outcome.ok).toBe(true);
+    expect(issueUserSession).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true, mfaSrc: 'policy' }),
+      expect.anything(),
+    );
+    expect(auditLogin).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ method: 'sso-partner', mfa: false }),
+    );
+  });
+
+  it('audits a factor-verified partner completion with mfa:true (#11889)', async () => {
+    wirePartner();
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: true, expectedUserId: USER_ID });
+    expect(outcome.ok).toBe(true);
+    expect(auditLogin).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ method: 'sso-partner', mfa: true }),
+    );
+  });
 
   it('attributes sso.identity.linked to the partner for a partner-level provider', async () => {
     wirePartner();

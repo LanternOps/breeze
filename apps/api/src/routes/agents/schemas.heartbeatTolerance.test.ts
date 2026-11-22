@@ -523,6 +523,22 @@ describe('heartbeatSchema — Layer A tolerance', () => {
   });
 });
 
+// Learned networks (#12369, contract C1): the report is parsed by the learner, report-locally, so the heartbeat
+// schema hands it over untouched and a malformed one never rejects the beat.
+describe('heartbeatSchema — networkAttachmentsV1', () => {
+  const minimal = { status: 'ok' as const, agentVersion: '0.65.15' };
+
+  it('passes networkAttachmentsV1 through untouched, even when malformed', () => {
+    for (const v of [{ epoch: 'x' }, 'junk', 7, null, { epoch: '9f2c1e7ab4d04c11', attachments: [], extra: true }]) {
+      expect(heartbeatSchema.parse({ ...minimal, networkAttachmentsV1: v }).networkAttachmentsV1).toEqual(v);
+    }
+  });
+
+  it('leaves the key absent when the beat carries none', () => {
+    expect('networkAttachmentsV1' in heartbeatSchema.parse(minimal)).toBe(false);
+  });
+});
+
 describe('heartbeatSchema — versioned agent health tolerance', () => {
   const minimal = {
     status: 'ok' as const,
@@ -1160,6 +1176,44 @@ describe('heartbeatSchema — watchdogInstall tolerance (#8620)', () => {
     ['a 5KB state', { state: 'x'.repeat(5000) }],
   ])('never rejects the heartbeat for %s', (_label, bad) => {
     expect(heartbeatSchema.safeParse({ ...minimal, watchdogInstall: bad }).success).toBe(true);
+  });
+});
+
+// Control-plane block episodes (#8868). Same contract as watchdogInstall: the
+// wire field is z.unknown().optional(), so old agents omit it and a malformed
+// object never rejects the beat. Strict parsing lives in parseControlPlaneBlock.
+describe('heartbeatSchema — controlPlaneBlock tolerance (#8868)', () => {
+  const minimal = { status: 'ok' as const, agentVersion: '0.65.15' };
+  const valid = {
+    kind: 'web_filter',
+    host: 'cp.example',
+    firstSeenAt: '2026-10-18T09:00:00Z',
+    lastSeenAt: '2026-10-18T09:03:00Z',
+    httpStatus: 302,
+    locationHost: 'warn.filter-a.example',
+  };
+
+  it('an old agent that omits the field parses, and the key stays undefined', () => {
+    const r = heartbeatSchema.safeParse(minimal);
+    expect(r.success).toBe(true);
+    if (r.success) expect((r.data as Record<string, unknown>).controlPlaneBlock).toBeUndefined();
+  });
+
+  it('carries a well-formed controlPlaneBlock object through untouched', () => {
+    const r = heartbeatSchema.safeParse({ ...minimal, echActive: true, controlPlaneBlock: valid });
+    expect(r.success).toBe(true);
+    if (r.success) expect((r.data as Record<string, unknown>).controlPlaneBlock).toEqual(valid);
+  });
+
+  it.each([
+    ['a string', 'garbage'],
+    ['a number', 42],
+    ['null', null],
+    ['unknown kind', { ...valid, kind: 'isp_filter' }],
+    ['markup in locationHost', { ...valid, locationHost: '<script>' }],
+    ['a 5KB host', { ...valid, host: 'a'.repeat(5000) }],
+  ])('never rejects the heartbeat for %s', (_label, bad) => {
+    expect(heartbeatSchema.safeParse({ ...minimal, controlPlaneBlock: bad }).success).toBe(true);
   });
 });
 

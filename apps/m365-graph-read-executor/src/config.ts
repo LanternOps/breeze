@@ -48,6 +48,13 @@ export interface ExecutorSyncConfig {
   /** #5784 W05. Own bucket rate: /auditLogs/signIns is not signin_activity's surface. */
   signinEventsRpm: number;
   /**
+   * #9394. `$top` for the /auditLogs/signIns walk. Small by default: a
+   * 1000-row page did not come back inside the 30 s per-request budget on a
+   * tenant of a few hundred users, and a weekday of that tenant (~1,500
+   * sign-ins) is ~15 pages of 100. Graph caps the page at 1000.
+   */
+  signinEventsPageSize: number;
+  /**
    * Continuation encryption secret. `null` means "mint an ephemeral one at
    * boot": continuations then die with the process and do not cross replicas,
    * which the API handles by restarting the sign-in domain from page 1. That
@@ -246,6 +253,7 @@ function parseSyncConfig(source: Environment): ExecutorSyncConfig {
     maxItemsSkus: boundedInteger(source, 'M365_SYNC_MAX_ITEMS_SKUS', 200, 1, 5_000),
     maxItemsSigninEvents: boundedInteger(source, 'M365_SYNC_MAX_ITEMS_SIGNIN_EVENTS', 25_000, 1, 200_000),
     signinEventsRpm: boundedInteger(source, 'M365_SIGNIN_EVENTS_RPM', 6, 1, 60),
+    signinEventsPageSize: boundedInteger(source, 'M365_SYNC_SIGNIN_EVENTS_PAGE_SIZE', 100, 10, 1_000),
     continuationKey: parseContinuationKey(source),
   };
 }

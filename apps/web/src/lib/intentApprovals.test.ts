@@ -368,6 +368,17 @@ describe('decideIntentApproval server rejections', () => {
     expect(toasted.message).not.toMatch(/failed to submit the decision/i);
     expect(toasted.message).toMatch(/organization-wide/i);
   });
+
+  it('maps a 403 approver_scope_required to translated copy, not the raw token or decideFailed', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'approver_scope_required' }), { status: 403 }),
+    );
+    const rejection = await decideIntentApproval('ap-1', 'approve').catch((e: unknown) => e);
+    expect(rejection).toBeInstanceOf(ActionError);
+    const toasted = showToast.mock.calls[0][0] as { message: string };
+    expect(toasted.message).not.toMatch(/failed to submit the decision/i);
+    expect(toasted.message).toMatch(/partner-level approver/i);
+  });
 });
 
 /**

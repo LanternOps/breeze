@@ -171,6 +171,11 @@ export interface SettleInvocationInput {
    */
   prompt?: PromptProvenance | null;
   /**
+   * #11395: the tool exposure the live query (or run) was created with. Absent:
+   * the ledger rows record no tool profile (NULL), as before W03.
+   */
+  toolExposure?: { profile: string; fingerprint: string } | null;
+  /**
    * W11: when the turn happened. Omitted in production (stamped once in
    * toNewInvocations); the built rows carry it through a deferred
    * settlement's JSON, so a late replay keeps turn order.
@@ -323,6 +328,8 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
       promptProfile,
       promptVariant,
       occurredAt,
+      toolProfile: input.toolExposure?.profile ?? null,
+      toolExposureFingerprint: input.toolExposure?.fingerprint ?? null,
     };
   });
 }

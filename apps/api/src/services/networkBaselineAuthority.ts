@@ -5,12 +5,11 @@ import {
   organizationUsers,
   organizations,
   partnerUsers,
-  permissions,
-  rolePermissions,
   users,
 } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { normalizeBaselineScanSchedule } from './networkBaseline';
+import { getRolePermissionGrants } from './roleInheritance';
 
 /**
  * Creator-bound versioned authority for recurring
@@ -216,20 +215,18 @@ export function evaluateBaselineDispatchAuthority(
   return { allowed: true };
 }
 
+/**
+ * Reads the role's runtime grants INCLUDING inherited ones via
+ * services/roleInheritance.ts (#11702). The match is EXACT (no `*` wildcard),
+ * as it always was for this gate.
+ */
 async function roleHasRequiredPermission(roleId: string): Promise<boolean> {
-  const rows = await db
-    .select({ id: permissions.id })
-    .from(rolePermissions)
-    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-    .where(
-      and(
-        eq(rolePermissions.roleId, roleId),
-        eq(permissions.resource, BASELINE_AUTHORITY_PERMISSION.resource),
-        eq(permissions.action, BASELINE_AUTHORITY_PERMISSION.action),
-      ),
-    )
-    .limit(1);
-  return rows.length > 0;
+  const grants = await getRolePermissionGrants(roleId);
+  return grants.some(
+    (grant) =>
+      grant.resource === BASELINE_AUTHORITY_PERMISSION.resource
+      && grant.action === BASELINE_AUTHORITY_PERMISSION.action,
+  );
 }
 
 /**

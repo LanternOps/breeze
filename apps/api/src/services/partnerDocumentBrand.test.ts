@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { partnerDocumentBrand, resolveDocumentBrand } from './partnerDocumentBrand';
 
@@ -45,5 +46,28 @@ describe('resolveDocumentBrand', () => {
     expect(resolveDocumentBrand({ logoUrl: 'org-logo.png', primaryColor: null }, partnerSettings))
       .toEqual({ logoUrl: 'org-logo.png', primaryColor: '#00bfa6', secondaryColor: '#0b1b2d' });
     expect(resolveDocumentBrand({ logoUrl: null, primaryColor: '#123456' }, partnerSettings).primaryColor).toBe('#123456');
+  });
+
+  // #9673: the secondary colour had no org level at all, so the org tab's field
+  // could never change a document.
+  it("the org's secondary colour overrides the partner's", () => {
+    expect(resolveDocumentBrand({ secondaryColor: '#123456' }, partnerSettings).secondaryColor).toBe('#123456');
+  });
+
+  // The resolver can only honour what its caller selected, and a mocked DB hands
+  // back the stubbed row whatever was selected. A quote path that leaves this
+  // column out silently prints the partner's colour.
+  it.each(['customerQuotePdf.ts', 'quoteLifecycle.ts', 'quoteBranding.ts', 'customerQuoteDocument.ts', 'reportBranding.ts'])(
+    '%s selects the org secondary colour',
+    (file) => {
+      const source = readFileSync(new URL(file, import.meta.url), 'utf8');
+      expect(source).toContain('secondaryColor: portalBranding.secondaryColor');
+    },
+  );
+
+  it('a blank or non-hex org secondary colour falls through to the partner', () => {
+    expect(resolveDocumentBrand({ secondaryColor: '' }, partnerSettings).secondaryColor).toBe('#0b1b2d');
+    expect(resolveDocumentBrand({ secondaryColor: null }, partnerSettings).secondaryColor).toBe('#0b1b2d');
+    expect(resolveDocumentBrand({ secondaryColor: 'red;}' }, partnerSettings).secondaryColor).toBe('#0b1b2d');
   });
 });

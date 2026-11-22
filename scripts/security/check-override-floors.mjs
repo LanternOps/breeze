@@ -87,11 +87,35 @@ export const INTENTIONAL_DOWNGRADES = {};
  * nowhere — preemptive pins that must survive a future reintroduction.
  * Anything else that resolves nowhere is a fossil and fails DEAD.
  *
- * Currently empty: the one fossil found when this guard was introduced
+ * The one fossil found when this guard was introduced
  * (`is-generator-function@>=1.1.0`, left over from #507 after the package left
  * the tree entirely) was deleted rather than waived.
+ *
+ * The entries below are pre-emptive. Their targets resolve today only through
+ * optional peers that the lockfile kept from earlier resolutions. A from-scratch
+ * resolution (pnpm-lock.yaml deleted, no node_modules; observed in #3690) drops
+ * those peers, after which the targets resolve nowhere and would fail DEAD.
+ * They stay armed because installing the optional peer brings the vulnerable
+ * range straight back. While a target still resolves, its entry is not read.
  */
-export const ALLOWED_DEAD_OVERRIDES = {};
+export const ALLOWED_DEAD_OVERRIDES = {
+  'ip@<=2.0.1': {
+    reason:
+      'ip (aliased to neoip) arrives via @react-native-community/cli@12 (cli-doctor, cli-hermes), an ' +
+      'optional peer of @react-native/community-cli-plugin (a react-native dependency); installing the ' +
+      'RN community CLI reintroduces it',
+  },
+  'joi@<17.13.9': {
+    reason:
+      'joi is an optional peer of @hookform/resolvers and a dependency of ' +
+      '@react-native-community/cli@12 (cli-config, cli-types); either reintroduces it',
+  },
+  'js-cookie@<3.0.7': {
+    reason:
+      'js-cookie arrives via js-beautify, a dependency of @react-email/render, which is an optional ' +
+      'peer of resend; installing @react-email/render reintroduces it',
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Minimal semver

@@ -199,8 +199,10 @@ describe('requireFreshMfaStepUp', () => {
     expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
-  it('returns 401 when the MFA method is passkey', async () => {
-    mockUserRow({ mfaEnabled: true, mfaSecret: 'enc-secret', mfaMethod: 'passkey' });
+  // #10650: a passkey primary WITH a secret is the authenticator-app backup and
+  // is accepted (helpers.totpFactor.test.ts). Without one there is no TOTP.
+  it('returns 401 when the MFA method is passkey and no authenticator app is enrolled', async () => {
+    mockUserRow({ mfaEnabled: true, mfaSecret: null, mfaMethod: 'passkey' });
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
     expect(c.json).toHaveBeenCalledWith(

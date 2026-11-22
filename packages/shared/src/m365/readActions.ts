@@ -233,11 +233,15 @@ const SYNC_BRANCHES = [
 ] as const;
 
 /**
- * Cold start for an org with no events yet. Graph retains ~30 days, but a first
- * run pulling a month in one go would blow the per-run item cap; the next runs
- * catch up through the overlapping delta window.
+ * Cold start for an org whose sign-in walk has never completed. One day, not
+ * the original seven (#9394): on a reported tenant of ~335 accounts a weekday
+ * was ~1,500 interactive sign-ins and a week ~8,000, and a first walk that long
+ * is the one most likely to be cut off before it can complete (a cut-off walk
+ * restarts from the same cold start). A weekday is ~15 pages of 100 and
+ * completes in a few runs; later runs walk forward from what it proved.
+ * Breeze accumulates forward from the first sync.
  */
-export const SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS = 7;
+export const SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS = 1;
 
 export const m365SyncActionSchema = z.discriminatedUnion('type', SYNC_BRANCHES);
 export type M365SyncAction = z.infer<typeof m365SyncActionSchema>;
@@ -324,6 +328,12 @@ export interface M365SyncActionResult {
   kind: 'sync';
   items: Record<string, unknown>[];
   truncated: boolean;
+  /**
+   * m365.sync.users only: users dropped for a non-string/empty id or an id
+   * already seen in this call. Absent on executors that predate the field;
+   * consumers treat absent as 0.
+   */
+  malformedItems?: number;
   continuation?: string;
   fetchedAt: string;
   sources: Record<string, M365SyncSourceState>;
@@ -334,6 +344,7 @@ export const m365SyncActionResultSchema: z.ZodType<M365SyncActionResult> = z.obj
   kind: z.literal('sync'),
   items: z.array(readActionItemSchema),
   truncated: z.boolean(),
+  malformedItems: z.number().int().nonnegative().optional(),
   continuation: z.string().min(1).max(M365_SYNC_CONTINUATION_MAX_CHARS).optional(),
   fetchedAt: z.string().datetime(),
   sources: z.record(z.string(), m365SyncSourceStateSchema),

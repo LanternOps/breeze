@@ -332,8 +332,8 @@ func runBootstrap() {
 	}
 
 	// Hand off to the existing enroll path via the package globals it reads.
-	// siteId is NOT forwarded here: enrollDevice never sends enrollSiteID (the
-	// deprecated --site-id flag, #8474). The server derives the site from the
+	// siteId is NOT forwarded here: enroll never sends a site (the removed
+	// --site-id flag, #8474/#8493). The server derives the site from the
 	// (child) key and returns it in the enroll response
 	// (cfg.SiteID = enrollResp.SiteID).
 	serverURL = res.ServerURL

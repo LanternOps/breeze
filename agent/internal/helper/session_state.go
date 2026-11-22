@@ -74,6 +74,21 @@ type sessionState struct {
 	// lastExit is the most recent Assist exit the watcher observed.
 	lastExit      assistExit
 	lastExitKnown bool
+
+	// waitingForUser: the last launch attempt in this session found nobody
+	// signed in (#10379). Dedupes the DEBUG wait line to one per change; not a
+	// failure, so it never touches crashFailures or watcherGaveUp.
+	waitingForUser bool
+	// noTokenSince: when Apply first found no user token for this session in
+	// the current wait; zero when not waiting. noTokenWarned: the WARN for
+	// this wait has fired. See noteNoUserTokenLocked.
+	noTokenSince  time.Time
+	noTokenWarned bool
+
+	// brandingRejectLogged dedupes the WARN for a rejected branding decision.
+	brandingRejectLogged bool
+	// brandingReadLogged dedupes the WARN for an unreadable stored branding.
+	brandingReadLogged bool
 }
 
 func newSessionState(key, baseDir string) *sessionState {
@@ -93,6 +108,13 @@ func (s *sessionState) freshCrashTracking() {
 	s.crashFailures = 0
 }
 
+// clearUserWait ends a wait for a signed-in user (#10379).
+func (s *sessionState) clearUserWait() {
+	s.waitingForUser = false
+	s.noTokenSince = time.Time{}
+	s.noTokenWarned = false
+}
+
 func (s *sessionState) configUnchanged(cfg *Config) bool {
 	if s.lastConfig == nil {
 		return false
@@ -103,7 +125,8 @@ func (s *sessionState) configUnchanged(cfg *Config) bool {
 		s.lastConfig.PortalUrl == cfg.PortalUrl &&
 		s.lastConfig.DeviceName == cfg.DeviceName &&
 		s.lastConfig.DeviceStatus == cfg.DeviceStatus &&
-		s.lastConfig.LastCheckin == cfg.LastCheckin
+		s.lastConfig.LastCheckin == cfg.LastCheckin &&
+		brandingEqual(s.lastConfig.Branding, cfg.Branding)
 }
 
 func (s *sessionState) refreshPID() {

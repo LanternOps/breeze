@@ -153,6 +153,43 @@ async function waitForCall(fn: string): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 300));
 }
 
+/** Wait until no backend is running `fn`: that attempt's budget has run out. */
+async function waitForCallToEnd(fn: string): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const rows = (await getTestDb().execute(sql`
+      SELECT count(*)::int AS n FROM pg_stat_activity
+      WHERE pid <> pg_backend_pid() AND state = 'active' AND query LIKE ${`%${fn}%`}
+    `)) as unknown as Array<{ n: number }>;
+    if (rows[0]!.n === 0) return;
+    if (Date.now() > deadline) throw new Error(`${fn} never finished`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/** Wait until some other backend holds a granted lock on `table`. */
+async function waitForHeldLock(table: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const rows = (await getTestDb().execute(sql`
+      SELECT count(*)::int AS n
+      FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+      WHERE l.granted AND l.pid <> pg_backend_pid() AND c.relname = ${table}
+    `)) as unknown as Array<{ n: number }>;
+    if (rows[0]!.n > 0) return;
+    if (Date.now() > deadline) throw new Error(`no backend ever held a lock on ${table}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve = () => {};
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 async function upsertHourly(bucketStart: string, avgValue: number): Promise<void> {
   await getTestDb()
     .insert(metricRollups)
@@ -531,6 +568,93 @@ describe('metric rollup bucket retention by partition drop (#7531, real DB, bree
 
     await dropMonth(LEGACY_LOCK_MONTH.name);
   }, 30_000);
+
+  it('retries a cutover that lost the lock race, without re-preparing, and compacts once the lock is free (#10960)', async () => {
+    await createLegacyMonth(LEGACY_LOCK_MONTH);
+    await seedMonth(LEGACY_LOCK_MONTH.start);
+
+    // A request mid-transaction on devices. It does not stop the copy, but the
+    // cutover's ACCESS EXCLUSIVE cannot be granted, so the first attempt uses
+    // up its NOWAIT budget and rolls back the copy.
+    const release = deferred();
+    const holder = getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT 1 FROM devices LIMIT 1`);
+      await release.promise;
+    });
+    await waitForHeldLock('devices');
+
+    const run = runMetricRollupMaintenance({
+      now: new Date(),
+      retentionDays: RETENTION,
+      // Long enough for the test to see the first attempt end and let go.
+      compactionRetryBackoffMs: [2000],
+    });
+    await waitForCall('breeze_compact_metric_rollup_partition');
+    expect(await queuedLocks()).toBe(0);
+    // The first attempt's budget is 100 x 100 ms. Let it run out before letting
+    // go, or this test would pass on the first attempt and prove nothing.
+    await waitForCallToEnd('breeze_compact_metric_rollup_partition');
+    expect(await relkind(LEGACY_LOCK_MONTH.name)).toBe('r');
+    release.resolve();
+    await holder;
+
+    const result = await run;
+    const failures = result.failures.filter((failure) => failure.partition === LEGACY_LOCK_MONTH.name);
+    expect(failures).toEqual([]);
+    expect(result.deferredCompactions).toEqual([]);
+    expect(result.compactedPartitions).toContain(LEGACY_LOCK_MONTH.name);
+    expect(await relkind(LEGACY_LOCK_MONTH.name)).toBe('p');
+    expect(await childrenOf(LEGACY_LOCK_MONTH.name)).toEqual([`${LEGACY_LOCK_MONTH.name}_1d`, `${LEGACY_LOCK_MONTH.name}_1h`]);
+    expect(await bucketCounts(LEGACY_LOCK_MONTH.start, LEGACY_LOCK_MONTH.end)).toEqual({ 3600: 2, 86400: 1 });
+
+    await dropMonth(LEGACY_LOCK_MONTH.name);
+  }, 60_000);
+
+  it('defers a month whose cutover never gets the lock: flat, rows intact, retried by the next run (#10960)', async () => {
+    await createLegacyMonth(LEGACY_LOCK_MONTH);
+    await seedMonth(LEGACY_LOCK_MONTH.start);
+
+    const release = deferred();
+    const holder = getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT 1 FROM devices LIMIT 1`);
+      await release.promise;
+    });
+    await waitForHeldLock('devices');
+
+    // One attempt is enough to prove the outcome, and each costs the 10 s budget.
+    // This 2020 month came due years ago, so it reads as stalled.
+    let contended: Awaited<ReturnType<typeof runMetricRollupMaintenance>>;
+    try {
+      contended = await runMetricRollupMaintenance({
+        now: new Date(),
+        retentionDays: RETENTION,
+        compactionRetryBackoffMs: [],
+      });
+    } finally {
+      release.resolve();
+      await holder;
+    }
+
+    expect(contended.compactedPartitions).not.toContain(LEGACY_LOCK_MONTH.name);
+    expect(contended.deferredCompactions.find((d) => d.partition === LEGACY_LOCK_MONTH.name)).toMatchObject({
+      step: 'compact',
+      attempts: 1,
+      stalled: true,
+      error: expect.stringContaining('breeze_metric_rollup_lock_nowait'),
+    });
+    expect(contended.failures.find((f) => f.partition === LEGACY_LOCK_MONTH.name)?.error).toContain('days overdue');
+    // Nothing was dropped or half cut over: the flat month still has every row.
+    expect(await relkind(LEGACY_LOCK_MONTH.name)).toBe('r');
+    expect(await bucketCounts(LEGACY_LOCK_MONTH.start, LEGACY_LOCK_MONTH.end)).toEqual({ 300: 3, 3600: 2, 86400: 1 });
+
+    const next = await runMetricRollupMaintenance({ now: new Date(), retentionDays: RETENTION });
+    expect(next.compactedPartitions).toContain(LEGACY_LOCK_MONTH.name);
+    expect(next.deferredCompactions).toEqual([]);
+    expect(await relkind(LEGACY_LOCK_MONTH.name)).toBe('p');
+    expect(await bucketCounts(LEGACY_LOCK_MONTH.start, LEGACY_LOCK_MONTH.end)).toEqual({ 3600: 2, 86400: 1 });
+
+    await dropMonth(LEGACY_LOCK_MONTH.name);
+  }, 60_000);
 
   it('drops a month with a stranded stage without queuing on devices/organizations (#10829)', async () => {
     await createLegacyMonth(LEGACY_LOCK_MONTH);

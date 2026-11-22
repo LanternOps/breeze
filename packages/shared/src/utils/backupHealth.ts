@@ -15,7 +15,12 @@ export const BACKUP_CRITICAL_AFTER_HOURS = 48;
  * Higher is worse. Order per the spec:
  *
  *   failed > over_quota > no_selection > no_backups > interrupted >
- *   completed_with_errors > not_started > unknown > in_progress > completed
+ *   completed_with_errors > not_started > paused > unknown > in_progress >
+ *   completed
+ *
+ * `paused` sits just below `not_started`: a parked device is a deliberate
+ * choice, not a run that never happened, but the bar must still not read it
+ * as fine.
  *
  * `in_progress` sits BELOW `completed` deliberately... no: it sits just above
  * it, because a day whose only observation is "a run is going" is marginally
@@ -32,6 +37,7 @@ export const EXTERNAL_BACKUP_STATUS_SEVERITY: Record<ExternalBackupStatus, numbe
   interrupted: 50,
   completed_with_errors: 40,
   not_started: 30,
+  paused: 25,
   unknown: 20,
   in_progress: 10,
   completed: 0,
@@ -100,17 +106,23 @@ export function mapBackupJobStatus(
  * exactly how two surfaces come to disagree about how many of a customer's
  * devices are failing.
  *
- * Order is render order. `other` is the sixth bucket and exists to make the
+ * `overdue` (#12025) holds `completed` rows whose newest success is past the
+ * 48-hour "recent" line. It is the one bucket chosen by row, not by status;
+ * see `bucketForBackupRow`. Like `other`, UIs render it only when non-zero.
+ *
+ * Order is render order. `other` is the last bucket and exists to make the
  * mapping TOTAL over `EXTERNAL_BACKUP_STATUSES` — a status belonging to no
  * bucket would silently vanish from a chart whose percentages still summed to
  * 100%. It collects `not_started` (the vendor knows the device but no run has
- * been scheduled) and `unknown` (a vendor code we do not map), and UIs render
- * it only when its count is non-zero, which keeps the familiar five-bar layout
- * in the normal case.
+ * been scheduled), `unknown` (a vendor code we do not map) and `paused` (an
+ * operator parked the device on purpose), and UIs render
+ * it only when its count is non-zero. With `overdue` following the same rule,
+ * a fleet with neither shows the familiar five-bar layout.
  */
 export const BACKUP_STATUS_BUCKET_IDS = [
   'no_backups',
   'completed',
+  'overdue',
   'completed_with_errors',
   'in_progress',
   'unsuccessful',
@@ -119,14 +131,19 @@ export const BACKUP_STATUS_BUCKET_IDS = [
 
 export type BackupStatusBucketId = (typeof BACKUP_STATUS_BUCKET_IDS)[number];
 
-/** Every `ExternalBackupStatus` lands in exactly one bucket; asserted in `backupHealth.test.ts`. */
+/**
+ * Every `ExternalBackupStatus` lands in exactly one bucket; asserted in
+ * `backupHealth.test.ts`. `overdue` has no static members: no status means
+ * overdue on its own. A row lands there through {@link bucketForBackupRow}.
+ */
 export const BACKUP_STATUS_BUCKET_MEMBERS: Record<BackupStatusBucketId, readonly ExternalBackupStatus[]> = {
   no_backups: ['no_backups'],
   completed: ['completed'],
+  overdue: [],
   completed_with_errors: ['completed_with_errors'],
   in_progress: ['in_progress'],
   unsuccessful: ['failed', 'over_quota', 'no_selection', 'interrupted'],
-  other: ['not_started', 'unknown'],
+  other: ['not_started', 'unknown', 'paused'],
 };
 
 /** Reverse index, built once from the members table so the two can never drift. */
@@ -146,6 +163,34 @@ const BUCKET_BY_STATUS: ReadonlyMap<ExternalBackupStatus, BackupStatusBucketId> 
  */
 export function bucketForBackupStatus(status: ExternalBackupStatus): BackupStatusBucketId {
   return BUCKET_BY_STATUS.get(status) ?? 'other';
+}
+
+/**
+ * "The last session completed, but that was too long ago" (#12025).
+ *
+ * `completed` is the status of the device's LAST session, whenever it ran. A
+ * device whose last session completed eight months ago is still `completed`,
+ * so on its own the status reads as fine. Its newest success is past the
+ * critical threshold (`over_48h`, the same 48 hours the overview calls
+ * "recent"), or there is none, so it is overdue.
+ *
+ * Only `completed` can be overdue. Every other status already sits in a bucket
+ * that says it needs a look. `completed_with_errors` is left out on purpose:
+ * vendors disagree on whether such a session advances `lastSuccessAt`, so its
+ * recency is not a safe signal that no backup ran.
+ */
+export function isOverdueBackup(row: { status: ExternalBackupStatus; recency: BackupRecency }): boolean {
+  return row.status === 'completed' && (row.recency === 'over_48h' || row.recency === 'never');
+}
+
+/**
+ * The Status bucket one ROW renders in. This is {@link bucketForBackupStatus},
+ * plus the one bucket that needs recency: an overdue `completed` row goes to
+ * `overdue`, so the Status card stops counting a months-stale device as
+ * "Completed".
+ */
+export function bucketForBackupRow(row: { status: ExternalBackupStatus; recency: BackupRecency }): BackupStatusBucketId {
+  return isOverdueBackup(row) ? 'overdue' : bucketForBackupStatus(row.status);
 }
 
 /** Statuses whose verdict is fixed by the status alone. */
@@ -200,6 +245,11 @@ function recencyOf(lastSuccessAt: Date | string | null, now: Date): BackupRecenc
  * not read as healthy off yesterday's success. For every other status the
  * status itself already carries the verdict.
  *
+ * `paused` is the one exception to that independence: an operator stopped
+ * protecting the device on purpose, so it is `warning` and never `covered`,
+ * however fresh its last restore point. `recency` is still computed so the
+ * surfaces can show how old that point is.
+ *
  * The 24h/48h thresholds are constants in phase 1; per-connection overrides are
  * an explicit phase-2 item.
  */
@@ -211,10 +261,12 @@ export function deriveBackupHealth(input: {
 }): { health: BackupHealth; recency: BackupRecency; covered: boolean } {
   const now = input.now ?? new Date();
   const recency = recencyOf(input.lastSuccessAt, now);
-  const covered = recency === 'under_24h' || recency === 'under_48h';
+  const covered = input.status !== 'paused' && (recency === 'under_24h' || recency === 'under_48h');
 
   let health: BackupHealth;
-  if (CRITICAL_STATUSES.has(input.status)) {
+  if (input.status === 'paused') {
+    health = 'warning';
+  } else if (CRITICAL_STATUSES.has(input.status)) {
     health = 'critical';
   } else if (WARNING_STATUSES.has(input.status)) {
     health = 'warning';
@@ -239,6 +291,28 @@ export function deriveBackupHealth(input: {
 
 /** Re-exported so consumers can iterate the enum without a second import. */
 export { EXTERNAL_BACKUP_STATUSES };
+
+/** Providers whose devices carry verified-bootable evidence. */
+export const VERIFIED_BOOTABLE_PROVIDER_KEYS: readonly string[] = ['axcient'];
+
+export type VerifiedBootableState = 'passed' | 'failed' | 'never_run' | 'not_applicable';
+
+/**
+ * One reading of the verified-bootable fields for every surface.
+ *
+ * `undefined` is distinct from `null`: null is a device the provider has no
+ * result for ("never run"), while an absent field is a row saved in a report
+ * before the evidence existed, which says nothing about the device ("n/a").
+ */
+export function verifiedBootableState(row: {
+  providerKey: string | null;
+  verifiedBootable?: boolean | null;
+}): VerifiedBootableState {
+  if (!row.providerKey || !VERIFIED_BOOTABLE_PROVIDER_KEYS.includes(row.providerKey)) return 'not_applicable';
+  if (row.verifiedBootable === undefined) return 'not_applicable';
+  if (row.verifiedBootable === null) return 'never_run';
+  return row.verifiedBootable ? 'passed' : 'failed';
+}
 
 const SAAS_WORKLOAD_LABELS: Readonly<Record<string, string>> = {
   m365_mail: 'Microsoft 365 mail',

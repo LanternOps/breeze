@@ -108,6 +108,16 @@ describe('deliverableTemplateService', () => {
     }
   });
 
+  // #6734: the AI tool pages this list in memory; a partner-wide set and an org
+  // set may share a name, so the order needs a unique tie-break.
+  it('orders sets by name with id as the tie-break', async () => {
+    dbMocks.rows.push([]);
+    await listTemplateSets(orgUser, {});
+    const { db } = await import('../db');
+    const order = ((db as any).orderBy.mock.calls.at(-1) ?? []).map((f: unknown) => compile(f).sql);
+    expect(order).toEqual(['"deliverable_template_sets"."name" asc', '"deliverable_template_sets"."id" asc']);
+  });
+
   it('an org-scope reader never gets the partner-wide arm in its query', async () => {
     dbMocks.rows.push([]);
     await listTemplateSets(orgUser, {});

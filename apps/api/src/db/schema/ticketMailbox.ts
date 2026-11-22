@@ -54,10 +54,23 @@ export const ticketMailboxConnections = pgTable('ticket_mailbox_connections', {
   // Gmail incremental cursor (users.history startHistoryId). A STRING — Gmail
   // history IDs must never be parsed as JS numbers. Parallels deltaLink for MS.
   historyId: text('history_id'),
-  // Gmail eligibility floor (connect time). Recovery after an expired cursor
-  // ingests only mail at/after this instant, so it never imports pre-connect mail.
+  // Eligibility floor (connect time), both providers. Mail received before this
+  // instant is never ingested, whichever path surfaces it. NULL on a Microsoft 365
+  // row until its tenant is bound (bindVerifiedTenant stamps it), and on a row from
+  // before the floor existed until the poll sweep seeds one (#10863).
   eligibleAfter: timestamp('eligible_after', { withTimezone: true }),
+  // Microsoft 365 only (#10863): the first delta round after a connect walks the
+  // whole inbox and leaves what predates the floor alone. These record how many
+  // messages it left and when it finished (NULL while it runs), for the mailbox
+  // card. Only a count: the floor, not these, decides what is imported.
+  baselineSkippedCount: integer('baseline_skipped_count').notNull().default(0),
+  baselineCompletedAt: timestamp('baseline_completed_at', { withTimezone: true }),
   strictSenderAuth: boolean('strict_sender_auth').notNull().default(false),
+  // Microsoft 365 only (#10862): the ARC sealing domains (the d= of an ARC-Seal) of
+  // the inline mail gateways this mailbox's mail is relayed through. A seal that
+  // verifies from one of them supplies the sender-auth verdict in place of Exchange's,
+  // which judges relayed mail against the gateway. Empty = none, the default.
+  trustedArcSealers: text('trusted_arc_sealers').array().notNull().default(sql`'{}'::text[]`),
   lastPolledAt: timestamp('last_polled_at', { withTimezone: true }),
   lastMessageAt: timestamp('last_message_at', { withTimezone: true }),
   lastError: text('last_error'),
@@ -117,14 +130,25 @@ export const ticketMailboxConnections = pgTable('ticket_mailbox_connections', {
   ),
   // Provider fields are mutually exclusive: a Microsoft row never carries the
   // Gmail identity/cursor columns, and a Gmail row never carries a Microsoft
-  // tenant. Prevents a mixed row that would silently fail the provider-scoped
-  // generation lock (tenant_id IS NOT DISTINCT FROM the Gmail null tenant).
+  // tenant or baseline state. Prevents a mixed row that would silently fail the
+  // provider-scoped generation lock (tenant_id IS NOT DISTINCT FROM the Gmail
+  // null tenant).
   providerFieldsConsistent: check(
     'ticket_mailbox_connections_provider_fields_consistent',
     sql`(${table.provider} = 'm365'
          AND ${table.orgId} IS NULL AND ${table.googleAccountSub} IS NULL
-         AND ${table.historyId} IS NULL AND ${table.eligibleAfter} IS NULL)
-      OR (${table.provider} = 'gmail' AND ${table.tenantId} IS NULL)`,
+         AND ${table.historyId} IS NULL)
+      OR (${table.provider} = 'gmail' AND ${table.tenantId} IS NULL
+         AND ${table.baselineSkippedCount} = 0 AND ${table.baselineCompletedAt} IS NULL)`,
+  ),
+  baselineSkippedCountCheck: check(
+    'ticket_mailbox_connections_baseline_skipped_count_check',
+    sql`${table.baselineSkippedCount} >= 0`,
+  ),
+  trustedArcSealersCheck: check(
+    'ticket_mailbox_connections_trusted_arc_sealers_check',
+    sql`cardinality(${table.trustedArcSealers}) <= 10
+      AND (${table.provider} = 'm365' OR cardinality(${table.trustedArcSealers}) = 0)`,
   ),
   gmailHandledLabelCheck: check(
     'ticket_mailbox_connections_gmail_handled_label_check',

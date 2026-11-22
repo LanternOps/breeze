@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, isNull, isNotNull, like, ne, type SQL } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   partners,
   organizations,
@@ -16,9 +16,10 @@ import {
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../../services/authLifecycle';
+import { cancelPendingEmailChange } from '../../services/pendingEmailCancellation';
 import { restorePartnerTenantAccess } from '../../services/tenantLifecycle';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { getBreezeBillingClient } from '../../services/breezeBillingClient';
+import { getBreezeBillingClient, type CloseOpenCheckoutsResult } from '../../services/breezeBillingClient';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { billingStatusContradictsPayment } from '../../services/partnerActivation';
 import { captureException } from '../../services/sentry';
@@ -35,6 +36,17 @@ export const abuseRoutes = new Hono();
 const SUSPENSION_DISABLED_REASON = 'partner_suspended';
 
 type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
+
+/**
+ * System scope for the cross-partner work in these routes. A platform admin
+ * who also belongs to a partner carries a partner-scoped token, so the request
+ * transaction is scoped to that partner, and a `withSystemDbAccessContext`
+ * nested inside it keeps that scope: every other partner's rows are invisible
+ * (#12299). Leave the request context first, as the other admin routes do.
+ */
+function withAdminSystemScope<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
+}
 
 /**
  * Disable the currently-active non-platform-admin users under a partner as part
@@ -103,7 +115,7 @@ export async function suspendPartnerForAbuse(
     const auth = c.get('auth');
     const callerId = auth.user.id;
 
-    const result = await withSystemDbAccessContext(async () => {
+    const result = await withAdminSystemScope(async () => {
       return db.transaction(async (tx) => {
         const [partner] = await tx
           .select({ id: partners.id, status: partners.status })
@@ -193,6 +205,7 @@ export async function suspendPartnerForAbuse(
         for (const { id } of disableResult) {
           await advanceUserEpochs(tx, id, { auth: true });
           await revokeAllRefreshFamilies(tx, id, 'suspended');
+          await cancelPendingEmailChange(tx, id);
         }
 
         // Revoke API keys for orgs under this partner.
@@ -222,7 +235,7 @@ export async function suspendPartnerForAbuse(
             .map((u) => u.id),
         };
       });
-    });
+    }, 'admin.suspendPartnerForAbuse');
 
     if (result.notFound) {
       return c.json({ error: 'partner not found' }, 404);
@@ -296,7 +309,26 @@ export async function suspendPartnerForAbuse(
     // (self-hosted). Outcome is recorded in the audit trail either way.
     let billingSubscriptionCanceled: boolean | null = null;
     let billingCancelError: string | null = null;
+    // Open Checkout Sessions stay payable for up to 24 h after the suspend
+    // unless they are expired, and Stripe refuses to cancel an `incomplete`
+    // subscription while its session is open, so they are closed first
+    // (#11952). Never throws; the outcome goes on the audit row.
+    let billingCheckoutsClosed: CloseOpenCheckoutsResult | null = null;
     if (process.env.BREEZE_BILLING_URL) {
+      try {
+        billingCheckoutsClosed = await getBreezeBillingClient().closeOpenCheckouts({
+          partnerId,
+          reason: 'admin:suspend_for_abuse',
+        });
+      } catch (err) {
+        // getBreezeBillingClient throws only when billing is not configured.
+        billingCheckoutsClosed = { status: 'failed', detail: err instanceof Error ? err.message : String(err) };
+      }
+      if (billingCheckoutsClosed.status === 'failed') {
+        captureException(new Error(
+          `[admin/suspend-for-abuse] close-open-checkouts failed for partner ${partnerId}: ${billingCheckoutsClosed.detail}`,
+        ), c);
+      }
       try {
         const cancelResult = await getBreezeBillingClient().cancelSubscription({
           partnerId,
@@ -308,6 +340,8 @@ export async function suspendPartnerForAbuse(
         captureException(err, c);
       }
     }
+
+    const checkoutsCloseFailed = billingCheckoutsClosed !== null && billingCheckoutsClosed.status !== 'closed';
 
     const auditResult: 'success' | 'failure' =
       tokenRevocationFailures.length === 0 && oauthRevocationError === null
@@ -334,6 +368,7 @@ export async function suspendPartnerForAbuse(
           oauthRefreshTokensRevoked: oauthRevocationResult?.refreshTokensRevoked ?? 0,
           billingSubscriptionCanceled,
           ...(billingCancelError !== null ? { billingCancelError } : {}),
+          ...(billingCheckoutsClosed !== null ? { billingCheckoutsClosed } : {}),
           ...(tokenRevocationFailures.length > 0
             ? { tokenRevocationFailures }
             : {}),
@@ -387,6 +422,7 @@ export async function suspendPartnerForAbuse(
           queuedUninstalls: result.deviceCount,
           billingSubscriptionCanceled,
           ...(billingCancelError !== null ? { billingCancelFailed: true } : {}),
+          ...(checkoutsCloseFailed ? { billingCheckoutsCloseFailed: true } : {}),
         },
         500,
       );
@@ -407,6 +443,8 @@ export async function suspendPartnerForAbuse(
       // Sentry/audit, so they can cancel manually in Stripe.
       billingSubscriptionCanceled,
       ...(billingCancelError !== null ? { billingCancelFailed: true } : {}),
+      // Same for open checkouts: those sessions need a manual expire.
+      ...(checkoutsCloseFailed ? { billingCheckoutsCloseFailed: true } : {}),
     });
 }
 
@@ -436,7 +474,7 @@ abuseRoutes.post(
     const { reason } = c.req.valid('json');
     const auth = c.get('auth');
 
-    const result = await withSystemDbAccessContext(async () => {
+    const result = await withAdminSystemScope(async () => {
       return db.transaction(async (tx) => {
         const [partner] = await tx
           .select({
@@ -481,7 +519,7 @@ abuseRoutes.post(
 
         return { notFound: false as const, status: newStatus, userCount: reEnabled.length };
       });
-    });
+    }, 'admin.unsuspendPartner');
 
     if (result.notFound) {
       return c.json({ error: 'partner not found' }, 404);
@@ -559,8 +597,9 @@ abuseRoutes.post(
 //
 // partner_abuse_signals is system-only under forced RLS (see the
 // 2026-07-13-partner-abuse-signals migration) — a request-context query would
-// silently see zero rows, so every read/write below runs under
-// withSystemDbAccessContext, exactly like services/abuseSignals/ does.
+// silently see zero rows, so every read/write below runs in a fresh system
+// context via withAdminSystemScope. A withSystemDbAccessContext nested in the
+// request context would keep the request's scope and see zero rows (#12299).
 //
 // What acknowledging suppresses (see services/abuseSignals/persistence.ts and
 // runAbuseDigest in services/abuseSignals/index.ts):
@@ -631,7 +670,7 @@ abuseRoutes.get(
       conds.push(like(partnerAbuseSignals.signalKey, `${escapeLikePrefix(signalKey)}%`));
     }
 
-    const rows = await withSystemDbAccessContext(() =>
+    const rows = await withAdminSystemScope(() =>
       db
         .select()
         .from(partnerAbuseSignals)
@@ -639,7 +678,7 @@ abuseRoutes.get(
         .orderBy(desc(partnerAbuseSignals.computedAt), desc(partnerAbuseSignals.id))
         .limit(limit)
         .offset(offset),
-    );
+    'admin.listAbuseSignals');
 
     return c.json({ signals: rows.map(toSignalResponse), limit, offset });
   },
@@ -653,7 +692,7 @@ abuseRoutes.post('/signals/:id/acknowledge', requireMfa(), async (c) => {
   }
   const id = parsedId.data;
 
-  const result = await withSystemDbAccessContext(async () => {
+  const result = await withAdminSystemScope(async () => {
     // Guarded write first: the `acknowledged_at IS NULL` predicate makes a
     // concurrent double-ack race collapse into the idempotent path below.
     const [updated] = await db
@@ -676,7 +715,7 @@ abuseRoutes.post('/signals/:id/acknowledge', requireMfa(), async (c) => {
       return { notFound: true as const };
     }
     return { notFound: false as const, alreadyAcknowledged: true as const, row: existing };
-  });
+  }, 'admin.acknowledgeAbuseSignal');
 
   if (result.notFound) {
     return c.json({ error: 'signal not found' }, 404);
@@ -717,7 +756,7 @@ abuseRoutes.post(
     const { ids } = c.req.valid('json');
     const uniqueIds = [...new Set(ids)];
 
-    const outcome = await withSystemDbAccessContext(async () => {
+    const outcome = await withAdminSystemScope(async () => {
       const acked = await db
         .update(partnerAbuseSignals)
         .set({ acknowledgedAt: new Date(), acknowledgedBy: auth.user.email })
@@ -753,7 +792,7 @@ abuseRoutes.post(
         acknowledgedCount: ackedIds.size,
         acknowledgedIds: [...ackedIds],
       };
-    });
+    }, 'admin.bulkAcknowledgeAbuseSignals');
 
     if (outcome.acknowledgedCount > 0) {
       await createAuditLog({

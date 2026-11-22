@@ -445,9 +445,13 @@ describe('in-flight deletes and refused publication', () => {
 describe('storage reconcile after a takeover', () => {
   runDb('attributes a server-issued id to the job currently holding it, not the job that ranks first', async () => {
     const t = await seedWriteTenant();
+    // The API reads a local destination only from
+    // <BACKUP_LOCAL_ROOT>/<org id>/<config id>; the stored path is the
+    // agent's path on the device and is not used here.
     const root = mkdtempSync(join(tmpdir(), 'brokered-continuation-'));
+    vi.stubEnv('BACKUP_LOCAL_ROOT', root);
     try {
-      const destination = { path: root };
+      const destination = { path: '/agent/backups' };
       const configId = randomUUID();
       await dbExec(sql`
         INSERT INTO backup_configs (id, org_id, name, type, provider, provider_config)
@@ -455,8 +459,9 @@ describe('storage reconcile after a takeover', () => {
       `);
       const identity = normalizeStorageIdentity('local', destination);
       const x = `snapshot-20261108T000000Z-${randomBytes(12).toString('hex')}`;
-      mkdirSync(join(root, 'snapshots', x), { recursive: true });
-      writeFileSync(join(root, 'snapshots', x, 'manifest.json'), JSON.stringify({ id: x, files: [] }));
+      const snapshotDir = join(root, t.orgId, configId, 'snapshots', x);
+      mkdirSync(snapshotDir, { recursive: true });
+      writeFileSync(join(snapshotDir, 'manifest.json'), JSON.stringify({ id: x, files: [] }));
 
       // The earlier job A left x unfinished; B took it over and then ended
       // without reporting. Both jobs recorded x; A would rank first (it is on
@@ -481,6 +486,7 @@ describe('storage reconcile after a takeover', () => {
       expect(snap[0]).toMatchObject({ job_id: jobB });
       expect(await reservationRow(x)).toMatchObject({ state: 'published', current_job_id: jobB });
     } finally {
+      vi.unstubAllEnvs();
       rmSync(root, { recursive: true, force: true });
     }
   });

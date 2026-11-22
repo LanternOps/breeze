@@ -533,3 +533,20 @@ describe('legacy configurations carrying a dead glob (#2473)', () => {
     expect(backupInlineSettingsSchema.safeParse(legacy).success).toBe(true);
   });
 });
+
+describe('backupScheduleSchema — runMissedBackupsOnConnect (#11013)', () => {
+  const base = { frequency: 'daily' as const, time: '05:00' };
+
+  it('keeps the toggle instead of stripping it', () => {
+    expect(backupScheduleSchema.parse({ ...base, runMissedBackupsOnConnect: false }))
+      .toMatchObject({ runMissedBackupsOnConnect: false });
+  });
+
+  it('leaves it absent when unset, which means on', () => {
+    expect(backupScheduleSchema.parse(base)).not.toHaveProperty('runMissedBackupsOnConnect');
+  });
+
+  it('refuses a non-boolean', () => {
+    expect(backupScheduleSchema.safeParse({ ...base, runMissedBackupsOnConnect: 'no' }).success).toBe(false);
+  });
+});

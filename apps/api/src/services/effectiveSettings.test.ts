@@ -379,6 +379,59 @@ describe('getEffectiveAiBudget alertThresholdPercents (#4388)', () => {
   });
 });
 
+// #9666: the partner AI Budgets tab now saves `aiBudgets` without `enabled`
+// when the partner leaves "AI for all organizations" not set. That shape must
+// leave each org's own AI switch in force and unlocked; only an explicit
+// partner `enabled` value overrides and locks it.
+describe('aiBudgets.enabled partner lock (#9666)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('partner caps without enabled keep the org switch and do not lock it', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ aiBudgets: { monthlyBudgetCents: 5000 } }),
+      mockOrgBudgetRow({ enabled: false }),
+    );
+    const { effective, locked } = await getEffectiveOrgSettings('org1');
+    expect((effective.aiBudgets as Record<string, unknown>).enabled).toBe(false);
+    expect(locked).toContain('aiBudgets.monthlyBudgetCents');
+    expect(locked).not.toContain('aiBudgets.enabled');
+  });
+
+  it('partner caps without enabled leave an org with AI on enabled at runtime', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ aiBudgets: { monthlyBudgetCents: 5000 } }),
+      mockOrgBudgetRow({ enabled: true }),
+    );
+    expect((await getEffectiveAiBudget('org1')).enabled).toBe(true);
+  });
+
+  it('an explicit partner enabled:false still wins and locks', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ aiBudgets: { enabled: false } }),
+      mockOrgBudgetRow({ enabled: true }),
+    );
+    const { effective, locked } = await getEffectiveOrgSettings('org1');
+    expect((effective.aiBudgets as Record<string, unknown>).enabled).toBe(false);
+    expect(locked).toContain('aiBudgets.enabled');
+  });
+
+  it('an explicit partner enabled:true wins over an org that turned AI off, and locks', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({ aiBudgets: { enabled: true } }),
+      mockOrgBudgetRow({ enabled: false }),
+    );
+    const { effective, locked } = await getEffectiveOrgSettings('org1');
+    expect((effective.aiBudgets as Record<string, unknown>).enabled).toBe(true);
+    expect(locked).toContain('aiBudgets.enabled');
+  });
+});
+
 describe('getEffectiveAiBudget toolRateLimitMultiplier (#6476)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

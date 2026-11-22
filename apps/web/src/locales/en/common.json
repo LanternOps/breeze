@@ -32,6 +32,9 @@
     "networkMonitor": "Network",
     "jobs": "Jobs",
     "flows": "Flows",
+    "previewTag": "Preview",
+    "automations": "Automations",
+    "automationsSections": "Automations sections",
     "monitoring": "Monitoring",
     "networkDiscovery": "Network Discovery",
     "edr": "EDR",
@@ -803,6 +806,7 @@
         "devices": "Devices",
         "scripts": "Scripts",
         "alerts": "Alerts",
+        "pages": "Pages",
         "users": "Users",
         "settings": "Settings",
         "recent-devices": "Recent devices",
@@ -822,7 +826,9 @@
         "wispHome": "Open Wisp",
         "wispHomeDescription": "Go to your Wisp home"
       },
-      "numberHint": "{{mod}}1–9 to open"
+      "numberHint": "{{mod}}1–9 to open",
+      "thisCustomerOnly": "This customer only",
+      "partnerWide": "Partner-wide"
     },
     "notifications": {
       "title": "Notifications",
@@ -834,6 +840,8 @@
       "unread_other": "{{count}} unread",
       "markAllRead": "Mark all read",
       "markAllUnread": "Mark all unread",
+      "muteSound": "Mute approval sound",
+      "unmuteSound": "Unmute approval sound",
       "confirmClear": "Confirm clear",
       "clearAll": "Clear all",
       "loading": "Loading notifications…",
@@ -903,7 +911,20 @@
       },
       "charKeysOn": "Character-key shortcuts are on.",
       "charKeysOff": "Character-key shortcuts are off. Only Ctrl/Cmd shortcuts work.",
-      "charKeysManage": "Change in profile settings"
+      "charKeysManage": "Change in profile settings",
+      "queueTitle": "Tickets queue",
+      "queueHint": "On the Tickets page, outside a text field.",
+      "queue": {
+        "next": "Next ticket",
+        "previous": "Previous ticket",
+        "open": "Open the ticket (after a resolve: the offered next one)",
+        "toggleBulk": "Add to or remove from the bulk selection",
+        "assignMe": "Assign to me",
+        "reply": "Write a reply",
+        "internal": "Write an internal note",
+        "resolve": "Resolve with a note",
+        "back": "Back to the queue"
+      }
     }
   },
   "migrationBanner": {
@@ -1448,6 +1469,10 @@
           "deviceOnline": {
             "description": "Triggered when a device connects.",
             "label": "Device Online"
+          },
+          "deviceReinstallSuspected": {
+            "description": "Triggered when a newly enrolled device looks like a reinstall of an existing, silent device record.",
+            "label": "Possible Device Reinstall"
           },
           "deviceReinstalled": {
             "description": "Triggered when a reinstalled machine is reattached to its existing device record.",
@@ -2031,7 +2056,7 @@
         "paused": "Paused",
         "everyInterval": "every {{interval}}",
         "lastPolled": "Last polled {{time}}",
-        "configureMonitoring": "Configure Monitoring",
+        "configureMonitoring": "Configure monitoring",
         "pauseSnmpPolling": "Pause SNMP polling",
         "resumeSnmpPolling": "Resume SNMP polling",
         "disableSnmpMonitoring": "Disable SNMP monitoring",
@@ -2055,7 +2080,7 @@
         },
         "ip": "IP",
         "snmp": "SNMP",
-        "networkChecks": "Network Checks",
+        "networkChecks": "Network checks",
         "emptyAssets": "No assets found.",
         "lastSeen": "Last seen {{time}}",
         "activeRatio": "{{active}}/{{total}} active",
@@ -2453,6 +2478,7 @@
           "invalidTimeRange": "Start time must be before end time.",
           "searchFailed": "Failed to search logs",
           "saveFailed": "Failed to save query",
+          "savedQueriesFailed": "Could not load saved queries.",
           "noRowsExport": "No rows to export."
         },
         "savePrompt": "Name this saved query:",
@@ -2472,10 +2498,14 @@
         },
         "searchFleetLogs": "Search Fleet Logs",
         "saveQuery": "Save Query",
+        "savedQueries": "Saved queries",
+        "customSearch": "Custom search",
+        "usingSavedFilters": "This search uses the stored filters.",
         "exportCsv": "Export CSV",
         "resultsTitle": "Search Results",
         "loading": "Loading...",
         "resultsCount": "{{shown}} shown of {{total}} total",
+        "resultsCountWithoutTotal": "{{shown}} shown",
         "table": {
           "timestamp": "Timestamp",
           "level": "Level",
@@ -2485,6 +2515,7 @@
         "unknownSite": "Unknown site",
         "empty": "No logs matched the current filters.",
         "pageCount": "Page {{page}} of {{totalPages}}",
+        "currentPage": "Page {{page}}",
         "previous": "Previous"
       }
     },
@@ -2865,6 +2896,9 @@
     "noneConfigured": "No {{source}} configured",
     "overriding": "Overrides {{source}}",
     "overridingWithValue": "Overrides {{source}} ({{value}})"
+  },
+  "inheritChoice": {
+    "inherit": "Inherit — {{value}} ({{source}})"
   },
   "fixMemoryPage": {
     "title": "Fix memory",

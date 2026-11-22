@@ -64,9 +64,17 @@ export interface MailboxConnectionListItem {
    * AADSTS50011 redirect URI mismatch), or the callback was turned away before
    * it could touch the row (#6936). Always false for any other status. */
   consentExpired: boolean;
+  /** ARC sealing domains (the d= of an ARC-Seal) of the inline mail gateways this
+   * mailbox trusts for sender auth (#10862). Always empty for gmail rows. */
+  trustedArcSealers: string[];
   /** Gmail rows only (null for m365): the per-mailbox "mark handled" setting
    * and the last marking failure as a fixed code (never upstream text). */
   gmailHandling: GmailHandlingSettings | null;
+  /** Microsoft 365 rows with a connect floor (#10863): how many messages already
+   * in the inbox the first delta round left alone so far, and when it finished
+   * (null while it runs). Null for gmail rows and for any m365 row with no floor
+   * (not yet bound, or from before the floor existed). */
+  connectBaseline: { skippedCount: number; completedAt: Date | null } | null;
 }
 
 export interface GmailHandlingSettings {
@@ -79,7 +87,8 @@ export interface GmailHandlingSettings {
   errorAt: Date | null;
 }
 
-export const MAILBOX_VERIFICATION_FAILED = 'Mailbox verification failed';
+import { MAILBOX_VERIFICATION_FAILED } from './mailboxErrors';
+export { MAILBOX_VERIFICATION_FAILED };
 
 export type MailboxConnectionSnapshot = Pick<
   MailboxConnection,
@@ -89,9 +98,26 @@ export type MailboxConnectionSnapshot = Pick<
 type ConnectedMailbox = MailboxConnectionSnapshot & Pick<
   MailboxConnection,
   'mailboxAddress' | 'deltaLink'
->;
+> & {
+  /** Connect floor: mail received before this is not imported (#10863). Null only
+   * on a connected row from before the floor existed; with no cursor either, the
+   * sweep seeds one (seedDeltaFloor) before its first read. */
+  eligibleAfter: Date | null;
+  /** When the first delta round after connect finished; null while it runs. */
+  baselineCompletedAt: Date | null;
+  trustedArcSealers: string[];
+};
 
 type Row = typeof ticketMailboxConnections.$inferSelect;
+
+/**
+ * The delta walk starts over whenever the cursor is cleared, so what an unfinished
+ * baseline counted would be counted again. A finished baseline keeps its count: the
+ * note on the card describes the connect, not this re-walk (#10863).
+ */
+const baselineCountAfterCursorCleared = sql`CASE
+  WHEN ${ticketMailboxConnections.baselineCompletedAt} IS NULL THEN 0
+  ELSE ${ticketMailboxConnections.baselineSkippedCount} END`;
 
 function toConnection(r: Row): MailboxConnection {
   return { ...r, status: r.status as MailboxConnectionStatus };
@@ -115,6 +141,10 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
     gmailArchiveOnHandle: ticketMailboxConnections.gmailArchiveOnHandle,
     gmailHandledError: ticketMailboxConnections.gmailHandledError,
     gmailHandledErrorAt: ticketMailboxConnections.gmailHandledErrorAt,
+    eligibleAfter: ticketMailboxConnections.eligibleAfter,
+    baselineSkippedCount: ticketMailboxConnections.baselineSkippedCount,
+    baselineCompletedAt: ticketMailboxConnections.baselineCompletedAt,
+    trustedArcSealers: ticketMailboxConnections.trustedArcSealers,
     // Whether the row's CURRENT attempt still has a live state (either phase).
     // Sessions are single-use and TTL-bound, so none left means the flow is
     // dead. Read under the caller's RLS context like the rest of this query;
@@ -152,6 +182,7 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
       ? { count: row.consecutiveTransientFailures, lastAt: row.lastTransientFailureAt }
       : null,
     consentExpired: row.status === 'pending_consent' && row.consentSessionLive !== true,
+    trustedArcSealers: row.trustedArcSealers,
     gmailHandling: row.provider === 'gmail'
       ? {
         label: row.gmailHandledLabel,
@@ -160,7 +191,36 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
         errorAt: row.gmailHandledErrorAt,
       }
       : null,
+    connectBaseline: row.provider !== 'gmail' && row.eligibleAfter
+      ? { skippedCount: row.baselineSkippedCount, completedAt: row.baselineCompletedAt }
+      : null,
   }));
+}
+
+/**
+ * Replace a Microsoft 365 mailbox's trusted ARC sealers (#10862). Runs in the
+ * caller's request DB context like updateGmailHandling. Only a non-disabled
+ * Microsoft 365 row of this partner matches; returns null when none did. The next
+ * sweep reads the new list, and mail already enqueued keeps the verdict it got.
+ */
+export async function updateTrustedArcSealers(
+  id: string,
+  partnerId: string,
+  sealers: string[],
+): Promise<{ id: string; mailboxAddress: string } | null> {
+  const rows = await db.update(ticketMailboxConnections)
+    .set({ trustedArcSealers: sealers, updatedAt: new Date() })
+    .where(and(
+      eq(ticketMailboxConnections.id, id),
+      eq(ticketMailboxConnections.partnerId, partnerId),
+      eq(ticketMailboxConnections.provider, 'm365'),
+      sql`${ticketMailboxConnections.status} <> 'disabled'`,
+    ))
+    .returning({
+      id: ticketMailboxConnections.id,
+      mailboxAddress: ticketMailboxConnections.mailboxAddress,
+    });
+  return rows[0] ?? null;
 }
 
 /**
@@ -228,6 +288,9 @@ export async function listConnectedMailboxes(): Promise<ConnectedMailbox[]> {
       mailboxAddress: ticketMailboxConnections.mailboxAddress,
       deltaLink: ticketMailboxConnections.deltaLink,
       consentAttemptId: ticketMailboxConnections.consentAttemptId,
+      eligibleAfter: ticketMailboxConnections.eligibleAfter,
+      baselineCompletedAt: ticketMailboxConnections.baselineCompletedAt,
+      trustedArcSealers: ticketMailboxConnections.trustedArcSealers,
     }).from(ticketMailboxConnections)
       .innerJoin(
         ticketMailboxTenantOwnerships,
@@ -259,6 +322,18 @@ export async function getMailboxConnection(id: string, partnerId: string): Promi
   return rows[0] ? toConnection(rows[0]) : null;
 }
 
+/** See createPendingConnection. Reads the row as it was before the conflict update. */
+const reconsentKeepsBaseline = sql`(${ticketMailboxConnections.provider} = 'm365' AND ${ticketMailboxConnections.status} <> 'disabled')`;
+
+/**
+ * A floor for a mailbox that was polling before floors existed (#10863): its last
+ * poll, less a margin. last_polled_at is written after the round's enqueue loop, so
+ * mail that arrived while that round ran sorts just before it; the margin re-offers
+ * that mail, and durable dedup absorbs what was already ingested. NULL when the
+ * row never polled.
+ */
+const floorFromLastPoll = sql`(${ticketMailboxConnections.lastPolledAt} - interval '5 minutes')`;
+
 export async function createPendingConnection(input: {
   partnerId: string; mailboxAddress: string; displayName: string | null; createdBy: string | null;
 }): Promise<MailboxConnection> {
@@ -276,17 +351,31 @@ export async function createPendingConnection(input: {
     set: {
       // This is the Microsoft connect path. If the existing row for this
       // (partner, mailbox) is a Gmail connection, converting it to M365 must be
-      // CLEAN: set provider and clear every Gmail-specific field, or we would
+      // CLEAN: set provider and clear every Gmail-specific field (the floor, which
+      // both providers use, is decided separately below), or we would
       // leave a mixed row (provider='gmail' + a Microsoft tenant) that the M365
       // selector picks up but the consumer's provider-equality check rejects.
       provider: 'm365',
       orgId: null,
       googleAccountSub: null,
       historyId: null,
-      // Gmail-only cursor floor; leaving it set violates the provider CHECK
-      // (an m365 row must not carry Gmail eligibility state) and is meaningless
-      // for the Graph delta cursor.
-      eligibleAfter: null,
+      // A re-consent of a mailbox still in service (reauth, re-test, an abandoned
+      // attempt) keeps its floor and finished baseline, so the cursor cleared below
+      // re-walks under the same floor: mail that arrived during an outage is still
+      // imported and the backlog still is not (#10863). Durable dedup absorbs what
+      // was already ingested. A row from before the floor existed takes one from
+      // its last poll, as seedDeltaFloor does, and counts as already baselined;
+      // last_polled_at is cleared below, so this is the only point it can be read.
+      // A deliberate disconnect, or a Gmail row whose floor is about another
+      // provider, starts over: bindVerifiedTenant stamps a new floor, so mail
+      // received while disconnected stays out.
+      eligibleAfter: sql`CASE WHEN ${reconsentKeepsBaseline}
+        THEN COALESCE(${ticketMailboxConnections.eligibleAfter}, ${floorFromLastPoll}) END`,
+      baselineCompletedAt: sql`CASE WHEN ${reconsentKeepsBaseline}
+        THEN COALESCE(${ticketMailboxConnections.baselineCompletedAt},
+          CASE WHEN ${ticketMailboxConnections.eligibleAfter} IS NULL AND ${ticketMailboxConnections.lastPolledAt} IS NOT NULL
+            THEN now() END) END`,
+      baselineSkippedCount: sql`CASE WHEN ${reconsentKeepsBaseline} THEN ${baselineCountAfterCursorCleared} ELSE 0 END`,
       // Gmail-only "mark handled" setting; the CHECK refuses it on an m365 row.
       gmailHandledLabel: null,
       gmailArchiveOnHandle: true,
@@ -486,6 +575,9 @@ export async function createGmailConnection(input: {
           status: 'connected',
           tenantId: null,
           deltaLink: null,
+          // Microsoft-only state; the CHECK refuses it on a gmail row.
+          baselineSkippedCount: 0,
+          baselineCompletedAt: null,
           lastError: null,
           // A marking failure recorded against the previous binding no longer
           // describes this one. The handled-label setting itself is kept.
@@ -550,6 +642,7 @@ export async function bindVerifiedTenant(
 ): Promise<void> {
   const normalizedTenantId = tenantId.toLowerCase();
   const normalizedMicrosoftOid = evidence.microsoftOid.toLowerCase();
+  const boundAt = new Date();
 
   await db.transaction(async (tx) => {
     await tx.insert(ticketMailboxTenantOwnerships).values({
@@ -576,9 +669,15 @@ export async function bindVerifiedTenant(
         tenantId: normalizedTenantId,
         status: probeFailure?.status ?? 'connected',
         lastError: probeFailure?.lastError ?? null,
+        // The connect instant: mail received before it is never imported (#10863).
+        // Stamped here, not at the first poll, so mail arriving before that poll
+        // (or before a failed probe's Re-test) is not lost. COALESCE keeps the floor
+        // a re-consent preserved. Bound as an ISO string + cast: postgres.js rejects
+        // a raw Date inside a sql`` template (see seedGmailCursor).
+        eligibleAfter: sql`COALESCE(${ticketMailboxConnections.eligibleAfter}, ${boundAt.toISOString()}::timestamptz)`,
         consecutiveTransientFailures: 0,
         lastTransientFailureAt: null,
-        updatedAt: new Date(),
+        updatedAt: boundAt,
       })
       .where(and(
         eq(ticketMailboxConnections.id, connectionId),
@@ -717,13 +816,18 @@ export async function setConnectedMailboxStatus(
  *  concurrency 1 is per worker, so two sweeps can overlap. Without it a slower
  *  sweep could write an older cursor (a deltaLink, or a resumeLink mid-round,
  *  #8400) over a newer one and move the mailbox backward. The loser's update
- *  matches 0 rows and the next sweep re-reads the advanced cursor. */
+ *  matches 0 rows and the next sweep re-reads the advanced cursor.
+ *
+ *  `baseline` is what this part of a connect baseline left alone (#10863), passed
+ *  only while one is open. It shares the compare-and-swap, so a losing sweep or a
+ *  retried page never counts the same messages twice. */
 export async function updateDeltaCursor(
   snapshot: MailboxConnectionSnapshot,
   expectedFromDeltaLink: string | null,
   deltaLink: string,
   polledAt: Date,
   lastMessageAt: Date | null,
+  baseline?: { skipped: number; completed: boolean },
 ): Promise<boolean> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const rows = await db.update(ticketMailboxConnections)
@@ -731,6 +835,12 @@ export async function updateDeltaCursor(
         deltaLink,
         lastPolledAt: polledAt,
         ...(lastMessageAt ? { lastMessageAt } : {}),
+        ...(baseline
+          ? {
+            baselineSkippedCount: sql`${ticketMailboxConnections.baselineSkippedCount} + ${baseline.skipped}`,
+            ...(baseline.completed ? { baselineCompletedAt: polledAt } : {}),
+          }
+          : {}),
         // A poll that completed, or advanced a long round (#8400), ends any run
         // of transient failures (#8308).
         consecutiveTransientFailures: 0,
@@ -763,11 +873,14 @@ function deltaCursorIs(expected: string | null): SQL {
     : eq(ticketMailboxConnections.deltaLink, expected);
 }
 
-/** 410 Gone: Graph invalidated the delta token. Clear it so the next sweep restarts
- *  the delta from "now" (no history backfill). Stays 'connected'. Worker-only;
- *  self-wraps in system context (FORCE RLS — see updateDeltaCursor). Same
- *  compare-and-swap as updateDeltaCursor: only the cursor that got the 410 is
- *  cleared, never one another sweep has since advanced (#8400). */
+/** Graph invalidated the delta token (isDeltaCursorExpired). Clear it so the next
+ *  sweep walks the inbox again. A fresh delta returns the whole inbox, so the floor
+ *  is what keeps that from being an import (#10863): it is left where it is, and
+ *  durable dedup absorbs what was already ingested. A row with no floor gets one
+ *  from seedDeltaFloor before that walk. Stays 'connected'. Worker-only; self-wraps
+ *  in system context (FORCE RLS — see updateDeltaCursor). Same compare-and-swap as
+ *  updateDeltaCursor: only the cursor Graph refused is cleared, never one another
+ *  sweep has since advanced (#8400). */
 export async function resetDeltaCursor(
   snapshot: MailboxConnectionSnapshot,
   expectedFromDeltaLink: string | null,
@@ -775,10 +888,52 @@ export async function resetDeltaCursor(
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const rows = await db.update(ticketMailboxConnections)
       // Not a completed poll, so a run of transient failures is left as is (#8308).
-      .set({ deltaLink: null, updatedAt: new Date() })
+      .set({ deltaLink: null, baselineSkippedCount: baselineCountAfterCursorCleared, updatedAt: new Date() })
       .where(connectedSnapshotPredicate(snapshot, deltaCursorIs(expectedFromDeltaLink)))
       .returning({ id: ticketMailboxConnections.id });
     return rows.length === 1;
+  }));
+}
+
+/**
+ * Give a connected Microsoft 365 row with neither a cursor nor a floor a floor,
+ * before its first delta read (#10863). bindVerifiedTenant stamps one on every new
+ * connection, so this only meets a row from before the floor existed: one that
+ * lost its cursor to an expired token, or had not polled yet.
+ *
+ * A row that has polled uses its last poll (floorFromLastPoll), so mail that
+ * arrived since then is still imported and the rest is not imported again. It is marked as already
+ * baselined, because the card's note describes a connect and this is not one. A
+ * row that never polled is effectively a new connection: its floor is now and its
+ * baseline counts.
+ *
+ * Only one sweep's write lands. Returns null otherwise, or when the generation
+ * changed; the caller then skips the mailbox, and the next sweep re-reads it.
+ * Worker-only; self-wraps in system context (FORCE RLS, see updateDeltaCursor).
+ */
+export async function seedDeltaFloor(
+  snapshot: MailboxConnectionSnapshot,
+  now: Date,
+): Promise<{ eligibleAfter: Date; baselineCompletedAt: Date | null } | null> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const at = now.toISOString();
+    const rows = await db.update(ticketMailboxConnections)
+      .set({
+        eligibleAfter: sql`COALESCE(${floorFromLastPoll}, ${at}::timestamptz)`,
+        baselineCompletedAt: sql`CASE WHEN ${ticketMailboxConnections.lastPolledAt} IS NOT NULL THEN ${at}::timestamptz END`,
+        updatedAt: now,
+      })
+      .where(connectedSnapshotPredicate(
+        snapshot,
+        isNull(ticketMailboxConnections.deltaLink),
+        isNull(ticketMailboxConnections.eligibleAfter),
+      ))
+      .returning({
+        eligibleAfter: ticketMailboxConnections.eligibleAfter,
+        baselineCompletedAt: ticketMailboxConnections.baselineCompletedAt,
+      });
+    const row = rows[0];
+    return row?.eligibleAfter ? { eligibleAfter: row.eligibleAfter, baselineCompletedAt: row.baselineCompletedAt } : null;
   }));
 }
 

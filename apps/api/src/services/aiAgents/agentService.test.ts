@@ -5,6 +5,7 @@ import { PartnerWideWriteDeniedError } from '../partnerWideAccess';
 import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { ResearchAgentEditError } from './researchAgentEdit';
+import { TroubleshootAgentEditError } from './troubleshootAgentEdit';
 
 const state = vi.hoisted(() => ({
   currentRow: null as Record<string, unknown> | null,
@@ -1385,6 +1386,52 @@ describe('research agent creation backstop (W2)', () => {
     await createAgent(auth(), { orgId: 'o1', partnerId: null }, researchInput as never);
     expect(state.insertedValues).toMatchObject({ kind: 'research', orgId: 'o1', partnerId: null, createdBy: 'u1' });
     expect(state.hasResolvableAgentRecipient).not.toHaveBeenCalled();
+  });
+});
+
+describe('built-in troubleshoot agent edits through updateAgent (#11084)', () => {
+  const troubleshoot = {
+    ...storedRow, orgId: null, partnerId: 'p1', kind: 'troubleshoot', mode: 'shadow', toolAllowlist: [],
+    createdBy: null, provisionedBy: 'system:troubleshoot',
+  };
+
+  it.each([
+    [{ mode: 'act' }, ['mode']],
+    [{ toolAllowlist: ['run_script'] }, ['toolAllowlist']],
+    [{ instructions: 'x' }, ['instructions']],
+  ])('refuses %j with TroubleshootAgentEditError and issues no update', async (patch, fields) => {
+    state.currentRow = troubleshoot;
+    state.returnedRow = troubleshoot;
+    const err = await updateAgent(auth(), 'a1', patch as never).catch((e) => e);
+    expect(err).toBeInstanceOf(TroubleshootAgentEditError);
+    expect((err as TroubleshootAgentEditError).fields).toEqual(fields);
+    expect(state.updatedValues).toBeNull();
+  });
+
+  it('allows enabled + name', async () => {
+    state.currentRow = troubleshoot;
+    state.returnedRow = { ...troubleshoot, enabled: false, name: 'X' };
+    await updateAgent(auth(), 'a1', { enabled: false, name: 'X' } as never);
+    expect(state.updatedValues).toMatchObject({ enabled: false, name: 'X' });
+  });
+
+  // The provisioner is exempt from the partner-wide write gate only because the
+  // user-facing edit path is gated here (partner-wide-write-coverage.test.ts).
+  it('denies a permitted field to a caller without full partner authority, before any update', async () => {
+    state.currentRow = troubleshoot;
+    state.returnedRow = troubleshoot;
+    await expect(updateAgent(auth({ partnerOrgAccess: 'selected' }), 'a1', { enabled: false } as never))
+      .rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(state.updatedValues).toBeNull();
+  });
+});
+
+describe('troubleshoot agent creation backstop (#11084)', () => {
+  it('createAgent refuses kind troubleshoot with fields [kind] before any insert', async () => {
+    const err = await createAgent(auth(), { orgId: 'o1', partnerId: null }, { ...createInput, kind: 'troubleshoot' } as never).catch((e) => e);
+    expect(err).toBeInstanceOf(TroubleshootAgentEditError);
+    expect((err as TroubleshootAgentEditError).fields).toEqual(['kind']);
+    expect(state.insertedValues).toBeNull();
   });
 });
 

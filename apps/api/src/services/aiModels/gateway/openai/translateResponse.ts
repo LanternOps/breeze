@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { GATEWAY_MAX_TOOL_ARGS_BYTES, GATEWAY_MAX_TOOL_CALLS, GATEWAY_MAX_USAGE_TOKENS } from '../limits';
+import { noteGatewayFailure } from '../failureNotes';
 import { GatewayError } from '../types';
 import { resolveToolName } from './toolNames';
 import type { OaiChatResponse, OaiUsage, ToolNameMap } from './types';
@@ -22,6 +23,21 @@ export interface AnthropicMessage {
 
 export const UNSAFE_TOOL_CALL_NOTE =
   '[Breeze: the model asked to run a tool in a form Breeze could not verify, so nothing was run. Try rephrasing, or choose a different model.]';
+
+/**
+ * W04 (#11397): what the technician sees in place of UNSAFE_TOOL_CALL_NOTE when
+ * the session runs a constrained tool profile (a small model): asking a
+ * narrower question is the useful next step there. The model's own transcript
+ * keeps the gateway note; only the streamed and persisted text change.
+ */
+export const CONSTRAINED_TOOL_CALL_NOTE = 'This model produced a tool call Breeze could not use. Try again, or ask a narrower question.';
+
+/** The technician-facing form of model text: the gateway's refusal note swapped for constrained profiles only. */
+export function presentRefusedToolCallNote(text: string, promptMode: 'standard' | 'constrained' | null | undefined): string {
+  return promptMode === 'constrained' && text.includes(UNSAFE_TOOL_CALL_NOTE)
+    ? text.split(UNSAFE_TOOL_CALL_NOTE).join(CONSTRAINED_TOOL_CALL_NOTE)
+    : text;
+}
 
 /** Clamp a token count into [0, GATEWAY_MAX_USAGE_TOKENS]. */
 const clampTokens = (n: number): number => Math.min(Math.max(0, Math.floor(n)), GATEWAY_MAX_USAGE_TOKENS);
@@ -247,7 +263,16 @@ export function mapFinish(finish: string | null | undefined, emittedToolUse: boo
   }
 }
 
-export function translateChatResponse(res: unknown, ctx: { model: string; tools: ToolNameMap; estimatedInputTokens?: number }): AnthropicMessage {
+export function translateChatResponse(
+  res: unknown,
+  ctx: {
+    model: string;
+    tools: ToolNameMap;
+    estimatedInputTokens?: number;
+    /** The grant's AI session: a refused batch is noted for the turn by name (W04 #11397). */
+    aiSessionId?: string | null;
+  },
+): AnthropicMessage {
   const r = res as OaiChatResponse;
   if (!r || typeof r !== 'object' || !Array.isArray(r.choices)) {
     throw new GatewayError(502, 'api_error', 'upstream_malformed', 'The endpoint returned a malformed response.');
@@ -260,7 +285,9 @@ export function translateChatResponse(res: unknown, ctx: { model: string; tools:
   const mapped = calls.map((c) => ({ id: c?.id, name: c?.function?.name, arguments: c?.function?.arguments }));
   const toolUses = validateToolCalls(mapped, ctx.tools);
   if (toolUses === null) {
-    console.warn(`[modelGateway] ${describeRefusedToolCalls(mapped, ctx.tools)}`);
+    const refused = describeRefusedToolCalls(mapped, ctx.tools);
+    console.warn(`[modelGateway] ${refused}`);
+    noteGatewayFailure(ctx.aiSessionId ?? null, refused, 'refused_tool_batch');
     content.push({ type: 'text', text: UNSAFE_TOOL_CALL_NOTE });
   }
   else content.push(...toolUses);

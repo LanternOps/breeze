@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
 import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
 import {
-  TIER1_ACTIONS, TIER2_ACTIONS,
+  TIER1_ACTIONS, TIER2_ACTIONS, TIER2_READONLY_TOOLS,
   TIER3_ACTIONS, TIER3_FOUR_EYES_ACTIONS, TIER3_FOUR_EYES_TOOLS,
   TIER3_SUPERVISED_ACTIONS, TIER3_SUPERVISED_TOOLS,
   TIER3_INPUT_AWARE_ACTIONS, TIER3_INPUT_AWARE_TOOLS,
@@ -17,9 +17,13 @@ import {
   checkGuardrails, resolveApprovalScope, isInputAwareTier3, AGENT_HUMAN_ONLY_TOOLS,
 } from './aiGuardrails';
 import { toolActionEnum } from './aiToolActions';
+import { isMfaGatedToolAction } from './aiToolMfaGate';
 import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_ACTIONS } from './aiToolExposure';
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
+import { isNeverDelegableTool, isNeverDelegableToolAction } from './wisp/grantAuthority';
+import { effectDigestResolverKey, requiresPinnedEffectDigest } from './actionIntents/effectDigest';
+import { isOrgWideGovernanceIntent } from './actionIntents/orgWideGovernanceTools';
 import { ExtensionContributionRegistry } from '../extensions/contributionRegistry';
 
 /** (tool, action) pairs from a scope table, flattened with their expected scope. */
@@ -421,6 +425,17 @@ describe('tier-3 approval scope classification', () => {
     expect(resolveApprovalScope('manage_policy_feature_link', 'add', { featureType: 'containment' })).toBe('supervised');
     expect(resolveApprovalScope('manage_policy_feature_link', 'update', { featureType: 'containment' })).toBe('supervised');
     expect(checkGuardrails('manage_policy_feature_link', { action: 'add', featureType: 'containment' }).tier).toBe(3);
+  });
+
+  it('manage_policy_feature_link stays tier 2 for oem_updates: the handler refuses arming outright (#11070)', () => {
+    // Deliberately NOT escalated. Every arming write is refused by the handler
+    // (oemUpdatesToolRefusal, armAuthorized:false) whatever an approver says, so
+    // an approval card would only stand in front of a call that cannot succeed.
+    // What is left (off, a category removed, an update blocked) is the narrowing
+    // a person must never need extra rights for, as with security_agents.
+    const armed = { featureType: 'oem_updates', inlineSettings: { enabled: true, vendors: { dell: { enabled: true, categories: { bios: true } } } } };
+    expect(checkGuardrails('manage_policy_feature_link', { action: 'add', ...armed }).tier).toBe(2);
+    expect(checkGuardrails('manage_policy_feature_link', { action: 'update', ...armed }).tier).toBe(2);
   });
 
   it('checkGuardrails surfaces the input-aware escalation on both branches', () => {
@@ -1674,5 +1689,303 @@ describe('W11 input-aware owner scopes (#6781, W11-D4 / W11-D13)', () => {
     // An update never changes ownership: static supervised, not input-aware.
     expect(TIER3_INPUT_AWARE_ACTIONS.has('manage_security_policies:update')).toBe(false);
     expect(classOf('manage_security_policies', { action: 'update', ownerScope: 'partner' })).toBe('supervised');
+  });
+});
+
+// ── W17 class rows (#6788) ─────────────────────────────────────────────────
+// Copied from the W17 plan's per-action class review, NOT derived from the guardrail tables. Every action-enum member
+// has a row, so a new action reds here until someone classifies it.
+const W17_EXPECTED: Record<string, Record<string, W02Class>> = {
+  // run queues a command on the machine and cannot be unsent.
+  manage_backup_verification: { health: 't1', list: 't1', readiness: 't1', run: 'supervised' },
+  list_bmr_recoveries: { list: 't1', get: 't1' },
+  // create/update choose whose mail is copied, to which storage, on what schedule; auto_approve runs tier 2 unprompted.
+  manage_c2c_configs: { list: 't1', create: 'supervised', update: 'supervised', delete: 'supervised' },
+};
+const W17_WRITES = ['manage_backup_verification:run', 'manage_c2c_configs:create', 'manage_c2c_configs:update', 'manage_c2c_configs:delete'];
+
+describe('W17 class rows (#6788)', () => {
+  it.each(Object.keys(W17_EXPECTED))('%s: W17_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W17_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W17_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it('registry tiers: the multiplexers and reads are 1, the VSS read is 2 and read-only', () => {
+    for (const tool of ['manage_backup_verification', 'list_bmr_recoveries', 'get_backup_health', 'manage_c2c_configs']) {
+      expect(getToolTier(tool), tool).toBe(1);
+    }
+    expect(getToolTier('get_vss_status')).toBe(2);
+    expect(TIER2_READONLY_TOOLS.has('get_vss_status')).toBe(true);
+    expect(classOf('get_vss_status', {})).toBe('t2');
+    expect(classOf('get_backup_health', {})).toBe('t1');
+  });
+
+  it('W17 every write is MFA-gated, and no read is', () => {
+    for (const key of W17_WRITES) {
+      const [tool, action] = key.split(':') as [string, string];
+      expect(isMfaGatedToolAction(tool, action), key).toBe(true);
+    }
+    expect(isMfaGatedToolAction('get_vss_status', undefined)).toBe(true);
+    for (const [tool, action] of [
+      ['manage_backup_verification', 'health'], ['manage_backup_verification', 'list'], ['manage_backup_verification', 'readiness'],
+      ['list_bmr_recoveries', 'list'], ['list_bmr_recoveries', 'get'], ['manage_c2c_configs', 'list'], ['get_backup_health', undefined],
+    ] as const) {
+      expect(isMfaGatedToolAction(tool, action), `${tool}:${action}`).toBe(false);
+    }
+  });
+
+  it('no W17 read action is in TIER2_ACTIONS or TIER3_ACTIONS', () => {
+    for (const [tool, actions] of Object.entries(W17_EXPECTED)) {
+      for (const [action, cls] of Object.entries(actions)) {
+        if (cls !== 't1') continue;
+        expect(TIER2_ACTIONS[tool] ?? [], `${tool}:${action}`).not.toContain(action);
+        expect(TIER3_ACTIONS[tool] ?? [], `${tool}:${action}`).not.toContain(action);
+      }
+    }
+  });
+
+  it('nothing in this wave is four-eyes or input-aware', () => {
+    const rows = Object.entries(W17_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [`${tool}:${a}`, c] as const));
+    expect(rows.filter(([, c]) => c === 'four_eyes')).toEqual([]);
+    for (const [key] of rows) expect(TIER3_INPUT_AWARE_ACTIONS.has(key), key).toBe(false);
+  });
+
+  it('manage_c2c_configs is never agent-reachable; the other four are', () => {
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('manage_c2c_configs')).toBe(true);
+    for (const tool of ['manage_backup_verification', 'get_vss_status', 'list_bmr_recoveries', 'get_backup_health']) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(false);
+    }
+  });
+});
+
+// ── W18 PR A class rows (#6789, spec checklist item 3) ─────────────────────
+// Copied from the W18 plan's class review table, NOT derived from the guardrail tables. Six are single reads; list_roles
+// multiplexes four reads. No W18 tool carries a write action (W18-1: user and role writes stay identity).
+const W18A_WHOLE_TOOL: Record<string, W02Class> = {
+  get_org_summary: 't1',
+  get_account_readiness: 't1',
+  get_audit_retention: 't1',
+  list_portal_users: 't1',
+  list_users: 't1',
+  get_user: 't1',
+};
+const W18A_EXPECTED: Record<string, Record<string, W02Class>> = {
+  list_roles: { list: 't1', get: 't1', users: 't1', effective_permissions: 't1' },
+};
+
+// ── W18 PR B class rows (#6789) ────────────────────────────────────────────
+// Copied from the W18 plan's PR B class review table, NOT derived from the guardrail tables.
+const W18B_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_org_portal_settings: { get: 't1', update: 'supervised', set_sensitive_access: 'four_eyes' },
+  manage_report_recipients: { list: 't1', add: 'supervised', remove: 'supervised', convert: 'supervised' },
+};
+
+describe('W18 PR B class rows (#6789)', () => {
+  it.each(Object.keys(W18B_EXPECTED))('%s: W18B_EXPECTED covers exactly the action enum, tool tier 1', (tool) => {
+    expect(Object.keys(W18B_EXPECTED[tool]!).sort()).toEqual([...(toolActionEnum(tool) ?? [])].sort());
+    expect(getToolTier(tool)).toBe(1);
+    for (const [action, cls] of Object.entries(W18B_EXPECTED[tool]!)) {
+      expect(classOf(tool, { action }), `${tool}:${action}`).toBe(cls);
+    }
+  });
+
+  it('set_sensitive_access is four_eyes via resolveApprovalScope; update and every recipient write are supervised', () => {
+    expect(resolveApprovalScope('manage_org_portal_settings', 'set_sensitive_access', { orgId: 'o1', flags: { enablePatchDetail: true } })).toBe('four_eyes');
+    expect(resolveApprovalScope('manage_org_portal_settings', 'update', { orgId: 'o1', settings: { enableReports: true } })).toBe('supervised');
+    for (const action of ['add', 'remove', 'convert']) {
+      expect(resolveApprovalScope('manage_report_recipients', action, { reportId: 'r1' }), action).toBe('supervised');
+    }
+  });
+
+  it('the MFA gate covers update, set_sensitive_access, add and convert, but not the reads or remove', () => {
+    for (const [tool, action] of [['manage_org_portal_settings', 'update'], ['manage_org_portal_settings', 'set_sensitive_access'], ['manage_report_recipients', 'add'], ['manage_report_recipients', 'convert']] as const) {
+      expect(isMfaGatedToolAction(tool, action), `${tool}:${action}`).toBe(true);
+    }
+    for (const [tool, action] of [['manage_org_portal_settings', 'get'], ['manage_report_recipients', 'list'], ['manage_report_recipients', 'remove']] as const) {
+      expect(isMfaGatedToolAction(tool, action), `${tool}:${action}`).toBe(false);
+    }
+  });
+
+  it('agent exposure: both tools agent-human-only, neither a denied read (Decision 4)', () => {
+    for (const tool of Object.keys(W18B_EXPECTED)) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+      expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
+    }
+  });
+});
+
+// ── W16 PR A class rows (#6786) ────────────────────────────────────────────
+// Copied from the W16 plan's PR A class review table, NOT derived from the guardrail tables. Both launches are
+// supervised as a recorded exception to the class rule (Decision 1).
+const W16A_EXPECTED: Record<string, W02Class> = {
+  run_patch_plan: 'supervised',
+  create_operator_task: 'supervised',
+};
+
+describe('W16 PR A class rows (#6786)', () => {
+  it.each(Object.entries(W16A_EXPECTED))('%s (whole tool) is %s at tier 3 with no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(getToolTier(tool)).toBe(3);
+    expect(classOf(tool, {})).toBe(cls);
+    expect(resolveApprovalScope(tool, undefined, { orgId: 'o1' })).toBe(cls);
+  });
+
+  it('both are MFA-gated as a whole', () => {
+    for (const tool of Object.keys(W16A_EXPECTED)) expect(isMfaGatedToolAction(tool, undefined), tool).toBe(true);
+  });
+
+  it('every W16 tool stays in AGENT_HUMAN_ONLY_TOOLS, and isNeverDelegableTool is true for each (Decision 7)', () => {
+    for (const tool of Object.keys(W16A_EXPECTED)) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+      expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
+      expect(isNeverDelegableTool(tool), tool).toBe(true);
+    }
+  });
+});
+
+// ── W16 PR B class rows (#6786) ────────────────────────────────────────────
+// Copied from the W16 plan's PR B class review table, NOT derived from the guardrail tables.
+const W16B_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_ai_agent_schedules: { create: 'supervised', update: 'supervised', delete: 'four_eyes' },
+  manage_fleet_designs: { run: 'supervised', preview: 't1', applied: 't1', apply: 'four_eyes', rollback: 'four_eyes', document: 'supervised' },
+};
+
+describe('W16 PR B class rows (#6786)', () => {
+  const rows = Object.entries(W16B_EXPECTED).flatMap(([tool, actions]) => Object.entries(actions).map(([action, cls]) => [tool, action, cls] as const));
+
+  it.each(rows)('%s:%s is %s', (tool, action, cls) => {
+    expect(classOf(tool, { action })).toBe(cls);
+    if (cls !== 't1') expect(resolveApprovalScope(tool, action, { action })).toBe(cls);
+  });
+
+  it('the rows name every action of each tool', () => {
+    for (const [tool, actions] of Object.entries(W16B_EXPECTED)) {
+      expect([...(toolActionEnum(tool) ?? [])].sort(), tool).toEqual(Object.keys(actions).sort());
+    }
+  });
+
+  it('every four-eyes action has a mandatory pinned digest and a resolver', () => {
+    for (const [tool, action] of [['manage_ai_agent_schedules', 'delete'], ['manage_fleet_designs', 'apply'], ['manage_fleet_designs', 'rollback']] as const) {
+      expect(requiresPinnedEffectDigest(tool, { action }), `${tool}:${action}`).toBe(true);
+      expect(effectDigestResolverKey(tool, action), `${tool}:${action}`).toBe(`${tool}:${action}`);
+    }
+    for (const [tool, action] of [['manage_ai_agent_schedules', 'update'], ['manage_fleet_designs', 'run'], ['manage_fleet_designs', 'document']] as const) {
+      expect(requiresPinnedEffectDigest(tool, { action }), `${tool}:${action}`).toBe(false);
+    }
+  });
+
+  it('MFA follows the routes', () => {
+    for (const action of ['create', 'update', 'delete']) expect(isMfaGatedToolAction('manage_ai_agent_schedules', action), action).toBe(true);
+    for (const action of ['run', 'preview', 'apply', 'rollback']) expect(isMfaGatedToolAction('manage_fleet_designs', action), action).toBe(true);
+    for (const action of ['applied', 'document']) expect(isMfaGatedToolAction('manage_fleet_designs', action), action).toBe(false);
+  });
+
+  it('agent exposure: both whole tools are human-only, the D4 exception for manage_fleet_designs (Decision 7)', () => {
+    for (const tool of Object.keys(W16B_EXPECTED)) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+      expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
+    }
+  });
+
+  // #11433 narrows Decision 7's Wisp half: a Wisp turn under a grant may start a design run (and read or file a
+  // design); apply and rollback stay off every grant. Schedules stay never delegable as a whole tool.
+  it('Wisp grant floor: schedules whole-tool; Fleet Design apply and rollback only (#11433)', () => {
+    expect(isNeverDelegableTool('manage_ai_agent_schedules')).toBe(true);
+    expect(isNeverDelegableTool('manage_fleet_designs')).toBe(false);
+    for (const action of Object.keys(W16B_EXPECTED.manage_fleet_designs!)) {
+      expect(isNeverDelegableToolAction('manage_fleet_designs', action), action).toBe(action === 'apply' || action === 'rollback');
+    }
+  });
+
+  it('org-wide governance covers the writes that apply beyond one site', () => {
+    for (const action of ['create', 'update', 'delete']) expect(isOrgWideGovernanceIntent('manage_ai_agent_schedules', { action }), action).toBe(true);
+    for (const action of ['apply', 'rollback']) expect(isOrgWideGovernanceIntent('manage_fleet_designs', { action }), action).toBe(true);
+    for (const action of ['run', 'preview', 'applied', 'document']) expect(isOrgWideGovernanceIntent('manage_fleet_designs', { action }), action).toBe(false);
+  });
+
+  it('no schedule write can arm act mode', () => {
+    expect(toolInputSchemas.manage_ai_agent_schedules?.safeParse({ action: 'update', scheduleId: '00000000-0000-4000-8000-000000000001', actMode: true }).success).toBe(false);
+  });
+
+  describe('approval copy', () => {
+    const SCHEDULE = '00000000-0000-4000-8000-000000000001';
+    const copy = (tool: string, input: Record<string, unknown>) => checkGuardrails(tool, input).description ?? '';
+
+    it('the two brakes read differently (Decision 3)', () => {
+      expect(copy('manage_ai_agent_schedules', { action: 'update', scheduleId: SCHEDULE, actMode: false })).toContain('stop unattended actions, including ones already waiting');
+      expect(copy('manage_ai_agent_schedules', { action: 'update', scheduleId: SCHEDULE, enabled: false })).toContain('stop future runs');
+    });
+
+    it('a brake never hides what else the same update changes', () => {
+      const text = copy('manage_ai_agent_schedules', { action: 'update', scheduleId: SCHEDULE, actMode: false, enabled: true, sweepKinds: ['disk_pressure', 'stale_agents'], cron: '0 * * * *', timezone: 'UTC' });
+      expect(text).toContain('stop unattended actions');
+      expect(text).toContain('turn its runs on');
+      expect(text).toContain('disk_pressure, stale_agents');
+      expect(text).toContain('0 * * * *');
+      expect(text).toContain('UTC');
+      const stopping = copy('manage_ai_agent_schedules', { action: 'update', scheduleId: SCHEDULE, enabled: false, cron: '0 * * * *' });
+      expect(stopping).toContain('stop future runs');
+      expect(stopping).toContain('0 * * * *');
+    });
+
+    it('create says what it costs and how far it reaches; delete says it cannot be undone', () => {
+      expect(copy('manage_ai_agent_schedules', { action: 'create', ownerScope: 'partner', kind: 'patch', agentId: SCHEDULE, cron: '0 2 * * *', timezone: 'UTC' })).toMatch(/every organization.*AI credits.*notify people/);
+      expect(copy('manage_ai_agent_schedules', { action: 'delete', scheduleId: SCHEDULE })).toContain('cannot be undone');
+    });
+
+    it('apply counts what it does and marks roles as billing; rollback and run say what they do', () => {
+      const text = copy('manage_fleet_designs', { action: 'apply', reportRunId: SCHEDULE, approval: { functions: ['a', 'a'], monitoring: ['m'], automation: [], roleCorrections: ['r', 's'] } });
+      expect(text).toContain('1 function groups');
+      expect(text).toContain('2 device role changes (billing)');
+      expect(copy('manage_fleet_designs', { action: 'rollback', reportRunId: SCHEDULE })).toContain('Monitoring it added stops');
+      expect(copy('manage_fleet_designs', { action: 'run', orgId: SCHEDULE })).toContain('nothing is applied');
+    });
+  });
+});
+
+describe('W18 PR A class rows (#6789)', () => {
+  it('covers the seven W18 PR A tools exactly once', () => {
+    expect([...Object.keys(W18A_WHOLE_TOOL), ...Object.keys(W18A_EXPECTED)].sort()).toEqual([
+      'get_account_readiness', 'get_audit_retention', 'get_org_summary', 'get_user',
+      'list_portal_users', 'list_roles', 'list_users',
+    ]);
+  });
+
+  it.each(Object.entries(W18A_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+    expect(getToolTier(tool)).toBe(1);
+  });
+
+  it('list_roles: W18A_EXPECTED covers exactly the action enum, every action tier 1', () => {
+    expect(Object.keys(W18A_EXPECTED.list_roles!).sort()).toEqual([...(toolActionEnum('list_roles') ?? [])].sort());
+    for (const [action, cls] of Object.entries(W18A_EXPECTED.list_roles!)) {
+      expect(classOf('list_roles', { action }), action).toBe(cls);
+    }
+  });
+
+  it('nothing in W18 PR A is tier 2, supervised or four-eyes', () => {
+    for (const tool of [...Object.keys(W18A_WHOLE_TOOL), ...Object.keys(W18A_EXPECTED)]) {
+      expect(TIER2_ACTIONS[tool] ?? [], tool).toEqual([]);
+      expect(TIER3_SUPERVISED_ACTIONS[tool] ?? [], tool).toEqual([]);
+      expect(TIER3_FOUR_EYES_ACTIONS[tool] ?? [], tool).toEqual([]);
+    }
+  });
+
+  it('agent exposure: six denied reads, get_audit_retention reachable, none agent-human-only (Decision 4)', () => {
+    for (const tool of ['get_org_summary', 'get_account_readiness', 'list_portal_users', 'list_users', 'get_user', 'list_roles']) {
+      expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(true);
+    }
+    expect(AGENT_DENIED_READ_TOOLS.has('get_audit_retention')).toBe(false);
+    for (const tool of [...Object.keys(W18A_WHOLE_TOOL), ...Object.keys(W18A_EXPECTED)]) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(false);
+    }
   });
 });

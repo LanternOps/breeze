@@ -179,9 +179,21 @@ type dxgiCapturer struct {
 
 	// Failure tracking for GDI fallback
 	consecutiveFailures int
-	gdiFallback         *gdiCapturer
-	gdiNoFrameCount     int
-	lastGDIRepair       time.Time
+	// gdiFallback is assigned only through setGDIFallbackLocked, which also
+	// publishes it to gdiFallbackView.
+	gdiFallback *gdiCapturer
+	// gdiFallbackView is gdiFallback for CaptureWarning, which must not wait
+	// on c.mu: Capture holds c.mu for the whole GDI capture, so a wedged
+	// BitBlt or SetThreadDesktop would otherwise silence the metrics line.
+	gdiFallbackView atomic.Pointer[gdiCapturer]
+	// gdiFollowsDesktop is the input desktop name this capturer's thread
+	// could NOT attach to, while the GDI fallback's own thread did. Set only
+	// in checkDesktopSwitch's SetThreadDesktop-failure branch; it stops the
+	// next tick re-detecting the same mismatch as a new desktop change.
+	gdiFollowsDesktop string
+	gdiFollowsSince   time.Time // when that attach failed; see gdiAlreadyFollowsInputDesktop
+	gdiNoFrameCount   int
+	lastGDIRepair     time.Time
 
 	// Diagnostic counters for debugging capture failures
 	diagTimeouts      int
@@ -232,7 +244,7 @@ func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 		// desktop transitions (e.g. login after lock screen) and reinit DXGI
 		// when the desktop becomes available. A standalone gdiCapturer has no
 		// desktop switch detection and would be stuck forever.
-		c.gdiFallback = &gdiCapturer{config: config}
+		c.setGDIFallbackLocked(&gdiCapturer{config: config})
 		c.secureDesktopFlag.Store(true)
 		return c, nil
 	}

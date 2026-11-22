@@ -3,8 +3,11 @@ import { Wrench } from "lucide-react";
 import type { FeatureTabProps } from "./types";
 import {
   MAINTENANCE_DATETIME_TIME_PATTERN,
+  MAINTENANCE_DAY_OF_MONTH_MAX,
+  MAINTENANCE_DAYS_OF_WEEK,
   MAINTENANCE_EXPLICIT_UTC_OFFSET_PATTERN,
   MAINTENANCE_TIME_OF_DAY_PATTERN,
+  type MaintenanceDayOfWeek,
 } from "@breeze/shared";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
@@ -22,6 +25,10 @@ type MaintenanceSettings = {
    * "HH:MM" time of day for 'daily' / 'weekly' / 'monthly' (issue #4224).
    */
   windowStart: string;
+  /** #9574: the weekday a weekly window opens on (default Sunday). */
+  dayOfWeek: MaintenanceDayOfWeek;
+  /** #9574: the day a monthly window opens on, 1–31; a shorter month uses its last day. */
+  dayOfMonth: number;
   suppressAlerts: boolean;
   suppressPatching: boolean;
   suppressAutomations: boolean;
@@ -36,6 +43,10 @@ const defaults: MaintenanceSettings = {
   durationHours: 2,
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   windowStart: "",
+  // The days the scheduler pinned before #9574, so a link saved without
+  // them reads (and re-saves) as the schedule it has been running on.
+  dayOfWeek: "sun",
+  dayOfMonth: 1,
   suppressAlerts: true,
   suppressPatching: false,
   suppressAutomations: false,
@@ -111,6 +122,34 @@ function toPayload(settings: MaintenanceSettings): MaintenanceSettings {
   };
 }
 
+/** Monday-first, as the patch schedule's weekday picker. */
+const WEEKDAY_ORDER: readonly MaintenanceDayOfWeek[] = [
+  ...MAINTENANCE_DAYS_OF_WEEK.slice(1),
+  MAINTENANCE_DAYS_OF_WEEK[0],
+];
+
+/**
+ * Weekday names in the UI language. `MAINTENANCE_DAYS_OF_WEEK` is indexed
+ * like `getUTCDay()`, and 2023-01-01 was a Sunday, so index N renders day N.
+ */
+const createDayOfWeekOptions = () => {
+  const format = new Intl.DateTimeFormat(i18n.language || "en", {
+    weekday: "long",
+    timeZone: "UTC",
+  });
+  return WEEKDAY_ORDER.map((value) => ({
+    value,
+    label: format.format(
+      new Date(Date.UTC(2023, 0, 1 + MAINTENANCE_DAYS_OF_WEEK.indexOf(value))),
+    ),
+  }));
+};
+
+const DAY_OF_MONTH_OPTIONS = Array.from(
+  { length: MAINTENANCE_DAY_OF_MONTH_MAX },
+  (_, i) => i + 1,
+);
+
 const createRecurrenceOptions = () => [
   {
     value: "once",
@@ -181,6 +220,7 @@ export default function MaintenanceTab({
 }: FeatureTabProps) {
   useTranslation("policies");
   const recurrenceOptions = createRecurrenceOptions();
+  const dayOfWeekOptions = createDayOfWeekOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
@@ -284,25 +324,74 @@ export default function MaintenanceTab({
               </option>
             ))}
           </select>
-          {/* #9565: the scheduler pins the day (featureConfigResolver.ts
-              maintenanceOccurrenceStart) — weekly = Sunday, monthly = the 1st.
-              There is no day picker yet, so say which day the window opens. */}
-          {(settings.recurrence === "weekly" ||
-            settings.recurrence === "monthly") && (
+        </div>
+
+        {/* #9574: the day a weekly / monthly window opens on. */}
+        {settings.recurrence === "weekly" && (
+          <div>
+            <label
+              htmlFor="maintenance-day-of-week"
+              className="text-sm font-medium"
+            >
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.maintenanceTab.dayOfWeek",
+              )}
+            </label>
+            <select
+              id="maintenance-day-of-week"
+              data-testid="maintenance-day-of-week"
+              value={settings.dayOfWeek}
+              onChange={(e) =>
+                update("dayOfWeek", e.target.value as MaintenanceDayOfWeek)
+              }
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            >
+              {dayOfWeekOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.maintenanceTab.dayOfWeekHint",
+              )}
+            </p>
+          </div>
+        )}
+        {settings.recurrence === "monthly" && (
+          <div>
+            <label
+              htmlFor="maintenance-day-of-month"
+              className="text-sm font-medium"
+            >
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.maintenanceTab.dayOfMonth",
+              )}
+            </label>
+            <select
+              id="maintenance-day-of-month"
+              data-testid="maintenance-day-of-month"
+              value={settings.dayOfMonth}
+              onChange={(e) => update("dayOfMonth", Number(e.target.value))}
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            >
+              {DAY_OF_MONTH_OPTIONS.map((day) => (
+                <option key={day} value={day}>
+                  {day}
+                </option>
+              ))}
+            </select>
             <p
-              data-testid="maintenance-recurrence-rule"
+              data-testid="maintenance-day-of-month-hint"
               className="mt-1 text-xs text-muted-foreground"
             >
-              {settings.recurrence === "weekly"
-                ? i18n.t(
-                    "policies:configurationPolicies.featureTabs.maintenanceTab.weeklyOpensEverySunday",
-                  )
-                : i18n.t(
-                    "policies:configurationPolicies.featureTabs.maintenanceTab.monthlyOpensOnTheFirst",
-                  )}
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.maintenanceTab.dayOfMonthHint",
+              )}
             </p>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Window start — a full date/time for a one-off window, a time of day
             for the recurring cadences (issue #4224). */}

@@ -59,6 +59,8 @@ vi.mock('bullmq', () => ({
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
 vi.mock('../db', () => ({ withSystemDbAccessContext: withSystemDbAccessContextMock }));
 vi.mock('../services/backupSnapshotFileIndex', () => ({ hydrateSnapshotFileIndex: hydrateMock }));
+const { cleanStaleManifestSpoolsMock } = vi.hoisted(() => ({ cleanStaleManifestSpoolsMock: vi.fn(async () => undefined) }));
+vi.mock('../services/backupManifestSpool', () => ({ cleanStaleManifestSpools: cleanStaleManifestSpoolsMock }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
 
@@ -104,6 +106,32 @@ describe('enqueueSnapshotFileIndexHydration', () => {
     expect(removeMock).toHaveBeenCalledTimes(1);
     expect(addMock).toHaveBeenCalledTimes(1);
     expect(addMock.mock.calls[0]?.[2]).toMatchObject({ jobId: 'hydrate-snap-db-1' });
+  });
+
+  it('#11026: carries force on the job when asked', async () => {
+    await enqueueSnapshotFileIndexHydration('snap-db-1', 'rebuild', { force: true });
+    expect(addMock).toHaveBeenCalledWith(
+      expect.any(String),
+      { snapshotDbId: 'snap-db-1', reason: 'rebuild', force: true },
+      expect.objectContaining({ jobId: 'hydrate-snap-db-1' }),
+    );
+  });
+});
+
+describe('worker start', () => {
+  it('sweeps manifest spools a crashed run left behind (#11026)', async () => {
+    cleanStaleManifestSpoolsMock.mockClear();
+    await initializeBackupSnapshotFileIndexWorker();
+    expect(cleanStaleManifestSpoolsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts even when the sweep fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    cleanStaleManifestSpoolsMock.mockRejectedValueOnce(new Error('EACCES'));
+    await expect(initializeBackupSnapshotFileIndexWorker()).resolves.toBeUndefined();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(capturedProcessorHolder.current).not.toBeNull();
+    warn.mockRestore();
   });
 });
 
@@ -151,6 +179,29 @@ describe('worker processor', () => {
     const processor = capturedProcessorHolder.current!;
     await processor({ data: { snapshotDbId: 'snap-db-1', reason } });
     expect(hydrateMock).toHaveBeenCalledWith('snap-db-1', { includeUnreferenced });
+  });
+
+  it.each(['browse', 'rebuild'] as const)('#11026: reason %s hydrates a full snapshot (includeUnreferenced)', async (reason) => {
+    hydrateMock.mockResolvedValueOnce({ status: 'complete', manifestSha256: 'x', entryCount: 1, externalCount: 0, originSnapshotIds: [] });
+    await initializeBackupSnapshotFileIndexWorker();
+    await capturedProcessorHolder.current!({ data: { snapshotDbId: 'snap-db-1', reason } });
+    expect(hydrateMock).toHaveBeenCalledWith('snap-db-1', { includeUnreferenced: true });
+  });
+
+  it('#11026: force on the job is passed through to the hydrator', async () => {
+    hydrateMock.mockResolvedValueOnce({ status: 'complete', manifestSha256: 'x', entryCount: 1, externalCount: 0, originSnapshotIds: [] });
+    await initializeBackupSnapshotFileIndexWorker();
+    await capturedProcessorHolder.current!({ data: { snapshotDbId: 'snap-db-1', reason: 'rebuild', force: true } });
+    expect(hydrateMock).toHaveBeenCalledWith('snap-db-1', { includeUnreferenced: true, force: true });
+  });
+
+  it('a superseded outcome completes the job without a retry, and says so in the log', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    hydrateMock.mockResolvedValueOnce({ status: 'skipped', reason: 'superseded' });
+    await initializeBackupSnapshotFileIndexWorker();
+    await expect(capturedProcessorHolder.current!({ data: { snapshotDbId: 'x', reason: 'browse' } })).resolves.toEqual({ status: 'skipped' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('superseded'));
+    warn.mockRestore();
   });
 
   it('a complete or skipped outcome completes the job', async () => {

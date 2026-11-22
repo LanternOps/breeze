@@ -1,3 +1,5 @@
+// noticeOutbox consults the billing switch (BRZ-8807); the validator's own partner-row check is what these tests exercise.
+vi.mock('../billingEnabled', () => ({ isBillingEnabledForOrg: async () => true }));
 vi.mock('./staffNotifications', () => ({enqueueAutopayStaffNotifications:vi.fn()}));
 import { enqueueAutopayStaffNotifications } from './staffNotifications';
 import { beforeEach, expect, it, vi } from 'vitest';
@@ -138,7 +140,7 @@ function dispatchResponses(change: string) {
     [{ ...enrollment, generation: change === 'new-generation' ? 2 : 1, status: change === 'paused' ? 'paused' : 'active' }],
     [{ ...org, status: change === 'archived' ? 'archived' : 'active' }],
     [{ ...partner, status: change === 'suspended-partner' ? 'suspended' : change === 'churned-partner' ? 'churned' : 'active',
-      deletedAt: change === 'deleted-partner' ? new Date() : null, autopayEnabled: change !== 'charging-off' }],
+      deletedAt: change === 'deleted-partner' ? new Date() : null, autopayEnabled: change !== 'charging-off', billingEnabled: change !== 'billing-off' }],
     [{ ...method, type: change === 'method-type' ? 'card' : method.type,
       accountHolderType: change === 'holder' ? 'company' : 'individual' }],
     [org], change === 'fee' ? [{ orgId: null, partnerId: partner.id, achFeeAmount: '1.00' }] : [],
@@ -147,7 +149,7 @@ function dispatchResponses(change: string) {
   ];
   return { queued, responses };
 }
-it.each(['old-outbox', 'cancelled', 'cleared-authority', 'new-generation', 'paused', 'wrong-tenant', 'paid', 'archived', 'suspended-partner', 'churned-partner', 'deleted-partner', 'charging-off', 'method-type', 'holder', 'fee'])(
+it.each(['old-outbox', 'cancelled', 'cleared-authority', 'new-generation', 'paused', 'wrong-tenant', 'paid', 'archived', 'suspended-partner', 'churned-partner', 'deleted-partner', 'charging-off', 'billing-off', 'method-type', 'holder', 'fee'])(
   'cancels an obsolete queued notice (%s) before transport', async reason => {
     registerAutopayNoticeHandlers();
     const { responses } = dispatchResponses(reason);

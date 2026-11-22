@@ -26,6 +26,14 @@ interface MailboxConnectionDTO {
   transientPollFailureCount: number;
   /** Pending row whose consent attempt can no longer complete (#6936). */
   consentExpired: boolean;
+  /**
+   * The first poll after a connect leaves mail already in the inbox alone (#10863).
+   * Null when there is nothing to say: a mailbox from before that existed, or an
+   * older API.
+   */
+  connectBaseline: { skippedCount: number; complete: boolean } | null;
+  /** ARC sealing domains of inline mail gateways this mailbox trusts (#10862). */
+  trustedArcSealers: string[];
 }
 
 /** Fixed reason codes the consent callback may redirect back with (#6936). */
@@ -80,7 +88,129 @@ function parseMailboxConnection(value: unknown): MailboxConnectionDTO | null {
     verificationError,
     transientPollFailureCount: parseTransientPollFailures(value.transientPollFailures),
     consentExpired,
+    connectBaseline: parseConnectBaseline(value.connectBaseline),
+    trustedArcSealers: Array.isArray(value.trustedArcSealers)
+      ? value.trustedArcSealers.filter((s): s is string => typeof s === 'string')
+      : [],
   };
+}
+
+function parseConnectBaseline(value: unknown): MailboxConnectionDTO['connectBaseline'] {
+  if (!isRecord(value)) return null;
+  const { skippedCount, completedAt } = value;
+  if (typeof skippedCount !== 'number' || !Number.isInteger(skippedCount) || skippedCount < 0) return null;
+  if (!isNullableString(completedAt)) return null;
+  return { skippedCount, complete: completedAt !== null };
+}
+
+const MAX_ARC_SEALERS = 10;
+// Client-side courtesy; the API's validator is the rule.
+const ARC_SEALER_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+
+function parseArcSealers(draft: string): string[] {
+  return [...new Set(draft.split(/[\s,]+/).map((s) => s.toLowerCase()).filter(Boolean))];
+}
+
+function TrustedArcSealers({
+  connection,
+  canAdminMailbox,
+  onSaved,
+  onUnauthorized,
+}: {
+  connection: MailboxConnectionDTO;
+  canAdminMailbox: boolean;
+  onSaved: () => Promise<void>;
+  onUnauthorized: () => void;
+}) {
+  const { t } = useTranslation('settings');
+  const saved = connection.trustedArcSealers.join(', ');
+  const [draft, setDraft] = useState(saved);
+  const [saving, setSaving] = useState(false);
+
+  // Adopt a new server value only when `saved` actually changes. Derived during
+  // render (not a mount-time effect) so a late passive effect can never overwrite
+  // an edit the user made before it flushed (#11350).
+  const [lastSaved, setLastSaved] = useState(saved);
+  if (lastSaved !== saved) {
+    setLastSaved(saved);
+    setDraft(saved);
+  }
+
+  if (!canAdminMailbox) {
+    return saved ? (
+      <p className="text-xs text-muted-foreground" data-testid="m365-arc-sealers-readonly">
+        {t('m365Mailbox.gatewayLabel')}: {saved}
+      </p>
+    ) : null;
+  }
+
+  const sealers = parseArcSealers(draft);
+  const invalid = sealers.find((s) => !ARC_SEALER_RE.test(s));
+  const tooMany = sealers.length > MAX_ARC_SEALERS;
+
+  const save = async () => {
+    setSaving(true);
+    let savedOk = false;
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/tickets/mailbox/connections/${connection.id}/trusted-arc-sealers`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sealers }),
+          }),
+        errorFallback: t('m365Mailbox.gatewaySaveFailed'),
+        successMessage: t('m365Mailbox.gatewaySaved'),
+        onUnauthorized,
+      });
+      savedOk = true;
+    } catch (err) {
+      if (!(err instanceof ActionError)) handleActionError(err, t('m365Mailbox.gatewaySaveFailed'));
+    } finally {
+      setSaving(false);
+    }
+    // Outside the save's error handling: a failed reload is not a failed save.
+    if (savedOk) await onSaved().catch(() => {});
+  };
+
+  return (
+    <details className="text-xs" open={saved !== ''}>
+      <summary className="cursor-pointer">{t('m365Mailbox.gatewayTitle')}</summary>
+      <div className="mt-2 flex flex-col gap-2">
+        <p className="text-muted-foreground">{t('m365Mailbox.gatewayHint')}</p>
+        <p className="text-muted-foreground">{t('m365Mailbox.gatewayWarning')}</p>
+        <label className="flex flex-col gap-1">
+          <span className="font-medium">{t('m365Mailbox.gatewayLabel')}</span>
+          <input
+            data-testid="m365-arc-sealers-input"
+            className="rounded border bg-background px-2 py-1 text-sm"
+            value={draft}
+            placeholder={t('m365Mailbox.gatewayPlaceholder')}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+        </label>
+        {invalid ? (
+          <p className="text-destructive" data-testid="m365-arc-sealers-invalid">
+            {t('m365Mailbox.gatewayInvalid', { value: invalid })}
+          </p>
+        ) : null}
+        {tooMany ? (
+          <p className="text-destructive">{t('m365Mailbox.gatewayTooMany', { max: MAX_ARC_SEALERS })}</p>
+        ) : null}
+        <div>
+          <button
+            type="button"
+            data-testid="m365-arc-sealers-save"
+            disabled={saving || Boolean(invalid) || tooMany}
+            className="text-sm text-primary hover:underline disabled:opacity-50"
+            onClick={() => void save()}
+          >
+            {t('m365Mailbox.gatewaySave')}
+          </button>
+        </div>
+      </div>
+    </details>
+  );
 }
 
 /** Show the "polls keep failing" note from this many failed sweeps in a row
@@ -298,6 +428,16 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
                   {t('m365Mailbox.pollFailing', { failures: c.transientPollFailureCount })}
                 </p>
               ) : null}
+              {c.status === 'connected' && c.connectBaseline && !c.connectBaseline.complete ? (
+                <p className="text-xs text-muted-foreground" data-testid="m365-baseline-running">
+                  {t('m365Mailbox.baselineRunning')}
+                </p>
+              ) : null}
+              {c.status === 'connected' && c.connectBaseline?.complete && c.connectBaseline.skippedCount > 0 ? (
+                <p className="text-xs text-muted-foreground" data-testid="m365-baseline-note">
+                  {t('m365Mailbox.baselineSkipped', { count: c.connectBaseline.skippedCount })}
+                </p>
+              ) : null}
               {c.status === 'error' && c.verificationError ? (
                 <p className="text-xs text-destructive" data-testid="m365-verification-error">
                   {c.verificationError}
@@ -310,6 +450,14 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
                     {powershellSnippet(c.mailboxAddress, appId)}
                   </pre>
                 </details>
+              ) : null}
+              {c.status !== 'pending_consent' ? (
+                <TrustedArcSealers
+                  connection={c}
+                  canAdminMailbox={canAdminMailbox}
+                  onSaved={refresh}
+                  onUnauthorized={onUnauthorized}
+                />
               ) : null}
               {canAdminMailbox ? (
                 <div className="flex gap-3">

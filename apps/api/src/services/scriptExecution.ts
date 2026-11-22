@@ -480,10 +480,11 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   // `running` flip; the follow-up writes get one more. No transaction is held
   // across a send.
   for (const { device, dispatch, deliver } of pendingDeliveries) {
-    // A throw inside deliver() comes back as `send_failed`: the claimed
-    // command was handed back to `pending` and runs at the next check-in, so
-    // the device is reported queued, and one bad socket cannot strand the rest
-    // of the fan-out.
+    // A throw inside deliver() comes back as `send_failed`: the command is
+    // committed (pending: runs at the agent's next check-in; claimed and kept:
+    // runs if the frame reached the agent, otherwise the stale reaper settles
+    // it), so the device is reported queued, and one bad socket cannot strand
+    // the rest of the fan-out.
     const settled = await deliverDeferredDispatch({ ...dispatch, deliver }, { deviceId: device.id });
     try {
       await withSystemDbAccessContext(() => recordDispatchOutcome(device, settled));

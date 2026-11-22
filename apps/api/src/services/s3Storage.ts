@@ -1,3 +1,4 @@
+import { tolerateUnparseableAbortDate } from './guardedS3Client';
 import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
 import type { Readable } from 'node:stream';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -99,15 +100,23 @@ function getS3Client(): S3Client {
       );
     }
 
-    s3Client = new S3Client({
+    s3Client = tolerateUnparseableAbortDate(new S3Client({
       endpoint,
       region: process.env.S3_REGION || 'us-east-1',
       credentials: { accessKeyId, secretAccessKey },
       // Required for MinIO and other S3-compatible providers that use path-style URLs
       forcePathStyle: true,
-    });
+    }));
   }
   return s3Client;
+}
+
+/** Test seam: the real cached platform client, and a reset so a test can rebuild it from env. */
+export function __getS3ClientForTests(): S3Client {
+  return getS3Client();
+}
+export function __resetS3ClientForTests(): void {
+  s3Client = null;
 }
 
 export function isS3Configured(): boolean {

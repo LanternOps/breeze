@@ -51,7 +51,7 @@ const CATALOG: AgentToolCatalogDto = {
       operations: [{ key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true, actRequiresAuthorizedScripts: true }],
     },
   ],
-  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [], research: [] },
+  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [], research: [], troubleshoot: [] },
   unreachableTools: [],
 };
 

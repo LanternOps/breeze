@@ -43,6 +43,43 @@
       "description": "Yerleşik monitörleri bir ilkeye ekleyin."
     }
   },
+  "lifecycle": {
+    "autoResolveOn": "Açık",
+    "autoResolveOff": "Kapalı",
+    "rearmLabel": "Yeniden etkinleştirme",
+    "rearmNewEvidence": "Yeni kanıt",
+    "rearmAfterDelay": "N dakika sonra",
+    "rearmAfterMinutes_one": "{{count}} dakika sonra",
+    "rearmAfterMinutes_other": "{{count}} dakika sonra",
+    "rearmDelayLabel": "Şu süre sonra yeniden etkinleştir (dakika)",
+    "rearmHelp": "Yeni kanıt: kapatılmış uyarıyı yalnızca onun henüz görmediği bir olay yeniden açar. N dakika sonra: kapanmasından itibaren N dakika geçtikten sonra daha eski olaylar da onu yeniden açabilir.",
+    "inheritOption": "Devral ({{value}}, {{source}})",
+    "inheritOptionPlain": "Devral",
+    "sources": {
+      "org": "Kuruluş varsayılanı",
+      "partner": "İş ortağı varsayılanı",
+      "builtin": "Yerleşik varsayılan"
+    },
+    "errors": {
+      "cooldown": "0 ile 1440 arasında bir tam sayı girin.",
+      "cooldownOrInherit": "0 ile 1440 arasında bir tam sayı girin veya devralmak için boş bırakın.",
+      "rearmDelay": "1 ile 1440 arasında tam sayı olarak dakika girin."
+    }
+  },
+  "lifecycleDefaults": {
+    "title": "Yaşam döngüsü varsayılanları",
+    "descriptionPartner": "Tüm kuruluşların monitörleri için varsayılan. Bir kuruluş bunu geçersiz kılabilir; bir monitörün kendi ayarı her ikisinden de önceliklidir.",
+    "descriptionOrg": "Bu kuruluş için iş ortağı varsayılanını geçersiz kılar. Devralmak için bir alanı boş bırakın. Bir monitörün kendi ayarı bundan önceliklidir.",
+    "readOnly": "İş ortağı varsayılanını değiştirme izniniz yok.",
+    "saved": "Yaşam döngüsü varsayılanları kaydedildi",
+    "saveAction": "Varsayılanları kaydet",
+    "overrideCount_one": "{{count}} monitör bunu geçersiz kılıyor",
+    "overrideCount_other": "{{count}} monitör bunu geçersiz kılıyor",
+    "errors": {
+      "load": "Yaşam döngüsü varsayılanları yüklenemedi.",
+      "save": "Yaşam döngüsü varsayılanları kaydedilemedi."
+    }
+  },
   "editor": {
     "attachedToPolicy": "Monitör oluşturuldu ve ilkeye bağlandı",
     "titleNew": "Yeni monitör",
@@ -53,11 +90,22 @@
     },
     "sections": {
       "watch": "Ne izlenecek",
-      "noise": "Önem ve gürültü",
+      "lifecycle": "Uyarı yaşam döngüsü",
       "respond": "Yanıtla",
       "notify": "Bildir",
       "escalate": "Bir kişiye yükselt",
       "deployed": "Dağıtıldığı yer"
+    },
+    "lifecycle": {
+      "overrides": {
+        "org": "Bu monitör, kuruluş varsayılanını ({{value}}) geçersiz kılıyor",
+        "partner": "Bu monitör, iş ortağı varsayılanını ({{value}}) geçersiz kılıyor",
+        "builtin": "Bu monitör, yerleşik varsayılanı ({{value}}) geçersiz kılıyor",
+        "unknown": "Bu monitör, devralınan varsayılanı geçersiz kılıyor."
+      },
+      "partnerWideHint": "Kendi varsayılanı olan bir kuruluş, burada gösterilen devralınan değer yerine onu kullanır.",
+      "inheritedUnavailable": "Devralınan değerler yüklenemedi. Yine de kaydedebilirsiniz.",
+      "windowWarning": "Olay penceresi ({{window}} dk), bekleme süresinden ({{cooldown}} dk) kısa. Bekleme süresi sırasında gelen yeni bir olay, uyarı yeniden açılmadan önce pencereden çıkabilir."
     },
     "tabs": {
       "settings": "Ayarlar",
@@ -175,7 +223,20 @@
     "psaBoardDefault": "Bağlantının varsayılan panosunu kullan",
     "psaBoardHelp": "Bu monitörün uyarı ticket’ları, bağlantının varsayılan panosu yerine bu panoda oluşturulur.",
     "psaBoardReadOnly": "Uyarı ticket’ları PSA panosu #{{id}} içine gider",
-    "psaBoardUnavailable": "PSA panoları yüklenemedi, bu nedenle pano geçersiz kılma şu anda kullanılamıyor."
+    "psaBoardUnavailable": "PSA panoları yüklenemedi, bu nedenle pano geçersiz kılma şu anda kullanılamıyor.",
+    "clearsWhen": {
+      "title": "Şu durumda temizlenir",
+      "hint": "Yalnızca uyarıyı tetikleyen olaydan sonra kaydedilen bir olayla temizlenir.",
+      "noneHint": "Kurtarma koşulu ayarlanmadı; tetikleyici eşleşmeyi bıraktığında uyarı temizlenir.",
+      "add": "Kurtarma koşulu ekle",
+      "removeCondition": "Kaldır",
+      "keepCustom": "Özel koşulu koru",
+      "customTitle": "Özel kurtarma koşulu (API)",
+      "customHint": "Bu koşul API üzerinden ayarlandı ve burada düzenlenemez. Kaydetmek onu olduğu gibi korur.",
+      "replaceCustom": "Değiştir",
+      "invalid": "Kurtarma koşulunun değerlerinden biri geçerli değil.",
+      "customUnusable": "Bu koşul değerlendirilemiyor, bu nedenle bu monitörün uyarıları otomatik olarak çözülmeyecek. Düzeltmek için koşulu değiştirin."
+    }
   },
   "kinds": {
     "composite": "Bileşik (birkaç koşulun tümü veya herhangi biri)",

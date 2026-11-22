@@ -175,6 +175,61 @@ describe('GET /policies/compliance/device/:deviceId (#1876)', () => {
     expect(vi.mocked(getConfigPolicyComplianceForDevice)).toHaveBeenCalledWith(DEVICE_ID, [ORG_ID]);
   });
 
+  it('never returns an observed registry value, even from a row stored before #11976', async () => {
+    // A stored registry_check detail used to carry the value the device
+    // reported (data.actualValue / data.valueType). This route needs only
+    // devices:read, so it must not hand that value back.
+    vi.mocked(getConfigPolicyComplianceForDevice).mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'row-legacy',
+          policyId: null,
+          configPolicyId: 'feature-link-1',
+          configItemName: 'Screen lock',
+          deviceId: DEVICE_ID,
+          status: 'non_compliant',
+          details: {
+            passed: false,
+            ruleResults: [
+              {
+                ruleType: 'registry_check',
+                passed: false,
+                message: 'Registry value mismatch for HKLM\\SOFTWARE\\Test\\Enabled.',
+                data: { expectedValue: '1', actualValue: 'observed-0xBEEF', valueType: 'REG_SZ' },
+              },
+              {
+                ruleType: 'config_check',
+                passed: false,
+                message: 'Config value mismatch.',
+                data: { expectedValue: 'no', actualValue: 'yes' },
+              },
+            ],
+          },
+          lastCheckedAt: new Date('2026-06-24T00:00:00Z'),
+          remediationAttempts: 0,
+          updatedAt: new Date('2026-06-24T00:00:00Z'),
+          deviceHostname: 'WIN-TEST',
+          deviceStatus: 'online',
+          deviceOsType: 'windows',
+        },
+      ],
+      ruleInfoMap: new Map(),
+    } as any);
+    currentPermissions = { allowedSiteIds: null };
+    mockDeviceLookup({ orgId: ORG_ID, siteId: SITE_ID });
+
+    const res = await app.request(`/policies/compliance/device/${DEVICE_ID}`);
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain('observed-0xBEEF');
+    expect(text).not.toContain('REG_SZ');
+    const body = JSON.parse(text) as { data: Array<{ details: { ruleResults: Array<{ data: Record<string, unknown> }> } }> };
+    const [registryResult, configResult] = body.data[0]!.details.ruleResults;
+    expect(registryResult!.data).toEqual({ expectedValue: '1' });
+    // #12130: config_check follows the same model.
+    expect(configResult!.data).toEqual({ expectedValue: 'no' });
+  });
+
   it('returns 200 with no site restriction (unrestricted org/partner caller)', async () => {
     currentPermissions = { allowedSiteIds: null };
     mockDeviceLookup({ orgId: ORG_ID, siteId: SITE_ID });

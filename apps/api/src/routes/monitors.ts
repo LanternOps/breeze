@@ -189,7 +189,7 @@ async function requireMonitorReadAccess(auth: AuthContext, monitorId: string, pe
  * from a different site.
  */
 async function selectExecutionAgentForMonitor(
-  monitor: { orgId: string; assetId: string | null; siteId?: string | null },
+  monitor: { orgId: string; assetId: string | null; siteId?: string | null; target?: string | null },
   permissions?: UserPermissions,
   agentId?: string,
 ): Promise<string | null | 'SITE_ACCESS_DENIED'> {

@@ -1,13 +1,14 @@
 // CI-only: apply EVERY migration through the real autoMigrate() entrypoint as
-// a NON-SUPERUSER role that mirrors a managed-Postgres admin (DigitalOcean
-// `doadmin`, AWS RDS master, etc.): it has LOGIN, CREATEDB, CREATEROLE,
-// REPLICATION, and BYPASSRLS, but is NOT a superuser.
+// a NON-SUPERUSER role no more privileged than a managed-Postgres admin
+// (DigitalOcean `doadmin`, AWS RDS master, etc.): LOGIN, CREATEDB, CREATEROLE
+// and ownership of the database. It is NOT a superuser, does NOT bypass RLS,
+// and has no role-level createrole_self_grant (#8991).
 //
 // Why this exists — this is the class-complete guard against superuser-only
 // DDL slipping into a migration. Superuser-only statements
 // (`ALTER FUNCTION ... OWNER TO`, `SET <custom.guc> = ...` as a function
-// attribute, `ALTER ROLE|DATABASE ... SET`, `ALTER SYSTEM`, `CREATE ROLE`,
-// `COPY ... FROM PROGRAM`, ...) all succeed when migrations are applied as the
+// attribute, `ALTER ROLE|DATABASE ... SET`, `ALTER SYSTEM`, writes that rely on
+// bypassing RLS, `COPY ... FROM PROGRAM`, ...) all succeed when migrations are applied as the
 // Postgres superuser — which is exactly what CI's `check-migrations` job and
 // every integration shard's autoMigrate do. Prod migrates as a non-superuser
 // and crash-loops on boot instead. This has shipped twice: v0.95.0
@@ -29,8 +30,8 @@ const MIGRATOR_PASSWORD = process.env.MIGRATOR_PASSWORD || 'migrator';
 const MIGRATOR_DB = process.env.MIGRATOR_DB || 'breeze';
 
 /**
- * As the superuser, create the doadmin-alike migration role and a database it
- * owns. Everything else — including the unprivileged `breeze_app` login — is
+ * As the superuser, create the least-privileged migration role (no more
+ * privileged than doadmin) and a database it owns. Everything else — including the unprivileged `breeze_app` login — is
  * created by autoMigrate()/ensureAppRole() running AS the migration role, so
  * those code paths are exercised under the same privilege constraints as prod.
  */
@@ -40,34 +41,38 @@ async function provisionMigratorRole(): Promise<void> {
     await admin.unsafe(`
       DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${MIGRATOR_ROLE}') THEN
-          -- NOSUPERUSER is the whole point. The other attributes match a real
-          -- managed-Postgres admin so the run is faithful: BYPASSRLS (doadmin
-          -- has it — it is why RLS-seeding migrations apply), CREATEROLE (to
-          -- create breeze_app), CREATEDB, REPLICATION.
+          -- The LEAST-privileged owner role a fresh install can be handed
+          -- (#8991): LOGIN, CREATEDB, CREATEROLE, owner of the database (and so
+          -- of schema public), and nothing else. NOSUPERUSER is the point of
+          -- the job; NOBYPASSRLS is deliberate too.
           --
-          -- BYPASSRLS here is LOAD-BEARING, not cosmetic (#4518). Measured
-          -- A/B on PG16 with this script, the RLS attribute as the sole
-          -- variable: WITH BYPASSRLS the full set applies; with NOBYPASSRLS it
-          -- aborts at 2026-05-22-snmp-multi-vendor-templates.sql, 42501 "new
-          -- row violates row-level security policy for table snmp_templates".
-          -- 122 shipped migrations write rows without electing
-          -- breeze.scope='system' first, so this job cannot drop BYPASSRLS
-          -- until that debt is paid. Until then the STATIC guard
-          -- src/db/migrationRlsScope.test.ts holds the line for new
-          -- migrations — it is why that debt cannot grow.
+          -- NOBYPASSRLS: 122 shipped migrations write rows without electing
+          -- breeze.scope='system' themselves (#4518). With BYPASSRLS on this
+          -- role they applied anyway and masked that a plain owner role aborts
+          -- at 2026-05-22-snmp-multi-vendor-templates.sql with 42501. autoMigrate
+          -- now elects system scope for every file, so the set must apply
+          -- without the attribute. Granting it here would hide a regression.
+          --
+          -- No REPLICATION and no role-level createrole_self_grant: PG16 gives
+          -- a CREATEROLE creator ADMIN on the roles it makes but not
+          -- membership, so 2026-07-16-td-synnex-sftp-price-file.sql's
+          -- \`ALTER FUNCTION ... OWNER TO breeze_search\` fails with
+          -- "must be able to SET ROLE". autoMigrate sets createrole_self_grant
+          -- for its own session. Setting it on the role here would hide a
+          -- regression there.
           CREATE ROLE ${MIGRATOR_ROLE} LOGIN PASSWORD '${MIGRATOR_PASSWORD}'
-            NOSUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS;
+            NOSUPERUSER NOBYPASSRLS CREATEDB CREATEROLE;
         END IF;
       END $$;
     `);
-    // PG16 tightened CREATEROLE: a non-superuser creator no longer implicitly
-    // administers the roles it makes. doadmin behaves as if self-grant is on,
-    // so set it here — without it, ensureAppRole()'s CREATE ROLE breeze_app
-    // and the migrations' `REVOKE ... FROM breeze_app` fail with a privilege
-    // error that prod would not hit.
+    // Re-assert the attributes when the role already existed. On a reused local
+    // cluster, a role left over from an older version of this script would still
+    // carry BYPASSRLS / REPLICATION / a role-level createrole_self_grant, and the
+    // run would pass while hiding exactly the regressions it exists to catch.
     await admin.unsafe(
-      `ALTER ROLE ${MIGRATOR_ROLE} SET createrole_self_grant = 'set, inherit'`,
+      `ALTER ROLE ${MIGRATOR_ROLE} NOSUPERUSER NOBYPASSRLS NOREPLICATION CREATEDB CREATEROLE`,
     );
+    await admin.unsafe(`ALTER ROLE ${MIGRATOR_ROLE} RESET createrole_self_grant`);
     const dbExists = await admin`SELECT 1 FROM pg_database WHERE datname = ${MIGRATOR_DB}`;
     if (dbExists.length === 0) {
       await admin.unsafe(`CREATE DATABASE ${MIGRATOR_DB} OWNER ${MIGRATOR_ROLE}`);

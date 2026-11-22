@@ -260,6 +260,8 @@ export interface EvaluationResult {
     processName?: string;
     /** From the event_log leaf: matching events in the window, for {{count}}. */
     count?: number;
+    /** From the software_presence leaf: the watched app, for {{name}}. */
+    name?: string;
     /** From the event_log leaf, for {{category}}. */
     category?: string;
     /** From the event_log leaf, for {{windowMinutes}}. */
@@ -274,7 +276,7 @@ export interface EvaluationResult {
 /** Values a handler supplies for its own template tokens. */
 export type ConditionTemplateValues = Pick<
   EvaluationResult['context'],
-  'count' | 'category' | 'windowMinutes' | 'message'
+  'count' | 'category' | 'windowMinutes' | 'message' | 'name'
 >;
 
 // Result from a single condition handler

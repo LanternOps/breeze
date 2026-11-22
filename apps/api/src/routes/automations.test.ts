@@ -442,6 +442,95 @@ describe('automations routes', () => {
     expect(db.select).toHaveBeenCalledTimes(2);
   });
 
+  describe('GET /automations jobCounts (Flows completion W01b #12435)', () => {
+    const selectPage = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue(rows) }),
+          }),
+        }),
+      }),
+    }) as any;
+    const base = {
+      orgId: 'org-123',
+      retiredAt: null,
+      managedByMonitorId: null,
+      managedByAgentId: null,
+      convertedToFlowId: null,
+      trigger: { type: 'manual' },
+    };
+
+    it('GET /automations reports jobCounts.notMoved for standalone unswitched rows only', async () => {
+      // The SQL predicate cannot be checked against the mocked schema; the
+      // real-DB case in __tests__/integration/flowDraftRoutes.integration.test.ts
+      // covers it. Here: the count query's FILTER column surfaces as
+      // jobCounts.notMoved, with no extra query.
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 4, notMoved: 1 }]) }),
+        } as any)
+        .mockReturnValueOnce(selectPage([{ ...base, id: 'auto-1', name: 'One' }]));
+
+      const res = await app.request('/automations?limit=10&page=1', {
+        headers: { Authorization: 'Bearer valid-token' },
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.jobCounts).toEqual({ notMoved: 1 });
+      expect(body.pagination.total).toBe(4);
+      expect(db.select).toHaveBeenCalledTimes(2);
+    });
+
+    it("a site-limited caller's notMoved counts only rows within their sites", async () => {
+      mockState.permissions = { allowedSiteIds: ['site-allowed'] };
+      const rows = [
+        { ...base, id: 'in-scope-plain', name: 'in-scope-plain', trigger: { type: 'event', filter: { eventType: 'x' } } },
+        { ...base, id: 'out-of-scope', name: 'out-of-scope' },
+        { ...base, id: 'monitor', name: 'monitor', managedByMonitorId: 'mon-1' },
+        { ...base, id: 'agent', name: 'agent', managedByAgentId: 'agent-1' },
+        { ...base, id: 'policy', name: 'policy', trigger: { type: 'event', filter: { _policyWorkflow: 'x' } } },
+        { ...base, id: 'switched', name: 'switched', retiredAt: new Date(), convertedToFlowId: '33333333-3333-4333-8333-333333333333' },
+        // No `filter` key at all: the SQL NULL trap; must still count.
+        { ...base, id: 'no-filter', name: 'no-filter', trigger: { type: 'manual' } },
+      ];
+      vi.mocked(db.select).mockReturnValueOnce(selectPage(rows));
+      vi.mocked(checkAutomationTargetsWithinSiteScope).mockImplementation(async (automation: any) => ({
+        ok: automation.name !== 'out-of-scope', outOfScopeDeviceIds: [], unbounded: false,
+      } as any));
+
+      const res = await app.request('/automations?limit=10&page=1', {
+        headers: { Authorization: 'Bearer valid-token' },
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.jobCounts).toEqual({ notMoved: 2 });
+      expect(db.select).toHaveBeenCalledTimes(1);
+    });
+
+    it('a partner caller with no reachable org gets jobCounts.notMoved 0', async () => {
+      mockState.auth = {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'partner',
+        partnerId: null,
+        orgId: null,
+        token: { sub: 'user-123' },
+        accessibleOrgIds: [],
+        canAccessOrg: () => false,
+      };
+      const res = await app.request('/automations?limit=10&page=1', {
+        headers: { Authorization: 'Bearer valid-token' },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        data: [],
+        pagination: { page: 1, limit: 10, total: 0 },
+        jobCounts: { notMoved: 0 },
+      });
+      expect(db.select).not.toHaveBeenCalled();
+    });
+  });
+
   // The web list renders the "Managed by AI agent" badge and its edit lock off
   // this field alone (#3824). `shapeAutomationForResponse` spreads the whole
   // row today, so the field rides along for free — this pins that, because
@@ -771,7 +860,11 @@ describe('automations routes', () => {
     expect(body.trigger.type).toBe('manual');
   });
 
-  describe('R1 create refusal (#5221 C5, Decision 8)', () => {
+  // #12310: W06 R1 refused new Jobs while Flows was on (410
+  // `automations_moved_to_flows`). A flow can only be drafted in AI chat, so
+  // that left a tenant without AI unable to create any automation. The refusal
+  // returns with the manual flow editor (#10336).
+  describe('Job creation while Flows is on (#12310)', () => {
     const body = {
       name: 'New Job', trigger: { type: 'manual' }, conditions: { type: 'all' },
       actions: [{ type: 'run_script', scriptId: 'script-1' }], onFailure: 'stop',
@@ -781,37 +874,32 @@ describe('automations routes', () => {
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify(payload),
     });
+    const mockInsert = () => vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: '11111111-1111-4111-8111-111111111111', name: 'New Job', orgId: 'org-123',
+          trigger: { type: 'manual' }, enabled: true,
+        }]),
+      }),
+    } as any);
 
-    it.each([['unset', undefined], ['true', 'true']] as const)(
-      'POST /automations is 410 with flowsUrl when flows are enabled (FLOWS_ENABLED %s)', async (_label, value) => {
+    it.each([['unset', undefined], ['true', 'true'], ['false', 'false']] as const)(
+      'POST /automations creates a Job (FLOWS_ENABLED %s)', async (_label, value) => {
         if (value === undefined) vi.stubEnv('FLOWS_ENABLED', undefined as unknown as string);
         else vi.stubEnv('FLOWS_ENABLED', value);
+        mockInsert();
         const res = await post();
-        expect(res.status).toBe(410);
-        expect(await res.json()).toEqual({ error: 'automations_moved_to_flows', flowsUrl: '/flows' });
-        expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
-        expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+        expect(res.status).toBe(201);
+        expect((await res.json()).id).toBe('11111111-1111-4111-8111-111111111111');
+        expect(vi.mocked(db.insert)).toHaveBeenCalled();
       },
     );
 
-    it('the 410 answers before body validation (an invalid body is still 410, not 400)', async () => {
+    it('an invalid body is refused by validation (400), not by a Flows redirect', async () => {
       vi.stubEnv('FLOWS_ENABLED', 'true');
       const res = await post({ name: '' });
-      expect(res.status).toBe(410);
-    });
-
-    it('POST /automations still creates when FLOWS_ENABLED=false', async () => {
-      vi.stubEnv('FLOWS_ENABLED', 'false');
-      vi.mocked(db.insert).mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: '11111111-1111-4111-8111-111111111111', name: 'New Job', orgId: 'org-123',
-            trigger: { type: 'manual' }, enabled: true,
-          }]),
-        }),
-      } as any);
-      const res = await post();
-      expect(res.status).toBe(201);
+      expect(res.status).toBe(400);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     });
   });
 

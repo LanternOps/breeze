@@ -20,6 +20,8 @@ vi.mock('../shared/Toast', () => ({
 vi.mock('@/lib/navigation', () => ({
   navigateTo: vi.fn(),
 }));
+// #8318: the reattach gate reads the auth store, which this file mocks away.
+vi.mock('../../lib/reattachCapability', () => ({ useCanReattachDevice: () => false }));
 
 // RemoveDeviceDialog (#3987) fetches the env-driven uninstall drain window on
 // open. Mocked at the service boundary so it does not land in this file's

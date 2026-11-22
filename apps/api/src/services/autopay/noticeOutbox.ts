@@ -7,6 +7,8 @@ import { db, assertOutsideHeldDbContext, runOutsideDbContext, withSystemDbAccess
 import { billingNoticeOutbox, organizations, partners } from '../../db/schema';
 import { captureException } from '../sentry';
 import { getEmailService } from '../email';
+import { isBillingEnabledForOrg } from '../billingEnabled';
+import { isBlockedWhileBillingOff } from './billingNoticePolicy';
 import type { Tx, RenderedNotice } from './types';
 export type { RenderedNotice } from './types';
 export async function enqueueBillingNotice(tx: Tx, input: {
@@ -89,11 +91,19 @@ export async function dispatchPendingBillingNotices(now = new Date()): Promise<{
       try {
         if (!row.sentAt) {
           const validate = validators.get(row.kind);
-          if (validate) {
+          const billingGated = isBlockedWhileBillingOff(row.kind);
+          if (validate || billingGated) {
             const allowed = await scope(() => db.transaction(async tx => {
               const [current] = await tx.select().from(billingNoticeOutbox).where(owns(row)).for('update');
               if (!current) return false;
-              const reason = await validate(tx, current);
+              // BRZ-8807: with billing off, new money-movement notices are cancelled
+              // (even already-queued ones); obligation-visibility kinds still send.
+              // Only for unsent rows: this branch never sees a row with sentAt set.
+              // card_expiring has a permanent dedupe key (card-expiring:<method id>),
+              // so a cancelled row counts as sent and is not re-sent after re-enable (accepted).
+              const reason = billingGated && !(await isBillingEnabledForOrg(current.orgId))
+                ? 'Billing is disabled'
+                : validate ? await validate(tx, current) : null;
               if (!reason) return true;
               await tx.update(billingNoticeOutbox).set({ status: 'cancelled', lastError: reason }).where(owns(current));
               // Validator reasons are fixed strings. Never log the recipient or the rendered body.

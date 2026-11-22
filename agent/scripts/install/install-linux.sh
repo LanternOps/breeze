@@ -8,6 +8,7 @@ SERVICE_DST="/etc/systemd/system/breeze-agent.service"
 CONFIG_DIR="/etc/breeze"
 DATA_DIR="/var/lib/breeze"
 LOG_DIR="/var/log/breeze"
+RECOVERY_ROOT="/usr/local/lib/breeze"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Error: must run as root (sudo $0)" >&2
@@ -83,6 +84,67 @@ elif [ -f "breeze-backup" ]; then
 else
     echo "Warning: breeze-backup binary not found — backups will fail with" \
          "'backup binary not found'. Run 'make build' (or 'make build-backup') first." >&2
+fi
+
+# Install the network-isolation recovery binary. It runs from systemd timers when
+# the agent cannot (a broken or half-upgraded agent must still release isolation),
+# so it lives in its own versioned directory and an installed version is never
+# replaced: a timer may be pointing at it. Link, not cp or mv: link is the
+# create-exclusive step, so an existing file can never be overwritten.
+# BEGIN BREEZE ISOLATION RECOVERY INSTALL
+install_isolation_recovery() {
+    _recovery_src="$1"
+    _recovery_root="$2"
+    if ! _recovery_version="$("$_recovery_src" --version)"; then
+        echo "Error: $_recovery_src --version failed" >&2
+        return 1
+    fi
+    # The version becomes a path component.
+    case "$_recovery_version" in
+        "" | *[!0-9A-Za-z.+-]* | .* | *..*)
+            echo "Error: refusing isolation recovery version '$_recovery_version'" >&2
+            return 1
+            ;;
+    esac
+    _recovery_dir="$_recovery_root/isolation-recovery/$_recovery_version"
+    _recovery_dst="$_recovery_dir/breeze-isolation-recovery"
+    if [ -e "$_recovery_dst" ]; then
+        echo "Isolation recovery $_recovery_version already installed; left in place."
+        return 0
+    fi
+    # Every step is checked by hand: the caller's `if !` turns errexit off here,
+    # and publishing a partial copy would leave a broken binary no one replaces.
+    mkdir -p "$_recovery_dir" || return 1
+    chmod 700 "$_recovery_root/isolation-recovery" "$_recovery_dir" || return 1
+    _recovery_tmp="$(mktemp "$_recovery_dir/.recovery.XXXXXX")" || return 1
+    if ! cp "$_recovery_src" "$_recovery_tmp" || ! chmod 700 "$_recovery_tmp"; then
+        rm -f "$_recovery_tmp"
+        echo "Error: could not stage isolation recovery $_recovery_version" >&2
+        return 1
+    fi
+    if ! ln "$_recovery_tmp" "$_recovery_dst"; then
+        rm -f "$_recovery_tmp"
+        [ -e "$_recovery_dst" ] && return 0
+        echo "Error: could not install isolation recovery $_recovery_version" >&2
+        return 1
+    fi
+    rm -f "$_recovery_tmp"
+    echo "Isolation recovery $_recovery_version installed."
+}
+# END BREEZE ISOLATION RECOVERY INSTALL
+
+# A recovery problem must never stop the agent being installed: it only leaves
+# this host unable to report network-isolation readiness (fail closed).
+RECOVERY_SRC=""
+if [ -f "bin/breeze-isolation-recovery" ]; then
+    RECOVERY_SRC="bin/breeze-isolation-recovery"
+elif [ -f "breeze-isolation-recovery" ]; then
+    RECOVERY_SRC="./breeze-isolation-recovery"
+fi
+if [ -n "$RECOVERY_SRC" ]; then
+    if ! install_isolation_recovery "$RECOVERY_SRC" "$RECOVERY_ROOT"; then
+        echo "Warning: isolation recovery was not installed; network isolation stays unavailable on this host." >&2
+    fi
 fi
 
 # (Re)install the watchdog systemd unit on EVERY install/upgrade.

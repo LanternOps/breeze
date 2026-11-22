@@ -1,11 +1,21 @@
 import { and, eq, gt, inArray, isNotNull, isNull, or } from 'drizzle-orm';
-import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import {
+  db,
+  getCurrentDbAccessContext,
+  hasDbAccessContext,
+  runAfterDbContextCommit,
+  runOutsideDbContext,
+  withDbTransaction,
+  withSystemDbAccessContext,
+} from '../db';
 import { apiKeys, devices, enrollmentKeys, organizationUsers, organizations, partnerUsers } from '../db/schema';
 import { revokeAllOrgOauthArtifacts, revokeAllPartnerOauthArtifacts } from '../oauth/grantRevocation';
 import { AGENT_TOKEN_SUSPEND_REASON } from './agentTokenSuspension';
 import { clearPermissionCache } from './permissions';
 import { invalidateAgentTenantCache } from './tenantStatus';
 import { revokeAllUserTokens } from './tokenRevocation';
+import { captureException } from './sentry';
+import { evictAgentSockets, type EvictOutcome } from './agentCommandRelayEvict';
 
 export interface TenantRevocationResult {
   apiKeysRevoked: number;
@@ -62,32 +72,98 @@ async function expireEnrollmentKeysForOrgIds(orgIds: string[], now: Date): Promi
  * until it happens to reconnect. Sever live sockets for devices in the
  * affected orgs so containment is immediate, not eventual.
  *
- * agentWs is imported dynamically (not statically): `routes/agentWs` pulls in
- * a large graph of services, and a static service→route edge here risks an
- * import cycle. Dynamic import at call time is the established de-cycling
- * pattern in this repo (agentWs itself dynamically imports its result
- * handlers). Best-effort: socket teardown must NEVER fail the credential
- * revocation, which is the load-bearing containment step.
+ * Fleet-wide and post-commit (#4142): every agent enrolled in the orgs is
+ * evicted through the relay facade, which closes each socket on whichever
+ * instance holds it (this one first, the others through their relay shards).
+ * The eviction is registered with runAfterDbContextCommit, so it runs once the
+ * transaction carrying the revocation commits and never on a rollback: the
+ * reconnect it forces then meets the committed cutoff. Outside any context it
+ * starts at once. Fire-and-forget (`awaitAck: false`): no caller waits on
+ * thousands of per-socket answers.
+ *
+ * Best-effort: socket teardown must NEVER fail the credential revocation,
+ * which is the load-bearing containment step. Sockets the facade could not
+ * reach are reported (see {@link reportSeverOutcomes}).
  */
 export async function disconnectLiveAgentSocketsForOrgIds(orgIds: string[], reason: string): Promise<void> {
+  await scheduleLiveAgentSocketSever(orgIds, reason);
+}
+
+/**
+ * Body of {@link disconnectLiveAgentSocketsForOrgIds}. `afterSever` runs in the
+ * same post-commit task, after the eviction is handed to the facade (the drain
+ * drops the tenant cache there; see prepareAgentDrainForOrgIds). It also runs
+ * when the device read failed, so a failed read never skips it.
+ */
+async function scheduleLiveAgentSocketSever(
+  orgIds: string[],
+  reason: string,
+  afterSever?: () => Promise<void>,
+): Promise<void> {
   if (orgIds.length === 0) return;
+  let agentIds: string[] = [];
   try {
-    const { disconnectAgent, getConnectedAgentIds } = await import('../routes/agentWs');
-    const connected = getConnectedAgentIds();
-    if (connected.length > 0) {
-      const connectedSet = new Set(connected);
-      const deviceRows = await db
-        .select({ agentId: devices.agentId })
-        .from(devices)
-        .where(and(inArray(devices.orgId, orgIds), isNotNull(devices.agentId)));
-      for (const row of deviceRows) {
-        if (row.agentId && connectedSet.has(row.agentId)) {
-          disconnectAgent(row.agentId, 4001, reason);
-        }
+    const readDevices = async () => db
+      .select({ agentId: devices.agentId })
+      .from(devices)
+      .where(and(inArray(devices.orgId, orgIds), isNotNull(devices.agentId)));
+    // A savepoint when a context is held: a failed read here must not abort
+    // the transaction carrying the credential revocation (#11203).
+    const deviceRows = await (hasDbAccessContext() ? withDbTransaction(readDevices) : readDevices());
+    agentIds = [...new Set(deviceRows.map((row) => row.agentId).filter((id): id is string => Boolean(id)))];
+  } catch (err) {
+    // Reported, not only logged: the revocation commits regardless, so this is
+    // the one signal that live sockets outlived it (#11203).
+    console.error('[tenantLifecycle] Failed to read the devices whose live agent sockets must be severed:', err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
+  if (agentIds.length === 0 && !afterSever) return;
+
+  runAfterDbContextCommit('tenant agent socket sever', async () => {
+    if (agentIds.length > 0) {
+      try {
+        const outcomes = await evictAgentSockets(
+          agentIds.map((agentId) => ({ agentId, code: 4001, reason })),
+          { awaitAck: false },
+        );
+        reportSeverOutcomes(outcomes, reason);
+      } catch (err) {
+        // evictAgentSockets never rejects; this is a contract violation.
+        console.error('[tenantLifecycle] Failed to sever live agent sockets after credential cutoff:', err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
       }
     }
-  } catch (err) {
-    console.error('[tenantLifecycle] Failed to sever live agent sockets after credential cutoff:', err);
+    await afterSever?.();
+  });
+}
+
+/**
+ * A socket the facade could not close (`unavailable`, `close_failed`) may have
+ * outlived the cutoff, so it is reported, with the reasons tallied; Sentry
+ * gets one event per sever, not one per agent. `indeterminate` (an enqueue
+ * whose result is unknown) is only logged: the job may well run.
+ */
+function reportSeverOutcomes(outcomes: Map<string, EvictOutcome>, reason: string): void {
+  const missed = new Map<string, number>();
+  let indeterminate = 0;
+  for (const outcome of outcomes.values()) {
+    const key = outcome.status === 'unavailable' ? `unavailable:${outcome.reason}`
+      : outcome.status === 'close_failed' ? `close_failed:${outcome.via}`
+        : null;
+    if (key) missed.set(key, (missed.get(key) ?? 0) + 1);
+    else if (outcome.status === 'indeterminate') indeterminate += 1;
+  }
+  const missedCount = [...missed.values()].reduce((a, b) => a + b, 0);
+  if (missedCount > 0) {
+    const tally = [...missed].map(([key, n]) => `${key}=${n}`).join(', ');
+    const err = new Error(
+      `[tenantLifecycle] ${missedCount} of ${outcomes.size} live agent socket(s) could not be severed (${reason}): ${tally}`,
+    );
+    console.error(err.message);
+    captureException(err);
+  }
+  if (indeterminate > 0) {
+    console.warn(`[tenantLifecycle] ${indeterminate} of ${outcomes.size} agent socket eviction(s) unconfirmed (${reason})`);
   }
 }
 
@@ -173,13 +249,19 @@ export async function prepareAgentDrainForOrgIds(
   const enrollmentKeysInvalidated = options.preserveEnrollmentKeys
     ? 0
     : await expireEnrollmentKeysForOrgIds(orgIds, new Date());
-  await disconnectLiveAgentSocketsForOrgIds(orgIds, 'Tenant offboarding');
-  // Lift the superseded tenant-suspensions AFTER the socket sever, not before:
-  // clearing the flag re-opens this fleet's auth gate, and a device that
-  // reconnected between the restore and the sever sweep's device read would keep
-  // a full WS control channel until the reaper's next re-sweep. Callers
-  // (begin*Offboarding) await this whole function before queueDrainUninstalls,
-  // so the unsuspend still lands before any self_uninstall is queued.
+  // The sever itself runs after the surrounding transaction commits (#4142),
+  // i.e. after the unsuspend below is visible: it reads presence leases then,
+  // so a device that reconnected once the auth gate re-opened is closed too,
+  // and the reaper's periodic re-sweep bounds anything that connects later.
+  // That ordering needs a held DB context, which every caller has (a request,
+  // or the reaper's system context). With none, runAfterDbContextCommit starts
+  // the sever at once and it may run before the unsuspend; the re-sweep
+  // covers that too.
+  // The tenant cache is dropped once more right after it (see the end of this
+  // function). Callers (begin*Offboarding) await this whole function before
+  // queueDrainUninstalls, so the unsuspend still lands before any
+  // self_uninstall is queued.
+  await scheduleLiveAgentSocketSever(orgIds, 'Tenant offboarding', () => invalidateAgentTenantCache(orgIds));
   const { agentTokensRestored } = await restoreAgentCredentialsForOrgIds(orgIds);
   if (agentTokensRestored > 0) {
     // Operationally load-bearing: this is the only signal that a drain was
@@ -188,14 +270,15 @@ export async function prepareAgentDrainForOrgIds(
       `[tenantLifecycle] drain entry lifted ${agentTokensRestored} superseded tenant-suspension(s) so the queued self_uninstall is deliverable`
     );
   }
-  // Invalidate a SECOND time, after the teardown. In sever mode the cache is
-  // only an optimization (agentTokenSuspendedAt is the real-time cutoff), but
-  // in drain mode tokens stay alive, so this cache IS the gate: a read that
-  // started before the status commit can land its positive `active` entry
-  // after the first invalidation and keep the tenant fully capable — long
-  // enough to win a WS upgrade — for the 60s TTL. Dropping it again once the
-  // sockets are down closes the common ordering; the drain reaper's periodic
-  // socket re-sweep bounds whatever still slips through.
+  // Invalidate a SECOND time, and a third time after the post-commit sever
+  // (scheduled above). In sever mode the cache is only an optimization
+  // (agentTokenSuspendedAt is the real-time cutoff), but in drain mode tokens
+  // stay alive, so this cache IS the gate: a read that started before the
+  // status commit can land its positive `active` entry after the first
+  // invalidation and keep the tenant fully capable — long enough to win a WS
+  // upgrade — for the 60s TTL. Dropping it again once the sockets are being
+  // torn down closes the common ordering; the drain reaper's periodic socket
+  // re-sweep bounds whatever still slips through.
   await invalidateAgentTenantCache(orgIds);
 
   return { enrollmentKeysInvalidated, agentTokensRestored };

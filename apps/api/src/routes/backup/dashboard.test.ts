@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { dashboardRoutes } from './dashboard';
+import type { SQL } from 'drizzle-orm';
+import { backupDestinationObservation } from '../../services/connectionHealth/sources/backupDestination';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
@@ -13,7 +15,7 @@ let permissionsState: any;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'leftJoin', 'orderBy', 'limit', 'as']) {
+  for (const method of ['from', 'where', 'leftJoin', 'innerJoin', 'orderBy', 'groupBy', 'limit', 'as']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   chain.then = (onFulfilled: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) =>
@@ -31,6 +33,7 @@ vi.mock('../../db', () => ({
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
   },
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -38,6 +41,9 @@ vi.mock('../../db/schema', () => ({
     id: 'backup_configs.id',
     orgId: 'backup_configs.org_id',
     name: 'backup_configs.name',
+    provider: 'backup_configs.provider',
+    providerConfig: 'backup_configs.provider_config',
+    isActive: 'backup_configs.is_active',
   },
   backupJobs: {
     id: 'backup_jobs.id',
@@ -52,7 +58,14 @@ vi.mock('../../db/schema', () => ({
     totalSize: 'backup_jobs.total_size',
     errorCount: 'backup_jobs.error_count',
     errorLog: 'backup_jobs.error_log',
+    storageIdentity: 'backup_jobs.storage_identity',
   },
+  backupStorageSessions: {
+    jobId: 'backup_storage_sessions.job_id',
+    scope: 'backup_storage_sessions.scope',
+    resumedAt: 'backup_storage_sessions.resumed_at',
+  },
+  IN_FLIGHT_BACKUP_JOB_STATUSES: ['pending', 'running'] as const,
   backupSnapshots: {
     orgId: 'backup_snapshots.org_id',
     deviceId: 'backup_snapshots.device_id',
@@ -88,11 +101,16 @@ vi.mock('drizzle-orm', () => ({
   lte: (column: unknown, value: unknown) => ({ op: 'lte', column, value }),
   inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
   desc: (value: unknown) => ({ op: 'desc', value }),
-  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+  isNotNull: (column: unknown) => ({ op: 'isNotNull', column }),
+  max: (column: unknown) => ({ op: 'max', column }),
+  sql: Object.assign((strings: TemplateStringsArray, ...values: unknown[]) => ({
     op: 'sql',
     strings,
     values,
     as: (alias: string) => ({ op: 'sql', strings, values, alias }),
+  }), {
+    // The backup_destination source (imported for the agreement test) builds literals at load.
+    raw: (text: string) => ({ op: 'raw', text }),
   }),
 }));
 
@@ -297,6 +315,431 @@ describe('backup dashboard routes', () => {
     expect(body.data.points.every((point: { totalBytes: number }) => point.totalBytes === 0)).toBe(true);
   });
 
+  it('adds dataAccounting to dashboard latestJobs', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 2 }]))
+      .mockReturnValueOnce(chainMock([{ completed: 1, failed: 1, running: 0, pending: 0 }]))
+      .mockReturnValueOnce(chainMock([
+        makeRecentJob({
+          id: 'job-inc', status: 'completed', backupMode: 'file',
+          totalSize: 1000, referencedSize: 900, baseSnapshotId: 'snap-base',
+        }),
+        makeRecentJob({
+          id: 'job-bad', status: 'failed', backupMode: 'file',
+          totalSize: 2000, transferredSize: 1500, baseSnapshotId: null, fullBackupReason: 'base_expired',
+        }),
+      ]));
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.latestJobs[0].dataAccounting).toMatchObject({ uploadedBytes: 100, reusedBytes: 900, runKind: 'incremental' });
+    expect(data.latestJobs[1].dataAccounting).toMatchObject({
+      uploadedBytes: null,
+      processedBytes: 1500,
+      runKind: 'full',
+      fullRunReason: 'base_expired',
+    });
+  });
+
+  it('adds failureCategory to dashboard latestJobs', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 2 }]))
+      .mockReturnValueOnce(chainMock([{ completed: 1, failed: 1, running: 0, pending: 0 }]))
+      .mockReturnValueOnce(chainMock([
+        makeRecentJob({ id: 'job-bad', status: 'failed', errorLog: 'failed to upload file to s3: SlowDown' }),
+        makeRecentJob({ id: 'job-ok', status: 'completed', errorLog: null }),
+      ]));
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.latestJobs[0].failureCategory).toBe('storage');
+    expect(data.latestJobs[1]).toHaveProperty('failureCategory', null);
+    expect(data.latestJobs[0]).toHaveProperty('failureCause', null);
+    expect(data.latestJobs[1]).toHaveProperty('failureCause', null);
+  });
+
+  it('adds failureCause to dashboard latestJobs when the text establishes one', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 1 }]))
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 1, running: 0, pending: 0 }]))
+      .mockReturnValueOnce(chainMock([
+        makeRecentJob({ id: 'job-403', status: 'failed', errorLog: 'file upload failed: storage session: storage answered status 403' }),
+      ]));
+
+    const { data } = await (await app.request('/backup/dashboard')).json();
+    expect(data.latestJobs[0]).toMatchObject({ failureCategory: 'storage', failureCause: 'storage_access_denied' });
+  });
+
+  // #11768 / #11772: one destination failing for every device is one statement,
+  // not N, and it is the shared evaluator's verdict (backupDestinationHealth.ts).
+  describe('destination-level attention item', () => {
+    const CONFIG_ID = '99999999-9999-4999-8999-999999999999';
+    const OTHER_CONFIG_ID = '88888888-8888-4888-8888-888888888888';
+    const STORE_403 = 'system state publish failed: upload system state artifact registry/SYSTEM: storage session: storage answered status 403';
+    const IDENTITY = 's3::s3.example.test::primary';
+    // What the sealed column's decoder hands back: credentials opened beside
+    // the destination. Only the derived identity may leave the route.
+    const openedConfig = (bucket: string) => ({
+      endpoint: 'https://s3.example.test', bucket, accessKey: 'AKIAPLAINACCESS', secretKey: 'plain-secret-key',
+    });
+    const CONFIG_ROWS = [
+      { id: CONFIG_ID, provider: 's3', providerConfig: openedConfig('primary') },
+      { id: OTHER_CONFIG_ID, provider: 's3', providerConfig: openedConfig('primary') },
+    ];
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 60 * 60 * 1000);
+    const recently = () => hoursAgo(2);
+
+    // One row serves both reads: the ranked per-device query (rn, device names)
+    // and the destination evidence query (storage identity). The config's
+    // current identity comes from a third read of the opened provider_config.
+    let seq = 0;
+    const row = (over: Record<string, unknown>) => {
+      seq += 1;
+      return {
+        deviceId: DEVICE_ID,
+        status: 'failed',
+        errorLog: STORE_403,
+        completedAt: recently(),
+        createdAt: new Date(recently().getTime() - seq),
+        rn: 1,
+        deviceName: 'Device',
+        deviceHostname: 'host',
+        configId: CONFIG_ID,
+        configName: 'Primary S3',
+        storageIdentity: IDENTITY,
+        ...over,
+      };
+    };
+
+    async function dashboardWith(rankedRows: unknown[], evidenceRows: unknown[] = rankedRows, configRows: unknown[] = CONFIG_ROWS) {
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, running: 0, pending: 0 }]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock(rankedRows))
+        .mockReturnValueOnce(chainMock(evidenceRows))
+        .mockReturnValueOnce(chainMock(configRows));
+      return (await (await app.request('/backup/dashboard')).json()).data;
+    }
+
+    it('derives the current identity from provider_config opened through its sealed column', async () => {
+      const failing = [row({ deviceId: 'd1' }), row({ deviceId: 'd2' })];
+      expect((await dashboardWith(failing)).attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(true);
+      // The same jobs, but the config now points at another bucket: they are not its evidence.
+      const moved = [{ id: CONFIG_ID, provider: 's3', providerConfig: openedConfig('moved') }];
+      expect((await dashboardWith(failing, failing, moved)).attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('opens provider_config only for the org\'s configs with a destination fault, and never returns it', async () => {
+      await dashboardWith([
+        row({ deviceId: 'd1' }),
+        row({ deviceId: 'd2' }),
+        row({ deviceId: 'd3', configId: OTHER_CONFIG_ID, configName: 'Other', status: 'completed', errorLog: null }),
+      ]);
+      expect(selectMock).toHaveBeenCalledTimes(9);
+      const selection = (selectMock.mock.calls[8] as unknown as [Record<string, unknown>])[0];
+      expect(selection).toEqual({ id: 'backup_configs.id', provider: 'backup_configs.provider', providerConfig: 'backup_configs.provider_config' });
+      const where = (selectMock.mock.results[8]!.value as { where: { mock: { calls: unknown[][] } } }).where.mock.calls[0]![0] as SQL;
+      // The mocked schema's columns are strings, so collect the condition's bound values by walking it.
+      const params: unknown[] = [];
+      const seen = new Set<unknown>();
+      const walk = (node: unknown) => {
+        if (node === null || typeof node !== 'object' || seen.has(node)) {
+          if (typeof node === 'string') params.push(node);
+          return;
+        }
+        seen.add(node);
+        for (const value of Array.isArray(node) ? node : Object.values(node)) walk(value);
+      };
+      walk(where);
+      expect(params).toContain(ORG_ID);
+      expect(params).toContain(CONFIG_ID);
+      expect(params).not.toContain(OTHER_CONFIG_ID);
+
+      const data = await dashboardWith([row({ deviceId: 'd1' }), row({ deviceId: 'd2' })]);
+      const out = JSON.stringify(data);
+      expect(out).not.toContain('plain-secret-key');
+      expect(out).not.toContain('AKIAPLAINACCESS');
+    });
+
+    it('skips the provider_config read when no destination has a fault', async () => {
+      await dashboardWith([row({ deviceId: 'd1', status: 'completed', errorLog: null }), row({ deviceId: 'd2', errorLog: 'backup helper exited unexpectedly' })]);
+      expect(selectMock).toHaveBeenCalledTimes(8);
+    });
+
+    it('a failed provider_config read keeps the per-device items and flags the degraded state', async () => {
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+      const failing = chainMock([]);
+      failing.where = vi.fn(() => Promise.reject(new Error('config read failed')));
+      const rows = [row({ deviceId: 'd1' }), row({ deviceId: 'd2' })];
+      selectMock
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, running: 0, pending: 0 }]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock(rows))
+        .mockReturnValueOnce(chainMock(rows))
+        .mockReturnValueOnce(failing);
+      const res = await app.request('/backup/dashboard');
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.attentionItems.map((i: any) => i.id).sort()).toEqual(['backup-failing-d1', 'backup-failing-d2']);
+      expect(data.attentionError).toBe(true);
+    });
+
+    it('emits one critical item for three devices failing a store 403, before the per-device items', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1' }),
+        row({ deviceId: 'd2' }),
+        row({ deviceId: 'd3' }),
+      ]);
+
+      const destination = data.attentionItems.filter((i: any) => i.kind === 'destination_failing');
+      expect(destination).toHaveLength(1);
+      expect(destination[0]).toMatchObject({
+        id: `backup-destination-${CONFIG_ID}`,
+        severity: 'critical',
+        configId: CONFIG_ID,
+        destinationName: 'Primary S3',
+        failureCategory: 'storage',
+        failureCause: 'storage_access_denied',
+        failingDevices: 3,
+        totalDevices: 3,
+      });
+      expect(Object.keys(destination[0]).sort()).toEqual([
+        'configId', 'description', 'destinationName', 'failingDevices', 'failureCategory', 'failureCause',
+        'id', 'kind', 'severity', 'title', 'totalDevices',
+      ]);
+      expect(data.attentionItems[0].kind).toBe('destination_failing');
+      // The per-device items stay.
+      expect(data.attentionItems.filter((i: any) => String(i.id).startsWith('backup-failing-'))).toHaveLength(3);
+    });
+
+    it('counts N of M over every device with an outcome on the destination', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1' }),
+        row({ deviceId: 'd2' }),
+        row({ deviceId: 'd3', status: 'completed', errorLog: null }),
+      ]);
+      const item = data.attentionItems.find((i: any) => i.kind === 'destination_failing');
+      expect(item).toMatchObject({ failingDevices: 2, totalDevices: 3 });
+    });
+
+    it('does not emit for one failing device among healthy ones', async () => {
+      const data = await dashboardWith([row({ deviceId: 'd1' }), row({ deviceId: 'd2', status: 'completed', errorLog: null })]);
+      expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('ignores failures older than the 72 h lookback and non-storage failures', async () => {
+      const old = hoursAgo(73);
+      const data = await dashboardWith([
+        row({ deviceId: 'd1', completedAt: old, createdAt: old }),
+        row({ deviceId: 'd2', completedAt: old, createdAt: old }),
+        row({ deviceId: 'd3', errorLog: 'backup helper exited unexpectedly' }),
+        row({ deviceId: 'd4', errorLog: 'backup helper exited unexpectedly' }),
+      ]);
+      expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('includes a failure just inside the lookback', async () => {
+      const inside = hoursAgo(71);
+      const data = await dashboardWith([
+        row({ deviceId: 'd1', completedAt: inside, createdAt: inside }),
+        row({ deviceId: 'd2', completedAt: inside, createdAt: new Date(inside.getTime() - 1) }),
+      ]);
+      expect(data.attentionItems.find((i: any) => i.kind === 'destination_failing')).toMatchObject({ failingDevices: 2 });
+    });
+
+    it('keeps destinations apart', async () => {
+      // Two failing devices, but one per destination, each beside a healthy one.
+      const data = await dashboardWith([
+        row({ deviceId: 'd1' }),
+        row({ deviceId: 'd3', status: 'completed', errorLog: null }),
+        row({ deviceId: 'd2', configId: OTHER_CONFIG_ID, configName: 'Other' }),
+        row({ deviceId: 'd4', configId: OTHER_CONFIG_ID, configName: 'Other', status: 'completed', errorLog: null }),
+      ]);
+      expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('ignores failures written before the destination was re-pointed', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1', storageIdentity: 's3::s3.example.test::old-bucket' }),
+        row({ deviceId: 'd2', storageIdentity: 's3::s3.example.test::old-bucket' }),
+      ]);
+      expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('a device that went offline after a refusal still counts as failing', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1', completedAt: hoursAgo(5), createdAt: hoursAgo(5) }),
+        row({ deviceId: 'd1', errorLog: '[stale-backup-reaper] Device went offline during backup' }),
+        row({ deviceId: 'd2' }),
+      ]);
+      expect(data.attentionItems.find((i: any) => i.kind === 'destination_failing')).toMatchObject({ failingDevices: 2, totalDevices: 2 });
+    });
+
+    it('counts only devices the site-restricted user can access', async () => {
+      permissionsState = { allowedSiteIds: [SITE_A] };
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+      const rows = [
+        row({ deviceId: 'd1' }),
+        row({ deviceId: 'd2', status: 'completed', errorLog: null }),
+        row({ deviceId: 'x1' }),
+        row({ deviceId: 'x2' }),
+        row({ deviceId: 'x3' }),
+      ];
+      selectMock
+        .mockReturnValueOnce(chainMock([
+          { id: 'd1', siteId: SITE_A },
+          { id: 'd2', siteId: SITE_A },
+          { id: 'x1', siteId: SITE_B },
+          { id: 'x2', siteId: SITE_B },
+          { id: 'x3', siteId: SITE_B },
+        ]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, running: 0, pending: 0 }]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock(rows))
+        .mockReturnValueOnce(chainMock(rows))
+        .mockReturnValueOnce(chainMock(CONFIG_ROWS));
+      const { data } = await (await app.request('/backup/dashboard')).json();
+      // One allowed failing device: the three failures on the other site must not tip it over.
+      expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('keeps the destination item first under the item cap, ordered by failing devices', async () => {
+      const many = Array.from({ length: 25 }, (_, n) => row({ deviceId: `m${n}`, completedAt: new Date(Date.now() - 1000 * n), createdAt: new Date(Date.now() - 1000 * n) }));
+      const data = await dashboardWith([
+        ...many,
+        row({ deviceId: 's1', configId: OTHER_CONFIG_ID, configName: 'Other' }),
+        row({ deviceId: 's2', configId: OTHER_CONFIG_ID, configName: 'Other' }),
+      ]);
+      expect(data.attentionItems).toHaveLength(20);
+      expect(data.attentionItems[0]).toMatchObject({ configId: CONFIG_ID, failingDevices: 25 });
+      expect(data.attentionItems[1]).toMatchObject({ configId: OTHER_CONFIG_ID, failingDevices: 2 });
+    });
+
+    it('does not blame the destination for Breeze API refusals or ended sessions', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1', errorLog: 'storage session: mint refused with status 403' }),
+        row({ deviceId: 'd2', errorLog: 'storage session: renew refused with status 404' }),
+        row({ deviceId: 'd3', errorLog: 'storage session: renew rejected with status 410' }),
+      ]);
+      expect(data.attentionItems.some((i: any) => i.kind === 'destination_failing')).toBe(false);
+    });
+
+    it('states no cause when the failing devices do not agree on a majority', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1' }),
+        row({ deviceId: 'd2', errorLog: 'storage session: storage answered status 404' }),
+        row({ deviceId: 'd3', errorLog: 'storage session: multipart:create failed with status 502 after 4 attempts' }),
+      ]);
+      const item = data.attentionItems.find((i: any) => i.kind === 'destination_failing');
+      expect(item).toMatchObject({ failingDevices: 3, failureCause: null });
+    });
+
+    it('does not claim a cause for a store 5xx beyond the operation failing', async () => {
+      const data = await dashboardWith([
+        row({ deviceId: 'd1', errorLog: 'storage session: multipart:create failed with status 502 after 4 attempts' }),
+        row({ deviceId: 'd2', errorLog: 'storage session: multipart:create failed with status 502 after 4 attempts' }),
+      ]);
+      const item = data.attentionItems.find((i: any) => i.kind === 'destination_failing');
+      expect(item.failureCause).toBe('storage_operation_failed');
+    });
+
+    it('a failed evidence read keeps the per-device items and flags the degraded state', async () => {
+      resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+      const failing = chainMock([]);
+      failing.where = vi.fn(() => Promise.reject(new Error('evidence read failed')));
+      selectMock
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ count: 0 }]))
+        .mockReturnValueOnce(chainMock([{ completed: 0, failed: 0, running: 0, pending: 0 }]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([row({ deviceId: 'd1' })]))
+        .mockReturnValueOnce(failing);
+      const res = await app.request('/backup/dashboard');
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      // The per-device item computed before the destination read survives it.
+      expect(data.attentionItems.map((i: any) => i.id)).toEqual(['backup-failing-d1']);
+      expect(data.attentionError).toBe(true);
+    });
+
+    // #11772 acceptance: the dashboard item and the connection-health incident
+    // agree for the same fixture.
+    it('agrees with the backup_destination health source on the same fixture', async () => {
+      const fixtures: Array<[string, Array<Record<string, unknown>>]> = [
+        ['refused', [row({ deviceId: 'd1' }), row({ deviceId: 'd2' }), row({ deviceId: 'd3', status: 'completed', errorLog: null })]],
+        ['one of three', [row({ deviceId: 'd1' }), row({ deviceId: 'd2', status: 'completed', errorLog: null }), row({ deviceId: 'd3', status: 'completed', errorLog: null })]],
+        ['single device refused', [row({ deviceId: 'd1' })]],
+        ['5xx', [row({ deviceId: 'd1', errorLog: 'storage session: storage answered status 503' }), row({ deviceId: 'd2', errorLog: 'storage session: storage answered status 503' })]],
+        ['old identity', [row({ deviceId: 'd1', storageIdentity: 'x' }), row({ deviceId: 'd2', storageIdentity: 'x' })]],
+        ['recovered among failing', [
+          row({ deviceId: 'd1', completedAt: hoursAgo(10), createdAt: hoursAgo(10) }),
+          row({ deviceId: 'd1', status: 'completed', errorLog: null }),
+          row({ deviceId: 'd2', completedAt: hoursAgo(9), createdAt: hoursAgo(9) }),
+          row({ deviceId: 'd3', completedAt: hoursAgo(8), createdAt: hoursAgo(8) }),
+        ]],
+        ['refusal beside an offline-only device', [
+          row({ deviceId: 'd1' }),
+          row({ deviceId: 'd2', errorLog: '[stale-backup-reaper] Device went offline during backup' }),
+        ]],
+        ['fan-out run with one refused job', (() => {
+          const run = hoursAgo(3);
+          return [
+            row({ deviceId: 'd1', status: 'completed', errorLog: null, createdAt: run }),
+            row({ deviceId: 'd1', createdAt: run, errorLog: 'storage session: storage answered status 503' }),
+            row({ deviceId: 'd2', errorLog: 'storage session: storage answered status 503' }),
+          ];
+        })()],
+      ];
+      for (const [name, rows] of fixtures) {
+        const data = await dashboardWith(rows);
+        const item = data.attentionItems.find((i: any) => i.kind === 'destination_failing');
+        const obs = backupDestinationObservation({
+          id: CONFIG_ID, orgId: ORG_ID, partnerId: ORG_ID, name: 'Primary S3', isActive: true, createdAt: hoursAgo(24 * 30),
+          currentStorageIdentity: IDENTITY,
+          jobs: rows.map((r) => ({
+            deviceId: r.deviceId as string, status: r.status as string, errorLog: r.errorLog as string | null,
+            createdAt: r.createdAt as Date, completedAt: r.completedAt as Date, storageIdentity: r.storageIdentity as string,
+          })),
+        }, new Date());
+        expect(Boolean(item), name).toBe(obs.state === 'broken');
+        if (item) {
+          expect(obs.detail, name).toMatch(new RegExp(`^${item.failingDevices} of ${item.totalDevices} devices? failing`));
+          const conditionByCause: Record<string, string> = { storage_access_denied: 'destination_access_denied', storage_not_found: 'destination_not_found' };
+          expect(obs.condition, name).toBe(conditionByCause[item.failureCause] ?? 'destination_failing');
+          expect(obs.severity, name).toBe(conditionByCause[item.failureCause] ? 'permanent' : 'transient');
+        }
+      }
+    });
+  });
+
   it('keeps unrestricted dashboard behavior unchanged', async () => {
     resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([
       { deviceId: DEVICE_ID, configId: 'config-1', featureLinkId: 'feature-1' },
@@ -319,9 +762,10 @@ describe('backup dashboard routes', () => {
     expect(body.data.totals.policies).toBe(2);
     expect(body.data.latestJobs).toHaveLength(2);
     // 5 base aggregation queries + 2 for the attention-items ranked-jobs lookup
-    // (subquery build + the awaited select over it). Storage Used comes from
-    // the stored-bytes service (#9631), mocked here.
-    expect(selectMock).toHaveBeenCalledTimes(7);
+    // (subquery build + the awaited select over it) + 1 for the destination
+    // evidence (#11772). Storage Used comes from the stored-bytes service
+    // (#9631), mocked here.
+    expect(selectMock).toHaveBeenCalledTimes(8);
     expect(body.data.attentionItems).toEqual([]);
   });
 
@@ -408,6 +852,39 @@ describe('backup dashboard routes', () => {
     expect(body.data.attentionItems).toHaveLength(1);
     expect(body.data.attentionItems[0].description).toMatch(/^backup stopped · Last unsuccessful /);
     expect(body.data.attentionItems[0].description).not.toContain('reparse');
+  });
+
+  // #11026: rows persisted before the server stopped storing it can still carry
+  // the note that a file list did not fit in the result. It is never the reason.
+  it('keeps the recoverable index drop note out of an attention item reason', async () => {
+    const indexNote = 'snapshot file index omitted (17950 entries): the result exceeded the 4934464 byte server result budget, so per-file restore browsing is unavailable for this snapshot';
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // configCount
+      .mockReturnValueOnce(chainMock([{ count: 2 }])) // jobCount
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 2, running: 0, pending: 0 }])) // last24hStats
+      .mockReturnValueOnce(chainMock([])) // recentJobsRaw
+      .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
+      .mockReturnValueOnce(chainMock([
+        {
+          deviceId: FAILING_DEVICE_ID,
+          status: 'failed',
+          errorLog: `backup stopped || bounded: ${indexNote}`,
+          completedAt: new Date('2026-07-14T10:00:00.000Z'),
+          createdAt: new Date('2026-07-14T09:55:00.000Z'),
+          rn: 1,
+          deviceName: 'Finance Laptop',
+          deviceHostname: 'fin-laptop-01',
+        },
+      ])); // ranked-jobs rows
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.attentionItems[0].description).toMatch(/^backup stopped · Last unsuccessful /);
+    expect(body.data.attentionItems[0].description).not.toContain('snapshot file index');
   });
 
   // #3000: a device whose latest backup landed `partial` (a real snapshot, but
@@ -701,6 +1178,66 @@ describe('backup dashboard routes', () => {
       expect(body.data.lastJob.vssMetadata).toBeNull();
     });
 
+    it('status lastJob carries dataAccounting', async () => {
+      mockStatusQueries(makeJob({
+        status: 'completed',
+        backupMode: 'system_image',
+        totalSize: 1000,
+        referencedSize: 0,
+        baseSnapshotId: 'snap-base',
+      }));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.lastJob.dataAccounting).toMatchObject({
+        uploadedBytes: 1000,
+        runKind: 'full',
+        fullRunReason: 'nothing_reused',
+      });
+    });
+
+    it('status lastJob and lastFailure carry failureCategory', async () => {
+      mockStatusQueries(makeJob({ status: 'failed', errorLog: 'backup helper exited unexpectedly' }));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.lastJob.failureCategory).toBe('agent');
+      expect(data.lastFailureCategory).toBe('agent');
+      expect(data.lastJob.failureCause).toBe('helper_stopped');
+      expect(data.lastFailureCause).toBe('helper_stopped');
+    });
+
+    it('classifies lastFailure from the failed run when a later run succeeded', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          makeJob({ id: 'job-ok', status: 'completed', createdAt: new Date('2026-04-02T00:00:00.000Z') }),
+          makeJob({ id: 'job-bad', status: 'failed', errorLog: 'Agent not connected' }),
+        ]));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.lastJob.failureCategory).toBeNull();
+      expect(data.lastFailureCategory).toBe('device_offline');
+    });
+
+    it('reports null failure categories for a device with no failed run', async () => {
+      mockStatusQueries(makeJob());
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      const { data } = await res.json();
+      expect(data.lastJob).toHaveProperty('failureCategory', null);
+      expect(data).toHaveProperty('lastFailureCategory', null);
+    });
+
     it('includes errorLog — the ONLY channel a total VSS failure has', async () => {
       // When the shadow copy could not be created there is no vssMetadata at
       // all, so the degradation rides the warning into error_log. Without this
@@ -830,6 +1367,120 @@ describe('backup dashboard routes', () => {
       expect(JSON.stringify(orderTerms[0])).toContain('backup_jobs.started_at');
       expect(orderTerms[1]).toEqual({ op: 'desc', value: 'backup_jobs.created_at' });
       expect(orderTerms[2]).toEqual({ op: 'desc', value: 'backup_jobs.id' });
+    });
+  });
+
+  describe('GET /status/:deviceId — activeJobs (#11027)', () => {
+    function inFlight(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'job-x',
+        status: 'running',
+        backupMode: 'file',
+        backupType: 'file',
+        createdAt: new Date('2026-11-05T10:00:00.000Z'),
+        startedAt: new Date('2026-11-05T10:01:00.000Z'),
+        completedAt: null,
+        totalSize: 400,
+        transferredSize: 100,
+        fileCount: 10,
+        totalFiles: 40,
+        lastProgressAt: new Date('2026-11-05T10:05:00.000Z'),
+        lastKeepaliveAt: new Date('2026-11-05T10:06:00.000Z'),
+        errorLog: null,
+        vssMetadata: null,
+        ...overrides,
+      };
+    }
+
+    it('status returns activeJobs running-first with resumedAt', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      const sessionsChain = chainMock([
+        { jobId: 'job-running', resumedAt: new Date('2026-11-05T10:02:00.000Z') },
+      ]);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          // Created later and never started: a second mode queued behind the
+          // running one on the same device (#11012's shape).
+          inFlight({
+            id: 'job-pending',
+            status: 'pending',
+            backupMode: 'system_image',
+            backupType: 'system_image',
+            createdAt: new Date('2026-11-05T10:00:00.000Z'),
+            startedAt: null,
+            totalSize: null,
+            transferredSize: null,
+            lastProgressAt: null,
+            lastKeepaliveAt: new Date('2026-11-05T10:06:00.000Z'),
+          }),
+          inFlight({ id: 'job-running', transferredSize: 0 }),
+          inFlight({ id: 'job-done', status: 'completed', completedAt: new Date('2026-11-04T10:00:00.000Z'), startedAt: new Date('2026-11-04T09:00:00.000Z') }),
+        ]))
+        .mockReturnValueOnce(sessionsChain);
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.activeJobs.map((j: { id: string }) => j.id)).toEqual(['job-running', 'job-pending']);
+      expect(data.activeJobs[0]).toMatchObject({
+        status: 'running',
+        backupMode: 'file',
+        totalSize: 400,
+        transferredSize: 0,
+        fileCount: 10,
+        totalFiles: 40,
+        startedAt: '2026-11-05T10:01:00.000Z',
+        lastKeepaliveAt: '2026-11-05T10:06:00.000Z',
+        resumedAt: '2026-11-05T10:02:00.000Z',
+      });
+      expect(data.activeJobs[1]).toMatchObject({ status: 'pending', startedAt: null, resumedAt: null });
+
+      // One grouped query, scoped to the active ids and to resumed write sessions.
+      const where = JSON.stringify(sessionsChain.where.mock.calls[0]);
+      expect(where).toContain('backup_storage_sessions.job_id');
+      expect(where).toContain('job-running');
+      expect(where).toContain('job-pending');
+      expect(where).not.toContain('job-done');
+      expect(where).toContain('snapshot_write');
+      expect(where).toContain('isNotNull');
+      expect(sessionsChain.groupBy).toHaveBeenCalledWith('backup_storage_sessions.job_id');
+    });
+
+    it('orders same-status jobs by startedAt then createdAt ascending', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          inFlight({ id: 'p-late', status: 'pending', startedAt: null, createdAt: new Date('2026-11-05T11:00:00.000Z') }),
+          inFlight({ id: 'p-early', status: 'pending', startedAt: null, createdAt: new Date('2026-11-05T09:00:00.000Z') }),
+          inFlight({ id: 'r-late', startedAt: new Date('2026-11-05T10:30:00.000Z') }),
+          inFlight({ id: 'r-early', startedAt: new Date('2026-11-05T10:10:00.000Z') }),
+        ]))
+        .mockReturnValueOnce(chainMock([]));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      const { data } = await res.json();
+      expect(data.activeJobs.map((j: { id: string }) => j.id)).toEqual(['r-early', 'r-late', 'p-early', 'p-late']);
+    });
+
+    it('status returns empty activeJobs and skips the session query when nothing is in flight', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          inFlight({ id: 'job-done', status: 'completed', completedAt: new Date('2026-11-04T10:00:00.000Z') }),
+        ]));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.activeJobs).toEqual([]);
+      // device lookup + job history only — no backup_storage_sessions read.
+      expect(selectMock).toHaveBeenCalledTimes(2);
     });
   });
 

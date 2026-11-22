@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { renderHook } from '@testing-library/react';
 
 import { applyLocale, i18n } from '@/lib/i18n';
-import { formatAuditAction, useAuditActionFormatter } from './auditFormat';
+import { auditPrefixLabel, formatAuditAction, useAuditActionFormatter } from './auditFormat';
 
 const localesDir = join(dirname(fileURLToPath(import.meta.url)), '../locales');
 
@@ -208,6 +208,12 @@ describe('recovery key audit labels (#9609)', () => {
 // renders translated for some operators and prettified for others — the exact
 // inconsistency #3432 was about. Locale parity only compares locales against
 // English, so nothing else would catch English drifting from the code.
+describe('UniFi prefix label (#11605)', () => {
+  it('renders the filter family as UniFi, not Unifi', () => {
+    expect(auditPrefixLabel('unifi')).toBe('UniFi');
+  });
+});
+
 describe('audit action catalog stays in sync with the English fallback map', () => {
   it('covers every code in the built-in map, with identical English wording', () => {
     const en = auditActions('en');

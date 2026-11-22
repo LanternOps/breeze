@@ -9,6 +9,7 @@ import {
   type NewElevationAuditEntry,
 } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { publishEvent, type EventType } from './eventBus';
 import { evaluatePamRules, type PamRuleMatch } from './pamRuleEngine';
@@ -336,6 +337,8 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('revoke_elevation', async (input, auth) => {
+      const mfaError = mfaGatedToolError('revoke_elevation', undefined, auth);
+      if (mfaError) return mfaError;
       // #6911: no approver to substitute at Tier 2 — refuse an agent
       // principal before the write. See isAgentPrincipalCaller.
       if (isAgentPrincipalCaller(auth)) {

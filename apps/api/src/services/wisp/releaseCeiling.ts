@@ -25,6 +25,7 @@
  *   - inside the ceiling                → `{ ok: true, auth }` cut to the ceiling
  *   - grant inactive                    → `wisp_grant_inactive`
  *   - outside the ceiling               → `wisp_ceiling_refused`
+ *   - a standing instruction now denies → `standing_instruction_denied` (#10428 W06)
  *   - session cannot be gated / any error → `wisp_gate_unavailable` (fail closed)
  * Every refusal is audited as `wisp.ceiling_refused` (as the chat gate does) and
  * is terminal — the worker fails the intent, it does not pause it.
@@ -42,8 +43,17 @@ import {
   type WispCeilingRefusal,
   type WispSessionGrant,
 } from './chatCeiling';
+import {
+  checkStandingInstructionsForRelease,
+  type STANDING_INSTRUCTION_DENIED,
+  type StandingInstructionReleaseRefusal,
+} from './standingInstructionRelease';
 
-export type WispReleaseErrorCode = 'wisp_ceiling_refused' | 'wisp_grant_inactive' | 'wisp_gate_unavailable';
+export type WispReleaseErrorCode =
+  | 'wisp_ceiling_refused'
+  | 'wisp_grant_inactive'
+  | 'wisp_gate_unavailable'
+  | typeof STANDING_INSTRUCTION_DENIED;
 
 export type WispReleaseCheck =
   | { ok: true; auth: AuthContext }
@@ -91,6 +101,41 @@ function refuse(
   };
 }
 
+function refuseStanding(
+  intent: ReleaseIntent,
+  auth: AuthContext,
+  standing: StandingInstructionReleaseRefusal,
+  grantId: string,
+): WispReleaseCheck {
+  try {
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId: intent.orgId,
+      action: 'wisp.standing_instruction_refused',
+      resourceType: 'action_intent',
+      resourceId: intent.id,
+      actorId: auth.user?.id ?? null,
+      actorEmail: auth.user?.email,
+      initiatedBy: 'ai',
+      result: 'failure',
+      errorMessage: standing.details.reason,
+      details: {
+        toolName: intent.actionName,
+        instructionId: standing.details.instructionId,
+        grantId,
+        aiSessionId: intent.aiOriginSessionId,
+        phase: 'release',
+      },
+    });
+  } catch (err) {
+    console.error(`[WispRelease] failed to audit the standing-instruction refusal for intent ${intent.id}:`, err);
+  }
+  return {
+    ok: false,
+    errorCode: standing.errorCode,
+    details: { ...standing.details, grantId, aiSessionId: intent.aiOriginSessionId },
+  };
+}
+
 export async function checkWispCeilingForRelease(intent: ReleaseIntent, auth: AuthContext): Promise<WispReleaseCheck> {
   const sessionId = intent.aiOriginSessionId;
   if (!sessionId) return { ok: true, auth };
@@ -128,6 +173,14 @@ export async function checkWispCeilingForRelease(intent: ReleaseIntent, auth: Au
     if (!result.ok) {
       const errorCode = result.refusal.code === 'wisp_grant_inactive' ? 'wisp_grant_inactive' : 'wisp_ceiling_refused';
       return refuse(intent, auth, errorCode, result.refusal, grant.grantId);
+    }
+    // #10428 W06 (Review Focus 3): a card raised before the user confirmed a
+    // standing instruction cannot release the action that instruction now
+    // denies. Under the same live ceiling; a lookup failure falls to the
+    // catch below (fail closed).
+    if (!external) {
+      const standing = await checkStandingInstructionsForRelease(intent, result.ceiling);
+      if (standing) return refuseStanding(intent, auth, standing, grant.grantId);
     }
     return { ok: true, auth: result.toolAuth };
   } catch (err) {

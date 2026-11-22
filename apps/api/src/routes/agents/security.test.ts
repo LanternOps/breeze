@@ -3,7 +3,9 @@ import { Hono } from 'hono';
 import { db } from '../../db';
 import { agentSecurityRoutes, managementPostureChanges } from './security';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { raiseRemoteToolAppearedAlerts } from '../../services/remoteToolAlerts/alerts';
 import { upsertSecurityStatusForDevice } from './helpers';
+import { runAfterDbContextCommit } from '../../db';
 
 const AGENT_ID = 'agent-001';
 const DEVICE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -20,6 +22,12 @@ vi.mock('../../db', () => ({
     select: vi.fn(),
     update: vi.fn(),
   },
+  // Records the deferred work; a test runs it to stand in for the commit.
+  runAfterDbContextCommit: vi.fn(),
+}));
+
+vi.mock('../../services/remoteToolAlerts/alerts', () => ({
+  raiseRemoteToolAppearedAlerts: vi.fn(async () => ({ raised: [], held: [], failed: [], suppressedByMaintenance: false })),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -333,6 +341,92 @@ describe('agent security routes — requireAgentRole gate (F3)', () => {
         expect(res.status).toBe(200);
         const details = (vi.mocked(writeAuditEvent).mock.calls[0]![1] as unknown as { details: { changed: string[] } }).details;
         expect(details.changed).toEqual(['identity']);
+      });
+
+      // #11306 — a remote access / RMM tool the previous scan did not have
+      // alerts the partner, after the posture write commits.
+      describe('new remote tool alerts', () => {
+        it('raises an alert for a remote access tool that appeared since the previous scan, after the commit', async () => {
+          mockDeviceLookup({ managementPosture: posture });
+          const res = await put('management/posture', {
+            ...posture,
+            collectedAt: '2026-06-20T00:15:00.000Z',
+            categories: { ...posture.categories, remoteAccess: [{ name: 'UltraViewer', status: 'installed' }] },
+          });
+
+          expect(res.status).toBe(200);
+          expect(runAfterDbContextCommit).toHaveBeenCalledTimes(1);
+          expect(runAfterDbContextCommit).toHaveBeenCalledWith('management-posture.remote-tool-alerts', expect.any(Function));
+          // Deferred, not raised inside the request transaction.
+          expect(raiseRemoteToolAppearedAlerts).not.toHaveBeenCalled();
+
+          const afterCommit = vi.mocked(runAfterDbContextCommit).mock.calls[0]![1] as () => unknown;
+          await afterCommit();
+          expect(raiseRemoteToolAppearedAlerts).toHaveBeenCalledTimes(1);
+          expect(raiseRemoteToolAppearedAlerts).toHaveBeenCalledWith({
+            deviceId: DEVICE_ID,
+            orgId: ORG_ID,
+            detectedAt: '2026-06-20T00:15:00.000Z',
+            tools: [{ name: 'UltraViewer', category: 'remoteAccess', status: 'installed' }],
+          });
+        });
+
+        it('raises nothing on the first-ever posture: it is the baseline', async () => {
+          mockDeviceLookup({ managementPosture: null });
+          const res = await put('management/posture', {
+            ...posture,
+            categories: { ...posture.categories, remoteAccess: [{ name: 'Splashtop', status: 'active' }] },
+          });
+
+          expect(res.status).toBe(200);
+          expect(raiseRemoteToolAppearedAlerts).not.toHaveBeenCalled();
+          expect(runAfterDbContextCommit).not.toHaveBeenCalled();
+        });
+
+        it('raises nothing for a re-scan with the same tools, or one that only lost a tool', async () => {
+          mockDeviceLookup({ managementPosture: posture });
+          await put('management/posture', { ...posture, collectedAt: '2026-06-20T00:15:00.000Z' });
+          mockDeviceLookup({ managementPosture: posture });
+          await put('management/posture', { ...posture, categories: { mdm: posture.categories.mdm } });
+
+          expect(runAfterDbContextCommit).not.toHaveBeenCalled();
+        });
+
+        it('raises nothing when the write persisted nothing', async () => {
+          mockDeviceLookup({ managementPosture: posture });
+          vi.mocked(db.update).mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+            }),
+          } as never);
+          vi.mocked(db.select).mockReset();
+          vi.mocked(db.select)
+            .mockReturnValueOnce(selectResolving([{ id: DEVICE_ID, orgId: ORG_ID, managementPosture: posture }]))
+            .mockReturnValueOnce(selectResolving([]));
+          const res = await put('management/posture', {
+            ...posture,
+            categories: { ...posture.categories, remoteAccess: [{ name: 'UltraViewer', status: 'installed' }] },
+          });
+
+          expect(res.status).toBe(404);
+          expect(runAfterDbContextCommit).not.toHaveBeenCalled();
+        });
+
+        it('raises nothing when the posture write fails', async () => {
+          const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+          mockDeviceLookup({ managementPosture: posture });
+          vi.mocked(db.update).mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(new Error('db down')) }),
+          } as never);
+          const res = await put('management/posture', {
+            ...posture,
+            categories: { ...posture.categories, remoteAccess: [{ name: 'UltraViewer', status: 'installed' }] },
+          });
+
+          expect(res.status).toBe(500);
+          expect(runAfterDbContextCommit).not.toHaveBeenCalled();
+          consoleError.mockRestore();
+        });
       });
 
       it('audits the first-ever posture for a device', async () => {

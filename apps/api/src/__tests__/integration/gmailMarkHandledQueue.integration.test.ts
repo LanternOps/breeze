@@ -61,6 +61,8 @@ function gmailMsg(id: string, from: string, mailbox: string): gmail_v1.Schema$Me
         { name: 'To', value: mailbox },
         { name: 'Subject', value: `Printer down ${id}` },
         { name: 'Message-ID', value: `<${id}@known.test>` },
+        // Gmail adds Return-Path at delivery.
+        { name: 'Return-Path', value: '<bounce@mail.example.net>' },
         { name: 'Authentication-Results', value: 'mx.google.com; spf=pass; dkim=pass; dmarc=pass' },
       ],
       body: { data: Buffer.from('printer down', 'utf8').toString('base64url') },

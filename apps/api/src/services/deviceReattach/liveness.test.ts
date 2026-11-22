@@ -15,6 +15,8 @@ vi.mock('../../db', () => ({
 
 import {
   decideTargetLiveness,
+  newestDbLivenessSignalAt,
+  newestLivenessSignal,
   readRedisLivenessSignals,
   targetSilenceThreshold,
   type RedisLivenessSignals,
@@ -112,5 +114,17 @@ describe('decideTargetLiveness (§6.5 over both halves)', () => {
 
   it('a never-seen target with no marker is silent', () => {
     expect(decideTargetLiveness(quietRedis(), oldRow({ lastSeenAt: null }), minutesAgo(30), NOW)).toEqual({ state: 'silent' });
+  });
+});
+
+describe('newestLivenessSignal / newestDbLivenessSignalAt (shared with reinstallCandidates)', () => {
+  it('picks the newest valid signal and ignores null and invalid dates', () => {
+    const a = new Date('2027-01-01T00:00:00Z');
+    const b = new Date('2027-01-02T00:00:00Z');
+    expect(newestLivenessSignal([['x', a], ['y', null], ['z', new Date('nope')], ['w', b]] as const)).toEqual({ signal: 'w', at: b });
+    expect(newestLivenessSignal([['x', null]] as const)).toBeNull();
+    expect(newestDbLivenessSignalAt({ lastSeenAt: b, watchdogLastSeen: a })).toEqual(b);
+    expect(newestDbLivenessSignalAt({ lastSeenAt: null, watchdogLastSeen: a })).toEqual(a);
+    expect(newestDbLivenessSignalAt({ lastSeenAt: null, watchdogLastSeen: null })).toBeNull();
   });
 });

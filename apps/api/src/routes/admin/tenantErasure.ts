@@ -23,7 +23,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations } from '../../db/schema';
 import { requireMfa } from '../../middleware/auth';
 import { enqueueTenantErasure } from '../../jobs/tenantErasure';
@@ -64,7 +64,7 @@ tenantErasureRoutes.post(
     // Lookup the org under system scope so we can capture its name in
     // the audit details (the cascade itself drops the org so name
     // would be unrecoverable downstream).
-    const org = await withSystemDbAccessContext(async () => {
+    const org = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
       const rows = await db
         .select({
           id: organizations.id,
@@ -75,13 +75,17 @@ tenantErasureRoutes.post(
         .where(eq(organizations.id, orgId))
         .limit(1);
       return rows[0] ?? null;
-    });
+    }, 'admin.tenantErasure.orgLookup'));
 
     if (!org) {
       return c.json({ error: 'org not found' }, 404);
     }
 
-    if (await hasUnresolvedNetworkIsolations(orgId)) {
+    // The precondition checks below open their own system contexts. Run each
+    // outside the request context so they see this org's rows: nested in a
+    // partner-scoped request context they would see nothing for another
+    // partner's org and let the erasure through (#12299).
+    if (await runOutsideDbContext(() => hasUnresolvedNetworkIsolations(orgId))) {
       await createAuditLog({
         orgId: null, actorType: 'user', actorId: auth.user.id, actorEmail: auth.user.email,
         action: 'tenant.erasure.refused_isolation', resourceType: 'organization', resourceId: orgId,
@@ -96,7 +100,7 @@ tenantErasureRoutes.post(
     // (which re-checks this itself, see cascadeDeleteOrg) skips silently.
     // This is a convenience check, not the enforcement point — the worker's
     // own check is what actually protects every erasure entry point.
-    if (await hasActiveBackupLegalHold(orgId)) {
+    if (await runOutsideDbContext(() => hasActiveBackupLegalHold(orgId))) {
       await createAuditLog({
         orgId: null,
         actorType: 'user',
@@ -123,7 +127,8 @@ tenantErasureRoutes.post(
     // PAM evidence and its organizations row until the hold is released.
     // Recorded here so the admin's request shows what was deferred, and
     // returned so the caller is not told the org is gone.
-    const evidenceHold = await withSystemDbAccessContext(() => findEvidenceHold(orgId));
+    const evidenceHold = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() => findEvidenceHold(orgId), 'admin.tenantErasure.evidenceHold'));
 
     const enqueued = await enqueueTenantErasure({
       orgId,

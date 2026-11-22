@@ -23,6 +23,9 @@
  * result has none, as a thrown `RemoteToolsDisabledByPolicyError`. The
  * contract test `aiRemoteToolsPolicy.contract.test.ts` fails if an exported
  * entry point stops calling the check.
+ *
+ * Every entry point that takes a command type also refuses a raw network
+ * isolation command (#10919, `RawNetworkIsolationCommandError` below).
  */
 import {
   executeCommand,
@@ -54,8 +57,28 @@ import {
   REMOTE_TOOLS_DISABLED_BY_POLICY,
 } from './aiRemoteToolsPolicy';
 import type { AiOriginRef } from '@breeze/shared';
+import { isNetworkIsolationCommand, USE_NETWORK_ISOLATION_ROUTES } from './networkIsolation/bypass';
 import { hasDbAccessContext } from '../db';
 import { dbAccessContextFromAuth, type AuthContext } from '../middleware/auth';
+
+/**
+ * #10919: an AI surface never issues a raw isolation command. Starting goes through
+ * `startNetworkIsolation`, releasing through the four-eyes `release_containment` tool, and both
+ * reach the device through the isolation service, never through this module. Refused here, first,
+ * on every entry point (`networkIsolation.issuers.contract.test.ts` scans for it). Delivery
+ * binding cancels anything that slips past.
+ */
+export class RawNetworkIsolationCommandError extends Error {
+  readonly code = USE_NETWORK_ISOLATION_ROUTES;
+  constructor(toolName: string) {
+    super(`[aiDispatch] tool "${toolName}" tried to queue a raw network-isolation command; ${USE_NETWORK_ISOLATION_ROUTES}`);
+    this.name = 'RawNetworkIsolationCommandError';
+  }
+}
+
+function refuseRawNetworkIsolation(type: CommandType | string, payload: unknown): boolean {
+  return isNetworkIsolationCommand(String(type), payload);
+}
 
 /** The only part of an AuthContext this module reads. */
 type AiAuth = Pick<AuthContext, 'aiOrigin'>;
@@ -99,6 +122,7 @@ export async function aiExecuteCommand(
   options: Omit<ExecuteCommandOptions, 'aiOrigin'> = {},
 ): Promise<CommandResult> {
   const aiOrigin = requireAiOrigin(auth, toolName);
+  if (refuseRawNetworkIsolation(type, payload)) return { status: 'failed', error: USE_NETWORK_ISOLATION_ROUTES };
   const policy = await checkAiRemoteToolsPolicy(deviceId, type);
   if (!policy.allowed) return { status: 'failed', error: policy.error };
   if (!hasDbAccessContext()) {
@@ -119,6 +143,7 @@ export async function aiExecuteCommandWithSystemPrecheck(
   options: Omit<Parameters<typeof executeCommandWithSystemPrecheck>[3], 'aiOrigin'>,
 ): Promise<CommandResult> {
   const aiOrigin = requireAiOrigin(auth, toolName);
+  if (refuseRawNetworkIsolation(type, payload)) return { status: 'failed', error: USE_NETWORK_ISOLATION_ROUTES };
   const policy = await checkAiRemoteToolsPolicy(deviceId, type);
   if (!policy.allowed) return { status: 'failed', error: policy.error };
   return executeCommandWithSystemPrecheck(deviceId, type, payload, { ...options, aiOrigin });
@@ -133,6 +158,7 @@ export async function aiQueueCommandForExecution(
   options: Omit<Parameters<typeof queueCommandForExecution>[3] & object, 'aiOrigin'> = {},
 ): Promise<QueueCommandForExecutionResult> {
   const aiOrigin = requireAiOrigin(auth, toolName);
+  if (refuseRawNetworkIsolation(type, payload)) return { error: USE_NETWORK_ISOLATION_ROUTES };
   const policy = await checkAiRemoteToolsPolicy(deviceId, type);
   if (!policy.allowed) return { error: policy.error };
   return queueCommandForExecution(deviceId, type, payload, { ...options, aiOrigin });
@@ -154,6 +180,7 @@ export async function aiQueueCommand(
   options: Omit<Parameters<typeof queueCommand>[4] & object, 'aiOrigin'> = {},
 ): Promise<QueuedCommand> {
   const aiOrigin = requireAiOrigin(auth, toolName);
+  if (refuseRawNetworkIsolation(type, payload)) throw new RawNetworkIsolationCommandError(toolName);
   await assertAiRemoteToolsAllowed(deviceId, type);
   return queueCommand(deviceId, type, payload, userId, { ...options, aiOrigin });
 }
@@ -161,7 +188,7 @@ export async function aiQueueCommand(
 /** `dispatchDeviceCommand`'s result, plus the remote-tools policy refusal. */
 export type AiDispatchDeviceCommandResult =
   | DispatchDeviceCommandResult
-  | { ok: false; code: typeof REMOTE_TOOLS_DISABLED_BY_POLICY; error: string };
+  | { ok: false; code: typeof REMOTE_TOOLS_DISABLED_BY_POLICY | typeof USE_NETWORK_ISOLATION_ROUTES; error: string };
 
 export async function aiDispatchDeviceCommand(
   auth: AiAuth,
@@ -169,6 +196,9 @@ export async function aiDispatchDeviceCommand(
   input: Omit<DispatchDeviceCommandInput, 'aiOrigin'>,
 ): Promise<AiDispatchDeviceCommandResult> {
   const aiOrigin = requireAiOrigin(auth, toolName);
+  if (refuseRawNetworkIsolation(input.type, input.payload)) {
+    return { ok: false, code: USE_NETWORK_ISOLATION_ROUTES, error: USE_NETWORK_ISOLATION_ROUTES };
+  }
   const policy = await checkAiRemoteToolsPolicy(input.deviceId, input.type);
   if (!policy.allowed) return { ok: false, code: REMOTE_TOOLS_DISABLED_BY_POLICY, error: policy.error };
   return dispatchDeviceCommand({ ...input, aiOrigin });
@@ -205,6 +235,7 @@ export async function aiInsertQueuedCommandInTransaction(
 ): Promise<QueuedCommand> {
   // Joins the caller's transaction context (the lookup is a plain read); only
   // remote-tools command types reach the database at all.
+  if (refuseRawNetworkIsolation(input.type, input.payload)) throw new RawNetworkIsolationCommandError(origin.kind);
   await assertAiRemoteToolsAllowed(input.deviceId, input.type);
   return insertQueuedCommandInTransaction(tx, { ...input, aiOrigin: origin });
 }

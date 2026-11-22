@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { isPgForeignKeyViolationCode } from '../../utils/pgErrors';
 import { and, eq, inArray, isNotNull, isNull, or, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
@@ -97,6 +98,9 @@ backupProviderDeviceRoutes.get(
         errorsCount: backupProviderDevices.errorsCount,
         breezeDeviceId: backupProviderDevices.breezeDeviceId,
         deviceMatchSource: backupProviderDevices.deviceMatchSource,
+        verifiedBootableAt: backupProviderDevices.verifiedBootableAt,
+        verifiedBootable: backupProviderDevices.verifiedBootable,
+        verifiedBootableFailedChecks: backupProviderDevices.verifiedBootableFailedChecks,
       })
       .from(backupProviderDevices)
       .leftJoin(backupProviderCustomers, eq(backupProviderDevices.customerId, backupProviderCustomers.id))
@@ -222,7 +226,7 @@ backupProviderDeviceRoutes.put(
       return c.json({ data: updated });
     } catch (error) {
       const code = pgErrorCode(error);
-      if (code === '23503') {
+      if (isPgForeignKeyViolationCode(code)) {
         return c.json({
           error: 'That device belongs to a different organization than this provider row',
           code: 'DEVICE_ORG_MISMATCH',

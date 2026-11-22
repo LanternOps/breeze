@@ -36,6 +36,9 @@ vi.mock('./businessReports/mrrRenewalsReport', () => ({
 vi.mock('./businessReports/quoteWinRateReport', () => ({
   generateQuoteWinRateReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'quote_win_rate' } })),
 }));
+vi.mock('./businessReports/ticketSlaPerformanceReport', () => ({
+  generateTicketSlaPerformanceReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'ticket_sla_performance' } })),
+}));
 vi.mock('./businessReports/clientProfitabilityReport', () => ({
   generateClientProfitabilityReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'client_profitability' } })),
 }));
@@ -101,6 +104,7 @@ const REPORT_TYPES: readonly ReportType[] = [
   'vulnerability_management',
   'identity_access_review',
   'backup_status',
+  'ticket_sla_performance',
 ];
 /**
  * #5784 W06. `identity_access_review` is org-wide by construction: M365 identity
@@ -110,7 +114,7 @@ const REPORT_TYPES: readonly ReportType[] = [
  * dedicated assertion in its place, so the exclusion is proven, not assumed.
  */
 const SITE_SCOPED_REPORT_TYPES: readonly ReportType[] = REPORT_TYPES
-  .filter((type) => type !== 'identity_access_review' && type !== 'backup_status');
+  .filter((type) => type !== 'identity_access_review' && type !== 'backup_status' && type !== 'ticket_sla_performance');
 /** Every `ReportType` that is NOT generated on demand. P2-3 added the first
  *  one: a weekly AI narrative's artifact is written once by the agent run and
  *  only ever read back — there is no query that could reproduce it. Fleet
@@ -510,6 +514,32 @@ describe('managed evidence system execution path (#5784 OD-5 = B)', () => {
       generateManagedEvidenceReport('device_inventory' as never, ORG_ID, {}, undefined),
     ).rejects.toThrow(/not a managed evidence type/i);
     expect(db.select).not.toHaveBeenCalled();
+  });
+
+  // #11018 W2. The evidence context is what makes the run report the occurrence's
+  // period, so the registry arm dropping it would silently report last month.
+  it('system authority may generate ticket_sla_performance, and the evidence context reaches the generator', async () => {
+    const { generateManagedEvidenceReport } = await import('./reportGenerationService');
+    const { generateTicketSlaPerformanceReport } = await import('./businessReports/ticketSlaPerformanceReport');
+    const evidence = {
+      periodStart: '2026-10-01', periodEnd: '2026-10-31',
+      generatedAt: '2026-10-31T05:18:00.000Z', deliverableId: USER_ID,
+    };
+    const result = await generateManagedEvidenceReport('ticket_sla_performance' as never, ORG_ID, { includeSubjects: false }, evidence);
+    expect(result.summary).toEqual({ generator: 'ticket_sla_performance' });
+    expect(generateTicketSlaPerformanceReport).toHaveBeenCalledTimes(1);
+    const [scope, config, passedAuthority, passedEvidence] = vi.mocked(generateTicketSlaPerformanceReport).mock.calls[0]! as unknown[];
+    expect(scope).toEqual({ kind: 'organization', orgId: ORG_ID });
+    expect(config).toEqual({ includeSubjects: false });
+    expect(passedAuthority).toMatchObject({ principalKind: 'system', scope: { kind: 'unrestricted', orgId: ORG_ID } });
+    expect(passedEvidence).toEqual(evidence);
+  });
+
+  it('portal-user authority may not generate ticket_sla_performance', async () => {
+    const { generateTicketSlaPerformanceReport } = await import('./businessReports/ticketSlaPerformanceReport');
+    await expect(generateReport('ticket_sla_performance', organizationScope(ORG_ID), {}, portalAuthority()))
+      .rejects.toThrow(/portal|authority|report type/i);
+    expect(generateTicketSlaPerformanceReport).not.toHaveBeenCalled();
   });
 
   it('refuses a system authority whose scope is not org-wide unrestricted', () => {

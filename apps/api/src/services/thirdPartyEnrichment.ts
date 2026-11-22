@@ -1,5 +1,6 @@
 import { db } from '../db';
 import { thirdPartyPackageCatalog, patchSeverityEnum } from '../db/schema';
+import { registerClusterInvalidator } from './clusterInvalidator';
 
 export type PatchSeverity = (typeof patchSeverityEnum.enumValues)[number];
 
@@ -12,6 +13,8 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 let cache: Map<string, CatalogEntry> | null = null;
 let cacheLoadedAt = 0;
 let inflight: Promise<void> | null = null;
+// Bumped by every invalidation: a load that started before it is not stored.
+let cacheGeneration = 0;
 
 function cacheKey(source: string, packageId: string): string {
   return `${source}::${packageId}`;
@@ -40,28 +43,47 @@ async function loadCache(): Promise<Map<string, CatalogEntry>> {
 }
 
 export async function primeCatalogCache(): Promise<void> {
-  cache = await loadCache();
+  const generationAtStart = cacheGeneration;
+  const loaded = await loadCache();
+  if (generationAtStart !== cacheGeneration) return;
+  cache = loaded;
   cacheLoadedAt = Date.now();
 }
 
-// Call from catalog write endpoints after a successful mutation.
-export function invalidateCatalogCache(): void {
+const catalogInvalidator = registerClusterInvalidator('third-party-package-catalog', () => {
+  cacheGeneration += 1;
   cache = null;
   cacheLoadedAt = 0;
+  inflight = null;
+});
+
+/**
+ * Call from catalog write endpoints after a successful mutation. Drops the
+ * catalog on this instance now and on every other API instance after the
+ * caller's transaction commits (#8636).
+ */
+export function invalidateCatalogCache(): void {
+  catalogInvalidator.invalidateAroundCommit();
 }
 
+/** Bounded so an invalidation storm cannot spin here forever. */
+const MAX_CACHE_LOAD_ATTEMPTS = 3;
+
 async function getCache(): Promise<Map<string, CatalogEntry>> {
-  if (!cache || Date.now() - cacheLoadedAt > CACHE_TTL_MS) {
+  for (let attempt = 0; attempt < MAX_CACHE_LOAD_ATTEMPTS; attempt += 1) {
+    if (cache && Date.now() - cacheLoadedAt <= CACHE_TTL_MS) return cache;
     // Singleflight: if a load is already in flight, await it instead of
     // starting a second concurrent query.
     if (!inflight) {
-      inflight = primeCatalogCache().finally(() => {
-        inflight = null;
+      const flight: Promise<void> = primeCatalogCache().finally(() => {
+        if (inflight === flight) inflight = null;
       });
+      inflight = flight;
     }
     await inflight;
+    // An invalidation that landed mid-load leaves `cache` empty: load again.
   }
-  return cache!;
+  return cache ?? loadCache();
 }
 
 function narrowSeverity(value: string | null | undefined): PatchSeverity | null {

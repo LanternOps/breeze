@@ -2,13 +2,14 @@ import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { and, asc, desc, eq, inArray, isNotNull, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import {
   AI_AGENT_GRADUATION_BY_ORG_LIMIT,
   AI_AGENT_IMPACT_REBUILD_DAYS,
   AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
   AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
+  AI_AGENT_RUN_CHAIN_MAX_STEPS,
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
   AI_AGENT_RUN_STATUSES,
   type AgentRunVerdict,
@@ -32,10 +33,11 @@ import {
   type AgentCeilingDto,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
+import { selectRunIntentsForCaller } from '../services/aiAgents/runIntentsForCaller';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   actionIntents, aiAgentGraduation, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
-  reportRuns, reports, ticketDrafts, users, wispGrants, type AiAgentRow,
+  reportRuns, reports, sites, ticketDrafts, users, wispGrants, type AiAgentRow,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import { policyDecideEnabled } from '../config/env';
@@ -48,6 +50,7 @@ import {
 import { AgentAccessDeniedError, AgentSiteCeilingDeniedError, assertAgentWriteAllowed } from '../services/aiAgents/access';
 import { AgentModelNotAllowedError } from '../services/aiAgents/agentModelErrors';
 import { ResearchAgentEditError } from '../services/aiAgents/researchAgentEdit';
+import { TroubleshootAgentEditError } from '../services/aiAgents/troubleshootAgentEdit';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { getCircuitState, resetCircuit } from '../services/aiAgents/agentCircuit';
 import { readAiKillState } from '../services/aiKillState';
@@ -248,7 +251,7 @@ function isAgentKindConflict(err: unknown): boolean {
 }
 
 export function mapError(c: Context, err: unknown) {
-  if (err instanceof ResearchAgentEditError) {
+  if (err instanceof ResearchAgentEditError || err instanceof TroubleshootAgentEditError) {
     return c.json({ error: err.message, code: err.code, fields: err.fields }, 400);
   }
   if (err instanceof UnsupportedAgentModeError) {
@@ -1413,6 +1416,12 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       // Execution plane W04 (#5715) — the settled sandbox charge the
       // run-detail DTO surfaces beside the analysis outcome.
       computeCents: aiAgentRuns.computeCents,
+      // Wisp analysis sessions W06 — lineage and the frozen scope, for the
+      // chain list and scope line below. All null/0 on an unchained run.
+      continuedFromRunId: aiAgentRuns.continuedFromRunId,
+      chainRootRunId: aiAgentRuns.chainRootRunId,
+      chainDepth: aiAgentRuns.chainDepth,
+      stagedInputs: aiAgentRuns.stagedInputs,
       // Fleet Designer W01 (#5651), Task 9 — gates the fleet design artifact
       // read below; `undefined`/absent for a row read back through an older
       // mock/fixture simply never matches `'design'`.
@@ -1492,20 +1501,15 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   // it. TWO org predicates: the run's OWN org pins the read, and the caller's
   // condition stays as defence-in-depth beside RLS — same posture as the
   // batched hostname read below.
-  const intentRows = await db
-    .select({
-      id: actionIntents.id,
-      status: actionIntents.status,
-      actionName: actionIntents.actionName,
-      approvalScope: actionIntents.approvalScope,
-      decidedVia: actionIntents.decidedVia,
-    })
-    .from(actionIntents)
-    .where(and(
-      eq(actionIntents.requestingAgentRunId, run.id),
-      eq(actionIntents.orgId, run.orgId),
-      auth.orgCondition(actionIntents.orgId),
-    ));
+  //
+  // W2 #11085: plus the caller's own pending approval row per intent
+  // (selectRunIntentsForCaller's header).
+  const intentRows = await selectRunIntentsForCaller({
+    runId: run.id,
+    runOrgId: run.orgId,
+    userId: auth.user.id,
+    orgCondition: auth.orgCondition(actionIntents.orgId),
+  });
 
   // Phase 2 wave P2-2 (scheduled sweeps), Task A7 — a sweep run is
   // device-less but its findings each name one device, so the detail needs
@@ -1733,6 +1737,56 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       .limit(1)
     : [];
 
+  // Wisp analysis sessions W06 — the analysis chain this run belongs to.
+  // Keyed on `chainRootRunId ?? id`: a root run has no lineage of its own
+  // (`chain_root_run_id` is null on it even after it was continued), so its
+  // own id is the key that finds its continuations. Pinned to `run.orgId` as
+  // well as `auth.orgCondition` for the same reason as the reads above (a
+  // partner-scoped caller's accessible set spans sibling orgs); the site
+  // ceiling applies as it does to the run lookup, so a site-restricted caller
+  // never sees a step it could not open. `goal` is projected in SQL rather
+  // than reading `trigger_ref` whole: a continuation stores a seed of up to
+  // 4 KB there. Ordered and capped in SQL; `projectRunChain` re-sorts anyway.
+  const chainRootId = run.chainRootRunId ?? run.id;
+  const chainRows = isAnalysisRun
+    ? await db
+      .select({
+        id: aiAgentRuns.id,
+        continuedFromRunId: aiAgentRuns.continuedFromRunId,
+        chainDepth: aiAgentRuns.chainDepth,
+        status: aiAgentRuns.status,
+        costCents: aiAgentRuns.costCents,
+        computeCents: aiAgentRuns.computeCents,
+        goal: sql<string | null>`${aiAgentRuns.triggerRef}->>'goal'`,
+        queuedAt: aiAgentRuns.queuedAt,
+      })
+      .from(aiAgentRuns)
+      .where(and(
+        eq(aiAgentRuns.orgId, run.orgId),
+        auth.orgCondition(aiAgentRuns.orgId),
+        runSiteScopeCondition(auth),
+        eq(aiAgentRuns.profile, 'analysis'),
+        or(eq(aiAgentRuns.id, chainRootId), eq(aiAgentRuns.chainRootRunId, chainRootId)),
+      ))
+      .orderBy(asc(aiAgentRuns.chainDepth), asc(aiAgentRuns.queuedAt), asc(aiAgentRuns.id))
+      .limit(AI_AGENT_RUN_CHAIN_MAX_STEPS)
+    : [];
+
+  // The site a `site`-scope run was frozen to, by name. Org-pinned like every
+  // read above; a missing or invisible site reads as an unnamed site.
+  const frozenScope = isAnalysisRun ? run.stagedInputs?.scope : undefined;
+  const [siteRow] = frozenScope?.kind === 'site' && frozenScope.siteId
+    ? await db
+      .select({ name: sites.name })
+      .from(sites)
+      .where(and(
+        eq(sites.id, frozenScope.siteId),
+        eq(sites.orgId, run.orgId),
+        auth.orgCondition(sites.orgId),
+      ))
+      .limit(1)
+    : [];
+
   // Both fields come from the same left-joined ai_agents row, so they are
   // either both present or both null together.
   const agent = run.agentName !== null && run.agentKind !== null
@@ -1752,6 +1806,7 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     // `toArtifactDto` is what keeps `blobKey` inside the API (W01).
     artifactRows.map(toArtifactDto),
     workspaceRow ?? null,
+    isAnalysisRun ? { chainRows, siteName: siteRow?.name ?? null } : null,
   );
   return c.json({
     data: {

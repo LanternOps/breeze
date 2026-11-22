@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { usePermissions } from '../../lib/permissions';
-import { Layers, FileCog, BarChart3, Plus, Loader2, RefreshCw, ClipboardList } from 'lucide-react';
+import { Layers, FileCog, BarChart3, Plus, Loader2, RefreshCw, ClipboardList, Factory } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import PatchList, {
   type Patch,
@@ -9,6 +9,7 @@ import PatchList, {
 import PatchDetailsDrawer from './PatchDetailsDrawer';
 import PatchApprovalModal, { type PatchApprovalAction } from './PatchApprovalModal';
 import PatchComplianceView from './PatchComplianceView';
+import VendorUpdatesView from './VendorUpdatesView';
 import PatchJobsList from './PatchJobsList';
 import PatchJobDetail from './PatchJobDetail';
 import UpdateRingList, { type UpdateRingItem } from './UpdateRingList';
@@ -28,6 +29,7 @@ import { Dialog } from '../shared/Dialog';
 import { runAction, ActionError } from '@/lib/runAction';
 import { asList } from '@/lib/asList';
 import { useHashState } from '@/lib/useHashState';
+import { useVendorUpdatesGate } from '../../stores/featuresStore';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -151,6 +153,11 @@ export default function PatchesPage() {
   // merely hides UI (this tab list, the ring action guards) is safe to fail
   // closed on canManageRings.
   const [mounted, setMounted] = useState(false);
+
+  // The Vendor updates tab exists only while the server's BREEZE_OEM_UPDATES_ENABLED
+  // is on (GET /config, #11249). Closed until /config answers, so SSR and the first
+  // client render agree and no fleet query runs for an install that has the feature off.
+  const { enabled: vendorUpdatesEnabled } = useVendorUpdatesGate();
   useEffect(() => setMounted(true), []);
 
   // Start from the SSR-safe default; the hash (with the org-scope guard) is
@@ -189,7 +196,10 @@ export default function PatchesPage() {
       const raw = getTabFromHash();
       const resolved = resolveTab(raw, ringAccess === 'allowed');
       if (resolved === raw) {
-        setActiveTabState(resolved);
+        // Vendor updates off (or /config not answered yet): show the default tab
+        // and leave the hash alone, so a deep link survives until the answer lands
+        // and the re-run (vendorUpdatesEnabled is a dep) re-selects it (#11249).
+        setActiveTabState(raw === 'vendor-updates' && !vendorUpdatesEnabled ? 'compliance' : resolved);
       } else if (ringAccess === 'denied') {
         setActiveTab(resolved); // real denial — also clears the stale hash
       } else {
@@ -199,7 +209,7 @@ export default function PatchesPage() {
     syncFromHash();
     window.addEventListener('hashchange', syncFromHash);
     return () => window.removeEventListener('hashchange', syncFromHash);
-  }, [ringAccess, setActiveTab]);
+  }, [ringAccess, setActiveTab, vendorUpdatesEnabled]);
   const [selectedRingId, setSelectedRingId] = useState<string | null>(null);
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
   // Read-only details drawer (#9544): the patch id lives in the hash.
@@ -265,10 +275,11 @@ export default function PatchesPage() {
     () => [
       { id: 'compliance' as TabKey, label: t('patchesPage.tabs.compliance'), icon: <BarChart3 className="h-4 w-4" /> },
       { id: 'patches' as TabKey, label: t('patchesPage.tabs.patches'), icon: <FileCog className="h-4 w-4" /> },
+      ...(vendorUpdatesEnabled ? [{ id: 'vendor-updates' as TabKey, label: t('patchesPage.tabs.vendorUpdates'), icon: <Factory className="h-4 w-4" /> }] : []),
       { id: 'jobs' as TabKey, label: t('patchesPage.tabs.jobs'), icon: <ClipboardList className="h-4 w-4" /> },
       ...(mounted && canManageRings ? [{ id: 'rings' as TabKey, label: t('patchesPage.tabs.updateRings'), icon: <Layers className="h-4 w-4" /> }] : [])
     ],
-    [mounted, canManageRings, t]
+    [mounted, canManageRings, vendorUpdatesEnabled, t]
   );
 
   // Ring selector data (simplified for dropdown)
@@ -1049,6 +1060,9 @@ export default function PatchesPage() {
 
       {/* Compliance tab — merged device view with summary */}
       {activeTab === 'compliance' && <PatchComplianceView ringId={selectedRingId} />}
+
+      {/* Vendor updates tab: the fleet view of each maker's own update tool (#11074) */}
+      {activeTab === 'vendor-updates' && vendorUpdatesEnabled && <VendorUpdatesView />}
 
       {/* Jobs tab — read-only list of patch_jobs (policy/ring/AI/API-created), #2606 */}
       {activeTab === 'jobs' && <PatchJobsList onSelectJob={setSelectedJobId} />}

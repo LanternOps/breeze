@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { buildStoredCommandResult } from './storedCommandResult';
 
@@ -31,3 +33,36 @@ describe('buildStoredCommandResult', () => {
     expect(stored.stdout).not.toContain('MIIabc');
   });
 });
+
+describe('buildStoredCommandResult installer secrecy (#8170)', () => {
+  const FILE_NAME = 'setupdownloader_[aHR0cHM6Ly9leGFtcGxlLnRlc3Q=-synthetic].exe';
+  const leak = `fork/exec C:\\Temp\\${FILE_NAME}: denied`;
+  const scrubbed = 'fork/exec C:\\Temp\\[installer]: denied';
+  const result = { status: 'failed', exitCode: 1, stderr: leak, error: leak } as never;
+
+  it('a framework provider install stores no file name in stdout, stderr or error', () => {
+    const stored = buildStoredCommandResult('software_install', result, leak, {
+      integrationProvider: 'bitdefender', fileName: FILE_NAME,
+    });
+    expect(stored).toMatchObject({ stdout: scrubbed, stderr: scrubbed, error: scrubbed });
+  });
+
+  it('any other payload stores the text unchanged', () => {
+    const stored = buildStoredCommandResult('software_install', result, leak, { fileName: FILE_NAME });
+    expect(stored).toMatchObject({ stdout: leak, stderr: leak, error: leak });
+  });
+
+  it('no payload argument stores the text unchanged', () => {
+    expect(buildStoredCommandResult('software_install', result, leak)).toMatchObject({ stdout: leak, error: leak });
+  });
+});
+
+describe('both result-ingest routes hand the command payload to buildStoredCommandResult (#8170)', () => {
+  it.each(['../routes/agentWs.ts', '../routes/agents/commands.ts'])('%s', (file) => {
+    const source = readFileSync(join(__dirname, file), 'utf8');
+    const calls = source.match(/buildStoredCommandResult\([^)]*\)/g) ?? [];
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) expect(call).toMatch(/,\s*command\.payload\s*\)$/);
+  });
+});
+

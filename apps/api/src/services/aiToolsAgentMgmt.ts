@@ -12,7 +12,12 @@ import { devices, agentVersions, deviceCommands } from '../db/schema';
 import { eq, ne, and, desc, sql, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { getOrgAgentUpdateConfig, resolvePinnedUpgradeTarget, normalizeAgentArchitecture } from '../routes/agents/helpers';
+import {
+  getOrgAgentUpdateConfig,
+  resolvePinnedUpgradeTarget,
+  normalizeAgentArchitecture,
+  type UpgradeOsHold,
+} from '../routes/agents/helpers';
 import { getBinaryEdition } from './binaryEdition';
 import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { aiExecuteCommand } from './aiDispatch';
@@ -329,6 +334,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
             id: devices.id,
             orgId: devices.orgId,
             osType: devices.osType,
+            osVersion: devices.osVersion,
             architecture: devices.architecture,
             agentVersion: devices.agentVersion,
           })
@@ -376,6 +382,8 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
           // pin null → the globally promoted latest for this platform/arch.
           // Either way, null means "no build" → fail closed, do not dispatch.
           let target: string | null;
+          // #12169: the same minimum-OS gate the heartbeat offer applies.
+          let osHold: UpgradeOsHold | null = null;
           try {
             target = await resolvePinnedUpgradeTarget({
               component: 'agent',
@@ -383,6 +391,8 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
               architecture: normalizedArch,
               pin,
               agentId: d.id,
+              deviceOs: { platform: d.osType, reportedOsVersion: null, storedOsVersion: d.osVersion ?? null },
+              onOsHold: (hold) => { osHold = hold; },
             });
           } catch (err) {
             console.error(
@@ -407,6 +417,16 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
           if (target && compareAgentVersions(target, installed) <= 0) {
             errors[d.id] =
               `Already at ${installed} (sanctioned ${target}); the AI never downgrades or re-pushes an agent`;
+            continue;
+          }
+
+          const heldBy = osHold as UpgradeOsHold | null;
+          if (!target && heldBy) {
+            errors[d.id] = heldBy.reason === 'os_below_minimum'
+              ? `Held on its installed agent: macOS ${heldBy.reportedOs} is below macOS ${heldBy.requiredOs}, ` +
+                `which agent ${heldBy.blockedVersion} requires. Upgrade macOS first.`
+              : `Held on its installed agent: this device's macOS version is unknown, and agent ` +
+                `${heldBy.blockedVersion} requires macOS ${heldBy.requiredOs} or later.`;
             continue;
           }
 

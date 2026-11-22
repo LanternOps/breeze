@@ -11,9 +11,11 @@
  */
 
 import {
+  bucketForBackupRow,
   deriveBackupHealth,
   mapBackupJobStatus,
   worstBackupStatus,
+  BACKUP_STATUS_BUCKET_IDS,
   EXTERNAL_BACKUP_STATUSES,
   type BackupHealthRow,
   type BackupHealthSummary,
@@ -95,6 +97,9 @@ export interface ProviderLegRow {
   connectionIsActive: boolean | null;
   connectionLastSyncAt: Date | string | null;
   connectionSyncIntervalMinutes: number | null;
+  verifiedBootableAt: Date | string | null;
+  verifiedBootable: boolean | null;
+  verifiedBootableFailedChecks: string[] | null;
 }
 
 export interface ConnectionFreshness {
@@ -255,6 +260,9 @@ export function toBreezeHealthRow(row: BreezeLegRow, opts: { now: Date }): Backu
     dataSources: [],
     history28d: [],
     agentOnline: row.deviceStatus === 'online',
+    verifiedBootableAt: null,
+    verifiedBootable: null,
+    verifiedBootableFailedChecks: null,
   };
 }
 
@@ -310,6 +318,9 @@ export function toProviderHealthRow(
     dataSources: row.dataSources ?? [],
     history28d: [],
     agentOnline: row.breezeDeviceId ? row.deviceStatus === 'online' : null,
+    verifiedBootableAt: toIso(row.verifiedBootableAt),
+    verifiedBootable: row.verifiedBootable,
+    verifiedBootableFailedChecks: row.verifiedBootableFailedChecks,
   };
 }
 
@@ -356,6 +367,53 @@ export function foldJobsIntoDays(
   return days;
 }
 
+/**
+ * Turn the provider ledger into per-day cells (#12025).
+ *
+ * A ledger row is an OBSERVATION: "a poll on this day saw the device's
+ * last-session status as X" (schema `backupProviderDeviceHistory`). The status
+ * belongs to the last session, whenever that ran. A device whose last session
+ * completed on Mar 23 gets a `completed` row for every day it is polled after
+ * that. Reading those rows as sessions painted a months-stale device green
+ * every day.
+ *
+ * A `completed` observation counts as a green day only when a success
+ * timestamp falls on that UTC day. The evidence is the `lastSuccessAt` of every
+ * ledger row, plus the device's current one. Taking it from every row, not just
+ * the day's own, credits a late-night session first seen by the next morning's
+ * poll to the day it ran. A `completed` day without that evidence is a missed
+ * day, `no_backups`, the status that already means "no backup here" in the bar.
+ *
+ * Today is left unobserved rather than missed, because the day's run may still
+ * be ahead. The first-party leg also shows today grey until a job lands.
+ *
+ * Other statuses are kept as observed. They do not claim a fresh success, so
+ * they cannot paint a day green. Because this works on the rows already
+ * stored, ledger rows written before this fix are read correctly too, with no
+ * backfill.
+ */
+export function foldProviderLedgerIntoDays(
+  ledger: ReadonlyArray<{ day: string; status: ExternalBackupStatus; lastSuccessAt: Date | string | null }>,
+  current: { lastSuccessAt: Date | string | null; today: string },
+): Map<string, ExternalBackupStatus> {
+  const successDays = new Set<string>();
+  for (const at of [current.lastSuccessAt, ...ledger.map((row) => row.lastSuccessAt)]) {
+    if (at == null) continue;
+    const day = utcDay(at);
+    if (day) successDays.add(day);
+  }
+
+  const days = new Map<string, ExternalBackupStatus>();
+  for (const row of ledger) {
+    if (row.status !== 'completed' || successDays.has(row.day)) {
+      days.set(row.day, row.status);
+    } else if (row.day !== current.today) {
+      days.set(row.day, 'no_backups');
+    }
+  }
+  return days;
+}
+
 // ── Merge + summary ────────────────────────────────────────────────────────
 
 /** Merge two legs that are each already ordered by `(lower(name), key)`.
@@ -384,11 +442,15 @@ export function emptyBackupHealthSummary(): BackupHealthSummary {
   const byStatus = Object.fromEntries(
     EXTERNAL_BACKUP_STATUSES.map((s) => [s, 0]),
   ) as BackupHealthSummary['byStatus'];
+  const byStatusBucket = Object.fromEntries(
+    BACKUP_STATUS_BUCKET_IDS.map((id) => [id, 0]),
+  ) as BackupHealthSummary['byStatusBucket'];
   return {
     endpoints: { total: 0, covered: 0, uncovered: 0 },
     providerOnly: 0,
     m365Accounts: 0,
     byStatus,
+    byStatusBucket,
     byHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
     byRecency: { under_24h: 0, under_48h: 0, over_48h: 0, never: 0 },
   };
@@ -409,6 +471,7 @@ export function foldBackupHealthSummary(rows: readonly BackupHealthRow[]): Backu
 
   for (const row of rows) {
     summary.byStatus[row.status] += 1;
+    summary.byStatusBucket[bucketForBackupRow(row)] += 1;
     summary.byHealth[row.health] += 1;
     summary.byRecency[row.recency] += 1;
 

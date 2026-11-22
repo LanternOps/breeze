@@ -9,7 +9,7 @@ import { toCustomerLines, sanitizeQuoteBlocksForRead } from './quoteService';
 import { loadContractPdfInputs } from './contractTemplateRender';
 import { safeContentDispositionFilename } from '../utils/httpHeaders';
 import { buildSellerSnapshot } from './sellerSnapshot';
-import { resolveThemeId, resolvePageSize } from './documentThemes';
+import { resolveThemeId, resolvePageSize, resolvePartnerPageSize } from './documentThemes';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { resolveDocumentFooter } from './documentFooter';
 import { resolveDocumentBrand } from './partnerDocumentBrand';
@@ -62,7 +62,7 @@ export async function renderCustomerQuotePdf(quote: QuoteRow): Promise<Buffer> {
       settings: partners.settings,
     }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)
   ));
-  const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
+  const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, secondaryColor: portalBranding.secondaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
   const loadImage = async (imageId: string) => { const img = await readQuoteImage(imageId, id); return img ? { data: img.data } : null; };
   const { renderQuotePdf } = await import('./quotePdf');
   // Legacy docs have no frozen snapshot; synthesize from the live partner so
@@ -84,7 +84,7 @@ export async function renderCustomerQuotePdf(quote: QuoteRow): Promise<Buffer> {
     partnerName: partner?.name ?? 'Proposal', ...resolveDocumentBrand(brand, partner?.settings),
     footer: resolveDocumentFooter({ documentTerms: quote.terms, partnerFooter: partner?.invoiceFooter ?? null, brandingFooter: brand?.footerText ?? null }), currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
     theme: resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme),
-    pageSize: resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize),
+    pageSize: resolvePageSize(presentationSnap?.pageSize ?? resolvePartnerPageSize(partner)),
     // Send-time locale snapshot → partner language → 'en' (#3777).
     locale: quote.documentLocale ?? resolvePartnerDocumentLocale(partner),
   };

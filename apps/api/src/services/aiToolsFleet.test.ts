@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./deviceGroupOwnership', async (importOriginal) => ({
   ...await importOriginal<typeof import('./deviceGroupOwnership')>(),
+  acquireMembershipExportOrgLock: vi.fn(async () => {}),
   findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
 }));
 import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
@@ -65,6 +66,8 @@ vi.mock('./siteScope', async (importOriginal) => {
 
 // Mock all DB and service dependencies so we can test registration without a database
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   getCurrentDbAccessContext: vi.fn(() => ({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' })),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -167,7 +170,6 @@ vi.mock('../db/schema/patches', async (importOriginal) => {
     devicePatches: {},
     patchJobs: { orgId: 'orgId' },
     patchRollbacks: {},
-    patchComplianceSnapshots: { orgId: 'orgId' },
   };
 });
 
@@ -343,6 +345,7 @@ describe('registerFleetTools', () => {
   it('each tool handler returns a string (JSON)', async () => {
     const mockAuth = {
       user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+      token: { mfa: true },
       orgId: 'org-1',
       scope: 'organization',
       accessibleOrgIds: ['org-1'],
@@ -366,6 +369,7 @@ describe('manage_groups peripheral reconciliation', () => {
   const tool = toolMap.get('manage_groups')!;
   const auth = {
     user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    token: { mfa: true },
     orgId: 'org-1',
     partnerId: null,
     scope: 'organization',
@@ -500,6 +504,7 @@ describe('manage_automations managed-row protection', () => {
   const tool = toolMap.get('manage_automations')!;
   const auth = {
     user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    token: { mfa: true },
     orgId: 'org-1',
     partnerId: null,
     scope: 'organization',
@@ -676,6 +681,7 @@ describe('manage_automations managed-by-monitor guard (#5289)', () => {
   const tool = toolMap.get('manage_automations')!;
   const auth = {
     user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    token: { mfa: true },
     orgId: 'org-1',
     partnerId: null,
     scope: 'organization',
@@ -757,6 +763,7 @@ describe('manage_automations on a switched (converted) row (#5221 W06 B7)', () =
   const tool = toolMap.get('manage_automations')!;
   const auth = {
     user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    token: { mfa: true }, // enable/disable are MFA-gated (aiToolMfaGate.ts)
     orgId: 'org-1',
     partnerId: null,
     scope: 'organization',
@@ -837,6 +844,7 @@ describe('manage_maintenance_windows handler', () => {
   it('list succeeds for an org-scope caller (no error, returns windows)', async () => {
     const orgAuth = {
       user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+      token: { mfa: true },
       orgId: 'org-1',
       scope: 'organization',
       partnerId: null,
@@ -853,6 +861,7 @@ describe('manage_maintenance_windows handler', () => {
   it('list succeeds for a partner-scope caller (dual-axis branch, #2131)', async () => {
     const partnerAuth = {
       user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+      token: { mfa: true },
       orgId: null,
       scope: 'partner',
       partnerId: 'partner-1',
@@ -938,6 +947,7 @@ describe('manage_alert_rules handler', () => {
 
   const mockAuth = {
     user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    token: { mfa: true },
     orgId: 'org-1',
     scope: 'organization',
     accessibleOrgIds: ['org-1'],
@@ -981,6 +991,7 @@ describe('manage_patches handler', () => {
 
   const noOrgAuth = {
     user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    token: { mfa: true },
     orgId: null,
     scope: 'system',
     accessibleOrgIds: null,
@@ -990,6 +1001,7 @@ describe('manage_patches handler', () => {
 
   const orgAuth = {
     user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    token: { mfa: true },
     orgId: 'org-1',
     partnerId: 'partner-1',
     scope: 'organization',
@@ -1261,6 +1273,7 @@ describe('manage_service_monitors handler', () => {
 
   const mockAuth = {
     user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    token: { mfa: true },
     orgId: 'org-1',
     scope: 'organization',
     accessibleOrgIds: ['org-1'],
@@ -1270,6 +1283,7 @@ describe('manage_service_monitors handler', () => {
 
   const noOrgAuth = {
     user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    token: { mfa: true },
     orgId: null,
     scope: 'system',
     accessibleOrgIds: null,
@@ -1304,6 +1318,7 @@ describe('get_fleet_findings handler', () => {
 
   const mockAuth = {
     user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    token: { mfa: true },
     orgId: 'org-1',
     scope: 'organization',
     accessibleOrgIds: ['org-1'],
@@ -1451,6 +1466,7 @@ describe('user-owned release attribution (#6200)', () => {
   const approverId = 'approver-1';
   const approverAuth = {
     user: { id: approverId, email: 'approver@test.com', name: 'Approver' },
+    token: { mfa: true },
     orgId: 'org-1',
     partnerId: 'partner-1',
     scope: 'organization',
@@ -1597,6 +1613,7 @@ describe('manage_patches device-scoped actions resolve the device org (#7827)', 
   const deviceId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
   const partnerAuth = {
     user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    token: { mfa: true },
     orgId: null,
     partnerId: 'partner-1',
     scope: 'partner',
@@ -1711,6 +1728,7 @@ describe('manage_patches:device_history (#6665)', () => {
   const deviceId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
   const otherOrgAuth = {
     user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    token: { mfa: true },
     orgId: 'org-1',
     partnerId: 'partner-1',
     scope: 'organization',
@@ -1945,6 +1963,7 @@ describe('tier-2 fleet writes refuse an ai_agent principal (#6206)', () => {
     principal: undefined,
     aiOrigin: undefined,
     user: { id: 'cccccccc-cccc-cccc-cccc-cccccccccccc', email: 'tech@test.com', name: 'Tech' },
+    token: { mfa: true },
   } as any;
 
   const patchId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -2062,6 +2081,7 @@ describe('write-org resolution for org-owning creates (#6667)', () => {
   // shape that silently picked accessibleOrgIds[0] before the fix.
   const multiOrgAuth = {
     user: { id: 'u1', email: 'tech@test.com', name: 'Tech' },
+    token: { mfa: true },
     orgId: null,
     partnerId: 'partner-1',
     scope: 'partner',
@@ -2116,6 +2136,10 @@ describe('write-org resolution for org-owning creates (#6667)', () => {
     }
 
     it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      // #10431's split check reads the device's org; one org means no split.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ id: deviceId, siteId: null, orgId: 'org-2' }]) }),
+      } as never);
       const result = JSON.parse(await tool().handler(baseInput, multiOrgAuth));
       expect(result.error).toBe('orgId is required: you have access to multiple organizations');
       expect(db.insert).not.toHaveBeenCalled();

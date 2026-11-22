@@ -19,7 +19,7 @@ import { and, eq } from 'drizzle-orm';
 import {
   canonicalGrantKey,
   M365_PERMISSION_PROFILES,
-  type CanonicalAppRoleAssignment,
+  type M365ApplicationGrant,
   type RetestResult,
   type VerifyConsentIdentityResult,
 } from '@breeze/shared/m365';
@@ -88,7 +88,7 @@ const FAKE_ACTIONS_CONFIG = {
 };
 
 const PROFILE_MANIFEST = M365_PERMISSION_PROFILES['customer-graph-actions'];
-const REQUIRED_GRANTS: CanonicalAppRoleAssignment[] = [...PROFILE_MANIFEST.applicationPermissionAssignments];
+const REQUIRED_GRANTS: M365ApplicationGrant[] = [...PROFILE_MANIFEST.applicationPermissionAssignments];
 const GRANT_USER_RW = REQUIRED_GRANTS[0]!;
 const GRANT_PASSWORD_RW = REQUIRED_GRANTS[1]!;
 // m365_connections.observed_grants must be stored in canonical order (sorted by
@@ -97,7 +97,7 @@ const GRANT_PASSWORD_RW = REQUIRED_GRANTS[1]!;
 // has to sort AFTER the highest required appRoleId ('cc117bb9-…'); '9999…' sorted
 // before it once the manifest moved to application role IDs (#8648), so the row
 // write was rejected and the callback landed on executor_unavailable.
-const EXTRA_GRANT: CanonicalAppRoleAssignment = {
+const EXTRA_GRANT: M365ApplicationGrant = {
   resourceApplicationId: '00000003-0000-0000-c000-000000000000',
   appRoleId: 'dddddddd-1111-4222-8333-444444444444',
   value: 'Group.ReadWrite.All',
@@ -173,7 +173,7 @@ function buildApp(tenantId: string, retest: () => Promise<RetestResult>) {
 
 function retestResultFor(input: {
   tenantId: string;
-  observedGrants: CanonicalAppRoleAssignment[];
+  observedGrants: M365ApplicationGrant[];
 }): RetestResult {
   const requiredKeys = new Set(REQUIRED_GRANTS.map(canonicalGrantKey));
   const observedKeys = new Set(input.observedGrants.map(canonicalGrantKey));
@@ -184,7 +184,7 @@ function retestResultFor(input: {
     organizationDisplayName: 'Contoso Actions',
     manifestVersion: PROFILE_MANIFEST.version,
     verifiedAt: new Date().toISOString(),
-    grantReconciliation: 'complete',
+    grantReconciliation: 'complete', grantReconciliationMode: 'exact',
     // The executor reconcile returns grants in canonical order (the column
     // CHECK breeze_m365_observed_grants_are_canonical requires it).
     observedGrants: [...input.observedGrants].sort((a, b) => canonicalGrantKey(a).localeCompare(canonicalGrantKey(b))),

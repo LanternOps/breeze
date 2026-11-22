@@ -17,6 +17,7 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 vi.mock('./drExecutionService', () => ({ createDrExecutionAndEnqueue: vi.fn() }));
 
@@ -51,6 +52,17 @@ function auth(allowedDeviceIds?: string[], allowedSiteIds?: string[]): AuthConte
 
 const PLAN = { id: 'plan-1', orgId: 'org-1', name: 'Plan', status: 'active' };
 
+/** The approved definition an execute_dr_plan action intent carries into the handler. */
+function approvedContext(groups: unknown[]) {
+  return {
+    actionIntentId: 'intent-1',
+    verifiedDrPlan: {
+      digest: 'approved-digest',
+      definition: { planId: PLAN.id, orgId: PLAN.orgId, updatedAt: '2026-08-01T00:00:00.000Z', status: PLAN.status, groups: groups as any },
+    },
+  };
+}
+
 /**
  * `select()` (no cols) = plan; `select({id,siteId})` = the org device scan;
  * `select({devices})` = stored plan groups; anything else = the handler's own
@@ -67,9 +79,16 @@ function mockReads(opts: { orgDevices: Array<{ id: string; siteId: string | null
     if ('devices' in cols && Object.keys(cols).length === 1) {
       return { from: () => ({ where: () => Promise.resolve(opts.storedGroups) }) };
     }
-    // W03-D10: the active-execution check (`select({ id })` on dr_executions) — none running.
+    // The plan write path: the plan row lock (FOR UPDATE) finds the plan, and
+    // the pending/running execution check (`select({ id })` on dr_executions) finds none.
     if ('id' in cols && Object.keys(cols).length === 1) {
-      return { from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) };
+      return {
+        from: () => ({
+          where: () => ({
+            limit: () => Object.assign(Promise.resolve([]), { for: () => Promise.resolve([{ id: PLAN.id }]) }),
+          }),
+        }),
+      };
     }
     return { from: () => ({ where: () => ({ orderBy: () => Promise.resolve(opts.storedGroups) }) }) };
   });
@@ -91,8 +110,9 @@ describe('execute_dr_plan — stored-device scope', () => {
       orgDevices: [{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-2', siteId: 'site-1' }],
       storedGroups: [{ devices: ['dev-2'] }],
     });
-    const out = JSON.parse(await handlerFor('execute_dr_plan')({ planId: 'plan-1', executionType: 'failover' }, auth(['dev-1'], ['site-1'])));
+    const out = JSON.parse(await handlerFor('execute_dr_plan')({ planId: 'plan-1', executionType: 'failover' }, auth(['dev-1'], ['site-1']), approvedContext([{ devices: ['dev-2'] }])));
     expect(out.error).toBeTruthy();
+    expect(out.error).not.toBe('approved_definition_required');
     expect(out.success).toBeUndefined();
     expect(createDrExecutionAndEnqueue).not.toHaveBeenCalled();
   });
@@ -102,8 +122,9 @@ describe('execute_dr_plan — stored-device scope', () => {
       orgDevices: [{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-2', siteId: 'site-1' }],
       storedGroups: [{ devices: ['dev-2'] }],
     });
-    const out = JSON.parse(await handlerFor('execute_dr_plan')({ planId: 'plan-1', executionType: 'failover' }, auth(['dev-1'], undefined)));
+    const out = JSON.parse(await handlerFor('execute_dr_plan')({ planId: 'plan-1', executionType: 'failover' }, auth(['dev-1'], undefined), approvedContext([{ devices: ['dev-2'] }])));
     expect(out.error).toBeTruthy();
+    expect(out.error).not.toBe('approved_definition_required');
     expect(createDrExecutionAndEnqueue).not.toHaveBeenCalled();
   });
 
@@ -112,14 +133,14 @@ describe('execute_dr_plan — stored-device scope', () => {
       orgDevices: [{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-2', siteId: 'site-1' }],
       storedGroups: [{ devices: ['dev-1'] }],
     });
-    const out = JSON.parse(await handlerFor('execute_dr_plan')({ planId: 'plan-1', executionType: 'failover' }, auth(['dev-1'], ['site-1'])));
+    const out = JSON.parse(await handlerFor('execute_dr_plan')({ planId: 'plan-1', executionType: 'failover' }, auth(['dev-1'], ['site-1']), approvedContext([{ devices: ['dev-1'] }])));
     expect(out.success).toBe(true);
     expect(createDrExecutionAndEnqueue).toHaveBeenCalledOnce();
   });
 
   it('unrestricted caller is unchanged', async () => {
     mockReads({ orgDevices: [], storedGroups: [{ devices: ['dev-2'] }] });
-    const out = JSON.parse(await handlerFor('execute_dr_plan')({ planId: 'plan-1', executionType: 'failover' }, auth(undefined, undefined)));
+    const out = JSON.parse(await handlerFor('execute_dr_plan')({ planId: 'plan-1', executionType: 'failover' }, auth(undefined, undefined), approvedContext([{ devices: ['dev-2'] }])));
     expect(out.success).toBe(true);
   });
 });

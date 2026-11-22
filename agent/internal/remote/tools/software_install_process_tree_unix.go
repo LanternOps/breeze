@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os/exec"
 	"syscall"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // unixInstallerProcessTree puts the installer in its own process group. A
@@ -20,6 +22,7 @@ func newInstallerProcessTree() installerProcessTree { return unixInstallerProces
 func (unixInstallerProcessTree) prepare(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
+		procspawn.Prepare(cmd)
 	}
 	cmd.SysProcAttr.Setpgid = true
 }

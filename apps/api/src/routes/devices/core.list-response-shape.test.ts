@@ -55,6 +55,10 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  // The reinstall-link redaction builds the site closure from the allowlist
+  // when the auth context has none; this auth has no allowlist (unrestricted).
+  siteAccessCheck: (allowed?: string[]) => (siteId?: string | null) =>
+    allowed === undefined || (!!siteId && Array.isArray(allowed) && allowed.includes(siteId)),
   requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
     c.set('permissions', {
       permissions: [{ resource, action }],
@@ -69,6 +73,10 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../../services/wakeAvailability', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/wakeAvailability')>()),
+  resolveWakeAvailability: vi.fn(),
+}));
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../services/remoteAccessPolicy', () => ({
   resolveRemoteAccessForDevice: vi.fn().mockResolvedValue({ policyId: null, settings: {} }),
@@ -92,15 +100,32 @@ import { coreRoutes } from './core';
 import { db } from '../../db';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { eq, type SQL } from 'drizzle-orm';
-import { deviceHardwareHealth, devices, deviceWarranty } from '../../db/schema';
+import { deviceHardware, deviceHardwareHealth, devices, deviceWarranty } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
+import { resolveWakeAvailability, WAKE_LOOKUP_FAILED_AVAILABILITY, type WakeAvailability } from '../../services/wakeAvailability';
 
 function rigDeviceListRows(
   rows: unknown[],
-  // Rows the batched LAN-IP lateral returns (#2503). The handler issues two
-  // db.execute calls per request in a fixed order — latest metrics first, then
-  // the LAN-IP lookup — so the LAN rig has to be the SECOND queued result.
+  // Batched lookups run in order: latest metrics, LAN IP, disk inventory.
   lanIpRows: Array<{ device_id: string; ip_address: string }> = [],
+  {
+    linkTargets = [],
+    diskRows = [],
+  }: {
+    // #8318 §7.3: the reinstall-link visibility lookup
+    // (select({id, orgId}).from(devices).where(...)) resolves the targets.
+    linkTargets?: Array<{ id: string; orgId: string }>;
+    diskRows?: Array<{
+      device_id: string;
+      id: string;
+      mount_point: string;
+      is_os_volume: boolean | null;
+      total_gb: number;
+      used_gb: number;
+      free_gb: number;
+      used_percent: number;
+    }>;
+  } = {},
 ) {
   const offset = vi.fn().mockResolvedValue(rows);
   const limit = vi.fn().mockReturnValue({ offset });
@@ -113,12 +138,14 @@ function rigDeviceListRows(
   const leftJoin = vi.fn().mockReturnValue(chain);
   chain.leftJoin = leftJoin;
   chain.where = where;
-  const from = vi.fn().mockReturnValue({ leftJoin });
+  const targetWhere = vi.fn().mockResolvedValue(linkTargets);
+  const from = vi.fn().mockReturnValue({ leftJoin, where: targetWhere });
   vi.mocked(db.select).mockReturnValue({ from } as never);
   vi.mocked(db.execute)
     .mockResolvedValue([] as never)
     .mockResolvedValueOnce([] as never)      // latest-metrics lateral
-    .mockResolvedValueOnce(lanIpRows as never); // LAN-IP lateral (#2503)
+    .mockResolvedValueOnce(lanIpRows as never)
+    .mockResolvedValueOnce(diskRows as never);
   return { where, leftJoin };
 }
 
@@ -127,8 +154,132 @@ describe('GET /devices — response shape', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.execute).mockReset();
     app = new Hono();
     app.route('/devices', coreRoutes);
+    vi.mocked(resolveWakeAvailability).mockReset();
+    vi.mocked(resolveWakeAvailability).mockResolvedValue(new Map());
+  });
+
+  it('attaches wakeAvailability to every row with ONE batched lookup per page (#10838)', async () => {
+    const first = '11111111-1111-4111-8111-111111111111';
+    const second = '22222222-2222-4222-8222-222222222222';
+    const shown: WakeAvailability = { show: true, mode: 'none', state: 'no_data', testWakeAllowed: false, flaggedTimeouts: false };
+    rigDeviceListRows([{ id: first }, { id: second }]);
+    vi.mocked(resolveWakeAvailability).mockResolvedValue(new Map([[first, shown]]));
+    const res = await app.request('/devices');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].wakeAvailability).toEqual(shown);
+    // No map entry for the second device: fail closed.
+    expect(body.data[1].wakeAvailability).toEqual(WAKE_LOOKUP_FAILED_AVAILABILITY);
+    expect(body.data[1].wakeAvailability.show).toBe(false);
+    expect(resolveWakeAvailability).toHaveBeenCalledTimes(1);
+    expect(resolveWakeAvailability).toHaveBeenCalledWith([first, second]);
+  });
+
+  it('resolves wake availability only for the returned page, not the cursor peek row', async () => {
+    const first = '11111111-1111-4111-8111-111111111111';
+    rigDeviceListRows([{ id: first }, { id: '22222222-2222-4222-8222-222222222222' }]);
+    await app.request('/devices?limit=1');
+    expect(resolveWakeAvailability).toHaveBeenCalledWith([first]);
+  });
+
+  it('hands the resolver an empty id list for an empty page (it returns early, no queries)', async () => {
+    rigDeviceListRows([]);
+    await app.request('/devices');
+    expect(resolveWakeAvailability).toHaveBeenCalledWith([]);
+  });
+
+  it.each(['', '?includeDisks=false'])('skips disk inventory without opting in (%s)', async (query) => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111' }]);
+    const response = await app.request(`/devices${query}`);
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0]).not.toHaveProperty('disks');
+    expect(db.execute).toHaveBeenCalledTimes(2); // metrics and LAN IP
+  });
+
+  it('rejects an invalid disk inventory flag before querying devices', async () => {
+    const response = await app.request('/devices?includeDisks=yes');
+    expect(response.status).toBe(400);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it('returns each disk usage reading under its own device without duplicating rows', async () => {
+    const first = '11111111-1111-4111-8111-111111111111';
+    const second = '22222222-2222-4222-8222-222222222222';
+    const firstOsDisk = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const firstDataDisk = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const legacyDisk = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    rigDeviceListRows([{ id: first }, { id: second }], [], {
+      diskRows: [
+        {
+          device_id: first, id: firstDataDisk, is_os_volume: false, mount_point: 'C:\\',
+          total_gb: 100, used_gb: 75, free_gb: 25, used_percent: 75,
+        },
+        {
+          device_id: first, id: firstOsDisk, is_os_volume: true, mount_point: 'D:\\',
+          total_gb: 200, used_gb: 100, free_gb: 100, used_percent: 50,
+        },
+        {
+          device_id: second, id: legacyDisk, is_os_volume: null, mount_point: '/',
+          total_gb: 500, used_gb: 0, free_gb: 500, used_percent: 0,
+        },
+      ],
+    });
+
+    const response = await app.request('/devices?includeDisks=true');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data).toHaveLength(2);
+    expect(body.data[0].disks).toEqual([
+      { id: firstDataDisk, isOsVolume: false, mountPoint: 'C:\\', totalGb: 100, usedGb: 75, freeGb: 25, usedPercent: 75 },
+      { id: firstOsDisk, isOsVolume: true, mountPoint: 'D:\\', totalGb: 200, usedGb: 100, freeGb: 100, usedPercent: 50 },
+    ]);
+    expect(body.data[1].disks).toEqual([
+      { id: legacyDisk, isOsVolume: null, mountPoint: '/', totalGb: 500, usedGb: 0, freeGb: 500, usedPercent: 0 },
+    ]);
+    expect(db.execute).toHaveBeenCalledTimes(3);
+    const query = new PgDialect().sqlToQuery(vi.mocked(db.execute).mock.calls[2]![0] as SQL);
+    expect(query.sql).toContain('INNER JOIN "device_disks" AS disk ON disk.device_id = d.device_id');
+    expect(query.sql).toContain('ORDER BY disk.device_id, disk.mount_point, disk.id');
+    expect(query.params).toEqual([first, second]);
+  });
+
+  it('returns an empty disk list when inventory has not been reported', async () => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111' }]);
+    const response = await app.request('/devices?includeDisks=true');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0].disks).toEqual([]);
+  });
+
+  it('restricts disk inventory to the authorized returned page, excluding the cursor peek row', async () => {
+    const first = '11111111-1111-4111-8111-111111111111';
+    const peek = '22222222-2222-4222-8222-222222222222';
+    rigDeviceListRows([{ id: first, hostname: 'a' }, { id: peek, hostname: 'b' }]);
+    const response = await app.request('/devices?limit=1&includeDisks=true');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.pagination.nextCursor).toBeTruthy();
+    const query = new PgDialect().sqlToQuery(vi.mocked(db.execute).mock.calls[2]![0] as SQL);
+    expect(query.params).toEqual([first]);
+  });
+
+  it('does not query disk inventory for an empty authorized page', async () => {
+    rigDeviceListRows([]);
+    const response = await app.request('/devices?includeDisks=true');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toEqual([]);
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects another organization before querying disk inventory', async () => {
+    const response = await app.request('/devices?includeDisks=true&orgId=22222222-2222-4222-8222-222222222222');
+    expect(response.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.execute).not.toHaveBeenCalled();
   });
 
   it('includes watchdog health fields in each list row', async () => {
@@ -187,6 +338,8 @@ describe('GET /devices — response shape', () => {
       },
       ],
       [{ device_id: '33333333-3333-4333-8333-333333333333', ip_address: '10.20.30.40' }],
+      // The linked device is in the caller's own org, so the link is kept.
+      { linkTargets: [{ id: '55555555-5555-4555-8555-555555555555', orgId: 'org-1' }] },
     );
 
     const res = await app.request('/devices?limit=50', {
@@ -408,6 +561,36 @@ describe('GET /devices — response shape', () => {
     expect(row.lastLogAt).toBeNull();
   });
 
+  it.each(['TEST-SERIAL-01', null])('includes hardware serialNumber %s in list rows', async serialNumber => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', serialNumber }]);
+    const response = await app.request('/devices');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0]).toHaveProperty('hardware.serialNumber', serialNumber);
+    expect(vi.mocked(db.select).mock.calls[0]?.[0]).toMatchObject({
+      serialNumber: deviceHardware.serialNumber,
+    });
+  });
+
+  it.each(['5S3F8EA#ABB', null])('includes hardware productSku %s in list rows (#9593)', async productSku => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', productSku }]);
+    const response = await app.request('/devices');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0]).toHaveProperty('hardware.productSku', productSku);
+    expect(vi.mocked(db.select).mock.calls[0]?.[0]).toMatchObject({
+      productSku: deviceHardware.productSku,
+    });
+  });
+
+  it.each(['VMware20,1', null])('includes hardware model %s in list rows (#11332)', async model => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', model }]);
+    const response = await app.request('/devices');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0]).toHaveProperty('hardware.model', model);
+    expect(vi.mocked(db.select).mock.calls[0]?.[0]).toMatchObject({
+      model: deviceHardware.model,
+    });
+  });
+
   it.each(['ok', 'warning', 'critical', 'unknown'] as const)('projects the hardware %s rollup on list rows', async health => {
     const { leftJoin } = rigDeviceListRows([{
       id: '11111111-1111-4111-8111-111111111111', hostname: 'hardware-host',
@@ -531,6 +714,66 @@ describe('GET /devices — response shape', () => {
     expect(row).not.toHaveProperty('watchdogInstallErrorClass');
     expect(row).not.toHaveProperty('watchdogInstallSince');
     expect(row).not.toHaveProperty('watchdogInstall');
+  });
+
+  // Control-plane block (#8868): the list badge reads the closed-enum kind off
+  // the row. The jsonb episode (network-supplied host/issuer text) is a
+  // DETAIL-only derived view and never reaches list rows.
+  it('carries controlPlaneBlockKind and never the episode jsonb on list rows', async () => {
+    const base = {
+      orgId: 'org-1', siteId: 'site-1', agentId: 'a', hostname: 'h', displayName: null,
+      osType: 'linux', status: 'online',
+    };
+    const recent = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    rigDeviceListRows([
+      {
+        ...base, id: '11111111-1111-4111-8111-111111111111',
+        controlPlaneBlockKind: 'web_filter',
+        controlPlaneBlockReportedAt: recent,
+        controlPlaneBlock: {
+          kind: 'web_filter', host: 'cp.example', firstSeenAt: '2026-10-18T09:00:00.000Z',
+          lastSeenAt: '2026-10-18T09:03:00.000Z', locationHost: 'warn.filter-a.example',
+          reachableViaEch: true, reportedAt: recent,
+        },
+      },
+      { ...base, id: '22222222-2222-4222-8222-222222222222', controlPlaneBlockKind: null, controlPlaneBlock: null },
+    ]);
+    const res = await app.request('/devices?limit=50', { headers: { Authorization: 'Bearer t' } });
+    expect(res.status).toBe(200);
+    const rows = (await res.json()).data;
+    expect(rows[0]).toHaveProperty('controlPlaneBlockKind', 'web_filter');
+    expect(rows[0]).toHaveProperty('controlPlaneBlockLastKnownAt', null);
+    expect(Object.prototype.hasOwnProperty.call(rows[1], 'controlPlaneBlockKind')).toBe(true);
+    expect(rows[1].controlPlaneBlockKind).toBeNull();
+    expect(rows[1]).toHaveProperty('controlPlaneBlockLastKnownAt', null);
+    for (const row of rows) {
+      expect(row).not.toHaveProperty('controlPlaneBlock');
+      expect(row).not.toHaveProperty('controlPlaneBlockReportedAt');
+      expect(JSON.stringify(row)).not.toContain('warn.filter-a.example');
+    }
+  });
+
+  // #8868 follow-up — a device that stopped reporting keeps its kind column
+  // (the stale write needs beats). The list ages it at read time with the same
+  // rule as the detail notice: muted "last known" after 3 h, gone after 30 d.
+  it('ages an active block pill when the device stopped reporting', async () => {
+    const base = {
+      orgId: 'org-1', siteId: 'site-1', agentId: 'a', hostname: 'h', displayName: null,
+      osType: 'linux', status: 'offline', controlPlaneBlockKind: 'web_filter',
+    };
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+    const fortyDaysAgo = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+    rigDeviceListRows([
+      { ...base, id: '11111111-1111-4111-8111-111111111111', controlPlaneBlockReportedAt: fourHoursAgo },
+      { ...base, id: '22222222-2222-4222-8222-222222222222', controlPlaneBlockReportedAt: fortyDaysAgo },
+      { ...base, id: '33333333-3333-4333-8333-333333333333', controlPlaneBlockReportedAt: null },
+    ]);
+    const res = await app.request('/devices?limit=50', { headers: { Authorization: 'Bearer t' } });
+    expect(res.status).toBe(200);
+    const rows = (await res.json()).data;
+    expect(rows[0]).toMatchObject({ controlPlaneBlockKind: 'web_filter', controlPlaneBlockLastKnownAt: fourHoursAgo });
+    expect(rows[1]).toMatchObject({ controlPlaneBlockKind: null, controlPlaneBlockLastKnownAt: null });
+    expect(rows[2]).toMatchObject({ controlPlaneBlockKind: null, controlPlaneBlockLastKnownAt: null });
   });
 
   // Filtering on hardware health goes through the shared filter engine

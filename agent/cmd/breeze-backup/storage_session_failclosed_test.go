@@ -62,7 +62,7 @@ func expiredStorageSession() map[string]any {
 // entry) into a LocalProvider rooted at dir and returns the provider.
 func seedLocalSnapshot(t *testing.T, dir, snapshotID string, files map[string][]byte) *providers.LocalProvider {
 	t.Helper()
-	provider := providers.NewLocalProvider(dir)
+	provider := privateTestLocalProvider(t, dir)
 	prefix := path.Join("snapshots", snapshotID)
 	manifest := backup.Snapshot{ID: snapshotID, Timestamp: time.Now().UTC()}
 	src := t.TempDir()
@@ -186,7 +186,7 @@ func TestStorageSession_InvalidDescriptorFailsClosed(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := sessionPayloadJSON(t, tc.payload)
-			result := execBackupVerifyContext(context.Background(), "verify-"+tc.name, payload, mgr, nil, nil)
+			result := execBackupVerifyContext(context.Background(), "verify-"+tc.name, payload, mgr, nil, nil, 0)
 			assertStorageSessionFailure(t, result)
 		})
 	}
@@ -283,10 +283,10 @@ func TestStorageSession_CoreCommandsDirectPathNeverFallBack(t *testing.T) {
 			return execBackupRestoreWithProgress(context.Background(), "c1", payload, mgr, nil, nil)
 		},
 		"verify": func() backupipc.BackupCommandResult {
-			return execBackupVerifyContext(context.Background(), "c2", payload, mgr, nil, nil)
+			return execBackupVerifyContext(context.Background(), "c2", payload, mgr, nil, nil, 0)
 		},
 		"test_restore": func() backupipc.BackupCommandResult {
-			return execBackupTestRestoreContext(context.Background(), "c3", payload, mgr, nil, nil)
+			return execBackupTestRestoreContext(context.Background(), "c3", payload, mgr, nil, nil, 0)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -303,15 +303,11 @@ func TestStorageSession_CoreCommandsDirectPathNeverFallBack(t *testing.T) {
 // --protocol-info; the output is one JSON object.
 func TestProtocolInfoFlagReportsBackupReadProtocol(t *testing.T) {
 	var out bytes.Buffer
-	rootCmd.SetOut(&out)
-	rootCmd.SetErr(&out)
-	rootCmd.SetArgs([]string{"--protocol-info"})
-	t.Cleanup(func() {
-		rootCmd.SetArgs(nil)
-		rootCmd.SetOut(nil)
-		rootCmd.SetErr(nil)
-	})
-	if err := rootCmd.Execute(); err != nil {
+	root := newRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--protocol-info"})
+	if err := root.Execute(); err != nil {
 		t.Fatalf("--protocol-info failed: %v (output %q)", err, out.String())
 	}
 	var info struct {

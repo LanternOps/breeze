@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { ActionError, runAction } from '../../lib/runAction';
+import { signupSourceLabel } from './TrustClassifierBanner';
 
 type InvalidReason = 'bad_signature' | 'expired' | 'used' | 'operator_mismatch';
 type TrustAction = 'approve' | 'suspend';
@@ -14,7 +15,7 @@ interface EvidenceCard {
     status: string;
     trustState: string;
   };
-  signup: { ip: string | null; ipClass: string; asn: number | null };
+  signup: { ip: string | null; ipClass: string; asn: number | null; source?: string | null };
   identity: {
     userName: string | null;
     userEmail: string | null;
@@ -163,6 +164,7 @@ export default function TrustActionPage() {
           <div><dt className="text-muted-foreground">Trust state</dt><dd className="font-medium">{preview.partner.trustState}</dd></div>
           <div><dt className="text-muted-foreground">Signup IP class</dt><dd className="font-medium">{card.signup.ipClass}</dd></div>
           <div><dt className="text-muted-foreground">Signup ASN</dt><dd className="font-medium">{displayValue(card.signup.asn)}</dd></div>
+          <div><dt className="text-muted-foreground">Signup IP classified by</dt><dd className="font-medium" data-testid="trust-action-ip-source">{signupSourceLabel(card.signup.ipClass, card.signup.source)}</dd></div>
           <div><dt className="text-muted-foreground">Denials in last 24 h</dt><dd className="font-medium">{card.denials24h}</dd></div>
           <div data-testid="trust-action-sending-domains">
             <dt className="text-muted-foreground">Sending domains</dt>

@@ -28,7 +28,7 @@ export default function IsolationBadge({ episode, onChange }: { episode: Isolati
         request: () => fetchWithAuth(`/devices/${episode.deviceId}/network-isolation/${episode.id}/acknowledge`, { method: 'POST' }),
         successMessage: t('networkIsolation.acknowledgeSuccess'),
         errorFallback: t('networkIsolation.acknowledgeError'),
-        friendly: code => isolationRefusalCopy(code, t),
+        friendly: (code, _message, body) => isolationRefusalCopy(code, t, body),
       });
       onChange();
     } catch (err) { handleActionError(err, t('networkIsolation.acknowledgeError')); }
@@ -39,7 +39,7 @@ export default function IsolationBadge({ episode, onChange }: { episode: Isolati
       {episode.state === 'verified' ? t('networkIsolation.isolatedExpires', { hours }) : t(/* i18n-dynamic */ `networkIsolation.states.${episode.state}`)}
     </span>
     {active && <>
-      <BreakGlassCodePopover deviceId={episode.deviceId} isolationId={episode.id} generation={episode.lastReportedGeneration ?? episode.generation} />
+      <BreakGlassCodePopover deviceId={episode.deviceId} isolationId={episode.id} generation={episode.lastReportedGeneration ?? episode.generation} releaseTokenAvailable={Boolean(episode.releaseTokenPublicKey)} codesDisabled={Boolean(episode.releaseTokenRequired)} />
       {extendable && <button type="button" data-testid="isolation-extend" onClick={() => setExtendOpen(true)} className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted">{t('networkIsolation.extend')}</button>}
     </>}
     {isUnresolvedTerminalIsolationState(episode.state) && <button type="button" data-testid="isolation-acknowledge" disabled={busy} onClick={() => void acknowledge()} className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50">{t('networkIsolation.acknowledge')}</button>}

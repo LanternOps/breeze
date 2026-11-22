@@ -1,0 +1,77 @@
+import type {
+  PortalAccessPolicyRowValues,
+  PortalAccessPolicyValues,
+  PortalAccessPolicyView,
+  PortalPolicySource,
+  PortalSignInCapabilities,
+} from '@breeze/shared';
+
+/** Test fixture: a policy view as the W03a routes return it. */
+export const BREEZE_DEFAULTS: PortalAccessPolicyValues = {
+  entraEnabled: false,
+  googleEnabled: false,
+  passwordMode: 'allowed',
+  selfRegistrationMode: 'off',
+  ssoNewPersonMode: 'approval',
+  ssoSessionMaxHours: 12,
+};
+
+const EMPTY_ROW: PortalAccessPolicyRowValues = {
+  entraEnabled: null,
+  googleEnabled: null,
+  passwordMode: null,
+  selfRegistrationMode: null,
+  ssoNewPersonMode: null,
+  ssoSessionMaxHours: null,
+};
+
+export function makePolicyView(opts: {
+  kind?: 'org' | 'partner';
+  values?: Partial<PortalAccessPolicyRowValues>;
+  inherited?: Partial<PortalAccessPolicyValues>;
+  inheritedSource?: Exclude<PortalPolicySource, 'org'>;
+  capabilities?: Partial<PortalSignInCapabilities>;
+  passwordModeFallback?: boolean;
+  entraTenantProven?: boolean | null;
+  verifiedDomainCount?: number | null;
+  verifiedDomains?: string[] | null;
+  canEdit?: boolean;
+} = {}): PortalAccessPolicyView {
+  const kind = opts.kind ?? 'org';
+  const values = { ...EMPTY_ROW, ...opts.values };
+  const inheritedValues = { ...BREEZE_DEFAULTS, ...opts.inherited };
+  const inheritedSource = opts.inheritedSource ?? (kind === 'org' ? 'partner' : 'default');
+  const inherited = Object.fromEntries(
+    Object.entries(inheritedValues).map(([k, v]) => [k, { value: v, source: inheritedSource }]),
+  ) as PortalAccessPolicyView['inherited'];
+  const effective = Object.fromEntries(
+    Object.entries(inheritedValues).map(([k, v]) => {
+      const own = values[k as keyof PortalAccessPolicyRowValues];
+      return [k, own !== null ? { value: own, source: kind } : { value: v, source: inheritedSource }];
+    }),
+  ) as PortalAccessPolicyView['effective'];
+  // The count and the list describe the same set: give one and the other follows
+  // (W6 tests pass a count, W7 tests a list). A partner view carries null for both.
+  const verifiedDomains = opts.verifiedDomains !== undefined
+    ? opts.verifiedDomains
+    : kind === 'partner'
+      ? null
+      : Array.from({ length: opts.verifiedDomainCount ?? 0 }, (_, i) => `domain${i + 1}.example.com`);
+  const verifiedDomainCount = opts.verifiedDomainCount !== undefined
+    ? opts.verifiedDomainCount
+    : verifiedDomains === null ? null : verifiedDomains.length;
+  return {
+    owner: { kind, id: kind === 'org' ? 'org-1' : 'partner-1' },
+    values,
+    inherited,
+    effective,
+    passwordModeFallback: opts.passwordModeFallback ?? false,
+    capabilities: { entra: false, google: false, selfRegistration: false, ...opts.capabilities },
+    entraTenantProven: opts.entraTenantProven !== undefined ? opts.entraTenantProven : (kind === 'partner' ? null : false),
+    // W6 (#11383): the org view's verified-domain count (the no-domain warning); null for a partner view.
+    verifiedDomainCount,
+    // W7 (#11384): the org view's verified domains (the Google row); null for a partner view.
+    verifiedDomains,
+    canEdit: opts.canEdit ?? true,
+  };
+}

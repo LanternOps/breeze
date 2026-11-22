@@ -1,0 +1,51 @@
+{
+  "id": "attention-includes-urgent-ticket",
+  "title": "\"What needs my attention today?\" mentions an urgent ticket that arrived after the last assessment",
+  "issue": 11677,
+  "expect": "pass",
+  "door": "wisp",
+  "note": "the world's own urgent ticket (the invoice one) is no test: once an assessment has run, its summary carries that ticket into the answer (5 of 5 runs on 2026-11-10/11, no tool call). A ticket that arrives after the assessment used to be invisible until the next one. Since #11677 the standing state carries open-ticket counts and the newest urgent/high subjects, offline devices and approvals waiting, read per turn through the chat tools' own reach, so the answer should name the ticket with no tool call. The API caches those facts 60 s per grant and user, so the scenario first waits out a read the previous scenario's last turn may have cached; it waits before planting, so no assessment has time to wake on the new ticket",
+  "steps": [
+    {
+      "name": "facts-cache",
+      "type": "sleep",
+      "sec": 61
+    },
+    {
+      "name": "new-ticket",
+      "type": "shell",
+      "argv": [
+        "plant-ticket.sh"
+      ]
+    },
+    {
+      "name": "attention",
+      "type": "say",
+      "approve": "none",
+      "maxSec": 90,
+      "text": "What needs my attention today? Keep it short."
+    }
+  ],
+  "checks": [
+    {
+      "kind": "sql_equals",
+      "precondition": true,
+      "equals": "0",
+      "sql": "select count(*) from ai_agent_runs where profile = 'assessment' and queued_at > {{since}}",
+      "note": "no assessment ran after the ticket arrived, so Wisp can only know about it from the standing state or a tool call"
+    },
+    {
+      "kind": "reply_matches",
+      "step": "attention",
+      "flags": "i",
+      "pattern": "(server closet|overheat|air condition|\\bA/?C\\b)",
+      "note": "#11677: an urgent unassigned ticket is left out of the attention answer"
+    },
+    {
+      "kind": "max_tool_calls",
+      "step": "attention",
+      "max": 3,
+      "note": "the chip's own prompt promises at most three tool calls for 'keep it short'"
+    }
+  ]
+}

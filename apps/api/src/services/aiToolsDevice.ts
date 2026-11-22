@@ -36,10 +36,11 @@ import { eq, and, asc, desc, sql, inArray, SQL } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import { sqlTextArray } from '../db/sqlValues';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
-import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds, siteScopeCondition, deviceScopeCondition } from './aiToolsSiteScope';
+import { deviceListReachConditions, resolveSiteAllowedDeviceIds, runFrozenDeviceIds, siteScopeCondition, deviceScopeCondition } from './aiToolsSiteScope';
 import { queryDeviceStats } from './deviceStats';
 import { getDeviceHardwareHealthView } from './hardwareHealth/view';
 import { getDeviceTimeStatusView } from './timeSync/view';
@@ -47,7 +48,7 @@ import { getDeviceWorkloadsView } from './workloads/view';
 import { projectWorkloadsForAi } from './workloads/aiProjection';
 import { fleetTimeFiltersSchema, listFleetTimeStatus } from './timeSync/fleet';
 import { getDeviceReliability, getDeviceReliabilityOffenders } from './reliabilityScoring';
-import { projectPublicDevice } from '../routes/devices/helpers';
+import { projectPublicDeviceForCaller } from '../routes/devices/helpers';
 import { readPlacement } from './assetPlacement';
 import {
   sanitizeUntrustedText,
@@ -60,7 +61,10 @@ import {
   createDeviceContext,
   resolveDeviceContext,
 } from './brainDeviceContext';
+import { unattendedNoteContentError, unattendedNoteExpiryDays } from './deviceNoteBounds';
+import { noteWriteCardFreeExpiryDays } from './aiNoteWrites';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { DEVICE_HARDWARE_READ_COLUMNS } from './deviceHardwareColumns';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -100,6 +104,8 @@ export function customFieldDefinitionConditions(auth: AuthContext): SQL[] {
   return conditions;
 }
 
+// Ordered by name, then id: names are not unique (an org and a partner-wide
+// definition may share one) and query_custom_fields pages this list.
 export async function readCustomFieldDefinitions(auth: AuthContext) {
   const conditions = customFieldDefinitionConditions(auth);
   return db
@@ -115,7 +121,7 @@ export async function readCustomFieldDefinitions(auth: AuthContext) {
     })
     .from(customFieldDefinitions)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(customFieldDefinitions.name);
+    .orderBy(asc(customFieldDefinitions.name), asc(customFieldDefinitions.id));
 }
 
 // #5351 — per-slot memory inventory for get_device_details. A 4-socket
@@ -134,7 +140,7 @@ function projectMemoryModule(row: MemoryModuleRow) {
   };
 }
 
-function summarizeMemory(hardware: typeof deviceHardware.$inferSelect | null, modules: MemoryModuleRow[]) {
+function summarizeMemory(hardware: Omit<typeof deviceHardware.$inferSelect, 'tpmEkPubSha256' | 'tpmEkMismatchSha256'> | null, modules: MemoryModuleRow[]) {
   // No module rows and no applied memory block = the agent never reported
   // slot inventory (needs an agent update) — not "zero slots".
   if (modules.length === 0 && !hardware?.memoryObservedAt) return { reported: false as const };
@@ -189,16 +195,20 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
       const { limit, offset, fingerprint } = page;
 
-      const conditions: SQL[] = [];
-      const orgCondition = auth.orgCondition(devices.orgId);
-      if (orgCondition) conditions.push(orgCondition);
-
-      // Quick Support's hidden 'quick_support' org stays inside accessibleOrgIds
-      // (so RLS lets techs read their own sessions), so ephemeral devices are NOT
-      // filtered by the org axis — exclude them explicitly from model-visible lists.
-      conditions.push(eq(devices.isEphemeral, false));
-      // Devices parked in a holding org are never model-visible, whatever the scope.
-      conditions.push(notParkedDeviceCondition());
+      // The tool's reach (deviceListReachConditions, shared with Wisp's standing
+      // state, #11677): the org axis; never a Quick Support device (its hidden
+      // 'quick_support' org stays inside accessibleOrgIds so RLS lets techs read
+      // their own sessions) or one parked in a holding org; and the site and
+      // exact-device axes (app-layer only; RLS does NOT enforce them). A
+      // site-restricted caller is narrowed to the real allowed device set, not
+      // to the optional, attacker-controlled `siteId` input below; a device-LESS
+      // analysis run (W04, #5715) to the device set frozen at admission. Null =
+      // nothing in reach: an empty page, no query.
+      const reach = await deviceListReachConditions(auth);
+      if (!reach) {
+        return JSON.stringify(pageEnvelope({ key: 'devices', items: [], limit, offset, fingerprint, total: 0 }));
+      }
+      const conditions: SQL[] = [...reach];
 
       if (input.status) conditions.push(eq(devices.status, input.status as typeof devices.status.enumValues[number]));
       if (input.osType) conditions.push(eq(devices.osType, input.osType as typeof devices.osType.enumValues[number]));
@@ -217,24 +227,6 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         const tagFilter = input.tags.filter((t): t is string => typeof t === 'string' && t.length > 0);
         if (tagFilter.length > 0) conditions.push(sql`${devices.tags} @> ${sqlTextArray(tagFilter)}`);
       }
-
-      // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
-      // caller may only enumerate devices in their allowed sites. The optional
-      // `siteId` input is attacker-controlled (a filter, not a restriction), so
-      // narrow to the real allowed device set instead.
-      const queryOrgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
-      if (auth.allowedSiteIds && queryOrgId) {
-        const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
-        if (!allowed || allowed.length === 0) {
-          return JSON.stringify(pageEnvelope({ key: 'devices', items: [], limit, offset, fingerprint, total: 0 }));
-        }
-        conditions.push(inArray(devices.id, allowed));
-      }
-      // W04 (#5715): a device-LESS analysis run carries no site axis, only the
-      // device set frozen at admission. Without this it enumerates the whole
-      // org — see `runFrozenDeviceIds`'s docstring.
-      const frozenDeviceIds = runFrozenDeviceIds(auth);
-      if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
 
       // #10408: a caller reaching several orgs gets each row's org, or it mixes
       // customers (wrong-org narration, cross-org proposals the write path refuses).
@@ -314,7 +306,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
 
       // Fetch related data in parallel
       const [hardware, network, disks, recentMetrics, memoryModules, placement] = await Promise.all([
-        db.select().from(deviceHardware).where(eq(deviceHardware.deviceId, deviceId)).limit(1),
+        db.select(DEVICE_HARDWARE_READ_COLUMNS).from(deviceHardware).where(eq(deviceHardware.deviceId, deviceId)).limit(1),
         db.select().from(deviceNetwork).where(eq(deviceNetwork.deviceId, deviceId)),
         db.select().from(deviceDisks).where(eq(deviceDisks.deviceId, deviceId)),
         db.select().from(deviceMetrics)
@@ -340,7 +332,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       // (no jsonb on device_hardware/device_network/device_disks).
       return JSON.stringify({
         device: {
-          ...projectPublicDevice(device),
+          ...(await projectPublicDeviceForCaller(device, auth)),
           siteName: site?.name
         },
         hardware: hardware[0] ?? null,
@@ -674,12 +666,28 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         required: ['deviceId', 'contextType', 'summary'],
       },
     },
-    handler: async (input, auth) => {
+    handler: async (input, auth, context) => {
       const deviceId = input.deviceId as string;
       const contextType = input.contextType as 'issue' | 'quirk' | 'followup' | 'preference';
       const summary = input.summary as string;
       const details = (input.details as Record<string, unknown>) ?? null;
-      const expiresInDays = input.expiresInDays as number | undefined;
+      // #12140 / #11986: a note no person approves is bounded in size and expiry
+      // here and in active notes per device by the service (one locked path,
+      // brainDeviceContext.ts). Both signals are pinned by server code, never
+      // by the model: the MCP / flow-step dispatch flag / a Wisp unattended-reads
+      // classification (unattended), and the chat gate's card-free flag.
+      const unattended = context?.unattendedNoteWrite === true
+        || context?.pinnedWispUnattendedRead?.kind === 'device_context';
+      const cardFree = context?.noteWriteCardFree === true;
+      if (unattended) {
+        const contentError = unattendedNoteContentError(input);
+        if (contentError) return JSON.stringify({ error: contentError });
+      }
+      const expiresInDays = unattended
+        ? unattendedNoteExpiryDays(input)
+        : cardFree
+          ? noteWriteCardFreeExpiryDays(input)
+          : input.expiresInDays as number | undefined;
 
       const expiresAt = expiresInDays
         ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
@@ -698,14 +706,18 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         summary,
         details,
         auth,
-        expiresAt
+        expiresAt,
+        unattended || cardFree
+          ? { ...(unattended && { unattended: true }), ...(cardFree && { cardFree: true }) }
+          : undefined
       );
 
       if ('error' in result) {
         return JSON.stringify({ error: result.error });
       }
 
-      return `Context recorded successfully (ID: ${result.id}). This will be remembered in future conversations about this device.`;
+      const expiry = unattended || cardFree ? ` It expires in ${expiresInDays} days.` : '';
+      return `Context recorded successfully (ID: ${result.id}). This will be remembered in future conversations about this device.${expiry}`;
     },
   });
 
@@ -775,6 +787,8 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_tags', action, auth);
+      if (mfaError) return mfaError;
 
       if (action === 'list') {
         const conditions: SQL[] = [];
@@ -883,7 +897,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_custom_fields',
-      description: 'Get custom field definitions for the organization, or get custom field values for a specific device. Actions: list_definitions, get_device_values.',
+      description: 'Get custom field definitions for the organization, or get custom field values for a specific device. Actions: list_definitions, get_device_values (values for the definitions on the returned page). Paged by definition: follow nextCursor while hasMore.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -892,18 +906,28 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
             enum: ['list_definitions', 'get_device_values'],
             description: 'Action: list_definitions to see available fields, get_device_values to see a device\'s field values'
           },
-          deviceId: { type: 'string', description: 'Device UUID (required for get_device_values)' }
+          deviceId: { type: 'string', description: 'Device UUID (required for get_device_values)' },
+          // Literals, not a module const: aiTools.ts calls registerDeviceTools inside
+          // an import cycle, before this module's top-level consts are initialised.
+          ...pageParamSchema(15, 100),
         },
         required: ['action']
       }
     },
     handler: async (input, auth) => {
       const action = input.action as string;
+      const page = readPageArgs('query_custom_fields', input, { defaultLimit: 15, maxLimit: 100 });
+      if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
+      // Definitions are a small, name-ordered config list, read whole and paged here.
+      const definitionPage = <T>(all: T[]) => pageEnvelope({
+        key: 'definitions', items: all.slice(page.offset, page.offset + page.limit),
+        limit: page.limit, offset: page.offset, fingerprint: page.fingerprint, total: all.length,
+      });
 
       if (action === 'list_definitions') {
         const definitions = await readCustomFieldDefinitions(auth);
 
-        return JSON.stringify({ definitions, total: definitions.length });
+        return JSON.stringify(definitionPage(definitions));
       }
 
       if (action === 'get_device_values') {
@@ -928,13 +952,21 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           })
           .from(customFieldDefinitions)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
-          .orderBy(customFieldDefinitions.name);
+          .orderBy(asc(customFieldDefinitions.name), asc(customFieldDefinitions.id));
 
+        // Values only for the definitions on this page — the value map is keyed
+        // by fieldKey and is as large as the definition list.
+        const envelope = definitionPage(definitions);
+        const values = (device.customFields ?? {}) as Record<string, unknown>;
+        const customFields: Record<string, unknown> = {};
+        for (const d of envelope.definitions as Array<{ fieldKey: string }>) {
+          if (Object.prototype.hasOwnProperty.call(values, d.fieldKey)) customFields[d.fieldKey] = values[d.fieldKey];
+        }
         return JSON.stringify({
           deviceId,
           hostname: device.hostname,
-          customFields: device.customFields ?? {},
-          definitions,
+          customFields,
+          ...envelope,
         });
       }
 

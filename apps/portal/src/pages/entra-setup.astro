@@ -1,0 +1,22 @@
+---
+import AuthLayout from '../layouts/AuthLayout.astro';
+import { ENTRA_SETUP_COPY, resolveEntraSetupStatus } from '../lib/entraSetup';
+
+// Public: the API callback sends an IT admin's browser here after the Microsoft
+// tenant-proof / admin-consent round trip. The status is untrusted input, so it
+// only ever selects one of four static strings.
+const status = resolveEntraSetupStatus(Astro.url.searchParams.get('status'));
+const copy = ENTRA_SETUP_COPY[status];
+---
+
+<AuthLayout title="Microsoft tenant setup">
+  <div
+    data-testid="portal-entra-setup-status"
+    data-status={status}
+    role="status"
+    class="border-y border-border/70 py-12 text-center"
+  >
+    <h3 class="font-display text-lg font-semibold text-foreground">{copy.title}</h3>
+    <p class="mx-auto mt-1 max-w-[44ch] text-sm text-muted-foreground">{copy.body}</p>
+  </div>
+</AuthLayout>

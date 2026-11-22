@@ -67,7 +67,12 @@ set -euo pipefail
 #   { schema: 1, tool: "osv-scanner", lockfile, exceptionsFile, threshold,
 #     today, scannedPackages, lockfilePackages,
 #     findings: [{ package, version, ecosystem, id, severity, excepted,
-#                  blocking }],          # blocking = would fail this run
+#                  blocking, scope }],   # blocking = would fail this run;
+#                                        # scope = production | dev | unknown
+#                                        # (production-closure walk of the
+#                                        # lockfile, lockfile-scope.mjs; the
+#                                        # base/head comparison treats unknown
+#                                        # as production — fails closed, #11137)
 #     exceptionProblems: [{ id, package, expires, status }] }  # EXPIRED|TOO_FAR
 
 fail() {
@@ -300,24 +305,37 @@ read -r blocking suppressed < <(jq -r --argjson min "$threshold_rank" '
 # findings document may be written. Written to a temp file and moved into
 # place, so a half-written document can never be read as a sound scan.
 if [ -n "$FINDINGS_JSON" ]; then
+  # Dependency scope per name@version. A walk that fails (or a lockfile it
+  # cannot read) yields an empty map: every finding is then "unknown", which
+  # the comparison treats as production — never a pass.
+  scopes_file="$(mktemp)" || fail "cannot create a temp file for the dependency scopes"
+  scopes_err="$(mktemp)" || fail "cannot create a temp file for the dependency scopes"
+  if ! node "$ROOT_DIR/scripts/security/lockfile-scope.mjs" "$LOCKFILE" >"$scopes_file" 2>"$scopes_err" \
+    || ! jq -e 'type == "object"' "$scopes_file" >/dev/null 2>&1; then
+    echo "::warning title=Dependency scope walk failed::$(tr '\n' ' ' <"$scopes_err") every finding is scoped unknown (treated as production)."
+    echo '{}' >"$scopes_file"
+  fi
+  rm -f "$scopes_err"
   findings_tmp="$(mktemp "${FINDINGS_JSON}.XXXXXX")" || fail "cannot create $FINDINGS_JSON"
   if ! jq -n \
     --argjson min "$threshold_rank" \
     --argjson problems "$(jq -c '[.[] | select(.status != "ACTIVE") | {id, package, expires, status}]' <<<"$exceptions_status")" \
     --arg lockfile "$LOCKFILE" --arg exceptions "$EXCEPTIONS_FILE" --arg threshold "$THRESHOLD" --arg today "$today" \
-    --argjson scanned "$scanned_count" --argjson locked "$lock_count" '
+    --argjson scanned "$scanned_count" --argjson locked "$lock_count" --slurpfile scopes "$scopes_file" '
       input as $findings
       | {schema: 1, tool: "osv-scanner", lockfile: $lockfile, exceptionsFile: $exceptions,
          threshold: $threshold, today: $today, scannedPackages: $scanned, lockfilePackages: $locked,
          findings: [$findings[]
            | ({"CRITICAL":4,"HIGH":3,"MODERATE":2,"LOW":1}[.severity] // 0) as $r
            | {package, version, ecosystem, id, severity, excepted,
-              blocking: (($r >= $min or .severity == "UNSPECIFIED" or .severity == "MALICIOUS") and (.excepted | not))}],
+              blocking: (($r >= $min or .severity == "UNSPECIFIED" or .severity == "MALICIOUS") and (.excepted | not)),
+              scope: ($scopes[0]["\(.package)@\(.version)"] // "unknown")}],
          exceptionProblems: $problems}
     ' <<<"$findings" >"$findings_tmp"; then
-    rm -f "$findings_tmp"
+    rm -f "$findings_tmp" "$scopes_file"
     fail "could not write $FINDINGS_JSON"
   fi
+  rm -f "$scopes_file"
   mv -f "$findings_tmp" "$FINDINGS_JSON" || { rm -f "$findings_tmp"; fail "could not write $FINDINGS_JSON"; }
 fi
 

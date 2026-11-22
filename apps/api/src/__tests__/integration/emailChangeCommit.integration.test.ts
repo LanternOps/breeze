@@ -58,6 +58,12 @@ async function readUser(userId: string) {
   return row;
 }
 
+// A signup link on an account with a password is claimed only with the stored
+// hash that POST /auth/verify-email confirmed the password against.
+function signupConfirmation(user: { passwordHash: string | null }) {
+  return { confirmedPasswordHash: user.passwordHash ?? undefined };
+}
+
 async function tokenState(userId: string) {
   const [row] = await getTestDb()
     .select({ consumedAt: emailVerificationTokens.consumedAt, purpose: emailVerificationTokens.purpose })
@@ -256,7 +262,7 @@ describe('email_change commit — atomic swap + sign-out (SR2-17, real Postgres)
         expiresAt: new Date(Date.now() + 3_600_000),
       });
 
-    const result = await consumeVerificationToken(raw);
+    const result = await consumeVerificationToken(raw, signupConfirmation(user));
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.purpose).toBe('signup');
 

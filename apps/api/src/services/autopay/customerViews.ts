@@ -19,6 +19,7 @@ import { completeAutopaySetup } from './enrollmentService';
 import { verifiedFeeText } from './feeDisclosure';
 import { autopayConsentSnapshotSchema } from './types';
 import { autopayPartnerLiveCondition, isAutopayPartnerChargeable } from './autopayGate';
+import { assertAutopayBillingEnabledForPartner } from './billingGate';
 export interface AutopayIdentity {orgId:string;partnerId:string;tokenId?:string;enrollmentId?:string;generation?:number}
 declare module 'hono' { interface ContextVariableMap {autopayIdentity:AutopayIdentity;autopayPartnerId:string} }
 const scoped=<T>(fn:()=>Promise<T>)=>runOutsideDbContext(()=>withSystemDbAccessContext(fn));
@@ -192,6 +193,7 @@ export async function getAutopayCustomerPage(orgId:string,options?:{allowStopOnl
   });
 }
 export async function completeOwnedAutopaySetup(identity:AutopayIdentity,checkoutSessionId:string):Promise<AutopaySetupResult>{
+  await scoped(()=>assertAutopayBillingEnabledForPartner(identity.partnerId));
   const owned=await scoped(()=>findOwnedSetup(identity,checkoutSessionId));
   if(!owned)throw new HTTPException(404,{message:'Setup session not found'});
   let methodLabel:string|null=null;

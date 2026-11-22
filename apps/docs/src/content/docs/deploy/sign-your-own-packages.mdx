@@ -351,7 +351,9 @@ directories (`AGENT_BINARY_DIR`, `VIEWER_BINARY_DIR`, `HELPER_BINARY_DIR`)
 with `BINARY_SOURCE=local`. See [Binary Distribution](/deploy/binaries/) for
 directory layout and S3 offload. Also stage your original signed
 `release-artifact-manifest.json` and `.ed25519` signature at the parent of
-`AGENT_BINARY_DIR`, configure your manifest public key, and set
+`AGENT_BINARY_DIR` (see [Release manifest pair](/deploy/binaries/#release-manifest-pair)
+for the copy step; use your own release and repository in it), configure your
+manifest public key, and set
 `BINARY_GITHUB_REPOSITORY` to the repository named by that manifest. macOS
 installer delivery fails closed if the pair is absent, invalid, or describes a
 different edition. This mode costs manual downloads per release.

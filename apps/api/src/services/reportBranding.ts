@@ -1,29 +1,36 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
-import { organizations, partners } from '../db/schema';
+import { organizations, partners, portalBranding } from '../db/schema';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
-import { parseHexColor, type ReportBranding } from '@breeze/shared/reportPdf';
+import { parseHexColor, partnerReportConventions, type ReportBranding } from '@breeze/shared/reportPdf';
+import { resolveDocumentBrand } from './partnerDocumentBrand';
+import { resolvePartnerPageSize } from './documentThemes';
+import { checkPngImageData } from './pngDecodeLimits';
 
-/** Parse intrinsic width/height from a PNG data URL (IHDR is always the first
- * chunk: width at byte 16, height at byte 20). Returns null for non-PNG data. */
-export function pngAspectFromDataUrl(dataUrl: string): number | null {
+/** Intrinsic width/height of a PNG data URL, or null for non-PNG data and for
+ * a PNG `checkPngImageData` refuses (a header outside the decode limits, or
+ * image data that inflates past what the header declares), since the report
+ * renderer decodes the logo and a null aspect leaves it out. Runs once per
+ * branding load, so once per render. */
+export async function pngAspectFromDataUrl(dataUrl: string): Promise<number | null> {
   if (!dataUrl.startsWith('data:image/png;base64,')) return null;
   try {
     const buf = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
-    if (buf.length < 24 || buf.toString('latin1', 12, 16) !== 'IHDR') return null;
-    const w = buf.readUInt32BE(16);
-    const h = buf.readUInt32BE(20);
-    return w > 0 && h > 0 ? w / h : null;
+    const check = await checkPngImageData(buf);
+    if (!check.ok) return null;
+    return check.header.width / check.header.height;
   } catch {
     return null;
   }
 }
 
 /**
- * Partner branding for server-rendered report PDFs. Mirrors the web's
- * loadPartnerBranding (reportExport.ts) but headless: only uploaded PNG data
- * URLs are embeddable (no canvas to re-encode external images); anything else
- * degrades to name-only branding, matching the renderer's fallback chain.
+ * Branding for server-rendered report PDFs of one org: the partner's name and
+ * contact, with the logo and colours resolved like the org's quotes and invoices
+ * (partner default, org override; #9673). Mirrors the web's loadPartnerBranding
+ * (reportExport.ts) but headless: only uploaded PNG data URLs are embeddable (no
+ * canvas to re-encode external images); anything else degrades to name-only
+ * branding, matching the renderer's fallback chain.
  */
 export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBranding> {
   const empty: ReportBranding = { name: null, logoDataUrl: null, logoAspect: null };
@@ -48,14 +55,26 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
     .limit(1);
   if (!org?.partnerId) return empty;
 
+  // portal_branding is org-axis, so this stays in the caller's context too. A
+  // row RLS hides reads as no override: the partner's branding applies.
+  const [orgBrand] = await db
+    .select({
+      logoUrl: portalBranding.logoUrl,
+      primaryColor: portalBranding.primaryColor,
+      secondaryColor: portalBranding.secondaryColor,
+    })
+    .from(portalBranding)
+    .where(eq(portalBranding.orgId, orgId))
+    .limit(1);
+
   const [row] = await readWithPartnerAxisVisibility(() =>
     db
-      .select({ partnerName: partners.name, partnerSettings: partners.settings })
+      .select({ partnerName: partners.name, partnerSettings: partners.settings, documentPageSize: partners.documentPageSize, billingAddressCountry: partners.billingAddressCountry })
       .from(partners)
       .where(eq(partners.id, org.partnerId!))
       .limit(1)
   );
-  return brandingFromPartnerRow(row, { orgId });
+  return brandingFromPartnerRow(row, { orgId }, orgBrand);
 }
 
 /** #3198 W01: branding for a PARTNER-owned report. The caller has already
@@ -64,7 +83,7 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
 export async function loadReportBrandingForPartner(partnerId: string): Promise<ReportBranding> {
   const [row] = await readWithPartnerAxisVisibility(() =>
     db
-      .select({ partnerName: partners.name, partnerSettings: partners.settings })
+      .select({ partnerName: partners.name, partnerSettings: partners.settings, documentPageSize: partners.documentPageSize, billingAddressCountry: partners.billingAddressCountry })
       .from(partners)
       .where(eq(partners.id, partnerId))
       .limit(1)
@@ -73,22 +92,25 @@ export async function loadReportBrandingForPartner(partnerId: string): Promise<R
 }
 
 /** The partner-row → ReportBranding mapping shared by the org and partner
- *  loaders. `logContext` only labels the non-embeddable-logo warning. */
-function brandingFromPartnerRow(
-  row: { partnerName: string | null; partnerSettings: unknown } | undefined,
+ *  loaders. `orgBrand` is the org override (org loader only); `logContext` only
+ *  labels the non-embeddable-logo warning. */
+async function brandingFromPartnerRow(
+  row: { partnerName: string | null; partnerSettings: unknown; documentPageSize?: string | null; billingAddressCountry?: string | null } | undefined,
   logContext: { orgId: string } | { partnerId: string },
-): ReportBranding {
+  orgBrand?: { logoUrl: string | null; primaryColor: string | null; secondaryColor: string | null },
+): Promise<ReportBranding> {
   const empty: ReportBranding = { name: null, logoDataUrl: null, logoAspect: null };
   if (!row?.partnerName) return empty;
-  const settings = (row.partnerSettings ?? {}) as { branding?: { logoUrl?: string; primaryColor?: string; secondaryColor?: string }; contact?: { name?: string; email?: string } };
-  const logoUrl = settings.branding?.logoUrl ?? null;
+  const settings = (row.partnerSettings ?? {}) as { contact?: { name?: string; email?: string } };
+  const brand = resolveDocumentBrand(orgBrand, row.partnerSettings);
+  const logoUrl = brand.logoUrl;
   // Colours ride along only when they parse as hex; the renderer falls back
   // to the Breeze palette for anything else.
-  const primaryColor = parseHexColor(settings.branding?.primaryColor) ? settings.branding!.primaryColor! : null;
-  const accentColor = parseHexColor(settings.branding?.secondaryColor) ? settings.branding!.secondaryColor! : null;
-  const aspect = logoUrl ? pngAspectFromDataUrl(logoUrl) : null;
+  const primaryColor = parseHexColor(brand.primaryColor ?? undefined) ? brand.primaryColor : null;
+  const accentColor = parseHexColor(brand.secondaryColor ?? undefined) ? brand.secondaryColor : null;
+  const aspect = logoUrl ? await pngAspectFromDataUrl(logoUrl) : null;
   if (logoUrl && aspect == null) {
-    console.warn('[reportBranding] Partner logo is not an embeddable PNG data URL; sending name-only branding', logContext);
+    console.warn('[reportBranding] Logo is not an embeddable PNG data URL; sending name-only branding', logContext);
   }
   return {
     name: row.partnerName,
@@ -98,6 +120,18 @@ function brandingFromPartnerRow(
     accentColor,
     contactEmail: settings.contact?.email?.trim() || null,
     contactName: settings.contact?.name?.trim() || null,
+    // #12048: the report prints on the page size the partner's quotes and
+    // invoices use (#12097: its choice, else its region default), in its date
+    // order and hour cycle. Unknown formats come back null so the renderer
+    // falls back instead of guessing.
+    ...partnerReportConventions({
+      documentPageSize: resolvePartnerPageSize({
+        documentPageSize: row.documentPageSize,
+        billingAddressCountry: row.billingAddressCountry,
+        settings: row.partnerSettings,
+      }),
+      settings: row.partnerSettings,
+    }),
   };
 }
 

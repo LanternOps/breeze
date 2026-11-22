@@ -19,7 +19,7 @@ vi.mock('jspdf', () => {
   const ctor = function () { return doc; } as unknown as () => typeof doc;
   return { jsPDF: ctor, default: ctor };
 });
-vi.mock('jspdf-autotable', () => ({ default: vi.fn() }));
+vi.mock('jspdf-autotable', () => ({ autoTable: vi.fn() }));
 vi.mock('@/lib/downloadBlob', () => ({ downloadBlob: (b: Blob) => { blobs.push(b); } }));
 
 import { exportReport } from './reportExport';

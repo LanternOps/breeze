@@ -11,7 +11,10 @@ describe('m365Connections schema', () => {
       // Delegated (user-axis) columns — design §4.1/§5.2.
       'delegated_user_object_id', 'consent_generation', 'observed_delegated_scopes',
       'credential_domain', 'credential_version', 'display_name', 'expires_at',
-      'grants_verified_at', 'id', 'last_error_code', 'last_verified_at', 'observed_grants', 'org_id',
+      'grants_verified_at',
+      // How observed_grants was verified (#12085).
+      'grant_reconciliation_mode',
+      'id', 'last_error_code', 'last_verified_at', 'observed_grants', 'org_id',
       'permission_manifest_version', 'profile', 'revoked_at', 'status',
       'tenant_id', 'updated_at', 'user_id', 'vault_ref', 'auth_mode',
     ].sort());

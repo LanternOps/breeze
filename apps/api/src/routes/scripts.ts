@@ -1554,6 +1554,8 @@ scriptRoutes.get(
         completedAt: scriptExecutions.completedAt,
         exitCode: scriptExecutions.exitCode,
         errorMessage: scriptExecutions.errorMessage,
+        // #4342 W2 — see GET /executions/:id below.
+        outputPurgedAt: scriptExecutions.outputPurgedAt,
         // #5040 — the cancel outcome that qualifies a terminal status in the
         // UI ("stop arrived too late" / "the device could not stop it").
         // Without it here the web label helper only ever sees `undefined`.
@@ -1610,6 +1612,9 @@ scriptRoutes.get(
         exitCode: scriptExecutions.exitCode,
         stdout: scriptExecutions.stdout,
         stderr: scriptExecutions.stderr,
+        // #4342 W2 — set when the retention job removed stdout/stderr, so the
+        // UI says the output was removed instead of "no output".
+        outputPurgedAt: scriptExecutions.outputPurgedAt,
         errorMessage: scriptExecutions.errorMessage,
         // #5040 — see the list endpoint above.
         cancelState: scriptExecutions.cancelState,

@@ -4,6 +4,7 @@ import {
   Clock,
   FileCode,
   Keyboard,
+  LayoutDashboard,
   Loader2,
   MessageSquare,
   Monitor,
@@ -18,6 +19,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
+import { seedRouterHistoryState } from '@/lib/replaceUrl';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useFeaturesStore } from '../../stores/featuresStore';
@@ -26,10 +28,11 @@ import { getJwtClaims } from '../../lib/authScope';
 import { getPartnersMe } from '../../lib/api/partnersMe';
 import { hasPermission } from '../../lib/permissions';
 import { searchSettingsCatalog } from '../../lib/settingsSearch';
+import { searchNavPages, searchPartnerSettingsTabs } from '../../lib/paletteIndex';
 import { useUiStore } from '../../stores/uiStore';
 import { useRecentsStore } from '../../stores/recentsStore';
 
-type SearchCategory = 'devices' | 'scripts' | 'alerts' | 'settings';
+type SearchCategory = 'devices' | 'scripts' | 'alerts' | 'pages' | 'settings';
 
 type SearchResult = {
   id?: string;
@@ -37,6 +40,9 @@ type SearchResult = {
   title: string;
   description?: string;
   href?: string;
+  /** The result's customer (#11803). null = partner-wide (no single customer). */
+  orgId?: string | null;
+  orgName?: string | null;
 };
 
 type CommandItem = {
@@ -49,6 +55,8 @@ type CommandItem = {
   icon: LucideIcon;
   kind: 'action' | 'recent' | 'result';
   category?: SearchCategory;
+  /** Customer label shown beside a server result (#11803). */
+  orgLabel?: string;
 };
 
 type Section = {
@@ -62,6 +70,7 @@ const CATEGORY_ORDER: SearchCategory[] = [
   'devices',
   'scripts',
   'alerts',
+  'pages',
   'settings'
 ];
 
@@ -90,6 +99,11 @@ const CATEGORY_CONFIG: Record<
     label: 'Alerts',
     icon: Bell,
     baseHref: '/alerts'
+  },
+  pages: {
+    label: 'Pages',
+    icon: LayoutDashboard,
+    baseHref: '/'
   },
   settings: {
     label: 'Settings',
@@ -189,7 +203,11 @@ const normalizeResults = (payload: unknown): SearchResult[] => {
       type,
       title,
       description: pickDescription(record),
-      href: pickString(record.href) || pickString(record.url)
+      href: pickString(record.href) || pickString(record.url),
+      // Only an explicit null means partner-wide; an absent key (an older API)
+      // means "unknown" and gets no label.
+      orgId: record.orgId === null ? null : pickString(record.orgId),
+      orgName: pickString(record.orgName) ?? null
     });
   };
 
@@ -281,11 +299,18 @@ export default function CommandPalette() {
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
   const permissions = useAuthStore((s) => s.user?.permissions);
   const serviceManagementMode = useOrgStore((s) => s.serviceManagementMode);
-  // The palette is a global overlay: server results follow the org switcher
+  // #11803: the palette searches every customer the user can access. The
+  // customer selected in the header only ranks its matches first (preferOrgId),
   // on every page, including catalog routes where fetchWithAuth injects no
-  // ambient orgId. null = All organizations (the server returns every
-  // accessible org). The API narrows only within the caller's access (#9612).
+  // ambient orgId. "This customer only" (off by default: an MSP opens Cmd+K to
+  // jump anywhere) turns it back into a hard filter. The API checks both
+  // against the caller's own access (#9612). null = All organizations.
   const selectedOrgId = useOrgStore((s) => s.currentOrgId);
+  const customerCount = useOrgStore((s) => s.organizations.length);
+  const [thisCustomerOnly, setThisCustomerOnly] = useState(false);
+  // Only worth offering when there is more than one customer to choose between.
+  const canNarrow = selectedOrgId !== null && customerCount > 1;
+  const narrowed = canNarrow && thisCustomerOnly;
   // Read-only: the palette mounts on every page, so it must not trigger the
   // /config or autopay fetches the gate hooks fire. An unknown gate hides the
   // entry (the nav's own default), and the sidebar loads /config anyway.
@@ -341,15 +366,27 @@ export default function CommandPalette() {
 
     const performSearch = async () => {
       try {
-        const response = await fetchWithAuth(`/search?q=${encodeURIComponent(debouncedQuery)}`, {
-          orgIdOverride: selectedOrgId ?? null,
+        const params = new URLSearchParams({ q: debouncedQuery });
+        const hinted = Boolean(selectedOrgId && !narrowed);
+        if (hinted) params.set('preferOrgId', selectedOrgId!);
+        // orgIdOverride null = never inject the ambient org: the header's
+        // customer must not silently narrow the search.
+        let response = await fetchWithAuth(`/search?${params.toString()}`, {
+          orgIdOverride: narrowed ? selectedOrgId : null,
         });
         if (!isActive) return;
+        // The hint is optional: a stale or revoked header customer must not
+        // block a search the user did not narrow. Ask once more without it.
+        if (hinted && response.status === 403) {
+          params.delete('preferOrgId');
+          response = await fetchWithAuth(`/search?${params.toString()}`, { orgIdOverride: null });
+          if (!isActive) return;
+        }
 
         if (!response.ok) {
-          // A 403 with an org selected is the server refusing that org (a
+          // A 403 on a narrowed search is the server refusing that org (a
           // stale or revoked selection, #9612), not a dead session.
-          if (response.status === 403 && selectedOrgId) {
+          if (response.status === 403 && narrowed) {
             setResults([]);
             setErrorMessage("You don't have access to the selected organization.");
             return;
@@ -382,7 +419,7 @@ export default function CommandPalette() {
     return () => {
       isActive = false;
     };
-  }, [debouncedQuery, open, selectedOrgId]);
+  }, [debouncedQuery, open, selectedOrgId, narrowed]);
 
   useEffect(() => {
     if (open) return;
@@ -413,6 +450,20 @@ export default function CommandPalette() {
         return;
       }
       if (item.href && typeof window !== 'undefined') {
+        // Same page, different fragment (Partner Settings sections): Astro's
+        // router would pushState without a hashchange, so the page would not
+        // switch sections. Assign the hash instead (see samePageHashClick.ts).
+        const target = new URL(item.href, window.location.href);
+        if (
+          item.href.includes('#') &&
+          target.origin === window.location.origin &&
+          target.pathname === window.location.pathname &&
+          target.search === window.location.search
+        ) {
+          window.location.hash = target.hash;
+          seedRouterHistoryState();
+          return;
+        }
         void navigateTo(item.href);
       }
     },
@@ -510,33 +561,44 @@ export default function CommandPalette() {
     return quickActionItems.filter(matchesQuery);
   }, [matchesQuery, quickActionItems, trimmedQuery]);
 
-  // Settings results are the web's settings catalogue (#8365), gated like the
-  // nav and matched instantly, so they never wait on (or depend on) the server.
-  const settingsItems = useMemo<CommandItem[]>(() => {
-    if (!trimmedQuery) return [];
-    return searchSettingsCatalog(
-      trimmedQuery,
-      {
-        isPlatformAdmin,
-        permissions,
-        getScope: () => getJwtClaims().scope,
-        toolSourcesEnabled,
-        flowsEnabled,
-        // Read on first open, never at mount (usePartnerAiFlags).
-        aiForOfficeEnabled,
-        wispEnabled,
-        serviceManagementMode,
-      },
-      (key, fallback) => t(/* i18n-dynamic */ key, { defaultValue: fallback }) as string
-    ).map((hit) => ({
-      key: `result:settings:${hit.id}`,
+  // Pages and settings results are built client-side from the sidebar nav, the
+  // settings catalogue (#8365) and the Partner Settings sections (#12210,
+  // #12216), gated like the nav and matched instantly, so they never wait on
+  // (or depend on) the server.
+  const { pageItems, settingsItems } = useMemo<{ pageItems: CommandItem[]; settingsItems: CommandItem[] }>(() => {
+    if (!trimmedQuery) return { pageItems: [], settingsItems: [] };
+    const gateCtx = {
+      isPlatformAdmin,
+      permissions,
+      getScope: () => getJwtClaims().scope,
+      toolSourcesEnabled,
+      flowsEnabled,
+      // Read on first open, never at mount (usePartnerAiFlags).
+      aiForOfficeEnabled,
+      wispEnabled,
+      serviceManagementMode,
+    };
+    const translate = (key: string, fallback: string) => t(/* i18n-dynamic */ key, { defaultValue: fallback }) as string;
+    // A screen reachable from both the nav and the settings catalogue (Billing,
+    // Sites, Agents…) is listed once, under Settings.
+    const catalog = searchSettingsCatalog(trimmedQuery, gateCtx, translate);
+    const catalogHrefs = new Set(catalog.map((h) => h.href));
+    const pages = searchNavPages(trimmedQuery, gateCtx, translate).filter((h) => !catalogHrefs.has(h.href));
+    const taken = new Set([...catalogHrefs, ...pages.map((p) => p.href)]);
+    const tabs = searchPartnerSettingsTabs(trimmedQuery, gateCtx, translate).filter((h) => !taken.has(h.href));
+    const toItem = (category: 'pages' | 'settings') => (hit: { id: string; title: string; description?: string; href: string }): CommandItem => ({
+      key: `result:${category}:${hit.id}`,
       title: hit.title,
       description: hit.description || undefined,
       href: hit.href,
-      icon: CATEGORY_CONFIG.settings.icon,
+      icon: CATEGORY_CONFIG[category].icon,
       kind: 'result',
-      category: 'settings'
-    }));
+      category
+    });
+    return {
+      pageItems: pages.map(toItem('pages')),
+      settingsItems: [...catalog, ...tabs].map(toItem('settings'))
+    };
   }, [trimmedQuery, isPlatformAdmin, permissions, toolSourcesEnabled, flowsEnabled, aiForOfficeEnabled, wispEnabled, serviceManagementMode, t]);
 
   const resultItemsByCategory = useMemo(() => {
@@ -545,10 +607,19 @@ export default function CommandPalette() {
       return acc;
     }, {} as Record<SearchCategory, CommandItem[]>);
 
+    // Label results with their customer whenever more than one could be in
+    // play: the user has several customers, or (org list not loaded yet) the
+    // results themselves span several. Never on a narrowed search.
+    const resultOrgs = new Set(results.map((r) => r.orgId).filter((id): id is string => typeof id === 'string'));
+    const showOrgLabels = !narrowed && (customerCount > 1 || resultOrgs.size > 1);
+
     results.forEach((result, index) => {
       // The server no longer owns settings results; ignore any from an older API.
-      if (result.type === 'settings') return;
+      if (result.type === 'settings' || result.type === 'pages') return;
       const key = `result:${result.type}:${result.id ?? `${result.title}-${index}`}`;
+      const orgLabel = !showOrgLabels
+        ? undefined
+        : result.orgName ?? (result.orgId === null ? t('layout.search.partnerWide') : undefined);
       grouped[result.type].push({
         key,
         title: result.title,
@@ -556,13 +627,15 @@ export default function CommandPalette() {
         href: buildResultHref(result),
         icon: CATEGORY_CONFIG[result.type].icon,
         kind: 'result',
-        category: result.type
+        category: result.type,
+        orgLabel
       });
     });
 
+    grouped.pages = pageItems;
     grouped.settings = settingsItems;
     return grouped;
-  }, [results, settingsItems]);
+  }, [results, pageItems, settingsItems, narrowed, customerCount, t]);
 
   const { sections, selectableItems, indexByKey } = useMemo(() => {
     const builtSections: Section[] = [];
@@ -759,6 +832,23 @@ export default function CommandPalette() {
               </span>
             </div>
 
+            {canNarrow && (
+              <label className="flex w-fit cursor-pointer items-center gap-2 px-4 py-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  data-testid="palette-this-customer-only"
+                  checked={thisCustomerOnly}
+                  onChange={(event) => {
+                    setThisCustomerOnly(event.target.checked);
+                    // Keep typing in the search box after a click on the toggle.
+                    inputRef.current?.focus();
+                  }}
+                  className="h-3.5 w-3.5 accent-primary"
+                />
+                {t('layout.search.thisCustomerOnly')}
+              </label>
+            )}
+
             <div className="max-h-[60vh] overflow-y-auto">
               {isLoading && (
                 <div className="flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground">
@@ -830,6 +920,20 @@ export default function CommandPalette() {
                                 </div>
                               )}
                             </div>
+                            {item.orgLabel && (
+                              <span
+                                data-testid="palette-item-org"
+                                title={item.orgLabel}
+                                className={cn(
+                                  'max-w-[40%] shrink-0 truncate rounded border px-1.5 py-0.5 text-[11px]',
+                                  isActive
+                                    ? 'border-primary-foreground/40 text-primary-foreground/90'
+                                    : 'text-muted-foreground'
+                                )}
+                              >
+                                {item.orgLabel}
+                              </span>
+                            )}
                             {itemIndex >= 0 && itemIndex < 9 && (
                               <kbd
                                 aria-hidden="true"

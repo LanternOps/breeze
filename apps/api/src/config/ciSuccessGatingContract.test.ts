@@ -47,6 +47,7 @@ const PR_EXEMPT_JOBS = new Set(['build-smoke-images', 'smoke-test', 'guided-setu
 
 const UNGATED_JOBS = new Set([
   'provenance-record', // W4 (#10748): writes the provenance artifact after CI Success; never a gate
+  'ci-gate-replay', // W02 (#10746): dispatch-only replay of the gate verdict; never a gate
   'ci-success', // the aggregate itself
   'main-red-alert', // runs after ci-success, alerts on a red main
   'rust-check-windows', // deliberately excluded, documented at its job definition: path-filtered and usually skipped
@@ -189,6 +190,9 @@ describe('ci-success gating contract', () => {
       // provenance artifact; continue-on-error and outside ci-success needs, so never a gate.
       // Its lines are pinned by queue-selection.test.mjs.
       'provenance-record',
+      // W02 (#10746): dispatch-only replay of the gate verdict; never a gate.
+      // Its lines are pinned by ci-gate.test.mjs.
+      'ci-gate-replay',
     ]);
     // lint/security-audit/release-ledger validate CI plumbing itself and must keep running on a
     // tooling-only PR, so they stay gated on `code` alone — never additionally on `app`.
@@ -204,6 +208,16 @@ describe('ci-success gating contract', () => {
       "(?: && (?:needs\\.changes\\.outputs\\.(?:api|web|portal|addins|m365|rust|integration|agent_code) == 'true'|" +
       "\\(needs\\.changes\\.outputs\\.api == 'true' \\|\\| needs\\.changes\\.outputs\\.web == 'true' \\|\\| needs\\.changes\\.outputs\\.portal == 'true'\\)))?";
     const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // W05 (#10749): a job ci-success has a thin `case` arm for may end its `if:` with the
+    // clause naming its own id (queue-selection.test.mjs requires it there); no other job may.
+    const thinArms = new Set(
+      [...ciSuccess.matchAll(/^ {14}([a-z0-9-]+)\) \[\[ "\$\{\w+_RESULT\}" != "skipped" \]\] \|\| \w+_RESULT=success ;;$/gm)].flatMap(
+        ([, job]) => (job ? [job] : []),
+      ),
+    );
+    const thinClause = (job: string) =>
+      thinArms.has(job) ? `(?:${escape(` && !contains(needs.changes.outputs.thin_skip, ',${job},')`)})?` : '';
+    expect(thinArms.size, 'the W05 normalization block lists the 27 thinnable jobs').toBe(27);
     const ungated = workflowJobs.filter((job) => {
       if (exempt.has(job)) return false;
       const body = jobBodies.get(job) ?? '';
@@ -213,7 +227,7 @@ describe('ci-success gating contract', () => {
         : job === 'check-migrations'
           ? escape("if: needs.changes.outputs.code == 'true' && needs.changes.outputs.api == 'true'")
           : escape("if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'") + areaClause;
-      return !new RegExp(`^    ${expectedIf}$`, 'm').test(body);
+      return !new RegExp(`^    ${expectedIf}${thinClause(job)}$`, 'm').test(body);
     });
     expect(
       ungated,

@@ -1,4 +1,4 @@
-.PHONY: build-isolation-recovery build-isolation-recovery-windows build build-agent build-yarac build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-windows-user-helper build-winres build-windows-msi clean test install install-service uninstall-service dev-push dev-push-helper build-watchdog build-watchdog-linux build-watchdog-darwin build-watchdog-windows dev-push-watchdog dev-push-both
+.PHONY: build-isolation-recovery build-isolation-recovery-linux build-isolation-recovery-windows build-isolation-recovery-darwin build build-agent build-yarac build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-windows-user-helper build-winres build-windows-msi clean test install install-service uninstall-service dev-push dev-push-helper build-watchdog build-watchdog-linux build-watchdog-darwin build-watchdog-windows dev-push-watchdog dev-push-both
 
 VERSION ?= 0.5.0
 # Local-dev targets intentionally keep plain LDFLAGS (self-host by
@@ -28,8 +28,17 @@ build-yarac:
 build-isolation-recovery:
 	go build $(LDFLAGS) -o bin/breeze-isolation-recovery ./cmd/breeze-isolation-recovery
 
+build-isolation-recovery-linux:
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-isolation-recovery-linux-amd64 ./cmd/breeze-isolation-recovery
+
 build-isolation-recovery-windows:
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-isolation-recovery-windows-amd64.exe ./cmd/breeze-isolation-recovery
+
+# Unsigned: the pkg bundles a recovery binary only once release.yml signs and
+# notarises one (activation gate).
+build-isolation-recovery-darwin:
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-isolation-recovery-darwin-amd64 ./cmd/breeze-isolation-recovery
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-isolation-recovery-darwin-arm64 ./cmd/breeze-isolation-recovery
 
 # Build for all platforms
 build-all: build-all-agent build-all-desktop-helper build-all-backup

@@ -318,6 +318,10 @@
     "generatingToken": "Belirteç oluşturuluyor...",
     "multiFactorAuthenticationIsRequiredTo3": "Kurulum belirteçlerini oluşturmak için çok faktörlü kimlik doğrulama gereklidir.",
     "generateNewToken": "Yeni belirteç oluştur",
+    "generateNewLink": "Yeni bağlantı oluştur",
+    "cliTokenReuse": "Daha önce oluşturuldu. Tüm cihaz kayıtları kullanılmadıysa {{date}} tarihine kadar geçerlidir.",
+    "cliTokenReuseVerified": "Daha önce oluşturuldu. {{date}} tarihine kadar geçerlidir.",
+    "linkReuse": "{{platform}} için daha önce oluşturuldu. {{date}} tarihine kadar geçerlidir.",
     "generateToken": "Belirteç oluştur",
     "cliTokenNotGenerated": "Henüz belirteç yok. Siteyi, cihaz sayısını ve süreyi seçip bir belirteç oluşturun. Her belirteç etkin bir kayıt anahtarıdır.",
     "cliCommandNeedsToken": "Önce bir belirteç oluşturun. Belirteç oluşturulduğunda kurulum komutu burada görünür; o zamana kadar çalıştırılacak bir şey yok.",
@@ -430,6 +434,18 @@
         "message": "{{hostname}}'yi çıkarmak istediğinizden emin misiniz? Cihaz etkin filonuzdan çıkarılacak ve izlenmeyecektir. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
         "confirm": "Çıkar"
       },
+      "forcePermanentDelete": {
+        "confirm": "Yine de sil",
+        "reason": {
+          "agentReturned": "Daha önce bir kaldırma işlemi tamamlandı, ancak araç o zamandan beri yeniden bağlandı (yeniden yüklendi).",
+          "cancelled": "Aracı kaldırma işlemi çalışmadan önce iptal edildi.",
+          "expired": "Aracı, süresi dolmadan önce kaldırma işlemini almaya hiç geri dönmedi.",
+          "failed": "Kaldırma komutu cihazda çalıştı ancak bir hata bildirdi.",
+          "none": "Bu cihaz için aracı kaldırma işlemi sıraya alınmadı (cihaz, araç yüklü bırakılarak kaldırıldı)."
+        },
+        "risk": "{{hostname}} cihazını şimdi silmek, aracın kimse tarafından yönetilmeden yüklü ve çalışır durumda kalmasına neden olabilir. Bu işlem geri alınamaz.",
+        "title": "Aracı kaldırıldığını doğrulamadı"
+      },
       "permanentDelete": {
         "title": "{{hostname}} kalıcı olarak silinsin mi?",
         "message": "Bu işlem, bu cihaza ait tüm geçmişi siler: talepler, uyarılar, yama ve yedekleme kayıtları. Geri alınamaz.",
@@ -505,7 +521,10 @@
     "shutdown": "Kapatma",
     "deviceSettings": "Cihaz Ayarları",
     "installHomebrew": "Homebrew'u yükle",
-    "restartAgent": "Ajanı yeniden başlat"
+    "restartAgent": "Ajanı yeniden başlat",
+    "runVendorUpdates": "Üretici güncellemelerini çalıştır",
+    "runVendorUpdatesHint": "Üreticinin güncelleme aracını bu cihazda çalıştırır.",
+    "runVendorUpdatesAgentUpgradeRequired": "Ajan yükseltmesi gerekli: üretici güncellemeleri için ajan {{version}} veya üzeri gerekir"
   },
   "deviceActivityFeed": {
     "activity": "Etkinlik",
@@ -861,7 +880,9 @@
     "noComplianceResultsReportedAssignA": "Uyumluluk sonucu bildirilmedi. Bu cihaza uyumluluk kurallarını içeren bir Yapılandırma Politikası atayın veya bir sonraki değerlendirmeyi bekleyin.",
     "text": "—",
     "s": "s",
-    "assignPolicy": "Bir yapılandırma ilkesi atayın"
+    "assignPolicy": "Bir yapılandırma ilkesi atayın",
+    "notCollectedProbeLimit": "Toplanmadı (yoklama sınırı)",
+    "notCollectedProbeLimitHint": "Bu kuruluşun uyumluluk yoklama listesi dolu, bu nedenle buradaki en az bir denetim toplanmıyor. Listede yer açılana kadar değerlendirilmez, uyarı oluşturmaz ve düzeltilmez."
   },
   "deviceDetailPage": {
     "movedToOrg": "{{hostname}} {{orgName}} kuruluşuna taşındı",
@@ -942,6 +963,8 @@
     "backupStatusJobsSnapshotsAndVerification": "Yedekleme durumu, işler, anlık görüntüler ve doğrulama",
     "theOsReportsAPendingReboot": "İşletim sistemi, beklemede olan bir yeniden başlatma rapor ediyor (Windows kayıt defteri / Linux'un yeniden başlatılması gereken işaretler).",
     "rebootPending": "Yeniden başlatma bekleniyor",
+    "backupRunning": "Yedekleme çalışıyor",
+    "backupRunningTooltip": "Bu cihazda bir yedekleme çalışıyor. İlerlemeyi görmek için Yedekleme sekmesini açın.",
     "restartScheduled": "Yeniden başlatma planlandı",
     "restartInProgress": "Yeniden başlatılıyor",
     "restartScheduledFor": "Yeniden başlatma {{time}} için planlandı",
@@ -952,6 +975,7 @@
     "restartCannotBePostponed": "Ertelenemez",
     "restartSourcePatchJob": "Bir yama kurulumu tarafından istendi",
     "restartSourceMaintenanceWindow": "Bir bakım penceresi tarafından istendi",
+    "restartSourceOemUpdates": "Bir üretici güncellemesi çalıştırması tarafından istendi",
     "restartSourceManual": "Bir teknisyen tarafından istendi",
     "restartSourceUnknown": "Planlanmış yeniden başlatma",
     "agentV": "Temsilci v",
@@ -1035,6 +1059,10 @@
       "label": "onay",
       "byRing": "bağlı güncelleme halkası tarafından belirlenir",
       "manualOnly": "yalnızca el ile onaylar (bağlı güncelleme halkası yok)"
+    },
+    "containment": {
+      "extraDestinations": "Yalıtım sırasındaki ek hedefler",
+      "invalid": "Bu ilkenin sınırlama ayarları geçerli değil, bu nedenle yalıtımda ek hedef olmadan sabit varsayılanlar kullanılır."
     },
     "chainResolutionRule": "Önce seviye belirler: Cihaz, Cihaz Grubunu geçer; ardından Site, Kuruluş ve İş Ortağı gelir. Öncelik (düşük sayı kazanır) yalnızca aynı seviyedeki politikalar arasında karar verir. Üstü çizili özellikler daha yakın bir politika tarafından geçersiz kılınmıştır.",
     "featureOverriddenBy": "{{policy}} tarafından geçersiz kılındı"
@@ -1401,6 +1429,8 @@
   "deviceInfoTab": {
     "updateStuck": "{{target}} sürümüne ajan güncellemesi takılmış görünüyor: {{since}} tarihinden bu yana {{attempts}} deneme yapıldı ve cihaz hâlâ eski sürümünde. Güncelleyici her heartbeat'te yeniden deniyor; ajan günlüklerini veya hiç günlük göndermiyorsa cihazın kendisini kontrol edin.",
     "updateOfferWithheld": "Bu cihaz için güncelleme teklifleri durduruldu ({{since}} tarihinden beri): aracı sürümünün bu sunucunun sunduğu sürümü kabul ettiği doğrulanamıyor, bu nedenle mevcut sürümünde kalıyor. Sunulan sürümün yükleyicisiyle veya sürümünü bildiren bir aracı sürümüyle kurtarın.",
+    "updateOfferWithheldOs": "Bu cihaz için aracı güncellemeleri beklemeye alındı ({{since}} tarihinden beri): macOS sürümü, geçerli aracı sürümünün gerektirdiği minimum sürümün altında olduğundan yüklü aracı sürümünde kalıyor. Aracı güncellemelerini sürdürmek için macOS'u yükseltin.",
+    "updateOfferWithheldOsUnknown": "Bu cihaz için aracı güncellemeleri beklemeye alındı ({{since}} tarihinden beri): macOS sürümü belirlenemedi ve geçerli aracı sürümü minimum bir macOS sürümü gerektiriyor; bu nedenle cihaz macOS sürümünü bildirene kadar yüklü aracı sürümünde kalıyor.",
     "helperInstallIssue": {
       "awaitingServerOffer": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri): sunucu bu cihaza yüklenecek bir Breeze Assist sürümü sunmadı, bu nedenle yüklenmemiş olarak kalıyor. Bu cihazın platformu için yayımlanmış bir Breeze Assist derlemesi olup olmadığını kontrol edin.",
       "installAbandoned": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri): sunulan sürümün yüklenmesi tekrar tekrar başarısız oldu, bu nedenle ajan yeniden denemeleri duraklattı. Birkaç saat sonra veya daha yeni bir sürüm sunulduğunda yeniden deneyecek; yükleme hatası ajan günlüğünde yer alıyor.",
@@ -1438,6 +1468,19 @@
         "locked": "başka bir kurulum zaten devam ediyordu",
         "unknown": "tanınmayan bir hata oluştu"
       }
+    },
+    "controlPlaneBlock": {
+      "title": "Bir ağ filtresi tarafından engellendi",
+      "titleUntrustedCertificate": "Sunucu sertifikasına güvenilmiyor",
+      "webFilter": "Bu cihazın ağındaki bir ağ güvenlik filtresi Breeze sunucusu yerine yanıt veriyor ({{locationHost}}). Bu genellikle internet sağlayıcısının modemindeki bir güvenlik özelliği, bir güvenlik duvarı web filtresi veya bir ağ oturum açma sayfasıdır.",
+      "captivePortal": "Bu cihazın ağı, bağlantıları bir oturum açma sayfasında (captive portal) tutuyor.",
+      "plaintextUnknown": "Bu cihazın ağındaki bir şey, Breeze bağlantısına TLS yerine şifrelenmemiş HTTP ile yanıt verdi.",
+      "untrustedCertificate": "Breeze sunucusuna yapılan bağlantı, bu cihazın güvenmediği bir sertifika sundu (veren: {{certIssuer}}). Bu genellikle bir güvenlik duvarı veya proxy tarafından yapılan TLS denetimi, kendi barındırılan bir sunucudaki bir sertifika sorunu ya da bu cihazdaki güncel olmayan güvenilir kök sertifika deposudur. Breeze bunu atlamaz.",
+      "viaEch": "Şu anda Encrypted Client Hello üzerinden erişilebilir.",
+      "cleared": "{{from}} ile {{to}} arasında engellendi.",
+      "lastKnown": "Son bildirim: {{time}}. Cihaz o zamandan beri bildirimde bulunmadı, bu nedenle bu artık geçerli olmayabilir.",
+      "howToFix": "Nasıl düzeltilir",
+      "noDetail": "ayrıntı yok"
     },
     "logShipping": {
       "label": "Günlük gönderimi",
@@ -1485,6 +1528,7 @@
     "cancel": "İptal",
     "editDisplayName": "Görünen adı düzenle",
     "serialNumber": "Seri Numarası",
+    "productSku": "Ürün Numarası",
     "manufacturer": "Üretici",
     "model": "Modeli",
     "deviceRole": "Cihaz Rolü",
@@ -1634,6 +1678,12 @@
     "online": "Çevrimiçi"
   },
   "deviceList": {
+    "diskUsage": "Disk kullanımı",
+    "diskUsageScope": "Gösterilecek diskler",
+    "allDisks": "Tüm diskler",
+    "osDiskOnly": "Yalnızca sistem diski",
+    "sortByDiskUsage": "Disk kullanımına göre sırala (gösterilen en yüksek kullanım)",
+    "osDiskUsageUnavailable": "Aracı henüz sistem diskini belirlemedi.",
     "selectedComposition": "{{agent}} ajanlı, {{network}} ağ",
     "agentOnlyBulkAction": "Yalnızca ajanlı cihazlar için geçerlidir",
     "eligibleOfSelected": "{{count}} / {{total}}",
@@ -1654,6 +1704,8 @@
       "ram": "RAM %'si",
       "lastSeen": "Son Görülme",
       "serial": "Seri No",
+      "productSku": "Ürün Numarası",
+      "hardwareModel": "Model",
       "assetTag": "Varlık Etiketi",
       "location": "Konum",
       "source": "Kaynak"
@@ -1671,6 +1723,8 @@
       "ram": "RAM kullanımına göre sırala",
       "lastSeen": "Son görülme zamanına göre sırala",
       "serial": "Seri numarasına göre sırala",
+      "productSku": "Ürün numarasına göre sırala",
+      "hardwareModel": "Modele göre sırala",
       "assetTag": "Varlık etiketine göre sırala",
       "location": "Konuma göre sırala",
       "source": "Kaynağa göre sırala"
@@ -1818,6 +1872,8 @@
     "updateStuck": "Güncelleme takıldı",
     "updateStuckTooltip": "Bu cihaz bir saatten uzun süredir {{target}} sürümüne ajan güncellemesini tamamlayamadan yeniden deniyor.",
     "updateWithheldTooltip": "Sunucu, aracı sürümünün sunulan sürümü kabul ettiği doğrulanamadığı için bu cihaza güncelleme sunmuyor. Kurtarılana kadar mevcut sürümünde kalır.",
+    "updateWithheldTooltipOs": "Bu cihazın macOS sürümü, geçerli aracı sürümünün gerektirdiği minimum sürümün altında olduğu için güncellemeler beklemeye alındı.",
+    "updateWithheldTooltipOsUnknown": "Bu cihazın macOS sürümü belirlenemediği ve geçerli aracı sürümü minimum bir macOS sürümü gerektirdiği için güncellemeler beklemeye alındı.",
     "helperNotInstalled": "Yüklü değil",
     "helperUnavailable": "Assist kullanılamıyor",
     "helperInstallIssueTooltip": {
@@ -1828,6 +1884,9 @@
       "unmanagedInstall": "Breeze Assist, Breeze tarafından yüklenmedi ve dağıtım kapalı, bu nedenle ajan ona dokunmuyor.",
       "unknown": "Breeze Assist etkin ancak yüklü değil."
     },
+    "controlPlaneBlockBadge": "Ağ filtresi",
+    "controlPlaneBlockBadgeCertificate": "Sertifikaya güvenilmiyor",
+    "controlPlaneBlockLastKnownTooltip": "Son bildirim: {{time}}; cihaz o zamandan beri bildirimde bulunmadı.",
     "agentVersionRelation": {
       "equalTooltip": "Etkin sürümle eşleşiyor: {{version}}",
       "aheadTooltip": "{{version}} sabitlemesinin ilerisinde",
@@ -2116,6 +2175,8 @@
       "deferredUntil": "{{date}} tarihinde otomatik onaylanır",
       "deferredUntilTitle": "{{ring}} güncelleme halkası yeni yamaları erteleme süresi boyunca bekletir. Bu yama {{date}} tarihinde onaylanır ve sonraki zamanlanmış yama çalıştırmasıyla yüklenir.",
       "excluded": "İlke tarafından hariç tutuldu",
+      "managedByVendorUpdates": "Üretici güncellemeleri tarafından yönetiliyor",
+      "managedByVendorUpdatesTitle": "Üreticinin güncelleme aracı bunu bu cihaza sağlıyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlıyor.",
       "excludedSourceTitle": "Yama ilkesinin kaynakları bu yamayı kapsamıyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedCategoryTitle": "{{ring}} güncelleme halkası bu yamanın kategorisini hariç tutuyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedAppRuleTitle": "Bağlantılı Güncelleme Halkasındaki bir uygulama engelleme veya sabitleme kuralı bu yamayı bekletiyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
@@ -2500,9 +2561,9 @@
       "couldNotQueue": "{{action}} sıraya alınamadı",
       "updateVersionQueued": "{{version}} güncellemesi \"{{name}}\" için sıraya alındı"
     },
-    "uninstallTitle": "Başlığı Kaldır",
+    "uninstallTitle": "Bu paketi kaldır",
     "unknownSoftware": "Bilinmeyen yazılım",
-    "updateTitle": "Başlığı Güncelle",
+    "updateTitle": "Bu paket için bir güncellemeyi kuyruğa al",
     "updatesAvailable": "{{count}} güncellemeler mevcut",
     "updatesAvailable_one": "{{count}} güncellemesi mevcut",
     "updatesAvailable_other": "{{count}} güncellemeler mevcut"
@@ -2534,7 +2595,7 @@
       "load": "Yükle",
       "mitigate": "Azaltma",
       "reopen": "Yeniden aç",
-      "scheduleRemediation": "Düzeltmeyi Planlayın"
+      "scheduleRemediation": "Düzeltme planlanamadı"
     },
     "groupSummary": "{{cves}} CVE'ler · {{findings}} bulgular · {{patchReady}} yamaya hazır",
     "hideFindings": "Bulguları Gizle",
@@ -2680,13 +2741,17 @@
       "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — hiçbir cihaz gösterilmiyor. Yeniden denemek için filtreyi düzenleyin veya temizleyin.",
       "agentOnlyAction": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Ağ cihazlarının aracısı yoktur ve atlanmıştır.",
       "agentOnlyActionManual": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Manuel varlıkların aracısı yoktur.",
-      "alreadyPendingTail": "Zaten Bekleyen Kuyruk",
-      "bulkActionFailed": "Toplu İşlem Başarısız Oldu",
+      "alreadyPendingTail": ", {{count}} zaten beklemede",
+      "bulkActionFailed": "Toplu {{action}} işlemi başarısız oldu",
       "bulkMaintenanceSuccess": "{{count}} cihazlar {{verb}} bakım modu",
       "bulkMaintenanceSuccess_one": "{{count}} cihaz {{verb}} bakım modu",
       "bulkMaintenanceSuccess_other": "{{count}} cihazlar {{verb}} bakım modu",
       "bulkPurgeFailed": "Kalıcı silme başarısız: {{reason}}",
-      "bulkPurgeNoneDeleted": "Hiçbir cihaz silinmedi: {{reasons}}",
+      "bulkPurgeNoneDeleted": "Hiçbir cihaz silinmedi. {{reasons}}",
+      "bulkPurgeSkipOther_one": "{{count}} atlandı, neden: {{code}}.",
+      "bulkPurgeSkipOther_other": "{{count}} atlandı, neden: {{code}}.",
+      "bulkPurgeSkipUninstallNotConfirmed_one": "{{count}} atlandı, çünkü aracı kaldırıldığını hiç doğrulamadı. Cihaz sayfasından ayrı olarak silin.",
+      "bulkPurgeSkipUninstallNotConfirmed_other": "{{count}} atlandı, çünkü araçları kaldırıldığını hiç doğrulamadı. Bunları cihaz sayfasından tek tek silin.",
       "bulkWakeAllFailed": "Toplu Uyandırma Hepsi Başarısız",
       "bulkWakeSent": "Toplu Uyandırma Gönderildi",
       "bulkWakeSomeFailed": "Toplu Uyandırma Bazıları Başarısız Oldu",
@@ -2698,14 +2763,14 @@
       "decommissionFailed": "Çıkarma Başarısız",
       "decommissioned": "Çıkarıldı",
       "decommissioning": "Çıkarılıyor",
-      "deleteFailed": "Silme Başarısız",
+      "deleteFailed": "{{hostname}} silinemedi",
       "deviceError": "Cihaz Hatası",
-      "deviceOnline": "Cihaz Çevrimiçi",
-      "inventoryRefreshRequested": "Envanter Yenileme İstendi",
+      "deviceOnline": "{{hostname}} artık çevrimiçi.",
+      "inventoryRefreshRequested": "{{hostname}} için envanter yenilemesi istendi. Güncel veriler 1–2 dakika içinde hazır olur.",
       "listTruncated": "Liste Kesildi",
       "maintenanceOff": "Bakım Kapalı",
       "maintenanceOn": "Bakım Açık",
-      "multibootLinked": "Çoklu Önyükleme Bağlantılı",
+      "multibootLinked": "{{count}} cihaz çoklu önyükleme profilleri olarak bağlandı.",
       "networkSkipped_one": "1 ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
       "networkSkipped_other": "{{count}} ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
       "networkSkipped": "{{count}} ağ cihazı atlandı — bu işlem yalnızca ajanlı cihazlar için geçerlidir.",
@@ -2714,15 +2779,15 @@
       "permanentlyDeleted": "{{hostname}} kalıcı olarak silindi",
       "refreshFailed": "Cihazlar yenilenemedi. Gösterilen liste güncel olmayabilir.",
       "restored": "Yenilendi",
-      "scriptQueueFailed": "Komut Dosyası Sırası Başarısız",
-      "scriptQueuedMany": "Komut Dosyası Çok Sayıda Sıraya Alındı",
-      "scriptQueuedOne": "Komut Dosyası Sıraya Alındı Bir",
-      "selectDeviceForScript": "Komut Dosyası İçin Cihaz Seçin",
-      "selectTwoForMultiboot": "Çoklu Önyükleme İçin İki Seçin",
-      "unknownAction": "Bilinmeyen Eylem",
-      "unknownBulkAction": "Bilinmeyen Toplu İşlem",
-      "wakeSentWatching": "Uyandırma İzlemeye Gönderildi",
-      "wakeTimeout": "Uyanma Zaman Aşımı",
+      "scriptQueueFailed": "Betik kuyruğa alınamadı",
+      "scriptQueuedMany": "\"{{script}}\" betiği {{count}} cihaz için kuyruğa alındı",
+      "scriptQueuedOne": "\"{{script}}\" betiği {{hostname}} için kuyruğa alındı",
+      "selectDeviceForScript": "Betik çalıştırmak için en az bir cihaz seçin",
+      "selectTwoForMultiboot": "Çoklu önyükleme profilleri olarak bağlamak için en az iki cihaz seçin.",
+      "unknownAction": "Bilinmeyen eylem: {{action}}",
+      "unknownBulkAction": "Bilinmeyen toplu eylem: {{action}}",
+      "wakeSentWatching": "Wake-on-LAN, {{relay}} üzerinden {{hostname}} cihazına gönderildi ({{broadcast}}). Çevrimiçi olması bekleniyor…",
+      "wakeTimeout": "{{hostname}} 4 dakika içinde çevrimiçi olmadı. Ethernet + BIOS WoL ayarını kontrol edin.",
       "queuedOfflineTail": ", {{count}} çevrimdışı cihaz için sıraya alındı",
       "runsWhenOnline": "Cihaz çevrimiçi olduğunda çalışır — son geçerlilik: {{date}}",
       "runsWhenOnlineNoExpiry": "Cihaz çevrimiçi olduğunda çalışır",
@@ -2753,8 +2818,8 @@
       "bulkMaintenanceSomeFailed_other": "{{count}} cihaz {{verb}} bakım modu; {{failed}} başarısız oldu: {{devices}}",
       "bulkPurgeDone_one": "{{count}} cihaz kalıcı olarak silindi",
       "bulkPurgeDone_other": "{{count}} cihaz kalıcı olarak silindi",
-      "bulkPurgeDoneWithSkips_one": "{{count}} cihaz kalıcı olarak silindi; {{skipped}} atlandı ({{reasons}})",
-      "bulkPurgeDoneWithSkips_other": "{{count}} cihaz kalıcı olarak silindi; {{skipped}} atlandı ({{reasons}})",
+      "bulkPurgeDoneWithSkips_one": "{{count}} cihaz kalıcı olarak silindi; {{reasons}}",
+      "bulkPurgeDoneWithSkips_other": "{{count}} cihaz kalıcı olarak silindi; {{reasons}}",
       "bulkPurgeStarted_one": "{{count}} cihaz kalıcı olarak siliniyor…",
       "bulkPurgeStarted_other": "{{count}} cihaz kalıcı olarak siliniyor…",
       "bulkRestoreAllFailed_one": "{{count}} cihazın tamamı geri yüklenemedi",
@@ -2774,7 +2839,13 @@
       "bulkMoveSiteNotMovedForbidden": "{{devices}} (mevcut siteye veya hedef siteye erişiminiz yok)",
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (artık bulunamıyor; silinmiş olabilir)",
       "bulkMoveSiteNotMovedError": "{{devices}} (beklenmeyen bir hata oluştu; yeniden deneyin)",
-      "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı"
+      "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı",
+      "bulkWakeResult": "{{sent}} cihaza gönderildi, {{skipped}} cihaz atlandı",
+      "bulkWakePolicySkipped": "{{count}} cihaz Wake-on-LAN ilkesi nedeniyle atlandı",
+      "bulkWakeAllBlockedByPolicy": "Uyandırma gönderilmedi: {{count}} cihaz Wake-on-LAN ilkesi tarafından engellendi",
+      "bulkWakeLookupFailedSkipped": "{{count}} cihaz denetlenemedi, tekrar deneyin",
+      "bulkWakeAllLookupFailed": "Uyandırma gönderilmedi: {{count}} cihaz denetlenemedi, tekrar deneyin",
+      "scriptQueuedOneOffline": "\"{{script}}\" betiği {{hostname}} için kuyruğa alındı — cihaz yeniden bağlandığında çalışacak"
     },
     "tryAgain": "Tekrar deneyin",
     "unknownDevice": "Bilinmiyor",
@@ -2813,7 +2884,20 @@
     "emptyOrgTitleUnnamed": "Bu kuruluşta henüz cihaz yok",
     "emptyOrgDescription": "İzlemeye başlamak için ajanı bu kuruluştaki bir makineye kurun veya filonuzun geri kalanını görmek için tüm kuruluşlara geçin.",
     "viewAllOrganizations": "Tüm kuruluşları görüntüle",
-    "importFromRmmShort": "İçe aktar"
+    "importFromRmmShort": "İçe aktar",
+    "wakeSkipReasons": {
+      "online": "zaten çevrimiçi",
+      "relayUnavailable": "aynı konumda çevrimiçi aracı yok",
+      "missingMac": "kayıtlı MAC adresi yok (aracı henüz bağlantı kurmadı)",
+      "missingSubnet": "kullanılabilir IPv4 geçmişi yok",
+      "ipv6": "yalnızca IPv6 geçmişi var",
+      "relayDisconnected": "gönderim sırasında aktarıcı bağlantısı kesildi — yeniden deneyin",
+      "missingTarget": "bulunamadı veya erişim reddedildi",
+      "removed": "kaldırıldı",
+      "invalidRelay": "aktarıcı seçimi geçersiz",
+      "policyNotReady": "Wake-on-LAN ilkesi tarafından engellendi (hazır değil)",
+      "policyLookupFailed": "Wake-on-LAN ilkesi denetlenemedi — yeniden deneyin"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Filtre ekle",
@@ -2894,6 +2978,13 @@
       "logShippingFailing": "Günlük gönderimi başarısız",
       "networkIsolation": {
         "active": "Yalıtılmış"
+      },
+      "helperVersion": "Yardımcı Sürümü",
+      "deviceFunction": "Cihaz İşlevi",
+      "hostsWorkloads": "İş Yüklerini Barındırır",
+      "workloadRuntimes": "İş Yükü Çalışma Zamanları",
+      "warranty": {
+        "status": "Garanti Durumu"
       }
     }
   },
@@ -3682,9 +3773,9 @@
       "noneRecorded": "Bu cihaz için henüz herhangi bir proses örneği kaydedilmedi. Temsilci bunları periyodik olarak toplar; raporlandıktan sonra tekrar kontrol edin."
     },
     "errors": {
-      "liveProcesses": "Canlı Süreçler",
-      "loadProcesses": "İşlemleri Yükle",
-      "processSample": "Süreç Örneği"
+      "liveProcesses": "Canlı işlemler alınamadı",
+      "loadProcesses": "İşlemler yüklenemedi",
+      "processSample": "İşlem örneği alınamadı"
     },
     "live": "Canlı",
     "subtitle": {
@@ -3725,6 +3816,7 @@
     "deleteTitle": "Sil \"{{name}}\"",
     "empty": "Henüz kayıtlı görünüm yok. Bir filtre oluşturun ve ardından bunu görünüm olarak kaydedin.",
     "manageAll": "Tüm görünümleri yönet",
+    "ownerOrgHint": "Görünümler tek bir kuruluşa aittir. Bu görünümün hangi kuruluşa ait olacağını seçin.",
     "saveCurrent": "Geçerli olanı görünüm olarak kaydet…",
     "saveCurrentTitle": "Geçerli filtreyi görünüm olarak kaydet",
     "setDefaultTitle": "Varsayılan görünüm olarak ayarla",
@@ -3783,7 +3875,11 @@
     "oldDeviceUnavailable": "Eski cihaz kaydı artık mevcut değil.",
     "title": "Olası mükerrer kayıt",
     "unknownDevice": "önceki cihaz",
-    "viewOldDevice": "Eski cihazı görüntüle"
+    "viewOldDevice": "Eski cihazı görüntüle",
+    "reattach": "Yeniden bağla",
+    "reattachPending": "Eski kayda bekleyen bir yeniden bağlama var: yeni kurulum, ajanı bağlandığında işlemi tamamlar. İstek {{expiresAt}} tarihinde sona erer.",
+    "reviewPending": "Olası bir yeniden kurulum iş ortağı incelemesini bekliyor.",
+    "reattachPendingOther": "Bu cihaz için bekleyen bir yeniden bağlama var. İstek {{expiresAt}} tarihinde sona erer."
   },
   "fleetPosture": {
     "securityUnavailable": "Bu görünüm için uzaktan erişim güvenliği bulguları yüklenemedi.",
@@ -4216,7 +4312,12 @@
       "PARTNER_DEVICE_LIMIT_REACHED": "Cihaz sınırına ulaşıldı",
       "STEP_UP_REQUIRED": "Doğrulama gerekli",
       "ASSIGNMENT_FAILED": "Başarısız"
-    }
+    },
+    "modeLegend": "Bu cihazla ne yapılacak",
+    "modeAssign": "Yeni cihaz olarak ata",
+    "modeReattach": "{{hostname}} kaydına yeniden bağla (mevcut bir kaydın yeniden kurulumu)",
+    "reattachPending": "Bu cihaz için bekleyen bir yeniden bağlama var: yeni kurulum, ajanı bağlandığında işlemi tamamlar. İstek {{expiresAt}} tarihinde sona erer.",
+    "cancelReattachConfirm": "Bu cihazı yeni olarak atamak bekleyen yeniden bağlamayı iptal eder. Anladım."
   },
   "timeFleet": {
     "title": "Saat eşitleme",
@@ -4805,6 +4906,7 @@
     "startDescription": "Breeze yönetim iletişimi dışındaki ağ trafiğini engelleyin.",
     "releaseDescription": "Breeze yalıtım kurallarının kaldırılmasını isteyin. Çevrimdışı cihaz yeniden bağlandığında isteği alır.",
     "serverWarning": "Bu bir sunucu işletim sistemidir. Yalıtım diğer cihazların hizmetlerini kesintiye uğratabilir.",
+    "deadManUnsupported": "Bu cihazın kısıtlama ilkesi bir dead-man serbest bırakma tanımlıyor, ancak aracı sürümü bunu desteklemiyor. Cihaz bu olmadan yalıtılacak.",
     "reason": "Gerekçe",
     "ttlHours": "Süre (saat)",
     "incidentId": "Mevcut olay kimliği (isteğe bağlı)",
@@ -4828,6 +4930,20 @@
     "codeNext": "Sonraki saatin kodu",
     "codeValidUntil": "Geçerli kodun son kullanımı: {{date}}",
     "codeError": "Acil durum kodları yüklenemedi. Yeniden deneyin.",
+    "tabCode": "Acil durum kodu",
+    "tabToken": "Serbest bırakma belirteci",
+    "issueToken": "Serbest bırakma belirteci oluştur",
+    "hideToken": "Belirteci gizle",
+    "tokenLabel": "Serbest bırakma belirteci",
+    "copyToken": "Belirteci kopyala",
+    "tokenCopied": "Kopyalandı",
+    "tokenCopyError": "Belirteç kopyalanamadı. Seçip elle kopyalayın.",
+    "tokenQrAlt": "Serbest bırakma belirtecini içeren QR kodu",
+    "tokenValidUntil": "Belirteç {{date}} tarihine kadar geçerli",
+    "tokenCommandHint": "İzole cihazda bu komutu yönetici veya root olarak çalıştırın ve <token> yerine belirteci yazın:",
+    "tokenError": "Serbest bırakma belirteci oluşturulamadı. Yeniden deneyin.",
+    "tokenUnavailable": "Bu izolasyon için serbest bırakma belirteci kullanılamıyor.",
+    "codesDisabledNote": "Bu cihaz için acil durum kodları kapalı. Bunun yerine imzalı bir serbest bırakma belirteci kullanın.",
     "incidentHeading": "Ağ yalıtımı",
     "retry": "Yalıtım durumunu yeniden dene",
     "filterLabel": "Yalıtılmış",
@@ -4861,6 +4977,11 @@
       "isolation_not_found": "Bu yalıtım kaydı bulunamadı.",
       "relay_unavailable": "Uzak masaüstü aktarıcısı yok. Aktarma seçeneğini kapatın veya TURN yapılandırın.",
       "invalid_allowlist": "Sunucunun yalıtım izin listesi geçersiz. Yöneticinize başvurun.",
+      "invalid_allowlist_server_url_missing": "Bu cihazın aracı sunucu URL’si yok ve sunucuda AGENT_SERVER_URL ayarlanmamış. AGENT_SERVER_URL değerini ayarlayıp yeniden deneyin.",
+      "invalid_allowlist_server_url_invalid": "Bu cihazın aracı sunucu URL’si geçerli bir http(s) URL’si değil. Cihazın sunucu URL’sini veya AGENT_SERVER_URL değerini kontrol edin.",
+      "invalid_allowlist_backup_url_invalid": "AGENT_BACKUP_SERVER_URL geçerli bir http(s) URL’si değil. Düzeltip yeniden deneyin.",
+      "invalid_allowlist_relay_config_invalid": "TURN aktarıcı ayarları (TURN_HOST, TURN_TLS_HOST, TURN_PORT, TURN_TLS_PORT) geçersiz. Bunları düzeltin veya aktarıcı seçeneğini kapatın.",
+      "invalid_allowlist_policy_invalid": "Kayıtlı sınırlama ilkesinde geçersiz veya çok büyük bir izin listesi girdisi var. İlkenin izin verilen hedeflerini gözden geçirin.",
       "isolation_conflict": "Yalıtım kaydı değişti. Durumu yenileyip yeniden deneyin.",
       "isolation_secret_unavailable": "Kurtarma kodları geçici olarak kullanılamıyor. Yöneticinize başvurun.",
       "approval_mismatch": "Onay bu yalıtım isteğiyle eşleşmiyor.",
@@ -4869,5 +4990,213 @@
       "device_pending_assignment": "Yalıtımı başlatmadan önce bu cihazı bir kuruluşa atayın.",
       "backup_helper_update_required": "Yalıtımı başlatmadan önce yedekleme yardımcısını güncelleyin."
     }
+  },
+  "runVendorUpdatesDialog": {
+    "title": "Üretici güncellemelerini çalıştır",
+    "description": "{{vendor}} güncelleme aracını şimdi {{hostname}} üzerinde çalıştırır. Sürücüleri ve uygulamaları kurabilir, BIOS ve donanım yazılımını güncelleyebilir.",
+    "rebootLegend": "Güncellemeler yeniden başlatma gerektiriyorsa",
+    "whenFinishedLabel": "Bittiğinde yeniden başlat",
+    "whenFinishedDescription": "Breeze, çalıştırmadan sonra cihazı yama ilkesinin belirlediği uyarıyla yeniden başlatır. BIOS ve donanım yazılımı güncellemeleri de dahildir.",
+    "leaveToMeLabel": "Yeniden başlatmayı bana bırak",
+    "leaveToMeDescription": "Breeze cihazı yeniden başlatmaz. Güncellemeleri tamamlamak için biri onu daha sonra yeniden başlatır.",
+    "skippedNote": "Bu seçimle BIOS ve donanım yazılımı güncellemeleri atlanır, çünkü Breeze'in denetlediği bir yeniden başlatma gerektirirler. Sürücüler ve uygulamalar yine de çalışır.",
+    "confirm": "Güncellemeleri çalıştır",
+    "submitting": "Başlatılıyor...",
+    "cancel": "İptal",
+    "genericError": "Bu cihazda üretici güncellemeleri başlatılamadı.",
+    "queued": "{{hostname}} üzerinde üretici güncellemeleri başlatıldı.",
+    "queuedSkipped": "{{hostname}} üzerinde üretici güncellemeleri başlatıldı. BIOS ve donanım yazılımı atlandı.",
+    "refusal": {
+      "flagOff": "Üretici güncellemeleri bu kuruluş için açık değil.",
+      "laneClosed": "Üretici güncellemeleri bu cihazın üreticisi için henüz kullanılamıyor.",
+      "killSwitch": "Üretici güncellemeleri bu cihazın üreticisi için duraklatıldı.",
+      "agentTooOld": "Bu cihazın ajanı üretici güncellemeleri için çok eski. Ajanı {{version}} veya üzeri bir sürüme güncelleyin.",
+      "notApplicable": "Üretici güncellemeleri bu cihaz için geçerli değil.",
+      "notSupported": "Üreticinin aracı bu modeli desteklemiyor.",
+      "ephemeral": "Üretici güncellemeleri Quick Support cihazlarında çalışmaz.",
+      "parked": "Üretici güncellemelerini çalıştırmadan önce bu cihazı bir kuruluşa atayın.",
+      "offline": "Cihaz çevrimiçi değil. Üretici güncellemeleri yalnızca şu anda çevrimiçi olan bir cihazda başlar.",
+      "runInFlight": "Bu cihazda zaten bir üretici güncellemesi çalıştırması sürüyor.",
+      "noOpenCategories": "Bu seçimle hiçbir şey çalıştırılamaz. Burada yalnızca BIOS ve donanım yazılımı kullanılabilir: Bittiğinde yeniden başlat seçeneğini seçin.",
+      "decommissioned": "Bu cihaz hizmet dışı bırakılmış, bu yüzden ona hiçbir şey gönderilemez.",
+      "cancelledAtClaim": "Çalıştırma cihaza ulaşmadan iptal edildi. Yeniden deneyin."
+    },
+    "observeQueued": "{{hostname}} üzerinde salt okunur üretici denetimi başlatıldı. Hiçbir şey yüklenmez."
+  },
+  "vendorUpdates": {
+    "title": "Üretici güncellemeleri",
+    "refreshState": "Yenile",
+    "loadError": "Bu cihaz için üretici güncellemeleri yüklenemedi.",
+    "retryLoad": "Yeniden dene",
+    "empty": "Bu cihazda henüz hiç üretici güncellemesi çalıştırılmadı.",
+    "state": {
+      "upToDate": "Güncel",
+      "overdue": "Gecikmiş",
+      "failing": "Başarısız",
+      "notSupported": "Desteklenmiyor",
+      "notManaged": "Yönetilmiyor",
+      "waitingForReboot": "Yeniden başlatma bekleniyor",
+      "rebootOverdue": "Yeniden başlatma gecikmiş"
+    },
+    "stateDescription": {
+      "upToDate": "Son zamanlanmış çalıştırma tamamlandı.",
+      "overdue": "Zamanlamanın vakti geldiğinden beri hiçbir çalıştırma tamamlanmadı.",
+      "failing": "Son çalıştırma tamamlanmadı. Ne yapılacağı için aşağıya bakın.",
+      "notSupported": "Üreticinin aracı bu modeli desteklemiyor.",
+      "notManaged": "Hiçbir ilke burada üretici güncellemelerini zamanlamıyor. Yine de isteğe bağlı olarak çalıştırabilirsiniz.",
+      "notOffered": "Üretici güncellemeleri şu anda bu cihazda kullanılamıyor.",
+      "waitingForReboot": "Güncellemeler kuruldu ve bir sonraki yeniden başlatmadan sonra etkinleşir.",
+      "rebootOverdue": "Bir yeniden başlatma üç günden uzun süredir bekliyor."
+    },
+    "lastRunHeading": "Son çalıştırma",
+    "outcomeLabel": "Sonuç",
+    "noOutcomeYet": "Cihazın bildirmesi bekleniyor",
+    "errorCodeLabel": "Hata kodu",
+    "toolVersionLabel": "Araç sürümü",
+    "lastAttemptLabel": "Başlatıldı",
+    "installedLabel": "Kurulan",
+    "failedLabel": "Başarısız",
+    "rebootLabel": "Yeniden başlatma",
+    "rebootPendingSince": "{{date}} tarihinden beri yeniden başlatma gerekiyor",
+    "rebootNotNeeded": "Yeniden başlatma gerekmiyor",
+    "outcome": {
+      "success": "Başarılı",
+      "successRebootRequired": "Başarılı, yeniden başlatma gerekiyor",
+      "noUpdates": "Güncelleme bulunamadı",
+      "partial": "Kısmen kuruldu",
+      "failed": "Tamamlanmadı",
+      "notSupported": "Model desteklenmiyor",
+      "toolUnavailable": "Araç kullanılamıyor",
+      "blockedOnBattery": "Engellendi: pil kullanılıyor",
+      "blockedRebootPending": "Engellendi: yeniden başlatma bekliyor",
+      "blockedNoRecoveryKey": "Engellendi: kurtarma anahtarı yok",
+      "retryLater": "Yeniden denenecek",
+      "interrupted": "Yarıda kesildi"
+    },
+    "outcomeHelp": {
+      "partial": "Bazı güncellemeler kuruldu, bazıları kurulmadı. Aşağıdaki başarısız öğeleri kontrol edin, ardından üretici güncellemelerini yeniden çalıştırın.",
+      "failed": "Üreticinin aracı tamamlanmadı. Hata kodunu kontrol edin, ardından üretici güncellemelerini yeniden çalıştırın.",
+      "notSupported": "Üreticinin aracı bu modeli desteklemiyor; bu yüzden Breeze, araç sürümü veya model değişene kadar sormayı bırakır.",
+      "toolUnavailable": "Üreticinin güncelleme aracı kurulu değil ve indirilemedi. Cihazın üreticinin indirme sitesine ulaşabildiğini kontrol edin.",
+      "blockedOnBattery": "BIOS ve donanım yazılımı yalnızca elektrik prizine takılıyken ve yeterli pil varken çalışır. Cihazı prize takın, ardından üretici güncellemelerini yeniden çalıştırın.",
+      "blockedRebootPending": "Cihazda zaten bekleyen bir yeniden başlatma var. Cihaz yeniden başladıktan sonra üretici güncellemelerini yeniden çalıştırın.",
+      "blockedNoRecoveryKey": "Breeze bu cihazın güncel BitLocker kurtarma anahtarına sahip olana kadar BIOS ve donanım yazılımı engelli kalır. Anahtarı Breeze'e yedekleyin, ardından üretici güncellemelerini yeniden çalıştırın.",
+      "retryLater": "Üreticinin aracı daha sonra yeniden denemeyi istedi. Breeze cihazda hiçbir şeyi değiştirmedi.",
+      "interrupted": "Çalıştırma bitmeden durdu; genellikle cihaz yeniden başladığı veya ajan durduğu için. Üretici güncellemelerini yeniden çalıştırın."
+    },
+    "categoriesHeading": "Bu cihazda neler çalıştırılabilir",
+    "category": {
+      "bios": "BIOS",
+      "firmware": "Donanım yazılımı",
+      "driver": "Sürücüler",
+      "application": "Uygulamalar"
+    },
+    "gateOpen": "Kullanılabilir",
+    "gateClosed": "{{vendor}} için henüz kullanılamıyor. Breeze her güncelleme türünü yalnızca gerçek donanımda test ettikten sonra açar.",
+    "itemResult": {
+      "installed": "kuruldu",
+      "failed": "başarısız",
+      "skipped": "atlandı"
+    },
+    "history": {
+      "heading": "Çalıştırma geçmişi",
+      "loadError": "Çalıştırma geçmişi yüklenemedi.",
+      "noResult": "Okunabilir sonuç yok",
+      "bySchedule": "Zamanlama",
+      "byUnknown": "Bilinmiyor",
+      "range": "{{from}}-{{to}} / {{total}}",
+      "previousPage": "Önceki",
+      "nextPage": "Sonraki",
+      "observed": "Gözlemlendi",
+      "observedTools": "Bulunan araçlar: {{tools}}",
+      "observedNoTools": "Üretici aracı bulunamadı",
+      "observedVerdict": {
+        "observed": "{{vendor}}: salt okunur denetim tamamlandı",
+        "observedWithErrors": "{{vendor}}: salt okunur denetim tamamlandı, bazı okumalar başarısız oldu",
+        "platformUnsupported": "{{vendor}}: bu model üreticinin kurumsal araçları tarafından desteklenmiyor",
+        "invalid": "{{vendor}}: denetim sonucu okunamadı"
+      }
+    }
+  },
+  "reinstalledBadge": {
+    "label": "{{date}} tarihinde yeniden kuruldu",
+    "title": "Bu kayıt {{at}} tarihinde yeniden kurulan bir makineyi devraldı. Yeni kurulum envanterini yeniden oluşturdu."
+  },
+  "reattachDialog": {
+    "title": "{{target}} kaydına yeniden bağla",
+    "description": "Yeni kurulum {{source}} için mevcut {{target}} kaydını kullanın; geçmişi, ilkeleri ve yapılandırması korunur.",
+    "newInstall": "Yeni kurulum",
+    "existingRecord": "Mevcut kayıt",
+    "holdingArea": "Bekleme alanı",
+    "fields": {
+      "hostname": "Ana bilgisayar adı",
+      "os": "İşletim sistemi",
+      "model": "Üretici ve model",
+      "serial": "Seri numarası",
+      "systemUuid": "Sistem UUID’si",
+      "agentVersion": "Ajan sürümü",
+      "place": "Kuruluş / konum",
+      "enrolledAt": "Kaydedildi",
+      "lastSeenAt": "Son görülme"
+    },
+    "matchedOn": "Eşleşme: {{evidence}}",
+    "evidence": {
+      "systemUuid": "sistem UUID’si",
+      "serial": "seri numarası ve üretici",
+      "hostname": "yalnızca ana bilgisayar adı",
+      "other": "bildirilen tanımlayıcılar"
+    },
+    "evidenceNoticeHint": "Cihazın bildirdiği donanım tanımlayıcıları. Doğrulanmadı.",
+    "evidenceNoticeTpm": "Eski kurulumun sahip olduğunu kanıtladığı TPM onay anahtarının aynısı. Bu, aynı fiziksel TPM’yi değil anahtar sürekliliğini kanıtlar; klonlanmış sanal TPM’ler anahtarları paylaşır.",
+    "consequences": "Yeni kurulum {{target}} envanterini yeniden oluşturur. Eski kurulumun kuyruktaki işleri, yetkileri ve oturumları iptal edilir ve {{source}} kaydı kullanımdan kaldırılır.",
+    "possession": "Yeni kurulumun {{target}} kaydının tanımladığı makinede çalıştığını Breeze dışında doğruladım.",
+    "acknowledgeOsChange": "Yeni kurulum {{sourceOs}}, mevcut kayıt {{targetOs}} bildiriyor. İşletim sisteminin değiştiğini onaylıyorum.",
+    "restoreDecommissioned": "{{target}} kaldırılmıştı. Bu yeniden bağlamanın parçası olarak geri yükle.",
+    "confirmNameLabel": "Onaylamak için {{hostname}} yazın",
+    "stepUpHeading": "Siz olduğunuzu doğrulayın",
+    "stepUpIntro": "Yeniden bağlama bir cihaz kaydını kullanımdan kaldırır. Devam etmek için ikinci faktörünüzle doğrulayın.",
+    "stepUpPasskeyNote": "Devam ettiğinizde tarayıcınız geçiş anahtarınızı isteyecek.",
+    "stepUpCodeLabel": "Kimlik doğrulayıcı kodu",
+    "stepUpRetry": "Bu doğrulamanın süresi doldu veya artık eşleşmiyor. Yeni bir kod girin.",
+    "noStepUpFactor": "Yeniden bağlama için bir geçiş anahtarı veya kimlik doğrulama uygulaması gerekir. Profilinizde birini ayarlayıp tekrar deneyin.",
+    "genericError": "Yeniden bağlama istenemedi. Tekrar deneyin.",
+    "cancel": "İptal",
+    "close": "Kapat",
+    "submit": "{{hostname}} kaydına yeniden bağla",
+    "submitting": "İsteniyor…",
+    "submitStepUp": "Doğrula ve yeniden bağla",
+    "requestedToast": "{{hostname}} kaydına yeniden bağlama istendi",
+    "pendingTitle": "Yeniden bağlama istendi",
+    "pendingMessage": "{{source}}, ajanı bir sonraki bağlandığında {{target}} kaydını devralır; burada başka bir şey gerekmez. İstek {{expiresAt}} tarihinde sona erer.",
+    "refusals": {
+      "device_not_found": "Cihazlardan biri artık yok veya erişiminizin dışında.",
+      "not_partner_user": "Cihazları yalnızca iş ortağı kullanıcıları yeniden bağlayabilir.",
+      "user_inactive": "Hesabınız etkin değil.",
+      "permission_denied": "Her iki cihazın kuruluşlarında cihazları düzenleme ve kaldırma izniniz olmalıdır.",
+      "org_access_denied": "Her iki cihazın kuruluşlarına erişiminiz yok.",
+      "full_admin_required": "Bekleme alanındaki bir cihazı bildirilen tanımlayıcılara göre yeniden bağlamak için tam yetkili bir iş ortağı yöneticisi gerekir.",
+      "partner_mismatch": "Cihazlar artık iş ortağınızda değil.",
+      "MFA_REQUIRED": "Yeniden bağlama, iki faktörlü kimlik doğrulamayla açılmış bir oturum gerektirir. İkinci faktörünüzle yeniden oturum açın.",
+      "target_alive": "{{hostname}} hâlâ kullanımda: kurulumu yakın zamanda kimlik doğruladı. Yeniden bağlama için eski kurulumun sessiz olması gerekir.",
+      "liveness_unknown": "{{hostname}} cihazının hâlâ kullanımda olup olmadığı kontrol edilemedi. Birazdan tekrar deneyin.",
+      "os_changed": "İşletim sistemleri farklı. İşletim sistemi değişikliğini onaylayıp tekrar deneyin.",
+      "target_changed": "{{hostname}} gösterildiğinden beri değişti (yeniden kaydoldu veya yeniden bağlandı). Güncel durumunu görmek için yeniden bağlamayı tekrar açın.",
+      "rebind_unsupported": "Yeni kurulumun ajanı yeniden bağlama için çok eski. Önce ajanı yükseltin.",
+      "source_decommissioned": "Yeni kurulumun kaydı kaldırıldı.",
+      "source_ineligible": "Bu cihaz yeniden bağlanamaz: Hızlı Destek cihazları bağlanamaz.",
+      "target_ephemeral": "{{hostname}} geçici bir cihazdır ve yeniden bağlama hedefi olamaz.",
+      "target_decommissioned": "{{hostname}} kaldırılmıştı. Ona yeniden bağlamak için geri yüklemeyi seçin.",
+      "target_ineligible": "{{hostname}} yönetilen bir kayıt değil.",
+      "target_retired": "{{hostname}} daha önceki bir yeniden bağlamayla zaten kullanımdan kaldırıldı.",
+      "device_quarantined": "Cihazlardan biri karantinada.",
+      "device_suspended": "Cihazlardan birinin ajan kimlik bilgileri askıya alınmış.",
+      "org_draining": "Cihazlardan birinin kuruluşu etkin değil.",
+      "device_in_open_intent": "Cihazlardan biri zaten bekleyen bir yeniden bağlamada.",
+      "confirm_target_name_required": "Onaylamak için mevcut cihazın adını yazın.",
+      "confirm_target_name_mismatch": "Yazılan ad {{hostname}} ile eşleşmiyor.",
+      "same_device": "Bir cihaz kendisine yeniden bağlanamaz.",
+      "invalid_target_version": "Mevcut kaydın sürümü eksik. Yeniden bağlamayı tekrar açın."
+    },
+    "stepUpHeld": "Doğrulamanız bu yeniden bağlama için hâlâ geçerli."
   }
 }

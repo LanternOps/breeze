@@ -8,7 +8,6 @@ import {
   deviceCommands,
   deviceDisks,
   deviceFilesystemSnapshots,
-  automationPolicies,
   cisBaselines,
   cisBaselineResults,
   cisRemediationActions,
@@ -45,6 +44,7 @@ import {
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { releaseFilesystemScanGenerationForCommand } from '../../services/filesystemScanGenerationRelease';
 import { parseCisCollectorOutput } from '../../services/cisHardening';
+import { VENDOR_STAGES, vendorStage } from '../../services/vendorCanary';
 import {
   claimFilesystemScanGeneration,
   setFilesystemScanGeneration,
@@ -65,6 +65,7 @@ import {
   matchesRoleOsFilter,
 } from '../../services/featureConfigResolver';
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
+import { resolveWakeOnLanSettingsForDevice } from '../../services/featureConfigResolver';
 import { hierarchyFor, type DeviceHierarchyOpts } from '../../services/deviceHierarchy';
 import { applicableCandidates, candidatesWithLink, policySetFor, type ApplicabilityRule, type DevicePolicySetOpts } from '../../services/devicePolicySet';
 import { devicePolicyCacheOrg, readDevicePolicyCache, writeDevicePolicyCache, type DevicePolicyCacheOpts } from '../../services/devicePolicyCache';
@@ -88,10 +89,10 @@ import { checkDeviceRemoteToolsPolicy } from '../../services/aiRemoteToolsPolicy
 import { recordFilesystemAutoTriggerSkipped, type FilesystemAutoTrigger } from '../../services/filesystemAnalysisPolicyMetrics';
 import { getBinaryEdition } from '../../services/binaryEdition';
 import { isUpgradeTargetServable } from '../../services/localBinaryBuild';
+import { evaluateOsFloor, noteOsFloorHold, type DeviceOsFacts, type OsFloorHoldReason } from '../../services/agentOsFloor';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
 import { recordIssuedCertificateForDevice, revokeInlineAfterContextExit } from '../../services/deviceMtlsCertificateIssuance';
-import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
 import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolver';
 import { MONITOR_KIND_SPECS, applyOverrides } from '../../services/monitors/kinds';
 import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
@@ -110,9 +111,6 @@ import {
 import {
   type SecurityProviderValue,
   type SecurityStatusPayload,
-  type PolicyRegistryProbeUpdate,
-  type PolicyConfigProbeUpdate,
-  type PolicyProbeConfigUpdate,
   commandResultSchema,
   securityStatusIngestSchema,
   securityCommandTypes,
@@ -290,6 +288,11 @@ export function normalizeProvider(raw: unknown): SecurityProviderValue {
     // CylancePROTECT, rebranded Aurora Endpoint Defense (#9178).
     case 'cylance':
       return 'cylance';
+    // Trend Micro Apex One / Worry-Free / Vision One (#8171).
+    case 'trend_micro':
+    case 'trendmicro':
+    case 'trend-micro':
+      return 'trend_micro';
     case 'unknown':
       return 'unknown';
     default:
@@ -366,143 +369,18 @@ export {
 // ============================================
 // Policy Probe Processing
 // ============================================
-
-export function sortPolicyRegistryProbes(probes: PolicyRegistryProbeUpdate[]): PolicyRegistryProbeUpdate[] {
-  return [...probes].sort((left, right) => {
-    const pathCompare = left.registry_path.localeCompare(right.registry_path);
-    if (pathCompare !== 0) return pathCompare;
-    return left.value_name.localeCompare(right.value_name);
-  });
-}
-
-export function sortPolicyConfigProbes(probes: PolicyConfigProbeUpdate[]): PolicyConfigProbeUpdate[] {
-  return [...probes].sort((left, right) => {
-    const pathCompare = left.file_path.localeCompare(right.file_path);
-    if (pathCompare !== 0) return pathCompare;
-    return left.config_key.localeCompare(right.config_key);
-  });
-}
-
-export function derivePolicyStateProbesFromRules(rules: unknown): {
-  registry: PolicyRegistryProbeUpdate[];
-  config: PolicyConfigProbeUpdate[];
-} {
-  if (!Array.isArray(rules)) {
-    return { registry: [], config: [] };
-  }
-
-  const registryProbes = new Map<string, PolicyRegistryProbeUpdate>();
-  const configProbes = new Map<string, PolicyConfigProbeUpdate>();
-
-  for (const rawRule of rules) {
-    if (!isObject(rawRule)) {
-      continue;
-    }
-
-    const type = readTrimmedString(rawRule.type ?? rawRule.name)?.toLowerCase();
-    if (type === 'registry_check') {
-      const registryPath = readTrimmedString(rawRule.registryPath ?? rawRule.registry_path);
-      const valueName = readTrimmedString(rawRule.registryValueName ?? rawRule.registry_value_name);
-      if (!registryPath || !valueName) {
-        continue;
-      }
-
-      const dedupeKey = `${registryPath.toLowerCase()}::${valueName.toLowerCase()}`;
-      if (!registryProbes.has(dedupeKey)) {
-        registryProbes.set(dedupeKey, {
-          registry_path: registryPath,
-          value_name: valueName
-        });
-      }
-      continue;
-    }
-
-    if (type === 'config_check') {
-      const filePath = readTrimmedString(rawRule.configFilePath ?? rawRule.config_file_path);
-      const configKey = readTrimmedString(rawRule.configKey ?? rawRule.config_key);
-      if (!filePath || !configKey || !isAllowedPolicyConfigProbe(filePath, configKey)) {
-        continue;
-      }
-
-      const dedupeKey = `${filePath.toLowerCase()}::${configKey.toLowerCase()}`;
-      if (!configProbes.has(dedupeKey)) {
-        configProbes.set(dedupeKey, {
-          file_path: filePath,
-          config_key: configKey
-        });
-      }
-    }
-  }
-
-  return {
-    registry: sortPolicyRegistryProbes(Array.from(registryProbes.values())),
-    config: sortPolicyConfigProbes(Array.from(configProbes.values()))
-  };
-}
-
-export async function buildPolicyProbeConfigUpdate(
-  orgId: string | null | undefined,
-  // #8053 W1a-1: the heartbeat passes the org's partner from the hierarchy it
-  // loaded. `undefined` = read it here, as before; `null` = no partner.
-  opts?: { partnerId?: string | null },
-): Promise<PolicyProbeConfigUpdate | null> {
-  if (!orgId) {
-    return null;
-  }
-
-  // Dual-ownership (#2129): the device's probe list must also cover
-  // partner-wide compliance policies (org_id NULL) owned by this org's
-  // partner — the evaluation worker fans those out to this device, so the
-  // agent has to collect their registry/config state too.
-  const partnerId = opts?.partnerId !== undefined
-    ? opts.partnerId
-    : (await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, orgId))
-      .limit(1))[0]?.partnerId ?? null;
-
-  const ownershipCondition = partnerId
-    ? or(
-        eq(automationPolicies.orgId, orgId),
-        and(isNull(automationPolicies.orgId), eq(automationPolicies.partnerId, partnerId))
-      )
-    : eq(automationPolicies.orgId, orgId);
-
-  const policyRows = await db
-    .select({ rules: automationPolicies.rules })
-    .from(automationPolicies)
-    .where(
-      and(
-        ownershipCondition,
-        eq(automationPolicies.enabled, true)
-      )
-    );
-
-  const registryByKey = new Map<string, PolicyRegistryProbeUpdate>();
-  const configByKey = new Map<string, PolicyConfigProbeUpdate>();
-
-  for (const row of policyRows) {
-    const probes = derivePolicyStateProbesFromRules(row.rules);
-    for (const probe of probes.registry) {
-      const key = `${probe.registry_path.toLowerCase()}::${probe.value_name.toLowerCase()}`;
-      if (!registryByKey.has(key)) {
-        registryByKey.set(key, probe);
-      }
-    }
-    for (const probe of probes.config) {
-      const key = `${probe.file_path.toLowerCase()}::${probe.config_key.toLowerCase()}`;
-      if (!configByKey.has(key)) {
-        configByKey.set(key, probe);
-      }
-    }
-  }
-
-  return {
-    policy_registry_state_probes: sortPolicyRegistryProbes(Array.from(registryByKey.values())),
-    policy_config_state_probes: sortPolicyConfigProbes(Array.from(configByKey.values()))
-  };
-}
+//
+// Moved to services/policyStateProbes.ts (#12130) so compliance evaluation can
+// ask whether a rule's value is collected without importing this module.
+// Re-exported here: every existing import site (and the suites that mock
+// `./helpers`) keeps working.
+export {
+  sortPolicyRegistryProbes,
+  sortPolicyConfigProbes,
+  derivePolicyStateProbesFromRules,
+  buildPolicyProbeConfigUpdate,
+  MAX_POLICY_STATE_PROBES_PER_ORG,
+} from '../../services/policyStateProbes';
 
 // ============================================
 // Security Operations
@@ -3356,8 +3234,15 @@ export async function resolvePinnedUpgradeTarget(args: {
   architecture: string;
   pin: string | null;
   agentId?: string;
+  /**
+   * #12169: the device's OS, judged against the target row's
+   * min_os_version. Required so every offer path is gated (tsc finds them).
+   */
+  deviceOs: DeviceOsFacts;
+  /** Called when the minimum-OS gate holds the target (the resolver returns null). */
+  onOsHold?: (hold: UpgradeOsHold) => void;
 }): Promise<string | null> {
-  const { component, platform, architecture, pin, agentId } = args;
+  const { component, platform, architecture, pin, agentId, deviceOs, onOsHold } = args;
 
   if (pin === null) {
     // LOCKSTEP (#3499): this promoted-row query is duplicated by
@@ -3368,7 +3253,7 @@ export async function resolvePinnedUpgradeTarget(args: {
     // whose bytes get served, agents are told to upgrade to something that
     // fails checksum verification on arrival.
     const [latest] = await db
-      .select({ version: agentVersions.version })
+      .select({ version: agentVersions.version, minOsVersion: agentVersions.minOsVersion })
       .from(agentVersions)
       .where(
         and(
@@ -3385,11 +3270,13 @@ export async function resolvePinnedUpgradeTarget(args: {
       )
       .orderBy(desc(agentVersions.createdAt)) // newest first if multiple isLatest rows exist
       .limit(1);
-    return servableTargetOrNull(component, platform, architecture, latest?.version ?? null);
+    return gatedTargetOrNull(
+      component, platform, architecture, latest?.version ?? null, latest?.minOsVersion ?? null, deviceOs, onOsHold,
+    );
   }
 
   const [pinned] = await db
-    .select({ version: agentVersions.version })
+    .select({ version: agentVersions.version, minOsVersion: agentVersions.minOsVersion })
     .from(agentVersions)
     .where(
       and(
@@ -3413,7 +3300,48 @@ export async function resolvePinnedUpgradeTarget(args: {
     warnMissingPinnedBuild(component, platform, architecture, pin, agentId);
     return null;
   }
-  return servableTargetOrNull(component, platform, architecture, pinned.version);
+  return gatedTargetOrNull(component, platform, architecture, pinned.version, pinned.minOsVersion, deviceOs, onOsHold);
+}
+
+/**
+ * A target the minimum-OS gate held (#12169): the device's OS is below the
+ * release's floor (`os_below_minimum`), or cannot be read while the release
+ * has one (`os_version_unknown`). The device stays on its installed version.
+ */
+export interface UpgradeOsHold {
+  component: string;
+  blockedVersion: string;
+  reason: OsFloorHoldReason;
+  requiredOs: string;
+  reportedOs: string | null;
+}
+
+/**
+ * The servability check (#7516), then the minimum-OS gate (#12169). Pins get
+ * no exception: a pinned version above the device's OS floor is held too.
+ */
+async function gatedTargetOrNull(
+  component: string,
+  platform: string,
+  architecture: string,
+  version: string | null,
+  minOs: string | null,
+  deviceOs: DeviceOsFacts,
+  onOsHold: ((hold: UpgradeOsHold) => void) | undefined,
+): Promise<string | null> {
+  const servable = await servableTargetOrNull(component, platform, architecture, version);
+  if (servable === null) return null;
+  const decision = evaluateOsFloor(deviceOs, minOs);
+  if (decision.kind === 'allow') return servable;
+  noteOsFloorHold(deviceOs, decision);
+  onOsHold?.({
+    component,
+    blockedVersion: servable,
+    reason: decision.reason,
+    requiredOs: decision.requiredOs,
+    reportedOs: decision.reportedOs,
+  });
+  return null;
 }
 
 /**
@@ -3456,15 +3384,23 @@ export async function resolvePinnedUpgradeTargets(args: {
   architecture: string;
   requests: readonly PinnedUpgradeRequest[];
   agentId?: string;
+  /** #12169 — see resolvePinnedUpgradeTarget. */
+  deviceOs: DeviceOsFacts;
+  onOsHold?: (hold: UpgradeOsHold) => void;
 }): Promise<Map<string, string | null>> {
-  const { platform, architecture, requests, agentId } = args;
+  const { platform, architecture, requests, agentId, deviceOs, onOsHold } = args;
   const result = new Map<string, string | null>();
   if (requests.length === 0) return result;
 
   const components = [...new Set(requests.map((r) => r.component))];
   const pinned = requests.filter((r): r is PinnedUpgradeRequest & { pin: string } => r.pin !== null);
   const rows = await db
-    .select({ component: agentVersions.component, version: agentVersions.version, isLatest: agentVersions.isLatest })
+    .select({
+      component: agentVersions.component,
+      version: agentVersions.version,
+      isLatest: agentVersions.isLatest,
+      minOsVersion: agentVersions.minOsVersion,
+    })
     .from(agentVersions)
     .where(
       and(
@@ -3482,13 +3418,21 @@ export async function resolvePinnedUpgradeTargets(args: {
 
   for (const request of requests) {
     if (request.pin === null) {
-      const latest = rows.find((r) => r.component === request.component && r.isLatest)?.version ?? null;
-      result.set(request.component, await servableTargetOrNull(request.component, platform, architecture, latest));
+      const latest = rows.find((r) => r.component === request.component && r.isLatest) ?? null;
+      result.set(
+        request.component,
+        await gatedTargetOrNull(
+          request.component, platform, architecture, latest?.version ?? null, latest?.minOsVersion ?? null, deviceOs, onOsHold,
+        ),
+      );
       continue;
     }
     const hit = rows.find((r) => r.component === request.component && r.version === request.pin);
     if (hit) {
-      result.set(request.component, await servableTargetOrNull(request.component, platform, architecture, hit.version));
+      result.set(
+        request.component,
+        await gatedTargetOrNull(request.component, platform, architecture, hit.version, hit.minOsVersion, deviceOs, onOsHold),
+      );
       continue;
     }
     warnMissingPinnedBuild(request.component, platform, architecture, request.pin, agentId);
@@ -3775,21 +3719,23 @@ export async function buildPatchSourceConfigUpdate(deviceId: string, opts?: Devi
 
 export interface WarrantySettings {
   /**
-   * When true the (Windows-only) agent may collect HP warranty data on the
-   * device via HP's CMSL. False explicitly tells the agent to stop — so
-   * unassigning the policy, or a nearer policy replacing the link without an
-   * hpCmsl block, cleanly revokes collection.
+   * The device's per-device HP CMSL opt-in: the nearest warranty link has
+   * hpCmsl enabled with consent to the current EULA. It is an input to the
+   * mode, not the mode: the heartbeat combines it with the vendor canary stage
+   * for the agent's partner (services/hpWarrantyGate.ts), and without it the
+   * device is `off`. False — unassigning the policy, or a nearer policy
+   * replacing the link without an hpCmsl block — cleanly revokes.
    */
-  hpCmslEnabled: boolean;
+  hpCmslOptedIn: boolean;
 }
 
 /**
  * Resolves the warranty feature link for the device and surfaces the HP CMSL
- * collection flag for the heartbeat config push. A device with no warranty
- * policy assigned resolves to `false`, which the agent treats as "stop
- * collecting". The caller (heartbeat) omits the block entirely on a resolver
- * error so a transient failure never revokes collection fleet-wide — which is
- * why this function deliberately does NOT catch.
+ * opt-in for the heartbeat config push. A device with no warranty policy
+ * assigned resolves to `false`, which the heartbeat sends as mode `off`. The
+ * caller (heartbeat) omits the block entirely on a resolver error so a
+ * transient failure never revokes fleet-wide — which is why this function
+ * deliberately does NOT catch.
  *
  * `warrantyHpCmslCollectionEffective` additionally requires an acceptance
  * recorded against the CURRENT HP_CMSL_EULA_ID: an enabled block with no
@@ -3798,7 +3744,58 @@ export interface WarrantySettings {
  */
 export async function buildWarrantyConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<WarrantySettings> {
   const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId, opts);
-  return { hpCmslEnabled: warrantyHpCmslCollectionEffective(inlineSettings) };
+  return { hpCmslOptedIn: warrantyHpCmslCollectionEffective(inlineSettings) };
+}
+
+// ============================================
+// Wake-on-LAN readiness collection config (#10838 W02)
+// ============================================
+
+export interface WakeOnLanConfigUpdate {
+  enabled: boolean;
+  configureSettings: false;
+  firmwareWrites: string[];
+  /** Vendors the agent may READ (observe-first amendment §1); never a write grant. */
+  observeVendors: string[];
+}
+
+/**
+ * The wake_on_lan vendors whose canary stage is `observe` or `act` for this
+ * partner, sorted. An env and code-table lookup only (services/vendorCanary.ts),
+ * so the heartbeat's query budget does not change. Empty for every partner
+ * while BREEZE_VENDOR_CANARY_PARTNER_IDS is unset, and for a pair named in
+ * BREEZE_VENDOR_CANARY_DISABLED. Dell is not in the table: it follows the
+ * plan's own write path (W04, W06).
+ */
+export function wakeObserveVendors(partnerId: string | null | undefined): string[] {
+  return Object.keys(VENDOR_STAGES.wake_on_lan)
+    .filter((vendor) => vendorStage('wake_on_lan', vendor, partnerId) !== 'off')
+    .sort();
+}
+
+/**
+ * `enabled` = a wake_on_lan link resolves for the device, which tells the
+ * agent to collect and upload its read-only readiness snapshot. Writes are off
+ * until W06, so configureSettings is always false and firmwareWrites is empty.
+ * `observeVendors` is always sent (`[]` when off) so a revoked vendor reaches
+ * the agent on the next heartbeat; it is empty without a link, because observe
+ * runs only on a device a wake_on_lan policy opted in.
+ * Deliberately does NOT catch: the heartbeat omits the block on a resolver
+ * error so a transient failure never stops collection.
+ */
+export async function buildWakeOnLanConfigUpdate(
+  deviceId: string,
+  opts?: DevicePolicySetOpts,
+  partnerId?: string | null,
+): Promise<WakeOnLanConfigUpdate> {
+  const settings = await resolveWakeOnLanSettingsForDevice(deviceId, opts);
+  const enabled = settings !== null;
+  return {
+    enabled,
+    configureSettings: false,
+    firmwareWrites: [],
+    observeVendors: enabled ? wakeObserveVendors(partnerId) : [],
+  };
 }
 
 // ============================================

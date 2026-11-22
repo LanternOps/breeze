@@ -9,7 +9,6 @@ import {
   isReportRecipientEmail,
   isSeriesSchedule,
   isSeriesEligibleReportType,
-  matchesRecipientRule,
   sameTargets,
   seriesBuilderDefaults,
   stripSeriesConfig,
@@ -27,6 +26,10 @@ describe('isSeriesEligibleReportType', () => {
       'endpoint_management_review', 'vulnerability_management', 'identity_access_review', 'ai_org_narrative', 'ai_fleet_design']) {
       expect(isSeriesEligibleReportType(t), t).toBe(false);
     }
+  });
+  it('series refuses ticket_sla_performance (managed_evidence)', () => {
+    expect(isSeriesEligibleReportType('ticket_sla_performance')).toBe(false);
+    expect(availableCoversModes('ticket_sla_performance', true)).toEqual(['org']);
   });
   it('never offers a system-managed type (parity with ReportsList)', () => {
     for (const t of REPORT_TYPES) {
@@ -98,13 +101,6 @@ describe('recipient helpers', () => {
     expect(isReportRecipientEmail('ops@msp.example')).toBe(true);
     expect(isReportRecipientEmail(' ops@msp.example ')).toBe(true);
     expect(isReportRecipientEmail('ops@msp')).toBe(false);
-  });
-  it('matches the org-level primary contact and role overlap', () => {
-    const rule = { primaryContact: true, roles: ['billing'] };
-    expect(matchesRecipientRule({ isPrimary: true, siteId: null, roles: [] }, rule)).toBe(true);
-    expect(matchesRecipientRule({ isPrimary: true, siteId: 'site-1', roles: [] }, rule)).toBe(false);
-    expect(matchesRecipientRule({ isPrimary: false, siteId: null, roles: ['billing'] }, rule)).toBe(true);
-    expect(matchesRecipientRule({ isPrimary: false, siteId: null, roles: ['technical'] }, rule)).toBe(false);
   });
 });
 

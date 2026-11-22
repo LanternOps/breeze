@@ -26,6 +26,7 @@ import {
   SQL,
 } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
@@ -435,6 +436,8 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('configure_backup_sla', async (input, auth) => {
+      const mfaError = mfaGatedToolError('configure_backup_sla', typeof input.action === 'string' ? input.action : undefined, auth);
+      if (mfaError) return mfaError;
       const action = input.action as string;
 
       // A backup SLA config is an ORG-WIDE governance object: it is created and

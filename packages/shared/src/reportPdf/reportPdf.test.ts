@@ -63,7 +63,7 @@ describe('buildPostureBackupMetric', () => {
         backupConfigured,
       })).toEqual({
         label: 'Backup',
-        value: backupConfigured ? 'Optional; configured' : 'Not required',
+        value: backupConfigured ? 'Optional; configured' : 'Not in scope',
         status: 'neutral',
       });
     },
@@ -168,7 +168,8 @@ describe('buildReportPdf in Node (no DOM)', () => {
     const continuationPage = pages.findIndex((page) => page.includes('Continued from the posture summary'));
     const detailPage = pages.findIndex((page) => page.includes('Per-device detail'));
     expect(continuationPage).toBeGreaterThan(0);
-    expect(detailPage).toBeGreaterThan(continuationPage);
+    // The device table shares the continuation page when it fits (#12043).
+    expect(detailPage).toBeGreaterThanOrEqual(continuationPage);
   });
 
   it('spells out the RTP-on subset so one active device is not read as full coverage (issue #2517)', () => {
@@ -212,31 +213,32 @@ describe('buildReportPdf in Node (no DOM)', () => {
     }
   });
 
-  // Ruling 23: a % over assessed devices must not read green when more than
-  // 20% of the fleet was not assessed (mirrors the trust page coverage floor).
-  describe('coverage-share status (Ruling 23)', () => {
+  // #12044 supersedes Ruling 23's 20% floor with one rule: a pass is green
+  // only when every in-scope device was assessed, a measured shortfall keeps
+  // its colour whatever the not-assessed share, and grey means nothing assessed.
+  describe('not-assessed status rule (#12044)', () => {
     const base = (over: Partial<PostureSummary['controls']>, deviceCount = 100): PostureSummary => ({
       ...postureSummary, deviceCount, controls: { ...postureSummary.controls, ...over },
     });
     const statusOf = (s: PostureSummary, label: string) => buildPostureCoverageMetrics(s).find((m) => m.label === label)?.status;
 
-    it('100 devices, 20 assessed, 19 with EDR → na, not good', () => {
-      expect(statusOf(base({ edrCoveragePct: 95, edrUnknownCount: 80 }), 'Managed EDR coverage')).toBe('na');
+    it('100 devices, 20 assessed, 19 with EDR → needs attention, not good', () => {
+      expect(statusOf(base({ edrCoveragePct: 95, edrUnknownCount: 80 }), 'EDR coverage')).toBe('warn');
     });
-    it('exactly 20% unknown keeps the percentage status; 21% is na', () => {
-      expect(statusOf(base({ encryptionPct: 95, encryptionUnknownCount: 20 }), 'Disk encryption')).toBe('good');
-      expect(statusOf(base({ encryptionPct: 95, encryptionUnknownCount: 21 }), 'Disk encryption')).toBe('na');
+    it('a measured failure stays red however many devices were not assessed', () => {
+      expect(statusOf(base({ encryptionPct: 20, encryptionUnknownCount: 90 }), 'Disk encryption')).toBe('bad');
+      expect(statusOf(base({ encryptionPct: 70, encryptionUnknownCount: 90 }), 'Disk encryption')).toBe('warn');
     });
     it.each([
-      ['Managed EDR coverage', { edrCoveragePct: 100, edrUnknownCount: 50 }],
-      ['AV + real-time protection', { anyAvCoveragePct: 100, anyAvUnknownCount: 50 }],
-      ['Disk encryption', { encryptionPct: 100, encryptionUnknownCount: 50 }],
-      ['Patch current (no critical pending)', { patchCurrentPct: 100, patchUnknownCount: 50 }],
-      ['Host firewall', { firewallPct: 100, firewallUnknownCount: 50 }],
-      ['Password complexity', { passwordComplexityPct: 100, passwordUnknownCount: 50 }],
-      ['Local-admin exposure', { localAdminExposurePct: 0, localAdminUnknownCount: 50 }],
-    ] as const)('%s goes na above the 20%% unknown share', (label, over) => {
-      expect(statusOf(base(over), label)).toBe('na');
+      ['EDR coverage', { edrCoveragePct: 100, edrUnknownCount: 1 }],
+      ['AV + real-time protection', { anyAvCoveragePct: 100, anyAvUnknownCount: 1 }],
+      ['Disk encryption', { encryptionPct: 100, encryptionUnknownCount: 1 }],
+      ['Patch current (no critical pending)', { patchCurrentPct: 100, patchUnknownCount: 1 }],
+      ['Host firewall', { firewallPct: 100, firewallUnknownCount: 1 }],
+      ['Password policy', { passwordComplexityPct: 100, passwordUnknownCount: 1 }],
+      ['Local-admin exposure', { localAdminExposurePct: 0, localAdminUnknownCount: 1 }],
+    ] as const)('%s needs attention when any device was not assessed', (label, over) => {
+      expect(statusOf(base(over), label)).toBe('warn');
       const zeroUnknown = Object.fromEntries(Object.entries(over).map(([k, v]) => [k, k.endsWith('UnknownCount') ? 0 : v]));
       expect(statusOf(base(zeroUnknown), label)).toBe('good');
     });
@@ -310,7 +312,7 @@ describe('buildReportPdf in Node (no DOM)', () => {
       expect(page).toContain('Confidential');
     }
     const detailPage = pages.findIndex((page) => page.includes('Per-device detail'));
-    expect(detailPage).toBeGreaterThan(continuationPages.at(-1)!.pageIndex);
+    expect(detailPage).toBeGreaterThanOrEqual(continuationPages.at(-1)!.pageIndex);
     const inventoryPagesText = pages.slice(0, detailPage).join('\n');
     let previousProductIndex = -1;
     for (const product of products) {
@@ -338,7 +340,7 @@ describe('buildReportPdf in Node (no DOM)', () => {
       reportType: 'security_compliance_posture',
       summary,
     }));
-    expect(text).toContain('Not required');
+    expect(text).toContain('Not in scope');
     expect(text).not.toContain('Configure backups');
   });
 

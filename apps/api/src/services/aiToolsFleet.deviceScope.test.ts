@@ -39,6 +39,8 @@ const { deleteSpy, reportScopeMocks, reportPreflightMock, patchHelperMocks, auto
   },
 }));
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -93,7 +95,7 @@ function deviceBoundAuth(overrides: Partial<AuthContext> = {}): AuthContext {
   return {
     principal: { kind: 'ai_agent', agentId: 'ag-1', runId: 'run-1' },
     user: { id: 'ag-1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
-    token: null, partnerId: 'p1', orgId: 'org-1', scope: 'organization',
+    token: { mfa: true }, partnerId: 'p1', orgId: 'org-1', scope: 'organization',
     accessibleOrgIds: ['org-1'], partnerOrgAccess: null,
     orgCondition: () => undefined, canAccessOrg: () => true,
     allowedSiteIds: ['site-1'], canAccessSite: (site?: string | null) => site === 'site-1',
@@ -279,23 +281,25 @@ describe('manage_deployments — control actions carry the device axis', () => {
     mockDb.update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
   }
 
-  it('denies start when the deployment includes a sibling device at the same site', async () => {
-    mockDeployment([{ deviceId: 'dev-1', siteId: 'site-1' }, { deviceId: 'dev-2', siteId: 'site-1' }]);
+  // Creating or driving a deployment is an organization-wide change, so a run
+  // carrying an exact-device ceiling is refused before the deployment is read,
+  // whatever its members are (same rule as routes/deployments.ts).
+  it.each([
+    [[{ deviceId: 'dev-1', siteId: 'site-1' }, { deviceId: 'dev-2', siteId: 'site-1' }]],
+    [[{ deviceId: 'dev-1', siteId: 'site-1' }]],
+  ])('refuses start for a device-bound run (members %j)', async (members) => {
+    mockDeployment(members);
     const r = await handlerFor('manage_deployments')({ action: 'start', deploymentId: 'dep-1' }, deviceBoundAuth());
-    expect(JSON.parse(r).error).toContain('access denied');
+    expect(JSON.parse(r).error).toMatch(/cannot modify organization-wide settings/);
+    expect(mockDb.select).not.toHaveBeenCalled();
     expect(mockDb.update).not.toHaveBeenCalled();
   });
 
-  it('still starts a deployment made only of the run device', async () => {
-    mockDeployment([{ deviceId: 'dev-1', siteId: 'site-1' }]);
-    const r = await handlerFor('manage_deployments')({ action: 'start', deploymentId: 'dep-1' }, deviceBoundAuth());
-    expect(JSON.parse(r).success).toBe(true);
-  });
-
-  it('denies cancel for a device-LESS run whose deployment reaches other devices', async () => {
+  it('refuses cancel for a device-LESS run', async () => {
     mockDeployment([{ deviceId: 'dev-2', siteId: 'site-9' }]);
     const r = await handlerFor('manage_deployments')({ action: 'cancel', deploymentId: 'dep-1' }, deviceLessRunAuth());
-    expect(JSON.parse(r).error).toContain('access denied');
+    expect(JSON.parse(r).error).toMatch(/cannot modify organization-wide settings/);
+    expect(mockDb.update).not.toHaveBeenCalled();
   });
 
   it('device_status narrows the per-device rows to the allowlist', async () => {

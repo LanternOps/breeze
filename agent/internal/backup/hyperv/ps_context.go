@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/hosttool"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // powerShellExe is the host's own Windows PowerShell, by absolute path from
@@ -36,7 +36,7 @@ func runCmdContext(ctx context.Context, timeout time.Duration, name string, args
 	}
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, name, args...)
+	cmd := procspawn.CommandContext(runCtx, name, args...)
 	cmd.WaitDelay = psWaitDelay
 	out, err := cmd.CombinedOutput()
 	switch {

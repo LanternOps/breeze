@@ -78,6 +78,9 @@ function row(overrides: Partial<BackupHealthRow> = {}): BackupHealthRow {
     dataSources: ['files'],
     history28d: [],
     agentOnline: true,
+    verifiedBootableAt: null,
+    verifiedBootable: null,
+    verifiedBootableFailedChecks: null,
     ...overrides,
   } as BackupHealthRow;
 }
@@ -125,6 +128,25 @@ describe('generateBackupStatusReport', () => {
     expect(data.org).toEqual({ id: ORG_ID, name: 'Acme Legal' });
   });
 
+  it('exports the verified-bootable state and date on the flat CSV rows', async () => {
+    queueOrgSelect([{ id: ORG_ID, name: 'Acme Legal' }]);
+    vi.mocked(listBackupHealthRows).mockResolvedValueOnce({
+      rows: [
+        row({ key: 'provider:a', name: 'A-AX', source: 'provider', providerKey: 'axcient', verifiedBootable: true, verifiedBootableAt: '2026-11-05T03:12:00.000Z', verifiedBootableFailedChecks: [] }),
+        row({ key: 'provider:b', name: 'B-AX', source: 'provider', providerKey: 'axcient', verifiedBootable: false, verifiedBootableAt: '2026-11-05T03:12:00.000Z', verifiedBootableFailedChecks: ['system_boot', 'check_disk'] }),
+        row({ key: 'breeze:d1', name: 'C-WKS' }),
+      ],
+      nextCursor: null,
+    });
+
+    const result = await generateBackupStatusReport(ORG_ID, {}, authority('unrestricted'));
+
+    const byDevice = new Map((result.rows as Array<Record<string, unknown>>).map((r) => [r.device, r]));
+    expect(byDevice.get('A-AX')).toMatchObject({ verifiedBootable: 'passed', verifiedBootableAt: '2026-11-05T03:12:00.000Z', verifiedBootableFailedChecks: '' });
+    expect(byDevice.get('B-AX')).toMatchObject({ verifiedBootable: 'failed', verifiedBootableFailedChecks: 'system_boot; check_disk' });
+    expect(byDevice.get('C-WKS')).toMatchObject({ verifiedBootable: 'not_applicable', verifiedBootableAt: null, verifiedBootableFailedChecks: '' });
+  });
+
   it('buckets statuses using the shared bucketForBackupStatus mapping, folding not_started and unknown into "other"', async () => {
     queueOrgSelect([{ id: ORG_ID, name: 'Acme Legal' }]);
     const rows = [
@@ -158,6 +180,24 @@ describe('generateBackupStatusReport', () => {
     expect(buckets.some((b) => b.key === 'other')).toBe(false);
     // The always-present buckets appear at count 0 too — only "other" is special-cased.
     expect(buckets.find((b) => b.key === 'no_backups')!.count).toBe(0);
+  });
+
+  it('counts a completed row with no recent success as overdue, not completed (#12025)', async () => {
+    queueOrgSelect([{ id: ORG_ID, name: 'Acme Legal' }]);
+    const rows = [
+      row({ key: 'a', status: 'completed', recency: 'under_24h' }),
+      row({ key: 'b', status: 'completed', recency: 'over_48h' }),
+      row({ key: 'c', status: 'completed', recency: 'never' }),
+    ];
+    vi.mocked(listBackupHealthRows).mockResolvedValueOnce({ rows, nextCursor: null });
+    vi.mocked(summarizeBackupHealth).mockResolvedValue(summary());
+
+    const result = await generateBackupStatusReport(ORG_ID, {}, authority('unrestricted'));
+
+    const buckets = summaryOf(result).statusBuckets;
+    expect(buckets.find((b) => b.key === 'completed')!.count).toBe(1);
+    expect(buckets.find((b) => b.key === 'overdue')!.count).toBe(2);
+    expect(buckets.map((b) => b.key)).toEqual(['no_backups', 'completed', 'overdue', 'completed_with_errors', 'in_progress', 'unsuccessful']);
   });
 
   it('computes bucket percentages rounded to one decimal', async () => {

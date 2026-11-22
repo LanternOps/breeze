@@ -1,6 +1,8 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { DEFAULT_ALERT_COOLDOWN_MINUTES } from '@breeze/shared';
 
 const { selectResults, updateResults, dbMock } = vi.hoisted(() => {
@@ -27,6 +29,8 @@ vi.mock('./alertCooldown', () => ({
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn(async () => 'evt') }));
 vi.mock('./deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(async () => 'site-1') }));
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: vi.fn(async () => {}) }));
+// #10926 — create stages its cooldown in the outbox envelope; the outbox itself is not under test here.
+vi.mock('./subjectAlertOutbox', () => ({ scheduleStagedAlertDispatch: vi.fn() }));
 
 import { createAlert, resolveAlert } from './alertService';
 import { setCooldown } from './alertCooldown';
@@ -76,8 +80,15 @@ it('resolveAlert and createAlert use the same cooldown fallback', async () => {
   })).resolves.toBe('alert-1');
   await expect(resolveAlert('alert-1')).resolves.toBe(true);
 
-  expect(setCooldown).toHaveBeenCalledTimes(2);
-  expect(vi.mocked(setCooldown).mock.calls.map(call => call[2])).toEqual([
+  // createAlert no longer sets the cooldown itself: it stages the fallback in
+  // the outbox envelope (the drain applies it after the publish). resolveAlert
+  // still sets it directly.
+  const insert = new PgDialect().sqlToQuery((dbMock.execute.mock.calls as unknown as Array<[SQL]>)[0]![0]);
+  const context = insert.params.find(param => typeof param === 'string' && param.includes('_subjectDispatch'));
+  expect(context, 'the INSERT context param carries the outbox envelope').toBeDefined();
+  const staged = JSON.parse(context as string)._subjectDispatch as { cooldownMinutes: number };
+  expect(setCooldown).toHaveBeenCalledTimes(1);
+  expect([staged.cooldownMinutes, ...vi.mocked(setCooldown).mock.calls.map(call => call[2])]).toEqual([
     DEFAULT_ALERT_COOLDOWN_MINUTES, DEFAULT_ALERT_COOLDOWN_MINUTES,
   ]);
 });

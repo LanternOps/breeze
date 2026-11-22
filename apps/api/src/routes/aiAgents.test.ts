@@ -14,6 +14,7 @@ import {
   AI_AGENT_IMPACT_REBUILD_DAYS,
   AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
   AI_AGENT_LIMIT_DEFAULTS,
+  AI_AGENT_RUN_CHAIN_MAX_STEPS,
   AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
   AI_AGENT_RUN_SUMMARY_EXCERPT_MAX_CHARS,
   DEFAULT_IMPACT_WEIGHTS,
@@ -37,6 +38,7 @@ import { AgentModelNotAllowedError } from '../services/aiAgents/agentModelErrors
 // below) — needed so a PATCH test can construct the exact instance
 // `updateAgentMock` rejects with.
 import { ModeNotAllowedForKindError } from '../services/aiAgents/agentService';
+import { TroubleshootAgentEditError } from '../services/aiAgents/troubleshootAgentEdit';
 
 const {
   selectMock,
@@ -524,7 +526,7 @@ function minimalToolCatalogDto(overrides: Partial<AgentToolCatalogDto> = {}): Ag
         ],
       },
     ],
-    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [], research: [] },
+    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [], research: [], troubleshoot: [] },
     unreachableTools: [],
     ...overrides,
   };
@@ -1130,6 +1132,8 @@ const runDetailResponseSchema = z.object({
     deviceId: z.string().nullable(),
     deviceHostname: z.string().nullable(),
     alertId: z.string().nullable(),
+    // W2 #11085: the run card shows Continue only for a device_troubleshooting run.
+    profile: z.string(),
     wisp: z.object({
       grantId: z.string(),
       grantorUserId: z.string(),
@@ -1169,6 +1173,9 @@ const runDetailResponseSchema = z.object({
       actionName: z.string(),
       approvalScope: z.string(),
       decidedVia: z.string().nullable(),
+      // W2 #11085: the caller's own pending approval row (label + id) for inline approve.
+      actionLabel: z.string().nullable(),
+      approvalRequestId: z.string().nullable(),
     }).strict()),
     // Wave 6 PR 3 (#3828, Task 4); reshaped in P2-4 (#4191) onto the
     // `TicketTriageProposal` outcome (@breeze/shared) — no args/toolInput/
@@ -1427,6 +1434,27 @@ const runDetailResponseSchema = z.object({
         stdoutArtifactHandle: z.string().nullable(),
       }).strict()),
     }).strict().nullable(),
+    // Wisp analysis sessions W06 — lineage, goal, frozen scope and the chain.
+    // Always present; null/0 for every run that is not part of an analysis chain.
+    continuedFromRunId: z.string().nullable(),
+    chainRootRunId: z.string().nullable(),
+    chainDepth: z.number().int().min(0),
+    analysisGoal: z.string().nullable(),
+    analysisScope: z.object({
+      kind: z.enum(['devices', 'site', 'org']),
+      siteId: z.string().nullable(),
+      siteName: z.string().nullable(),
+      deviceCount: z.number(),
+    }).strict().nullable(),
+    chain: z.array(z.object({
+      id: z.string(),
+      step: z.number(),
+      continuedFromRunId: z.string().nullable(),
+      goal: z.string().nullable(),
+      status: z.string(),
+      costCents: z.number(),
+      queuedAt: z.string(),
+    }).strict()).nullable(),
   }).strict(),
 }).strict();
 
@@ -1725,6 +1753,30 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(JSON.stringify(body)).not.toContain('"patchIds"');
   });
 
+
+  it('W2 #11085: a pending intent carries the caller\'s own approval row (id + label); others carry nulls; profile is on the DTO', async () => {
+    const PENDING = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const DONE = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({ sessionId: null, profile: 'device_troubleshooting' })]))
+      .mockReturnValueOnce(selectChain([
+        { id: PENDING, status: 'pending_approval', actionName: 'manage_services', approvalScope: 'supervised', decidedVia: null,
+          approvalRequestId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', actionLabel: 'Restart the Print Spooler service on WS-01' },
+        // A duplicate join row for the same intent never doubles it.
+        { id: PENDING, status: 'pending_approval', actionName: 'manage_services', approvalScope: 'supervised', decidedVia: null,
+          approvalRequestId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', actionLabel: 'Restart the Print Spooler service on WS-01' },
+        { id: DONE, status: 'completed', actionName: 'set_device_context', approvalScope: 'supervised', decidedVia: 'human',
+          approvalRequestId: null, actionLabel: null },
+      ]));
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+    expect(parsed.data.profile).toBe('device_troubleshooting');
+    expect(parsed.data.intents).toEqual([
+      expect.objectContaining({ id: PENDING, approvalRequestId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', actionLabel: 'Restart the Print Spooler service on WS-01' }),
+      expect.objectContaining({ id: DONE, approvalRequestId: null, actionLabel: null }),
+    ]);
+  });
 
   it('reads intents by requesting_agent_run_id and reports a COMPLETED sweep intent that run.intentIds dropped', async () => {
     // #4442 W05 — the exact regression act mode introduces. `run.intent_ids`
@@ -2416,6 +2468,8 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
         }],
       },
     ]));
+    // W06 — the chain read (analysis only). This run is in no chain.
+    selectMock.mockReturnValueOnce(selectChain([]));
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
@@ -2519,7 +2573,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(sqlParams(intentWhere)).toContain(RUN_ID);
     expect(parsed.data.intents).toEqual([{
       id: SWEEP_INTENT_ID, status: 'completed', actionName: 'manage_services:restart',
-      approvalScope: 'supervised', decidedVia: 'policy',
+      approvalScope: 'supervised', decidedVia: 'policy', actionLabel: null, approvalRequestId: null,
     }]);
     expect(parsed.data.artifacts).toEqual([]);
     expect(parsed.data.workspace).toBeNull();
@@ -2559,6 +2613,105 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     const parsed = runDetailResponseSchema.parse(body);
     expect(parsed.data.alertVerdict?.suggestedAction?.disposition).toBe('not_created');
     expect(parsed.data.alertVerdict?.suggestedAction?.reason).toBe('superseded_concurrently');
+  });
+});
+
+// Wisp analysis sessions W06 — the run page and the chat run card read the
+// chain and the frozen scope from this DTO.
+describe('GET /ai-agents/runs/:runId — analysis chain (W06)', () => {
+  const ROOT = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const chainRow = (o: Record<string, unknown>) => ({
+    id: ROOT, continuedFromRunId: null, chainDepth: 0,
+    status: 'completed', costCents: 30, computeCents: 5, goal: 'export inventory',
+    queuedAt: new Date('2026-11-13T10:00:00Z'), ...o,
+  });
+
+  function mockAnalysisReads(
+    run: Record<string, unknown>,
+    chainRows: unknown[],
+    onChainWhere?: (p: unknown) => void,
+    onChainLimit?: (n: number) => void,
+  ) {
+    selectMock.mockReturnValueOnce(selectChain([runRow({ profile: 'analysis', sessionId: null, intentIds: [], ...run })]));
+    selectMock.mockReturnValueOnce(selectChain([])); // intents
+    selectMock.mockReturnValueOnce(selectChain([])); // artifacts
+    selectMock.mockReturnValueOnce(selectChain([])); // workspace
+    selectMock.mockReturnValueOnce(selectChain(chainRows, onChainWhere, onChainLimit)); // chain
+  }
+
+  it('keys the chain read on the root for a continuation and pins it to the run org', async () => {
+    let where: unknown;
+    let limit: number | undefined;
+    mockAnalysisReads(
+      { continuedFromRunId: ROOT, chainRootRunId: ROOT, chainDepth: 1, triggerRef: { goal: 'count by OS' } },
+      [chainRow({}), chainRow({ id: RUN_ID, continuedFromRunId: ROOT, chainDepth: 1 })],
+      (p) => { where = p; },
+      (n) => { limit = n; },
+    );
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = runDetailResponseSchema.parse(await res.json());
+    expect(sqlParams(where)).toEqual(expect.arrayContaining([ORG_ID, ROOT]));
+    expect(sqlParams(where)).not.toContain(RUN_ID);
+    expect(limit).toBe(AI_AGENT_RUN_CHAIN_MAX_STEPS);
+    expect(body.data.chain!.map((s) => s.step)).toEqual([1, 2]);
+    expect(body.data.chain![0]!.costCents).toBe(35);
+    expect(body.data).toMatchObject({
+      chainDepth: 1, chainRootRunId: ROOT, continuedFromRunId: ROOT, analysisGoal: 'count by OS',
+    });
+  });
+
+  it('discovers the chain of a root run (no lineage of its own) by its own id', async () => {
+    let where: unknown;
+    mockAnalysisReads(
+      { chainRootRunId: null, chainDepth: 0 },
+      [chainRow({ id: RUN_ID }), chainRow({ id: ROOT, continuedFromRunId: RUN_ID, chainDepth: 1 })],
+      (p) => { where = p; },
+    );
+    const body = runDetailResponseSchema.parse(await (await buildApp().request(`/ai-agents/runs/${RUN_ID}`)).json());
+    expect(sqlParams(where)).toEqual(expect.arrayContaining([ORG_ID, RUN_ID]));
+    expect(body.data.chain).toHaveLength(2);
+    expect(body.data.chainDepth).toBe(0);
+  });
+
+  it('applies the caller site ceiling to the chain read', async () => {
+    let where: unknown;
+    mockAnalysisReads({}, [], (p) => { where = p; });
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] }).request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    expect(sqlParams(where)).toContain(SITE_ID);
+  });
+
+  it('returns a null chain for an unchained analysis run', async () => {
+    mockAnalysisReads({}, [chainRow({ id: RUN_ID })]);
+    const body = runDetailResponseSchema.parse(await (await buildApp().request(`/ai-agents/runs/${RUN_ID}`)).json());
+    expect(body.data.chain).toBeNull();
+  });
+
+  it('names the site for a site-scope run through an org-pinned sites read', async () => {
+    let siteWhere: unknown;
+    mockAnalysisReads({
+      stagedInputs: {
+        handles: [], deviceIds: ['d1'], region: 'us',
+        scope: { kind: 'site', siteId: SITE_ID, deviceCount: 1 },
+      },
+    }, []);
+    selectMock.mockReturnValueOnce(selectChain([{ name: 'Main office' }], (p) => { siteWhere = p; }));
+    const body = runDetailResponseSchema.parse(await (await buildApp().request(`/ai-agents/runs/${RUN_ID}`)).json());
+    expect(sqlParams(siteWhere)).toEqual(expect.arrayContaining([SITE_ID, ORG_ID]));
+    expect(body.data.analysisScope).toEqual({ kind: 'site', siteId: SITE_ID, siteName: 'Main office', deviceCount: 1 });
+  });
+
+  it('makes no site read for an org-scope run and reports the frozen device count', async () => {
+    mockAnalysisReads({
+      stagedInputs: {
+        handles: [], deviceIds: ['d1', 'd2'], region: 'us',
+        scope: { kind: 'org', siteId: null, deviceCount: 412 },
+      },
+    }, []);
+    const body = runDetailResponseSchema.parse(await (await buildApp().request(`/ai-agents/runs/${RUN_ID}`)).json());
+    expect(selectMock).toHaveBeenCalledTimes(5);
+    expect(body.data.analysisScope).toEqual({ kind: 'org', siteId: null, siteName: null, deviceCount: 412 });
   });
 });
 
@@ -4657,6 +4810,46 @@ describe('PATCH /ai-agents/:id — mode vs kind (Fleet Designer W01)', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body).toEqual({ error: 'mode_not_allowed_for_kind' });
+  });
+});
+
+describe('troubleshoot agent edit restrictions (#11084)', () => {
+  it('PATCH maps TroubleshootAgentEditError to 400 troubleshoot_agent_edit_restricted with fields', async () => {
+    updateAgentMock.mockRejectedValueOnce(new TroubleshootAgentEditError(['mode', 'toolAllowlist']));
+
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'act' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: 'troubleshoot_agent_edit_restricted',
+      fields: ['mode', 'toolAllowlist'],
+    });
+  });
+
+  it('mapError maps it directly', () => {
+    const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+    const ctx = { json: jsonMock } as unknown as Parameters<typeof mapError>[0];
+    mapError(ctx, new TroubleshootAgentEditError(['kind']));
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'troubleshoot_agent_edit_restricted', fields: ['kind'] }),
+      400,
+    );
+  });
+
+  it('POST with kind troubleshoot is refused at the zod layer (400) and never reaches createAgent', async () => {
+    const { createAgent } = await import('../services/aiAgents/agentService');
+    vi.mocked(createAgent).mockClear();
+    const res = await buildApp().request('/ai-agents', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'T', kind: 'troubleshoot', mode: 'shadow' }),
+    });
+    expect(res.status).toBe(400);
+    expect(vi.mocked(createAgent)).not.toHaveBeenCalled();
   });
 });
 

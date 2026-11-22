@@ -1,5 +1,7 @@
 import { and, desc, eq, gte, inArray, or, sql, type SQL } from 'drizzle-orm';
-import { db } from '../db';
+import { captureException } from './sentry';
+import { safeErrorMessage } from './aiModels/safeDbError';
+import { db, withDbTransactionIfHeld } from '../db';
 import {
   alerts,
   alertTemplates,
@@ -443,7 +445,7 @@ async function resolveAlertDeviceForChangeEvent(
 
   // Strategy 2: Discovered asset with exact IP match
   try {
-    const [linkedAsset] = await db
+    const [linkedAsset] = await withDbTransactionIfHeld(() => db
       .select({ linkedDeviceId: discoveredAssets.linkedDeviceId })
       .from(discoveredAssets)
       .where(
@@ -453,7 +455,7 @@ async function resolveAlertDeviceForChangeEvent(
           sql`${discoveredAssets.linkedDeviceId} is not null`
         )
       )
-      .limit(1);
+      .limit(1));
 
     if (linkedAsset?.linkedDeviceId) {
       return {
@@ -465,8 +467,9 @@ async function resolveAlertDeviceForChangeEvent(
   } catch (error) {
     console.error(
       `[NetworkBaseline] resolveAlertDevice strategy 'discovered_asset_exact_ip' failed for event ${changeEvent.id}:`,
-      error instanceof Error ? error.message : error
+      safeErrorMessage(error)
     );
+    captureException(error, undefined, { strategy: 'discovered_asset_exact_ip', changeEventId: changeEvent.id });
   }
 
   // Strategy 3: Device network table match by IP or MAC
@@ -480,7 +483,7 @@ async function resolveAlertDeviceForChangeEvent(
     }
 
     if (candidateConditions.length > 0) {
-      const [candidate] = await db
+      const [candidate] = await withDbTransactionIfHeld(() => db
         .select({ deviceId: deviceNetwork.deviceId })
         .from(deviceNetwork)
         .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
@@ -491,7 +494,7 @@ async function resolveAlertDeviceForChangeEvent(
             or(...candidateConditions)
           )
         )
-        .limit(1);
+        .limit(1));
 
       if (candidate?.deviceId) {
         return {
@@ -504,13 +507,14 @@ async function resolveAlertDeviceForChangeEvent(
   } catch (error) {
     console.error(
       `[NetworkBaseline] resolveAlertDevice strategy 'device_network_match' failed for event ${changeEvent.id}:`,
-      error instanceof Error ? error.message : error
+      safeErrorMessage(error)
     );
+    captureException(error, undefined, { strategy: 'device_network_match', changeEventId: changeEvent.id });
   }
 
   // Strategy 4: Most recently seen device at the same site
   try {
-    const [siteAnchorDevice] = await db
+    const [siteAnchorDevice] = await withDbTransactionIfHeld(() => db
       .select({ id: devices.id })
       .from(devices)
       .where(
@@ -520,7 +524,7 @@ async function resolveAlertDeviceForChangeEvent(
         )
       )
       .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
-      .limit(1);
+      .limit(1));
 
     if (siteAnchorDevice?.id) {
       return {
@@ -532,18 +536,19 @@ async function resolveAlertDeviceForChangeEvent(
   } catch (error) {
     console.error(
       `[NetworkBaseline] resolveAlertDevice strategy 'site_anchor_device' failed for event ${changeEvent.id}:`,
-      error instanceof Error ? error.message : error
+      safeErrorMessage(error)
     );
+    captureException(error, undefined, { strategy: 'site_anchor_device', changeEventId: changeEvent.id });
   }
 
   // Strategy 5: Most recently seen device in the same org
   try {
-    const [orgAnchorDevice] = await db
+    const [orgAnchorDevice] = await withDbTransactionIfHeld(() => db
       .select({ id: devices.id })
       .from(devices)
       .where(eq(devices.orgId, changeEvent.orgId))
       .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
-      .limit(1);
+      .limit(1));
 
     if (orgAnchorDevice?.id) {
       return {
@@ -555,8 +560,9 @@ async function resolveAlertDeviceForChangeEvent(
   } catch (error) {
     console.error(
       `[NetworkBaseline] resolveAlertDevice strategy 'org_anchor_device' failed for event ${changeEvent.id}:`,
-      error instanceof Error ? error.message : error
+      safeErrorMessage(error)
     );
+    captureException(error, undefined, { strategy: 'org_anchor_device', changeEventId: changeEvent.id });
   }
 
   return {
@@ -637,9 +643,10 @@ export async function createNetworkChangeAlert(
     : eventMessageFallback(normalizedEventType, context);
   const severity = template?.severity ?? EVENT_SEVERITY_FALLBACK[normalizedEventType];
 
-  // Routed through createSourcedAlert so the row is rolled back if the
-  // alert.triggered publish fails — a committed-but-unpublished alert would be
-  // linked to the change event yet never notify anyone (#5325).
+  // Routed through createSourcedAlert so alert.triggered is staged on the row
+  // and published by the alert outbox after COMMIT, retried until it goes out:
+  // an alert linked to the change event is never left unannounced (#5325,
+  // #10926).
   const alertId = await createSourcedAlert({
     deviceId: alertDeviceId,
     orgId: changeEvent.orgId,

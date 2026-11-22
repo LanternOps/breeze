@@ -79,6 +79,14 @@ const CASES: Array<string | undefined> = [
   // and is exactly what a `.trim()` in the helper used to swallow.
   'application/json ',
   ' application/json',
+  // Hono 4.13.18 (GHSA-92p4-j3wq-jmqx) decides by the media type alone, so the
+  // parameter list no longer matters. Each of these used to skip parsing.
+  'application/json ; charset=utf-8',
+  'application/json;',
+  'application/json; odd param',
+  'application/json;charset',
+  'application/vnd.api+json; ext="a;b"',
+  'application/x_y+json',
 ];
 
 describe('isJsonContentType matches Hono', () => {

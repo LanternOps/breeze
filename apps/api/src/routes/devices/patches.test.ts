@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 import { patchesRoutes } from './patches';
+import { deviceCommandsInCurrentOrg } from './commandOrgScope';
 
 const DEVICE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const PATCH_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -25,6 +26,8 @@ vi.mock('../../db', () => ({
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => any) => fn()),
+  withDbTransactionIfHeld: vi.fn(async (fn: () => any) => fn()),
   // #7647: the ambient request context. Org-scoped, own partner = the partner
   // resolvePartnerIdForOrg returns below, so the patch_policies /
   // patch_approvals reads are legible in place via the own-partner SELECT
@@ -100,6 +103,10 @@ vi.mock('../../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
+vi.mock('./commandOrgScope', () => ({
+  deviceCommandsInCurrentOrg: vi.fn(async () => ({ op: 'commandOrgScope' })),
+}));
+
 vi.mock('./helpers', async () => {
   const actual = await vi.importActual<typeof import('./helpers')>('./helpers');
   return {
@@ -143,10 +150,17 @@ vi.mock('../../services/workloads/imageCompliance', () => ({
   containerImageComplianceTerms: vi.fn(async () => new Map())
 }));
 
+// #11073: a lane that delivers everything, which a tech's install must not ask about.
+vi.mock('../../services/oemUpdates/laneDelivery', () => ({
+  getVendorManagedClasses: vi.fn(async () => new Set(['driver', 'firmware'])),
+  getVendorManagedClassesForDevices: vi.fn(async () => new Map()),
+}));
+
 import { db } from '../../db';
 import { devicePatches, patches } from '../../db/schema';
 import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
+import { getVendorManagedClasses, getVendorManagedClassesForDevices } from '../../services/oemUpdates/laneDelivery';
 import { resolvePartnerIdForOrg } from '../patches/helpers';
 import { loadDevicePatchApprovalView } from '../../services/devicePatchApprovalView';
 import { captureException } from '../../services/sentry';
@@ -325,6 +339,7 @@ describe('device patch routes', () => {
     expect(body.data.compliancePercent).toBe(50);
     expect(body.data.lastPatchScanAt).toBe('2026-02-09T10:00:00.000Z');
     expect(body.data.lastPatchScanStatus).toBe('completed');
+    expect(deviceCommandsInCurrentOrg).toHaveBeenCalledWith(expect.objectContaining({ id: DEVICE_ID }));
   });
 
   describe('container image term (W06)', () => {
@@ -819,6 +834,7 @@ describe('device patch routes', () => {
     expect(whereClause).toContain('software_update');
     expect(whereClause).toContain('"op":"gte"');
     expect(whereClause).toContain(completedAfter);
+    expect(whereClause).toContain('commandOrgScope');
     expect(body.total).toBe(1);
     expect(body.history).toHaveLength(1);
     expect(body.history[0].type).toBe('software_update');
@@ -885,6 +901,38 @@ describe('device patch routes', () => {
       },
       { userId: USER_ID, preferHeartbeat: false }
     );
+  });
+
+  // Spec 4.6: an explicit action wins. Vendor updates narrow patch jobs only.
+  it('a tech\'s manual install is unaffected by a vendor lane delivering that class', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereResult([
+        { id: PATCH_ID, source: 'microsoft', externalId: 'wu-driver-1', packageId: 'windows-update:wu-driver-1', title: 'Dell Inc. - Display' }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([
+        { patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: null }
+      ]) as any);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: { id: 'cmd-install-1', status: 'sent' }
+    } as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches/install`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patchIds: [PATCH_ID] })
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).patchCount).toBe(1);
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'install_patches',
+      expect.objectContaining({ patchIds: [PATCH_ID] }),
+      expect.anything()
+    );
+    expect(getVendorManagedClasses).not.toHaveBeenCalled();
+    expect(getVendorManagedClassesForDevices).not.toHaveBeenCalled();
   });
 
   it('uses the device-observed KB selector instead of a global first-writer WUA UpdateID', async () => {

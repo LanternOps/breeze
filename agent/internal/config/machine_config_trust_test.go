@@ -224,6 +224,14 @@ func TestReplaceEvidenceOnlyCountsTheAgentsOwnEntries(t *testing.T) {
 			entries: map[string]programDataPathSecurity{"watchdog-install.state": link}, wantEvidence: "watchdog-install.state is a link"},
 		{name: "watchdog-install.lock owned by a standard user", root: trusted,
 			entries: map[string]programDataPathSecurity{"watchdog-install.lock": userOwned}, wantEvidence: "watchdog-install.lock"},
+		// #8318: a corrupt staged reattach set moved aside is the agent's own
+		// (it holds the staged set's secrets): kept when the agent's, and
+		// evidence when another account owns it.
+		{name: "agent-owned set-aside staged set is kept", root: trusted,
+			entries: map[string]programDataPathSecurity{"rebind-staged.json.unusable-20261026T000000Z": trusted}},
+		{name: "set-aside staged set owned by a standard user", root: trusted,
+			entries:      map[string]programDataPathSecurity{"rebind-staged.json.unusable-20261026T000000Z": userOwned},
+			wantEvidence: "rebind-staged.json.unusable-20261026T000000Z"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			evidence, foreign, err := replaceEvidence(tc.root, tc.entries)

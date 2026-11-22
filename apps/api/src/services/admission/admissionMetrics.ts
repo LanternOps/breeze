@@ -13,6 +13,9 @@ import type { AdmissionMode } from './admissionConfig';
 import type { AdmissionSignals } from './admissionSignals';
 
 export type ShedReason = 'level' | 'bulk_in_flight' | 'ws_bucket' | 'ws_setups';
+export type OfflineDeferEvent = 'close' | 'error';
+/** `level`: enforcing at level 1+. `in_flight`: the immediate-write cap was full, e.g. a mass close (#9520). */
+export type OfflineDeferReason = 'level' | 'in_flight';
 
 function counter<L extends string>(name: string, help: string, labelNames: L[]): Counter<L> {
   return (metricsRegistry.getSingleMetric(name) as Counter<L> | undefined)
@@ -37,8 +40,8 @@ const riseSuppressed = counter(
 );
 const offlineDeferred = counter(
   'breeze_admission_offline_deferred_total',
-  'Agent WS closes/errors whose immediate offline write was left to the offline detector because admission was at level 1+',
-  ['event'],
+  'Agent WS closes/errors whose immediate offline write was left to the offline detector: admission at level 1+ (reason=level), or the immediate-write cap full during a mass close (reason=in_flight, #9520)',
+  ['event', 'reason'],
 );
 const tickFailures = counter(
   'breeze_admission_tick_failures_total',
@@ -79,8 +82,8 @@ export function recordAdmissionFailOpen(from: number): void {
   level.set(0);
 }
 
-export function recordOfflineDeferred(event: 'close' | 'error'): void {
-  offlineDeferred.labels(event).inc();
+export function recordOfflineDeferred(event: OfflineDeferEvent, reason: OfflineDeferReason): void {
+  offlineDeferred.labels(event, reason).inc();
 }
 
 export interface AdmissionTickSnapshot {

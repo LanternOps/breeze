@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ sets: [] as Record<string, unknown>[], returning: [] as unknown[][], savepoints: 0, throwOnUpdate: false, hasContext: true }));
+const h = vi.hoisted(() => ({ sets: [] as Record<string, unknown>[], wheres: [] as unknown[], returning: [] as unknown[][], savepoints: 0, throwOnUpdate: false, hasContext: true }));
 vi.mock('../../db', () => {
   const update = vi.fn(() => ({
     set: (s: Record<string, unknown>) => {
       h.sets.push(s);
-      return { where: () => ({ returning: async () => { if (h.throwOnUpdate) throw new Error('boom'); return h.returning.shift() ?? []; } }) };
+      return { where: (w: unknown) => { h.wheres.push(w); return { returning: async () => { if (h.throwOnUpdate) throw new Error('boom'); return h.returning.shift() ?? []; } }; } };
     },
   }));
   return {
@@ -15,7 +15,15 @@ vi.mock('../../db', () => {
   };
 });
 
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { advanceOutcomesForTerminalExecution, terminalVerdict } from './scriptTerminalHook';
+
+const dialect = new PgDialect();
+const whereSql = (i: number) => dialect.sqlToQuery(h.wheres[i] as SQL);
 
 describe('terminalVerdict', () => {
   it.each([
@@ -36,7 +44,7 @@ describe('terminalVerdict', () => {
 });
 
 describe('advanceOutcomesForTerminalExecution', () => {
-  beforeEach(() => { h.sets.length = 0; h.returning.length = 0; h.savepoints = 0; h.throwOnUpdate = false; h.hasContext = true; });
+  beforeEach(() => { h.sets.length = 0; h.wheres.length = 0; h.returning.length = 0; h.savepoints = 0; h.throwOnUpdate = false; h.hasContext = true; });
 
   it('a successful run moves pending → awaiting_recovery with a 24h recovery deadline, inside a savepoint', async () => {
     h.returning.push([{ id: 'o-1' }]);
@@ -45,6 +53,64 @@ describe('advanceOutcomesForTerminalExecution', () => {
     expect(h.sets[0]).not.toHaveProperty('countedAt');
     expect(((h.sets[0]!.deadlineAt as Date).getTime() - Date.now()) / 3_600_000).toBeGreaterThan(23.9);
     expect(h.savepoints).toBe(1);
+  });
+
+  it('dates the recovery deadline from the script completion time the caller passes (#7279)', async () => {
+    h.returning.push([{ id: 'o-1' }]);
+    const completedAt = new Date(Date.now() - 2 * 3_600_000);
+    await advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'completed', completedAt });
+    expect((h.sets[0]!.deadlineAt as Date).getTime()).toBe(completedAt.getTime() + 24 * 3_600_000);
+  });
+
+  it('an on-time result never touches an attempt that is already terminal (one write, the pending CAS)', async () => {
+    await advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'completed' });
+    expect(h.sets).toHaveLength(1);
+  });
+
+  describe('a late result recovered onto a swept execution (#7279)', () => {
+    it('a real success re-opens an attempt the sweep failed or called undelivered, uncounted, with a recount request', async () => {
+      h.returning.push([], [{ id: 'o-1' }]);
+      const completedAt = new Date(Date.now() - 60_000);
+      await expect(advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'completed', completedAt, lateResult: true })).resolves.toBe(1);
+      expect(h.sets).toHaveLength(2);
+      expect(h.sets[1]).toMatchObject({
+        state: 'awaiting_recovery', stateReason: 'script_succeeded_late', terminalAt: null, countedAt: null,
+        deadlineAt: new Date(completedAt.getTime() + 24 * 3_600_000),
+      });
+      expect(h.sets[1]!.recountRequestedAt).toBeInstanceOf(Date);
+      const q = whereSql(1);
+      expect(q.sql).toContain('"state" in');
+      expect(q.sql).toContain('"state_reason" in');
+      expect(q.sql).toContain('"counted_at" is not null');
+      expect(q.params).toEqual(expect.arrayContaining(['e-1', 'failed', 'inconclusive', 'script_failed', 'script_timeout', 'script_never_delivered']));
+      expect(h.savepoints).toBe(1); // both writes in the one savepoint
+    });
+
+    it('a real failure only turns an undelivered (inconclusive) attempt into a counted failure', async () => {
+      h.returning.push([], [{ id: 'o-1' }]);
+      await advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'failed', lateResult: true });
+      expect(h.sets[1]).toMatchObject({ state: 'failed', stateReason: 'script_failed' });
+      expect(h.sets[1]).not.toHaveProperty('countedAt'); // already counted: the CAS requires it
+      expect(h.sets[1]!.recountRequestedAt).toBeInstanceOf(Date);
+      const q = whereSql(1);
+      expect(q.params).toEqual(expect.arrayContaining(['e-1', 'inconclusive', 'script_never_delivered']));
+      expect(q.params).not.toContain('failed');
+    });
+
+    it('a failed reconcile is reported (no sweeper retry exists for it), never thrown', async () => {
+      h.throwOnUpdate = true;
+      captureExceptionMock.mockClear();
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await expect(advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'completed', lateResult: true })).resolves.toBe(0);
+      expect(err.mock.calls[0]![0]).toContain('keeps the sweep');
+      err.mockRestore();
+      expect(captureExceptionMock).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ phase: 'late_result_reconcile', executionId: 'e-1' }));
+    });
+
+    it('a cancelled late result reconciles nothing', async () => {
+      await advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'cancelled', lateResult: true });
+      expect(h.sets).toHaveLength(1);
+    });
   });
 
   it('a failed run is terminal + counted and requests a deferred aggregate recount (no fix_memory write here)', async () => {

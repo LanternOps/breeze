@@ -3,8 +3,9 @@
 package heartbeat
 
 import (
-	"os/exec"
 	"syscall"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // startDetachedProcess launches name/args in its own session (Setsid) and
@@ -12,11 +13,24 @@ import (
 // being killed by launchd/systemd when the agent's own service is stopped
 // (#2878). Same detach pattern as tools.agent_restart_darwin.
 func startDetachedProcess(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := procspawn.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	procspawn.Prepare(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	_ = cmd.Process.Release()
 	return nil
+}
+
+// startWatchedDetachedProcess exists so the Windows hand-off compiles (and is
+// tested) everywhere; only Windows spawns its helper this way.
+func startWatchedDetachedProcess(name string, args ...string) (<-chan int, error) {
+	cmd := procspawn.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	procspawn.Prepare(cmd)
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return watchExit(cmd), nil
 }

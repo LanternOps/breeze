@@ -129,4 +129,5 @@ func invalidateSlowPostureProbes() {
 	bitLockerStatusProbe.Invalidate()
 	bitLockerDetailsProbe.Invalidate()
 	passwordPolicyProbe.Invalidate()
+	linuxFirewallTools.invalidate()
 }

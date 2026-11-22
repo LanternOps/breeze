@@ -50,6 +50,9 @@ const EXPECTED: Record<string, Classification> = {
 
   // --- agent-authenticated, refused for a parked device -------------------
   'GET /:id/config': 'deny',
+  // #8318 T1: TPM EK collection. Wave T2 opens both to a parked device (§11).
+  'POST /:id/attestation/challenge': 'deny',
+  'POST /:id/attestation/complete': 'deny',
   // #4618: a parked device cannot start or verify an isolation episode.
   'POST /:id/isolation/:isolationId/verify': 'deny',
   'PUT /:id/monitoring-results': 'deny',
@@ -79,6 +82,9 @@ const EXPECTED: Record<string, Classification> = {
   'PUT /:id/eventlogs': 'deny',
   'PUT /:id/hardware-health': 'deny',
   'PUT /:id/time-status': 'deny',
+  'PUT /:id/wake-status': 'deny',
+  // #11065: a parked device is never sent a vendor update run.
+  'PUT /:id/oem-updates/verification': 'deny',
   'PUT /:id/workloads': 'deny',
   'POST /:id/logs': 'deny',
   'POST /:id/boot-performance': 'deny',
@@ -136,6 +142,7 @@ const EXPECTED: Record<string, Classification> = {
   'GET /download/recovery-iso/:os/:arch': 'outside_agent_auth',
   'GET /download/user-helper/:os/:arch': 'outside_agent_auth',
   'GET /install.sh': 'outside_agent_auth',
+  'GET /install.ps1': 'outside_agent_auth',
   'GET /uninstall.sh': 'outside_agent_auth',
 };
 

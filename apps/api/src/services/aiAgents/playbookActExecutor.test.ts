@@ -54,6 +54,8 @@ vi.mock('../../db', () => ({
     })),
   },
   getCurrentDbAccessContext: vi.fn(() => dbMockState.ambientContext),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransactionIfHeld: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
     const previous = dbMockState.ambientContext;
@@ -615,7 +617,7 @@ describe('executeBuiltInPlaybookForRun — digest pin', () => {
     expect(dbMockState.updatedExecutions[0]!.set).toMatchObject({ status: 'completed' });
   });
 
-  it('an insert failure is non-fatal — the playbook still executes for real', async () => {
+  it('an insert failure is fatal — the playbook does not start and no step is dispatched', async () => {
     const { createHash } = await import('node:crypto');
     const digest = createHash('sha256').update(JSON.stringify(steps)).digest('hex');
     dbMockState.playbookRows = [{
@@ -623,13 +625,12 @@ describe('executeBuiltInPlaybookForRun — digest pin', () => {
     }];
     dbMockState.insertShouldThrow = true;
     const deps = makeDeps({ executeToolFn: vi.fn(async () => JSON.stringify({ ok: true })) });
-    const result = await executeBuiltInPlaybookForRun({
+    await expect(executeBuiltInPlaybookForRun({
       run: RUN, agentAuth: AGENT_AUTH, playbookId: 'pb-1', expectedDigest: digest,
       variables: {}, reserved: { count: 0 }, deadlineMs: FAR_FUTURE_DEADLINE, deps,
-    });
-    expect(result.execution).toBe('succeeded');
-    expect(result.playbookExecutionId).toBeNull();
-    expect(deps.executeToolFn).toHaveBeenCalled();
+    })).rejects.toThrow();
+    expect(deps.executeToolFn).not.toHaveBeenCalled();
+    expect(dbMockState.updatedExecutions).toHaveLength(0);
   });
 });
 

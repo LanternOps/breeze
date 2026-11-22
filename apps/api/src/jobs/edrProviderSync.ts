@@ -40,6 +40,15 @@ import {
   evaluateEdrStaleTenants,
 } from '../services/edrProviders/alerts';
 import { EDR_ACTION_UNKNOWN_GIVEUP_MS, pollEdrActionStatus } from '../services/edrProviders/actionStatus';
+import { ensureBuiltinPackage, getBuiltinPackage } from '../services/builtinDeploymentPackages';
+import {
+  installerRefreshDue,
+  installerStateSelect,
+  persistInstallerOutcomes,
+  pickInstallerFetches,
+  type InstallerOutcome,
+} from '../services/edrProviders/installerMaterial';
+import { isEdrInstallerProviderKey, type EdrInstallerProviderKey } from '../services/edrProviders/providerKeys';
 import { attachWorkerObservability } from './workerObservability';
 import { isFinalSyncAttempt, reportTerminalSyncFailure } from './syncAttempt';
 
@@ -411,7 +420,69 @@ async function mapWithConcurrency<T, R>(
 
 const deadlockBackoffMs = (attempt: number): number => 10 * attempt + Math.floor(Math.random() * 25);
 
-interface LoadedTenant { id: string; vendorTenantId: string; orgId: string | null; apiHost: string | null; detectionCursor: string | null }
+interface LoadedTenant {
+  id: string;
+  vendorTenantId: string;
+  orgId: string | null;
+  apiHost: string | null;
+  detectionCursor: string | null;
+  installerHasMaterial: boolean;
+  installerFetchedAt: Date | null;
+  installerExpiresAt: Date | null;
+  installerFetchError: string | null;
+}
+
+/** The provider key when this run should refresh installer material: installer-capable AND released. */
+function installerRefreshProvider(adapter: EdrProviderAdapter): EdrInstallerProviderKey | null {
+  if (adapter.capabilities.installer === 'none' || !adapter.fetchInstallerMaterial) return null;
+  if (!isEdrInstallerProviderKey(adapter.key)) return null;
+  return getBuiltinPackage(adapter.key).released ? adapter.key : null;
+}
+
+/**
+ * Connections created before the package was released get their catalog row on
+ * the first run after it. Idempotent. A failure here must not cost the run its
+ * inventory; the next run tries again.
+ */
+async function provisionInstallerPackage(provider: EdrInstallerProviderKey, partnerId: string): Promise<void> {
+  try {
+    await ensureBuiltinPackage({ provider, partnerId });
+  } catch (error) {
+    console.error(`[EdrProviderSync] Failed to provision the ${provider} package for partner ${partnerId}:`, error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
+/**
+ * Phase 2, after inventory. An installer outcome never fails inventory, so every
+ * throw (a 401 included) becomes `vendor_error` for that tenant: the inventory
+ * calls alone decide the connection's status. No vendor text is kept.
+ */
+async function fetchInstallerOutcomes(
+  adapter: EdrProviderAdapter,
+  ctx: EdrAdapterContext,
+  tenants: LoadedTenant[],
+): Promise<Array<InstallerOutcome & { vendorTenantId: string }>> {
+  return mapWithConcurrency(tenants, adapter.capabilities.tenantFetchConcurrency, async (t) => {
+    const ids = { tenantId: t.id, vendorTenantId: t.vendorTenantId };
+    try {
+      const result = await adapter.fetchInstallerMaterial!(ctx, { vendorTenantId: t.vendorTenantId, apiHost: t.apiHost });
+      return { ...ids, ...result };
+    } catch (error) {
+      // The code or class only: vendor and adapter messages can quote the link.
+      if (error instanceof EdrProviderRequestError) {
+        console.warn(`[EdrProviderSync] installer fetch for tenant ${t.id} failed (${error.code})`);
+      } else {
+        const kind = error instanceof Error ? error.name : typeof error;
+        console.warn(`[EdrProviderSync] installer fetch for tenant ${t.id} threw (${kind})`);
+        captureException(new Error(`EDR installer fetch threw ${kind}`), undefined, {
+          service: 'edrProviderSync', operation: 'fetchInstallerMaterial', tenantId: t.id,
+        });
+      }
+      return { ...ids, ok: false as const, code: 'vendor_error' as const };
+    }
+  });
+}
 
 interface LoadedConnection {
   row: typeof edrConnections.$inferSelect;
@@ -468,6 +539,7 @@ async function loadForSync(connectionId: string, stream: EdrSyncStream): Promise
         orgId: edrTenants.orgId,
         apiHost: edrTenants.apiHost,
         detectionCursor: edrTenants.detectionCursor,
+        ...installerStateSelect(),
       })
       .from(edrTenants)
       .where(and(eq(edrTenants.connectionId, connectionId), sql`${edrTenants.vendorMissingSince} IS NULL`));
@@ -712,6 +784,9 @@ export async function syncEdrInventory(
     const ctx = built.ctx;
     secrets = built.secrets;
     const byVendorId = new Map(loaded.tenants.map((t) => [t.vendorTenantId, t]));
+    // Dormant providers stop here: no catalog row, no installer call (#8170).
+    const installerProvider = installerRefreshProvider(adapter);
+    if (installerProvider) await provisionInstallerPackage(installerProvider, loaded.row.partnerId);
 
     // ---- phase 2 (NO DB) ---------------------------------------------
     const fetched = await dbModule.runOutsideDbContext(async () => {
@@ -758,7 +833,20 @@ export async function syncEdrInventory(
           }
         },
       );
-      return { vendorTenants, results };
+      // Only tenants the vendor still lists this run; a tombstone is not worth a call.
+      const listed = new Set(vendorTenants.map((t) => t.vendorTenantId));
+      const now = new Date();
+      const installerDue = installerProvider
+        ? loaded.tenants.filter((t) => listed.has(t.vendorTenantId) && installerRefreshDue({
+            orgId: t.orgId,
+            hasMaterial: t.installerHasMaterial,
+            fetchedAt: t.installerFetchedAt,
+            expiresAt: t.installerExpiresAt,
+            fetchError: t.installerFetchError,
+          }, now))
+        : [];
+      const installerOutcomes = await fetchInstallerOutcomes(adapter, ctx, pickInstallerFetches(installerDue));
+      return { vendorTenants, results, installerOutcomes };
     });
 
     throwIfAllFailed(fetched.results);
@@ -781,6 +869,19 @@ export async function syncEdrInventory(
       });
       const dropped = fetched.results.length - keep.length;
       const inv = await persistInventory(tx, conn, keep, now);
+      if (installerProvider) {
+        // The same fence: a tenant unmapped since Phase 1 had its material cleared on purpose.
+        const installerKeep = fetched.installerOutcomes.filter((o) =>
+          (currentTenants.get(o.vendorTenantId)?.orgId ?? null) === (byVendorId.get(o.vendorTenantId)?.orgId ?? null));
+        if (installerKeep.length > 0) {
+          await persistInstallerOutcomes(
+            tx as unknown as typeof db,
+            installerProvider,
+            installerKeep.map(({ vendorTenantId: _vendorTenantId, ...outcome }) => outcome),
+            now,
+          );
+        }
+      }
       // A5: apply the re-read verdicts (and rotate the omitted refs) BEFORE the open-count read below.
       for (const r of keep) {
         if (!r.ok || !r.value.reread) continue;

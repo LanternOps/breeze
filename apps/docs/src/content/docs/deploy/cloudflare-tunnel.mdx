@@ -85,10 +85,13 @@ ingress:
     path: '^/portal(/.*)?$'
     service: http://portal:4322
   # Billing UI sidecar — only needed if you run the optional `billing`
-  # container (not part of the bundled self-host stack). Omit this rule
-  # entirely if you don't run it; the MSP Invoices/Quotes pages
-  # (/billing/invoices, /billing/quotes) then fall through correctly to the
-  # web catch-all below either way.
+  # container (not part of the bundled self-host stack). Omit both rules
+  # below if you don't run it: every /billing path then falls through to
+  # the web catch-all. If you do run it, keep the web rule first, or the
+  # sidecar shadows the MSP Invoices, Quotes and Autopay pages.
+  - hostname: breeze.example.com
+    path: '^/billing/(invoices|quotes|autopay)(/.*)?$'
+    service: http://web:4321
   - hostname: breeze.example.com
     path: '^/billing(/.*)?$'
     service: http://billing:3002

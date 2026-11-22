@@ -49,8 +49,8 @@ func TestRecoveryVersion(t *testing.T) {
 }
 
 func TestRecoverySelfTestUnsupported(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows wiring is tested with injected dependencies; no live WFP calls")
+	if runtime.GOOS == "windows" || runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		t.Skip("wiring is tested with injected dependencies; no live WFP, nft or pf calls")
 	}
 	cap := isolation.NewPlatformIsolator().Capability()
 	var out, errOut bytes.Buffer
@@ -67,8 +67,8 @@ func TestRecoverySelfTestUnsupported(t *testing.T) {
 }
 
 func TestRecoveryOperationsDoNotSilentlySucceed(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows cleanup is tested with injected dependencies; no live WFP calls")
+	if runtime.GOOS == "windows" || runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		t.Skip("cleanup is tested with injected dependencies; no live WFP, nft or pf calls")
 	}
 	dir := t.TempDir()
 	for _, args := range [][]string{

@@ -4,6 +4,7 @@ package backupipc
 
 import (
 	"encoding/json"
+	"math"
 	"time"
 )
 
@@ -113,7 +114,16 @@ type BackupProgress struct {
 	Total      int64  `json:"total"`   // bytes total
 	FilesDone  int    `json:"filesDone,omitempty"`
 	FilesTotal int    `json:"filesTotal,omitempty"`
-	Message    string `json:"message,omitempty"`
+	// VerifiedFiles/VerifiedBytes (backup_run only) count files, and their
+	// source bytes, the run has finished checking before deciding whether to
+	// upload them: the resume pass over the checkpoint journal and the
+	// dedupe pre-pass's re-hash of a file whose modification time moved. They
+	// are separate from Current/FilesDone, whose meaning is unchanged; the
+	// API counts their movement as progress so a multi-hour check pass is
+	// not reaped as wedged (#11014). Cumulative for the run.
+	VerifiedFiles int    `json:"verifiedFiles,omitempty"`
+	VerifiedBytes int64  `json:"verifiedBytes,omitempty"`
+	Message       string `json:"message,omitempty"`
 	// SnapshotID is the backup_run snapshot currently being written. Empty
 	// until the snapshot is created (pre-scan keepalives) and always empty for
 	// restore progress. Sent so the server can persist backup_jobs.snapshot_id
@@ -123,22 +133,52 @@ type BackupProgress struct {
 	SnapshotID string `json:"snapshotId,omitempty"`
 }
 
-// VerifyCommandTimeout is how long the agent waits for the helper to answer a
-// backup_verify or backup_test_restore, matching the API's two-hour
-// LONG_TIMEOUT_TYPES tier for both commands.
+// VerifyCommandTimeout is the BASE time the agent waits for the helper to
+// answer a backup_verify or backup_test_restore: the API's 2 h base budget
+// (BACKUP_VERIFY_BASE_BUDGET_MS, apps/api/src/services/backupVerifyBudget.ts),
+// used when the command payload carries no timeBudgetSeconds.
 //
-// VerifyRunBudget is how long the helper lets one of those runs work before
-// it stops and reports the counts it has so far. It MUST stay below
-// VerifyCommandTimeout with room for in-flight downloads to unwind, the
-// test-restore directory (possibly hundreds of thousands of files) to be
-// removed and the result to cross IPC. Otherwise the agent's wait expires
-// first, the late result is discarded, and the server records "command timed
-// out" with 0 files ok and 0 failed however much was checked (#6598).
+// VerifyMaxCommandTimeout is the ceiling on that wait. The API scales each
+// verification's budget with its snapshot (file count and size) into
+// [VerifyCommandTimeout, VerifyMaxCommandTimeout] and sends it as the
+// payload's timeBudgetSeconds; ClampVerifyCommandTimeout applies the same
+// clamp on this side.
+//
+// VerifyRunMargin is how much shorter than its wait the helper's run budget
+// is: the helper stops each run at (wait - VerifyRunMargin) and reports the
+// counts it has so far. The margin leaves room for in-flight downloads to
+// unwind, the test-restore directory (possibly hundreds of thousands of files)
+// to be removed and the result to cross IPC. Otherwise the agent's wait
+// expires first, the late result is discarded, and the server records
+// "command timed out" with 0 files ok and 0 failed however much was checked
+// (#6598). The helper derives its budget from the IPC request's TimeoutMs, so
+// an agent that sends the base wait gets VerifyRunBudget.
 // Pinned by types_test.go.
 const (
-	VerifyCommandTimeout = 2 * time.Hour
-	VerifyRunBudget      = VerifyCommandTimeout - 10*time.Minute
+	VerifyCommandTimeout    = 2 * time.Hour
+	VerifyMaxCommandTimeout = 12 * time.Hour
+	VerifyRunMargin         = 10 * time.Minute
+	VerifyRunBudget         = VerifyCommandTimeout - VerifyRunMargin
 )
+
+// ClampVerifyCommandTimeout turns a verification command's timeBudgetSeconds
+// into the agent's forward wait: clamped to [VerifyCommandTimeout,
+// VerifyMaxCommandTimeout]; zero, negative, NaN or infinite is the base.
+func ClampVerifyCommandTimeout(budgetSeconds float64) time.Duration {
+	if math.IsNaN(budgetSeconds) || math.IsInf(budgetSeconds, 0) || budgetSeconds <= 0 {
+		return VerifyCommandTimeout
+	}
+	// Compare in seconds before converting, so a huge value cannot overflow
+	// time.Duration.
+	if budgetSeconds >= VerifyMaxCommandTimeout.Seconds() {
+		return VerifyMaxCommandTimeout
+	}
+	d := time.Duration(budgetSeconds * float64(time.Second))
+	if d < VerifyCommandTimeout {
+		return VerifyCommandTimeout
+	}
+	return d
+}
 
 // BareMetalRebuildForwardTimeout is how long the agent waits for the helper
 // to answer a bare_metal_rebuild. It stays under the API's 24 h

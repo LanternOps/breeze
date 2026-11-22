@@ -5,6 +5,8 @@ import { promptHostTelemetrySchema } from '@breeze/shared/promptHost';
 import { redactSecretsFromOutput } from '../../services/secretRedaction';
 import { MAX_AGENT_WARRANTY_ENTITLEMENTS } from '../../services/warrantyDataSources';
 import { PG_UUID_REGEX } from '../../utils/uuid';
+import { normalizeSystemUuid } from '../../services/reinstallCandidates/systemUuid';
+import { BACKUP_SNAPSHOT_ID_MAX_LENGTH } from '../../db/schema/backupConstants';
 
 // ============================================
 // Enrollment
@@ -36,6 +38,27 @@ const desktopAccessReasonSchema = z.enum([
   'x11_auth_failed',
 ]);
 
+// #9593: device_hardware.product_sku is varchar(100). One odd firmware string must
+// not fail the whole hardware report on a Postgres length error, and a cut-off
+// product number would misdirect a warranty lookup, so it is dropped instead.
+const productSkuField = z.string().transform((value) => {
+  const trimmed = value.trim();
+  return trimmed && trimmed.length <= 100 ? trimmed : undefined;
+}).optional();
+
+/**
+ * `systemUuid` on enroll and on the hardware report (#8318 §7.2). Tolerant: a
+ * value of any shape never fails the request. Absent stays `undefined` (the
+ * stored value is left alone); present is normalized with the agent's rules,
+ * and a rejected value (malformed, a placeholder, not a string) becomes
+ * `null`, which is stored as NULL.
+ */
+export const systemUuidField = z
+  .unknown()
+  .optional()
+  .transform((value): string | null | undefined =>
+    value === undefined ? undefined : normalizeSystemUuid(typeof value === 'string' ? value : null));
+
 export const enrollSchema = z.object({
   enrollmentKey: z.string().min(1),
   enrollmentSecret: z.string().min(1).optional(),
@@ -54,13 +77,15 @@ export const enrollSchema = z.object({
     ramTotalMb: z.number().int().optional(),
     diskTotalGb: z.number().int().optional(),
     serialNumber: z.string().optional(),
+    productSku: productSkuField,
     manufacturer: z.string().optional(),
     model: z.string().optional(),
     motherboardManufacturer: z.string().optional(),
     motherboardProduct: z.string().optional(),
     motherboardVersion: z.string().optional(),
     biosVersion: z.string().optional(),
-    gpuModel: z.string().optional()
+    gpuModel: z.string().optional(),
+    systemUuid: systemUuidField,
   }).optional(),
   networkInfo: z.array(z.object({
     name: z.string(),
@@ -184,6 +209,9 @@ export const heartbeatSchema = z.object({
   // Version/shape failures are report-local and must not reject the heartbeat.
   networkContextV1: z.unknown().optional(),
   networkContextReset: z.unknown().optional(),
+  // Learned networks (#12369, contract C1). Parsed report-locally by services/learnedNetworks/ingest;
+  // absent = no change, so a beat without it never clears anything.
+  networkAttachmentsV1: z.unknown().optional(),
   // #8608 — log-shipping health. z.unknown() so a malformed object can never
   // reject the beat; services/logShippingHealth.parseLogShipping strict-parses
   // it separately (a bad value is `invalid`, never coerced to a healthy zero).
@@ -193,6 +221,11 @@ export const heartbeatSchema = z.object({
   // services/watchdogInstallHealth.parseWatchdogInstall strict-parses it
   // separately (a bad value is `invalid`: no state change, never coerced).
   watchdogInstall: z.unknown().optional(),
+  // #8868 — control-plane block episode. OPTIONAL (old agents omit it) and
+  // z.unknown() so a malformed object can never reject the beat;
+  // services/controlPlaneBlockHealth.parseControlPlaneBlock strict-parses it
+  // separately (a bad value is `invalid`: no change, never clears).
+  controlPlaneBlock: z.unknown().optional(),
   metrics: z.object({
     cpuPercent: z.number(),
     ramPercent: z.number(),
@@ -427,6 +460,7 @@ export const heartbeatSchema = z.object({
     networkIsolationMechanism: z.enum(ISOLATION_MECHANISMS).optional().catch(undefined),
     networkIsolationUnsupportedReason: truncated(1000).optional().catch(undefined),
     networkIsolationReady: z.boolean().optional().catch(undefined),
+    networkIsolationDeadMan: z.boolean().optional().catch(undefined),
 
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
     // #3409 PR4 — encrypted secret-env delivery. Same informational contract:
@@ -683,9 +717,11 @@ export function isAgentCommandErrorCode(value: unknown): value is AgentCommandEr
 }
 
 /**
- * The ten statuses an agent can report for a System Restore checkpoint
- * attempt (#4609, W06 #4757). Mirrors `Status` in
- * agent/internal/systemrestore/types.go. 'requested' is deliberately absent:
+ * The eleven statuses an agent can report for a System Restore checkpoint
+ * attempt (#4609, W06 #4757; 'interrupted' #9163). Mirrors `Status` in
+ * agent/internal/systemrestore/types.go, except 'interrupted': the API accepts
+ * it ahead of the agent half of #9163, which adds `StatusInterrupted` (the
+ * API must be deployed first). 'requested' is deliberately absent:
  * it is server-only, written at command-creation time, and an agent claiming
  * it is malformed. Pinned against the shared union and the ledger statuses in
  * restorePointResultSchema.test.ts.
@@ -701,6 +737,7 @@ export const RESTORE_POINT_OUTCOME_STATUSES = [
   'insufficient_privileges',
   'verification_failed',
   'failed',
+  'interrupted',
 ] as const satisfies ReadonlyArray<RestorePointOutcome['status']>;
 
 const RESTORE_POINT_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -786,6 +823,15 @@ export function parseRestorePointOutcome(raw: unknown): RestorePointOutcome | nu
   return classified.ok ? classified.outcome : null;
 }
 
+/**
+ * Longest command id an agent may send back. Ids the API issues are a short
+ * prefix plus a UUID; the longest agent-made id is `vault-auto-sync-` plus a
+ * snapshot id of up to BACKUP_SNAPSHOT_ID_MAX_LENGTH characters. The id becomes
+ * part of log lines, database lookups and cache keys, so a frame carrying a
+ * longer one is refused at the schema (and on the HTTP result route's path).
+ */
+export const MAX_AGENT_COMMAND_ID_LENGTH = Math.max(256, 'vault-auto-sync-'.length + BACKUP_SNAPSHOT_ID_MAX_LENGTH);
+
 export const commandResultSchema = z.object({
   status: z.enum(['completed', 'failed', 'timeout']),
   exitCode: z.number().int().optional(),
@@ -853,6 +899,7 @@ export const securityProviderValues = [
   'webroot',
   'withsecure',
   'cylance',
+  'trend_micro',
   'other',
   'unknown'
 ] as const;
@@ -1041,6 +1088,7 @@ export const updateHardwareSchema = z.object({
   ramTotalMb: z.number().int().optional(),
   diskTotalGb: z.number().int().optional(),
   serialNumber: z.string().optional(),
+  productSku: productSkuField,
   manufacturer: z.string().optional(),
   model: z.string().optional(),
   motherboardManufacturer: z.string().optional(),
@@ -1048,6 +1096,11 @@ export const updateHardwareSchema = z.object({
   motherboardVersion: z.string().optional(),
   biosVersion: z.string().optional(),
   gpuModel: z.string().optional(),
+  systemUuid: systemUuidField,
+  // #8318 T1 (§12.1): false when the machine has no TPM or TBS is unavailable.
+  // Tolerant like systemUuid: anything but a boolean is dropped, never a 400.
+  // The EK baseline itself is never part of this report (attestation route only).
+  tpmAvailable: z.unknown().optional().transform((v) => (typeof v === 'boolean' ? v : undefined)),
   // #5351: kept RAW here and validated separately with
   // agentMemoryInventorySchema by the route, so an invalid memory block is
   // logged and ignored instead of 400-ing the whole hardware report.
@@ -1113,7 +1166,8 @@ export const updateDisksSchema = z.object({
     usedGb: z.number(),
     freeGb: z.number(),
     usedPercent: z.number(),
-    health: z.string().optional()
+    health: z.string().optional(),
+    isOsVolume: z.boolean().optional()
   })).max(100)
 });
 
@@ -1223,6 +1277,11 @@ const pendingPatchSchema = z.object({
   // is a malformed one (`.catch`), since a bad provenance label must never
   // cost the device its whole patch inventory.
   severitySource: z.string().max(32).optional().catch(undefined),
+  // What this device says the update is (#11073). A free string narrowed at
+  // ingest for the same reason as `severitySource`: an unrecognised or malformed
+  // value is dropped rather than costing the device its whole patch inventory.
+  reportedUpdateType: z.string().max(32).optional().catch(undefined),
+  reportedUpdateOwner: z.string().max(32).optional().catch(undefined),
   size: z.number().int().optional(),
   requiresRestart: z.boolean().optional(),
   releaseDate: z.string().optional(),
@@ -1324,11 +1383,28 @@ export const agentLogIngestSchema = z.object({
 
 export const EVENT_LOG_EMPTY_MESSAGE_PLACEHOLDER = '(no message text)';
 
+// device_event_logs.source column width (varchar(255)).
+const EVENT_LOG_SOURCE_MAX = 255;
+
+function truncateToCodePoints(max: number) {
+  return (value: string): string => {
+    // Cheap path: UTF-16 length <= max implies code points <= max.
+    if (value.length <= max) return value;
+    const points = Array.from(value);
+    return points.length <= max ? value : points.slice(0, max).join('');
+  };
+}
+
 export const eventLogRowSchema = z.object({
   timestamp: z.string().min(1),
   level: z.enum(['info', 'warning', 'error', 'critical']),
   category: z.enum(['security', 'hardware', 'application', 'system']),
-  source: z.string().min(1),
+  // device_event_logs.source is varchar(255). An over-long source passed
+  // validation and then failed the whole 100-row insert batch (Postgres
+  // 22001), losing ~99 neighbouring events. It is a display/grouping label, so
+  // truncate to the column width rather than drop the row. Cut by code point
+  // (Postgres counts characters) so a surrogate pair is never split.
+  source: z.string().min(1).transform(truncateToCodePoints(EVENT_LOG_SOURCE_MAX)),
   // device_event_logs.event_id is varchar(100). Without this bound an
   // over-long id passed validation and then failed the whole 100-row insert
   // batch; now only that row is dropped (counted in invalidDropped). The

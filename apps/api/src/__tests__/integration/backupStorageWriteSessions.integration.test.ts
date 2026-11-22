@@ -28,8 +28,9 @@ import { runBackupWriteSessionJanitor } from '../../jobs/backupWriteSessionJanit
 import { backupWriteCredentialPayload } from '../../services/backupCommandCredentials';
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
-import { defaultVerifyDeps, verifySnapshotAttestation } from '../../services/backupAttestationVerify';
-import { authenticateStorageSession, type StorageSessionRow } from '../../services/backupStorageSessions';
+import { verifySnapshotAttestation } from '../../services/backupAttestationVerify';
+import { verifyDepsFromBytes } from '../helpers/verifyDepsFromBytes';
+import { authenticateStorageSession, renewStorageSession, type StorageSessionRow } from '../../services/backupStorageSessions';
 import {
   abortWriteSessionMultipart,
   completeWriteSessionMultipart,
@@ -290,7 +291,7 @@ describe('verifying the attestation of a brokered snapshot', () => {
         ${createHash('sha256').update(manifest).digest('hex')}, ${manifest.byteLength}, 'pending')
     `);
     const fetchObject = vi.fn(async () => new Uint8Array(manifest));
-    const deps = { ...defaultVerifyDeps, fetchObject };
+    const deps = verifyDepsFromBytes(fetchObject);
 
     const whileSealing = await verifySnapshotAttestation(snapshotDbId, deps);
     expect(whileSealing).toEqual({ outcome: 'retry', reason: 'snapshot_sealing' });
@@ -1134,5 +1135,96 @@ describe('write sessions resolve physical keys from the reservation key root', (
       warn.mockRestore();
     }
     expect(calls).toEqual([]);
+  });
+});
+
+describe('a write session queued behind another backup of the same batch (#11012)', () => {
+  /** The lease lapses while the job waits in the helper's queue; the deadline is far away. */
+  async function lapseLease(sessionId: string) {
+    await getTestDb().execute(sql`
+      UPDATE backup_storage_sessions SET expires_at = now() - interval '3 hours' WHERE id = ${sessionId}
+    `);
+  }
+  const authenticate = (t: WriteTenant, envelope: Record<string, unknown>) =>
+    withDbAccessContext(orgContext(t.orgId), () =>
+      authenticateStorageSession({
+        sessionId: envelope.sessionId as string,
+        token: envelope.token as string,
+        agent: { deviceId: t.deviceId, orgId: t.orgId },
+      }),
+    );
+  /** The agent route's renew: re-check the job and reservation, then renew. */
+  const renewAsAgent = (t: WriteTenant, session: StorageSessionRow) =>
+    withDbAccessContext(orgContext(t.orgId), async () => {
+      const live = await ensureWriteSessionLive(session);
+      if (!live.ok) return { status: live.status };
+      return renewStorageSession(session);
+    });
+
+  runDb('an unused session with a lapsed lease is still usable while its job waits, and renew grants a lease from now', async () => {
+    const t = await seedWriteTenant();
+    await getTestDb().execute(sql`UPDATE backup_jobs SET status = 'pending' WHERE id = ${t.jobId}`);
+    const minted = await mint(t);
+    if (minted.mode !== 'brokered') throw new Error('expected brokered');
+    await lapseLease(minted.sessionId);
+
+    const auth = await authenticate(t, minted.envelope);
+    expect(auth.ok).toBe(true);
+    if (!auth.ok) return;
+    expect((await renewAsAgent(t, auth.session)).status).toBe(200);
+    const row = await sessionRow(minted.sessionId);
+    expect(new Date(row.expires_at as string).getTime()).toBeGreaterThan(Date.now() + 14 * 60_000);
+    expect(row).toMatchObject({ call_count: 1, revoked_at: null });
+    expect(row.last_used_at).not.toBeNull();
+
+    // Used now: a lapsed lease ends it like any running session.
+    await lapseLease(minted.sessionId);
+    expect(await authenticate(t, minted.envelope)).toMatchObject({ ok: false, status: 410 });
+  });
+
+  runDb('a lapsed lease ends a session that has been used, even with its deadline far away', async () => {
+    const t = await seedWriteTenant();
+    const minted = await mint(t);
+    if (minted.mode !== 'brokered') throw new Error('expected brokered');
+    const session = await authed(t, minted.envelope);
+    expect((await renewAsAgent(t, session)).status).toBe(200);
+    await lapseLease(minted.sessionId);
+    expect(await authenticate(t, minted.envelope)).toMatchObject({ ok: false, status: 410 });
+  });
+
+  runDb('an unused session whose job has ended is not revived', async () => {
+    const t = await seedWriteTenant();
+    const minted = await mint(t);
+    if (minted.mode !== 'brokered') throw new Error('expected brokered');
+    await lapseLease(minted.sessionId);
+    // Ending the job revokes its write sessions (trigger in the write-session migration).
+    await getTestDb().execute(sql`UPDATE backup_jobs SET status = 'failed' WHERE id = ${t.jobId}`);
+    expect(await authenticate(t, minted.envelope)).toMatchObject({ ok: false, status: 410, error: 'Storage session has been revoked' });
+    expect(await sessionRow(minted.sessionId)).toMatchObject({ revoked_reason: 'job_failed' });
+  });
+
+  runDb('an unused session whose job has ended is refused by the live check even if not yet revoked', async () => {
+    const t = await seedWriteTenant();
+    const minted = await mint(t);
+    if (minted.mode !== 'brokered') throw new Error('expected brokered');
+    await lapseLease(minted.sessionId);
+    const auth = await authenticate(t, minted.envelope);
+    if (!auth.ok) throw new Error(`authentication failed: ${auth.error}`);
+    // The job ends between authentication and the call (the row read above predates it).
+    await getTestDb().execute(sql`UPDATE backup_jobs SET status = 'failed' WHERE id = ${t.jobId}`);
+    expect(await renewAsAgent(t, auth.session)).toMatchObject({ status: 410 });
+    expect((await sessionRow(minted.sessionId)).call_count).toBe(0);
+  });
+
+  runDb('an unused session past its deadline stays expired', async () => {
+    const t = await seedWriteTenant();
+    const minted = await mint(t);
+    if (minted.mode !== 'brokered') throw new Error('expected brokered');
+    await getTestDb().execute(sql`
+      UPDATE backup_storage_sessions
+         SET expires_at = now() - interval '2 hours', deadline = now() - interval '1 hour'
+       WHERE id = ${minted.sessionId}
+    `);
+    expect(await authenticate(t, minted.envelope)).toMatchObject({ ok: false, status: 410 });
   });
 });

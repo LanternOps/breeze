@@ -21,7 +21,7 @@ import { organizations, sites, partners } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
 import { alerts } from './alerts';
-import type { NetworkBaselineScanSchedule, NetworkBaselineAlertSettings } from '@breeze/shared';
+import type { DiscoveryJobError, NetworkBaselineScanSchedule, NetworkBaselineAlertSettings } from '@breeze/shared';
 
 export const discoveredAssetTypeEnum = pgEnum('discovered_asset_type', [
   'workstation',
@@ -129,10 +129,23 @@ export const discoveryProfiles = pgTable('discovery_profiles', {
    * `device_id` on purpose — see that migration.
    */
   pinnedDeviceId: uuid('pinned_device_id'),
+  /**
+   * Learned networks (#12369, spec §6): optional narrowing to one learned network. Composite FK
+   * discovery_profiles_network_fk (network_id, org_id) -> learned_networks(id, org_id), NO ACTION (it blocks
+   * deleting the network and is never set null, which would widen the profile), lives in
+   * migrations/2027-01-29-100000-learned-networks.sql: importing learnedNetworks.ts here would be an import cycle.
+   */
+  networkId: uuid('network_id'),
+  /** Whether saved SNMP secrets may go anywhere a site agent is ('unrestricted') or only behind granted fingerprints ('bound'). */
+  snmpGrantMode: varchar('snmp_grant_mode', { length: 16 }).$type<'unrestricted' | 'bound'>().notNull().default('unrestricted'),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => [
+  uniqueIndex('discovery_profiles_id_org_id_uniq').on(table.id, table.orgId),
+  index('discovery_profiles_network_idx').on(table.networkId).where(sql`network_id IS NOT NULL`),
+  check('discovery_profiles_snmp_grant_mode_chk', sql`snmp_grant_mode IN ('unrestricted', 'bound')`),
+]);
 
 export const discoveryJobs = pgTable('discovery_jobs', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -147,15 +160,26 @@ export const discoveryJobs = pgTable('discovery_jobs', {
   hostsScanned: integer('hosts_scanned'),
   hostsDiscovered: integer('hosts_discovered'),
   newAssets: integer('new_assets'),
-  errors: jsonb('errors'),
+  errors: jsonb('errors').$type<DiscoveryJobError>(),
   // M2 D7 dispatch authorization snapshot (secret-free, bounded; see
   // services/topology/discoveryDispatch.ts). All three set together or none.
   topologyDispatch: jsonb('topology_dispatch').$type<Record<string, unknown>>(),
   topologyDeadlineAt: timestamp('topology_deadline_at', { withTimezone: true }),
   topologyConfigGeneration: varchar('topology_config_generation', { length: 64 }),
+  // Learned networks (#12369, spec §6). network_id: the network the scan ran on (history). Composite FK
+  // discovery_jobs_network_fk (network_id, org_id) -> learned_networks(id, org_id) ON DELETE SET NULL (network_id)
+  // lives in migrations/2027-01-29-100000-learned-networks.sql. network_dispatch: the attempt record written
+  // before the command leaves (secret-free, bounded). cross_network_asset_updates: the count of assets the scan
+  // updated that were last seen on another network.
+  networkId: uuid('network_id'),
+  networkDispatch: jsonb('network_dispatch').$type<Record<string, unknown>>(),
+  crossNetworkAssetUpdates: integer('cross_network_asset_updates'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => [
+  index('discovery_jobs_network_idx').on(table.networkId).where(sql`network_id IS NOT NULL`),
+  check('discovery_jobs_network_dispatch_chk', sql`network_dispatch IS NULL
+  OR (jsonb_typeof(network_dispatch) = 'object' AND octet_length(network_dispatch::text) <= 16384)`),
   check('discovery_jobs_topology_dispatch_chk', sql`num_nonnulls(topology_dispatch, topology_deadline_at, topology_config_generation) IN (0, 3)
   AND (topology_dispatch IS NULL OR (jsonb_typeof(topology_dispatch) = 'object' AND octet_length(topology_dispatch::text) <= 65536))
   AND (topology_config_generation IS NULL OR topology_config_generation ~ '^[0-9a-f]{64}$')`),
@@ -222,6 +246,11 @@ export const discoveredAssets = pgTable('discovered_assets', {
   // Website/SaaS endpoint for asset_type website|service — the identity of an
   // IP-less asset.
   url: text('url'),
+  // Learned networks (#12369, spec §6): the network of the last guarded scan that saw the asset (history).
+  // Composite FK discovered_assets_last_network_fk (last_network_id, org_id) -> learned_networks(id, org_id)
+  // ON DELETE SET NULL (last_network_id) lives in migrations/2027-01-29-100000-learned-networks.sql. Not partner-export
+  // material: that migration adds it to breeze_partner_export_site_child_update()'s excluded list.
+  lastNetworkId: uuid('last_network_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
@@ -232,7 +261,8 @@ export const discoveredAssets = pgTable('discovered_assets', {
   idOrgSiteUnique: uniqueIndex('discovered_assets_id_org_id_site_id_uniq').on(table.id, table.orgId, table.siteId),
   orgIpUnique: uniqueIndex('discovered_assets_org_ip_unique')
     .on(table.orgId, table.ipAddress)
-    .where(sql`${table.ipAddress} is not null`)
+    .where(sql`${table.ipAddress} is not null`),
+  lastNetworkIdx: index('discovered_assets_last_network_idx').on(table.lastNetworkId).where(sql`last_network_id IS NOT NULL`)
 }));
 
 export interface KnownNetworkDevice {
@@ -342,7 +372,9 @@ export const networkChangeEvents = pgTable('network_change_events', {
   acknowledged: boolean('acknowledged').notNull().default(false),
   acknowledgedBy: uuid('acknowledged_by').references(() => users.id),
   acknowledgedAt: timestamp('acknowledged_at'),
-  alertId: uuid('alert_id').references(() => alerts.id),
+  // ON DELETE SET NULL (2027-01-23-102000, #4342 W3): history that outlives
+  // the alert, which closed-alert retention may delete.
+  alertId: uuid('alert_id').references(() => alerts.id, { onDelete: 'set null' }),
   linkedDeviceId: uuid('linked_device_id').references(() => devices.id),
   notes: text('notes'),
   createdAt: timestamp('created_at').defaultNow().notNull()

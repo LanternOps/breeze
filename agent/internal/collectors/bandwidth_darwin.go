@@ -4,9 +4,10 @@ package collectors
 
 import (
 	"log/slog"
+	"os"
 	"regexp"
-	"strconv"
 	"strings"
+	"syscall"
 )
 
 var darwinInterfaceNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,32}$`)
@@ -64,25 +65,46 @@ func getLinkSpeed(ifaceName string) uint64 {
 	return 0
 }
 
-func getWiFiSpeed() uint64 {
-	// Try the system_profiler approach
-	out, err := runCollectorOutput(collectorShortCommandTimeout, "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport", "-I")
-	if err != nil {
-		slog.Debug("failed to get wifi speed: airport command failed", "error", err.Error())
-		return 0
-	}
+// wifiSpeedSourceProbe caches which tool can read the Wi-Fi rate so hosts
+// without a usable one stop spawning per tick (#10911).
+var wifiSpeedSourceProbe = newCachedHostProbe(hostProbeAvailabilityTTL, detectWiFiSpeedSource)
 
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "lastTxRate:") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				mbps, err := strconv.ParseUint(parts[1], 10, 64)
-				if err == nil {
-					return mbps * 1_000_000 // Mbps → bps
-				}
-			}
+func detectWiFiSpeedSource() wifiSpeedSource {
+	version, _ := syscall.Sysctl("kern.osproductversion")
+	src := selectWiFiSpeedSource(version, os.Geteuid() == 0, func(path string) bool {
+		info, err := os.Stat(path)
+		return err == nil && info.Mode().IsRegular()
+	})
+	slog.Debug("wifi speed source selected", "source", wifiSpeedSourceName(src), "macos", version)
+	return src
+}
+
+func wifiSpeedSourceName(s wifiSpeedSource) string {
+	switch s {
+	case wifiSpeedAirport:
+		return "airport"
+	case wifiSpeedWdutil:
+		return "wdutil"
+	}
+	return "none"
+}
+
+func getWiFiSpeed() uint64 {
+	switch wifiSpeedSourceProbe.get() {
+	case wifiSpeedAirport:
+		out, err := runCollectorOutput(collectorShortCommandTimeout, airportPath, "-I")
+		if err != nil {
+			slog.Debug("failed to get wifi speed: airport command failed", "error", err.Error())
+			return 0
 		}
+		return parseAirportTxRate(string(out))
+	case wifiSpeedWdutil:
+		out, err := runCollectorOutput(collectorShortCommandTimeout, wdutilPath, "info")
+		if err != nil {
+			slog.Debug("failed to get wifi speed: wdutil command failed", "error", err.Error())
+			return 0
+		}
+		return parseWdutilTxRate(string(out))
 	}
 	return 0
 }

@@ -1,11 +1,11 @@
 ---
 name: release
-description: Use when cutting, shipping, or announcing a Breeze RMM release — "cut a release", "ship vX.Y.Z", "release notes for X", "what do self-hosters need to know", "draft the release announcement", "do the release write-up". Orchestrates the whole release-comms pass: a self-hoster-focused GitHub Release body (breaking changes, required env vars, migrations), then /update-breeze-release-notes (marketing site), /update-breeze-docs (technical docs), and a Discord announcement. Also covers the post-release deploy + agent-fleet promote steps that the tag alone does NOT do.
+description: Use when cutting, shipping, or announcing a Breeze RMM release — "cut a release", "ship vX.Y.Z", "release notes for X", "what do self-hosters need to know", "draft the release announcement", "do the release write-up". Orchestrates the whole release-comms pass: a self-hoster-focused GitHub Release body (breaking changes, required env vars, migrations), then /update-breeze-release-notes (marketing site), /update-breeze-docs (technical docs), a Discord announcement, and an email update to subscribers sent through Sequenzy. Also covers the post-release deploy + agent-fleet promote steps that the tag alone does NOT do.
 ---
 
 # Breeze Release
 
-This skill drives the **communication and rollout** pass for a release: the GitHub Release body (especially the self-hoster section), the marketing release notes, the technical docs, and the Discord announcement — plus the post-release deploy/promote steps the tag alone doesn't handle.
+This skill drives the **communication and rollout** pass for a release: the GitHub Release body (especially the self-hoster section), the marketing release notes, the technical docs, the Discord announcement and the subscriber email update — plus the post-release deploy/promote steps the tag alone doesn't handle.
 
 It assumes the **code is already merged to `main` and green**. Tagging is the trigger; this skill is about everything that surrounds it.
 
@@ -43,7 +43,30 @@ git -C ~/breeze log --oneline $PREV..HEAD                  # everything that wil
 2. Merge it.
 3. Push the tag at exactly that SHA. Once the tag exists, both scripts check the row whenever they read the registry: a tag that peels to a different commit fails with `candidate registry SHA mismatch`. If a candidate is abandoned before tagging, remove its row.
 
+**Agent-version gates.** Server-side `*_AGENT_VERSION` constants gate a feature on the agent release that first carries it, and are written before that release exists. A value that is too low shows the feature to agents that cannot do it; too high hides it from agents that can. List them and check every value above `$PREV`:
+
+```bash
+rg -n "[A-Z_]*AGENT_VERSION[A-Z_]* = '[0-9]" apps/api/src ee packages -g '!*.test.ts' -g '!node_modules'
+```
+
+- A gated feature whose agent code is in `$PREV..HEAD` must carry exactly `$NEW` (bare semver). If the tag is a different number than the constant guessed (a patch or a skipped minor), fix the constant on main first.
+- A value above `$NEW` is only right when the feature's agent code is not in this tag. `999.0.0` means gated off on purpose.
+- A value at or below `$PREV` whose agent code is in `$PREV..HEAD` is wrong; it claims an older agent can do it.
+- Example: `MIN_WAKE_STATUS_AGENT_VERSION` (`apps/api/src/services/wakeAvailability.ts`) is `0.130.0` because the wake readiness collector (#11996) merged after v0.129.0 was tagged.
+
 If migrations are listed, you're committing prod to those migrations the moment the new API boots. Read them; confirm there are no large-table rewrites/backfills before you proceed (call those out in the upgrade notes if present).
+
+**Check UI QA coverage (scheduled sweep).** The QA Mac sweeps `main` nightly (`ui-qa-sweep` Scheduled mode). Everything it records lives in the **private** repo `LanternOps/breeze-qa`, never on the public repo or its PRs: findings are `qa-sweep` issues there, and the runner keeps a `QA sweep ledger` issue whose body has a "Coverage: swept through main <sha9>" line, the last 20 runs and one `pr=<n> result=<r> main=<sha9> run=<id>` line per PR (latest verdict per PR, the newest 400), with per-PR detail in one comment per run. Before tagging:
+```bash
+QA=LanternOps/breeze-qa
+LEDGER=$(gh issue list -R $QA --label qa-sweep --state open --json number,title --jq '.[] | select(.title=="QA sweep ledger") | .number')
+gh issue view -R $QA "$LEDGER"                       # Coverage line at or near the HEAD you're tagging?
+gh issue list -R $QA --label qa-sweep --state open   # triage as ship/block
+# release-range PRs with no recorded verdict
+comm -23 <(git -C ~/breeze log --first-parent --format=%s $PREV..HEAD | sed -nE 's/.*\(#([0-9]+)\)[[:space:]]*$/\1/p' | sort -u) \
+         <(gh issue view -R $QA "$LEDGER" --json body --jq .body | sed -nE 's/^pr=([0-9]+) .*/\1/p' | sort -u)
+```
+An open `[QA] Environment change on main needs upgrade notes` lists every runtime pin/env-var change (e.g. a Postgres major bump) that the Self-Hosting / Upgrade Notes must cover; `[QA] Dev stack fails to boot on main` is an automatic blocker. PRs with no verdict (the `comm` output, plus anything merged after the swept SHA) are un-QA'd: run `launchctl kickstart gui/$(id -u)/io.lanternops.breeze-qa-sweep` on the QA Mac (or a manual `ui-qa-sweep`) if they touch UI. A finding that needs a public issue is promoted **by hand**: open it on `LanternOps/breeze` yourself, rewritten from the QA issue (don't paste the sweep's text wholesale), and note the link on the QA issue.
 
 **Smoke-test privileged migrations as a NON-SUPERUSER role (learned the hard way, v0.95.0→v0.95.1).** CI and the local docker-compose test DB both migrate as the Postgres **superuser** (`POSTGRES_USER=breeze`), which silently passes statements a least-privilege role would be *denied*. Prod is DO-managed **`doadmin` — NOT a superuser**, so a migration that only a superuser can run passes every test and then **crash-loops the API on deploy** (this is exactly what took EU down on v0.95.0: `ALTER FUNCTION ... OWNER TO <role>` requires the *new owner* to hold `CREATE` on the schema; a superuser bypasses that check, doadmin does not → `permission denied for schema public`). So: any migration in the range that does `CREATE ROLE`, `ALTER ... OWNER TO`, `GRANT`/`REVOKE` on a schema, `CREATE EXTENSION`, or a `SECURITY DEFINER` function — **run it against a non-superuser role before tagging.** Two ways: pipe the migration to a real managed DB (or a droplet's `doadmin`) inside `BEGIN; ...; ROLLBACK;` with `ON_ERROR_STOP=1`, or `SET ROLE <nosuperuser-createrole-role>` on a local DB that already has the full schema. If it only works as a superuser, fix it forward (grant the owning role the privilege for the one statement, then revoke) **before** it reaches prod.
 
@@ -77,6 +100,16 @@ If migrations are listed, you're committing prod to those migrations the moment 
 **YARA on the signed build (#10375).** The YARA engine executes code it compiles at run time, which the hardened runtime kills unless `breeze-agent` carries `com.apple.security.cs.allow-unsigned-executable-memory`. On each leg, after the update: `codesign -d --entitlements - --xml /usr/local/bin/breeze-agent` lists that key (and `breeze-desktop-helper` / `breeze-watchdog` do not), then dispatch an IOC scan with one marker rule over a folder holding the marker. Pass = the agent PID is unchanged, no new `breeze-agent-*.ips` in `/Library/Logs/DiagnosticReports`, and the scan result reports engine `yara` (not `legacy` / `engine_unavailable`) with the marker found. Before the cut, `cd agent && go test -count=1 -run Hardened ./internal/yarascan/yarac` on any Mac (without `-short`) re-signs a test binary with the hardened runtime and proves the plists still behave.
 
 **Restore:** leave the lab host on the promoted release, not a lab build, and note which version it runs.
+
+## Step 0.27 — Hosted-edition upgrade gate: test the bits the fleet will actually get
+
+**Why this gate exists.** The lab legs above install the public draft, which is the **self-host** edition. The hosted fleet never runs those files: the private hosted signing lane (Step 0.6) rebuilds the whole agent family as the hosted edition, with its own Windows signing and its own macOS signing, notarization and `.pkg`. A stranding bug in that build (signing identity, entitlements, host-policy enforcement, installer scripts) passes every self-host lab leg and only shows up when the fleet updates. Standard practice since v0.130.0 (Todd, 2026-11-19).
+
+**On the last release candidate before the final tag** (the rc whose agent code the final will ship; confirm with `git diff --stat <rc-sha> <final-sha> -- agent/` being empty or understood):
+1. Dispatch the hosted lane in **audit mode**: same command as Step 0.6 but `publish_image=false` (details in `internal/ops/release-infra.md`). It builds, signs and verifies everything and keeps the outputs as private workflow artifacts (30-day retention); it publishes no image and touches nothing in prod. Signing quota is spent, so it needs Todd's go like any lane run.
+2. Run the upgrade-in-place legs (Step 0.25 for macOS, the Windows lab VM for Windows) with **those hosted artifacts**, over an agent that is already enrolled and running the previous hosted release. The pass criteria are Step 0.25's, plus: the agent comes back on its own after the update, heartbeats within 2 minutes, reports the candidate version, and the watchdog is running.
+3. The hosted edition enforces a control-plane host allowlist. A lab server is not on it, so fresh enrollment against a lab stack is refused by design. Upgrade-in-place of an already-enrolled agent is the case under test. If the edition refuses something on the lab host that it would allow against prod, record it as a lab limit, not a pass, and cover that path in the canary (Step 6).
+4. Any failure blocks the tag. Record the run id, the artifacts used and the results in the sweep doc (no private repo names, hostnames or allowlist values in public files).
 
 ## Step 0.3 — Dynamic security gates, at the exact commit you will tag
 
@@ -356,6 +389,50 @@ Template:
 
 Tone: operator-to-operator, not corporate. Lead with what people can do now. If a release is mostly internal/security, say so plainly ("mostly hardening + reliability — recommended upgrade").
 
+## Step 5b — Email update via Sequenzy
+
+Draft an email update for the Breeze subscriber list and send it through Sequenzy from the `updates@` sender. **Sending is external comms: show Todd the full draft (subject, preview text, body, audience) and send or schedule only on his explicit go.** A go for the release does not cover this send.
+
+**Where it goes (verify each time, don't assume):**
+- Sequenzy MCP (`mcp__sequenzy__*`). If only `authenticate` is listed, run it and have Todd finish the sign-in, or ask him to re-auth with `/mcp`. Then load the campaign/broadcast tools with `ToolSearch "+sequenzy campaign"`, and read their schemas before calling them.
+- Company: the **Breeze** workspace (`get_account`, then `select_company`). Do not send from the LanternOps workspace.
+- Sender: `Breeze <updates@hello.breezermm.com>`, the company default. Confirm it with `get_company`.
+- Audience: the Breeze subscriber list(s) from `list_lists`. Name the list and its active-subscriber count in the draft you show Todd.
+- If the MCP has no campaign tool, build the draft in the Sequenzy dashboard instead, and file `submit_feedback` about the missing tool.
+
+**When to send:** after the marketing release-notes page is **deployed** (the email links to it) and the hosted regions run the new version (Step 6). Draft it alongside Discord, and send it last.
+
+**Content.** Use the same source as the marketing notes (Step 3). Write for MSP owners and technicians, not developers, and follow the `lanternops-marketing` voice: operator to operator, plain, no hype.
+
+```
+Subject:  Breeze vX.Y.Z: <the one or two headline things>   (≤ 60 chars)
+Preview:  <one line that adds to the subject, not a repeat>
+
+<2–3 sentence opener: what you can do now that you couldn't last week>
+
+What's new
+• <headline 1, one sentence>
+• <headline 2>
+• <headline 3>
+• <security line, if any: "N security fixes; self-hosters should upgrade">
+
+<⚠️ one short paragraph if there's an action-required / breaking change, saying what to do and where the steps are>
+
+Self-hosting? <one line: upgrade command, or "see the upgrade notes">.
+
+Read the full release notes → https://breezermm.com/releases/<YYYY-MM-DD-vX-Y-Z>/
+
+— Todd
+```
+
+Rules:
+- Use 3–5 highlights. Give the action-required item its own paragraph, never a bullet.
+- Name security areas at most, never mechanics. Link to the GitHub release for detail.
+- Leave out features that ship dark or API-only, and leave out internal tooling. Use the Step 3 rule.
+- Don't promise dates for "still to come" items.
+- Before you ask for a go, send a test to Todd's own address if the tools allow it, and check that the links resolve.
+- After the send, note the campaign id and the recipient count in the release session log.
+
 ## Step 6 — Roll it out
 
 The tag built images and registered binaries; it does **not** deploy prod or update the agent fleet on its own. The intent **is** for cutting a release to flow straight into rollout — but **always confirm with Todd before touching prod**, then proceed. Three parts, per region: **back up the DB → deploy the droplet → (later) promote the agent fleet**.
@@ -511,6 +588,20 @@ So after any rollback that followed a mid-set failure:
 3. **Un-break minimally:** `ALTER COLUMN <col> SET DEFAULT <sane value>` (keeps `NOT NULL`, lets the old code insert) is the lightest fix; it's inert on the new version (which sets the value explicitly). Note the divergence and **drop the DEFAULT once you're forward again** so the schema matches a fresh install.
 4. **The clean alternative is to roll *forward*** to a fixed build rather than back — completing the migration set makes code and schema match. Prefer this when the fix is understood; the pre-deploy dump is the fallback if it isn't.
 
+### Canary before the fleet promote (standard practice)
+
+A fleet promote is the one step that can strand agents across every tenant at once, so it never goes out cold. After both regions are deployed and healthy, and **before** the fleet-wide promote:
+1. **Pin the canary orgs** (our own tenant on US, plus one consenting customer org if Todd names one) to the release via `organizations.settings->'defaults'->'agentVersionPins'`. Todd's go is required, because it is a prod change.
+2. **Record a baseline first.** For each canary org, note the online device count per platform and the version of each device.
+3. **Soak.** The default is 24 hours; Todd can shorten it per release. Pass means:
+   - every device that was online before the pin reports the new version and is still online;
+   - there are no new offline devices against the baseline;
+   - no device shows repeated update attempts;
+   - macOS devices keep Screen Recording, and a remote session connects.
+
+   A device that was online, took the update and then went quiet is a **stranding signal**. Stop: do not promote, and investigate.
+4. Promote the fleet only after the canary passes. Then clear the canary pins in the same session (see below).
+
 ### Promote the agent fleet — via a DB row change
 
 Prod sets `AGENT_AUTO_PROMOTE=false`, so deploying registers the new binaries in `agent_versions` (`is_latest` stays on the prior version) and devices don't update until you promote. **Promote with a direct DB row change** — this is the method precisely because it **does not require an MFA session**. The API `/promote` endpoint is gated on a platform-admin MFA session (which we can't drive headlessly), so editing `agent_versions` directly is the authorized, MFA-free path. Confirm with Todd first, then run it per region (US and EU have **separate DBs — promote each**).
@@ -545,7 +636,7 @@ Caveats:
 
 Rolling the fleet is a user-facing change — get Todd's go-ahead before promoting, and don't promote until both regions are deployed and healthy.
 
-**Canary pins must be cleared at promote time.** The canary step pins the canary orgs (OliveTech + Silberman Law on US) to the release via `organizations.settings->'defaults'->'agentVersionPins'`. A pin is upgrade-only *to the pinned version*, so once the next release is promoted fleet-wide the canary orgs are the ONLY tenants left behind (10-22: Silberman stuck on 0.123.0 five days after 0.124.0 went out). In the same session as the promote, run per region and expect zero rows afterwards for the canary orgs:
+**Canary pins must be cleared at promote time.** The canary step pins the canary orgs (our own tenant + one customer org on US) to the release via `organizations.settings->'defaults'->'agentVersionPins'`. A pin is upgrade-only *to the pinned version*, so once the next release is promoted fleet-wide the canary orgs are the ONLY tenants left behind (10-22: the customer canary org stuck on 0.123.0 five days after 0.124.0 went out). In the same session as the promote, run per region and expect zero rows afterwards for the canary orgs:
 ```sql
 SELECT set_config('breeze.scope','system',true);
 UPDATE organizations SET settings = jsonb_set(settings,'{defaults,agentVersionPins}','{}'::jsonb), updated_at=now()
@@ -602,9 +693,11 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] **Advisory-debt pre-flight run** (`gh api ... select(.state=="draft")`) — any draft whose patched version already rolled out is **published before this release proceeds**
 - [ ] `docs/release-notes/next-release-draft.md` read and folded into the body — then cleared
 - [ ] `git diff $PREV..HEAD --stat` + migrations reviewed — blast radius understood
+- [ ] **Agent-version gates** (Step 0): every `*_AGENT_VERSION` constant above `$PREV` equals `$NEW` when its agent code ships in this tag (e.g. `MIN_WAKE_STATUS_AGENT_VERSION`)
 - [ ] **Pre-cut gates** (Step 0.2): newest sweep doc's "Before the release cut" list cleared, sweep fix PR merged, live-agent rows run on the lab rigs (not deferred)
 - [ ] **Dynamic security gates** (Step 0.3) at the tag SHA: private extended fuzz green, Tenant Isolation E2E green, touched-area pentest playbook entries run on the lab and recorded privately
 - [ ] **macOS upgrade-in-place gate** (Step 0.25): previous version → candidate via auto-update on each Mac leg; no TCC prompt, helper loaded within 60 s with no manual bootstrap (#10868), `canCapture=true`, desktop connects, wallpaper back — a leg with no lab host is named in the release body's known gaps
+- [ ] **Hosted-edition upgrade gate** (Step 0.27): hosted lane audit run (`publish_image=false`) on the last rc, and lab upgrade-in-place with those hosted artifacts on macOS and Windows; any failure blocks the tag
 - [ ] In-app What's New entry added to `WHATS_NEW_ENTRIES` (`apps/web/src/lib/whatsNew.ts`) and **merged to main BEFORE the tag** — version = bare semver of this release (or deliberately skipped for an internal-only release)
 - [ ] Tag pushed (off main for full release / off $PREV for surgical hotfix)
 - [ ] **Abuse-asset gate** (Step 0.6): agent-family exes/MSI verified unsigned at the byte level, manifest all `edition=self-host`, checksums spot-checked
@@ -614,10 +707,12 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] `/update-breeze-release-notes` (marketing site) — published via the site's deploy script, not just committed
 - [ ] `/update-breeze-docs` (technical docs)
 - [ ] Discord announcement drafted, shown to Todd
+- [ ] **Email update** (Step 5b) drafted in Sequenzy from `updates@hello.breezermm.com` to the Breeze list, shown to Todd, sent only on his go — after the marketing page is deployed and hosted is on the new version
 - [ ] Confirmed rollout with Todd
 - [ ] DB backed up per region (encrypted off-region dump) **immediately before that region's deploy** — verified non-trivial dump size (not the `defaultdb` 4K trap)
 - [ ] Droplets deployed — **night region first** (back up → deploy → verify), then the other + `/health` green
 - [ ] Deploy lines recorded and pushed for EU and US
+- [ ] **Canary passed** (Step 6): canary orgs pinned, baseline recorded, soak clean (no stranded devices) — with Todd's go
 - [ ] Agent fleet promoted via slot-aware DB row change (both DBs) — only with Todd's go-ahead
 - [ ] Firewall exception removed (if the doctl fallback was used)
 - [ ] CVE requested for each advisory the private disclosure policy says gets one (request from the draft; it stays private until publish)

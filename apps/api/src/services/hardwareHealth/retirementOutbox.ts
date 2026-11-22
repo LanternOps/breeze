@@ -21,7 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, assertInTransaction, hasDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { alerts, hardwareAlertRetirementOutbox } from '../../db/schema';
-import type { SubjectAlertDispatch } from '../alertService';
+import type { SubjectAlertDispatch } from '../alertDispatchEnvelope';
 import { publishEvent } from '../eventBus';
 import { recordStateTransition, setCooldown } from '../alertCooldown';
 import { captureException } from '../sentry';

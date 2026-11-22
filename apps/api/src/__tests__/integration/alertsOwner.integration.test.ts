@@ -185,10 +185,11 @@ describe('sourced workload alert concurrency', () => {
     const rows = await getTestDb().execute(sql`
       SELECT id, device_id, owner_kind, owner_ref FROM alerts WHERE org_id = ${f.orgAId}::uuid`);
     expect(rows).toEqual([{ id: ids[0], device_id: null, owner_kind: 'backup_workload', owner_ref: 'concurrent-workload' }]);
-    expect(publishEventMock).toHaveBeenCalledTimes(1);
+    // #10926 — the winner's event goes out from the outbox after its COMMIT.
+    await vi.waitFor(() => expect(publishEventMock).toHaveBeenCalledTimes(1), { timeout: 5_000 });
     expect(publishEventMock).toHaveBeenCalledWith('alert.triggered', f.orgAId, expect.objectContaining({
       alertId: ids[0], deviceId: null, owner: input.owner, ownerKey: 'backup_workload:concurrent-workload',
-    }), 'backup-provider-test', { siteId: null });
+    }), 'backup-provider-test', expect.objectContaining({ siteId: null, eventId: ids[0] }));
     expect(correlationMock).not.toHaveBeenCalled();
     expect(captureExceptionMock).not.toHaveBeenCalled();
   });

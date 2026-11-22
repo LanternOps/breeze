@@ -113,12 +113,30 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		return "", fmt.Errorf("failed to create peer connection: %w", err)
 	}
 
+	// Capture config for this session (optionally targeting a display).
+	capConfig := m.CaptureConfig()
+	if displayIndex > 0 {
+		capConfig.DisplayIndex = displayIndex
+	}
+
+	// A process with a registered session backend (the Linux desktop
+	// helper, #12117) takes capture and input from one backend session;
+	// otherwise both are today's platform code. Opened before the Session
+	// exists because its input sink is fixed at construction; once the
+	// Session is published, doCleanup closes it.
+	backendSession, err := openRegisteredBackendSession(capConfig)
+	if err != nil {
+		_ = peerConn.Close()
+		return "", fmt.Errorf("failed to create screen capturer: %w", err)
+	}
+
 	// Create session early so external StopSession calls and peer callbacks can
 	// clean up even if we fail before returning an answer.
 	session := &Session{
 		id:           sessionID,
 		peerConn:     peerConn,
-		inputHandler: NewSafeInput(NewInputHandler(m.config.DesktopContext), sessionID),
+		backend:      backendSession,
+		inputHandler: NewSafeInput(sessionInputHandler(backendSession, m.config.DesktopContext), sessionID),
 		done:         make(chan struct{}),
 		isActive:     true,
 		fps:          defaultFrameRate,
@@ -235,12 +253,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	}()
 
 	// Create screen capturer (optionally targeting a specific display)
-	capConfig := m.CaptureConfig()
-	if displayIndex > 0 {
-		capConfig.DisplayIndex = displayIndex
-	}
 	capturerStart := time.Now()
-	capturer, err := openSessionCapturer(capConfig)
+	capturer, err := openSessionCaptureSource(session.backend, func() (ScreenCapturer, error) {
+		return openSessionCapturer(capConfig)
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create screen capturer: %w", err)
 	}
@@ -249,11 +265,18 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	session.displayIndex = capConfig.DisplayIndex
 	session.captureConfig = capConfig
 	session.gpuVendor = m.gpuVendor
+	if session.backend != nil {
+		// The source can end on its own (the user stops sharing); that ends
+		// the session with share_stopped or capture_ended. Exits on
+		// session.done, like watchSessionLifetime, so not in session.wg.
+		go m.watchSessionBackend(sessionID, session, session.backend)
+	}
 
 	// Set display offset so input handler translates viewer-relative coords
-	// to virtual screen coords (required for multi-monitor setups).
-	displayIdx := displayIndex
-	applyDisplayOffset(session.inputHandler, displayIdx, &session.cursorOffsetX, &session.cursorOffsetY)
+	// to virtual screen coords (required for multi-monitor setups). A session
+	// that starts on a secure desktop keeps the origin: no desktop switch
+	// follows to correct a monitor origin (#12194).
+	session.applyInputOffset(capturer, displayIndex)
 
 	// Get screen bounds first — needed for bitrate scaling and encoder init.
 	// On macOS Retina, GetScreenBounds (NSScreen × scaleFactor) may report
@@ -303,6 +326,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		w, h = pw, ph
 	}
 	captureImagePool.Put(probeImg)
+	// The size the stream starts at; a frame of another size later is a
+	// resolution change (#11754).
+	session.captureW, session.captureH = AlignEven(w, h)
+	session.captureCap = capturer
 	slog.Info("StartSession: probe capture done", "session", sessionID, "elapsed", time.Since(probeStart))
 
 	// Start at 2.5Mbps — matches the viewer's default max-bitrate slider.
@@ -356,8 +383,19 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	slog.Info("StartSession: encoder created", "session", sessionID, "backend", enc.BackendName(), "elapsed", time.Since(encoderStart))
 	session.encoder.Store(enc)
 
+	// OpenH264 failed to load, so the software path returned the passthrough
+	// placeholder. On Windows, fall back to the Media Foundation encoder
+	// (hardware MFT, else Microsoft's software MFT) instead of refusing the
+	// session; this is what happens at the sign-in screen, where the encoder
+	// is created with PreferHardware=false (#11392). When that fails too, the
+	// error names the OpenH264 load failure so the operator sees the cause.
+	usedPlaceholderFallback := false
 	if enc.BackendIsPlaceholder() {
-		return "", fmt.Errorf("no H264 encoder available (backend=%s)", enc.BackendName())
+		if err := enc.ReplacePlaceholderBackend(); err != nil {
+			return "", err
+		}
+		usedPlaceholderFallback = true
+		slog.Info("StartSession: encoder replaced placeholder", "session", sessionID, "backend", enc.BackendName())
 	}
 
 	// Pass D3D11 device to encoder for GPU zero-copy pipeline setup.
@@ -373,6 +411,14 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 
 	if err := enc.SetDimensions(w, h); err != nil {
 		return "", fmt.Errorf("failed to set encoder dimensions: %w", err)
+	}
+	// The fallback MFT activates in SetDimensions, which only logs a failure
+	// (and retries on every Encode). Refuse the session with the cause now
+	// rather than stream nothing.
+	if usedPlaceholderFallback {
+		if err := enc.FallbackActivationError(); err != nil {
+			return "", err
+		}
 	}
 
 	// If the capturer produces BGRA, tell the encoder to skip BGRA→RGBA conversion
@@ -437,10 +483,13 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		if cbErr != nil {
 			slog.Warn("Failed to create clipboard DataChannel", "session", sessionID, "error", cbErr.Error())
 		} else if clipboardDC != nil {
-			session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, clipboard.NewSystemClipboard(), clipboard.Policy{
+			session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, m.clipboardProviderFor(sessionID), clipboard.Policy{
 				HostToViewer: policy.ClipboardHostToViewer,
 				ViewerToHost: policy.ClipboardViewerToHost,
 			})
+			session.mu.Lock()
+			session.clipboardNotifier = session.clipboardSync
+			session.mu.Unlock()
 			hostToViewer := policy.ClipboardHostToViewer
 			clipboardDC.OnOpen(func() {
 				onClipboardChannelOpen(session.clipboardSync, hostToViewer)
@@ -657,6 +706,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			})
 
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+			// The report does not always end the server session at once: when
+			// the viewer announced a reconnect just before closing its peer,
+			// the API holds this peer_disconnected for a short grace instead of
+			// revoking under the reconnect (#10542).
 			logSelectedPair("failed-or-closed")
 			m.StopSession(sessionID)
 			if m.OnSessionStopped != nil {

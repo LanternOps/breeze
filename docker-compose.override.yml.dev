@@ -37,7 +37,7 @@ services:
   # on path alone under /portal — see the @portal block there and #3906.
 
   binaries-init:
-    image: alpine:3.19
+    image: alpine:3.24
     entrypoint: ["sh", "-c", "mkdir -p /target/agent /target/viewer /target/helper && echo '0.0.0-dev' > /target/VERSION && echo 'Stub binaries volume created'"]
 
   api:
@@ -60,7 +60,10 @@ services:
       - ./apps/api/src:/app/apps/api/src:cached
       - ./apps/api/assets:/app/apps/api/assets:ro
       - ./apps/api/migrations:/app/apps/api/migrations:ro
-      - ./packages/shared/src:/app/packages/shared/src:cached
+      # The whole package, not src/ alone: a file at its root (zodJitlessAlias.mjs,
+      # which the astro configs import) otherwise comes from the image and breaks
+      # every image built before it landed (#11623). node_modules stays the image's.
+      - ./packages/shared:/app/packages/shared:cached
       - ./ee/workspace/src:/app/ee/workspace/src:cached
       # ee/workspace imports @breeze/extension-sdk (main: ./src/index.ts). Mount it
       # too, or a mounted workspace hot-reloads against a baked, stale SDK
@@ -75,8 +78,6 @@ services:
       - ./apps/api/package.json:/app/apps/api/package.json:ro
       - ./apps/api/tsconfig.json:/app/apps/api/tsconfig.json:ro
       - ./apps/api/drizzle.config.ts:/app/apps/api/drizzle.config.ts:ro
-      - ./packages/shared/package.json:/app/packages/shared/package.json:ro
-      - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
       # Exclude node_modules (use container's)
       - /app/node_modules
       - /app/apps/api/node_modules
@@ -122,6 +123,45 @@ services:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health']
       start_period: 60s
 
+  # Worker-role process for `--profile worker-split` in dev (#4144): the same
+  # source-mounted image and mounts as `api`, but running the worker entrypoint
+  # under tsx watch. Without this the profile would pull the base file's
+  # registry image ref instead of the code being developed. Publishes no port.
+  # It reuses the `breeze-api:dev` tag that `api` builds, so build/start `api`
+  # first (`up --build api`). Unlike `api` it does not re-run `pnpm install` on
+  # start; after a lockfile change rebuild the image.
+  # BREEZE_ROLE is hardcoded in the base service; the api's ROLE is untouched.
+  worker:
+    image: breeze-api:dev
+    command: ["sh", "-lc", "pnpm exec tsx watch src/worker.ts"]
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    volumes:
+      - ./apps/api/src:/app/apps/api/src:cached
+      - ./apps/api/assets:/app/apps/api/assets:ro
+      - ./apps/api/migrations:/app/apps/api/migrations:ro
+      # The whole package, not src/ alone: a file at its root (zodJitlessAlias.mjs,
+      # which the astro configs import) otherwise comes from the image and breaks
+      # every image built before it landed (#11623). node_modules stays the image's.
+      - ./packages/shared:/app/packages/shared:cached
+      - ./ee/workspace/src:/app/ee/workspace/src:cached
+      - ./packages/extension-sdk/src:/app/packages/extension-sdk/src:cached
+      - ./ee/workspace/migrations:/app/ee/workspace/migrations:ro
+      - ./ee/workspace/manifest.json:/app/ee/workspace/manifest.json:ro
+      - ./apps/api/package.json:/app/apps/api/package.json:ro
+      - ./apps/api/tsconfig.json:/app/apps/api/tsconfig.json:ro
+      - ./apps/api/drizzle.config.ts:/app/apps/api/drizzle.config.ts:ro
+      - /app/node_modules
+      - /app/apps/api/node_modules
+      - /app/packages/shared/node_modules
+    environment:
+      NODE_ENV: development
+      APP_VERSION: dev
+      LOG_LEVEL: debug
+      BREEZE_WORKSPACE_ENABLED: ${BREEZE_WORKSPACE_ENABLED:-true}
+      # Dev runs source under tsx, so the production 1 GB heap cap does not apply.
+      NODE_OPTIONS: ""
+
   web:
     image: breeze-web:dev
     build:
@@ -135,14 +175,15 @@ services:
       - ./apps/web/public:/app/apps/web/public:cached
       # predev/prebuild run scripts/*.ts inside the container (copy-monaco-assets); read-only — never written at runtime
       - ./apps/web/scripts:/app/apps/web/scripts:ro
-      - ./packages/shared/src:/app/packages/shared/src:cached
+      # The whole package, not src/ alone: a file at its root (zodJitlessAlias.mjs,
+      # which the astro configs import) otherwise comes from the image and breaks
+      # every image built before it landed (#11623). node_modules stays the image's.
+      - ./packages/shared:/app/packages/shared:cached
       - ./packages/document-ui/src:/app/packages/document-ui/src:cached
       # Mount config files
       - ./apps/web/package.json:/app/apps/web/package.json:ro
       - ./apps/web/tsconfig.json:/app/apps/web/tsconfig.json:ro
       - ./apps/web/astro.config.mjs:/app/apps/web/astro.config.mjs:ro
-      - ./packages/shared/package.json:/app/packages/shared/package.json:ro
-      - ./packages/shared/tsconfig.json:/app/packages/shared/tsconfig.json:ro
       - ./packages/document-ui/package.json:/app/packages/document-ui/package.json:ro
       - ./packages/document-ui/tsconfig.json:/app/packages/document-ui/tsconfig.json:ro
       # Exclude node_modules (use container's)
@@ -174,6 +215,8 @@ services:
       # Mount source code for hot-reloading
       - ./apps/portal/src:/app/apps/portal/src:cached
       - ./apps/portal/public:/app/apps/portal/public:cached
+      # astro.config.mjs imports packages/shared/zodJitlessAlias.mjs (#11623).
+      - ./packages/shared:/app/packages/shared:cached
       - ./packages/document-ui/src:/app/packages/document-ui/src:cached
       # Mount config files
       - ./apps/portal/package.json:/app/apps/portal/package.json:ro
@@ -184,6 +227,7 @@ services:
       # Exclude node_modules (use container's)
       - /app/node_modules
       - /app/apps/portal/node_modules
+      - /app/packages/shared/node_modules
       - /app/packages/document-ui/node_modules
     environment:
       NODE_ENV: development

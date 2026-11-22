@@ -5,7 +5,8 @@
  *
  * Given an org, returns the distinct set of user ids eligible to decide a
  * Tier-3 action intent: a user is eligible iff their role in (or covering)
- * the org grants `approvals:decide`.
+ * the org grants `approvals:decide` — directly or through role inheritance
+ * (`roles.parent_role_id`; usersWithPermission → roleInheritance, #11702).
  *
  * Mirrors `resolveElevationApprovers` (services/pamApprovers.ts) EXACTLY for
  * the role/membership resolution — role-ids granting the permission (incl.
@@ -57,11 +58,14 @@ import {
 } from '../permissions';
 import { resolveUsersWithPermissionForOrg, type PermissionPair } from '../usersWithPermission';
 import { canMutateOrgWideGovernance } from '../siteCeilingAccess';
+import { resolvePartnerAxisApprovers } from './partnerAxisApprover';
 
 /**
  * Resolve the distinct user ids eligible to decide an action intent for
- * `orgId`. Empty array when none qualify. Pure-read; opens its own system DB
- * context, so it may be called from any ambient context (or none).
+ * `orgId`: the org's `approvals:decide` holders, or with `requirePartnerAxis`
+ * the full-partner holders of its partner. Empty array when none qualify.
+ * Pure-read; opens its own system DB context, so it may be called from any
+ * ambient context (or none).
  */
 export interface ResolveIntentApproversOpts {
   /**
@@ -95,6 +99,13 @@ export interface ResolveIntentApproversOpts {
    * `no_eligible_approvers` (intentService.ts).
    */
   requireOrgWideGovernance?: boolean;
+  /**
+   * Pass `true` when `intentRequiresPartnerAxisApprover` says so: the pool becomes the
+   * full-partner `approvals:decide` holders of the org's partner, with no org members.
+   * The fan-out and the sole-operator re-derivation must pass the same value, for the
+   * reason given on `requireOrgWideGovernance`.
+   */
+  requirePartnerAxis?: boolean;
   /**
    * Review finding #1: invoked with the ceiling-filter diagnostics whenever
    * the filter actually ran (i.e. whenever
@@ -134,7 +145,9 @@ export async function resolveIntentApproversWithDiagnostics(
   orgId: string,
   opts?: ResolveIntentApproversOpts,
 ): Promise<{ approvers: string[]; diagnostics: ResolveIntentApproversDiagnostics | null }> {
-  const deciders = await resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.APPROVALS_DECIDE);
+  const deciders = opts?.requirePartnerAxis
+    ? await resolvePartnerAxisApprovers(orgId)
+    : await resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.APPROVALS_DECIDE);
   let eligible = deciders;
   if (opts?.alsoRequire && eligible.length > 0) {
     const also = new Set(await resolveUsersWithPermissionForOrg(orgId, opts.alsoRequire));

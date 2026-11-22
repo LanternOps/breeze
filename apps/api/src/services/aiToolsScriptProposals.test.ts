@@ -28,6 +28,7 @@ const dbState = vi.hoisted(() => ({
   current: undefined as undefined | { label: string },
   events: [] as string[],
 }));
+const orgNameLookup = vi.hoisted(() => ({ fail: false }));
 const AUTH_CTX = vi.hoisted(() => ({ label: 'from-auth' }));
 const { captureExceptionMock, dbAccessContextFromAuthMock } = vi.hoisted(() => ({
   captureExceptionMock: vi.fn(),
@@ -35,6 +36,14 @@ const { captureExceptionMock, dbAccessContextFromAuthMock } = vi.hoisted(() => (
 }));
 
 vi.mock('../db', () => ({
+  db: {
+    select: () => ({ from: () => ({ where: async (ids: string[]) => {
+      if (orgNameLookup.fail) throw new Error('boom');
+      return [{ id: 'org-dev', name: 'Org Dev' }, { id: 'org-other', name: 'Org Other' }]
+        .filter((o) => ids.includes(o.id));
+    } }) }),
+  },
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   hasDbAccessContext: () => dbState.current !== undefined,
   getCurrentDbAccessContext: () => dbState.current,
   runOutsideDbContext: (fn: () => unknown) => {
@@ -56,6 +65,11 @@ vi.mock('../db', () => ({
       dbState.current = undefined;
     }
   },
+}));
+vi.mock('../db/schema', () => ({ organizations: { id: 'id', name: 'name' } }));
+vi.mock('drizzle-orm', async (orig) => ({
+  ...(await orig<typeof import('drizzle-orm')>()),
+  inArray: (_col: unknown, ids: string[]) => ids,
 }));
 vi.mock('../middleware/auth', () => ({ dbAccessContextFromAuth: dbAccessContextFromAuthMock }));
 vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
@@ -256,8 +270,38 @@ describe('propose_script', () => {
     }));
     const out = JSON.parse(await tools.get('propose_script')!.handler(
       { ...input, deviceIds: [...input.deviceIds, '22222222-2222-4222-8222-222222222222'] }, partnerAuth));
-    expect(out.error).toContain('invalid_input');
+    expect(out.error).toBe('split_by_org');
+    expect(out.groups).toEqual([
+      { orgId: 'org-dev', orgName: 'Org Dev', deviceIds: ['11111111-1111-4111-8111-111111111111'] },
+      { orgId: 'org-other', orgName: 'Org Other', deviceIds: ['22222222-2222-4222-8222-222222222222'] },
+    ]);
+    expect(out.hint).toMatch(/once per group/i);
     expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it('still returns the split with null names when the org-name lookup fails', async () => {
+    orgNameLookup.fail = true;
+    try {
+      verifyDeviceAccessMock.mockImplementation(async (id: string) => ({
+        device: { id, orgId: id.startsWith('1') ? 'org-dev' : 'org-other' },
+      }));
+      const out = JSON.parse(await tools.get('propose_script')!.handler(
+        { ...input, deviceIds: [...input.deviceIds, '22222222-2222-4222-8222-222222222222'] }, partnerAuth));
+      expect(out.error).toBe('split_by_org');
+      expect(out.groups.map((g: { orgName: unknown }) => g.orgName)).toEqual([null, null]);
+      expect(captureExceptionMock).toHaveBeenCalled();
+    } finally { orgNameLookup.fail = false; }
+  });
+
+  it('groups three devices over two orgs, keeping every id under its org', async () => {
+    verifyDeviceAccessMock.mockImplementation(async (id: string) => ({
+      device: { id, orgId: id.startsWith('2') ? 'org-other' : 'org-dev' },
+    }));
+    const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '13333333-3333-4333-8333-333333333333'];
+    const out = JSON.parse(await tools.get('propose_script')!.handler({ ...input, deviceIds: ids }, partnerAuth));
+    expect(out.groups.map((g: { orgId: string; deviceIds: string[] }) => [g.orgId, g.deviceIds])).toEqual([
+      ['org-dev', [ids[0], ids[2]]], ['org-other', [ids[1]]],
+    ]);
   });
 
   it('refuses when a target device cannot be resolved', async () => {

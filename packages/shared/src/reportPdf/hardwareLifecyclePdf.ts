@@ -15,7 +15,7 @@
  * budget decision, and every colour is paired with a word.
  */
 import type { jsPDF } from 'jspdf';
-import autoTable, { type CellHookData } from 'jspdf-autotable';
+import { autoTable, type CellHookData } from 'jspdf-autotable';
 import type {
   HardwareLifecycleDeviceRow,
   HardwareLifecycleSummary,

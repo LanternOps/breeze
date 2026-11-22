@@ -14,6 +14,9 @@ vi.mock('../../services/invoiceService', () => ({
   deleteDraftInvoice: vi.fn(),
   updateInvoice: vi.fn(),
   updateIssuedDueDate: vi.fn(),
+  changeInvoiceCurrency: vi.fn(),
+  requireOrgAccess: vi.fn(),
+  requireSiteAccess: vi.fn(),
   issueInvoice: vi.fn(),
   voidInvoice: vi.fn(),
   recordPayment: vi.fn(),
@@ -21,6 +24,11 @@ vi.mock('../../services/invoiceService', () => ({
   voidPayment: vi.fn(),
   assembleDraftFromOrg: vi.fn(),
   assembleDraftFromTicket: vi.fn()
+}));
+
+vi.mock('../../services/invoiceBillingGate', () => ({
+  assertInvoiceBillingEnabled: vi.fn(),
+  assertInvoiceBillingEnabledById: vi.fn(),
 }));
 
 // Mock the Phase 5 PDF/email service — /:id/send + /:id/pdf delegate here.
@@ -87,6 +95,7 @@ import * as pdfSvc from '../../services/invoicePdf';
 import * as brandingSvc from '../../services/quoteBranding';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
+import { assertInvoiceBillingEnabled, assertInvoiceBillingEnabledById } from '../../services/invoiceBillingGate';
 
 function app() {
   // invoiceRoutes already applies authMiddleware internally
@@ -777,5 +786,94 @@ describe('invoice assembly routes', () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe('NOTHING_TO_INVOICE');
+  });
+});
+
+// Partner billing master switch (billing_enabled=false): gated operations answer
+// 404 { error: 'Not found', code: 'BILLING_DISABLED' }; reads and payments keep working.
+describe('billing master switch', () => {
+  const L = '44444444-4444-4444-4444-444444444444';
+  const off = () => new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED');
+  const json = { 'content-type': 'application/json' };
+  const gatedServiceCalls: Array<[string, string, string, unknown, () => any]> = [
+    ['create', 'POST', '/', { orgId: ORG_ID }, () => svc.createManualInvoice],
+    ['edit', 'PATCH', `/${INV_ID}`, { notes: 'x' }, () => svc.updateInvoice],
+    ['delete', 'DELETE', `/${INV_ID}`, undefined, () => svc.deleteDraftInvoice],
+    ['add line', 'POST', `/${INV_ID}/lines`, { name: 'n', quantity: 1, unitPrice: 1, taxable: false }, () => svc.addManualLine],
+    ['add catalog line', 'POST', `/${INV_ID}/lines/catalog`, { catalogItemId: L, quantity: 1 }, () => svc.addCatalogLine],
+    ['add bundle line', 'POST', `/${INV_ID}/lines/bundle`, { bundleId: L, quantity: 1 }, () => svc.addBundleLine],
+    ['edit line', 'PATCH', `/${INV_ID}/lines/${L}`, { quantity: 2 }, () => svc.updateLine],
+    ['delete line', 'DELETE', `/${INV_ID}/lines/${L}`, undefined, () => svc.removeLine],
+    ['currency', 'POST', `/${INV_ID}/currency`, { currencyCode: 'EUR' }, () => svc.changeInvoiceCurrency],
+    ['due date', 'PATCH', `/${INV_ID}/due-date`, { dueDate: '2026-12-01' }, () => svc.updateIssuedDueDate],
+    ['refresh time lines', 'POST', `/${INV_ID}/refresh-time-lines`, undefined, () => svc.refreshDraftTimeLines],
+    ['issue', 'POST', `/${INV_ID}/issue`, undefined, () => svc.issueInvoice],
+    ['void', 'POST', `/${INV_ID}/void`, { reason: 'dup' }, () => svc.voidInvoice],
+  ];
+  beforeEach(() => vi.clearAllMocks());
+
+  it.each(gatedServiceCalls)('%s: service BILLING_DISABLED -> 404 body; resolves normally when on', async (_n, method, path, body, fn) => {
+    fn().mockRejectedValueOnce(off());
+    const init = { method, headers: json, body: body === undefined ? undefined : JSON.stringify(body) };
+    const res = await app().request(path, init);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+    fn().mockResolvedValueOnce({ id: INV_ID, orgId: ORG_ID, invoice: {}, audit: {}, summary: {} });
+    expect((await app().request(path, init)).status).toBe(200);
+  });
+
+  it('assemble from org and from ticket -> 404 BILLING_DISABLED', async () => {
+    (svc.assembleDraftFromOrg as any).mockRejectedValueOnce(off());
+    const r1 = await invoiceAssemblyRoutes.request(`/orgs/${ORG_ID}/invoices/assemble`, {
+      method: 'POST', headers: json, body: JSON.stringify({ from: '2026-01-01', to: '2026-01-31' }),
+    });
+    expect(r1.status).toBe(404);
+    expect(await r1.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+    (svc.assembleDraftFromTicket as any).mockRejectedValueOnce(off());
+    const r2 = await invoiceAssemblyRoutes.request(`/tickets/${TICKET_ID}/invoice`, { method: 'POST' });
+    expect(r2.status).toBe(404);
+    expect(await r2.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+  });
+
+  it.each(['send', 'resend'])('POST /:id/%s -> 404 BEFORE the device-appendix write and before any email', async (op) => {
+    (assertInvoiceBillingEnabledById as any).mockRejectedValueOnce(off());
+    dbAppendixState.callOrder = [];
+    const res = await app().request(`/${INV_ID}/${op}`, {
+      method: 'POST', headers: json, body: JSON.stringify({ includeDeviceAppendix: true }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+    expect(dbAppendixState.callOrder).toEqual([]);
+    expect(pdfSvc.sendInvoiceEmail).not.toHaveBeenCalled();
+    expect(pdfSvc.resendInvoiceEmail).not.toHaveBeenCalled();
+  });
+
+  it.each(['GET', 'POST'])('public-link / reset-link (%s) -> 404 BILLING_DISABLED before any write', async (method) => {
+    const path = method === 'GET' ? `/${INV_ID}/public-link` : `/${INV_ID}/reset-link`;
+    // loadLinkableInvoice reads via the (chain-mocked) db; give it a row, then fail the gate.
+    const { db } = await import('../../db');
+    (db as any).limit.mockResolvedValueOnce([{ id: INV_ID, orgId: ORG_ID, siteId: null, status: 'sent' }]);
+    (assertInvoiceBillingEnabled as any).mockRejectedValueOnce(off());
+    dbAppendixState.callOrder = [];
+    const res = await app().request(path, { method });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+    expect((db as any).delete).not.toHaveBeenCalled();
+    expect((db as any).update).not.toHaveBeenCalled();
+  });
+
+  it('kept operations work with billing off: GET /:id and record payment are never gated', async () => {
+    (assertInvoiceBillingEnabled as any).mockRejectedValue(off());
+    (assertInvoiceBillingEnabledById as any).mockRejectedValue(off());
+    (svc.getInvoice as any).mockResolvedValueOnce({ invoice: { id: INV_ID, orgId: ORG_ID }, lines: [] });
+    (brandingSvc.resolveInvoiceBranding as any).mockResolvedValueOnce({});
+    expect((await app().request(`/${INV_ID}`)).status).toBe(200);
+    (svc.recordPayment as any).mockResolvedValueOnce({ id: 'pay1' });
+    const pay = await app().request(`/${INV_ID}/payments`, {
+      method: 'POST', headers: json, body: JSON.stringify({ amount: 5, method: 'cash', paidAt: '2026-01-01T00:00:00Z' }),
+    });
+    expect(pay.status).not.toBe(404);
+    (assertInvoiceBillingEnabled as any).mockReset();
+    (assertInvoiceBillingEnabledById as any).mockReset();
   });
 });

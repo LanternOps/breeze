@@ -5,9 +5,10 @@ package sessionbroker
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // dsclTimeout bounds every dscl invocation. These run on the daemon startup
@@ -35,7 +36,7 @@ func lookupGroupIDDarwin(name string) (int, error) {
 func runDscl(args []string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dsclTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "dscl", args...).CombinedOutput()
+	out, err := procspawn.CommandContext(ctx, "dscl", args...).CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("dscl %s: %w: %s",
 			strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -55,7 +56,7 @@ func runDscl(args []string) (string, error) {
 func EnsureIPCGroup() error {
 	ctx, cancel := context.WithTimeout(context.Background(), dsclTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", ensureIPCGroupScript)
+	cmd := procspawn.CommandContext(ctx, "/bin/sh", "-c", ensureIPCGroupScript)
 	// The context kills only sh. A dscl it spawned that is wedged on
 	// opendirectoryd would keep the output pipe open and block Wait past
 	// dsclTimeout; WaitDelay bounds that so daemon startup cannot hang here.

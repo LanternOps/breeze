@@ -49,8 +49,38 @@ describe('ContextScopeLine', () => {
     expect(line.textContent).toContain('Catalog — same for every organization');
   });
 
-  it('renders nothing on an org-or-all page in org view (the switcher already says it)', () => {
+  it('renders nothing on the devices list in org view (its heading names the organization)', () => {
     stubPathname('/devices');
+    render(<ContextScopeLine />);
+    expect(screen.queryByTestId('context-scope-line')).toBeNull();
+  });
+
+  // Below 640px the header's org switcher is icon-only (#11598), so on a phone
+  // this line is the only place the page names the customer it is showing.
+  it('names the organization on an org-or-all page in org view, for phones only', () => {
+    stubPathname('/alerts');
+    render(<ContextScopeLine />);
+    const line = screen.getByTestId('context-scope-line');
+    expect(line.getAttribute('data-kind')).toBe('org');
+    expect(line.textContent).toBe('Acme');
+    // CSS-only: gone from 640px up, where the switcher shows the name itself.
+    expect(line.className.split(/\s+/)).toContain('sm:hidden');
+    // The switcher keeps the name as its accessible text at every width, so
+    // this visual copy must not be announced a second time.
+    expect(line.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('names the organization on an org-required page in org view', () => {
+    stubPathname('/monitoring');
+    render(<ContextScopeLine />);
+    const line = screen.getByTestId('context-scope-line');
+    expect(line.getAttribute('data-kind')).toBe('org');
+    expect(line.textContent).toBe('Acme');
+  });
+
+  it('renders nothing in org view until the organization record is known', () => {
+    stubPathname('/alerts');
+    mockStoreState.organizations = [];
     render(<ContextScopeLine />);
     expect(screen.queryByTestId('context-scope-line')).toBeNull();
   });

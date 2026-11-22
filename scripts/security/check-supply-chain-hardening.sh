@@ -86,6 +86,84 @@ if [[ "${1:-}" == "--require-openssl-upgrade" ]]; then
   exit 0
 fi
 
+# Every Dependabot updates entry carries an explicit cooldown of at least 3
+# days. Every ecosystem this file uses (npm, gomod, github-actions, cargo,
+# docker, docker-compose) supports `cooldown.default-days`; an ecosystem that
+# does not would need a named exemption here rather than a silent skip.
+# scripts/security/check-security-guards.test.mjs drives this through
+# --check-dependabot-cooldown against fixture files.
+check_dependabot_cooldown() {
+  local file="$1"
+  local report entry_count missing
+  [[ -r "$file" ]] || fail "cannot read $file"
+  # Plain POSIX awk (CI runs Debian mawk, macOS ships BSD awk): no gawk-only
+  # features. An entry starts at ANY `  - ` list item under `updates:`, so a
+  # reordered entry cannot fold into the one above it; its ecosystem comes from
+  # whichever of its lines carries `package-ecosystem:`. Inside `cooldown:`,
+  # every `*-days` value must be a whole number >= 3, and `include:` /
+  # `exclude:` (which narrow the cooldown to, or exempt, named packages) are
+  # rejected. Anything unexpected inside the block (a blank line, a comment)
+  # ends it, which fails safe: a later default-days is then not counted.
+  report="$(
+    awk '
+      function problem(msg) { problems[++nproblems] = msg }
+      function finish(   i, label) {
+        if (!open) return
+        entries++
+        label = (eco == "" ? "(unknown ecosystem)" : eco) " entry (line " start ")"
+        if (!has_cooldown) problem("no cooldown block")
+        else if (default_days == "") problem("cooldown has no default-days")
+        for (i = 1; i <= nproblems; i++) printf "%s: %s\n", label, problems[i]
+        open = 0; nproblems = 0
+      }
+      /^updates:[[:space:]]*$/ { in_updates = 1; next }
+      in_updates && /^[^[:space:]#]/ { finish(); in_updates = 0 }
+      !in_updates { next }
+      {
+        line = $0
+        if (line ~ /^  - /) {
+          finish()
+          open = 1; start = NR; eco = ""; has_cooldown = 0; default_days = ""; in_cooldown = 0
+          line = "    " substr(line, 5)
+        }
+        if (!open) next
+        if (in_cooldown && line !~ /^      /) in_cooldown = 0
+        if (in_cooldown) {
+          if (line ~ /^      [A-Za-z-]+-days:/) {
+            key = line; sub(/^      /, "", key); sub(/:.*$/, "", key)
+            val = line; sub(/^[^:]*:[[:space:]]*/, "", val); sub(/[[:space:]]*#.*$/, "", val); sub(/[[:space:]]*$/, "", val)
+            if (val !~ /^[0-9]+$/ || val + 0 < 3) problem(key ": " val " at line " NR " is below 3")
+            if (key == "default-days") default_days = val
+          } else if (line ~ /^      (include|exclude):/) {
+            key = line; sub(/^      /, "", key); sub(/:.*$/, "", key)
+            problem("cooldown " key ": at line " NR " is not allowed (it limits which packages the cooldown covers)")
+          }
+          next
+        }
+        if (line ~ /^    package-ecosystem:/) {
+          eco = line; sub(/^    package-ecosystem:[[:space:]]*/, "", eco); sub(/[[:space:]]*#.*$/, "", eco); gsub(/"/, "", eco)
+        } else if (line ~ /^    cooldown:[[:space:]]*(#.*)?$/) {
+          has_cooldown = 1; in_cooldown = 1
+        }
+      }
+      END { finish(); printf "entries=%d\n", entries }
+    ' "$file"
+  )"
+  entry_count="$(sed -n 's/^entries=//p' <<<"$report")"
+  [[ "${entry_count:-0}" -gt 0 ]] ||
+    fail "$file has no updates entries the cooldown check could parse"
+  missing="$(grep -v '^entries=' <<<"$report" || true)"
+  [[ -z "$missing" ]] ||
+    fail "every Dependabot updates entry must keep a cooldown of at least 3 days with no exemptions: $(awk 'NR > 1 { printf "; " } { printf "%s", $0 }' <<<"$missing")"
+}
+
+if [[ "${1:-}" == "--check-dependabot-cooldown" ]]; then
+  [[ -n "${2:-}" && -f "${2:-}" && -r "${2:-}" ]] || fail "--check-dependabot-cooldown needs a readable dependabot.yml"
+  check_dependabot_cooldown "$2"
+  echo "Dependabot cooldown check passed."
+  exit 0
+fi
+
 extract_yaml_job() {
   local job="$1"
   local workflow="$2"
@@ -573,10 +651,19 @@ require_grep '^gate=scripts/security/check-npm-audit\.sh$' .github/scripts/secur
   ".github/scripts/security-audit-compare.sh must run the blocking dependency audit gate"
 require_grep '^bash "\$gate" --findings-json "\$head_json"$' .github/scripts/security-audit-compare.sh \
   ".github/scripts/security-audit-compare.sh must scan the head with the blocking dependency audit gate"
-require_grep 'OSV_SCANNER_VERSION:-[0-9]+\.[0-9]+\.[0-9]+' scripts/security/install-osv-scanner.sh \
+# The digest is pinned in the repo and has no environment override, so a cached
+# copy is verified offline and a download is never trusted on its origin
+# alone (#11367). install-osv-scanner.test.mjs exercises the behaviour.
+require_grep '^OSV_SCANNER_VERSION=[0-9]+\.[0-9]+\.[0-9]+$' scripts/security/install-osv-scanner.sh \
   "osv-scanner install must pin an explicit version"
-require_grep 'sha256sum -c -' scripts/security/install-osv-scanner.sh \
-  "osv-scanner install must verify the downloaded binary checksum"
+require_grep '^OSV_SCANNER_SHA256=[0-9a-f]{64}$' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must pin the binary's SHA-256 in the repo"
+reject_grep 'OSV_SCANNER_SHA256:-' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must not let the environment override the pinned SHA-256"
+require_grep '"\$got" != "\$OSV_SCANNER_SHA256"' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must verify every downloaded binary against the pinned SHA-256"
+require_grep '"\$cached_sha" == "\$OSV_SCANNER_SHA256"' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must verify a cached binary against the pinned SHA-256"
 reject_grep 'curl .*\|[[:space:]]*(sudo )?(tar|sh|bash)' scripts/security/install-osv-scanner.sh \
   "osv-scanner install must not pipe remote payloads into a shell or archiver"
 require_grep 'produced no parseable report' scripts/security/check-npm-audit.sh \
@@ -609,8 +696,30 @@ require_grep '(directory: |^ +- )"/apps/web"$' .github/dependabot.yml \
   "Dependabot must cover Web Dockerfiles before digest pinning can be maintained"
 require_grep '(directory: |^ +- )"/docker"$' .github/dependabot.yml \
   "Dependabot must cover release/security Dockerfiles before digest pinning can be maintained"
-require_grep 'language: \[javascript-typescript, go, actions\]' .github/workflows/codeql.yml \
-  "CodeQL must analyze TypeScript, Go and the Actions workflows"
+require_grep 'language: \[javascript-typescript, go, actions, rust\]' .github/workflows/codeql.yml \
+  "CodeQL must analyze TypeScript, Go, the Actions workflows and the Tauri Rust crates"
+
+# pnpm resolution policy (pnpm-workspace.yaml). minimumReleaseAge holds a
+# freshly published version back from resolution for N minutes, and
+# blockExoticSubdeps keeps transitive dependencies on the registry (no git or
+# tarball URLs). Each key must appear exactly once at top level: a duplicate
+# would leave the effective value to the YAML parser.
+require_single_workspace_setting() {
+  local key="$1"
+  local count
+  [[ -r pnpm-workspace.yaml ]] || fail "cannot read pnpm-workspace.yaml"
+  count="$(grep -cE "^${key}:" pnpm-workspace.yaml || true)"
+  [[ "$count" == "1" ]] || fail "pnpm-workspace.yaml must set $key exactly once at top level (found $count)"
+}
+require_single_workspace_setting minimumReleaseAge
+MIN_RELEASE_AGE="$(sed -nE 's/^minimumReleaseAge:[[:space:]]*([0-9]+)[[:space:]]*(#.*)?$/\1/p' pnpm-workspace.yaml)"
+[[ -n "$MIN_RELEASE_AGE" && "$MIN_RELEASE_AGE" -ge 4320 ]] ||
+  fail "pnpm-workspace.yaml minimumReleaseAge must be a plain number of minutes, at least 4320 (3 days)"
+require_single_workspace_setting blockExoticSubdeps
+require_grep '^blockExoticSubdeps:[[:space:]]*true[[:space:]]*(#.*)?$' pnpm-workspace.yaml \
+  "pnpm-workspace.yaml must set blockExoticSubdeps: true"
+
+check_dependabot_cooldown .github/dependabot.yml
 
 require_grep "severity: 'HIGH,CRITICAL'" .github/workflows/security.yml \
   "Trivy must fail on HIGH and CRITICAL vulnerabilities"
@@ -800,6 +909,12 @@ require_grep 'metrics_scrape_token:' docker-compose.monitoring.yml \
 require_grep 'environment: METRICS_SCRAPE_TOKEN' docker-compose.monitoring.yml \
   "monitoring compose must source metrics scrape token from the environment"
 
+# Every monitoring image must be digest-pinned (default inside *_IMAGE_REF), #7812.
+for monitoring_ref_var in PROMETHEUS_IMAGE_REF GRAFANA_IMAGE_REF ALERTMANAGER_IMAGE_REF LOKI_IMAGE_REF PROMTAIL_IMAGE_REF REDIS_EXPORTER_IMAGE_REF POSTGRES_EXPORTER_IMAGE_REF; do
+  require_grep "image: \\$\\{${monitoring_ref_var}:-[^}]*@sha256:[0-9a-f]{64}\\}" docker-compose.monitoring.yml \
+    "monitoring compose must digest-pin ${monitoring_ref_var}"
+done
+
 # docker-compose.monitoring.yml must compose cleanly on top of BOTH base
 # stacks: the self-host root docker-compose.yml (which runs a local `postgres`
 # service) and deploy/docker-compose.prod.yml (which has no local Postgres —
@@ -855,5 +970,11 @@ node scripts/security/check-override-floors.mjs ||
   fail "pnpm.overrides contains stale or dead pins (detail: node scripts/security/check-override-floors.mjs --report)"
 node --test scripts/security/check-override-floors.test.mjs >/dev/null ||
   fail "pnpm.overrides floor guard has failing unit tests (run: pnpm test:override-floors)"
+
+# e2e-tests installs must use the committed package-lock.json (#11197).
+bash scripts/security/check-e2e-install-pinned.sh >/dev/null ||
+  fail "e2e-tests install steps must use 'npm ci' (detail: bash scripts/security/check-e2e-install-pinned.sh)"
+node --test scripts/security/check-e2e-install-pinned.test.mjs >/dev/null ||
+  fail "e2e install guard has failing unit tests (run: node --test scripts/security/check-e2e-install-pinned.test.mjs)"
 
 echo "Supply-chain hardening checks passed."

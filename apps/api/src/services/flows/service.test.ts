@@ -38,6 +38,7 @@ vi.mock('../../db', () => {
       },
     },
     runOutsideDbContext: (fn: () => unknown) => fn(),
+    withDbTransaction: (fn: () => Promise<unknown>) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
   };
 });

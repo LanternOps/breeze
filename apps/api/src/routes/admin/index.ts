@@ -13,11 +13,13 @@ import { aiToolUsageAdminRoutes } from './aiToolUsage';
 import { aiBillingAdminRoutes } from './aiBilling';
 import { trustAdminRoutes } from './trust';
 import { trustActionAdminRoutes } from './trustAct';
+import { trustFraudFlagAdminRoutes } from './trustFraudFlags';
 import { adminMonitorConversionRoutes } from './monitorConversion';
 import { adminSendingDomainsRoutes } from './sendingDomains';
 import { deprecationsAdminRoutes } from './deprecations';
 import { systemConnectionsAdminRoutes } from './systemConnections';
 import { systemConnectionHealthAdminRoutes } from './systemConnectionHealth';
+import { systemHealthAdminRoutes } from './systemHealth';
 import { adminAutopayRolloutRoutes } from './autopayRollout';
 import { entitlementsAdminRoutes } from './entitlements';
 import { wispAdminRoutes } from './wisp';
@@ -29,6 +31,7 @@ adminRoutes.route('/', adminAutopayRolloutRoutes);
 adminRoutes.route('/', abuseRoutes);
 adminRoutes.route('/', trustAdminRoutes);
 adminRoutes.route('/', trustActionAdminRoutes);
+adminRoutes.route('/', trustFraudFlagAdminRoutes);
 // Task 30 — GDPR org-wide erasure + export.
 // Mounted UNDER the platformAdminMiddleware above; tenantErasureRoutes
 // adds its own requireMfa() middleware on top.
@@ -77,6 +80,7 @@ adminRoutes.route('/deprecations', deprecationsAdminRoutes);
 adminRoutes.route('/system', systemConnectionsAdminRoutes);
 // Connection health W4: reconciler / digest liveness (Redis only, GET only).
 adminRoutes.route('/system', systemConnectionHealthAdminRoutes);
+adminRoutes.route('/system', systemHealthAdminRoutes);
 
 // Hosted conversion sweep: platform-admin gate here, MFA on POSTs in the router.
 adminRoutes.route('/monitor-conversion', adminMonitorConversionRoutes);

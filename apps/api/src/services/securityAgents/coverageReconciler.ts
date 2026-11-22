@@ -38,7 +38,7 @@ import type { VendorKey } from './securityAgentVendors';
 
 /** What a vendor console reports about one agent, normalised across vendors. */
 export interface VendorEndpointView {
-  /** Breeze-side id of the vendor endpoint row (huntress_agents.id today). */
+  /** Breeze-side id of the vendor endpoint row, in its source's table. */
   endpointId: string;
   /** The Breeze org the vendor reports this agent under (through the vendor's org mapping). */
   orgId: string;
@@ -50,8 +50,9 @@ export interface VendorEndpointView {
 }
 
 /**
- * The vendor view, provider-neutral. Backed by `huntress_agents` in W03;
- * `s1_agents` (W04) and `edr_endpoints` (framework) implement it later.
+ * The vendor view, provider-neutral. Backed by `huntress_agents` (W03),
+ * `s1_agents` (W04) and `edr_endpoints` (framework vendors, #8170); see
+ * `vendorEndpointSources.ts`.
  */
 export interface VendorEndpointSource {
   vendor: VendorKey;

@@ -20,10 +20,11 @@
  * report `ok`, never a provisional `breach`, so it opens no episode.
  */
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
-import { interpolateAlertTemplate } from '@breeze/shared';
+import { interpolateAlertTemplate, type ResolvedAlertLifecycle } from '@breeze/shared';
 import { db } from '../db';
 import { alerts, devices } from '../db/schema';
 import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES, type RuleWithTemplate } from './alertService';
+import { readLifecycleSnapshot } from './alertLifecycle/resolve';
 import type { EvaluationResult } from './alertConditions/types';
 import { allocateSubjectEpisode, type MonitorObservation } from './monitors/episodeService';
 
@@ -32,14 +33,15 @@ export interface SubjectAlertInput {
   template: RuleWithTemplate['template'];
   device: typeof devices.$inferSelect;
   monitor: RuleWithTemplate['monitor'];
+  /** The rule's effective lifecycle for this device (getApplicableRules). */
+  lifecycle: ResolvedAlertLifecycle;
   evidence: EvaluationResult & { createdAlertIds: string[] };
 }
 
-export async function evaluateSubjectAlerts({ rule, template, device, monitor, evidence }: SubjectAlertInput): Promise<MonitorObservation> {
+export async function evaluateSubjectAlerts({ rule, template, device, monitor, lifecycle, evidence }: SubjectAlertInput): Promise<MonitorObservation> {
   const subjects = evidence.subjects ?? [];
   const overrides = rule.overrideSettings as Record<string, unknown> | null;
   const severity = (overrides?.severity as RuleWithTemplate['effectiveSeverity']) ?? template.severity;
-  const autoResolve = (overrides?.autoResolve as boolean) ?? template.autoResolve;
   const allocateEpisode = monitor
     ? () => allocateSubjectEpisode({ monitor, deviceId: device.id, orgId: device.orgId })
     : undefined;
@@ -57,12 +59,14 @@ export async function evaluateSubjectAlerts({ rule, template, device, monitor, e
       subjectKey: subject.subjectKey,
       deviceName: device.displayName || device.hostname, hostname: device.hostname, osType: device.osType,
       osVersion: device.osVersion, ruleName: rule.name, severity, actualValue: subject.actualValue,
-      templateId: template.id, cooldownMinutes: (overrides?.cooldownMinutes as number) ?? template.cooldownMinutes,
+      templateId: template.id, cooldownMinutes: lifecycle.cooldownMinutes,
     };
     const id = await createAlert({
       ruleId: rule.id, deviceId: device.id, orgId: device.orgId, subjectKey: subject.subjectKey,
       severity, title: interpolateAlertTemplate(template.titleTemplate, context), message: interpolateAlertTemplate(template.messageTemplate, context),
       context, monitorId: rule.managedByMonitorId, kind: monitor?.kind, allocateSubjectEpisode: allocateEpisode,
+      resolvedLifecycle: lifecycle,
+      monitorCompiledHash: monitor?.compiledHash ?? null,
     });
     if (id) evidence.createdAlertIds.push(id);
   }
@@ -72,13 +76,14 @@ export async function evaluateSubjectAlerts({ rule, template, device, monitor, e
     inArray(alerts.status, [...RESOLVABLE_ALERT_STATUSES]),
   ));
 
-  if (autoResolve) {
-    const byKey = new Map(subjects.map(s => [s.subjectKey, s]));
-    for (const alert of await open()) {
-      const subject = byKey.get(alert.subjectKey!);
-      if (!alert.requiresHuman && subject?.status === 'recovered') {
-        await resolveAlert(alert.id, `Auto-resolved: ${subject.description}`, undefined, true, 'condition_cleared');
-      }
+  const byKey = new Map(subjects.map(s => [s.subjectKey, s]));
+  for (const alert of await open()) {
+    const subject = byKey.get(alert.subjectKey!);
+    // Each alert keeps the lifecycle it opened with (settings rule 6); `lifecycle`
+    // only decides for an alert with no snapshot (opened before W2).
+    const autoResolve = (readLifecycleSnapshot(alert.context) ?? lifecycle).autoResolve;
+    if (autoResolve && !alert.requiresHuman && subject?.status === 'recovered') {
+      await resolveAlert(alert.id, `Auto-resolved: ${subject.description}`, undefined, true, 'condition_cleared');
     }
   }
 

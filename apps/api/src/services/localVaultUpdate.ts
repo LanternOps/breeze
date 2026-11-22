@@ -13,6 +13,45 @@ import { and, eq, inArray } from 'drizzle-orm';
 
 import { db } from '../db';
 import { devices, localVaults } from '../db/schema';
+import { assertSupportedLocalVaultTarget } from './localStoreTargets';
+
+/*
+ * Every write that sets a vault's type or path goes through this module and
+ * is checked by assertSupportedLocalVaultTarget first: network share vaults
+ * are not supported. A refusal throws UnsupportedLocalStoreTargetError before
+ * anything is written.
+ */
+
+/** Create a vault row (POST /backup/vault and the `configure_vault` AI tool). */
+export async function createLocalVault(values: typeof localVaults.$inferInsert) {
+  assertSupportedLocalVaultTarget(values);
+  const [row] = await db.insert(localVaults).values(values).returning();
+  return row;
+}
+
+/**
+ * Update a vault bound to (id, org, device): the `configure_vault` AI tool's
+ * write for a caller without a site restriction. The device equality is a
+ * CAS against a concurrent reassignment.
+ */
+export async function updateVaultOnDevice(
+  orgId: string,
+  vaultId: string,
+  deviceId: string,
+  updateData: Record<string, unknown>,
+) {
+  assertSupportedLocalVaultTarget(updateData);
+  const [row] = await db
+    .update(localVaults)
+    .set(updateData)
+    .where(and(
+      eq(localVaults.id, vaultId),
+      eq(localVaults.orgId, orgId),
+      eq(localVaults.deviceId, deviceId),
+    ))
+    .returning();
+  return row;
+}
 
 export async function updateVaultWithinCurrentSite(
   orgId: string,
@@ -20,6 +59,7 @@ export async function updateVaultWithinCurrentSite(
   updateData: Record<string, unknown>,
   allowedSiteIds: readonly string[] | undefined,
 ) {
+  assertSupportedLocalVaultTarget(updateData);
   if (allowedSiteIds === undefined) {
     const [row] = await db
       .update(localVaults)

@@ -15,6 +15,8 @@ vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransactionIfHeld: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 // #5128: scriptDispatch.ts now imports `CommandTypes` from './commandQueue'
 // (a re-export of the leaf module './commandTypes') to look up the script
@@ -38,7 +40,27 @@ vi.mock('./sensitiveCommandPayload', () => ({
     payload: c.payload,
   })),
 }));
-vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: vi.fn().mockReturnValue(false) }));
+vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: vi.fn().mockReturnValue(false), isAgentConnected: vi.fn().mockReturnValue(false) }));
+// #4142: scriptDispatch reaches agents through the relay facade. This mock
+// bridges over the agentWs mock above (a local socket send); the facade-outcome
+// tests drive dispatchCommandToAgent directly. The real mapping is pinned in
+// agentCommandRelay.test.ts.
+vi.mock('./agentCommandRelay', async () => {
+  const ws = await import('../routes/agentWs');
+  return {
+    dispatchCommandToAgent: vi.fn(async (agentId: string, frame: unknown) => (
+      vi.mocked(ws.sendCommandToAgent)(agentId, frame as never)
+        ? { status: 'sent', via: 'local' }
+        : { status: 'offline' }
+    )),
+    agentReachability: vi.fn(async (agentId: string) => (
+      vi.mocked(ws.isAgentConnected)(agentId) ? 'connected' : 'absent'
+    )),
+    dispatchDisposition: (o: { status: string }) => (
+      o.status === 'sent' ? 'delivered' : o.status === 'indeterminate' ? 'uncertain' : 'not_delivered'
+    ),
+  };
+});
 // #3409 PR4c-2: the secret-delivery gates are unit-tested against their own
 // drizzle mocks in scriptSecretDelivery.test.ts. Here they are mocked so this
 // file tests the WIRING — that dispatch calls them at the right two points,
@@ -68,6 +90,7 @@ import { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } from '.
 import { cancelledCommandError } from './commandCancelMessage';
 import { decryptCommandForDelivery, encryptSensitivePayloadFields } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
+import { dispatchCommandToAgent } from './agentCommandRelay';
 import { captureException } from './sentry';
 import {
   AGENT_UPGRADE_REQUIRED_MESSAGE,
@@ -900,10 +923,13 @@ describe('dispatchScriptToDevice — deferDelivery (#3445)', () => {
     expect(delivered).toEqual(expect.objectContaining({ ok: true, delivered: false, deliveryOutcome: 'no_agent' }));
   });
 
-  it('a send that throws after the claim releases the claim back to pending before propagating', async () => {
+  // #4142: scriptDispatch sends through the relay facade. A rejected promise is
+  // a contract violation: the frame may already be out, so the claim is KEPT
+  // (releasing would let a second delivery race the first) and the error propagates.
+  it('a facade promise that rejects keeps the claim and propagates (uncertain: the frame may be out)', async () => {
     const executedAt = new Date('2026-09-26T00:00:00Z');
     vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt, agentId: 'agent-1' } as any);
-    vi.mocked(sendCommandToAgent).mockImplementationOnce(() => { throw new Error('socket-local in worker role'); });
+    vi.mocked(dispatchCommandToAgent).mockRejectedValueOnce(new Error('relay contract violation'));
     const { releaseClaimedCommandDelivery } = await import('./commandDispatch');
 
     const r = await dispatchScriptToDevice({
@@ -912,9 +938,56 @@ describe('dispatchScriptToDevice — deferDelivery (#3445)', () => {
       deferDelivery: true,
     });
     if (!r.ok) throw new Error('expected ok');
-    await expect(r.deliver!()).rejects.toThrow('socket-local in worker role');
-    expect(releaseClaimedCommandDelivery).toHaveBeenCalledWith('cmd-1', executedAt);
+    await expect(r.deliver!()).rejects.toThrow('relay contract violation');
+    expect(releaseClaimedCommandDelivery).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
   });
+
+  it('an indeterminate facade outcome keeps the claim and does not stamp the execution running', async () => {
+    const executedAt = new Date('2026-09-26T00:00:00Z');
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt, agentId: 'agent-1' } as any);
+    vi.mocked(dispatchCommandToAgent).mockResolvedValueOnce({ status: 'indeterminate', reason: 'ack_timeout' } as any);
+    const { releaseClaimedCommandDelivery } = await import('./commandDispatch');
+
+    const r = await dispatchScriptToDevice({ device: device({ agentId: 'agent-1' }), source: { kind: 'saved', script: savedScript() } });
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.delivered).toBe(false);
+    expect(r.deliveryOutcome).toBe('indeterminate');
+    expect(releaseClaimedCommandDelivery).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('a relayed delivery (via relay) counts as delivered: stamps running', async () => {
+    const executedAt = new Date('2026-09-26T00:00:00Z');
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt, agentId: 'agent-1' } as any);
+    vi.mocked(dispatchCommandToAgent).mockResolvedValueOnce({ status: 'sent', via: 'relay' } as any);
+    vi.mocked(db.update).mockReturnValue({ set: () => ({ where: () => Promise.resolve(undefined) }) } as any);
+
+    const r = await dispatchScriptToDevice({ device: device({ agentId: 'agent-1' }), source: { kind: 'saved', script: savedScript() } });
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.delivered).toBe(true);
+    expect(r.deliveryOutcome).toBe('sent');
+    expect(db.update).toHaveBeenCalled();
+  });
+
+  it.each(['offline', 'expired', 'owner_mismatch', 'infrastructure_error'])(
+    'a %s facade outcome releases the claim and reports send_failed',
+    async (status) => {
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const executedAt = new Date('2026-09-26T00:00:00Z');
+      vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt, agentId: 'agent-1' } as any);
+      vi.mocked(dispatchCommandToAgent).mockResolvedValueOnce({ status } as any);
+      const { releaseClaimedCommandDelivery } = await import('./commandDispatch');
+
+      const r = await dispatchScriptToDevice({ device: device({ agentId: 'agent-1' }), source: { kind: 'saved', script: savedScript() } });
+      if (!r.ok) throw new Error('expected ok');
+      expect(r.delivered).toBe(false);
+      expect(r.deliveryOutcome).toBe('send_failed');
+      expect(releaseClaimedCommandDelivery).toHaveBeenCalledWith('cmd-1', executedAt);
+      expect(db.update).not.toHaveBeenCalled();
+      consoleWarnSpy.mockRestore();
+    },
+  );
 
   it('a failed running flip after a successful send still reports delivered (the agent has it)', async () => {
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);

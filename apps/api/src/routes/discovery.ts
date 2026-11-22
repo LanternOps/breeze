@@ -51,6 +51,17 @@ import {
   mergeEncryptSnmpCredentials,
   subnetChangeWouldRetainSnmpSecrets,
 } from '../services/snmpSecrets';
+import { lockSitesForNetworkGate } from '../services/learnedNetworks/siteLock';
+import { lockProfileForSave } from '../services/learnedNetworks/profileSaveLock';
+import {
+  EMPTY_SNMP_SECRET_STATE,
+  ProfileNetworkNotAssignableError,
+  applySnmpGrantRulesOnSave,
+  assertProfileNetworkAssignable,
+  isFullSnmpReentry,
+  profileWillHoldSnmpSecrets,
+  snmpPatchSuppliesSecret,
+} from '../services/learnedNetworks/snmpGrants';
 
 // The worker stores the agent's OS string as `{ os: '<name>' }` in jsonb;
 // the API contract is a plain string (#9645).
@@ -163,13 +174,16 @@ async function validateRequestedDiscoveryAgent(
       orgId: devices.orgId,
       siteId: devices.siteId,
       agentId: devices.agentId,
-      status: devices.status
+      status: devices.status,
+      isEphemeral: devices.isEphemeral
     })
     .from(devices)
     .where(eq(devices.agentId, agentId))
     .limit(1);
 
-  if (!agentDevice) {
+  // Same rule as the pinned scan agent below: a Quick Support session machine
+  // is never a scan source.
+  if (!agentDevice || agentDevice.isEphemeral) {
     return { ok: false, error: 'Requested agent not found', status: 404 } as const;
   }
 
@@ -231,6 +245,22 @@ async function validatePinnedDiscoveryDevice(
     return { ok: false, error: 'Scan agent device has no Breeze agent' };
   }
   return { ok: true };
+}
+
+/**
+ * Learned networks (spec 8.3): the 400 body when `networkId` is not a network assigned to the profile's site as
+ * saved; null when it is (or is null). The check's query succeeds and the refusal is an application error, so this
+ * catch needs no savepoint; any other error is rethrown.
+ */
+async function refuseUnassignableNetwork(input: { orgId: string; siteId: string; networkId: string | null }):
+  Promise<{ error: string; code: ProfileNetworkNotAssignableError['code'] } | null> {
+  try {
+    await assertProfileNetworkAssignable(input);
+    return null;
+  } catch (err) {
+    if (err instanceof ProfileNetworkNotAssignableError) return { error: err.message, code: err.code };
+    throw err;
+  }
 }
 
 function serializeDiscoveryProfile(profile: typeof discoveryProfiles.$inferSelect) {
@@ -416,9 +446,12 @@ const createProfileSchema = z.object({
   resolveHostnames: z.boolean().optional(),
   timeout: z.number().int().positive().optional(),
   concurrency: z.number().int().positive().optional(),
+  alertSettings: alertSettingsSchema,
   // #7969: devices.id of the agent that must run this profile's scans; null
   // or absent = automatic selection.
-  pinnedDeviceId: z.string().guid().nullable().optional()
+  pinnedDeviceId: z.string().guid().nullable().optional(),
+  // Learned networks (#12369, spec 8.3): narrow the profile to one network assigned to its site; null or absent = all.
+  networkId: z.string().guid().nullable().optional()
 });
 
 const updateProfileSchema = z.object({
@@ -445,7 +478,9 @@ const updateProfileSchema = z.object({
   concurrency: z.number().int().positive().optional(),
   alertSettings: alertSettingsSchema,
   // #7969: null clears the pin (automatic selection).
-  pinnedDeviceId: z.string().guid().nullable().optional()
+  pinnedDeviceId: z.string().guid().nullable().optional(),
+  // Learned networks (#12369, spec 8.3): null clears the narrowing. A stored value is re-checked on every save.
+  networkId: z.string().guid().nullable().optional()
 });
 
 const scanSchema = z.object({
@@ -674,6 +709,14 @@ discoveryRoutes.post(
       if (!pin.ok) return c.json({ error: pin.error }, 400);
     }
 
+    // Learned networks (spec 8.3): the shared site lock, then the insert; the profile, its secrets, mode and grants
+    // commit together in this request transaction.
+    await lockSitesForNetworkGate([body.siteId], 'shared');
+    const networkRefusal = await refuseUnassignableNetwork({
+      orgId: orgResult.orgId!, siteId: body.siteId, networkId: body.networkId ?? null,
+    });
+    if (networkRefusal) return c.json(networkRefusal, 400);
+
     const [profile] = await db.insert(discoveryProfiles).values({
       orgId: orgResult.orgId!,
       siteId: body.siteId,
@@ -691,9 +734,26 @@ discoveryRoutes.post(
       resolveHostnames: body.resolveHostnames ?? false,
       timeout: body.timeout ?? null,
       concurrency: body.concurrency ?? null,
+      alertSettings: body.alertSettings ?? null,
       pinnedDeviceId: body.pinnedDeviceId ?? null,
+      networkId: body.networkId ?? null,
       createdBy: auth.user?.id ?? null
     }).returning();
+
+    if (profile) {
+      // Creating a profile with secrets is a full re-entry (rule 1).
+      const incoming = { communities: body.snmpCommunities, credentials: body.snmpCredentials };
+      await applySnmpGrantRulesOnSave({
+        orgId: profile.orgId,
+        profileId: profile.id,
+        siteId: profile.siteId,
+        networkId: profile.networkId ?? null,
+        fullReentry: isFullSnmpReentry({ existing: EMPTY_SNMP_SECRET_STATE, incoming }),
+        suppliedAnySecret: snmpPatchSuppliesSecret(incoming),
+        willHoldSecrets: profileWillHoldSnmpSecrets({ communities: profile.snmpCommunities ?? [], credentials: profile.snmpCredentials }),
+        actorUserId: auth.user.id,
+      });
+    }
 
     writeRouteAudit(c, {
       orgId: profile?.orgId ?? orgResult.orgId,
@@ -803,17 +863,35 @@ discoveryRoutes.patch(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
+    // Learned networks (spec 8.3): the unlocked read above serves the 404, the site-access check and the lock set
+    // only. Shared site locks (both sites on a move), then the profile row FOR UPDATE; every read of the stored
+    // profile from here on, retained secrets included, uses the locked row. The destination, secrets, mode and
+    // grants then commit together in this request transaction.
+    const locked = await lockProfileForSave({
+      orgId: existing.orgId,
+      profileId,
+      siteIds: [existing.siteId, ...(updates.siteId ? [updates.siteId] : [])],
+    });
+    if (!locked) return c.json({ error: 'Profile not found' }, 404);
+    if (locked.siteId !== existing.siteId) {
+      // The locks were taken for the site this request saw; a profile moved in between cannot be saved under them.
+      return c.json({
+        error: 'This profile changed while it was being saved. Reload it and try again.',
+        code: 'PROFILE_CHANGED',
+      }, 409);
+    }
+
     // The agent skips subnets over the host limit unless DeepScan is on.
     // Re-check whenever the update touches either input to that rule.
     if (updates.subnets !== undefined || updates.deepScan !== undefined) {
-      const effectiveDeepScan = updates.deepScan ?? existing.deepScan ?? false;
+      const effectiveDeepScan = updates.deepScan ?? locked.deepScan ?? false;
       const oversizedSubnet = effectiveDeepScan
         ? null
-        : findOversizedDiscoverySubnet(updates.subnets ?? existing.subnets ?? []);
+        : findOversizedDiscoverySubnet(updates.subnets ?? locked.subnets ?? []);
       if (oversizedSubnet) return c.json({ error: discoverySubnetTooLargeMessage(oversizedSubnet) }, 400);
     }
 
-    const siteChanged = updates.siteId !== undefined && updates.siteId !== existing.siteId;
+    const siteChanged = updates.siteId !== undefined && updates.siteId !== locked.siteId;
 
     // Same origin-binding contract as credentialOriginBinding.ts: a masked or simply omitted
     // snmpCommunities/snmpCredentials field must not carry the org's live
@@ -824,14 +902,14 @@ discoveryRoutes.patch(
     // the site picks the physical LAN they're probed on).
     if (
       subnetChangeWouldRetainSnmpSecrets({
-        existingSubnets: existing.subnets,
+        existingSubnets: locked.subnets,
         nextSubnets: updates.subnets,
-        existingExcludeIps: existing.excludeIps,
+        existingExcludeIps: locked.excludeIps,
         nextExcludeIps: updates.excludeIps,
         siteChanged,
-        existingCommunities: existing.snmpCommunities,
+        existingCommunities: locked.snmpCommunities,
         nextCommunities: updates.snmpCommunities,
-        existingCredentials: existing.snmpCredentials,
+        existingCredentials: locked.snmpCredentials,
         nextCredentials: updates.snmpCredentials,
       })
     ) {
@@ -845,11 +923,11 @@ discoveryRoutes.patch(
     // to place the profile INTO it — the source-site check above does not
     // cover the destination.
     let siteMoveTarget: { fromSiteId: string; toSiteId: string } | null = null;
-    if (updates.siteId !== undefined && updates.siteId !== existing.siteId) {
+    if (updates.siteId !== undefined && updates.siteId !== locked.siteId) {
       const [targetSite] = await db
         .select({ id: sites.id })
         .from(sites)
-        .where(and(eq(sites.id, updates.siteId), eq(sites.orgId, existing.orgId)))
+        .where(and(eq(sites.id, updates.siteId), eq(sites.orgId, locked.orgId)))
         .limit(1);
       if (!targetSite) {
         return c.json({ error: 'Target site not found or belongs to a different organization' }, 400);
@@ -857,7 +935,7 @@ discoveryRoutes.patch(
       if (permissions?.allowedSiteIds && !canAccessSite(permissions, updates.siteId)) {
         return c.json({ error: 'Access to this site denied' }, 403);
       }
-      siteMoveTarget = { fromSiteId: existing.siteId, toSiteId: updates.siteId };
+      siteMoveTarget = { fromSiteId: locked.siteId, toSiteId: updates.siteId };
     }
     const moveAssets = siteMoveTarget !== null && updates.moveDiscoveredAssets === true;
 
@@ -867,11 +945,11 @@ discoveryRoutes.patch(
     // An unchanged pin re-sent by the form on an unrelated edit (rename,
     // schedule) is NOT re-validated: a pin gone stale since it was set fails
     // the scan visibly at run time, and must not lock the rest of the profile.
-    const effectiveSiteId = siteMoveTarget?.toSiteId ?? existing.siteId;
-    const nextPin = updates.pinnedDeviceId !== undefined ? updates.pinnedDeviceId : existing.pinnedDeviceId;
-    const pinChanged = updates.pinnedDeviceId !== undefined && updates.pinnedDeviceId !== existing.pinnedDeviceId;
+    const effectiveSiteId = siteMoveTarget?.toSiteId ?? locked.siteId;
+    const nextPin = updates.pinnedDeviceId !== undefined ? updates.pinnedDeviceId : locked.pinnedDeviceId;
+    const pinChanged = updates.pinnedDeviceId !== undefined && updates.pinnedDeviceId !== locked.pinnedDeviceId;
     if (nextPin && (pinChanged || siteMoveTarget)) {
-      const pin = await validatePinnedDiscoveryDevice(nextPin, { orgId: existing.orgId, siteId: effectiveSiteId });
+      const pin = await validatePinnedDiscoveryDevice(nextPin, { orgId: locked.orgId, siteId: effectiveSiteId });
       if (!pin.ok) {
         return c.json({
           error: pinChanged
@@ -881,6 +959,15 @@ discoveryRoutes.patch(
       }
     }
 
+    // Learned networks (spec 8.3): every save whose resulting network_id is non-null is checked against the site the
+    // profile will have after it, including a save that does not mention networkId (a site move leaving it behind).
+    const networkRefusal = await refuseUnassignableNetwork({
+      orgId: locked.orgId,
+      siteId: effectiveSiteId,
+      networkId: updates.networkId !== undefined ? updates.networkId : locked.networkId,
+    });
+    if (networkRefusal) return c.json(networkRefusal, 400);
+
     const setValues: Record<string, unknown> = { updatedAt: new Date() };
     if (siteMoveTarget) setValues.siteId = siteMoveTarget.toSiteId;
     if (updates.name !== undefined) setValues.name = updates.name;
@@ -889,8 +976,8 @@ discoveryRoutes.patch(
     if (updates.excludeIps !== undefined) setValues.excludeIps = updates.excludeIps;
     if (updates.methods !== undefined) setValues.methods = updates.methods;
     if (updates.portRanges !== undefined) setValues.portRanges = updates.portRanges;
-    if (updates.snmpCommunities !== undefined) setValues.snmpCommunities = mergeEncryptSnmpCommunities(updates.snmpCommunities, existing.snmpCommunities);
-    if (updates.snmpCredentials !== undefined) setValues.snmpCredentials = mergeEncryptSnmpCredentials(updates.snmpCredentials, existing.snmpCredentials);
+    if (updates.snmpCommunities !== undefined) setValues.snmpCommunities = mergeEncryptSnmpCommunities(updates.snmpCommunities, locked.snmpCommunities);
+    if (updates.snmpCredentials !== undefined) setValues.snmpCredentials = mergeEncryptSnmpCredentials(updates.snmpCredentials, locked.snmpCredentials);
     if (updates.schedule !== undefined) setValues.schedule = updates.schedule;
     if (updates.enabled !== undefined) setValues.enabled = updates.enabled;
     if (updates.deepScan !== undefined) setValues.deepScan = updates.deepScan;
@@ -900,6 +987,7 @@ discoveryRoutes.patch(
     if (updates.concurrency !== undefined) setValues.concurrency = updates.concurrency;
     if (updates.alertSettings !== undefined) setValues.alertSettings = updates.alertSettings;
     if (updates.pinnedDeviceId !== undefined) setValues.pinnedDeviceId = updates.pinnedDeviceId;
+    if (updates.networkId !== undefined) setValues.networkId = updates.networkId;
 
     const applyProfileUpdate = (executor: Pick<typeof db, 'update'>) => executor
       .update(discoveryProfiles)
@@ -914,9 +1002,9 @@ discoveryRoutes.patch(
       // triggers) and the profile's new site stand or fall together. The
       // candidates are selected on the tx so a concurrent scan cannot slip an
       // asset between the count and the move.
-      const moveOrgId = existing.orgId;
+      const moveOrgId = locked.orgId;
       const moveTarget = siteMoveTarget;
-      const source = { id: existing.id, orgId: existing.orgId, siteId: existing.siteId };
+      const source = { id: locked.id, orgId: locked.orgId, siteId: locked.siteId };
       try {
         ({ updated, assetMove } = await db.transaction(async (tx) => {
           const candidates = await selectMovableProfileAssets(tx, source);
@@ -953,6 +1041,23 @@ discoveryRoutes.patch(
     if (!updated) {
       return c.json({ error: 'Failed to update discovery profile' }, 500);
     }
+
+    // Learned networks (spec 8.3): grants follow the profile as saved. After every early return, so a grant write
+    // never precedes a response that leaves the profile row unchanged.
+    const incoming = { communities: updates.snmpCommunities, credentials: updates.snmpCredentials };
+    await applySnmpGrantRulesOnSave({
+      orgId: updated.orgId,
+      profileId: updated.id,
+      siteId: updated.siteId,
+      networkId: updated.networkId ?? null,
+      fullReentry: isFullSnmpReentry({
+        existing: { communities: locked.snmpCommunities ?? [], credentials: locked.snmpCredentials },
+        incoming,
+      }),
+      suppliedAnySecret: snmpPatchSuppliesSecret(incoming),
+      willHoldSecrets: profileWillHoldSnmpSecrets({ communities: updated.snmpCommunities ?? [], credentials: updated.snmpCredentials }),
+      actorUserId: auth.user.id,
+    });
 
     writeRouteAudit(c, {
       orgId: updated.orgId,
@@ -1123,7 +1228,7 @@ discoveryRoutes.get(
         id: discoveryJobs.id,
         orgId: discoveryJobs.orgId,
         siteId: discoveryJobs.siteId,
-        profileId: discoveryJobs.profileId,
+        profileId: discoveryProfiles.id,
         profileName: discoveryProfiles.name,
         agentId: discoveryJobs.agentId,
         status: discoveryJobs.status,
@@ -1137,7 +1242,12 @@ discoveryRoutes.get(
         createdAt: discoveryJobs.createdAt
       })
       .from(discoveryJobs)
-      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      // Profile details only while the profile is in the job's org and site.
+      .leftJoin(discoveryProfiles, and(
+        eq(discoveryJobs.profileId, discoveryProfiles.id),
+        eq(discoveryProfiles.orgId, discoveryJobs.orgId),
+        eq(discoveryProfiles.siteId, discoveryJobs.siteId),
+      ))
       .where(where)
       .orderBy(desc(discoveryJobs.createdAt));
 
@@ -1423,7 +1533,12 @@ discoveryRoutes.get(
         eq(discoveredAssets.siteId, devices.siteId),
       ))
       .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
-      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      // Profile details only while the profile is in the asset's org and site.
+      .leftJoin(discoveryProfiles, and(
+        eq(discoveryJobs.profileId, discoveryProfiles.id),
+        eq(discoveryProfiles.orgId, discoveredAssets.orgId),
+        eq(discoveryProfiles.siteId, discoveredAssets.siteId),
+      ))
       .where(where)
       .orderBy(desc(discoveredAssets.lastSeenAt));
 
@@ -1544,10 +1659,16 @@ discoveryRoutes.get(
         eq(discoveredAssets.siteId, devices.siteId),
       ))
       .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
-      .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      // Profile details only while the profile is in the asset's org and site.
+      .leftJoin(discoveryProfiles, and(
+        eq(discoveryJobs.profileId, discoveryProfiles.id),
+        eq(discoveryProfiles.orgId, discoveredAssets.orgId),
+        eq(discoveryProfiles.siteId, discoveredAssets.siteId),
+      ))
       .leftJoin(bridgeDevices, and(
         eq(discoveryJobs.agentId, bridgeDevices.agentId),
         eq(bridgeDevices.orgId, discoveredAssets.orgId),
+        eq(bridgeDevices.siteId, discoveredAssets.siteId),
       ))
       .leftJoin(sites, eq(discoveredAssets.siteId, sites.id))
       .where(and(...conditions))

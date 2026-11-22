@@ -20,6 +20,15 @@ describe('toolSources validators', () => {
     expect(TOOL_SOURCE_SLUG_RE.test('hu-du')).toBe(false);
     expect(TOOL_SOURCE_SLUG_RE.test('h')).toBe(false);
   });
+  it('explains the allowed slug format instead of a bare "Invalid format"', () => {
+    for (const slug of ['hu-du', 'hu_du', 'a'.repeat(25), 'Hudu', '1hudu']) {
+      const r = createToolSourceSchema.safeParse({ ...base, slug });
+      expect(r.success).toBe(false);
+      const msg = r.success ? '' : r.error.issues.find((i) => i.path[0] === 'slug')?.message ?? '';
+      expect(msg).toMatch(/lowercase letters and numbers/);
+      expect(msg).toMatch(/2-24 characters/);
+    }
+  });
   it('requires authConfig fields matching authKind', () => {
     expect(createToolSourceSchema.safeParse({ ...base, authKind: 'basic', authConfig: { token: 'x' } }).success).toBe(false);
     expect(createToolSourceSchema.safeParse({ ...base, authKind: 'basic', authConfig: { username: 'u', password: 'p' } }).success).toBe(true);
@@ -30,6 +39,18 @@ describe('toolSources validators', () => {
   it('rejects a header name that is not a token and a tokenUrl over http', () => {
     expect(createToolSourceSchema.safeParse({ ...base, authKind: 'api_key_header', authConfig: { headerName: 'X Api', value: 'k' } }).success).toBe(false);
     expect(createToolSourceSchema.safeParse({ ...base, authKind: 'oauth2_client_credentials', authConfig: { tokenUrl: 'http://id.example/token', clientId: 'a', clientSecret: 'b' } }).success).toBe(false);
+  });
+  it('update leaves an omitted rateLimitPerMinute omitted, so a partial PATCH cannot reset it (#10932)', () => {
+    for (const schema of [updateToolSourceSchema, updateToolSourceSchemaWithHttp]) {
+      expect(schema.parse({})).toStrictEqual({});
+      expect(schema.parse({ name: 'x' })).toStrictEqual({ name: 'x' });
+      expect(schema.parse({ rateLimitPerMinute: 60 })).toStrictEqual({ rateLimitPerMinute: 60 });
+    }
+  });
+  it('create still fills rateLimitPerMinute with 120', () => {
+    expect(createToolSourceSchema.parse(base)).toMatchObject({ rateLimitPerMinute: 120 });
+    expect(createToolSourceSchemaWithHttp.parse(base)).toMatchObject({ rateLimitPerMinute: 120 });
+    expect(createToolSourceSchema.parse({ ...base, rateLimitPerMinute: 30 })).toMatchObject({ rateLimitPerMinute: 30 });
   });
   it('patch tool schema allows tier 1-3 and enabled only', () => {
     expect(patchToolSourceToolSchema.safeParse({ tier: 2 }).success).toBe(true);

@@ -38,6 +38,7 @@ const VERIFICATION_CLASS: Record<OfferingVerificationState, string> = {
   unverified: 'bg-muted text-muted-foreground',
   failed: 'bg-destructive/10 text-destructive',
   stale: 'bg-warning/10 text-warning',
+  invalid: 'bg-warning/10 text-warning',
 };
 
 function verificationLabel(v: NonNullable<AiOfferingDto['verification']>, t: TFunction<'settings'>): string {
@@ -48,6 +49,7 @@ function verificationLabel(v: NonNullable<AiOfferingDto['verification']>, t: TFu
       ? t('aiModels.models.verification.failedWithSummary', { summary: v.summary })
       : t('aiModels.models.verification.failed');
     case 'stale': return t('aiModels.models.verification.stale');
+    case 'invalid': return t('aiModels.models.verification.invalid');
     default: {
       const unreachable: never = v.state;
       return String(unreachable);

@@ -38,7 +38,7 @@ Verified facts (2026-07-21): totals rail is already `xl:sticky` with a `quote-to
 19. [I] Keyboard shortcuts (add line, jump between blocks).
 
 ## Not code
-20. [F] Data fixes in the demo quote: "Corfigure" typo, "OliveTech" internal-tooling leak in customer-visible description — run "Tidy all descriptions" on that quote in-app.
+20. [F] Data fixes in the demo quote: "Corfigure" typo, internal-tooling name leak in customer-visible description — run "Tidy all descriptions" on that quote in-app.
 
 ## Conventions for implementers (learned in #2711)
 - Shared worktree possible; targeted edits only, no git stash/checkout, re-read before editing.

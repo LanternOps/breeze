@@ -57,12 +57,11 @@ describe('WispGrantPauseControl (W06 T15, w00 A29)', () => {
   });
 
   it('says why a budget pause holds Resume, with the reset time, tied by aria-describedby (#10106)', () => {
-    const budgetResetsAt = new Date(Date.now() + 20 * 3600_000 - 60_000).toISOString();
+    const budgetResetsAt = '2099-01-01T00:00:00.000Z';
     render(<WispGrantPauseControl wisp={wisp({ status: 'paused', pausedReason: 'budget_exhausted', budgetResetsAt })} onChange={vi.fn()} />);
     const reason = screen.getByTestId('wisp-paused-system');
     expect(reason).toHaveAttribute('data-reason', 'budget_exhausted');
-    expect(reason).toHaveTextContent("today's budget is used up");
-    expect(reason).toHaveTextContent('20 h');
+    expect(reason).toHaveTextContent('background checks are paused until 00:00 UTC');
     // No server path resumes a budget_exhausted grant, so the line must not promise one.
     expect(reason).not.toHaveTextContent(/resume/i);
     const resume = screen.getByTestId('wisp-resume') as HTMLButtonElement;
@@ -74,8 +73,8 @@ describe('WispGrantPauseControl (W06 T15, w00 A29)', () => {
   it('a budget pause with no reset time still gives the reason (#10106)', () => {
     render(<WispGrantPauseControl wisp={wisp({ status: 'paused', pausedReason: 'budget_exhausted' })} onChange={vi.fn()} />);
     const reason = screen.getByTestId('wisp-paused-system');
-    expect(reason).toHaveTextContent("today's budget is used up");
-    expect(reason.textContent).not.toMatch(/\d+ h/);
+    expect(reason).toHaveTextContent('background checks are paused until 00:00 UTC');
+    expect(reason.textContent).not.toContain('{{');
   });
 
   it.each([

@@ -297,6 +297,8 @@ function deniedRouteCases(f: Fixture): MountedRouteCase[] {
     { name: 'snapshot list explicit source filter', method: 'GET', path: `/snapshots?deviceId=${f.sourceB}` },
     { name: 'snapshot by ID', method: 'GET', path: `/snapshots/${f.snapshotB}` },
     { name: 'snapshot browse', method: 'GET', path: `/snapshots/${f.snapshotB}/browse` },
+    { name: 'snapshot search', method: 'GET', path: `/snapshots/${f.snapshotB}/search?q=etc` },
+    { name: 'snapshot file index rebuild', method: 'POST', path: `/snapshots/${f.snapshotB}/file-index/rebuild` },
     { name: 'snapshot legal hold apply', method: 'POST', path: `/snapshots/${f.snapshotB}/legal-hold`, body: { reason: 'denied route coverage' } },
     { name: 'snapshot legal hold release', method: 'POST', path: `/snapshots/${f.snapshotB}/legal-hold/release`, body: { reason: 'denied route coverage' } },
     { name: 'snapshot legal hold legacy release', method: 'DELETE', path: `/snapshots/${f.snapshotB}/legal-hold`, body: { reason: 'denied route coverage' } },

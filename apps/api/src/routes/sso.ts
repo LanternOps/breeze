@@ -47,11 +47,13 @@ import {
   getUserEpochs,
   getRefreshFamily,
   issueUserSession,
+  resolveOrganizationSessionPartnerId,
   rateLimiter,
   getRedis,
   verifyPassword,
   hashPassword,
-  isAccountLocked,
+  reserveAccountAttempt,
+  releaseAccountAttempt,
   clearAccountFailures,
   type UserSessionIdentity,
 } from '../services';
@@ -82,9 +84,10 @@ import {
   userRequiresSetup,
   userIsMfaProtected,
   installAuthorizedUserSessionCookies,
+  hasActiveTotpFactor,
   type PendingMfaRecord,
 } from './auth/helpers';
-import { recordAccountFailureAndMaybeNotify } from './auth/login';
+import { notifyAccountLocked } from './auth/login';
 import { ENABLE_2FA } from './auth/schemas';
 import { completeSsoLogin, finalizeSsoPendingLink, normalizeRedirectPath } from './auth/ssoLinkCompletion';
 import {
@@ -3675,8 +3678,10 @@ ssoRoutes.get('/callback', async (c) => {
     // phishing-resistant (`phr`, #6137) authentication, propagate
     // mfa:true so the tenant can satisfy Breeze's MFA-gated routes via their
     // IdP. Fail-safe: any provider that hasn't opted in, or an assertion
-    // without an `mfa`/`phr` amr, yields mfa:false. This claim never satisfies the
-    // L4 step-up (requireFreshMfaStepUp re-verifies a Breeze-held TOTP).
+    // without an `mfa`/`phr` amr, earns NO IdP credit (`idpMfa` false); the
+    // session can still be policy-admitted (#11889, below). This claim never
+    // satisfies the L4 step-up (requireFreshMfaStepUp re-verifies a Breeze-held
+    // TOTP).
     //
     // BUT: trusting an IdP's MFA assertion is NOT the same as the user holding
     // a factor under OUR policy (the adjudicated rule the CF-Access mint sites
@@ -3684,25 +3689,43 @@ ssoRoutes.get('/callback', async (c) => {
     // must not get mfa:true, however loudly the IdP asserts `amr:mfa` — that
     // would walk them straight past authMiddleware's forced-enrollment gate and
     // every hasSatisfiedMfa() route, permanently, through refresh rotation.
-    // `trustsIdpMfa` still satisfies MFA for a user who actually HAS a factor,
-    // and still does so for an unenrolled user under a policy that does not
-    // require one. The callback is unauthenticated (no ambient DB context), so
+    // `trustsIdpMfa` satisfies MFA for a user who actually HAS a factor. An
+    // unenrolled user under a policy that does not require one is
+    // policy-admitted whether or not the assertion is present (mfa_src 'idp'
+    // only when it is). The callback is unauthenticated (no ambient DB context), so
     // getEffectiveMfaPolicy's own runOutsideDbContext+withSystemDbAccessContext
     // read resolves live policy for existing users. Newly provisioned users
     // conservatively receive mfa:false until their membership commits.
+    //
+    // The read is fail-closed, as at accept-invite: a policy-admitted session
+    // is only granted on a policy that was actually read. If the settings read
+    // fails, `required` resolves true and a no-factor user gets mfa:false (held
+    // to enrollment) rather than a session the tenant's policy might refuse.
+    // Sign-in itself still succeeds, and the IdP arm for an enrolled user does
+    // not depend on this read.
+    //
+    // #11889: the IdP assertion is NOT a precondition of every mfa:true. A
+    // user who holds NO Breeze factor under a policy that does not require
+    // one is policy-admitted, exactly like the password login
+    // (routes/auth/login.ts) and the requireMfa contract (middleware/auth.ts).
+    // Before this, a tenant with MFA off got 403 MFA_REQUIRED on every
+    // MFA-gated route after an SSO sign-in. A user who DOES hold a factor
+    // proved none of it here (the callback runs no Breeze challenge), so only
+    // the trusted IdP assertion can assure them.
     const idpMfa = provider.trustsIdpMfa === true && idpAssertedMfa(idClaims);
     const ssoPolicy = await getEffectiveMfaPolicy({
       scope: provider.partnerId ? 'partner' : 'organization',
       userId: user.id,
       orgId: provider.partnerId ? null : provider.orgId,
       partnerId: provider.partnerId ?? null,
-    });
-    const ssoMfa = idpMfa && (
-      user.mfaEnabled === true
-      || (provisionedRoleId === null && !ssoPolicy.required)
-    );
-    // Every `ssoMfa: true` rests on the trusted IdP assertion (spec D6).
-    const ssoMfaSrc = mfaSrcFor(ssoMfa, 'idp');
+    }, { failClosed: true });
+    const ssoPolicyAdmitted = user.mfaEnabled !== true
+      && provisionedRoleId === null
+      && !ssoPolicy.required;
+    const ssoMfa = (idpMfa && user.mfaEnabled === true) || ssoPolicyAdmitted;
+    // 'idp' whenever the trusted assertion is present; otherwise the session
+    // is assured only because policy admits a no-factor user (spec D6).
+    const ssoMfaSrc = mfaSrcFor(ssoMfa, idpMfa ? 'idp' : 'policy');
 
     // Membership resolution + guarded session identity, keyed on the provider's axis.
     let sessionIdentity: UserSessionIdentity;
@@ -3794,12 +3817,19 @@ ssoRoutes.get('/callback', async (c) => {
         throw new SsoLoginFinalizationError('/login?error=invalid_role_scope');
       }
 
+      // #12246: an org session carries its org's owning partner, exactly as a
+      // password login does, so the partner-wide config SELECT branches apply.
+      const orgPartnerId = await resolveOrganizationSessionPartnerId(tx, provider.orgId!);
+      if (!orgPartnerId) {
+        throw new SsoLoginFinalizationError('/login?error=no_org_access');
+      }
+
       sessionIdentity = {
         userId: user.id,
         email: user.email,
         roleId: orgUser.roleId,
         orgId: provider.orgId!,
-        partnerId: null,
+        partnerId: orgPartnerId,
         scope: 'organization' as const,
         mfa: ssoMfa,
         mfaSrc: ssoMfaSrc
@@ -3980,7 +4010,7 @@ ssoRoutes.get('/callback', async (c) => {
         expiresInSeconds: issued.expiresInSeconds,
       },
     });
-      return { user, issued, tokenExchangeCode, ip, userAgent, ssoMfa };
+      return { user, issued, tokenExchangeCode, ip, userAgent, ssoMfa, ssoMfaSrc };
     });
     loginCapability = undefined;
     await bindIssuedUserSession(finalized.issued);
@@ -4001,7 +4031,9 @@ ssoRoutes.get('/callback', async (c) => {
         userId: finalized.user.id,
         email: finalized.user.email,
         name: finalized.user.name,
-        mfa: finalized.ssoMfa,
+        // The audit `mfa` records a presented factor or trusted IdP assertion,
+        // as the password login does; a policy-admitted session logs false.
+        mfa: finalized.ssoMfa && finalized.ssoMfaSrc !== 'policy',
         scope: 'partner',
         ip: finalized.ip,
         method: 'sso-partner'
@@ -4210,14 +4242,15 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
 
   const normalizedEmail = user.email.toLowerCase();
 
-  // SR2-23 discipline (mirrors /auth/login): the lockout read never
-  // short-circuits the argon2 verify, and a locked account is denied with
-  // the same generic 401 even on a correct password — without re-bumping
-  // the counter (that would let an attacker hold the lockout open).
-  const accountLocked = await isAccountLocked(redis, normalizedEmail);
+  // Same discipline as /auth/login: the attempt is reserved on the
+  // account before the password is checked (concurrent guesses each take
+  // their own slot), the reservation never short-circuits the argon2 verify,
+  // and a locked account is denied with the same generic 401 even on a correct
+  // password. Attempts while locked never move the window's expiry.
+  const reservation = await reserveAccountAttempt(redis, normalizedEmail);
   const validPassword = await verifyPassword(user.passwordHash, password);
 
-  if (accountLocked) {
+  if (!reservation.allowed) {
     void auditUserLoginFailure(c, {
       userId: user.id,
       email: user.email,
@@ -4231,7 +4264,7 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
   }
 
   if (!validPassword) {
-    void recordAccountFailureAndMaybeNotify(c, user, normalizedEmail);
+    if (reservation.reachesLimit) void notifyAccountLocked(c, user, reservation.count);
     void auditUserLoginFailure(c, {
       userId: user.id,
       email: user.email,
@@ -4242,6 +4275,10 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
     await floorPromise;
     return c.json(genericAuthError(), 401);
   }
+
+  // Correct password: give the reserved attempt back so the counter keeps
+  // measuring failed passwords only.
+  void releaseAccountAttempt(redis, normalizedEmail);
 
   // Cheap stale-state guards before any continuation (the finalizer re-checks
   // everything again atomically after consuming the record).
@@ -4289,7 +4326,7 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
   // mfa:pending continuation so all factor types (TOTP/SMS/recovery/passkey)
   // work; the completion endpoints see ssoLinkTokenHash and finalize the
   // link instead of the password-login mint.
-  if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
+  if (ENABLE_2FA && user.mfaEnabled && (hasActiveTotpFactor(user) || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
     const tempToken = nanoid(32);
     const mfaMethod = user.mfaMethod || 'totp';
     const passkeyAvailable = await userHasUsablePasskey(user.id);
@@ -4306,7 +4343,7 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
       partnerId: record.providerPartnerId,
     });
     const allowedMethods = {
-      totp: Boolean(user.mfaSecret) && pendingPolicy.allowedMethods.totp,
+      totp: hasActiveTotpFactor(user) && pendingPolicy.allowedMethods.totp,
       sms: user.mfaMethod === 'sms' && Boolean(user.phoneNumber) && pendingPolicy.allowedMethods.sms,
       passkey: passkeyAvailable && pendingPolicy.allowedMethods.passkey,
     };

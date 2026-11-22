@@ -13,16 +13,15 @@ import type { BackupHealthRow, BackupHealthSummary, BackupRecency } from './back
 import type { BackupStatusBucketId } from '../utils/backupHealth';
 
 /**
- * The six buckets `bucketForBackupStatus` (W01, `./backupHealth`) sorts every
- * `ExternalBackupStatus` into — the same shared mapping the W03 web overview
- * uses for its own status bar, so this report and the overview can never
- * disagree about where a status lands: `no_backups`, `completed`,
- * `completed_with_errors`, `in_progress`, `unsuccessful` (`failed` +
- * `over_quota` + `no_selection` + `interrupted`), `other` (`not_started` +
- * `unknown`). `other` is the catch-all for the two statuses the spec's Web UI
- * section's five named buckets don't mention by name; see
- * `buildStatusBuckets` (Task 4) for why it is rendered only when non-zero,
- * unlike the other five.
+ * The buckets `bucketForBackupRow` (W01, `./backupHealth`) sorts every row
+ * into — the same shared mapping the W03 web overview uses for its own status
+ * bar, so this report and the overview can never disagree about where a row
+ * lands: `no_backups`, `completed`, `overdue` (a `completed` row with no
+ * success in 48 hours, #12025), `completed_with_errors`, `in_progress`,
+ * `unsuccessful` (`failed` + `over_quota` + `no_selection` + `interrupted`),
+ * `other` (`not_started` + `unknown` + `paused`). `overdue` and `other` are
+ * rendered only when non-zero, unlike the five named buckets; see
+ * `buildStatusBuckets`.
  */
 export type BackupStatusBucket = {
   key: BackupStatusBucketId;

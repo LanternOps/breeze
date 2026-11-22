@@ -195,6 +195,22 @@ describe('shared M365 permission profiles', () => {
       `${MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID}/${grant.appRoleId}`,
     );
   });
+
+  // #12085: a Graph role seen only in the token's roles claim has a value but
+  // no resolvable appRoleId. It must key by value, never collide with another
+  // unresolved role, and never match an id-keyed manifest grant.
+  it('keys a null-id grant by value so distinct unresolved roles never collide', () => {
+    const unresolved = (value: string) => ({
+      resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+      appRoleId: null,
+      value,
+    });
+    const a = canonicalGrantKey(unresolved('Directory.ReadWrite.All'));
+    const b = canonicalGrantKey(unresolved('Mail.Send'));
+    expect(a).not.toBe(b);
+    expect(a).not.toBe(canonicalGrantKey(CUSTOMER_GRAPH_READ_ASSIGNMENTS[0]));
+    expect(a).toBe(canonicalGrantKey(unresolved('Directory.ReadWrite.All')));
+  });
 });
 
 describe('customer-graph-actions manifest (least privilege)', () => {

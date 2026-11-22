@@ -569,8 +569,9 @@ describe('SentinelOne: the partner-uploaded MSI gate through the real route (#69
     expect(await linksOf(cp.id)).toEqual([]);
 
     // The partner adds the MSI through the REAL Versions route with the args
-    // left blank: the route fills in the generic msiexec default, which carries
-    // no site token, so enabling is still refused.
+    // left blank: since #9246 the route fills in the package's own template,
+    // which carries the site-token placeholder, so the version is deployable
+    // as created and enabling the feature is armed at once.
     const created = await call(app, token, 'POST', `/software/catalog/${catalogId}/versions`, {
       version: '1.0.0',
       downloadUrl: 'https://downloads.example.invalid/placeholder-sentinelone.msi',
@@ -578,16 +579,7 @@ describe('SentinelOne: the partner-uploaded MSI gate through the real route (#69
     });
     expect(created.status).toBe(201);
     const version = (await created.json()).data;
-    expect(version.silentInstallArgs ?? '').not.toContain('{s1_site_token}');
-    const stillRefused = await enable();
-    expect(stillRefused.status).toBe(400);
-    expect((await stillRefused.json()).code).toBe('security_agents_binary_missing');
-
-    // Editing the version's args to pass the site token makes it deployable.
-    const edited = await call(app, token, 'PATCH', `/software/catalog/${catalogId}/versions/${version.id}`, {
-      silentInstallArgs: 'SITE_TOKEN={s1_site_token} /q /NORESTART',
-    });
-    expect(edited.status).toBe(200);
+    expect(version.silentInstallArgs).toBe('SITE_TOKEN={s1_site_token} /q /NORESTART');
     const ok = await call(app, token, 'POST', `/configuration-policies/${cp.id}/features`, {
       featureType: 'security_agents', inlineSettings: S1_ENABLED,
     });

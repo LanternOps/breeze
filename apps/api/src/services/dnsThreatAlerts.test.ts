@@ -31,7 +31,13 @@ vi.mock('./eventBus', () => ({
   EVENT_TYPES: { DNS_THREAT_BLOCKED: 'dns.threat.blocked' },
 }));
 
+// #11328 — the alert goes through the shared create + `alert.triggered` path.
+vi.mock('./alertService', () => ({
+  createSourcedAlert: vi.fn(),
+}));
+
 import { db, withSystemDbAccessContext } from '../db';
+import { createSourcedAlert } from './alertService';
 import { handleDnsThreatBlocked, handleDnsThreatBlockedEvent } from './dnsThreatAlerts';
 
 function mockCooldownSelect(found: boolean) {
@@ -55,11 +61,11 @@ function mockDeviceSelect(device: { hostname: string; displayName: string | null
 }
 
 function mockInsertReturning(id: string) {
-  vi.mocked(db.insert).mockReturnValueOnce({
-    values: vi.fn().mockReturnValue({
-      returning: vi.fn().mockResolvedValue([{ id }]),
-    }),
-  } as any);
+  vi.mocked(createSourcedAlert).mockResolvedValueOnce(id);
+}
+
+function createdAlertParams(call = 0) {
+  return vi.mocked(createSourcedAlert).mock.calls[call]![0];
 }
 
 describe('handleDnsThreatBlocked', () => {
@@ -81,14 +87,18 @@ describe('handleDnsThreatBlocked', () => {
     });
 
     expect(result).toEqual({ alertId: 'alert-new-1', reason: 'created' });
-    const insertSpy = vi.mocked(db.insert);
-    expect(insertSpy).toHaveBeenCalledTimes(1);
-    const values = (insertSpy.mock.results[0]!.value as any).values.mock.calls[0][0];
+    // #11328 — a raw insert never published `alert.triggered`, so channels,
+    // routing rules and escalation never saw a DNS threat. createSourcedAlert
+    // stages the event with the row and announces it after COMMIT.
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    expect(vi.mocked(createSourcedAlert)).toHaveBeenCalledTimes(1);
+    const values = createdAlertParams();
     expect(values.severity).toBe('high');
     expect(values.orgId).toBe('org-1');
     expect(values.deviceId).toBe('dev-1');
+    expect(values.owner).toBeUndefined();
     expect(values.configItemName).toBe('dns_threat_malware');
-    expect(values.ruleId).toBeNull();
+    expect(values.publisher).toBe('dns-threat-alerts');
     expect(values.title).toContain('malware.example.com');
     expect(values.title).toContain('malware');
     expect(values.message).toContain('TST-LAPTOP-01');
@@ -99,7 +109,7 @@ describe('handleDnsThreatBlocked', () => {
     });
   });
 
-  it('returns cooldown reason and does not insert when an active alert for the same device+category exists', async () => {
+  it('returns cooldown reason and does not create (or publish) when an active alert for the same device+category exists', async () => {
     mockCooldownSelect(true);
 
     const result = await handleDnsThreatBlocked('org-1', {
@@ -111,7 +121,23 @@ describe('handleDnsThreatBlocked', () => {
     });
 
     expect(result).toEqual({ alertId: null, reason: 'cooldown' });
-    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    expect(vi.mocked(createSourcedAlert)).not.toHaveBeenCalled();
+  });
+
+  it('reports create_failed (not created) when createSourcedAlert produced no alert', async () => {
+    mockCooldownSelect(false);
+    mockDeviceSelect({ hostname: 'h', displayName: null });
+    vi.mocked(createSourcedAlert).mockResolvedValueOnce(null);
+
+    const result = await handleDnsThreatBlocked('org-1', {
+      deviceId: 'dev-1',
+      domain: 'm.example.com',
+      category: 'malware',
+      integrationId: null,
+      timestamp: '2026-05-22T20:00:00.000Z',
+    });
+
+    expect(result).toEqual({ alertId: null, reason: 'create_failed' });
   });
 
   it('returns no_device reason when payload has no deviceId', async () => {
@@ -125,7 +151,7 @@ describe('handleDnsThreatBlocked', () => {
 
     expect(result).toEqual({ alertId: null, reason: 'no_device' });
     expect(vi.mocked(db.select)).not.toHaveBeenCalled();
-    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    expect(vi.mocked(createSourcedAlert)).not.toHaveBeenCalled();
   });
 
   it('separate categories on the same device both fire (cooldown is per-category)', async () => {
@@ -174,7 +200,7 @@ describe('handleDnsThreatBlocked', () => {
       timestamp: '2026-05-22T20:00:00.000Z',
     });
     expect(result.reason).toBe('created');
-    const values = (vi.mocked(db.insert).mock.results[0]!.value as any).values.mock.calls[0][0];
+    const values = createdAlertParams();
     expect(values.message).toContain('Alice Laptop');
   });
 
@@ -200,7 +226,7 @@ describe('handleDnsThreatBlocked', () => {
     // the cooldown logic respects. The non-throw + creation success is
     // the smoke; the override-respect path is exercised more thoroughly
     // by the cooldown-blocks test above.
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
+    expect(vi.mocked(createSourcedAlert)).toHaveBeenCalled();
   });
 });
 
@@ -243,6 +269,24 @@ describe('handleDnsThreatBlockedEvent (durable registry contract)', () => {
     ).rejects.toThrow('db exploded');
   });
 
+  it('throws when no alert row was produced, so queue mode retries instead of acking an unpublished threat', async () => {
+    mockCooldownSelect(false);
+    mockDeviceSelect({ hostname: 'h', displayName: null });
+    vi.mocked(createSourcedAlert).mockResolvedValueOnce(null);
+
+    await expect(
+      handleDnsThreatBlockedEvent(
+        event('org-1', {
+          deviceId: 'dev-1',
+          domain: 'm.example.com',
+          category: 'malware',
+          integrationId: null,
+          timestamp: '2026-05-22T20:00:00.000Z',
+        })
+      )
+    ).rejects.toThrow('nothing was published');
+  });
+
   it('inserts an alert on the happy path', async () => {
     mockCooldownSelect(false);
     mockDeviceSelect({ hostname: 'h', displayName: null });
@@ -258,7 +302,7 @@ describe('handleDnsThreatBlockedEvent (durable registry contract)', () => {
       })
     );
 
-    expect(vi.mocked(db.insert)).toHaveBeenCalled();
+    expect(vi.mocked(createSourcedAlert)).toHaveBeenCalled();
   });
 
   // #4085 final-review fix: publish() dispatches durable-registry handlers via
@@ -286,7 +330,7 @@ describe('handleDnsThreatBlockedEvent (durable registry contract)', () => {
     expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
     const contextCallOrder = vi.mocked(withSystemDbAccessContext).mock.invocationCallOrder[0]!;
     const firstSelectCallOrder = vi.mocked(db.select).mock.invocationCallOrder[0]!;
-    const firstInsertCallOrder = vi.mocked(db.insert).mock.invocationCallOrder[0]!;
+    const firstInsertCallOrder = vi.mocked(createSourcedAlert).mock.invocationCallOrder[0]!;
     expect(contextCallOrder).toBeLessThan(firstSelectCallOrder);
     expect(contextCallOrder).toBeLessThan(firstInsertCallOrder);
   });
@@ -321,7 +365,7 @@ describe('handleDnsThreatBlocked — threat-category gate (#6692)', () => {
       const result = await handleDnsThreatBlocked('org-1', payload(category));
 
       expect(result).toEqual({ alertId: `alert-${category}`, reason: 'created' });
-      const values = (vi.mocked(db.insert).mock.results[0]!.value as any).values.mock.calls[0][0];
+      const values = createdAlertParams();
       expect(values.severity).toBe('high');
       expect(values.configItemName).toBe(`dns_threat_${category}`);
     },
@@ -334,7 +378,7 @@ describe('handleDnsThreatBlocked — threat-category gate (#6692)', () => {
 
       expect(result).toEqual({ alertId: null, reason: 'not_threat_category' });
       expect(vi.mocked(db.select)).not.toHaveBeenCalled();
-      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+      expect(vi.mocked(createSourcedAlert)).not.toHaveBeenCalled();
     },
   );
 });

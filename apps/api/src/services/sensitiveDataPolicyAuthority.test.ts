@@ -1,13 +1,39 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const dbState = vi.hoisted(() => ({ rows: [] as unknown[][] }));
+
+vi.mock('../db', () => ({
+  db: {
+    select: vi.fn(() => {
+      const promise = Promise.resolve(dbState.rows.shift() ?? []);
+      const chain: any = {
+        from: vi.fn(() => chain),
+        innerJoin: vi.fn(() => chain),
+        where: vi.fn(() => chain),
+        limit: vi.fn(() => chain),
+        then: promise.then.bind(promise),
+      };
+      return chain;
+    }),
+  },
+  runOutsideDbContext: vi.fn((callback: () => unknown) => callback()),
+  withSystemDbAccessContext: vi.fn((callback: () => unknown) => callback()),
+}));
+
+vi.mock('./roleInheritance', () => ({
+  getRoleGrantRows: vi.fn(async () => []),
+}));
 
 import type { AuthContext } from '../middleware/auth';
 import {
   captureSensitiveDataAuthority,
   captureSystemSensitiveDataAuthority,
   decodeSensitiveDataAuthority,
+  resolveSensitiveDataAuthorityInCurrentSystemContext,
   type PersistedSensitiveDataAuthority,
   type SensitiveDataPolicyOwner,
 } from './sensitiveDataPolicyAuthority';
+import { getRoleGrantRows } from './roleInheritance';
 
 const ORG = '11111111-1111-1111-1111-111111111111';
 const PARTNER = '22222222-2222-2222-2222-222222222222';
@@ -97,5 +123,59 @@ describe('sensitive-data recurring execution authority', () => {
       });
     expect(captureSystemSensitiveDataAuthority(owner))
       .toMatchObject({ executionAuthorityKind: 'partner_unrestricted', executionAuthorityPrincipalKind: 'system' });
+  });
+});
+
+describe('live devices:execute check uses inherited role grants (#11702)', () => {
+  const ROLE = '77777777-7777-4777-8777-777777777777';
+  const OTHER_PARTNER = '88888888-8888-4888-8888-888888888888';
+  const partnerRow = () => row(
+    { orgId: null, partnerId: PARTNER },
+    captureSensitiveDataAuthority(auth({ scope: 'partner', partnerOrgAccess: 'all' }), { orgId: null, partnerId: PARTNER })!,
+  );
+  const grant = (overrides: Record<string, unknown> = {}) => ({
+    roleId: ROLE, resource: 'devices', action: 'execute',
+    roleScope: 'partner', roleIsSystem: false, roleOrgId: null, rolePartnerId: PARTNER,
+    ...overrides,
+  });
+  const queueMembership = () => dbState.rows.push(
+    [{ status: 'active', isPlatformAdmin: false, partnerId: PARTNER }],
+    [{ roleId: ROLE, orgAccess: 'all' }],
+  );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.rows.length = 0;
+  });
+
+  it('honours devices:execute held only through inheritance', async () => {
+    queueMembership();
+    vi.mocked(getRoleGrantRows).mockResolvedValueOnce([grant()]);
+    await expect(resolveSensitiveDataAuthorityInCurrentSystemContext(partnerRow())).resolves.not.toBeNull();
+    expect(getRoleGrantRows).toHaveBeenCalledWith([ROLE]);
+  });
+
+  it('honours an inherited wildcard grant', async () => {
+    queueMembership();
+    vi.mocked(getRoleGrantRows).mockResolvedValueOnce([grant({ resource: '*', action: '*' })]);
+    await expect(resolveSensitiveDataAuthorityInCurrentSystemContext(partnerRow())).resolves.not.toBeNull();
+  });
+
+  it('refuses when the resolved grants lack devices:execute', async () => {
+    queueMembership();
+    vi.mocked(getRoleGrantRows).mockResolvedValueOnce([grant({ action: 'read' })]);
+    await expect(resolveSensitiveDataAuthorityInCurrentSystemContext(partnerRow())).resolves.toBeNull();
+  });
+
+  it('refuses when the base role is owned by another partner', async () => {
+    queueMembership();
+    vi.mocked(getRoleGrantRows).mockResolvedValueOnce([grant({ rolePartnerId: OTHER_PARTNER })]);
+    await expect(resolveSensitiveDataAuthorityInCurrentSystemContext(partnerRow())).resolves.toBeNull();
+  });
+
+  it('refuses a base role of the wrong scope', async () => {
+    queueMembership();
+    vi.mocked(getRoleGrantRows).mockResolvedValueOnce([grant({ roleScope: 'organization', roleOrgId: ORG })]);
+    await expect(resolveSensitiveDataAuthorityInCurrentSystemContext(partnerRow())).resolves.toBeNull();
   });
 });

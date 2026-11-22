@@ -63,9 +63,15 @@ function mockApi(policy: unknown = DEFAULT_POLICY) {
         surfaces: [{ surface: 'office_chat', effective: { defaultOfferingId: null, defaultSource: 'none' } }],
       });
     }
+    if (url.startsWith(`/client-ai/admin/orgs/${ORG_ID}/policy/transcript-retention-preview?`)) {
+      return makeJsonResponse(preview);
+    }
     return makeJsonResponse({ error: 'unexpected' }, false, 500);
   });
 }
+let preview: unknown = { eligible: 3, capped: false, enforced: false };
+const previewUrls = () =>
+  fetchMock.mock.calls.map(([u]) => String(u)).filter((u) => u.includes('/transcript-retention-preview'));
 
 describe('PolicyEditor', () => {
   beforeEach(() => {
@@ -228,5 +234,44 @@ describe('PolicyEditor', () => {
   it('testPattern counts matches and reports compile errors', () => {
     expect(testPattern('\\d+', 'a1 b22')).toEqual({ ok: true, matches: 2 });
     expect(testPattern('([', 'x').ok).toBe(false);
+  });
+
+  describe('client transcript retention preview (#4342 W4)', () => {
+    beforeEach(() => { preview = { eligible: 3, capped: false, enforced: false }; });
+
+    it('previews the stored window and says nothing is removed while enforcement is off', async () => {
+      mockApi({ ...DEFAULT_POLICY, retentionDays: 30 });
+      render(<PolicyEditor orgId={ORG_ID} onBack={vi.fn()} />);
+      const el = await screen.findByTestId('ai-office-policy-retention-preview', {}, { timeout: 2000 });
+      await waitFor(() => expect(el).toHaveTextContent(/3 conversations/));
+      expect(el).toHaveTextContent(/Nothing is removed yet/);
+      expect(previewUrls()).toEqual([`/client-ai/admin/orgs/${ORG_ID}/policy/transcript-retention-preview?days=30`]);
+    });
+
+    it('uses the next-nightly-run copy once enforcement is on, and previews the typed window', async () => {
+      preview = { eligible: 1, capped: false, enforced: true };
+      mockApi({ ...DEFAULT_POLICY, retentionDays: 30 });
+      render(<PolicyEditor orgId={ORG_ID} onBack={vi.fn()} />);
+      fireEvent.change(await screen.findByTestId('ai-office-policy-retention'), { target: { value: '45' } });
+      await waitFor(() => expect(previewUrls()).toContain(`/client-ai/admin/orgs/${ORG_ID}/policy/transcript-retention-preview?days=45`));
+      await waitFor(() => expect(screen.getByTestId('ai-office-policy-retention-preview')).toHaveTextContent(/next nightly run/));
+    });
+
+    it('does not preview a blank (keep forever) window', async () => {
+      mockApi();
+      render(<PolicyEditor orgId={ORG_ID} onBack={vi.fn()} />);
+      await screen.findByTestId('ai-office-policy-retention');
+      await new Promise((r) => setTimeout(r, 600));
+      expect(previewUrls()).toEqual([]);
+      expect(screen.queryByTestId('ai-office-policy-retention-preview')).toBeNull();
+    });
+
+    it('names its scope and links to the technician window on the org AI settings', async () => {
+      mockApi();
+      render(<PolicyEditor orgId={ORG_ID} onBack={vi.fn()} />);
+      const link = await screen.findByTestId('ai-office-policy-retention-technician-link');
+      expect(link).toHaveAttribute('href', `/settings/organizations/${ORG_ID}#ai`);
+      expect(screen.getByTestId('ai-office-policy-retention-scope')).toHaveTextContent(/client AI/i);
+    });
   });
 });

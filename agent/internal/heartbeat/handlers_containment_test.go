@@ -22,6 +22,13 @@ type containmentFake struct {
 	reconciles atomic.Int32
 	entered    chan struct{}
 	unblock    chan struct{}
+	rejections chan containmentRejection
+}
+
+func (f *containmentFake) NotePolicyRejected(_ context.Context, id string, gen int, reason isolation.PolicyRejectReason) {
+	if f.rejections != nil {
+		f.rejections <- containmentRejection{isolationID: id, generation: gen, reason: reason}
+	}
 }
 
 func (f *containmentFake) HandleIsolate(context.Context, map[string]any) isolation.CommandOutcome {
@@ -44,6 +51,7 @@ func (f *containmentFake) Reconcile(ctx context.Context, _ *isolation.DesiredBlo
 		}
 	}
 }
+func (f *containmentFake) NoteControlPlaneContact()  {}
 func (f *containmentFake) Startup(context.Context)   { f.startup.Add(1) }
 func (f *containmentFake) Tick(context.Context)      { f.ticks.Add(1) }
 func (f *containmentFake) Report() *isolation.Report { return nil }

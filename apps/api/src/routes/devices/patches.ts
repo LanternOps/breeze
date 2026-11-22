@@ -2,13 +2,14 @@ import { Hono } from 'hono';
 import { eq, desc, inArray, and, sql, gte } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { readOwnPartnerAxisRows } from '../../db/partnerAxisRead';
 import { patches, devicePatches, deviceCommands, users } from '../../db/schema';
 import { resolveLatestManualDecisions, selectManualDecisionRows } from '../../services/patchManualDecisions';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import { deviceCommandsInCurrentOrg } from './commandOrgScope';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { resolvePartnerIdForOrg } from '../patches/helpers';
@@ -270,6 +271,7 @@ patchesRoutes.get(
 
     const conditions = [
       eq(deviceCommands.deviceId, deviceId),
+      await deviceCommandsInCurrentOrg(device),
       inArray(deviceCommands.type, commandTypes)
     ];
     if (status !== 'all') {
@@ -383,6 +385,7 @@ patchesRoutes.get(
       .where(
         and(
           eq(deviceCommands.deviceId, deviceId),
+          await deviceCommandsInCurrentOrg(device),
           eq(deviceCommands.type, 'patch_scan'),
           inArray(deviceCommands.status, ['completed', 'failed', 'timeout'])
         )
@@ -446,11 +449,13 @@ patchesRoutes.get(
     if (approvalViewParam !== '0' && devicePatchList.some((p) => p.status === 'pending')) {
       try {
         const evaluate = () => loadDevicePatchApprovalView(deviceId, device.orgId);
-        approvalView = partnerId
-          ? await readOwnPartnerAxisRows(partnerId, evaluate)
+        // Savepoint: the catch below survives a failed read, and the install
+        // state read after it runs on this same transaction (#11225).
+        approvalView = await withDbTransaction(() => (partnerId
+          ? readOwnPartnerAxisRows(partnerId, evaluate)
           // Partner-less org: the evaluator reads no partner-axis rows (it
           // stops at the org's missing partner), so the request context suffices.
-          : await evaluate();
+          : evaluate()));
         approvalEvaluation = approvalView.evaluation;
         // A pending row the evaluator did not classify (status changed between
         // the two reads, or an org with no partner) keeps the manual-only

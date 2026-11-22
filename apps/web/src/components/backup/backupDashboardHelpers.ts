@@ -1,13 +1,16 @@
 import {
   Activity,
   AlertTriangle,
+  Ban,
   CheckCircle2,
+  Clock,
   Database,
   HardDrive,
   ShieldAlert,
   XCircle
 } from 'lucide-react';
 import { formatNumber } from '@/lib/i18n/format';
+import type { BackupFailureCategory, BackupFailureCause } from '@breeze/shared';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -33,6 +36,8 @@ export type BackupJob = {
   totalSize?: number | null;
   errorCount?: number | null;
   errorLog?: string | null;
+  failureCategory?: BackupFailureCategory | null;
+  failureCause?: BackupFailureCause | null;
   // Legacy fields for compatibility
   device?: string;
   config?: string;
@@ -67,6 +72,15 @@ export type AttentionItem = {
   title: string;
   description?: string;
   severity?: 'warning' | 'critical' | 'info' | 'success';
+  // #11768: a destination failing for several devices. The structured fields
+  // let the web localize the item instead of showing the server's fallback text.
+  kind?: 'destination_failing';
+  configId?: string;
+  destinationName?: string;
+  failureCategory?: BackupFailureCategory;
+  failureCause?: BackupFailureCause | null;
+  failingDevices?: number;
+  totalDevices?: number;
 };
 
 export type UsageHistoryProvider = {
@@ -114,6 +128,18 @@ export const statusConfig = {
     icon: AlertTriangle,
     label: 'Completed with errors',
     className: 'text-warning bg-warning/10'
+  },
+  // Neutral outcomes: a queued run (pending, e.g. a catch-up waiting for its
+  // device) and a cancelled run are neither healthy nor a problem.
+  pending: {
+    icon: Clock,
+    label: 'Queued',
+    className: 'text-muted-foreground bg-muted'
+  },
+  cancelled: {
+    icon: Ban,
+    label: 'Cancelled',
+    className: 'text-muted-foreground bg-muted'
   },
   warning: {
     icon: AlertTriangle,

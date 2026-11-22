@@ -13,6 +13,9 @@
  */
 
 import { z } from 'zod';
+import { GUARDED_COMMAND_TYPES, verifiedNetworkSchema, type VerifiedNetwork } from '@breeze/shared';
+import { CommandTypes } from './commandTypes';
+import { applyWakeRelayResult } from './wakeAttempts';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   AGENT_UPDATE_REQUIRED_ERROR,
@@ -22,7 +25,7 @@ import {
 } from './systemCleanup';
 
 import { eq, ne, and, inArray, isNull, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbTransaction } from '../db';
+import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import {
   deviceCommands,
   deviceFilesystemCleanupRuns,
@@ -33,6 +36,7 @@ import {
   backupJobs,
 } from '../db/schema';
 import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacency } from '../jobs/discoveryWorker';
+import type { QueueActorMeta } from '../jobs/queueSchemas';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
 import { isRedisAvailable } from './redis';
 import { processBackupVerificationResult } from '../routes/backup/verificationService';
@@ -76,10 +80,25 @@ import { handleNotifyUserResult, handleRetractMessageResult } from './endpointMe
 import { handleChatMessageResult, handleChatOpenResult } from './endpointMessaging/chatResults';
 // #9662: AI/incident containment actions follow their command's real outcome.
 import { handleExecuteContainmentResult } from './incidentContainmentResults';
+import { applyOemUpdateRelease, applyOemUpdateResult } from './oemUpdates/results';
+import { applyOemObserveResult } from './oemUpdates/observe';
+import { lockSitesForNetworkGate } from './learnedNetworks/siteLock';
+import { attemptFromRecord, verifyDiscoveryResult } from './learnedNetworks/verify';
+import { GATE_FAILURE_MESSAGES } from './learnedNetworks/messages';
 
 export type CommandResultHandlerOutcome =
   | { kind: 'pam'; classification: PamActuationResultClassification }
+  | CommandResultAfterCommit
   | void;
+
+/**
+ * Queue work a handler owes once the transport's transaction has COMMITTED (#12502). The handler's transaction may
+ * hold a lock that must never wait on Redis, so the handler returns the work instead of doing it. The WebSocket
+ * transport awaits `run` after its finalize transaction commits and before it acknowledges the agent; the REST
+ * transport registers it with `runAfterDbContextCommit` once its savepoint returned 'recorded', so it starts when
+ * the request transaction commits and is dropped on a rollback. `run` never throws.
+ */
+export type CommandResultAfterCommit = { kind: 'afterCommit'; label: string; run: () => Promise<void> };
 
 export type CommandResultHandler = (params: {
   agentId: string;
@@ -113,100 +132,230 @@ export function normalizeDiscoveryHosts(hosts: DiscoveredHostResult[]): Discover
   }));
 }
 
-async function handleDiscoveryResult({ agentId, command, result, commandId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+/** Learned networks (#12369): the agent's guarded refusal codes, compared as raw strings (W02c owns the list). */
+const DISCOVERY_REFUSAL_CODES = ['network_mismatch', 'network_changed'] as const;
+type DiscoveryRefusalCode = (typeof DISCOVERY_REFUSAL_CODES)[number];
+
+function discoveryRefusalCode(value: unknown): DiscoveryRefusalCode | null {
+  return (DISCOVERY_REFUSAL_CODES as readonly unknown[]).includes(value) ? (value as DiscoveryRefusalCode) : null;
+}
+
+/**
+ * The upload's `verifiedNetwork`: from the structured result, else from stdout (the REST result route may carry
+ * the body only there, index C7). Anything unreadable is `undefined`; the verifier decides what that means.
+ */
+function discoveryVerifiedNetwork(structured: unknown, stdout: string | undefined): unknown {
+  if (structured && typeof structured === 'object' && 'verifiedNetwork' in structured) {
+    const value = (structured as { verifiedNetwork?: unknown }).verifiedNetwork;
+    if (value !== undefined) return value;
+  }
+  if (!stdout) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as { verifiedNetwork?: unknown }).verifiedNetwork
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function handleDiscoveryResult({ agentId, command, result, commandId, stdout }: Parameters<CommandResultHandler>[0]): Promise<CommandResultHandlerOutcome> {
   const payload = command.payload as Record<string, unknown> | null;
   const expectedJobId = typeof payload?.jobId === 'string' ? payload.jobId : null;
-  try {
-    const discoveryData = result.result as {
-      jobId?: string;
-      hosts?: DiscoveredHostResult[];
-      hostsScanned?: number;
-      hostsDiscovered?: number;
-      adjacency?: DeviceAdjacency[];
-    } | undefined;
 
-    if (discoveryData?.hosts) {
-      if (!expectedJobId || discoveryData.jobId !== expectedJobId) {
-        console.warn(
-          `[AgentWs] Rejecting mismatched discovery result ${commandId} from agent ${agentId}: ` +
-          `sentJob=${discoveryData.jobId ?? 'none'} expected=${expectedJobId ?? 'none'}`
-        );
-        return;
-      }
-    }
+  // Learned networks (#12369): a guarded refusal records its code on the job. Only a job-backed command (the AI
+  // tool sends none) and only these two codes; every other failure keeps the behavior below.
+  const refusal = result.status === 'failed' ? discoveryRefusalCode(result.errorCode) : null;
+  if (refusal && expectedJobId) {
+    await db
+      .update(discoveryJobs)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        errors: { code: refusal, message: GATE_FAILURE_MESSAGES[refusal] },
+        updatedAt: new Date()
+      })
+      // A job that already finished or was cancelled keeps its outcome.
+      .where(and(eq(discoveryJobs.id, expectedJobId), inArray(discoveryJobs.status, ['scheduled', 'running'])));
+    console.warn(`[AgentWs] Discovery job ${expectedJobId} refused by agent ${agentId}'s network guard: ${refusal}`);
+    return;
+  }
 
-    if (expectedJobId && discoveryData?.hosts) {
-      // Look up the job to get orgId and siteId
-      const [job] = await db
-        .select({ orgId: discoveryJobs.orgId, siteId: discoveryJobs.siteId })
-        .from(discoveryJobs)
-        .where(eq(discoveryJobs.id, expectedJobId))
-        .limit(1);
+  const discoveryData = result.result as {
+    jobId?: string;
+    hosts?: DiscoveredHostResult[];
+    hostsScanned?: number;
+    hostsDiscovered?: number;
+    adjacency?: DeviceAdjacency[];
+    verifiedNetwork?: unknown;
+  } | undefined;
 
-      if (job && isRedisAvailable()) {
-        const normalizedHosts = normalizeDiscoveryHosts(discoveryData.hosts);
-        // Exit the held org-scoped transaction context for the Redis
-        // round-trips (#1105) — see the note on the monitor-result branch.
-        await runOutsideDbContext(() => enqueueDiscoveryResults(
-          expectedJobId,
-          job.orgId,
-          job.siteId,
-          normalizedHosts,
-          discoveryData.hostsScanned ?? 0,
-          discoveryData.hostsDiscovered ?? 0,
-          undefined,
-          discoveryData.adjacency ?? [],
-          {
-            actorType: 'agent',
-            actorId: agentId,
-            source: 'route:agentWs:script-network-scan',
-          }
-        ));
-      } else if (job) {
-        // Redis not available — mark job failed so user knows results weren't processed
-        console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${expectedJobId}`);
-        await db
-          .update(discoveryJobs)
-          .set({
-            status: 'failed',
-            completedAt: new Date(),
-            hostsDiscovered: discoveryData.hostsDiscovered ?? 0,
-            hostsScanned: discoveryData.hostsScanned ?? 0,
-            errors: { message: 'Results received but could not be processed: job queue unavailable' },
-            updatedAt: new Date()
-          })
-          .where(eq(discoveryJobs.id, expectedJobId));
-      } else {
-        console.warn(
-          `[AgentWs] Discovery job ${expectedJobId} not found in DB — ` +
-          `discarding ${discoveryData.hosts.length} host(s) from agent ${agentId}`
-        );
-      }
-    }
-  } catch (err) {
-    console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
-    captureException(err);
-    if (expectedJobId) {
-      try {
-        await db
-          .update(discoveryJobs)
-          .set({
-            status: 'failed',
-            completedAt: new Date(),
-            errors: { message: err instanceof Error ? err.message : 'Failed to enqueue discovery results' },
-            updatedAt: new Date()
-          })
-          .where(eq(discoveryJobs.id, expectedJobId));
-      } catch (dbErr) {
-        // #3530: the job would stay 'running' with nothing recorded — neither
-        // the results nor the failure. Propagate so the transport rolls the
-        // command's terminal transition back and parks it as
-        // result_processing_failed instead of reporting it completed.
-        console.error(`[AgentWs] Additionally failed to mark discovery job ${expectedJobId} as failed:`, dbErr);
-        throw dbErr;
-      }
+  if (discoveryData?.hosts) {
+    if (!expectedJobId || discoveryData.jobId !== expectedJobId) {
+      console.warn(
+        `[AgentWs] Rejecting mismatched discovery result ${commandId} from agent ${agentId}: ` +
+        `sentJob=${discoveryData.jobId ?? 'none'} expected=${expectedJobId ?? 'none'}`
+      );
+      return;
     }
   }
+  if (!expectedJobId || !discoveryData?.hosts) return;
+
+  // Learned networks (#12369, E10): the job read, the shared site lock and the verifier run in the transport's
+  // transaction and outside any catch, so a failed query fails that transaction instead of being caught beside a
+  // later write (docs/agents/tenancy-rls.md). A rejection is terminal here: the job fails and nothing is queued.
+  const [job] = await db
+    .select({
+      orgId: discoveryJobs.orgId,
+      siteId: discoveryJobs.siteId,
+      profileId: discoveryJobs.profileId,
+      networkDispatch: discoveryJobs.networkDispatch,
+    })
+    .from(discoveryJobs)
+    .where(eq(discoveryJobs.id, expectedJobId))
+    .limit(1);
+
+  if (!job) {
+    console.warn(
+      `[AgentWs] Discovery job ${expectedJobId} not found in DB — ` +
+      `discarding ${discoveryData.hosts.length} host(s) from agent ${agentId}`
+    );
+    return;
+  }
+
+  const uploadedNetwork = discoveryVerifiedNetwork(discoveryData, stdout);
+  await lockSitesForNetworkGate([job.siteId], 'shared');
+  const outcome = await verifyDiscoveryResult({
+    orgId: job.orgId,
+    siteId: job.siteId,
+    profileId: job.profileId,
+    attempt: attemptFromRecord(job.networkDispatch),
+    verifiedNetwork: uploadedNetwork,
+  });
+  if (!outcome.ok) {
+    console.warn(`[AgentWs] Discarding unverified discovery result for job ${expectedJobId} from agent ${agentId}`);
+    await db
+      .update(discoveryJobs)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        errors: outcome.error,
+        updatedAt: new Date()
+      })
+      .where(and(eq(discoveryJobs.id, expectedJobId), inArray(discoveryJobs.status, ['scheduled', 'running'])));
+    return;
+  }
+  const parsedNetwork = verifiedNetworkSchema.safeParse(uploadedNetwork);
+  const verifiedNetwork = parsedNetwork.success ? parsedNetwork.data : undefined;
+
+  // #12502: the transport's transaction holds the shared site lock until it ends, so the enqueue is returned for
+  // the transport to run after that transaction commits (CommandResultAfterCommit), never awaited here.
+  const delivery: DiscoveryResultsDelivery = {
+    agentId,
+    jobId: expectedJobId,
+    orgId: job.orgId,
+    siteId: job.siteId,
+    hosts: discoveryData.hosts,
+    hostsScanned: discoveryData.hostsScanned ?? 0,
+    hostsDiscovered: discoveryData.hostsDiscovered ?? 0,
+    adjacency: discoveryData.adjacency ?? [],
+    meta: {
+      actorType: 'agent',
+      actorId: agentId,
+      source: 'route:agentWs:script-network-scan',
+    },
+    verifiedNetwork,
+    failWhileStatus: ['scheduled', 'running'],
+  };
+  return {
+    kind: 'afterCommit',
+    label: `discovery: enqueue results for job ${expectedJobId}`,
+    run: () => deliverDiscoveryResults(delivery),
+  };
+}
+
+/** An accepted discovery result, ready to enqueue once the transaction that verified it has committed. */
+export interface DiscoveryResultsDelivery {
+  agentId: string;
+  jobId: string;
+  orgId: string;
+  siteId: string;
+  hosts: DiscoveredHostResult[];
+  hostsScanned: number;
+  hostsDiscovered: number;
+  adjacency: DeviceAdjacency[];
+  meta: QueueActorMeta;
+  verifiedNetwork?: VerifiedNetwork;
+  /** A failure is written only while the job is in one of these states: a job that already left keeps its outcome. */
+  failWhileStatus: ReadonlyArray<'scheduled' | 'running'>;
+}
+
+/**
+ * Enqueues an accepted discovery result (#12502). Both result paths (the direct WebSocket branch and the persisted
+ * command result) run this only after the transaction that took the shared site lock and verified the result has
+ * committed, outside any DB context, so the lock is never held across the Redis round trip.
+ *
+ * Never throws. A failed enqueue, or a queue that is unavailable, fails the job in a fresh system context with the
+ * same messages as before, and only while the job is still in `failWhileStatus`. If that write fails too, the job
+ * stays `running` until the stale-running expiry fails it: the command result has already committed, so it can no
+ * longer be parked for resubmission (#3530).
+ */
+export async function deliverDiscoveryResults(d: DiscoveryResultsDelivery): Promise<void> {
+  if (!isRedisAvailable()) {
+    // Redis not available — mark job failed so user knows results weren't processed
+    console.warn(`[AgentWs] Redis unavailable, cannot process ${d.hosts.length} discovery hosts for job ${d.jobId}`);
+    await markDiscoveryDeliveryFailed(d, {
+      hostsDiscovered: d.hostsDiscovered,
+      hostsScanned: d.hostsScanned,
+      errors: { message: 'Results received but could not be processed: job queue unavailable' },
+    });
+    return;
+  }
+  try {
+    // Outside any context, even one a caller still holds (#1105).
+    await runOutsideDbContext(() => enqueueDiscoveryResults(
+      d.jobId,
+      d.orgId,
+      d.siteId,
+      normalizeDiscoveryHosts(d.hosts),
+      d.hostsScanned,
+      d.hostsDiscovered,
+      undefined,
+      d.adjacency,
+      d.meta,
+      d.verifiedNetwork,
+    ));
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process discovery results for ${d.agentId}:`, err);
+    captureException(err, undefined, discoveryDeliveryTags(d, 'discovery_enqueue'));
+    await markDiscoveryDeliveryFailed(d, {
+      errors: { message: err instanceof Error ? err.message : 'Failed to enqueue discovery results' },
+    });
+  }
+}
+
+async function markDiscoveryDeliveryFailed(
+  d: DiscoveryResultsDelivery,
+  fields: { errors: { message: string }; hostsDiscovered?: number; hostsScanned?: number },
+): Promise<void> {
+  try {
+    // A fresh context: the transaction that verified the result has already committed.
+    await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db
+        .update(discoveryJobs)
+        .set({ status: 'failed', completedAt: new Date(), ...fields, updatedAt: new Date() })
+        .where(and(eq(discoveryJobs.id, d.jobId), inArray(discoveryJobs.status, [...d.failWhileStatus]))),
+    'discovery.resultDelivery.markFailed'));
+  } catch (dbErr) {
+    console.error(`[AgentWs] Additionally failed to mark discovery job ${d.jobId} as failed:`, dbErr);
+    captureException(dbErr, undefined, discoveryDeliveryTags(d, 'discovery_mark_failed'));
+  }
+}
+
+/** Sentry tags that find the job from the event: after the commit, the event is the only record of a lost delivery. */
+function discoveryDeliveryTags(d: DiscoveryResultsDelivery, phase: string): Record<string, string> {
+  return { command_result_phase: phase, discovery_job_id: d.jobId, org_id: d.orgId, site_id: d.siteId, source: d.meta.source };
 }
 
 // #3530: every persistence handler below PROPAGATES its failure. Both
@@ -620,6 +769,9 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       }
 
       let updatedExecutions: TerminalExecution[] = [];
+      // #7279: set when the #3607 recovery below records this result onto an
+      // execution a server sweep already terminalised.
+      let recoveredLateResult = false;
       let effectiveExecution = cancelClosed[0] ?? null;
 
       if (cancelClosed.length === 0) {
@@ -682,6 +834,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
 
           if (recovered.length > 0) {
             effectiveExecution = recovered[0] ?? null;
+            recoveredLateResult = true;
             console.warn(
               `[AgentWs] #3607 recovered late script result onto swept execution ${executionId} (command ${command.id})`
             );
@@ -819,9 +972,13 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
 
         // AI Suggested Fixes W1 (D-a) — advance any fix attempt riding on this
         // execution. Inline, own savepoint, never throws; NOT a public event.
+        // A late result also reconciles an attempt the sweep's verdict already
+        // closed (#7279, scriptTerminalHook lateResultWrites).
         await advanceOutcomesForTerminalExecution({
           executionId: effectiveExecution.id,
           status: cancelConfirmed ? 'cancelled' : scriptStatus,
+          completedAt: executionValues.completedAt,
+          lateResult: recoveredLateResult,
         });
 
         if (effectiveExecution.proposalId) {
@@ -1250,8 +1407,67 @@ export async function handleSystemCleanupRunResult(
   });
 }
 
+async function handleWakeOnLanResult({ command, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const payload = command.payload as Record<string, unknown> | null;
+  const attemptId = payload?.wakeAttemptId;
+  if (typeof attemptId !== 'string' || !PG_UUID_REGEX.test(attemptId)) return;
+  const parsed = parseAgentJson(z.object({ packetsSent: z.number().int().nonnegative() }), stdout);
+  if (result.status === 'completed' && parsed === null) {
+    console.warn('[wakeAttempts] relay reported completed with unreadable output; recording send_failed', { commandId: command.id, attemptId });
+  }
+  await applyWakeRelayResult(attemptId, result.status === 'completed' && parsed !== null && parsed.packetsSent > 0);
+}
+
+/**
+ * Vendor updates (#11065). The agent reports its normalized result as JSON on
+ * stdout; anything else reaches the strict parser as-is and is recorded as
+ * `result_unparseable`.
+ */
+async function handleOemUpdateRunResult({ commandId, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  let result: unknown = stdout;
+  try {
+    result = JSON.parse(stdout ?? '');
+  } catch {
+    // Left as the raw text: the parser refuses it.
+  }
+  await applyOemUpdateResult({ commandId, deviceId: resolvedDeviceId, result });
+}
+
+/** The agent's answer to a vendor schedule release, the same way: JSON on stdout. */
+async function handleOemUpdateReleaseResult({ commandId, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  let result: unknown = stdout;
+  try {
+    result = JSON.parse(stdout ?? '');
+  } catch {
+    // Left as the raw text: the parser refuses it.
+  }
+  await applyOemUpdateRelease({ commandId, deviceId: resolvedDeviceId, result });
+}
+
+/**
+ * A read-only vendor observation (#11065 observe-first). The transport has
+ * already stored the envelope in this transaction; the handler rewrites it to
+ * the validated observation only (or a rejection), so raw output never persists.
+ */
+async function handleOemObserveResult({ command, commandId, resolvedDeviceId, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  await applyOemObserveResult({
+    commandId,
+    deviceId: resolvedDeviceId,
+    command,
+    envelopeStatus: result.status,
+    stdout: stdout ?? '',
+    error: result.error ?? null,
+  });
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
+  [CommandTypes.OEM_UPDATE_RUN]: handleOemUpdateRunResult,
+  [CommandTypes.OEM_OBSERVE]: handleOemObserveResult,
+  [CommandTypes.OEM_UPDATE_RELEASE]: handleOemUpdateReleaseResult,
+  [CommandTypes.WAKE_ON_LAN]: handleWakeOnLanResult,
   network_discovery: handleDiscoveryResult,
+  // Learned networks (#12369): the guarded scan's result runs the same handler (and its verification).
+  [GUARDED_COMMAND_TYPES.network_discovery]: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
   backup_test_restore: handleBackupVerificationResult,
   backup_restore: handleVmRestoreResult,

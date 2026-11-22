@@ -59,15 +59,39 @@ export function resolveMcpExecutionOrgId(
  * unambiguously and safely: devices span more than one org, an explicit
  * `toolInput.orgId` disagrees with the devices' real org, a targeted device
  * fails the org/site access gate, or an org-pinned caller reaches a device
- * outside its org. The MCP dispatch maps this to a generic JSON-RPC
- * `invalid_params` error — the mixed/ambiguous case must fail closed BEFORE any
- * ledger, audit, or handler mutation.
+ * outside its org. The MCP dispatch maps this to a JSON-RPC `invalid_params`
+ * error ({@link mcpExecutionOrgRpcError}) — the mixed/ambiguous case must fail
+ * closed BEFORE any ledger, audit, or handler mutation.
+ *
+ * `reason: 'split_by_org'` marks the one refusal the caller can fix by itself:
+ * every device passed the access gate but they belong to more than one org.
  */
 export class McpExecutionOrgError extends Error {
-  constructor(message = 'Ambiguous or unauthorized MCP execution organization') {
+  constructor(
+    message = 'Ambiguous or unauthorized MCP execution organization',
+    readonly reason?: 'split_by_org',
+  ) {
     super(message);
     this.name = 'McpExecutionOrgError';
   }
+}
+
+/**
+ * The JSON-RPC error for a {@link McpExecutionOrgError}. Every refusal stays the
+ * generic `Invalid params` (it must not say which device failed the access
+ * gate), except a mixed-org device set: the chat path answers that with
+ * `split_by_org` (#11255), which an MCP client never sees because this gate
+ * refuses first, so the refusal tells it to split the call (#11287). It names
+ * no org or device: every device in the set already passed the access gate.
+ */
+export function mcpExecutionOrgRpcError(err: McpExecutionOrgError): { message: string; data?: { reason: 'split_by_org' } } {
+  if (err.reason === 'split_by_org') {
+    return {
+      message: 'Invalid params: the devices belong to more than one organization. Call the tool once per organization.',
+      data: { reason: 'split_by_org' },
+    };
+  }
+  return { message: 'Invalid params' };
 }
 
 type MaybePromise<T> = T | Promise<T>;
@@ -187,9 +211,10 @@ export async function resolveMcpExecutionContext(
 
   // Exactly one distinct org — a mixed-org device array is rejected here, BEFORE
   // ledger creation / handler execution.
-  if (deviceOrgIds.size !== 1) {
-    throw new McpExecutionOrgError('Devices span more than one organization');
+  if (deviceOrgIds.size > 1) {
+    throw new McpExecutionOrgError('Devices span more than one organization', 'split_by_org');
   }
+  if (deviceOrgIds.size !== 1) throw new McpExecutionOrgError('No target device resolved to an organization');
   const deviceOrgId = deviceOrgIds.values().next().value as string;
 
   // An explicit orgId must agree with the devices' real org.

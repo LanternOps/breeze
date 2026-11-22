@@ -14,6 +14,9 @@ const MAX_LABEL_LENGTH = 140;
 /** `on device 6eae0f70...` as emitted by aiGuardrails.buildApprovalDescription. */
 const DEVICE_ID_STUB = /\bon device [0-9a-f]{8}\.\.\./i;
 
+/** Shape-only UUID guard: only a real ticket id's prefix is turned into a pattern. */
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function titleCaseWords(snake: string): string {
   return snake
     .split(/[_\s]+/)
@@ -191,6 +194,13 @@ export interface ActionLabelInput {
   reason?: string | null;
   /** Resolved target hostname, so "on device 6eae0f70..." becomes "on KIT". */
   deviceHostname?: string | null;
+  /**
+   * #11674: the ticket this call acts on and its resolved number, so
+   * "ticket #2aad0601..." becomes "ticket T-2026-0001". Only the stub built
+   * from THIS id is replaced. The number only, never ticket content.
+   */
+  ticketId?: string | null;
+  ticketNumber?: string | null;
 }
 
 export function buildActionLabel(args: ActionLabelInput): string {
@@ -198,6 +208,11 @@ export function buildActionLabel(args: ActionLabelInput): string {
   let label = softenLeadingShout(base);
   const host = str(args.deviceHostname);
   if (host) label = label.replace(DEVICE_ID_STUB, `on ${host}`);
+  const ticketNumber = str(args.ticketNumber);
+  if (ticketNumber && args.ticketId && UUID_SHAPE.test(args.ticketId)) {
+    const stub = new RegExp(`\\bticket #${args.ticketId.slice(0, 8)}\\.\\.\\.`, 'gi');
+    label = label.replace(stub, () => `ticket ${ticketNumber}`);
+  }
   label = label.replace(/\s+/g, ' ').trim();
   return label.length > MAX_LABEL_LENGTH ? `${label.slice(0, MAX_LABEL_LENGTH - 1)}…` : label;
 }
@@ -216,4 +231,13 @@ export function buildActionLabel(args: ActionLabelInput): string {
  */
 export function hasDeviceIdStub(text: string, deviceId: string): boolean {
   return text.toLowerCase().includes(`on device ${deviceId.slice(0, 8).toLowerCase()}...`);
+}
+
+/**
+ * #11674 — does `text` carry the `ticket #<8 hex>...` stub for THIS call's
+ * ticket? The intent service reads the ticket number only when it does, so the
+ * many labels with no ticket stub cost no read.
+ */
+export function hasTicketIdStub(text: string, ticketId: string): boolean {
+  return text.toLowerCase().includes(`ticket #${ticketId.slice(0, 8).toLowerCase()}...`);
 }

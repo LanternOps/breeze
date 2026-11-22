@@ -28,6 +28,10 @@ interface SelfManagedRoute {
 }
 
 const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
+  // Human override of a failed script review (#10954). The proposal claim, the
+  // audit row and the execution rows must all COMMIT before any command is sent
+  // (#7103: an agent can otherwise answer a row the result path cannot see).
+  { method: 'POST', pattern: /^\/api\/v1\/ai\/script-proposals\/[0-9a-f-]{36}\/override-run\/?$/i },
   // YARA rule test upload (#6263 W04-2): the sandboxed `breeze-yarac match`
   // child runs up to 30 s; inside the request transaction it would pin a
   // pooled connection idle-in-transaction (#1105). The handler reads the set
@@ -46,7 +50,47 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // so the service owns its caller-scoped transaction; the cancel does the
   // same so its CAS and the command-cancel propagation are one short unit.
   { method: 'POST', pattern: /^\/api\/v1\/security\/scan\/[0-9a-f-]{36}\/?$/i },
+  // Run vendor updates (#11065 W04): the dispatch seam commits the run on its own
+  // connection and only then pushes it to the socket. Under a request transaction
+  // the handler would hold one pooled connection while waiting for a second
+  // (#1105). The handler reads the device in a short caller-scoped context.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[0-9a-f-]{36}\/oem-updates\/run\/?$/i },
   { method: 'POST', pattern: /^\/api\/v1\/security\/scans\/[0-9a-f-]{36}\/cancel\/?$/i },
+  // Connection tests and probes against a provider or a caller-supplied URL:
+  // the handler reads in a short caller-scoped context and makes the outbound
+  // call with no transaction held, so waiting on the other host holds no
+  // pooled database connection.
+  { method: 'POST', pattern: /^\/api\/v1\/google\/connection\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/unifi\/(?:connect|test)\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/unifi\/hosts\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/pax8\/integration\/test\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/integrations\/monitoring\/test\/?$/ },
+  // Catalog image import downloads a caller-supplied URL between a short
+  // ownership read and a short image write.
+  { method: 'POST', pattern: /^\/api\/v1\/catalog\/[0-9a-f-]{36}\/image\/from-url\/?$/i },
+  // Quote image upload or copy-from-URL: same shape (short read, download with
+  // nothing held, short write).
+  { method: 'POST', pattern: /^\/api\/v1\/quotes\/[0-9a-f-]{36}\/images\/?$/i },
+  // Quick Support end waits on the agent relay twice (the self-destruct
+  // command, then the socket close). The handler reads the session in a short
+  // caller-scoped context; endSupportSession opens its own short contexts.
+  { method: 'POST', pattern: /^\/api\/v1\/remote\/support-sessions\/[0-9a-f-]{36}\/end\/?$/i },
+  // Customer domain ownership check: a DNS (or HTTPS) lookup of the domain
+  // between short reads; the verification service owns its own contexts.
+  { method: 'POST', pattern: /^\/api\/v1\/orgs\/organizations\/[^/]+\/customer-domains\/[^/]+\/verification\/check\/?$/ },
+  // Trust Center publish and unpublish (#9087, spec trust-center §7 "live when
+  // the toast says so"): the publish must COMMIT before the serving set is
+  // reconciled against the DB, and the response waits for that reconcile.
+  // Under the request transaction the reconcile would read the pre-publish
+  // rows. The handler runs its DB work in one caller-scoped context, then
+  // reconciles with no context held.
+  { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/trust-page\/publish\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/orgs\/[^/]+\/trust-page\/unpublish\/?$/ },
+  // Billing portal session and support message: forwarded to the billing
+  // service. The support handler reads the sender in a short caller-scoped
+  // context; the portal handler does no DB work of its own.
+  { method: 'POST', pattern: /^\/api\/v1\/billing\/portal\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/support\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/autopay\/charge-now\/?$/ },
   // Autopay routes own short authorized contexts; no outer request transaction.
   { method: 'GET', pattern: /^\/api\/v1\/billing\/autopay\/?$/ },
@@ -150,6 +194,12 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // #5861 PR 2: the per-asset list opens the same org-scoped context as the
   // overview, so it must opt out of the portal request transaction too.
   { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/assets\/?$/ },
+  // CPEV-W2: the site filter options and the per-site health summary open the
+  // same org-scoped context (with currentPartnerId) as the overview, so they
+  // opt out too; otherwise the portal auth context (currentPartnerId null)
+  // wins and the handler's own context never takes effect.
+  { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/sites\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/sites\/health\/?$/ },
   // #8973 W4 Gate B1: portal ticket create. portalTicketsEnabledMiddleware
   // opens one org-scoped context with currentPartnerId (the validated owning
   // partner) BEFORE its enable_tickets read, so createTicket's business-calendar
@@ -253,6 +303,17 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // enqueues, so it keeps the ambient transaction (same call as
   // `quotes/bulk-send`).
   { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/restore\/?$/ },
+  // Wake prepares each attempt + relay command in runBulkIsolated, then sends
+  // after that device commits (#7103/#7109). An ambient batch transaction
+  // would hide the rows from a fast relay result. Non-wake commands retain
+  // one explicit withAuthDbAccessContext around the whole branch.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/commands\/?$/ },
+  // Same reasoning for a single wake. The other command types run in one
+  // explicit withAuthDbAccessContext, as they did under the request transaction.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/commands\/?$/ },
+  // Auto-update persists in a short caller-scoped context and awaits the
+  // deferred delivery after commit, like the manual command route.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/auto-update\/?$/ },
   // #9796 bulk site move — same connection-hold reason as bulk restore. `runBulkIsolated` moves
   // each device (row lock + guarded UPDATE + denormalized rewrite) in its own short RLS
   // transaction, up to BULK_SITE_MOVE_CAP. Under the ambient request transaction every row lock
@@ -273,6 +334,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // transactions each open their own system context.
   { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/switch\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/pre-assignment\/deploy-keys\/[^/]+\/expire-devices\/?$/ },
+  // Reinstall reattach (#8318 wave 2-2). The request reads Redis (target
+  // liveness) before any lock, then runs one system transaction that holds the
+  // holding-area lock and both device rows while it consumes the step-up grant
+  // (Redis GETDEL); the candidates read is a partner-wide system read. Under
+  // the ambient request transaction each would pin a second pooled connection
+  // while the request's sat idle (#1105).
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/reattach\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/devices\/[^/]+\/reinstall-candidates\/?$/ },
   // PR3 (SSO/OIDC) — the three provider routes that run OIDC discovery
   // (`discoverOIDCConfig` → `safeFetch`, up to OIDC_FETCH_TIMEOUT_MS = 10s
   // against a TENANT-CONTROLLED issuer host). Held inside the request
@@ -408,6 +477,25 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // blocks (see withAuthDbAccessContext in middleware/auth.ts) and runs the HTTP call
   // between them.
   { method: 'POST', pattern: /^\/api\/v1\/psa\/connections\/[^/]+\/test\/?$/ },
+  // Ticket import sources and runs (#8313 W4, spec 2026-10-19 §5.6–§5.7).
+  // Create, edit and preflight call the module's connect (and catalog)
+  // against a TENANT-CONTROLLED base URL through safeFetch, which refuses to
+  // run inside a held DB context; each handler reads and writes in short
+  // withAuthDbAccessContext blocks around the call. Starting a run commits
+  // the run row before enqueueing its first slice, or the worker could take
+  // the job before the row is visible.
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/preflight\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/runs\/?$/ },
+  // Removing a source's created contacts (#8313 W4b, spec §5.13): one short
+  // transaction per contact, each under its own locks, so a batch of 500
+  // holds no lock (source, org, contacts) across the whole batch.
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/created-contacts\/remove\/?$/ },
+  // Naming the report's source people (#8313 W6, spec §5.10) calls the
+  // module against the tenant-controlled base URL through safeFetch, which
+  // refuses to run inside a held DB context.
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/source-users\/resolve\/?$/ },
   // PSA company import (#3246), both halves.
   //
   // PREVIEW walks the PSA's own pagination — up to PSA_COMPANY_LIST_CAP/100

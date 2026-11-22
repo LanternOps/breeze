@@ -4,6 +4,8 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
   },
+  withDbTransaction: (fn: () => unknown) => fn(),
+  withDbTransactionIfHeld: (fn: () => unknown) => fn(),
 }));
 
 vi.mock('./aiAgent', () => ({

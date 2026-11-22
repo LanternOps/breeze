@@ -21,6 +21,11 @@ const {
   writeRouteAuditMock: vi.fn(),
 }));
 
+vi.mock('../db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../db')>()),
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
+}));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: async (_c: unknown, next: () => Promise<void>) => next(),
   requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),

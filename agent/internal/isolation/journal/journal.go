@@ -102,6 +102,14 @@ type EpisodeRecord struct {
 	// BreakGlassSecret is the per-episode 32-byte secret behind the offline
 	// release code. Never logged.
 	BreakGlassSecret []byte `json:"breakGlassSecret,omitempty"`
+	// ReleaseTokenPublicKey, ReleaseTokenDeviceID and RequireSignedReleaseToken
+	// are pinned from the first spec of the episode that carries a key, and
+	// never replaced while the episode lasts (#10102). Additive fields: the
+	// recovery binary is always the agent's own version (EnsureRecovery), so
+	// no older binary rewrites the journal during an episode.
+	ReleaseTokenPublicKey     []byte `json:"releaseTokenPublicKey,omitempty"`
+	ReleaseTokenDeviceID      string `json:"releaseTokenDeviceId,omitempty"`
+	RequireSignedReleaseToken bool   `json:"requireSignedReleaseToken,omitempty"`
 	// Resolved is the last-known-good address set per allowlist host (and
 	// the proxy host), as installed.
 	Resolved map[string][]string `json:"resolved,omitempty"`
@@ -123,6 +131,16 @@ type EpisodeRecord struct {
 	RollbackCode string `json:"rollbackCode,omitempty"`
 	// ReleaseKind is set once a release has been decided.
 	ReleaseKind string `json:"releaseKind,omitempty"`
+	// PolicyRevision is the containment policy behind Allow's scope:"any"
+	// entries, as installed. Empty means none.
+	PolicyRevision string `json:"policyRevision,omitempty"`
+	// PolicyGeneration is the generation at which Allow and PolicyRevision were
+	// last adopted. It can trail Generation: a generation that extended the
+	// episode but failed to install its rules leaves it behind, so the next
+	// heartbeat may retry. Zero (a journal from before this field) means
+	// Generation. An older recovery binary that rewrites the file drops both
+	// fields, which only makes the agent re-adopt the same entries.
+	PolicyGeneration int `json:"policyGeneration,omitempty"`
 }
 
 // Event is one entry of the append-only local event log, reported to the

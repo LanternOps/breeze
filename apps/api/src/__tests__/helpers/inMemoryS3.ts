@@ -5,6 +5,7 @@
  * DeleteObjects) and records every call, so a test can assert exactly which
  * prefixes were listed and which keys were deleted.
  */
+import { Readable } from 'node:stream';
 import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 
 export type InMemoryS3Call =
@@ -58,7 +59,11 @@ export class InMemoryS3 {
       if (!object) throw Object.assign(new Error(`NoSuchKey: ${key}`), { name: 'NoSuchKey' });
       return {
         ContentLength: Buffer.byteLength(object.body, 'utf8'),
-        Body: { transformToString: async () => object.body },
+        // As the SDK's Node body: a readable stream with the transform helpers.
+        Body: Object.assign(Readable.from([Buffer.from(object.body, 'utf8')]), {
+          transformToString: async () => object.body,
+          transformToByteArray: async () => new Uint8Array(Buffer.from(object.body, 'utf8')),
+        }),
       };
     }
     if (command instanceof DeleteObjectsCommand) {

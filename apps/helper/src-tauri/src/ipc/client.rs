@@ -1257,11 +1257,20 @@ pub async fn run(
         // identity of the process on the other end is the agent broker
         // itself. A pipe of the same name created by another process would
         // otherwise be indistinguishable from the real one at the point of
-        // dialing. Unix sockets are not affected — their parent directory is
-        // root-owned — so this check is windows-only.
+        // dialing. On Linux the same holds for the Unix socket: a member of
+        // the IPC group can replace the socket entry in the group-writable
+        // socket directory, so the server must prove it is root (SO_PEERCRED)
+        // behind a root-controlled directory chain — the check the Go
+        // clients make (`ipc.VerifyUnixBrokerServer`). macOS keeps its
+        // existing trust model, as the Go clients do.
         #[cfg(windows)]
-        if let Err(e) = super::transport::verify_server_identity(&stream) {
-            eprintln!("[helper] ipc: refusing pipe server ({}): {}", path, e);
+        let verified = super::transport::verify_server_identity(&stream);
+        #[cfg(target_os = "linux")]
+        let verified = super::server_identity_unix::verify_unix_broker_server(&stream, &path);
+        #[cfg(not(any(windows, target_os = "linux")))]
+        let verified: Result<(), String> = Ok(());
+        if let Err(e) = verified {
+            eprintln!("[helper] ipc: refusing broker server ({}): {}", path, e);
             drop(stream);
             if wait_or_stop(&mut stop, backoff).await {
                 return;
@@ -2469,7 +2478,7 @@ mod prompt_auth_tests {
         let now: i64 = 1_793_000_000_000;
         let messages = std::sync::Arc::new(super::super::message::MessageBridge::default());
         let prompts = std::sync::Arc::new(PromptBridge::default());
-        let exp = chrono::DateTime::from_timestamp_millis(now + 3_600_000).unwrap().to_rfc3339();
+        let exp = crate::timestamp::rfc3339_from_millis(now + 3_600_000);
         let show: MessageShow = serde_json::from_str(&format!(
             r##"{{"messageId":"m-1","title":"t","body":"b","severity":"info","requiresAck":false,"expiresAt":"{exp}","branding":{{}}}}"##
         ))

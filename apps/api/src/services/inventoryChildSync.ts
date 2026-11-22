@@ -94,6 +94,7 @@ export interface DiskReport {
   freeGb: number;
   usedPercent: number;
   health?: string;
+  isOsVolume?: boolean;
 }
 
 interface DeviceRef {
@@ -114,6 +115,7 @@ export async function syncDeviceDisks(tx: DbTx, device: DeviceRef, disks: readon
     freeGb: disk.freeGb,
     usedPercent: disk.usedPercent,
     health: disk.health || 'healthy',
+    isOsVolume: disk.isOsVolume ?? null,
   }));
   const stored = await tx
     .select({ id: deviceDisks.id, mountPoint: deviceDisks.mountPoint, device: deviceDisks.device, fsType: deviceDisks.fsType, totalGb: deviceDisks.totalGb })
@@ -136,11 +138,12 @@ export async function syncDeviceDisks(tx: DbTx, device: DeviceRef, disks: readon
     // timestamp without time zone: bind the UTC wall clock, as Drizzle does for the column.
     const updatedAt = now.toISOString();
     const values = plan.updates.map(({ id, row }) => sql`(${id}::uuid, ${row.device}::varchar, ${row.fsType}::varchar,
-      ${row.totalGb}::real, ${row.usedGb}::real, ${row.freeGb}::real, ${row.usedPercent}::real, ${row.health}::varchar)`);
+      ${row.totalGb}::real, ${row.usedGb}::real, ${row.freeGb}::real, ${row.usedPercent}::real, ${row.health}::varchar, ${row.isOsVolume}::boolean)`);
     await tx.execute(sql`UPDATE device_disks AS d SET
         device = v.device, fs_type = v.fs_type, total_gb = v.total_gb, used_gb = v.used_gb,
-        free_gb = v.free_gb, used_percent = v.used_percent, health = v.health, updated_at = ${updatedAt}::timestamp
-      FROM (VALUES ${sql.join(values, sql`, `)}) AS v(id, device, fs_type, total_gb, used_gb, free_gb, used_percent, health)
+        free_gb = v.free_gb, used_percent = v.used_percent, health = v.health,
+        is_os_volume = v.is_os_volume, updated_at = ${updatedAt}::timestamp
+      FROM (VALUES ${sql.join(values, sql`, `)}) AS v(id, device, fs_type, total_gb, used_gb, free_gb, used_percent, health, is_os_volume)
       WHERE d.id = v.id AND d.device_id = ${device.id}`);
   }
   if (plan.inserts.length > 0) {
@@ -351,10 +354,16 @@ export async function syncDeviceMemoryModules(
   }
 }
 
-/** Base hardware columns an agent may report (everything the route validated, minus `memory`). */
+/**
+ * Base hardware columns an agent may report (everything the route validated,
+ * minus `memory`). Never the TPM EK baseline or a mismatching EK (#8318 T1,
+ * §5.1/§12.2): only the attestation route writes them, after a proof of
+ * possession.
+ */
 export type HardwareReportColumns = Partial<Omit<typeof deviceHardware.$inferInsert,
   'deviceId' | 'orgId' | 'updatedAt' | 'partnerExportUpdatedAt'
-  | 'memorySlotsTotal' | 'memoryMaxCapacityMb' | 'memorySoldered' | 'memoryObservedAt'>>;
+  | 'memorySlotsTotal' | 'memoryMaxCapacityMb' | 'memorySoldered' | 'memoryObservedAt'
+  | 'tpmEkPubSha256' | 'tpmAttestedAt' | 'tpmEkMismatchSha256' | 'tpmEkMismatchAt'>>;
 
 /**
  * Upsert device_hardware and, when a valid memory block came with the report,

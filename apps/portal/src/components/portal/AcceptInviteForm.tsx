@@ -1,5 +1,5 @@
 import { withBase } from '@/lib/basePath';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -9,6 +9,15 @@ import { cn } from '@/lib/utils';
 import { usePortalAuth } from '@/lib/auth';
 import { navigateTo } from '@/lib/navigation';
 import { safeNextPath } from '@/lib/nextPath';
+import {
+  getInviteMethods,
+  startGoogleSignIn,
+  startMicrosoftSignIn,
+  type InviteMethods,
+  type StartResult
+} from '@/lib/oidc';
+import { MicrosoftSignInButton } from './MicrosoftSignInButton';
+import { GoogleSignInButton } from './GoogleSignInButton';
 import { BTN_PRIMARY, INPUT } from './ui';
 
 const acceptInviteSchema = z
@@ -50,6 +59,65 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
   useEffect(() => {
     setHydrated(true);
   }, []);
+
+  // null = still asking the API which options this invite offers.
+  const [methods, setMethods] = useState<InviteMethods | null>(null);
+  const [inviteInvalid, setInviteInvalid] = useState(false);
+  const [msBusy, setMsBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const autoStarted = useRef(false);
+
+  const startSso = async (
+    start: typeof startMicrosoftSignIn,
+    setBusy: (busy: boolean) => void
+  ) => {
+    setBusy(true);
+    setError(null);
+    const next = safeNextPath(nextParam);
+    const result: StartResult = await start({
+      purpose: 'invite',
+      inviteToken: token,
+      ...(next ? { next } : {})
+    });
+    if (result.ok) return;
+    // A 400 from an invite start means this invite can't be used for that
+    // sign-in (e.g. its account already holds that provider's identity): the
+    // same expired-invite state as a dead token, never a different message.
+    if (result.inviteInvalid) setInviteInvalid(true);
+    else setError(result.error);
+    setBusy(false);
+  };
+  const startMicrosoft = () => startSso(startMicrosoftSignIn, setMsBusy);
+  const startGoogle = () => startSso(startGoogleSignIn, setGoogleBusy);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    void getInviteMethods(token).then((result) => {
+      if (cancelled) return;
+      if (result.status === 'invalid') setInviteInvalid(true);
+      // Any other failure: fall back to today's password form so nothing regresses.
+      else setMethods(result.status === 'ok' ? result.methods : { password: true, microsoft: false, google: false });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  // The invite email's SSO buttons link here with ?method=microsoft|google:
+  // start that provider at once, only when this invite offers it.
+  useEffect(() => {
+    if (!methods || autoStarted.current) return;
+    const method = new URLSearchParams(window.location.search).get('method');
+    if (method === 'microsoft' && methods.microsoft) {
+      autoStarted.current = true;
+      void startMicrosoft();
+    } else if (method === 'google' && methods.google) {
+      autoStarted.current = true;
+      void startGoogle();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [methods]);
 
   const {
     register,
@@ -102,7 +170,13 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
     }
   };
 
-  if (!token) {
+  // Until the API answers (and on SSR) show today's password form: the pre-hydration
+  // safety net must exist in the server HTML, and a failed lookup must not regress.
+  const showMicrosoft = methods?.microsoft === true;
+  const showGoogle = methods?.google === true;
+  const showPassword = methods?.password !== false;
+
+  if (!token || inviteInvalid) {
     return (
       <div className="border-y border-border/70 py-12 text-center">
         <h3 className="font-display text-lg font-semibold text-foreground">This invite has expired</h3>
@@ -135,6 +209,37 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
   }
 
   return (
+    <div className="space-y-6">
+      {showMicrosoft && (
+        <MicrosoftSignInButton
+          onClick={startMicrosoft}
+          busy={msBusy}
+          label="Continue with Microsoft"
+          testId="portal-accept-invite-microsoft"
+        />
+      )}
+
+      {showGoogle && (
+        <GoogleSignInButton
+          onClick={startGoogle}
+          busy={googleBusy}
+          label="Continue with Google"
+          testId="portal-accept-invite-google"
+        />
+      )}
+
+      {!showPassword && error && (
+        <div role="alert" className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
+          <AlertCircle className="h-4 w-4" />
+          {error}
+        </div>
+      )}
+
+      {(showMicrosoft || showGoogle) && showPassword && (
+        <p className="text-center text-xs uppercase tracking-[0.08em] text-muted-foreground">or set a password</p>
+      )}
+
+      {showPassword && (
     // method="post" is a pre-hydration safety net: if the island fails to
     // hydrate, a native submit must never be a GET that puts the password in
     // the URL / browser history / access logs (#2868). Once hydrated,
@@ -214,5 +319,7 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
         )}
       </button>
     </form>
+      )}
+    </div>
   );
 }

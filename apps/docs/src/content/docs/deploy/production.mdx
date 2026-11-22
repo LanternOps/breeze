@@ -21,22 +21,45 @@ The core stack (`docker-compose.yml`) includes:
 | **API** | `ghcr.io/lanternops/breeze/api` | Hono API server |
 | **Web** | `ghcr.io/lanternops/breeze/web` | Astro SSR dashboard |
 | **Portal** | `ghcr.io/lanternops/breeze/portal` | Astro SSR customer portal, served under `/portal` (see [Customer Portal](/features/portal/)) |
-| **PostgreSQL** | `pgvector/pgvector:pg16` | Primary database |
-| **Redis** | `redis:7-alpine` | Job queue, caching, rate limiting |
+| **PostgreSQL** | `pgvector/pgvector:pg16` (17 and 18 supported) | Primary database |
+| **Redis** | `redis` (digest-pinned via `REDIS_IMAGE_REF`; Redis 8.x) | Job queue, caching, rate limiting |
 | **Coturn** | `coturn/coturn:4-alpine` | TURN relay server for WebRTC remote desktop (opt-in via `--profile turn`) |
 
-The `pgvector` extension is required **only if you enable the Workspace built-in** (`BREEZE_WORKSPACE_ENABLED=true`), which uses it for content embeddings. Workspace ships inside the API image but is off by default: with the flag unset, no Workspace migrations run and any Postgres 16 image works. The bundled `POSTGRES_IMAGE_REF` default is pgvector-capable regardless, so enabling Workspace later needs no database swap — supply your own Postgres image and you must provide `pgvector` yourself before setting the flag, or the API will fail to start with `extension "vector" is not available`.
+The `pgvector` extension is required **only if you enable the Workspace built-in** (`BREEZE_WORKSPACE_ENABLED=true`), which uses it for content embeddings. Workspace ships inside the API image but is off by default: with the flag unset, no Workspace migrations run and any image of a [supported Postgres version](#supported-postgresql-versions) works. The bundled `POSTGRES_IMAGE_REF` default is pgvector-capable regardless, so enabling Workspace later needs no database swap — supply your own Postgres image and you must provide `pgvector` yourself before setting the flag, or the API will fail to start with `extension "vector" is not available`.
 
 <Aside type="caution" title="Do not swap Postgres images over an existing data volume">
-`postgres:16-alpine` is built against **musl**; `pgvector/pgvector:pg16` is built against **glibc**. Starting one image over a data directory initialized by the other produces a **collation version mismatch**: Postgres warns at startup, and every text index (including unique constraints on text columns) is potentially inconsistent until rebuilt — which can return wrong rows rather than failing loudly.
+The `postgres:<major>-alpine` images are built against **musl**; the `pgvector/pgvector:pg<major>` images are built against **glibc**. Starting one image over a data directory initialized by the other produces a **collation version mismatch**: Postgres warns at startup, and every text index (including unique constraints on text columns) is potentially inconsistent until rebuilt — which can return wrong rows rather than failing loudly.
 
 If you are already running on a stock image and want Workspace, either:
 
-- dump and restore into a freshly-initialized volume on the new image, or
+- dump and restore into a freshly-initialized volume on the new image (roles are not part of a database dump; see [Restoring into a new Postgres cluster](/security/backup/#restoring-into-a-new-postgres-cluster)), or
 - after the first start on the new image, run `REINDEX DATABASE <dbname>;` followed by `ALTER DATABASE <dbname> REFRESH COLLATION VERSION;`.
 
 If you do not need Workspace, keep the Postgres image you are already running.
 </Aside>
+
+### Supported PostgreSQL versions
+
+Breeze states only what CI tests:
+
+| Major | Status | What CI runs |
+|---|---|---|
+| 16 | Default (the shipped `POSTGRES_IMAGE_REF`) | Full suite on every pull request |
+| 17 | Supported | Full integration, row-level security and migration suites weekly |
+| 18 | Supported | Migration smoke on every pull request; full integration, row-level security and migration suites nightly |
+
+The default stays 16. Moving it is a separate, announced decision.
+
+**Running 17 or 18:**
+
+- **New install:** before the first start, set `POSTGRES_IMAGE_REF` in `.env` to a reviewed digest of `pgvector/pgvector:pg17` or `pgvector/pgvector:pg18`. With `guided-setup.sh`, answer **no** when it asks to start Breeze, edit `.env`, then run the start commands it prints.
+- **Existing install:** follow [PostgreSQL 16 to 18](/deploy/upgrades/#postgresql-16-to-18). Never change the image's major version over an existing data volume: Postgres refuses to start on a data directory from another major.
+- Use a `docker-compose.yml` from a release that sets `PGDATA` on the `postgres` service. On older files a Postgres 18 image refuses to start, because its default data directory moved outside the volume mount.
+- The host `pg_dump` that `scripts/backup.sh` uses must be the same major as the server or newer.
+
+**Redis:** Breeze is tested against Redis 8.x. Redis 7 is no longer tested. Set `REDIS_IMAGE_REF` to a reviewed digest of a Redis 8.x image.
+
+**Upgrading Redis from 7 to 8:** see [Redis 7 to 8](/deploy/upgrades/#redis-7-to-8) in the Upgrade Guide.
 
 An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail, exporters) is available as a separate overlay — see [Monitoring](#adding-monitoring).
 

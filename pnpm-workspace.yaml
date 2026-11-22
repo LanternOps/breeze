@@ -8,3 +8,17 @@ packages:
 #   - esbuild downloads its native binary on install (required for tsup, vitest, etc.)
 onlyBuiltDependencies:
   - esbuild
+
+# Resolution policy. pnpm applies these when it resolves versions (adding or
+# bumping a dependency, regenerating the lockfile); an install from an
+# up-to-date lockfile, including --frozen-lockfile, does not re-check them.
+#
+# Hold a newly published version back from resolution for 3 days (minutes).
+# For an urgent fix that needs a newer release, add the exact version with a
+# comment saying why, and remove the entry once the release is 3 days old:
+#   minimumReleaseAgeExclude:
+#     - 'some-package@1.2.3'   # CVE-XXXX-YYYY fix, remove after <date>
+minimumReleaseAge: 4320
+# Only direct dependencies may come from git or tarball URLs; transitive
+# dependencies must resolve from the registry.
+blockExoticSubdeps: true

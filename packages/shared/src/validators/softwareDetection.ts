@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { utf8MaxBytes } from './unitLength';
 
 // ============================================
 // Software Detection Rules (issue #2022, Phase 1)
@@ -116,10 +117,7 @@ export const serviceRunningDetectionRuleSchema = z
       .max(256)
       .regex(SERVICE_NAME_REGEX, 'No control characters and no leading "-"')
       .refine((s) => s.trim().length > 0, 'Must not be blank')
-      .refine(
-        (s) => new TextEncoder().encode(s).length <= SERVICE_NAME_MAX_BYTES,
-        `Must be at most ${SERVICE_NAME_MAX_BYTES} bytes (UTF-8)`,
-      ),
+      .check(utf8MaxBytes(SERVICE_NAME_MAX_BYTES, `Must be at most ${SERVICE_NAME_MAX_BYTES} bytes (UTF-8)`)),
   })
   .strict();
 

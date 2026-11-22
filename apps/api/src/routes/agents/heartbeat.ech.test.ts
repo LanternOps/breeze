@@ -196,7 +196,8 @@ vi.mock('./helpers', () => ({
   // Default OFF, mirroring buildPatchSourceConfigUpdate: every heartbeat test
   // that does not care about warranty still exercises the delivery merge rather
   // than the builder-throws path.
-  buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslEnabled: false })),
+  buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslOptedIn: false })),
+  buildWakeOnLanConfigUpdate: vi.fn(async () => ({ enabled: false, configureSettings: false as const, firmwareWrites: [] as string[], observeVendors: [] as string[] })),
   // Null = no onedrive policy for the device. Tests that exercise delivery
   // override this per-test. Omitting it entirely would make every heartbeat
   // test silently exercise only the builder-throws path (undefined is not a
@@ -230,13 +231,15 @@ vi.mock('./helpers', () => ({
   resolvePinnedUpgradeTargets: async (args: {
     platform: string; architecture: string; agentId?: string;
     requests: Array<{ component: string; pin: string | null }>;
+    deviceOs?: unknown; onOsHold?: (hold: unknown) => void;
   }) => {
     const helpers = await import('./helpers');
     const out = new Map<string, string | null>();
     for (const r of args.requests) {
       out.set(r.component, await helpers.resolvePinnedUpgradeTarget({
         component: r.component, platform: args.platform, architecture: args.architecture, pin: r.pin, agentId: args.agentId,
-      }));
+        deviceOs: args.deviceOs, onOsHold: args.onOsHold,
+      } as never));
     }
     return out;
   },
@@ -543,11 +546,11 @@ describe('POST /agents/:id/heartbeat — ECH (#8869)', () => {
   it('persists all four capability fields non-sticky on consecutive heartbeats', async () => {
     const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
     updateMock.mockReturnValue({ set: setSpy });
-    await beat({ securityCapabilities: { networkIsolationVersion: 1, networkIsolationMechanism: 'wfp', networkIsolationUnsupportedReason: 'diagnostic', networkIsolationReady: true } });
-    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ networkIsolationVersion: 1, networkIsolationMechanism: 'wfp', networkIsolationUnsupportedReason: 'diagnostic', networkIsolationReady: true }));
+    await beat({ securityCapabilities: { networkIsolationVersion: 1, networkIsolationMechanism: 'wfp', networkIsolationUnsupportedReason: 'diagnostic', networkIsolationReady: true, networkIsolationDeadMan: true } });
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ networkIsolationVersion: 1, networkIsolationMechanism: 'wfp', networkIsolationUnsupportedReason: 'diagnostic', networkIsolationReady: true, networkIsolationDeadMan: true }));
     selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
     await beat();
-    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ networkIsolationVersion: 0, networkIsolationMechanism: null, networkIsolationUnsupportedReason: null, networkIsolationReady: false }));
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ networkIsolationVersion: 0, networkIsolationMechanism: null, networkIsolationUnsupportedReason: null, networkIsolationReady: false, networkIsolationDeadMan: false }));
   });
 
   it('always returns containment at top level, tolerating a malformed report', async () => {

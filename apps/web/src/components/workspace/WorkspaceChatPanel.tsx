@@ -1,12 +1,15 @@
 import { useState } from "react";
 import { Sparkles } from "lucide-react";
-import WispWelcome from "../wisp/WispWelcome";
+import WispChatWelcome from "../wisp/WispChatWelcome";
 import { useWispScopeLabel } from "../wisp/useWispScopeLabel";
 
 import AiChatMessages from "../ai/AiChatMessages";
 import AiChatInput from "../ai/AiChatInput";
 import AiContextBadge from "../ai/AiContextBadge";
+import AiErrorBanner from "../ai/AiErrorBanner";
+import { activeRetryTarget } from "@/lib/aiErrors";
 import AiCostIndicator from "../ai/AiCostIndicator";
+import AiNotifyToggle from "../ai/AiNotifyToggle";
 import WorkspaceSessionChips from "./WorkspaceSessionChips";
 import CreateTicketFromChatModal, {
   type CreateTicketFromChatModalProps,
@@ -37,10 +40,12 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
     pauseAi,
     interruptResponse,
     clearError,
+    retryLastTurn,
     draftTicketFromChat,
     saveTicketFromChat,
     setComposerDraft,
     recheckPendingApprovals,
+    wispGrantAvailable,
   } = useWorkspaceStore();
   // #9431: an approval card may have been decided in another window meanwhile.
   useOnWindowReturn(() => recheckPendingApprovals?.());
@@ -53,6 +58,8 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
   // its empty state and its composer — not only in the mode label above.
   const tabWisp = tab.wisp?.kind === "wisp" ? tab.wisp : null;
   const wispScopeLabel = useWispScopeLabel(tabWisp?.orgId ?? null);
+  // #10289: beside an active grant "Breeze AI" alone reads as Wisp, so say it isn't.
+  const plainLabel = tab.plainChosen || wispGrantAvailable ? t("wisp.plainChat.label") : t("aiChatSidebar.title");
 
   const hasAssistantMsg = tab.messages.some((m) => m.role === "assistant");
   const canCreateTicket = !!tab.sessionId && hasAssistantMsg;
@@ -109,7 +116,7 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
               }`}
             >
               {tab.wisp.kind === "wisp" && <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />}
-              {tab.wisp.kind === "wisp" ? t("wisp.title") : t("aiChatSidebar.title")}
+              {tab.wisp.kind === "wisp" ? t("wisp.title") : plainLabel}
             </span>
           )}
           <WorkspaceSessionChips
@@ -128,6 +135,7 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
             {t("aiConversationMove.continueInPanel")}
           </button>
         )}
+        <AiNotifyToggle />
         <button
           type="button"
           onClick={openTicketModal}
@@ -150,13 +158,18 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
 
       {/* Error banner */}
       {tab.error && (
-        <div
+        <AiErrorBanner
+          testId="workspace-error-banner"
+          error={tab.errorAction === "continue_in_panel" ? t("aiConversationMove.chooseModelInPanel") : tab.error}
+          retryTarget={activeRetryTarget({ error: tab.error, retryTarget: tab.retryTarget ?? null })}
+          busy={tab.isStreaming || tab.isLoading}
+          onRetry={() => void retryLastTurn(tab.id)}
+          onDismiss={() => clearError(tab.id)}
+          dismissLabel={t("workspaceChatPanel.dismiss")}
           className="flex items-center justify-between gap-2 border-b border-red-300/50 bg-red-100/50 px-4 py-2 dark:border-red-800/50 dark:bg-red-900/20"
-          data-testid="workspace-error-banner"
+          textClassName="text-xs text-red-400"
+          buttonClassName="text-xs text-red-400 hover:text-red-300"
         >
-          <span className="text-xs text-red-400">
-            {tab.errorAction === "continue_in_panel" ? t("aiConversationMove.chooseModelInPanel") : tab.error}
-          </span>
           {tab.errorAction === "continue_in_panel" && onContinueInPanel && (
             <button
               type="button"
@@ -167,13 +180,7 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
               {t("aiConversationMove.continueInPanel")}
             </button>
           )}
-          <button
-            onClick={() => clearError(tab.id)}
-            className="text-xs text-red-400 hover:text-red-300"
-          >
-            {t("workspaceChatPanel.dismiss")}
-          </button>
-        </div>
+        </AiErrorBanner>
       )}
 
       {/* #9427: attached to a running turn whose replay was too large to send. */}
@@ -207,10 +214,12 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
         assistantLabel={tabWisp ? t("wisp.title") : undefined}
         emptyState={
           tabWisp ? (
-            <WispWelcome
+            <WispChatWelcome
+              key={tabWisp.grantId}
+              grantId={tabWisp.grantId}
+              orgId={tabWisp.orgId}
               scopeLabel={wispScopeLabel}
               onSuggest={(prompt) => sendMessage(tab.id, prompt)}
-              briefNote={false}
             />
           ) : undefined
         }

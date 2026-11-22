@@ -47,3 +47,26 @@ describe('PartnerAiApprovalsTab', () => {
     expect(screen.getByTestId('partner-ai-approvals-not-unattended-note')).toBeInTheDocument();
   });
 });
+
+describe('PartnerAiApprovalsTab — approval mode', () => {
+  it('edits aiBudgets.approvalMode, keeping the other budget fields', () => {
+    const onBudgetsChange = vi.fn();
+    render(
+      <PartnerAiApprovalsTab
+        data={{}}
+        onChange={vi.fn()}
+        budgets={{ maxTurnsPerSession: 10 }}
+        onBudgetsChange={onBudgetsChange}
+      />,
+    );
+
+    const select = screen.getByTestId('partner-ai-approvals-mode') as HTMLSelectElement;
+    expect(select.value).toBe('');
+
+    fireEvent.change(select, { target: { value: 'auto_approve' } });
+    expect(onBudgetsChange).toHaveBeenLastCalledWith({ maxTurnsPerSession: 10, approvalMode: 'auto_approve' });
+
+    fireEvent.change(select, { target: { value: '' } });
+    expect(onBudgetsChange).toHaveBeenLastCalledWith({ maxTurnsPerSession: 10, approvalMode: undefined });
+  });
+});

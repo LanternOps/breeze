@@ -82,12 +82,14 @@ const { requireOrgAccessMock, requireSiteAccessMock } = vi.hoisted(() => ({
   requireOrgAccessMock: vi.fn(),
   requireSiteAccessMock: vi.fn(),
 }));
+const { billingGateMock } = vi.hoisted(() => ({ billingGateMock: vi.fn(async (_orgId: string) => undefined) }));
+vi.mock('./invoiceBillingGate', () => ({ assertInvoiceBillingEnabled: billingGateMock }));
 vi.mock('./invoiceService', () => ({
   requireOrgAccess: requireOrgAccessMock,
   requireSiteAccess: requireSiteAccessMock,
 }));
 
-import { createInvoicePayLink, checkoutSessionExpiry } from './invoiceCheckout';
+import { createInvoicePayLink, checkoutSessionExpiry, checkCheckoutPublicationInTx } from './invoiceCheckout';
 import { assertNoPendingRevocation } from './stripeSessionRevocation';
 import { InvoiceServiceError } from './invoiceTypes';
 
@@ -153,7 +155,39 @@ it('checked card payments retain card-only Checkout and a stable save-enabled re
     dbResults.length = 0;
     insertValuesMock.mockReset(); mappings.clear();
     prepareSaveMock.mockResolvedValue(null);
+    billingGateMock.mockReset(); billingGateMock.mockResolvedValue(undefined);
   });
+
+const sentInvoice = { id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00', depositDue: null, amountPaid: '0.00', invoiceNumber: 'INV-BE' };
+
+it('billing off: 404 BILLING_DISABLED after the access checks and before any session', async () => {
+  dbResults.push([sentInvoice]);
+  billingGateMock.mockRejectedValueOnce(new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED'));
+  await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({ status: 404, code: 'BILLING_DISABLED' });
+  expect(billingGateMock).toHaveBeenCalledWith(ORG_ID);
+  expect(sessionsCreateMock).not.toHaveBeenCalled();
+  expect(prepareSaveMock).not.toHaveBeenCalled();
+});
+
+it('another partner invoice answers the access error whether billing is on or off (no oracle)', async () => {
+  for (const off of [false, true]) {
+    dbResults.push([sentInvoice]);
+    requireOrgAccessMock.mockImplementationOnce(() => { throw new InvoiceServiceError('Access denied', 403, 'ORG_DENIED'); });
+    if (off) billingGateMock.mockRejectedValueOnce(new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED'));
+    await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({ status: 403, code: 'ORG_DENIED' });
+  }
+  expect(billingGateMock).not.toHaveBeenCalled();
+});
+
+it('the public pay path opts out of the gate, so an issued invoice stays payable with billing off', async () => {
+  dbResults.push([sentInvoice], [{ id: '44444444-4444-4444-8444-444444444444' }], []);
+  getPartnerStripeClientMock.mockResolvedValue(partnerClient());
+  sessionsCreateMock.mockResolvedValue({ id: 'cs_pub', url: 'https://checkout.stripe.com/c/cs_pub', payment_intent: 'pi_pub' });
+  billingGateMock.mockRejectedValue(new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED'));
+  const link = await createInvoicePayLink(INV_ID, actor, {}, { billingGate: false });
+  expect(link.url).toBe('https://checkout.stripe.com/c/cs_pub');
+  expect(billingGateMock).not.toHaveBeenCalled();
+});
 
 it('refuses a reserved invoice before calling Stripe', async () => {
   dbResults.push([{ id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);
@@ -314,6 +348,36 @@ it('refuses a reserved invoice before calling Stripe', async () => {
 
     await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({ code: 'NOTHING_TO_PAY' });
     expect(sessionsCreateMock).not.toHaveBeenCalled();
+  });
+
+  // #3803 item 8: a legacy zero-decimal balance with a fraction has no correct
+  // Checkout charge — half-up made JPY 1000.50 a 1001 charge (over-charge) and
+  // 1000.40 a 1000 charge (stranded 0.40). Refused before any Stripe work.
+  it.each([['1000.50'], ['1000.40']])('refuses a JPY balance of %s that the currency cannot express', async (balance) => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, createdAt: INV_CREATED_AT, partnerId: 'p1', status: 'sent',
+      balance, depositDue: null, amountPaid: '0.00', currencyCode: 'JPY', invoiceNumber: 'INV-JPY-LEGACY',
+    }], [{ id: '44444444-4444-4444-8444-444444444444' }], []);
+    // The success path is fully wired, so only the representability guard can refuse.
+    getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: 'JPY' });
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_jpy_legacy', url: 'https://checkout.stripe.com/c/cs_jpy_legacy', payment_intent: 'pi_jpy_legacy' });
+
+    await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({ status: 409, code: 'BALANCE_NOT_REPRESENTABLE' });
+    expect(sessionsCreateMock).not.toHaveBeenCalled();
+    expect(prepareSaveMock).not.toHaveBeenCalled();
+    expect(insertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it('the publication check treats a locked balance the currency cannot express as raced', async () => {
+    // Session minted for 1001 when the balance read 1001.00; the LOCKED row now
+    // says 1000.50. Rounding the locked balance (1000.50 → 1001) made the two
+    // agree, so a session 0.50 over the balance was published.
+    reservation.lock.mockResolvedValueOnce({ invoice: { status: 'sent', currencyCode: 'JPY', depositDue: null, amountPaid: '0.00', balance: '1000.50' }, reservedAmount: '0.00' });
+    await expect(checkCheckoutPublicationInTx({} as never, { id: INV_ID, currencyCode: 'JPY' }, 1001))
+      .resolves.toEqual({ racedCollection: false, racedBalance: true });
+    reservation.lock.mockResolvedValueOnce({ invoice: { status: 'sent', currencyCode: 'JPY', depositDue: null, amountPaid: '0.00', balance: '1001.00' }, reservedAmount: '0.00' });
+    await expect(checkCheckoutPublicationInTx({} as never, { id: INV_ID, currencyCode: 'JPY' }, 1001))
+      .resolves.toEqual({ racedCollection: false, racedBalance: false });
   });
 
   // ---- multi-currency (#3777): warn-don't-block + friendly currency error ----

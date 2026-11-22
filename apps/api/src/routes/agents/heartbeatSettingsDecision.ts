@@ -65,6 +65,15 @@ export function agentEchEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.AGENT_ECH_ENABLED !== 'false';
 }
 
+/**
+ * #8318 T1 — server-side switch for agent TPM EK attestation. Default OFF:
+ * only the literal 'true' turns it on. While off, agents touch no TPM (no
+ * probe, no transient keys) and the attestation routes refuse.
+ */
+export function tpmAttestationEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.TPM_ATTESTATION_ENABLED === 'true';
+}
+
 export function buildSettingsDecisionFields(i: SettingsDecisionInput): SettingsDecisionFields {
   if (i.retainProtocol !== 1 || !i.enabled) {
     return {

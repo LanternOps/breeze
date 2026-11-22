@@ -35,6 +35,8 @@ go_dur() {
   echo "$out"
 }
 
+INJECT_ALLOW_NON2XX=20
+
 usage() { echo "usage: run-perf.sh --profile nightly-200|smoke --out-dir <dir> [--label clean|inject] | --storm <scenario> --out-dir <dir> [-- storm.sh flags...]" >&2; exit 64; }
 
 PROFILE=""; OUT=""; LABEL="clean"; STORM=""; STORM_ARGS=()
@@ -107,8 +109,9 @@ cleanup() {
   if ! ( cd "$REPO" && pnpm wt-stack down ); then
     echo "run-perf: pnpm wt-stack down failed; a stack may still be running on this host" >&2
     # A run that leaves a stack behind must not look green: the next run on a
-    # persistent runner would collide with it.
-    [ "$rc" -eq 0 ] && rc=1
+    # persistent runner would collide with it. That includes a storm gate miss
+    # (3), which the workflow may keep warn-only; a harness failure may not (#11623).
+    if [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; then rc=1; fi
   fi
   rm -rf "$SIM/.state"
   rm -f "$ENV_FILE"
@@ -161,7 +164,16 @@ if [ -n "$STORM" ]; then
 fi
 echo "run-perf: profile=$PROFILE label=$LABEL duration=$DURATION out=$OUT" >&2
 echo "$LABEL" >"$OUT/label.txt"
-( cd "$REPO" && pnpm wt-stack up )
+# --rebuild: build the dev images from THIS checkout. Without it compose reuses
+# whatever breeze-{api,web,portal}:dev the persistent runner already has; from
+# 2026-11-05 to 11-14 that was one build, and once a file reached the containers
+# only through the image (#11544) web/portal crash-looped (#11623). The build
+# runs here, before the idle sample and the measured window; unchanged layers
+# come from the build cache, so only a real source change costs build time.
+( cd "$REPO" && pnpm wt-stack up --rebuild )
+docker image inspect --format '{{index .RepoTags 0}} {{.Id}} created {{.Created}}' \
+  breeze-api:dev breeze-web:dev breeze-portal:dev >&2 \
+  || echo "run-perf: could not inspect the dev images; the log has no record of what was measured" >&2
 
 # --- 3. Lab setup (W06's scripts, unchanged).
 mkdir -p "$SIM/.state"
@@ -172,6 +184,8 @@ chmod 700 "$SIM/.state"
 if [ -n "$STORM" ]; then
   ulimit -n 16384 2>/dev/null || true
   storm_rc=0
+  # Never let an earlier run's report stand in for this one (#11623).
+  rm -f "$OUT/storm.json"
   mark="$(mktemp)"
   "$SIM/storm.sh" "$STORM" ${STORM_ARGS[@]+"${STORM_ARGS[@]}"} &
   SIM_PID=$!
@@ -202,6 +216,13 @@ sim_rc=0
 SIM_PID=$!
 wait "$SIM_PID" || sim_rc=$?
 SIM_PID=""
+# The simulator exits exactly at the window end, and kpi.mjs needs a counter
+# sample on both sides of each window edge. Keep sampling one more interval
+# (plus margin) so a row lands after window.end. The start edge needs nothing:
+# the sampler starts before the simulator, and the window opens only after
+# ramp + warmup, so the first row already precedes it.
+sleep "${TAIL_SECONDS:-$(( ${INTERVAL:-10} + 10 ))}" &
+wait $!
 stop_sampler
 if [ "$sim_rc" -ne 0 ]; then
   echo "run-perf: simulator exited $sim_rc" >&2
@@ -209,7 +230,11 @@ if [ "$sim_rc" -ne 0 ]; then
 fi
 
 # --- 6. Acceptance: a failing report means the run measured something else.
-if ! "$SIM/check-acceptance.sh" report "$OUT/agentsim.json"; then
+# Only the inject self-test gets a non-2xx allowance: its deliberate event-loop
+# block makes the proxy answer a few 502s. Clean, nightly and storm runs keep zero.
+ACCEPT_ARGS=()
+[ "$LABEL" = inject ] && ACCEPT_ARGS=(--allow-non2xx "$INJECT_ALLOW_NON2XX")
+if ! "$SIM/check-acceptance.sh" report ${ACCEPT_ARGS[@]+"${ACCEPT_ARGS[@]}"} "$OUT/agentsim.json"; then
   echo "run-perf: check-acceptance.sh report failed; run is invalid" >&2
   exit 2
 fi

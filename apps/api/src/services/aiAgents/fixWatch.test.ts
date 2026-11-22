@@ -44,6 +44,8 @@ const state = vi.hoisted(() => ({
   updateReturningQueue: [] as (unknown[] | undefined)[],
   selectCount: 0,
   insertCount: 0,
+  /** #11328 — attention alerts raised through the mocked `createSourcedAlert`. */
+  sourcedAlerts: [] as Record<string, unknown>[],
   updateCount: 0,
   // P2-5 (#4192) fix round 1 — the auto-demote runs in a SAVEPOINT nested
   // inside the phase-2 CAS transaction. `transactionDepth` is what proves the
@@ -58,6 +60,7 @@ const state = vi.hoisted(() => ({
 
 function resetDbState(): void {
   state.selectQueue = [];
+  state.sourcedAlerts = [];
   state.selectWheres = [];
   state.selectOrderBys = [];
   state.selectLimits = [];
@@ -117,8 +120,10 @@ vi.mock('../../db', () => {
         then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
           Promise.resolve(state.insertReturningQueue.shift() ?? []).then(resolve, reject),
       })),
-      // Plain `await db.insert(...).values(...)` with no `.returning()`
-      // (the alerts insert in sendRecurrenceNotifications).
+      // Plain `await db.insert(...).values(...)` with no `.returning()` —
+      // no call site does that since the attention alert moved to
+      // `createSourcedAlert` (#11328); kept so a future bare insert fails
+      // loudly instead of hanging a test.
       then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
         Promise.resolve(undefined).then(resolve, reject),
     };
@@ -175,6 +180,15 @@ vi.mock('../../db', () => {
     withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
   };
 });
+
+// #11328 — the attention alert goes through the shared create +
+// `alert.triggered` path; a raw insert never reached channels or routing.
+vi.mock('../alertService', () => ({
+  createSourcedAlert: vi.fn(async (params: Record<string, unknown>) => {
+    state.sourcedAlerts.push(params);
+    return 'attention-alert-id';
+  }),
+}));
 
 const resolveRecipientUserIdsMock = vi.fn();
 vi.mock('./recipients', () => ({
@@ -410,6 +424,7 @@ describe('createFixWatchRow', () => {
     try {
       expect(await createFixWatchRow(finishedRun(), outcome())).toBeNull();
       expect(state.insertCount).toBe(0);
+      expect(state.sourcedAlerts).toHaveLength(0);
       expect(state.selectCount).toBe(1);
       expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
         alertId: ALERT_ID, orgId: ORG_ID, reason: 'alert_has_no_device',
@@ -424,6 +439,7 @@ describe('createFixWatchRow', () => {
     expect(id).toBeNull();
     expect(state.selectCount).toBe(0);
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 
   it('denormalizes rule_id/device_id/config_item_name from the ALERT row and inserts', async () => {
@@ -455,6 +471,7 @@ describe('createFixWatchRow', () => {
     const id = await createFixWatchRow(finishedRun(), outcome());
     expect(id).toBeNull();
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 
   it('returns null when the org has no resolvable partner', async () => {
@@ -465,6 +482,7 @@ describe('createFixWatchRow', () => {
     const id = await createFixWatchRow(finishedRun(), outcome());
     expect(id).toBeNull();
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 
   it('returns null on a duplicate scheduling attempt (onConflictDoNothing — the run_id UNIQUE constraint)', async () => {
@@ -567,6 +585,7 @@ describe('createIntentFixWatchRow', () => {
     try {
       expect(await createIntentFixWatchRow(intentForWatch())).toBeNull();
       expect(state.insertCount).toBe(0);
+      expect(state.sourcedAlerts).toHaveLength(0);
       expect(state.selectCount).toBe(1);
       expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
         alertId: ALERT_ID, orgId: ORG_ID, reason: 'alert_has_no_device',
@@ -624,6 +643,7 @@ describe('createIntentFixWatchRow', () => {
 
     expect(id).toBeNull();
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 
   it('returns null when the org has no resolvable partner', async () => {
@@ -636,6 +656,7 @@ describe('createIntentFixWatchRow', () => {
 
     expect(id).toBeNull();
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 
   it('names the partial UNIQUE (intent_id) predicate on the conflict target', async () => {
@@ -776,6 +797,7 @@ describe('createSweepFixWatchRow', () => {
 
     expect(id).toBeNull();
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 
   it('issues every statement through the SAVEPOINT executor it was handed, never the ambient db', async () => {
@@ -1048,6 +1070,7 @@ describe('checkFixWatchPhase1 — subject watch', () => {
     expect(state.updateSets[0]).toMatchObject({ state: 'inconclusive' });
     // `inconclusive` grades nothing — phase 1 never writes evidence at all.
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 
   it('consults the probe on every verdict and never reaches the cancel path', async () => {
@@ -1146,6 +1169,7 @@ describe('checkFixWatchPhase2 — subject watch', () => {
     expect(result).toEqual({ action: 'inconclusive' });
     expect(state.updateSets[0]).toMatchObject({ state: 'inconclusive' });
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
     expect(createNotificationMock).not.toHaveBeenCalled();
   });
 
@@ -1183,8 +1207,9 @@ describe('checkFixWatchPhase2 — subject watch', () => {
       dedupeKey: `fix-watch-${RUN_ID}-${WATCH_ID}-recurred`,
     });
     // insertValues[0] is the watch-verdict evidence array, written inside the
-    // winning CAS; the attention alert is the SEPARATE later insert.
-    const alertValues = state.insertValues[1] as Record<string, unknown>;
+    // winning CAS; the attention alert is the SEPARATE later createSourcedAlert.
+    expect(state.sourcedAlerts).toHaveLength(1);
+    const alertValues = state.sourcedAlerts[0]!;
     expect(alertValues).toMatchObject({
       deviceId: DEVICE_ID,
       configItemName: 'ai_agent_fix_watch',
@@ -1208,6 +1233,7 @@ describe('checkFixWatchPhase2 — subject watch', () => {
 
     // Only the watch-verdict evidence insert — no second attention alert.
     expect(state.insertCount).toBe(1);
+    expect(state.sourcedAlerts).toHaveLength(0);
     // The guard probes on the watch id, not on a recurrence alert id.
     expect(sqlText(state.selectWheres[3])).toContain('watchId');
   });
@@ -1266,14 +1292,17 @@ describe('checkFixWatchPhase2', () => {
       dedupeKey: `fix-watch-${RUN_ID}-${RECURRENCE_ALERT_ID}-recurred`,
     });
 
-    expect(state.insertValues).toHaveLength(1);
-    expect(state.insertValues[0]).toMatchObject({
-      ruleId: null,
+    // #11328 — through createSourcedAlert (which stages `alert.triggered`),
+    // never a raw insert the notification dispatcher cannot see.
+    expect(state.insertValues).toHaveLength(0);
+    expect(state.sourcedAlerts).toHaveLength(1);
+    expect(state.sourcedAlerts[0]).not.toHaveProperty('owner');
+    expect(state.sourcedAlerts[0]).toMatchObject({
       deviceId: DEVICE_ID,
       orgId: ORG_ID,
       configItemName: 'ai_agent_fix_watch',
       severity: 'high',
-      status: 'active',
+      publisher: 'ai-agent-fix-watch',
       context: expect.objectContaining({
         source: 'ai_agent_fix_watch',
         watchId: WATCH_ID,
@@ -1301,9 +1330,10 @@ describe('checkFixWatchPhase2', () => {
     expect(recurrenceWhereSql).toContain('is null');
     expect(recurrenceWhereSql).toContain('config_item_name');
     // Zero resolved recipients -> no notification sent, but the rule-less
-    // attention alert still fires (operators must still be paged some way).
+    // attention alert still fires (operators must still be paged some way —
+    // which needs the `alert.triggered` createSourcedAlert publishes, #11328).
     expect(createNotificationMock).not.toHaveBeenCalled();
-    expect(state.insertValues).toHaveLength(1);
+    expect(state.sourcedAlerts).toHaveLength(1);
   });
 
   it('no recurrence -> held_qualified, quiet: no notification, no alert', async () => {
@@ -1319,6 +1349,7 @@ describe('checkFixWatchPhase2', () => {
     expect(state.updateSets[0]).toMatchObject({ state: 'held_qualified' });
     expect(createNotificationMock).not.toHaveBeenCalled();
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 
   it('the watch state is ALREADY committed before notify runs — a notify failure still returns recurred', async () => {
@@ -1355,6 +1386,7 @@ describe('checkFixWatchPhase2', () => {
     expect(result).toEqual({ action: 'not_found' });
     expect(createNotificationMock).not.toHaveBeenCalled();
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 
   it('a second checkFixWatchPhase2 that loses the held_qualified-write CAS race is a no-op', async () => {
@@ -1370,6 +1402,7 @@ describe('checkFixWatchPhase2', () => {
     expect(result).toEqual({ action: 'not_found' });
     expect(createNotificationMock).not.toHaveBeenCalled();
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 
   // ---------------------------------------------------------------------
@@ -1425,6 +1458,7 @@ describe('checkFixWatchPhase2', () => {
     // not fire a second time.
     expect(createNotificationMock).toHaveBeenCalledTimes(1);
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 
   it('keys the attention-alert guard on the episode identifiers in `context`, predicated on the device', async () => {
@@ -1469,6 +1503,7 @@ describe('checkFixWatchPhase2', () => {
     expect(result).toEqual({ action: 'recurred' });
     expect(createNotificationMock).not.toHaveBeenCalled();
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 });
 
@@ -1492,7 +1527,7 @@ describe('checkFixWatchPhase2 — P2-5 watch-verdict op evidence', () => {
     expect(result).toEqual({ action: 'recurred' });
     // The evidence insert is `state.insertValues[0]` — it lands INSIDE the
     // winning CAS's transaction, before `sendRecurrenceNotifications`'s own
-    // (separate) alert insert, which is `state.insertValues[1]`.
+    // (separate) attention alert, raised through createSourcedAlert.
     expect(state.insertValues[0]).toEqual([
       expect.objectContaining({
         orgId: ORG_ID, agentId: AGENT_ID, namespace: 'act_op', opKey: 'a:b', ruleId: RULE_ID,
@@ -1502,7 +1537,7 @@ describe('checkFixWatchPhase2 — P2-5 watch-verdict op evidence', () => {
         namespace: 'act_op', opKey: 'c:d', sourceKind: 'watch', sourceId: `${WATCH_ID}:c:d`, metric: 'recurred',
       }),
     ]);
-    expect(state.insertValues[1]).toMatchObject({ configItemName: 'ai_agent_fix_watch' });
+    expect(state.sourcedAlerts[0]).toMatchObject({ configItemName: 'ai_agent_fix_watch' });
     // Notification still fires — the evidence write did not short-circuit it.
     expect(createNotificationMock).toHaveBeenCalledTimes(1);
   });
@@ -1518,6 +1553,7 @@ describe('checkFixWatchPhase2 — P2-5 watch-verdict op evidence', () => {
 
     expect(result).toEqual({ action: 'not_found' });
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 
   it('held_qualified inserts a "verified" row per op_key', async () => {
@@ -1547,6 +1583,7 @@ describe('checkFixWatchPhase2 — P2-5 watch-verdict op evidence', () => {
 
     expect(result).toEqual({ action: 'not_found' });
     expect(state.insertCount).toBe(0);
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 
   it('an intent-anchored watch (source_kind "intent") writes namespace "policy_key"', async () => {
@@ -1584,6 +1621,8 @@ describe('checkFixWatchPhase2 — P2-5 watch-verdict op evidence', () => {
     await checkFixWatchPhase2(WATCH_ID);
 
     expect(state.insertCount).toBe(0);
+
+    expect(state.sourcedAlerts).toHaveLength(0);
   });
 });
 

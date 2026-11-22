@@ -1,0 +1,134 @@
+import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { EXPORT_DATASETS } from './aiToolsExportDatasetNames';
+import { join } from 'node:path';
+import {
+  EXPORT_DATASET_REQUIREMENTS,
+  LEGACY_EXPORT_GRANTS,
+  effectiveExportGrants,
+  frozenExportGrantsOf,
+  resolveExportGrants,
+  withheldSensitiveGates,
+} from './aiToolsExportPermissions';
+
+const SEVEN = ['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields'];
+
+describe('EXPORT_DATASET_REQUIREMENTS', () => {
+  it('every existing dataset needs devices:read; event_logs gates security rows on devices:execute', () => {
+    for (const d of SEVEN) {
+      expect(EXPORT_DATASET_REQUIREMENTS[d as keyof typeof EXPORT_DATASET_REQUIREMENTS].permission)
+        .toEqual({ resource: 'devices', action: 'read' });
+    }
+    expect(EXPORT_DATASET_REQUIREMENTS.event_logs.sensitiveGate).toEqual({
+      gate: 'security_events',
+      permission: { resource: 'devices', action: 'execute' },
+    });
+    expect(SEVEN.filter((d) => d !== 'event_logs')
+      .every((d) => !EXPORT_DATASET_REQUIREMENTS[d as 'agent_logs'].sensitiveGate)).toBe(true);
+  });
+
+  it('legacy grants are the ORIGINAL SEVEN as a literal, with no gate (they must not grow when W04/W05 add datasets)', () => {
+    expect(LEGACY_EXPORT_GRANTS).toEqual({ datasets: SEVEN, sensitiveGates: [] });
+  });
+
+  it('legacy grants are frozen so no caller can widen them at runtime', () => {
+    expect(Object.isFrozen(LEGACY_EXPORT_GRANTS)).toBe(true);
+    expect(Object.isFrozen(LEGACY_EXPORT_GRANTS.datasets)).toBe(true);
+    expect(Object.isFrozen(LEGACY_EXPORT_GRANTS.sensitiveGates)).toBe(true);
+  });
+
+  it('is a zero-runtime-import leaf: every import is `import type`', () => {
+    const src = readFileSync(join(import.meta.dirname, 'aiToolsExportPermissions.ts'), 'utf8');
+    const imports = src.split('\n').filter((l) => /^import\s/.test(l));
+    expect(imports.length).toBeGreaterThan(0);
+    expect(imports.every((l) => l.startsWith('import type '))).toBe(true);
+  });
+});
+
+describe('resolveExportGrants', () => {
+  it('a ceiling holding every permission gets every dataset and both gates', () => {
+    expect(resolveExportGrants(() => true))
+      .toEqual({ datasets: [...EXPORT_DATASETS], sensitiveGates: ['security_events', 'user_account_changes'] });
+  });
+
+  it('W05: devices:read without devices:execute yields change_log but not the user_account_changes gate', () => {
+    const g = resolveExportGrants((r, a) => r === 'devices' && a === 'read');
+    expect(g.datasets).toContain('change_log');
+    expect(g.sensitiveGates).not.toContain('user_account_changes');
+  });
+
+  it('W05: devices:read + devices:execute holds the user_account_changes gate', () => {
+    expect(resolveExportGrants((r) => r === 'devices').sensitiveGates).toEqual(['security_events', 'user_account_changes']);
+  });
+
+  it('W05: only event_logs and change_log declare a sensitive gate', () => {
+    const gated = Object.entries(EXPORT_DATASET_REQUIREMENTS).filter(([, r]) => r.sensitiveGate).map(([d, r]) => [d, r.sensitiveGate!.gate]);
+    expect(gated).toEqual([['event_logs', 'security_events'], ['change_log', 'user_account_changes']]);
+  });
+
+  it('devices:read without devices:execute: every devices:read dataset, no gate', () => {
+    expect(resolveExportGrants((r, a) => r === 'devices' && a === 'read'))
+      .toEqual({ datasets: EXPORT_DATASETS.filter((d) => d !== 'alerts'), sensitiveGates: [] });
+  });
+
+  it('W05: alerts needs alerts:read (manage_alerts.list), independent of devices:read', () => {
+    expect(resolveExportGrants((r, a) => r === 'alerts' && a === 'read')).toEqual({ datasets: ['alerts'], sensitiveGates: [] });
+    expect(resolveExportGrants((r, a) => a === 'read').datasets).toEqual([...EXPORT_DATASETS]);
+  });
+
+  it('a ceiling without devices:read gets nothing, and holds no gate for a dataset it cannot export', () => {
+    expect(resolveExportGrants((r, a) => r === 'devices' && a === 'execute')).toEqual({ datasets: [], sensitiveGates: [] });
+  });
+
+  it('a ceiling holding nothing gets nothing', () => {
+    expect(resolveExportGrants(() => false)).toEqual({ datasets: [], sensitiveGates: [] });
+  });
+});
+
+describe('withheldSensitiveGates', () => {
+  it('names a gate a permitted dataset declares and the grants lack', () => {
+    expect(withheldSensitiveGates(['event_logs'], { datasets: SEVEN, sensitiveGates: [] })).toEqual(['security_events']);
+    expect(withheldSensitiveGates(['event_logs'], { datasets: SEVEN, sensitiveGates: ['security_events'] })).toEqual([]);
+    expect(withheldSensitiveGates(['metrics'], LEGACY_EXPORT_GRANTS)).toEqual([]);
+  });
+
+  it('deduplicates and ignores names that are not datasets', () => {
+    expect(withheldSensitiveGates(['event_logs', 'event_logs', 'not_a_dataset'], LEGACY_EXPORT_GRANTS))
+      .toEqual(['security_events']);
+  });
+});
+
+describe('frozenExportGrantsOf (strict: no legacy fallback)', () => {
+  it('a well-formed grant is returned as a copy', () => {
+    const v = { datasets: ['metrics'], sensitiveGates: ['security_events'] };
+    const g = frozenExportGrantsOf(v);
+    expect(g).toEqual(v);
+    g!.datasets.push('widened');
+    expect(v.datasets).toEqual(['metrics']);
+  });
+  it.each([
+    undefined, null, 'event_logs', [], { datasets: 'metrics', sensitiveGates: [] }, { datasets: ['metrics'] },
+    { datasets: [1], sensitiveGates: [] }, { datasets: ['metrics'], sensitiveGates: ['root'] },
+  ])('%j is unreadable (null), never the legacy set and never "nothing"', (value) => {
+    expect(frozenExportGrantsOf(value)).toBeNull();
+  });
+});
+
+describe('effectiveExportGrants', () => {
+  it('absent (a pre-W02 run) is the legacy seven with no gate, as a fresh copy', () => {
+    const g = effectiveExportGrants(undefined);
+    expect(g).toEqual({ datasets: SEVEN, sensitiveGates: [] });
+    g.datasets.push('widened');
+    expect(LEGACY_EXPORT_GRANTS.datasets).toEqual(SEVEN);
+  });
+  it('a well-formed grant is returned as is', () => {
+    expect(effectiveExportGrants({ datasets: ['metrics'], sensitiveGates: ['security_events'] }))
+      .toEqual({ datasets: ['metrics'], sensitiveGates: ['security_events'] });
+  });
+  it.each([
+    null, 'event_logs', [], { datasets: 'metrics', sensitiveGates: [] }, { datasets: ['metrics'] },
+    { datasets: [1], sensitiveGates: [] }, { datasets: ['metrics'], sensitiveGates: ['root'] },
+  ])('a malformed grant %j permits nothing (never the legacy set)', (value) => {
+    expect(effectiveExportGrants(value)).toEqual({ datasets: [], sensitiveGates: [] });
+  });
+});

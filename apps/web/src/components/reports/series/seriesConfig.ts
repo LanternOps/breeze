@@ -112,15 +112,6 @@ export function isReportRecipientEmail(value: string): boolean {
   return REPORT_RECIPIENT_EMAIL.test(value.trim());
 }
 
-/** Spec §3.5 rule match: org-level primary contact, or any role overlap. */
-export function matchesRecipientRule(
-  contact: { isPrimary: boolean; siteId: string | null; roles: string[] },
-  rule: SeriesRecipientRule,
-): boolean {
-  if (rule.primaryContact && contact.isPrimary && contact.siteId === null) return true;
-  return rule.roles.some((role) => contact.roles.includes(role));
-}
-
 export function sameTargets(a: SeriesTargets, b: SeriesTargets): boolean {
   if (a.targetMode !== b.targetMode || a.orgIds.length !== b.orgIds.length) return false;
   const bs = new Set(b.orgIds);

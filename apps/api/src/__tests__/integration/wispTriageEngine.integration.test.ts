@@ -40,6 +40,10 @@ import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   aiAgentRuns,
   aiAgents,
+  alerts,
+  connectionHealthIncidents,
+  metricAnomalyEpisodes,
+  metricAnomalyIncidents,
   organizationUsers,
   tickets,
   userNotifications,
@@ -51,7 +55,7 @@ import {
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 import type { BreezeEvent } from '../../services/eventBus';
 import { registerAgentRunEnqueuer } from '../../services/aiAgents/runService';
-import { enqueueAssessment, loadAssessmentContext } from '../../services/wisp/assessment';
+import { enqueueAssessment, lastAssessmentWatermark, loadAssessmentContext } from '../../services/wisp/assessment';
 import { listConcernsForCeiling, upsertConcern } from '../../services/wisp/concerns';
 import { resolveGrantCeiling, type GrantCeiling } from '../../services/wisp/grantAuthority';
 import { pauseGrant } from '../../services/wisp/grants';
@@ -60,6 +64,7 @@ import {
   closeWispWakeQueue,
   getWispWakeQueue,
   handleWispWakeEvent,
+  loadLastAssessedByOrg,
   requestAssessment,
   wakeJobId,
 } from '../../services/wisp/wake';
@@ -70,6 +75,7 @@ import {
   assignUserToPartner,
   createOrganization,
   createPartner,
+  createDevice,
   createRole,
   createSite,
   createUser,
@@ -77,6 +83,7 @@ import {
 } from './db-utils';
 import { getTestDb } from './setup';
 import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
+import { insertEpisodeDevice, seedEpisode, seedIncident as seedAnomalyIncident } from './metricAnomalyEpisodeFixtures';
 
 // Admission resolves the triage agent's model; the platform default needs a key.
 usePlatformAiKeyPlaceholder();
@@ -134,13 +141,15 @@ interface Tenant {
  * org_access all) and a partner admin. tickets:read lets the digest's tickets
  * section load (each digest section is gated on the grantor's permission).
  */
-async function seedTenant(): Promise<Tenant> {
+async function seedTenant(extraPermissions: Array<{ resource: string; action: string }> = []): Promise<Tenant> {
   const partner = await createPartner();
   const orgA = await createOrganization({ partnerId: partner.id });
   const orgB = await createOrganization({ partnerId: partner.id });
   const grantor = await createUser({ partnerId: partner.id, email: `wisp-triage-grantor-${randomUUID()}@wisp.test` });
   const role = await createRole({ scope: 'partner', partnerId: partner.id });
-  await grantRolePermissions(role.id, [{ resource: 'ai_sessions', action: 'use' }, { resource: 'tickets', action: 'read' }]);
+  await grantRolePermissions(role.id, [
+    { resource: 'ai_sessions', action: 'use' }, { resource: 'tickets', action: 'read' }, ...extraPermissions,
+  ]);
   await assignUserToPartner(grantor.id, partner.id, role.id, 'all');
   const admin = await createUser({ partnerId: partner.id, email: `wisp-triage-admin-${randomUUID()}@wisp.test` });
   const adminRole = await createRole({ scope: 'partner', partnerId: partner.id });
@@ -149,10 +158,10 @@ async function seedTenant(): Promise<Tenant> {
 }
 
 /** A grant + revision 1 + pointer in system scope (the W02/W05a fixture path). */
-async function seedGrant(t: Tenant, opts: { scopeOrgId?: string | null; orgIds: string[]; budgetCentsPerDay?: number }) {
+async function seedGrant(t: Tenant, opts: { scopeOrgId?: string | null; orgIds: string[]; budgetCentsPerDay?: number; permissionKeys?: string[] }) {
   const scopeOrgId = opts.scopeOrgId ?? null;
   const snapshot: WispCeilingSnapshot = {
-    version: 1, permissionKeys: ['ai_sessions:use', 'tickets:read'], orgIds: opts.orgIds, siteIds: null,
+    version: 1, permissionKeys: opts.permissionKeys ?? ['ai_sessions:use', 'tickets:read'], orgIds: opts.orgIds, siteIds: null,
     toolAllowlist: null, deniedTools: [], partnerWide: scopeOrgId === null,
   };
   return asSystem(async () => {
@@ -183,14 +192,15 @@ async function seedTriageAgent(t: Tenant): Promise<string> {
   return agent!.id;
 }
 
-/** A finished assessment run under the grant, queued at `queuedAt`, that cost `costCents`. */
-async function seedSpentRun(agentId: string, orgId: string, g: { grantId: string; revisionId: string }, costCents: number, queuedAt: Date) {
-  await asSystem(() => db.insert(aiAgentRuns).values({
+/** A finished assessment run under the grant, queued at `queuedAt` (finished a minute later), that cost `costCents`. */
+async function seedSpentRun(agentId: string, orgId: string, g: { grantId: string; revisionId: string }, costCents: number, queuedAt: Date): Promise<string> {
+  const [row] = await asSystem(() => db.insert(aiAgentRuns).values({
     agentId, orgId, triggerKind: 'schedule', dedupeKey: `seed:${randomUUID()}`, modeAtStart: 'shadow',
     policySnapshot: {} as never, profile: 'assessment', status: 'completed', costCents,
     queuedAt, startedAt: queuedAt, finishedAt: new Date(queuedAt.getTime() + 60_000),
     grantId: g.grantId, grantRevisionId: g.revisionId,
-  } as never));
+  } as never).returning({ id: aiAgentRuns.id }));
+  return row!.id;
 }
 
 async function seedTicket(t: Tenant, orgId: string, subject: string): Promise<string> {
@@ -361,7 +371,11 @@ describe('budget (UTC day, queued_at)', () => {
     const todayStart = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
     await seedSpentRun(agentId, t.orgA, g, 200, new Date(todayStart - 60_000)); // 23:59 yesterday
 
-    const result = await enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: { kind: 'tick' } });
+    // An event reason: a tick with nothing new since yesterday's run would be
+    // skipped by the no-changes gate (#11423) before admission.
+    const result = await enqueueAssessment({
+      grantId: g.grantId, orgId: t.orgA, reason: { kind: 'event', eventType: 'alert.triggered', eventId: 'evt-yesterday' },
+    });
     expect(result).not.toEqual({ skipped: 'budget_exhausted' });
     expect(result).toHaveProperty('runId');
     expect(await noticesByPrefix(t.grantorId, 'wisp-budget-')).toHaveLength(0);
@@ -417,8 +431,9 @@ describe('flag off', () => {
     };
 
     expect(await processWakeTick(new Date())).toEqual({
-      grantsTicked: 0, watchesFired: 0, staleTicketsPublished: 0, watchesStopped: 0,
-      grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0,
+      grantsTicked: 0, watchesFired: 0, watchesUnchanged: 0, staleTicketsPublished: 0, watchesStopped: 0,
+      grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0, concernRollupsOpened: 0, checkInsRefired: 0,
+      checkInTriggersFired: 0, checkInTriggersCancelled: 0, checkInRunsPosted: 0,
     });
     await handleWispWakeEvent(alertEvent(t.orgA, randomUUID()));
 
@@ -491,6 +506,270 @@ describe('real admission (flag on)', () => {
     // The first request's data is kept.
     expect(job!.data).toMatchObject({ grantId: g.grantId, orgId: t.orgA, reason: { kind: 'tick' } });
     expect(await queue.getDelayedCount()).toBe(2);
+  });
+});
+
+// #11423: a tick or watch for an org where nothing changed since its last
+// clean assessment records a skipped run and makes no model call.
+describe('no-changes gate (#11423)', () => {
+  const MIN = 60_000;
+  // Each section is probed only when the grantor may read it (the digest's rule).
+  const READ_ALL = [
+    { resource: 'ai_agents', action: 'read' }, { resource: 'alerts', action: 'read' }, { resource: 'organizations', action: 'read' },
+  ];
+  const READ_ALL_KEYS = ['ai_sessions:use', 'tickets:read', 'ai_agents:read', 'alerts:read', 'organizations:read'];
+  const tick = { kind: 'tick' } as const;
+
+  /** A grant on org A whose last clean assessment finished 60 min ago. */
+  async function gateFixture() {
+    const t = await seedTenant(READ_ALL);
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA], permissionKeys: READ_ALL_KEYS });
+    const lastRunId = await seedSpentRun(agentId, t.orgA, g, 5, new Date(Date.now() - 61 * MIN));
+    let n = 0;
+    const look = () => enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: tick, occurrenceKey: `look-${n++}` });
+    return { t, agentId, g, lastRunId, look };
+  }
+
+  async function seedAlert(orgId: string, at: { triggeredAt: Date; acknowledgedAt?: Date }): Promise<string> {
+    const site = await createSite({ orgId });
+    const device = await createDevice({ orgId, siteId: site.id });
+    const [row] = await asSystem(() => db.insert(alerts).values({
+      orgId, deviceId: device.id, severity: 'high', title: 'Disk almost full', status: 'active', ...at,
+    }).returning({ id: alerts.id }));
+    return row!.id;
+  }
+
+  /** A non-Wisp run of the org's agent (profile full), or a specialist child with depth 1. */
+  async function seedOtherRun(agentId: string, orgId: string, at: { queuedAt: Date; finishedAt: Date }, depth = 0) {
+    await asSystem(() => db.insert(aiAgentRuns).values({
+      agentId, orgId, triggerKind: 'schedule', dedupeKey: `other:${randomUUID()}`, modeAtStart: 'shadow',
+      policySnapshot: {} as never, profile: 'full', status: 'completed', depth,
+      queuedAt: at.queuedAt, startedAt: at.queuedAt, finishedAt: at.finishedAt,
+    } as never));
+  }
+
+  async function seedIncident(t: Tenant, viewPermission: string, openedAt: Date) {
+    await asSystem(() => db.insert(connectionHealthIncidents).values({
+      partnerId: t.partnerId, orgId: t.orgA, sourceKind: 'oauth_grant', sourceId: `grant-${randomUUID()}`,
+      condition: 'reauth_required', severity: 'permanent', displayName: 'Accounting app', fixHref: '/settings/connected-apps',
+      viewPermission, repairPermission: 'connected_apps:manage', firstFailedAt: openedAt, openedAt, lastObservedAt: openedAt,
+    }));
+  }
+
+  it('alerts on real Postgres: one triggered before the last run is not a change; acknowledging it, or a new one, is', async () => {
+    const f = await gateFixture();
+    const alertId = await seedAlert(f.t.orgA, { triggeredAt: new Date(Date.now() - 90 * MIN) });
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    await asSystem(() => db.update(alerts).set({ status: 'acknowledged', acknowledgedAt: new Date() }).where(eq(alerts.id, alertId)));
+    expect(await f.look()).toHaveProperty('runId');
+
+    const g = await gateFixture();
+    expect(await g.look()).toEqual({ skipped: 'no_changes' });
+    await seedAlert(g.t.orgA, { triggeredAt: new Date() }); // timestamp without time zone, set by the app
+    expect(await g.look()).toHaveProperty('runId');
+  });
+
+  it('runs on real Postgres: an older run that FINISHED since is a change; a specialist child (depth 1) is not', async () => {
+    const f = await gateFixture();
+    const now = Date.now();
+    await seedOtherRun(f.agentId, f.t.orgA, { queuedAt: new Date(now - 30 * MIN), finishedAt: new Date(now - 25 * MIN) }, 1);
+    await seedOtherRun(f.agentId, f.t.orgA, { queuedAt: new Date(now - 120 * MIN), finishedAt: new Date(now - 100 * MIN) });
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    await seedOtherRun(f.agentId, f.t.orgA, { queuedAt: new Date(now - 120 * MIN), finishedAt: new Date(now - 5 * MIN) });
+    expect(await f.look()).toHaveProperty('runId');
+  });
+
+  it('incidents on real Postgres: one the grantor may not view is not a change; one it may view is', async () => {
+    const f = await gateFixture();
+    await seedIncident(f.t, 'billing:read', new Date());
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    await seedIncident(f.t, 'organizations:read', new Date());
+    expect(await f.look()).toHaveProperty('runId');
+  });
+
+  it('a watch of a kind the digest cannot judge (backup_health) always runs', async () => {
+    const f = await gateFixture();
+    const ceiling = await resolveGrantCeiling(f.g.grantId, f.g.revisionId);
+    const w = await createWatch(ceiling, { orgId: f.t.orgA, kind: 'backup_health', params: {}, cadenceMinutes: 60 });
+    expect(await enqueueAssessment({ grantId: f.g.grantId, orgId: f.t.orgA, reason: { kind: 'watch', watchId: w.id } }))
+      .toHaveProperty('runId');
+  });
+
+  it('nothing new since the last completed run: a skipped no_changes row, nothing enqueued; a new ticket then admits a model run', async () => {
+    const t = await seedTenant(READ_ALL);
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA], permissionKeys: READ_ALL_KEYS });
+    const queuedAt = new Date(Date.now() - 61 * MIN);
+    const lastRunId = await seedSpentRun(agentId, t.orgA, g, 5, queuedAt); // finished 60 min ago
+
+    expect(await enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: tick, occurrenceKey: 'k1' }))
+      .toEqual({ skipped: 'no_changes' });
+    // The gate's own skip is not a change: the next look (an alert_pattern watch) skips too.
+    const ceiling = await resolveGrantCeiling(g.grantId, g.revisionId);
+    const alertWatch = await createWatch(ceiling, { orgId: t.orgA, kind: 'alert_pattern', params: {}, cadenceMinutes: 60 });
+    expect(await enqueueAssessment({
+      grantId: g.grantId, orgId: t.orgA, reason: { kind: 'watch', watchId: alertWatch.id }, occurrenceKey: 'k2',
+    })).toEqual({ skipped: 'no_changes' });
+    expect(enqueuedRunIds).toEqual([]);
+
+    const skips = (await runsOfGrant(g.grantId)).filter((r) => r.id !== lastRunId);
+    expect(skips).toHaveLength(2);
+    for (const r of skips) {
+      expect(r).toMatchObject({
+        orgId: t.orgA, agentId, profile: 'assessment', status: 'skipped', errorCode: 'no_changes',
+        costCents: 0, turnCount: 0, startedAt: null, grantId: g.grantId, grantRevisionId: g.revisionId,
+      });
+      expect(r.finishedAt).toBeInstanceOf(Date);
+      expect(r.summary).toMatch(/nothing changed/i);
+      expect(r.triggerRef).toMatchObject({ wisp: { grantId: g.grantId, watermark: queuedAt.toISOString() } });
+    }
+    // A skip never moves the watermark; it does count as a look for the round-robin.
+    expect(await lastAssessmentWatermark(g.grantId, t.orgA)).toEqual(queuedAt);
+    const lastLook = (await loadLastAssessedByOrg(g.grantId)).get(t.orgA)!;
+    expect(lastLook.getTime()).toBe(Math.max(...skips.map((r) => r.finishedAt!.getTime())));
+
+    // Control: a ticket updated since the last run is a change.
+    await seedTicket(t, t.orgA, 'Scanner offline in the back office');
+    const ran = await enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: tick, occurrenceKey: 'k3' });
+    if (!('runId' in ran)) throw new Error(`expected admission, got skip ${ran.skipped}`);
+    expect(enqueuedRunIds).toEqual([ran.runId]);
+  });
+
+  it("another grant's assessment and its concern touch are not a change; a later edit by a person is", async () => {
+    const t = await seedTenant(READ_ALL);
+    const agentId = await seedTriageAgent(t);
+    const g1 = await seedGrant(t, { orgIds: [t.orgA], permissionKeys: READ_ALL_KEYS });
+    // One live grant per (grantor, scope): the second is scoped to org A.
+    const g2 = await seedGrant(t, { scopeOrgId: t.orgA, orgIds: [t.orgA], permissionKeys: READ_ALL_KEYS });
+    const now = Date.now();
+    await seedSpentRun(agentId, t.orgA, g1, 5, new Date(now - 61 * MIN)); // g1 finished 60 min ago
+    const otherRunId = await seedSpentRun(agentId, t.orgA, g2, 5, new Date(now - 21 * MIN)); // g2 finished 20 min ago
+    const ticketId = await seedTicket(t, t.orgA, 'Label printer queue stuck');
+    const concern = await upsertConcern({
+      partnerId: t.partnerId, orgId: t.orgA, subject: { kind: 'ticket', id: ticketId },
+      summary: 'Label printer queue stuck for a day', severity: 'medium', evidence: {},
+    });
+    // The ticket predates g1's last run; g2's run then touched the concern
+    // (its finalizer writes before the run's finished_at).
+    await asSystem(() => db.update(tickets).set({ updatedAt: new Date(now - 70 * MIN) }).where(eq(tickets.id, ticketId)));
+    await asSystem(() => db.update(wispConcerns)
+      .set({ updatedAt: new Date(now - 20.5 * MIN), lastAssessedRunId: otherRunId })
+      .where(eq(wispConcerns.id, concern.id)));
+
+    expect(await enqueueAssessment({ grantId: g1.grantId, orgId: t.orgA, reason: tick, occurrenceKey: 'g1-k1' }))
+      .toEqual({ skipped: 'no_changes' });
+    expect(enqueuedRunIds).toEqual([]);
+
+    // A person snoozes it after g2's run finished: that write is not a finalizer's.
+    await asSystem(() => db.update(wispConcerns)
+      .set({ status: 'snoozed', updatedAt: new Date(now - 5 * MIN) })
+      .where(eq(wispConcerns.id, concern.id)));
+    expect(await enqueueAssessment({ grantId: g1.grantId, orgId: t.orgA, reason: tick, occurrenceKey: 'g1-k2' }))
+      .toHaveProperty('runId');
+  });
+
+  // #11513: the anomalies probe on real SQL, and the anchor a degraded
+  // anomaly read must not move. The grant reads devices (the anomalies
+  // section's permission) and nothing else the gate probes, so a change can
+  // only be an anomaly: in particular the `runs` probe is off, and the seeded
+  // runs themselves are never the change.
+  const ANOMALY_KEYS = ['ai_sessions:use', 'devices:read'];
+
+  async function anomalyFixture(lastRunQueuedAt: Date) {
+    const t = await seedTenant([{ resource: 'devices', action: 'read' }]);
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA], permissionKeys: ANOMALY_KEYS });
+    await seedSpentRun(agentId, t.orgA, g, 5, lastRunQueuedAt);
+    const site = await createSite({ orgId: t.orgA });
+    const deviceId = await insertEpisodeDevice(t.orgA, site.id);
+    let n = 0;
+    const look = () => enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: tick, occurrenceKey: `anomaly-look-${n++}` });
+    return { t, agentId, g, deviceId, look };
+  }
+
+  /** An incident of a new episode, announced (dispatched) at `dispatchedAt`, or never when null. */
+  async function seedAnomaly(orgId: string, deviceId: string, o: {
+    dispatchedAt: Date | null; status?: 'open' | 'resolved' | 'dismissed'; resolvedAt?: Date; episodeUpdatedAt?: Date; suppressed?: boolean;
+  }) {
+    const start = new Date(Date.now() - 4 * 60 * MIN);
+    const { episodeId } = await seedEpisode({
+      orgId, deviceId, memberCount: 1, start, status: o.status ?? 'open', resolvedAt: o.resolvedAt ?? null,
+      // A distinct episode key per call (episodeKey is source:type:family).
+      metricFamily: `fam-${randomUUID().slice(0, 8)}`,
+    });
+    if (o.episodeUpdatedAt) {
+      await asSystem(() => db.update(metricAnomalyEpisodes).set({ updatedAt: o.episodeUpdatedAt }).where(eq(metricAnomalyEpisodes.id, episodeId)));
+    }
+    const incidentId = await seedAnomalyIncident({ orgId, deviceId, episodeId, windowStart: start });
+    await asSystem(() => db.update(metricAnomalyIncidents)
+      .set({ dispatchedAt: o.dispatchedAt, suppressedByEpisode: o.suppressed ?? false })
+      .where(eq(metricAnomalyIncidents.id, incidentId)));
+    return { episodeId, incidentId };
+  }
+
+  it('anomalies on real Postgres: an incident announced before the last run, unannounced or suppressed is not a change; one announced since is', async () => {
+    const f = await anomalyFixture(new Date(Date.now() - 61 * MIN)); // last run finished 60 min ago
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(Date.now() - 90 * MIN) });
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: null });
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(), suppressed: true });
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date() });
+    expect(await f.look()).toHaveProperty('runId');
+  });
+
+  it('anomalies on real Postgres: a resolve whose resolved_at is backdated before the last run is a change (updated_at since)', async () => {
+    const f = await anomalyFixture(new Date(Date.now() - 61 * MIN));
+    const before = new Date(Date.now() - 90 * MIN);
+    // Resolved before the last run: not a change.
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(Date.now() - 3 * 60 * MIN), status: 'resolved', resolvedAt: before, episodeUpdatedAt: before });
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    // The automatic close: resolved_at backdated to the end of the data, updated_at stamped now.
+    await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(Date.now() - 3 * 60 * MIN), status: 'resolved', resolvedAt: before, episodeUpdatedAt: new Date() });
+    expect(await f.look()).toHaveProperty('runId');
+  });
+
+  it('a run that could not read the anomalies does not move the anchor: an anomaly announced before it still wakes the next tick', async () => {
+    // A completed assessment 30 min ago, after a clean one 120 min ago; an
+    // anomaly was announced between them (60 min ago).
+    async function withLaterRun(errorCode: string | null, status: 'completed' | 'awaiting_approval' = 'completed') {
+      const f = await anomalyFixture(new Date(Date.now() - 121 * MIN));
+      await seedAnomaly(f.t.orgA, f.deviceId, { dispatchedAt: new Date(Date.now() - 60 * MIN) });
+      const startedAt = new Date(Date.now() - 31 * MIN);
+      await asSystem(() => db.insert(aiAgentRuns).values({
+        agentId: f.agentId, orgId: f.t.orgA, triggerKind: 'schedule', dedupeKey: `seed:${randomUUID()}`, modeAtStart: 'shadow',
+        policySnapshot: {} as never, profile: 'assessment', status, costCents: 5, errorCode,
+        queuedAt: startedAt, startedAt, finishedAt: new Date(startedAt.getTime() + 60_000),
+        grantId: f.g.grantId, grantRevisionId: f.g.revisionId,
+      } as never));
+      return { ...f, startedAt };
+    }
+
+    // Control: the later run read the anomalies, so it saw that one: skip.
+    const clean = await withLaterRun(null);
+    expect(await clean.look()).toEqual({ skipped: 'no_changes' });
+
+    // The later run's anomaly read failed: the anchor stays at the clean run,
+    // so the anomaly announced after it is a change and the tick runs.
+    const degraded = await withLaterRun('assessment_anomalies_unread');
+    expect(await degraded.look()).toHaveProperty('runId');
+    // The digest watermark still advances to the degraded run's start: the
+    // anomalies are current state and are read again whatever the window.
+    expect(await lastAssessmentWatermark(degraded.g.grantId, degraded.t.orgA)).toEqual(degraded.startedAt);
+
+    // The same for a run that also left a pending intent (awaiting_approval).
+    const pending = await withLaterRun('assessment_anomalies_unread', 'awaiting_approval');
+    expect(await pending.look()).toHaveProperty('runId');
+  });
+
+  it('an event reason runs even when nothing changed', async () => {
+    const t = await seedTenant(READ_ALL);
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA], permissionKeys: READ_ALL_KEYS });
+    await seedSpentRun(agentId, t.orgA, g, 5, new Date(Date.now() - 61 * MIN));
+    expect(await enqueueAssessment({
+      grantId: g.grantId, orgId: t.orgA, reason: { kind: 'event', eventType: 'ticket.stale', eventId: 'evt-stale' },
+    })).toHaveProperty('runId');
   });
 });
 

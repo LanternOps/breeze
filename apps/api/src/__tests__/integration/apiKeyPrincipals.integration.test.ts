@@ -25,7 +25,7 @@
  *   docker run -d --name pr5-int-pg -e POSTGRES_USER=breeze -e POSTGRES_PASSWORD=breeze \
  *     -e POSTGRES_DB=breeze_test -p 5457:5432 \
  *     --tmpfs /var/lib/postgresql/data:rw,size=2g postgres:16-alpine
- *   docker run -d --name pr5-int-redis -p 6390:6379 redis:7-alpine
+ *   docker run -d --name pr5-int-redis -p 6390:6379 redis:8-alpine
  *   until docker exec pr5-int-pg pg_isready -U breeze >/dev/null 2>&1; do sleep 1; done
  *   docker exec pr5-int-pg psql -U breeze -d breeze_test -c \
  *     "CREATE ROLE breeze_app LOGIN PASSWORD 'breeze';"

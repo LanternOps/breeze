@@ -40,6 +40,16 @@ import { Hono } from 'hono';
 import { sql } from 'drizzle-orm';
 import { getTestDb, getTestRedis } from './setup';
 import { bootstrapAuthBinding } from './db-utils';
+import { hashPassword } from '../../services/password';
+
+// Step 2 confirms the password chosen at step 1, so the parked registration
+// carries a real hash of it and every click sends it.
+const SIGNUP_PASSWORD = 'Sup3rSecure!Passw0rd';
+let signupHash: Promise<string> | undefined;
+function signupPasswordHash(): Promise<string> {
+  signupHash ??= hashPassword(SIGNUP_PASSWORD);
+  return signupHash;
+}
 
 import './setup';
 
@@ -119,7 +129,7 @@ async function parkAndVerify(companyName: string): Promise<MintedRegistration> {
     email: emailFor(companyName),
     companyName,
     name: 'New Admin',
-    passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$dGVzdHNhbHR0ZXN0$Zm9vYmFyYmF6Zm9vYmFyYmF6Zm9vYmFyYmF6',
+    passwordHash: await signupPasswordHash(),
     acceptTerms: true,
     termsVersion: 'v1',
     hostedExpectation: true,
@@ -137,7 +147,7 @@ async function parkAndVerify(companyName: string): Promise<MintedRegistration> {
       'user-agent': 'mail-scanner/9.9 (link-prefetch)',
       cookie: binding.cookie,
     },
-    body: JSON.stringify({ token: rawToken }),
+    body: JSON.stringify({ token: rawToken, password: SIGNUP_PASSWORD }),
   });
   const body = await res.json();
   return {
@@ -290,7 +300,7 @@ describe('SR2-21 email-first partner registration (real DB)', () => {
       email: emailFor('SingleWinnerCo'),
       companyName: 'SingleWinnerCo',
       name: 'New Admin',
-      passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$dGVzdHNhbHR0ZXN0$Zm9vYmFyYmF6Zm9vYmFyYmF6Zm9vYmFyYmF6',
+      passwordHash: await signupPasswordHash(),
       acceptTerms: true,
       termsVersion: 'v1',
       hostedExpectation: true,
@@ -302,14 +312,14 @@ describe('SR2-21 email-first partner registration (real DB)', () => {
     const first = await app.request('/auth/verify-email', {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie: binding.cookie },
-      body: JSON.stringify({ token: rawToken }),
+      body: JSON.stringify({ token: rawToken, password: SIGNUP_PASSWORD }),
     });
     expect(first.status).toBe(200);
 
     const second = await app.request('/auth/verify-email', {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie: binding.cookie },
-      body: JSON.stringify({ token: rawToken }),
+      body: JSON.stringify({ token: rawToken, password: SIGNUP_PASSWORD }),
     });
     expect(second.status).toBe(400);
     expect(await second.json()).toEqual({ error: 'Invalid or expired verification link' });

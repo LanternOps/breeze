@@ -44,13 +44,21 @@ vi.mock('./featureFlags', () => ({ resolvePortalCapabilities: capabilitiesMock }
 
 // #9674: the partner's Custom CSS read is its own system-scope query (tested in
 // portalCustomCss.test.ts); here only how /branding layers it with the org's.
-const { partnerCssMock } = vi.hoisted(() => ({ partnerCssMock: vi.fn(async (): Promise<string | null> => null) }));
+const { partnerCssMock, partnerSettingsMock, partnerDegradedMock } = vi.hoisted(() => ({
+  partnerCssMock: vi.fn(async (_orgId: string): Promise<string | null> => null),
+  partnerSettingsMock: vi.fn((): unknown => null),
+  partnerDegradedMock: vi.fn((): boolean => false),
+}));
 vi.mock('./portalCustomCss', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./portalCustomCss')>()),
-  loadPartnerPortalCustomCss: partnerCssMock,
+  loadPartnerPortalDefaults: async (orgId: string) => ({
+    customCss: await partnerCssMock(orgId),
+    settings: partnerSettingsMock(),
+    degraded: partnerDegradedMock(),
+  }),
 }));
 
-import { brandingRoutes } from './branding';
+import { brandingRoutes, resolvePortalHostOrgId } from './branding';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 
@@ -75,6 +83,10 @@ const authenticatedApp = buildAuthenticatedApp();
 beforeEach(() => {
   partnerCssMock.mockReset();
   partnerCssMock.mockResolvedValue(null);
+  partnerSettingsMock.mockReset();
+  partnerSettingsMock.mockReturnValue(null);
+  partnerDegradedMock.mockReset();
+  partnerDegradedMock.mockReturnValue(false);
 });
 
 describe('GET /branding (authenticated)', () => {
@@ -275,6 +287,128 @@ describe('GET /branding partner Custom CSS (#9674)', () => {
   });
 });
 
+// #9673 (settings rules 3 + 5): the portal chrome follows the same partner
+// default -> org override chain as the org's quotes and invoices.
+describe('GET /branding partner brand fallback (#9673)', () => {
+  const PARTNER_LOGO = 'data:image/png;base64,UEFSVE5FUg==';
+  const ORG_LOGO = 'data:image/png;base64,T1JH';
+  const partnerSettings = { branding: { logoUrl: PARTNER_LOGO, primaryColor: '#7c3aed', secondaryColor: '#0b1b2d' } };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.rows = [];
+  });
+
+  it("uses the partner's logo and colours when the org row leaves them empty", async () => {
+    partnerSettingsMock.mockReturnValue(partnerSettings);
+    dbState.rows = [{ orgId: ORG_ID, logoUrl: null, primaryColor: null, secondaryColor: null, enableTickets: true }];
+
+    const { branding } = await (await authenticatedApp.request('/branding')).json();
+
+    expect(branding.logoUrl).toBe(PARTNER_LOGO);
+    expect(branding.primaryColor).toBe('#7c3aed');
+    expect(branding.secondaryColor).toBe('#0b1b2d');
+    expect(branding.enableTickets).toBe(true);
+  });
+
+  it("the org's own values win field by field", async () => {
+    partnerSettingsMock.mockReturnValue(partnerSettings);
+    dbState.rows = [{ orgId: ORG_ID, logoUrl: ORG_LOGO, primaryColor: null, secondaryColor: '#123456' }];
+
+    const { branding } = await (await authenticatedApp.request('/branding')).json();
+
+    expect(branding.logoUrl).toBe(ORG_LOGO);
+    expect(branding.primaryColor).toBe('#7c3aed');
+    expect(branding.secondaryColor).toBe('#123456');
+  });
+
+  it("serves the partner's brand to an org that has never saved portal settings, with no visibility flags", async () => {
+    partnerSettingsMock.mockReturnValue(partnerSettings);
+    dbState.rows = [];
+
+    const response = await authenticatedApp.request('/branding');
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      branding: { logoUrl: PARTNER_LOGO, primaryColor: '#7c3aed', secondaryColor: '#0b1b2d' },
+    });
+  });
+
+  it('still 404s for an org with no row when the partner has no brand or CSS', async () => {
+    partnerSettingsMock.mockReturnValue({ branding: { theme: 'dark' } });
+    dbState.rows = [];
+
+    const response = await authenticatedApp.request('/branding');
+
+    expect(response.status).toBe(404);
+  });
+
+  it('selects the org columns the resolver needs, on both projections', async () => {
+    dbState.rows = [{ orgId: ORG_ID, customDomain: 'portal.example.test', domainVerified: true }];
+    await authenticatedApp.request('/branding');
+    expect(dbState.selected).toEqual(expect.objectContaining({
+      logoUrl: expect.anything(), primaryColor: expect.anything(), secondaryColor: expect.anything(),
+    }));
+
+    const publicApp = new Hono();
+    publicApp.route('/', brandingRoutes);
+    await publicApp.request('/branding/portal.example.test');
+    expect(dbState.selected).toEqual(expect.objectContaining({
+      logoUrl: expect.anything(), primaryColor: expect.anything(), secondaryColor: expect.anything(),
+    }));
+  });
+
+  it('ignores a partner logo the renderers refuse', async () => {
+    partnerSettingsMock.mockReturnValue({ branding: { logoUrl: 'http://insecure.example.com/l.png' } });
+    dbState.rows = [{ orgId: ORG_ID, logoUrl: null, primaryColor: null, secondaryColor: null }];
+
+    const { branding } = await (await authenticatedApp.request('/branding')).json();
+
+    expect(branding.logoUrl).toBeNull();
+  });
+
+  it('is part of the ETag, so a partner logo change is not answered 304', async () => {
+    partnerSettingsMock.mockReturnValue(partnerSettings);
+    dbState.rows = [{ orgId: ORG_ID, logoUrl: null, primaryColor: null, secondaryColor: null }];
+    const first = await authenticatedApp.request('/branding');
+    const etag = first.headers.get('ETag')!;
+
+    partnerSettingsMock.mockReturnValue({ branding: { logoUrl: ORG_LOGO } });
+    const second = await authenticatedApp.request('/branding', { headers: { 'If-None-Match': etag } });
+
+    expect(second.status).toBe(200);
+  });
+
+  // A transient partner-lookup failure must not be pinned for an hour at a
+  // shared cache: the degraded answer is served but never cached.
+  it('never caches a public answer built without the partner defaults', async () => {
+    partnerDegradedMock.mockReturnValue(true);
+    dbState.rows = [{ orgId: ORG_ID, customDomain: 'portal.example.test', domainVerified: true, logoUrl: ORG_LOGO, primaryColor: null, secondaryColor: null }];
+
+    const publicApp = new Hono();
+    publicApp.route('/', brandingRoutes);
+    const response = await publicApp.request('/branding/portal.example.test');
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).branding.logoUrl).toBe(ORG_LOGO);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(response.headers.get('ETag')).toBeNull();
+  });
+
+  it('applies the same fallback on the public domain lookup', async () => {
+    partnerSettingsMock.mockReturnValue(partnerSettings);
+    dbState.rows = [{ orgId: ORG_ID, customDomain: 'portal.example.test', domainVerified: true, logoUrl: null, primaryColor: '#123456', secondaryColor: null }];
+
+    const publicApp = new Hono();
+    publicApp.route('/', brandingRoutes);
+    const { branding } = await (await publicApp.request('/branding/portal.example.test')).json();
+
+    expect(branding.logoUrl).toBe(PARTNER_LOGO);
+    expect(branding.primaryColor).toBe('#123456');
+    expect(branding.secondaryColor).toBe('#0b1b2d');
+  });
+});
+
 describe('GET /branding canEditTrustPage (Trust Center W3d)', () => {
   afterEach(() => { capabilitiesMock.mockImplementation(async () => ({ canEditTrustPage: false })); });
   beforeEach(() => {
@@ -438,5 +572,41 @@ describe('GET /branding/:domain (public)', () => {
     const response = await publicApp.request('/branding/unknown.example.test');
 
     expect(response.status).toBe(404);
+  });
+});
+
+// Portal registration W4 (#11381, plan D5): the org whose VERIFIED custom
+// domain is the request host binds a Microsoft sign-in to that org.
+describe('resolvePortalHostOrgId (D5 host binding)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.rows = [];
+    dbState.where = undefined;
+  });
+
+  it('returns the org of a verified custom domain, looked up by the lowercased host', async () => {
+    dbState.rows = [{ orgId: ORG_ID, customDomain: 'portal.acme.test', domainVerified: true }];
+    expect(await resolvePortalHostOrgId('Portal.Acme.Test')).toBe(ORG_ID);
+    const query = new PgDialect().sqlToQuery(dbState.where as SQL);
+    expect(query.sql).toContain('"portal_branding"."custom_domain" = $1');
+    expect(query.params).toEqual(['portal.acme.test']);
+    // Only the org id is needed: the partner's portal defaults are never loaded.
+    expect(partnerCssMock).not.toHaveBeenCalled();
+  });
+
+  it('returns null for an unverified domain', async () => {
+    dbState.rows = [{ orgId: ORG_ID, customDomain: 'portal.acme.test', domainVerified: false }];
+    expect(await resolvePortalHostOrgId('portal.acme.test')).toBeNull();
+  });
+
+  it('returns null for an unknown host (the shared portal host)', async () => {
+    dbState.rows = [];
+    expect(await resolvePortalHostOrgId('breeze.example.test')).toBeNull();
+  });
+
+  it('returns null for an empty host without querying', async () => {
+    dbState.rows = [{ orgId: ORG_ID, customDomain: '', domainVerified: true }];
+    expect(await resolvePortalHostOrgId('   ')).toBeNull();
+    expect(dbState.where).toBeUndefined();
   });
 });
