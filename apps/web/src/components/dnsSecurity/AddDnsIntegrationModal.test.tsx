@@ -124,6 +124,18 @@ describe('AddDnsIntegrationModal', () => {
     });
   });
 
+  it('sends piholeVersion v5 explicitly when the Pi-hole select is left alone', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: { id: 'new-4' } }));
+    render(<AddDnsIntegrationModal onClose={() => {}} onCreated={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'pihole' } });
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Pi' } });
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'tok' } });
+    fireEvent.click(screen.getByRole('button', { name: /Add integration/i }));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const body = JSON.parse(String((fetchWithAuthMock.mock.calls[0]![1] as RequestInit).body));
+    expect(body.config).toEqual({ piholeVersion: 'v5' });
+  });
+
   it('does not leak piholeVersion into other providers after switching away', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: { id: 'new-3' } }));
     render(<AddDnsIntegrationModal onClose={() => {}} onCreated={() => {}} />);

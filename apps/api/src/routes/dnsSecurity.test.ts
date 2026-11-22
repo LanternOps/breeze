@@ -1297,7 +1297,23 @@ describe('dns security routes', () => {
         mockIntegrationLookup({ ...activeRow, provider: 'umbrella' });
         const res = await patch({ piholeVersion: 'v6' });
         expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ error: expect.stringMatching(/Pi-hole/) });
         expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('reverts v6 to v5 and combines with retentionDays', async () => {
+        mockIntegrationLookup({ ...activeRow, provider: 'pihole', config: { apiEndpoint: 'http://pihole.local', piholeVersion: 'v6' } });
+        const set = mockUpdate();
+
+        const res = await patch({ piholeVersion: 'v5', retentionDays: 30 });
+
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({
+          config: { apiEndpoint: 'http://pihole.local', piholeVersion: 'v5', retentionDays: 30 }
+        }));
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          details: expect.objectContaining({ piholeVersion: { from: 'v6', to: 'v5' } })
+        }));
       });
 
       it('rejects an unknown piholeVersion', async () => {

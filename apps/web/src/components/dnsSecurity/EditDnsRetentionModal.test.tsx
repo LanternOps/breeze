@@ -100,7 +100,22 @@ describe('EditDnsRetentionModal — Pi-hole version (#12507)', () => {
     expect(sentBody()).toEqual({ retentionDays: null, storeAllowedTraffic: false, piholeVersion: 'v6' });
   });
 
-  it('hides the version select (and omits the field) for other providers', () => {
+  it('omits piholeVersion from the PATCH when the version was not changed', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(okResponse({ id: 'int-1' }));
+    const onSaved = vi.fn();
+    render(
+      <EditDnsRetentionModal
+        integration={{ id: 'int-1', name: 'Pi', retentionDays: 7, storeAllowedTraffic: false, piholeVersion: 'v6' }}
+        onClose={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(sentBody()).toEqual({ retentionDays: 7, storeAllowedTraffic: false });
+  });
+
+  it('hides the version select for other providers', () => {
     renderModal(false);
     expect(screen.queryByLabelText('Pi-hole version')).toBeNull();
   });

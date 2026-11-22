@@ -66,7 +66,8 @@ export default function EditDnsRetentionModal({
           body: JSON.stringify({
             retentionDays,
             storeAllowedTraffic,
-            ...(integration.piholeVersion !== undefined ? { piholeVersion } : {}),
+            // Only when changed, so a retention-only save does not write a v5 default or a no-op audit entry.
+            ...(integration.piholeVersion !== undefined && piholeVersion !== integration.piholeVersion ? { piholeVersion } : {}),
           }),
         }),
         errorFallback: t('dnsSecurityEditDnsRetentionModal.messages.saveFailed', { name: integration.name }),
