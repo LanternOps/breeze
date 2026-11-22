@@ -606,6 +606,91 @@ describe('organization routes', () => {
       expect(body.data).toHaveLength(1);
     });
 
+    // Server search for the applies-to target picker (#12465). The count and the
+    // page share one WHERE, so the count query's condition is captured and its
+    // bound values inspected: a row-count assertion against this mock would pass
+    // whether or not the filter existed.
+    describe('search', () => {
+      const orgId = '11111111-1111-1111-1111-111111111111';
+
+      /** Every primitive value bound anywhere inside a drizzle SQL condition. */
+      function boundValues(node: unknown, seen = new WeakSet<object>()): unknown[] {
+        if (node === null || typeof node !== 'object') return [node];
+        if (seen.has(node as object)) return [];
+        seen.add(node as object);
+        const out: unknown[] = [];
+        const record = node as Record<string, unknown>;
+        if (Array.isArray(node)) {
+          for (const item of node) out.push(...boundValues(item, seen));
+          return out;
+        }
+        if ('queryChunks' in record) out.push(...boundValues(record.queryChunks, seen));
+        if ('value' in record) out.push(...boundValues(record.value, seen));
+        return out;
+      }
+
+      function mockSitesList() {
+        const countWhere = vi.fn().mockResolvedValue([{ count: 0 }]);
+        vi.mocked(db.select)
+          .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: countWhere }) } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([]) })
+                })
+              })
+            })
+          } as any);
+        return countWhere;
+      }
+
+      beforeEach(() => {
+        vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+          c.set('auth', {
+            scope: 'organization',
+            partnerId: null,
+            orgId,
+            user: { id: 'user-123', email: 'test@example.com' },
+            canAccessOrg: (id: string) => id === orgId
+          });
+          return next();
+        });
+      });
+
+      it('GET /orgs/sites?search= filters by name', async () => {
+        const countWhere = mockSitesList();
+        const res = await app.request(`/orgs/sites?orgId=${orgId}&search=Main`, {
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(res.status).toBe(200);
+        expect(boundValues(countWhere.mock.calls[0]![0])).toContain('%Main%');
+      });
+
+      it('search escapes LIKE characters', async () => {
+        const countWhere = mockSitesList();
+        const res = await app.request(`/orgs/sites?orgId=${orgId}&search=${encodeURIComponent('50%_off\\')}`, {
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(res.status).toBe(200);
+        expect(boundValues(countWhere.mock.calls[0]![0])).toContain('%50\\%\\_off\\\\%');
+      });
+
+      it('binds no name pattern without search', async () => {
+        const countWhere = mockSitesList();
+        await app.request(`/orgs/sites?orgId=${orgId}`, { headers: { Authorization: 'Bearer token' } });
+        const values = boundValues(countWhere.mock.calls[0]![0]);
+        expect(values.some((v) => typeof v === 'string' && v.startsWith('%'))).toBe(false);
+      });
+
+      it('rejects a search longer than 100 characters', async () => {
+        const res = await app.request(`/orgs/sites?orgId=${orgId}&search=${'a'.repeat(101)}`, {
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(res.status).toBe(400);
+      });
+    });
+
     it('should create a site for an accessible organization', async () => {
       const orgId = '11111111-1111-1111-1111-111111111111';
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
