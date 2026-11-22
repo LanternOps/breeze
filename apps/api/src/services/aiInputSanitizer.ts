@@ -234,23 +234,66 @@ export function sanitizeUntrustedToolText(value: string, flags?: string[]): stri
 // `<tool_output untrusted>…</tool_output>`; device text must not close it.
 const TOOL_OUTPUT_FENCE = /<\/?tool_output\b[^>]*>/giu;
 
-/** `sanitizeUntrustedToolText` over every string in a JSON-shaped value (keys are left alone). */
+/**
+ * `sanitizeUntrustedToolText` over every string in a JSON-shaped value: string
+ * values AND property names, at every depth. A device- or tenant-authored
+ * object (a jsonb `details`, a decoded agent stdout) chooses its own keys, so a
+ * key is as untrusted as a value. Keys are not length-capped, matching values:
+ * `sanitizeUntrustedToolText` never clips (size belongs to the compactor).
+ */
 export function sanitizeUntrustedToolValue(value: unknown, flags?: string[]): unknown {
   const sink = flags ?? [];
   if (typeof value === 'string') return value.length > 0 ? sanitizeUntrustedToolText(value, sink) : value;
   if (Array.isArray(value)) return value.map((entry) => sanitizeUntrustedToolValue(entry, sink));
   if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value);
+    const safeKeys = fenceUntrustedKeys(entries.map(([key]) => key), sink);
     const out: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value)) {
+    entries.forEach(([, entry], index) => {
       // defineProperty, not assignment: a JSON `__proto__` key stays an own
       // data property instead of re-pointing `out`'s prototype.
-      Object.defineProperty(out, key, {
+      Object.defineProperty(out, safeKeys[index]!, {
         value: sanitizeUntrustedToolValue(entry, sink), enumerable: true, writable: true, configurable: true,
       });
-    }
+    });
     return out;
   }
   return value;
+}
+
+/**
+ * Filter one object's property names, index-aligned with `keys`.
+ *
+ * A key the filter leaves unchanged is returned byte-identical, so a clean
+ * payload re-encodes to the same JSON (`sanitizeUntrustedToolStdout` relies on
+ * that to hand back the original string).
+ *
+ * Collision scheme: unchanged keys are reserved first. A changed key then takes
+ * its filtered text if that name is still free, otherwise the first free
+ * `<filtered>_<n>` for n = 2, 3, … — checked against every unchanged key in the
+ * object (including ones later in order) and every name already assigned. Keys
+ * are processed in their original order, so the result is deterministic, no
+ * value is overwritten or dropped, and a changed key can never take the name of
+ * an unchanged one. A collision raises `key_collision` (the same suffix scheme
+ * and flag as `sanitizeRecord` for page context). A Set, not `in`, decides
+ * "taken", so `constructor` / `__proto__` are not mistaken for existing keys.
+ */
+function fenceUntrustedKeys(keys: readonly string[], flags: string[]): string[] {
+  const filtered = keys.map((key) => sanitizeUntrustedToolText(key, flags));
+  const taken = new Set(keys.filter((key, index) => filtered[index] === key));
+  return keys.map((key, index) => {
+    const safe = filtered[index]!;
+    if (safe === key) return key;
+    let candidate = safe;
+    if (taken.has(candidate)) {
+      addFlag(flags, 'key_collision');
+      let suffix = 2;
+      while (taken.has(`${safe}_${suffix}`)) suffix++;
+      candidate = `${safe}_${suffix}`;
+    }
+    taken.add(candidate);
+    return candidate;
+  });
 }
 
 /**
