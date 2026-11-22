@@ -654,8 +654,10 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
           : 'Installs the selected patches on the selected devices. Devices may restart to finish installing.';
       case 'scan':
         return `Scans ${deviceCount ?? 'the selected devices'} for missing patches. Nothing is installed.`;
+      // The handler records one pending patch_rollbacks row for deviceIds[0]
+      // and queues no command, so no uninstall or restart is claimed.
       case 'rollback':
-        return `Uninstalls a patch from ${deviceCount ?? 'the selected devices'}. ${oneDevice ? 'The device' : 'Devices'} may restart.`;
+        return `Records a rollback request for the patch on one device${Array.isArray(input.deviceIds) && input.deviceIds.length > 1 ? ' (the first listed)' : ''}. Nothing is uninstalled or restarted now.`;
       case 'approve':
         return 'Approves the patch. This changes its approval status only; nothing is installed now.';
       case 'bulk_approve':

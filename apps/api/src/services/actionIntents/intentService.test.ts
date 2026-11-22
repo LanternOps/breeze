@@ -3466,18 +3466,20 @@ describe('buildImpactSummary (#5106)', () => {
       expected: 'Scans 2 devices for missing patches. Nothing is installed.',
     },
     {
-      name: 'manage_patches rollback uninstalls a patch and may restart the device',
+      // The handler inserts one pending patch_rollbacks row for deviceIds[0]
+      // and queues no command (aiToolsFleet.ts): no uninstall, no restart.
+      name: 'manage_patches rollback records a request for one device and claims no uninstall',
       toolName: 'manage_patches',
       input: { action: 'rollback', patchId: 'p1', deviceIds: ['d1'] },
       guardrailDescription: 'CVEs: get_vulnerability_report.',
-      expected: 'Uninstalls a patch from 1 device. The device may restart.',
+      expected: 'Records a rollback request for the patch on one device. Nothing is uninstalled or restarted now.',
     },
     {
-      name: 'manage_patches rollback on several devices',
+      name: 'manage_patches rollback on several devices names the one device the handler uses',
       toolName: 'manage_patches',
       input: { action: 'rollback', patchId: 'p1', deviceIds: ['d1', 'd2'] },
       guardrailDescription: 'CVEs: get_vulnerability_report.',
-      expected: 'Uninstalls a patch from 2 devices. Devices may restart.',
+      expected: 'Records a rollback request for the patch on one device (the first listed). Nothing is uninstalled or restarted now.',
     },
     {
       name: 'manage_patches approve changes approval status only',
