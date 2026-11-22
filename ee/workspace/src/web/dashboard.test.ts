@@ -283,6 +283,8 @@ describe('DASHBOARD_STYLES theming (#12383)', () => {
   it('uses app theme tokens, no raw hex colours', async () => {
     const { DASHBOARD_STYLES } = await import('./dashboard');
     expect(DASHBOARD_STYLES).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(DASHBOARD_STYLES).not.toMatch(/\b(?:rgb|rgba|hsla?|oklch|hwb)\(\s*(?!var\()/);
+    expect(DASHBOARD_STYLES).not.toMatch(/:\s*(?:white|black)\b/);
     expect(DASHBOARD_STYLES).toContain('var(--card)');
     expect(DASHBOARD_STYLES).toContain('var(--border)');
     expect(DASHBOARD_STYLES).toContain('var(--muted-foreground)');
