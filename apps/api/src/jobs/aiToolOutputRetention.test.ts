@@ -18,6 +18,7 @@ const m = vi.hoisted(() => ({
   warnOnRetentionBacklog: vi.fn(),
   deleteSession: vi.fn(),
   captureMessage: vi.fn(),
+  systemLabels: [] as string[],
 }));
 
 vi.mock('bullmq', () => ({
@@ -40,7 +41,7 @@ vi.mock('../db', () => ({
     select: () => ({ from: async () => m.selectResults.shift() ?? [] }),
   },
   runOutsideDbContext: (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: (fn: () => unknown, label?: string) => { m.systemLabels.push(label ?? ''); return fn(); },
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: (...a: unknown[]) => m.attach(...a) }));
@@ -56,6 +57,7 @@ import {
   deleteSdkTranscript,
   initializeAiToolOutputRetention,
   runAiToolOutputRetention,
+  SEARCH_EVENT_MAX_AGE_DAYS,
   tombstone,
 } from './aiToolOutputRetention';
 import { JOB_SCHEDULES } from './scheduleRegistry';
@@ -70,6 +72,7 @@ const rows = <T>(r: T[], count = r.length) => Object.assign([...r], { count });
 beforeEach(() => {
   vi.clearAllMocks();
   m.selectResults = [];
+  m.systemLabels = [];
   m.getRepeatableJobs.mockResolvedValue([]);
 });
 
@@ -100,6 +103,7 @@ describe('runAiToolOutputRetention', () => {
     m.execute.mockImplementation(async (q: { queryChunks?: unknown[] }) => {
       const params = JSON.stringify(q);
       if (params.includes(ORG_BAD)) throw new Error('boom');
+      if (params.includes('ai_tool_search_events') || params.includes('ToolSearch')) return rows([], 0);
       if (params.includes('ai_run_artifacts') || params.includes('action_intents')) return rows([], 0);
       if (params.includes('ai_tool_executions')) return rows([{ scrubbed: 0, cleared: [] }]);
       return rows([{ scrubbed: 2, cleared: ['sdk-1'] }]);
@@ -119,6 +123,7 @@ describe('runAiToolOutputRetention', () => {
     const statements: string[] = [];
     m.execute.mockImplementation(async (q: unknown) => {
       const s = JSON.stringify(q);
+      if (s.includes('ai_tool_search_events') || s.includes('ToolSearch')) return rows([], 0);
       if (s.includes('action_intents')) { statements.push(s); return rows([], 3); }
       if (s.includes('ai_run_artifacts')) return rows([], 0);
       return rows([{ scrubbed: 0, cleared: [] }]);
@@ -147,6 +152,7 @@ describe('runAiToolOutputRetention', () => {
     m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], []];
     m.execute.mockImplementation(async (q: unknown) => {
       const s = JSON.stringify(q);
+      if (s.includes('ai_tool_search_events') || s.includes('ToolSearch')) return rows([], 0);
       if (s.includes('ai_run_artifacts') || s.includes('action_intents')) return rows([], 0);
       if (s.includes('ai_tool_executions')) return rows([{ scrubbed: 0, cleared: [] }]);
       return rows([{ scrubbed: 1, cleared: [] }]);
@@ -165,6 +171,7 @@ describe('runAiToolOutputRetention: retain-on-doubt branches', () => {
   const quietOrg = () => {
     m.execute.mockImplementation(async (q: unknown) => {
       const s = JSON.stringify(q);
+      if (s.includes('ai_tool_search_events') || s.includes('ToolSearch')) return rows([], 0);
       if (s.includes('ai_run_artifacts') || s.includes('action_intents')) return rows([], 0);
       if (s.includes('ai_tool_executions')) return rows([{ scrubbed: 0, cleared: [] }]);
       return rows([{ scrubbed: 1, cleared: ['sdk-x'] }]);
@@ -200,6 +207,119 @@ describe('runAiToolOutputRetention: retain-on-doubt branches', () => {
     const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn(async () => 'not_found' as const) });
     expect(summary.incomplete).toBe(false);
     expect(m.captureMessage).not.toHaveBeenCalled();
+  });
+});
+
+// #12421 W01: tool-discovery rows are deleted at the org's tool-output window,
+// capped at SEARCH_EVENT_MAX_AGE_DAYS even for keep-forever orgs, with no
+// live-session deferral; the same pass blanks aged ToolSearch inputs inside
+// assistant content_blocks. The SQL itself is proven on real Postgres.
+describe('runAiToolOutputRetention: tool search events (#12421 W01)', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const NOW = new Date('2027-02-01T00:00:00.000Z');
+  const searchStatements: string[] = [];
+  const blankStatements: string[] = [];
+  function route(opts: { searchRows?: number[]; blankRows?: number[] } = {}) {
+    const searchRows = [...(opts.searchRows ?? [0])];
+    const blankRows = [...(opts.blankRows ?? [0])];
+    searchStatements.length = 0;
+    blankStatements.length = 0;
+    m.execute.mockImplementation(async (q: unknown) => {
+      const s = JSON.stringify(q);
+      if (s.includes('ai_tool_search_events')) { searchStatements.push(s); return rows([], searchRows.shift() ?? 0); }
+      if (s.includes('ToolSearch')) { blankStatements.push(s); return rows([], blankRows.shift() ?? 0); }
+      if (s.includes('ai_run_artifacts') || s.includes('action_intents')) return rows([], 0);
+      return rows([{ scrubbed: 0, cleared: [] }]);
+    });
+  }
+  const cutoffOf = (statement: string) => statement.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/)?.[0];
+  const iso = (days: number) => new Date(NOW.getTime() - days * DAY).toISOString();
+  const policy = (days: number | null) => [{ id: 'p', orgId: null, partnerId: PARTNER, toolOutputRetentionDays: days }];
+
+  it('is 180 days', () => {
+    expect(SEARCH_EVENT_MAX_AGE_DAYS).toBe(180);
+  });
+
+  it('an org with retention 30 deletes search rows older than 30 days and blanks ToolSearch inputs at the same age', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
+    route({ searchRows: [4], blankRows: [2] });
+    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    expect(searchStatements).toHaveLength(1);
+    expect(cutoffOf(searchStatements[0]!)).toBe(iso(30));
+    expect(searchStatements[0]).toContain(ORG_OK);
+    expect(cutoffOf(blankStatements[0]!)).toBe(iso(30));
+    expect(summary).toMatchObject({ searchEventsDeleted: 4, toolSearchInputsBlanked: 2, incomplete: false });
+    expect(m.recordRetentionRun).toHaveBeenCalledWith('ai_tool_output_retention', { rowsDeleted: 4, incomplete: false });
+  });
+
+  it('an org with retention 400 uses the 180-day ceiling', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(400)];
+    route();
+    await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    expect(cutoffOf(searchStatements[0]!)).toBe(iso(180));
+    expect(cutoffOf(blankStatements[0]!)).toBe(iso(180));
+  });
+
+  it('a keep-forever org still gets the 180-day pass while its tool outputs are skipped', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(null)];
+    route({ searchRows: [3] });
+    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    expect(summary).toMatchObject({ orgsKeptForever: 1, orgsScrubbed: 0, searchEventsDeleted: 3 });
+    expect(cutoffOf(searchStatements[0]!)).toBe(iso(180));
+    // Only the two discovery passes ran: no tool-output scrub statement.
+    expect(m.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('the search-event delete carries no live-session deferral', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
+    route();
+    await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    // The tool-output scrub's quiet-window predicate reads ai_messages; this delete never does.
+    expect(searchStatements[0]).not.toContain('ai_messages');
+  });
+
+  it('a batch cap with rows remaining sets incomplete and warns, for each of the two passes', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
+    route({ searchRows: [1, 1], blankRows: [1, 1] });
+    const summary = await runAiToolOutputRetention({ batchSize: 1, maxBatches: 2, now: NOW, deleteTranscript: vi.fn() });
+    expect(summary.incomplete).toBe(true);
+    expect(m.warnOnRetentionBacklog).toHaveBeenCalledWith(
+      '[AiToolOutputRetention]', 'ai_tool_output.ai_tool_search_events', { deleted: 2, batches: 2, hasMore: true }, `org=${ORG_OK}`,
+    );
+    expect(m.warnOnRetentionBacklog).toHaveBeenCalledWith(
+      '[AiToolOutputRetention]', 'ai_tool_output.ai_messages.tool_search_input', { deleted: 2, batches: 2, hasMore: true }, `org=${ORG_OK}`,
+    );
+  });
+
+  it('each batch runs in its own fresh system context, labelled per pass', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
+    route({ searchRows: [1, 0], blankRows: [1, 1, 0] });
+    await runAiToolOutputRetention({ batchSize: 1, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    expect(m.systemLabels.filter((l) => l === 'aiToolOutputRetention.ai_tool_search_events')).toHaveLength(2);
+    expect(m.systemLabels.filter((l) => l === 'aiToolOutputRetention.tool_search_inputs')).toHaveLength(3);
+  });
+
+  it('an org with an unusable retention value is skipped before the discovery passes', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(0)];
+    route();
+    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    expect(summary.orgsSkipped).toBe(1);
+    expect(m.execute).not.toHaveBeenCalled();
+  });
+
+  it('a failing discovery pass counts the org failed but its tool outputs are still scrubbed', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], policy(30)];
+    m.execute.mockImplementation(async (q: unknown) => {
+      const s = JSON.stringify(q);
+      if (s.includes('ai_tool_search_events')) throw new Error('boom');
+      if (s.includes('ToolSearch')) return rows([], 0);
+      if (s.includes('ai_run_artifacts') || s.includes('action_intents')) return rows([], 0);
+      if (s.includes('ai_tool_executions')) return rows([{ scrubbed: 0, cleared: [] }]);
+      return rows([{ scrubbed: 2, cleared: [] }]);
+    });
+    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, now: NOW, deleteTranscript: vi.fn() });
+    expect(summary).toMatchObject({ orgsFailed: 1, orgsScrubbed: 1, incomplete: true });
+    expect(summary.totals.messages).toBe(2);
   });
 });
 

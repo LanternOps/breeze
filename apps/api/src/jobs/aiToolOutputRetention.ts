@@ -72,6 +72,14 @@
  * `action_intents.result` of terminal intents past the same window is nulled
  * in the same run (#9050; `nullIntentResultsBatch`).
  *
+ * TOOL-DISCOVERY TELEMETRY (#12421 W01) rides the same run, per org, with
+ * two deliberate differences: rows are DELETED (`ai_tool_search_events`, no
+ * tombstone), and the age is the org's window capped at
+ * SEARCH_EVENT_MAX_AGE_DAYS — so a keep-forever org still loses them at 180
+ * days — with no live-session deferral (nothing in memory reads them). The
+ * same pass blanks the ToolSearch `tool_use` input (the model's query) inside
+ * aged assistant rows' `ai_messages.content_blocks`, the one other copy.
+ *
  * Not covered (spec "Out of scope"): user/assistant prose, continuation
  * summaries, screenshots, run workspaces. `ai_messages.content_blocks` holds no
  * tool results: no write path persists `tool_result` blocks there (the SDK's
@@ -109,6 +117,17 @@ export function tombstone(at: Date): AiToolOutputTombstone {
 export { LIVE_SESSION_MAX_DEFER_MS, LIVE_SESSION_QUIET_MS };
 
 const DEFAULT_BATCH_SIZE = 1000;
+
+/**
+ * #12421 W01: tool-discovery rows never outlive this, whatever the org's
+ * tool-output window (including "keep forever"). Spec §3.5.
+ */
+export const SEARCH_EVENT_MAX_AGE_DAYS = 180;
+
+/** The age at which an org's discovery telemetry is removed: its window, capped. */
+export function searchEventAgeDays(retentionDays: number | null): number {
+  return retentionDays === null ? SEARCH_EVENT_MAX_AGE_DAYS : Math.min(retentionDays, SEARCH_EVENT_MAX_AGE_DAYS);
+}
 const DEFAULT_MAX_BATCHES = 50;
 
 export type TranscriptDeleteOutcome = 'deleted' | 'not_found' | 'failed';
@@ -330,6 +349,87 @@ export const deleteSdkTranscript: TranscriptDeleter = async (sdkSessionId) => {
 };
 
 /**
+ * #12421 W01: delete one org's `ai_tool_search_events` rows older than its
+ * discovery age, batch by batch, each batch its own fresh system transaction.
+ * The table has no org_id: rows are scoped through their session. Its
+ * `created_at` is `timestamptz`, so the cutoff is compared as one (not through
+ * `utcWallTime`, which is for the `timestamp` columns). No live-session
+ * deferral: nothing in memory reads these rows.
+ */
+export async function deleteAgedSearchEvents(
+  orgId: string,
+  retentionDays: number | null,
+  opts: ScrubOptions,
+): Promise<BatchedPruneResult> {
+  const now = opts.now ?? new Date();
+  const cutoffIso = new Date(now.getTime() - searchEventAgeDays(retentionDays) * DAY_MS).toISOString();
+  return batched(opts.batchSize, opts.maxBatches, async () => {
+    const result = await inFreshSystemContext('aiToolOutputRetention.ai_tool_search_events', () => db.execute(sql`
+      WITH target AS (
+        SELECT e.id
+          FROM ai_tool_search_events e
+          JOIN ai_sessions s ON s.id = e.session_id
+         WHERE s.org_id = ${orgId}
+           AND e.created_at < ${cutoffIso}::timestamptz
+         LIMIT ${opts.batchSize}
+         FOR UPDATE OF e SKIP LOCKED
+      )
+      DELETE FROM ai_tool_search_events
+       WHERE id IN (SELECT id FROM target)
+    `));
+    return extractRowCount(result);
+  });
+}
+
+/**
+ * #12421 W01: blank the ToolSearch `tool_use` input (the model's search
+ * query) inside one org's assistant `ai_messages.content_blocks` older than
+ * `ageDays`. Every other block keeps its position and bytes
+ * (`WITH ORDINALITY … ORDER BY ord`). "Already blanked" is the
+ * `b->'input' <> '{}'` EXISTS, not a `@>` containment test: jsonb containment
+ * treats `{}` as contained in every object, so that form would match nothing.
+ */
+export async function blankAgedToolSearchInputs(
+  orgId: string,
+  ageDays: number,
+  opts: ScrubOptions,
+): Promise<BatchedPruneResult> {
+  const now = opts.now ?? new Date();
+  const cutoffIso = new Date(now.getTime() - ageDays * DAY_MS).toISOString();
+  return batched(opts.batchSize, opts.maxBatches, async () => {
+    const result = await inFreshSystemContext('aiToolOutputRetention.tool_search_inputs', () => db.execute(sql`
+      WITH target AS (
+        SELECT m.id
+          FROM ai_messages m
+          JOIN ai_sessions s ON s.id = m.session_id
+         WHERE s.org_id = ${orgId}
+           AND m.role = 'assistant'
+           AND m.created_at < ${utcWallTime(cutoffIso)}
+           AND jsonb_typeof(m.content_blocks) = 'array'
+           AND EXISTS (
+             SELECT 1 FROM jsonb_array_elements(m.content_blocks) b
+              WHERE b->>'type' = 'tool_use' AND b->>'name' = 'ToolSearch' AND b->'input' <> '{}'::jsonb
+           )
+         LIMIT ${opts.batchSize}
+         FOR UPDATE OF m SKIP LOCKED
+      )
+      UPDATE ai_messages m
+         SET content_blocks = (
+           SELECT jsonb_agg(
+                    CASE WHEN t.b->>'type' = 'tool_use' AND t.b->>'name' = 'ToolSearch'
+                         THEN t.b || '{"input":{}}'::jsonb
+                         ELSE t.b END
+                    ORDER BY t.ord)
+             FROM jsonb_array_elements(m.content_blocks) WITH ORDINALITY AS t(b, ord)
+         )
+        FROM target
+       WHERE m.id = target.id
+    `));
+    return extractRowCount(result);
+  });
+}
+
+/**
  * Effective retention days per org, from ONE system-context read. A `Map` of
  * orgId → days, `null` = keep forever.
  */
@@ -362,6 +462,10 @@ export interface RetentionRunSummary {
   transcripts: { deleted: number; notFound: number; failed: number };
   incomplete: boolean;
   durationMs: number;
+  /** #12421 W01: ai_tool_search_events rows deleted. */
+  searchEventsDeleted: number;
+  /** #12421 W01: assistant rows whose ToolSearch input was blanked. */
+  toolSearchInputsBlanked: number;
 }
 
 export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTranscript?: TranscriptDeleter }): Promise<RetentionRunSummary> {
@@ -373,6 +477,8 @@ export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTran
     transcripts: { deleted: 0, notFound: 0, failed: 0 },
     incomplete: false,
     durationMs: 0,
+    searchEventsDeleted: 0,
+    toolSearchInputsBlanked: 0,
   };
 
   const onCleared = async (ids: string[]) => {
@@ -393,12 +499,34 @@ export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTran
   const retentionByOrg = await loadEffectiveRetentionByOrg();
   for (const [orgId, days] of retentionByOrg) {
     summary.orgsScanned += 1;
-    if (days === null) { summary.orgsKeptForever += 1; continue; }
-    if (!Number.isSafeInteger(days) || days < 1) {
+    if (days !== null && (!Number.isSafeInteger(days) || days < 1)) {
       console.error(`${LOG} Org ${orgId} has an unusable retention of ${String(days)} days; SKIPPING it (retain rather than guess)`);
       summary.orgsSkipped += 1;
       continue;
     }
+    // #12421 W01: discovery telemetry first, for keep-forever orgs too (the
+    // 180-day ceiling). A failure here counts the org failed but does not
+    // keep its tool outputs from being scrubbed below.
+    let discoveryFailed = false;
+    try {
+      const events = await deleteAgedSearchEvents(orgId, days, opts);
+      const inputs = await blankAgedToolSearchInputs(orgId, searchEventAgeDays(days), opts);
+      summary.searchEventsDeleted += events.deleted;
+      summary.toolSearchInputsBlanked += inputs.deleted;
+      for (const [target, result] of [
+        ['ai_tool_search_events', events], ['ai_messages.tool_search_input', inputs],
+      ] as const) {
+        if (result.hasMore) {
+          summary.incomplete = true;
+          warnOnRetentionBacklog(LOG, `ai_tool_output.${target}`, result, `org=${orgId}`);
+        }
+      }
+    } catch (err) {
+      console.error(`${LOG} Failed to remove tool-discovery telemetry for org ${orgId}:`, err);
+      discoveryFailed = true;
+      summary.orgsFailed += 1;
+    }
+    if (days === null) { summary.orgsKeptForever += 1; continue; }
     try {
       const r = await scrubOrgToolOutputs(orgId, days, { ...opts, onCleared });
       summary.orgsScrubbed += 1;
@@ -417,7 +545,7 @@ export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTran
       }
     } catch (err) {
       console.error(`${LOG} Failed to scrub tool outputs for org ${orgId}:`, err);
-      summary.orgsFailed += 1;
+      if (!discoveryFailed) summary.orgsFailed += 1;
     }
   }
 
@@ -443,10 +571,11 @@ export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTran
     `${LOG} Scrubbed messages=${totals.messages} executions=${totals.executions} captures=${totals.artifacts} intents=${totals.intents} ` +
     `sessions=${totals.sessions} (transcripts deleted=${transcripts.deleted} notFound=${transcripts.notFound} failed=${transcripts.failed}) ` +
     `across ${summary.orgsScrubbed}/${summary.orgsScanned} orgs (keptForever=${summary.orgsKeptForever}, ` +
-    `skipped=${summary.orgsSkipped}, failed=${summary.orgsFailed}) in ${summary.durationMs}ms`,
+    `skipped=${summary.orgsSkipped}, failed=${summary.orgsFailed}) in ${summary.durationMs}ms; ` +
+    `searchEventsDeleted=${summary.searchEventsDeleted} toolSearchInputsBlanked=${summary.toolSearchInputsBlanked}`,
   );
   recordRetentionRun('ai_tool_output_retention', {
-    rowsDeleted: totals.messages + totals.executions + totals.artifacts + totals.intents,
+    rowsDeleted: totals.messages + totals.executions + totals.artifacts + totals.intents + summary.searchEventsDeleted,
     incomplete: summary.incomplete,
   });
   return summary;
