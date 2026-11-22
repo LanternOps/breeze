@@ -114,11 +114,18 @@ describe('Sidebar — one Automations entry (Flows server gate)', () => {
     expect(automationsLink(container)?.getAttribute('aria-current')).toBe('page');
   });
 
-  it('is not active on an unrelated page', async () => {
+  it.each(['/scripts', '/jobsfoo', '/flowsx'])('is not active on %s', async (path) => {
     mockConfig({ features: { flows: true } });
-    const { container } = render(<Sidebar currentPath="/scripts" />);
+    const { container } = render(<Sidebar currentPath={path} />);
     await waitFor(() => expect(automationsLink(container)).not.toBeNull());
     expect(automationsLink(container)?.getAttribute('aria-current')).toBeNull();
+  });
+
+  it('lights exactly one link on a Flows page', async () => {
+    mockConfig({ features: { flows: true } });
+    const { container } = render(<Sidebar currentPath="/flows/runs/abc" />);
+    await waitFor(() => expect(automationsLink(container)?.getAttribute('aria-current')).toBe('page'));
+    expect(container.querySelectorAll('a[aria-current="page"]')).toHaveLength(1);
   });
 
   it('no Jobs or Flows entry remains', async () => {

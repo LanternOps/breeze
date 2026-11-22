@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { i18n } from '@/lib/i18n';
 
 const fetchWithAuthMock = vi.hoisted(() => vi.fn());
@@ -54,10 +54,33 @@ describe('AutomationsTabStrip', () => {
     render(<AutomationsTabStrip currentPath="/jobs" />);
     const jobs = await screen.findByTestId('automations-tab-jobs');
     expect(jobs.getAttribute('aria-current')).toBe('page');
+    // Tab links are bare paths: they never carry the Jobs page's own hash.
     expect(jobs.getAttribute('href')).toBe('/jobs');
+    expect(screen.getByTestId('automations-tab-flows').getAttribute('href')).toBe('/flows');
     expect(screen.getByTestId('automations-tab-flows').getAttribute('aria-current')).toBeNull();
-    // The strip never touches the Jobs page's own hash tabs or #convert-<id>.
+    // Rendering the strip leaves the page's own hash tabs and #convert-<id> alone.
     expect(window.location.hash).toBe('#convert-abc');
+  });
+
+  it.each(['popstate', 'astro:after-swap'])('the active tab follows navigation (%s)', async (eventName) => {
+    mockApi({ flows: true });
+    render(<AutomationsTabStrip currentPath="/jobs" />);
+    const flows = await screen.findByTestId('automations-tab-flows');
+    expect(screen.getByTestId('automations-tab-jobs').getAttribute('aria-current')).toBe('page');
+    window.history.replaceState(null, '', '/flows/abc');
+    act(() => {
+      if (eventName === 'popstate') window.dispatchEvent(new PopStateEvent('popstate'));
+      else document.dispatchEvent(new Event('astro:after-swap'));
+    });
+    expect(flows.getAttribute('aria-current')).toBe('page');
+    expect(screen.getByTestId('automations-tab-jobs').getAttribute('aria-current')).toBeNull();
+  });
+
+  it('does not treat a lookalike path as the Flows section', async () => {
+    mockApi({ flows: true });
+    render(<AutomationsTabStrip currentPath="/flowsx" />);
+    await screen.findByTestId('automations-tab-flows');
+    expect(screen.getByTestId('automations-tab-flows').getAttribute('aria-current')).toBeNull();
   });
 
   it('marks Flows active on /flows and on its sub-pages, Flows tab first', async () => {
