@@ -76,14 +76,23 @@ func dumpNetlink(parent context.Context, typ uint16) ([]syscall.NetlinkMessage, 
 	if e = syscall.Sendto(fd, request, 0, &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}); e != nil {
 		return nil, e
 	}
+	return receiveNetlinkDump(ctx, func(buf []byte) (int, syscall.Sockaddr, error) {
+		return syscall.Recvfrom(fd, buf, syscall.MSG_TRUNC)
+	})
+}
+
+// receiveNetlinkDump collects the messages of one dump. recv fills the buffer
+// it is given, as Recvfrom does; it is a parameter only so tests can supply
+// successive reads. Returned messages never alias that buffer.
+func receiveNetlinkDump(ctx context.Context, recv func([]byte) (int, syscall.Sockaddr, error)) ([]syscall.NetlinkMessage, error) {
 	out := []syscall.NetlinkMessage{}
 	total := 0
 	buf := make([]byte, 256*1024)
 	for {
-		if e = ctx.Err(); e != nil {
+		if e := ctx.Err(); e != nil {
 			return out, e
 		}
-		n, from, e := syscall.Recvfrom(fd, buf, syscall.MSG_TRUNC)
+		n, from, e := recv(buf)
 		if errors.Is(e, syscall.EAGAIN) || errors.Is(e, syscall.EINTR) {
 			continue
 		}
@@ -124,6 +133,9 @@ func dumpNetlink(parent context.Context, typ uint16) ([]syscall.NetlinkMessage, 
 					return out, syscall.Errno(-code)
 				}
 			default:
+				// ParseNetlinkMessage returns Data slices into buf, which the
+				// next read overwrites (#12505), so keep a copy.
+				m.Data = append([]byte(nil), m.Data...)
 				out = append(out, m)
 			}
 		}
