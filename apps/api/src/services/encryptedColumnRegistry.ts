@@ -55,7 +55,24 @@ export const SETTINGS_SECRET_JSON_PATHS: readonly (readonly string[])[] = [
   ['notifications', 'pushoverDefaultUser'],
 ];
 
+/**
+ * UniFi Site Manager API keys (#11808). The W1 migration copied each key's
+ * ciphertext byte for byte out of `unifi_integrations.api_key_encrypted`, so the
+ * AAD tag stays that column's identity (the #6379 moved-column precedent).
+ * Column-bound, not row-bound, exactly as the value was sealed before the move.
+ * Seal and open it only via `columnAad(UNIFI_KEY_COLUMN_SPEC)`; never call
+ * `decryptForColumn('unifi_integration_keys', ...)`. Never rename the tag.
+ */
+export const UNIFI_KEY_COLUMN_SPEC = {
+  table: 'unifi_integration_keys',
+  column: 'api_key_encrypted',
+  kind: 'text',
+  aadTag: 'unifi_integrations.api_key_encrypted',
+  description: 'UniFi Site Manager API key (#11808): moved verbatim from unifi_integrations.api_key_encrypted, keeps its column-bound AAD tag',
+} satisfies EncryptedColumnSpec;
+
 export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
+  UNIFI_KEY_COLUMN_SPEC,
   { table: 'billing_link_tokens', column: 'token_ct', kind: 'text', aadBinding: 'row', description: 'Autopay bearer link token, encrypted and bound to its row id' },
   { table: 'caller_verifications', column: 'sealed_link_token', kind: 'text', aadBinding: 'row', description: 'Caller verification SMS/email link token (#6354 W03), sealed for post-commit (re)delivery and bound to its row id' },
 

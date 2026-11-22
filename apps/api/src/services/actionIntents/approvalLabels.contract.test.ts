@@ -85,3 +85,30 @@ describe('W15 Pax8 approval consequences', () => {
     expect(buildApprovalDescription('manage_pax8_orders', 'preflight', {})).toContain('sends the staged order content to Pax8');
   });
 });
+
+// #11674: a comment edit or delete acts on `expectedTicketId` (intentRowTarget.ts),
+// so its headline names that ticket, by an id stub the intent service swaps for
+// the ticket number. Never the comment text (aiGuardrails.ts `manage_tickets`).
+describe('comment edit and delete headlines (#11674)', () => {
+  const OPERATIVE = '7c1e9d02-aaaa-4bbb-8ccc-ddddeeeeffff';
+  const STRAY = '2aad0601-1111-4222-8333-444455556666';
+
+  it('edit_comment names the expectedTicketId ticket and says the text is replaced', () => {
+    const label = buildApprovalDescription('manage_tickets', 'edit_comment', {
+      action: 'edit_comment', commentId: STRAY, expectedTicketId: OPERATIVE, ticketId: STRAY, content: 'secret replacement text',
+    });
+    expect(label).toBe('Edit a comment on ticket #7c1e9d02... (replaces its text)');
+    expect(label).not.toContain('secret');
+  });
+
+  it('delete_comment names the expectedTicketId ticket', () => {
+    expect(buildApprovalDescription('manage_tickets', 'delete_comment', {
+      action: 'delete_comment', commentId: STRAY, expectedTicketId: OPERATIVE, ticketId: STRAY,
+    })).toBe('Delete a comment on ticket #7c1e9d02...');
+  });
+
+  it('never names a stray ticketId when expectedTicketId is missing', () => {
+    expect(buildApprovalDescription('manage_tickets', 'delete_comment', { action: 'delete_comment', ticketId: STRAY }))
+      .toBe('Delete a comment on ticket #unknown');
+  });
+});

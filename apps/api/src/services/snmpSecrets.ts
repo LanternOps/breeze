@@ -15,6 +15,10 @@ const SECRET_FIELD_NAMES = new Set([
   'token',
 ]);
 
+/** The keys whose values are SNMP secrets, at any depth of `snmp_credentials`. Learned networks (#12369 W03b) walks
+ *  the same keys as the merge helpers here. */
+export const SNMP_SECRET_FIELD_NAMES: ReadonlySet<string> = SECRET_FIELD_NAMES;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -157,6 +161,17 @@ function collectSecretLeaves(value: unknown): unknown[] {
     }
   }
   return leaves;
+}
+
+/**
+ * Whether a stored profile row holds any saved SNMP secret: one non-empty community, or one non-empty secret
+ * leaf in the credentials. Same leaves as the stored-secret checks in `subnetChangeWouldRetainSnmpSecrets`.
+ * Learned networks (#12369 E5): the gate's `hasSavedSnmpSecrets`; W03b's save-time predicate agrees with it.
+ */
+export function storedProfileHoldsSnmpSecrets(row: { snmpCommunities: string[] | null; snmpCredentials: unknown }): boolean {
+  const hasStoredCommunities = (row.snmpCommunities ?? []).some((value) => Boolean(value));
+  const hasStoredCredentials = collectSecretLeaves(row.snmpCredentials).some((leaf) => typeof leaf === 'string' && leaf.length > 0);
+  return hasStoredCommunities || hasStoredCredentials;
 }
 
 /**

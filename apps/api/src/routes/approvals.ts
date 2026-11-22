@@ -617,11 +617,20 @@ approvalRoutes.get('/pending', async (c) => {
 // 'count' as an :id. Same filters as `/pending`, unpaginated — the whole
 // live-authorized set's length, not a raw table count(*) (which couldn't
 // account for the app-layer four_eyes/supervised live-authz filter above).
+/**
+ * How many approvals wait on `userId`: exactly `GET /pending/count`, the same
+ * live-authorized set as `GET /pending`. Exported for Wisp's standing state
+ * (#11677), which says how many are waiting and nothing about them. Opens its
+ * own system context (`runOutsideDbContext`), so call it outside any held one.
+ */
+export async function countAuthorizedPendingApprovals(userId: string, partnerId: string | null): Promise<number> {
+  return (await fetchAuthorizedPendingApprovals(userId, partnerId)).length;
+}
+
 approvalRoutes.get('/pending/count', async (c) => {
   const userId = c.get('auth').user.id;
   const partnerId = c.get('auth').partnerId ?? null;
-  const authorized = await fetchAuthorizedPendingApprovals(userId, partnerId);
-  return c.json({ count: authorized.length });
+  return c.json({ count: await countAuthorizedPendingApprovals(userId, partnerId) });
 });
 
 const denySchema = z.object({

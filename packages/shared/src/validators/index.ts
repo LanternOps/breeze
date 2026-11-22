@@ -1285,6 +1285,9 @@ export * from './topology';
 
 export * from './topologyCollection';
 
+// Learned networks heartbeat attachment report (#12369 B1)
+export * from './networkAttachments';
+
 export * from './topologyConfiguration';
 
 export * from './topologyPresence';
@@ -1500,6 +1503,7 @@ export * from './flowRuns';
 export * from './flowBudgets';
 export * from './flowWebhooks';
 export * from './flowConversions';
+export * from './flowDrafts';
 export * from './networkIsolation';
 export * from './oemUpdates';
 export * from './oemObserve';

@@ -818,6 +818,7 @@
         "overridesLabel": "Anulaciones:",
         "failedToLoadMonitors": "Error al cargar los monitores",
         "createMonitor": "Crear monitor",
+        "helpText": "Las definiciones de monitores están en Alertas > Monitores. Aquí eliges qué monitores se aplican a esta política y puedes anular el valor de un monitor.",
         "notAttachable": "Este monitor no se puede asociar a esta política. Las políticas del partner solo pueden usar monitores a nivel de partner.",
         "monitorDeleted": "Monitor eliminado",
         "recommended": {

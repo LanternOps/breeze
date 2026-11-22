@@ -63,7 +63,7 @@ export default function ChannelsSection({ channels, currentOrgId, isPartnerScope
     switch (values.type) {
       case 'email':
         config = {
-          recipients: values.emailRecipients?.map(r => r.value).filter(v => v) ?? []
+          recipients: values.emailRecipients?.map(r => r.value.trim()).filter(Boolean) ?? []
         };
         break;
       case 'slack':

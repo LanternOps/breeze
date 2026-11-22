@@ -74,6 +74,8 @@ const h = await vi.hoisted(async () => {
 vi.mock('../db', () => ({
   db: h.db,
   hasDbAccessContext: () => h.depth() > 0,
+  // Learned networks (#12369): the network_discovery gate's site lock must run inside a context.
+  assertInTransaction: (name: string) => { if (h.depth() === 0) throw new Error(`${name} outside a transaction`); },
   getCurrentDbAccessContext: () => (h.depth() > 0 ? { scope: 'organization' } : undefined),
   withDbAccessContext: (_ctx: unknown, fn: () => Promise<unknown>) => h.enter(fn),
   withSystemDbAccessContext: (fn: () => Promise<unknown>) => h.enter(fn),

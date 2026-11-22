@@ -130,6 +130,26 @@ export function ticketSiteScopeCondition(auth: AuthContext): SQL | undefined {
 }
 
 /**
+ * The reach of the `manage_tickets` list action (aiToolsTicketing.ts) as WHERE
+ * fragments: never a soft-deleted ticket, the caller's org condition, the site
+ * axis ({@link ticketSiteScopeCondition}) and the exact-device axis of a
+ * device-bound run (deviceless tickets stay visible on both, as there). The
+ * list action and Wisp's standing state (#11677) both read through this, so
+ * what Wisp is told about and what its tool would list cannot drift.
+ *
+ * `auth.orgCondition` is undefined for a system-scope auth: a caller running
+ * in system DB context must add its own explicit org list.
+ */
+export function ticketListReachConditions(auth: AuthContext): SQL[] {
+  const conditions: SQL[] = [isNull(tickets.deletedAt)];
+  const orgCond = auth.orgCondition(tickets.orgId);
+  if (orgCond) conditions.push(orgCond);
+  const scope = ticketCounterpartScopeCondition(auth);
+  if (scope) conditions.push(scope);
+  return conditions;
+}
+
+/**
  * The visibility getScopedTicketOr404 applies to ONE ticket, as a list
  * condition on the other end of a ticket link: the site axis, plus the
  * exact-device axis of a device-bound AI run (allowedDeviceIds), which

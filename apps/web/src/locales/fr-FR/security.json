@@ -1656,7 +1656,9 @@
         "label": "Pi-hole",
         "helpText": "Point de terminaison de l’API Pi-hole et clé API. Utilisez le nom d’hôte accessible sur le LAN.",
         "apiKeyPlaceholder": "clé API pihole à partir de /admin",
-        "apiEndpointPlaceholder": "http://pihole.local"
+        "apiEndpointPlaceholder": "http://pihole.local",
+        "versionHelp": "Choisissez la version majeure de votre Pi-hole. La v6 s’authentifie avec un mot de passe d’application.",
+        "appPasswordPlaceholder": "mot de passe d’application depuis Paramètres → Interface Web / API"
       },
       "adguardHome": {
         "label": "AdGuard Home",
@@ -1678,7 +1680,9 @@
       "accountIdOptional": "Compte ID (optionnel)",
       "apiEndpoint": "API point d’arrivée",
       "httpBasicUsername": "Nom d’utilisateur HTTP Basic",
-      "httpBasicPassword": "HTTP Mot de passe de base"
+      "httpBasicPassword": "HTTP Mot de passe de base",
+      "piholeVersion": "Version de Pi-hole",
+      "appPassword": "Mot de passe d’application"
     },
     "placeholders": {
       "displayName": "par exemple Acme HQ Gateway",
@@ -1693,6 +1697,10 @@
       "createFailed": "Impossible de créer une intégration",
       "createSuccess": "{{provider}} intégration « {{name}} » ajouté",
       "networkError": "Erreur réseau"
+    },
+    "piholeVersions": {
+      "v5": "Pi-hole v5 (ancienne API d’administration)",
+      "v6": "Pi-hole v6 (API de session)"
     }
   },
   "dnsSecurityAddDnsPolicyModal": {
@@ -1825,6 +1833,12 @@
       "label": "Stocker le trafic autorisé",
       "helpOff": "Seules les requêtes bloquées et redirigées sont stockées. Les requêtes autorisées représentent généralement presque tout le trafic, et votre fournisseur DNS les conserve dans ses propres rapports.",
       "helpOn": "Les requêtes autorisées sont aussi stockées, soit généralement environ 100 fois plus de lignes. Désactiver cette option plus tard ne supprime pas les requêtes autorisées déjà stockées ; la rétention les supprime."
+    },
+    "piholeVersion": {
+      "label": "Version de Pi-hole",
+      "v5": "Pi-hole v5 (ancienne API d’administration)",
+      "v6": "Pi-hole v6 (API de session)",
+      "help": "Modifie la façon dont Breeze communique avec ce Pi-hole. Pour la v6, recréez l’intégration avec un mot de passe d’application si la clé enregistrée est un jeton v5."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

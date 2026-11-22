@@ -10,6 +10,7 @@
  * - get_network_asset_reachability (Tier 1): Sourced, dated reachability for a discovered asset
  */
 
+import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import { z } from 'zod';
 import { maskOidShapedModel, nicVendorFromMac } from './assetIdentity';
@@ -63,6 +64,13 @@ import {
 import { aiExecuteCommand } from './aiDispatch';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { inToolDbPhase } from './aiToolDbContext';
+import { evaluateDiscoveryGate } from './learnedNetworks/gate';
+import { explainGuardedAgent } from './learnedNetworks/eligibility';
+import { lockSitesForNetworkGate } from './learnedNetworks/siteLock';
+import { buildDiscoveryScanCommand, DISCOVERY_SCAN_FAMILY } from './learnedNetworks/scanCommand';
+import { loadCommandAttempt } from './learnedNetworks/attempt';
+import { verifyDiscoveryResult } from './learnedNetworks/verify';
+import { agentNotEligibleMessage, GATE_FAILURE_MESSAGES } from './learnedNetworks/messages';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -90,6 +98,25 @@ const DISCOVERY_SCAN_METHODS: Record<string, string[]> = {
   arp: ['arp'],
   full: ['arp', 'ping', 'port_scan', 'snmp'],
 };
+
+/**
+ * The fingerprint a guarded scan result proves it ran behind (#12369). The stored `stdout` is the JSON of the
+ * agent's result body (routes/agentWs.ts); anything unreadable is no proof, which the verifier refuses.
+ */
+function verifiedNetworkFromStdout(stdout: string | undefined): unknown {
+  if (!stdout) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return undefined;
+  }
+  return parsed && typeof parsed === 'object' ? (parsed as { verifiedNetwork?: unknown }).verifiedNetwork : undefined;
+}
+
+/** The agent's guard refusals (raw strings: AGENT_COMMAND_ERROR_CODES is pinned to the Go list, W02c). */
+const isDiscoveryRefusalCode = (code: string | undefined): code is 'network_mismatch' | 'network_changed' =>
+  code === 'network_mismatch' || code === 'network_changed';
 
 async function verifyDeviceAccess(
   deviceId: string,
@@ -963,6 +990,11 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
       const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, true));
       if ('error' in access) return JSON.stringify({ error: access.error });
+      // Same rule as the discovery-profile worker's agent selection: a Quick
+      // Support session machine is never a scan source.
+      if (access.device.isEphemeral) {
+        return JSON.stringify({ error: 'Network discovery cannot run from a Quick Support device.' });
+      }
 
       // The agent's handleNetworkDiscovery reads `subnets` and `methods`
       // (agent/internal/heartbeat/handlers_network.go), the same shape the
@@ -970,10 +1002,65 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       // Subnets empty and every scan failed with "no valid subnets provided"
       // (#8799).
       const scanType = (input.scanType as string | undefined) ?? 'ping';
-      const result = await aiExecuteCommand(auth, 'network_discovery', deviceId, 'network_discovery', {
-        subnets: [input.subnet as string],
-        methods: DISCOVERY_SCAN_METHODS[scanType] ?? DISCOVERY_SCAN_METHODS.ping,
-      }, { userId: auth.user.id, timeoutMs: 120000 });
+      const { orgId, siteId } = access.device;
+
+      // Learned networks (#12369, spec §8.2): the same gate as the discovery worker, under the shared site lock.
+      // The lock is released when this phase commits: the 120 s wait below holds no lock and no DB context
+      // (the persisted device_commands row is the attempt, checked against the current state on return).
+      const gated = await inToolDbPhase(auth, async () => {
+        await lockSitesForNetworkGate([siteId], 'shared');
+        const decision = await evaluateDiscoveryGate({ orgId, siteId, profile: null });
+        if (decision.kind === 'fail') {
+          return { refusal: { error: decision.error.message, code: decision.error.code } };
+        }
+        if (decision.kind === 'unrestricted') return { decision };
+        const target = await explainGuardedAgent({
+          orgId, siteId, deviceId,
+          allowedGatewayIds: decision.allowed.map((g) => g.gatewayId),
+          commandType: DISCOVERY_SCAN_FAMILY,
+        });
+        if (!target.eligible) {
+          return {
+            refusal: {
+              error: agentNotEligibleMessage(target.label, target.reason),
+              code: 'agent_not_eligible' as const,
+              reason: target.reason,
+            },
+          };
+        }
+        return { decision, agentGatewayIds: target.agent.gatewayIds };
+      });
+      if ('refusal' in gated) return JSON.stringify(gated.refusal);
+
+      // The builder is the only place a discovery scan command is constructed (scanCommand.contract.test.ts).
+      // aiExecuteCommand writes its own command row id, so the builder's id is unused (contract note 4).
+      const command = buildDiscoveryScanCommand({
+        commandId: randomUUID(),
+        payload: {
+          subnets: [input.subnet as string],
+          methods: DISCOVERY_SCAN_METHODS[scanType] ?? DISCOVERY_SCAN_METHODS.ping,
+        },
+        decision: gated.decision,
+        agentGatewayIds: gated.agentGatewayIds,
+      });
+      const result = await aiExecuteCommand(auth, 'network_discovery', deviceId, command.type, command.payload, { userId: auth.user.id, timeoutMs: 120000 });
+
+      if (result.status === 'failed' && isDiscoveryRefusalCode(result.errorCode)) {
+        return JSON.stringify({ error: GATE_FAILURE_MESSAGES[result.errorCode], code: result.errorCode });
+      }
+
+      if (result.status === 'completed') {
+        // No host leaves this tool until the result is matched to the attempt and to the site's state now.
+        const outcome = await inToolDbPhase(auth, async () => {
+          await lockSitesForNetworkGate([siteId], 'shared');
+          const attempt = result.commandId ? await loadCommandAttempt(result.commandId, deviceId) : null;
+          return verifyDiscoveryResult({
+            orgId, siteId, profileId: null, attempt,
+            verifiedNetwork: verifiedNetworkFromStdout(result.stdout),
+          });
+        });
+        if (!outcome.ok) return JSON.stringify({ error: outcome.error.message, code: 'network_unverified' });
+      }
 
       return JSON.stringify(result);
     }

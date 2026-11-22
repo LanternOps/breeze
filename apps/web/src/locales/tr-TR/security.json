@@ -1656,7 +1656,9 @@
         "label": "Pi-hole",
         "helpText": "Pi-hole API bitiş noktası + API anahtarı. LAN tarafından yönlendirilebilen ana bilgisayar adını kullanın.\n/admin'den ",
         "apiKeyPlaceholder": "pihole API anahtarı",
-        "apiEndpointPlaceholder": "http://pihole.local"
+        "apiEndpointPlaceholder": "http://pihole.local",
+        "versionHelp": "Pi-hole’unuzun ana sürümünü seçin. v6, uygulama parolasıyla oturum açar.",
+        "appPasswordPlaceholder": "Ayarlar → Web arayüzü / API altındaki uygulama parolası"
       },
       "adguardHome": {
         "label": "AdGuard Home",
@@ -1678,7 +1680,9 @@
       "accountIdOptional": "Hesap Kimliği (isteğe bağlı)",
       "apiEndpoint": "API uç nokta",
       "httpBasicUsername": "HTTP Temel kullanıcı adı",
-      "httpBasicPassword": "HTTP Temel şifresi"
+      "httpBasicPassword": "HTTP Temel şifresi",
+      "piholeVersion": "Pi-hole sürümü",
+      "appPassword": "Uygulama parolası"
     },
     "placeholders": {
       "displayName": "ör. Acme Genel Merkez Ağ Geçidi",
@@ -1693,6 +1697,10 @@
       "createFailed": "Entegrasyon oluşturulamadı",
       "createSuccess": "{{provider}} entegrasyonu \"{{name}}\" eklendi",
       "networkError": "Ağ hatası"
+    },
+    "piholeVersions": {
+      "v5": "Pi-hole v5 (eski yönetici API’si)",
+      "v6": "Pi-hole v6 (oturum API’si)"
     }
   },
   "dnsSecurityAddDnsPolicyModal": {
@@ -1825,6 +1833,12 @@
       "label": "İzin verilen trafiği depola",
       "helpOff": "Yalnızca engellenen ve yönlendirilen sorgular depolanır. İzin verilen sorgular genellikle trafiğin neredeyse tamamıdır ve DNS sağlayıcınız bunları kendi raporlarında tutar.",
       "helpOn": "İzin verilen sorgular da depolanır; bu genellikle yaklaşık 100 kat daha fazla satır demektir. Daha sonra kapatmak, zaten depolanmış izin verilen sorguları silmez; saklama süresi bunları kaldırır."
+    },
+    "piholeVersion": {
+      "label": "Pi-hole sürümü",
+      "v5": "Pi-hole v5 (eski yönetici API’si)",
+      "v6": "Pi-hole v6 (oturum API’si)",
+      "help": "Breeze’in bu Pi-hole ile nasıl konuştuğunu değiştirir. v6 için, kayıtlı anahtar bir v5 belirteciyse entegrasyonu uygulama parolasıyla yeniden oluşturun."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

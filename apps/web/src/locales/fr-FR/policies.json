@@ -818,6 +818,7 @@
         "overridesLabel": "Remplacements :",
         "failedToLoadMonitors": "Échec du chargement des moniteurs",
         "createMonitor": "Créer un moniteur",
+        "helpText": "Les définitions des moniteurs se trouvent dans Alertes > Moniteurs. Cet onglet choisit les moniteurs qui s'appliquent à cette politique et permet de remplacer la valeur d'un moniteur.",
         "notAttachable": "Ce moniteur ne peut pas être associé à cette politique. Les politiques du partenaire ne peuvent utiliser que des moniteurs à l'échelle du partenaire.",
         "monitorDeleted": "Moniteur supprimé",
         "recommended": {

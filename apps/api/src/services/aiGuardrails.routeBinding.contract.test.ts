@@ -760,6 +760,13 @@ const BINDINGS: readonly Binding[] = [
 
   { tool: 'manage_automations', action: 'run', routeFile: 'automations.ts', method: 'post', path: '/:id/run' },
 
+  // Flows completion W01b (#12435, Decisions P8 and P20): the flow authoring
+  // tools bind to their REST twins. flows.ts gates the whole router on
+  // automations:read, so POST / and PUT /:id require read AND write.
+  { tool: 'draft_flow', routeFile: 'flows.ts', method: 'post', path: '/' },
+  { tool: 'draft_flow', routeFile: 'flows.ts', method: 'put', path: '/:id' },
+  { tool: 'validate_flow', routeFile: 'flows.ts', method: 'post', path: '/validate' },
+
   { tool: 'manage_configuration_policy', action: 'create', routeFile: 'configurationPolicies/crud.ts', method: 'post', path: '/' },
 
   { tool: 'manage_update_rings', action: 'list', routeFile: 'updateRings.ts', method: 'get', path: '/' },

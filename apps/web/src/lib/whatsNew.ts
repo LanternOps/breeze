@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.130.0',
+    date: '2026-11-20',
+    title: 'Ticket import, reinstall reattach, portal SCIM and remote desktop fixes',
+    highlights: [
+      'Move tickets in from Zammad with a guided import wizard: connect, check a dry run, then cut over. Imported tickets carry an Imported chip and filter.',
+      'Reattach a reinstalled computer to its existing device record from the Unassigned Devices dialog or the possible-replacement banner.',
+      'Create and remove customer portal accounts from Microsoft Entra with SCIM, under Portal → Sign-in & registration.',
+      'Remote desktop follows a resolution change mid-session, the clipboard pastes whichever side changed last, and session history says why each session ended. Needs this release’s agent and Breeze Viewer.',
+      'AI chat offers Try again on a failed reply, and can notify you in the browser when a reply is ready or needs your approval.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.129.0',
     date: '2026-11-14',
     title: 'Ticket triage board, backup destination alerts and security hardening',

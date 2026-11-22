@@ -1090,7 +1090,7 @@ test('verify: pins itself by ancestry, before waiting for anything', () => {
   assert.equal(waited, false);
   assert.match(gateLines(io)[0], /^ci-gate: verdict=fail reason=not_pinned /);
   const ancestry = io.gitCalls.find(args => args[0] === 'merge-base');
-  assert.deepEqual(ancestry, ['merge-base', '--is-ancestor', WORKFLOW_SHA, 'origin/main']);
+  assert.deepEqual(ancestry, ['merge-base', '--is-ancestor', WORKFLOW_SHA, 'refs/remotes/origin/main']);
   // An unusable sha cannot be ancestry-checked at all.
   const bad = verifyIo();
   assert.equal(runVerify(bad, { env: { GITHUB_WORKFLOW_SHA: '' } }), 1);
@@ -1704,6 +1704,13 @@ const prJobs = over => api(['Detect', 'success'], ['Lint', 'success'], ['Integra
 function trustRig({ baseFiles = tinyPolicy(), headFiles = { 'src/a.ts': 'a\n' } } = {}) {
   const r = anchorRemote(headFiles, baseFiles);
   r.io.repository = REPO;
+  // Moves main to a commit, and the clone's view of main with it, as the gate's checkout would have it.
+  r.landOnMain = sha => {
+    r.inOrigin('branch', '-f', 'main', sha);
+    execFileSync('git', ['fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main'], { cwd: r.clone, stdio: 'ignore' });
+  };
+  // A pull request's base is a commit of main, which the gate's checkout has.
+  r.landOnMain(r.baseSha);
   const state = { workflows: LISTED, runs: [], artifacts: {}, files: {}, jobIds: {}, logs: {}, jobs: {}, calls: [], downloads: [] };
   let nextJob = 5000;
   r.io.gh = args => {
@@ -1820,6 +1827,7 @@ test('trustedRecord: a same-named run at another path is not looked at, which is
 test('trustedRecord: two anchors for one head give the oldest base and the union of files', () => {
   const r = trustRig();
   const newerBase = r.inOrigin('commit-tree', `${r.baseSha}^{tree}`, '-p', r.baseSha, '-m', 'main moved');
+  r.landOnMain(newerBase);
   // Listed newest first, as the API does: the rule must not depend on the order.
   r.addAnchor({ id: 902, anchor: { base_sha: newerBase, files: ['src/a.ts', 'src/b.ts'], policy_digest: 'e'.repeat(64) } });
   r.addAnchor({ id: 901, anchor: { files: ['src/a.ts', 'src/c.ts'] } });
@@ -2020,13 +2028,18 @@ test('no_verified_pr_run: an anchor made after the run tested something else, so
   assert.equal(same.trust().suites_passed, true);
 });
 
-test('no_verified_pr_run: a base that cannot be fetched is a failed verification, not a crash', () => {
+test('no_verified_pr_run: a merge commit that cannot be fetched is a failed verification, not a crash', () => {
   const r = trustRig();
-  r.addAnchor({ anchor: { base_sha: 'a'.repeat(40) } });
+  r.addAnchor({ anchor: { merge_sha: 'a'.repeat(40) } });
   r.addCi();
   const stats = {};
   assert.equal(r.trust(stats).reason, 'no_verified_pr_run');
-  assert.match(stats.verification, /cannot fetch/);
+  assert.match(stats.verification, /cannot fetch a{40}/);
+  // A base that does not exist is not one of main's commits; nothing fetches it.
+  const gone = trustRig();
+  gone.addAnchor({ anchor: { base_sha: 'a'.repeat(40) } });
+  gone.addCi();
+  assert.equal(gone.trust().reason, 'anchor_base_not_on_main');
 });
 
 test('trustedRecord: an Actions API failure throws, so the shadow says error rather than a reason about the PR', () => {
@@ -2113,6 +2126,20 @@ test('baseRevisionIO: the PR head comes from refs/pull, which needs no pull-requ
   assert.equal(baseIo.prHead(7), r.headSha);
   assert.equal(baseIo.prHead(8), '', 'no such PR');
   assert.throws(() => baseIo.prHead('7 --upload-pack=x'));
+});
+
+test('baseRevisionIO: only the ref named exactly refs/pull/<n>/head is the PR head', () => {
+  const r = trustRig();
+  r.inOrigin('update-ref', 'refs/pull/7/head', r.headSha);
+  // ls-remote matches a pattern against the tail of every ref name, and lists
+  // branches before pull refs.
+  r.inOrigin('update-ref', 'refs/heads/x/refs/pull/7/head', r.baseSha);
+  r.inOrigin('update-ref', 'refs/heads/y/refs/pull/8/head', r.baseSha);
+  const listed = r.io.git(['ls-remote', 'origin', 'refs/pull/7/head']).trim().split('\n');
+  assert.deepEqual(listed, [`${r.baseSha}\trefs/heads/x/refs/pull/7/head`, `${r.headSha}\trefs/pull/7/head`], 'the branch is listed too, and first');
+  const baseIo = gate.baseRevisionIO(r.io, r.baseSha);
+  assert.equal(baseIo.prHead(7), r.headSha);
+  assert.equal(baseIo.prHead(8), '', 'a branch alone is no pull request');
 });
 
 // ── The shadow line in verify ────────────────────────────────────────────
@@ -2939,6 +2966,7 @@ test('two anchors: the oldest anchor by run id is the one the skew check reads',
 test('a re-run gate: every attempt\'s anchor counts, though the run object reports only the latest attempt', () => {
   const r = trustRig();
   const newerBase = r.inOrigin('commit-tree', `${r.baseSha}^{tree}`, '-p', r.baseSha, '-m', 'main moved');
+  r.landOnMain(newerBase);
   r.addAnchor({ attempt: 1, run: { run_attempt: 2 } });
   r.addAnchor({ attempt: 2, addRun: false, anchor: { base_sha: newerBase } });
   r.addCi();
@@ -3175,4 +3203,434 @@ test('N3 automated, controls: without the tamper the same ci.yml change passes; 
     thin_skip: [n3.N3_JOB], would_skip: [n3.N3_JOB], thin_queue: 'enforce' }));
   assert.equal(gate.verify(forged.r.io, forged.env), 1);
   assert.match(lineOf(forged.r)[0], new RegExp(`reason=thin_skip_unjustified:${n3.N3_JOB} .* thin=0$`));
+});
+
+// ── Stacked pull requests ───────────────────────────────────────────────
+//
+// A stacked PR is based on the branch below it, not on main. Each PR in a stack
+// gets its own queue entry with the usual ref shape, chained on the previous
+// entry's head; the merge_group payload carries no stack or PR field. On
+// pull_request, `github.base_ref` is main but GitHub's merge commit for a
+// mid-stack PR sits on the parent branch: M^1 is the parent branch's head
+// ("parent" shape) or the parent PR's own merge commit ("chain" shape). These
+// push that shape through the real anchor, select and verify. Values are
+// synthetic, in the shape of the recorded payloads.
+const STACK_FIELD = { base: { ref: 'main', sha: 'b'.repeat(40) }, id: 4242, number: 9, position: 2, size: 3 };
+
+// The entry's own merge_group CI run, as the real classifier (no --pull-request,
+// as in the queue) says it ran for these files.
+const entryRunJobs = files => {
+  const flags = Object.fromEntries(execFileSync('bash', [join(REPO_ROOT, SCRIPTS, 'classify-pr-paths.sh')],
+    { input: `${files.join('\n')}\n`, encoding: 'utf8' }).trim().split('\n').map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+  return gate.extractAggregator(realCi).needs.flatMap(id => {
+    const { template, expected } = gate.jobInstances(realCi, id);
+    const condition = gate.workflowJobsOf(realCi)[id].condition;
+    let runs;
+    try { runs = !condition || evaluateIf(condition, flags); } catch { runs = true; }
+    if (id === 'build-mobile-ios') runs = files.some(path => path.startsWith('apps/mobile/'));
+    return runs ? expected.map(name => ({ name, conclusion: 'success', status: 'completed' })) : [{ name: template, conclusion: 'skipped', status: 'completed' }];
+  });
+};
+
+// Main M0 (the rig's policy commit) <- parent branch P (PR 6) <- child head C (PR 7).
+// PR 7's pull_request merge commit M: C into P ("parent"), or C into PR 6's merge
+// of P into M0 ("chain"). The queue: entry A is PR 6 squashed onto M0, entry B is
+// PR 7 squashed onto A, so B's merge_group.base_sha is A's head. The anchor is the
+// one gate.anchor writes for M; the PR 7 CI run is green for its own files.
+// With queuedParentFiles, the parent branch moved after PR 7's anchor (no restack):
+// entry A is the moved parent head P', and entry B is the child's change on it.
+function stackRig({ shape = 'parent', parentFiles = { 'apps/web/src/stack-parent.ts': 'export const p = 1;\n' },
+  childFiles = { 'apps/web/src/stack-child.ts': 'export const c = 1;\n' }, baseFiles, queuedParentFiles } = {}) {
+  const r = trustRig({ baseFiles: baseFiles ?? { ...realPolicyFiles(), ...selectionPolicyFiles(), [CI_PATH]: thinCi }, headFiles: parentFiles });
+  const commitOn = (from, files, message) => {
+    r.inOrigin('checkout', '-q', '--detach', from);
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(r.origin, path)), { recursive: true });
+      writeFileSync(join(r.origin, path), text);
+    }
+    r.inOrigin('add', '-A');
+    r.inOrigin('commit', '-q', '--allow-empty', '-m', message);
+    return r.inOrigin('rev-parse', 'HEAD');
+  };
+  const main = r.baseSha, parent = r.headSha;
+  const child = commitOn(parent, childFiles, 'child');
+  const parentMerge = r.inOrigin('commit-tree', `${parent}^{tree}`, '-p', main, '-p', parent, '-m', `Merge ${parent} into ${main}`);
+  const onto = shape === 'chain' ? parentMerge : parent;
+  const merge = r.inOrigin('commit-tree', `${child}^{tree}`, '-p', onto, '-p', child, '-m', `Merge ${child} into ${onto}`);
+  const queuedParent = queuedParentFiles ? commitOn(parent, queuedParentFiles, 'parent moved') : parent;
+  const queuedChild = queuedParentFiles ? commitOn(queuedParent, childFiles, 'child as queued') : child;
+  const entryA = r.inOrigin('commit-tree', `${queuedParent}^{tree}`, '-p', main, '-m', 'PR 6 (#6)');
+  const entryB = r.inOrigin('commit-tree', `${queuedChild}^{tree}`, '-p', entryA, '-m', 'PR 7 (#7)');
+  for (const [ref, sha] of [['refs/pull/6/head', queuedParent], ['refs/pull/6/merge', parentMerge], ['refs/pull/7/head', child], ['refs/pull/7/merge', merge],
+    [`refs/heads/gh-readonly-queue/main/pr-6-${main}`, entryA], [`refs/heads/gh-readonly-queue/main/pr-7-${entryA}`, entryB]]) r.inOrigin('update-ref', ref, sha);
+  Object.assign(r, { main, parent, parentMerge, child, merge, entryA, entryB, childFiles: Object.keys(childFiles), parentFiles: Object.keys(parentFiles) });
+  // PR 7's pull_request run of the pinned gate.
+  r.headSha = child;
+  r.merge = merge;
+  assert.equal(gate.anchor(r.io, r.env({ GITHUB_SHA: merge, PR_HEAD_SHA: child, PR_NUMBER: '7', GITHUB_RUN_ID: '900', GITHUB_RUN_ATTEMPT: '1' })), 0);
+  r.anchor = r.written();
+  assert.ok(r.anchor, r.lines.join('\n'));
+  r.lines.length = 0;
+  r.entryJobs = entryRunJobs(Object.keys(childFiles));
+  const trustGh = r.io.gh;
+  r.io.gh = args => {
+    const endpoint = args.find(arg => arg.startsWith('repos/')) ?? '';
+    if (endpoint.includes('actions/workflows/ci.yml/runs')) return JSON.stringify({ workflow_runs: [ciRun({ head_sha: r.entryB, status: 'completed', conclusion: 'success' })] });
+    if (/\/runs\/77\/jobs/.test(endpoint)) return JSON.stringify([{ jobs: [...r.entryJobs, ciSuccessJob('completed', 'success')] }]);
+    if (/\/runs\/77\/artifacts/.test(endpoint)) return JSON.stringify([{ artifacts: [] }]);
+    return trustGh(args);
+  };
+  r.addStackEvidence = ({ anchor = {} } = {}) => {
+    r.addAnchor({ anchor: { ...r.anchor, ...anchor } });
+    r.addCi({ attempts: [prRunJobs(r.childFiles)] });
+  };
+  r.verifyEnv = over => verifyEnv({ GITHUB_WORKFLOW_SHA: r.workflowSha, BASE_SHA: r.entryA, HEAD_SHA: r.entryB,
+    HEAD_REF: `refs/heads/gh-readonly-queue/main/pr-7-${r.entryA}`, GITHUB_RUN_ATTEMPT: '1', GITHUB_STEP_SUMMARY: '', ...over });
+  r.isAncestor = (a, b) => { try { r.inOrigin('merge-base', '--is-ancestor', a, b); return true; } catch { return false; } };
+  return r;
+}
+const selectionLineOf = r => r.lines.find(line => /^ci-gate-selection:/.test(line)) ?? assert.fail(r.lines.join('\n'));
+
+test('stacked PR anchor, parent shape: the base is M^1, the parent branch head, and the files are the child\'s alone', () => {
+  const r = stackRig();
+  assert.equal(r.anchor.base_sha, r.parent, 'M^1 is the parent branch head, which is pull_request.base.sha for a stacked PR');
+  assert.notEqual(r.anchor.base_sha, r.main, 'never the stack base (main), which with only these files would hide the parent\'s change');
+  assert.equal(r.isAncestor(r.anchor.base_sha, r.main), false);
+  assert.deepEqual(r.anchor.files, r.childFiles);
+  for (const path of r.parentFiles) assert.ok(!r.anchor.files.includes(path));
+  assert.deepEqual([r.anchor.head_sha, r.anchor.merge_sha, r.anchor.pr_number], [r.child, r.merge, 7]);
+});
+
+test('stacked PR anchor, chain shape: the base is M^1, the parent PR\'s merge commit, and the files are the child\'s alone', () => {
+  const r = stackRig({ shape: 'chain' });
+  assert.equal(r.anchor.base_sha, r.parentMerge);
+  assert.notEqual(r.anchor.base_sha, r.main);
+  assert.equal(r.isAncestor(r.anchor.base_sha, r.entryA), false, 'a pull_request merge commit is never in the queue\'s history');
+  assert.deepEqual(r.anchor.files, r.childFiles);
+});
+
+test('ci-gate.yml: the gate takes no base from the pull_request payload, github.base_ref or the stack field', () => {
+  // For a stacked PR pull_request.base is the parent branch and github.base_ref is
+  // main; the anchor's base must come from the merge commit, which agrees with the
+  // tree the run tested, and from nothing else.
+  const yml = gateYml();
+  for (const text of ['pull_request.base', 'base_ref', '.stack']) assert.ok(!yml.includes(text), text);
+  assert.deepEqual(Object.keys(STACK_FIELD).sort(), ['base', 'id', 'number', 'position', 'size']);
+  assert.deepEqual(gateStep('Record the PR anchor').match(/^ {10}\w+(?=:)/gm).map(name => name.trim()), ['GH_TOKEN', 'PR_HEAD_SHA', 'PR_NUMBER']);
+});
+
+for (const thinQueue of ['enforce', 'shadow']) {
+  test(`stacked queue entry (${thinQueue}): an anchor based on the parent branch head runs the full suite, anchor_base_not_on_main`, () => {
+    const r = stackRig();
+    r.addStackEvidence();
+    assert.equal(gate.select(r.io, r.verifyEnv({ THIN_QUEUE: thinQueue })), 0);
+    const line = selectionLineOf(r);
+    assert.match(line, /^ci-gate-selection: mode=full reason=anchor_base_not_on_main thin_queue="\w+" thin_skip=\[\] /, line);
+    // One PR per entry. There is no record, so nothing of the anchor reaches the selection.
+    assert.equal(fieldOf(line, 'pr'), 7);
+    assert.equal(fieldOf(line, 'head'), r.child);
+    assert.equal(fieldOf(line, 'B'), '');
+    assert.deepEqual(fieldOf(line, 'p'), []);
+    assert.equal(fieldOf(line, 'record_stats').anchors, 1);
+    assert.deepEqual(fieldOf(line, 'thin_jobs'), fieldOf(line, 'full_jobs'));
+    const value = publishedIn(r);
+    assert.deepEqual([value.mode, value.reason, value.thin_skip, value.base_sha, value.head_sha], ['full', 'anchor_base_not_on_main', [], r.entryA, r.entryB]);
+    // verify judges the entry against everything, with the base revision's policy.
+    assert.equal(gate.verify(r.io, r.verifyEnv()), 0, r.lines.join('\n'));
+    assert.match(lineOf(r)[0], new RegExp(`^ci-gate: verdict=pass reason=required_jobs_passed event=merge_group base=${r.entryA} head=${r.entryB} .* thin=0$`));
+  });
+}
+
+test('stacked queue entry: the same entry is thin-eligible but for its base, so the full suite is the base checks\' doing', () => {
+  // Control for the test above: the rig is otherwise a thin entry. Answering the
+  // two questions about the anchor's base "yes" (is it on main, is it behind the
+  // queue base) makes the gate thin it.
+  const r = stackRig();
+  r.addStackEvidence();
+  const git = r.io.git;
+  const asked = [];
+  r.io.git = args => {
+    if (args[0] === 'rev-list' && args[1] === '--first-parent' && args[2] === 'refs/remotes/origin/main') { asked.push('origin/main'); return `${git(args)}\n${r.parent}\n`; }
+    if (args[0] === 'merge-base' && args[1] === '--is-ancestor' && args[2] === r.parent && args[3] === r.entryA) { asked.push(args[3]); return ''; }
+    return git(args);
+  };
+  gate.select(r.io, r.verifyEnv({ THIN_QUEUE: 'shadow' }));
+  assert.deepEqual(asked, ['origin/main', r.entryA], 'main first, and each question once');
+  const value = publishedIn(r);
+  assert.deepEqual([value.mode, value.reason], ['shadow', ''], selectionLineOf(r));
+  assert.ok(value.thin_skip.includes('test-web'), JSON.stringify(value.thin_skip));
+});
+
+test('stacked queue entry, chain shape: an anchor based on the parent PR\'s merge commit runs the full suite', () => {
+  const r = stackRig({ shape: 'chain' });
+  r.addStackEvidence();
+  gate.select(r.io, r.verifyEnv({ THIN_QUEUE: 'enforce' }));
+  const line = selectionLineOf(r);
+  assert.match(line, /^ci-gate-selection: mode=full reason=anchor_base_not_on_main /, line);
+  assert.equal(fieldOf(line, 'B'), '');
+  assert.deepEqual(publishedIn(r).thin_skip, []);
+});
+
+// Every revision select read a file from (`git show <rev>:<path>`), and every
+// script it ran. Base-revision scripts are read that way and then run isolated.
+const policyReads = r => {
+  const seen = { revisions: [], runs: [] };
+  const { git, runIsolated } = r.io;
+  r.io.git = args => {
+    const at = args[0] === 'show' && args[1]?.match(/^([a-f\d]{40}):/);
+    if (at) seen.revisions.push(at[1]);
+    return git(args);
+  };
+  r.io.runIsolated = (...args) => { seen.runs.push(args[0]); return runIsolated(...args); };
+  return seen;
+};
+
+test('stacked queue entry: an anchor base that no longer exists (parent branch gone) runs the full suite, and is not fetched', () => {
+  const r = stackRig();
+  r.addStackEvidence({ anchor: { base_sha: 'e'.repeat(40) } });
+  r.io.sleep = () => {};
+  const seen = policyReads(r);
+  const named = [];
+  const git = r.io.git;
+  r.io.git = args => { if (args.some(arg => arg.includes('e'.repeat(40)))) named.push(args[0]); return git(args); };
+  gate.select(r.io, r.verifyEnv({ THIN_QUEUE: 'enforce' }));
+  const line = selectionLineOf(r);
+  assert.match(line, /^ci-gate-selection: mode=full reason=anchor_base_not_on_main /, line);
+  for (const revision of new Set(seen.revisions)) assert.ok(r.isAncestor(revision, r.entryA), `read ${revision}`);
+  assert.deepEqual(named, [], 'no git command names the base, so it is not fetched: it is not one of main\'s commits');
+  assert.deepEqual(publishedIn(r).thin_skip, []);
+});
+
+test('plain queue entry: select reads policy only from the queue base or its history', () => {
+  // Control for the stacked tests below: for a PR based on main the anchor base is
+  // the queue base (or behind it), and its scripts are read and run.
+  const r = queueEntryRig({ headFiles: { 'apps/web/src/plain.ts': 'export {};\n' }, baseFiles: { ...realPolicyFiles(), ...selectionPolicyFiles(), [CI_PATH]: thinCi } });
+  r.addAnchor({ anchor: { files: ['apps/web/src/plain.ts'], policy_digest: queueSelection.policyDigest(gate.createGateIO({ cwd: r.origin, env: { PATH: process.env.PATH } }), r.baseSha) } });
+  r.addCi({ attempts: [prRunJobs(['apps/web/src/plain.ts'])] });
+  const isAncestor = (a, b) => { try { r.inOrigin('merge-base', '--is-ancestor', a, b); return true; } catch { return false; } };
+  const seen = policyReads(r);
+  gate.select(r.io, selectOf(r)({ THIN_QUEUE: 'shadow' }));
+  assert.ok(seen.revisions.includes(r.baseSha) && seen.runs.length > 0);
+  // The merge commit names the PR run's jobs; it is read, never run.
+  for (const revision of new Set(seen.revisions)) assert.ok(revision === r.merge || isAncestor(revision, r.baseSha), `read ${revision}`);
+});
+
+test('select: a branch named like the pull request\'s head ref does not change the head the entry is judged by', () => {
+  const r = queueEntryRig({ headFiles: { 'apps/web/src/plain.ts': 'export {};\n' }, baseFiles: { ...realPolicyFiles(), ...selectionPolicyFiles(), [CI_PATH]: thinCi } });
+  r.addAnchor({ anchor: { files: ['apps/web/src/plain.ts'], policy_digest: queueSelection.policyDigest(gate.createGateIO({ cwd: r.origin, env: { PATH: process.env.PATH } }), r.baseSha) } });
+  r.addCi({ attempts: [prRunJobs(['apps/web/src/plain.ts'])] });
+  r.inOrigin('update-ref', 'refs/heads/x/refs/pull/7/head', r.baseSha);
+  gate.select(r.io, selectOf(r)({ THIN_QUEUE: 'shadow' }));
+  assert.equal(fieldOf(selectionLineOf(r), 'head'), r.headSha);
+  const value = publishedIn(r);
+  assert.deepEqual([value.mode, value.reason], ['shadow', ''], selectionLineOf(r));
+});
+
+for (const shape of ['parent', 'chain']) {
+  test(`stacked queue entry, ${shape} shape: select reads policy only from the queue base or its history`, () => {
+    const r = stackRig({ shape });
+    r.addStackEvidence();
+    const seen = policyReads(r);
+    gate.select(r.io, r.verifyEnv({ THIN_QUEUE: 'enforce' }));
+    assert.ok(seen.revisions.length > 0 && seen.runs.length > 0, 'the queue base is still classified');
+    for (const revision of new Set(seen.revisions)) assert.ok(r.isAncestor(revision, r.entryA), `read ${revision}`);
+  });
+
+  test(`trustedRecord, ${shape} shape: an anchor whose base is not on main is anchor_base_not_on_main, and nothing of that base is read or run`, () => {
+    const r = stackRig({ shape });
+    r.addStackEvidence();
+    const calls = [];
+    const git = r.io.git;
+    r.io.git = args => { calls.push(args); return git(args); };
+    let ran = 0;
+    r.io.runIsolated = () => { ran++; throw Error('ran'); };
+    const stats = {};
+    assert.deepEqual(r.trust(stats), { reason: 'anchor_base_not_on_main' });
+    assert.equal(ran, 0, 'nothing runs for an anchor whose base is not on main');
+    assert.equal(stats.anchors, 1);
+    // The base is fetched and its ancestry asked; no file of it is opened.
+    const base = r.anchor.base_sha;
+    const touched = new Set(calls.filter(args => args.some(arg => arg.includes(base))).map(args => args[0]));
+    assert.deepEqual([...touched], [], 'no git command names the base');
+    assert.ok(calls.some(args => args[0] === 'rev-list' && args[1] === '--first-parent' && args[2] === 'refs/remotes/origin/main'));
+    assert.deepEqual(calls.filter(args => ['show', 'ls-tree', 'diff'].includes(args[0])), []);
+  });
+}
+
+test('select: main is listed before any base-revision script runs, so a later change to the clone\'s ref for main does not move the answer', () => {
+  // A base-revision script runs as the gate's own user, in a clone it can write
+  // to. Here the clone's ref for main is moved the moment the first one runs.
+  const r = stackRig();
+  r.addStackEvidence();
+  const { runIsolated } = r.io;
+  let moved = 0;
+  r.io.runIsolated = (...args) => {
+    if (!moved++) {
+      execFileSync('git', ['fetch', '--no-tags', '--quiet', 'origin', r.parent], { cwd: r.clone, stdio: 'ignore' });
+      execFileSync('git', ['update-ref', 'refs/remotes/origin/main', r.parent], { cwd: r.clone, stdio: 'ignore' });
+    }
+    return runIsolated(...args);
+  };
+  const seen = policyReads(r);
+  gate.select(r.io, r.verifyEnv({ THIN_QUEUE: 'enforce' }));
+  assert.ok(moved > 0, 'a base-revision script ran, and the ref moved under it');
+  assert.equal(execFileSync('git', ['rev-parse', 'refs/remotes/origin/main'], { cwd: r.clone, encoding: 'utf8' }).trim(), r.parent);
+  const line = selectionLineOf(r);
+  assert.match(line, /^ci-gate-selection: mode=full reason=anchor_base_not_on_main /, line);
+  for (const revision of new Set(seen.revisions)) assert.ok(r.isAncestor(revision, r.entryA), `read ${revision}`);
+});
+
+test('trustedRecord: one anchor off main refuses the head, whichever anchor is the oldest', () => {
+  // The same head with two gate runs: one while the PR was based on main, one
+  // while it was based on another branch.
+  for (const [first, second] of [['main', 'parent'], ['parent', 'main']]) {
+    const r = stackRig();
+    r.addAnchor({ id: 900, anchor: { ...r.anchor, run_id: 900, base_sha: r[first] } });
+    r.addAnchor({ id: 901, anchor: { ...r.anchor, run_id: 901, base_sha: r[second] } });
+    r.addCi({ attempts: [prRunJobs(r.childFiles)] });
+    let ran = 0;
+    r.io.runIsolated = () => { ran++; throw Error('ran'); };
+    const stats = {};
+    assert.deepEqual(r.trust(stats), { reason: 'anchor_base_not_on_main' }, `${first} first`);
+    assert.equal(ran, 0, `nothing runs when the ${first === 'main' ? 'newest' : 'oldest'} anchor's base is not on main`);
+    assert.equal(stats.anchors, 2);
+  }
+});
+
+test('trustedRecord: a listing of main that could not run is an error, not an answer about the base', () => {
+  for (const rig of [stackRig, rigWithEvidence]) {
+    const r = rig();
+    if (rig === stackRig) r.addStackEvidence();
+    const git = r.io.git;
+    r.io.git = args => { if (args[0] === 'rev-list' && args[1] === '--first-parent') throw Object.assign(Error('no origin/main'), { status: 128 }); return git(args); };
+    assert.throws(() => r.trust(), error => error instanceof gate.GateError && error.code === 'selection_ancestry');
+  }
+});
+
+// The gate's checkout fetches tags, and git resolves a short name to a tag before
+// a remote-tracking branch. So the gate names main in full.
+const tagNamedLikeMain = (r, sha) => {
+  r.inOrigin('tag', 'origin/main', sha);
+  execFileSync('git', ['fetch', '--quiet', 'origin', '+refs/tags/*:refs/tags/*'], { cwd: r.clone, stdio: 'ignore' });
+  const short = execFileSync('git', ['rev-parse', 'origin/main'], { cwd: r.clone, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  assert.equal(short, sha, 'in this clone the short name now means the tag');
+};
+
+test('trustedRecord: a tag named origin/main does not say what main is', () => {
+  const r = stackRig();
+  r.addStackEvidence();
+  tagNamedLikeMain(r, r.parent);
+  let ran = 0;
+  r.io.runIsolated = () => { ran++; throw Error('ran'); };
+  assert.deepEqual(r.trust(), { reason: 'anchor_base_not_on_main' });
+  assert.equal(ran, 0);
+  // Control: a tag on unrelated history takes nothing away from a base that is main's.
+  const plain = rigWithEvidence();
+  tagNamedLikeMain(plain, plain.inOrigin('commit-tree', `${plain.baseSha}^{tree}`, '-m', 'unrelated history'));
+  assert.equal(plain.trust().base_sha, plain.baseSha);
+});
+
+test('trustedRecord and verify: a tag named origin/main does not put a workflow sha on main', () => {
+  // An identity line naming a commit main never had, with a tag that would vouch for it.
+  const r = trustRig();
+  r.addAnchor({ identity: `2026-11-06T16:30:13.0Z ci-gate-identity: workflow_ref=${PINNED_REF} workflow_sha=${r.headSha} gate_run=900 gate_attempt=1\n` });
+  r.addCi();
+  tagNamedLikeMain(r, r.headSha);
+  assert.equal(r.trust().reason, 'anchor_not_pinned');
+  const v = gateRemote(realPolicyFiles(), { 'docs/guide.md': '# x\n' });
+  fakeActions(v.io, v.headSha, docsOnlyJobs());
+  tagNamedLikeMain(v, v.headSha);
+  assert.equal(gate.verify(v.io, remoteEnv(v, { GITHUB_WORKFLOW_SHA: v.headSha })), 1);
+  assert.match(lineOf(v)[0], /reason=not_pinned /);
+});
+
+test('trustedRecord: a commit a merge brought into main\'s history was never main, and is anchor_base_not_on_main', () => {
+  const r = trustRig();
+  // A merge commit on main. Its second parent is an ancestor of main, as a branch
+  // commit merged long ago is, but main never pointed at it.
+  const side = r.inOrigin('commit-tree', `${r.headSha}^{tree}`, '-p', r.baseSha, '-m', 'a branch commit');
+  const merged = r.inOrigin('commit-tree', `${r.baseSha}^{tree}`, '-p', r.baseSha, '-p', side, '-m', 'Merge a branch');
+  r.landOnMain(merged);
+  r.inOrigin('merge-base', '--is-ancestor', side, 'main');
+  r.addAnchor({ anchor: { base_sha: side } });
+  r.addCi();
+  let ran = 0;
+  r.io.runIsolated = () => { ran++; throw Error('ran'); };
+  assert.deepEqual(r.trust(), { reason: 'anchor_base_not_on_main' });
+  assert.equal(ran, 0);
+  // Control: the merge commit itself is main's, and so is its first parent.
+  for (const base of [merged, r.baseSha]) {
+    const ok = trustRig();
+    const tip = ok.inOrigin('commit-tree', `${ok.baseSha}^{tree}`, '-p', ok.baseSha, '-p', ok.headSha, '-m', 'Merge a branch');
+    ok.landOnMain(tip);
+    ok.addAnchor({ anchor: { base_sha: base === merged ? tip : ok.baseSha } });
+    ok.addCi();
+    assert.equal(ok.trust().base_sha, base === merged ? tip : ok.baseSha);
+  }
+});
+
+// After the PR below lands, GitHub retargets the next PR to main and force-pushes a
+// rebased head. Its anchors come only from its new PR run.
+function rebasedRig() {
+  const r = stackRig();
+  // PR 6 landed as entry A; PR 7 is rebased onto it: the same change, a new head.
+  r.landOnMain(r.entryA);
+  r.inOrigin('checkout', '-q', '--detach', r.entryA);
+  for (const path of r.childFiles) { mkdirSync(dirname(join(r.origin, path)), { recursive: true }); writeFileSync(join(r.origin, path), 'export const c = 1;\n'); }
+  r.inOrigin('add', '-A');
+  r.inOrigin('commit', '-q', '-m', 'child, rebased by GitHub');
+  r.rebased = r.inOrigin('rev-parse', 'HEAD');
+  r.entryB = r.inOrigin('commit-tree', `${r.rebased}^{tree}`, '-p', r.entryA, '-m', 'PR 7 (#7)');
+  r.inOrigin('update-ref', 'refs/pull/7/head', r.rebased);
+  r.inOrigin('update-ref', `refs/heads/gh-readonly-queue/main/pr-7-${r.entryA}`, r.entryB);
+  return r;
+}
+
+test('after GitHub\'s rebase: enqueued with only the old head\'s anchors, or none yet, the entry runs the full suite', () => {
+  // Only the pre-rebase head has a gate run and a green PR run.
+  const old = rebasedRig();
+  old.addStackEvidence();
+  gate.select(old.io, old.verifyEnv({ THIN_QUEUE: 'enforce' }));
+  let line = selectionLineOf(old);
+  assert.match(line, /^ci-gate-selection: mode=full reason=no_anchor /, line);
+  assert.equal(fieldOf(line, 'head'), old.rebased, 'the head is the PR\'s current one, so the old head\'s anchors are not looked at');
+  assert.deepEqual(publishedIn(old).thin_skip, []);
+  // The new head's PR run exists but its gate run has written nothing yet.
+  const none = rebasedRig();
+  none.headSha = none.rebased;
+  none.addCi({ attempts: [prRunJobs(none.childFiles)] });
+  gate.select(none.io, none.verifyEnv({ THIN_QUEUE: 'enforce' }));
+  line = selectionLineOf(none);
+  assert.match(line, /^ci-gate-selection: mode=full reason=no_anchor /, line);
+  assert.equal(fieldOf(line, 'record_stats').anchors, 0);
+});
+
+test('after GitHub\'s rebase: an old-head anchor never vouches for the new head, even listed under it', () => {
+  const r = rebasedRig();
+  r.headSha = r.rebased;
+  // A gate run listed for the new head whose artifact is the old head's anchor.
+  r.addAnchor({ anchor: { ...r.anchor } });
+  r.addCi({ attempts: [prRunJobs(r.childFiles)] });
+  const stats = {};
+  assert.equal(r.trust(stats).reason, 'no_anchor');
+  assert.deepEqual(stats.rejected.map(({ why }) => why), ['head_sha']);
+});
+
+test('after GitHub\'s rebase: the new head\'s own anchor, based on main, is judged like any PR (control)', () => {
+  const r = rebasedRig();
+  const merge = r.inOrigin('commit-tree', `${r.rebased}^{tree}`, '-p', r.entryA, '-p', r.rebased, '-m', 'merge');
+  r.inOrigin('update-ref', 'refs/pull/7/merge', merge);
+  r.headSha = r.rebased;
+  r.merge = merge;
+  r.io.remove(gate.ANCHOR_FILE);
+  assert.equal(gate.anchor(r.io, r.env({ GITHUB_SHA: merge, PR_HEAD_SHA: r.rebased, PR_NUMBER: '7', GITHUB_RUN_ID: '900', GITHUB_RUN_ATTEMPT: '1' })), 0);
+  const anchor = r.written();
+  assert.equal(anchor.base_sha, r.entryA);
+  r.lines.length = 0;
+  r.addAnchor({ anchor });
+  r.addCi({ attempts: [prRunJobs(r.childFiles)] });
+  gate.select(r.io, r.verifyEnv({ THIN_QUEUE: 'shadow' }));
+  const value = publishedIn(r);
+  assert.deepEqual([value.mode, value.reason], ['shadow', ''], selectionLineOf(r));
+  assert.ok(value.thin_skip.includes('test-web'));
 });

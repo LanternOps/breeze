@@ -45,6 +45,7 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
       'apply_browser_policy',
       'desktop_stream_stop',
       'network_discovery',
+      'network_discovery_guarded',
       'reboot',
       'restart_agent',
       'schedule_reboot',
@@ -67,6 +68,7 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
     expect(defaultOfflinePolicy('update_watchdog')).toEqual({ kind: 'reject' });
     expect(defaultOfflinePolicy('restart_agent')).toEqual({ kind: 'reject' });
     expect(defaultOfflinePolicy('network_discovery')).toEqual({ kind: 'reject' });
+    expect(defaultOfflinePolicy('network_discovery_guarded')).toEqual({ kind: 'reject' });
     expect(defaultOfflinePolicy('actuate_elevation')).toEqual({ kind: 'reject' });
     expect(defaultOfflinePolicy('desktop_stream_stop')).toEqual({ kind: 'reject' });
     expect(defaultOfflinePolicy('wake')).toEqual({ kind: 'reject' });

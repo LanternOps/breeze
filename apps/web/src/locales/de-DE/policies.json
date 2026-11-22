@@ -818,6 +818,7 @@
         "overridesLabel": "Überschreibungen:",
         "failedToLoadMonitors": "Überwachungen konnten nicht geladen werden",
         "createMonitor": "Monitor erstellen",
+        "helpText": "Monitordefinitionen finden Sie unter Warnungen > Monitore. Hier legen Sie fest, welche Monitore für diese Richtlinie gelten, und können den Wert eines Monitors überschreiben.",
         "notAttachable": "Dieser Monitor kann dieser Richtlinie nicht zugewiesen werden. Partnereigene Richtlinien können nur partnerweite Monitore verwenden.",
         "monitorDeleted": "Monitor gelöscht",
         "recommended": {

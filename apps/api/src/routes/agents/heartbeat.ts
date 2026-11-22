@@ -115,8 +115,13 @@ import {
   recordAgentHeartbeatEch,
   recordAgentFilterSignatureReport,
   recordAgentControlPlaneBlockReport,
+  recordNetworkAttachmentReport,
   resolveResponseStatus,
 } from '../metrics';
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import {
+  applyNetworkAttachmentChange, noteCaptureTimeSkew, planNetworkAttachmentIngest,
+} from '../../services/learnedNetworks/ingest';
 import { ingestRollbackObservation } from '../../services/agentRollbackResult';
 import {
   editionWithheldDetail,
@@ -1400,6 +1405,43 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates,
     planControlPlaneBlockWrite(device, controlPlaneBlock, data.echActive, new Date()),
   );
+
+  // Learned networks (#12369 W01b, spec §8.1). The planner is pure and runs on the locked `device` row, so a beat
+  // without the field, or with an unchanged report, costs no statement here: an unchanged report only folds its
+  // confirmation into this beat's single device UPDATE. Only a changed report writes the learned tables, in its own
+  // savepoint with the catch outside it, so a learner failure never fails or rolls back the heartbeat; its device
+  // fields are merged only after that savepoint committed, so the next beat retries. The parked and watchdog paths
+  // returned above. A removed device (status decommissioned, inside its uninstall drain) still beats, but the device
+  // write below matches no row for it, so it is treated as carrying no report: it must not learn, and an apply whose
+  // digest is never stored would repeat on every beat.
+  const attachmentsAt = new Date();
+  const attachmentsRaw = device.status === 'decommissioned' || device.status === 'quarantined'
+    ? undefined
+    : data.networkAttachmentsV1;
+  const attachmentPlan = planNetworkAttachmentIngest(device, attachmentsRaw,
+    getTrustedClientIpOrUndefined(c) ?? null, attachmentsAt);
+  if (attachmentPlan.kind === 'apply') {
+    try {
+      await withDbTransaction(() =>
+        applyNetworkAttachmentChange({ id: device.id, orgId: device.orgId }, attachmentPlan, attachmentsAt));
+      Object.assign(deviceUpdates, attachmentPlan.deviceFields);
+      recordNetworkAttachmentReport('apply');
+    } catch (err) {
+      console.error('[heartbeat] learned network ingest failed', {
+        deviceId: device.id, orgId: device.orgId, error: err instanceof Error ? err.name : typeof err,
+      });
+      captureException(err, undefined, { phase: 'learned_network_ingest', deviceId: device.id, orgId: device.orgId });
+      recordNetworkAttachmentReport('apply_failed');
+    }
+  } else if (attachmentPlan.kind === 'confirm') {
+    Object.assign(deviceUpdates, attachmentPlan.deviceFields);
+    recordNetworkAttachmentReport('confirm');
+  } else if (attachmentPlan.reason !== 'absent') {
+    recordNetworkAttachmentReport(attachmentPlan.reason);
+    if (attachmentPlan.reason === 'capture_time_out_of_bounds') {
+      noteCaptureTimeSkew(device.id, attachmentsRaw, attachmentsAt);
+    }
+  }
 
   // #800 Layer C — recovery side. If the asymmetry detector previously
   // set mainAgentSilentSince (watchdog kept reporting while we went
