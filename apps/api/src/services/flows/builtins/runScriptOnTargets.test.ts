@@ -131,6 +131,14 @@ describe('executeRunScriptOnTargets', () => {
     expect(out).toMatchObject({ output: { count: 5, succeededCount: 2, failedCount: 3 } });
   });
 
+  it('skipped-offline devices count as failed and the counts add up to the requested total', async () => {
+    const four = [id(1), id(2), id(3), id(4)];
+    m.resolve.mockResolvedValue({ deviceIds: four, devices: devs(four), warnings: [], problems: [] });
+    dispatchAll((d) => (d === id(3) ? 'skipped_offline' : 'queued'));
+    const out = await executeRunScriptOnTargets({ ...base, conditions: [] } as RunScriptOnTargetsInput, ctx);
+    expect(out).toMatchObject({ output: { count: 4, succeededCount: 3, failedCount: 1 } });
+  });
+
   it('zero targets with no problems completes with count 0', async () => {
     m.resolve.mockResolvedValue({ deviceIds: [], devices: [], warnings: ['empty'], problems: [] });
     const out = await executeRunScriptOnTargets({ ...base, conditions: [] } as RunScriptOnTargetsInput, ctx);

@@ -74,6 +74,14 @@ const CASES: Case[] = [
 ];
 
 describe('compiled form documents validate for the owner', () => {
+  it('control: a counts suffix that points at a step that does not exist is refused', async () => {
+    const doc = compileFlowForm({ ...base, trigger: schedule, target: onGroup, actions: [script, notify] });
+    const bad = structuredClone(doc);
+    bad.steps[1]!.input.message = String(bad.steps[1]!.input.message).replaceAll('a0_run_script', 'a9_missing');
+    const v = await validateFlowDocument(bad, { owner: orgOwner });
+    expect(v.valid).toBe(false);
+  });
+
   it('control: a form document naming a script the owner does not own is refused', async () => {
     const values: FlowFormValues = { ...base, trigger: schedule, target: onGroup, actions: [{ ...script, scriptId: '33333333-3333-4333-8333-3333333333ff' }] };
     const v = await validateFlowDocument(compileFlowForm(values), { owner: orgOwner });
