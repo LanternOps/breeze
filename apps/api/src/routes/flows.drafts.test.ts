@@ -4,6 +4,7 @@
  *   POST   /flows            create a draft          automations.read + write, no MFA (P8)
  *   PUT    /flows/:id        replace a draft         automations.read + write, no MFA (P8)
  *   POST   /flows/validate   validate, write nothing automations.read
+ *   DELETE /flows/:id        delete a never-run draft automations.read + delete + MFA
  *
  * The services are mocked: their own suites (service.test.ts, the integration
  * files) prove reach, owner and validation. Here: the gates, the body schemas,
@@ -35,6 +36,7 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../db', () => ({ db: {}, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: vi.fn() }));
 vi.mock('../services/flows/service', () => ({ listFlows: vi.fn(), getFlow: vi.fn(), saveDraftFlow: vi.fn() }));
 vi.mock('../services/flows/versions', () => ({ enableFlow: vi.fn(), disableFlow: vi.fn() }));
+vi.mock('../services/flows/deleteDraft', () => ({ deleteDraftFlow: vi.fn() }));
 vi.mock('../services/flows/draftValidation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/flows/draftValidation')>();
   return { ...actual, validateFlowDraft: vi.fn() };
@@ -53,6 +55,7 @@ vi.mock('./flowLimits', () => ({
 import { authMiddleware } from '../middleware/auth';
 import { saveDraftFlow } from '../services/flows/service';
 import { validateFlowDraft } from '../services/flows/draftValidation';
+import { deleteDraftFlow } from '../services/flows/deleteDraft';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { flowsRoutes } from './flows';
 
@@ -79,6 +82,7 @@ describe('flows draft routes (W01b)', () => {
     setAuth({ scope: 'organization', orgId: ORG_ID } as Partial<AuthContext>);
     vi.mocked(saveDraftFlow).mockReset().mockResolvedValue({ saved: true, flow: FLOW, validation: VALID } as never);
     vi.mocked(validateFlowDraft).mockReset();
+    vi.mocked(deleteDraftFlow).mockReset().mockResolvedValue({ ok: true });
   });
   afterEach(() => vi.unstubAllEnvs());
 
@@ -245,6 +249,65 @@ describe('flows draft routes (W01b)', () => {
     expect(validateFlowDraft).not.toHaveBeenCalled();
   });
 
+  // ── DELETE /:id ───────────────────────────────────────────────────────────
+
+  it('delete of a never-published draft is 204 with no body', async () => {
+    const res = await send('DELETE', `/${FLOW_ID}`, { expectedVersion: 2 });
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe('');
+    expect(res.headers.get('X-Test-Permissions')).toBe('automations:read,automations:delete');
+    expect(res.headers.get('X-Test-Mfa-Checked')).toBe('1');
+    expect(deleteDraftFlow).toHaveBeenCalledWith(expect.anything(), FLOW_ID, 2);
+  });
+
+  it.each([
+    ['flow_not_found', 404],
+    ['partner_wide_forbidden', 403],
+    ['version_conflict', 409],
+    ['flow_has_history', 409],
+  ] as const)('a delete refused with %s is %i', async (error, status) => {
+    vi.mocked(deleteDraftFlow).mockResolvedValue({ ok: false, error } as never);
+    const res = await send('DELETE', `/${FLOW_ID}`, { expectedVersion: 2 });
+    expect(res.status).toBe(status);
+    expect(await res.json()).toEqual({ error });
+  });
+
+  it("a shadow conversion's draft is 409 flow_has_history with conversionId and automationId", async () => {
+    const refusal = { ok: false, error: 'flow_has_history', conversionId: 'c1', automationId: 'a1' } as const;
+    vi.mocked(deleteDraftFlow).mockResolvedValue(refusal);
+    const res = await send('DELETE', `/${FLOW_ID}`, { expectedVersion: 2 });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'flow_has_history', conversionId: 'c1', automationId: 'a1' });
+  });
+
+  it('org token DELETE on a partner-wide flow is 404', async () => {
+    // deleteDraft.test.ts pins the reach rule; here the 404 mapping.
+    vi.mocked(deleteDraftFlow).mockResolvedValue({ ok: false, error: 'flow_not_found' });
+    expect((await send('DELETE', `/${FLOW_ID}`, { expectedVersion: 2 })).status).toBe(404);
+  });
+
+  it('automations.write without automations.delete is 403', async () => {
+    setAuth({ scope: 'organization', orgId: ORG_ID, deny: ['automations:delete'] } as never);
+    const res = await send('DELETE', `/${FLOW_ID}`, { expectedVersion: 2 });
+    expect(res.status).toBe(403);
+    expect(res.headers.get('X-Test-Permissions')).toBe('automations:read,automations:delete');
+    expect(deleteDraftFlow).not.toHaveBeenCalled();
+  });
+
+  it('an MFA-unsatisfied session is 403 MFA_REQUIRED on delete', async () => {
+    setAuth({ scope: 'organization', orgId: ORG_ID, mfaUnsatisfied: true } as never);
+    const res = await send('DELETE', `/${FLOW_ID}`, { expectedVersion: 2 });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+    expect(deleteDraftFlow).not.toHaveBeenCalled();
+  });
+
+  it('a delete without expectedVersion, or with extra keys, is 400', async () => {
+    expect((await send('DELETE', `/${FLOW_ID}`, {})).status).toBe(400);
+    expect((await send('DELETE', `/${FLOW_ID}`, { expectedVersion: 2, force: true })).status).toBe(400);
+    expect(deleteDraftFlow).not.toHaveBeenCalled();
+  });
+
   // ── gates ─────────────────────────────────────────────────────────────────
 
   it('an MFA-unsatisfied session can save a draft', async () => {
@@ -262,6 +325,8 @@ describe('flows draft routes (W01b)', () => {
     expect((await send('POST', '/', { document: DOC })).status).toBe(404);
     expect((await send('PUT', `/${FLOW_ID}`, { document: DOC, expectedVersion: 1 })).status).toBe(404);
     expect((await send('POST', '/validate', { document: DOC })).status).toBe(404);
+    expect((await send('DELETE', `/${FLOW_ID}`, { expectedVersion: 1 })).status).toBe(404);
+    expect(deleteDraftFlow).not.toHaveBeenCalled();
     expect(saveDraftFlow).not.toHaveBeenCalled();
     expect(validateFlowDraft).not.toHaveBeenCalled();
   });

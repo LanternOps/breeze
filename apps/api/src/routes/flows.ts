@@ -17,6 +17,7 @@ import { z } from 'zod';
 import {
   FLOW_RUN_STATUSES,
   flowDraftCreateRequestSchema,
+  flowDraftDeleteRequestSchema,
   flowDraftUpdateRequestSchema,
   flowDraftValidateRequestSchema,
   flowEnableRequestSchema,
@@ -27,6 +28,7 @@ import { zValidator } from '../lib/validation';
 import { flowsEnabled } from '../config/env';
 import { authMiddleware, isInteractiveUserSession, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { getFlow, listFlows, saveDraftFlow } from '../services/flows/service';
+import { deleteDraftFlow, type DeleteDraftFlowResult } from '../services/flows/deleteDraft';
 import { isOwnerAccessDeniedMessage, validateFlowDraft } from '../services/flows/draftValidation';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { cancelFlowRun, getFlowRun, getFlowRunStep, listFlowRuns, startManualRun } from '../services/flows/runService';
@@ -68,6 +70,7 @@ flowsRoutes.route('/conversions', flowConversionRoutes);
 // literal `/limits` and `/conversions` paths so `PUT /:id` never swallows them.
 
 type DraftStatus = 400 | 403 | 404 | 409 | 422;
+type DeleteDraftFlowFailure = Extract<DeleteDraftFlowResult, { ok: false }>;
 
 const DRAFT_STATUS: Record<string, DraftStatus> = {
   flow_not_found: 404,
@@ -139,6 +142,31 @@ flowsRoutes.get('/:id', zValidator('param', idParamSchema), async (c) => {
   if (!found) return c.json({ error: 'Flow not found' }, 404);
   return c.json(found);
 });
+
+// Delete a never-published, never-converted, never-run draft. Unlike the draft
+// writes, delete needs automations.delete AND requireMfa() (spec §3.2, OD2).
+// Written inline for the same binding-contract reason as above.
+const DELETE_STATUS: Record<DeleteDraftFlowFailure['error'], DraftStatus> = {
+  flow_not_found: 404,
+  partner_wide_forbidden: 403,
+  version_conflict: 409,
+  flow_has_history: 409,
+};
+
+flowsRoutes.delete(
+  '/:id',
+  requirePermission('automations', 'delete'),
+  requireMfa(),
+  zValidator('param', idParamSchema),
+  zValidator('json', flowDraftDeleteRequestSchema),
+  async (c) => {
+    const { id } = c.req.valid('param');
+    const result = await deleteDraftFlow(c.get('auth'), id, c.req.valid('json').expectedVersion);
+    if (result.ok) return c.body(null, 204);
+    const { ok: _ok, ...body } = result;
+    return c.json(body, DELETE_STATUS[result.error]);
+  },
+);
 
 // ── W04 (#5219): enable / disable, manual runs, run ledger, cancel ─────────
 // No shadowing between `/runs/:runId…` and `/:id…`: Hono's `:id` matches ONE

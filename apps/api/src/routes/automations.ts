@@ -830,7 +830,7 @@ automationRoutes.use('*', authMiddleware);
 // classifyAutomation() === 'S' && !convertedToFlowId in
 // services/flows/conversion/classify.ts. The policy-workflow test is NULL-safe
 // (IS NOT TRUE) so a trigger with no `filter` key still counts.
-const standaloneNotMovedCondition = and(
+export const standaloneNotMovedCondition = and(
   isNull(automations.retiredAt),
   isNull(automations.convertedToFlowId),
   isNull(automations.managedByMonitorId),
