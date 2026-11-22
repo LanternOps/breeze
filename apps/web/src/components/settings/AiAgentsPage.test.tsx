@@ -424,6 +424,32 @@ describe('AiAgentsPage — circuit breaker (#12347)', () => {
     })));
   });
 
+  // #12347 Strix round 2: the reset route refuses a site-restricted caller.
+  // The page carries no ceiling data (its other write controls are not gated
+  // on it either), so the refusal is the server's own words, toasted as-is,
+  // and the dialog stays open rather than reporting a reset that did not
+  // happen.
+  it('shows the server refusal when a site-restricted caller tries to reset', async () => {
+    const refusal = 'Site-restricted users cannot modify organization-wide settings. Ask an unrestricted administrator.';
+    routes((url) => (url === '/ai/agents/a1/circuit/reset'
+      ? json({ error: refusal }, false, 403)
+      : undefined));
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-circuit-reset-a1-org-1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-circuit-reset-reason'), {
+      target: { value: 'gateway is back' },
+    });
+    fireEvent.click(screen.getByTestId('ai-agent-circuit-reset-confirm'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: refusal,
+    })));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(screen.getByTestId('ai-agent-circuit-reset-confirm')).toBeInTheDocument();
+  });
+
   it('Run now on an open circuit says so, and reloads the list so the badge appears', async () => {
     orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
     const patchAgent = { ...PARTNER_AGENT, id: 'p-agent', kind: 'patch' as const, name: 'Patcher' };

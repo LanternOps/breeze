@@ -36,6 +36,7 @@ import { aiAgentCircuitState } from '../db/schema/aiAgentCircuitState';
 // Real (unmocked): access.ts is the single source of truth for who may mutate
 // an agent row, and POST /:id/enable calls it directly.
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { AgentModelNotAllowedError } from '../services/aiAgents/agentModelErrors';
 // Resolves to the MOCKED class (vi.mock('../services/aiAgents/agentService')
 // below) — needed so a PATCH test can construct the exact instance
@@ -3235,6 +3236,44 @@ describe('POST /ai-agents/:id/circuit/reset', () => {
     const res = await resetReq(buildApp(), { reason: 'no' });
     expect(res.status).toBe(400);
     expect(resetCircuitMock).not.toHaveBeenCalled();
+  });
+
+  // #12347 Strix round 2. A circuit is keyed (org, agent) and an open one
+  // stops that agent on EVERY site in the org, so clearing it is an org-wide
+  // governance write: a caller carrying a site or exact-device ceiling is
+  // refused exactly as `assertAgentWriteAllowed` refuses every other agent
+  // write (403 + the shared ceiling message), before any state changes.
+  it.each([
+    ['a site-restricted caller', { allowedSiteIds: [SITE_ID] }],
+    ['a caller restricted to zero sites', { allowedSiteIds: [] }],
+    ['an exact-device-restricted caller', { allowedDeviceIds: [DEVICE_ID] }],
+  ])('refuses %s (403) without resetting or auditing', async (_label, overrides) => {
+    const res = await resetReq(buildApp(false, overrides));
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+    expect(resetCircuitMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an automation principal (an agent cannot re-arm itself)', async () => {
+    const res = await resetReq(buildApp(false, { principal: { kind: 'ai_agent', id: AGENT_ID } }));
+
+    expect(res.status).toBe(404);
+    expect(resetCircuitMock).not.toHaveBeenCalled();
+  });
+
+  // The write is authorized against the CIRCUIT's owner (the org), not the
+  // agent row's: an unrestricted org admin may still reset their own org's
+  // circuit on a partner-wide baseline agent without partner-wide rights —
+  // the same org-owner shape scheduleService uses for an org override.
+  it('lets an unrestricted org caller reset its org circuit on a partner-wide agent', async () => {
+    getAgentMock.mockResolvedValue(agent({ orgId: null, partnerId: PARTNER_ID }));
+
+    const res = await resetReq(buildApp());
+
+    expect(res.status).toBe(200);
+    expect(resetCircuitMock).toHaveBeenCalledWith(ORG_ID, AGENT_ID, USER_ID);
   });
 
   it('resets the circuit and audits the human actor + reason', async () => {

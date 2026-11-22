@@ -32,12 +32,16 @@ type Props = {
  * tripped agent sat skipping its scheduled runs with no visible sign.
  *
  * Reset calls the EXISTING `POST /ai/agents/:id/circuit/reset` and adds no
- * gate of its own: that route already requires `ai_agents:write` and a
- * session that satisfies the tenant's MFA policy (`requireMfa()`, a 403
- * `MFA_REQUIRED` otherwise). It takes no step-up grant, so there is no
- * step-up prompt to show — the MFA
- * refusal is named in the toast instead. The route also requires a reason for
- * its audit row, which is why Reset opens a dialog rather than firing.
+ * gate of its own: that route already requires `ai_agents:write`, a session
+ * that satisfies the tenant's MFA policy (`requireMfa()`, a 403
+ * `MFA_REQUIRED` otherwise), and — because an open circuit covers every site
+ * in the org — a caller with no site or device ceiling (`assertAgentWriteAllowed`,
+ * a 403 carrying the server's site-ceiling message). This page has no ceiling
+ * data and its other write controls are not gated on it, so the button is
+ * shown and a refusal is the server's own words in the toast. The route takes
+ * no step-up grant, so there is no step-up prompt to show — the MFA refusal is
+ * named in the toast instead. The route also requires a reason for its audit
+ * row, which is why Reset opens a dialog rather than firing.
  *
  * Always posts the CIRCUIT's org, never the page's selected org: a partner on
  * "All organizations" resets the org it clicked.

@@ -2487,7 +2487,8 @@ aiAgentsRoutes.get(
  * The ONLY way an open circuit closes (wave-6 quorum: "manual MFA reset
  * only" — never automatic, and a config edit on the agent must never touch
  * this row, see `agentService.test.ts`'s coverage). Same write-permission +
- * MFA gate as every other mutating route in this file.
+ * MFA gate as every other mutating route in this file, plus
+ * `assertAgentWriteAllowed` (site/device ceiling, automation principals).
  */
 aiAgentsRoutes.post(
   '/:id/circuit/reset',
@@ -2509,6 +2510,23 @@ aiAgentsRoutes.post(
     const orgResult = resolveOrgId(auth, body.orgId, true);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     if (!orgResult.orgId) return c.json({ error: 'orgId is required' }, 400);
+
+    // #12347 (Strix round 2): an open circuit stops this agent on EVERY site
+    // in the org, so clearing it is an org-wide governance write and gets the
+    // same gate as every other agent write — a caller with a site or
+    // exact-device ceiling is refused (403), an automation principal cannot
+    // re-arm an agent, and the org must be reachable. Authorized against the
+    // CIRCUIT's owner (the resolved org), not the agent row: a circuit is
+    // per-(org, agent), so an unrestricted org admin may reset their own org's
+    // circuit on a partner-wide baseline agent without partner-wide rights —
+    // the same org-owner shape `scheduleService` uses for an org override.
+    // Only the synchronous assert sits in the try; `resetCircuit` stays
+    // outside it (a catch around a query would mask a rethrow at COMMIT).
+    try {
+      assertAgentWriteAllowed(auth, { orgId: orgResult.orgId, partnerId: null });
+    } catch (err) {
+      return mapError(c, err);
+    }
 
     const snapshot = await resetCircuit(orgResult.orgId, id, auth.user.id);
     writeRouteAudit(c, {
