@@ -40,12 +40,99 @@ describe('dedupeResponsibleContacts', () => {
     expect(result.map((c) => c.contactId)).toEqual(['a', 'b']);
   });
 
-  it('merges a phone-only entry into the entry with that phone and an email', () => {
+  it('drops a nameless phone-only entry that shares a phone with a named entry', () => {
     const result = dedupeResponsibleContacts([
       contact({ contactId: 'a', name: 'Ana', email: 'ana@example.com', phone: '555-0100' }),
       contact({ contactId: 'b', phone: '555 0100' }),
     ]);
     expect(result.map((c) => c.contactId)).toEqual(['a']);
+  });
+
+  it('keeps the entry with an email when a phone-only entry for the same line came first', () => {
+    const result = dedupeResponsibleContacts([
+      contact({ contactId: 'b', phone: '555 0100' }),
+      contact({ contactId: 'a', name: 'Ana', email: 'ana@example.com', phone: '555-0100' }),
+    ]);
+    expect(result).toEqual([contact({ contactId: 'a', name: 'Ana', email: 'ana@example.com', phone: '555-0100' })]);
+  });
+
+  it('keeps two differently named entries that share a phone line, with or without emails', () => {
+    const result = dedupeResponsibleContacts([
+      contact({ contactId: 'a', name: 'Front desk', phone: '555-0100' }),
+      contact({ contactId: 'b', name: 'Ben', email: 'ben@example.com', phone: '555 0100' }),
+      contact({ contactId: 'c', name: 'Reception', mobile: '5550100' }),
+    ]);
+    expect(result.map((c) => c.contactId)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('treats names as equal whatever their case and spacing', () => {
+    const result = dedupeResponsibleContacts([
+      contact({ contactId: 'a', name: 'Front  Desk', phone: '555-0100' }),
+      contact({ contactId: 'b', name: ' front desk ', phone: '555 0100', title: 'Reception' }),
+    ]);
+    expect(result).toEqual([contact({ contactId: 'a', name: 'Front  Desk', phone: '555-0100', title: 'Reception' })]);
+  });
+
+  it('keeps the Primary flag when the primary entry is the one merged away', () => {
+    // Primary sorts first, so give the non-primary entry the email: it survives
+    // the phone match and must still come out primary.
+    const result = dedupeResponsibleContacts([
+      contact({ contactId: 'a', phone: '555-0100', isPrimary: true }),
+      contact({ contactId: 'b', name: 'Ana', email: 'ana@example.com', phone: '555 0100' }),
+    ]);
+    expect(result).toEqual([contact({ contactId: 'b', name: 'Ana', email: 'ana@example.com', phone: '555 0100', isPrimary: true })]);
+  });
+
+  it('lists primary contacts first, otherwise in the given order', () => {
+    const result = dedupeResponsibleContacts([
+      contact({ contactId: 'a', email: 'a@example.com' }),
+      contact({ contactId: 'b', email: 'b@example.com', isPrimary: true }),
+      contact({ contactId: 'c', email: 'c@example.com' }),
+      contact({ contactId: 'd', email: 'd@example.com', isPrimary: true }),
+    ]);
+    expect(result.map((c) => c.contactId)).toEqual(['b', 'd', 'a', 'c']);
+  });
+
+  // The count of people, and who they are, must not depend on the order the
+  // API happens to return the rows in.
+  it.each([
+    [
+      'a nameless phone-only entry beside two people on that line',
+      [
+        contact({ contactId: 'x', phone: '555-0100' }),
+        contact({ contactId: 'alice', name: 'Alice', email: 'alice@example.com', phone: '555 0100' }),
+        contact({ contactId: 'bob', name: 'Bob', email: 'bob@example.com', phone: '555-0100', isPrimary: true }),
+      ],
+      ['alice@example.com', 'bob@example.com'],
+    ],
+    [
+      'a named front desk beside two people on that line',
+      [
+        contact({ contactId: 'desk', name: 'Front desk', phone: '555-0100' }),
+        contact({ contactId: 'alice', name: 'Alice', email: 'alice@example.com', phone: '555 0100' }),
+        contact({ contactId: 'bob', name: 'Bob', email: 'bob@example.com', phone: '555-0100', isPrimary: true }),
+      ],
+      ['Front desk', 'alice@example.com', 'bob@example.com'],
+    ],
+    [
+      'the same person entered three ways',
+      [
+        contact({ contactId: 'p', phone: '+1 555-0142', isPrimary: true }),
+        contact({ contactId: 'e1', name: 'Dana', email: 'dana@example.com', phone: '+1 555 0142' }),
+        contact({ contactId: 'e2', name: 'Dana', email: 'DANA@example.com', title: 'Office Manager' }),
+      ],
+      ['dana@example.com'],
+    ],
+  ])('gives the same people in every input order: %s', (_label, input, expected) => {
+    const permutations = (list: ResponsibleContact[]): ResponsibleContact[][] =>
+      list.length <= 1 ? [list] : list.flatMap((item, i) => permutations([...list.slice(0, i), ...list.slice(i + 1)]).map((rest) => [item, ...rest]));
+    const hadPrimary = input.some((c) => c.isPrimary);
+    for (const order of permutations(input)) {
+      const result = dedupeResponsibleContacts(order);
+      const people = result.map((c) => c.email?.toLowerCase() || c.name).sort();
+      expect(people, order.map((c) => c.contactId).join()).toEqual([...expected].sort());
+      expect(result.some((c) => c.isPrimary), order.map((c) => c.contactId).join()).toBe(hadPrimary);
+    }
   });
 
   it('never matches on a blank email or a phone with no digits', () => {
@@ -61,20 +148,11 @@ describe('dedupeResponsibleContacts', () => {
   it('keeps the first entry but fills what it lacks from the dropped duplicate', () => {
     const result = dedupeResponsibleContacts([
       contact({ contactId: 'a', email: 'dana@example.com' }),
-      contact({ contactId: 'b', name: 'Dana', email: 'dana@example.com', title: 'Office Manager', phone: '555-0142', isPrimary: true }),
+      contact({ contactId: 'b', name: 'Dana', email: 'dana@example.com', title: 'Office Manager', phone: '555-0142' }),
     ]);
     expect(result).toEqual([
-      contact({ contactId: 'a', name: 'Dana', email: 'dana@example.com', title: 'Office Manager', phone: '555-0142', isPrimary: true }),
+      contact({ contactId: 'a', name: 'Dana', email: 'dana@example.com', title: 'Office Manager', phone: '555-0142' }),
     ]);
-  });
-
-  it('does not graft details onto the kept entry from a duplicate matched by phone alone', () => {
-    const ana = contact({ contactId: 'a', name: 'Ana', phone: '555-0100' });
-    const result = dedupeResponsibleContacts([
-      ana,
-      contact({ contactId: 'b', name: 'Ben', email: 'ben@example.com', title: 'Owner', phone: '555 0100', isPrimary: true }),
-    ]);
-    expect(result).toEqual([ana]);
   });
 
   it('preserves order and does not mutate its input', () => {
