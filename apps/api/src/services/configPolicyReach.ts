@@ -95,6 +95,25 @@ export async function expandAssignmentsToDevices(
   return deviceIds;
 }
 
+/**
+ * The subset of `policyIds` the caller may read, through the same access
+ * condition `listConfigPolicies` and `getConfigPolicy` apply. The batch reach
+ * route runs the client's list through this before counting; it never trusts
+ * the list itself.
+ */
+export async function readablePolicyIds(auth: AuthContext, policyIds: readonly string[]): Promise<string[]> {
+  const ids = [...new Set(policyIds)];
+  if (ids.length === 0) return [];
+  const conditions: SQL[] = [inArray(configurationPolicies.id, ids)];
+  const accessCond = policyAccessCondition(auth);
+  if (accessCond) conditions.push(accessCond);
+  const rows = await db
+    .select({ id: configurationPolicies.id })
+    .from(configurationPolicies)
+    .where(and(...conditions));
+  return rows.map((row) => row.id);
+}
+
 interface OwnedPolicy {
   id: string;
   orgId: string | null;

@@ -26,6 +26,7 @@ const { selectMock, state, mockResolveSafe, mockAudit, mockAccessCondition } = v
     devices: [] as Array<{ id: string; orgId: string; siteId: string; partnerId: string; groups: string[]; deviceRole: string | null; osType: string | null }>,
     candidateSelects: 0,
     childWhere: [] as unknown[],
+    accessWhere: [] as unknown[],
   },
   mockResolveSafe: vi.fn(async (groupIds: string[]) => ({
     allowedGroupIds: groupIds,
@@ -52,7 +53,7 @@ import {
   deviceGroupMemberships,
   devices,
 } from '../db/schema';
-import { computePolicyReach, expandAssignmentsToDevices } from './configPolicyReach';
+import { computePolicyReach, expandAssignmentsToDevices, readablePolicyIds } from './configPolicyReach';
 
 const dialect = new PgDialect();
 const compile = (condition: unknown) => dialect.sqlToQuery(condition as SQL);
@@ -60,6 +61,10 @@ const compile = (condition: unknown) => dialect.sqlToQuery(condition as SQL);
 function answer(cols: Record<string, unknown>, table: unknown, where: unknown): unknown[] {
   const { sql, params } = where ? compile(where) : { sql: '', params: [] as unknown[] };
   if (table === configurationPolicies) {
+    if (!sql.includes('"parent_policy_id"') && sql.includes('access_marker')) {
+      state.accessWhere.push(where);
+      return state.policies.filter((p) => params.includes(p.id)).map((p) => ({ id: p.id }));
+    }
     if (sql.includes('"parent_policy_id"')) {
       state.childWhere.push(where);
       return state.policies.filter((p) => p.parentPolicyId && params.includes(p.parentPolicyId));
@@ -123,6 +128,7 @@ afterEach(() => {
   state.devices = [];
   state.candidateSelects = 0;
   state.childWhere = [];
+  state.accessWhere = [];
   vi.clearAllMocks();
   mockAccessCondition.mockReturnValue(undefined);
 });
@@ -304,5 +310,24 @@ describe('expandAssignmentsToDevices', () => {
     expect([...second]).toEqual(['d1']);
     expect(memo.size).toBe(2);
     expect(state.candidateSelects).toBe(2);
+  });
+});
+
+describe('readablePolicyIds', () => {
+  it('keeps only the ids the caller\'s policy access condition admits', async () => {
+    const { sql } = await import('drizzle-orm');
+    mockAccessCondition.mockReturnValue(sql`access_marker = 1`);
+    state.policies = [{ id: 'p1', orgId: ORG_A, partnerId: null }];
+
+    const ids = await readablePolicyIds(auth, ['p1', 'hidden']);
+
+    expect(ids).toEqual(['p1']);
+    expect(state.accessWhere).toHaveLength(1);
+    expect(compile(state.accessWhere[0]).params).toEqual(expect.arrayContaining(['p1', 'hidden']));
+  });
+
+  it('issues no statement for an empty list', async () => {
+    expect(await readablePolicyIds(auth, [])).toEqual([]);
+    expect(selectMock).not.toHaveBeenCalled();
   });
 });
