@@ -72,11 +72,7 @@ vi.mock('./assetProbeRun', () => ({ runAssetProbe: h.svc.runAssetProbe }));
 vi.mock('./snmpMetricHistory', () => ({ loadAssetMetricHistory: h.svc.loadAssetMetricHistory, MAX_INSTANCES_PER_OID: 64 }));
 vi.mock('./snmpDashboard', () => ({ loadSnmpDashboard: h.svc.loadSnmpDashboard }));
 vi.mock('./unifi/unifiConnectionService', () => ({ getConnection: h.svc.getConnection }));
-vi.mock('./unifi/unifiKeyService', async (importOriginal) => ({
-  // pickSingleSyncKey is pure: keep the real one.
-  pickSingleSyncKey: (await importOriginal<typeof import('./unifi/unifiKeyService')>()).pickSingleSyncKey,
-  getSyncKeys: h.svc.getSyncKeys,
-}));
+vi.mock('./unifi/unifiKeyService', () => ({ getSyncKeys: h.svc.getSyncKeys }));
 vi.mock('./unifi/unifiCollectorService', () => ({ listCollectors: h.svc.listCollectors }));
 vi.mock('./unifi/unifiControllerSiteService', () => ({ listControllerSitesForIntegration: h.svc.listControllerSitesForIntegration }));
 vi.mock('./unifi/unifiClient', () => ({
@@ -579,16 +575,51 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
     expect(h.svc.getSyncKeys).not.toHaveBeenCalled();
   });
 
-  it('hosts refuses a connection with several keys and reports a missing key as not connected', async () => {
+  it('AI hosts action fans out and still refuses a site-restricted session', async () => {
+    const { UnifiApiError } = await import('./unifi/unifiClient');
     h.svc.getConnection.mockResolvedValue(conn);
     const two = syncKeys('a');
-    h.svc.getSyncKeys.mockResolvedValue({ ...two, keys: [two.keys[0]!, { ...two.keys[0]!, id: 'key-2', apiKey: 'b' }] });
-    const multi = await call('get_unifi_status', { action: 'hosts' }, partnerAuth());
-    expect(multi.code).toBe('UNIFI_MULTI_KEY');
-    expect(h.svc.createUnifiClient).not.toHaveBeenCalled();
+    h.svc.getSyncKeys.mockResolvedValue({
+      ...two,
+      keys: [{ ...two.keys[0]!, id: 'key-a', label: 'Independent' }, { ...two.keys[0]!, id: 'key-b', label: 'Fabric', apiKey: 'secret-b' }],
+    });
+    h.svc.createUnifiClient
+      .mockReturnValueOnce({
+        listHosts: vi.fn(async () => [{ id: 'h1', name: 'Console', model: 'UDM', type: 'console' }]),
+        listSites: vi.fn(async () => [{ id: 's1', name: 'Main', hostId: 'h1' }]),
+      })
+      .mockReturnValueOnce({
+        listHosts: vi.fn().mockRejectedValue(Object.assign(new UnifiApiError('body: secret-b', 401), { status: 401 })),
+        listSites: vi.fn().mockRejectedValue(Object.assign(new UnifiApiError('body: secret-b', 401), { status: 401 })),
+      });
+    const out = await call('get_unifi_status', { action: 'hosts' }, partnerAuth());
+    expect(h.svc.createUnifiClient).toHaveBeenCalledTimes(2);
+    expect(out.complete).toBe(false);
+    expect(out.hosts).toEqual([
+      { id: 'h1', name: 'Console', model: 'UDM', type: 'console', keyIds: ['key-a'], sites: [{ id: 's1', name: 'Main', keyIds: ['key-a'] }] },
+    ]);
+    // Per-key failures are fixed strings: the vendor's body is never relayed.
+    expect(out.keys).toEqual([
+      { id: 'key-a', label: 'Independent', ok: true },
+      { id: 'key-b', label: 'Fabric', ok: false, error: 'The UniFi API key was rejected' },
+    ]);
+    expect(JSON.stringify(out)).not.toContain('secret-b');
 
+    h.svc.createUnifiClient.mockClear();
+    expect((await call('get_unifi_status', { action: 'hosts' }, partnerAuth(restricted([SITE])))).code).toBe('ACCESS_DENIED');
+    expect(h.svc.createUnifiClient).not.toHaveBeenCalled();
+  });
+
+  it('hosts reports a missing key as not connected and an unreadable lone key as not connected', async () => {
+    h.svc.getConnection.mockResolvedValue(conn);
     h.svc.getSyncKeys.mockResolvedValue({ baseUrl: 'https://api.example.test', keys: [] });
     expect((await call('get_unifi_status', { action: 'hosts' }, partnerAuth())).code).toBe('NOT_CONNECTED');
+    h.svc.getSyncKeys.mockResolvedValue({
+      baseUrl: 'https://api.example.test',
+      keys: [{ id: 'key-1', label: 'Global', apiKey: null, decryptError: 'The stored API key could not be decrypted', lastSeenHostIds: null }],
+    });
+    expect((await call('get_unifi_status', { action: 'hosts' }, partnerAuth())).code).toBe('NOT_CONNECTED');
+    expect(h.svc.createUnifiClient).not.toHaveBeenCalled();
   });
 
   it('hosts lists every host that has a site, whatever its type', async () => {
@@ -605,9 +636,10 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
     });
     const out = await call('get_unifi_status', { action: 'hosts' }, partnerAuth());
     expect(out.hosts).toEqual([
-      { id: 'h1', name: 'Console', model: 'UDM', type: 'console', sites: [{ id: 's1', name: 'Main' }] },
-      { id: 'h3', name: 'Cloud key', model: 'CK', type: 'cloudkey', sites: [{ id: 's3', name: 'x' }] },
+      { id: 'h1', name: 'Console', model: 'UDM', type: 'console', keyIds: ['key-1'], sites: [{ id: 's1', name: 'Main', keyIds: ['key-1'] }] },
+      { id: 'h3', name: 'Cloud key', model: 'CK', type: 'cloudkey', keyIds: ['key-1'], sites: [{ id: 's3', name: 'x', keyIds: ['key-1'] }] },
     ]);
+    expect(out.complete).toBe(true);
     expect(out.omitted).toEqual({ hostsWithoutSites: 1, sitesWithoutHostId: 0 });
   });
 

@@ -230,25 +230,6 @@ export async function getSyncKeys(
   };
 }
 
-export type SingleSyncKey =
-  | { ok: true; baseUrl: string; apiKey: string }
-  | { ok: false; reason: 'no_key' | 'multi_key' | 'decrypt_error' };
-
-/**
- * W1 single-key parity for the live reads (`/test`, `/hosts`, the AI `hosts`
- * view): exactly one enabled, readable key, or the reason there is none. A
- * connection with several keys is refused rather than read through one of them,
- * the same rollout guard the worker applies (plan D12). W2 replaces this with a
- * fan-out across every key.
- */
-export function pickSingleSyncKey(creds: { baseUrl: string; keys: UnifiSyncKey[] } | null): SingleSyncKey {
-  if (!creds || creds.keys.length === 0) return { ok: false, reason: 'no_key' };
-  if (creds.keys.length > 1) return { ok: false, reason: 'multi_key' };
-  const key = creds.keys[0]!;
-  if (key.apiKey === null) return { ok: false, reason: 'decrypt_error' };
-  return { ok: true, baseUrl: creds.baseUrl, apiKey: key.apiKey };
-}
-
 /** How many ENABLED keys the connection holds (D9: several means mapping deletes must be explicit). */
 export async function countEnabledKeys(db: DbExecutor, integrationId: string, partnerId: string): Promise<number> {
   const [row] = await db

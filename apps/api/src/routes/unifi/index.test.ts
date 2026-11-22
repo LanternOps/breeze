@@ -111,16 +111,11 @@ vi.mock('../../services/unifi/unifiConnectionService', () => ({
   },
 }));
 
-vi.mock('../../services/unifi/unifiKeyService', async (importActual) => {
-  const actual = await importActual<typeof import('../../services/unifi/unifiKeyService')>();
-  return {
-    // pickSingleSyncKey is pure: keep the real one.
-    pickSingleSyncKey: actual.pickSingleSyncKey,
-    getSyncKeys: vi.fn(),
-    listKeys: vi.fn(async () => []),
-    countEnabledKeys: vi.fn(async () => 1),
-  };
-});
+vi.mock('../../services/unifi/unifiKeyService', () => ({
+  getSyncKeys: vi.fn(),
+  listKeys: vi.fn(async () => []),
+  countEnabledKeys: vi.fn(async () => 1),
+}));
 
 vi.mock('../../services/unifi/unifiCollectorService', () => ({
   listCollectors: vi.fn(),
@@ -306,17 +301,120 @@ describe('unifi routes', () => {
     expect(createUnifiClient).toHaveBeenCalledWith({ baseUrl: 'https://api.ui.com', apiKey: 'key-from-row' });
   });
 
-  it.each([['POST', '/test'], ['GET', '/hosts']])('%s %s refuses a connection with several keys (W1 supports one)', async (method, path) => {
-    vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
-    vi.mocked(keySvc.getSyncKeys).mockResolvedValue({
+  describe('fan-out across keys (#11808 W2)', () => {
+    const twoKeys = () => ({
       baseUrl: 'https://api.ui.com',
-      keys: [oneKey('a').keys[0]!, { ...oneKey('b').keys[0]!, id: 'key-2' }],
+      keys: [
+        { id: 'key-a', label: 'Independent', apiKey: 'secret-a', keyLast4: null, lastSeenHostIds: null },
+        { id: 'key-b', label: 'Fabric', apiKey: 'secret-b', keyLast4: null, lastSeenHostIds: null },
+      ],
     });
-    const { createUnifiClient } = await import('../../services/unifi/unifiClient');
-    const res = await unifiRoutes.request(path, { method });
-    expect(res.status).toBe(409);
-    await expect(res.json()).resolves.toMatchObject({ success: false, code: 'UNIFI_MULTI_KEY' });
-    expect(createUnifiClient).not.toHaveBeenCalled();
+    const hostsClient = (hosts: string[], sites: Array<[string, string]>, fail?: Error) => ({
+      listHosts: vi.fn(async () => { if (fail) throw fail; return hosts.map((id) => ({ id, name: id, type: 'console', model: null })); }),
+      listSites: vi.fn(async () => { if (fail) throw fail; return sites.map(([hostId, id]) => ({ id, hostId, name: id })); }),
+      listSitesForSync: vi.fn(),
+      listDevicesByHost: vi.fn(),
+      listIspMetricsBySite: vi.fn(),
+    });
+    async function clients(...list: Array<ReturnType<typeof hostsClient>>) {
+      const { createUnifiClient } = await import('../../services/unifi/unifiClient');
+      for (const c of list) vi.mocked(createUnifiClient).mockReturnValueOnce(c as any);
+      return createUnifiClient;
+    }
+
+    it('GET /hosts merges two keys and tags each host and site with keyIds', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+      vi.mocked(keySvc.getSyncKeys).mockResolvedValue(twoKeys());
+      await clients(hostsClient(['h1'], [['h1', 's1']]), hostsClient(['h1', 'h2'], [['h1', 's1'], ['h2', 's2']]));
+      const res = await unifiRoutes.request('/hosts', { method: 'GET' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.complete).toBe(true);
+      expect(body.keys).toEqual([{ id: 'key-a', label: 'Independent', ok: true }, { id: 'key-b', label: 'Fabric', ok: true }]);
+      expect(body.hosts).toEqual([
+        { id: 'h1', name: 'h1', model: null, type: 'console', keyIds: ['key-a', 'key-b'], sites: [{ id: 's1', name: 's1', keyIds: ['key-a', 'key-b'] }] },
+        { id: 'h2', name: 'h2', model: null, type: 'console', keyIds: ['key-b'], sites: [{ id: 's2', name: 's2', keyIds: ['key-b'] }] },
+      ]);
+      expect(JSON.stringify(body)).not.toContain('secret-');
+    });
+
+    it('GET /hosts returns complete:false and the failed key when one key fails', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+      vi.mocked(keySvc.getSyncKeys).mockResolvedValue(twoKeys());
+      const { UnifiApiError } = await import('../../services/unifi/unifiClient');
+      await clients(hostsClient(['h1'], [['h1', 's1']]), hostsClient([], [], new UnifiApiError('Unauthorized', 401)));
+      const res = await unifiRoutes.request('/hosts', { method: 'GET' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.complete).toBe(false);
+      expect(body.keys[1]).toEqual({ id: 'key-b', label: 'Fabric', ok: false, error: 'Unauthorized' });
+      expect(body.hosts.map((h: { id: string }) => h.id)).toEqual(['h1']);
+    });
+
+    it('GET /hosts returns 502 when every key fails', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+      vi.mocked(keySvc.getSyncKeys).mockResolvedValue(twoKeys());
+      await clients(hostsClient([], [], new Error('first down')), hostsClient([], [], new Error('second down')));
+      const res = await unifiRoutes.request('/hosts', { method: 'GET' });
+      expect(res.status).toBe(502);
+      await expect(res.json()).resolves.toEqual({ success: false, message: 'first down' });
+    });
+
+    it('GET /hosts reads keys inside the request context and calls UniFi outside it', async () => {
+      const { withAuthDbAccessContext } = await import('../../middleware/auth');
+      let inRequestContext = false;
+      vi.mocked(withAuthDbAccessContext).mockImplementationOnce(async (_auth: unknown, fn: () => Promise<unknown>) => {
+        inRequestContext = true;
+        try { return await fn(); } finally { inRequestContext = false; }
+      });
+      const seen: Record<string, boolean> = {};
+      vi.mocked(svc.getConnection).mockImplementation(async () => { seen.connection = inRequestContext; return cloudConn(); });
+      vi.mocked(keySvc.getSyncKeys).mockImplementation(async () => { seen.keys = inRequestContext; return twoKeys(); });
+      const a = hostsClient(['h1'], [['h1', 's1']]);
+      a.listHosts.mockImplementation(async () => { seen.unifi = inRequestContext; return []; });
+      await clients(a, hostsClient([], []));
+      const res = await unifiRoutes.request('/hosts', { method: 'GET' });
+      expect(res.status).toBe(200);
+      expect(seen).toEqual({ connection: true, keys: true, unifi: false });
+      expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    });
+
+    it('POST /test reports per-key results', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+      vi.mocked(keySvc.getSyncKeys).mockResolvedValue(twoKeys());
+      const { UnifiApiError } = await import('../../services/unifi/unifiClient');
+      const created = await clients(hostsClient(['h1', 'h2'], []), hostsClient([], [], new UnifiApiError('Unauthorized', 401)));
+      const res = await unifiRoutes.request('/test', { method: 'POST' });
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({
+        success: false,
+        hostsFound: 2,
+        message: '1 of 2 API keys failed: "Fabric"',
+        keys: [
+          { id: 'key-a', label: 'Independent', success: true, hostsFound: 2 },
+          { id: 'key-b', label: 'Fabric', success: false, message: 'Unauthorized' },
+        ],
+      });
+      expect(created).toHaveBeenCalledTimes(2);
+    });
+
+    it('POST /test counts distinct hosts across healthy keys', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+      vi.mocked(keySvc.getSyncKeys).mockResolvedValue(twoKeys());
+      await clients(hostsClient(['h1', 'h2'], []), hostsClient(['h2', 'h3'], []));
+      const res = await unifiRoutes.request('/test', { method: 'POST' });
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({ success: true, hostsFound: 3 });
+    });
+
+    it('POST /test returns 502 with each key when every key fails', async () => {
+      vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+      vi.mocked(keySvc.getSyncKeys).mockResolvedValue(twoKeys());
+      await clients(hostsClient([], [], new Error('first down')), hostsClient([], [], new Error('second down')));
+      const res = await unifiRoutes.request('/test', { method: 'POST' });
+      expect(res.status).toBe(502);
+      await expect(res.json()).resolves.toMatchObject({ success: false, message: 'first down', keys: [{ success: false }, { success: false }] });
+    });
   });
 
   it.each([['POST', '/test'], ['GET', '/hosts']])('%s %s answers 400 when the connection has no usable key', async (method, path) => {
@@ -931,9 +1029,9 @@ describe('unifi routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.hosts).toEqual([
-      { id: 'console-1', name: 'Mappable UDM', model: 'UDM Pro', type: 'console', sites: [{ id: 'usite-1', name: 'HQ' }] },
-      { id: 'ghost-host', name: 'Unknown console', model: null, type: null, unknownConsole: true,
-        sites: [{ id: 'usite-9', name: 'Lost' }, { id: 'usite-8', name: 'Lost 2' }] },
+      { id: 'console-1', name: 'Mappable UDM', model: 'UDM Pro', type: 'console', keyIds: ['key-1'], sites: [{ id: 'usite-1', name: 'HQ', keyIds: ['key-1'] }] },
+      { id: 'ghost-host', name: 'Unknown console', model: null, type: null, unknownConsole: true, keyIds: ['key-1'],
+        sites: [{ id: 'usite-9', name: 'Lost', keyIds: ['key-1'] }, { id: 'usite-8', name: 'Lost 2', keyIds: ['key-1'] }] },
     ]);
     expect(body.omitted).toEqual({ hostsWithoutSites: 0, sitesWithoutHostId: 1 });
   });
