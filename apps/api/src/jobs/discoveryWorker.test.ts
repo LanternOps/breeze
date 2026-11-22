@@ -1031,7 +1031,7 @@ describe('processDispatchScan (wave 3.5b #4084 — dispatch via facade)', () => 
     agentId: 'agent-1',
   };
   const JOB_ROW_SCHEDULED = { status: 'scheduled' };
-  const PROFILE_ROW = { id: 'profile-1' };
+  const PROFILE_ROW = { id: 'profile-1', orgId: DATA.orgId, siteId: DATA.siteId };
   const VALID_AGENT_ROW = { agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', status: 'online' };
 
   let selectQueue: unknown[][];

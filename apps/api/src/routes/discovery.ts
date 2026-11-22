@@ -163,13 +163,16 @@ async function validateRequestedDiscoveryAgent(
       orgId: devices.orgId,
       siteId: devices.siteId,
       agentId: devices.agentId,
-      status: devices.status
+      status: devices.status,
+      isEphemeral: devices.isEphemeral
     })
     .from(devices)
     .where(eq(devices.agentId, agentId))
     .limit(1);
 
-  if (!agentDevice) {
+  // Same rule as the pinned scan agent below: a Quick Support session machine
+  // is never a scan source.
+  if (!agentDevice || agentDevice.isEphemeral) {
     return { ok: false, error: 'Requested agent not found', status: 404 } as const;
   }
 

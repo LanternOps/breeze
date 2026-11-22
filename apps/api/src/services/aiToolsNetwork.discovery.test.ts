@@ -125,3 +125,31 @@ describe('network_discovery payload (#8799)', () => {
     expect(schema.safeParse({ deviceId: DEVICE_ID, subnet: '10.0.0.0/24' }).success).toBe(true);
   });
 });
+
+describe('network_discovery scan source', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(aiExecuteCommand).mockResolvedValue({ status: 'completed' } as any);
+  });
+
+  it('does not run from a Quick Support session machine', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([
+      { id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'visitor-pc', status: 'online', isEphemeral: true },
+    ]) as any);
+
+    const result = JSON.parse(await tool().handler({ deviceId: DEVICE_ID, subnet: '192.168.1.0/24' }, auth));
+
+    expect(result).toEqual({ error: 'Network discovery cannot run from a Quick Support device.' });
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
+  });
+
+  it('runs from a managed device', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([
+      { id: DEVICE_ID, orgId: ORG_ID, siteId: null, hostname: 'pc-1', status: 'online', isEphemeral: false },
+    ]) as any);
+
+    await tool().handler({ deviceId: DEVICE_ID, subnet: '192.168.1.0/24' }, auth);
+
+    expect(aiExecuteCommand).toHaveBeenCalledTimes(1);
+  });
+});

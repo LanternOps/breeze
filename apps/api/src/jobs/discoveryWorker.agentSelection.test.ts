@@ -156,7 +156,7 @@ const { pinnedAgentNotConnectedMessage } = await import('./discoveryAgentSelecti
 
 const DATA = { type: 'dispatch-scan' as const, jobId: 'job-1', profileId: 'profile-1', orgId: 'org-1', siteId: 'site-1' };
 const JOB_ROW_SCHEDULED = { status: 'scheduled' };
-const PROFILE_UNPINNED = { id: 'profile-1', subnets: ['192.168.1.0/24'], methods: ['ping'], pinnedDeviceId: null };
+const PROFILE_UNPINNED = { id: 'profile-1', orgId: 'org-1', siteId: 'site-1', subnets: ['192.168.1.0/24'], methods: ['ping'], pinnedDeviceId: null };
 const PROFILE_PINNED = { ...PROFILE_UNPINNED, pinnedDeviceId: 'dev-pinned' };
 
 let updates: Array<Record<string, unknown>>;
@@ -265,6 +265,29 @@ describe('pinned profile (#7969)', () => {
   });
 });
 
+describe('explicitly requested agent', () => {
+  const REQUESTED = { agentId: 'agent-manual', orgId: 'org-1', siteId: 'site-1', status: 'online', isEphemeral: false };
+
+  it('runs on a managed device in the profile\'s site', async () => {
+    queueSelects([JOB_ROW_SCHEDULED], [PROFILE_UNPINNED], [REQUESTED]);
+
+    const result = await __testables.processDispatchScan({ ...DATA, agentId: 'agent-manual' });
+
+    expect(result).toMatchObject({ dispatched: true, agentId: 'agent-manual' });
+  });
+
+  it('is refused when the device is a Quick Support session machine', async () => {
+    queueSelects([JOB_ROW_SCHEDULED], [PROFILE_UNPINNED], [{ ...REQUESTED, isEphemeral: true }]);
+
+    const result = await __testables.processDispatchScan({ ...DATA, agentId: 'agent-manual' });
+
+    expect(result).toMatchObject({ dispatched: false, agentId: null });
+    expect(agentRelayMock.isAgentConnectedAnywhere).not.toHaveBeenCalled();
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(failure()).toMatchObject({ errors: { message: 'Requested agent not found' } });
+  });
+});
+
 describe('unpinned profile (#7969)', () => {
   it('prefers the agent on a profile subnet over one that sorts first but is off-LAN', async () => {
     queueSelects([JOB_ROW_SCHEDULED], [PROFILE_UNPINNED]);
@@ -327,5 +350,75 @@ describe('unpinned profile (#7969)', () => {
     expect(agentRelayMock.isAgentConnectedAnywhere).not.toHaveBeenCalled();
     expect(failure()).toMatchObject({ errors: { message: 'No online agent available for this site' } });
     warn.mockRestore();
+  });
+});
+
+describe('job and profile placement agree', () => {
+  const MOVED_MESSAGE = 'The profile moved to another site or organization after this scan was queued. The scan was not sent.';
+  const CANDIDATE = { deviceId: 'dev-a', agentId: 'agent-1', label: 'one', addresses: ['192.168.1.1'] };
+
+  function expectNothingSelectedOrSent() {
+    expect(selectionMock.loadCandidates).not.toHaveBeenCalled();
+    expect(selectionMock.resolvePinned).not.toHaveBeenCalled();
+    expect(topologyMock.prepare).not.toHaveBeenCalled();
+    expect(agentRelayMock.isAgentConnectedAnywhere).not.toHaveBeenCalled();
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(updates.find((u) => u.status === 'running')).toBeUndefined();
+  }
+
+  it('fails a job queued for a site the profile is no longer in', async () => {
+    queueSelects([JOB_ROW_SCHEDULED], [{ ...PROFILE_UNPINNED, siteId: 'site-2' }]);
+    selectionMock.loadCandidates.mockResolvedValue([CANDIDATE]);
+
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toMatchObject({ dispatched: false, agentId: null });
+    expectNothingSelectedOrSent();
+    expect(failure()).toMatchObject({ errors: { message: MOVED_MESSAGE } });
+  });
+
+  it('fails a job queued for an organization the profile is no longer in', async () => {
+    queueSelects([JOB_ROW_SCHEDULED], [{ ...PROFILE_UNPINNED, orgId: 'org-2' }]);
+    selectionMock.loadCandidates.mockResolvedValue([CANDIDATE]);
+
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toMatchObject({ dispatched: false, agentId: null });
+    expectNothingSelectedOrSent();
+    expect(failure()).toMatchObject({ errors: { message: MOVED_MESSAGE } });
+  });
+
+  it('applies to a pinned profile', async () => {
+    queueSelects([JOB_ROW_SCHEDULED], [{ ...PROFILE_PINNED, siteId: 'site-2' }]);
+    selectionMock.resolvePinned.mockResolvedValue({ ok: true, agentId: 'agent-pinned', label: 'scanner-01' });
+
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toMatchObject({ dispatched: false, agentId: null });
+    expectNothingSelectedOrSent();
+    expect(failure()).toMatchObject({ errors: { message: MOVED_MESSAGE } });
+  });
+
+  it('applies to an explicitly requested agent', async () => {
+    queueSelects(
+      [JOB_ROW_SCHEDULED],
+      [{ ...PROFILE_UNPINNED, siteId: 'site-2' }],
+      [{ agentId: 'agent-manual', orgId: 'org-1', siteId: 'site-1', status: 'online', isEphemeral: false }],
+    );
+
+    const result = await __testables.processDispatchScan({ ...DATA, agentId: 'agent-manual' });
+
+    expect(result).toMatchObject({ dispatched: false, agentId: null });
+    expectNothingSelectedOrSent();
+    expect(failure()).toMatchObject({ errors: { message: MOVED_MESSAGE } });
+  });
+
+  it('dispatches when the job and the profile name the same organization and site', async () => {
+    queueSelects([JOB_ROW_SCHEDULED], [PROFILE_UNPINNED]);
+    selectionMock.loadCandidates.mockResolvedValue([CANDIDATE]);
+
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toMatchObject({ dispatched: true, agentId: 'agent-1' });
   });
 });

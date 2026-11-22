@@ -181,7 +181,7 @@ function updateChain(label: string) {
 
 describe('processDispatchScan topology dispatch authority (D7)', () => {
   const DATA = { type: 'dispatch-scan' as const, jobId: 'job-1', profileId: 'profile-1', orgId: 'org-1', siteId: 'site-1', agentId: 'agent-1' };
-  const PROFILE_ROW = { id: 'profile-1', subnets: ['192.0.2.0/24'], methods: ['snmp'] };
+  const PROFILE_ROW = { id: 'profile-1', orgId: 'org-1', siteId: 'site-1', subnets: ['192.0.2.0/24'], methods: ['snmp'] };
   // main #7199: loadDispatchScanInputs re-reads the job's live status first.
   const JOB_ROW_SCHEDULED = { status: 'scheduled' };
   const VALID_AGENT_ROW = { agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', status: 'online' };

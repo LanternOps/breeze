@@ -1303,6 +1303,33 @@ describe('discovery routes', () => {
       const body = await res.json();
       expect(body.error).toContain('same site');
     });
+
+    it('rejects a requested agent that is a Quick Support session machine', async () => {
+      const profileId = '00000000-0000-0000-0000-000000000010';
+      const agentId = '00000000-0000-0000-0000-000000000012';
+      const orgId = '00000000-0000-0000-0000-000000000000';
+      const siteId = '00000000-0000-0000-0000-000000000001';
+      const row = (value: Record<string, unknown>) => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([value]) }),
+        }),
+      } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(row({ id: profileId, orgId, siteId }))
+        .mockReturnValueOnce(row({
+          id: '00000000-0000-0000-0000-000000000011', orgId, siteId, agentId, status: 'online', isEphemeral: true,
+        }));
+
+      const res = await app.request('/discovery/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ profileId, agentId })
+      });
+
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toBe('Requested agent not found');
+      expect(enqueueDiscoveryScanAfterCommit).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /discovery/jobs/:id asset link safety', () => {
