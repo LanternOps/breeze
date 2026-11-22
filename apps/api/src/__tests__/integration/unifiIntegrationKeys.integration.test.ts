@@ -278,6 +278,28 @@ describe('connection service on unifi_integration_keys (breeze_app)', () => {
     expect(keys.map((k) => openUnifiKey(k.apiKeyEncrypted)).sort()).toEqual(['fabric-key', 'kept-key-1']);
   });
 
+  runDb('getSyncKeys adopts a reconnect an older API instance wrote to the legacy column, once', async () => {
+    const partner = await createPartner();
+    await asPartner(partner.id, () => upsertConnection(db, partner.id, { baseUrl: 'https://api.ui.com', apiKey: 'row-key-1111' }));
+    const [integration] = await withSystemDbAccessContext(() =>
+      db.select().from(unifiIntegrations).where(eq(unifiIntegrations.partnerId, partner.id)),
+    );
+    // An older instance's /connect writes the legacy column alone.
+    const legacy = sealUnifiKey('legacy-key-2222');
+    await (getTestDb() as any).update(unifiIntegrations).set({ apiKeyEncrypted: legacy }).where(eq(unifiIntegrations.id, integration!.id));
+
+    const first = await asPartner(partner.id, () => getSyncKeys(db, integration!.id, partner.id));
+    expect(first!.keys[0]).toMatchObject({ apiKey: 'legacy-key-2222', keyLast4: null });
+    const [adopted] = await keysOf(integration!.id);
+    expect(adopted!.apiKeyEncrypted).toBe(legacy);
+    expect(adopted!.keyLast4).toBeNull();
+
+    const second = await asPartner(partner.id, () => getSyncKeys(db, integration!.id, partner.id));
+    expect(second!.keys[0]).toMatchObject({ apiKey: 'legacy-key-2222' });
+    const [after] = await keysOf(integration!.id);
+    expect(after!.updatedAt.getTime()).toBe(adopted!.updatedAt.getTime());
+  });
+
   runDb("switching to self-hosted deletes the connection's keys; getSyncKeys then returns null", async () => {
     const partner = await createPartner();
     await asPartner(partner.id, () => upsertConnection(db, partner.id, { baseUrl: 'https://api.ui.com', apiKey: 'cloud-key' }));

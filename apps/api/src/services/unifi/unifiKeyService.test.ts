@@ -24,7 +24,7 @@ function seal(plain: string): string {
 //   update unifiIntegrationKeys       → recorded in `updates`, returns [{ id }]
 // The selected field names and orderBy SQL of every select are recorded.
 // ---------------------------------------------------------------------------
-function scriptedDb(opts: { integration?: Record<string, unknown> | null; keys?: Array<Record<string, unknown>> }) {
+function scriptedDb(opts: { integration?: Record<string, unknown> | null; keys?: Array<Record<string, unknown>>; updateRows?: unknown[] }) {
   const selects: Array<{ table: unknown; fields: string[] | null; orderBy: string | null }> = [];
   const updates: Array<{ table: unknown; set: Record<string, unknown> }> = [];
   const dialect = new PgDialect();
@@ -61,7 +61,7 @@ function scriptedDb(opts: { integration?: Record<string, unknown> | null; keys?:
       returning() { return chain; },
       then(resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) {
         updates.push(record);
-        return Promise.resolve([{ id: 'key-1' }]).then(resolve, reject);
+        return Promise.resolve(opts.updateRows ?? [{ id: 'key-1' }]).then(resolve, reject);
       },
     };
     return chain;
@@ -181,7 +181,32 @@ describe('unifiKeyService', () => {
     expect(updates).toHaveLength(1);
     expect(updates[0]!.table).toBe(unifiIntegrationKeys);
     expect(updates[0]!.set).toMatchObject({ apiKeyEncrypted: legacy, keyLast4: null });
-    expect(log).toHaveBeenCalledWith('[unifi] adopted a reconnect written by an older API instance');
+    expect(log).toHaveBeenCalledWith('[unifi] adopted a reconnect written by an older API instance', { integrationId: 'int-1' });
+  });
+
+  it('getSyncKeys adopts a readable legacy key over an unreadable key row (self-heal, not a decryptError)', async () => {
+    const legacy = seal('legacy-good');
+    const { db, updates } = scriptedDb({
+      integration: { ...CLOUD, apiKeyEncrypted: legacy },
+      keys: [keyRow({ apiKeyEncrypted: 'enc:v3:test:corrupt-row' })],
+    });
+    const result = await getSyncKeys(db, 'int-1', 'p-1');
+    expect(result!.keys).toEqual([{ id: 'key-1', label: 'Global', apiKey: 'legacy-good', keyLast4: null, lastSeenHostIds: null }]);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.set).toMatchObject({ apiKeyEncrypted: legacy });
+  });
+
+  it('getSyncKeys keeps the key row when the adoption write matches no row', async () => {
+    const { db, updates } = scriptedDb({
+      integration: { ...CLOUD, apiKeyEncrypted: seal('new') },
+      keys: [keyRow({ apiKeyEncrypted: seal('old') })],
+      updateRows: [],
+    });
+    const result = await getSyncKeys(db, 'int-1', 'p-1');
+    expect(updates).toHaveLength(1);
+    expect(result!.keys[0]).toMatchObject({ apiKey: 'old' });
+    expect(log).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith('[unifi] legacy key adoption matched no key row; not adopted', { integrationId: 'int-1' });
   });
 
   it('getSyncKeys does not write when the legacy plaintext matches the key row', async () => {
@@ -203,7 +228,7 @@ describe('unifiKeyService', () => {
     expect(result!.keys).toEqual([{ id: 'key-1', label: 'Global', apiKey: 'row-key', keyLast4: null, lastSeenHostIds: null }]);
     expect(result!.keys[0]).not.toHaveProperty('decryptError');
     expect(updates).toHaveLength(0);
-    expect(warn).toHaveBeenCalledWith('[unifi] legacy key unreadable; not adopted');
+    expect(warn).toHaveBeenCalledWith('[unifi] legacy key unreadable; not adopted', { integrationId: 'int-1' });
   });
 
   it('getSyncKeys never consults the legacy column when the connection has two keys', async () => {

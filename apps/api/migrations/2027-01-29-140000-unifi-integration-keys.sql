@@ -81,8 +81,9 @@ CREATE POLICY breeze_partner_isolation_delete ON unifi_integration_keys
 -- The key takes the parent connection's status and last error (a connection
 -- that needs re-auth today must not show a healthy key). A parent status
 -- outside the key domain becomes 'pending'. last_sync_status stays NULL: its
--- domain differs from the parent's. key_last4 stays NULL until the worker's
--- next successful sync. The label is clamped to the key's 100-character limit
+-- domain differs from the parent's. key_last4 stays NULL until the key is
+-- replaced or the per-key sync status (W2) fills it. The label is clamped to the
+-- key's 100-character limit
 -- (/connect accepted account labels of up to 200).
 DO $$
 DECLARE

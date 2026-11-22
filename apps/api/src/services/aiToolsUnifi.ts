@@ -240,6 +240,8 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
       try {
         const conn = await getConnection(db, partner.partnerId);
         if (!conn) return jsonError('Not connected', 'NOT_CONNECTED');
+        // Only cloud connections sync; a queued job for a self-hosted one would do nothing.
+        if (conn.connectionType !== 'cloud') return jsonError('Self-hosted controllers are polled by their collectors; there is no cloud sync to run', 'NOT_CLOUD');
         await enqueueUnifiSync(conn.id, partner.partnerId, 'manual');
         return json({ queued: true, note: 'The sync runs in the background; read the outcome with get_unifi_status sync_runs.' });
       } catch (error) {

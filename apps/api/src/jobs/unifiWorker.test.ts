@@ -166,7 +166,7 @@ describe('unifi worker reads keys from unifi_integration_keys (#11808 W1)', () =
     expect(markStatus).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'connected', null);
   });
 
-  it('W1 refuses a connection with two enabled keys and writes no devices', async () => {
+  it('W1 refuses a connection with two enabled keys: no UniFi call, only a fatal (failed) run is recorded', async () => {
     vi.mocked(getSyncKeys).mockResolvedValue({ baseUrl: 'https://api.ui.com', keys: [okKey('key-1', 'a'), okKey('key-2', 'b')] });
     const run = await processor();
     await run(syncJob());

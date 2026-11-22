@@ -507,6 +507,11 @@ unifiRoutes.post('/sync', partnerScopes, writePerm, requireMfa(), async (c) => {
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const conn = await getConnection(db, partner.partnerId);
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
+  // The worker syncs cloud connections only; a self-hosted controller is polled
+  // by its collector, so a queued job would silently do nothing.
+  if (conn.connectionType !== 'cloud') {
+    return c.json({ success: false, code: 'UNIFI_NOT_CLOUD', message: 'Self-hosted controllers are polled by their collectors; there is no cloud sync to run' }, 400);
+  }
   await enqueueUnifiSync(conn.id, partner.partnerId, 'manual');
   return c.json({ success: true });
 });

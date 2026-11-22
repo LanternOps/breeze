@@ -332,6 +332,20 @@ describe('unifi routes', () => {
     await expect(none.json()).resolves.toMatchObject({ success: false, message: 'No API key found' });
   });
 
+  it('POST /sync refuses a self-hosted connection instead of queueing a job that does nothing', async () => {
+    const { enqueueUnifiSync } = await import('../../jobs/unifiWorker');
+    vi.mocked(svc.getConnection).mockResolvedValue({ ...cloudConn(), connectionType: 'self_hosted' });
+    const res = await unifiRoutes.request('/sync', { method: 'POST' });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ success: false, code: 'UNIFI_NOT_CLOUD' });
+    expect(enqueueUnifiSync).not.toHaveBeenCalled();
+
+    vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+    const ok = await unifiRoutes.request('/sync', { method: 'POST' });
+    expect(ok.status).toBe(200);
+    expect(enqueueUnifiSync).toHaveBeenCalledTimes(1);
+  });
+
   it('GET / returns {connected:false} when no connection', async () => {
     vi.mocked(svc.getConnection).mockResolvedValue(null);
     const res = await unifiRoutes.request('/', { method: 'GET' });

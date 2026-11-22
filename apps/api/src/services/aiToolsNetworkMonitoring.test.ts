@@ -624,6 +624,12 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
     expect(depths).toEqual({ connection: 1, key: 1, hosts: 0 });
   });
 
+  it('trigger_unifi_sync refuses a self-hosted connection (nothing to sync from the cloud)', async () => {
+    h.svc.getConnection.mockResolvedValueOnce({ ...conn, connectionType: 'self_hosted' });
+    expect((await call('trigger_unifi_sync', {}, partnerAuth())).code).toBe('NOT_CLOUD');
+    expect(h.svc.enqueueUnifiSync).not.toHaveBeenCalled();
+  });
+
   it('sync_runs projects the row shape (no partner or integration id)', async () => {
     h.svc.getConnection.mockResolvedValue(conn);
     h.queue.push([{ id: 'r1', trigger: 'manual', status: 'ok', startedAt: new Date(), finishedAt: null, hostsSeen: 1, devicesCreated: 0, devicesUpdated: 0, devicesUnchanged: 1, devicesRemoved: 0, error: null, integrationId: 'x', partnerId: PARTNER }]);

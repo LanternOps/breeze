@@ -137,23 +137,30 @@ async function reconcileLegacyKey(
   if (!legacyCiphertext || legacyCiphertext === row.apiKeyEncrypted) return row;
   const legacy = tryOpen(legacyCiphertext);
   if (!legacy.ok) {
-    console.warn('[unifi] legacy key unreadable; not adopted');
+    console.warn('[unifi] legacy key unreadable; not adopted', { integrationId });
     return row;
   }
   if (!legacy.value) return row;
   const current = tryOpen(row.apiKeyEncrypted);
   if (current.ok && current.value === legacy.value) return row;
 
-  await db
+  // Conditional on the key row still holding what was read: a reconnect that
+  // committed between the two reads must not be overwritten by the older value.
+  const adopted = await db
     .update(unifiIntegrationKeys)
     .set({ apiKeyEncrypted: legacyCiphertext, keyLast4: null, updatedAt: new Date() })
     .where(and(
       eq(unifiIntegrationKeys.id, row.id),
       eq(unifiIntegrationKeys.integrationId, integrationId),
       eq(unifiIntegrationKeys.partnerId, partnerId),
+      eq(unifiIntegrationKeys.apiKeyEncrypted, row.apiKeyEncrypted),
     ))
     .returning({ id: unifiIntegrationKeys.id });
-  console.log('[unifi] adopted a reconnect written by an older API instance');
+  if (adopted.length === 0) {
+    console.warn('[unifi] legacy key adoption matched no key row; not adopted', { integrationId });
+    return row;
+  }
+  console.log('[unifi] adopted a reconnect written by an older API instance', { integrationId });
   return { ...row, apiKeyEncrypted: legacyCiphertext, keyLast4: null };
 }
 
