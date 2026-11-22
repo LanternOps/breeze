@@ -324,15 +324,18 @@ export interface ResolvedDeviceAutomations {
 /**
  * The assignment that wins `featureType` for a device: the closest assignment
  * whose active policy carries the feature link (own or inherited through the
- * effective view), whatever that link's list holds. Deliberately joins NO
- * child table — a link with an empty list is a candidate like any other, so
- * an empty closer list overrides a broader one (#12488). `null` when no
- * assigned policy carries the feature.
+ * effective view). Deliberately joins NO child table — a link with an empty
+ * list is a candidate like any other, so an empty closer list overrides a
+ * broader one (#12488). `candidacy`, when given, is an extra per-link WHERE
+ * condition (a correlated subquery on the effective link) that a link must
+ * pass to be a candidate at all. `null` when no assigned policy carries the
+ * feature.
  */
 async function resolveListFeatureWinner(
   hierarchy: DeviceHierarchy,
   featureType: 'automation' | 'compliance',
   executor: DbExecutor,
+  candidacy?: SQL,
 ): Promise<{ featureLinkId: string; policyId: string; policyName: string } | null> {
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
@@ -368,7 +371,11 @@ async function resolveListFeatureWinner(
         eq(configPolicyEffectiveFeatureLinks.featureType, featureType)
       )
     )
-    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+    .where(and(
+      sql`(${sql.join(targetConditions, sql` OR `)})`,
+      ...roleOsConditions,
+      ...(candidacy ? [candidacy] : []),
+    ))
     .orderBy(
       configPolicyAssignments.level,
       configPolicyAssignments.priority,
@@ -384,9 +391,14 @@ async function resolveListFeatureWinner(
  * Resolves automations for a device via the hierarchy, naming the policy whose
  * assignment won. `null` when the device is unknown or no assigned policy
  * carries the Automations feature — callers treat that as "skip this device",
- * never as "no constraint applies". A winning policy whose Automations list is
- * empty (or holds only retired rows with no live conversion) returns its id
- * and `automations: []`: the closest policy wins whole (#12488).
+ * never as "no constraint applies".
+ *
+ * A link with NO automation rows (saved with an explicitly empty list) is a
+ * candidate: when it is closest it wins with `automations: []` (#12488). A
+ * link whose rows are ALL retired with no live conversion is NOT a candidate
+ * and the next policy up wins, as before #12488: retiring a row needs only
+ * `alerts.write` (monitor conversion routes), while emptying a policy's list
+ * needs `devices.write`, so retirement must not suppress broader automations.
  */
 export async function resolveAutomationAssignmentForDevice(
   deviceId: string, executor: DbExecutor = db,
@@ -394,23 +406,28 @@ export async function resolveAutomationAssignmentForDevice(
   const hierarchy = await loadDeviceHierarchy(deviceId, executor);
   if (!hierarchy) return null;
 
-  const winner = await resolveListFeatureWinner(hierarchy, 'automation', executor);
+  // A row survives while it is live, or retired with a live monitor
+  // conversion that carries its workflow (policyWorkflowApplies keys on them);
+  // the run paths drop every retired row (resolveAutomationsForDeviceWithPolicy).
+  // One predicate for candidacy and for the row load, so a winner can never
+  // come back with its surviving rows filtered to [].
+  const survives = or(isNull(configPolicyAutomations.retiredAt), sql`EXISTS (SELECT 1 FROM ${monitorConversions}
+    WHERE ${monitorConversions.sourceTable} = 'config_policy_automations'
+      AND ${monitorConversions.sourceId} = ${configPolicyAutomations.id}
+      AND ${monitorConversions.revertedAt} IS NULL
+      AND ${monitorConversions.sourceState}->>'workflowId' IS NOT NULL)`)!;
+  const linkRows = sql`${configPolicyAutomations.featureLinkId} = ${configPolicyEffectiveFeatureLinks.id}`;
+  const candidacy = sql`(NOT EXISTS (SELECT 1 FROM ${configPolicyAutomations} WHERE ${linkRows})
+    OR EXISTS (SELECT 1 FROM ${configPolicyAutomations} WHERE ${linkRows} AND ${survives}))`;
+
+  const winner = await resolveListFeatureWinner(hierarchy, 'automation', executor, candidacy);
   if (!winner) return null;
 
-  // Retired rows stay only while a live monitor conversion carries their
-  // workflow (policyWorkflowApplies keys on them); the run paths drop every
-  // retired row (resolveAutomationsForDeviceWithPolicy). Same caller context.
+  // Same caller context.
   const automations = await executor
     .select()
     .from(configPolicyAutomations)
-    .where(and(
-      eq(configPolicyAutomations.featureLinkId, winner.featureLinkId),
-      or(isNull(configPolicyAutomations.retiredAt), sql`EXISTS (SELECT 1 FROM ${monitorConversions}
-        WHERE ${monitorConversions.sourceTable} = 'config_policy_automations'
-          AND ${monitorConversions.sourceId} = ${configPolicyAutomations.id}
-          AND ${monitorConversions.revertedAt} IS NULL
-          AND ${monitorConversions.sourceState}->>'workflowId' IS NOT NULL)`),
-    ))
+    .where(and(eq(configPolicyAutomations.featureLinkId, winner.featureLinkId), survives))
     .orderBy(asc(configPolicyAutomations.sortOrder));
 
   return { configPolicyId: winner.policyId, automations };

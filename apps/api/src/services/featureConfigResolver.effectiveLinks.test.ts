@@ -275,10 +275,10 @@ it('a converted child still wins; only its legacy executable rows disappear', as
   expect(await resolveAutomationAssignmentForDevice('dev-1')).toEqual({ configPolicyId: 'policy-site', automations: [converted] });
   queueHierarchy([candidate(ORG), candidate(SITE)], [converted]);
   expect(await resolveAutomationsForDeviceWithPolicy('dev-1')).toEqual({ configPolicyId: 'policy-site', automations: [] });
-  // #12488: a child whose rows are ALL filtered out (retired with no live
-  // conversion) still wins; the broader policy's automations do not come back.
-  queueHierarchy([candidate(ORG), candidate(SITE)], []);
-  expect(await resolveAutomationsForDeviceWithPolicy('dev-1')).toEqual({ configPolicyId: 'policy-site', automations: [] });
+  // A link whose rows are ALL retired with no live conversion is not a
+  // candidate (it falls through to the broader policy). That is decided in the
+  // candidate query's SQL, so the mocked suite cannot show it: the real-DB
+  // featureConfigResolverEmptyListOverride.integration.test.ts does.
 });
 
 // #7647: the ring-aware approval evaluator only needs WHICH config policy won.

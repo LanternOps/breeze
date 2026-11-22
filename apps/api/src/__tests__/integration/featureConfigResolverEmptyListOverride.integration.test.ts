@@ -9,7 +9,11 @@
  * picking the winning assignment. A feature link with no child rows then
  * contributed no rows, was never a candidate, and the next assignment up the
  * hierarchy won — so "no automations at this site" could not be expressed.
- * The same join dropped a closer automation link whose rows were all retired.
+ * A closer automation link whose rows are ALL retired with no live conversion
+ * still falls through to the broader policy, as before: retiring a row needs
+ * only `alerts.write`, so letting that empty a winner would let an alerts-only
+ * principal switch off broader automations (Strix review on #12521). Only a
+ * link with no automation rows at all overrides.
  *
  * Real database, real RLS, under an org-scoped request context: the mocked
  * unit suite cannot evaluate the join, which is where the bug lived.
@@ -36,7 +40,9 @@ import {
   resolveAutomationsForDeviceWithPolicy,
   resolveComplianceAssignmentForDevice,
   resolveComplianceRulesForDevice,
+  createSystemAuthContext,
 } from '../../services/featureConfigResolver';
+import { retireSource } from '../../services/monitors/conversion';
 import { createPartner, createOrganization, createSite } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -308,21 +314,56 @@ describe.each<Feature>(['automation', 'compliance'])('%s — an empty closer lis
   });
 });
 
-describe('automation — a closer list whose rows are all retired still wins (#12488)', () => {
-  it('a site policy whose only automation is retired (no live conversion) wins with an empty runnable list', async () => {
+// Strix review on #12521: retiring a row (`POST /monitor-definitions/conversion/
+// retire`) needs only `alerts.write`, while editing a policy's feature list
+// needs `devices.write`. So a link whose rows are ALL retired with no live
+// conversion must NOT override a broader policy — otherwise an alerts-only
+// principal could switch off org/partner automations by retiring a closer
+// policy's last row. Only a link with NO automation rows at all (saved with an
+// explicitly empty list) overrides; an all-retired link falls through, as on
+// main.
+describe('automation — a closer link whose rows are all retired falls through (#12488, Strix)', () => {
+  it('retiring the last row of a closer list through retireSource leaves the broader list in force', async () => {
+    const t = await seedTenant();
+    const orgPolicy = await seedPolicy(t.orgId, 'automation', ORG_ITEMS);
+    await assign(orgPolicy, 'organization', t.orgId);
+    const sitePolicy = await seedPolicy(t.orgId, 'automation', [{ name: 'Site item' }]);
+    await assign(sitePolicy, 'site', t.siteId);
+    expect(await resolveWinner(t, 'automation')).toEqual({ policyId: sitePolicy, names: ['Site item'] });
+
+    // The real retire path, which writes its own ledger row (no workflowId).
+    const { conversionId } = await retireSource(
+      'config_policy_automations', await automationIdByName(sitePolicy, 'Site item'), 'operator', createSystemAuthContext(),
+    );
+    createdConversions.push(conversionId);
+
+    expect(await resolveWinner(t, 'automation')).toEqual({ policyId: orgPolicy, names: ORG_ITEMS.map((i) => i.name) });
+    expect(await resolveList(t, 'automation')).toEqual(ORG_ITEMS.map((i) => i.name));
+  });
+
+  it('a site policy whose only automation is retired (no conversion) does not override the organization list', async () => {
+    // Known limit: a policy editor who later saves `{ items: [] }` on this link
+    // leaves the same rows (deleteNormalizedRows keeps retired history), so that
+    // save also falls through. Fall-through is main's behaviour.
     const t = await seedTenant();
     const orgPolicy = await seedPolicy(t.orgId, 'automation', ORG_ITEMS);
     await assign(orgPolicy, 'organization', t.orgId);
     const sitePolicy = await seedPolicy(t.orgId, 'automation', [{ name: 'Retired site item', retired: true }]);
     await assign(sitePolicy, 'site', t.siteId);
 
-    // The retired row carries no live monitor conversion, so it is not part
-    // of the winner's list either; the winner is still the site policy.
-    expect(await resolveWinner(t, 'automation')).toEqual({ policyId: sitePolicy, names: [] });
+    expect(await resolveWinner(t, 'automation')).toEqual({ policyId: orgPolicy, names: ORG_ITEMS.map((i) => i.name) });
     const withPolicy = await withDbAccessContext(orgContext(t.orgId, t.partnerId), () =>
       resolveAutomationsForDeviceWithPolicy(t.deviceId),
     );
-    expect(withPolicy).toEqual({ configPolicyId: sitePolicy, automations: [] });
+    expect(withPolicy?.configPolicyId).toBe(orgPolicy);
+  });
+
+  it('with no broader policy an all-retired link is not a winner: null, not an empty winner', async () => {
+    const t = await seedTenant();
+    const sitePolicy = await seedPolicy(t.orgId, 'automation', [{ name: 'Retired site item', retired: true }]);
+    await assign(sitePolicy, 'site', t.siteId);
+
+    expect(await resolveWinner(t, 'automation')).toBeNull();
   });
 
   it('a retired row next to a live one: only the live row is returned, from the closer policy', async () => {
@@ -340,8 +381,10 @@ describe('automation — a closer list whose rows are all retired still wins (#1
 });
 
 describe('automation — retired rows with a monitor conversion (#12488)', () => {
-  it('a retired row with a LIVE conversion carrying a workflow stays in the winner\'s list', async () => {
+  it('a retired row with a LIVE conversion carrying a workflow keeps the closer policy the winner', async () => {
     const t = await seedTenant();
+    const orgPolicy = await seedPolicy(t.orgId, 'automation', ORG_ITEMS);
+    await assign(orgPolicy, 'organization', t.orgId);
     const sitePolicy = await seedPolicy(t.orgId, 'automation', [{ name: 'Converted', retired: true }]);
     await assign(sitePolicy, 'site', t.siteId);
     await seedConversion(t.orgId, sitePolicy, await automationIdByName(sitePolicy, 'Converted'), {});
@@ -352,7 +395,7 @@ describe('automation — retired rows with a monitor conversion (#12488)', () =>
   it.each([
     ['reverted', { reverted: true }],
     ['carrying no workflow', { workflowId: null }],
-  ] as const)('a retired row whose conversion is %s is dropped; the policy still wins', async (_label, opts) => {
+  ] as const)('a retired row whose conversion is %s is dropped and the broader policy wins', async (_label, opts) => {
     const t = await seedTenant();
     const orgPolicy = await seedPolicy(t.orgId, 'automation', ORG_ITEMS);
     await assign(orgPolicy, 'organization', t.orgId);
@@ -360,7 +403,7 @@ describe('automation — retired rows with a monitor conversion (#12488)', () =>
     await assign(sitePolicy, 'site', t.siteId);
     await seedConversion(t.orgId, sitePolicy, await automationIdByName(sitePolicy, 'Converted'), opts);
 
-    expect(await resolveWinner(t, 'automation')).toEqual({ policyId: sitePolicy, names: [] });
+    expect(await resolveWinner(t, 'automation')).toEqual({ policyId: orgPolicy, names: ORG_ITEMS.map((i) => i.name) });
   });
 });
 
