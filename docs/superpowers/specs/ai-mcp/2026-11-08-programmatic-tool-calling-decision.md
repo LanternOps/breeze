@@ -1,6 +1,7 @@
 ---
 title: Programmatic tool calling for fleet-scale AI work — decision
-status: APPROVED 2026-11-21 (Todd, Gate A) — every Open Decision in §8 resolved to its recommended option; OD1(b) (fleet aggregate dimensions + fleet-step flow at the existing 10-device ceiling) is the only build item and gets a plan; OD2 no, OD4 keep 10, OD6 read accelerators only. One independent review round (Codex gpt-6-astra xhigh, read-only, 2026-11-08) folded in. Plan: docs/superpowers/plans/ai-mcp/<to be written>
+status: APPROVED 2026-11-21 (Todd, Gate A) — every Open Decision in §8 resolved to its recommended option; OD1(b) (fleet aggregate dimensions + fleet-step flow at the existing 10-device ceiling) is the only build item and gets a plan; OD2 no, OD4 keep 10, OD6 read accelerators only. One independent review round (Codex gpt-6-astra xhigh, read-only, 2026-11-08) folded in. Plan: docs/superpowers/plans/ai-mcp/2026-11-21-fleet-aggregates-and-fleet-step-flow-plan.md
+tracking_issue: LanternOps/breeze#12418
 date: 2026-11-08
 kind: decision
 sibling: 2026-11-08-ai-tool-examples-and-discovery-telemetry-spec.md (defines the discovery telemetry this decision depends on)
