@@ -22,6 +22,14 @@ const { captureExceptionMock, selectMock, updateMock, helpers, persistence } = v
     applyScriptCancelAck: vi.fn(),
   },
 }));
+// Learned networks (#12369 W03a): discovery results are verified under the site lock before they are enqueued.
+// Lock a no-op; the verifier accepts (an unrestricted result on a site that is not gated).
+vi.mock('./learnedNetworks/siteLock', () => ({ lockSitesForNetworkGate: vi.fn(async () => undefined) }));
+vi.mock('./learnedNetworks/verify', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./learnedNetworks/verify')>()),
+  verifyDiscoveryResult: vi.fn(async () => ({ ok: true, networkId: null })),
+}));
+
 vi.mock('./sentry', () => ({ captureException: (...a: unknown[]) => captureExceptionMock(...a) }));
 vi.mock('../routes/agents/helpers', () => helpers);
 vi.mock('../routes/backup/verificationService', () => ({
