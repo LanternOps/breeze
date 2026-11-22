@@ -131,6 +131,19 @@ function parseLastMonitorMarker(stdout: string | null): ParsedMonitorMarker | nu
 // real exit (`ranToExitCode`).
 const NON_COMPLETED_TERMINAL_STATUSES = new Set(['failed', 'timeout', 'cancelled']);
 
+const CAUSE_MAX_CHARS = 200;
+
+/**
+ * The run's own error (already secret-redacted at persistence), first line,
+ * capped — appended to the no-data description so a monitor whose script can
+ * never start says why in its activity, instead of a bare "status: failed".
+ */
+function causeSuffix(errorMessage: string | null): string {
+  const firstLine = errorMessage?.split(/\r?\n/, 1)[0]?.trim();
+  if (!firstLine) return '';
+  return `: ${firstLine.length > CAUSE_MAX_CHARS ? `${firstLine.slice(0, CAUSE_MAX_CHARS)}…` : firstLine}`;
+}
+
 interface ProbeRow {
   status: string;
   exitCode: number | null;
@@ -208,7 +221,7 @@ export const scriptMonitorHandler: ConditionHandler = {
         return {
           passed: false,
           dataAvailable: false,
-          description: `Script probe did not complete (status: ${latest.status})`,
+          description: `Script probe did not complete (status: ${latest.status})${causeSuffix(latest.errorMessage)}`,
         };
       }
       // pending / queued / running / cancelling — the probe simply hasn't

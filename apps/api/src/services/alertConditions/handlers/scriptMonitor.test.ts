@@ -254,6 +254,22 @@ describe('scriptMonitorHandler', () => {
       expect(result.description).toMatch(/did not complete/i);
     });
 
+    it('names the cause so a run that can never start is diagnosable', async () => {
+      setRows([makeExecution({ status: 'failed', exitCode: 1, errorMessage: 'script content is empty' })]);
+
+      const result = await scriptMonitorHandler.evaluate(condition(), DEVICE_ID);
+
+      expect(result.description).toBe('Script probe did not complete (status: failed): script content is empty');
+    });
+
+    it('keeps the cause to its first line, capped', async () => {
+      setRows([makeExecution({ status: 'failed', exitCode: -1, errorMessage: `${'x'.repeat(300)}\nsecond line` })]);
+
+      const result = await scriptMonitorHandler.evaluate(condition(), DEVICE_ID);
+
+      expect(result.description).toBe(`Script probe did not complete (status: failed): ${'x'.repeat(200)}…`);
+    });
+
     it('a breach marker in a timed-out run does not breach', async () => {
       setRows([makeExecution({
         status: 'timeout',
