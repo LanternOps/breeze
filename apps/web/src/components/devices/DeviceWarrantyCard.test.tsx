@@ -311,12 +311,13 @@ describe('DeviceWarrantyCard — imported data and source labels (#9862)', () =>
     expect(await screen.findByText('Source: Imported')).toBeInTheDocument();
   });
 
-  it('compact view does not pair the vendor service level with the imported end date', async () => {
+  it('does not pair the vendor service level with the imported end date', async () => {
     fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({
       dataSource: 'import', status: 'active', warrantyEndDate: '2028-06-30', entitlements: [VENDOR_BASE],
     })));
-    render(<DeviceWarrantyCard deviceId={deviceId} compact />);
-    expect(await screen.findByText('DELL')).toBeInTheDocument();
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    expect(await screen.findByText('Source: Imported (vendor reports earlier end date)')).toBeInTheDocument();
+    expect(screen.queryByText('Coverage')).not.toBeInTheDocument();
     expect(screen.queryByText(/Basic Hardware Service/)).not.toBeInTheDocument();
   });
 
@@ -387,33 +388,6 @@ describe('DeviceWarrantyCard — imported data and source labels (#9862)', () =>
       });
     });
     expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
-  });
-});
-
-describe('DeviceWarrantyCard — compact empty state (#9029)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('collapses to one muted line with a Look up step that queues a warranty lookup', async () => {
-    fetchWithAuthMock.mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url.endsWith('/warranty/refresh') && init?.method === 'POST') {
-        return jsonResponse({ message: 'Warranty refresh queued' });
-      }
-      return jsonResponse({ warranty: null });
-    });
-
-    render(<DeviceWarrantyCard deviceId={deviceId} compact />);
-    const row = await screen.findByTestId('device-warranty-empty');
-    expect(row).toHaveTextContent('No warranty on file');
-    fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
-    await waitFor(() =>
-      expect(fetchWithAuthMock).toHaveBeenCalledWith(
-        `/devices/${deviceId}/warranty/refresh`,
-        expect.objectContaining({ method: 'POST' }),
-      ),
-    );
   });
 });
 

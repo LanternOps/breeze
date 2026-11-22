@@ -36,7 +36,6 @@ export type WarrantyData = {
 
 type DeviceWarrantyCardProps = {
   deviceId: string;
-  compact?: boolean;
   /** The device's purchase date. A coverage start on the same day is not
    *  repeated: the purchase date row already says it. */
   purchaseDate?: string | null;
@@ -142,7 +141,6 @@ function isProviderNotConfigured(err: string | null): boolean {
 
 export default function DeviceWarrantyCard({
   deviceId,
-  compact = false,
   purchaseDate = null,
   purchase,
   onChanged,
@@ -267,67 +265,6 @@ export default function DeviceWarrantyCard({
     pollTimerRef.current = setTimeout(poll, REFRESH_POLL_INTERVAL_MS);
   };
 
-  if (loading && compact) {
-    return (
-      <div className="rounded-lg border bg-card p-4 shadow-xs animate-pulse">
-        <div className="h-4 w-24 rounded bg-muted" />
-        <div className="mt-3 h-6 w-48 rounded bg-muted" />
-      </div>
-    );
-  }
-
-  if (!warranty) {
-    // #9029: on the Overview an empty warranty is one muted line with the one
-    // next step this card offers — a vendor lookup.
-    if (compact && !error) {
-      return (
-        <p
-          data-testid="device-warranty-empty"
-          className="flex flex-wrap items-center gap-x-1.5 rounded-lg border bg-card px-5 py-3 text-sm text-muted-foreground"
-        >
-          <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span>{t('deviceWarrantyCard.noInformation')}</span>
-          <span aria-hidden="true">·</span>
-          <button
-            type="button"
-            onClick={() => void handleRefresh()}
-            disabled={refreshing}
-            className="font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground disabled:cursor-progress disabled:no-underline"
-          >
-            {refreshing ? t('deviceWarrantyCard.checking') : t('deviceWarrantyCard.lookUp')}
-          </button>
-        </p>
-      );
-    }
-    if (compact) {
-      return (
-        <div className="rounded-lg border bg-card p-4 shadow-xs">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <ShieldCheck className="h-4 w-4" />
-            {t('deviceWarrantyCard.compactTitle')}
-          </div>
-          {error ? (
-            // A fetch failure is distinct from a device that genuinely has no
-            // warranty record — surface it with a retry rather than the
-            // identical "No warranty information" empty state.
-            <p className="mt-2 text-sm text-muted-foreground">
-              {t('deviceWarrantyCard.loadFailed')}{' '}
-              <button
-                type="button"
-                onClick={() => { setError(false); setLoading(true); fetchWarranty(); }}
-                className="font-medium text-primary hover:underline"
-              >
-                {t('common:actions.retry')}
-              </button>
-            </p>
-          ) : (
-            <p className="mt-2 text-sm text-muted-foreground">{t('deviceWarrantyCard.noInformation')}</p>
-          )}
-        </div>
-      );
-    }
-  }
-
   if (!warranty || loading) {
     return (
       <WarrantySection
@@ -382,33 +319,6 @@ export default function DeviceWarrantyCard({
   const primaryEntitlement = vendorEarlier ? undefined : warranty.entitlements?.[0];
   // For a renewing subscription the stored end date is the next renewal, not an expiry.
   const isSubscription = warranty.isSubscription || warranty.status === 'subscription_active';
-  const endDateLabel = isSubscription ? t('deviceWarrantyCard.renews') : t('deviceWarrantyCard.expires');
-
-  if (compact) {
-    return (
-      <div className="rounded-lg border bg-card p-4 shadow-xs">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <ShieldCheck className="h-4 w-4" />
-            {t('deviceWarrantyCard.compactTitle')}
-          </div>
-          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${cfg.color}`}>
-            {t(/* i18n-dynamic */ `deviceWarrantyCard.status.${cfg.label}`)}
-          </span>
-        </div>
-        <p className="mt-2 text-sm font-medium">
-          {primaryEntitlement
-            ? `${warranty.manufacturer?.toUpperCase()} ${primaryEntitlement.serviceLevelDescription}`
-            : warranty.manufacturer?.toUpperCase() ?? t('deviceWarrantyCard.status.unknown')}
-        </p>
-        {warranty.warrantyEndDate && (
-          <p className="text-xs text-muted-foreground">
-            {endDateLabel} {formatDate(warranty.warrantyEndDate)}
-          </p>
-        )}
-      </div>
-    );
-  }
 
   // Details tab: "Warranty & purchase". Manufacturer and serial are not
   // repeated here — the System section above shows them. Nor is a coverage

@@ -2641,7 +2641,6 @@
     "compactTitle": "Warranty",
     "endDate": "End Date",
     "error": "Error: {{error}}",
-    "expires": "Expires",
     "lastChecked": "Last checked: {{time}}",
     "loadFailed": "Couldn't load warranty.",
     "lookupUnavailable": "Warranty lookup not available for this manufacturer",

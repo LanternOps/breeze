@@ -2641,7 +2641,6 @@
     "compactTitle": "Garanti",
     "endDate": "Bitiş Tarihi",
     "error": "Hata: {{error}}",
-    "expires": "Süresi doluyor",
     "lastChecked": "Son kontrol: {{time}}",
     "loadFailed": "Garanti yüklenemedi.",
     "lookupUnavailable": "Bu üretici için garanti araması mevcut değil",

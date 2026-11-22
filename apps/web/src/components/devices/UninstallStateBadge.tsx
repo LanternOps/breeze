@@ -25,8 +25,6 @@ export interface UninstallStateBadgeProps {
   uninstall: Device["uninstall"];
   /** The device's status — the badge is only meaningful on a removed device. */
   status: string;
-  /** Inline text instead of a pill, for the Removed panel in the settings modal. */
-  compact?: boolean;
   /** Injectable for tests; defaults to the wall clock. */
   now?: Date;
 }
@@ -38,17 +36,9 @@ const PILL_TONE: Record<Tone, string> = {
   muted: "bg-muted text-muted-foreground border-border",
 };
 
-const COMPACT_TONE: Record<Tone, string> = {
-  info: "text-info",
-  success: "text-success",
-  warning: "text-warning",
-  muted: "text-muted-foreground",
-};
-
 export default function UninstallStateBadge({
   uninstall,
   status,
-  compact,
   now,
 }: UninstallStateBadgeProps) {
   const { t } = useTranslation("devices");
@@ -112,18 +102,6 @@ export default function UninstallStateBadge({
       default:
         return null;
     }
-  }
-
-  if (compact) {
-    return (
-      <p
-        data-testid="uninstall-state"
-        data-state={state}
-        className={`text-xs ${COMPACT_TONE[tone]}`}
-      >
-        {label}
-      </p>
-    );
   }
 
   return (

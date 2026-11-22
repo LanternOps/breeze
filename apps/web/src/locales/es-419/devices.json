@@ -2641,7 +2641,6 @@
     "compactTitle": "Garantía",
     "endDate": "Fecha de finalización",
     "error": "Error: {{error}}",
-    "expires": "Vence",
     "lastChecked": "Última comprobación: {{time}}",
     "loadFailed": "No se pudo cargar la garantía.",
     "lookupUnavailable": "La búsqueda de garantía no está disponible para este fabricante",
