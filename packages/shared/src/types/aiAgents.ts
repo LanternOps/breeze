@@ -876,6 +876,20 @@ export interface AiAgentRunSkipSummaryDto {
  * are NOT NULL, so a client writing `toolAllowlist ?? []` would be papering over
  * a contract change rather than handling a real absence.
  */
+/**
+ * #12347 — one open (org, agent) circuit, as the agents LIST route reports it.
+ * `openedReason` is server-built from machine tokens only (the threshold and
+ * the triggering run's allowlisted error code), never from run output.
+ */
+export interface AiAgentOpenCircuitDto {
+  orgId: string;
+  orgName: string;
+  /** ISO-8601; null only for a row opened by something that set no time. */
+  openedAt: string | null;
+  openedReason: string | null;
+  consecutiveFailures: number;
+}
+
 export interface AiAgentDto {
   id: string;
   kind: AiAgentKind;
@@ -949,6 +963,14 @@ export interface AiAgentDto {
    * (only the list route computes it). Additive — no DTO version bump.
    */
   nextOccurrenceAt?: string | null;
+  /**
+   * #12347 — every org in which this agent's circuit breaker is currently
+   * OPEN (admission refuses its runs there with `circuit_open` until a human
+   * resets it), limited to orgs this caller can see. Empty when none is open.
+   * Optional because only the list route computes it: absent means "not
+   * reported" (another route, an older server), never "all closed".
+   */
+  openCircuits?: AiAgentOpenCircuitDto[];
   /**
    * Whether `resolveEffectiveAgentInner` would treat this row as effective
    * (#4170) — always `true` for a partner-wide row (`allOrgs`), since it IS

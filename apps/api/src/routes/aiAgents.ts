@@ -52,7 +52,7 @@ import { AgentModelNotAllowedError } from '../services/aiAgents/agentModelErrors
 import { ResearchAgentEditError } from '../services/aiAgents/researchAgentEdit';
 import { TroubleshootAgentEditError } from '../services/aiAgents/troubleshootAgentEdit';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
-import { getCircuitState, resetCircuit } from '../services/aiAgents/agentCircuit';
+import { getCircuitState, listOpenCircuits, resetCircuit } from '../services/aiAgents/agentCircuit';
 import { readAiKillState } from '../services/aiKillState';
 import { readAgentRunSkipSummary } from '../services/aiAgents/skipVisibility';
 import { AI_AGENTS_ENV_FLAG_NAME, aiAgentsEnvFlagEnabled } from '../services/aiAgents/subsystemState';
@@ -499,6 +499,11 @@ aiAgentsRoutes.get(
     // AI patch agent W01 (#5747): the card's "next occurrence", batched the
     // same way — one cadence read for the page.
     const nextOccurrences = await loadNextOccurrences(auth, agentIds);
+    // #12347: every OPEN circuit for these agents in orgs this caller can
+    // reach, batched the same way — one read for the page. Nothing on the page
+    // used to say a circuit was open, so a tripped agent skipped every run
+    // until someone found the reset route by hand.
+    const openCircuits = await listOpenCircuits(auth.orgCondition, agentIds);
     // #4170: one query for the whole page, same convention as loadLastRuns
     // above — never one per row. Reported both per-row (`hasPartnerBaseline`,
     // so the list can flag an org row the resolver would treat as inert) and
@@ -523,6 +528,7 @@ aiAgentsRoutes.get(
           lastRunStatus: last?.lastRunStatus ?? null,
           lastRunFindingsToReview: last?.lastRunFindingsToReview ?? null,
           nextOccurrenceAt: nextOccurrences.get(row.id) ?? null,
+          openCircuits: openCircuits.get(row.id) ?? [],
         };
       }),
       partnerBaselineKinds: Array.from(partnerBaselineKinds),

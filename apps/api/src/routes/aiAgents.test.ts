@@ -30,6 +30,9 @@ import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess
 // stand-in — proves the byOrg org listing's tenancy pin is the same
 // eq/inArray shape authMiddleware actually installs on `auth.orgCondition`.
 import { buildOrgAccessClosures } from '../middleware/auth';
+// Real schema column (no DB): the open-circuit test applies the passed org
+// condition to it to prove the route forwarded the caller's own pin.
+import { aiAgentCircuitState } from '../db/schema/aiAgentCircuitState';
 // Real (unmocked): access.ts is the single source of truth for who may mutate
 // an agent row, and POST /:id/enable calls it directly.
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
@@ -54,6 +57,7 @@ const {
   writeRouteAuditMock,
   getCircuitStateMock,
   resetCircuitMock,
+  listOpenCircuitsMock,
   recordVerdictFeedbackMock,
   loadImpactSummaryMock,
   enqueueImpactRollupForOrgsMock,
@@ -89,6 +93,9 @@ const {
   writeRouteAuditMock: vi.fn(),
   getCircuitStateMock: vi.fn(),
   resetCircuitMock: vi.fn(),
+  // #12347 — the list route's batched open-circuit read. Defaults to "none
+  // open" so every pre-existing GET / test keeps its old shape.
+  listOpenCircuitsMock: vi.fn(async (..._args: unknown[]) => new Map<string, unknown[]>()),
   // Carry-in B (PR-A review, feedback-route hardening) — `recordVerdictFeedback`
   // now returns a discriminated result, not a bare boolean; see
   // `RecordVerdictFeedbackResult` in services/aiAgents/alertVerdicts.ts.
@@ -274,6 +281,7 @@ vi.mock('../services/aiAgents/runService', () => ({
 vi.mock('../services/aiAgents/agentCircuit', () => ({
   getCircuitState: getCircuitStateMock,
   resetCircuit: resetCircuitMock,
+  listOpenCircuits: listOpenCircuitsMock,
 }));
 
 // Phase 2 wave P2-1 (alert verdicts), Task 8: `recordVerdictFeedback` has its
@@ -4703,6 +4711,38 @@ describe('GET /ai-agents', () => {
 
     expect(res.status).toBe(200);
     expect(sqlParams(where)).toContain(ORG_ID);
+  });
+
+  // #12347 — nothing on the page said an agent's circuit was open, so a
+  // tripped agent sat skipping every run for weeks. One batched read for the
+  // whole page, pinned to the caller's org condition.
+  it('reports each agent\'s open circuits from ONE batched read pinned to the caller orgs', async () => {
+    const circuit = {
+      orgId: ORG_ID, orgName: 'Org A', openedAt: '2026-11-17T07:03:02.000Z',
+      openedReason: '3 consecutive terminal failures (threshold 3); last failure: llm_unavailable',
+      consecutiveFailures: 3,
+    };
+    listOpenCircuitsMock.mockResolvedValueOnce(new Map([[AGENT_ID, [circuit]]]));
+    const { orgCondition } = buildOrgAccessClosures([ORG_ID]);
+
+    const res = await buildApp(false, { orgCondition }).request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].openCircuits).toEqual([circuit]);
+    expect(listOpenCircuitsMock).toHaveBeenCalledTimes(1);
+    const [passedCondition, passedIds] = listOpenCircuitsMock.mock.calls[0]! as [
+      (column: unknown) => unknown, string[],
+    ];
+    expect(passedIds).toEqual([AGENT_ID]);
+    // The caller's own org condition, not a widened one: applied to a column
+    // it yields the same predicate the auth context would.
+    expect(sqlParams(passedCondition(aiAgentCircuitState.orgId))).toContain(ORG_ID);
+  });
+
+  it('reports an empty openCircuits array — never omits it — when nothing is open', async () => {
+    const body = await (await buildApp().request('/ai-agents')).json();
+    expect(body.data[0].openCircuits).toEqual([]);
   });
 
   it('forwards includeDisabled to the service', async () => {
