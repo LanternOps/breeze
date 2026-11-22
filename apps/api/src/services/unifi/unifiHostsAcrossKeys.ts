@@ -23,6 +23,8 @@ export interface HostsKeyOutcome {
   error?: string;
   authFailure: boolean;
   httpStatus: number | null;
+  /** The stored key did not decrypt: no request was made with it. */
+  unreadable: boolean;
 }
 
 export interface HostsAcrossKeys {
@@ -39,6 +41,7 @@ export interface HostsAcrossKeys {
  * first key's own error is thrown, so a caller keeps its single-key error path.
  */
 export async function readHostsAcrossKeys(keys: UnifiSyncKey[], baseUrl: string): Promise<HostsAcrossKeys> {
+  const unreadable = new Set(keys.filter((k) => k.apiKey === null).map((k) => k.id));
   const reads = await readKeys(
     keys.map((key) => ({
       id: key.id,
@@ -61,8 +64,8 @@ export async function readHostsAcrossKeys(keys: UnifiSyncKey[], baseUrl: string)
     hosts: list.hosts as MappingHostRowWithKeys[],
     omitted: list.omitted,
     keys: reads.map((r) => (r.ok
-      ? { id: r.keyId, label: r.label, ok: true, authFailure: false, httpStatus: null }
-      : { id: r.keyId, label: r.label, ok: false, error: r.error, authFailure: r.authFailure, httpStatus: r.httpStatus })),
+      ? { id: r.keyId, label: r.label, ok: true, authFailure: false, httpStatus: null, unreadable: false }
+      : { id: r.keyId, label: r.label, ok: false, error: r.error, authFailure: r.authFailure, httpStatus: r.httpStatus, unreadable: unreadable.has(r.keyId) })),
     complete: reads.every((r) => r.ok),
   };
 }

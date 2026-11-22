@@ -252,29 +252,30 @@ export function mergeKeyReads(reads: KeyRead[]): MergedRead {
   const conflictingDeviceIds = new Set<string>();
   if (deviceReads.length > 0) {
     devicesByHost = new Map();
-    const hostsByDevice = new Map<string, Set<string>>();
-    const keysByDevice = new Map<string, Set<string>>();
+    // device id -> key id -> the hosts that key reported it under.
+    const hostsByDeviceByKey = new Map<string, Map<string, Set<string>>>();
     for (const read of deviceReads) {
       for (const [hostId, list] of read.devicesByHost!) {
         const merged = devicesByHost.get(hostId) ?? [];
         for (const d of list) {
-          const seenOn = hostsByDevice.get(d.unifiDeviceId) ?? new Set<string>();
+          const byKey = hostsByDeviceByKey.get(d.unifiDeviceId) ?? new Map<string, Set<string>>();
+          const seenOn = byKey.get(read.keyId) ?? new Set<string>();
           seenOn.add(hostId);
-          hostsByDevice.set(d.unifiDeviceId, seenOn);
-          const seenBy = keysByDevice.get(d.unifiDeviceId) ?? new Set<string>();
-          seenBy.add(read.keyId);
-          keysByDevice.set(d.unifiDeviceId, seenBy);
+          byKey.set(read.keyId, seenOn);
+          hostsByDeviceByKey.set(d.unifiDeviceId, byKey);
           if (!merged.some((m) => m.unifiDeviceId === d.unifiDeviceId)) merged.push(d);
         }
         devicesByHost.set(hostId, merged);
       }
     }
-    // A device that different keys report under different hosts (a console
-    // mid-move between scopes) would be moved into the second host's org by the
-    // per-connection upsert: quarantine it. One key alone reporting a device under
-    // two hosts is left as the single-key engine always handled it.
-    for (const [deviceId, seenOn] of hostsByDevice) {
-      if (seenOn.size > 1 && keysByDevice.get(deviceId)!.size > 1) conflictingDeviceIds.add(deviceId);
+    // Keys that disagree on which hosts a device is under (a console mid-move
+    // between scopes): the per-connection upsert would move it into whichever
+    // host's org is written last, so quarantine it. Keys that agree, including
+    // one key alone reporting it under two hosts, are left as the single-key
+    // engine always handled them.
+    const hostSetKey = (hosts: Set<string>) => [...hosts].sort().join('\u0000');
+    for (const [deviceId, byKey] of hostsByDeviceByKey) {
+      if (new Set([...byKey.values()].map(hostSetKey)).size > 1) conflictingDeviceIds.add(deviceId);
     }
     if (conflictingDeviceIds.size > 0) {
       for (const [hostId, list] of devicesByHost) {

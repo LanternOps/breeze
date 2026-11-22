@@ -11,6 +11,8 @@ import { markStatus, markSynced } from '../services/unifi/unifiConnectionService
 import { getSyncKeys, recordKeyResults, unifiKeyLast4 } from '../services/unifi/unifiKeyService';
 import { collectSyncData, applySyncData, type CollectedSync } from '../services/unifi/unifiSyncService';
 import { attachWorkerObservability } from './workerObservability';
+import { captureException } from '../services/sentry';
+import { safeErrorMessage } from '../services/aiModels/safeDbError';
 
 export const UNIFI_SYNC_QUEUE = 'unifi-sync';
 const SYNC_SCHEDULER_JOB = 'sync-scheduler';
@@ -65,10 +67,6 @@ export async function enqueueUnifiSync(
 function failedStatus(collected: CollectedSync): 'reauth_required' | 'error' {
   if (!collected.fatalError) return 'error';
   return collected.keyResults.every((r) => r.status !== 'success' && r.authFailure) ? 'reauth_required' : 'error';
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 async function processScheduler(): Promise<{ queued: number }> {
@@ -152,13 +150,22 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<voi
   for (const key of keys) {
     if (key.apiKey !== null && key.keyLast4 === null) keyLast4ById.set(key.id, unifiKeyLast4(key.apiKey));
   }
-  const recordKeys = () => recordKeyResults(db, {
-    integrationId: data.integrationId,
-    partnerId: data.partnerId,
-    runStartedAt,
-    results: collected.keyResults,
-    keyLast4ById,
-  });
+  // The keys' outcomes are real whatever happens to the run: a failure to save
+  // them is logged and never turns a saved run into a failed one.
+  const recordKeys = async () => {
+    try {
+      await withSystemDbAccessContext(() => recordKeyResults(db, {
+        integrationId: data.integrationId,
+        partnerId: data.partnerId,
+        runStartedAt,
+        results: collected.keyResults,
+        keyLast4ById,
+      }));
+    } catch (error) {
+      console.error('[UnifiWorker] Failed to record per-key sync results', { integrationId: data.integrationId, error: safeErrorMessage(error) });
+      captureException(error, undefined, { integrationId: data.integrationId });
+    }
+  };
 
   // 3) Short DB context(s): persist the run + device reconciliation, then the
   //    key rows, the run summary and the integration status.
@@ -166,8 +173,8 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<voi
     const result = await withSystemDbAccessContext(() =>
       applySyncData(db, integration, data.trigger, prep.mappings, collected),
     );
+    await recordKeys();
     await withSystemDbAccessContext(async () => {
-      await recordKeys();
       await markSynced(db, data.integrationId, data.partnerId, result.status, result.error ?? null);
       if (result.status === 'failed') {
         await markStatus(db, data.integrationId, data.partnerId, failedStatus(collected), result.error ?? 'UniFi sync failed');
@@ -177,10 +184,12 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<voi
       }
     });
   } catch (error) {
-    const message = errorMessage(error);
+    // Logged before anything else can fail: the stored text is all that survives otherwise.
+    const message = safeErrorMessage(error);
+    console.error('[UnifiWorker] Failed to save a sync run', { integrationId: data.integrationId, error: message });
+    captureException(error, undefined, { integrationId: data.integrationId });
+    await recordKeys();
     await withSystemDbAccessContext(async () => {
-      // The keys' outcomes are real even when saving the run failed.
-      await recordKeys();
       await markStatus(db, data.integrationId, data.partnerId, failedStatus(collected), message);
       await markSynced(db, data.integrationId, data.partnerId, 'failed', message);
     });

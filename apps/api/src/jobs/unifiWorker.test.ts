@@ -151,8 +151,10 @@ const runResult = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('unifi worker syncs every enabled key (#11808)', () => {
+  let errorSpy: ReturnType<typeof vi.spyOn>;
   beforeEach(async () => {
     vi.clearAllMocks();
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     dbState.integrations = [];
     dbState.wheres = [];
     await shutdownUnifiWorker();
@@ -288,5 +290,17 @@ describe('unifi worker syncs every enabled key (#11808)', () => {
     expect(recordKeyResults).toHaveBeenCalledTimes(1);
     expect(markStatus).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'error', 'connection reset');
     expect(markSynced).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'failed', 'connection reset');
+    expect(errorSpy).toHaveBeenCalledWith('[UnifiWorker] Failed to save a sync run', { integrationId: INTEGRATION, error: 'connection reset' });
+  });
+
+  it('a failure to record key results never turns a saved run into a failed one', async () => {
+    vi.mocked(getSyncKeys).mockResolvedValue({ baseUrl: 'https://api.ui.com', keys: [okKey('key-1', 'a')] });
+    vi.mocked(collectSyncData).mockResolvedValue(collected({ keyResults: [keyResult({})] }));
+    vi.mocked(recordKeyResults).mockRejectedValueOnce(new Error('lock timeout'));
+    const run = await processor();
+    await run(syncJob());
+    expect(markSynced).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'success', null);
+    expect(markStatus).toHaveBeenCalledWith(expect.anything(), INTEGRATION, PARTNER, 'connected', null);
+    expect(errorSpy).toHaveBeenCalledWith('[UnifiWorker] Failed to record per-key sync results', { integrationId: INTEGRATION, error: 'lock timeout' });
   });
 });

@@ -619,6 +619,10 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
       keys: [{ id: 'key-1', label: 'Global', apiKey: null, decryptError: 'The stored API key could not be decrypted', lastSeenHostIds: null }],
     });
     expect((await call('get_unifi_status', { action: 'hosts' }, partnerAuth())).code).toBe('NOT_CONNECTED');
+    // Several keys, none readable: the same clean answer, not an internal error.
+    const unreadable = { id: 'key-1', label: 'Global', apiKey: null, decryptError: 'The stored API key could not be decrypted', lastSeenHostIds: null };
+    h.svc.getSyncKeys.mockResolvedValue({ baseUrl: 'https://api.example.test', keys: [unreadable, { ...unreadable, id: 'key-2', label: 'Fabric' }] });
+    expect((await call('get_unifi_status', { action: 'hosts' }, partnerAuth())).code).toBe('NOT_CONNECTED');
     expect(h.svc.createUnifiClient).not.toHaveBeenCalled();
   });
 

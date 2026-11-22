@@ -27,8 +27,8 @@ describe('readHostsAcrossKeys', () => {
     expect(createUnifiClient).toHaveBeenNthCalledWith(1, { baseUrl: 'https://api.ui.com', apiKey: 'secret-a' });
     expect(out.complete).toBe(true);
     expect(out.keys).toEqual([
-      { id: 'a', label: 'A', ok: true, authFailure: false, httpStatus: null },
-      { id: 'b', label: 'B', ok: true, authFailure: false, httpStatus: null },
+      { id: 'a', label: 'A', ok: true, authFailure: false, httpStatus: null, unreadable: false },
+      { id: 'b', label: 'B', ok: true, authFailure: false, httpStatus: null, unreadable: false },
     ]);
     expect(out.hosts).toEqual([
       { id: 'h1', name: 'Host h1', model: null, type: 'console', keyIds: ['a', 'b'], sites: [{ id: 's1', name: 'Site s1', keyIds: ['a', 'b'] }] },
@@ -42,7 +42,7 @@ describe('readHostsAcrossKeys', () => {
       .mockReturnValueOnce(client([], [], new UnifiApiError('Unauthorized', 401)));
     const out = await readHostsAcrossKeys([key('a'), key('b')], 'https://api.ui.com');
     expect(out.complete).toBe(false);
-    expect(out.keys[1]).toEqual({ id: 'b', label: 'B', ok: false, error: 'Unauthorized', authFailure: true, httpStatus: 401 });
+    expect(out.keys[1]).toEqual({ id: 'b', label: 'B', ok: false, error: 'Unauthorized', authFailure: true, httpStatus: 401, unreadable: false });
     expect(out.hosts.map((h) => h.id)).toEqual(['h1']);
   });
 
@@ -60,7 +60,7 @@ describe('readHostsAcrossKeys', () => {
     const broken: UnifiSyncKey = { id: 'x', label: 'X', apiKey: null, decryptError: 'The stored API key could not be decrypted', lastSeenHostIds: null };
     const out = await readHostsAcrossKeys([key('a'), broken], 'https://api.ui.com');
     expect(createUnifiClient).toHaveBeenCalledTimes(1);
-    expect(out.keys[1]).toMatchObject({ id: 'x', ok: false, error: 'The stored API key could not be decrypted' });
+    expect(out.keys[1]).toMatchObject({ id: 'x', ok: false, error: 'The stored API key could not be decrypted', unreadable: true });
     await expect(readHostsAcrossKeys([broken], 'https://api.ui.com')).rejects.toThrow('The stored API key could not be decrypted');
   });
 

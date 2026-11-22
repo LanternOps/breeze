@@ -224,6 +224,12 @@ describe('mergeKeyReads', () => {
       okRead('b', { hosts: [host('h1')], devicesByHost: new Map([['h1', [device('d1')]]]) }),
     ]);
     expect([...withB.conflictingDeviceIds]).toEqual(['d1']);
+    // Two keys that agree on the same two hosts are not a conflict.
+    const agree = mergeKeyReads([
+      okRead('a', { hosts: [host('h1'), host('h2')], devicesByHost: new Map([['h1', [device('d1')]], ['h2', [device('d1')]]]) }),
+      okRead('b', { hosts: [host('h1'), host('h2')], devicesByHost: new Map([['h2', [device('d1')]], ['h1', [device('d1')]]]) }),
+    ]);
+    expect(agree.conflictingDeviceIds.size).toBe(0);
   });
 
   it('mergeKeyReads marks a coverage gap when a key lists a host but returns no device group for it', () => {

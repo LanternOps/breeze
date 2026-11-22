@@ -40,9 +40,10 @@ const ROW_CAP = 500;
 
 /** A key's failure in the `hosts` view: a fixed string, never the vendor's body (it can echo request details). */
 function keyFailureText(k: HostsKeyOutcome): string {
+  if (k.unreadable) return 'The stored key could not be read; replace it in Settings';
   if (k.authFailure) return 'The UniFi API key was rejected';
   if (k.httpStatus !== null) return `The UniFi cloud request failed (HTTP ${k.httpStatus})`;
-  return 'The key could not be used';
+  return 'The UniFi cloud could not be reached';
 }
 const PARTNER_GATE = 'Full partner scope is required to manage the shared UniFi integration';
 
@@ -120,7 +121,7 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
             if (!conn) return jsonError('Not connected', 'NOT_CONNECTED');
             const creds = await inToolDbPhase(auth, () => getSyncKeys(db, conn.id, partnerId));
             if (!creds || creds.keys.length === 0) return jsonError('No API key found', 'NOT_CONNECTED');
-            if (creds.keys.length === 1 && creds.keys[0]!.apiKey === null) {
+            if (creds.keys.every((k) => k.apiKey === null)) {
               return jsonError('The stored UniFi API key could not be read; reconnect the integration in Settings', 'NOT_CONNECTED');
             }
             try {

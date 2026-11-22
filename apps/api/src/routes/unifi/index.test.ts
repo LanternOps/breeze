@@ -1636,6 +1636,26 @@ describe('PUT /unifi/mappings explicit deletes (#11808 D9)', () => {
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 
+  it('a self-hosted connection keeps the hostIds replace-all (keys are cloud-only)', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({ ...cloudConn(), connectionType: 'self_hosted' });
+    vi.mocked(keySvc.countEnabledKeys).mockResolvedValue(2);
+    siteLookup();
+    vi.mocked(db.insert).mockReturnValueOnce({ values: vi.fn(() => ({ onConflictDoUpdate: vi.fn(async () => undefined) })) } as any);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({ where: vi.fn(async () => [{ id: 'keep-1', orgId: ORG_ID, siteId: SITE_ID, unifiHostId: 'host-1', unifiSiteId: 'site-1' }]) })),
+    } as any);
+    const res = await put({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }], hostIds: ['host-1'] });
+    expect(res.status).toBe(200);
+    expect(keySvc.countEnabledKeys).not.toHaveBeenCalled();
+  });
+
+  it('an empty hostIds with two enabled keys is still refused', async () => {
+    vi.mocked(keySvc.countEnabledKeys).mockResolvedValue(2);
+    const res = await put({ mappings: [], hostIds: [] });
+    expect(res.status).toBe(409);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it('two enabled keys without hostIds still saves (upsert plus explicit deletes)', async () => {
     vi.mocked(keySvc.countEnabledKeys).mockResolvedValue(2);
     siteLookup();

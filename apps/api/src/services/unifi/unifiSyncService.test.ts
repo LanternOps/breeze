@@ -124,6 +124,9 @@ function scriptedDb(opts: {
       limit(_n: number) {
         return chain;
       },
+      orderBy(..._cols: any[]) {
+        return chain;
+      },
       for(strength: string) {
         writes.locks.push({ table: ctx.table, strength });
         return chain;
@@ -1387,6 +1390,48 @@ describe('multi-key collectSyncData and applySyncData (#11808)', () => {
     ]);
   });
 
+  it('a budget-skipped key bounds its reach by its snapshot: no sweep there, run partial', async () => {
+    const { db, writes } = scriptedDb({
+      mappings: [M1, M2],
+      existingDevices: [{ id: 'row-old', unifiDeviceId: 'old', mappingId: 'm1', raw: {} }],
+    });
+    const keys = [
+      key('A', { hosts: ['h1', 'h2'], sites: [['h1', 's1'], ['h2', 's2']], devices: { h1: ['d1'], h2: ['d2'] } }),
+      key('B', { hosts: ['h1'] }, ['h1']),
+    ];
+    // The clock reads 0 for the start and for key A's check, then the budget is spent before key B starts.
+    let calls = 0;
+    const now = () => (calls++ < 2 ? 0 : 300_000);
+    const collected = await collectWithKeys(keys, [M1, M2], { now, budgetMs: 200_000 });
+    expect(keys[1]!.client.listHosts).not.toHaveBeenCalled();
+    expect(collected.keyResults[1]).toMatchObject({ status: 'skipped', authFailure: false, error: 'sync time budget exhausted' });
+    expect(collected.uncertainHostIds).toEqual(new Set(['h1']));
+    expect(collected.byMapping.get('m2')!.devices).toEqual([dev('d2')]);
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [M1, M2], collected);
+    expect(staleUpdates(writes)).toHaveLength(0);
+    expect(result.status).toBe('partial');
+    expect(result.error).toBe('1 of 2 API keys failed: "B" (skipped: sync time budget exhausted)');
+  });
+
+  it('a quarantined device does not stop the sweep of other devices', async () => {
+    const { db, writes } = scriptedDb({
+      mappings: [M1, M2],
+      existingDevices: [
+        { id: 'row-d1', unifiDeviceId: 'd1', mappingId: 'm1', raw: {} },
+        { id: 'row-gone', unifiDeviceId: 'gone', mappingId: 'm2', raw: {} },
+      ],
+    });
+    const keys = [
+      key('A', { hosts: ['h1'], sites: [['h1', 's1']], devices: { h1: ['d1'] } }),
+      key('B', { hosts: ['h2'], sites: [['h2', 's2']], devices: { h2: ['d1', 'd2'] } }),
+    ];
+    const collected = await collectWithKeys(keys, [M1, M2]);
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [M1, M2], collected);
+    // 'gone' was not seen on a mapping that synced: swept. d1 is protected.
+    expect(staleUpdates(writes)).toHaveLength(1);
+    expect(result.devicesRemoved).toBe(1);
+  });
+
   it('a run with no mappings reads hosts only and records no reach', async () => {
     const keys = [key('A', { hosts: ['h1'] }), key('B', { hosts: ['h1', 'h2'] })];
     const collected = await collectWithKeys(keys, []);
@@ -1427,6 +1472,16 @@ describe('applySyncData obsolete-write guards and key_results (#11808 W2, Task 2
     expect(result.error).toBe('site s1: mapping changed during the sync; its devices were not synced');
     // The re-read locks the rows against a remap or delete, not against FK inserts.
     expect(writes.locks).toEqual([{ table: unifiSiteMappings, strength: 'no key update' }]);
+  });
+
+  it('apply skips a mapping moved to another site of the same org', async () => {
+    const { db, writes } = scriptedDb({
+      mappings: [{ id: BASE_MAPPING.id, orgId: BASE_MAPPING.orgId, siteId: 'site-moved' }],
+    });
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [BASE_MAPPING], collectedFor({ [BASE_MAPPING.id]: [NET_NEW_DEVICE] }));
+    expect(writes.inserts.filter((w) => w.table === unifiDevices || w.table === discoveredAssets)).toHaveLength(0);
+    expect(result.status).toBe('partial');
+    expect(result.error).toBe('site s1: mapping changed during the sync; its devices were not synced');
   });
 
   it('apply skips a mapping deleted since the snapshot', async () => {

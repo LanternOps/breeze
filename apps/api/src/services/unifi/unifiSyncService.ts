@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { captureException } from '../sentry';
 import { safeErrorMessage } from '../aiModels/safeDbError';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
@@ -568,27 +568,32 @@ export async function applySyncData(
     result.status = 'failed';
     result.error = collected.fatalError;
   } else {
+    // Obsolete-write guard. FOR NO KEY UPDATE holds a concurrent remap (UPDATE)
+    // or delete of these rows until this transaction commits, so the check
+    // cannot go stale between here and the device writes. It does not block the
+    // KEY SHARE lock an insert referencing a mapping takes, and this
+    // transaction's own WAN-metrics UPDATE needs no stronger lock. Rows are locked
+    // in id order so two lockers never take them in opposite orders. A save of
+    // these mappings waits for this apply to commit.
+    // Outside the try below on purpose: a failed lock aborts the transaction,
+    // so it must propagate to the caller rather than be recorded as a run error.
+    const current = await db
+      .select({ id: unifiSiteMappings.id, orgId: unifiSiteMappings.orgId, siteId: unifiSiteMappings.siteId })
+      .from(unifiSiteMappings)
+      .where(eq(unifiSiteMappings.integrationId, integration.id))
+      .orderBy(asc(unifiSiteMappings.id))
+      .for('no key update');
+    const currentById = new Map((current as Array<{ id: string; orgId: string; siteId: string }>).map((row) => [row.id, row]));
+    const changedMappingIds = new Set<string>();
+    for (const mapping of mappings) {
+      const now = currentById.get(mapping.id);
+      if (!now || now.orgId !== mapping.orgId || now.siteId !== mapping.siteId) changedMappingIds.add(mapping.id);
+    }
+
     try {
       const seenDeviceIds = new Set<string>();
       const failedMappingIds = new Set<string>();
       let anySiteFailed = false;
-
-      // Obsolete-write guard. FOR NO KEY UPDATE holds a concurrent remap (UPDATE)
-      // or delete of these rows until this transaction commits, so the check
-      // cannot go stale between here and the device writes. It does not block the
-      // KEY SHARE lock an insert referencing a mapping takes, and this
-      // transaction's own WAN-metrics UPDATE needs no stronger lock.
-      const current = await db
-        .select({ id: unifiSiteMappings.id, orgId: unifiSiteMappings.orgId, siteId: unifiSiteMappings.siteId })
-        .from(unifiSiteMappings)
-        .where(eq(unifiSiteMappings.integrationId, integration.id))
-        .for('no key update');
-      const currentById = new Map((current as Array<{ id: string; orgId: string; siteId: string }>).map((row) => [row.id, row]));
-      const changedMappingIds = new Set<string>();
-      for (const mapping of mappings) {
-        const now = currentById.get(mapping.id);
-        if (!now || now.orgId !== mapping.orgId || now.siteId !== mapping.siteId) changedMappingIds.add(mapping.id);
-      }
 
       if (collected.metricsError) {
         anySiteFailed = true;
