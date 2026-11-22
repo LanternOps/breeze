@@ -3260,7 +3260,32 @@ describe('POST /ai-agents/:id/circuit/reset', () => {
     const res = await resetReq(buildApp(false, { principal: { kind: 'ai_agent', id: AGENT_ID } }));
 
     expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'AI agents cannot manage agents' });
     expect(resetCircuitMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  // The "All organizations" path: a partner-scope caller resets the circuit's
+  // own org. The org-owner shape (`partnerId: null`) is what keeps this a
+  // plain org write — no partner-wide right, no one-owner refusal.
+  it('lets a partner-scope caller reset the circuit of an org it reaches', async () => {
+    const res = await resetReq(
+      buildApp(false, {
+        scope: 'partner',
+        partnerId: PARTNER_ID,
+        orgId: null,
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+      }),
+      { orgId: ORG_ID, reason: 'gateway is back' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(resetCircuitMock).toHaveBeenCalledWith(ORG_ID, AGENT_ID, USER_ID);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ orgId: ORG_ID, action: 'ai_agent.circuit_reset' }),
+    );
   });
 
   // The write is authorized against the CIRCUIT's owner (the org), not the
