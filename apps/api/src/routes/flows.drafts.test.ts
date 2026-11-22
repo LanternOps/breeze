@@ -3,6 +3,7 @@
  *
  *   POST   /flows            create a draft          automations.read + write, no MFA (P8)
  *   PUT    /flows/:id        replace a draft         automations.read + write, no MFA (P8)
+ *   POST   /flows/validate   validate, write nothing automations.read
  *
  * The services are mocked: their own suites (service.test.ts, the integration
  * files) prove reach, owner and validation. Here: the gates, the body schemas,
@@ -34,6 +35,10 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../db', () => ({ db: {}, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: vi.fn() }));
 vi.mock('../services/flows/service', () => ({ listFlows: vi.fn(), getFlow: vi.fn(), saveDraftFlow: vi.fn() }));
 vi.mock('../services/flows/versions', () => ({ enableFlow: vi.fn(), disableFlow: vi.fn() }));
+vi.mock('../services/flows/draftValidation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/flows/draftValidation')>();
+  return { ...actual, validateFlowDraft: vi.fn() };
+});
 vi.mock('../services/flows/webhook/secret', () => ({ createOrRotateWebhookSecret: vi.fn() }));
 vi.mock('../services/flows/webhook/deliveries', () => ({ listWebhookDeliveries: vi.fn() }));
 vi.mock('../services/flows/runService', () => ({
@@ -47,6 +52,7 @@ vi.mock('./flowLimits', () => ({
 
 import { authMiddleware } from '../middleware/auth';
 import { saveDraftFlow } from '../services/flows/service';
+import { validateFlowDraft } from '../services/flows/draftValidation';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { flowsRoutes } from './flows';
 
@@ -72,6 +78,7 @@ describe('flows draft routes (W01b)', () => {
     vi.stubEnv('FLOWS_ENABLED', 'true');
     setAuth({ scope: 'organization', orgId: ORG_ID } as Partial<AuthContext>);
     vi.mocked(saveDraftFlow).mockReset().mockResolvedValue({ saved: true, flow: FLOW, validation: VALID } as never);
+    vi.mocked(validateFlowDraft).mockReset();
   });
   afterEach(() => vi.unstubAllEnvs());
 
@@ -195,6 +202,49 @@ describe('flows draft routes (W01b)', () => {
     expect(saveDraftFlow).not.toHaveBeenCalled();
   });
 
+  // ── POST /validate ────────────────────────────────────────────────────────
+
+  it('validate answers 200 { validation } for an invalid document', async () => {
+    vi.mocked(validateFlowDraft).mockResolvedValue({ ok: true, validation: INVALID } as never);
+    const res = await send('POST', '/validate', { document: DOC, flowId: FLOW_ID });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ validation: INVALID });
+    expect(validateFlowDraft).toHaveBeenCalledWith(expect.anything(), { document: DOC, flowId: FLOW_ID });
+  });
+
+  it('validate needs only automations.read, and no MFA', async () => {
+    setAuth({ scope: 'organization', orgId: ORG_ID, deny: ['automations:write'], mfaUnsatisfied: true } as never);
+    vi.mocked(validateFlowDraft).mockResolvedValue({ ok: true, validation: VALID } as never);
+    const res = await send('POST', '/validate', { document: DOC });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-Test-Permissions')).toBe('automations:read');
+    expect(res.headers.get('X-Test-Mfa-Checked')).toBeNull();
+  });
+
+  it('validate of an unknown flowId is 404 flow_not_found', async () => {
+    vi.mocked(validateFlowDraft).mockResolvedValue({ ok: false, error: 'flow_not_found' } as never);
+    const res = await send('POST', '/validate', { document: DOC, flowId: FLOW_ID });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'flow_not_found' });
+  });
+
+  it('validate: an access-denied owner message is 403 owner_invalid and any other is 400', async () => {
+    vi.mocked(validateFlowDraft).mockResolvedValueOnce({ ok: false, error: 'owner_invalid', message: 'Cannot access another organization', accessDenied: true } as never);
+    const denied = await send('POST', '/validate', { document: DOC, orgId: ORG_ID });
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({ error: 'owner_invalid', message: 'Cannot access another organization' });
+    vi.mocked(validateFlowDraft).mockResolvedValueOnce({ ok: false, error: 'owner_invalid', message: 'Organization not found', accessDenied: false } as never);
+    const malformed = await send('POST', '/validate', { document: DOC });
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toEqual({ error: 'owner_invalid', message: 'Organization not found' });
+  });
+
+  it('validate rejects an unknown body key and a non-uuid flowId with 400', async () => {
+    expect((await send('POST', '/validate', { document: DOC, expectedVersion: 1 })).status).toBe(400);
+    expect((await send('POST', '/validate', { document: DOC, flowId: 'nope' })).status).toBe(400);
+    expect(validateFlowDraft).not.toHaveBeenCalled();
+  });
+
   // ── gates ─────────────────────────────────────────────────────────────────
 
   it('an MFA-unsatisfied session can save a draft', async () => {
@@ -211,7 +261,9 @@ describe('flows draft routes (W01b)', () => {
     vi.stubEnv('FLOWS_ENABLED', 'false');
     expect((await send('POST', '/', { document: DOC })).status).toBe(404);
     expect((await send('PUT', `/${FLOW_ID}`, { document: DOC, expectedVersion: 1 })).status).toBe(404);
+    expect((await send('POST', '/validate', { document: DOC })).status).toBe(404);
     expect(saveDraftFlow).not.toHaveBeenCalled();
+    expect(validateFlowDraft).not.toHaveBeenCalled();
   });
 
   it('automations.read alone cannot save', async () => {

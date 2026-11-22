@@ -18,6 +18,7 @@ import {
   FLOW_RUN_STATUSES,
   flowDraftCreateRequestSchema,
   flowDraftUpdateRequestSchema,
+  flowDraftValidateRequestSchema,
   flowEnableRequestSchema,
   flowManualRunRequestSchema,
   type FlowValidationResult,
@@ -26,6 +27,7 @@ import { zValidator } from '../lib/validation';
 import { flowsEnabled } from '../config/env';
 import { authMiddleware, isInteractiveUserSession, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { getFlow, listFlows, saveDraftFlow } from '../services/flows/service';
+import { isOwnerAccessDeniedMessage, validateFlowDraft } from '../services/flows/draftValidation';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { cancelFlowRun, getFlowRun, getFlowRunStep, listFlowRuns, startManualRun } from '../services/flows/runService';
 import { disableFlow, enableFlow } from '../services/flows/versions';
@@ -56,7 +58,8 @@ registerFlowLimitsRoutes(flowsRoutes);
 flowsRoutes.route('/conversions', flowConversionRoutes);
 
 // ── Flows completion W01b (#12435): REST drafts ────────────────────────────
-// POST / and PUT /:id over the same `saveDraftFlow` the draft_flow tool calls.
+// POST / and PUT /:id over the same `saveDraftFlow` the draft_flow tool calls;
+// POST /validate over `validateFlowDraft` (the same validation, no write).
 // The gate is automations.write WITHOUT requireMfa() (Decision P8, OD2 option
 // i): a draft runs nothing, and enable already requires MFA and an interactive
 // session. So these routes must never use `requireAutomationWrite` below, and
@@ -75,17 +78,6 @@ const DRAFT_STATUS: Record<string, DraftStatus> = {
   invalid_slug: 422,
 };
 
-/**
- * Owner-resolution messages that mean "you may not act for that owner"
- * (`resolveWritableToolOrgId` in services/aiToolWriteOrg.ts, and owner.ts).
- * Any other owner message is a malformed request (400).
- */
-const OWNER_ACCESS_DENIED_MESSAGES: ReadonlySet<string> = new Set([
-  'Cannot access another organization',
-  'Access denied to this organization',
-  'Partner-wide flows require a partner-scoped caller',
-]);
-
 /** Plan Decision P13: one table for every draft failure. The error code is checked before the validation. */
 function draftFailure(c: Context, result: { error?: string; validation?: FlowValidationResult }) {
   const { error, validation } = result;
@@ -93,7 +85,8 @@ function draftFailure(c: Context, result: { error?: string; validation?: FlowVal
   if (error === PARTNER_WIDE_WRITE_DENIED_MESSAGE) return c.json({ error: 'partner_wide_forbidden' }, 403);
   const status = DRAFT_STATUS[error];
   if (status !== undefined) return c.json(validation ? { error, validation } : { error }, status);
-  return c.json({ error: 'owner_invalid', message: error }, OWNER_ACCESS_DENIED_MESSAGES.has(error) ? 403 : 400);
+  // Any other message is an owner-resolution refusal (draftValidation.ts names the access-denied ones).
+  return c.json({ error: 'owner_invalid', message: error }, isOwnerAccessDeniedMessage(error) ? 403 : 400);
 }
 
 const idParamSchema = z.object({ id: z.string().uuid() });
@@ -102,6 +95,15 @@ flowsRoutes.post('/', requirePermission('automations', 'write'), zValidator('jso
   const result = await saveDraftFlow(c.get('auth'), c.req.valid('json'));
   if (!result.saved) return draftFailure(c, result);
   return c.json({ flow: result.flow, validation: result.validation }, 201);
+});
+
+// Writes nothing, so the router's automations.read is its whole gate. A
+// validate call is never a 422: `validation.valid` says whether it passed.
+flowsRoutes.post('/validate', zValidator('json', flowDraftValidateRequestSchema), async (c) => {
+  const result = await validateFlowDraft(c.get('auth'), c.req.valid('json'));
+  if (result.ok) return c.json({ validation: result.validation });
+  if (result.error === 'flow_not_found') return c.json({ error: 'flow_not_found' }, 404);
+  return c.json({ error: 'owner_invalid', message: result.message }, result.accessDenied ? 403 : 400);
 });
 
 flowsRoutes.put(

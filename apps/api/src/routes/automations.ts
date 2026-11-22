@@ -23,6 +23,7 @@ import {
   withAuthDbAccessContext,
   type AuthContext,
 } from '../middleware/auth';
+import { classifyAutomation } from '../services/flows/conversion/classify';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
 import { verifyBreezeHmacSignature, type BreezeHmacFailure } from '../services/webhookSignature';
@@ -825,6 +826,18 @@ automationRoutes.use('*', authMiddleware);
 // Read-only routes
 // ============================================
 
+// Standalone (class S) Jobs not yet switched to a flow. SQL mirror of
+// classifyAutomation() === 'S' && !convertedToFlowId in
+// services/flows/conversion/classify.ts. The policy-workflow test is NULL-safe
+// (IS NOT TRUE) so a trigger with no `filter` key still counts.
+const standaloneNotMovedCondition = and(
+  isNull(automations.retiredAt),
+  isNull(automations.convertedToFlowId),
+  isNull(automations.managedByMonitorId),
+  isNull(automations.managedByAgentId),
+  sql`(jsonb_typeof(${automations.trigger}->'filter') = 'object' AND jsonb_exists(${automations.trigger}->'filter', '_policyWorkflow')) IS NOT TRUE`,
+);
+
 automationRoutes.get(
   '/',
   requireScope('organization', 'partner', 'system'),
@@ -870,6 +883,7 @@ automationRoutes.get(
           return c.json({
             data: [],
             pagination: { page, limit, total: 0 },
+            jobCounts: { notMoved: 0 },
           });
         }
         const orgCondition = orgIds.length > 0 ? inArray(automations.orgId, orgIds) : undefined;
@@ -890,6 +904,7 @@ automationRoutes.get(
 
     let rows: Array<typeof automations.$inferSelect>;
     let total: number;
+    let notMoved = 0;
     if (permissions?.allowedSiteIds !== undefined) {
       const scanSize = 100;
       let databaseOffset = 0;
@@ -910,6 +925,7 @@ automationRoutes.get(
         for (const automation of candidates) {
           const check = await checkAutomationTargetsWithinSiteScope(automation, permissions);
           if (!check.ok) continue;
+          if (classifyAutomation(automation) === 'S' && !automation.convertedToFlowId) notMoved += 1;
           if (total >= offset && rows.length < limit) rows.push(automation);
           total += 1;
         }
@@ -917,11 +933,16 @@ automationRoutes.get(
         if (candidates.length < scanSize) break;
       }
     } else {
+      // W01b (#12435, Decision P6): the Jobs tab count rides the same count query.
       const countResult = await db
-        .select({ count: sql<number>`count(*)` })
+        .select({
+          count: sql<number>`count(*)`,
+          notMoved: sql<number>`count(*) filter (where ${standaloneNotMovedCondition})`,
+        })
         .from(automations)
         .where(whereCondition);
       total = Number(countResult[0]?.count ?? 0);
+      notMoved = Number(countResult[0]?.notMoved ?? 0);
 
       rows = await db
         .select()
@@ -942,6 +963,7 @@ automationRoutes.get(
         conversion: conversions.get(automation.id) ?? null,
       })),
       pagination: { page, limit, total },
+      jobCounts: { notMoved },
     });
   },
 );
