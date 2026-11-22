@@ -3,7 +3,9 @@
   "subtitle": "Araçları birbirine zincirleyen çok adımlı otomasyonlar.",
   "empty": {
     "title": "Henüz akış yok",
-    "body": "Breeze AI'dan bir akış taslağı hazırlamasını isteyin, ardından burada inceleyin."
+    "body": "Akış, Breeze'in her çalıştırmada aynı şekilde izlediği kayıtlı bir adım listesidir. Bir zamanlamayla, bir olayda, bir webhook'tan veya siz başlattığınızda çalışabilir. Görev birden fazla adım içeriyorsa, onay gerektiriyorsa veya başka araçları çağırıyorsa akış kullanın. Bir adım istemedikçe yapay zeka kullanmaz. Bir betiği zamanlamayla çalıştırmak için iş daha basittir.",
+    "how": "Akışlar önizleme aşamasındadır. Oluşturmak için Breeze AI'dan taslağını hazırlamasını isteyin veya İşler sayfasından mevcut bir işi taşıyın.",
+    "jobsLink": "İşler'e git"
   },
   "list": {
     "name": "Ad",
@@ -766,7 +768,7 @@
     "migration": {
       "banner": {
         "r1": "İşler Akışlar'a taşınıyor.",
-        "r1Body": "Yeni işler Akışlar'da oluşturulur. Gölgesi eşleşince her işi taşıyın; geri de taşıyabilirsiniz."
+        "r1Body": "İşleri burada oluşturmaya ve düzenlemeye devam edebilirsiniz. Gölgesi eşleşince bir işi taşıyın; geri de taşıyabilirsiniz."
       },
       "convertAll": "Dönüştürülebilir tümü için gölge başlat",
       "converting": "Başlatılıyor…",

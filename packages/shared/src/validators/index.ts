@@ -1500,6 +1500,7 @@ export * from './flowRuns';
 export * from './flowBudgets';
 export * from './flowWebhooks';
 export * from './flowConversions';
+export * from './flowDrafts';
 export * from './networkIsolation';
 export * from './oemUpdates';
 export * from './oemObserve';

@@ -11,8 +11,9 @@ import { listFlows } from './api';
 const PAGE_LIMIT = 100;
 
 /**
- * Flows list (#5218 W3 PR B). Read-only: flows are drafted in AI chat and
- * reviewed here; enabling and runs arrive in a later release.
+ * Flows list (#5218 W3 PR B). Read-only: a flow is drafted in AI chat or moved
+ * from a Job, then reviewed here. Until there is a manual editor (#10336) the
+ * page is tagged as a preview and its empty state explains flows (#12310).
  */
 export default function FlowsPage() {
   const { t } = useTranslation('flows');
@@ -77,7 +78,15 @@ export default function FlowsPage() {
     <div className="space-y-4 p-4" data-testid="flows-page">
       <header className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h1 className="text-xl font-semibold">{t('title')}</h1>
+          <h1 className="flex items-center gap-2 text-xl font-semibold">
+            {t('title')}
+            <span
+              data-testid="flows-preview-tag"
+              className="rounded border px-1.5 py-0.5 text-xs font-medium text-muted-foreground"
+            >
+              {t('common:nav.previewTag')}
+            </span>
+          </h1>
           <p className="max-w-2xl text-sm text-muted-foreground">{t('subtitle')}</p>
         </div>
         <a className="text-sm text-primary hover:underline" href="/settings/flow-limits" data-testid="flows-limits-link">
@@ -90,7 +99,15 @@ export default function FlowsPage() {
       {flows !== null && rows.length === 0 && !loadFailed ? (
         <div data-testid="flow-empty" className="rounded-md border border-dashed p-8 text-center">
           <p className="font-medium">{t('empty.title')}</p>
-          <p className="mt-1 text-sm text-muted-foreground">{t('empty.body')}</p>
+          <p className="mx-auto mt-1 max-w-2xl text-sm text-muted-foreground">{t('empty.body')}</p>
+          <p className="mx-auto mt-2 max-w-2xl text-sm text-muted-foreground">{t('empty.how')}</p>
+          <a
+            href="/jobs"
+            data-testid="flow-empty-jobs-link"
+            className="mt-3 inline-block text-sm font-medium text-primary hover:underline"
+          >
+            {t('empty.jobsLink')}
+          </a>
         </div>
       ) : (
         <ResponsiveTable

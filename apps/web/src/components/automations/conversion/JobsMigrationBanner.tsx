@@ -8,6 +8,7 @@ import { createConversionsBulk } from './conversionApi';
 
 /**
  * The R1 Jobs banner (#5221 W06, plan Decision 10): "Jobs are moving to Flows."
+ * Jobs can still be created and edited here (#12310), and the body says so.
  * With write access it offers "Start shadow for all convertible" for the
  * selected organization — shadow conversions only, never a switch (Decision 2).
  * R2/R3 copy belongs to the release-gated follow-up (#10336).

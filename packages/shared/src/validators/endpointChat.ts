@@ -26,11 +26,12 @@ export const ENDPOINT_CHAT_LIMITS = {
 } as const;
 
 /**
- * First agent release whose chat handlers exist. Fail-closed placeholder until
- * the release carrying the agent change is cut: no real agent reaches 999.0.0,
- * so no chat is ever opened on an agent that would not understand it.
+ * Oldest agent release a chat is opened on. The chat handlers have shipped
+ * since v0.124.0; the floor is 0.128.0 because that is the agent and Breeze
+ * Assist version the chat window and reply path were proved on in the Windows
+ * lab. Below it the API answers `agent_unsupported`.
  */
-export const ENDPOINT_CHAT_MIN_AGENT_VERSION = '999.0.0';
+export const ENDPOINT_CHAT_MIN_AGENT_VERSION = '0.128.0';
 
 /** False for null, unparseable and older versions — never guesses in favour. */
 export function agentSupportsEndpointChat(agentVersion: string | null | undefined): boolean {

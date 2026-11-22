@@ -18,7 +18,7 @@
 
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations } from '../../db/schema';
 import { buildOrgExportZip } from '../../services/tenantExport';
 import { captureException } from '../../services/sentry';
@@ -39,15 +39,18 @@ tenantExportRoutes.get('/:orgId', requireMfa(), async (c) => {
   }
 
   // Verify the org exists before opening an archive — surface 404 with a
-  // JSON body instead of streaming an empty ZIP for typoed IDs.
-  const org = await withSystemDbAccessContext(async () => {
+  // JSON body instead of streaming an empty ZIP for typoed IDs. Out of the
+  // request context first: a platform admin with a partner membership has a
+  // partner-scoped request context, and a nested system context would keep
+  // that scope and miss every other partner's org (#12299).
+  const org = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const rows = await db
       .select({ id: organizations.id, name: organizations.name })
       .from(organizations)
       .where(eq(organizations.id, orgId))
       .limit(1);
     return rows[0] ?? null;
-  });
+  }, 'admin.tenantExport.orgLookup'));
   if (!org) {
     return c.json({ error: 'org not found' }, 404);
   }

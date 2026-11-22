@@ -3,7 +3,9 @@
   "subtitle": "Automatisations en plusieurs étapes qui enchaînent des outils.",
   "empty": {
     "title": "Aucun flux pour le moment",
-    "body": "Demandez à Breeze AI de rédiger un flux, puis examinez-le ici."
+    "body": "Un flux est une liste d'étapes enregistrée que Breeze suit de la même façon à chaque exécution. Il peut démarrer selon une planification, lors d'un événement, à partir d'un webhook ou quand vous le lancez. Utilisez un flux quand le travail comporte plusieurs étapes, exige une approbation ou appelle d'autres outils. Il n'utilise pas l'IA, sauf si une étape la demande. Pour exécuter un script selon une planification, une tâche est plus simple.",
+    "how": "Les flux sont en préversion. Pour en créer un, demandez à Breeze AI de le rédiger, ou déplacez une tâche existante depuis la page Tâches.",
+    "jobsLink": "Aller aux Tâches"
   },
   "list": {
     "name": "Nom",
@@ -766,7 +768,7 @@
     "migration": {
       "banner": {
         "r1": "Les tâches passent dans Flux.",
-        "r1Body": "Les nouvelles tâches sont créées dans Flux. Déplacez chaque tâche quand son mode fantôme correspond ; vous pouvez la remettre en tâche."
+        "r1Body": "Vous pouvez toujours créer et modifier des tâches ici. Déplacez une tâche quand son mode fantôme correspond ; vous pouvez la remettre en tâche."
       },
       "convertAll": "Démarrer le mode fantôme pour toutes les tâches convertibles",
       "converting": "Démarrage…",

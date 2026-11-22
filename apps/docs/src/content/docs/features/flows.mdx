@@ -11,6 +11,10 @@ A flow is a saved, multi-step workflow. Each step runs one Breeze tool (for exam
 Flows are on by default. An administrator of your Breeze deployment can turn them off with `FLOWS_ENABLED=false`. Everything on this page, including webhook triggers, built-in steps, flow tools and monthly limits, is behind that one setting. Existing Jobs move to Flows one at a time: see [Moving Jobs to Flows](/features/automations/#moving-jobs-to-flows).
 </Aside>
 
+<Aside type="caution" title="Preview">
+Flows is in preview. There is no flow editor yet: you make a flow by asking Breeze AI to draft one, or by moving an existing Job. To run a script on a schedule, on an event or from a webhook without Breeze AI, create a [Job](/features/automations/).
+</Aside>
+
 ## Enabling a flow and what it delegates
 
 A flow is a draft until someone enables it. Enabling publishes an immutable version of the flow and makes you its **delegator**: the flow acts with authority you are lending it.
