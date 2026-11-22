@@ -159,7 +159,7 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
     await handleTicketEvent({
       type: 'ticket.autoresponse', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
       actorUserId: null, eventId: 'evt-ar-graph',
-      payload: { to: 'jane@x.com', internalNumber: 'T-2026-0001', subject: 'printer down' },
+      payload: { to: 'jane.home@x.com', internalNumber: 'T-2026-0001', subject: 'printer down' },
     } as never);
 
     expect(sendThreadedMock).toHaveBeenCalledTimes(1);
@@ -168,8 +168,9 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
     expect(call[1]).toBe('orig-1');
     const opts = call[3] as { to?: string; subject?: string } | undefined;
     expect(opts?.subject).toBe('[KQ04YOHZ-N] We received your request: printer down');
-    // Recipient replace: the autoresponse goes to event.payload.to only.
-    expect(opts?.to).toBe('jane@x.com');
+    // Recipient replace: the autoresponse goes to event.payload.to only (the
+    // ingest-time reply address), never the ticket's submitterEmail.
+    expect(opts?.to).toBe('jane.home@x.com');
     expect(sendNewMock).not.toHaveBeenCalled();
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
@@ -253,6 +254,25 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
         ? (sendNewMock.mock.calls[0] as unknown as unknown[] | undefined)?.[1]
         : (sendEmailMock.mock.calls[0]?.[0] as { to?: string } | undefined)?.to;
       expect(to).toBe('jane@customer.example');
+    });
+
+    it('resolved notice on the graph lane: threaded, recipient pinned to the stored Reply-To', async () => {
+      selectMock
+        .mockResolvedValueOnce([{ ...WEB_FORM_TICKET, status: 'resolved' }])
+        .mockResolvedValueOnce([{ slug: 'acme', settings: {} }]);
+      resolveMailboxMock.mockResolvedValue({ ...MAILBOX, originalMessageId: 'orig-1' });
+      requesterReplyMock.mockResolvedValueOnce('jane@customer.example');
+
+      await handleTicketEvent({
+        type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+        actorUserId: 'u-1', eventId: 'evt-rt-res-g', payload: { from: 'open', to: 'resolved', resolutionNote: null },
+      } as never);
+
+      expect(sendThreadedMock).toHaveBeenCalledTimes(1);
+      const call = sendThreadedMock.mock.calls[0]! as unknown as unknown[];
+      expect(call[1]).toBe('orig-1');
+      expect(call[3]).toEqual({ to: 'jane@customer.example' });
+      expect(sendEmailMock).not.toHaveBeenCalled();
     });
 
     it('resolved notice goes to the stored Reply-To', async () => {

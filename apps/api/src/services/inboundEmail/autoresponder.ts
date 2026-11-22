@@ -121,7 +121,15 @@ export async function maybeSendAutoresponse(
     throw new Error(`partner mismatch — refusing autoresponse (ticket ${ticket.id} partnerId=${ticket.partnerId} resolved=${partnerId})`);
   }
 
-  const reason = autoresponseSuppressionReason(n, inboundDomainOrUndefined());
+  // The acknowledgement's recipient: the Reply-To ingest kept (verified sender,
+  // never one of our own addresses), else From. The loop rules and the cap run
+  // on the sender AND on that recipient, so a Reply-To can only narrow who is
+  // acknowledged: it never aims acknowledgements at a system address or past
+  // the per-address cap.
+  const to = n.replyTo ?? n.from;
+  const inboundDomain = inboundDomainOrUndefined();
+  const reason = autoresponseSuppressionReason(n, inboundDomain)
+    ?? (to !== n.from ? autoresponseSuppressionReason({ ...n, from: to }, inboundDomain) : null);
   if (reason) {
     console.info('[InboundEmail] autoresponse suppressed', { reason, from: n.from, ticketId: ticket.id });
     return;
@@ -131,7 +139,7 @@ export async function maybeSendAutoresponse(
     return;
   }
 
-  if (!(await capAllows(partnerId, n.from))) {
+  if (!(await capAllows(partnerId, n.from)) || (to !== n.from && !(await capAllows(partnerId, to)))) {
     console.info('[InboundEmail] autoresponse suppressed', { reason: 'rate-capped', from: n.from, ticketId: ticket.id });
     return;
   }
@@ -142,10 +150,7 @@ export async function maybeSendAutoresponse(
     orgId: ticket.orgId,
     partnerId: ticket.partnerId,
     payload: {
-      // The requester's reply address: the Reply-To ingest stored for this
-      // message (already cleared of our own addresses), else From. Suppression
-      // and the cap above stay keyed on From, the sender identity.
-      to: n.replyTo ?? n.from,
+      to,
       internalNumber: ticket.internalNumber,
       subject: ticket.subject,
     },

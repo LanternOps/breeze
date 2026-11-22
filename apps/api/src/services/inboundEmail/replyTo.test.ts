@@ -6,6 +6,9 @@ describe('normalizeReplyTo (syntax only: exactly one usable address, else undefi
     expect(normalizeReplyTo('Jane Customer <Jane@Customer.Example>')).toBe('jane@customer.example');
     expect(normalizeReplyTo('jane@customer.example')).toBe('jane@customer.example');
     expect(normalizeReplyTo(['jane@customer.example'])).toBe('jane@customer.example');
+    expect(normalizeReplyTo('jane.o+tickets@mail.customer.co.uk')).toBe('jane.o+tickets@mail.customer.co.uk');
+    expect(normalizeReplyTo('jane@xn--bcher-kva.example')).toBe('jane@xn--bcher-kva.example');
+    expect(normalizeReplyTo('jane@customer.xn--p1ai')).toBe('jane@customer.xn--p1ai');
   });
 
   it('reads the address inside a display name that itself looks like an address', () => {
@@ -35,6 +38,13 @@ describe('normalizeReplyTo (syntax only: exactly one usable address, else undefi
       'jane smith@customer.example',
       'jane@customer.example\u0000',
       `${'a'.repeat(250)}@customer.example`,
+      // No IP-literal-looking or numeric top-level domain.
+      'jane@1.2.3.4',
+      'jane@customer.123',
+      // No source-routing-era local-part characters.
+      'jane%relay@customer.example',
+      'relay!jane@customer.example',
+      'ja|ne@customer.example',
     ]) {
       expect(normalizeReplyTo(bad), bad).toBeUndefined();
     }

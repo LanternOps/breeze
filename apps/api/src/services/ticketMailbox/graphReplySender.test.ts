@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('./mailboxToken', () => ({ getMailboxToken: vi.fn(async () => 'tok') }));
+const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
+vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
 import { sendThreadedReply, sendNewMail, GraphRecipientMismatchError } from './graphReplySender';
@@ -99,7 +101,10 @@ describe('sendThreadedReply', () => {
       .mockResolvedValueOnce(patchedEcho([REQUESTER], ['colleague@example.com']))
       .mockRejectedValueOnce(new Error('network down'));
 
+    captureExceptionMock.mockClear();
     await expect(sendThreadedReply(target, 'orig-1', '<p>reply</p>', OPTS)).rejects.toBeInstanceOf(GraphRecipientMismatchError);
+    // The leftover draft is reported, not just logged.
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
 
   it('deletes the draft when the PATCH itself fails', async () => {

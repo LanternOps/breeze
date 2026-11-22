@@ -23,8 +23,12 @@ const MAX_HEADER_LENGTH = 998;
 // Dot-atom local part (no quoted strings, no comments) and an LDH domain with at
 // least two labels. Stricter than RFC 5322 on purpose: a reply address that
 // needs quoting is not one we mail on an attacker's say-so.
-const LOCAL_PART = /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*$/;
+// The atext set minus `%`, `!` and `|`, which only ever meant relay routing.
+const LOCAL_PART = /^[a-z0-9#$&'*+/=?^_`{}~-]+(?:\.[a-z0-9#$&'*+/=?^_`{}~-]+)*$/;
 const DOMAIN_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+// A real top-level domain: letters, or an IDN A-label. Never numeric, so no
+// IP-address-shaped domain.
+const TOP_LABEL = /^(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/;
 
 function isUsableAddress(address: string): boolean {
   if (address.length === 0 || address.length > MAX_ADDRESS_LENGTH) return false;
@@ -35,7 +39,8 @@ function isUsableAddress(address: string): boolean {
   return local.length <= 64
     && LOCAL_PART.test(local)
     && labels.length >= 2
-    && labels.every((l) => DOMAIN_LABEL.test(l));
+    && labels.every((l) => DOMAIN_LABEL.test(l))
+    && TOP_LABEL.test(labels[labels.length - 1]!);
 }
 
 function recipientAddress(value: unknown): string | null {

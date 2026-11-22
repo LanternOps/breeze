@@ -1,4 +1,5 @@
 import { getMailboxToken } from './mailboxToken';
+import { captureException } from '../sentry';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 
@@ -94,6 +95,8 @@ export async function sendThreadedReply(
         toRecipients: [{ emailAddress: { address: opts.to } }],
         ccRecipients: [],
         bccRecipients: [],
+        // The customer's answer comes back to the support mailbox, never to an
+        // address carried over from the original message.
         replyTo: [{ emailAddress: { address: t.mailbox } }],
         ...(opts.subject ? { subject: opts.subject } : {}),
         body: { contentType: 'HTML', content: html },
@@ -107,8 +110,10 @@ export async function sendThreadedReply(
     });
   } catch (err) {
     await gfetch(draftUrl, token, { method: 'DELETE' }).catch((cleanupErr: unknown) => {
-      console.warn('[graphReplySender] could not delete the unsent draft',
-        cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
+      // An unsent draft (possibly with recipients Graph did not replace) stays
+      // in the mailbox's Drafts: worth a Sentry event, not just a log line.
+      captureException(cleanupErr instanceof Error ? cleanupErr : new Error(String(cleanupErr)), undefined,
+        { component: 'graph_reply_draft_cleanup', tenantId: t.tenantId }, { fingerprint: ['graph_reply_draft_cleanup_failed'] });
     });
     throw err;
   }

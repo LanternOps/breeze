@@ -66,7 +66,8 @@ export async function guardedReplyTo(n: NormalizedInboundEmail, partnerId: strin
     });
     return own ? undefined : replyTo;
   } catch (err) {
-    captureException(err instanceof Error ? err : new Error(String(err)));
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined,
+      { component: 'inbound_reply_to_guard', partnerId }, { fingerprint: ['inbound_reply_to_guard_failed'] });
     return undefined;
   }
 }
