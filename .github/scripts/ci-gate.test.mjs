@@ -3376,11 +3376,14 @@ test('stacked queue entry: an anchor base that no longer exists (parent branch g
   r.addStackEvidence({ anchor: { base_sha: 'e'.repeat(40) } });
   r.io.sleep = () => {};
   const seen = policyReads(r);
+  const named = [];
+  const git = r.io.git;
+  r.io.git = args => { if (args.some(arg => arg.includes('e'.repeat(40)))) named.push(args[0]); return git(args); };
   gate.select(r.io, r.verifyEnv({ THIN_QUEUE: 'enforce' }));
   const line = selectionLineOf(r);
   assert.match(line, /^ci-gate-selection: mode=full reason=anchor_base_not_on_main /, line);
   for (const revision of new Set(seen.revisions)) assert.ok(r.isAncestor(revision, r.entryA), `read ${revision}`);
-  assert.ok(!r.lines.some(text => text.includes('e'.repeat(40))), 'the base is not fetched: it is not one of main\'s commits');
+  assert.deepEqual(named, [], 'no git command names the base, so it is not fetched: it is not one of main\'s commits');
   assert.deepEqual(publishedIn(r).thin_skip, []);
 });
 
