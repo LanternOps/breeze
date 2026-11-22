@@ -42,7 +42,7 @@ For a webhook-triggered flow, use **Save** only in the editor, then create the s
 
 ### Editing, disabling and deleting
 
-- A draft, disabled or paused flow can be edited. An enabled flow is read-only in the editor; **Disable and edit** disables it first. That cancels queued and waiting runs and pending approvals; running runs stop at their next checkpoint.
+- A draft, disabled or paused flow can be edited. **Edit** on an enabled flow opens it read-only; choose **Disable and edit** and confirm to disable it first. Pressing **Edit** never disables a flow. Disabling cancels queued and waiting runs and pending approvals; running runs stop at their next checkpoint.
 - A flow moved from a Job that is still being compared: saving a change resets the comparison evidence, and the editor asks you to confirm.
 - **Delete draft** on the flow page removes a draft that was never enabled and was not moved from a Job. It needs the delete permission and MFA.
 

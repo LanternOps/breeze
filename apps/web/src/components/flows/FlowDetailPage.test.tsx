@@ -299,16 +299,24 @@ describe('FlowDetailPage', () => {
       api.getFlow.mockResolvedValue(d);
     }
 
-    it('Edit shows for an editable flow and not for an enabled one', async () => {
-      for (const status of ['draft', 'disabled', 'paused']) {
+    it('Edit shows for every status, an enabled flow included, and is a plain link', async () => {
+      // Spec §3.1: an enabled flow's Edit opens the editor read-only, where
+      // "Disable and edit" is the explicit confirmation. Edit never disables.
+      for (const status of ['draft', 'disabled', 'paused', 'enabled']) {
         withFlow({ status });
         const { unmount } = render(<FlowDetailPage flowId={ID} />);
         const edit = await screen.findByTestId('flow-edit');
+        expect(edit.tagName).toBe('A');
         expect(edit.getAttribute('href')).toBe(`/flows/${ID}/edit`);
         expect(within(screen.getByTestId('flow-actions')).getByTestId('flow-edit')).toBeTruthy();
         unmount();
       }
-      withFlow({ status: 'enabled' });
+      expect(api.disableFlow).not.toHaveBeenCalled();
+    });
+
+    it('an org-scoped user sees no Edit on an enabled partner-wide flow', async () => {
+      viewer.claims = { status: 'resolved', claims: { scope: 'organization', orgId: 'org-1', partnerId: 'p-1' } };
+      withFlow({ status: 'enabled', ownerScope: 'partner', orgId: null, partnerId: 'p-1' });
       render(<FlowDetailPage flowId={ID} />);
       await screen.findByTestId('flow-steps');
       expect(screen.queryByTestId('flow-edit')).toBeNull();

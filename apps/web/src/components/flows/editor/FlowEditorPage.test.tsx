@@ -186,8 +186,11 @@ describe('FlowEditorPage', () => {
     expect(await screen.findByTestId('flow-editor-enabled-readonly')).toBeInTheDocument();
     expect(screen.getByTestId('mock-form')).toHaveAttribute('data-readonly', 'true');
     expect(screen.queryByTestId('flow-editor-save')).toBeNull();
+    // Opening the editor on an enabled flow never disables it (spec §3.1).
+    expect(api.disableFlow).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId('flow-editor-disable-and-edit'));
     expect(await screen.findByText(/cancels queued and waiting runs/i)).toBeInTheDocument();
+    expect(api.disableFlow).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId('flow-editor-disable-confirm'));
     await waitFor(() => expect(api.disableFlow).toHaveBeenCalledWith(ID));
     await waitFor(() => expect(screen.getByTestId('mock-form')).toHaveAttribute('data-readonly', 'false'));

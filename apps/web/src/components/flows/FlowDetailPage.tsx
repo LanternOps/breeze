@@ -42,8 +42,10 @@ type DeleteHistory = { automationId: string | null };
  * chat, or moved from a Job; this page reviews and operates it.
  *
  * Gates (UX only: the API re-checks every one):
- * - Enable / Disable / Run now / Edit need `automations.write`; Edit only while
- *   the flow is editable (draft, disabled or paused).
+ * - Enable / Disable / Run now / Edit need `automations.write`. Edit shows for
+ *   every status: on an enabled flow it opens the editor read-only, where
+ *   "Disable and edit" is the explicit confirmation (spec §3.1). Edit itself
+ *   never disables.
  * - Delete draft needs `automations.delete` and a draft that was never
  *   published and never moved from a Job. A 409 `flow_has_history` (the row
  *   gained history since load) is explained inline, with a link to the Job's
@@ -155,8 +157,7 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
   const ownerAllowsChange =
     flow.ownerScope !== 'partner'
     || ((viewerScope === 'partner' || viewerScope === 'system') && canManagePartnerWide !== false);
-  const canEdit =
-    canWrite && ownerAllowsChange && (flow.status === 'draft' || flow.status === 'disabled' || flow.status === 'paused');
+  const canEdit = canWrite && ownerAllowsChange;
   const canDelete =
     can('automations', 'delete')
     && ownerAllowsChange
