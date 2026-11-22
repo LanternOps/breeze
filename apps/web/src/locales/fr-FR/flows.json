@@ -4,7 +4,7 @@
   "empty": {
     "title": "Aucun flux pour le moment",
     "body": "Un flux est une liste d'étapes enregistrée que Breeze suit de la même façon à chaque exécution. Il peut démarrer selon une planification, lors d'un événement, à partir d'un webhook ou quand vous le lancez. Utilisez un flux quand le travail comporte plusieurs étapes, exige une approbation ou appelle d'autres outils. Il n'utilise pas l'IA, sauf si une étape la demande. Pour exécuter un script selon une planification, une tâche est plus simple.",
-    "how": "Les flux sont en préversion. Pour en créer un, demandez à Breeze AI de le rédiger, ou déplacez une tâche existante depuis la page Tâches.",
+    "how": "Créez-en un avec Nouvelle automatisation, demandez à Breeze AI de le rédiger, ou déplacez une tâche existante depuis la page Tâches.",
     "jobsLink": "Aller aux Tâches"
   },
   "list": {
@@ -43,7 +43,13 @@
     "version": "Version {{version}}",
     "createdInChat": "Créé dans Breeze AI",
     "movedFromJob": "Déplacé depuis une tâche",
-    "movedFromJobReverted": "(remis en tâche)"
+    "movedFromJobReverted": "(remis en tâche)",
+    "edit": "Modifier",
+    "delete": "Supprimer le brouillon",
+    "deleteConfirmTitle": "Supprimer ce brouillon ?",
+    "deleteConfirmMessage": "Le brouillon est supprimé définitivement. Cette action est irréversible.",
+    "deleteHasHistory": "Ce flux a été activé ou déplacé depuis une tâche, il ne peut donc plus être supprimé. Désactivez-le à la place.",
+    "deleteHasHistoryLink": "Ouvrir la tâche"
   },
   "step": {
     "tool": "Outil",
@@ -123,7 +129,9 @@
     "enableFailed": "Impossible d'activer le flux.",
     "disableFailed": "Impossible de désactiver le flux.",
     "runFailed": "Impossible de démarrer l'exécution.",
-    "cancelFailed": "Impossible d'annuler l'exécution."
+    "cancelFailed": "Impossible d'annuler l'exécution.",
+    "saveFailed": "Impossible d'enregistrer le flux.",
+    "deleteFailed": "Impossible de supprimer le brouillon."
   },
   "tabs": {
     "overview": "Vue d'ensemble",
@@ -330,7 +338,9 @@
     "enabled": "Flux activé",
     "disabled": "Flux désactivé",
     "runStarted": "Exécution démarrée",
-    "runCancelled": "Exécution annulée"
+    "runCancelled": "Exécution annulée",
+    "draftSaved": "Brouillon enregistré",
+    "draftDeleted": "Brouillon supprimé"
   },
   "disable": {
     "title": "Désactiver le flux",
@@ -774,6 +784,109 @@
       "converting": "Démarrage…",
       "bulkSummary": "{{created}} démarré(s), {{skipped}} ignoré(s).",
       "newJobOpensFlows": "Nouveau flux"
+    }
+  },
+  "flowEditor": {
+    "titleNew": "Nouvelle automatisation",
+    "titleEdit": "Modifier {{name}}",
+    "subtitle": "Créez le flux avec le formulaire ou modifiez directement son document. Les deux onglets modifient le même document.",
+    "backToFlow": "Retour au flux",
+    "tabs": {
+      "form": "Formulaire",
+      "document": "Document JSON"
+    },
+    "owner": {
+      "title": "Propriétaire",
+      "organization": "Cette organisation uniquement",
+      "partner": "Toutes les organisations"
+    },
+    "enabledReadOnly": "Ce flux est activé, il ne peut donc pas être modifié. Désactivez-le pour apporter des changements, puis réactivez-le.",
+    "disableAndEdit": "Désactiver et modifier",
+    "disableMessage": "La désactivation annule les exécutions en file d'attente ou en attente ainsi que les approbations en cours. Les exécutions déjà en cours s'arrêtent à leur prochain point de contrôle. Vous pourrez réactiver le flux après l'avoir modifié.",
+    "notFormShaped": "Le formulaire ne peut pas afficher tout le contenu de ce document ; il est donc en lecture seule ici. Modifiez plutôt le document.",
+    "openDocument": "Ouvrir le document",
+    "validateFailed": "Impossible de vérifier le document : {{message}}",
+    "conflict": "Quelqu'un d'autre a enregistré ce flux pendant que vous le modifiiez. Vos modifications sont toujours là. Rechargez pour obtenir la dernière version ; le rechargement supprime vos modifications.",
+    "reload": "Recharger",
+    "saveInvalid": "Le flux n'a pas été enregistré, car le document contient des erreurs. Corrigez les problèmes indiqués et enregistrez à nouveau.",
+    "notDraft": "Ce flux est activé, il ne peut donc pas être enregistré. Désactivez-le d'abord.",
+    "webhookNext": "Enregistré. Les flux webhook s'activent depuis la page du flux : créez-y le secret du webhook, transmettez-le à l'expéditeur, puis activez le flux.",
+    "webhookTabLink": "Ouvrir l'onglet Webhook",
+    "limits": "Chaque exécution atteint au plus {{devices}} appareils et envoie au plus {{notices}} notifications. Un flux compte au plus {{steps}} étapes.",
+    "save": "Enregistrer",
+    "saveAndEnable": "Enregistrer et activer",
+    "shadow": {
+      "title": "Réinitialiser la comparaison ?",
+      "message": "Ce flux a été déplacé depuis une tâche et est toujours comparé à celle-ci. L'enregistrement d'une modification réinitialise les preuves de comparaison, et la comparaison recommence."
+    },
+    "document": {
+      "loading": "Chargement de l'éditeur…",
+      "loadError": "Impossible de charger l'éditeur. Actualisez la page pour réessayer.",
+      "parseError": "Le document n'est pas un JSON valide"
+    },
+    "form": {
+      "name": "Nom",
+      "description": "Description du flux",
+      "remove": "Retirer",
+      "listsFailed": "Impossible de charger vos scripts et canaux de notification. Actualisez la page pour réessayer.",
+      "trigger": {
+        "title": "Quand il s'exécute",
+        "timezone": "Fuseau horaire",
+        "eventDeviceHelp": "Les actions s'exécutent sur l'appareil qui a déclenché l'événement. Si un événement arrive sans appareil, l'exécution échoue.",
+        "filter": "Seulement si l'événement correspond",
+        "filterHelp": "Chaque champ doit être exactement égal à sa valeur. Laissez vide pour exécuter à chaque événement de ce type.",
+        "filterKey": "Champ de l'événement",
+        "filterValue": "Valeur",
+        "filterAdd": "Ajouter une condition",
+        "resolverHelp": "Un flux pour toutes les organisations trouve l'organisation à partir du corps de la requête : indiquez le champ du corps qui contient l'identifiant de l'organisation, ainsi que le système dont provient cet identifiant.",
+        "resolverPath": "Champ du corps",
+        "resolverSystem": "Système",
+        "webhookHelp": "Enregistrez le flux, puis créez le secret du webhook et activez le flux depuis son onglet Webhook.",
+        "manualHelp": "Le flux ne s'exécute que lorsque quelqu'un le lance."
+      },
+      "target": {
+        "title": "Appareils",
+        "triggerDevice": "L'appareil qui a déclenché l'événement.",
+        "choose": "Choisissez les appareils sur lesquels les actions s'exécutent. Tous les appareils n'est que le point de départ.",
+        "keep": "Utiliser tous les appareils",
+        "partnerWide": "Un flux pour toutes les organisations peut cibler tous les appareils ou un filtre, mais pas des appareils ou groupes précis."
+      },
+      "actions": {
+        "title": "Actions à exécuter",
+        "empty": "Ajoutez au moins une action.",
+        "position": "Action n° {{n}}",
+        "runScript": "Exécuter un script",
+        "notify": "Envoyer une notification",
+        "alert": "Déclencher une alerte",
+        "moveUp": "Monter",
+        "moveDown": "Descendre",
+        "runAsDefault": "Le paramètre du script",
+        "runAsSystem": "Système",
+        "runAsUser": "Utilisateur connecté",
+        "parameters": "Paramètres",
+        "parameterName": "Nom du paramètre",
+        "parameterValue": "Valeur du paramètre",
+        "parameterAdd": "Ajouter un paramètre",
+        "severityInfo": "Information",
+        "severityWarning": "Avertissement",
+        "severityCritical": "Critique",
+        "title_": "Titre",
+        "notifyHelp": "Un message est envoyé à chaque exécution, et non un par appareil.",
+        "countsHelp": "Le nombre d'appareils réussis et en échec est ajouté à la fin du message.",
+        "alertHelp": "Une alerte est déclenchée sur chaque appareil atteint par les actions.",
+        "commandHint": "Pour exécuter une commande, enregistrez-la d'abord comme script.",
+        "scriptsLink": "Aller à Scripts"
+      },
+      "onFailure": {
+        "title": "Si le script ne peut pas être envoyé à un appareil",
+        "stop": "Arrêter",
+        "stopHelp": "Les actions suivantes ignorent les appareils auxquels le script n'a pas pu être envoyé.",
+        "continue": "Continuer",
+        "continueHelp": "Poursuivre avec les actions restantes.",
+        "notify": "Notifier",
+        "notifyHelp": "Envoyer un avis aux canaux ci-dessous pour chaque appareil auquel le script n'a pas pu être envoyé. Au plus 20 avis sont envoyés par exécution.",
+        "noChannels": "Ajoutez un canal de notification pour utiliser Notifier."
+      }
     }
   }
 }

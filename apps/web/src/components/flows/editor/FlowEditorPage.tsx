@@ -12,6 +12,7 @@ import {
 import { useJwtClaims } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 import { usePermissions } from '@/lib/permissions';
+import { replaceUrl } from '@/lib/replaceUrl';
 import { ActionError } from '@/lib/runAction';
 import { useHashTab } from '@/lib/useHashState';
 import { cn } from '@/lib/utils';
@@ -242,7 +243,7 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
       // The save response carries no pre-approval eligibility; only GET computes it.
       const fresh = await getFlow(result.flow.id);
       if (result.created) {
-        window.history.replaceState(null, '', `/flows/${result.flow.id}/edit`);
+        replaceUrl(`/flows/${result.flow.id}/edit`);
         setFlowId(result.flow.id);
       }
       setEnableTarget(fresh);

@@ -42,6 +42,14 @@ Lab checks owed before the next tag:
 
 - **Analysis investigations from Wisp chat** (#11844 W06, #11850). Wisp can run a sandboxed analysis across a whole customer, a site or chosen devices, bring the result and its files back to the conversation, and continue from an earlier step with that step's files. Chains stop at 8 continuations deep, 12 runs or $6.00 by default; the grant's daily budget (200 ¢ on Pro) usually stops first, so a partner admin raises it for long investigations. The run card shows the step, goal, findings, cost and files; the run page lists the chain and the device scope. Hosted only, behind the existing AI workspace and Wisp switches; no new env var.
 
+### Flows: build flows by hand
+
+- **Build flows by hand in the new flow editor** (preview). **New automation** on the Flows page opens a guided form for a trigger (schedule, event, webhook or manual), a target and ordered actions (run a script, send a notification, raise an alert), with a **Document** tab for the flow as JSON, with completion and inline validation. Save from the editor, or use **Save and enable**. Enabled flows are read-only until you choose **Disable and edit**, and a never-enabled draft can be deleted from its flow page (needs the delete permission and MFA). A document the form cannot fully show opens read-only in the form; edit it on the Document tab.
+- **Four new API routes**, all under `/api/v1` and answering 404 when `FLOWS_ENABLED` is off: `POST /flows` (create a draft), `PUT /flows/:id` (replace a draft's document), `DELETE /flows/:id` (delete a draft) and `POST /flows/validate` (check a document without saving). `PUT` and `DELETE` require `expectedVersion`. See the [API reference](/reference/api/#flows).
+- **One "Automations" sidebar entry** replaces the separate Jobs and Flows entries. It opens Flows when Flows is enabled, otherwise Jobs. The Flows and Jobs pages share a tab strip. Old links still work: `/automations` goes to `/flows` (or `/jobs` when Flows is off), `/automations/new` goes to `/jobs/new`, and `/automations/<id>` goes to `/jobs/<id>`.
+- **Breeze AI `draft_flow` updates without `expectedVersion` now return a warning** (`expected_version_required_soon`). A later release will refuse them, so send the version you loaded.
+- **Flows is still marked Preview.**
+
 ## Migrations
 
 - `2027-01-24-170000-portal-access-requests-google-hosted-domain.sql`: adds nullable `portal_access_requests.google_hosted_domain` and the CHECK `portal_access_requests_google_hd_chk` (validated in the same file when no Google request lacks a domain, which is every existing database). DDL only; fast.

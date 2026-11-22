@@ -4,7 +4,7 @@
   "empty": {
     "title": "Noch keine Abläufe",
     "body": "Ein Ablauf ist eine gespeicherte Liste von Schritten, die Breeze bei jeder Ausführung auf dieselbe Weise abarbeitet. Er kann nach Zeitplan, bei einem Ereignis, über einen Webhook oder von Ihnen gestartet werden. Nutzen Sie einen Ablauf, wenn die Arbeit mehrere Schritte hat, eine Genehmigung braucht oder andere Werkzeuge aufruft. Er nutzt keine KI, sofern kein Schritt sie anfordert. Um ein Skript nach Zeitplan auszuführen, ist ein Auftrag einfacher.",
-    "how": "Abläufe befinden sich in der Vorschau. Um einen zu erstellen, bitten Sie Breeze AI, ihn zu entwerfen, oder verschieben Sie einen vorhandenen Auftrag von der Seite „Aufträge“.",
+    "how": "Erstellen Sie einen mit Neue Automatisierung, bitten Sie Breeze AI, ihn zu entwerfen, oder verschieben Sie einen vorhandenen Auftrag von der Seite „Aufträge“.",
     "jobsLink": "Zu den Aufträgen"
   },
   "list": {
@@ -43,7 +43,13 @@
     "version": "Version {{version}}",
     "createdInChat": "In Breeze AI erstellt",
     "movedFromJob": "Aus Auftrag verschoben",
-    "movedFromJobReverted": "(zurückverschoben)"
+    "movedFromJobReverted": "(zurückverschoben)",
+    "edit": "Bearbeiten",
+    "delete": "Entwurf löschen",
+    "deleteConfirmTitle": "Diesen Entwurf löschen?",
+    "deleteConfirmMessage": "Der Entwurf wird endgültig entfernt. Das lässt sich nicht rückgängig machen.",
+    "deleteHasHistory": "Dieser Ablauf wurde aktiviert oder aus einem Auftrag verschoben und kann daher nicht mehr gelöscht werden. Deaktivieren Sie ihn stattdessen.",
+    "deleteHasHistoryLink": "Auftrag öffnen"
   },
   "step": {
     "tool": "Werkzeug",
@@ -123,7 +129,9 @@
     "enableFailed": "Der Ablauf konnte nicht aktiviert werden.",
     "disableFailed": "Der Ablauf konnte nicht deaktiviert werden.",
     "runFailed": "Die Ausführung konnte nicht gestartet werden.",
-    "cancelFailed": "Die Ausführung konnte nicht abgebrochen werden."
+    "cancelFailed": "Die Ausführung konnte nicht abgebrochen werden.",
+    "saveFailed": "Der Ablauf konnte nicht gespeichert werden.",
+    "deleteFailed": "Der Entwurf konnte nicht gelöscht werden."
   },
   "tabs": {
     "overview": "Übersicht",
@@ -330,7 +338,9 @@
     "enabled": "Ablauf aktiviert",
     "disabled": "Ablauf deaktiviert",
     "runStarted": "Ausführung gestartet",
-    "runCancelled": "Ausführung abgebrochen"
+    "runCancelled": "Ausführung abgebrochen",
+    "draftSaved": "Entwurf gespeichert",
+    "draftDeleted": "Entwurf gelöscht"
   },
   "disable": {
     "title": "Flow deaktivieren",
@@ -774,6 +784,109 @@
       "converting": "Wird gestartet …",
       "bulkSummary": "{{created}} gestartet, {{skipped}} übersprungen.",
       "newJobOpensFlows": "Neuer Ablauf"
+    }
+  },
+  "flowEditor": {
+    "titleNew": "Neue Automatisierung",
+    "titleEdit": "{{name}} bearbeiten",
+    "subtitle": "Erstellen Sie den Ablauf mit dem Formular oder bearbeiten Sie direkt sein Dokument. Beide Tabs bearbeiten dasselbe Dokument.",
+    "backToFlow": "Zurück zum Ablauf",
+    "tabs": {
+      "form": "Formular",
+      "document": "Dokument"
+    },
+    "owner": {
+      "title": "Eigentümer",
+      "organization": "Nur diese Organisation",
+      "partner": "Alle Organisationen"
+    },
+    "enabledReadOnly": "Dieser Ablauf ist aktiviert und kann daher nicht bearbeitet werden. Deaktivieren Sie ihn, um Änderungen vorzunehmen, und aktivieren Sie ihn danach wieder.",
+    "disableAndEdit": "Deaktivieren und bearbeiten",
+    "disableMessage": "Beim Deaktivieren werden eingereihte und wartende Ausführungen sowie ausstehende Genehmigungen abgebrochen. Bereits laufende Ausführungen stoppen am nächsten Kontrollpunkt. Nach der Bearbeitung können Sie den Ablauf wieder aktivieren.",
+    "notFormShaped": "Das Formular kann nicht alles in diesem Dokument darstellen und ist hier daher schreibgeschützt. Bearbeiten Sie stattdessen das Dokument.",
+    "openDocument": "Dokument öffnen",
+    "validateFailed": "Das Dokument konnte nicht geprüft werden: {{message}}",
+    "conflict": "Jemand anderes hat diesen Ablauf gespeichert, während Sie ihn bearbeitet haben. Ihre Änderungen sind noch vorhanden. Laden Sie neu, um die neueste Version zu erhalten; beim Neuladen gehen Ihre Änderungen verloren.",
+    "reload": "Neu laden",
+    "saveInvalid": "Der Ablauf wurde nicht gespeichert, weil das Dokument Fehler enthält. Beheben Sie die aufgeführten Probleme und speichern Sie erneut.",
+    "notDraft": "Dieser Ablauf ist aktiviert und kann daher nicht gespeichert werden. Deaktivieren Sie ihn zuerst.",
+    "webhookNext": "Gespeichert. Webhook-Abläufe werden auf der Ablaufseite aktiviert: Erstellen Sie dort das Webhook-Geheimnis, geben Sie es an den Absender weiter und aktivieren Sie dann den Ablauf.",
+    "webhookTabLink": "Tab „Webhook“ öffnen",
+    "limits": "Jede Ausführung erreicht höchstens {{devices}} Geräte und sendet höchstens {{notices}} Benachrichtigungen. Ein Ablauf hat höchstens {{steps}} Schritte.",
+    "save": "Speichern",
+    "saveAndEnable": "Speichern und aktivieren",
+    "shadow": {
+      "title": "Vergleich zurücksetzen?",
+      "message": "Dieser Ablauf wurde aus einem Auftrag verschoben und wird noch mit diesem verglichen. Beim Speichern einer Änderung werden die Vergleichsdaten zurückgesetzt, und der Vergleich beginnt von neuem."
+    },
+    "document": {
+      "loading": "Editor wird geladen…",
+      "loadError": "Der Editor konnte nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+      "parseError": "Das Dokument ist kein gültiges JSON"
+    },
+    "form": {
+      "name": "Bezeichnung",
+      "description": "Beschreibung",
+      "remove": "Entfernen",
+      "listsFailed": "Ihre Skripte und Benachrichtigungskanäle konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+      "trigger": {
+        "title": "Wann er ausgeführt wird",
+        "timezone": "Zeitzone",
+        "eventDeviceHelp": "Die Aktionen laufen auf dem Gerät, das das Ereignis ausgelöst hat. Trifft ein Ereignis ohne Gerät ein, schlägt die Ausführung fehl.",
+        "filter": "Nur wenn das Ereignis passt",
+        "filterHelp": "Jedes Feld muss genau seinem Wert entsprechen. Leer lassen, um bei jedem Ereignis dieses Typs auszuführen.",
+        "filterKey": "Ereignisfeld",
+        "filterValue": "Wert",
+        "filterAdd": "Bedingung hinzufügen",
+        "resolverHelp": "Ein Ablauf für alle Organisationen ermittelt die Organisation aus dem Anfragetext: Nennen Sie das Feld im Text, das die Kennung der Organisation enthält, und das System, aus dem diese Kennung stammt.",
+        "resolverPath": "Feld im Text",
+        "resolverSystem": "Quellsystem",
+        "webhookHelp": "Speichern Sie den Ablauf und erstellen Sie dann auf seinem Tab „Webhook“ das Webhook-Geheimnis und aktivieren Sie den Ablauf.",
+        "manualHelp": "Der Ablauf wird nur ausgeführt, wenn jemand ihn startet."
+      },
+      "target": {
+        "title": "Geräte",
+        "triggerDevice": "Das Gerät, das das Ereignis ausgelöst hat.",
+        "choose": "Wählen Sie, auf welchen Geräten die Aktionen laufen. „Alle Geräte“ ist nur der Ausgangspunkt.",
+        "keep": "Alle Geräte verwenden",
+        "partnerWide": "Ein Ablauf für alle Organisationen kann alle Geräte oder einen Filter ansprechen, aber keine bestimmten Geräte oder Gruppen."
+      },
+      "actions": {
+        "title": "Aktionen",
+        "empty": "Fügen Sie mindestens eine Aktion hinzu.",
+        "position": "Aktion {{n}}",
+        "runScript": "Skript ausführen",
+        "notify": "Benachrichtigung senden",
+        "alert": "Warnung auslösen",
+        "moveUp": "Nach oben",
+        "moveDown": "Nach unten",
+        "runAsDefault": "Einstellung des Skripts",
+        "runAsSystem": "Systemkonto",
+        "runAsUser": "Angemeldeter Benutzer",
+        "parameters": "Parameter",
+        "parameterName": "Parametername",
+        "parameterValue": "Parameterwert",
+        "parameterAdd": "Parameter hinzufügen",
+        "severityInfo": "Information",
+        "severityWarning": "Warnung",
+        "severityCritical": "Kritisch",
+        "title_": "Titel",
+        "notifyHelp": "Pro Ausführung wird eine Nachricht gesendet, nicht eine pro Gerät.",
+        "countsHelp": "Die Anzahl der erfolgreichen und fehlgeschlagenen Geräte wird am Ende der Nachricht angefügt.",
+        "alertHelp": "Auf jedem Gerät, das die Aktionen erreicht haben, wird eine Warnung ausgelöst.",
+        "commandHint": "Um einen Befehl auszuführen, speichern Sie ihn zuerst als Skript.",
+        "scriptsLink": "Zu Skripte"
+      },
+      "onFailure": {
+        "title": "Wenn das Skript nicht an ein Gerät gesendet werden kann",
+        "stop": "Anhalten",
+        "stopHelp": "Spätere Aktionen überspringen die Geräte, an die das Skript nicht gesendet werden konnte.",
+        "continue": "Fortfahren",
+        "continueHelp": "Mit den restlichen Aktionen weitermachen.",
+        "notify": "Benachrichtigen",
+        "notifyHelp": "Für jedes Gerät, an das das Skript nicht gesendet werden konnte, eine Mitteilung an die folgenden Kanäle senden. Pro Ausführung werden höchstens 20 Mitteilungen gesendet.",
+        "noChannels": "Fügen Sie einen Benachrichtigungskanal hinzu, um „Benachrichtigen“ zu verwenden."
+      }
     }
   }
 }
