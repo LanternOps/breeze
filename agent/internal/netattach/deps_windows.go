@@ -35,7 +35,7 @@ const (
 
 var (
 	errIfTableLimit     = errors.New("netattach: interface table too large")
-	errIfTableMalformed = errors.New("netattach: interface table missing")
+	errIfTableMalformed = errors.New("netattach: GetIfTable2Ex returned no table")
 )
 
 // windowsBridged is K2 on Windows (Task 2 candidate A): the hardware interface

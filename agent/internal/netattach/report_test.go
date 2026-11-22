@@ -90,6 +90,19 @@ func TestBuildReport_SequenceIncreases(t *testing.T) {
 	}
 }
 
+func TestReadErrorLog_LogsOnlyChanges(t *testing.T) {
+	var l readErrorLog
+	a, b := errors.New("a"), errors.New("b")
+	for i, step := range []struct {
+		err  error
+		want bool
+	}{{nil, false}, {a, true}, {a, false}, {b, true}, {nil, true}, {nil, false}, {a, true}} {
+		if got := l.changed(step.err); got != step.want {
+			t.Fatalf("step %d (%v): changed = %v, want %v", i, step.err, got, step.want)
+		}
+	}
+}
+
 func TestBuildReport_ReadsBeforeSequence(t *testing.T) {
 	st := stateFromFile(t, `{"epoch":"9f2c1e7ab4d04c11","reservedThrough":417}`)
 	var seqDuringRead uint64

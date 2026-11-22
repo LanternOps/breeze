@@ -16,8 +16,8 @@ var osDeps = sync.OnceValue(func() deps {
 	return deps{reader: reader, lookup: readerLookup(reader), resolve: systemResolve, bridged: darwinBridged}
 })
 
-// darwinBridged reads no bridge members in v1, so a macOS bridge (or virtual)
-// row is never reported (plan contract note 2).
+// darwinBridged reads no bridge membership on macOS, so a macOS bridge or
+// virtual row is never reported.
 func darwinBridged(context.Context, []networkcontext.InterfaceRow) (map[string]bool, error) {
 	return map[string]bool{}, nil
 }

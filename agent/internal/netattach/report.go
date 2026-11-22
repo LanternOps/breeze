@@ -2,8 +2,34 @@ package netattach
 
 import (
 	"context"
+	"sync"
 	"time"
 )
+
+// readErrorLog logs a read failure when it starts or changes, and once when
+// reads recover, so a host whose reports stay incomplete leaves one line per
+// cause in the agent log instead of one per beat.
+type readErrorLog struct {
+	mu   sync.Mutex
+	last string
+}
+
+// changed records err and reports whether it differs from the last one seen.
+func (l *readErrorLog) changed(err error) bool {
+	text := ""
+	if err != nil {
+		text = err.Error()
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if text == l.last {
+		return false
+	}
+	l.last = text
+	return true
+}
+
+var readErrors readErrorLog
 
 // Report is the heartbeat's networkAttachmentsV1 object (spec §7.1). Field
 // order is the JSON order of the spec.
@@ -36,6 +62,13 @@ func BuildReport(ctx context.Context, st *State, serverHost string, now time.Tim
 func buildReport(ctx context.Context, st *State, serverHost string, now time.Time,
 	cur func(context.Context, string) ([]Attachment, bool, error)) Report {
 	attachments, complete, err := cur(ctx, serverHost)
+	if readErrors.changed(err) {
+		if err != nil {
+			log.Warn("network attachment read failed; reports are incomplete until it succeeds", "error", err.Error())
+		} else {
+			log.Info("network attachment reads succeeding again")
+		}
+	}
 	epoch, sequence, seqErr := st.Next()
 	if seqErr != nil {
 		log.Warn("network attachment report skipped: no sequence", "error", seqErr.Error())

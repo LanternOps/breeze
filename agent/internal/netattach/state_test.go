@@ -120,7 +120,7 @@ func TestState_PersistsOncePerBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2048; i++ {
+	for range 2048 {
 		mustNext(t, st)
 	}
 	if writes != 2 {
@@ -256,11 +256,9 @@ func TestState_ConcurrentNextIsUnique(t *testing.T) {
 	seen := map[uint64]bool{}
 	epochs := map[string]bool{}
 	var wg sync.WaitGroup
-	for g := 0; g < 8; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 300; i++ {
+	for range 8 {
+		wg.Go(func() {
+			for range 300 {
 				epoch, seq, err := st.Next()
 				if err != nil {
 					t.Error(err)
@@ -271,7 +269,7 @@ func TestState_ConcurrentNextIsUnique(t *testing.T) {
 				epochs[epoch] = true
 				mu.Unlock()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if len(seen) != 2400 || len(epochs) != 1 {

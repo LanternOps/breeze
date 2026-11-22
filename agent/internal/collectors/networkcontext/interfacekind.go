@@ -122,7 +122,7 @@ func readLinuxLinkFacts(root, name string) linuxLinkFacts {
 
 // LinuxBridgedUplink reports whether the bridge or virtual link root/<name>
 // has a physical member: an entry of root/<name>/brif/ (bridge ports) or a
-// root/<name>/lower_<member> entry (macvlan, ipvlan, vlan) whose own sysfs
+// root/<name>/lower_<member> entry (stacked links such as macvlan) whose sysfs
 // evidence classifies as ethernet or wifi. A bridge whose ports are only tap
 // or veth links is a NAT-only switch and has no uplink. It only reads; a name
 // that is not a single path element, or any read failure, is false.

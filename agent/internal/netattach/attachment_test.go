@@ -66,8 +66,8 @@ func (f *fixture) iface(key, name, kind string, up upShape, cidrs ...string) *fi
 }
 
 func (f *fixture) route(key, gateway string) *fixture {
-	return f.rawRoute(networkcontext.RouteRow{Family: "ipv4", DestinationPrefix: "0.0.0.0/0", InterfaceKey: ptrTo(key), TableKey: "254", RouteType: "unicast",
-		NextHops: []networkcontext.NextHop{{Address: ptrTo(gateway), InterfaceKey: ptrTo(key)}}})
+	return f.rawRoute(networkcontext.RouteRow{Family: "ipv4", DestinationPrefix: "0.0.0.0/0", InterfaceKey: new(key), TableKey: "254", RouteType: "unicast",
+		NextHops: []networkcontext.NextHop{{Address: new(gateway), InterfaceKey: new(key)}}})
 }
 
 func (f *fixture) rawRoute(r networkcontext.RouteRow) *fixture {
@@ -78,7 +78,7 @@ func (f *fixture) rawRoute(r networkcontext.RouteRow) *fixture {
 func (f *fixture) neighRow(key, address, mac, state string) *fixture {
 	row := networkcontext.NeighborRow{RowKey: key + ":" + address, Address: address, Family: "ipv4", InterfaceKey: key, State: state}
 	if mac != "" {
-		row.MAC = ptrTo(mac)
+		row.MAC = new(mac)
 	}
 	f.neigh = append(f.neigh, row)
 	return f
@@ -97,7 +97,7 @@ func (f *fixture) serverVia(key, nextHop string) *fixture {
 	f.resolved["breeze.example"] = []netip.Addr{netip.MustParseAddr("203.0.113.20")}
 	sel := networkcontext.RouteSelection{ContextKey: testContextKey, InterfaceKey: key, Attribution: "observed"}
 	if nextHop != "" {
-		sel.NextHop = ptrTo(nextHop)
+		sel.NextHop = new(nextHop)
 	}
 	f.server = &sel
 	return f
@@ -214,8 +214,6 @@ func (f *fixture) deps() deps {
 	}
 }
 
-func ptrTo[T any](v T) *T { return &v }
-
 func mustMAC(t *testing.T, s string) net.HardwareAddr {
 	t.Helper()
 	mac, err := net.ParseMAC(s)
@@ -321,9 +319,9 @@ func TestCurrent_TwoDefaultRoutes(t *testing.T) {
 			iface("k1", "eth0", "ethernet", upUnix, "192.168.1.57/24").
 			iface("k2", "eth1", "ethernet", upUnix, "10.1.2.57/24").
 			rawRoute(networkcontext.RouteRow{Family: "ipv4", DestinationPrefix: "0.0.0.0/0", TableKey: "254", RouteType: "unicast", NextHops: []networkcontext.NextHop{
-				{Address: ptrTo("192.168.1.1"), InterfaceKey: ptrTo("k1")},
-				{Address: ptrTo("10.1.2.100"), InterfaceKey: ptrTo("k2")},
-				{InterfaceKey: ptrTo("k2")}, // no address: not a candidate
+				{Address: new("192.168.1.1"), InterfaceKey: new("k1")},
+				{Address: new("10.1.2.100"), InterfaceKey: new("k2")},
+				{InterfaceKey: new("k2")}, // no address: not a candidate
 			}}).
 			serverVia("k1", "192.168.1.1").deps()
 		check(t, d, "breeze.example", []Attachment{
@@ -369,13 +367,13 @@ func TestCurrent_TunnelAndLoopbackExcluded(t *testing.T) {
 		}},
 		{"blackhole default and a local-table default", func(f *fixture) *fixture {
 			return f.iface("k1", "eth0", "ethernet", upUnix, "192.168.1.57/24").
-				rawRoute(networkcontext.RouteRow{Family: "ipv4", DestinationPrefix: "0.0.0.0/0", InterfaceKey: ptrTo("k1"), TableKey: "254", RouteType: "blackhole", NextHops: []networkcontext.NextHop{{Address: ptrTo("192.168.1.1"), InterfaceKey: ptrTo("k1")}}}).
-				rawRoute(networkcontext.RouteRow{Family: "ipv4", DestinationPrefix: "0.0.0.0/0", InterfaceKey: ptrTo("k1"), TableKey: "255", RouteType: "unicast", NextHops: []networkcontext.NextHop{{Address: ptrTo("192.168.1.1"), InterfaceKey: ptrTo("k1")}}})
+				rawRoute(networkcontext.RouteRow{Family: "ipv4", DestinationPrefix: "0.0.0.0/0", InterfaceKey: new("k1"), TableKey: "254", RouteType: "blackhole", NextHops: []networkcontext.NextHop{{Address: new("192.168.1.1"), InterfaceKey: new("k1")}}}).
+				rawRoute(networkcontext.RouteRow{Family: "ipv4", DestinationPrefix: "0.0.0.0/0", InterfaceKey: new("k1"), TableKey: "255", RouteType: "unicast", NextHops: []networkcontext.NextHop{{Address: new("192.168.1.1"), InterfaceKey: new("k1")}}})
 		}},
 		{"non-default and IPv6 routes", func(f *fixture) *fixture {
 			return f.iface("k1", "eth0", "ethernet", upUnix, "192.168.1.57/24").
-				rawRoute(networkcontext.RouteRow{Family: "ipv4", DestinationPrefix: "10.0.0.0/8", InterfaceKey: ptrTo("k1"), TableKey: "254", RouteType: "unicast", NextHops: []networkcontext.NextHop{{Address: ptrTo("192.168.1.1"), InterfaceKey: ptrTo("k1")}}}).
-				rawRoute(networkcontext.RouteRow{Family: "ipv6", DestinationPrefix: "::/0", InterfaceKey: ptrTo("k1"), TableKey: "254", RouteType: "unicast", NextHops: []networkcontext.NextHop{{Address: ptrTo("2001:db8::1"), InterfaceKey: ptrTo("k1")}}})
+				rawRoute(networkcontext.RouteRow{Family: "ipv4", DestinationPrefix: "10.0.0.0/8", InterfaceKey: new("k1"), TableKey: "254", RouteType: "unicast", NextHops: []networkcontext.NextHop{{Address: new("192.168.1.1"), InterfaceKey: new("k1")}}}).
+				rawRoute(networkcontext.RouteRow{Family: "ipv6", DestinationPrefix: "::/0", InterfaceKey: new("k1"), TableKey: "254", RouteType: "unicast", NextHops: []networkcontext.NextHop{{Address: new("2001:db8::1"), InterfaceKey: new("k1")}}})
 		}},
 		{"link-local, multicast and unspecified gateways", func(f *fixture) *fixture {
 			return f.iface("k1", "eth0", "ethernet", upUnix, "192.168.1.57/24", "169.254.7.7/16").
@@ -600,13 +598,13 @@ func TestCurrent_NoBridgeRowsSkipsUplinkRead(t *testing.T) {
 
 func TestCurrent_CutToEight(t *testing.T) {
 	f := newFixture(t)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		key := fmt.Sprintf("k%d", i)
 		f.iface(key, fmt.Sprintf("eth%d", i), "ethernet", upUnix, fmt.Sprintf("192.168.1.%d/24", 50+i)).route(key, "192.168.1.1")
 	}
 	f.serverVia("k9", "192.168.1.1")
 	want := []Attachment{att(t, "eth9", 10, "192.168.1.59/24", "192.168.1.1", "", true)}
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		want = append(want, att(t, fmt.Sprintf("eth%d", i), uint32(i+1), fmt.Sprintf("192.168.1.%d/24", 50+i), "192.168.1.1", "", false))
 	}
 	check(t, f.deps(), "breeze.example", want, false, false)
@@ -651,5 +649,13 @@ func TestCurrent_NameIsCapped(t *testing.T) {
 	}
 	if names[3] != "if3" {
 		t.Errorf("empty name = %q, want if3", names[3])
+	}
+}
+
+func TestCurrent_UnparseableServerNextHopIsIncomplete(t *testing.T) {
+	d := twoRoutes(t).serverVia("k2", "not-an-ip").deps()
+	got, complete, err := current(context.Background(), d, "breeze.example")
+	if err == nil || complete || len(got) != 2 || got[0].Primary || got[1].Primary {
+		t.Fatalf("got %+v complete=%v err=%v; want both, none primary, incomplete", got, complete, err)
 	}
 }

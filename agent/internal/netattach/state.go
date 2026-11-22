@@ -24,8 +24,8 @@ var log = logging.L("netattach")
 const (
 	// blockSize sequences are reserved per state-file write.
 	blockSize = 1024
-	// maxSequence is the largest integer a JSON number carries exactly; the
-	// server parses sequence as one.
+	// maxSequence is 2^53-1, the largest integer a parser that reads JSON
+	// numbers as doubles handles safely; the server parses sequence that way.
 	maxSequence = 1<<53 - 1
 	// maxStateFileBytes bounds what OpenState reads.
 	maxStateFileBytes = 4096

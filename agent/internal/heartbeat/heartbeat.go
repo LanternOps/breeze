@@ -101,8 +101,9 @@ type HeartbeatPayload struct {
 	NetworkContextV1    *networkcontext.Report `json:"networkContextV1,omitempty"`
 	NetworkContextReset *NetworkContextReset   `json:"networkContextReset,omitempty"`
 
-	// NetworkAttachmentsV1 is absent on a beat with no newly finished
-	// attachment read; the server reads absence as "no change" (#12369).
+	// NetworkAttachmentsV1 is absent on any beat without a fresh, unsent
+	// report (see netAttachReporter); the server reads absence as "no change"
+	// (#12369).
 	NetworkAttachmentsV1 *netattach.Report `json:"networkAttachmentsV1,omitempty"`
 
 	Metrics             *collectors.SystemMetrics  `json:"metrics,omitempty"`

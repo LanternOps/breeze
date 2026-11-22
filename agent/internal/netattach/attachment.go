@@ -2,9 +2,10 @@
 // per IPv4 default route on an up LAN interface, with the gateway's MAC from
 // the neighbour cache (learned networks, #12369).
 //
-// It reads OS tables only (netlink, the routing socket, iphlpapi) through its
-// own networkcontext reader, and resolves the server host through the system
-// resolver. It never sends a packet to the LAN, and it does not depend on the
+// It reads OS tables (netlink, the routing socket, iphlpapi) through its own
+// networkcontext reader and never probes: no ARP, ICMP or other packet to a
+// LAN host. The only traffic is the system resolver's lookup of the server
+// host name, skipped for an IP literal. It does not depend on the
 // network-context manager or its snapshot.
 package netattach
 
@@ -12,6 +13,8 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"slices"
@@ -116,9 +119,7 @@ func current(ctx context.Context, d deps, serverHost string) ([]Attachment, bool
 		if err != nil {
 			errs = append(errs, err)
 		}
-		for k, v := range m {
-			bridged[k] = v
-		}
+		maps.Copy(bridged, m)
 	}
 
 	var out []entry
@@ -297,7 +298,7 @@ func markPrimary(ctx context.Context, d deps, contextKey, serverHost string, out
 	var nextHop netip.Addr
 	if sel.NextHop != nil {
 		if nextHop, err = netip.ParseAddr(*sel.NextHop); err != nil {
-			return nil
+			return fmt.Errorf("netattach: server route next hop: %w", err)
 		}
 		nextHop = nextHop.Unmap()
 	}

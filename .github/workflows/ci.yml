@@ -2750,12 +2750,12 @@ jobs:
       # parse and the missing root/HP namespace must map to `absent`.
       #
       # ./internal/netattach (#12369) builds the heartbeat's network attachment
-      # report. Its Windows-only code is the bridged-uplink reader
+      # report. Its Windows-specific paths are the bridged-uplink reader
       # (GetIfTable2Ex, resolved with Find before Call) and the state-file
-      # rename (atomicrename.Replace over an existing file). The state tests
-      # run the rename; TestReadHardwareInterfaces_Live and TestCurrent_Live
-      # read the runner's real tables. Verified with GOOS=windows GOARCH=amd64 CGO_ENABLED=0 vet, the
-      # test binary compiles, and `go list -deps` has no cgo or remote/desktop.
+      # replace, which goes through the Windows atomicrename.Replace. The state
+      # tests replace an existing file; TestReadHardwareInterfaces_Live and
+      # TestCurrent_Live read the runner's real tables. It stays cgo-free and
+      # does not depend on remote/desktop.
       - name: Run Windows Go tests
         working-directory: agent
         env:

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/netattach"
 )
 
@@ -97,7 +99,7 @@ func TestNetAttachReporter_OneReadAtATime(t *testing.T) {
 		return sampleReport(n)
 	})
 	stop := make(chan struct{})
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if got := r.attach(netAttachT0.Add(time.Duration(i)*time.Minute), "breeze.example", stop); got != nil {
 			t.Fatalf("beat %d carried %+v", i, got)
 		}
@@ -178,7 +180,7 @@ func TestNetAttachReporter_OldReportIsDropped(t *testing.T) {
 func TestNetAttachReporter_ZeroReportNotAttached(t *testing.T) {
 	r, _ := testNetAttachReporter(t, func(context.Context, int32) netattach.Report { return netattach.Report{} })
 	stop := make(chan struct{})
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if got := r.attach(netAttachT0.Add(time.Duration(i)*time.Minute), "breeze.example", stop); got != nil {
 			t.Fatalf("beat %d carried %+v", i, got)
 		}
@@ -217,7 +219,7 @@ func TestNetAttachReporter_StateOpenFailure(t *testing.T) {
 		return realOpen()
 	}
 	stop := make(chan struct{})
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if got := r.attach(netAttachT0.Add(time.Duration(i)*time.Minute), "breeze.example", stop); got != nil {
 			t.Fatalf("beat %d carried %+v", i, got)
 		}
@@ -258,5 +260,75 @@ func TestAttachNetworkAttachments_NilReporterIsNoop(t *testing.T) {
 	(&Heartbeat{}).attachNetworkAttachments(&p)
 	if p.NetworkAttachmentsV1 != nil {
 		t.Fatalf("field = %+v", p.NetworkAttachmentsV1)
+	}
+}
+
+// The server host taken from the configured server URL reaches the read: it
+// decides which attachment is primary.
+func TestAttachNetworkAttachments_PassesServerHost(t *testing.T) {
+	r, _ := testNetAttachReporter(t, func(_ context.Context, n int32) netattach.Report { return sampleReport(n) })
+	var host atomic.Value
+	build := r.build
+	r.build = func(ctx context.Context, st *netattach.State, h string, now time.Time) netattach.Report {
+		host.Store(h)
+		return build(ctx, st, h, now)
+	}
+	h := &Heartbeat{config: &config.Config{ServerURL: "https://breeze.example:8443/api"}, netAttach: r, stopChan: make(chan struct{})}
+	var p HeartbeatPayload
+	h.attachNetworkAttachments(&p)
+	waitNetAttachIdle(t, r)
+	if got, _ := host.Load().(string); got != "breeze.example" {
+		t.Fatalf("serverHost = %q, want breeze.example", got)
+	}
+	h.attachNetworkAttachments(&p)
+	if p.NetworkAttachmentsV1 == nil || p.NetworkAttachmentsV1.Sequence != 1 {
+		t.Fatalf("second beat field = %+v", p.NetworkAttachmentsV1)
+	}
+}
+
+// NewWithVersion builds the reporter and sendHeartbeat attaches its report;
+// tests that build &Heartbeat{} directly bypass both, so pin them in source.
+func TestNetworkAttachmentsWiredIntoHeartbeat(t *testing.T) {
+	src, err := os.ReadFile("heartbeat.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`netAttach:                      newNetAttachReporter(filepath.Join(config.GetDataDir(), "network-attachment-state.json")),`,
+		"\th.attachNetworkAttachments(&payload)\n",
+	} {
+		if !strings.Contains(string(src), want) {
+			t.Errorf("heartbeat.go lacks %q", want)
+		}
+	}
+	start := strings.Index(string(src), "func (h *Heartbeat) sendHeartbeat() {")
+	call := strings.Index(string(src), "\th.attachNetworkAttachments(&payload)\n")
+	if start < 0 || call < start || strings.Contains(string(src)[start:call], "\n}\n") {
+		t.Errorf("attachNetworkAttachments is not called inside sendHeartbeat")
+	}
+}
+
+func TestNetAttachReporter_DropWarningOncePerStreak(t *testing.T) {
+	r, _ := testNetAttachReporter(t, func(_ context.Context, n int32) netattach.Report {
+		if n <= 2 {
+			time.Sleep(60 * time.Millisecond)
+		}
+		return sampleReport(n)
+	})
+	r.bound = 30 * time.Millisecond
+	stop := make(chan struct{})
+	warned := func() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.dropWarned }
+	r.attach(netAttachT0, "breeze.example", stop)
+	waitNetAttachIdle(t, r)
+	if !warned() {
+		t.Fatal("overrun not warned")
+	}
+	r.attach(netAttachT0.Add(time.Minute), "breeze.example", stop) // second overrun: same streak
+	waitNetAttachIdle(t, r)
+	r.bound = time.Hour
+	r.attach(netAttachT0.Add(2*time.Minute), "breeze.example", stop) // succeeds
+	waitNetAttachIdle(t, r)
+	if warned() {
+		t.Fatal("a kept report did not end the streak")
 	}
 }
