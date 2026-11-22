@@ -22,7 +22,9 @@ import {
   deviceGroups,
 } from '../../db/schema';
 import { loadAppliesToSummaries } from '../../services/configPolicyAppliesTo';
-import type { AuthContext } from '../../middleware/auth';
+import { loadPolicyOwners } from '../../routes/configurationPolicies/resolution';
+import type { EffectiveConfiguration } from '../../services/configurationPolicy';
+import { buildDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { createOrganization, createPartner, createSite } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -221,5 +223,80 @@ describe('loadAppliesToSummaries under forced RLS', () => {
       (await loadAppliesToSummaries(partnerAuth(other.id, [otherOrg!.id]), [policyId])).get(policyId));
 
     expect(foreign).toEqual({ assignmentCount: 0, allOrganizations: false, targets: [], childPolicyCount: 0 });
+  });
+});
+
+describe('childPolicyCount under forced RLS', () => {
+  it('counts only the children the caller can see', async () => {
+    // A partner-owned parent with one child in each of two organizations. A
+    // partner user limited to one organization sees one child.
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id, name: 'Acme' });
+    const orgB = await createOrganization({ partnerId: partner.id, name: 'Birch' });
+    const parentId = await seedPolicy({ orgId: null, partnerId: partner.id });
+    await seedPolicy({ orgId: orgA!.id, partnerId: null }, parentId);
+    await seedPolicy({ orgId: orgB!.id, partnerId: null }, parentId);
+
+    const limited = await withDbAccessContext(partnerDbContext(partner.id, [orgA!.id]), async () =>
+      (await loadAppliesToSummaries(partnerAuth(partner.id, [orgA!.id]), [parentId])).get(parentId));
+    expect(limited!.childPolicyCount).toBe(1);
+
+    const both = [orgA!.id, orgB!.id];
+    const full = await withDbAccessContext(partnerDbContext(partner.id, both), async () =>
+      (await loadAppliesToSummaries(partnerAuth(partner.id, both), [parentId])).get(parentId));
+    expect(full!.childPolicyCount).toBe(2);
+  });
+});
+
+describe('loadPolicyOwners under forced RLS', () => {
+  function effective(policyIds: string[]): EffectiveConfiguration {
+    return {
+      deviceId: randomUUID(),
+      features: {},
+      inheritanceChain: [
+        ...policyIds.map((policyId) => ({
+          level: 'organization' as const,
+          targetId: randomUUID(),
+          policyId,
+          policyName: 'P',
+          priority: 0,
+          featureTypes: [],
+        })),
+        // The synthesized defaults layer must never reach the uuid IN list.
+        { level: 'default' as const, targetId: 'breeze-defaults', policyId: 'breeze-defaults', policyName: 'Breeze Defaults', priority: 0, featureTypes: [] },
+      ],
+    };
+  }
+
+  it('names owners for a partner caller, its own partner policies for an org caller, nothing for another tenant', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const orgPolicy = await seedPolicy({ orgId: org!.id, partnerId: null });
+    const partnerPolicy = await seedPolicy({ orgId: null, partnerId: partner.id });
+    const other = await createPartner();
+    const otherOrg = await createOrganization({ partnerId: other.id });
+    const foreignPolicy = await seedPolicy({ orgId: null, partnerId: other.id });
+    const ids = [orgPolicy, partnerPolicy, foreignPolicy];
+
+    const asPartner = await withDbAccessContext(
+      buildDbAccessContext({ scope: 'partner', orgId: null, accessibleOrgIds: [org!.id], partnerId: partner.id, userId: null }),
+      () => loadPolicyOwners(effective(ids)),
+    );
+    expect(asPartner).toEqual({ [orgPolicy]: 'organization', [partnerPolicy]: 'partner' });
+
+    // A real org request context carries its partner as currentPartnerId, which
+    // the SELECT-only partner-wide policy reads: the MSP policy is legible and
+    // named 'partner' (the web shows "Managed by your MSP" without a link).
+    const asOrg = await withDbAccessContext(
+      buildDbAccessContext({ scope: 'organization', orgId: org!.id, accessibleOrgIds: [org!.id], partnerId: partner.id, userId: null }),
+      () => loadPolicyOwners(effective(ids)),
+    );
+    expect(asOrg).toEqual({ [orgPolicy]: 'organization', [partnerPolicy]: 'partner' });
+
+    const asOtherOrg = await withDbAccessContext(
+      buildDbAccessContext({ scope: 'organization', orgId: otherOrg!.id, accessibleOrgIds: [otherOrg!.id], partnerId: other.id, userId: null }),
+      () => loadPolicyOwners(effective([orgPolicy, partnerPolicy])),
+    );
+    expect(asOtherOrg).toEqual({});
   });
 });

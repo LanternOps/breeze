@@ -48,12 +48,16 @@ export type PolicyOwner = 'organization' | 'partner';
  * synthesized Breeze Defaults layer (`'default'` level; its sentinel id is not a
  * uuid and would break the IN list). One select on the ambient `db`, so it runs
  * in the caller's own request context: an id that context cannot read gets no
- * key, and the web then treats the owner as unknown and does not link. For an
- * org-scope caller that is every partner-owned policy, since RLS hides those
- * rows from org contexts. Built here, after the resolver, so
+ * key, and the web then treats the owner as unknown and does not link. An
+ * org-scope request context carries its partner as `currentPartnerId`, and the
+ * SELECT-only `configuration_policies_partner_wide_select` policy lets it read
+ * its own partner's partner-wide rows, so those come back as `'partner'`.
+ * Ownership follows `policyAccessCondition`: an org_id makes it the org's; a
+ * partner-wide row is org_id NULL with a partner_id; a row with neither gets no
+ * key rather than a guess. Built here, after the resolver, so
  * `resolveEffectiveConfig` and its AI callers keep their output.
  */
-async function loadPolicyOwners(result: EffectiveConfiguration): Promise<Record<string, PolicyOwner>> {
+export async function loadPolicyOwners(result: EffectiveConfiguration): Promise<Record<string, PolicyOwner>> {
   const ids = new Set<string>();
   for (const feature of Object.values(result.features)) {
     if (feature.sourceLevel !== 'default') ids.add(feature.sourcePolicyId);
@@ -66,12 +70,17 @@ async function loadPolicyOwners(result: EffectiveConfiguration): Promise<Record<
   if (ids.size === 0) return owners;
 
   const rows = await db
-    .select({ id: configurationPolicies.id, orgId: configurationPolicies.orgId })
+    .select({
+      id: configurationPolicies.id,
+      orgId: configurationPolicies.orgId,
+      partnerId: configurationPolicies.partnerId,
+    })
     .from(configurationPolicies)
     .where(inArray(configurationPolicies.id, [...ids]));
   for (const row of rows) {
     if (!ids.has(row.id)) continue;
-    owners[row.id] = row.orgId === null ? 'partner' : 'organization';
+    if (row.orgId !== null) owners[row.id] = 'organization';
+    else if (row.partnerId !== null) owners[row.id] = 'partner';
   }
   return owners;
 }

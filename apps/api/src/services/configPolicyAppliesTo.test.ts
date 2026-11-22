@@ -8,12 +8,25 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { selectMock, authorizeMock, tableResults, fromCalls } = vi.hoisted(() => ({
+const { selectMock, authorizeMock, tableResults, fromCalls, inArrayCalls } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   authorizeMock: vi.fn(),
   tableResults: new Map<unknown, unknown[]>(),
   fromCalls: [] as unknown[],
+  inArrayCalls: [] as Array<{ column: unknown; values: unknown[] }>,
 }));
+
+// Records which ids each IN list carried, so the tests can bound the name lookups.
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const original = await importOriginal<typeof import('drizzle-orm')>();
+  return {
+    ...original,
+    inArray: (column: never, values: never) => {
+      inArrayCalls.push({ column, values: [...(values as unknown[])] });
+      return original.inArray(column, values);
+    },
+  };
+});
 
 vi.mock('../db', () => ({
   db: { select: selectMock },
@@ -75,6 +88,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   tableResults.clear();
   fromCalls.length = 0;
+  inArrayCalls.length = 0;
   selectMock.mockImplementation(() => ({
     from: (table: unknown) => {
       fromCalls.push(table);
@@ -236,6 +250,69 @@ describe('loadAppliesToSummaries', () => {
     const summary = (await loadAppliesToSummaries(auth, [POLICY_A])).get(POLICY_A)!;
     expect(summary.assignmentCount).toBe(2);
     expect(summary.targets.map((t) => t.assignmentId)).toEqual(['a-site']);
+  });
+
+  it('caps each policy at 3 on its own, not across the page', async () => {
+    const rows = [];
+    for (const policy of [POLICY_A, POLICY_B]) {
+      for (let i = 0; i < 4; i += 1) {
+        rows.push(assignment({
+          id: `${policy.slice(0, 1)}-${i}`,
+          configPolicyId: policy,
+          level: 'device',
+          targetId: DEVICE,
+          createdAt: new Date(Date.UTC(2026, 0, 1 + i)),
+        }));
+      }
+    }
+    tableResults.set(configPolicyAssignments, rows);
+    tableResults.set(devices, [{ id: DEVICE, displayName: 'Front desk', hostname: 'fd-01' }]);
+
+    const result = await loadAppliesToSummaries(auth, [POLICY_A, POLICY_B]);
+    expect(result.get(POLICY_A)!.targets.map((t) => t.assignmentId)).toEqual(['a-0', 'a-1', 'a-2']);
+    expect(result.get(POLICY_B)!.targets.map((t) => t.assignmentId)).toEqual(['b-0', 'b-1', 'b-2']);
+    expect(result.get(POLICY_A)!.assignmentCount).toBe(4);
+    expect(result.get(POLICY_B)!.assignmentCount).toBe(4);
+  });
+
+  it('authorizes and names only the rows needed to fill the cap', async () => {
+    // A policy assigned to 40 devices, every one listable and named.
+    const ids = Array.from({ length: 40 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    tableResults.set(configPolicyAssignments, ids.map((id, i) => assignment({
+      id: `d-${i}`,
+      level: 'device',
+      targetId: id,
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, i)),
+    })));
+    tableResults.set(devices, ids.map((id, i) => ({ id, displayName: `Device ${i}`, hostname: `h-${i}` })));
+
+    const summary = (await loadAppliesToSummaries(auth, [POLICY_A])).get(POLICY_A)!;
+
+    expect(summary.assignmentCount).toBe(40);
+    expect(summary.targets.map((t) => t.assignmentId)).toEqual(['d-0', 'd-1', 'd-2']);
+    expect(authorizeMock).toHaveBeenCalledTimes(3);
+    const deviceLookups = inArrayCalls.filter((call) => call.column === devices.id);
+    expect(deviceLookups).toHaveLength(1);
+    expect(deviceLookups[0]!.values).toEqual(ids.slice(0, 3));
+  });
+
+  it('keeps looking past rows it cannot name until the cap fills', async () => {
+    // The first five targets are not legible; the sixth and seventh are.
+    const ids = Array.from({ length: 7 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    tableResults.set(configPolicyAssignments, ids.map((id, i) => assignment({
+      id: `d-${i}`,
+      level: 'device',
+      targetId: id,
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, i)),
+    })));
+    tableResults.set(devices, [
+      { id: ids[5], displayName: 'Six', hostname: 'h-5' },
+      { id: ids[6], displayName: 'Seven', hostname: 'h-6' },
+    ]);
+
+    const summary = (await loadAppliesToSummaries(auth, [POLICY_A])).get(POLICY_A)!;
+    expect(summary.assignmentCount).toBe(7);
+    expect(summary.targets.map((t) => t.name)).toEqual(['Six', 'Seven']);
   });
 
   it('childPolicyCount counts children', async () => {

@@ -161,9 +161,9 @@ describe('GET /effective/:deviceId policyOwners', () => {
     });
     // HIDDEN_POLICY is not returned by the caller-context select: no key.
     tableResults.set('configurationPolicies', [
-      { id: ORG_POLICY, orgId: 'org-1' },
-      { id: PARTNER_POLICY, orgId: null },
-      { id: CHAIN_ONLY_POLICY, orgId: 'org-2' },
+      { id: ORG_POLICY, orgId: 'org-1', partnerId: null },
+      { id: PARTNER_POLICY, orgId: null, partnerId: 'partner-1' },
+      { id: CHAIN_ONLY_POLICY, orgId: 'org-2', partnerId: null },
     ]);
 
     const res = await app.request(`/effective/${DEVICE_ID}`);
@@ -180,6 +180,21 @@ describe('GET /effective/:deviceId policyOwners', () => {
     expect(policyIdsAsked).toHaveLength(1);
   });
 
+  it('a row with neither an org nor a partner owner gets no key', async () => {
+    resolveEffectiveConfigMock.mockResolvedValue({
+      deviceId: DEVICE_ID,
+      features: { patch: feature('patch', ORG_POLICY) },
+      inheritanceChain: [
+        { level: 'organization', targetId: 't', policyId: ORG_POLICY, policyName: 'Odd', priority: 0, featureTypes: ['patch'] },
+      ],
+    });
+    tableResults.set('configurationPolicies', [{ id: ORG_POLICY, orgId: null, partnerId: null }]);
+
+    const res = await app.request(`/effective/${DEVICE_ID}`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).policyOwners).toEqual({});
+  });
+
   it('the Breeze Defaults sentinel gets no policyOwners entry', async () => {
     resolveEffectiveConfigMock.mockResolvedValue({
       deviceId: DEVICE_ID,
@@ -191,7 +206,7 @@ describe('GET /effective/:deviceId policyOwners', () => {
       ],
     });
     // Even if a lookup ran and echoed the sentinel back, it must not be keyed.
-    tableResults.set('configurationPolicies', [{ id: 'breeze-defaults', orgId: null }]);
+    tableResults.set('configurationPolicies', [{ id: 'breeze-defaults', orgId: null, partnerId: null }]);
 
     const res = await app.request(`/effective/${DEVICE_ID}`);
     expect(res.status).toBe(200);
