@@ -1,4 +1,4 @@
-import type { Locator, Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 import { BasePage } from './BasePage';
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
@@ -26,6 +26,11 @@ export class FlowEditorPage extends BasePage {
   async gotoEdit(id: string) {
     await this.page.goto(`/flows/${id}/edit`);
     await this.root().waitFor();
+  }
+
+  async gotoDetail(id: string) {
+    await this.page.goto(`/flows/${id}`);
+    await this.detail().waitFor();
   }
 
   /** The flow id in `/flows/<id>/edit` or `/flows/<id>`; null when the URL carries none. */
@@ -98,10 +103,15 @@ export class FlowEditorPage extends BasePage {
   async pickFirstScript(i = 0): Promise<string> {
     const select = this.actionField(i, 'script');
     await select.waitFor();
-    const values = await select.locator('option').evaluateAll((opts) =>
+    // The script list loads after the form renders; wait for a real option.
+    const readValues = () => select.locator('option').evaluateAll((opts) =>
       (opts as HTMLOptionElement[]).map((o) => o.value).filter((v) => v !== ''),
     );
-    if (values.length === 0) throw new Error('no script options available in the flow action script select');
+    await expect.poll(async () => (await readValues()).length, {
+      message: 'a script option in the flow action script select',
+      timeout: 15_000,
+    }).toBeGreaterThan(0);
+    const values = await readValues();
     await select.selectOption(values[0]);
     return values[0];
   }

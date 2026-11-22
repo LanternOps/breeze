@@ -2,8 +2,9 @@ import { test, expect } from '../fixtures';
 import type { APIRequestContext, Page, Request } from '@playwright/test';
 import { FlowEditorPage } from '../pages/FlowEditorPage';
 
-// Requires a stack with Flows enabled (FLOWS_ENABLED) and a seeded script the
-// logged-in admin can see (seed-fixtures.sql).
+// Requires a stack with Flows enabled (FLOWS_ENABLED). The seed carries only
+// system (library) scripts, which the editor's picker does not list (it reads
+// `GET /scripts`, as the Job form does), so each test creates its own script.
 
 const UUID_RE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
@@ -43,8 +44,22 @@ async function apiJson<T>(
   return (await res.json()) as T;
 }
 
+/** Create an org script through the API so the editor's script picker has an option. */
+async function createScript(page: Page): Promise<{ id: string; orgId?: string | null }> {
+  const token = await readAccessToken(page);
+  return apiJson<{ id: string; orgId?: string | null }>(page.request, token, 'post', '/api/v1/scripts', {
+    name: `e2e-flow-fixture-${Date.now()}`,
+    osTypes: ['windows', 'macos', 'linux'],
+    language: 'bash',
+    content: 'echo flow',
+    timeoutSeconds: 300,
+    runAs: 'system',
+  });
+}
+
 /** Build and save a scheduled single-script flow through the UI; returns the new flow id. */
 async function createSavedFlow(page: Page, editor: FlowEditorPage): Promise<string> {
+  await createScript(page);
   await editor.gotoNew();
   await editor.fillName(`E2E flow ${Date.now()}`);
   await editor.setCron('0 3 * * *');
@@ -62,6 +77,7 @@ async function createSavedFlow(page: Page, editor: FlowEditorPage): Promise<stri
 test.describe('Flows editor', () => {
   test('builds and saves a scheduled script automation', async ({ authedPage: page }) => {
     const editor = new FlowEditorPage(page);
+    await createScript(page);
     await editor.gotoList();
     await expect(editor.previewTag()).toBeVisible();
     await editor.newButton().click();
@@ -95,41 +111,39 @@ test.describe('Flows editor', () => {
     await expect(editor.enableDialog()).toBeVisible();
     await expect(editor.enableStep('a0_run_script')).toBeVisible();
 
+    // Live check 8 (spec §3.5): a hand-built scheduled script is pre-approved
+    // with a device cap. Both controls must be usable; a disabled one is a failure.
     const preApprove = editor.preApprove('a0_run_script');
-    if (await preApprove.isEnabled()) {
-      await preApprove.check();
-    } else {
-      test.info().annotations.push({
-        type: 'pre-approve-disabled',
-        description: 'pre-approve checkbox is disabled on this stack (eligibility); enabling without it',
-      });
-    }
-    // The max-targets input may stay disabled until pre-approve is ticked.
+    await expect(preApprove).toBeEnabled();
+    await preApprove.check();
     const maxTargets = editor.maxTargets('a0_run_script');
-    if (await maxTargets.isEnabled()) {
-      await maxTargets.fill('25');
-    } else {
-      test.info().annotations.push({
-        type: 'maxtargets-disabled',
-        description: 'max targets input is disabled without pre-approval; enabling without it',
-      });
-    }
+    await expect(maxTargets).toBeEnabled();
+    await maxTargets.fill('25');
+
+    const enableRequest = page.waitForRequest((req) => req.method() === 'POST' && req.url().includes(`/flows/${id}/enable`));
     await editor.enableConfirm().click();
+    const body = (await enableRequest).postDataJSON() as { preApprovedStepIds?: string[]; fleetMaxTargets?: Record<string, number> };
+    expect(body.preApprovedStepIds).toEqual(['a0_run_script']);
+    expect(body.fleetMaxTargets).toEqual({ a0_run_script: 25 });
 
     await page.waitForURL(new RegExp(`/flows/${id}(?:$|\\?|#)`, 'i'));
     await expect(editor.detail()).toBeVisible();
+    await expect(editor.status()).toContainText(/enabled/i);
+
+    // Edit on an enabled flow opens the editor read-only; it never disables.
+    await page.getByTestId('flow-edit').click();
+    await page.waitForURL(new RegExp(`/flows/${id}/edit`, 'i'));
+    await expect(page.getByTestId('flow-editor-enabled-readonly')).toBeVisible();
+    await expect(page.getByTestId('flow-editor-disable-and-edit')).toBeVisible();
+    await expect(editor.saveButton()).toHaveCount(0);
+    await editor.gotoDetail(id);
     await expect(editor.status()).toContainText(/enabled/i);
   });
 
   test('opens a non-form document on the Document tab, and the form tab shows the not-form-shaped notice', async ({ authedPage: page }) => {
     const editor = new FlowEditorPage(page);
+    const script = await createScript(page);
     const token = await readAccessToken(page);
-
-    const scripts = await apiJson<{ data: Array<{ id: string; orgId?: string | null }> }>(
-      page.request, token, 'get', '/api/v1/scripts?limit=1',
-    );
-    test.skip(!scripts.data?.length, 'no seeded script reachable through GET /api/v1/scripts');
-    const script = scripts.data[0];
 
     const document = {
       version: 1,
@@ -183,13 +197,7 @@ test.describe('Flows editor', () => {
       page.request, token, 'get', '/api/v1/automations?limit=1',
     );
     const jobId = list.data?.[0]?.id;
-    if (!jobId) {
-      test.info().annotations.push({
-        type: 'no-seeded-job',
-        description: 'no Job returned by GET /api/v1/automations?limit=1; skipped the /automations/<id> redirect',
-      });
-      return;
-    }
+    expect(jobId, 'a seeded Job from GET /api/v1/automations?limit=1').toBeTruthy();
     await page.goto(`/automations/${jobId}`);
     await page.waitForURL(new RegExp(`/jobs/${jobId}(?:$|\\?|#)`));
   });
