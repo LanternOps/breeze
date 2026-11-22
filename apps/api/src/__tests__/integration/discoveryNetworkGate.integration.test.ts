@@ -38,6 +38,23 @@ vi.mock('../../jobs/discoveryWorker', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../jobs/discoveryWorker')>()),
   enqueueDiscoveryResults: enqueueResults,
 }));
+// W13 (#12502): the discovery worker's processor is captured from its BullMQ Worker so a test drives the real
+// job entry, and the baseline comparison enqueue is a spy a test can hold on a latch or fail.
+const workerCapture = vi.hoisted(() => ({ processor: undefined as undefined | ((job: unknown) => Promise<unknown>) }));
+vi.mock('bullmq', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('bullmq')>();
+  class CapturingWorker {
+    constructor(_name: string, processor: (job: unknown) => Promise<unknown>) { workerCapture.processor = processor; }
+    on() { return this; }
+    async close() {}
+  }
+  return { ...actual, Worker: CapturingWorker };
+});
+const enqueueComparison = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => 'compare-queued'));
+vi.mock('../../jobs/networkBaselineWorker', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../jobs/networkBaselineWorker')>()),
+  enqueueBaselineComparison: enqueueComparison,
+}));
 vi.mock('../../services/snmpSecrets', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/snmpSecrets')>();
   spies.decryptCommunities.mockImplementation(actual.decryptSnmpCommunities);
@@ -61,6 +78,7 @@ import type { IneligibleReason } from '@breeze/shared';
 import { encryptSnmpCommunities } from '../../services/snmpSecrets';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
+import { createDiscoveryWorker } from '../../jobs/discoveryWorker';
 
 // ---------------------------------------------------------------------------------------------------------
 // Fixtures (synthetic values only: index "Public repository")
@@ -909,5 +927,139 @@ describe('the AI tool', () => {
     expect(JSON.stringify(out)).toContain('no_network_assigned');
     expect(await commandsFor(deviceId)).toEqual([]);
   }, 30_000);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// W13 (#12502): result paths release the site lock before queue I/O
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * Takes the site lock in `exclusive` mode on its own connection with a short lock_timeout. Resolves 'granted',
+ * or the error (55P03 while a transaction still holds the shared lock).
+ */
+const takeExclusive = (siteId: string) => sys(async () => {
+  await db.execute(sql`set local lock_timeout = '500ms'`);
+  await lockSitesForNetworkGate([siteId], 'exclusive');
+  return 'granted' as const;
+}).catch((e: unknown) => e);
+
+/** A mock implementation that signals entry, then waits for the latch. */
+function latched<T>(value: T) {
+  const entered = deferred(); const release = deferred();
+  const impl = async (..._args: unknown[]) => { entered.resolve(); await release.promise; return value; };
+  return { entered, release, impl };
+}
+
+/** Runs one job through the discovery worker's real processor, as BullMQ does. */
+async function runDiscoveryWorkerJob(data: Record<string, unknown>): Promise<unknown> {
+  if (!workerCapture.processor) createDiscoveryWorker();
+  return workerCapture.processor!({
+    id: `test-${randomUUID()}`,
+    name: String(data.type),
+    data: { ...data, meta: { actorType: 'agent', actorId: null, source: 'route:agentWs:discovery-result' } },
+  });
+}
+
+async function seedBaseline(t: Scope, lastScanJobId: string): Promise<string> {
+  const [b] = await admin<{ id: string }>(sql`
+    INSERT INTO network_baselines (org_id, site_id, subnet, last_scan_job_id)
+    VALUES (${t.orgId}::uuid, ${t.siteId}::uuid, '192.168.1.0/24', ${lastScanJobId}::uuid) RETURNING id`);
+  return b!.id;
+}
+
+async function jobCompletion(jobId: string) {
+  const [row] = await admin<{ status: string; completed_at: Date | null; new_assets: number | null;
+    hosts_scanned: number | null; hosts_discovered: number | null; updated_at: Date }>(sql`
+    SELECT status, completed_at, new_assets, hosts_scanned, hosts_discovered, updated_at
+      FROM discovery_jobs WHERE id = ${jobId}::uuid`);
+  return row!;
+}
+
+async function assetStamps(orgId: string) {
+  return admin<{ id: string; updated_at: Date; last_seen_at: Date | null }>(sql`
+    SELECT id, updated_at, last_seen_at FROM discovered_assets WHERE org_id = ${orgId}::uuid ORDER BY ip_address`);
+}
+
+describe('W13: the baseline comparison is enqueued after the storing transaction', () => {
+  /** An ungated site with an unrestricted running job that a baseline launched. */
+  async function baselineScene() {
+    const t = await seedSite();
+    const agent = await seedAgent({ ...t, hostname: 'DESKTOP-01' });
+    const profileId = await seedProfile(t);
+    const jobId = await runningJob(t, profileId, {
+      version: 1, mode: 'unrestricted', agentId: agent.agentId, deviceId: agent.deviceId,
+      allowedNetworkIds: [], allowedGatewayIds: [], decidedAt: new Date().toISOString(),
+    });
+    const baselineId = await seedBaseline(t, jobId);
+    const hosts = [host('192.168.1.20'), host('192.168.1.21')];
+    const data = { type: 'process-results' as const, jobId, profileId, orgId: t.orgId, siteId: t.siteId,
+      hosts, hostsScanned: 2, hostsDiscovered: 2 };
+    return { t, profileId, jobId, baselineId, hosts, data };
+  }
+
+  beforeEach(() => { enqueueComparison.mockReset(); enqueueComparison.mockImplementation(async () => 'compare-queued'); });
+
+  it('an exclusive site lock is granted while the comparison enqueue is in flight', async () => {
+    const { t, jobId, baselineId, hosts, data } = await baselineScene();
+    const hold = latched('compare-queued');
+    enqueueComparison.mockImplementationOnce(hold.impl);
+
+    const run = runDiscoveryWorkerJob(data);
+    let taken: unknown;
+    try {
+      await hold.entered.promise;
+      taken = await takeExclusive(t.siteId);
+    } finally {
+      hold.release.resolve();
+      await run.catch(() => undefined);
+    }
+
+    expect(taken).toBe('granted');
+    expect(enqueueComparison).toHaveBeenCalledTimes(1);
+    expect(enqueueComparison.mock.calls[0]).toEqual([baselineId, jobId, t.orgId, t.siteId, hosts]);
+    expect(await job(jobId)).toMatchObject({ status: 'completed' });
+  });
+
+  it('a comparison enqueue that fails after commit is retried: the retry stores nothing again and delivers once', async () => {
+    const { t, jobId, baselineId, hosts, data } = await baselineScene();
+    enqueueComparison.mockRejectedValueOnce(new Error('queue down'));
+
+    await expect(runDiscoveryWorkerJob(data)).rejects.toThrow('queue down');
+    const first = await jobCompletion(jobId);
+    const firstAssets = await assetStamps(t.orgId);
+    expect(first).toMatchObject({ status: 'completed', new_assets: 2, hosts_scanned: 2, hosts_discovered: 2 });
+    expect(firstAssets).toHaveLength(2);
+
+    // BullMQ emits 'failed' for the attempt: the listener must leave a completed job completed.
+    await __testables.recordWorkerJobFailure({ data }, new Error('queue down'));
+    expect(await jobCompletion(jobId)).toEqual(first);
+
+    await runDiscoveryWorkerJob(data);
+
+    expect(await jobCompletion(jobId)).toEqual(first);
+    expect(await assetStamps(t.orgId)).toEqual(firstAssets);
+    expect(enqueueComparison).toHaveBeenCalledTimes(2);
+    expect(enqueueComparison.mock.calls[1]).toEqual([baselineId, jobId, t.orgId, t.siteId, hosts]);
+  });
+
+  it('a retry whose baseline moved on to a newer scan stores nothing and delivers nothing', async () => {
+    const { t, profileId, jobId, baselineId, data } = await baselineScene();
+    enqueueComparison.mockRejectedValueOnce(new Error('queue down'));
+    await expect(runDiscoveryWorkerJob(data)).rejects.toThrow('queue down');
+    const first = await jobCompletion(jobId);
+    const newer = await seedJob(t.orgId, t.siteId, profileId);
+    await admin(sql`UPDATE network_baselines SET last_scan_job_id = ${newer}::uuid WHERE id = ${baselineId}::uuid`);
+
+    await runDiscoveryWorkerJob(data);
+
+    expect(await jobCompletion(jobId)).toEqual(first);
+    expect(enqueueComparison).toHaveBeenCalledTimes(1);
+  });
+
+  it('the failed listener still fails a running job', async () => {
+    const { jobId, data } = await baselineScene();
+    await __testables.recordWorkerJobFailure({ data }, new Error('worker crashed'));
+    expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { message: 'worker crashed' } });
+  });
 });
 
