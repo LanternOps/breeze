@@ -666,8 +666,6 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
         return 'Declines the patch. This changes its approval status only; nothing is installed or removed now.';
       case 'defer':
         return 'Defers the patch. This changes its approval status only; nothing is installed now.';
-      case 'setup_auto_approval':
-        return 'Sets up automatic patch approval and a reboot policy in a configuration policy. Matching patches are approved without review.';
       default:
         return null;
     }

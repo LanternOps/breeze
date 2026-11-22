@@ -3510,11 +3510,13 @@ describe('buildImpactSummary (#5106)', () => {
       expected: 'Defers the patch. This changes its approval status only; nothing is installed now.',
     },
     {
-      name: 'manage_patches setup_auto_approval says patches get approved without review',
+      // The handler refuses setup_auto_approval unconditionally, so there is
+      // no effect to describe: no call-specific summary.
+      name: 'manage_patches setup_auto_approval has no call-specific summary (the handler refuses it)',
       toolName: 'manage_patches',
       input: { action: 'setup_auto_approval' },
-      guardrailDescription: 'CVEs: get_vulnerability_report.',
-      expected: 'Sets up automatic patch approval and a reboot policy in a configuration policy. Matching patches are approved without review.',
+      guardrailDescription: 'Catalog text.',
+      expected: 'Catalog text.',
     },
     {
       name: 'manage_patches list (a read) keeps the catalog fallback',
