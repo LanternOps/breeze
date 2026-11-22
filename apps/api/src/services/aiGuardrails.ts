@@ -3091,6 +3091,11 @@ const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string 
     { resource: 'devices', action: 'write' },
     { resource: 'alerts', action: 'write' },
   ],
+  // Flows completion W01b (#12435, Decision P20): primary automations.write in
+  // TOOL_PERMISSIONS, plus read. The REST twins (routes/flows.ts POST / and
+  // PUT /:id) inherit the router-level requirePermission('automations', 'read'),
+  // so the tool requires both, as aiGuardrails.routeBinding.contract.test.ts binds.
+  draft_flow: [{ resource: 'automations', action: 'read' }],
   restore_snapshot: [{ resource: 'backup', action: 'read' }],
   restore_as_vm: [{ resource: 'backup', action: 'read' }],
   instant_boot_vm: [{ resource: 'backup', action: 'read' }],

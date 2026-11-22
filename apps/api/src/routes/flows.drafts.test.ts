@@ -58,6 +58,9 @@ import { validateFlowDraft } from '../services/flows/draftValidation';
 import { deleteDraftFlow } from '../services/flows/deleteDraft';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { flowsRoutes } from './flows';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { MFA_GATED_TOOL_ACTIONS } from '../services/aiToolMfaGate';
 
 const FLOW_ID = '11111111-1111-4111-8111-111111111111';
 const ORG_ID = '33333333-3333-4333-8333-333333333333';
@@ -344,5 +347,25 @@ describe('flows draft routes (W01b)', () => {
     setAuth({ scope: 'organization', orgId: ORG_ID, deny: ['automations:read'] } as never);
     expect((await send('POST', '/', { document: DOC })).status).toBe(403);
     expect(saveDraftFlow).not.toHaveBeenCalled();
+  });
+
+  // Decision P8 (OD2 option i): drafts need no MFA on either path, and the two
+  // paths must stay in step (aiToolMfaGate.ts: an MFA-gated tool mirrors its
+  // REST twin's requireMfa()). The source is read so a gate slipped in through
+  // the file's `requireAutomationWrite` alias is caught too.
+  it('draft_flow is not in MFA_GATED_TOOL_ACTIONS and POST/PUT /flows carry no requireMfa', () => {
+    expect(Object.hasOwn(MFA_GATED_TOOL_ACTIONS, 'draft_flow')).toBe(false);
+    expect(Object.hasOwn(MFA_GATED_TOOL_ACTIONS, 'validate_flow')).toBe(false);
+    const src = readFileSync(join(__dirname, 'flows.ts'), 'utf8');
+    const registration = (call: string) => {
+      const start = src.indexOf(call);
+      expect(start, `${call} is registered`).toBeGreaterThan(-1);
+      return src.slice(start, src.indexOf('async (c)', start));
+    };
+    for (const call of ["flowsRoutes.post('/',", "flowsRoutes.put(\n  '/:id',", "flowsRoutes.post('/validate',"]) {
+      const chain = registration(call);
+      expect(chain).not.toMatch(/requireMfa|requireAutomationWrite/);
+    }
+    expect(registration("flowsRoutes.delete(\n  '/:id',")).toMatch(/requirePermission\('automations', 'delete'\),\s*requireMfa\(\)/);
   });
 });
