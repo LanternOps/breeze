@@ -3102,6 +3102,23 @@ describe('a job that names its patches installs only those', () => {
     expect(payload).not.toHaveProperty('evaluationRingId');
   });
 
+  it('a job without patchIds but with a ring: the command carries no evaluationRingId (exact payload keys)', async () => {
+    primeJob(
+      { ringId: LIVE_RING, autoApprove: {} },
+      { dispatches: true, ringRow: { deferralDays: 0, partnerId: 'partner-9', enabled: true } },
+    );
+    argumentKeyedResolver();
+    queuedDispatch();
+
+    const result: any = await run();
+
+    expect(result).toMatchObject({ kind: 'queued', patchCount: 2 });
+    expect(resolveDevicePatchEvaluationConfig).not.toHaveBeenCalled();
+    expect(vi.mocked(resolveApprovedPatchesForDevice).mock.calls[0]![2]).toMatchObject({ ringId: LIVE_RING, ringPartnerId: 'partner-9' });
+    const payload = (vi.mocked(dispatchDeviceCommand).mock.calls[0]![0] as unknown as { payload: Record<string, unknown> }).payload;
+    expect(Object.keys(payload).sort()).toEqual(['patchIds', 'patchJobId', 'patches']);
+  });
+
   it('a job without patchIds keeps today\'s behaviour: every eligible patch, resolver called with three arguments', async () => {
     primeJob({ ringId: null, autoApprove: {} });
     argumentKeyedResolver();
