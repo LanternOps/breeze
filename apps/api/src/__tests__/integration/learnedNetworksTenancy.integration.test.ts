@@ -314,6 +314,22 @@ describe('learned networks: gated-site invariant (A6)', () => {
     }), '23514', 'learned_network_site_not_gated:');
   });
 
+  it('A6: both checks restore the caller\'s breeze.scope after electing system scope', async () => {
+    const { a } = await twoOrgs();
+    const scopes = await scoped(a.orgId, async () => {
+      const read = async () => ((await db.execute(sql`SELECT current_setting('breeze.scope', true) AS s`)) as unknown as Array<{ s: string }>)[0]!.s;
+      const before = await read();
+      await db.execute(setGated(a.siteId, true));
+      await db.execute(assign(a, a.siteId));
+      const afterAssign = await read();
+      await db.execute(sql`UPDATE learned_networks SET site_id = NULL WHERE id = ${a.networkId}::uuid`);
+      await db.execute(setGated(a.siteId, false));
+      return { before, afterAssign, afterClear: await read() };
+    });
+    expect(scopes.before).not.toBe('system');
+    expect(scopes).toEqual({ before: scopes.before, afterAssign: scopes.before, afterClear: scopes.before });
+  });
+
   it('A6: clearing the gated flag while a network is assigned is refused', async () => {
     const { a } = await twoOrgs();
     await scoped(a.orgId, async () => { await db.execute(setGated(a.siteId, true)); await db.execute(assign(a, a.siteId)); });
@@ -358,6 +374,26 @@ describe('learned networks: device org move (A5)', () => {
     await admin(sql`UPDATE devices SET site_id = ${second.id}::uuid WHERE id = ${a.deviceId}::uuid`);
     expect(await memberships(a.deviceId)).toEqual([{ id: a.memberId }]);
     expect(await attachment(a.deviceId)).toEqual(STAMPED);
+  });
+
+  it('A5: an UPDATE that names org_id without changing it keeps memberships and the attachment columns', async () => {
+    const a = await tenant();
+    await stampAttachment(a.deviceId);
+    await admin(sql`UPDATE devices SET org_id = org_id WHERE id = ${a.deviceId}::uuid`);
+    expect(await memberships(a.deviceId)).toEqual([{ id: a.memberId }]);
+    expect(await attachment(a.deviceId)).toEqual(STAMPED);
+  });
+
+  it('A5: restores the caller\'s breeze.scope after electing system scope', async () => {
+    const a = await tenant();
+    const b = await tenant(a.partnerId);
+    const scope = await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('breeze.scope', 'organization', true)`);
+      await tx.execute(sql`UPDATE devices SET org_id = ${b.orgId}::uuid, site_id = ${b.siteId}::uuid WHERE id = ${a.deviceId}::uuid`);
+      return (await tx.execute(sql`SELECT current_setting('breeze.scope', true) AS scope`))[0];
+    });
+    expect(scope).toEqual({ scope: 'organization' });
+    expect(await memberships(a.deviceId)).toEqual([]);
   });
 
   it('A5: stands down while the source org is merging, so outside a real merge the restamp refuses the move', async () => {

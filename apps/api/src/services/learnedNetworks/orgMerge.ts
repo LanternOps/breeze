@@ -14,15 +14,18 @@
  *     network is deleted;
  *   - any other loser network that lost a gateway (a split across survivor networks, or a partial fold) is kept
  *     without the folded gateways and is unassigned. A partial fold is never merged: that would put an unreviewed
- *     gateway into a network that may be assigned. Profiles pointing at it then fail closed (network_not_assigned).
+ *     gateway into a network that may be assigned. A split network keeps no gateway at all. Profiles pointing at
+ *     it keep pointing at an unassigned network, which the discovery gate (later waves) treats as fail-closed.
  *
  * A source site keeps discovery_network_required, so a site that lost its last network fails closed.
  *
- * Every statement joins by ids, never by org_id, and child rows are re-pointed BEFORE their parent is deleted
+ * Rows are located by id; org_id is used only to pair loser and survivor fingerprints and to stamp new WAN rows.
+ * Child rows are re-pointed BEFORE their parent is deleted
  * (cascade actions are not deferred). Rows in between name a survivor-org parent under a loser org_id, which the
- * merge's `SET CONSTRAINTS ALL DEFERRED` (orgMerge.ts) admits until the move half repoints them. The
+ * merge's `SET CONSTRAINTS ALL DEFERRED` (services/orgMerge.ts) admits until the move half repoints them. The
  * device-org-move trigger breeze_learned_networks_device_moved stands down while the loser is 'merging', so this
- * fold, not that trigger, decides the device rows.
+ * fold, not that trigger, decides the device rows. Memberships keep their fingerprint identity here, so the
+ * devices' network_attachment_digest stays valid and is not cleared (index A8 applies to deletes outside a merge).
  *
  * Runs on the merge's ambient transaction (`dbModule.db`), like every executor; never opens its own.
  */
@@ -76,12 +79,16 @@ interface PairRow {
 
 export const resolveLearnedNetworks: CustomMergeExecutor = async (loser, survivor): Promise<MergeTableOutcome> => {
   // 1. One read. No pairs (every ordinary merge): nothing else runs.
-  const pairs = Array.from((await dbModule.db.execute(sql`
+  const result = await dbModule.db.execute(sql`
     SELECT p.t_id::text, p.t_network_id::text, p.s_id::text, p.s_network_id::text,
            (SELECT count(*)::int FROM learned_network_gateways g WHERE g.network_id = p.t_network_id) AS t_network_gateways,
            (SELECT n.site_id IS NOT NULL FROM learned_networks n WHERE n.id = p.t_network_id) AS t_network_assigned
       FROM (${fingerprintPairs(loser, survivor)}) p
-     ORDER BY p.t_network_id, p.t_id`) ?? []) as Iterable<PairRow>);
+     ORDER BY p.t_network_id, p.t_id`);
+  // Not null-safe on purpose (as extractRowCount): a result that is not a row list is a driver fault, not "no
+  // collisions", and treating it as empty would surface as a raw 23505 in the move phase instead.
+  if (!Array.isArray(result)) throw new Error('resolveLearnedNetworks: fingerprint read returned no row list');
+  const pairs = result as unknown as PairRow[];
   if (pairs.length === 0) return { moved: 0, dropped: 0, notes: [] };
 
   // 2. Classify each loser network that has a colliding gateway.
@@ -143,7 +150,8 @@ export const resolveLearnedNetworks: CustomMergeExecutor = async (loser, survivo
       WITH f AS (SELECT * FROM ${fold}),
       agg AS (
         SELECT f.m_id, min(n.first_seen_at) AS first_seen_at, max(n.last_seen_at) AS last_seen_at,
-               (array_agg(n.name ORDER BY n.id) FILTER (WHERE n.name IS NOT NULL))[1] AS name
+               (array_agg(n.name ORDER BY n.id) FILTER (WHERE n.name IS NOT NULL))[1] AS name,
+               (array_agg(n.prefix ORDER BY n.last_seen_at DESC, n.id) FILTER (WHERE n.prefix IS NOT NULL))[1] AS prefix
           FROM f JOIN learned_networks n ON n.id = f.n_id
          GROUP BY f.m_id),
       asg AS (
@@ -157,6 +165,7 @@ export const resolveLearnedNetworks: CustomMergeExecutor = async (loser, survivo
              assigned_at = CASE WHEN m.site_id IS NULL AND asg.site_id IS NOT NULL THEN asg.assigned_at ELSE m.assigned_at END,
              ignored_at = CASE WHEN m.site_id IS NULL AND asg.site_id IS NOT NULL THEN NULL ELSE m.ignored_at END,
              name = COALESCE(m.name, agg.name),
+             prefix = COALESCE(m.prefix, agg.prefix),
              first_seen_at = LEAST(m.first_seen_at, agg.first_seen_at),
              last_seen_at = GREATEST(m.last_seen_at, agg.last_seen_at),
              updated_at = now()
@@ -165,7 +174,7 @@ export const resolveLearnedNetworks: CustomMergeExecutor = async (loser, survivo
     networksDeleted = await run(sql`DELETE FROM learned_networks WHERE id = ANY (${uuidArray(nIds)})`);
   }
 
-  // 5. Kept networks that lost a gateway are unassigned (the moved half repoints them as they are).
+  // 5. Kept networks that lost a gateway are unassigned (the move half repoints them as they are).
   if (kept.length > 0) {
     await run(sql`
       UPDATE learned_networks SET site_id = NULL, assigned_by = NULL, assigned_at = NULL, updated_at = now()

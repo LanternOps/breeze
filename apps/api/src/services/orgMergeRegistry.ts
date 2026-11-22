@@ -753,7 +753,6 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // The first five re-home their children onto the SURVIVOR's row and then
   // delete the now-unreferenced duplicate. `incidents` does not delete at all
   // (see its note) — an incident is a case file, not a derived row.
-  learned_networks: { kind: 'custom', note: 'fold identical fingerprints (gateway_mac, gateway_address) into the survivor in RESOLVE: re-point device rows and grants to the survivor fingerprint, merge a network whose fingerprints all fold into one survivor network, unassign one that would split; MOVE repoints the rest (learnedNetworks/orgMerge.ts)' },
   discovered_assets: { kind: 'custom', note: 're-home network_monitors/snmp_devices/unifi_* children onto the survivor asset with the same ip_address, then delete the duplicate; SPLIT across phases because discovered_assets rides sites\' ON UPDATE CASCADE (see CUSTOM_RESOLVE_EXECUTORS)' },
   plugin_installations: { kind: 'custom', note: 're-home plugin_logs.installation_id onto the survivor installation for the same catalog_id, then delete the duplicate' },
   playbook_definitions: { kind: 'custom', note: 're-home playbook_executions.playbook_id (and remediation_suggestions.playbook_id) onto the survivor definition with the same lower(name), then delete the duplicate' },
@@ -763,6 +762,10 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
     + 'A blind repoint-dedupe DELETE would cascade-delete those values once device_custom_field_values lands (W05). '
     + 'The collision predicate is org_id-equality on both sides, so partner-wide definitions (org_id NULL, #2135) are never touched by an org merge.' },
   pam_signer_groups: { kind: 'custom', note: 're-home pam_rules.match_signer_group_id onto the survivor group with the same name, then delete the duplicate (the FK is ON DELETE RESTRICT — a plain dedupe DELETE raises 23503)' },
+  // Learned networks (#12369 W01a): unlike the block above, every learned-network FK is DEFERRABLE INITIALLY
+  // IMMEDIATE and the fold relies on the merge's SET CONSTRAINTS ALL DEFERRED. The collision is the
+  // non-deferrable unique learned_network_gateways_fingerprint_uniq, resolved per fingerprint in RESOLVE.
+  learned_networks: { kind: 'custom', note: 'fold identical fingerprints (gateway_mac, gateway_address) into the survivor in RESOLVE: re-point device rows and grants to the survivor fingerprint, merge a network whose fingerprints all fold into one survivor network, unassign one that would split; MOVE repoints the rest (learnedNetworks/orgMerge.ts)' },
   // CORRECTED (P2-3 review, #4190): `reports` was a plain `repoint` — correct
   // until P2-3 gave it its FIRST collidable unique index,
   // `reports_source_ai_agent_schedule_uniq (org_id, source_ai_agent_schedule_id)
@@ -1071,8 +1074,8 @@ const REPOINT_TABLES: readonly string[] = [
   "device_workloads",
   "devices",
   "discovery_jobs",
-  // Learned networks (#12369 W01a): colliding fingerprints are already gone after the learned_networks resolve
-  // half (CUSTOM_RESOLVE_EXECUTORS), so a plain repoint cannot hit learned_network_gateways_fingerprint_uniq.
+  // Learned networks (#12369 W01a): grants were re-pointed to the survivor fingerprint by the learned_networks
+  // resolve half, and (profile_id, gateway_id) cannot collide across orgs.
   "discovery_profile_snmp_grants",
   "discovery_profiles",
   "dns_event_aggregations",
@@ -1157,7 +1160,9 @@ const REPOINT_TABLES: readonly string[] = [
   "invoice_payments",
   "invoice_stripe_payments",
   "invoices",
-  // Learned networks (#12369 W01a): see discovery_profile_snmp_grants above.
+  // Learned networks (#12369 W01a): colliding fingerprints are already gone after the learned_networks resolve
+  // half (CUSTOM_RESOLVE_EXECUTORS), so this repoint cannot hit learned_network_gateways_fingerprint_uniq.
+  // learned_networks itself is moved by its custom MOVE executor (moveLearnedNetworks).
   "learned_network_devices",
   "learned_network_gateways",
   "learned_network_wan_addresses",
