@@ -14,6 +14,13 @@ import (
 	"golang.org/x/net/route"
 )
 
+// readRouteSocket reads one reply from the routing socket. It is read(2), not
+// recvfrom(2): the reply's source address has family AF_ROUTE, which Go's
+// Recvfrom cannot convert, so Recvfrom returns EAFNOSUPPORT after the bytes
+// arrived (#12484). A routing socket has no useful peer address. Tests replace
+// it to feed captured replies to the lookup loop.
+var readRouteSocket = syscall.Read
+
 // LookupRoute asks the routing socket for this destination; it sends no packet
 // to the destination. Source-policy requests that Darwin cannot enforce fail.
 func (r *DarwinReader) LookupRoute(ctx context.Context, request RouteLookupRequest) (RouteSelection, error) {
@@ -65,7 +72,7 @@ func lookupDarwinRoute(ctx context.Context, request RouteLookupRequest, keys map
 		if e = ctx.Err(); e != nil {
 			return RouteSelection{}, e
 		}
-		n, _, e := syscall.Recvfrom(fd, buffer, 0)
+		n, e := readRouteSocket(fd, buffer)
 		if errors.Is(e, syscall.EAGAIN) || errors.Is(e, syscall.EINTR) {
 			continue
 		}
