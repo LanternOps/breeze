@@ -46,6 +46,21 @@ export function navigateToMicrosoftLogin(url: string): void {
   window.location.assign(target.toString());
 }
 
+/** True when `path` differs from the current URL only by its (non-identical) fragment. */
+function isFragmentOnlyChange(path: string): boolean {
+  try {
+    const target = new URL(path, window.location.href);
+    return (
+      target.origin === window.location.origin
+      && target.pathname === window.location.pathname
+      && target.search === window.location.search
+      && target.hash !== window.location.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function navigateTo(path: string, options: NavigateOptions = {}): Promise<NavigationMode> {
   if (typeof window === 'undefined') {
     return 'hard';
@@ -55,6 +70,23 @@ export async function navigateTo(path: string, options: NavigateOptions = {}): P
   // (e.g. notification/command `href`). Only allow same-origin relative paths;
   // anything else falls back to '/'.
   const safePath = getSafeNext(path, '/');
+
+  // Same path + query, different fragment: the router's fragment-only shortcut
+  // would `pushState` without firing `hashchange`, leaving every `useHashState`
+  // subscriber on the old value (#12476; mechanism on shared/HashLink.tsx).
+  // Assign the hash ourselves so a real `hashchange` fires. The page stays
+  // alive, so this is the 'soft' outcome.
+  const hashIndex = safePath.indexOf('#');
+  if (hashIndex >= 0 && isFragmentOnlyChange(safePath)) {
+    window.location.hash = safePath.slice(hashIndex + 1);
+    try {
+      // Hash assignment pushes null `history.state`; seed it for the router (#8331).
+      seedRouterHistoryState();
+    } catch {
+      // Best-effort, as below.
+    }
+    return 'soft';
+  }
 
   let swapped = false;
   const onSwap = () => { swapped = true; };
