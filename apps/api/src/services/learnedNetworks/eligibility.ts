@@ -43,13 +43,16 @@ function minimumVersionParts(commandType: GuardedCommandFamily): [number, number
 }
 
 /**
- * Superset of `agentSupportsGuardedCommand`: true for every version the exact check accepts (and a few it does
- * not, such as `1.2.3.4`), so the candidate cap is applied after the version cut, not before.
+ * Prefilter for `agentSupportsGuardedCommand`, so the candidate cap is applied after the version cut, not before.
+ * It passes every version with three numeric parts of at most 9 digits each that the exact check accepts (and a
+ * few it does not, such as `1.2.3.4`). Each part is bounded and the triple must end at a non-digit, so the int cast
+ * can never overflow: an agent-reported version is free text, and one bad value must not fail the site's query. A
+ * part longer than 9 digits (or zero-padded past 9) is filtered out, which fails closed.
  */
 function versionPrefilterCondition(parts: [number, number, number]): SQL {
   const [maj, min, patch] = parts;
-  return sql`case when ${devices.agentVersion} ~ '^\\s*\\d{1,9}\\.\\d{1,9}\\.\\d{1,9}'
-    then string_to_array(substring(${devices.agentVersion} from '^\\s*(\\d+\\.\\d+\\.\\d+)'), '.')::int[]
+  return sql`case when ${devices.agentVersion} ~ '^\\s*\\d{1,9}\\.\\d{1,9}\\.\\d{1,9}(\\D|$)'
+    then string_to_array(substring(${devices.agentVersion} from '^\\s*(\\d{1,9}\\.\\d{1,9}\\.\\d{1,9})(?:\\D|$)'), '.')::int[]
          >= array[${maj}::int, ${min}::int, ${patch}::int]
     else false end`;
 }

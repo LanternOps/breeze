@@ -57,7 +57,7 @@ import { lockSitesForNetworkGate } from '../../services/learnedNetworks/siteLock
 import {
   explainGuardedAgent, explainNoEligibleAgent, loadEligibleGuardedAgents,
 } from '../../services/learnedNetworks/eligibility';
-import { loadNetworkGateways } from '../../services/learnedNetworks/siteNetworks';
+import { loadNetworkGateways, loadSiteGateState } from '../../services/learnedNetworks/siteNetworks';
 import { loadUsableGrantGateways } from '../../services/learnedNetworks/snmpGrants';
 import type { IneligibleReason } from '@breeze/shared';
 import { encryptSnmpCommunities } from '../../services/snmpSecrets';
@@ -366,6 +366,15 @@ describe('eligibility', () => {
     expect(await explain(unknown)).toBe('agents_need_update');
   });
 
+  it('an agent version whose numbers overflow an int is filtered out, not raised as a query error', async () => {
+    const c = await ctx();
+    const good = await seedAgent({ ...c.site, hostname: 'LAPTOP-JS', behind: [c.g1] });
+    for (const version of ['1.2.99999999999', '999.0.99999999999-rc.1', ' 999.0.0000000000001'])
+      await seedAgent({ ...c.site, hostname: 'DESKTOP-01', version, behind: [c.g1] });
+    const input = { orgId: c.orgId, siteId: c.siteId, allowedGatewayIds: [c.g1], commandType: 'network_discovery' as const };
+    expect((await sys(() => loadEligibleGuardedAgents(input))).map((a) => a.deviceId)).toEqual([good.deviceId]);
+  });
+
   it('S6 eligibility matches the fingerprint', async () => {
     const c = await ctx();
     const desktop = await seedAgent({ ...c.site, hostname: 'DESKTOP-01', behind: [c.g3], deviceId: lowDeviceId() });
@@ -385,6 +394,14 @@ describe('eligibility', () => {
 // ---------------------------------------------------------------------------------------------------------
 
 describe('gate reads', () => {
+  it('loadSiteGateState reads a missing site, or one of another org, as gated with nothing assigned (fails closed)', async () => {
+    const t = await seedSite();
+    const other = await seedSite();
+    expect(await sys(() => loadSiteGateState(t.orgId, randomUUID()))).toEqual({ gated: true, assignedNetworkIds: [] });
+    expect(await sys(() => loadSiteGateState(other.orgId, t.siteId))).toEqual({ gated: true, assignedNetworkIds: [] });
+    expect(await sys(() => loadSiteGateState(t.orgId, t.siteId))).toEqual({ gated: false, assignedNetworkIds: [] });
+  });
+
   it('loadNetworkGateways returns host addresses and lower-case MACs, by network then gateway', async () => {
     const t = await seedSite();
     const { networkIds, gatewayIds } = await gateSite(t.orgId, t.siteId, [[G1, G3]]);
@@ -535,6 +552,40 @@ describe('dispatch and results', () => {
     expect(await job(jobId)).toMatchObject({ status: 'running' });
     expect(enqueueResults).toHaveBeenCalledTimes(1);
     expect(enqueueResults.mock.calls[0]![9]).toEqual(verifiedFor(n1, g1, G1));
+  });
+
+  // Review gap: the attempt write's `status = 'scheduled'` condition, on real SQL.
+  it('a job cancelled between the phases is not sent and stays cancelled', async () => {
+    const t = await seedSite();
+    await seedAgent({ ...t, hostname: 'DESKTOP-01' });
+    const profileId = await seedProfile(t);
+    const jobId = await seedJob(t.orgId, t.siteId, profileId);
+    relay.isAgentConnectedAnywhere.mockImplementationOnce(async () => {
+      await admin(sql`UPDATE discovery_jobs SET status = 'cancelled' WHERE id = ${jobId}::uuid`);
+      return true;
+    });
+
+    expect((await __testables.processDispatchScan(dispatchData(t, profileId, jobId))).dispatched).toBe(false);
+    expect(relay.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(await job(jobId)).toMatchObject({ status: 'cancelled', networkDispatch: null, agentId: null });
+  });
+
+  // Review gap: phase 3 decides from the profile row it re-reads, never phase 1's.
+  it('a profile bound between the phases is decided from its phase-3 row and its secrets are not sent', async () => {
+    const t = await seedSite();
+    await seedAgent({ ...t, hostname: 'DESKTOP-01' });
+    const profileId = await seedProfile({ ...t, withSecrets: true });
+    const jobId = await seedJob(t.orgId, t.siteId, profileId);
+    relay.isAgentConnectedAnywhere.mockImplementationOnce(async () => {
+      await admin(sql`UPDATE discovery_profiles SET snmp_grant_mode = 'bound' WHERE id = ${profileId}::uuid`);
+      return true;
+    });
+
+    expect((await __testables.processDispatchScan(dispatchData(t, profileId, jobId))).dispatched).toBe(false);
+    expect(await job(jobId)).toMatchObject({ status: 'failed', networkDispatch: null, errors: { code: 'credentials_need_reentry' } });
+    expect(spies.build).not.toHaveBeenCalled();
+    expect(spies.decryptCommunities).not.toHaveBeenCalled();
+    expect(relay.dispatchCommandToAgent).not.toHaveBeenCalled();
   });
 
   // Task 7
@@ -700,6 +751,23 @@ describe('process results', () => {
     expect((await assets(t.orgId)).every((a) => a.last_network_id === n1)).toBe(true);
   });
 
+  it('stores under the shared site lock: an exclusive holder blocks it and nothing is written', async () => {
+    const { t, n1, g1, profileId, jobId } = await guardedScene();
+    const held = deferred(); const release = deferred();
+    const holder = sys(async () => { await lockSitesForNetworkGate([t.siteId], 'exclusive'); held.resolve(); await release.promise; });
+    await held.promise;
+
+    const err = await sys(async () => {
+      await db.execute(sql`set local lock_timeout = '200ms'`);
+      await processResults(resultsFor(t, profileId, jobId, [host('192.168.1.20')], verifiedFor(n1, g1, G1)));
+    }).catch((e) => e);
+    release.resolve(); await holder;
+
+    expect(pgErrorCode(err)).toBe('55P03');
+    expect(await assets(t.orgId)).toEqual([]);
+    expect(await job(jobId)).toMatchObject({ status: 'running' });
+  });
+
   it('an unrestricted result leaves last_network_id and the job network null', async () => {
     const t = await seedSite();
     const agent = await seedAgent({ ...t, hostname: 'DESKTOP-01' });
@@ -802,6 +870,34 @@ describe('the AI tool', () => {
       expect(out).toMatchObject({ status: 'completed' });
     }
   }, 90_000);
+
+  // Review gap: the guarded AI path end to end, including loadCommandAttempt's read of the persisted row.
+  it('a gated site: the AI tool sends the guarded command and returns hosts only for a matching fingerprint', async () => {
+    const t = await seedSite();
+    const { networkIds, gatewayIds } = await gateSite(t.orgId, t.siteId, [[G1]]);
+    const n1 = networkIds[0]!; const g1 = gatewayIds[0]![0]!;
+    const g2 = (await unassignedNetwork(t.orgId, [G2])).gatewayIds[0]!;
+    const { deviceId } = await seedAgent({ ...t, hostname: 'LAPTOP-JS', behind: [g1] });
+    const auth = await callerAuth(t);
+    const hosts = [{ ip: '192.168.1.20', assetType: 'printer', methods: ['ping'] }];
+
+    const matched = fakeAgent(deviceId, JSON.stringify({ hosts, hostsScanned: 1, hostsDiscovered: 1, verifiedNetwork: verifiedFor(n1, g1, G1) }));
+    const ok = parseToolText(await sdkToolsTest.makeHandler('network_discovery', () => auth)({ deviceId, subnet: '192.168.1.0/24' }));
+    await matched;
+    const [row] = await commandsFor(deviceId);
+    expect(row!.type).toBe('network_discovery_guarded');
+    expect((row!.payload as { expectedNetwork: { gateways: Array<{ gatewayId: string }> } }).expectedNetwork.gateways.map((g) => g.gatewayId))
+      .toEqual([g1]);
+    expect(ok).toMatchObject({ status: 'completed' });
+    expect(JSON.stringify(ok)).toContain('192.168.1.20');
+
+    // A result naming a fingerprint the attempt never allowed returns no hosts.
+    const wrong = fakeAgent(deviceId, JSON.stringify({ hosts, hostsScanned: 1, hostsDiscovered: 1, verifiedNetwork: verifiedFor(n1, g2, G2) }));
+    const refused = parseToolText(await sdkToolsTest.makeHandler('network_discovery', () => auth)({ deviceId, subnet: '192.168.1.0/24' }));
+    await wrong;
+    expect(refused).toMatchObject({ code: 'network_unverified' });
+    expect(JSON.stringify(refused)).not.toContain('192.168.1.20');
+  }, 60_000);
 
   // Task 13
   it('a gated site with no assigned network sends the AI tool no command', async () => {

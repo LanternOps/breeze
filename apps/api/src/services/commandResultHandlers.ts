@@ -167,6 +167,7 @@ async function handleDiscoveryResult({ agentId, command, result, commandId, stdo
       })
       // A job that already finished or was cancelled keeps its outcome.
       .where(and(eq(discoveryJobs.id, expectedJobId), inArray(discoveryJobs.status, ['scheduled', 'running'])));
+    console.warn(`[AgentWs] Discovery job ${expectedJobId} refused by agent ${agentId}'s network guard: ${refusal}`);
     return;
   }
 

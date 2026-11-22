@@ -29,6 +29,15 @@ const UNVERIFIED: VerifyOutcome = {
   error: { code: 'network_unverified', message: GATE_FAILURE_MESSAGES.network_unverified },
 };
 
+/**
+ * Every rejection reads the same to the user; the specific cause is logged so an agent-contract mismatch can be
+ * told apart from a real network change.
+ */
+function unverified(cause: string, input: { orgId: string; siteId: string; profileId: string | null }): VerifyOutcome {
+  console.warn(`[learnedNetworks] discovery result unverified (${cause}): org=${input.orgId} site=${input.siteId} profile=${input.profileId ?? 'none'}`);
+  return UNVERIFIED;
+}
+
 /** A job's `network_dispatch` as a verifier attempt. An unreadable record fails closed (guarded, nothing allowed). */
 export function attemptFromRecord(value: unknown): Attempt | null {
   const record = parseNetworkDispatchRecord(value);
@@ -46,26 +55,26 @@ export async function verifyDiscoveryResult(input: {
 
   if (!attempt || attempt.mode === 'unrestricted') {
     const { gated } = await loadSiteGateState(orgId, siteId);
-    return gated ? UNVERIFIED : { ok: true, networkId: null };
+    return gated ? unverified('site_gated_since_unrestricted_dispatch', input) : { ok: true, networkId: null };
   }
 
   const parsed = verifiedNetworkSchema.safeParse(input.verifiedNetwork);
-  if (!parsed.success) return UNVERIFIED;
+  if (!parsed.success) return unverified('no_valid_verified_network', input);
   const uploaded = parsed.data;
   // The allowed fingerprints come from the attempt the server recorded, never from the upload.
-  if (!attempt.allowedGatewayIds.includes(uploaded.gatewayId)) return UNVERIFIED;
+  if (!attempt.allowedGatewayIds.includes(uploaded.gatewayId)) return unverified('gateway_not_in_attempt', input);
 
   let profile: GateProfile | null = null;
   if (profileId) {
     profile = await loadGateProfile(profileId);
-    if (!profile) return UNVERIFIED;
+    if (!profile) return unverified('profile_missing', input);
   }
   const decision = await evaluateDiscoveryGate(
     profile ? { orgId, siteId, profile, job: { orgId, siteId } } : { orgId, siteId, profile: null },
   );
-  if (decision.kind !== 'guarded') return UNVERIFIED;
+  if (decision.kind !== 'guarded') return unverified(`gate_now_${decision.kind}`, input);
 
   const current = decision.allowed.find((g) =>
     g.gatewayId === uploaded.gatewayId && g.address === uploaded.gatewayAddress && g.mac === uploaded.gatewayMac);
-  return current ? { ok: true, networkId: current.networkId } : UNVERIFIED;
+  return current ? { ok: true, networkId: current.networkId } : unverified('fingerprint_not_allowed_now', input);
 }

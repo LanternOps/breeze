@@ -15,8 +15,8 @@ const SRC = resolve(__dirname, '../..');
 const LITERAL = /(['"`])network_discovery(_guarded)?\1|\bnetwork_discovery(_guarded)?\s*:/g;
 const BASE_LITERAL = /(['"`])network_discovery\1|\bnetwork_discovery\s*:/g;
 const GUARDED_NAMED = /(['"`])network_discovery_guarded\1|\bnetwork_discovery_guarded\s*:|\bGUARDED_COMMAND_TYPES\.network_discovery\b/g;
-const CONSTRUCT = /\btype\s*:\s*(['"`]network_discovery(_guarded)?['"`]|GUARDED_COMMAND_TYPES\.network_discovery)/;
-const AI_HELPER_TYPE = /\b(aiExecuteCommand|aiExecuteCommandWithSystemPrecheck|aiQueueCommand|aiQueueCommandForExecution)\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*['"`]network_discovery/;
+const CONSTRUCT = /\btype\s*:\s*(['"`]network_discovery(_guarded)?['"`]|GUARDED_COMMAND_TYPES\.network_discovery|DISCOVERY_SCAN_FAMILY\b)/;
+const AI_HELPER_TYPE = /\b(aiExecuteCommand|aiExecuteCommandWithSystemPrecheck|aiQueueCommand|aiQueueCommandForExecution)\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*(['"`]network_discovery|DISCOVERY_SCAN_FAMILY\b|GUARDED_COMMAND_TYPES\.)/;
 const HELPER_TYPE = /\b(executeCommand|executeCommandWithSystemPrecheck|executeCommandWithCallerPrecheck|queueCommand|queueCommandForExecution)\(\s*[^,]+,\s*['"`]network_discovery/;
 
 type Class = { kind: 'builder' } | { kind: 'paired' } | { kind: 'toolName'; reason: string };
@@ -129,6 +129,9 @@ describe('discovery scan command builder contract (E8)', () => {
     expect(SOURCES.size).toBeGreaterThan(500);
     expect(CONSTRUCT.test(`const c = { id, type: 'network_discovery', payload }`)).toBe(true);
     expect(CONSTRUCT.test('return { type: GUARDED_COMMAND_TYPES.network_discovery }')).toBe(true);
+    expect(CONSTRUCT.test('const c = { id, type: DISCOVERY_SCAN_FAMILY, payload }')).toBe(true);
+    expect(CONSTRUCT.test('explain({ commandType: DISCOVERY_SCAN_FAMILY })')).toBe(false);
+    expect(AI_HELPER_TYPE.test(`aiExecuteCommand(auth, 'network_discovery', deviceId, DISCOVERY_SCAN_FAMILY, {})`)).toBe(true);
     expect(AI_HELPER_TYPE.test(`aiExecuteCommand(auth, 'network_discovery', deviceId, 'network_discovery', {})`)).toBe(true);
     expect(HELPER_TYPE.test(`executeCommand(deviceId, 'network_discovery', payload)`)).toBe(true);
     expect(stripComments(`const a = 'x'; // 'network_discovery'\n/* network_discovery: */ const u = 'https://x';`))

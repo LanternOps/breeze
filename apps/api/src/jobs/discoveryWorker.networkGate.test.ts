@@ -256,6 +256,37 @@ describe('processDispatchScan network gate order (E9)', () => {
     });
   });
 
+  it('a guarded requested agent that is not eligible fails naming it; another org\'s agent id is not recorded', async () => {
+    for (const [reason, recordedAgentId] of [['not_found', undefined], ['parked', undefined], ['offline', 'agent-1']] as const) {
+      vi.clearAllMocks(); updates = [];
+      mockDb.select
+        .mockReturnValueOnce(selectLimitChain([JOB_ROW_SCHEDULED], 'jobStatusSelect') as never)
+        .mockReturnValueOnce(selectLimitChain([PROFILE_ROW], 'profileSelect') as never);
+      gateDecisions(GUARDED);
+      eligibilityMock.explainGuardedAgent.mockResolvedValueOnce({ eligible: false, reason, label: 'agent-1' });
+
+      const r = await __testables.processDispatchScan(DATA);
+
+      expect(r.dispatched).toBe(false);
+      expect(eligibilityMock.explainGuardedAgent).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'agent-1', allowedGatewayIds: ['g-1'] }));
+      expect(eligibilityMock.loadEligibleGuardedAgents).not.toHaveBeenCalled();
+      expect(agentRelayMock.isAgentConnectedAnywhere).not.toHaveBeenCalled();
+      expect(failure()).toMatchObject({ errors: { code: 'agent_not_eligible', reason } });
+      expect(failure()!.agentId).toBe(recordedAgentId);
+    }
+  });
+
+  it('builds the command from the phase-3 profile row, not phase 1\'s', async () => {
+    queueRequestedAgentSelects();
+    gateDecisions(UNRESTRICTED, UNRESTRICTED);
+    attemptMock.loadProfileForDispatch.mockResolvedValue({ ...PROFILE_ROW, subnets: ['10.1.2.0/24'] });
+
+    await __testables.processDispatchScan(DATA);
+
+    const [, command] = agentRelayMock.dispatchCommandToAgent.mock.calls[0]! as [string, { payload: Record<string, unknown> }];
+    expect(command.payload.subnets).toEqual(['10.1.2.0/24']);
+  });
+
   it('an unsent command fails the job after the attempt was recorded', async () => {
     queueRequestedAgentSelects();
     gateDecisions(UNRESTRICTED, UNRESTRICTED);
