@@ -9,7 +9,7 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 
 // Seams (plan "Integration proofs"): the relay is replaced, so "no command sent" means dispatchCommandToAgent was
 // not called; the topology snapshot is skipped; the builder and the decrypt helpers are pass-through spies.
@@ -47,11 +47,9 @@ vi.mock('../../services/snmpSecrets', async (importOriginal) => {
 
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { processOrphanedCommandResult } from '../../routes/agentWs';
-import { and, eq, inArray } from 'drizzle-orm';
 import { aiSessions, deviceCommands } from '../../db/schema';
 import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
 import { __test__ as sdkToolsTest } from '../../services/aiAgentSdkTools';
-import { createUser } from './db-utils';
 import { __testables, processResults } from '../../jobs/discoveryWorker';
 import { lockSitesForNetworkGate } from '../../services/learnedNetworks/siteLock';
 import {
@@ -61,7 +59,7 @@ import { loadNetworkGateways, loadSiteGateState } from '../../services/learnedNe
 import { loadUsableGrantGateways } from '../../services/learnedNetworks/snmpGrants';
 import type { IneligibleReason } from '@breeze/shared';
 import { encryptSnmpCommunities } from '../../services/snmpSecrets';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
 // ---------------------------------------------------------------------------------------------------------
