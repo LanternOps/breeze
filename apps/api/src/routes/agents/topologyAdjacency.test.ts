@@ -98,6 +98,22 @@ describe('POST /agents/:id/topology/adjacency', () => {
     expect({ status: res.status, body: await res.json() }).toEqual({ status: 410, body: { error: 'parent_expired' } });
   });
 
+  // C4: the agent sends verifiedNetwork beside the report on guarded scans.
+  it('accepts verifiedNetwork in the body and hands it to admission', async () => {
+    const r = report();
+    const VN = { gatewayId: '6c1d0f3e-5b7a-4c2e-9f10-2a3b4c5d6e7f', gatewayAddress: '192.168.1.1', gatewayMac: 'a4:2b:b0:11:22:9c' };
+    const res = await post({ parentJobId: r.parentJobId, report: r, verifiedNetwork: VN });
+    expect(res.status).toBe(200);
+    expect(admit).toHaveBeenCalledWith(expect.objectContaining({ deviceId: DEVICE, orgId: 'org-1', verifiedNetwork: VN }));
+  });
+
+  it('still rejects unknown body keys beside verifiedNetwork', async () => {
+    const r = report();
+    const res = await post({ parentJobId: r.parentJobId, report: r, verifiedNetwork: {}, extra: 1 });
+    expect({ status: res.status, body: await res.json() }).toEqual({ status: 400, body: { error: 'invalid_report' } });
+    expect(admit).not.toHaveBeenCalled();
+  });
+
   it('answers 413 above 4 MiB plus envelope and admits a large body under it', async () => {
     const r = report();
     const pad = (bytes: number) => JSON.stringify({ parentJobId: r.parentJobId, report: { ...r, padding: 'x'.repeat(bytes) } });

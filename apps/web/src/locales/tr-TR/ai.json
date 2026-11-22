@@ -24,7 +24,9 @@
       "publicTo": "{{recipient}} için müşterinin görebileceği yanıt",
       "publicNoRecipient": "Müşterinin görebileceği yanıt (talep sahibine e-postayla gönderilir)",
       "publicNoEmail": "Müşterinin görebileceği yanıt (kayıtlı talep sahibi e-postası yok, bu yüzden e-posta gönderilmez)",
-      "internal": "Dahili not (müşteri göremez)"
+      "internal": "Dahili not (müşteri göremez)",
+      "editReplaces": "Mevcut bir yorumun metnini şununla değiştirir:",
+      "deleteNotice": "Bu talepteki mevcut bir yorum silinecek."
     },
     "memory": {
       "heading": "Wisp hatırlayacak",

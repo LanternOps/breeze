@@ -218,6 +218,7 @@ export * from './topologyMonitoring';
 
 export * from './topologyTemplates';
 export * from './topologyPresence';
+export * from './learnedNetworks';
 export * from './emailSendingDomains';
 export * from './backupProviders';
 export * from './edrProviders';

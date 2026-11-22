@@ -32,6 +32,10 @@ export interface Features {
    *  flag. Off ⇒ the Patches page has no Vendor updates tab and never reads
    *  GET /oem-updates/fleet. */
   vendorUpdates: boolean;
+  /** Browser remote desktop (#9557): the server's BREEZE_BROWSER_DESKTOP_ENABLED
+   *  rollout flag. Off ⇒ the in-browser desktop page and its entry points stay
+   *  closed. Temporary; removed after the lab leg. */
+  browserDesktop: boolean;
 }
 
 export interface CfAccessLoginConfig {
@@ -64,7 +68,7 @@ interface FeaturesState {
 // flags are off by default (decision D2). An unreachable or older /config
 // (missing the field) must hide the "Delegate to Operator" button, never
 // show it.
-const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false, vendorUpdates: false };
+const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false, vendorUpdates: false, browserDesktop: false };
 const DEFAULT_CF_ACCESS: CfAccessLoginConfig = { enabled: false };
 // Default closed: until /config confirms registration is open we hide the
 // registration UI rather than flash a link that may be disabled (#1308).
@@ -118,6 +122,8 @@ export const useFeaturesStore = create<FeaturesState>()((set, get) => {
           sendingDomains: data.features?.sendingDomains === true,
           // Default CLOSED: an older or unreachable /config hides the tab.
           vendorUpdates: data.features?.vendorUpdates === true,
+          // Default CLOSED: only an exact boolean true opens the browser desktop.
+          browserDesktop: data.features?.browserDesktop === true,
         },
         cfAccessLogin: {
           enabled: !!data.cfAccessLogin?.enabled,

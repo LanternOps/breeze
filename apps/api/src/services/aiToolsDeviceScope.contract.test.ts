@@ -92,6 +92,12 @@ const DEVICE_AXIS_MARKERS = [
   // judgement the site suite makes about the same call sites.
   'canMutateOrgWideGovernance',
   'hasExactDeviceCeiling',
+  // #11677: list-reach helpers that apply `runFrozenDeviceIds`
+  // (`aiToolsSiteScope.ts`) and `ticketCounterpartScopeCondition`'s
+  // `allowedDeviceIds` arm (`routes/tickets/siteScope.ts`). Exact parity with
+  // the site suite.
+  'deviceListReachConditions',
+  'ticketListReachConditions',
 ] as const;
 
 // ---------------------------------------------------------------- utilities

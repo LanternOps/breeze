@@ -142,6 +142,43 @@ export async function resolveSiteAllowedDeviceIds(
 }
 
 /**
+ * The reach of `query_devices` (aiToolsDevice.ts) as WHERE fragments, or
+ * `null` when it reaches no device at all (the tool answers an empty page
+ * without querying). The org condition; never a Quick Support device (its
+ * hidden org stays inside `accessibleOrgIds`) or one parked in a holding org;
+ * the site axis, narrowed to the real allowed device set across every org the
+ * caller reaches (#10396: never just the first one), never to a caller-chosen
+ * site, and nothing at all for a site-restricted caller with no org list; and
+ * the exact-device axis of a device-bound run. `query_devices` and Wisp's
+ * standing state (#11677) both read through this, so what Wisp is told about
+ * and what its tool would list cannot drift.
+ *
+ * `auth.orgCondition` is undefined for a system-scope auth: a caller running
+ * in system DB context must add its own explicit org list.
+ */
+export async function deviceListReachConditions(auth: AuthContext): Promise<SQL[] | null> {
+  // Lazy: selectorPredicate.ts imports the whole schema index, and a static
+  // import here would put it in the graph of every module importing these
+  // helpers (and of their tests' partial schema mocks).
+  const { notParkedDeviceCondition } = await import('./unassignedPool/selectorPredicate');
+  const conditions: SQL[] = [];
+  const orgCondition = auth.orgCondition(devices.orgId);
+  if (orgCondition) conditions.push(orgCondition);
+  conditions.push(eq(devices.isEphemeral, false));
+  conditions.push(notParkedDeviceCondition());
+  if (auth.allowedSiteIds) {
+    const reachOrgIds = auth.accessibleOrgIds ?? (auth.orgId ? [auth.orgId] : null);
+    if (!reachOrgIds || reachOrgIds.length === 0) return null;
+    const allowed = await resolveSiteAllowedDeviceIds(reachOrgIds, auth);
+    if (!allowed || allowed.length === 0) return null;
+    conditions.push(inArray(devices.id, allowed));
+  }
+  const frozenDeviceIds = runFrozenDeviceIds(auth);
+  if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
+  return conditions;
+}
+
+/**
  * Narrow a set of device ids a row already carries (an incident's
  * `affected_devices`, a script proposal's `target_device_ids`, …) to the ones
  * THIS caller may see, applying BOTH axes.

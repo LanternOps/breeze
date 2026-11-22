@@ -3,9 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { AlertTriangle, RotateCcw } from 'lucide-react';
 import { forceRebootArgv, forceRebootChangesBehavior } from '@breeze/shared';
 import { Dialog } from '../shared/Dialog';
-import { pickReauthTier, type ReauthTier } from '../settings/StepUpPrompt';
+import type { ReauthTier } from '../settings/StepUpPrompt';
+import { discoverReauthTier } from '../../lib/reauthTier';
 import { mintStepUpGrant, StepUpMintError } from '../../lib/mfaStepUp';
-import { fetchWithAuth } from '../../stores/auth';
 import { forceRebootDevice } from '../../services/deviceActions';
 import type { OSType } from './DeviceList';
 import '../../lib/i18n';
@@ -116,18 +116,7 @@ export default function ForceRebootDialog({ open, device, onClose, onCompleted }
         // that the server has asked, so 2FA-off deployments never need to.
         if (tier === null) {
           try {
-            const [userResponse, passkeyResponse] = await Promise.all([
-              fetchWithAuth('/users/me'),
-              fetchWithAuth('/auth/passkeys'),
-            ]);
-            if (!userResponse.ok || !passkeyResponse.ok) throw new Error();
-            const user = await userResponse.json();
-            const passkeyData = await passkeyResponse.json();
-            const passkeys = Array.isArray(passkeyData) ? passkeyData : passkeyData?.passkeys;
-            if (!user || typeof user !== 'object' || !('mfaMethod' in user) || !Array.isArray(passkeys)) {
-              throw new Error();
-            }
-            setTier(pickReauthTier(passkeys.length, user.mfaMethod));
+            setTier(await discoverReauthTier());
           } catch {
             setError(t('forceRebootDialog.genericError'));
             return;

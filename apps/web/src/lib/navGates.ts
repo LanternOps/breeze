@@ -69,6 +69,19 @@ export interface NavGateContext {
   loadedExtensions?: readonly string[];
 }
 
+/**
+ * Where a nav entry links. An entry with `hrefWhenFlows` (the one Automations
+ * entry, #12437) points there only while the server's Flows flag is known to be
+ * on; unknown or off falls back to `href`, so nothing links a page that would
+ * answer 404.
+ */
+export function navItemHref(
+  item: { href: string; hrefWhenFlows?: string },
+  flowsEnabled: boolean | undefined,
+): string {
+  return item.hrefWhenFlows && flowsEnabled === true ? item.hrefWhenFlows : item.href;
+}
+
 export function isNavGateVisible(gate: NavGate, ctx: NavGateContext): boolean {
   if (gate.requiresAutopay && ctx.autopayEnabled !== true) return false;
   if (gate.requiresModule === 'service_management' && ctx.serviceManagementMode !== 'native') return false;

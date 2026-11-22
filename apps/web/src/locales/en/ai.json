@@ -24,7 +24,9 @@
       "publicTo": "Customer-visible reply to {{recipient}}",
       "publicNoRecipient": "Customer-visible reply (emails the requester)",
       "publicNoEmail": "Customer-visible reply (no requester email on file, so no email is sent)",
-      "internal": "Internal note (not visible to the customer)"
+      "internal": "Internal note (not visible to the customer)",
+      "editReplaces": "Replaces the text of an existing comment with:",
+      "deleteNotice": "An existing comment on this ticket will be deleted."
     },
     "memory": {
       "heading": "Wisp will remember",

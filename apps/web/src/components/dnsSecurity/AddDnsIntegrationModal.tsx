@@ -81,10 +81,13 @@ const PROVIDERS: Record<SupportedProvider, ProviderFieldSpec> = {
   },
 };
 
+type PiholeVersion = 'v5' | 'v6';
+
 type ConfigPayload = {
   organizationId?: string;
   accountId?: string;
   apiEndpoint?: string;
+  piholeVersion?: PiholeVersion;
 };
 
 interface AddDnsIntegrationModalProps {
@@ -108,7 +111,13 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
 
   const spec = PROVIDERS[provider];
 
-  const updateConfig = (key: keyof ConfigPayload, value: string) => {
+  // Pi-hole v6 authenticates with an app password; v5 with the API token.
+  const isPiholeV6 = provider === 'pihole' && config.piholeVersion === 'v6';
+  const apiKeySpec = isPiholeV6
+    ? { labelKey: 'fields.appPassword', placeholderKey: 'providers.pihole.appPasswordPlaceholder' }
+    : spec.apiKey;
+
+  const updateConfig = (key: Exclude<keyof ConfigPayload, 'piholeVersion'>, value: string) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -131,6 +140,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
     if (config.organizationId?.trim()) trimmedConfig.organizationId = config.organizationId.trim();
     if (config.accountId?.trim()) trimmedConfig.accountId = config.accountId.trim();
     if (config.apiEndpoint?.trim()) trimmedConfig.apiEndpoint = config.apiEndpoint.trim();
+    if (provider === 'pihole') trimmedConfig.piholeVersion = config.piholeVersion ?? 'v5';
 
     try {
       const result = await runAction({
@@ -262,7 +272,28 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
             )}
           </Field>
 
-          <Field label={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.apiKey.labelKey}`)}>
+          {provider === 'pihole' && (
+            <Field label={t('dnsSecurityAddDnsIntegrationModal.fields.piholeVersion')}>
+              {(id) => (
+                <>
+                  <select
+                    id={id}
+                    value={config.piholeVersion ?? 'v5'}
+                    onChange={(e) => setConfig((prev) => ({ ...prev, piholeVersion: e.target.value as PiholeVersion }))}
+                    className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                  >
+                    <option value="v5">{t('dnsSecurityAddDnsIntegrationModal.piholeVersions.v5')}</option>
+                    <option value="v6">{t('dnsSecurityAddDnsIntegrationModal.piholeVersions.v6')}</option>
+                  </select>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t('dnsSecurityAddDnsIntegrationModal.providers.pihole.versionHelp')}
+                  </p>
+                </>
+              )}
+            </Field>
+          )}
+
+          <Field label={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${apiKeySpec.labelKey}`)}>
             {(id) => (
               <input
                 id={id}
@@ -271,7 +302,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 required
-                placeholder={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${spec.apiKey.placeholderKey}`)}
+                placeholder={t(/* i18n-dynamic */ `dnsSecurityAddDnsIntegrationModal.${apiKeySpec.placeholderKey}`)}
                 className="h-9 w-full rounded-md border bg-background px-2 text-sm font-mono"
               />
             )}

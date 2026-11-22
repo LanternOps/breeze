@@ -668,6 +668,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'diagnostic_access_grants',
   'discovered_assets',
   'discovery_jobs',
+  // Learned networks (#12369 W01a): grants cascade from the profile and the fingerprint.
+  'discovery_profile_snmp_grants',
   'discovery_profiles',
   'dns_event_aggregations',
   'dns_filter_integrations',
@@ -772,6 +774,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'invoice_payments',
   'invoice_stripe_payments',
   'invoices',
+  // Learned networks (#12369 W01a): children cascade from learned_networks; discovery_profiles' NO ACTION
+  // network_id FK is satisfied because discovery_profiles is deleted first (topological order).
+  'learned_network_devices',
+  'learned_network_gateways',
+  'learned_network_wan_addresses',
+  'learned_networks',
   // #4628 W04b: snapshot of the dropped labour-pricing columns (org rows carry org_id).
   'legacy_labour_pricing_archive',
   'llm_egress_daily_rollups',

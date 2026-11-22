@@ -1,4 +1,4 @@
-import { Brain, Mail, StickyNote, Ticket } from "lucide-react";
+import { Brain, Mail, Pencil, StickyNote, Ticket, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AiApprovalTicketContext } from "@breeze/shared";
 
@@ -119,6 +119,46 @@ function TicketCommentPreview({
   );
 }
 
+/**
+ * A comment edit (`edit_comment`) replaces an existing comment's text with
+ * `input.content`. The input does not say whether that comment is public or
+ * internal, so this block makes no claim about who sees it.
+ */
+function CommentEditPreview({ content }: { content: string }) {
+  const { t } = useTranslation("ai");
+  return (
+    <div data-testid="approval-comment-edit-preview" className="mt-2 rounded-md border border-border bg-background/60 px-2.5 py-2 text-xs">
+      <div
+        data-testid="approval-comment-edit-heading"
+        className="flex items-center gap-1.5 font-medium text-gray-700 dark:text-gray-300"
+      >
+        <Pencil className="h-3.5 w-3.5 shrink-0 opacity-70" />
+        <span>{t("aiApprovalDialog.ticketComment.editReplaces")}</span>
+      </div>
+      <div
+        data-testid="approval-comment-edit-text"
+        className="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap break-words text-sm text-gray-900 dark:text-gray-100"
+      >
+        {content}
+      </div>
+    </div>
+  );
+}
+
+/** A comment delete carries no text in its input; say what happens instead. */
+function CommentDeleteNotice() {
+  const { t } = useTranslation("ai");
+  return (
+    <div
+      data-testid="approval-comment-delete-preview"
+      className="mt-2 flex items-center gap-1.5 rounded-md border border-border bg-background/60 px-2.5 py-2 text-xs font-medium text-gray-700 dark:text-gray-300"
+    >
+      <Trash2 className="h-3.5 w-3.5 shrink-0 opacity-70" />
+      <span>{t("aiApprovalDialog.ticketComment.deleteNotice")}</span>
+    </div>
+  );
+}
+
 function MemoryWritePreview({ input }: { input: Record<string, unknown> }) {
   const { t } = useTranslation("ai");
   const { text, fields, omitted } = memoryPreview(input.content);
@@ -187,10 +227,14 @@ export default function ApprovalContentPreview({
 }) {
   if (toolName === "remember") return <MemoryWritePreview input={input} />;
   if (toolName !== "manage_tickets") return null;
-  const isComment = input.action === "comment" && typeof input.content === "string" && input.content.length > 0;
+  const hasContent = typeof input.content === "string" && input.content.length > 0;
+  const isComment = input.action === "comment" && hasContent;
+  const isCommentEdit = input.action === "edit_comment" && hasContent;
   return (
     <>
       {ticketContext && <TicketContextRow ctx={ticketContext} />}
+      {isCommentEdit && <CommentEditPreview content={input.content as string} />}
+      {input.action === "delete_comment" && <CommentDeleteNotice />}
       {isComment && (
         <TicketCommentPreview
           // Same predicate as the guardrail headline and the tier (`isPublic === true`).

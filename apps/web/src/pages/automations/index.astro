@@ -1,3 +1,9 @@
 ---
-return Astro.redirect('/jobs', 301);
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import AutomationsRedirect from '../../components/automations/AutomationsRedirect';
 ---
+
+<DashboardLayout titleKey="titles.jobs">
+  <AutomationsRedirect client:load />
+  <noscript><a href="/jobs">/jobs</a></noscript>
+</DashboardLayout>

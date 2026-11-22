@@ -134,6 +134,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/contractQuantities.ts': 'billing: contract quantities',
   'services/endpointMessaging/history.ts': 'read model: endpoint message send history and per-device delivery detail (#8742); lists existing deliveries, selects no targets',
   'services/deviceStats.ts': 'read model: fleet device counts by status (GET /devices/stats and the AI tool); excludes parked devices',
+  'services/wisp/standingLoop.ts': 'read model (#11677): the Wisp standing state counts and names offline devices through deviceListReachConditions (query_devices\' own reach, parked and Quick Support devices out) for the per-turn prompt; selects no targets and runs nothing',
   'services/hardwareLifecycleReport.ts': 'report: hardware lifecycle',
   'services/partnerDeviceCapacity.ts': 'billing: partner device capacity',
   'services/portal/backupReadModel.ts': 'read model: portal backups',
@@ -222,6 +223,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/learnedNetworks/maintenance.ts': 'derived: refreshes learned-network last-seen times from device confirmations the heartbeat already accepted and applies retention; selects no device to act on',
   'services/aiAgents/analysisFrame.ts': 'analysis frame (W02 analysis sessions): expands one customer org or site the coordinator already checked against GrantCeiling.orgIds, which never contains a holding org, so a parked device cannot match; selects read scope for a run that cannot act',
   'services/aiAgents/analysisRunSite.ts': 'checks that the input devices an analysis run already names sit in its recorded site; selects no targets',
   'services/oemUpdates/revalidation.ts': 'vendor update claim recheck (#11065): reads the partner of the one device being claimed; selects no targets. A parked device is cancelled by partitionClaimable first',
@@ -373,7 +375,6 @@ const EXEMPT: Record<string, string> = {
   'services/aiToolsRestoreAuthorization.ts': 'org-pinned: target device must match the snapshot\'s org, always a real org',
   'services/aiToolsSLABackup.ts': 'org-pinned: writes require an explicit real org id; reads are org-scoped compliance views',
   'services/aiToolsSentinelOne.ts': 'org-pinned: actions require an active integration row for the org, which a person configures for real orgs only',
-  'services/aiToolsSiteScope.ts': 'derived: shared helper queries devices by a caller-supplied, already-scoped org id',
   'services/alertConditions/handlers/networkCheck.ts': 'derived: evaluates only the device the guarded alert sweep selected',
   'services/alertConditions/utils.ts': 'derived: per-device lookups keyed on a device handed in by a guarded sweep',
   'services/alertService.ts': 'derived: alert creation keyed on a device from guarded worker fan-out; auto-resolve only closes existing rows',

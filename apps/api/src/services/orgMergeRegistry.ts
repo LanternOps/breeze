@@ -762,6 +762,10 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
     + 'A blind repoint-dedupe DELETE would cascade-delete those values once device_custom_field_values lands (W05). '
     + 'The collision predicate is org_id-equality on both sides, so partner-wide definitions (org_id NULL, #2135) are never touched by an org merge.' },
   pam_signer_groups: { kind: 'custom', note: 're-home pam_rules.match_signer_group_id onto the survivor group with the same name, then delete the duplicate (the FK is ON DELETE RESTRICT — a plain dedupe DELETE raises 23503)' },
+  // Learned networks (#12369 W01a): unlike the block above, every learned-network FK is DEFERRABLE INITIALLY
+  // IMMEDIATE and the fold relies on the merge's SET CONSTRAINTS ALL DEFERRED. The collision is the
+  // non-deferrable unique learned_network_gateways_fingerprint_uniq, resolved per fingerprint in RESOLVE.
+  learned_networks: { kind: 'custom', note: 'fold identical fingerprints (gateway_mac, gateway_address) into the survivor in RESOLVE: re-point device rows and grants to the survivor fingerprint, merge a network whose fingerprints all fold into one survivor network, unassign one that would split; MOVE repoints the rest (learnedNetworks/orgMerge.ts)' },
   // CORRECTED (P2-3 review, #4190): `reports` was a plain `repoint` — correct
   // until P2-3 gave it its FIRST collidable unique index,
   // `reports_source_ai_agent_schedule_uniq (org_id, source_ai_agent_schedule_id)
@@ -1070,6 +1074,9 @@ const REPOINT_TABLES: readonly string[] = [
   "device_workloads",
   "devices",
   "discovery_jobs",
+  // Learned networks (#12369 W01a): grants were re-pointed to the survivor fingerprint by the learned_networks
+  // resolve half, and (profile_id, gateway_id) cannot collide across orgs.
+  "discovery_profile_snmp_grants",
   "discovery_profiles",
   "dns_event_aggregations",
   "dns_filter_integrations",
@@ -1153,6 +1160,12 @@ const REPOINT_TABLES: readonly string[] = [
   "invoice_payments",
   "invoice_stripe_payments",
   "invoices",
+  // Learned networks (#12369 W01a): colliding fingerprints are already gone after the learned_networks resolve
+  // half (CUSTOM_RESOLVE_EXECUTORS), so this repoint cannot hit learned_network_gateways_fingerprint_uniq.
+  // learned_networks itself is moved by its custom MOVE executor (moveLearnedNetworks).
+  "learned_network_devices",
+  "learned_network_gateways",
+  "learned_network_wan_addresses",
   "legacy_labour_pricing_archive",
   "local_vaults",
   "log_correlation_rules",

@@ -250,6 +250,19 @@ describe('useUnattestedRestoreStepUp', () => {
     expect(screen.queryByTestId('unattested-restore-stepup-confirm')).toBeNull();
   });
 
+  it('offers the backup authenticator app when the account has no passkey left (#10650)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/restore') return json(stepUpBody('mfa'), 403);
+      if (url === '/users/me') return json({ mfaEnabled: true, mfaMethod: 'passkey', totpEnrolled: true });
+      if (url === '/auth/passkeys') return json([]);
+      return json({}, 404);
+    });
+    render(<Harness />);
+    fireEvent.click(screen.getByText('Start restore'));
+    expect(await screen.findByTestId('unattested-restore-stepup-code')).toBeTruthy();
+  });
+
   it('an account whose only factor is text-message codes is told to add an authenticator app or passkey', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);

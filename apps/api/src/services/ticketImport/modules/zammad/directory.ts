@@ -135,6 +135,12 @@ export async function zammadPeople(
   src: SourceHandle<unknown>,
   ids: Iterable<number>,
   now: number = Date.now(),
+  /**
+   * At most this many per-user requests in this call (#11949 review). An id
+   * past the cap is answered null and NOT cached, so a later call can still
+   * read it. Unset (the import loads) means no cap.
+   */
+  maxUncachedLookups: number = Number.POSITIVE_INFINITY,
 ): Promise<Map<number, ZammadPerson | null>> {
   const entry = entryOf(src, now);
   if (!entry.users) {
@@ -143,8 +149,14 @@ export async function zammadPeople(
     entry.users = new Map(rows.map((u) => [u.id, personOf(u)]));
   }
   const out = new Map<number, ZammadPerson | null>();
+  let lookups = 0;
   for (const id of new Set(ids)) {
     if (!entry.users.has(id)) {
+      if (lookups >= maxUncachedLookups) {
+        out.set(id, null);
+        continue;
+      }
+      lookups += 1;
       try {
         entry.users.set(id, personOf(await getUser(src, id)));
       } catch (error) {

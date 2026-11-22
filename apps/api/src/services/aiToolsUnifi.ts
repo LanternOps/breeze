@@ -25,7 +25,8 @@ import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { siteAllowlistOf } from './aiToolsSiteScope';
 import { createUnifiClient, UnifiApiError } from './unifi/unifiClient';
 import { buildMappingHostList } from './unifi/unifiMappingHosts';
-import { getConnection, getDecryptedApiKey } from './unifi/unifiConnectionService';
+import { getConnection } from './unifi/unifiConnectionService';
+import { getSyncKeys, pickSingleSyncKey } from './unifi/unifiKeyService';
 import { listCollectors } from './unifi/unifiCollectorService';
 import { listControllerSitesForIntegration } from './unifi/unifiControllerSiteService';
 import { enqueueUnifiSync } from '../jobs/unifiWorker';
@@ -110,10 +111,18 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
           }
           case 'hosts': {
             if (!conn) return jsonError('Not connected', 'NOT_CONNECTED');
-            const apiKey = await inToolDbPhase(auth, () => getDecryptedApiKey(db, partnerId));
-            if (!apiKey) return jsonError('No API key found', 'NOT_CONNECTED');
+            const key = pickSingleSyncKey(await inToolDbPhase(auth, () => getSyncKeys(db, conn.id, partnerId)));
+            if (!key.ok) {
+              // W1 reads one key (#11808); a connection with several is refused, not read through one of them.
+              if (key.reason === 'multi_key') {
+                return jsonError('This connection has several API keys; this server version supports one', 'UNIFI_MULTI_KEY');
+              }
+              return jsonError(key.reason === 'decrypt_error'
+                ? 'The stored UniFi API key could not be read; reconnect the integration in Settings'
+                : 'No API key found', 'NOT_CONNECTED');
+            }
             try {
-              const client = createUnifiClient({ baseUrl: conn.baseUrl, apiKey });
+              const client = createUnifiClient({ baseUrl: key.baseUrl, apiKey: key.apiKey });
               const [hosts, allSites] = await runOutsideDbContext(() => Promise.all([client.listHosts(), client.listSites()]));
               const list = buildMappingHostList(hosts, allSites);
               return bounded({ hosts: list.hosts, omitted: list.omitted });
@@ -231,6 +240,8 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
       try {
         const conn = await getConnection(db, partner.partnerId);
         if (!conn) return jsonError('Not connected', 'NOT_CONNECTED');
+        // Only cloud connections sync; a queued job for a self-hosted one would do nothing.
+        if (conn.connectionType !== 'cloud') return jsonError('Self-hosted controllers are polled by their collectors; there is no cloud sync to run', 'NOT_CLOUD');
         await enqueueUnifiSync(conn.id, partner.partnerId, 'manual');
         return json({ queued: true, note: 'The sync runs in the background; read the outcome with get_unifi_status sync_runs.' });
       } catch (error) {

@@ -248,10 +248,10 @@ export function buildViewModel(
  * shared WORKSPACE_STYLES (the base element injects that one); clearContent
  * preserves every STYLE node, so both survive a re-render.
  */
-const DASHBOARD_STYLES = `
+export const DASHBOARD_STYLES = `
 .ws-dash {
-  color: #2a2723;
-  background: #f6f5f2;
+  color: inherit;
+  background: transparent;
   padding: 20px;
   display: grid;
   gap: 16px;
@@ -261,9 +261,9 @@ const DASHBOARD_STYLES = `
 .ws-dash * { box-sizing: border-box; }
 .ws-banner {
   grid-column: 1 / -1;
-  background: #fdf3dd;
-  border: 1px solid #e8c976;
-  color: #6b5217;
+  background: hsl(var(--warning) / 0.15);
+  border: 1px solid hsl(var(--warning) / 0.5);
+  color: inherit;
   border-radius: 8px;
   padding: 10px 14px;
   font-size: 13px;
@@ -274,17 +274,17 @@ const DASHBOARD_STYLES = `
   flex-wrap: wrap;
   gap: 8px;
   font-size: 12px;
-  color: #6b6558;
+  color: hsl(var(--muted-foreground));
 }
 .ws-jobs-strip .job {
-  background: #fff;
-  border: 1px solid #e4e0d8;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
   border-radius: 6px;
   padding: 4px 8px;
 }
 .ws-card {
-  background: #ffffff;
-  border: 1px solid #e4e0d8;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
   border-radius: 10px;
   padding: 16px;
 }
@@ -293,23 +293,23 @@ const DASHBOARD_STYLES = `
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.01em;
-  color: #4a4638;
+  color: hsl(var(--card-foreground));
   text-transform: uppercase;
 }
-.ws-empty { color: #8a8574; font-size: 13px; }
+.ws-empty { color: hsl(var(--muted-foreground)); font-size: 13px; }
 .ws-source-row, .ws-queue-row, .ws-activity-row, .ws-project-row {
   display: flex;
   justify-content: space-between;
   gap: 8px;
   padding: 6px 0;
-  border-bottom: 1px solid #f0eee7;
+  border-bottom: 1px solid hsl(var(--border));
   font-size: 13px;
 }
 .ws-source-row:last-child, .ws-queue-row:last-child,
 .ws-activity-row:last-child, .ws-project-row:last-child { border-bottom: none; }
-.ws-muted { color: #8a8574; font-size: 12px; }
-.ws-funnel { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; font-size: 12px; color: #6b6558; }
-.ws-funnel b { color: #2a2723; }
+.ws-muted { color: hsl(var(--muted-foreground)); font-size: 12px; }
+.ws-funnel { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; font-size: 12px; color: hsl(var(--muted-foreground)); }
+.ws-funnel b { color: hsl(var(--foreground)); }
 `;
 
 function formatTimestamp(iso: string | null): string {

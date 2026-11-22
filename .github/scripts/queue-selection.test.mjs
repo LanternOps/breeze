@@ -777,7 +777,7 @@ test('shadowCore: io.recordSource replaces io.records and its record goes throug
   assert.equal(queue.shadowCore(io, input).reason, 'entry_outside_p');
 });
 
-for (const reason of ['no_anchor', 'anchor_not_pinned', 'anchor_policy_in_p', 'no_verified_pr_run']) {
+for (const reason of ['no_anchor', 'anchor_not_pinned', 'anchor_policy_in_p', 'anchor_base_not_on_main', 'no_verified_pr_run']) {
   test(`shadowCore: a source that reports ${reason} means full, under that reason`, () => {
     const { io, input } = shadowIO();
     io.recordSource = () => ({ records: [], stats: { runs: 2 }, reason });

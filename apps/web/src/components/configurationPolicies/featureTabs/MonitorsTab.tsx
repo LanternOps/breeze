@@ -346,6 +346,9 @@ export default function MonitorsTab({
     >
       <DuplicateConditionNotice hits={findDuplicateConditions({ attached: items, catalog, inlineRules, watches })} />
       <div className="space-y-6">
+        <p data-testid="monitors-tab-help" className="text-sm text-muted-foreground">
+          {t('configurationPolicies.featureTabs.monitorsTab.helpText')}
+        </p>
         <div>
           <label className="text-sm font-medium" htmlFor="monitors-tab-attach-select">
             {i18n.t(
@@ -512,7 +515,15 @@ export default function MonitorsTab({
                           )}
                         </p>
                       ) : (
-                        <p className="truncate text-sm font-medium">{monitor?.name}</p>
+                        <p className="truncate text-sm font-medium">
+                          {monitor && (
+                            <a data-testid={`monitors-tab-item-link-${it.monitorId}`}
+                              href={`/alerts/monitors/${encodeURIComponent(it.monitorId)}`}
+                              className="text-primary hover:underline">
+                              {monitor.name}
+                            </a>
+                          )}
+                        </p>
                       )}
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                         {monitor?.kind && <span>{monitor.kind}</span>}

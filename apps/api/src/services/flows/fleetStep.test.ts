@@ -163,6 +163,12 @@ describe('executeFleetStep', () => {
     expect(out).toMatchObject({ kind: 'completed', output: { count: 0, warnings: ['empty group'], dispatchedDeviceIds: [] } });
   });
 
+  it('an empty fleet output reports zero counts', async () => {
+    m.select.mockResolvedValue({ kind: 'set', requested: [], found: [], warnings: [] });
+    const out = await executeFleetStep(input(), rendered, ctx, deps(null));
+    expect(out).toMatchObject({ kind: 'completed', output: { count: 0, succeededCount: 0, failedCount: 0 } });
+  });
+
   it('a refused selection is returned as is', async () => {
     m.select.mockResolvedValue({ kind: 'outcome', outcome: { kind: 'failed', code: 'targets_over_cap', message: 'x', policy: true } });
     expect(await executeFleetStep(input(), rendered, ctx, deps(binding()))).toMatchObject({ kind: 'failed', code: 'targets_over_cap' });

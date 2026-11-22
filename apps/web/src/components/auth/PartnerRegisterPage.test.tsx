@@ -55,7 +55,7 @@ const perDeviceOffer = {
 // "loaded + enabled" so the form renders; the disabled path has its own test.
 function setRegistration(enabled: boolean, loaded = true) {
   useFeaturesStore.setState({
-    features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false, vendorUpdates: false },
+    features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false, vendorUpdates: false, browserDesktop: false },
     cfAccessLogin: { enabled: false },
     registration: { enabled },
     loaded,

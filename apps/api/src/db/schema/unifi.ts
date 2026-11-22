@@ -13,6 +13,8 @@ import {
   inet,
   index,
   uniqueIndex,
+  unique,
+  foreignKey,
   check,
 } from 'drizzle-orm/pg-core';
 import { organizations, partners, sites } from './orgs';
@@ -39,6 +41,53 @@ export const unifiIntegrations = pgTable('unifi_integrations', {
   partnerActiveIdx: uniqueIndex('unifi_integrations_partner_active_idx')
     .on(table.partnerId)
     .where(sql`${table.isActive}`),
+  // Target of unifi_integration_keys' composite FK (#11808).
+  idPartnerUnique: unique('unifi_integrations_id_partner_unique').on(table.id, table.partnerId),
+}));
+
+// One encrypted UniFi Site Manager API key per row (#11808). Partner axis:
+// partner_id is pinned to the integration's by the composite FK. The ciphertext
+// keeps the legacy column-bound AAD tag: seal and open it ONLY through
+// columnAad(UNIFI_KEY_COLUMN_SPEC) (services/unifi/unifiKeyService.ts), never
+// decryptForColumn('unifi_integration_keys', ...).
+export const unifiIntegrationKeys = pgTable('unifi_integration_keys', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  integrationId: uuid('integration_id').notNull(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  label: text('label').notNull(),
+  apiKeyEncrypted: text('api_key_encrypted').notNull(),
+  keyLast4: varchar('key_last4', { length: 4 }),
+  isEnabled: boolean('is_enabled').notNull().default(true),
+  status: varchar('status', { length: 20 }).notNull().default('pending'),
+  lastSyncAt: timestamp('last_sync_at', { withTimezone: true }),
+  lastSyncStatus: varchar('last_sync_status', { length: 16 }),
+  lastSyncError: text('last_sync_error'),
+  lastOkAt: timestamp('last_ok_at', { withTimezone: true }),
+  hostsSeen: integer('hosts_seen'),
+  sitesSeen: integer('sites_seen'),
+  lastSeenHostIds: text('last_seen_host_ids').array(),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  integrationFk: foreignKey({
+    columns: [table.integrationId, table.partnerId],
+    foreignColumns: [unifiIntegrations.id, unifiIntegrations.partnerId],
+    name: 'unifi_integration_keys_integration_fk',
+  }).onDelete('cascade'),
+  labelIdx: uniqueIndex('unifi_integration_keys_label_idx')
+    .on(table.integrationId, sql`lower(btrim(${table.label}))`),
+  integrationIdx: index('unifi_integration_keys_integration_idx')
+    .on(table.integrationId, table.createdAt, table.id),
+  labelCheck: check('unifi_integration_keys_label_chk', sql`char_length(btrim(${table.label})) BETWEEN 1 AND 100`),
+  statusCheck: check(
+    'unifi_integration_keys_status_chk',
+    sql`${table.status} IN ('pending', 'connected', 'reauth_required', 'error')`,
+  ),
+  lastSyncStatusCheck: check(
+    'unifi_integration_keys_last_sync_status_chk',
+    sql`${table.lastSyncStatus} IS NULL OR ${table.lastSyncStatus} IN ('success', 'failed', 'skipped')`,
+  ),
 }));
 
 export const unifiSiteMappings = pgTable('unifi_site_mappings', {

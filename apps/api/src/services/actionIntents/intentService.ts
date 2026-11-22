@@ -1,6 +1,7 @@
 import { flowBuiltinTierFor, isFlowBuiltin, isTenantToolName, remediationTriggerSchema, type RemediationTrigger, AI_APPROVAL_TIMEOUT_MAX_MINUTES, AI_APPROVAL_TIMEOUT_MIN_MINUTES } from '@breeze/shared';
-import { buildActionLabel, describePax8Action, describePax8Submit, hasDeviceIdStub } from './actionLabel';
+import { buildActionLabel, describePax8Action, describePax8Submit, hasDeviceIdStub, hasTicketIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
+import { argumentTicketId, resolveApprovalTicketNumber } from './approvalTicketNumber';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { isMcpOriginIntent } from '../mcpIntentEligibility';
@@ -2278,14 +2279,30 @@ export async function createActionIntent(
   // left the raw stub as the mobile takeover's headline, so resolve the
   // device THESE arguments name. One indexed, org-pinned read, and only when
   // the label really carries this call's stub — no read at all for the many
-  // tools whose description never mentions a device.
+  // tools whose description never mentions a device. #11674: the name follows
+  // the FILING principal's site scope (`auth`: org condition, site allowlist,
+  // exact-device ceiling); a device outside it keeps the stub.
   let labelDeviceName = scopedDeviceHostname;
   if (!labelDeviceName && labelReason) {
     const argDeviceId = argumentDeviceId(input.input);
     if (argDeviceId && hasDeviceIdStub(labelReason, argDeviceId)) {
-      labelDeviceName = await resolveApprovalDeviceName(argDeviceId, orgId);
+      labelDeviceName = await resolveApprovalDeviceName(argDeviceId, orgId, auth);
     }
   }
+  // #11674: the same for a ticket. "ticket #2aad0601..." becomes
+  // "ticket T-2026-0001" in the label the /approvals queue and the push show.
+  // The number only (never subject, requester or text), pinned to the intent's
+  // org and cut to the FILING principal's reach (`auth`: org condition, and
+  // site/device scope for a device-bound ticket), because that principal can
+  // read this label back from its own approval row. A ticket outside that
+  // reach, or a principal with no org condition, keeps the stub. Read only
+  // when the label carries the stub of the ticket THIS call acts on
+  // (`expectedTicketId` for a comment edit or delete). A flow step's label
+  // names no ticket, so it costs no read.
+  const labelTicketId = flowRunFacts ? null : argumentTicketId(input.toolName, input.input);
+  const labelTicketNumber = labelTicketId && labelReason && hasTicketIdStub(labelReason, labelTicketId)
+    ? await resolveApprovalTicketNumber(labelTicketId, orgId, auth)
+    : null;
   // Tool catalog W04 (#5219), spec §6.5 card copy: a flow step reads
   // "Flow <name>" / "Step <id>: <tool>" — both from the server run.
   const actionLabel = flowRunFacts
@@ -2295,6 +2312,8 @@ export async function createActionIntent(
       input: input.input,
       reason: labelReason,
       deviceHostname: labelDeviceName,
+      ticketId: labelTicketId,
+      ticketNumber: labelTicketNumber,
     });
   const expiresAt = computeExpiresAt(input.source, approvalScope, input.chatApprovalWindowMs);
   const requestingClientLabel = flowRunFacts

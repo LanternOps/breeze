@@ -2695,8 +2695,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         : contextDescription;
       // #11674: what the chat card shows. The guardrail headline names a
       // ticket or a device by an id stub; the card names them by ticket number
-      // and device name (the intent service does the device half for the
-      // stored label, so `description` itself — the intent's reason — is left
+      // and device name (the intent service does the same for the stored label,
+      // approvalDeviceName.ts and approvalTicketNumber.ts, so `description`
+      // itself — the intent's reason — is left
       // as is). The ticket's subject and requester ride as `ticketContext` for
       // the card body, never in a headline. Both reads are non-fatal.
       const cardTicketId = argumentTicketId(toolName, input as Record<string, unknown>);

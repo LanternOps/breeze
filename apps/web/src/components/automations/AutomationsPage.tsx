@@ -531,14 +531,15 @@ export default function AutomationsPage() {
           <h1 className="text-xl font-semibold tracking-tight">{t('automationsPage.title')}</h1>
           <p className="text-muted-foreground">{t('automationsPage.description')}</p>
         </div>
-        {/* R1 (#5221 Decision 8): with Flows on, "New job" opens Flows (POST /automations is 410). */}
+        {/* #12310: always the Job form. A flow can only be drafted in AI chat, so
+            sending "New job" to Flows left people with nowhere to create one. */}
         <a
-          href={flowsOn ? '/flows' : '/jobs/new'}
+          href="/jobs/new"
           data-testid="automations-new"
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <Plus className="h-4 w-4" />
-          {flowsOn ? t('flows:jobs.migration.newJobOpensFlows') : t('automationsPage.actions.new')}
+          {t('automationsPage.actions.new')}
         </a>
       </div>
 
