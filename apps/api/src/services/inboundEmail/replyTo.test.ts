@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeReplyTo } from './replyTo';
+import { normalizeReplyTo, replyToUnlessOwn } from './replyTo';
 
 describe('normalizeReplyTo (syntax only: exactly one usable address, else undefined)', () => {
   it('parses a single Reply-To', () => {
@@ -74,5 +74,23 @@ describe('normalizeReplyTo (syntax only: exactly one usable address, else undefi
     expect(normalizeReplyTo([{ emailAddress: { address: 'jane@customer.example, other@customer.example' } }]))
       .toBeUndefined();
     expect(normalizeReplyTo([{ emailAddress: {} }])).toBeUndefined();
+  });
+});
+
+describe('replyToUnlessOwn (normalizer loop guard)', () => {
+  it('drops the receiving mailbox, case-insensitively', () => {
+    expect(replyToUnlessOwn('support@acme-msp.example', 'Support@Acme-MSP.example')).toBeUndefined();
+  });
+
+  it('drops a plus-subaddress of the receiving mailbox (delivered to the same mailbox)', () => {
+    expect(replyToUnlessOwn('support+t1@acme-msp.example', 'support@acme-msp.example')).toBeUndefined();
+    expect(replyToUnlessOwn('support+@acme-msp.example', 'Support@Acme-MSP.example')).toBeUndefined();
+    expect(replyToUnlessOwn('support@acme-msp.example', 'support+tickets@acme-msp.example')).toBeUndefined();
+  });
+
+  it('keeps a different mailbox: no dot folding, other domains, other local parts', () => {
+    expect(replyToUnlessOwn('sup.port@acme-msp.example', 'support@acme-msp.example')).toBe('sup.port@acme-msp.example');
+    expect(replyToUnlessOwn('support+t1@other.example', 'support@acme-msp.example')).toBe('support+t1@other.example');
+    expect(replyToUnlessOwn('supporter@acme-msp.example', 'support@acme-msp.example')).toBe('supporter@acme-msp.example');
   });
 });

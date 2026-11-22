@@ -83,8 +83,33 @@ export function normalizeReplyTo(raw: unknown): string | undefined {
   return address && isUsableAddress(address) ? address : undefined;
 }
 
-/** `replyTo` unless it names the mailbox the message was delivered to (a loop). */
+/**
+ * The mailbox an address delivers to, for own-address comparisons: lower-cased,
+ * with any `+tag` subaddress dropped from the local part. Exchange Online and
+ * Gmail both deliver `support+anything@x` to `support@x`, so a Reply-To naming
+ * a subaddress of one of our mailboxes loops just as the bare address would.
+ * No other folding (Gmail ignores dots, but most mailboxes do not, so
+ * `sup.port@x` stays a different address).
+ */
+export function mailboxBaseAddress(address: string): string {
+  const a = address.trim().toLowerCase();
+  const at = a.lastIndexOf('@');
+  if (at < 0) return a;
+  const local = a.slice(0, at);
+  const plus = local.indexOf('+');
+  return (plus < 0 ? local : local.slice(0, plus)) + a.slice(at);
+}
+
+/** True when `a` and `b` deliver to the same mailbox (see mailboxBaseAddress). */
+export function isSameMailbox(a: string, b: string): boolean {
+  return mailboxBaseAddress(a) === mailboxBaseAddress(b);
+}
+
+/**
+ * `replyTo` unless it names the mailbox the message was delivered to, or a
+ * subaddress of it (a loop).
+ */
 export function replyToUnlessOwn(replyTo: string | undefined, ownAddress: string): string | undefined {
   if (!replyTo) return undefined;
-  return replyTo === ownAddress.trim().toLowerCase() ? undefined : replyTo;
+  return isSameMailbox(replyTo, ownAddress) ? undefined : replyTo;
 }

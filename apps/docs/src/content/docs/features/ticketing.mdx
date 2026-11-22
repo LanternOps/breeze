@@ -150,7 +150,7 @@ A connected Microsoft 365 support mailbox sends via Graph from that mailbox (whi
 
 **Who receives it.** Customer mail about a ticket (the reply notice, the resolved notice, the merge notice and the ticket-received acknowledgement) goes to the requester's **reply address** only:
 
-- For a ticket created from email, that is the `Reply-To` of the message that created it, when that header held exactly one valid address and the sender passed sender authentication. A web form whose `From` is a no-reply relay and whose `Reply-To` is the customer is answered at the customer. A `Reply-To` that names one of your own support mailboxes or inbound addresses is ignored.
+- For a ticket created from email, that is the `Reply-To` of the message that created it, when that header held exactly one valid address and the sender passed sender authentication. A web form whose `From` is a no-reply relay and whose `Reply-To` is the customer is answered at the customer. A `Reply-To` that names one of your own support mailboxes or inbound addresses is ignored, including a plus-subaddress of one (`support+anything@`). Other aliases of a connected mailbox are not known to Breeze and are not caught.
 - Otherwise it is the requester's email address (the message's `From`, or the address on a portal or technician ticket).
 - A later follow-up's `Reply-To` never changes the address, and changing the requester's email on the ticket takes precedence over it.
 

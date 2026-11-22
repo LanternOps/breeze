@@ -15,10 +15,12 @@ vi.mock('../../db', () => {
     const chain = {
       from(t: { __t?: string }) { table = t.__t ?? 'unknown'; return chain; },
       where() { return chain; },
-      limit() {
+      limit() { return chain; },
+      // Awaiting the query (with or without .limit()) runs it.
+      then(resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) {
         state.queried.push(table);
-        if (state.fail) return Promise.reject(new Error('db down'));
-        return Promise.resolve(state.rows[table] ?? []);
+        if (state.fail) return Promise.reject(new Error('db down')).then(resolve, reject);
+        return Promise.resolve(state.rows[table] ?? []).then(resolve, reject);
       },
     };
     return chain;
@@ -92,8 +94,28 @@ describe('guardedReplyTo (ingest loop guard, email-first replies W1)', () => {
   });
 
   it('Reply-To equal to the connected mailbox is not stored', async () => {
-    state.rows.ticket_mailbox_connections = [{ id: 'conn-1' }];
+    state.rows.ticket_mailbox_connections = [{ mailboxAddress: 'Support@Acme-MSP.example' }];
     await expect(guardedReplyTo(email('support@acme-msp.example'), 'p-1')).resolves.toBeUndefined();
+  });
+
+  it('Reply-To that is a plus-subaddress of a connected mailbox is not stored', async () => {
+    state.rows.ticket_mailbox_connections = [{ mailboxAddress: 'Support@Acme-MSP.example' }];
+    await expect(guardedReplyTo(email('support+t1@acme-msp.example'), 'p-1')).resolves.toBeUndefined();
+  });
+
+  it('keeps a different address on a connected mailbox domain (no dot folding)', async () => {
+    state.rows.ticket_mailbox_connections = [{ mailboxAddress: 'support@acme-msp.example' }];
+    await expect(guardedReplyTo(email('sales@acme-msp.example'), 'p-1')).resolves.toBe('sales@acme-msp.example');
+    await expect(guardedReplyTo(email('sup.port@acme-msp.example'), 'p-1')).resolves.toBe('sup.port@acme-msp.example');
+  });
+
+  it("drops a plus-subaddress of the partner's configured inbound address", async () => {
+    state.rows.partners = [{ slug: 'acme', inboundLocalPart: null, settings: { ticketing: { inbound: { address: 'Help@Acme-MSP.example' } } } }];
+    await expect(guardedReplyTo(email('help+x@acme-msp.example'), 'p-1')).resolves.toBeUndefined();
+  });
+
+  it('drops a plus-subaddress of the recipient mailbox', async () => {
+    await expect(guardedReplyTo(email('support+x@acme-msp.example', { to: 'support@acme-msp.example' }), 'p-1')).resolves.toBeUndefined();
   });
 
   it('fails closed to no Reply-To (From is used) when the lookup errors', async () => {

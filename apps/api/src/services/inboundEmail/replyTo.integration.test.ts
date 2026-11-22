@@ -141,6 +141,7 @@ describe('Reply-To at ingest (real driver, system context)', () => {
 
   it.each([
     ['a connected mailbox', () => fx.mailbox.toUpperCase()],
+    ['a plus-subaddress of a connected mailbox', () => fx.mailbox.replace('@', '+t1@')],
     ['a partner inbound domain', () => `other@${fx.domain}`],
   ])('Reply-To equal to %s is not stored', async (_label, replyTo) => {
     const email = buildEmail({ from: fx.janeEmail, replyTo: replyTo().toLowerCase() });
