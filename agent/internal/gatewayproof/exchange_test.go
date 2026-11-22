@@ -110,7 +110,8 @@ func TestExchange_Resends(t *testing.T) {
 	// Tight lower bounds (the schedule never runs early), loose upper bounds (loaded runners).
 	for i, want := range []time.Duration{0, resendInterval, 2 * resendInterval} {
 		got := writes[i].Sub(start)
-		if got < want || got > want+150*time.Millisecond {
+		// 20 ms below allows for a coarse clock tick (Windows); the schedule itself never runs early.
+		if got < want-20*time.Millisecond || got > want+150*time.Millisecond {
 			t.Errorf("write %d at %v, want %v (+150ms slack)", i, got, want)
 		}
 	}

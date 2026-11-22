@@ -127,6 +127,9 @@ func TestBPFConn_FramesDoNotAliasReadBuffer(t *testing.T) {
 // 0 bytes, which os.File reports as io.EOF; that must be a timeout slice, not a
 // closed device. A regular file is never in the poller, so it drives this path.
 func TestBPFConn_NonPollableReadTimeoutSlices(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("BPF is darwin only; Windows file reads and clock make this timing test meaningless")
+	}
 	empty, err := os.CreateTemp(t.TempDir(), "bpf-empty")
 	if err != nil {
 		t.Fatal(err)

@@ -105,7 +105,8 @@ func TestRunLab(t *testing.T) {
 		tracef(ctx, "mech=fake")
 		r := script[n]
 		n++
-		time.Sleep(time.Duration(n) * time.Millisecond)
+		// Spaced well past one tick of a coarse (Windows) clock, so the median is non-zero.
+		time.Sleep(time.Duration(n) * 20 * time.Millisecond)
 		return r.mac, r.err
 	}
 	var out bytes.Buffer
