@@ -21,6 +21,7 @@ import { navigateTo } from '@/lib/navigation';
 import { Drawer } from '../../shared/Drawer';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { registryFriendly } from './surfaceLabels';
+import { useJobPoll } from './useJobPoll';
 import OfferingToolsSection, { buildToolsPatch, toolsDraftFrom, type ToolGaps, type ToolsDraft } from './OfferingToolsSection';
 
 const PREMIUM_PERMISSION = AI_MODEL_REQUIRED_PERMISSION_CHOICES[0];
@@ -196,6 +197,8 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
   const [tools, setTools] = useState<ToolsDraft>(initialTools);
   const [toolGaps, setToolGaps] = useState<ToolGaps | null>(null);
   const friendly = registryFriendly(t);
+  // #12456: Verify finishes in a background job; re-read the snapshot until this row's verification changes.
+  const pollForVerify = useJobPoll(JSON.stringify(offering.verification), onSaved);
 
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
   const support = offering.optionSupport;
@@ -235,6 +238,7 @@ export default function OfferingDrawer({ offering, offerings, envManaged = false
         friendly,
         onUnauthorized,
       });
+      pollForVerify();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.offering.verifyFailed') });

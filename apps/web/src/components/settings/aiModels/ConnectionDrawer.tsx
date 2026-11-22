@@ -12,6 +12,7 @@ import { isBaseUrlRefusal, registryFriendly } from './surfaceLabels';
 import { ConnectionKindForm, type KindDraft } from './connectionForms/ConnectionKindForm';
 import type { OpenAiDraft as OpenAiDraftT } from './connectionForms/OpenAiCompatibleConnectionForm';
 import type { AddableConnectionKind } from './connectionForms/connectionKinds';
+import { useJobPoll } from './useJobPoll';
 
 type CatalogEntry = AiModelsSnapshotDto['catalog'][number];
 
@@ -57,6 +58,8 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
   const [savedEndpoint, setSavedEndpoint] = useState<{ value: string | null } | null>(null);
   const busy = saving || disconnecting || refreshing;
   const friendly = registryFriendly(t);
+  // #12456: Refresh finishes in a background job; re-read the snapshot until discovery stamps the connection again.
+  const pollForRefresh = useJobPoll(`${connection?.lastDiscoveredAt}|${connection?.discoveryError}|${connection?.verifiedAt}`, onSaved);
 
   const storedEndpoint = savedEndpoint ? savedEndpoint.value : connection?.catalogEntryId ?? null;
   const keyDirty = apiKey.trim() !== '';
@@ -276,6 +279,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
         friendly,
         onUnauthorized,
       });
+      pollForRefresh();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.connections.refreshFailed') });
