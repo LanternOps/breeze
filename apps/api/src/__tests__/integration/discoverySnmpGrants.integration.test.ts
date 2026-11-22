@@ -13,13 +13,26 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql, type SQL } from 'drizzle-orm';
+
+// The concurrency barrier (Task 5): lockProfileForSave is the real function behind a spy, so a test can pause one
+// save right after it holds its site locks and its profile row lock.
+const lockSeam = vi.hoisted(() => ({
+  real: null as null | typeof import('../../services/learnedNetworks/profileSaveLock').lockProfileForSave,
+}));
+vi.mock('../../services/learnedNetworks/profileSaveLock', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/learnedNetworks/profileSaveLock')>();
+  lockSeam.real = actual.lockProfileForSave;
+  return { ...actual, lockProfileForSave: vi.fn(actual.lockProfileForSave) };
+});
 
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { discoveryProfiles } from '../../db/schema';
 import { discoveryRoutes } from '../../routes/discovery';
+import { loadProfileForDispatch } from '../../services/learnedNetworks/attempt';
 import { evaluateDiscoveryGate, gateProfileFromRow, type GateDecision } from '../../services/learnedNetworks/gate';
+import { lockProfileForSave } from '../../services/learnedNetworks/profileSaveLock';
 import { lockSitesForNetworkGate } from '../../services/learnedNetworks/siteLock';
 import { bindUnrestrictedProfilesOnGating } from '../../services/learnedNetworks/snmpGrants';
 import { decryptSnmpCommunities, encryptSnmpCommunities } from '../../services/snmpSecrets';
@@ -383,5 +396,198 @@ describe('W03b credential sequences', () => {
     expect(await storedCommunities(P)).toEqual(['public-a']);
     expect(allowed(await gateFor(P))).toBe('unrestricted');
   });
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Concurrency: the lock order on real Postgres. Ordering points are proven by pg_stat_activity, never by a sleep.
+// ---------------------------------------------------------------------------------------------------------
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), 10_000);
+    })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function backendPid(): Promise<number> {
+  const [row] = await db.execute<{ pid: number }>(sql`SELECT pg_backend_pid() AS pid`);
+  return row!.pid;
+}
+
+/** Pauses the next lockProfileForSave right after it returns (site locks and the row lock held). */
+function pauseNextProfileLock() {
+  const locked = deferred();
+  const release = deferred();
+  const state = { pid: 0, locked: locked.promise, release: () => release.resolve() };
+  vi.mocked(lockProfileForSave).mockImplementationOnce(async (input) => {
+    const row = await lockSeam.real!(input);
+    state.pid = await backendPid();
+    locked.resolve();
+    await bounded(release.promise, 'barrier release');
+    return row;
+  });
+  return state;
+}
+
+const WAIT_PREDICATE = {
+  advisory: sql`wait_event = 'advisory'`,
+  row: sql`wait_event_type = 'Lock' AND wait_event IN ('transactionid', 'tuple')`,
+} as const;
+
+/** Resolves once `count` backends wait on `blockerPid` for the given kind of lock. */
+async function waitBlockedBy(blockerPid: number, kind: keyof typeof WAIT_PREDICATE, count = 1): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const [row] = await admin<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM pg_stat_activity
+       WHERE ${blockerPid}::integer = ANY(pg_blocking_pids(pid)) AND ${WAIT_PREDICATE[kind]}`);
+    if ((row?.n ?? 0) >= count) return;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`no ${count} backend(s) waited on ${blockerPid} for a ${kind} lock`);
+}
+
+function sqlState(error: unknown): string | undefined {
+  for (let current: unknown = error, depth = 0; current && depth < 8; depth++) {
+    const value = current as { code?: unknown; cause?: unknown };
+    if (typeof value.code === 'string' && /^[0-9A-Z]{5}$/.test(value.code)) return value.code;
+    current = value.cause;
+  }
+  return undefined;
+}
+
+function expectNo40P01(...outcomes: PromiseSettledResult<unknown>[]): void {
+  for (const outcome of outcomes) {
+    if (outcome.status === 'rejected') expect(sqlState(outcome.reason)).not.toBe('40P01');
+  }
+}
+
+function statusOf(outcome: PromiseSettledResult<Response>): number {
+  if (outcome.status === 'rejected') throw outcome.reason;
+  return outcome.value.status;
+}
+
+describe('W03b concurrency', () => {
+  // X = masked save (credentials omitted, retained). Y = move to site B with a full re-entry.
+  const maskedX = (P: string) => patchProfile(P, { name: 'renamed', snmpCommunities: [MASK] });
+  const moveY = (P: string) => patchProfile(P, { siteId: fx.siteB, snmpCommunities: ['public-b'], snmpCredentials: null });
+
+  describe("S4 concurrent saves never pair one save's secrets with another's grants", () => {
+    it.each(['mover first', 'masked save first'] as const)('%s', async (order) => {
+      const P = await credentialedProfileOnA();
+      const first = order === 'mover first' ? moveY : maskedX;
+      const second = order === 'mover first' ? maskedX : moveY;
+      const barrier = pauseNextProfileLock();
+      const a = first(P);
+      let b: Promise<Response> | undefined;
+      let outcomes: PromiseSettledResult<Response>[] = [];
+      try {
+        await bounded(barrier.locked, 'first save holds its locks');
+        b = second(P);
+        await waitBlockedBy(barrier.pid, 'row');
+      } finally {
+        barrier.release();
+        outcomes = await Promise.allSettled([a, ...(b ? [b] : [])]);
+      }
+      expect(outcomes).toHaveLength(2);
+      expectNo40P01(...outcomes);
+      expect(await storedCommunities(P)).toEqual(['public-b']);
+      expect((await profileRow(P)).siteId).toBe(fx.siteB);
+      expect(allowed(await gateFor(P))).toEqual([fx.G_B]);   // never 'public-a' behind G_B
+      const [ra, rb] = outcomes as [PromiseSettledResult<Response>, PromiseSettledResult<Response>];
+      if (order === 'mover first') {
+        expect(statusOf(ra)).toBe(200);
+        expect(statusOf(rb)).toBe(409);                       // X saw site A; the row is now on B
+      } else {
+        expect([statusOf(ra), statusOf(rb)]).toEqual([200, 200]);
+      }
+    }, 45_000);
+  });
+
+  it('a dispatch-shaped reader waits for the save and sees its secrets and grants together', async () => {
+    const P = await credentialedProfileOnA();
+    const barrier = pauseNextProfileLock();
+    // Full re-entry narrowed to N_A: secrets become 'public-b', grants {G_A, G_A2} -> {G_A}.
+    const save = patchProfile(P, { networkId: fx.N_A, snmpCommunities: ['public-b'], snmpCredentials: null });
+    let reader: Promise<{ communities: string[]; decision: GateDecision }> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      await bounded(barrier.locked, 'save holds its locks');
+      // As W03a's dispatch reads: the shared site lock, then the profile row FOR SHARE, then the gate.
+      reader = inSystemTx(async () => {
+        await lockSitesForNetworkGate([fx.siteA], 'shared');
+        const row = await loadProfileForDispatch(P);
+        if (!row) throw new Error('profile gone');
+        const decision = await evaluateDiscoveryGate({ orgId: row.orgId, siteId: row.siteId, profile: gateProfileFromRow(row) });
+        return { communities: decryptSnmpCommunities(row.snmpCommunities), decision };
+      });
+      await waitBlockedBy(barrier.pid, 'row');
+    } finally {
+      barrier.release();
+      outcomes = await Promise.allSettled([save, ...(reader ? [reader] : [])]);
+    }
+    expect(outcomes).toHaveLength(2);
+    expectNo40P01(...outcomes);
+    expect(statusOf(outcomes[0] as PromiseSettledResult<Response>)).toBe(200);
+    const read = outcomes[1]!;
+    if (read.status === 'rejected') throw read.reason;
+    const { communities, decision } = read.value as { communities: string[]; decision: GateDecision };
+    expect(communities).toEqual(['public-b']);
+    expect(allowed(decision)).toEqual([fx.G_A]);
+  }, 45_000);
+
+  // P1 (secrets, unrestricted) on C moves to D; P2 (secrets, unrestricted) on D moves to C; both with fresh secrets.
+  // A third transaction (the exclusive participant) gates site C while both saves wait.
+  it('T4 opposing moves do not deadlock', async () => {
+    const P1 = await createProfile({ siteId: fx.siteC, snmpCommunities: ['public-a'] });
+    const P2 = await createProfile({ siteId: fx.siteD, snmpCommunities: ['public-a'] });
+    const participantLocked = deferred();
+    const participantRelease = deferred();
+    let participantPid = 0;
+    const participant = inSystemTx(async () => {
+      await db.execute(sql`SET LOCAL statement_timeout = '15s'`);
+      await lockSitesForNetworkGate([fx.siteC, fx.siteD], 'exclusive');
+      participantPid = await backendPid();
+      participantLocked.resolve();
+      await bounded(participantRelease.promise, 'participant release');
+      await db.execute(sql`UPDATE sites SET discovery_network_required = true WHERE id = ${fx.siteC}::uuid`);
+      await db.execute(sql`UPDATE learned_networks SET site_id = ${fx.siteC}::uuid WHERE id = ${fx.N_C}::uuid`);
+      return bindUnrestrictedProfilesOnGating({ orgId: fx.orgId, siteId: fx.siteC, networkId: fx.N_C, actorUserId: fx.actorUserId });
+    });
+    const moveProfile = (id: string, siteId: string) =>
+      patchProfile(id, { siteId, snmpCommunities: ['public-b'], snmpCredentials: null });
+    let s1: Promise<Response> | undefined;
+    let s2: Promise<Response> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      await bounded(participantLocked.promise, 'participant holds the exclusive site locks');
+      s1 = moveProfile(P1, fx.siteD);
+      s2 = moveProfile(P2, fx.siteC);
+      await waitBlockedBy(participantPid, 'advisory', 2);
+      // Neither save holds a profile row while it waits on a site lock:
+      await expect(getTestDb().transaction((tx) => tx.execute(sql`
+        SELECT id FROM discovery_profiles WHERE id IN (${P1}::uuid, ${P2}::uuid) FOR UPDATE NOWAIT`))).resolves.toBeDefined();
+    } finally {
+      participantRelease.resolve();
+      outcomes = await Promise.allSettled([participant, ...(s1 ? [s1] : []), ...(s2 ? [s2] : [])]);
+    }
+    expect(outcomes).toHaveLength(3);
+    expectNo40P01(...outcomes);
+    expect(outcomes[0]).toMatchObject({ status: 'fulfilled', value: 1 });       // P1 was bound on C before it moved
+    expect([statusOf(outcomes[1] as PromiseSettledResult<Response>), statusOf(outcomes[2] as PromiseSettledResult<Response>)])
+      .toEqual([200, 200]);
+    expect(allowed(await gateFor(P1))).toBe('unrestricted');  // D is not gated
+    expect(allowed(await gateFor(P2))).toEqual([fx.G_C]);     // C gated before P2 arrived; full re-entry binds it
+  }, 45_000);
 });
 
