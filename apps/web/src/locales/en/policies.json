@@ -156,15 +156,15 @@
       "features": "Features",
       "noPoliciesFoundTryAdjustingYourSearch": "No policies found. Try adjusting your search.",
       "noPoliciesYet": "No configuration policies yet. Create one, then assign it to organizations, sites or devices.",
-      "partnerWidePolicyAppliesToEveryOrganization": "Partner-wide policy — applies to every organization",
-      "allOrgs": "Partner-wide",
       "page": "Page",
       "of2": "of",
       "itsOwningOrganization": "its owning organization",
-      "organizationPolicyTitle": "Organization policy — applies only to {{organization}}",
       "summary": "{{filtered}} of {{total}} policies",
-      "partnerPolicy": "Partner",
-      "partnerPolicyAppliesOnlyWhereAssigned": "Partner policy — applies only where it is assigned. Assign it to all organizations to make it partner-wide."
+      "appliesToHeader": "Applies to",
+      "managedByOrganization": "Managed by {{organization}}",
+      "notAppliedChip": "Not applied",
+      "inUseChip_one": "In use through {{count}} policy",
+      "inUseChip_other": "In use through {{count}} policies"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Failed to fetch configuration policies",

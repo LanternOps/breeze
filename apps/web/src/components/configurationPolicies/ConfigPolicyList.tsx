@@ -6,12 +6,19 @@ import {
   ChevronRight,
   Pencil,
   Trash2,
-  Building2,} from "lucide-react";
+  AlertTriangle,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { FilterSelect } from "../shared/FilterSelect";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { FEATURE_META, type FeatureType } from "./featureTabs/types";
+import {
+  appliesToState,
+  formatAppliesToTargets,
+  notAppliedTone,
+  parseAppliesTo,
+} from "./appliesToSummary";
 export type ConfigPolicyStatus = "active" | "inactive" | "archived";
 export type ConfigPolicy = {
   id: string;
@@ -25,10 +32,12 @@ export type ConfigPolicy = {
   parentPolicyId?: string | null;
   // Owning org's name, joined in by the list API for org-owned policies.
   orgName?: string | null;
-  // #9565: true only when a partner-owned policy has a partner-level ("all
-  // organizations") assignment. A partner policy without one applies to no
-  // organization until it is assigned, so it must not read as partner-wide.
+  // Still sent by the API; no longer read. The Applies to column below shows
+  // where a policy applies from `appliesTo` instead (#12306).
   hasPartnerWideAssignment?: boolean;
+  // Where the policy applies (#12306), parsed per row with parseAppliesTo.
+  // Absent when the API is a release behind: the row then claims nothing.
+  appliesTo?: unknown;
   createdAt?: string;
   updatedAt?: string;
   featureLinks?: {
@@ -68,6 +77,78 @@ const createStatusConfig = (): Record<
 // feature types and silently fell through to raw enum values for the rest.
 function featureTypeLabel(featureType: string): string {
   return FEATURE_META[featureType as FeatureType]?.label ?? featureType;
+}
+type AppliesTo = ReturnType<typeof parseAppliesTo>;
+
+// The first targets and +N, from the API's unfiltered count (#12306). An absent
+// or malformed summary is unknown: an em dash, never "Not applied".
+function AppliesToCell({ summary }: { summary: AppliesTo }) {
+  if (!summary || appliesToState(summary) !== "applied") {
+    return (
+      <span className="text-muted-foreground" aria-hidden="true">
+        &mdash;
+      </span>
+    );
+  }
+  const { shown, more } = formatAppliesToTargets(summary);
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {shown.map((target) => (
+        <span
+          key={target.key}
+          className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2 py-0.5 text-xs text-foreground"
+        >
+          {target.text}
+        </span>
+      ))}
+      {more > 0 && (
+        <span className="text-xs font-medium text-muted-foreground">+{more}</span>
+      )}
+    </div>
+  );
+}
+
+// One state chip beside the status: Not applied (a warning only when active)
+// or In use through N policies for a parent with no rows of its own.
+function AppliesToStateChip({
+  status,
+  summary,
+}: {
+  status: ConfigPolicyStatus;
+  summary: AppliesTo;
+}) {
+  if (!summary) return null;
+  const state = appliesToState(summary);
+  if (state === "in_use_through_children") {
+    return (
+      <span
+        className="inline-flex items-center rounded-full border bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground"
+        data-testid="config-policy-in-use-badge"
+      >
+        <Layers className="mr-1 h-3 w-3" aria-hidden="true" />
+        {i18n.t("policies:configurationPolicies.configPolicyList.inUseChip", {
+          count: summary.childPolicyCount,
+        })}
+      </span>
+    );
+  }
+  const tone = notAppliedTone(status, state);
+  if (!tone) return null;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
+        tone === "warning"
+          ? "border-warning/30 bg-warning/15 text-warning"
+          : "bg-muted/60 text-muted-foreground",
+      )}
+      data-testid="config-policy-not-applied-badge"
+      data-tone={tone}
+    >
+      {tone === "warning" && <AlertTriangle className="mr-1 h-3 w-3" aria-hidden="true" />}
+      {i18n.t("policies:configurationPolicies.configPolicyList.notAppliedChip")}
+    </span>
+  );
 }
 function formatDate(dateString?: string): string {
   if (!dateString) return "\u2014";
@@ -216,6 +297,11 @@ export default function ConfigPolicyList({
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-3">{i18n.t("common:labels.name")}</th>
+              <th className="px-4 py-3">
+                {i18n.t(
+                  "policies:configurationPolicies.configPolicyList.appliesToHeader",
+                )}
+              </th>
               <th className="px-4 py-3">{i18n.t("common:labels.status")}</th>
               <th className="px-4 py-3">
                 {i18n.t(
@@ -232,7 +318,7 @@ export default function ConfigPolicyList({
             {paginatedPolicies.length === 0 ? (
               <tr>
                 <td
-                  colSpan={5}
+                  colSpan={6}
                   className="px-4 py-6 text-center text-sm text-muted-foreground"
                 >
                   {hasNoPoliciesAtAll ? (
@@ -265,7 +351,9 @@ export default function ConfigPolicyList({
                 </td>
               </tr>
             ) : (
-              paginatedPolicies.map((policy) => (
+              paginatedPolicies.map((policy) => {
+                const appliesTo = parseAppliesTo(policy.appliesTo);
+                return (
                 <tr
                   key={policy.id}
                   className="text-sm"
@@ -273,51 +361,32 @@ export default function ConfigPolicyList({
                   data-policy-id={policy.id}
                 >
                   <td className="px-4 py-3 font-medium text-foreground">
-                    <div className="flex items-center gap-2">
-                      <span>{policy.name}</span>
-                      {policy.orgId === null && policy.hasPartnerWideAssignment === true && (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
-                          title={i18n.t(
-                            "policies:configurationPolicies.configPolicyList.partnerWidePolicyAppliesToEveryOrganization",
-                          )}
-                          data-testid="partner-wide-badge"
-                        >
-                          <Layers className="h-3 w-3" />
-                          {i18n.t(
-                            "policies:configurationPolicies.configPolicyList.allOrgs",
-                          )}
-                        </span>
-                      )}
-                      {policy.orgId === null && policy.hasPartnerWideAssignment !== true && (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground"
-                          title={i18n.t(
-                            "policies:configurationPolicies.configPolicyList.partnerPolicyAppliesOnlyWhereAssigned",
-                          )}
-                          data-testid="partner-policy-badge"
-                        >
-                          <Layers className="h-3 w-3" />
-                          {i18n.t(
-                            "policies:configurationPolicies.configPolicyList.partnerPolicy",
-                          )}
-                        </span>
-                      )}
-                      {policy.orgId !== null && (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground"
-                          title={i18n.t("policies:configurationPolicies.configPolicyList.organizationPolicyTitle", { organization: policy.orgName ?? i18n.t("policies:configurationPolicies.configPolicyList.itsOwningOrganization") })}
-                          data-testid="org-badge"
-                        >
-                          <Building2 className="h-3 w-3" />
-                          {policy.orgName ??
-                            i18n.t("common:labels.organization")}
-                        </span>
-                      )}
-                    </div>
+                    <span>{policy.name}</span>
+                    {/* Only an org-managed row names its manager; an
+                        MSP-managed row is the default and says nothing. */}
+                    {policy.orgId !== null && (
+                      <p
+                        className="mt-0.5 text-xs font-normal text-muted-foreground"
+                        data-testid="config-policy-managed-by"
+                      >
+                        {i18n.t(
+                          "policies:configurationPolicies.configPolicyList.managedByOrganization",
+                          {
+                            organization:
+                              policy.orgName ??
+                              i18n.t(
+                                "policies:configurationPolicies.configPolicyList.itsOwningOrganization",
+                              ),
+                          },
+                        )}
+                      </p>
+                    )}
+                  </td>
+                  <td className="px-4 py-3" data-testid="config-policy-applies-to-cell">
+                    <AppliesToCell summary={appliesTo} />
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <span
                         className={cn(
                           "inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium",
@@ -326,6 +395,7 @@ export default function ConfigPolicyList({
                       >
                         {statusConfig[policy.status].label}
                       </span>
+                      <AppliesToStateChip status={policy.status} summary={appliesTo} />
                       {policy.parentPolicyId && (
                         <span
                           className="inline-flex items-center rounded-full border bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground"
@@ -407,7 +477,8 @@ export default function ConfigPolicyList({
                     </div>
                   </td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>
