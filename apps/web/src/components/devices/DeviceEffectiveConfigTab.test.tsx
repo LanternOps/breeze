@@ -26,6 +26,8 @@ const mixedResponse = {
     { level: 'organization', targetId: 'org-1', policyId: 'pol-org', policyName: 'Org Patch Policy', priority: 10, featureTypes: ['patch'] },
     { level: 'default', targetId: 'breeze-defaults', policyId: 'breeze-defaults', policyName: 'Breeze Defaults', priority: 0, featureTypes: ['monitors'] },
   ],
+  // An org-owned policy links for any caller (#12306); the sentinel gets no entry.
+  policyOwners: { 'pol-org': 'organization' },
 };
 
 // Device whose real org policy enforces warranty (a feature type beyond the
@@ -94,6 +96,9 @@ const inheritedFeatureResponse = {
   ],
 };
 
+// The tab reads JWT scope to decide which policy names link (#12306); these
+// cases do not exercise links, so the scope stays unresolved.
+vi.mock('../../lib/authScope', () => ({ useJwtClaims: () => ({ status: 'unresolved' as const }) }));
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(async (url: string) => {
     const body = url.includes('dev-5')

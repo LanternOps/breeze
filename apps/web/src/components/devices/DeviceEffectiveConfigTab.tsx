@@ -34,7 +34,9 @@ import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 import { configFeatureLabel, configTargetLevelLabel } from "../configurationPolicies/configPolicyLabels";
+import { useJwtClaims } from "../../lib/authScope";
 import EffectiveContainmentSummary from "./EffectiveContainmentSummary";
+import { canOpenPolicy, lostClauses, type PolicyOwners } from "./effectiveConfigPrecedence";
 import { OEM_VENDOR_NAMES } from "./vendorUpdatesApi";
 import type { OemLane } from "@breeze/shared";
 
@@ -101,6 +103,9 @@ type EffectiveConfiguration = {
   deviceId: string;
   features: Record<string, ResolvedFeature>;
   inheritanceChain: InheritanceEntry[];
+  // #12306: who owns each winning and chain policy. Absent from an API a
+  // release behind; a policy with no entry is shown without a link.
+  policyOwners?: PolicyOwners;
 };
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -331,6 +336,7 @@ export default function DeviceEffectiveConfigTab({
   deviceId,
 }: DeviceEffectiveConfigTabProps) {
   const { t } = useTranslation("devices");
+  const jwtClaims = useJwtClaims();
   const [data, setData] = useState<EffectiveConfiguration | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -424,7 +430,20 @@ export default function DeviceEffectiveConfigTab({
     );
   }
 
-  const { features, inheritanceChain } = data;
+  const { features, inheritanceChain, policyOwners } = data;
+  const canOpen = (policyId: string) => canOpenPolicy(policyId, policyOwners, jwtClaims);
+  const policyName = (policyId: string, name: string, testId?: string) =>
+    canOpen(policyId) ? (
+      <a
+        href={`/configuration-policies/${policyId}`}
+        data-testid={testId}
+        className="font-medium text-primary hover:underline"
+      >
+        {name}
+      </a>
+    ) : (
+      <span className="font-medium text-foreground">{name}</span>
+    );
   // The synthetic "Breeze Defaults" layer (level 'default') is excluded from the
   // assigned-policy count AND the inheritance-chain table below — it is not a real
   // assigned policy and has no policy page to link to. Its feature types instead
@@ -503,13 +522,24 @@ export default function DeviceEffectiveConfigTab({
                     <h4 className="font-semibold">{label}</h4>
                     <p className="mt-0.5 text-xs text-muted-foreground">
                       {t("deviceEffectiveConfigTab.from")}{" "}
-                      <span className="font-medium text-foreground">
-                        {feature.sourcePolicyName}
-                      </span>{" "}
-                      <span className="inline-flex items-center rounded-full border bg-muted/50 px-1.5 py-0.5 text-xs text-muted-foreground">
-                        {configTargetLevelLabel(feature.sourceLevel)}
+                      {policyName(
+                        feature.sourcePolicyId,
+                        feature.sourcePolicyName,
+                        "effective-config-winner-link",
+                      )}
+                      {" · "}
+                      <span data-testid="effective-config-winner-level">
+                        {t("deviceEffectiveConfigTab.viaLevel", {
+                          level: configTargetLevelLabel(feature.sourceLevel),
+                        })}
                       </span>
                     </p>
+                    {!canOpen(feature.sourcePolicyId) &&
+                      policyOwners?.[feature.sourcePolicyId] === "partner" && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {t("deviceEffectiveConfigTab.managedByYourMsp")}
+                        </p>
+                      )}
                     {feature.inheritedFromPolicyId && (
                       <p
                         data-testid="effective-config-inherited-from"
@@ -586,23 +616,18 @@ export default function DeviceEffectiveConfigTab({
         </div>
       )}
 
-      {/* Inheritance chain — real assigned policies only (the synthetic
+      {/* Precedence — real assigned policies only (the synthetic
           "Breeze Defaults" node is excluded; see assignedChain above). */}
       {assignedChain.length > 0 && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h4 className="font-semibold mb-3">
             {t("deviceEffectiveConfigTab.inheritanceChain")}
           </h4>
-          <p className="text-xs text-muted-foreground">
-            {t(
-              "deviceEffectiveConfigTab.policiesAreResolvedUsingClosestWins",
-            )}{" "}
-          </p>
           <p
-            data-testid="inheritance-chain-rule"
-            className="mt-1 mb-4 text-xs text-muted-foreground"
+            data-testid="precedence-legend"
+            className="mb-4 text-xs text-muted-foreground"
           >
-            {t("deviceEffectiveConfigTab.chainResolutionRule")}
+            {t("deviceEffectiveConfigTab.precedenceLegend")}
           </p>
           <div className="overflow-hidden rounded-md border">
             <table className="min-w-full divide-y">
@@ -623,7 +648,9 @@ export default function DeviceEffectiveConfigTab({
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {assignedChain.map((entry) => (
+                {assignedChain.map((entry) => {
+                  const losses = lostClauses(entry, features as Partial<Record<FeatureType, ResolvedFeature>>);
+                  return (
                   <tr
                     key={`${entry.policyId}-${entry.level}-${entry.targetId}`}
                     className="text-sm"
@@ -637,12 +664,7 @@ export default function DeviceEffectiveConfigTab({
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <a
-                        href={`/configuration-policies/${entry.policyId}`}
-                        className="font-medium text-primary hover:underline"
-                      >
-                        {entry.policyName}
-                      </a>
+                      {policyName(entry.policyId, entry.policyName)}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1">
@@ -676,9 +698,30 @@ export default function DeviceEffectiveConfigTab({
                           );
                         })}
                       </div>
+                      {/* Why this row lost, visible: the chips' title is a
+                          tooltip that touch and keyboard users never see. */}
+                      {losses.length > 0 && (
+                        <p
+                          data-testid="chain-row-lost-reason"
+                          className="mt-1.5 text-xs text-muted-foreground"
+                        >
+                          {losses
+                            .map((loss) =>
+                              t("deviceEffectiveConfigTab.lostClause", {
+                                features: loss.featureTypes
+                                  .map((ft) => EFFECTIVE_FEATURE_META[ft]?.label ?? ft)
+                                  .join(", "),
+                                winner: loss.winnerPolicyName,
+                                reason: t(/* i18n-dynamic */ `deviceEffectiveConfigTab.lostReasons.${loss.reason}`),
+                              }),
+                            )
+                            .join(" ")}
+                        </p>
+                      )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

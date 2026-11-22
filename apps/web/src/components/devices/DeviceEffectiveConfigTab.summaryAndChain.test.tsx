@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import DeviceEffectiveConfigTab from './DeviceEffectiveConfigTab';
+import { FEATURE_META } from '../configurationPolicies/featureTabs/types';
 
 // #9565 — demo-video QA papercuts:
 //  (1) a card's settings summary followed JSONB key order, so the Maintenance
@@ -65,10 +66,30 @@ const response = {
     // The partner policy links maintenance too, but the org override won it.
     { level: 'partner', targetId: 'partner-1', policyId: 'pol-partner', policyName: 'MSP Baseline', priority: 0, featureTypes: ['maintenance', 'warranty'] },
   ],
+  // #12306: who owns each policy, so the tab links only what the caller can open.
+  policyOwners: { 'pol-org': 'organization', 'pol-partner': 'partner' },
 };
 
+// The response each render reads; a test may swap it before rendering.
+let currentResponse: unknown = response;
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn(async () => ({ ok: true, status: 200, statusText: 'OK', json: async () => response })),
+  fetchWithAuth: vi.fn(async () => ({ ok: true, status: 200, statusText: 'OK', json: async () => currentResponse })),
+}));
+
+// Partner scope by default (every policy openable); a test switches to an
+// organization-scope caller to check the MSP-managed winner is not linked.
+const { claimsRef } = vi.hoisted(() => ({
+  claimsRef: {
+    current: { scope: 'partner', partnerId: 'partner-1', orgId: null } as {
+      scope: 'partner' | 'organization';
+      partnerId: string | null;
+      orgId: string | null;
+    },
+  },
+}));
+vi.mock('@/lib/authScope', () => ({
+  useJwtClaims: () => ({ status: 'resolved' as const, claims: claimsRef.current }),
+  getJwtClaims: () => claimsRef.current,
 }));
 
 function summaryLines(cardHeading: string): string[] {
@@ -104,15 +125,20 @@ describe('DeviceEffectiveConfigTab per-feature summary (#9565)', () => {
 });
 
 describe('DeviceEffectiveConfigTab inheritance chain contributions (#9565)', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentResponse = response;
+  });
 
   function chainRow(policyName: string): HTMLElement {
-    return screen.getByRole('link', { name: policyName }).closest('tr') as HTMLElement;
+    // The card names the same policy, so pick the link inside the chain table.
+    const link = screen.getAllByRole('link', { name: policyName }).find((el) => el.closest('tr'));
+    return link!.closest('tr') as HTMLElement;
   }
 
   it('marks a feature a closer policy won as overridden, not contributed', async () => {
     render(<DeviceEffectiveConfigTab deviceId="dev-9565" />);
-    await screen.findByRole('heading', { name: 'Inheritance Chain' });
+    await screen.findByRole('heading', { name: 'Precedence' });
 
     const partnerRow = chainRow('MSP Baseline');
     const contributed = within(partnerRow).getAllByTestId('chain-feature-contributed');
@@ -130,11 +156,142 @@ describe('DeviceEffectiveConfigTab inheritance chain contributions (#9565)', () 
     ]);
   });
 
-  it('explains that level decides first and priority only breaks ties within a level', async () => {
+});
+
+describe('DeviceEffectiveConfigTab precedence: winner link, level and why others lost (#12306)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentResponse = response;
+    claimsRef.current = { scope: 'partner', partnerId: 'partner-1', orgId: null };
+  });
+
+  function card(heading: string): HTMLElement {
+    return screen.getByRole('heading', { level: 4, name: heading }).closest('div.rounded-lg') as HTMLElement;
+  }
+  function chainRowByText(policyName: string): HTMLElement {
+    const cell = screen.getAllByText(policyName).find((el) => el.closest('tr'));
+    return cell!.closest('tr') as HTMLElement;
+  }
+
+  it('the winning policy is a link for a partner-scope caller', async () => {
     render(<DeviceEffectiveConfigTab deviceId="dev-9565" />);
-    await screen.findByRole('heading', { name: 'Inheritance Chain' });
-    expect(screen.getByTestId('inheritance-chain-rule')).toHaveTextContent(
-      /level decides first.*priority.*same level/i,
+    await screen.findByRole('heading', { level: 4, name: 'Warranty' });
+    const link = within(card('Warranty')).getByTestId('effective-config-winner-link');
+    expect(link).toHaveAttribute('href', '/configuration-policies/pol-partner');
+    expect(link).toHaveTextContent('MSP Baseline');
+  });
+
+  it('an org-scope caller sees no link to an MSP-managed winner', async () => {
+    claimsRef.current = { scope: 'organization', partnerId: null, orgId: 'org-1' };
+    render(<DeviceEffectiveConfigTab deviceId="dev-9565" />);
+    await screen.findByRole('heading', { level: 4, name: 'Warranty' });
+    const warranty = card('Warranty');
+    expect(within(warranty).queryByTestId('effective-config-winner-link')).toBeNull();
+    expect(warranty).toHaveTextContent('MSP Baseline');
+    expect(warranty).toHaveTextContent('Managed by your MSP');
+    // Its own organization's policy still links.
+    expect(within(card('Maintenance')).getByTestId('effective-config-winner-link')).toHaveAttribute(
+      'href',
+      '/configuration-policies/pol-org',
     );
+    // The chain rows follow the same rule.
+    expect(within(chainRowByText('MSP Baseline')).queryByRole('link')).toBeNull();
+    expect(within(chainRowByText('Org Override')).getByRole('link', { name: 'Org Override' })).toBeTruthy();
+  });
+
+  it('does not link when the API names no owner for the policy', async () => {
+    claimsRef.current = { scope: 'organization', partnerId: null, orgId: 'org-1' };
+    const { policyOwners: _omit, ...legacy } = response;
+    currentResponse = legacy;
+    render(<DeviceEffectiveConfigTab deviceId="dev-9565" />);
+    await screen.findByRole('heading', { level: 4, name: 'Maintenance' });
+    expect(screen.queryAllByTestId('effective-config-winner-link')).toHaveLength(0);
+  });
+
+  it('the card states the level the feature arrived through', async () => {
+    render(<DeviceEffectiveConfigTab deviceId="dev-9565" />);
+    await screen.findByRole('heading', { level: 4, name: 'Maintenance' });
+    expect(within(card('Maintenance')).getByTestId('effective-config-winner-level')).toHaveTextContent(
+      'via Organization',
+    );
+    expect(within(card('Warranty')).getByTestId('effective-config-winner-level')).toHaveTextContent(
+      'via All organizations',
+    );
+  });
+
+  it('a row that lost on level says more specific level', async () => {
+    render(<DeviceEffectiveConfigTab deviceId="dev-9565" />);
+    await screen.findByRole('heading', { name: 'Precedence' });
+    const reason = within(chainRowByText('MSP Baseline')).getByTestId('chain-row-lost-reason');
+    expect(reason).toHaveTextContent('Replaced for Maintenance by Org Override');
+    expect(reason).toHaveTextContent(/more specific level/i);
+    expect(within(chainRowByText('Org Override')).queryByTestId('chain-row-lost-reason')).toBeNull();
+  });
+
+  const sameLevel = (loserPriority: number) => ({
+    deviceId: 'dev-tie',
+    features: {
+      patch: {
+        featureType: 'patch',
+        featurePolicyId: null,
+        inlineSettings: { scheduleFrequency: 'weekly' },
+        sourceLevel: 'site',
+        sourceTargetId: 'site-1',
+        sourcePolicyId: 'pol-a',
+        sourcePolicyName: 'Site A',
+        sourcePriority: 1,
+      },
+    },
+    inheritanceChain: [
+      { level: 'site', targetId: 'site-1', policyId: 'pol-a', policyName: 'Site A', priority: 1, featureTypes: ['patch'] },
+      { level: 'site', targetId: 'site-1', policyId: 'pol-b', policyName: 'Site B', priority: loserPriority, featureTypes: ['patch'] },
+    ],
+    policyOwners: { 'pol-a': 'organization', 'pol-b': 'organization' },
+  });
+
+  it('a row that lost on priority at the same level says lower priority number', async () => {
+    currentResponse = sameLevel(5);
+    render(<DeviceEffectiveConfigTab deviceId="dev-tie" />);
+    await screen.findByRole('heading', { name: 'Precedence' });
+    const reason = within(chainRowByText('Site B')).getByTestId('chain-row-lost-reason');
+    expect(reason).toHaveTextContent('Replaced for Patches by Site A');
+    expect(reason).toHaveTextContent(/lower priority number/i);
+  });
+
+  it('a tie on level and priority says assigned earlier', async () => {
+    currentResponse = sameLevel(1);
+    render(<DeviceEffectiveConfigTab deviceId="dev-tie" />);
+    await screen.findByRole('heading', { name: 'Precedence' });
+    expect(within(chainRowByText('Site B')).getByTestId('chain-row-lost-reason')).toHaveTextContent(
+      /assigned earlier/i,
+    );
+  });
+
+  it('chain heading reads Precedence and shows the legend', async () => {
+    render(<DeviceEffectiveConfigTab deviceId="dev-9565" />);
+    await screen.findByRole('heading', { name: 'Precedence' });
+    expect(screen.queryByRole('heading', { name: 'Inheritance Chain' })).toBeNull();
+    expect(screen.getByTestId('precedence-legend')).toHaveTextContent(
+      'Most specific wins, per feature: Device › Device group › Site › Organization › All organizations. A closer policy replaces the whole feature; it does not merge.',
+    );
+  });
+
+  it("card labels match the editor's labels", async () => {
+    render(<DeviceEffectiveConfigTab deviceId="dev-9565" />);
+    await screen.findByRole('heading', { level: 4, name: FEATURE_META.maintenance.label });
+    expect(screen.getByRole('heading', { level: 4, name: FEATURE_META.warranty.label })).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 4, name: FEATURE_META.helper.label })).toBeTruthy();
+  });
+
+  it('names the parent a feature came from as Based on', async () => {
+    currentResponse = {
+      ...response,
+      features: {
+        ...response.features,
+        warranty: { ...response.features.warranty, inheritedFromPolicyId: 'pol-parent', inheritedFromPolicyName: 'Standard' },
+      },
+    };
+    render(<DeviceEffectiveConfigTab deviceId="dev-9565" />);
+    expect(await screen.findByTestId('effective-config-inherited-from')).toHaveTextContent('Based on Standard');
   });
 });

@@ -1339,7 +1339,6 @@
   "devices.deviceEdrPanel.removeIsolation",
   "devices.deviceEdrPanel.unknownThreat",
   "devices.deviceEffectiveConfigTab.effectiveConfiguration",
-  "devices.deviceEffectiveConfigTab.inheritanceChain",
   "devices.deviceEffectiveConfigTab.noConfigurationPolicies",
   "devices.deviceEffectiveConfigTab.notEnforced",
   "devices.deviceEffectiveConfigTab.resolvedConfigurationFrom",

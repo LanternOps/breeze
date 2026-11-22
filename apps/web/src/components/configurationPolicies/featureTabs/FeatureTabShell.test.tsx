@@ -171,7 +171,7 @@ describe('FeatureTabShell state badge (#12306)', () => {
     expect(expected).not.toMatch(/badgeConfigured/);
     expect(expected).not.toBe('Configured');
     render(
-      <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured>
+      <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured saving={false} onSave={vi.fn()}>
         <div />
       </FeatureTabShell>,
     );
