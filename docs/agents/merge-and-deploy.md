@@ -56,14 +56,14 @@ Each queue run logs one `ci-gate-selection: mode=… reason=… thin_queue=… t
 | `no_anchor` | no usable anchor for this head: no gate run, nothing written, expired after 7 days, or rejected (`record_stats.rejected`) |
 | `anchor_not_pinned` | anchors exist, but only from runs that are not the pinned gate (`record_stats.not_pinned`); a PR enabling its own copy of the gate looks like this |
 | `anchor_policy_in_p` | an anchor's files include a policy path |
-| `anchor_base_not_on_main` | an anchor's base is not on `main`: a stacked pull request, whose merge commit sits on its parent branch. Nothing is read from that base |
+| `anchor_base_not_on_main` | an anchor's base is not a commit `main` has pointed at (its first-parent line): a stacked pull request, whose merge commit sits on its parent branch. Nothing is read from that base |
 | `no_verified_pr_run` | the PR's run did not pass the base's script, or could not be checked (`record_stats.verification`) |
 | `thin_unsupported_at_base` | the base revision's `ci-success` has no W05 block it can read exactly, so it could not excuse a skip |
 | `nothing_to_skip` | nothing in `would_skip` is both thinnable and labelled at the base |
 | `audit_sample` | under `enforce`, one thin-eligible entry in 5 (by head sha) runs full while logging the list it would have skipped |
 | `attempt1_selection_missing` | a re-run found no usable attempt-1 selection in its own run; if CI already skipped jobs, the entry goes red, which is the safe direction |
 | `error` | a bug or an unreadable input; `error` on the line has the cause |
-| `selection_time_limit`, `selection_ancestry`, `base_io_refused` | text rather than a `reason=` value: usually in `error` under `reason=error`. Out of time, the check that a run's sha or an anchor's base is on `main` could not run, or a read tried to run something other than the base classifier. Running out of time can also show as `delta_uncomputable` or `no_verified_pr_run`, and a child killed at the limit shows a timeout error |
+| `selection_time_limit`, `selection_ancestry`, `base_io_refused` | text rather than a `reason=` value: usually in `error` under `reason=error`. Out of time, the check that a run's sha is on `main` or the listing of `main` for an anchor's base could not run, or a read tried to run something other than the base classifier. Running out of time can also show as `delta_uncomputable` or `no_verified_pr_run`, and a child killed at the limit shows a timeout error |
 
 Any other reason is a W4 fallback (`stale_base`, `entry_outside_p`, `entry_not_single_commit`, and so on). `mode=shadow` carries the real list but means "run everything" too.
 

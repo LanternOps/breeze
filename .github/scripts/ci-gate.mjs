@@ -822,6 +822,13 @@ function isOnMain(io, sha) {
   }
 }
 
+// The commits main itself has pointed at: its first-parent line. A commit that a
+// merge brought in through another parent is in main's history, but was a branch's.
+function mainLine(io) {
+  try { return new Set(nonEmptyLines(io.git(['rev-list', '--first-parent', 'origin/main']))); }
+  catch (error) { throw new GateError('selection_ancestry', `listing main failed: ${failureText(error)}`); }
+}
+
 // Unlike classifyAtBase, a classifier that fails here is not read as "everything
 // changed": judging the PR's run under flags it never ran with would blame the PR.
 function prFlagsAtBase(io, baseSha, files) {
@@ -927,15 +934,12 @@ export function trustedRecord(io, { head, pr }, stats = {}) {
   stats.anchors = anchors.length;
   if (!anchors.length) return { reason: stats.not_pinned.length ? 'anchor_not_pinned' : 'no_anchor' };
   if (anchors.some(({ policy_in_files }) => policy_in_files)) return { reason: 'anchor_policy_in_p' };
-  // Base-revision policy is read, and its scripts run, from main's history only.
-  // A stacked pull request's merge commit sits on its parent branch, so its
-  // anchor's base is not there: the entry runs everything. Every anchor is
+  // Base-revision policy is read, and its scripts run, only from a commit main has
+  // pointed at. A stacked pull request's merge commit sits on its parent branch,
+  // so its anchor's base is not one: the entry runs everything. Every anchor is
   // asked, and before anything of a base is opened.
-  for (const base of new Set(anchors.map(({ base_sha }) => base_sha))) {
-    const cause = fetchFailure(io, base);
-    if (cause) { stats.verification = `cannot fetch ${base}: ${cause}`; return { reason: 'no_verified_pr_run' }; }
-    if (!isOnMain(io, base)) return { reason: 'anchor_base_not_on_main' };
-  }
+  const main = mainLine(io);
+  if (anchors.some(({ base_sha }) => !main.has(base_sha))) return { reason: 'anchor_base_not_on_main' };
 
   // More than one anchor comes from a close and reopen, or a re-run of the gate.
   // The oldest base and every file over-approximate Δ and P.

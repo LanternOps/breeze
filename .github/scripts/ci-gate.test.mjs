@@ -2028,13 +2028,18 @@ test('no_verified_pr_run: an anchor made after the run tested something else, so
   assert.equal(same.trust().suites_passed, true);
 });
 
-test('no_verified_pr_run: a base that cannot be fetched is a failed verification, not a crash', () => {
+test('no_verified_pr_run: a merge commit that cannot be fetched is a failed verification, not a crash', () => {
   const r = trustRig();
-  r.addAnchor({ anchor: { base_sha: 'a'.repeat(40) } });
+  r.addAnchor({ anchor: { merge_sha: 'a'.repeat(40) } });
   r.addCi();
   const stats = {};
   assert.equal(r.trust(stats).reason, 'no_verified_pr_run');
-  assert.match(stats.verification, /cannot fetch/);
+  assert.match(stats.verification, /cannot fetch a{40}/);
+  // A base that does not exist is not one of main's commits; nothing fetches it.
+  const gone = trustRig();
+  gone.addAnchor({ anchor: { base_sha: 'a'.repeat(40) } });
+  gone.addCi();
+  assert.equal(gone.trust().reason, 'anchor_base_not_on_main');
 });
 
 test('trustedRecord: an Actions API failure throws, so the shadow says error rather than a reason about the PR', () => {
@@ -3331,7 +3336,8 @@ test('stacked queue entry: the same entry is thin-eligible but for its base, so 
   const git = r.io.git;
   const asked = [];
   r.io.git = args => {
-    if (args[0] === 'merge-base' && args[1] === '--is-ancestor' && args[2] === r.parent && ['origin/main', r.entryA].includes(args[3])) { asked.push(args[3]); return ''; }
+    if (args[0] === 'rev-list' && args[1] === '--first-parent' && args[2] === 'origin/main') { asked.push('origin/main'); return `${git(args)}\n${r.parent}\n`; }
+    if (args[0] === 'merge-base' && args[1] === '--is-ancestor' && args[2] === r.parent && args[3] === r.entryA) { asked.push(args[3]); return ''; }
     return git(args);
   };
   gate.select(r.io, r.verifyEnv({ THIN_QUEUE: 'shadow' }));
@@ -3351,17 +3357,6 @@ test('stacked queue entry, chain shape: an anchor based on the parent PR\'s merg
   assert.deepEqual(publishedIn(r).thin_skip, []);
 });
 
-test('stacked queue entry: an anchor base that cannot be fetched (parent branch gone) runs the full suite', () => {
-  const r = stackRig();
-  r.addStackEvidence({ anchor: { base_sha: 'e'.repeat(40) } });
-  r.io.sleep = () => {};
-  gate.select(r.io, r.verifyEnv({ THIN_QUEUE: 'enforce' }));
-  const line = selectionLineOf(r);
-  assert.match(line, /^ci-gate-selection: mode=full reason=no_verified_pr_run /, line);
-  assert.match(JSON.stringify(fieldOf(line, 'record_stats')), /cannot fetch e{40}/);
-  assert.deepEqual(publishedIn(r).thin_skip, []);
-});
-
 // Every revision select read a file from (`git show <rev>:<path>`), and every
 // script it ran. Base-revision scripts are read that way and then run isolated.
 const policyReads = r => {
@@ -3375,6 +3370,19 @@ const policyReads = r => {
   r.io.runIsolated = (...args) => { seen.runs.push(args[0]); return runIsolated(...args); };
   return seen;
 };
+
+test('stacked queue entry: an anchor base that no longer exists (parent branch gone) runs the full suite, and is not fetched', () => {
+  const r = stackRig();
+  r.addStackEvidence({ anchor: { base_sha: 'e'.repeat(40) } });
+  r.io.sleep = () => {};
+  const seen = policyReads(r);
+  gate.select(r.io, r.verifyEnv({ THIN_QUEUE: 'enforce' }));
+  const line = selectionLineOf(r);
+  assert.match(line, /^ci-gate-selection: mode=full reason=anchor_base_not_on_main /, line);
+  for (const revision of new Set(seen.revisions)) assert.ok(r.isAncestor(revision, r.entryA), `read ${revision}`);
+  assert.ok(!r.lines.some(text => text.includes('e'.repeat(40))), 'the base is not fetched: it is not one of main\'s commits');
+  assert.deepEqual(publishedIn(r).thin_skip, []);
+});
 
 test('plain queue entry: select reads policy only from the queue base or its history', () => {
   // Control for the stacked tests below: for a PR based on main the anchor base is
@@ -3406,15 +3414,17 @@ for (const shape of ['parent', 'chain']) {
     const calls = [];
     const git = r.io.git;
     r.io.git = args => { calls.push(args); return git(args); };
-    r.io.runIsolated = () => assert.fail('nothing runs for an anchor whose base is not on main');
+    let ran = 0;
+    r.io.runIsolated = () => { ran++; throw Error('ran'); };
     const stats = {};
     assert.deepEqual(r.trust(stats), { reason: 'anchor_base_not_on_main' });
+    assert.equal(ran, 0, 'nothing runs for an anchor whose base is not on main');
     assert.equal(stats.anchors, 1);
     // The base is fetched and its ancestry asked; no file of it is opened.
     const base = r.anchor.base_sha;
     const touched = new Set(calls.filter(args => args.some(arg => arg.includes(base))).map(args => args[0]));
-    assert.ok(touched.has('merge-base'));
-    for (const command of touched) assert.ok(['cat-file', 'fetch', 'merge-base'].includes(command), command);
+    assert.deepEqual([...touched], [], 'no git command names the base');
+    assert.ok(calls.some(args => args[0] === 'rev-list' && args[1] === '--first-parent' && args[2] === 'origin/main'));
     assert.deepEqual(calls.filter(args => ['show', 'ls-tree', 'diff'].includes(args[0])), []);
   });
 }
@@ -3427,19 +3437,48 @@ test('trustedRecord: one anchor off main refuses the head, whichever anchor is t
     r.addAnchor({ id: 900, anchor: { ...r.anchor, run_id: 900, base_sha: r[first] } });
     r.addAnchor({ id: 901, anchor: { ...r.anchor, run_id: 901, base_sha: r[second] } });
     r.addCi({ attempts: [prRunJobs(r.childFiles)] });
-    r.io.runIsolated = () => assert.fail(`nothing runs when the ${first === 'main' ? 'newest' : 'oldest'} anchor's base is not on main`);
+    let ran = 0;
+    r.io.runIsolated = () => { ran++; throw Error('ran'); };
     const stats = {};
     assert.deepEqual(r.trust(stats), { reason: 'anchor_base_not_on_main' }, `${first} first`);
+    assert.equal(ran, 0, `nothing runs when the ${first === 'main' ? 'newest' : 'oldest'} anchor's base is not on main`);
     assert.equal(stats.anchors, 2);
   }
 });
 
-test('trustedRecord: an ancestry check of an anchor base that could not run is an error, not an answer', () => {
-  const r = stackRig();
-  r.addStackEvidence();
-  const git = r.io.git;
-  r.io.git = args => { if (args[0] === 'merge-base' && args[2] === r.parent) throw Object.assign(Error('no origin/main'), { status: 128 }); return git(args); };
-  assert.throws(() => r.trust(), /ancestry check/);
+test('trustedRecord: a listing of main that could not run is an error, not an answer about the base', () => {
+  for (const rig of [stackRig, rigWithEvidence]) {
+    const r = rig();
+    if (rig === stackRig) r.addStackEvidence();
+    const git = r.io.git;
+    r.io.git = args => { if (args[0] === 'rev-list' && args[1] === '--first-parent') throw Object.assign(Error('no origin/main'), { status: 128 }); return git(args); };
+    assert.throws(() => r.trust(), error => error instanceof gate.GateError && error.code === 'selection_ancestry');
+  }
+});
+
+test('trustedRecord: a commit a merge brought into main\'s history was never main, and is anchor_base_not_on_main', () => {
+  const r = trustRig();
+  // A merge commit on main. Its second parent is an ancestor of main, as a branch
+  // commit merged long ago is, but main never pointed at it.
+  const side = r.inOrigin('commit-tree', `${r.headSha}^{tree}`, '-p', r.baseSha, '-m', 'a branch commit');
+  const merged = r.inOrigin('commit-tree', `${r.baseSha}^{tree}`, '-p', r.baseSha, '-p', side, '-m', 'Merge a branch');
+  r.landOnMain(merged);
+  r.inOrigin('merge-base', '--is-ancestor', side, 'main');
+  r.addAnchor({ anchor: { base_sha: side } });
+  r.addCi();
+  let ran = 0;
+  r.io.runIsolated = () => { ran++; throw Error('ran'); };
+  assert.deepEqual(r.trust(), { reason: 'anchor_base_not_on_main' });
+  assert.equal(ran, 0);
+  // Control: the merge commit itself is main's, and so is its first parent.
+  for (const base of [merged, r.baseSha]) {
+    const ok = trustRig();
+    const tip = ok.inOrigin('commit-tree', `${ok.baseSha}^{tree}`, '-p', ok.baseSha, '-p', ok.headSha, '-m', 'Merge a branch');
+    ok.landOnMain(tip);
+    ok.addAnchor({ anchor: { base_sha: base === merged ? tip : ok.baseSha } });
+    ok.addCi();
+    assert.equal(ok.trust().base_sha, base === merged ? tip : ok.baseSha);
+  }
 });
 
 // After the PR below lands, GitHub retargets the next PR to main and force-pushes a
