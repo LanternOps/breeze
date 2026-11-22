@@ -468,6 +468,26 @@ func TestCurrent_MissingNeighbourGivesNilMAC(t *testing.T) {
 	}
 }
 
+// A MAC no gateway can have is "no entry": otherwise every device behind the
+// same gateway address would report the same placeholder fingerprint.
+func TestCurrent_NonGatewayMACIsNil(t *testing.T) {
+	for _, tc := range []struct {
+		name, mac, want string
+	}{
+		{"macOS unprivileged placeholder", "02:00:00:00:00:00", ""},
+		{"all zero", "00:00:00:00:00:00", ""},
+		{"broadcast", "ff:ff:ff:ff:ff:ff", ""},
+		{"multicast (group bit set)", "01:00:5e:00:00:01", ""},
+		{"normal unicast is kept", "a4:2b:b0:11:22:9c", "a4:2b:b0:11:22:9c"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newFixture(t).iface("k1", "eth0", "ethernet", upUnix, "192.168.1.57/24").route("k1", "192.168.1.1").
+				neighRow("k1", "192.168.1.1", tc.mac, "reachable").deps()
+			check(t, d, "", []Attachment{att(t, "eth0", 1, "192.168.1.57/24", "192.168.1.1", tc.want, false)}, true, false)
+		})
+	}
+}
+
 func TestCurrent_LocalAddressChoice(t *testing.T) {
 	d := newFixture(t).
 		iface("k1", "eth0", "ethernet", upUnix, "10.1.2.57/24", "192.168.1.57/24").route("k1", "192.168.1.1").

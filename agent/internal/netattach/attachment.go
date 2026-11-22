@@ -10,6 +10,7 @@
 package netattach
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -263,7 +264,8 @@ func localAddress(row networkcontext.InterfaceRow, gateway netip.Addr) (netip.Pr
 
 // gatewayMAC is K6: the neighbour row on the same interface with the gateway's
 // address and a 6-byte MAC, unless it is incomplete or failed. Stale and
-// permanent entries count; the report never probes.
+// permanent entries count; the report never probes. A MAC no gateway can have
+// counts as no entry (see unicastGatewayMAC).
 func gatewayMAC(neighbors []networkcontext.NeighborRow, key string, gateway netip.Addr) net.HardwareAddr {
 	for _, n := range neighbors {
 		if n.InterfaceKey != key || n.MAC == nil || n.State == "incomplete" || n.State == "failed" {
@@ -274,12 +276,25 @@ func gatewayMAC(neighbors []networkcontext.NeighborRow, key string, gateway neti
 			continue
 		}
 		mac, err := net.ParseMAC(*n.MAC)
-		if err != nil || len(mac) != 6 {
+		if err != nil || !unicastGatewayMAC(mac) {
 			continue
 		}
 		return mac
 	}
 	return nil
+}
+
+// macOSHiddenMAC is what macOS shows an unprivileged process in place of a real
+// link-layer address.
+var macOSHiddenMAC = net.HardwareAddr{0x02, 0, 0, 0, 0, 0}
+
+// unicastGatewayMAC rejects MACs no gateway can have: the macOS placeholder,
+// all zeros, and any group address (multicast, broadcast included). Reporting
+// one would give every device behind the same gateway address the same
+// fingerprint.
+func unicastGatewayMAC(mac net.HardwareAddr) bool {
+	return len(mac) == 6 && mac[0]&0x01 == 0 &&
+		!bytes.Equal(mac, make(net.HardwareAddr, 6)) && !bytes.Equal(mac, macOSHiddenMAC)
 }
 
 // markPrimary is K7: the attachment on the interface that carries the route
