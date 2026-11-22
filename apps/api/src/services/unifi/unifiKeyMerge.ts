@@ -253,6 +253,7 @@ export function mergeKeyReads(reads: KeyRead[]): MergedRead {
   if (deviceReads.length > 0) {
     devicesByHost = new Map();
     const hostsByDevice = new Map<string, Set<string>>();
+    const keysByDevice = new Map<string, Set<string>>();
     for (const read of deviceReads) {
       for (const [hostId, list] of read.devicesByHost!) {
         const merged = devicesByHost.get(hostId) ?? [];
@@ -260,14 +261,21 @@ export function mergeKeyReads(reads: KeyRead[]): MergedRead {
           const seenOn = hostsByDevice.get(d.unifiDeviceId) ?? new Set<string>();
           seenOn.add(hostId);
           hostsByDevice.set(d.unifiDeviceId, seenOn);
+          const seenBy = keysByDevice.get(d.unifiDeviceId) ?? new Set<string>();
+          seenBy.add(read.keyId);
+          keysByDevice.set(d.unifiDeviceId, seenBy);
           if (!merged.some((m) => m.unifiDeviceId === d.unifiDeviceId)) merged.push(d);
         }
         devicesByHost.set(hostId, merged);
       }
     }
-    // A device under two hosts (a console mid-move between scopes) would be moved
-    // into the second host's org by the per-connection upsert: quarantine it.
-    for (const [deviceId, seenOn] of hostsByDevice) if (seenOn.size > 1) conflictingDeviceIds.add(deviceId);
+    // A device that different keys report under different hosts (a console
+    // mid-move between scopes) would be moved into the second host's org by the
+    // per-connection upsert: quarantine it. One key alone reporting a device under
+    // two hosts is left as the single-key engine always handled it.
+    for (const [deviceId, seenOn] of hostsByDevice) {
+      if (seenOn.size > 1 && keysByDevice.get(deviceId)!.size > 1) conflictingDeviceIds.add(deviceId);
+    }
     if (conflictingDeviceIds.size > 0) {
       for (const [hostId, list] of devicesByHost) {
         devicesByHost.set(hostId, list.filter((d) => !conflictingDeviceIds.has(d.unifiDeviceId)));

@@ -93,9 +93,10 @@ function scriptedDb(opts: {
   // wrapped the column in lower(replace(...)), exactly like Postgres would.
   assetByMac?: Record<string, any>;
 }) {
-  const writes: { inserts: WriteRecord[]; updates: WriteRecord[] } = {
+  const writes: { inserts: WriteRecord[]; updates: WriteRecord[]; locks: Array<{ table: any; strength: string }> } = {
     inserts: [],
     updates: [],
+    locks: [],
   };
 
   function makeChain(ctx: {
@@ -123,7 +124,8 @@ function scriptedDb(opts: {
       limit(_n: number) {
         return chain;
       },
-      for(_strength: string) {
+      for(strength: string) {
+        writes.locks.push({ table: ctx.table, strength });
         return chain;
       },
       // insert chain
@@ -1423,6 +1425,8 @@ describe('applySyncData obsolete-write guards and key_results (#11808 W2, Task 2
     expect(writes.updates.filter((w) => w.table === unifiDevices && w.values.isStale)).toHaveLength(0);
     expect(result.status).toBe('partial');
     expect(result.error).toBe('site s1: mapping changed during the sync; its devices were not synced');
+    // The re-read locks the rows against a remap or delete, not against FK inserts.
+    expect(writes.locks).toEqual([{ table: unifiSiteMappings, strength: 'no key update' }]);
   });
 
   it('apply skips a mapping deleted since the snapshot', async () => {

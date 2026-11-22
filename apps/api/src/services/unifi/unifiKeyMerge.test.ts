@@ -211,6 +211,21 @@ describe('mergeKeyReads', () => {
     expect([...merged.conflictingDeviceIds]).toEqual(['d1']);
   });
 
+  it('mergeKeyReads leaves a device one key reports under two hosts as the single-key engine did', () => {
+    const merged = mergeKeyReads([
+      okRead('a', { hosts: [host('h1'), host('h2')], devicesByHost: new Map([['h1', [device('d1')]], ['h2', [device('d1')]]]) }),
+    ]);
+    expect(merged.conflictingDeviceIds.size).toBe(0);
+    expect(merged.devicesByHost?.get('h1')).toEqual([device('d1')]);
+    expect(merged.devicesByHost?.get('h2')).toEqual([device('d1')]);
+    // A second key reporting it under one of those hosts makes it a conflict.
+    const withB = mergeKeyReads([
+      okRead('a', { hosts: [host('h1'), host('h2')], devicesByHost: new Map([['h1', [device('d1')]], ['h2', [device('d1')]]]) }),
+      okRead('b', { hosts: [host('h1')], devicesByHost: new Map([['h1', [device('d1')]]]) }),
+    ]);
+    expect([...withB.conflictingDeviceIds]).toEqual(['d1']);
+  });
+
   it('mergeKeyReads marks a coverage gap when a key lists a host but returns no device group for it', () => {
     const merged = mergeKeyReads([
       okRead('a', { hosts: [host('h1')], siteRead: siteRead([site('s1', 'h1')]), devicesByHost: new Map([['h1', [device('d1')]]]) }),

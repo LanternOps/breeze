@@ -573,14 +573,16 @@ export async function applySyncData(
       const failedMappingIds = new Set<string>();
       let anySiteFailed = false;
 
-      // Obsolete-write guard. FOR UPDATE holds a concurrent remap or delete of
-      // these rows until this transaction commits, so the check cannot go stale
-      // between here and the device writes.
+      // Obsolete-write guard. FOR NO KEY UPDATE holds a concurrent remap (UPDATE)
+      // or delete of these rows until this transaction commits, so the check
+      // cannot go stale between here and the device writes. It does not block the
+      // KEY SHARE lock an insert referencing a mapping takes, and this
+      // transaction's own WAN-metrics UPDATE needs no stronger lock.
       const current = await db
         .select({ id: unifiSiteMappings.id, orgId: unifiSiteMappings.orgId, siteId: unifiSiteMappings.siteId })
         .from(unifiSiteMappings)
         .where(eq(unifiSiteMappings.integrationId, integration.id))
-        .for('update');
+        .for('no key update');
       const currentById = new Map((current as Array<{ id: string; orgId: string; siteId: string }>).map((row) => [row.id, row]));
       const changedMappingIds = new Set<string>();
       for (const mapping of mappings) {
