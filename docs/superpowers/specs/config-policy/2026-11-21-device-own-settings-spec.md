@@ -111,16 +111,16 @@ its target derived at read time through a new targets view.
   the switch changes readers, not data.
 - **Release gates for A** (from the second round):
   - A database-owned transition that carries the protected assignment through an org merge
-    and validates the final owner and target together. Today a merge is expected to fail when
-    the losing organization owns both a policy and a device that policy is assigned to (see
-    "Device lifecycle").
+    and validates the final owner and target together. Today a merge fails when
+    the losing organization owns a policy applied inside that organization at any level
+    (#12490, reproduced; see "Device lifecycle").
   - Tests for direct insert, retarget, filter change and delete of the protected row,
     concurrent writes, single and bulk permanent delete, and merge with ordinary and protected
     device-level assignments.
   - An explicit empty automation or compliance setting must win. Today both resolvers
     inner-join the child rows before choosing a winner, so an empty link vanishes and a
     broader policy wins. Choose the winning link first, then return its children. This is a
-    defect today for any policy, under either storage option.
+    defect today for any policy, under either storage option (#12488).
   - Backup legal holds and immutability are combined across every applicable policy, not
     taken from one winner. A device's own backup setting must not weaken them.
 - **Switch to C** if A cannot pass the merge, delete and concurrent-write tests, or once
@@ -187,8 +187,8 @@ Device-owned rows must never surface where policies are listed, counted, picked 
 | Decommission (soft delete) and restore | Own settings are kept, so a restored device comes back as it was (Decision 3). |
 | Permanent delete, single and bulk | Delete device-level assignments for the device, then the device-owned row, then the device. Without the first step the delete fails today with a 409 (#12293). |
 | Site move within the org | Nothing stored changes; the fallback is recomputed. Site-bound execution authority is re-checked at dispatch, as today. |
-| Org move | Own settings are removed, and the move confirmation lists the affected features (Decision 1). Today a device with any device-level assignment of its own organization's policy cannot change organization: the database refuses the update (an integration test pins this), and the move service has no step that clears such assignments. Reproduce through the service in D0. |
-| Org merge | **A's main exposure. Expected to fail today (inferred from the trigger and merge code, not yet reproduced).** The assignment re-check on a device or policy org change is an immediate statement trigger, and the validator has no merge exemption (newest definition: `2027-01-12-200200-config-assignment-partner-device-group-targets.sql`, re-read on main). The merge itself repoints organization-level assignments only (`orgMerge.ts`). A device-level assignment of an org-owned policy may therefore block a merge today. Under A every device with own settings carries one; under C none does. Reproduce in D0; it is one of the switch criteria. |
+| Org move | Own settings are removed, and the move confirmation lists the affected features (Decision 1). Today a device with a device-level assignment of its own organization's policy cannot change organization: the database refuses the update, the move engine has no step that clears such assignments, and the route returns a 500 (#12491, reproduced through the route). An assignment of an MSP-managed policy does not block the move. |
+| Org merge | **A's main exposure. Fails today (#12490, reproduced).** The assignment re-check on a device or policy org change is an immediate statement trigger, and the validator has no merge exemption (newest definition: `2027-01-12-200200-config-assignment-partner-device-group-targets.sql`, re-read on main). The merge itself repoints organization-level assignments only (`orgMerge.ts`). An org-owned policy applied inside the losing organization at organization, site or device level therefore blocks a merge today, with or without this feature. Under A every device with own settings carries one more such assignment; under C none does. The fix for #12490 is one of the switch criteria. |
 | Org cascade delete | Already covered: the table is registered and sorts before `devices`. |
 
 ### Features offered
@@ -238,7 +238,7 @@ the parity fixture.
 
 | Wave | Scope | Depends on |
 |---|---|---|
-| D0 | #12293 (device delete removes device-level assignments). Fix the empty automation and compliance override. Audit existing assignment priorities ahead of the database range check. Contract test pinning priority direction. Reproduce org move and org merge with a device-level assignment of an org-owned policy. Independent of everything else. | none |
+| D0 | #12293 (device delete removes device-level assignments). Fix the empty automation and compliance override (#12488). Audit existing assignment priorities ahead of the database range check. Contract test pinning priority direction. Fix org move (#12491) and org merge (#12490) for an org-owned policy applied inside the organization. Independent of everything else. | none |
 | D1 | Column, constraints, guards; catalog definition; lister sweep; leak contract test | D0 |
 | D2 | Device configuration service and routes; source kind and fallback in resolution; parity fixture (acceptance gate, switch criteria above) | D1 |
 | D3 | Device Config tab actions, device list badge and filter, "Apply a policy to this device" | D2, reshape W1 |
@@ -286,6 +286,10 @@ The four product calls, as decided. The spec stays `draft` until it is approved 
   trigger on `devices`, the unbounded priority column, the inner join in the automation
   resolver): the reader and discovery counts, warranty's two paths, the empty-link defect,
   the backup protection aggregate, the org move and org merge findings.
-- **Unresolved, must be reproduced in D0:** an org merge where the losing organization owns a
-  policy assigned at device level to one of its devices (expected to fail); a device org move
-  through the move service with such an assignment (the raw update is refused).
+- **Reproduced on real Postgres at `122bbba2db` (2026-11-21, integration fixtures with one
+  added org-owned policy):** an org merge fails with `23503` when the losing organization
+  owns a policy assigned to that organization, to one of its sites, or to one of its devices
+  (#12490); a device org move through the route returns 500 with the same refusal, and
+  succeeds when the policy is MSP-managed (#12491).
+- **Not checked in those runs:** `device_group`-level assignments, policies with a parent or
+  feature links, Postgres 18.
