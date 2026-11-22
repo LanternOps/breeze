@@ -563,6 +563,7 @@ apps/api/src/services/incidentContainmentResults.registration.test.ts
 apps/api/src/services/invoiceTerms.test.ts
 apps/api/src/services/ipClassifyOffline.test.ts
 apps/api/src/services/laborAmount.routing.test.ts
+apps/api/src/services/learnedNetworks/scanCommand.contract.test.ts
 apps/api/src/services/llm/llmEgressProxy.test.ts
 apps/api/src/services/llm/providerFidelityHarness.test.ts
 apps/api/src/services/llm/sdkPermissionMode.contract.test.ts
