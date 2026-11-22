@@ -77,7 +77,12 @@ export type ScheduledRunStatus = {
   lastOutcome?: OemOutcome | null;
   /** The trigger of the run `lastOutcome` came from. Only a scheduled run finishes an occurrence. */
   lastTrigger?: string | null;
+  /** Any run's dispatch, Run Now's included. */
   lastAttemptAt?: Date | null;
+  /** A scheduled run's dispatch only: what uses up the night (#12266). */
+  lastScheduledAttemptAt?: Date | null;
+  /** The status of the last run's command, whatever its trigger. */
+  commandStatus?: string | null;
   rebootPendingSince?: Date | null;
 };
 
@@ -93,6 +98,7 @@ export type ScheduledRunRefusal =
   | 'finished'
   | 'attempts_exhausted'
   | 'attempted_tonight'
+  | 'run_in_progress'
   | 'reboot_pending';
 
 export type ScheduledRunPlan = {
@@ -163,9 +169,19 @@ export function decideScheduledRun(
     }
     if ((status.attempts ?? 0) >= OEM_MAX_ATTEMPTS_PER_OCCURRENCE) return refused('attempts_exhausted');
   }
-  // One run a night: a failure retries on the next night (spec 4.2), not the next tick.
-  if (status.lastAttemptAt && status.lastAttemptAt.getTime() >= occurrence.windowStart.getTime()) {
+  // One scheduled run a night: a failure retries on the next night (spec 4.2), not the
+  // next tick. Only a scheduled dispatch counts (#12266): a Run Now may have left out
+  // categories or the reboot the policy asks for, so it does not use up the night.
+  if (status.lastScheduledAttemptAt
+    && status.lastScheduledAttemptAt.getTime() >= occurrence.windowStart.getTime()) {
     return refused('attempted_tonight');
+  }
+  // A run still on its way or running (a Run Now, or a scheduled run from an earlier
+  // night). Refused for this tick only and nothing is recorded, so the device is due
+  // again on a later tick once it settles, until notAfter. The seam refuses a second
+  // run under its lock regardless.
+  if (status.commandStatus && IN_FLIGHT_STATUSES.has(status.commandStatus)) {
+    return refused('run_in_progress');
   }
   // Overnight has a restart of its own coming, and the run follows it. Under `never`
   // nothing else will ask, and a clean answer from the tool is what clears the wait.
@@ -290,6 +306,7 @@ async function loadPage(scope: SQL, after: string | null, upTo: string | null): 
       attempts: deviceOemUpdateStatus.attempts,
       lastOutcome: deviceOemUpdateStatus.lastOutcome,
       lastAttemptAt: deviceOemUpdateStatus.lastAttemptAt,
+      lastScheduledAttemptAt: deviceOemUpdateStatus.lastScheduledAttemptAt,
       rebootPendingSince: deviceOemUpdateStatus.rebootPendingSince,
       applicability: deviceOemUpdateStatus.applicability,
       notSupportedToolVersion: deviceOemUpdateStatus.notSupportedToolVersion,
@@ -325,7 +342,8 @@ async function loadPage(scope: SQL, after: string | null, upTo: string | null): 
 /** The lane, when nothing about the device alone already rules a run out. */
 function laneWithoutALink(row: CandidateRow): OemLane | null {
   if (!oemUpdatesEnabled(row.partnerId)) return null;
-  if (row.commandStatus && IN_FLIGHT_STATUSES.has(row.commandStatus)) return null;
+  // A run in flight is the decision's call (`run_in_progress`), after the window and
+  // the night's scheduled attempt, so the reason it names is the right one.
   // A release on its way would undo the takeover a run makes. The sweep settles it first.
   if (row.takeoverState === 'releasing') return null;
 
