@@ -68,6 +68,13 @@ A few kinds have units or evidence rules worth knowing:
   24 hours, or one computed for a device with no patch telemetry, counts as no data.
 - **Certificate expiry** watches the Breeze agent's own mTLS certificate only. It
   does not inspect certificates installed on the device or served by its services.
+- **Script** monitors judge the device's newest run of the script. If the script
+  prints a `::breeze:monitor:: {"state":"breach"|"ok","detail":"…"}` line, the last
+  such line decides, whatever the exit code. Without one, **Breach on non-zero exit code**
+  makes any non-zero exit a breach. A run that timed out, was cancelled, never
+  reached the device, could not start or was killed counts as no data, as does no run
+  within three intervals. No data neither opens an episode nor resolves an open
+  alert. **Test** reads the same newest run; it does not run the script.
 
 Composite monitors contain two to ten server-evaluated child conditions,
 matching all or any. They cannot nest or contain agent-delivered/worker-provisioned
