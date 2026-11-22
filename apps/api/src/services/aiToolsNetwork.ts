@@ -963,6 +963,11 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
       const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, true));
       if ('error' in access) return JSON.stringify({ error: access.error });
+      // Same rule as the discovery-profile worker's agent selection: a Quick
+      // Support session machine is never a scan source.
+      if (access.device.isEphemeral) {
+        return JSON.stringify({ error: 'Network discovery cannot run from a Quick Support device.' });
+      }
 
       // The agent's handleNetworkDiscovery reads `subnets` and `methods`
       // (agent/internal/heartbeat/handlers_network.go), the same shape the

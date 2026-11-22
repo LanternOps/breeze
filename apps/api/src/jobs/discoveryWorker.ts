@@ -279,7 +279,8 @@ async function validateRequestedAgentForDiscovery(
       agentId: devices.agentId,
       orgId: devices.orgId,
       siteId: devices.siteId,
-      status: devices.status
+      status: devices.status,
+      isEphemeral: devices.isEphemeral
     })
     .from(devices)
     // A device parked in its partner's holding org never runs a scan (the
@@ -287,7 +288,9 @@ async function validateRequestedAgentForDiscovery(
     .where(and(eq(devices.agentId, requestedAgentId), notParkedDeviceCondition()))
     .limit(1);
 
-  if (!agentDevice) {
+  // Same rule as automatic and pinned selection (discoveryAgentSelection.ts):
+  // a Quick Support session machine is never a scan source.
+  if (!agentDevice || agentDevice.isEphemeral) {
     return { ok: false, message: 'Requested agent not found' };
   }
 
@@ -625,6 +628,7 @@ async function processScheduleProfiles(): Promise<{ enqueued: number }> {
  */
 type DispatchScanInputs =
   | { status: 'profile-missing' }
+  | { status: 'profile-moved' }
   | { status: 'invalid-agent' }
   | { status: 'no-agent' }
   | { status: 'not-scheduled' }
@@ -653,6 +657,9 @@ type DispatchScanInputs =
 type DiscoveryAgentSelectionSource = 'requested' | 'pinned' | 'subnet-match' | 'site-auto';
 
 type DispatchAgentCandidate = { agentId: string; label: string };
+
+const PROFILE_MOVED_MESSAGE =
+  'The profile moved to another site or organization after this scan was queued. The scan was not sent.';
 
 /** Cap on websocket-connectivity probes per dispatch (Redis round-trips). */
 const MAX_CONNECTIVITY_PROBES = 25;
@@ -708,6 +715,19 @@ async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<Dispat
   if (!profile) {
     await markJobFailed(data.jobId, 'Profile not found');
     return { status: 'profile-missing' };
+  }
+
+  // The job records the organization and site it was queued for; agents are
+  // chosen and results are filed against those. A profile edited to another
+  // site in the meantime no longer describes this job, so the job ends here.
+  // Nothing is re-queued: the next scheduled or manual run is created from
+  // the profile's current site.
+  if (profile.orgId !== data.orgId || profile.siteId !== data.siteId) {
+    console.warn(
+      `[DiscoveryWorker] Job ${data.jobId} was queued for org=${data.orgId} site=${data.siteId} but profile ${profile.id} is now in org=${profile.orgId} site=${profile.siteId}; not dispatching`
+    );
+    await markJobFailed(data.jobId, PROFILE_MOVED_MESSAGE);
+    return { status: 'profile-moved' };
   }
 
   // Resolve who runs the scan (#7969). Precedence: an explicit agent on a
