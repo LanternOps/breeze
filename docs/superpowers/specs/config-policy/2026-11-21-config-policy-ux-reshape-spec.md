@@ -1,6 +1,6 @@
 ---
-title: Configuration policies UX reshape (applies-to first, draft until live, visible inheritance)
-status: draft
+title: Configuration policies UX reshape (applies-to first, inactive until activated, visible inheritance)
+status: approved
 date: 2026-11-21
 origin: "Design shaping session with Todd, 2026-11-21: six reported problems with Config Policies"
 related_issues: [12306, 9565, 6670, 12309, 11776, 12293, 6339, 12263, 3381, 12308, 9408]
@@ -35,7 +35,7 @@ nothing on the page said so. That state must not be reachable silently.
   policies only; sees MSP-managed ones read-only with the reason stated up front.
 - **Org-scope user** (a customer's own admin, or a single-org IT team on an org token). Creates
   org-managed policies for their own org. Today cannot open MSP-managed policies at all
-  (`policyAccessCondition`, `services/configurationPolicy.ts`); see Open Decision 2.
+  (`policyAccessCondition`, `services/configurationPolicy.ts`); see Decision 2.
 
 Ranges: 1 to 500+ organizations per partner, 10,000+ devices, tens to low hundreds of policies,
 26 feature types, 0 to hundreds of targets per policy.
@@ -43,12 +43,14 @@ Ranges: 1 to 500+ organizations per partner, 10,000+ devices, tens to low hundre
 ## Decisions already made (Todd, 2026-11-21)
 
 1. Ask only "Applies to". Ownership is derived and shown as a secondary "Managed by" line.
-2. A new policy is a draft until one explicit go-live. The existing Inactive status is the draft.
-   Edits to a live policy stay immediate, with an accurate reach line instead of draft/publish.
+2. A new policy stays inactive until one explicit activation. This is today's Inactive status,
+   not a new state. Edits to an active policy stay immediate, with an accurate reach line
+   instead of draft/publish.
 3. Full shape in waves; backend changes allowed.
 4. Approved with the brief: feature rail replaces the tab strip; Overview tab removed; no target
    pre-selected on create; owner and parent lock at the first feature save; the renames below;
    the list under a selected org shows policies that apply to that org.
+5. The five open questions are settled; see "Decisions on the open questions".
 
 ## Proposed design
 
@@ -67,7 +69,7 @@ Visual authority is the web app's existing components and tokens.
 | Who can edit it (owner) | **Managed by** | Partner library, Partner-wide as a type, A specific organization |
 | Policy-to-policy inheritance | **Parent policy**, "Based on X" | Master, baseline, Link to Existing, linked |
 | Which assigned policy wins on a device | **Precedence**, "most specific wins" | Inheritance chain, closest-wins priority |
-| Inactive | **Draft** / **Paused** (Open Decision 3) | Inactive |
+| Saved but not enforced | **Inactive**, unchanged. No Draft or Paused state (Decision 3). | none |
 
 "Baseline" is avoided because security audit baselines already use it across the app. The two
 inheritance mechanisms never share a word. API field names do not change.
@@ -83,7 +85,7 @@ inheritance mechanisms never share a word. API field names do not change.
 - **Feature rail** replaces the 29-tab overflow strip. Vertical, grouped, all 26 features
   visible, each with a text state: *Set here*, *From parent*, *Not set*. The selected feature
   stays in `window.location.hash`. Reuse the pattern in `components/settings/SettingsSectionNav.tsx`.
-  Below about 1024px the rail becomes a picker. Proposed groups (Open Decision 5):
+  Below about 1024px the rail becomes a picker. Proposed groups (Decision 5):
   Updates & software · Monitoring · Security · Backup · Access & end user · Lifecycle.
 - **Remove from this policy** on every *Set here* feature. Today a feature, once saved,
   cannot be returned to *Not set* from the page (#12263). Remove returns it to *Not set*, or
@@ -97,26 +99,27 @@ One pattern per control type (`docs/agents/settings.md` rule 7):
 - **Feature:** per-feature Save, as today. New: an unsaved-changes guard on leaving a feature.
 - **Name and description:** a small details form with Save and Cancel.
 - **Applies to:** edits are staged in the panel and commit on one **Apply** that states the
-  change ("adds 64 devices, removes 12"). Today every toggle commits at once, and on a live
+  change ("adds 64 devices, removes 12"). Today every toggle commits at once, and on an active
   policy this is the widest-reaching edit on the page.
-- **State:** Turn on and Pause are explicit actions that state their reach.
-- **Reach line** on every save of a live policy: "Save · reaches 212 devices". Reach is devices
+- **State:** Activate and Deactivate are explicit actions that state their reach. They are
+  today's status change, not a new mechanism.
+- **Reach line** on every save of an active policy: "Save · reaches 212 devices". Reach is devices
   targeted directly plus devices reached through policies based on this one.
 - The reach line and the staged Apply are also where a destructive link gets its own
   confirmation, such as a software allowlist that removes everything unlisted (#3381). That
   rule is #3381's; this spec provides the place and the number.
 
-### Create: draft until go-live
+### Create: inactive until activated
 
 - `/configuration-policies/new` opens the full page at once; every feature is browsable before
   anything is saved. The two-card chooser becomes an optional **Start from**: Blank · Based on a
   parent policy · later, Copy of a policy (#12309, #11776).
-- The policy is saved as a draft (`status: inactive`) at the first feature Save. Only a name is
-  needed first. A draft survives navigation, lists as Draft, and reaches no device.
+- The policy is saved with `status: inactive` at the first feature Save. Only a name is
+  needed first. It survives navigation, lists as Inactive, and reaches no device.
 - **Managed by and Based on are fixed at that first save.** Both are create-only in the API and
   enforced in the database. The page says so before the first save. Afterwards the way to change
   either is Copy.
-- Primary action is the go-live, not a save: **"Turn on · reaches 212 devices"**. It needs a
+- Primary action is the activation, not a save: **"Activate · reaches 212 devices"**. It needs a
   name and an explicit applies-to decision: at least one target, or the stated choice "Don't
   apply yet".
 - No target is pre-selected. The org switcher's current org is the first suggestion in the
@@ -144,15 +147,15 @@ a side panel so the feature stays in view.
   organizations, single organizations and MSP-owned device groups, nothing narrower.
 - An org-managed policy shows its organization locked and offers that org and below.
 - **Managed by** is one secondary line. Default for a partner user with full org access: their
-  MSP. Before the first save it states the trade plainly (see Open Decision 1).
+  MSP. Before the first save it states the trade plainly (see Decision 1).
 
 ### Policy list
 
 - An **Applies to** column from real assignments replaces the ownership badge, with a device
-  count and a state: Live · Draft · Paused · Not applied · Live through N policies.
+  count and a state: Active · Inactive · Not applied · In use through N policies.
   "Managed by Acme" shows only on org-managed rows.
 - Filters: state, not applied, organization.
-- With one org selected in the switcher: policies that apply to that org, plus drafts. Today
+- With one org selected in the switcher: policies that apply to that org, plus inactive ones. Today
   that view returns the org's own policies plus every partner-owned one
   (`listConfigPolicies`), which stops being useful once partner-owned is the default.
 
@@ -166,8 +169,8 @@ a side panel so the feature stays in view.
 - **Start-from picker.** An MSP-managed policy can only be based on MSP-managed parents; the
   picker says why org-managed ones are absent.
 - **A parent is never inert.** Parent status does not gate inheritance and link changes
-  propagate live (inheritance spec 2026-09-06, "Semantics"). A draft, paused or unapplied policy
-  that others are based on reads "Live through 3 policies · 148 devices", and its saves carry
+  propagate live (inheritance spec 2026-09-06, "Semantics"). An inactive or unapplied policy
+  that others are based on reads "In use through 3 policies · 148 devices", and its saves carry
   that reach.
 - **Precedence, on the device** (Config tab). Already shipped (#9575): chain rows link to each
   policy, list what it contributes and mark the features a closer policy won. Still to do: each
@@ -183,14 +186,14 @@ spec for #6670. This spec delivers only the precedence display above.
 
 ### States
 
-- Policy: draft · live · live but not applied (warning) · paused · archived · live through N.
+- Policy: inactive · active · active but not applied (warning) · archived · in use through N.
 - Feature: not set · set here · from parent · changed from parent · saved but not deployed
   (existing amber state) · unavailable on this policy (say why, offer Copy).
 - Applies to: none · all organizations · N organizations · mixed narrower targets · target
   deleted · zero matching devices · count loading · staged, not yet applied.
 - Viewer: partner with full access · partner with limited org access (read-only on MSP-managed
   policies with the reason shown before any click) · org user on their own policy · org user on
-  an MSP-managed policy (Open Decision 2).
+  an MSP-managed policy (Decision 2).
 
 ### Assignment homes
 
@@ -217,16 +220,16 @@ Decided here, with the reason for each.
    reveal another customer's device counts to an org-scope caller.
 3. **List:** rows carry an applies-to summary and derived state. New filters: applies to org,
    not applied. The existing `orgId` filter keeps its meaning for other callers.
-4. **Go-live needs no new endpoint.** Assignments already save on an inactive policy (no status
-   check found in the assignment route or in `assignPolicy`) and Turn on is the existing status PATCH. The create page sends
-   `status: 'inactive'` for a new draft.
+4. **Activation needs no new endpoint.** Assignments already save on an inactive policy (no status
+   check found in the assignment route or in `assignPolicy`) and Activate is the existing status PATCH. The create page sends
+   `status: 'inactive'` for a new policy.
 5. **Target listing:** include MSP-managed policies for partner-scope callers.
 6. **Read scoping** (ships with the W3 owner default, not before): see "Tenancy & data model
-   impact" and Open Decision 2.
+   impact" and Decision 2.
 
 ## Tenancy & data model impact
 
-- **W1 and W2: no schema change.** New reads run under `withDbAccessContext`.
+- **No schema change in any wave.** New reads run under `withDbAccessContext`.
 - **W3 changes what a partner-owned policy means.** Until now partner-owned rows were a shared
   library. With MSP-managed as the default they will often be customer-specific. Two
   consequences must ship in the same wave:
@@ -241,17 +244,16 @@ Decided here, with the reason for each.
     profiles), never an org-owned one, and backup resolves each org's default destination
     (`validateFeaturePolicyExists`, `PARTNER_LINKABLE_FEATURE_TYPES`). OneDrive Helper cannot
     exist on one at all (`ORG_SCOPED_ONLY_FEATURE_TYPES`, which holds only that type today). The
-    owner default therefore narrows what a single-customer policy can link. See Open Decision 1.
-- **Possible column** `configuration_policies.first_activated_at timestamptz NULL` if Open
-  Decision 3 picks two labels. `configuration_policies` is an org-cascade table, so the column
-  needs a `CORE_TENANT_EXPORT_POLICY` classification (`included`). No RLS change.
+    owner default therefore narrows what a single-customer policy can link. See Decision 1.
+- No new column. With one Inactive state nothing has to record a first activation. No RLS
+  change.
 - No new tables. The other config surfaces that share `useDefaultOwnerScope` (33 files import
   it) keep their owner selector: ownership is their only scope control, whereas a config policy has targets.
 
 ## Out of scope
 
 - The insides of the 26 feature forms; resolver rules; the one-level parent rule.
-- Draft/publish for edits to a live policy.
+- Draft/publish for edits to an active policy.
 - Exclusion targeting ("all except Birch") and field-level merging.
 - Tag and dynamic filters (#7414, #8957).
 - The confirmation rule for destructive links (#3381) and the backup setup pages (#12308).
@@ -267,7 +269,7 @@ Decided here, with the reason for each.
 |---|---|---|
 | W1 | Applies-to strip (targets, no counts) opening today's editors; not-applied warning on page and list; list Applies-to column, with the list API returning the applies-to summary; vocabulary and the contradictory copy; device Config tab: winner link and level on each card, the reason a policy lost, shared labels (the chain display itself shipped in #9575); hard-coded English badges into i18n. This wave is the scope of #12306 (p1), which has no open PR or plan. | none |
 | W2 | Unified applies-to editor with staged Apply; MSP-managed site/group/device targets; reach read and counts; target-listing fix | W1 |
-| W3 | One-page create with draft and go-live; feature rail; save-model changes; owner default with the org-scope read rule; list filter by applies-to | W2 |
+| W3 | One-page create, inactive until activated; feature rail; save-model changes; owner default with the org-scope read rule; list filter by applies-to | W2 |
 | W4 | Device-own settings | companion spec, #12293 |
 | W5 | "Outranked on N devices"; Copy (#12309, #11776) | W2 |
 
@@ -276,35 +278,25 @@ full rigor (TDD, contract suites, one independent review). Every wave updates th
 `apps/docs` configuration-policies page and the release-notes draft, adds new locale keys in all
 eight locales, and uses `runAction` for mutations and `data-testid` for E2E.
 
-## Open Decisions
+## Decisions on the open questions (Todd, 2026-11-21)
 
-Product calls for Todd. Each has a recommendation.
-
-1. **Owner default when a policy targets a single organization.** New facts since the shaping
-   questions: an MSP-managed policy cannot link that customer's own software/security/backup
-   entities or a specific backup destination, cannot carry OneDrive Helper, and (today) is
-   invisible to the customer's own admins.
-   - A. Always MSP-managed for partner users, with the trade stated on the Managed-by line before
-     the first save and in each linked picker. "Acme, then Birch too" keeps working.
-   - B. Org-managed when the first target is within one org. Links that org's own entities, but
-     spreading to a second org needs Copy.
-   - **Recommend A.** It matches partner-wide-first (#2135) and the request behind #11776; the
-     cost is that single-customer linked entities must be MSP-owned.
-2. **What a customer's own admin sees of MSP-managed policies.**
-   - A. A read-only view of the MSP-managed policies that apply to their org, and only those are
-     offered as parents.
-   - B. Keep them hidden, as today.
-   - **Recommend A.** Otherwise the default in decision 1 leaves a customer admin with an empty
-     policy list while their devices are fully managed.
-3. **Draft and Paused: one label or two.** Two needs the `first_activated_at` column.
-   **Recommend two.** "Paused" tells a tech that turning it back on re-applies to known devices.
-4. **OneDrive Helper on an MSP-managed policy that targets one org.** It is the only org-only
-   feature today. Keep the gate (it is database-enforced and org-bound by design) or lift it. **Recommend keep**, with Copy as the
-   stated way out.
-5. **Rail groups and their names.** Proposal above; adjust freely. The six features added since
-   October would sit as: Vendor updates in Updates & software; Security agents and Containment
-   in Security; System protection in Backup; Workload inventory in Monitoring; Wake-on-LAN in
-   Access & end user.
+1. **Owner default when a policy targets a single organization: always MSP-managed** for
+   partner users with full org access. The trade is stated on the Managed-by line before the
+   first save and in each linked picker: an MSP-managed policy cannot link that customer's own
+   software, security or backup entities or a specific backup destination, and cannot carry
+   OneDrive Helper. This matches partner-wide-first (#2135) and the request behind #11776.
+2. **A customer's own admin gets a read-only view** of the MSP-managed policies that apply to
+   their organization, and only those are offered as parents. This is the read-scoping rule in
+   "Tenancy & data model impact" and ships in W3 with the owner default.
+3. **No Draft or Paused state.** A policy is Active or Inactive, as today. A new policy starts
+   Inactive and is switched on with Activate. Deactivate stops enforcement without deleting
+   anything. No new column.
+4. **OneDrive Helper stays org-only.** It is the only org-only feature today. On an MSP-managed
+   policy the feature says why it is unavailable and offers Copy.
+5. **Rail groups as proposed:** Updates & software · Monitoring · Security · Backup · Access &
+   end user · Lifecycle. The six features added since October sit as: Vendor updates in Updates
+   & software; Security agents and Containment in Security; System protection in Backup;
+   Workload inventory in Monitoring; Wake-on-LAN in Access & end user.
 
 ## Evidence notes
 
