@@ -10,6 +10,9 @@ const shared = vi.hoisted(() => ({
   // in production). Tracked by a plain function, NOT vi.fn, so the suites that
   // call vi.resetAllMocks() cannot wipe its passthrough implementation.
   txDepth: 0,
+  // Depth of open `withDbTransaction` savepoints, tracked the same way: a
+  // read whose failure the executor catches must run inside one (CLAUDE.md).
+  savepointDepth: 0,
 }));
 
 vi.mock('bullmq', () => ({
@@ -55,7 +58,14 @@ vi.mock('../db', () => {
       shared.txDepth -= 1;
     }
   };
-  const withDbTransaction = (fn: () => unknown) => fn();
+  const withDbTransaction = async (fn: () => Promise<unknown>) => {
+    shared.savepointDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      shared.savepointDepth -= 1;
+    }
+  };
   const withDbTransactionIfHeld = (fn: () => unknown) => fn();
   return {
     db,
@@ -3075,6 +3085,21 @@ describe('a job that names its patches installs only those', () => {
     expect(dispatchDeviceCommand).not.toHaveBeenCalled();
     expect(insertedRows).toContainEqual(expect.objectContaining({ status: 'skipped', errorMessage: 'ring_unavailable' }));
     expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Update ring deleted or disabled' });
+  });
+
+  it('the live config read runs inside its own savepoint, so a caught failure cannot abort the device transaction', async () => {
+    const depthAtRead: number[] = [];
+    vi.mocked(resolveDevicePatchEvaluationConfig).mockImplementationOnce(async () => {
+      depthAtRead.push(shared.savepointDepth);
+      return NO_POLICY as any;
+    });
+    primeJob({ patchIds: [A] });
+    argumentKeyedResolver();
+    queuedDispatch();
+
+    await run();
+
+    expect(depthAtRead).toEqual([1]);
   });
 
   it('a failure resolving the live config installs nothing and skips the device', async () => {
