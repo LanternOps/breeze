@@ -109,9 +109,8 @@ describe('cross-org batch scope (#12288 follow-up)', () => {
   });
 
   it('keys by (tool, action) only, so two orgs share a cross-org key', () => {
-    expect(approvalCrossOrgBatchKey(patch)).toBe(
-      approvalCrossOrgBatchKey({ ...patch, orgId: 'org-2' }),
-    );
+    const otherOrg = { ...patch, orgId: 'org-2' };
+    expect(approvalCrossOrgBatchKey(patch)).toBe(approvalCrossOrgBatchKey(otherOrg));
     expect(approvalCrossOrgBatchKey(patch)).toBe(
       ['manage_patches', 'install'].join(APPROVAL_BATCH_GROUP_SEPARATOR),
     );
