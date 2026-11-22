@@ -1271,3 +1271,104 @@ describe('W13: a persisted discovery result is enqueued after its transaction co
   });
 });
 
+describe('W13: a direct WebSocket discovery result is enqueued after its transaction commits', () => {
+  beforeEach(() => { enqueueResults.mockReset(); enqueueResults.mockImplementation(async () => 'queued'); });
+
+  /** resultScene, with the job bound to its agent as a direct dispatch records it. */
+  async function directScene() {
+    const scene = await resultScene();
+    await admin(sql`UPDATE discovery_jobs SET agent_id = ${scene.fx.agentId} WHERE id = ${scene.jobId}::uuid`);
+    return scene;
+  }
+
+  /** The job id is the command id and there is no device_commands row: the live loop's direct branch. */
+  it('an exclusive site lock is granted while the results enqueue is in flight, and the ack follows it', async () => {
+    const { fx, jobId } = await directScene();
+    const hold = latched('queued');
+    enqueueResults.mockImplementationOnce(hold.impl);
+
+    const sending = sendWsResult(fx, jobId, discoveryResultBody(jobId));
+    let taken: unknown;
+    let resolvedWhileHeld = -1;
+    let frames: string[] = [];
+    try {
+      await hold.entered.promise;
+      taken = await takeExclusive(fx.siteId);
+      resolvedWhileHeld = await Promise.race([sending.then(() => 1), settle().then(() => 0)]);
+    } finally {
+      hold.release.resolve();
+      frames = await sending.catch(() => []);
+    }
+
+    expect(taken).toBe('granted');
+    expect(resolvedWhileHeld).toBe(0);
+    expect(frames.map((f) => JSON.parse(f))).toContainEqual({ type: 'ack', commandId: jobId });
+    expect(enqueueResults).toHaveBeenCalledTimes(1);
+    expect(enqueueResults.mock.calls[0]!.slice(0, 3)).toEqual([jobId, fx.orgId, fx.siteId]);
+    expect(await job(jobId)).toMatchObject({ status: 'running' });
+  });
+
+  it('called inside a context it does not own, it enqueues only after that context commits', async () => {
+    const { fx, jobId } = await directScene();
+    const hold = latched('queued');
+    enqueueResults.mockImplementationOnce(hold.impl);
+
+    const running = withDbAccessContext(
+      { scope: 'organization', orgId: fx.orgId, accessibleOrgIds: [fx.orgId], accessiblePartnerIds: [], currentPartnerId: null },
+      () => processOrphanedCommandResult(fx.agentId, fx.deviceId,
+        { type: 'command_result', commandId: jobId, ...discoveryResultBody(jobId) } as never),
+    );
+    let taken: unknown;
+    try {
+      await hold.entered.promise;
+      taken = await takeExclusive(fx.siteId);
+    } finally {
+      hold.release.resolve();
+      await running.catch(() => undefined);
+    }
+
+    expect(taken).toBe('granted');
+    expect(enqueueResults).toHaveBeenCalledTimes(1);
+  });
+
+  it('a context that rolls back after the result was accepted delivers nothing', async () => {
+    const { fx, jobId } = await directScene();
+
+    const err = await withDbAccessContext(
+      { scope: 'organization', orgId: fx.orgId, accessibleOrgIds: [fx.orgId], accessiblePartnerIds: [], currentPartnerId: null },
+      async () => {
+        await processOrphanedCommandResult(fx.agentId, fx.deviceId,
+          { type: 'command_result', commandId: jobId, ...discoveryResultBody(jobId) } as never);
+        throw new Error('rolled back after the handler');
+      },
+    ).catch((e: unknown) => e);
+    await settle();
+
+    expect(String(err)).toContain('rolled back after the handler');
+    expect(enqueueResults).not.toHaveBeenCalled();
+    expect(await job(jobId)).toMatchObject({ status: 'running' });
+  });
+
+  it('a failed enqueue still fails the job with its message, and the agent is still acknowledged', async () => {
+    const { fx, jobId } = await directScene();
+    enqueueResults.mockRejectedValueOnce(new Error('queue down'));
+
+    const frames = await sendWsResult(fx, jobId, discoveryResultBody(jobId));
+
+    expect(frames.map((f) => JSON.parse(f))).toContainEqual({ type: 'ack', commandId: jobId });
+    expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { message: 'queue down' } });
+  });
+
+  it('a failed enqueue does not fail a job that already left running', async () => {
+    const { fx, jobId } = await directScene();
+    enqueueResults.mockImplementationOnce(async () => {
+      await admin(sql`UPDATE discovery_jobs SET status = 'cancelled' WHERE id = ${jobId}::uuid`);
+      throw new Error('queue down');
+    });
+
+    await sendWsResult(fx, jobId, discoveryResultBody(jobId));
+
+    expect(await job(jobId)).toMatchObject({ status: 'cancelled' });
+  });
+});
+
