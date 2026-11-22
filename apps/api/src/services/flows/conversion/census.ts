@@ -43,15 +43,25 @@ export interface ConversionCensus {
   enabledUnswitchedS: number;
   /**
    * Enabled unswitched S rows whose converted document the editor opens
-   * read-only (Document tab), because it is not form-shaped. A row that
-   * converts to no document is in `byFidelity.unconvertible` instead.
+   * read-only (Document tab), because it is not form-shaped. Not counted here:
+   * a row that converts to no document (`byFidelity.unconvertible`), a row in
+   * `contextErrors` or `conversionErrors`, and a row in `formRecognizerErrors`.
    */
   notFormShapedEnabledUnswitchedS: number;
-  /** Enabled unswitched S rows with a webhook trigger and a `run_script` or `execute_command` action. */
+  /**
+   * Enabled unswitched S rows with a webhook trigger and a `run_script` or
+   * `execute_command` action. Counted from the row itself, before the context
+   * load, so context errors and unconvertible rows are included. A row whose
+   * trigger or actions jsonb is malformed is not counted.
+   */
   webhookScriptJobs: number;
+  /** Enabled unswitched S rows whose document the form recognizer threw on (a recognizer bug; counted, never listed). */
+  formRecognizerErrors: number;
   oldestSwitchAgeMs: number | null;
   /** S rows whose context could not be read (counted, never listed). */
   contextErrors: number;
+  /** S rows the converter threw on (counted, never listed; the message could carry row content). */
+  conversionErrors: number;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -67,15 +77,15 @@ function isWebhookScriptJob(row: { trigger: unknown; actions: unknown }): boolea
 
 /**
  * Only `.formShaped` is read: a form-shaped result also carries the decoded
- * values, which include the Job's name. A recognizer that throws is counted as
- * not form-shaped (the editor could not open it in the form either), and its
- * message, which could carry row content, is never surfaced.
+ * values, which include the Job's name. The recognizer is meant to be total,
+ * so a throw is a bug: it is reported as `'error'` and counted on its own,
+ * and its message, which could carry row content, is never surfaced.
  */
-function isFormShaped(document: FlowDocumentV1): boolean {
+function formShape(document: FlowDocumentV1): 'form' | 'not_form' | 'error' {
   try {
-    return recognizeFlowForm(document).formShaped;
+    return recognizeFlowForm(document).formShaped ? 'form' : 'not_form';
   } catch {
-    return false;
+    return 'error';
   }
 }
 
@@ -103,8 +113,10 @@ export async function conversionCensus(now: Date = new Date()): Promise<Conversi
     enabledUnswitchedS: 0,
     notFormShapedEnabledUnswitchedS: 0,
     webhookScriptJobs: 0,
+    formRecognizerErrors: 0,
     oldestSwitchAgeMs: null,
     contextErrors: 0,
+    conversionErrors: 0,
   };
 
   const switchedIds = new Set<string>();
@@ -141,10 +153,21 @@ export async function conversionCensus(now: Date = new Date()): Promise<Conversi
       continue;
     }
     if (ctx.isRemediationTarget) census.remediationTargets += 1;
-    const result = convertAutomation(row, ctx);
+    let result;
+    try {
+      result = convertAutomation(row, ctx);
+    } catch {
+      // The message could carry row content and the CLI prints it verbatim.
+      census.conversionErrors += 1;
+      continue;
+    }
     census.byFidelity[result.fidelity] += 1;
     for (const code of new Set(result.findings.map((f) => f.code))) census.byFinding[code] += 1;
-    if (enabledUnswitched && result.document && !isFormShaped(result.document)) census.notFormShapedEnabledUnswitchedS += 1;
+    if (enabledUnswitched && result.document) {
+      const shape = formShape(result.document);
+      if (shape === 'not_form') census.notFormShapedEnabledUnswitchedS += 1;
+      else if (shape === 'error') census.formRecognizerErrors += 1;
+    }
   }
   return census;
 }

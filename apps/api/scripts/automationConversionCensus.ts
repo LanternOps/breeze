@@ -9,10 +9,12 @@
 // counts, compliance-remediation targets, switched counts, enabled unswitched
 // S rows, how many of those the flow editor cannot open in its form
 // (`notFormShapedEnabledUnswitchedS`) and how many are webhook Jobs that run a
-// script or command (`webhookScriptJobs`), context errors and the oldest
-// switch age — never an id, a name or any other row content. Only these
-// numbers ever leave the host; nothing about a customer is printed or
-// committed.
+// script or command (`webhookScriptJobs`), context, conversion and
+// form-recognizer error counts and the oldest switch age — never an id, a
+// name or any other row content. A row the converter or the recognizer fails
+// on is counted and its error message dropped; only a failure of the whole run
+// (for example the database) reaches the catch below. Only these numbers ever
+// leave the host; nothing about a customer is printed or committed.
 
 import { closeDb } from '../src/db';
 import { conversionCensus } from '../src/services/flows/conversion/census';

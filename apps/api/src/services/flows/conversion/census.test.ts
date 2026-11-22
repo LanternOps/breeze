@@ -16,6 +16,7 @@ const m = vi.hoisted(() => ({
   policyRows: [] as Array<Record<string, unknown>>,
   context: vi.fn(),
   recognize: vi.fn(),
+  convert: vi.fn(),
 }));
 
 /**
@@ -51,6 +52,11 @@ vi.mock('../../../db/schema', () => ({
   configPolicyAutomations: { _: 'policyAutomations', enabled: { key: 'enabled' }, retiredAt: { key: 'retiredAt' } },
 }));
 vi.mock('./context', () => ({ loadConversionContext: m.context }));
+vi.mock('./convertAutomation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./convertAutomation')>();
+  m.convert.mockImplementation(actual.convertAutomation);
+  return { ...actual, convertAutomation: (...args: Parameters<typeof actual.convertAutomation>) => m.convert(...args) };
+});
 vi.mock('@breeze/shared', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@breeze/shared')>();
   m.recognize.mockImplementation(actual.recognizeFlowForm);
@@ -90,6 +96,7 @@ beforeEach(() => {
   m.policyRows = [];
   m.context.mockReset().mockImplementation(async () => ctx());
   m.recognize.mockClear();
+  m.convert.mockClear();
 });
 
 describe('conversionCensus', () => {
@@ -155,19 +162,41 @@ describe('conversionCensus', () => {
       return ctx({ isRemediationTarget: r.id === id(7) });
     });
     const c = await conversionCensus(NOW);
-    expect(c.notFormShapedEnabledUnswitchedS).toBe(1);
-    expect(c.byFidelity.unconvertible).toBeGreaterThanOrEqual(1);
+    // The negatives took the paths they name.
+    expect(c.byFidelity.unconvertible).toBe(2); // the notify row and the remediation target
+    expect(c.remediationTargets).toBe(1);
     expect(c.contextErrors).toBe(1);
+    // Ids 1 (counted) and 2 (form-shaped) are the only enabled unswitched rows with a document.
+    expect(m.recognize).toHaveBeenCalledTimes(2); // only for those two
+    expect(c.notFormShapedEnabledUnswitchedS).toBe(1);
+    expect(c.formRecognizerErrors).toBe(0);
   });
 
-  it('a recognizer that throws counts the row as not form-shaped and leaks nothing', async () => {
+  it('a recognizer that throws is counted on its own and leaks nothing', async () => {
     m.rows = [row({ id: id(1), name: 'Customer Hooli backup' })];
     m.recognize.mockImplementationOnce(() => {
       throw new Error(`cannot decode ${id(1)} Customer Hooli backup`);
     });
     const c = await conversionCensus(NOW);
     expect(m.recognize).toHaveBeenCalledTimes(1);
+    // A recognizer bug is not read as "opens on the Document tab".
+    expect(c.formRecognizerErrors).toBe(1);
+    expect(c.notFormShapedEnabledUnswitchedS).toBe(0);
+    const text = JSON.stringify(c);
+    expect(text).not.toMatch(UUID);
+    expect(text).not.toContain('Hooli');
+  });
+
+  it('a converter that throws is counted, not thrown, and leaks nothing', async () => {
+    m.rows = [row({ id: id(1), name: 'Customer Hooli backup' }), row({ id: id(2), actions: COMMAND })];
+    m.convert.mockImplementationOnce(() => {
+      throw new Error(`bad row ${id(1)} Customer Hooli backup`);
+    });
+    const c = await conversionCensus(NOW);
+    expect(c.conversionErrors).toBe(1);
+    // The next row is still converted and counted.
     expect(c.notFormShapedEnabledUnswitchedS).toBe(1);
+    expect(c.enabledUnswitchedS).toBe(2);
     const text = JSON.stringify(c);
     expect(text).not.toMatch(UUID);
     expect(text).not.toContain('Hooli');
@@ -186,10 +215,24 @@ describe('conversionCensus', () => {
       row({ id: id(9), trigger: WEBHOOK, actions: SCRIPT_ACTION, retiredAt: new Date('2026-12-01T00:00:00Z') }), // retired
       row({ id: id(10), trigger: null, actions: null } as never), // malformed jsonb: not counted, not thrown
       row({ id: id(11), trigger: WEBHOOK, actions: { type: 'run_script' } } as never), // actions not an array
+      row({ id: id(12), trigger: WEBHOOK, actions: [null, 'x', 5] } as never), // no record action
+      row({ id: id(13), trigger: 'webhook', actions: SCRIPT_ACTION } as never), // trigger not a record
+      row({ id: id(14), trigger: [], actions: SCRIPT_ACTION } as never), // trigger an array
+      row({ id: id(15), trigger: WEBHOOK, actions: [null, 'x', 5, ...SCRIPT_ACTION] } as never), // counted
+      // Counted from the row, before the context load and the conversion:
+      row({ id: id(16), trigger: WEBHOOK, actions: SCRIPT_ACTION }), // counted: context error
+      row({ id: id(17), trigger: WEBHOOK, actions: SCRIPT_ACTION }), // counted: remediation target
+      row({ id: id(18), trigger: WEBHOOK, actions: UNCONVERTIBLE }), // counted: no document
     ];
     m.conversions = [{ automationId: id(4), state: 'switched', switchedAt: new Date('2027-01-01T00:00:00Z') }];
+    m.context.mockImplementation(async (r: { id: string }) => {
+      if (r.id === id(16)) throw new Error('no owner');
+      return ctx({ isRemediationTarget: r.id === id(17) });
+    });
     const c = await conversionCensus(NOW);
-    expect(c.webhookScriptJobs).toBe(2);
+    expect(c.contextErrors).toBe(1);
+    expect(c.remediationTargets).toBe(1);
+    expect(c.webhookScriptJobs).toBe(6);
   });
 
   it('census output contains no uuid', async () => {
