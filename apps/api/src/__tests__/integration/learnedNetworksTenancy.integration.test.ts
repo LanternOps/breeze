@@ -47,8 +47,8 @@ async function rejectsCode(work: Promise<unknown>, code: string) {
 type Tenant = Awaited<ReturnType<typeof tenant>>;
 
 /** One tenant: a network 192.168.1.0/24 via (192.168.1.1, a4:2b:b0:11:22:9c), one membership, one WAN row, a profile and a grant. */
-async function tenant() {
-  const partner = await createPartner();
+async function tenant(partnerId?: string) {
+  const partner = partnerId ? { id: partnerId } : await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
   const site = await createSite({ orgId: org.id });
   const device = await createDevice({ orgId: org.id, siteId: site.id, hostname: 'LAPTOP-JS' });
@@ -72,6 +72,33 @@ async function tenant() {
 
 async function twoOrgs() {
   return { a: await tenant(), b: await tenant() };
+}
+
+async function rejectsWith(work: Promise<unknown>, code: string, messagePrefix: string) {
+  const err = await failure(work);
+  expect(pgErrorCode(err)).toBe(code);
+  expect(pgMessage(err)).toMatch(new RegExp(`^${messagePrefix}`));
+}
+
+/** The Postgres error's own message, wherever Drizzle nested it. */
+function pgMessage(err: unknown): string | undefined {
+  let cur: unknown = err;
+  for (let depth = 0; cur && typeof cur === 'object' && depth < 5; depth++) {
+    const e = cur as { code?: unknown; message?: unknown; cause?: unknown };
+    if (typeof e.code === 'string' && typeof e.message === 'string') return e.message;
+    cur = e.cause;
+  }
+  return undefined;
+}
+
+const ATTACHMENT_COLUMNS = sql`network_attachment_epoch, network_attachment_sequence::text AS network_attachment_sequence,
+  network_attachment_digest, network_attachments_confirmed_at IS NOT NULL AS confirmed`;
+const STAMPED = { network_attachment_epoch: 'e1', network_attachment_sequence: '42', network_attachment_digest: 'd'.repeat(64), confirmed: true };
+const CLEARED = { network_attachment_epoch: null, network_attachment_sequence: null, network_attachment_digest: null, confirmed: false };
+
+async function stampAttachment(deviceId: string) {
+  await admin(sql`UPDATE devices SET network_attachment_epoch = 'e1', network_attachment_sequence = 42,
+    network_attachment_digest = ${'d'.repeat(64)}, network_attachments_confirmed_at = now() WHERE id = ${deviceId}::uuid`);
 }
 
 const ownId = (t: Tenant, table: Table) => ({
@@ -249,5 +276,98 @@ describe('learned networks: RLS and composite tenancy FKs', () => {
     await rejectsCode(job(dispatchOf(16385)), '23514');
     await rejectsCode(job('[]'), '23514');
     await job(dispatchOf(16384));
+  });
+});
+
+describe('learned networks: gated-site invariant (A6)', () => {
+  const assign = (t: Tenant, siteId: string) => sql`UPDATE learned_networks SET site_id = ${siteId}::uuid WHERE id = ${t.networkId}::uuid`;
+  const setGated = (siteId: string, value: boolean) => sql`UPDATE sites SET discovery_network_required = ${value} WHERE id = ${siteId}::uuid`;
+
+  it('A6: assigning a network to a site that is not gated is refused', async () => {
+    const { a } = await twoOrgs();
+    await rejectsWith(asOrg(a.orgId, assign(a, a.siteId)), '23514', 'learned_network_site_not_gated:');
+    await rejectsWith(asOrg(a.orgId, sql`INSERT INTO learned_networks (org_id, site_id, prefix)
+      VALUES (${a.orgId}::uuid, ${a.siteId}::uuid, '10.1.2.0/24')`), '23514', 'learned_network_site_not_gated:');
+    expect(await admin(sql`SELECT site_id FROM learned_networks WHERE id = ${a.networkId}::uuid`)).toEqual([{ site_id: null }]);
+
+    // Flag first, in the same transaction: accepted.
+    await scoped(a.orgId, async () => {
+      await db.execute(setGated(a.siteId, true));
+      await db.execute(assign(a, a.siteId));
+    });
+    expect(await admin(sql`SELECT site_id FROM learned_networks WHERE id = ${a.networkId}::uuid`)).toEqual([{ site_id: a.siteId }]);
+  });
+
+  it('A6: assigning first and setting the flag later in the same transaction commits under deferral', async () => {
+    const { a } = await twoOrgs();
+    await scoped(a.orgId, async () => {
+      await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      await db.execute(assign(a, a.siteId));
+      await db.execute(setGated(a.siteId, true));
+    });
+    expect(await admin(sql`SELECT site_id FROM learned_networks WHERE id = ${a.networkId}::uuid`)).toEqual([{ site_id: a.siteId }]);
+    // Control: deferred but never gated fails at commit.
+    const other = await createSite({ orgId: a.orgId });
+    await rejectsWith(scoped(a.orgId, async () => {
+      await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      await db.execute(sql`INSERT INTO learned_networks (org_id, site_id) VALUES (${a.orgId}::uuid, ${other.id}::uuid)`);
+    }), '23514', 'learned_network_site_not_gated:');
+  });
+
+  it('A6: clearing the gated flag while a network is assigned is refused', async () => {
+    const { a } = await twoOrgs();
+    await scoped(a.orgId, async () => { await db.execute(setGated(a.siteId, true)); await db.execute(assign(a, a.siteId)); });
+    await rejectsWith(asOrg(a.orgId, setGated(a.siteId, false)), '23514', 'site_network_still_assigned:');
+    expect(await admin(sql`SELECT discovery_network_required FROM sites WHERE id = ${a.siteId}::uuid`)).toEqual([{ discovery_network_required: true }]);
+    await asOrg(a.orgId, sql`UPDATE learned_networks SET site_id = NULL WHERE id = ${a.networkId}::uuid`);
+    await asOrg(a.orgId, setGated(a.siteId, false));
+    expect(await admin(sql`SELECT discovery_network_required FROM sites WHERE id = ${a.siteId}::uuid`)).toEqual([{ discovery_network_required: false }]);
+  });
+
+  it('A6: deleting a gated site unassigns its networks without tripping either trigger', async () => {
+    const { a } = await twoOrgs();
+    const gated = await createSite({ orgId: a.orgId });
+    await scoped(a.orgId, async () => { await db.execute(setGated(gated.id, true)); await db.execute(assign(a, gated.id)); });
+    await admin(sql`DELETE FROM sites WHERE id = ${gated.id}::uuid`);
+    expect(await admin(sql`SELECT site_id FROM learned_networks WHERE id = ${a.networkId}::uuid`)).toEqual([{ site_id: null }]);
+  });
+});
+
+describe('learned networks: device org move (A5)', () => {
+  const memberships = (deviceId: string) => admin(sql`SELECT id FROM learned_network_devices WHERE device_id = ${deviceId}::uuid`);
+  const attachment = async (deviceId: string) => (await admin(sql`SELECT ${ATTACHMENT_COLUMNS} FROM devices WHERE id = ${deviceId}::uuid`))[0];
+
+  it('A5: a device org move deletes its memberships and clears the four attachment columns', async () => {
+    const a = await tenant();
+    const b = await tenant(a.partnerId);
+    await stampAttachment(a.deviceId);
+    expect(await attachment(a.deviceId)).toEqual(STAMPED);
+    await admin(sql`UPDATE devices SET org_id = ${b.orgId}::uuid, site_id = ${b.siteId}::uuid WHERE id = ${a.deviceId}::uuid`);
+    expect(await memberships(a.deviceId)).toEqual([]);
+    expect(await attachment(a.deviceId)).toEqual(CLEARED);
+    expect(await admin(sql`SELECT org_id FROM devices WHERE id = ${a.deviceId}::uuid`)).toEqual([{ org_id: b.orgId }]);
+    // The source org's fingerprint and network stay where they are.
+    expect(await admin(sql`SELECT org_id FROM learned_network_gateways WHERE id = ${a.gatewayId}::uuid`)).toEqual([{ org_id: a.orgId }]);
+    expect(await admin(sql`SELECT org_id FROM learned_networks WHERE id = ${a.networkId}::uuid`)).toEqual([{ org_id: a.orgId }]);
+  });
+
+  it('A5: a site-only move keeps memberships and the attachment columns', async () => {
+    const a = await tenant();
+    const second = await createSite({ orgId: a.orgId });
+    await stampAttachment(a.deviceId);
+    await admin(sql`UPDATE devices SET site_id = ${second.id}::uuid WHERE id = ${a.deviceId}::uuid`);
+    expect(await memberships(a.deviceId)).toEqual([{ id: a.memberId }]);
+    expect(await attachment(a.deviceId)).toEqual(STAMPED);
+  });
+
+  it('A5: stands down while the source org is merging, so outside a real merge the restamp refuses the move', async () => {
+    const a = await tenant();
+    const b = await tenant(a.partnerId);
+    await admin(sql`UPDATE organizations SET status = 'merging' WHERE id = ${a.orgId}::uuid`);
+    const err = await failure(admin(sql`UPDATE devices SET org_id = ${b.orgId}::uuid, site_id = ${b.siteId}::uuid WHERE id = ${a.deviceId}::uuid`));
+    // The kept row still names (device, source org) and (gateway, source org); whichever RI check fires first refuses it.
+    expect(isPgForeignKeyViolation(err, 'learned_network_devices_device_fk')
+      || isPgForeignKeyViolation(err, 'learned_network_devices_gateway_fk'), String((err as Error)?.message)).toBe(true);
+    expect(await memberships(a.deviceId)).toEqual([{ id: a.memberId }]);
   });
 });

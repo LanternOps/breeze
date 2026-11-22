@@ -271,3 +271,128 @@ BEGIN
   RETURN NULL;
 END;
 $$;
+
+-- ---------------------------------------------------------------------------
+-- Gated invariant (index A6): (sites.discovery_network_required = false, a learned network assigned to the site)
+-- is unrepresentable. Assigning a network requires the site's flag to be true in the same transaction (in either
+-- order: checked when the statement ends, or at commit under SET CONSTRAINTS ... DEFERRED), and clearing the flag
+-- requires the site to have no assigned network. Deleting a site is neither: its networks' site_id is set null.
+--
+-- Both functions re-read the row by NEW.id instead of trusting NEW, because under deferral they run at commit.
+-- SECURITY DEFINER with in-body system scope, saved and restored before they raise or return (the tables are
+-- FORCE RLS and the caller may not see every row); an error aborts the statement, which rolls the set_config back
+-- too. A function-level SET "breeze.scope" attribute is not usable: it needs superuser in prod.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.breeze_learned_network_site_gated_check()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _site_id uuid;
+  _required boolean;
+BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  SELECT n.site_id, s.discovery_network_required INTO _site_id, _required
+    FROM public.learned_networks n
+    LEFT JOIN public.sites s ON s.id = n.site_id
+   WHERE n.id = NEW.id;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  IF _site_id IS NOT NULL AND _required IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'learned_network_site_not_gated: network % is assigned to site % whose discovery_network_required is false', NEW.id, _site_id
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.breeze_site_network_required_check()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+  _still_assigned boolean;
+BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  SELECT (s.discovery_network_required IS DISTINCT FROM true)
+         AND EXISTS (SELECT 1 FROM public.learned_networks n WHERE n.site_id = NEW.id)
+    INTO _still_assigned
+    FROM public.sites s
+   WHERE s.id = NEW.id;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  IF _still_assigned THEN
+    RAISE EXCEPTION 'site_network_still_assigned: site % has an assigned learned network', NEW.id
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS learned_networks_site_gated_chk ON public.learned_networks;
+CREATE CONSTRAINT TRIGGER learned_networks_site_gated_chk
+  AFTER INSERT OR UPDATE OF site_id ON public.learned_networks
+  DEFERRABLE INITIALLY IMMEDIATE FOR EACH ROW WHEN (NEW.site_id IS NOT NULL)
+  EXECUTE FUNCTION public.breeze_learned_network_site_gated_check();
+
+DROP TRIGGER IF EXISTS sites_network_required_chk ON public.sites;
+CREATE CONSTRAINT TRIGGER sites_network_required_chk
+  AFTER UPDATE OF discovery_network_required ON public.sites
+  DEFERRABLE INITIALLY IMMEDIATE FOR EACH ROW WHEN (NEW.discovery_network_required = false)
+  EXECUTE FUNCTION public.breeze_site_network_required_check();
+
+-- Trigger-only bodies; nobody calls them directly.
+REVOKE ALL ON FUNCTION public.breeze_learned_network_site_gated_check() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.breeze_site_network_required_check() FROM PUBLIC;
+
+-- ---------------------------------------------------------------------------
+-- Device org move (index A5). A learned_network_devices row names a source-org fingerprint through its composite
+-- (gateway_id, org_id) FK, so it can never follow the device: this BEFORE UPDATE OF org_id trigger deletes the
+-- device's rows and clears the four devices.network_attachment* columns on NEW, before the AFTER restamp
+-- (breeze_cascade_device_org_id()) runs, so nothing is carried into the target org. The next attachment report
+-- rebuilds the memberships there. A same-org site move keeps them.
+--
+-- Skipped while the source org is fenced for a merge: the merge folds learned_network_devices with their
+-- fingerprints (orgMergeRegistry custom policy for learned_networks) under deferred constraints, as
+-- breeze_topology_presence_device_moved (2026-12-27-000000-topology-presence-days-and-confirmation.sql) does.
+-- A forged 'merging' status only keeps the rows, and the immediate composite FKs then refuse the move.
+--
+-- Modifies only NEW (no separate write on devices) and never RAISEs. SECURITY DEFINER with in-body system scope,
+-- saved and restored before RETURN.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.breeze_learned_networks_device_moved()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  _prev_scope text := current_setting('breeze.scope', true);
+BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  IF NOT EXISTS (
+    SELECT 1 FROM public.organizations o WHERE o.id = OLD.org_id AND o.status::text = 'merging'
+  ) THEN
+    DELETE FROM public.learned_network_devices WHERE device_id = OLD.id;
+    NEW.network_attachment_epoch := NULL;
+    NEW.network_attachment_sequence := NULL;
+    NEW.network_attachment_digest := NULL;
+    NEW.network_attachments_confirmed_at := NULL;
+  END IF;
+  PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS breeze_learned_networks_device_moved ON public.devices;
+CREATE TRIGGER breeze_learned_networks_device_moved
+  BEFORE UPDATE OF org_id ON public.devices FOR EACH ROW
+  WHEN (NEW.org_id IS DISTINCT FROM OLD.org_id)
+  EXECUTE FUNCTION public.breeze_learned_networks_device_moved();
+
+-- Trigger-only body; nobody calls it directly.
+REVOKE ALL ON FUNCTION public.breeze_learned_networks_device_moved() FROM PUBLIC;
