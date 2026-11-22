@@ -52,6 +52,12 @@ Lab checks owed before the next tag:
 - **Breeze AI `draft_flow` now also needs `automations.read`** (#12435). It already needed `automations.write`. The REST routes it mirrors sit behind the flows router's read permission, and the tool now requires the same. No built-in role grants write without read. A custom role that grants `automations.write` without `automations.read` can no longer draft flows through Breeze AI or MCP until read is added.
 - **Flows is still marked Preview.**
 
+- **Configuration policies show where they apply** (#12306). The policy page has an always-visible **Applies to** line above the feature tabs. It names the first targets, opens the target editor in a side panel, and warns "Not applied to any device" when an active policy reaches nothing. An inactive one reads "Not applied yet"; a parent reads "In use through N policies".
+- The policy list has an **Applies to** column, a **Not applied** chip and "In use through N policies" for parents. The ownership badges are gone; org-managed rows read "Managed by <organization>".
+- The device **Effective Configuration** tab links the policy that won each feature (when you can open it), names the level it arrived through, and says in plain text why each other policy lost: a more specific level, a lower priority number, or an earlier assignment.
+- The create page, editors and device tab use one vocabulary: Applies to, Managed by, Parent policy / Based on, Precedence. A new policy now opens with the Applies-to editor open.
+- `GET /configuration-policies` rows and `GET /configuration-policies/:id` gain `appliesTo`; `GET /configuration-policies/effective/:deviceId` gains `policyOwners` (additive). Old `#assignments` links still work.
+
 ## Migrations
 
 - `2027-01-24-170000-portal-access-requests-google-hosted-domain.sql`: adds nullable `portal_access_requests.google_hosted_domain` and the CHECK `portal_access_requests_google_hd_chk` (validated in the same file when no Google request lacks a domain, which is every existing database). DDL only; fast.
