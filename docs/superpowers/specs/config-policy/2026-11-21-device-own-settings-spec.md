@@ -55,11 +55,9 @@ Policies list shows only a count that links to that filter.
 
 ### Storage: quorum result
 
-**Provisional. Do not approve this section as written.** My position and Codex's were both
-formed on the tree at `8329045244` (2026-10-08), 2,175 commits behind main. Main has since
-gained a shared assignment read and a shared assignment expansion (see "What changed on
-main" below), which lowers the cost that decided A over C. The quorum must be re-run on
-current main before Gate A.
+**Result: A, agreed by both advisors on current main.** The first round ran on a tree 2,175
+commits old and split (Codex C, this spec A). It was re-run at `46f3a89d01` with the readers
+measured. Both now choose A, with the release gates listed below.
 
 Options considered: (A) a `configuration_policies` row flagged as device-owned plus one real
 device-level assignment; (B) a separate overrides table; (C) the flagged row with no assignment,
@@ -72,34 +70,34 @@ its target derived at read time through a new targets view.
 - **Agreed by both:** the flagged row, org-owned, reusing real feature links; dedicated device
   routes; one catalog definition that hides these rows from every lister; a real-database parity
   fixture as the acceptance gate.
-- **Disagreement.** Codex (xhigh) recommends C: an assignment row is independently mutable, same
-  level ties are broken by priority and age rather than by kind, and device delete re-validates
-  surviving assignments. This spec chose **A with a database-owned assignment**, because C
-  requires changing every reader that starts from assignments, and a missed reverse lookup
-  silently drops a job while the device page looks correct. Codex names that as the strongest
-  argument against C. On the October tree that cost was about 25 independently coded queries
-  plus the schedulers that expand a policy's assignments into devices.
-- **What changed on main** (read at `46f3a89d01`):
-  - `services/devicePolicySet.ts` (#8142) reads a device's candidate assignments once for the
-    12 feature types the heartbeat delivers. Each resolver still ranks in its own code, and a
-    real-Postgres parity suite proves each one against its old query.
-  - `services/configPolicyAssignmentDevices.ts` (#8442) is one expansion from an assignment
-    to its devices, shared by the patch scheduler and the ring count.
-  - 34 non-test files still reference the assignments table, and 8 files keep their own level
-    table.
-  - The number that decides A against C is how many of those 34 rank or expand assignments
-    themselves. It is **unmeasured**.
+- **First round (October tree).** Codex recommended C: an assignment row is independently
+  mutable, same-level ties are broken by priority and age rather than by kind, and device
+  delete re-validates surviving assignments. This spec chose A because C must change every
+  reader that starts from assignments, and a missed reverse lookup silently drops a job while
+  the device page looks correct.
+- **Second round (main; readers measured by Codex, each function read).**
+  - 11 files choose a device's winning policy with their own assignment query: 32 independent
+    queries, 16 of them in `featureConfigResolver.ts`.
+  - `devicePolicySet.ts` (#8142) is one shared read for 12 heartbeat feature types, but every
+    resolver on it still ranks in its own code and keeps a live fallback query.
+  - 6 files find or count a policy's devices with their own query (11 queries). The shared
+    expansion in `configPolicyAssignmentDevices.ts` (#8442) expands a target it is handed; the
+    patch scheduler and both ring counts still discover targets themselves, and the scheduler
+    skips a policy whose discovery returns nothing.
+  - On those numbers both advisors choose A. One real row is seen by all 43 queries from the
+    first day. C must migrate each of them, and a miss fails silently.
 - **How A answers C's objections:**
   - The assignment is not user-mutable. A device-owned policy has exactly one assignment (level
     `device`, target = its owning device, no role or OS filter), enforced in the assignment
     integrity guards; every other insert, update or delete on it is rejected.
   - Precedence over an ordinary device-level assignment comes from a reserved priority below the
-    user range (the assign validator allows 0 to 1000). On the October tree a grep of resolver
-    sorts found priority ascending everywhere except warranty, where the higher number wins.
-    On main that is written down as warranty's own ranking (`warrantyInlineFromRows`) and
-    pinned by the #8142 parity suite, so it is a decision (Open Decision 5), not a bug to fix
-    first. Until it is aligned, a reserved low priority picks the wrong winner for warranty.
-    This counts against priority as the mechanism and for a rule keyed on kind, as in C.
+    ordinary range. Every device-winner comparator on main lets the lower number win except
+    warranty (`warrantyInlineFromRows`, higher wins, on both of its paths). Warranty keeps its
+    rule among ordinary policies and gains one owned-first check ahead of it. No other reader
+    changes.
+  - The reservation is enforced in the database, not in the HTTP validator. The column is a
+    plain integer with no range check, and the AI tool passes a priority straight to
+    `assignPolicy`. Audit existing values, then add the range check for ordinary rows.
   - Device delete removes device-level assignments before the device row (the #12293 fix, needed
     regardless).
 - **Switch criteria.** Wave D2 builds the parity fixture before any UI, as an extension of
@@ -111,6 +109,23 @@ its target derived at read time through a new targets view.
   with own settings present, and the device not being scheduled a second time under the policy
   that lost. If A cannot pass it, move to C. The row shape is identical, so
   the switch changes readers, not data.
+- **Release gates for A** (from the second round):
+  - A database-owned transition that carries the protected assignment through an org merge
+    and validates the final owner and target together. Today a merge is expected to fail when
+    the losing organization owns both a policy and a device that policy is assigned to (see
+    "Device lifecycle").
+  - Tests for direct insert, retarget, filter change and delete of the protected row,
+    concurrent writes, single and bulk permanent delete, and merge with ordinary and protected
+    device-level assignments.
+  - An explicit empty automation or compliance setting must win. Today both resolvers
+    inner-join the child rows before choosing a winner, so an empty link vanishes and a
+    broader policy wins. Choose the winning link first, then return its children. This is a
+    defect today for any policy, under either storage option.
+  - Backup legal holds and immutability are combined across every applicable policy, not
+    taken from one winner. A device's own backup setting must not weaken them.
+- **Switch to C** if A cannot pass the merge, delete and concurrent-write tests, or once
+  forward and reverse discovery both run through one mechanically enforced target source. At
+  that point the reason to keep a physical row is gone.
 - **Longer term.** Readers each rebuild the same ranking (eight copies of the level table on
   main, mixed tiebreaks). One shared "targets for this device, ranked" definition is the right
   end state and would make own-first structural. `devicePolicySet.ts` is the first half of it
@@ -172,8 +187,8 @@ Device-owned rows must never surface where policies are listed, counted, picked 
 | Decommission (soft delete) and restore | Own settings are kept, so a restored device comes back as it was (Open Decision 3). |
 | Permanent delete, single and bulk | Delete device-level assignments for the device, then the device-owned row, then the device. Without the first step the delete fails today with a 409 (#12293). |
 | Site move within the org | Nothing stored changes; the fallback is recomputed. Site-bound execution authority is re-checked at dispatch, as today. |
-| Org move | Open Decision 1. |
-| Org merge | **Unresolved, and A's main exposure.** The assignment re-check on a device or policy org change is an immediate statement trigger, and the validator has no merge exemption (newest definition: `2027-01-12-200200-config-assignment-partner-device-group-targets.sql`, re-read on main). The merge itself repoints organization-level assignments only (`orgMerge.ts`). A device-level assignment of an org-owned policy may therefore block a merge today. Under A every device with own settings carries one; under C none does. Reproduce in D0; it is one of the switch criteria. |
+| Org move | Open Decision 1. Today a device with any device-level assignment of its own organization's policy cannot change organization: the database refuses the update (an integration test pins this), and the move service has no step that clears such assignments. Reproduce through the service in D0. |
+| Org merge | **A's main exposure. Expected to fail today (inferred from the trigger and merge code, not yet reproduced).** The assignment re-check on a device or policy org change is an immediate statement trigger, and the validator has no merge exemption (newest definition: `2027-01-12-200200-config-assignment-partner-device-group-targets.sql`, re-read on main). The merge itself repoints organization-level assignments only (`orgMerge.ts`). A device-level assignment of an org-owned policy may therefore block a merge today. Under A every device with own settings carries one; under C none does. Reproduce in D0; it is one of the switch criteria. |
 | Org cascade delete | Already covered: the table is registered and sorts before `devices`. |
 
 ### Features offered
@@ -223,7 +238,7 @@ the parity fixture.
 
 | Wave | Scope | Depends on |
 |---|---|---|
-| D0 | #12293 (device delete removes device-level assignments). Re-run the storage quorum on current main, with the count of readers that rank or expand assignments themselves. Warranty tie-break (Open Decision 5): aligning it is a **behaviour change** for any tenant with two warranty policies at the same level, so check production for such ties first and write a release note. Contract test pinning priority direction. Reproduce org move and org merge with a device-level assignment of an org-owned policy. Independent of everything else. | none |
+| D0 | #12293 (device delete removes device-level assignments). Fix the empty automation and compliance override. Audit existing assignment priorities ahead of the database range check. Contract test pinning priority direction. Reproduce org move and org merge with a device-level assignment of an org-owned policy. Independent of everything else. | none |
 | D1 | Column, constraints, guards; catalog definition; lister sweep; leak contract test | D0 |
 | D2 | Device configuration service and routes; source kind and fallback in resolution; parity fixture (acceptance gate, switch criteria above) | D1 |
 | D3 | Device Config tab actions, device list badge and filter, "Apply a policy to this device" | D2, reshape W1 |
@@ -251,10 +266,6 @@ Product calls for Todd. Each has a recommendation.
 4. **First release feature set.** Everything that passes the parity fixture, or start with the
    five most requested (patches, monitors, maintenance, backup, remote access).
    **Recommend everything that passes**; the per-feature cost is one fixture row.
-5. **Warranty tie-break.** Warranty lets the higher priority number win; every other reader
-   read so far lets the lower number win, and the assignment editor says lower wins. Keep
-   warranty's rule, or align it. **Recommend align**, after the production check in D0. It
-   matters here only under storage option A.
 
 ## Evidence notes
 
@@ -273,7 +284,11 @@ Product calls for Todd. Each has a recommendation.
 - **From Codex's independent review, also at the drafting commit (not re-read):** peripheral delivery choosing policies per
   device class; the patch scheduler expanding assignments before creating jobs; `devices`
   carrying a unique `(id, org_id)`; the reset-authorization precedent.
-- **Unresolved, must be reproduced in planning:** whether an org move or an org merge with an
-  ordinary device-level assignment of an org-owned policy fails today (the trigger code says it raises;
-  a test comment says it survives); whether any database CHECK bounds assignment priority; how
-  many readers on main still rank or expand assignments themselves.
+- **From Codex's second review at `46f3a89d01`** (each function read by Codex; spot-checked
+  here: the integration test that expects the refused device move, the statement-level
+  trigger on `devices`, the unbounded priority column, the inner join in the automation
+  resolver): the reader and discovery counts, warranty's two paths, the empty-link defect,
+  the backup protection aggregate, the org move and org merge findings.
+- **Unresolved, must be reproduced in D0:** an org merge where the losing organization owns a
+  policy assigned at device level to one of its devices (expected to fail); a device org move
+  through the move service with such an assignment (the raw update is refused).

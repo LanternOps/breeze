@@ -54,7 +54,7 @@ Ranges: 1 to 500+ organizations per partner, 10,000+ devices, tens to low hundre
 
 ## Proposed design
 
-Thesis: **a policy is a sentence: what it sets, where it applies, whether it is live.** One page
+Thesis: **a policy is a sentence: what it sets, where it applies, whether it is active.** One page
 shape serves create and edit. "Where" is a permanent, always-visible part of the policy.
 Inheritance is shown at the two places a decision is felt: on the feature (parent policy) and on
 the device (precedence).
