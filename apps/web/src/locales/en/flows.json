@@ -4,7 +4,7 @@
   "empty": {
     "title": "No flows yet",
     "body": "A flow is a saved list of steps that Breeze follows the same way on every run. It can start on a schedule, on an event, from a webhook, or when you start it. Use a flow when the work has several steps, needs an approval, or calls other tools. It uses no AI unless a step asks for it. To run a script on a schedule, a job is simpler.",
-    "how": "Flows are in preview. To make one, ask Breeze AI to draft it, or move an existing job from the Jobs page.",
+    "how": "Build one with New automation, ask Breeze AI to draft it, or move an existing job from the Jobs page.",
     "jobsLink": "Go to Jobs"
   },
   "list": {
