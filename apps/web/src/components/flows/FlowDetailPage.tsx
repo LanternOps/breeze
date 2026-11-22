@@ -3,15 +3,18 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import type { FlowDetailDto, FlowValidationResult } from '@breeze/shared';
 import { useFlowsGate } from '../../stores/featuresStore';
+import { useAuthStore } from '../../stores/auth';
 import { ScopeBadge } from '../shared/ScopeBadge';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ActionError } from '@/lib/runAction';
+import { useJwtClaims } from '@/lib/authScope';
+import { navigateTo } from '@/lib/navigation';
 import { usePermissions } from '@/lib/permissions';
 import { useHashTab } from '@/lib/useHashState';
 import { cn } from '@/lib/utils';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
-import { disableFlow, getFlow } from './api';
+import { deleteFlowDraft, disableFlow, getFlow } from './api';
 import { FlowEnableDialog } from './FlowEnableDialog';
 import { FlowRunDialog } from './FlowRunDialog';
 import { FlowRunsTab } from './FlowRunsTab';
@@ -29,10 +32,24 @@ type LoadState =
 
 const TABS = ['overview', 'runs', 'webhook'] as const;
 
+/** The 409 `flow_has_history` body: the conversion that blocks a delete, when one exists. */
+type DeleteHistory = { automationId: string | null };
+
 /**
  * Flow detail (#5218 W3 PR B review surface; #5219 W4 adds enable / disable /
- * run-now). Flows are still drafted in AI chat; this page reviews and operates
- * them. Actions need `automations.write` (UX only: the API re-checks).
+ * run-now; Flows completion W01e #12438 adds Edit and Delete draft). A flow is
+ * built in the manual editor (`/flows/new`, `/flows/<id>/edit`), drafted in AI
+ * chat, or moved from a Job; this page reviews and operates it.
+ *
+ * Gates (UX only: the API re-checks every one):
+ * - Enable / Disable / Run now / Edit need `automations.write`; Edit only while
+ *   the flow is editable (draft, disabled or paused).
+ * - Delete draft needs `automations.delete` and a draft that was never
+ *   published and never moved from a Job. A 409 `flow_has_history` (the row
+ *   gained history since load) is explained inline, with a link to the Job's
+ *   conversion panel built from the 409 body.
+ * - On a partner-wide flow, Edit and Delete are hidden from an org-scoped
+ *   viewer and from a partner user who cannot manage partner-wide state.
  */
 export default function FlowDetailPage({ flowId }: { flowId: string }) {
   const { t } = useTranslation('flows');
@@ -47,8 +64,39 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
   const [disabling, setDisabling] = useState(false);
   // W05 (#10270): the enable that just ran cleared the webhook secret.
   const [secretInvalidated, setSecretInvalidated] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteHistory, setDeleteHistory] = useState<DeleteHistory | null>(null);
+  const jwt = useJwtClaims();
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
 
   const reload = () => setReloadSeq((n) => n + 1);
+
+  const confirmDelete = async (flow: FlowDetailDto) => {
+    if (deleting) return;
+    setDeleting(true);
+    try {
+      await deleteFlowDraft(flow.id, flow.definitionVersion);
+      setDeleteOpen(false);
+      void navigateTo('/flows');
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      setDeleteOpen(false);
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('errors.deleteFailed') });
+        return;
+      }
+      const body = err.body && typeof err.body === 'object' ? (err.body as { error?: unknown; automationId?: unknown }) : {};
+      if (body.error === 'flow_has_history') {
+        setDeleteHistory({ automationId: typeof body.automationId === 'string' && body.automationId ? body.automationId : null });
+      } else if (body.error === 'version_conflict') {
+        reload();
+      }
+      // Any other ActionError was already toasted by runAction.
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const confirmDisable = async () => {
     if (disabling) return;
@@ -101,6 +149,20 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
   const canEnable = canWrite && (flow.status === 'draft' || flow.status === 'disabled' || flow.status === 'paused');
   const canDisable = canWrite && (flow.status === 'enabled' || flow.status === 'paused');
   const canRun = canWrite && flow.status === 'enabled' && definition.trigger.type === 'manual';
+  // A partner-wide flow is edited or deleted only by a partner/system viewer
+  // who may manage partner-wide state (`canManagePartnerWide` absent = capable).
+  const viewerScope = jwt.status === 'resolved' ? jwt.claims.scope : null;
+  const ownerAllowsChange =
+    flow.ownerScope !== 'partner'
+    || ((viewerScope === 'partner' || viewerScope === 'system') && canManagePartnerWide !== false);
+  const canEdit =
+    canWrite && ownerAllowsChange && (flow.status === 'draft' || flow.status === 'disabled' || flow.status === 'paused');
+  const canDelete =
+    can('automations', 'delete')
+    && ownerAllowsChange
+    && flow.status === 'draft'
+    && flow.enabledPublicationSeq === null
+    && flow.convertedFrom === null;
   const isWebhook = definition.trigger.type === 'webhook' && flow.webhook !== null;
   const tabs = TABS.filter((id) => id !== 'webhook' || isWebhook);
   // A #webhook hash on a flow that has no webhook falls back to the overview.
@@ -155,7 +217,17 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
             )}
           </div>
         )}
-        {(canEnable || canDisable) && (
+        {deleteHistory && (
+          <div role="alert" className="flex flex-wrap items-center gap-2 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200" data-testid="flow-delete-has-history">
+            <span>{t('detail.deleteHasHistory')}</span>
+            {deleteHistory.automationId && (
+              <a href={`/jobs#convert-${deleteHistory.automationId}`} className="font-medium underline" data-testid="flow-delete-has-history-link">
+                {t('detail.deleteHasHistoryLink')}
+              </a>
+            )}
+          </div>
+        )}
+        {(canEnable || canDisable || canEdit || canDelete) && (
           <div className="flex flex-wrap gap-2 pt-2" data-testid="flow-actions">
             {canEnable && (
               <button type="button" className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground" data-testid="flow-enable" onClick={() => setEnableOpen(true)}>
@@ -170,6 +242,16 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
             {canDisable && (
               <button type="button" className="rounded border px-3 py-1.5 text-sm" data-testid="flow-disable" onClick={() => setDisableOpen(true)}>
                 {t('actions.disable')}
+              </button>
+            )}
+            {canEdit && (
+              <a className="rounded border px-3 py-1.5 text-sm" href={`/flows/${flow.id}/edit`} data-testid="flow-edit">
+                {t('detail.edit')}
+              </a>
+            )}
+            {canDelete && (
+              <button type="button" className="rounded border border-destructive px-3 py-1.5 text-sm text-destructive" data-testid="flow-delete" onClick={() => setDeleteOpen(true)}>
+                {t('detail.delete')}
               </button>
             )}
           </div>
@@ -257,6 +339,17 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
         confirmLabel={t('actions.disable')}
         isLoading={disabling}
         confirmTestId="flow-disable-confirm"
+      />
+      <ConfirmDialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={() => void confirmDelete(flow)}
+        title={t('detail.deleteConfirmTitle')}
+        message={t('detail.deleteConfirmMessage')}
+        confirmLabel={t('detail.delete')}
+        variant="destructive"
+        isLoading={deleting}
+        confirmTestId="flow-delete-confirm"
       />
     </div>
   );

@@ -43,7 +43,13 @@
     "version": "Version {{version}}",
     "createdInChat": "Created in Breeze AI",
     "movedFromJob": "Moved from Job",
-    "movedFromJobReverted": "(moved back)"
+    "movedFromJobReverted": "(moved back)",
+    "edit": "Edit",
+    "delete": "Delete draft",
+    "deleteConfirmTitle": "Delete this draft?",
+    "deleteConfirmMessage": "The draft is removed permanently. This cannot be undone.",
+    "deleteHasHistory": "This flow has been enabled or moved from a job, so it can no longer be deleted. Disable it instead.",
+    "deleteHasHistoryLink": "Open the job"
   },
   "step": {
     "tool": "Tool",
@@ -778,6 +784,45 @@
       "converting": "Starting…",
       "bulkSummary": "Started {{created}}, skipped {{skipped}}.",
       "newJobOpensFlows": "New flow"
+    }
+  },
+  "flowEditor": {
+    "titleNew": "New automation",
+    "titleEdit": "Edit {{name}}",
+    "subtitle": "Build the flow with the form, or edit its document directly. Both tabs edit the same document.",
+    "backToFlow": "Back to the flow",
+    "tabs": {
+      "form": "Form",
+      "document": "Document"
+    },
+    "owner": {
+      "title": "Owner",
+      "organization": "This organization only",
+      "partner": "All organizations"
+    },
+    "enabledReadOnly": "This flow is enabled, so it can't be edited. Disable it to make changes, then enable it again.",
+    "disableAndEdit": "Disable and edit",
+    "disableMessage": "Disabling cancels queued and waiting runs and pending approvals. Runs already in progress stop at their next checkpoint. You can enable the flow again after you edit it.",
+    "notFormShaped": "The form can't show everything in this document, so it is read-only here. Edit the document instead.",
+    "openDocument": "Open the document",
+    "validateFailed": "Could not check the document: {{message}}",
+    "conflict": "Someone else saved this flow while you were editing. Your changes are still here. Reload to get the latest version; reloading discards your changes.",
+    "reload": "Reload",
+    "saveInvalid": "The flow was not saved because the document has errors. Fix the issues listed and save again.",
+    "notDraft": "This flow is enabled, so it can't be saved. Disable it first.",
+    "webhookNext": "Saved. Webhook flows are enabled from the flow page: create the webhook secret there, give it to the sender, then enable the flow.",
+    "webhookTabLink": "Open the Webhook tab",
+    "limits": "Each run reaches at most {{devices}} devices and sends at most {{notices}} notifications. A flow has at most {{steps}} steps.",
+    "save": "Save",
+    "saveAndEnable": "Save and enable",
+    "shadow": {
+      "title": "Reset the comparison?",
+      "message": "This flow was moved from a job and is still being compared with it. Saving a change resets the comparison evidence, and the comparison starts again."
+    },
+    "document": {
+      "loading": "Loading editor…",
+      "loadError": "The editor failed to load. Refresh the page to try again.",
+      "parseError": "The document is not valid JSON"
     }
   }
 }

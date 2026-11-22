@@ -6,18 +6,22 @@ import { useFlowsGate } from '../../stores/featuresStore';
 import { ResponsiveTable, DataCard } from '../shared/ResponsiveTable';
 import { ScopeBadge } from '../shared/ScopeBadge';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { usePermissions } from '@/lib/permissions';
 import { listFlows } from './api';
 
 const PAGE_LIMIT = 100;
 
 /**
- * Flows list (#5218 W3 PR B). Read-only: a flow is drafted in AI chat or moved
- * from a Job, then reviewed here. Until there is a manual editor (#10336) the
- * page is tagged as a preview and its empty state explains flows (#12310).
+ * Flows list (#5218 W3 PR B). A flow is built in the manual editor (New
+ * automation, `/flows/new`, Flows completion W01e #12438), drafted in AI chat,
+ * or moved from a Job, then reviewed here. The page is still tagged as a
+ * preview, and its empty state explains flows (#12310). New automation needs
+ * `automations.write` (UX only: the API re-checks).
  */
 export default function FlowsPage() {
   const { t } = useTranslation('flows');
   const { enabled, loaded } = useFlowsGate();
+  const { can } = usePermissions();
   const [flows, setFlows] = useState<FlowSummaryDto[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
 
@@ -89,9 +93,20 @@ export default function FlowsPage() {
           </h1>
           <p className="max-w-2xl text-sm text-muted-foreground">{t('subtitle')}</p>
         </div>
-        <a className="text-sm text-primary hover:underline" href="/settings/flow-limits" data-testid="flows-limits-link">
-          {t('usage.limitsLink')}
-        </a>
+        <div className="flex flex-wrap items-center gap-3">
+          <a className="text-sm text-primary hover:underline" href="/settings/flow-limits" data-testid="flows-limits-link">
+            {t('usage.limitsLink')}
+          </a>
+          {can('automations', 'write') && (
+            <a
+              className="rounded bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground"
+              href="/flows/new"
+              data-testid="flows-new"
+            >
+              {t('scripts:automationsPage.actions.new')}
+            </a>
+          )}
+        </div>
       </header>
 
       {loadFailed && <p data-testid="flow-error" className="text-sm text-destructive">{t('errors.loadFailed')}</p>}

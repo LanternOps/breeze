@@ -3,16 +3,20 @@
  *
  * Pinned: steps render in document order with tier badges, validation issues
  * from the server (e.g. tool_not_found) are surfaced, the selected step lives
- * in the URL hash (`#step-<id>`), and there are no mutation controls at all.
+ * in the URL hash (`#step-<id>`). Later waves add enable / disable / run-now
+ * (#5219) and, in Flows completion W01e (#12438), Edit and Delete draft.
  */
-import { render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const api = vi.hoisted(() => ({ listFlowRuns: vi.fn().mockResolvedValue({ runs: [], total: 0 }), listFlows: vi.fn(), getFlow: vi.fn(), disableFlow: vi.fn(), enableFlow: vi.fn(), startFlowRun: vi.fn(), listWebhookDeliveries: vi.fn(), rotateWebhookSecret: vi.fn() }));
-const perms = vi.hoisted(() => ({ write: true }));
+const api = vi.hoisted(() => ({ listFlowRuns: vi.fn().mockResolvedValue({ runs: [], total: 0 }), listFlows: vi.fn(), getFlow: vi.fn(), disableFlow: vi.fn(), enableFlow: vi.fn(), startFlowRun: vi.fn(), listWebhookDeliveries: vi.fn(), rotateWebhookSecret: vi.fn(), deleteFlowDraft: vi.fn() }));
+const perms = vi.hoisted(() => ({ write: true, del: true }));
 vi.mock('@/lib/permissions', () => ({
-  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => r === 'automations' && a === 'write' && perms.write }),
+  usePermissions: () => ({
+    permissions: [],
+    can: (r: string, a: string) => r === 'automations' && ((a === 'write' && perms.write) || (a === 'delete' && perms.del)),
+  }),
 }));
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (sel?: (s: unknown) => unknown) => {
@@ -20,11 +24,23 @@ vi.mock('../../stores/orgStore', () => ({
     return sel ? sel(st) : st;
   },
 }));
-vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+const navigation = vi.hoisted(() => ({ navigateTo: vi.fn() }));
+vi.mock('@/lib/navigation', () => navigation);
 vi.mock('./api', () => api);
 const gate = vi.hoisted(() => ({ value: { enabled: true, loaded: true } }));
 vi.mock('../../stores/featuresStore', () => ({ useFlowsGate: () => gate.value }));
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+const viewer = vi.hoisted(() => ({
+  claims: { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } } as Record<string, unknown>,
+  canManagePartnerWide: undefined as boolean | undefined,
+}));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  useAuthStore: (sel: (s: unknown) => unknown) => sel({ user: { canManagePartnerWide: viewer.canManagePartnerWide } }),
+}));
+vi.mock('@/lib/authScope', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  useJwtClaims: () => viewer.claims,
+}));
 
 import { ActionError } from '@/lib/runAction';
 import FlowDetailPage from './FlowDetailPage';
@@ -49,6 +65,8 @@ function detail() {
       createdAt: '2026-10-19T02:00:00.000Z',
       createdByUserId: 'u-1',
       aiSessionId: 's-1',
+      enabledPublicationSeq: null as number | null,
+      convertedFrom: null as Record<string, unknown> | null,
       definition: {
         version: 1,
         name: 'Nightly offline report',
@@ -80,6 +98,9 @@ beforeEach(() => {
   window.location.hash = '';
   gate.value = { enabled: true, loaded: true };
   perms.write = true;
+  perms.del = true;
+  viewer.claims = { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } };
+  viewer.canManagePartnerWide = undefined;
   api.getFlow.mockResolvedValue(detail());
 });
 
@@ -269,6 +290,145 @@ describe('FlowDetailPage', () => {
     await user.click(screen.getByTestId('flow-enable-confirm'));
     await screen.findByTestId('flow-enable-error-version_conflict');
     await vi.waitFor(() => expect(api.getFlow).toHaveBeenCalledTimes(2));
+  });
+
+  describe('Flows completion W01e (#12438): Edit and Delete draft', () => {
+    function withFlow(patch: Record<string, unknown>) {
+      const d = detail();
+      Object.assign(d.flow, patch);
+      api.getFlow.mockResolvedValue(d);
+    }
+
+    it('Edit shows for an editable flow and not for an enabled one', async () => {
+      for (const status of ['draft', 'disabled', 'paused']) {
+        withFlow({ status });
+        const { unmount } = render(<FlowDetailPage flowId={ID} />);
+        const edit = await screen.findByTestId('flow-edit');
+        expect(edit.getAttribute('href')).toBe(`/flows/${ID}/edit`);
+        expect(within(screen.getByTestId('flow-actions')).getByTestId('flow-edit')).toBeTruthy();
+        unmount();
+      }
+      withFlow({ status: 'enabled' });
+      render(<FlowDetailPage flowId={ID} />);
+      await screen.findByTestId('flow-steps');
+      expect(screen.queryByTestId('flow-edit')).toBeNull();
+    });
+
+    it('Edit is hidden without automations.write', async () => {
+      perms.write = false;
+      render(<FlowDetailPage flowId={ID} />);
+      await screen.findByTestId('flow-steps');
+      expect(screen.queryByTestId('flow-edit')).toBeNull();
+    });
+
+    it('Delete draft shows only for a never-published, never-converted draft', async () => {
+      render(<FlowDetailPage flowId={ID} />);
+      expect(await screen.findByTestId('flow-delete')).toBeTruthy();
+      cleanup();
+
+      const hidden: Array<[string, Record<string, unknown>]> = [
+        ['disabled', { status: 'disabled' }],
+        ['once published', { enabledPublicationSeq: 2 }],
+        ['converted', { convertedFrom: { automationId: 'a-1', name: 'Job', conversionId: 'c-1', state: 'reverted' } }],
+      ];
+      for (const [, patch] of hidden) {
+        withFlow(patch);
+        const { unmount } = render(<FlowDetailPage flowId={ID} />);
+        await screen.findByTestId('flow-steps');
+        expect(screen.queryByTestId('flow-delete')).toBeNull();
+        unmount();
+      }
+
+      withFlow({});
+      perms.del = false;
+      render(<FlowDetailPage flowId={ID} />);
+      await screen.findByTestId('flow-steps');
+      expect(screen.queryByTestId('flow-delete')).toBeNull();
+      // automations.delete alone governs Delete; Edit still shows with write.
+      expect(screen.getByTestId('flow-edit')).toBeTruthy();
+    });
+
+    it('an org-scoped user sees no Edit or Delete on a partner-wide flow', async () => {
+      viewer.claims = { status: 'resolved', claims: { scope: 'organization', orgId: 'org-1', partnerId: 'p-1' } };
+      withFlow({ ownerScope: 'partner', orgId: null, partnerId: 'p-1' });
+      const first = render(<FlowDetailPage flowId={ID} />);
+      await screen.findByTestId('flow-steps');
+      expect(screen.queryByTestId('flow-edit')).toBeNull();
+      expect(screen.queryByTestId('flow-delete')).toBeNull();
+      // Enable is not governed by this rule here (the enable dialog handles it).
+      expect(screen.getByTestId('flow-enable')).toBeTruthy();
+      first.unmount();
+
+      // The same org-scoped user still gets both on an org-owned flow.
+      withFlow({});
+      const second = render(<FlowDetailPage flowId={ID} />);
+      expect(await screen.findByTestId('flow-edit')).toBeTruthy();
+      expect(screen.getByTestId('flow-delete')).toBeTruthy();
+      second.unmount();
+
+      // A partner user without partner-wide management rights is hidden too.
+      viewer.claims = { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } };
+      viewer.canManagePartnerWide = false;
+      withFlow({ ownerScope: 'partner', orgId: null, partnerId: 'p-1' });
+      const third = render(<FlowDetailPage flowId={ID} />);
+      await screen.findByTestId('flow-steps');
+      expect(screen.queryByTestId('flow-edit')).toBeNull();
+      expect(screen.queryByTestId('flow-delete')).toBeNull();
+      third.unmount();
+
+      // A partner user with rights (or a pre-field session: undefined) sees both.
+      viewer.canManagePartnerWide = undefined;
+      render(<FlowDetailPage flowId={ID} />);
+      expect(await screen.findByTestId('flow-edit')).toBeTruthy();
+      expect(screen.getByTestId('flow-delete')).toBeTruthy();
+    });
+
+    it('confirming Delete draft deletes at the loaded version and returns to the list', async () => {
+      api.deleteFlowDraft.mockResolvedValue(undefined);
+      const user = userEvent.setup();
+      render(<FlowDetailPage flowId={ID} />);
+      await user.click(await screen.findByTestId('flow-delete'));
+      expect(api.deleteFlowDraft).not.toHaveBeenCalled();
+      await user.click(screen.getByTestId('flow-delete-confirm'));
+      expect(api.deleteFlowDraft).toHaveBeenCalledWith(ID, 3);
+      await vi.waitFor(() => expect(navigation.navigateTo).toHaveBeenCalledWith('/flows'));
+    });
+
+    it('flow_has_history renders inline with the conversion link built from the 409 body\'s automationId', async () => {
+      api.deleteFlowDraft.mockRejectedValue(
+        new ActionError('x', 409, 'flow_has_history', { error: 'flow_has_history', conversionId: 'c-9', automationId: 'a-9' }),
+      );
+      const user = userEvent.setup();
+      render(<FlowDetailPage flowId={ID} />);
+      await user.click(await screen.findByTestId('flow-delete'));
+      await user.click(screen.getByTestId('flow-delete-confirm'));
+      const alert = await screen.findByTestId('flow-delete-has-history');
+      expect(alert.getAttribute('role')).toBe('alert');
+      expect(within(alert).getByTestId('flow-delete-has-history-link').getAttribute('href')).toBe('/jobs#convert-a-9');
+      await vi.waitFor(() => expect(screen.queryByTestId('flow-delete-confirm')).toBeNull());
+      expect(navigation.navigateTo).not.toHaveBeenCalled();
+    });
+
+    it('flow_has_history without an automationId renders no conversion link', async () => {
+      api.deleteFlowDraft.mockRejectedValue(new ActionError('x', 409, 'flow_has_history', { error: 'flow_has_history' }));
+      const user = userEvent.setup();
+      render(<FlowDetailPage flowId={ID} />);
+      await user.click(await screen.findByTestId('flow-delete'));
+      await user.click(screen.getByTestId('flow-delete-confirm'));
+      const alert = await screen.findByTestId('flow-delete-has-history');
+      expect(within(alert).queryByTestId('flow-delete-has-history-link')).toBeNull();
+    });
+
+    it('a version_conflict on delete closes the dialog and reloads the flow', async () => {
+      api.deleteFlowDraft.mockRejectedValue(new ActionError('x', 409, 'version_conflict', { error: 'version_conflict' }));
+      const user = userEvent.setup();
+      render(<FlowDetailPage flowId={ID} />);
+      await user.click(await screen.findByTestId('flow-delete'));
+      await user.click(screen.getByTestId('flow-delete-confirm'));
+      await vi.waitFor(() => expect(api.getFlow).toHaveBeenCalledTimes(2));
+      expect(screen.queryByTestId('flow-delete-has-history')).toBeNull();
+      expect(navigation.navigateTo).not.toHaveBeenCalled();
+    });
   });
 
   describe('W05 (#5220): webhook tab, secret invalidation, usage and the refusal banner', () => {
