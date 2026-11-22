@@ -49,7 +49,7 @@ export type FeatureTabProps = {
   allLinks?: FeatureLink[];
   /** Parent monitor attachments for cumulative advisory detection; never used for saves. */
   inheritedMonitorsLink?: FeatureLink;
-  onLinkChanged: (link: FeatureLink | null, featureType: FeatureType) => void;
+  onLinkChanged: (link: FeatureLink | null, featureType: FeatureType, removedLinkId?: string) => void;
   /** Shared linked Configuration Policy ID (set at the policy level, not per-tab) */
   linkedPolicyId: string | null;
   /** Parent policy's feature link for this tab (for inheritance display) */

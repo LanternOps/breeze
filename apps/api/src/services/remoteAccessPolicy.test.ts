@@ -153,6 +153,7 @@ describe('resolveRemoteAccessForDevice no-policy fallback', () => {
     vi.mocked(resolveEffectiveConfig).mockResolvedValueOnce({
       deviceId,
       features: {},
+      softwarePolicies: [],
       inheritanceChain: [],
     });
 
@@ -166,7 +167,7 @@ describe('resolveRemoteAccessForDevice no-policy fallback', () => {
 
   it('reports resolved:true when an effective config was found (no policy is a decision), from a miss and from the cache (#8616)', async () => {
     const deviceId = `test-device-resolved-${Date.now()}`;
-    vi.mocked(resolveEffectiveConfig).mockResolvedValueOnce({ deviceId, features: {}, inheritanceChain: [] });
+    vi.mocked(resolveEffectiveConfig).mockResolvedValueOnce({ deviceId, features: {}, softwarePolicies: [], inheritanceChain: [] });
 
     expect((await resolveRemoteAccessForDevice(deviceId)).resolved).toBe(true);
     const cached = await resolveRemoteAccessForDevice(deviceId);
@@ -189,7 +190,7 @@ describe('resolveRemoteAccessForDevice no-policy fallback', () => {
   it('bypasses a stale allowed cache entry for live continuation checks', async () => {
     const deviceId = `test-device-policy-transition-${Date.now()}`;
     vi.mocked(resolveEffectiveConfig)
-      .mockResolvedValueOnce({ deviceId, features: {}, inheritanceChain: [] })
+      .mockResolvedValueOnce({ deviceId, features: {}, softwarePolicies: [], inheritanceChain: [] })
       .mockResolvedValueOnce({
         deviceId,
         features: {
@@ -316,6 +317,7 @@ describe('checkRemoteAccess for a parked device', () => {
     vi.mocked(resolveEffectiveConfig).mockResolvedValue({
       deviceId: 'any',
       features: {},
+      softwarePolicies: [],
       inheritanceChain: [],
     });
   });

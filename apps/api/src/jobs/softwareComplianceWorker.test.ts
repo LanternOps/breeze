@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+vi.mock('../services/softwarePolicyConflicts', () => ({ getSoftwareBlocklistRulesForDevice: vi.fn(async () => []) }));
 
 const { addMock } = vi.hoisted(() => ({
   addMock: vi.fn(async () => ({ id: 'queued-job-1' })),

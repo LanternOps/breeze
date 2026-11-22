@@ -38,6 +38,7 @@ vi.mock('bullmq', () => ({
   Job: class {},
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
+vi.mock('../services/softwarePolicyConflicts', () => ({ getSoftwareBlocklistRulesForDevice: vi.fn(async () => []) }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../db', () => ({
   db: {
@@ -89,6 +90,7 @@ vi.mock('../services/securityAgents/coverageStatusStore', () => ({
 }));
 
 import { processCheckPolicy } from './softwareComplianceWorker';
+import { getSoftwareBlocklistRulesForDevice } from '../services/softwarePolicyConflicts';
 import { captureException } from '../services/sentry';
 import type { SoftwarePolicyViolation } from '../db/schema';
 
@@ -171,6 +173,18 @@ describe('processCheckPolicy — service_running bridge (#6958 PR E3)', () => {
     vi.clearAllMocks();
     dbSelectMock.mockReset();
     dbSelectDistinctOnMock.mockReset();
+  });
+
+  it('an applying blocklist suppresses the allowlist service requirement as well as missing installs', async () => {
+    primePass({});
+    primeObservations([{ deviceId: 'device-1', name: 'ctrld', status: 'stopped', timestamp: fresh() }]);
+    vi.mocked(getSoftwareBlocklistRulesForDevice).mockResolvedValueOnce([{ name: 'Control D', catalogId: CATALOG }]);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(upserted()).toMatchObject({ status: 'compliant', violations: [] });
+    expect(scheduleInstallMock).not.toHaveBeenCalled();
+    expect(scheduleUninstallMock).not.toHaveBeenCalled();
   });
 
   it('a stopped client with no inventory yields not_running, service_watches, and NO install', async () => {

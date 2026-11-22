@@ -23,6 +23,9 @@ import {
   resolveMaintenanceConfigForDevice,
   resolveComplianceRulesForDevice,
   resolveSoftwarePolicyForDevice,
+  resolveSoftwarePoliciesForDevice,
+  resolveSoftwarePolicyCoverage,
+  softwarePolicyTargetsDevice,
   resolveVulnerabilityEnabledForDevice,
   resolveDeviceIdsForSoftwarePolicy,
   resolveBackupProtectionForDevice,
@@ -258,4 +261,67 @@ describe('resolvePatchConfigPolicyForDevice (#7647)', () => {
       vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'system' } as any);
     }
   });
+});
+
+
+describe('additive software policy resolution', () => {
+  const assignment = (featurePolicyId: string, assignmentLevel: string) => ({
+    featurePolicyId, assignmentLevel, assignmentPriority: 0,
+    assignmentCreatedAt: new Date(0), assignmentId: featurePolicyId,
+  });
+  it('unions partner, organization and device policies and deduplicates repeated links', async () => {
+    queueHierarchy([
+      assignment('required', 'partner'), assignment('blocked', 'organization'),
+      assignment('required', 'device'),
+    ]);
+    queue([]);
+    expect(await resolveSoftwarePoliciesForDevice('dev-1')).toEqual(['required', 'blocked']);
+  });
+  it('excludes disabled linked policies without suppressing active software policies', async () => {
+    queueHierarchy([
+      { ...assignment('disabled', 'device'), softwarePolicyActive: false },
+      { ...assignment('required', 'partner'), softwarePolicyActive: true },
+      { ...assignment('missing', 'organization'), softwarePolicyActive: null },
+    ]);
+    queue([]);
+    expect(await resolveSoftwarePoliciesForDevice('dev-1')).toEqual(['required']);
+  });
+  it('includes explicitly targeted default policies alongside a partner configuration link', async () => {
+    queueHierarchy([assignment('required', 'partner')]);
+    queue([
+      { id: 'default-blocklist', targetType: 'organization', targetIds: ['org-1'] },
+      { id: 'elsewhere', targetType: 'devices', targetIds: ['another-device'] },
+    ]);
+    expect(await resolveSoftwarePoliciesForDevice('dev-1')).toEqual(['required', 'default-blocklist']);
+  });
+  it('keeps a broader software policy in its compliance fanout when another policy also applies', async () => {
+    queue([{ managedByLinkId: null }], [{ configPolicyId: 'config-required' }], [{ level: 'device', targetId: 'dev-1' }],
+      [{ id: 'required', isActive: true, targetIds: null }]);
+    queueHierarchy([assignment('blocked', 'device'), assignment('required', 'partner')]);
+    queue([]);
+    expect(await resolveDeviceIdsForSoftwarePolicy('required')).toEqual(['dev-1']);
+  });
+  it('fans out explicitly targeted policies without any configuration link', async () => {
+    queue([{ managedByLinkId: null }], [], [{ id: 'default-blocklist', isActive: true, targetType: 'devices', targetIds: ['dev-1'] }]);
+    queueHierarchy([]);
+    queue([{ id: 'default-blocklist', targetType: 'devices', targetIds: ['dev-1'] }]);
+    expect(await resolveDeviceIdsForSoftwarePolicy('default-blocklist')).toEqual(['dev-1']);
+  });
+  it('does not treat an unset target as an implicit organization-wide assignment', () => {
+    expect(softwarePolicyTargetsDevice({ targetType: null, targetIds: null }, {
+      deviceId: 'dev-1', orgId: 'org-1', siteId: 'site-1', partnerId: 'ptr-1', groupIds: [],
+    })).toBe(false);
+  });
+});
+
+
+it('software coverage reports both hierarchy policies as applying without overridden devices', async () => {
+  const policy = { id: 'required', isActive: true, targetIds: null };
+  queue([{ managedByLinkId: null }], [{ configPolicyId: 'required-config' }], [{ level: 'device', targetId: 'dev-1' }], [policy]);
+  queueHierarchy([
+    { featurePolicyId: 'blocked', assignmentLevel: 'device', assignmentPriority: 0, assignmentCreatedAt: new Date(0), assignmentId: 'block-asg' },
+    { featurePolicyId: 'required', assignmentLevel: 'partner', assignmentPriority: 0, assignmentCreatedAt: new Date(0), assignmentId: 'required-asg' },
+  ]);
+  queue([]);
+  expect(await resolveSoftwarePolicyCoverage('required')).toEqual({ candidateDeviceIds: ['dev-1'], appliesToDeviceIds: ['dev-1'], overriddenBy: [] });
 });

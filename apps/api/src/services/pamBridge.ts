@@ -4,8 +4,8 @@
  *
  * Pure lookup function consulted by the future PAM elevation-request handler.
  * Given a UAC-intercept candidate (an executable the agent saw a user try to
- * launch elevated), return whether the device's winning software_policy
- * (resolved via the existing config-policy hierarchy) matches the executable
+ * launch elevated), return whether any of the device's applying software policies
+ * (resolved through assignments and explicit targets) match the executable
  * on hash / signer / publisher / path, and whether the policy mode says we
  * should silently auto-elevate (allowlist) or auto-deny (blocklist).
  *
@@ -43,20 +43,16 @@
  *
  * Mode tie-breaker (when allowlist AND blocklist policies both match)
  * -------------------------------------------------------------------
- * Because `resolveSoftwarePolicyForDevice` returns the SINGLE winning policy
- * per device (the existing config-policy resolver's closest-wins semantics),
- * there is at most one policy in scope for a given device at any moment.
- * `matchPoliciesAgainst` still accepts a list so tests can exercise the
- * tie-breaker logic and so future "all matching policies" semantics can be
- * plugged in without touching the matcher: blocklist beats allowlist, audit
- * is reported via `auditMatches` only.
+ * All applying policies are evaluated together. Blocklist beats allowlist;
+ * audit is reported through `auditMatches` only. The policy priority breaks
+ * ties within a mode after executable field strength.
  *
  * OS scoping
  * ----------
  * OS scoping is enforced at policy-ASSIGNMENT time via
  * `configPolicyAssignments.osFilter` (varchar[]), not per-rule. The bridge
  * does not need a per-rule `os` field — by the time `resolveSoftware-
- * PolicyForDevice` hands us a policy, the assignment-side OS filter has
+ * PoliciesForDevice` hands us a linked policy, the assignment-side OS filter has
  * already excluded mismatches.
  *
  * Rules shape
@@ -68,14 +64,14 @@
  * ignores `software[]`.
  */
 
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, hasDbAccessContext, withDbAccessContext, type DbAccessContext } from '../db';
 import {
   softwarePolicies,
   type SoftwarePolicyExecutableRule,
   type SoftwarePolicyRulesDefinition,
 } from '../db/schema';
-import { resolveSoftwarePolicyForDevice } from './featureConfigResolver';
+import { resolveSoftwarePoliciesForDevice } from './featureConfigResolver';
 
 // ============================================================
 // Types
@@ -174,10 +170,8 @@ export async function evaluatePamBridgeWithContext(
  * Pure matcher: given a candidate and a fully-loaded policy list, compute
  * the verdict. Exported so tests can drive it without a DB.
  *
- * Production today passes 0 or 1 policy (the winner from
- * `resolveSoftwarePolicyForDevice`). The matcher tolerates an N-element list
- * so the precedence / mode-tie-breaker logic stays exercised by unit tests
- * and can be reused if the resolver ever returns multiple policies.
+ * Production passes every applying active software policy, including explicit
+ * targets and policies attached through configuration-policy assignments.
  */
 export function matchPoliciesAgainst(
   input: PamBridgeInput,
@@ -395,10 +389,7 @@ export type LoadedPolicy = {
 };
 
 /**
- * Load the device's currently winning software policy via the existing
- * config-policy hierarchy resolver. Returns a 0- or 1-element array (the
- * resolver picks the single closest-wins policy across all 5 assignment
- * levels: partner / organization / site / device_group / device).
+ * Load every applying active software policy through the additive resolver.
  *
  * Caller is expected to have already established a `withDbAccessContext`
  * scope. RLS enforces visibility on the policy row fetch.
@@ -406,8 +397,8 @@ export type LoadedPolicy = {
 export async function loadActivePoliciesForDevice(
   deviceId: string
 ): Promise<LoadedPolicy[]> {
-  const winningPolicyId = await resolveSoftwarePolicyForDevice(deviceId);
-  if (!winningPolicyId) return [];
+  const policyIds = await resolveSoftwarePoliciesForDevice(deviceId);
+  if (policyIds.length === 0) return [];
 
   const rows = await db
     .select({
@@ -418,18 +409,12 @@ export async function loadActivePoliciesForDevice(
       isActive: softwarePolicies.isActive,
     })
     .from(softwarePolicies)
-    .where(eq(softwarePolicies.id, winningPolicyId))
-    .limit(1);
+    .where(and(inArray(softwarePolicies.id, policyIds), eq(softwarePolicies.isActive, true)));
 
-  const row = rows[0];
-  if (!row || !row.isActive) return [];
-
-  return [
-    {
-      id: row.id,
-      mode: row.mode,
-      priority: row.priority,
-      rules: row.rules as SoftwarePolicyRulesDefinition,
-    },
-  ];
+  return rows.map((row) => ({
+    id: row.id,
+    mode: row.mode,
+    priority: row.priority,
+    rules: row.rules as SoftwarePolicyRulesDefinition,
+  }));
 }

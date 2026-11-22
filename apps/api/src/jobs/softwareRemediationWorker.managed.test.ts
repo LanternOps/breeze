@@ -22,6 +22,7 @@ vi.mock('bullmq', () => ({
   Job: class {},
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
+vi.mock('../services/softwarePolicyConflicts', () => ({ getSoftwareBlocklistRulesForDevice: vi.fn(async () => []) }));
 vi.mock('../routes/metrics', () => ({ recordSoftwareRemediationDecision: vi.fn() }));
 vi.mock('../services/commandQueue', () => ({ queueCommand: vi.fn(), CommandTypes: { SOFTWARE_UNINSTALL: 'software_uninstall' } }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
@@ -30,6 +31,7 @@ vi.mock('../services/softwarePolicyService', async (orig) => {
   const actual = await orig<typeof import('../services/softwarePolicyService')>();
   return {
     evaluateSoftwarePolicyArming: actual.evaluateSoftwarePolicyArming,
+    isSoftwareRuleBlocked: actual.isSoftwareRuleBlocked,
     SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS: actual.SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS,
     normalizeSoftwarePolicyRules: actual.normalizeSoftwarePolicyRules,
     recordSoftwarePolicyAudit: recordPolicyAuditMock,
