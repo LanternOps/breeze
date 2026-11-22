@@ -814,13 +814,30 @@ function runIdentity(io, repository, run, attempt) {
   return job ? parseIdentity(jobLog(io, repository, job.id)) : null;
 }
 
+// Main by its full name. The checkout fetches tags too, and git resolves a short
+// name to a tag before a remote-tracking branch.
+const MAIN = 'refs/remotes/origin/main';
+
 function isOnMain(io, sha) {
-  try { io.git(['merge-base', '--is-ancestor', sha, 'origin/main']); return true; } catch (error) {
+  try { io.git(['merge-base', '--is-ancestor', sha, MAIN]); return true; } catch (error) {
     // Exit 1 is the answer "no". Anything else says nothing about the run.
     if (error?.status === 1) return false;
     throw new GateError('selection_ancestry', `ancestry check for ${sha} failed: ${failureText(error)}`);
   }
 }
+
+// The commits main itself has pointed at: its first-parent line. A commit that a
+// merge brought in through another parent is in main's history, but was a branch's.
+function mainLine(io) {
+  try { return new Set(nonEmptyLines(io.git(['rev-list', '--first-parent', MAIN]))); }
+  catch (error) { throw new GateError('selection_ancestry', `listing main failed: ${failureText(error)}`); }
+}
+
+// A base-revision script runs as this user, in a clone it can write to. select
+// lists main before the first one runs and trustedRecord reads that listing, so
+// nothing a script does to the clone afterwards can say what main is.
+const MAIN_LINES = new WeakMap();
+const rememberMainLine = io => { MAIN_LINES.set(io, mainLine(io)); };
 
 // Unlike classifyAtBase, a classifier that fails here is not read as "everything
 // changed": judging the PR's run under flags it never ran with would blame the PR.
@@ -927,6 +944,12 @@ export function trustedRecord(io, { head, pr }, stats = {}) {
   stats.anchors = anchors.length;
   if (!anchors.length) return { reason: stats.not_pinned.length ? 'anchor_not_pinned' : 'no_anchor' };
   if (anchors.some(({ policy_in_files }) => policy_in_files)) return { reason: 'anchor_policy_in_p' };
+  // Base-revision policy is read, and its scripts run, only from a commit main has
+  // pointed at. A stacked pull request's merge commit sits on its parent branch,
+  // so its anchor's base is not one: the entry runs everything. Every anchor is
+  // asked, and before anything of a base is opened.
+  const main = MAIN_LINES.get(io) ?? mainLine(io);
+  if (anchors.some(({ base_sha }) => !main.has(base_sha))) return { reason: 'anchor_base_not_on_main' };
 
   // More than one anchor comes from a close and reopen, or a re-run of the gate.
   // The oldest base and every file over-approximate Δ and P.
@@ -960,7 +983,11 @@ export function baseRevisionIO(io, baseSha) {
     // `pull-requests` scope, and whether the pulls API works without one is not checked.
     prHead(pr) {
       if (!Number.isSafeInteger(pr) || pr <= 0) throw new GateError('invalid_repository', 'invalid PR');
-      return io.git(['ls-remote', 'origin', `refs/pull/${pr}/head`]).match(/^([a-f\d]{40})\t/)?.[1] ?? '';
+      // ls-remote matches its pattern against the tail of every ref name, so a branch
+      // named x/refs/pull/7/head is listed too, and first. Only the exact name counts.
+      const ref = `refs/pull/${pr}/head`;
+      const sha = nonEmptyLines(io.git(['ls-remote', 'origin', ref])).map(line => line.split('\t')).find(([, name]) => name === ref)?.[0];
+      return isSha(sha) ? sha : '';
     },
     recordSource(head, pr) {
       const stats = {};
@@ -985,6 +1012,8 @@ const SELECTION_MS = 3 * MINUTE;
 
 // The gate's own checks, which the decision in ci-gate-thin.mjs is given.
 const flagsAt = (io, baseSha, headSha) => {
+  // The first base-revision script runs in here. Main is listed first.
+  rememberMainLine(io);
   try { return baseFlags(io, baseSha, headSha).flags; } catch (error) { if (error instanceof GateError) return null; throw error; }
 };
 // Unreadable or unparseable at the base: no W05 block there. Anything else is a bug, so reason=error.
@@ -1064,9 +1093,9 @@ function pinFailure(io, workflowSha) {
   // The checkout normally wrote this ref; fetching it here means the answer does
   // not depend on that. A failed fetch leaves what is local, and no ref is not pinned.
   let fetchNote = '';
-  try { io.git(['fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main']); }
+  try { io.git(['fetch', '--no-tags', '--quiet', 'origin', `+refs/heads/main:${MAIN}`]); }
   catch (error) { fetchNote = ` (fetching main failed: ${failureText(error)})`; }
-  try { io.git(['merge-base', '--is-ancestor', workflowSha, 'origin/main']); return null; } catch (error) {
+  try { io.git(['merge-base', '--is-ancestor', workflowSha, MAIN]); return null; } catch (error) {
     // Exit 1 is the answer "no". Anything else means the check could not run.
     const why = error?.status === 1 ? 'not an ancestor of origin/main' : `ancestry check failed: ${failureText(error)}`;
     return `${workflowSha}: ${why}${fetchNote}`;
