@@ -501,7 +501,6 @@ func TestFirmwareRunsAfterWindowsWrites(t *testing.T) {
 	fw.seq = seq
 	r := newFWRig(m, fw)
 	r.writer = &fakeWriter{machine: m}
-	r.applyRig.writer = r.writer
 	inner := r.writer
 	rep := Apply(context.Background(), ApplyInputs{activated: true, Configure: true, PolicyFingerprint: "p1",
 		Readings: m.read(), State: r.state, Persist: func(ApplyState) error { return nil }, Now: t0,

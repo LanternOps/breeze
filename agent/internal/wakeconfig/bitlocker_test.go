@@ -25,7 +25,7 @@ func tpmListing(profiles ...string) string {
 		b.WriteString("    TPM:\r\n")
 		b.WriteString("      ID: {00000000-0000-4000-8000-00000000000" + string(rune('1'+i)) + "}\r\n")
 		b.WriteString("      PCR Validation Profile:\r\n")
-		for _, line := range strings.Split(p, "\n") {
+		for line := range strings.SplitSeq(p, "\n") {
 			b.WriteString("        " + line + "\r\n")
 		}
 		b.WriteString("        (Uses Secure Boot for integrity validation)\r\n\r\n")

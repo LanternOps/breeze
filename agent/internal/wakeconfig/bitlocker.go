@@ -199,7 +199,7 @@ func parsePCRList(line string) ([]int, error) {
 		return nil, fmt.Errorf("the validation profile is empty")
 	}
 	var out []int
-	for _, field := range strings.Split(line, ",") {
+	for field := range strings.SplitSeq(line, ",") {
 		n, err := strconv.Atoi(strings.TrimSpace(field))
 		if err != nil || n < 0 || n > maxPCR {
 			return nil, fmt.Errorf("the validation profile is not a list of PCRs")
