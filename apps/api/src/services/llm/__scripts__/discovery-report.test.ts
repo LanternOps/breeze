@@ -61,7 +61,7 @@ describe('discovery-report CLI', () => {
     expect(files).toContain('discovery-2026-11-21.md');
     expect(files).not.toContain('candidates');
     expect(out.join('\n').length).toBeGreaterThan(0);
-    expect((build.mock.calls[0][0] as DiscoveryReportInput).mode).toBe('cross-org');
+    expect((build.mock.calls[0]![0] as DiscoveryReportInput).mode).toBe('cross-org');
   });
 
   it('--org writes .ai-reports/candidates/<date>.json and an org-suffixed report', async () => {
@@ -69,8 +69,8 @@ describe('discovery-report CLI', () => {
     expect(await readdir(dir)).toContain(`discovery-2026-11-21-${ORG}.md`);
     const candidates = JSON.parse(await readFile(path.join(dir, 'candidates', '2026-11-21.json'), 'utf8'));
     expect(candidates).toEqual([{ query: 'spooler jammed' }]);
-    expect((build.mock.calls[0][0] as DiscoveryReportInput).mode).toBe('org');
-    expect(load.mock.calls[0][0]).toMatchObject({ orgId: ORG, days: 7 });
+    expect((build.mock.calls[0]![0] as DiscoveryReportInput).mode).toBe('org');
+    expect(load.mock.calls[0]![0]).toMatchObject({ orgId: ORG, days: 7 });
   });
 
   it('--out outside .ai-reports/ exits 2 and writes nothing', async () => {
@@ -106,7 +106,7 @@ describe('discovery-report CLI', () => {
 
   it('--fingerprint is forwarded to buildDiscoveryReport', async () => {
     expect(await runCli(['--fingerprint', 'fp-b'], deps())).toBe(0);
-    expect((build.mock.calls[0][0] as DiscoveryReportInput).fingerprint).toBe('fp-b');
+    expect((build.mock.calls[0]![0] as DiscoveryReportInput).fingerprint).toBe('fp-b');
   });
 
   it('rejects unknown options and a non-uuid --org with exit 2', async () => {

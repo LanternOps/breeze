@@ -49,18 +49,18 @@ function drop(session: string, tool: string, tu: string | null, discovery: strin
 
 function fixture(): DiscoveryReportInput {
   const turnRows = [
-    turn(U[0], S1, 'fp-a', 1, 1), turn(U[1], S1, 'fp-a', 0, 1), turn(U[2], S2, 'fp-a', 1, 2),
-    turn(U[3], S2, 'fp-b', 2, 1), turn(U[4], S3, 'fp-b', 3, 2), turn(U[5], S3, 'fp-b', 1, 0),
+    turn(U[0]!, S1, 'fp-a', 1, 1), turn(U[1]!, S1, 'fp-a', 0, 1), turn(U[2]!, S2, 'fp-a', 1, 2),
+    turn(U[3]!, S2, 'fp-b', 2, 1), turn(U[4]!, S3, 'fp-b', 3, 2), turn(U[5]!, S3, 'fp-b', 1, 0),
   ];
   const searches = [
-    search(U[0], S1, 'restart the print service', ['manage_services', 'query_devices'], ['manage_services'], 'fp-a'),
-    search(U[2], S2, 'kill hung process', ['manage_processes'], [], 'fp-a'),
-    search(U[3], S2, 'check spooler services status', [], [], 'fp-b'),
-    search(U[3], S2, 'list stopped processes', ['manage_processes'], [], 'fp-b'),
-    search(U[4], S3, 'fleet stats', ['get_fleet_device_stats', 'run_script'], ['get_fleet_device_stats', 'run_script'], 'fp-b'),
-    search(U[4], S3, 'spooler jammed', [], [], 'fp-b'),
-    search(U[4], S3, 'devices by os filter', ['query_devices'], ['query_devices'], 'fp-b'),
-    search(U[5], S3, 'run a script', ['run_script'], [], 'fp-b'),
+    search(U[0]!, S1, 'restart the print service', ['manage_services', 'query_devices'], ['manage_services'], 'fp-a'),
+    search(U[2]!, S2, 'kill hung process', ['manage_processes'], [], 'fp-a'),
+    search(U[3]!, S2, 'check spooler services status', [], [], 'fp-b'),
+    search(U[3]!, S2, 'list stopped processes', ['manage_processes'], [], 'fp-b'),
+    search(U[4]!, S3, 'fleet stats', ['get_fleet_device_stats', 'run_script'], ['get_fleet_device_stats', 'run_script'], 'fp-b'),
+    search(U[4]!, S3, 'spooler jammed', [], [], 'fp-b'),
+    search(U[4]!, S3, 'devices by os filter', ['query_devices'], ['query_devices'], 'fp-b'),
+    search(U[5]!, S3, 'run a script', ['run_script'], [], 'fp-b'),
   ];
   const executions: ExecRow[] = [
     exec(S1, 'manage_services', 'completed', 'tu-1', 'searched_this_turn', at(10, 1), { deviceId: D[0] }),
@@ -85,9 +85,9 @@ function fixture(): DiscoveryReportInput {
     turnRows,
     isEscalatedCall: (tool) => tool === 'run_script',
     userTurns: [
-      { sessionId: S1, messageId: U[0], createdAt: at(10) }, { sessionId: S1, messageId: U[1], createdAt: at(11) },
-      { sessionId: S2, messageId: U[2], createdAt: at(10) }, { sessionId: S2, messageId: U[3], createdAt: at(11) },
-      { sessionId: S3, messageId: U[4], createdAt: at(10) }, { sessionId: S3, messageId: U[5], createdAt: at(11) },
+      { sessionId: S1, messageId: U[0]!, createdAt: at(10) }, { sessionId: S1, messageId: U[1]!, createdAt: at(11) },
+      { sessionId: S2, messageId: U[2]!, createdAt: at(10) }, { sessionId: S2, messageId: U[3]!, createdAt: at(11) },
+      { sessionId: S3, messageId: U[4]!, createdAt: at(10) }, { sessionId: S3, messageId: U[5]!, createdAt: at(11) },
     ],
     sessions: [{ id: S1, orgId: ORG_A }, { id: S2, orgId: ORG_A }, { id: S3, orgId: ORG_B }],
     registry: {
@@ -164,8 +164,8 @@ describe('buildDiscoveryReport', () => {
 
   it("byFingerprint: a call whose question has no turn row lands under 'unattributed'", () => {
     const input = fixture();
-    input.turnRows = input.turnRows.filter((t) => t.turnMessageId !== U[1]);
-    input.searchEvents = input.searchEvents.filter((e) => !(e.kind === 'turn' && e.turnMessageId === U[1]));
+    input.turnRows = input.turnRows.filter((t) => t.turnMessageId !== U[1]!);
+    input.searchEvents = input.searchEvents.filter((e) => !(e.kind === 'turn' && e.turnMessageId === U[1]!));
     const svc = buildDiscoveryReport(input).perTool.find((p) => p.tool === 'manage_services')!;
     expect(svc.byFingerprint['fp-a']).toEqual({ calls: 2, schemaInvalid: 0 });
     expect(svc.byFingerprint.unattributed).toEqual({ calls: 3, schemaInvalid: 2 });
