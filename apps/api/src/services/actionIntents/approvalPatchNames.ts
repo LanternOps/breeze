@@ -23,9 +23,10 @@
  *    is shown only for a Microsoft-source row, taken from its `external_id`
  *    (its identity: rows are deduped on `(source, external_id)`), never from
  *    a title or a third-party id, where any tenant could plant a
- *    trusted-looking KB. Every other row shows its title, stripped of control
- *    and format characters, collapsed, capped and quoted, so it reads as data
- *    and can neither forge a device stub nor close its own quotes.
+ *    trusted-looking KB. Every other row shows its title cut to an allowlist
+ *    (letters, digits, spaces and a little ASCII punctuation), collapsed,
+ *    capped and quoted, so it reads as data and can neither forge a device
+ *    stub nor close its own quotes.
  *  - **Never fatal.** A headline is presentation. A failed read degrades to
  *    the count, reported to Sentry, never swallowed.
  */
@@ -48,14 +49,20 @@ const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 const KB_NUMBER = /\bKB\d{6,8}\b/i;
 
 /**
- * `"` and what renders like it: initial/final quote punctuation (curly
- * quotes, guillemets), double prime, fullwidth quote, modifier double prime,
- * ditto mark, and the low and high-reversed double quotes.
+ * What a title may keep, after NFKC: letters (any script), digits, plain
+ * spaces and a short list of ASCII punctuation. An allowlist, not a denylist:
+ * every quote look-alike, bidi override, control or format character, known
+ * or not, is replaced by a space, so a title can neither appear to close the
+ * quotes it is shown in nor reorder the text around it.
  */
-const QUOTE_LOOKALIKES = /["\p{Pi}\p{Pf}″＂ʺ〃„‟]/gu;
+const TITLE_DISALLOWED = /[^\p{L}\p{N} .,\-+()[\]/:_&#%']/gu;
 
-/** Control, format (bidi overrides, zero-width), and line/paragraph separator characters. */
-const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+/**
+ * Modifier letters are `\p{L}` but include quote look-alikes (ʺ U+02BA,
+ * ˮ U+02EE), so they are dropped too, except the two CJK ones common in
+ * product names and shaped nothing like a quote: 々 (U+3005) and ー (U+30FC).
+ */
+const MODIFIER_LETTERS = /(?![\u3005\u30FC])\p{Lm}/gu;
 
 /** Distinct, lower-cased UUIDs from a tool argument, in order, at most `MAX_APPROVAL_PATCH_IDS`. */
 function boundedIds(value: unknown): string[] {
@@ -83,10 +90,11 @@ export function approvalPatchDisplayName(row: { source: string; title: string | 
   const kb = row.source === KB_SOURCE ? row.externalId?.match(KB_NUMBER)?.[0] : undefined;
   if (kb) return kb.toUpperCase();
   const clean = (row.title ?? '')
-    .replace(UNSAFE_CHARS, ' ')
-    // A double quote, or anything that renders like one, would appear to
-    // close the quotes this name is shown in.
-    .replace(QUOTE_LOOKALIKES, "'")
+    .normalize('NFKC')
+    // Combining marks go first, so none is left attached to a space.
+    .replace(/\p{M}/gu, '')
+    .replace(TITLE_DISALLOWED, ' ')
+    .replace(MODIFIER_LETTERS, ' ')
     // `...` is how a device stub ends; a title must not look like one.
     .replace(/\.{3,}/g, '…')
     .replace(/\s+/g, ' ')

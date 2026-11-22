@@ -351,16 +351,55 @@ describe('approvalPatchDisplayName — titles are untrusted', () => {
     expect(inner.startsWith('Harmless update evil ')).toBe(true);
   });
 
-  it('folds every double-quote look-alike to a single quote, so a title cannot fake a closing quote', () => {
-    expect(approvalPatchDisplayName({ source: 'third_party', title: 'Chrome 131\u2033 on DC-01, \u2033Edge 120', externalId: 'x' }))
-      .toBe(`"Chrome 131' on DC-01, 'Edge 120"`);
-    // Curly quotes.
-    expect(approvalPatchDisplayName({ source: 'third_party', title: '\u201CChrome\u201D on \u2018DC-01\u2019', externalId: 'x' }))
-      .toBe(`"'Chrome' on 'DC-01'"`);
-    const lookAlikes = ['\uFF02', '\u02BA', '\u3003', '\u201E', '\u201F', '\u00AB', '\u00BB', '\u2039', '\u203A', '"'];
-    for (const q of lookAlikes) {
-      expect(approvalPatchDisplayName({ source: 'third_party', title: `a${q}b`, externalId: 'x' })).toBe(`"a'b"`);
-    }
+  // An allowlist, not a denylist: any character that is not a letter, a
+  // digit, a plain space or a short list of ASCII punctuation is dropped, so
+  // no quote look-alike (known or not) can appear to close the name's quotes.
+  const QUOTE_LOOKALIKES: Array<[string, string]> = [
+    ['Hebrew gershayim', '\u05F4'],
+    ['double acute accent', '\u02DD'],
+    ['modifier double apostrophe', '\u02EE'],
+    ['heavy double turned comma ornament', '\u275D'],
+    ['heavy double comma ornament', '\u275E'],
+    ['reversed double prime quotation mark', '\u301D'],
+    ['double prime quotation mark', '\u301E'],
+    ['low double prime quotation mark', '\u301F'],
+    ['double prime', '\u2033'],
+    ['fullwidth quotation mark', '\uFF02'],
+    ['modifier double prime', '\u02BA'],
+    ['ditto mark', '\u3003'],
+    ['double low-9 quotation mark', '\u201E'],
+    ['double high-reversed-9 quotation mark', '\u201F'],
+    ['left guillemet', '\u00AB'],
+    ['right guillemet', '\u00BB'],
+    ['left curly double quote', '\u201C'],
+    ['right curly double quote', '\u201D'],
+    ['ASCII double quote', '"'],
+    ['right-to-left override', '\u202E'],
+  ];
+
+  it.each(QUOTE_LOOKALIKES)('drops a %s', (_name, char) => {
+    const name = approvalPatchDisplayName({ source: 'third_party', title: `Chrome 131${char} on DC-01, ${char}Edge 120`, externalId: 'x' })!;
+    expect(name).toBe('"Chrome 131 on DC-01, Edge 120"');
+    expect(name.slice(1, -1)).not.toContain(char);
+  });
+
+  it('keeps real-world titles as they are, apart from the length cap', () => {
+    const windows = '2024-01 Cumulative Update for Windows 11 Version 23H2 for x64-based Systems (KB5034123)';
+    expect(approvalPatchDisplayName({ source: 'third_party', title: windows, externalId: 'x' }))
+      .toBe(`"${windows.slice(0, 59).trimEnd()}…"`);
+    expect(approvalPatchDisplayName({ source: 'third_party', title: 'Google Chrome 120.0.6099.130', externalId: 'x' }))
+      .toBe('"Google Chrome 120.0.6099.130"');
+    // Every allowed ASCII punctuation mark survives.
+    const punctuation = "Firefox [ESR] 115.0 - x64, en-US (C:/apps) 50% & #1 _b o'b+c";
+    expect(approvalPatchDisplayName({ source: 'third_party', title: punctuation, externalId: 'x' }))
+      .toBe(`"${punctuation}"`);
+  });
+
+  it('keeps letters of other scripts, including the Japanese long-vowel mark', () => {
+    expect(approvalPatchDisplayName({ source: 'third_party', title: 'עדכון אבטחה 2024', externalId: 'x' }))
+      .toBe('"עדכון אבטחה 2024"');
+    expect(approvalPatchDisplayName({ source: 'third_party', title: 'セキュリティ アップデート', externalId: 'x' }))
+      .toBe('"セキュリティ アップデート"');
   });
 
   it('gives nothing for an empty or whitespace-only title with no KB', () => {
