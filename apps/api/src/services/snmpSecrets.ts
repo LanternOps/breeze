@@ -15,6 +15,10 @@ const SECRET_FIELD_NAMES = new Set([
   'token',
 ]);
 
+/** The keys whose values are SNMP secrets, at any depth of `snmp_credentials`. Learned networks (#12369 W03b) walks
+ *  the same keys as the merge helpers here. */
+export const SNMP_SECRET_FIELD_NAMES: ReadonlySet<string> = SECRET_FIELD_NAMES;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
