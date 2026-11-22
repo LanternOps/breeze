@@ -69,6 +69,7 @@ export async function searchPax8Products(
   const products = await loadPartnerProducts(actor, input.vendor);
   const matched = products.filter((p) =>
     p.name.toLowerCase().includes(needle) ||
+    p.pax8ProductId.toLowerCase().includes(needle) ||
     (p.vendorName?.toLowerCase().includes(needle) ?? false) ||
     (p.vendorSku?.toLowerCase().includes(needle) ?? false));
   return matched.slice(0, input.limit);
