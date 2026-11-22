@@ -262,16 +262,18 @@ describe('learned networks org merge (A7)', () => {
     expect(await gated(p.loserSite)).toBe(true);
   });
 
-  it('an ignored, unassigned survivor network takes the carried assignment and stops being ignored', async () => {
+  it('an ignored, unassigned survivor network takes the carried assignment, stops being ignored and gains the source prefix', async () => {
     const p = await pair();
     await gate(p.loserSite);
     await network(p.loser, [F1], { siteId: p.loserSite, userId: p.env.user.id });
     const ns = await network(p.survivor, [F1]);
-    await admin(sql`UPDATE learned_networks SET ignored_at = now() WHERE id = ${ns.id}::uuid`);
+    await admin(sql`UPDATE learned_networks SET ignored_at = now(), prefix = NULL WHERE id = ${ns.id}::uuid`);
 
     await merge(p);
 
     expect(await networkRow(ns.id)).toMatchObject({ site_id: p.loserSite, ignored_at: null });
+    // A survivor network with no observed prefix takes the source network's.
+    expect(await admin(sql`SELECT prefix::text FROM learned_networks WHERE id = ${ns.id}::uuid`)).toEqual([{ prefix: '192.168.1.0/24' }]);
   });
 
   it('device rows follow their fingerprint through the merge, and the device-move trigger leaves them alone', async () => {
