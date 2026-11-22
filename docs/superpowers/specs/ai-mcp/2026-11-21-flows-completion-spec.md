@@ -5,7 +5,7 @@ tracking_issue: LanternOps/breeze#10336
 # Finish Flows as the single home for automations
 
 **Date:** 2026-11-21
-**Status:** Draft for owner review. Product direction fixed by Todd ("finish forward": wave 1 is a manual flow editor plus a single nav item, then the production census, then R2, then R3). Everything else here is a proposal. Codex quorum on Open Decisions 1 to 3: see §6 and the quorum note at the end.
+**Status:** Approved by Todd on 2026-11-21 (Gate A), with every recommendation in §6 as written. The resolutions are in the table at the top of §6. Product direction: "finish forward" (wave 1 is a manual flow editor plus a single nav item, then the production census, then R2, then R3). Codex quorum on Decisions 1 to 3: see §6 and the quorum note at the end.
 **Extends:** `docs/superpowers/specs/ai-mcp/2026-09-07-tool-catalog-and-flows-design.md` (the Flows spec) and `docs/superpowers/plans/ai-mcp/2026-10-27-tool-catalog-w6-legacy-automations.md` (the W06 plan, which keeps PR D and PR E as the design record for R2 and R3).
 **Code read at:** `origin/main` `aabccd8a6d`.
 
@@ -24,7 +24,7 @@ Breeze has two automation engines, and the move from the old one to the new one 
 
 - The sidebar shows **Jobs** and **Flows** side by side (`apps/web/src/components/layout/Sidebar.tsx:285-287`). The Jobs page is titled "Jobs", its button says "New Automation" (`apps/web/src/locales/en/scripts.json:367-370`), and the docs page is titled "Automations" (`apps/docs/src/content/docs/features/automations.mdx:2`). A new partner asked on 2026-11-20 what Flows is (#12310).
 - **No person can build a flow by hand.** A draft is created only by the `draft_flow` AI tool (`apps/api/src/services/aiToolsFlows.ts:72-105`) or by converting a Job (`apps/api/src/services/flows/conversion/`). `apps/api/src/routes/flows.ts` has list, get, enable, disable, runs and the webhook secret, and no create, update or delete (`routes/flows.ts:1-13` says so). `FlowsPage.tsx:14-16` and `FlowStepList.tsx:132-141` are read-only. A tenant with no AI key, no AI credit, or an active Wisp grant (#10289) cannot author a flow in the web app. `draft_flow` is also reachable over Breeze's MCP server with an `ai:write` key, so an external AI client can author one, but that is not a product path for most technicians.
-- W06 R1 refused new Jobs once Flows were on (`apps/api/src/routes/automations.ts:1322-1333` on `origin/main`). The orchestrator reports that a PR for #12310, in flight now, lifts that refusal and tags Flows as "Preview", and that the W06 plan will carry an amendment saying the refusal returns together with a manual editor. **Unverified:** neither the PR nor the amendment is on `origin/main` at `aabccd8a6d`, and `gh pr list --search 12310` returned nothing. This spec treats the lift as done, as instructed.
+- W06 R1 refused new Jobs once Flows were on (`apps/api/src/routes/automations.ts:1322-1333` on `origin/main`). PR #12366 (for #12310) lifts that refusal, tags Flows as "Preview", and adds a dated amendment to the W06 plan at Decision 8: the refusal returns together with a manual editor, and PR D's test list must add `POST /automations is 410` back. The PR entered the merge queue on 2026-11-21. This spec treats the lift as done; the plan checks `origin/main` before wave 3 is written.
 - Only class S converts. M, A, P, C and the R dependency still run on the legacy engine core (Flows spec §7, W06 amendment).
 - R2 and R3 are designed (W06 plan PR D and PR E, lines 1234-1320) but unbuilt, and they moved to #10336, which has no plan and no waves.
 - Seven live checks from the #5215 close-out (comment of 2026-10-29) were never run: the census CLI on US and EU, switching a real scheduled Job, a webhook retry against a switched Job, a revert while parked on approval, the `maxTargets` pause (`binding_drift`), the Jobs page in a non-en locale, and chat smokes for the W05 flow tools. Nobody knows how many unswitched Jobs exist in production.
@@ -218,9 +218,23 @@ Deleting the worker and dropping the tables is not in this feature (Open Decisio
 - Any automatic switch of a Job to a flow (W06 Decision 2 stands).
 - The Wisp ceiling redesign (#11155).
 
-## 6. Open Decisions
+## 6. Decisions (resolved at Gate A, 2026-11-21)
 
-Each has a recommendation. Decisions 1 to 3 went to a Codex quorum; where Codex disagreed, both positions are recorded.
+Todd approved every recommendation below as written. The options and the Codex positions are kept as the record of what was considered.
+
+| Decision | Resolution |
+|---|---|
+| OD1 Editor shape | **A.** Guided form plus a JSON Document tab, with the whole-document recognizer |
+| OD2 API surface | **A.** Four REST routes over `saveDraftFlow`, no new MCP or AI tools, read-only Partner API flows export before R2. Edit-while-enabled (B) is a later wave. **No MFA on drafts, on either path** (option i); Codex's MFA-on-drafts position (option ii) was considered and not adopted |
+| OD3 Nav name and layout | **A.** One entry, "Automations", with path tabs at `/flows` and `/jobs` |
+| OD4 Create refusal | **A.** Returns in wave 3, per trigger, with the named exceptions |
+| OD5 Webhook scripts | **C.** Decided from the census; B (webhook flows always ask a person) is the wave 3 position |
+| OD6 Deployment Jobs | **C.** Decided from the census; defaults to B if the hosted count is small |
+| OD7 Scope | **B.** This feature is standalone-Job completion, editor through R3, under a new parent issue. #10336 stays the roadmap item for the managed classes, the worker deletion and the table drops |
+| OD8 Deferred items | **B.** Census-driven: blockers become conditional waves (W3a), the rest are filed as roadmap issues, the auto-switch grant is dropped |
+| OD9 Legacy-aimed specs | #9900 split (group targeting proceeds now, multiple triggers re-aimed at flows); #9209 and #11643 re-aimed at flows |
+
+Each decision had a recommendation. Decisions 1 to 3 went to a Codex quorum; where Codex disagreed, both positions are recorded.
 
 ### OD1. Editor shape
 
@@ -241,7 +255,7 @@ Each has a recommendation. Decisions 1 to 3 went to a Codex quorum; where Codex 
 Codex agreed on the four routes, no new MCP tools and the read-only export before R2. Where it differed, both positions:
 - **Delete permission.** My draft used `automations.write`, following the legacy Job delete (`routes/automations.ts:1710-1714`). Codex: use the existing `automations.delete` plus MFA, lock the row and check everything in one transaction. **Adopted Codex's position** in §3.2; the permission exists for this purpose and the lock closes a race with a concurrent enable.
 - **`draft_flow` must require `expectedVersion` on update.** Not in my draft. **Adopted** (§3.2), staged over one release.
-- **MFA on drafting. Disagreement, not resolved toward Codex.** Codex: put `requireMfa()` on the REST draft routes and mirror it on `draft_flow` (the repo rule in `aiToolMfaGate.ts`), accepting that MCP callers lose drafting under `ENABLE_2FA`. Mine: the impact is total for MCP authoring (API-key and OAuth MCP callers never carry an MFA claim, `aiToolMfaGate.ts:151-153`), and a draft runs nothing; the delegation decision is enable, which already requires MFA and an interactive session. So neither path requires MFA for a draft, and both stay consistent with the mirror rule. Options: (i) no MFA on drafts, either path (recommended); (ii) MFA on both, MCP drafting lost under 2FA (Codex); (iii) MFA on REST only, which breaks the mirror rule (rejected by both).
+- **MFA on drafting. Disagreement; resolved at Gate A as option (i), no MFA on drafts.** Codex: put `requireMfa()` on the REST draft routes and mirror it on `draft_flow` (the repo rule in `aiToolMfaGate.ts`), accepting that MCP callers lose drafting under `ENABLE_2FA`. Mine: the impact is total for MCP authoring (API-key and OAuth MCP callers never carry an MFA claim, `aiToolMfaGate.ts:151-153`), and a draft runs nothing; the delegation decision is enable, which already requires MFA and an interactive session. So neither path requires MFA for a draft, and both stay consistent with the mirror rule. Options: (i) no MFA on drafts, either path (recommended); (ii) MFA on both, MCP drafting lost under 2FA (Codex); (iii) MFA on REST only, which breaks the mirror rule (rejected by both).
 - **Validation of shadow drafts** takes a `flowId` so it matches save. **Adopted** (§3.2).
 
 ### OD3. Nav name and layout
