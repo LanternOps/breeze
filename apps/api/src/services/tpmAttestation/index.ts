@@ -144,7 +144,7 @@ export type BaselineAuditBuilder = (action: 'device.tpm_baseline.recorded' | 'de
  * together.
  */
 export async function completeAttestation(
-  agent: { deviceId: string; agentId: string; orgId: string; partnerId?: string | null },
+  agent: { deviceId: string; agentId: string; orgId: string; partnerId?: string | null; isPreAssignment?: boolean },
   input: { challengeId: string; secret: string },
   audit: BaselineAuditBuilder,
   now: Date = new Date(),
@@ -173,7 +173,9 @@ export async function completeAttestation(
       orgId: agent.orgId,
       accessibleOrgIds: [agent.orgId],
       accessiblePartnerIds: [],
-      currentPartnerId: agent.partnerId ?? null,
+      // Same as agentAuth's request wrap: a parked device's org is its
+      // partner's holding org, and it carries no partner scope.
+      currentPartnerId: agent.isPreAssignment ? null : agent.partnerId ?? null,
     },
     () => db.transaction(async (tx) => {
       // The row is still this install's (#8318 §6.4). FOR NO KEY UPDATE, not
