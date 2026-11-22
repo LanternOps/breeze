@@ -15,7 +15,9 @@
  *         skipped summary row per target device carrying the reason, and
  *       - every `install_patches` command of a running job from the ring that
  *         is still `pending` (queued for an offline device, or online but not
- *         yet claimed). The shared cancel path terminalises its
+ *         yet claimed). A job that names its patches (the AI install) stores
+ *         no ring; its commands are matched by the `evaluationRingId` the
+ *         executor stamps on them at dispatch. The shared cancel path terminalises its
  *         `patch_job_results` rows and counters through the patch finalizer.
  *     A `sent` command has reached the agent and is left alone.
  *  2. Dispatch time (`jobs/patchJobExecutor.ts` `prepareDeviceExecution`). A

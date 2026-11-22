@@ -314,6 +314,24 @@ describe('a job that names its patches is judged under the device\'s live policy
     expect(rows.map((r) => [r.status, r.errorMessage])).toEqual([['skipped', 'ring_deleted']]);
   });
 
+  it('a stamped install whose job is no longer running is left alone by the sweep', async () => {
+    const ring = await makeRingPolicy({ autoApprove: { enabled: true, severities: ['critical'] } });
+    const device = await makeDevice();
+    const patch = await makeOutstandingPatch(device.id);
+    const job = await makeAiJob([patch.id], [device.id]);
+    expect((await dispatchDevice(job.id, device.id)).kind).toBe('queued');
+    await getTestDb().update(patchJobs).set({ status: 'completed' }).where(eq(patchJobs.id, job.id));
+
+    const result = await withSystemDbAccessContext(async () => {
+      await db.update(patchPolicies).set({ enabled: false }).where(eq(patchPolicies.id, ring.id));
+      return cancelQueuedRingPatchWork(ring.id, 'ring_deleted');
+    });
+
+    expect(result.cancelledInstallCount).toBe(0);
+    const [cmd] = await installCommands(device.id);
+    expect(cmd?.status).toBe('pending');
+  });
+
   it('a queued install of an unrelated job is left alone by another ring\'s delete', async () => {
     await makeRingPolicy({ autoApprove: { enabled: true, severities: ['critical'] } });
     const unrelated = await withSystemDbAccessContext(async () => {
