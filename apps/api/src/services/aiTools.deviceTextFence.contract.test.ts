@@ -200,6 +200,8 @@ const EXPECTED_FENCED: Readonly<Record<string, readonly string[]>> = {
   m365_query_sites: ['name', 'displayName', 'webUrl'],
   // Watched service/process names and the check's details blob are agent-reported.
   get_service_monitoring_status: ['name', 'details'],
+  // A network check's last error and each result's error/details are written by the reporting agent.
+  manage_monitors: ['lastError', 'error', 'details'],
   // A run's ledger error echoes tool output; its report, findings and proposals are model text
   // written from device data; the agent name is typed by another user.
   get_ai_agent_run: [

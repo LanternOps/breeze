@@ -1162,6 +1162,9 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   manage_device_anomalies: new Set(['metricName', 'evidence', 'baselineSummary']),
   // Watched service/process names (and change-log service names) and the check's details blob are agent-reported.
   get_service_monitoring_status: new Set(['name', 'details']),
+  // A network check's last error and each result's error/details blob are written by the reporting
+  // agent (recordMonitorCheckResult), not by Breeze.
+  manage_monitors: new Set(['lastError', 'error', 'details']),
   // USB descriptor strings (vendor, product, serial), the peripheral type, event id and details blob are
   // agent-reported (routes/agents/peripherals.ts).
   get_peripheral_activity: new Set(['vendor', 'product', 'serialNumber', 'peripheralType', 'sourceEventId', 'details']),
