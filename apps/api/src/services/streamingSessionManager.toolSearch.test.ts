@@ -91,6 +91,11 @@ vi.mock('./aiModels/connectionFactory', async (orig) => {
   return { ...actual, prepareSdkChild: vi.fn(actual.prepareSdkChild) };
 });
 
+// #12421 W01: the turn-end discovery write, observed rather than run.
+vi.mock('./aiToolDiscoveryLedger', () => ({
+  persistTurnDiscovery: vi.fn(async () => ({ ok: true, rows: 1, reconciled: 0 })),
+}));
+
 // Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of whichever test reaches it first (#11011).
 vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
@@ -103,6 +108,8 @@ import { createBreezeMcpServer } from './aiAgentSdkTools';
 import { SDK_PERMISSION_MODE } from './llm/sdkChildEnvGuards';
 import { prepareSdkChild } from './aiModels/connectionFactory';
 import type { AuthContext } from '../middleware/auth';
+import { persistTurnDiscovery } from './aiToolDiscoveryLedger';
+import { discoveryEligible } from './streamingSessionManager';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
 
@@ -578,5 +585,170 @@ describe('turn budget (#10400)', () => {
     expect(session.eventBus.getReplayEvents()).toContainEqual(
       expect.objectContaining({ type: 'error', code: 'turn_limit_reached' }),
     );
+  });
+});
+
+
+// #12421 W01: tool-discovery telemetry, written once per chat turn after
+// settlement. Only a full-registry chat session (web chat, Wisp) observes;
+// every other surface stamps `unknown` and writes nothing.
+describe('discovery telemetry (#12421 W01)', () => {
+  const writes = () => vi.mocked(persistTurnDiscovery).mock.calls.map((c) => c[0]);
+  const assistant = (id: string, content: Array<Record<string, unknown>>) => ({
+    type: 'assistant', message: { id, content, usage: { input_tokens: 10, output_tokens: 5 } },
+  });
+  const searchResult = (id: string, names: string[]) => ({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'tool_search_tool_result', content: names.map((n) => ({ type: 'tool_reference', tool_name: `mcp__breeze__${n}` })) }] }] },
+  });
+  const SEARCHING_TURN = [
+    assistant('msg_1', [{ type: 'tool_use', id: 'toolu_s1', name: 'ToolSearch', input: { query: 'store device context', max_results: 5 } }]),
+    searchResult('toolu_s1', ['set_device_context']),
+    assistant('msg_2', [{ type: 'tool_use', id: 'toolu_w1', name: 'mcp__breeze__set_device_context', input: PAREN_INPUT }]),
+    assistant('msg_3', [{ type: 'text', text: 'Done.' }]),
+    { ...RESULT_MSG, num_turns: 3 },
+  ];
+
+  /** A query whose stream waits for `release()` before yielding, so the test can bind the turn first. */
+  function gatedSdkQuery(messages: unknown[]): { release: () => void } {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    queryMock.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {
+        await gate;
+        yield* messages as never[];
+      },
+      interrupt: vi.fn(),
+      close: vi.fn(),
+    }));
+    return { release };
+  }
+
+  it('a searching turn calls persistTurnDiscovery once with one search event and the turn summary', async () => {
+    const { release } = gatedSdkQuery(SEARCHING_TURN);
+    const session = await manager.getOrCreate(
+      'sess-disc', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    session.turnUserMessageId = '00000000-0000-4000-8000-000000000009';
+    release();
+    await session.processorPromise;
+
+    expect(writes()).toHaveLength(1);
+    const write = writes()[0]!;
+    expect(write).toMatchObject({
+      sessionId: 'sess-disc',
+      orgId: ORG,
+      turnMessageId: '00000000-0000-4000-8000-000000000009',
+      surface: 'chat',
+      surfaceFingerprint: session.toolSurfaceFingerprint,
+      turn: { searches: 1, searchOnlyRoundTrips: 1, workRoundTrips: 1, firstCallAfterSearches: 1, aborted: false },
+    });
+    expect(write.surfaceFingerprint).toMatch(/^[0-9a-f]{16}$/);
+    expect(write.events).toHaveLength(1);
+    expect(write.events[0]).toMatchObject({
+      toolUseId: 'toolu_s1', roundTripId: 'msg_1', query: 'store device context', maxResults: 5,
+      resultToolNames: ['set_device_context'], calledToolNames: ['set_device_context'], empty: false,
+    });
+    // The flush passes endTurn's final discovery per call as the reconcile map.
+    expect([...write.reconcile]).toEqual([['toolu_w1', 'searched_this_turn']]);
+    // The session-sticky set keeps the loaded name for the next turn.
+    expect(session.discovery?.discoveryOf('set_device_context')).toBe('loaded_earlier');
+  });
+
+  it('a zero-search turn still writes a turn row', async () => {
+    mockSdkQuery([assistant('msg_1', [{ type: 'text', text: 'Hello' }]), RESULT_MSG]);
+    const session = await manager.getOrCreate(
+      'sess-disc-0', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(writes()).toHaveLength(1);
+    expect(writes()[0]).toMatchObject({ events: [], turn: { searches: 0, aborted: false } });
+  });
+
+  it('the write is awaited after settleInvocation', async () => {
+    const order: string[] = [];
+    vi.mocked(settleInvocation).mockImplementationOnce(async () => { order.push('settle'); return { costCents: 0, invocationIds: [], deferred: false } as never; });
+    vi.mocked(persistTurnDiscovery).mockImplementationOnce(async () => { order.push('discovery'); return { ok: true, rows: 1, reconciled: 0 }; });
+    mockSdkQuery(SEARCHING_TURN);
+    const session = await manager.getOrCreate(
+      'sess-disc-order', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(order).toEqual(['settle', 'discovery']);
+  });
+
+  it('a failed or throwing write never fails the turn', async () => {
+    vi.mocked(persistTurnDiscovery).mockRejectedValueOnce(new Error('boom'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockSdkQuery(SEARCHING_TURN);
+    const session = await manager.getOrCreate(
+      'sess-disc-throw', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(settleInvocation).toHaveBeenCalled();
+    expect(session.eventBus.getReplayEvents().some((e) => e.type === 'done')).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it('an aborted turn (no result) flushes with aborted true and the unmatched search as empty', async () => {
+    mockSdkQuery([
+      assistant('msg_1', [{ type: 'tool_use', id: 'toolu_s1', name: 'ToolSearch', input: { query: 'restart a service' } }]),
+      // The stream ends before the search result and before any `result`.
+    ]);
+    const session = await manager.getOrCreate(
+      'sess-disc-abort', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true, budgetReservationId: 'res-1' },
+    );
+    await session.processorPromise;
+    expect(writes()).toHaveLength(1);
+    expect(writes()[0]).toMatchObject({ turn: { aborted: true, searches: 1 } });
+    expect(writes()[0]!.events[0]).toMatchObject({ toolUseId: 'toolu_s1', empty: true, resultToolNames: [] });
+  });
+
+  it('a session whose surface did not opt into the full chat registry has discovery null and writes nothing', async () => {
+    mockSdkQuery(SEARCHING_TURN);
+    const staticSession = await manager.getOrCreate(
+      'sess-disc-static', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+    );
+    await staticSession.processorPromise;
+    expect(staticSession.discovery).toBeNull();
+
+    // A factory-built server (topology, helper, Office, script builder) — even on the chat surface.
+    mockSdkQuery(SEARCHING_TURN);
+    const factory = vi.fn(() => ({ server: { type: 'sdk' } as never, name: 'breeze' }));
+    const factorySession = await manager.getOrCreate(
+      'sess-disc-factory', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      ['mcp__breeze__query_devices'], factory,
+    );
+    await factorySession.processorPromise;
+    expect(factory).toHaveBeenCalled();
+    expect(factorySession.discovery).toBeNull();
+    expect(writes()).toHaveLength(0);
+  });
+
+  it('discoveryEligible is true only for a chat-surface session that registered the full chat registry', () => {
+    const chat = { turnBinding: { surface: 'chat' } } as never;
+    expect(discoveryEligible(chat, { fullChatRegistry: true })).toBe(true);
+    expect(discoveryEligible(chat, { fullChatRegistry: false })).toBe(false);
+    for (const surface of ['helper', 'office_chat', 'script_builder', 'ai_agents']) {
+      expect(discoveryEligible({ turnBinding: { surface } } as never, { fullChatRegistry: true })).toBe(false);
+    }
+  });
+
+  it('a Wisp session is eligible (chat surface, full registry behind its grant filter)', async () => {
+    vi.mocked(lookupWispGrant).mockResolvedValueOnce({ grantId: 'g-1', revisionId: 'r-1', threadId: 't-1' } as never);
+    vi.mocked(wispSessionToolFilter).mockResolvedValueOnce(() => true);
+    mockSdkQuery(SEARCHING_TURN);
+    const session = await manager.getOrCreate(
+      'sess-disc-wisp', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+      undefined, undefined, { toolSearch: true },
+    );
+    await session.processorPromise;
+    expect(session.discovery).not.toBeNull();
+    expect(writes()).toHaveLength(1);
   });
 });
