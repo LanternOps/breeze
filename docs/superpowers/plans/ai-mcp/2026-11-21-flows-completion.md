@@ -86,7 +86,7 @@ tracking_issue: LanternOps/breeze#12433
   - Exactly one part per wave owns `apps/docs/**` and `docsIndex.json`.
 - **Release notes.** Each wave appends under its own heading in `docs/release-notes/next-release-draft.md` (`## Features / API`, or `## Self-Hosting / Upgrade Notes` for env lines). The file is a merge-queue hot spot: **append only, and rebase just before opening the PR.** One part per wave owns the append.
 - **Public repo.**
-  - No IPs, hostnames, regions, tenant or customer names, or internal domain mappings. Say "the hosted US and EU installations".
+  - No IPs, hostnames, regions, tenant or customer names, or internal domain mappings. Say "the two hosted installations"; never name their regions in the repo or on a public issue.
   - Census output never enters the repo.
   - Test addresses use `example.com`.
 - **Permissions (unchanged rows).**
@@ -123,7 +123,7 @@ These are five conditions the spec implies that no single route test exercises, 
 Each one is flagged in its PR body.
 
 - **P1. W1 has five parts, not three PRs.** Spec §8 lists PRs A, B and C. The shared compile helpers and recognizer are carved out as W01a, because the editor depends on them and the API routes do not. The `fleetMaxTargets` enable-dialog work is carved out as W01c, because it touches no locale file and no editor file. The result is that W01b, W01c and W01d start at once, and W01e starts once W01a's shared commit exists. See "Execution split and parallelism" under W1.
-- **P2. Fleet outputs gain `succeededCount` and `failedCount`.** Spec §3.1 says the one-per-run notification "says how many devices succeeded and failed". Flow templates are paths only (`packages/shared/src/flows/templates.ts`: "template bodies are paths only, never expressions"), and `FlowFleetStepOutput` carries id arrays and `count` only. W01a adds two scalar fields to `FlowFleetStepOutput`, set by all three builders (`builtins/runScriptOnTargets.ts`, `fleetStep.ts`, `builtins/resolveTargets.ts`). The form's notify message can then template `{{steps.<id>.output.succeededCount}}`. The change is additive. Test: `run_script_on_targets output carries succeeded and failed counts`.
+- **P2. Fleet outputs gain `succeededCount` and `failedCount`.** Spec §3.1 says the one-per-run notification "says how many devices succeeded and failed". Flow templates are paths only (`packages/shared/src/flows/templates.ts`: "template bodies are paths only, never expressions"), and `FlowFleetStepOutput` carries id arrays, `count`, `warnings` and (for `resolve_targets` only) an optional `devices` list, but no per-outcome counts. No validator checks a template path below `.output` against a declared shape (`flows/structure.ts`), so no schema change is needed. W01a adds two scalar fields to `FlowFleetStepOutput`, set by all three builders (`builtins/runScriptOnTargets.ts`, `fleetStep.ts`, `builtins/resolveTargets.ts`). The form's notify message can then template `{{steps.<id>.output.succeededCount}}`. The change is additive. Test: `run_script_on_targets output carries succeeded and failed counts`.
 - **P3. The run link.** The `notify` built-in links `/flows/<flowId>` (`builtins/notify.ts`), not the run, and the template scope has no run id (`runSlice.ts`: roots `trigger, inputs, steps, item, flow, now`). This plan does **not** change the link, which leaves "links the run" unmet. The flow page's Runs tab lists the run. This is an owner question (Q2).
 - **P4. The recognizer is browser-safe and does not use the shared canonicalizer.** `@breeze/shared/canonicalize` pulls in `node:crypto` and is kept out of the root barrel (its own header says so). The recognizer normalizes both documents with `flowDocumentV1Schema.parse` (which fills step defaults) and compares them with a key-order-insensitive structural equality in the form module.
 - **P5. The `/automations` redirect is a client island, not a server redirect.** No Astro page reads the server's `FLOWS_ENABLED` at SSR; the web learns it from `/config` through `useFlowsGate()` in `stores/featuresStore.ts`. `pages/automations/index.astro` renders a small island that calls `window.location.replace(enabled ? '/flows' : '/jobs')` once the gate has loaded, with a plain `<noscript>` link. The response is a 200, so it is never cached as a permanent redirect. The old cached 301 to `/jobs` still lands on a page that carries the tab strip (spec §3.3). Test: `/automations sends Flows-on users to /flows and Flows-off users to /jobs`.
@@ -132,7 +132,7 @@ Each one is flagged in its PR body.
 - **P8. Parity pins for the no-MFA decision.** `routes/flows.ts`'s `requireAutomationWrite` alias includes `requireMfa()`, so the draft routes must not reuse it. W01b adds a test that an MFA-unsatisfied session can save a draft, and a pin that `draft_flow` is absent from `MFA_GATED_TOOL_ACTIONS`. It also adds binding rows to `services/aiGuardrails.routeBinding.contract.test.ts`: `draft_flow` ↔ `POST /` and `PUT /:id`, and `validate_flow` ↔ `POST /validate` in `flows.ts`. The tool then can never require less than its route.
 - **P9. W2 adds one more census number.** `approval_each_run` fires both for webhook runs and for non-pre-approvable scripts (`convertAutomation.ts`), so it cannot decide OD5 on its own. W02a adds `webhookScriptJobs`: enabled, unswitched S rows with a webhook trigger and at least one `run_script` or `execute_command` action. Aggregate only.
 - **P10. Census class C.** It counts `config_policy_automations` rows with `retired_at IS NULL`, total and enabled. It reads that table only and never `config_policy_feature_links`, so `services/featureLinkReaders.contract.test.ts` is unaffected.
-- **P11. Page titles.** To keep W01e off `common.json` (owned by W01d), `/flows/new` uses the existing `titles.flows` key and `/flows/:id/edit` uses `titles.flowDetail`.
+- **P11. Page titles.** Page titles live in `locales/*/pages.json`. To avoid adding a title key in 8 locales, `/flows/new` uses the existing `titles.flows` key and `/flows/:id/edit` uses `titles.flowDetail`; no part touches `pages.json` in W1.
 - **P12. Keyboard shortcut.** `G` then `J` (`lib/keyboard/goToShortcuts.ts`, `nav.jobs`, `/jobs`) stays, because `/jobs` stays a real tab. No change.
 - **P13. Route error codes.** The spec names the statuses; this plan names the bodies:
   - A partner-wide denial is `403 { error: 'partner_wide_forbidden' }`. The service returns prose (`PARTNER_WIDE_WRITE_DENIED_MESSAGE`).
@@ -144,16 +144,20 @@ Each one is flagged in its PR body.
 - **P16. Where "Delete draft" sits.** On the flow detail page, only for a never-published, never-converted draft and only with `automations.delete`. The editor does not show it.
 - **P17. Webhook secrets and the editor.** `updateDraft` always bumps `definition_version` and `updated_at`, and `webhookSecretSurvivesEnable` (`versions.ts`, #10270) then clears a secret minted against an older draft. So:
   - The editor never sends a PUT for an unchanged document. "Save and enable" skips the save when nothing changed.
-  - After an enable whose result has `webhookSecretInvalidated: true`, the editor stays put and shows the existing `flows:enable.webhookSecretInvalidated` notice with a link to `/flows/<id>#webhook`. Otherwise it navigates to `/flows/<id>`.
+  - For a webhook-triggered flow the editor offers Save only, never "Save and enable" (P21). The secret is minted and the flow enabled on `/flows/<id>#webhook`, after the last save.
+  - So the editor's own enable path should never see `webhookSecretInvalidated: true`: enable sets it only for a webhook trigger (`enableFlow` in `versions.ts`). If it ever arrives, the editor stays put and shows the existing `flows:enable.webhookSecretInvalidated` notice with a link to `/flows/<id>#webhook` instead of navigating away. Otherwise it navigates to `/flows/<id>`.
   - Whether "Disable and edit" warns about this up front is Q6.
 - **P18. Model tiers that differ from the default heuristic.**
   - W01a runs as **sonnet**, with Opus review of its recognizer and converter-rewiring commits. It is pure code, guarded by a golden file.
   - W02a runs as **opus**, because its one guarantee is that no identifier leaves a production host for a public issue.
 - **P19. Event targets.** The form binds the triggering device for every event type in the Job form's list and hides the picker, as the converter does for every event Job (`selectorOf` in `convertAutomation.ts`). `trigger.device` exists only when the payload carries the uuid of a device in the run org (`services/flows/triggerScope.ts`). Some events may carry none (for example a SentinelOne threat without a mapped device), and then the step fails. This is Q5.
+- **P20. `draft_flow` also requires `automations.read`.** Its REST twins (`POST /flows`, `PUT /flows/:id`) inherit the router-level `requirePermission('automations', 'read')` in `routes/flows.ts`, so the route requires read and write. `aiGuardrails.routeBinding.contract.test.ts` adds that router-level gate to the route's set and fails any tool that requires less than its route. W01b adds `draft_flow: [{ resource: 'automations', action: 'read' }]` to `TOOL_EXTRA_PERMISSIONS` in `services/aiGuardrails.ts` (the primary `automations.write` in `TOOL_PERMISSIONS` stays). The tool then needs read and write, the same as its REST twin. A caller with write but not read could never reach the REST route either. W01b checks the seeded role definitions for any role that grants `automations.write` without `automations.read` and states the result in the PR; if one exists, it stops and raises it as a question for the owner (not checked by this plan). Each draft route writes its permission gate inline in the route call, never as a `const` array alias: the binder's alias parser recognizes only `const X = requirePermission(…)`, and an array alias would resolve to nothing.
+- **P21. Webhook flows are enabled from the flow page, not the editor.** A webhook flow cannot be enabled without a secret (`webhook_secret_missing`), the secret is minted on `/flows/<id>#webhook`, and any draft save after the mint invalidates it at the next enable (P17). So for a webhook-triggered flow the editor shows Save only. After a successful save it shows a notice (`flow-editor-webhook-next`) linking to `/flows/<id>#webhook`, where the person mints the secret and enables. Tests (W01e): `a webhook flow offers Save only and links to the webhook tab after saving`.
+- **P22. The Flows-off branch is pinned by component tests, not Playwright.** One Playwright stack runs one `FLOWS_ENABLED` value. E8a runs with Flows on and covers `/automations`, `/automations/new` and `/automations/<id>`. The Flows-off behaviour (sidebar entry links `/jobs`, no Flows tab, `/automations` lands on `/jobs`) is pinned by the W01d component tests (`it links /jobs when Flows is off`, `the Flows tab is hidden when Flows is off`, `/automations sends Flows-on users to /flows and Flows-off users to /jobs`).
 
 ## Owner gates
 
-- **Census on the hosted US and EU installations (W02b).** This is a production action. It runs **only on the owner's separate go-ahead**, given after W1 is deployed to both. Only the JSON aggregates the CLI prints leave the host. The results go into a comment on the feature issue, **never into the repo**. The operator should expect the system audit rows that §3.5 describes.
+- **Census on the two hosted installations (W02b).** This is a production action. It runs **only on the owner's separate go-ahead**, given after W1 is deployed to both. Only the JSON aggregates the CLI prints leave the host. The results go into a comment on the feature issue, **never into the repo**. The operator should expect the system audit rows that §3.5 describes.
 - **Release spacing.**
   - W3 ships at least one release after W1, only after the W02b checks pass and OD5 and OD6 are decided from the census.
   - W4 ships at least one release after W3.
@@ -191,7 +195,7 @@ Each one is flagged in its PR body.
 - Create `src/flows/form/types.ts`: `FlowFormValues`, `FlowFormTrigger`, `FlowFormTarget`, `FlowFormAction`, `FlowFormOnFailure`.
 - Create `src/flows/form/emit.ts`, the step emitters shared with the converter.
 - Create `src/flows/form/compile.ts` (`compileFlowForm`) and `src/flows/form/decode.ts` (`decodeFlowForm`).
-- Create `src/flows/form/recognize.ts` (`normalizeFlowDocument`, `recognizeFlowForm`) and `src/flows/form/jsonSchema.ts` (`flowDocumentJsonSchema`).
+- Create `src/flows/form/recognize.ts` (`normalizeFlowDocument`, `recognizeFlowForm`), `src/flows/form/equality.ts` (`structurallyEqual`, `sameFlowDocument`) and `src/flows/form/jsonSchema.ts` (`flowDocumentJsonSchema`).
 - Create `src/flows/form/index.ts`, with tests beside each file.
 - Modify `src/flows/index.ts` (export `./form`) and `src/flows/builtins.ts` (`FlowFleetStepOutput` gains the counts).
 
@@ -208,7 +212,7 @@ Each one is flagged in its PR body.
 **apps/api (W01b)**
 - Modify `routes/flows.ts`: the four routes, registered before every `/:id` route.
 - Create `services/flows/deleteDraft.ts` (`deleteDraftFlow`) and `services/flows/draftValidation.ts` (`validateFlowDraft`).
-- Modify `services/aiToolsFlows.ts` (the `draft_flow` warning), `services/mcpCoverage.ts` (the `flows.ts` entry), and `routes/automations.ts` (`jobCounts` on `GET /`).
+- Modify `services/aiToolsFlows.ts` (the `draft_flow` warning), `services/mcpCoverage.ts` (the `flows.ts` entry), `services/aiGuardrails.ts` (`draft_flow` in `TOOL_EXTRA_PERMISSIONS`, Decision P20) and `routes/automations.ts` (`jobCounts` on `GET /`).
 - Tests:
   - `routes/flows.drafts.test.ts`, `services/flows/deleteDraft.test.ts`, `services/flows/draftValidation.test.ts`;
   - `__tests__/integration/flowDraftRoutes.integration.test.ts`;
@@ -222,7 +226,7 @@ Each one is flagged in its PR body.
 **apps/web (W01d)**
 - Modify `components/layout/Sidebar.tsx`, `lib/paletteIndex.ts`, `pages/flows/index.astro`, `pages/jobs/index.astro` and `pages/automations/index.astro`.
 - Create `components/automations/AutomationsTabStrip.tsx` and `components/automations/AutomationsRedirect.tsx`, with tests.
-- Modify `common.json` in all 8 locales, and `components/layout/Sidebar.flows.test.tsx`.
+- Modify `common.json` in all 8 locales, `components/layout/Sidebar.flows.test.tsx` and `components/layout/Sidebar.nav.test.tsx` (it pins a top-level Jobs entry at `/jobs`), plus any other `Sidebar.*.test.tsx` the change turns red. The full set, every one run by W01d: `Sidebar.aiSection`, `Sidebar.billing`, `Sidebar.collapsedrail`, `Sidebar.contrast`, `Sidebar.extensions`, `Sidebar.featuregate`, `Sidebar.flows`, `Sidebar.hydration`, `Sidebar.mobiledrawer`, `Sidebar.module`, `Sidebar.nav`, `Sidebar.railflyout`, `Sidebar.rbac`, `Sidebar.recents`, `Sidebar.scrollpersist`, `Sidebar.sites`, `Sidebar.staleness`, `Sidebar.tickettypes`, `Sidebar.toolSources`, `Sidebar.unassigned` (each `.test.tsx`).
 
 **apps/web, apps/docs, docs (W01e)**
 - Create `components/flows/editor/`:
@@ -251,14 +255,16 @@ Spec §3.1–§3.3 and §8 row W1. Gating: none beyond `FLOWS_ENABLED`. "Preview
 | Part | Owns (file-disjoint) | Session model |
 |---|---|---|
 | **W01a** | `packages/shared/src/flows/**` (the form module and `builtins.ts`); `apps/api/src/services/flows/conversion/convertAutomation.ts` and its new golden test; the three fleet output builders and their tests; `apps/api/src/services/flows/form/**` (test only) | sonnet, with Opus review of A2 (recognizer) and A3 (converter rewiring). Pure code, guarded by the golden file (P18). |
-| **W01b** | `packages/shared/src/validators/{flowDrafts.ts,index.ts}`; `apps/api/src/routes/flows.ts`, `routes/automations.ts` (the `GET /` handler only); `services/flows/{deleteDraft,draftValidation}.ts`; `services/flows/versions.ts` (a single export, see B3); `services/aiToolsFlows.ts`; `services/mcpCoverage.ts`; their tests; the new integration file; `aiGuardrails.routeBinding.contract.test.ts` | opus (partner-wide writes, delete, MFA) |
+| **W01b** | `packages/shared/src/validators/{flowDrafts.ts,index.ts}`; `apps/api/src/routes/flows.ts`, `routes/automations.ts` (the `GET /` handler only); `services/flows/{deleteDraft,draftValidation}.ts`; `services/flows/versions.ts` (a single export, see B3); `services/aiToolsFlows.ts`; `services/mcpCoverage.ts`; `services/aiGuardrails.ts` (one `TOOL_EXTRA_PERMISSIONS` entry, P20; no other W1 part touches it); their tests; the new integration file; `aiGuardrails.routeBinding.contract.test.ts` | opus (partner-wide writes, delete, MFA) |
 | **W01c** | `apps/web/src/components/flows/{FleetMaxTargetsField,FlowEnableDialog}.tsx`, `components/automations/conversion/SwitchDialog.tsx`, their tests | opus (what a pre-approval authorizes) |
-| **W01d** | `components/layout/Sidebar.tsx` and its tests, `lib/paletteIndex.ts` and its test, `components/automations/{AutomationsTabStrip,AutomationsRedirect}.tsx`, `pages/{flows/index,jobs/index,automations/index}.astro`, `locales/*/common.json` | sonnet |
+| **W01d** | `components/layout/Sidebar.tsx` and every `components/layout/Sidebar.*.test.tsx` it turns red (at least `Sidebar.flows` and `Sidebar.nav`; full list under "File structure (W1)"), `lib/paletteIndex.ts` and its test, `components/automations/{AutomationsTabStrip,AutomationsRedirect}.tsx`, `pages/{flows/index,jobs/index,automations/index}.astro`, `locales/*/common.json` | sonnet |
 | **W01e** | `components/flows/editor/**`, `pages/flows/{new,[id]/edit}.astro`, `components/flows/{api,FlowDetailPage,FlowsPage}.tsx` and their tests, `components/automations/AutomationForm.tsx` (one export), `locales/*/flows.json`, `translationCoverage.test.ts` if needed, `apps/docs/**`, `docsIndex.json`, the Flows spec, the release-notes append, `e2e-tests/**` | opus |
 
 **Real dependency order.**
 1. W01a, W01b, W01c and W01d start together.
-2. W01e starts once W01a has pushed its shared-module commit (Task A2). It copies `packages/shared/src/flows/form/**` and the `src/flows/index.ts` export line **verbatim** from W01a's branch, so the later rebase is byte-identical. It re-copies after any W01a review change to those files.
+2. W01e starts once W01a has pushed its shared-module commit (Task A2). It copies `packages/shared/src/flows/form/**` and the `src/flows/index.ts` export line **verbatim** from W01a's branch, so the later rebase is byte-identical. It re-copies after any W01a review change to those files. Before opening its PR, after rebasing on `main` with W01a merged, W01e checks that `git diff origin/main -- packages/shared/src/flows/form packages/shared/src/flows/index.ts` is empty; a non-empty diff means the copy went stale and is re-copied from `main`.
+   - W01e does not import W01b's `flowDrafts` request schemas; its API client declares its own request types (Task E1), so it compiles before W01b merges.
+   - W01d declares the `jobCounts` response field as a local optional type in the web; it does not import a shared DTO from W01b.
 3. Merge order: W01a, then W01b, W01c and W01d in any order, then W01e. W01e merges last because its "New automation" button and editor need W01b's routes, and its Playwright run needs W01c's dialog and W01d's strip.
 
 W01d reads W01b's `jobCounts` field when it is present and renders no count without it, so either can merge first. If a release is cut mid-wave, the parts already merged are inert or additive: the routes are unused until the editor ships, the dialog field only appears for fleet steps, and the nav is self-contained.
@@ -278,7 +284,7 @@ W01d reads W01b's `jobCounts` field when it is present and renders no count with
 - **Sonnet (session):** all tasks.
 - **Opus review:** A1's case list, A2's `emit.ts`, `compile.ts`, `decode.ts` and `recognize.ts`, and A3.
 - **Commands:**
-  - `cd packages/shared && npx vitest run src/flows/form src/flows/builtins.test.ts`;
+  - `cd packages/shared && npx vitest run src/flows/form src/flows/builtins.test.ts src/browserSafeBarrel.test.ts` (the last is the guard behind Decision P4);
   - `cd apps/api && npx vitest run src/services/flows/conversion src/services/flows/form src/services/flows/builtins/runScriptOnTargets.test.ts src/services/flows/builtins/resolveTargets.test.ts src/services/flows/fleetStep.test.ts`;
   - both typechecks.
 - **Migration slot:** none.
@@ -296,7 +302,7 @@ W01d reads W01b's `jobCounts` field when it is present and renders no count with
 - **Sonnet-eligible:** B1's schema file and its test; B4's `mcpCoverage.ts` line; B5's response plumbing.
 - **Opus:** B1's routes, B2, B3, B4's warning, B6.
 - **Commands:**
-  - `cd apps/api && npx vitest run src/routes/flows.drafts.test.ts src/routes/flows.test.ts src/services/flows/deleteDraft.test.ts src/services/flows/draftValidation.test.ts src/services/aiToolsFlows.test.ts src/routes/automations.test.ts`;
+  - `cd apps/api && npx vitest run src/routes/flows.drafts.test.ts src/routes/flows.test.ts src/services/flows/deleteDraft.test.ts src/services/flows/draftValidation.test.ts src/services/aiToolsFlows.test.ts src/routes/automations.test.ts src/services/aiGuardrails.test.ts src/services/aiToolPermissionsCatalogParity.contract.test.ts`;
   - the contract batch in B6;
   - `cd packages/shared && npx vitest run src/validators/flowDrafts.test.ts`;
   - both typechecks.
@@ -317,7 +323,7 @@ W01d reads W01b's `jobCounts` field when it is present and renders no count with
 - **SERIAL last:** D4, the `common.json` fan-out in all 8 locales, then the i18n contracts and PR.
 - **Sonnet:** all of it. Opus reviews D1's active-state rule.
 - **Commands:**
-  - `cd apps/web && npx vitest run src/components/layout/Sidebar.flows.test.tsx src/components/layout/Sidebar.featuregate.test.tsx src/components/layout/Sidebar.collapsedrail.test.tsx src/components/automations/AutomationsTabStrip.test.tsx src/components/automations/AutomationsRedirect.test.tsx src/lib/paletteIndex.test.ts`;
+  - `cd apps/web && npx vitest run src/components/layout/Sidebar.aiSection.test.tsx src/components/layout/Sidebar.billing.test.tsx src/components/layout/Sidebar.collapsedrail.test.tsx src/components/layout/Sidebar.contrast.test.tsx src/components/layout/Sidebar.extensions.test.tsx src/components/layout/Sidebar.featuregate.test.tsx src/components/layout/Sidebar.flows.test.tsx src/components/layout/Sidebar.hydration.test.tsx src/components/layout/Sidebar.mobiledrawer.test.tsx src/components/layout/Sidebar.module.test.tsx src/components/layout/Sidebar.nav.test.tsx src/components/layout/Sidebar.railflyout.test.tsx src/components/layout/Sidebar.rbac.test.tsx src/components/layout/Sidebar.recents.test.tsx src/components/layout/Sidebar.scrollpersist.test.tsx src/components/layout/Sidebar.sites.test.tsx src/components/layout/Sidebar.staleness.test.tsx src/components/layout/Sidebar.tickettypes.test.tsx src/components/layout/Sidebar.toolSources.test.tsx src/components/layout/Sidebar.unassigned.test.tsx src/components/automations/AutomationsTabStrip.test.tsx src/components/automations/AutomationsRedirect.test.tsx src/lib/paletteIndex.test.ts`;
   - the i18n batch in D4;
   - astro check; lint.
 - **Migration slot:** none.
@@ -374,7 +380,7 @@ W01d reads W01b's `jobCounts` field when it is present and renders no count with
 #### Task A2: The shared form module
 
 **Files:**
-- Create `packages/shared/src/flows/form/{types,emit,compile,decode,recognize,jsonSchema,index}.ts`, with `*.test.ts` beside `emit`, `compile`, `decode`, `recognize` and `jsonSchema`.
+- Create `packages/shared/src/flows/form/{types,emit,compile,decode,recognize,equality,jsonSchema,index}.ts`, with `*.test.ts` beside `emit`, `compile`, `decode`, `recognize`, `equality` and `jsonSchema`.
 - Modify `packages/shared/src/flows/index.ts`.
 
 **Interfaces (produced; W01e, W02a and A3 consume these exact names):**
@@ -416,11 +422,17 @@ export type FlowFormRecognition =
   | { formShaped: false; reason: 'invalid_document' | 'not_decodable' | 'differs_after_recompile' };
 export function recognizeFlowForm(doc: unknown): FlowFormRecognition;
 export function flowDocumentJsonSchema(): Record<string, unknown>; // z.toJSONSchema(flowDocumentV1Schema, { io: 'input' })
+
+// equality.ts (exported from form/index.ts; the recognizer and the W01e editor both use it)
+export function structurallyEqual(a: unknown, b: unknown): boolean; // plain objects key-order-insensitive, arrays ordered, primitives ===
+export function sameFlowDocument(a: unknown, b: unknown): boolean;  // normalizeFlowDocument on both sides, then structurallyEqual; false if either is invalid
 ```
+
+`form/index.ts` re-exports every name above, including `structurallyEqual` and `sameFlowDocument`. Callers compare documents with `sameFlowDocument`, which normalizes both sides first (schema defaults filled), so a stored document missing a defaulted field still equals its normalized twin.
 
 **Pinned shapes.** These are the converter's own shapes (W06 plan "Conversion map"). A3 proves them through the golden file.
 - The step defaults are `approval: 'default'`, `onFailure: 'continue'`, `timeoutSec: 300`. A script step uses `timeoutSec: 3600`. A `targets` resolve step uses `onFailure: 'stop'`.
-- Step ids are `targets`, `a<i>_run_script`, `a<i>_command`, `a<i>_devices`, `a<i>_alert`, `a<i>_failed`, `a<i>_failnotice_<n>` and (form only) `a<i>_notify`.
+- Step ids are `targets`, `a<i>_run_script`, `a<i>_command`, `a<i>_devices`, `a<i>_alert`, `a<i>_failed`, `a<i>_failnotice_<n>` and `a<i>_notify`. The converter also emits `a<i>_notify`, but with a `forEach` over the active devices (one notice per device, `convertAutomation.ts`); the form's `a<i>_notify` has no `forEach`. The recognizer tells them apart by that `forEach`, never by the id.
 - The chain set is `succeeded` under stop or notify and `dispatched` under continue.
 - The failure block is:
   - `a<i>_failed`: `resolve_targets` with `fromStep {stepId, set: 'failed'}` and `when: length(steps.<fleet>.output.failedDeviceIds) > 0`.
@@ -434,7 +446,7 @@ export function flowDocumentJsonSchema(): Record<string, unknown>; // z.toJSONSc
   - When a script step precedes it, the compiled message is the user's text, a blank line, and `Devices: {{steps.<lastScriptStepId>.output.succeededCount}} succeeded, {{steps.<lastScriptStepId>.output.failedCount}} failed.`
   - `decodeFlowForm` strips exactly that suffix.
 - A notify-only form emits no `targets` step.
-- `decodeFlowForm` sets `target` to `{ kind: 'target', target: { type: 'all' } }` when no step carries a selector, so the recompile is identical.
+- When no step carries a selector (a notify-only form), `decodeFlowForm` sets `target` from the trigger: `{ kind: 'trigger_device' }` for an event trigger, else `{ kind: 'target', target: { type: 'all' } }`. That matches what the form holds for each trigger (an event trigger always targets the triggering device), so both the document and the values round-trip.
 - Webhook `orgResolver` is carried as given. Whether it is required or refused for the owner is the API validator's call (`webhook_org_resolver_required` / `_not_allowed`).
 - `runAs` is `system` or `user` only (the built-in refuses `elevated`).
 
@@ -450,7 +462,7 @@ export function flowDocumentJsonSchema(): Record<string, unknown>; // z.toJSONSc
     - `compiled documents pass flowDocumentV1Schema and checkFlowStructure`;
     - `compile is deterministic` (same values, same JSON).
   - `recognize.test.ts`:
-    - `every form-built document is recognized and round-trips its values` (table over the compile cases);
+    - `every form-built document is recognized and round-trips its values` (table over the compile cases, including an event trigger with a notify-only action list and a schedule with a notify-only action list);
     - `custom timeoutSec is not form-shaped`;
     - `limits or notices are not form-shaped`;
     - `a when expression the form did not emit is not form-shaped`;
@@ -460,9 +472,10 @@ export function flowDocumentJsonSchema(): Record<string, unknown>; // z.toJSONSc
     - `an invalid document is invalid_document`;
     - `key order does not matter`.
   - `jsonSchema.test.ts`: `the JSON schema requires version, name, trigger and steps`.
+  - `equality.test.ts`: `structurallyEqual ignores key order and respects array order`; `sameFlowDocument treats a missing defaulted step field as equal to its default`; `sameFlowDocument is false for an invalid document`.
   - `emit.test.ts`: one test per emitter pinning the exact object (the values above).
 - [ ] **Step 2:** `cd packages/shared && npx vitest run src/flows/form`. Expected: FAIL (modules missing).
-- [ ] **Step 3: Implement.** The recognizer runs `normalizeFlowDocument` on the input, then `decodeFlowForm`, then `compileFlowForm`, then `normalizeFlowDocument` on the result, then a structural deep-equal. Write a local `structurallyEqual(a, b)`: plain objects key-order-insensitive, arrays ordered, primitives `===`. **Do not import `@breeze/shared/canonicalize`** (it pulls in `node:crypto`; the root barrel is bundled into the web).
+- [ ] **Step 3: Implement.** The recognizer runs `normalizeFlowDocument` on the input, then `decodeFlowForm`, then `compileFlowForm`, then `normalizeFlowDocument` on the result, then `structurallyEqual` from `equality.ts` (plain objects key-order-insensitive, arrays ordered, primitives `===`). Export `structurallyEqual` and `sameFlowDocument` from `form/index.ts`; W01e's editor uses `sameFlowDocument`. **Do not import `@breeze/shared/canonicalize`** (it pulls in `node:crypto`; the root barrel is bundled into the web).
 - [ ] **Step 4:** rerun. Expected: PASS. Shared typecheck `exit=0`.
 - [ ] **Step 5: Commit** `feat(shared): flow form compile, decode and whole-document recognizer (#<sub-issue>)`, **and push the branch** (W01e copies these files).
 
@@ -493,7 +506,7 @@ export function flowDocumentJsonSchema(): Record<string, unknown>; // z.toJSONSc
   - `an empty fleet output reports zero counts`;
   - `resolve_targets reports every resolved device as succeeded`.
 - [ ] **Step 2:** run the three test files. Expected: FAIL.
-- [ ] **Step 3:** set `succeededCount = succeededDeviceIds.length` and `failedCount = failedDeviceIds.length` in each builder.
+- [ ] **Step 3:** set `succeededCount = succeededDeviceIds.length` and `failedCount = failedDeviceIds.length` in each builder. Update the existing exact-equality pins on the whole output in `runScriptOnTargets.test.ts` (the `toEqual` on the completed outcome) and `resolveTargets.test.ts` (the `toEqual` on the resolved set); both files are A4's.
 - [ ] **Step 4:** rerun, plus `src/services/flows/conversion` and the golden test. Expected: PASS. Converter documents do not embed outputs, so the golden is unchanged.
 - [ ] **Step 5: Commit.**
 
@@ -507,7 +520,7 @@ export function flowDocumentJsonSchema(): Record<string, unknown>; // z.toJSONSc
 
 #### Task A6: Contracts and PR
 
-- [ ] Run the A commands above, plus `cd apps/api && npx vitest run src/__tests__/parkedFanout.contract.test.ts`. Discovery there is conditional: a file is listed only if it reads `devices` or carries a quick-support or hidden-org exclusion. No A file does, so it must stay green unchanged.
+- [ ] Run the A commands above (they include `src/browserSafeBarrel.test.ts`, which proves nothing reachable from the root barrel imports a Node builtin), plus `cd apps/api && npx vitest run src/__tests__/parkedFanout.contract.test.ts`. Discovery there is conditional: a file is listed only if it reads `devices` or carries a quick-support or hidden-org exclusion. No A file does, so it must stay green unchanged.
 - [ ] Open PR `feat(flows): shared flow-form core; converter emits through it (#<sub-issue>)`. The body states the golden-file evidence (no diff) and Decisions P2 and P4. Run one review round with Opus on A2 and A3. Post the summary comment.
 
 ---
@@ -531,7 +544,7 @@ export const flowDraftDeleteRequestSchema   // { expectedVersion: int ≥ 1 }, s
 export const flowDraftValidateRequestSchema // { document; ownerScope?; orgId?; flowId?: uuid }, strict
 ```
 
-Routes. The draft gate is `[requirePermission('automations', 'write')]` **without** `requireMfa()`, deliberately not the file's `requireAutomationWrite` alias. Register the routes before every `/:id` route.
+Routes. The draft gate is `requirePermission('automations', 'write')` **without** `requireMfa()`, deliberately not the file's `requireAutomationWrite` alias. Write it inline in each route call (`flowsRoutes.post('/', requirePermission('automations', 'write'), zValidator(…), …)`), never through a `const` array alias, so `aiGuardrails.routeBinding.contract.test.ts` can see it (Decision P20). Register the routes before every `/:id` route. Widen the file's `Status` type (`403 | 404 | 409 | 422 | 429` today) to include `400` and `201` where the new handlers need them.
 - `POST /` calls `saveDraftFlow(auth, body)` and returns `201 { flow, validation }`.
 - `PUT /:id` calls `saveDraftFlow(auth, { ...body, flowId })` and returns `200 { flow, validation }`.
 - Failure mapping, one table (a `DRAFT_STATUS` record like `ENABLE_STATUS`):
@@ -540,7 +553,7 @@ Routes. The draft gate is `[requirePermission('automations', 'write')]` **withou
   - `flow_not_draft` and `version_conflict` give 409.
   - `slug_unavailable` and `slug_conflict` give 409. `invalid_slug` gives 422.
   - `PARTNER_WIDE_WRITE_DENIED_MESSAGE` gives `403 { error: 'partner_wide_forbidden' }`.
-  - Any other owner-resolution message from `resolveFlowOwnerForCaller` (`services/flows/owner.ts`) gives `400 { error: 'owner_invalid', message }`, except an access-denied message, which gives 403. Pin each message the owner module emits.
+  - Any other owner-resolution message from `resolveFlowOwnerForCaller` (`services/flows/owner.ts`) gives `400 { error: 'owner_invalid', message }`, except an access-denied message, which gives `403 { error: 'owner_invalid', message }`. The access-denied messages are `'Cannot access another organization'` and `'Access denied to this organization'` (`services/aiToolWriteOrg.ts` `resolveWritableToolOrgId`) and `'Partner-wide flows require a partner-scoped caller'` (`owner.ts`). Every other message (`'orgId cannot be combined with ownerScope "partner"'`, `'Organization context required'`, `'orgId is required for this operation'`, the ambiguous-org message, `'Organization not found'`) is 400. Pin each message with a test; match on a shared constant where one exists rather than retyping the string.
 
 - [ ] **Step 0:** the baseline check.
 - [ ] **Step 1: Failing tests** (`flows.drafts.test.ts`; the `flows.test.ts` mocking pattern):
@@ -566,16 +579,24 @@ Routes. The draft gate is `[requirePermission('automations', 'write')]` **withou
 - Create `apps/api/src/services/flows/draftValidation.ts` and `draftValidation.test.ts`.
 - Modify `routes/flows.ts`.
 
-**Interfaces:** `validateFlowDraft(auth: AuthContext, req: { document: unknown; ownerScope?: 'organization'|'partner'; orgId?: string; flowId?: string }): Promise<{ ok: true; validation: FlowValidationResult } | { ok: false; error: 'flow_not_found' | 'owner_invalid'; message?: string }>`.
-- With `flowId`: read the row in the caller's context, take its owner from `ownerForFlowRow`, and apply `shadowPlaceholderAllowance` + `allowGeneratedScriptPlaceholders` exactly as `updateDraft` does in `services/flows/service.ts`.
+**Interfaces:** `validateFlowDraft(auth: AuthContext, req: { document: unknown; ownerScope?: 'organization'|'partner'; orgId?: string; flowId?: string }): Promise<{ ok: true; validation: FlowValidationResult } | { ok: false; error: 'flow_not_found' | 'owner_invalid'; message?: string; accessDenied?: boolean }>`.
+- With `flowId`: read the row in the caller's context. **Validate with a `flowId` applies the same reach rule as update**: when the row is partner-wide (`org_id` NULL) and the caller's scope is neither `partner` nor `system`, answer `flow_not_found`, before any owner lookup or catalog read (the rule `updateDraft` applies in `services/flows/service.ts`). Then take the owner from `ownerForFlowRow` and apply `shadowPlaceholderAllowance` + `allowGeneratedScriptPlaceholders` exactly as `updateDraft` does. `ownerScope` and `orgId` in the body are ignored when `flowId` is present.
 - Without it: `resolveFlowOwnerForCaller(…, 'read')`.
 - Writes nothing. Route gate: the router's `automations.read`.
+
+**Route response** (the same envelope as create and update):
+- Success: `200 { validation }`, whether or not the document is valid (`validation.valid` says which). A validate call is never a 422.
+- `flow_not_found`: `404 { error: 'flow_not_found' }`.
+- An owner-resolution message: `400 { error: 'owner_invalid', message }`, or `403 { error: 'owner_invalid', message }` for an access-denied message (the same message table as B1).
 
 - [ ] **Step 1: Failing tests:**
   - `validate with flowId answers what save would for a shadow draft` (a placeholder script id passes for a shadow conversion's flow and fails for an ordinary draft);
   - `validate writes nothing` (no insert or update called);
   - `an event trigger on a non-durable installation returns the event_dispatch_not_durable warning with pointer /trigger/event`;
-  - `an unknown flowId is 404`.
+  - `an unknown flowId is 404`;
+  - `validate with a flowId applies the same reach rule as update` (an org token with a partner-wide flow's id is 404 and no catalog read happens);
+  - `validate answers 200 { validation } for an invalid document`;
+  - `an access-denied owner message is 403 owner_invalid and any other is 400`.
 - [ ] **Steps 2–4:** implement, run, PASS. **Step 5:** commit.
 
 #### Task B3: `DELETE /flows/:id`
@@ -586,23 +607,23 @@ Routes. The draft gate is `[requirePermission('automations', 'write')]` **withou
 - Modify `routes/flows.ts`.
 - Modify `services/flows/versions.ts`, only to add `export` to the existing `partnerWideReach` function.
 
-**Interfaces:** `deleteDraftFlow(auth: AuthContext, flowId: string, expectedVersion: number): Promise<{ ok: true } | { ok: false; error: 'flow_not_found' | 'partner_wide_forbidden' | 'version_conflict' | 'flow_has_history'; conversionId?: string }>`.
+**Interfaces:** `deleteDraftFlow(auth: AuthContext, flowId: string, expectedVersion: number): Promise<{ ok: true } | { ok: false; error: 'flow_not_found' | 'partner_wide_forbidden' | 'version_conflict' | 'flow_has_history'; conversionId?: string; automationId?: string }>`. `conversionId` and `automationId` (the Job the conversion came from) are both set whenever a conversion of any state exists for the flow; the web links `/jobs#convert-<automationId>`.
 
 Order, all in the caller's transaction:
 1. `SELECT … FOR UPDATE` on the row. Under RLS this matches only a row the caller may update; none is `flow_not_found`.
 2. `partnerWideReach`. An org token on a partner-wide row is `flow_not_found`.
 3. Call `canManagePartnerWidePolicies(auth)` by name in this file, or `partner-wide-write-coverage.test.ts` fails: the file deletes from a partner-axis table.
 4. `expectedVersion` must equal `definition_version`.
-5. Status `draft`, `enabled_publication_seq` NULL, zero `flow_versions` rows and zero `flow_automation_conversions` rows of any state for the flow. Anything else is `flow_has_history`, with `conversionId` when a shadow conversion exists.
+5. Status `draft`, `enabled_publication_seq` NULL, zero `flow_versions` rows and zero `flow_automation_conversions` rows of any state for the flow. Anything else is `flow_has_history`, with `conversionId` and `automationId` when a conversion exists.
 6. Delete, then audit `flow.draft.delete`: same shape as `auditDraftSave`, never the definition.
 
-Route: `DELETE /:id` with `requirePermission('automations', 'delete'), requireMfa()` and the `flowDraftDeleteRequestSchema` body. Success is 204. Map 404, 403, 409 and 409 respectively.
+Route: `DELETE /:id` with `requirePermission('automations', 'delete'), requireMfa()` written inline and the `flowDraftDeleteRequestSchema` body. Success is 204 with no body. Map `flow_not_found` 404, `partner_wide_forbidden` 403, `version_conflict` 409 and `flow_has_history` 409; the 409 body for `flow_has_history` is `{ error: 'flow_has_history', conversionId?, automationId? }`.
 
 - [ ] **Step 1: Failing tests:**
   - Unit:
     - `delete of a never-published draft is 204 and audited`;
     - `a draft with a publication is 409 flow_has_history`;
-    - `a shadow conversion's draft is 409 flow_has_history with conversionId`;
+    - `a shadow conversion's draft is 409 flow_has_history with conversionId and automationId`;
     - `a disabled flow is 409 flow_has_history`;
     - `stale expectedVersion is 409`;
     - `automations.write without automations.delete is 403`;
@@ -640,15 +661,21 @@ Route: `DELETE /:id` with `requirePermission('automations', 'delete'), requireMf
 - Add `jobCounts: { notMoved }` beside `pagination` (Decision P6).
 - On the unrestricted path: one extra `count(*)` with the list's `whereCondition`, plus the class-S predicate and `converted_to_flow_id IS NULL`.
 - On the site-restricted path: count during the existing scan with the same predicate.
+- The early return for a partner caller with no accessible org and no partner-wide condition (`{ data: [], pagination }`) also carries `jobCounts: { notMoved: 0 }`.
+- The class-S predicate is the one `classify.ts` uses: `managed_by_monitor_id` NULL, `managed_by_agent_id` NULL, and the trigger's `filter` object has no `_policyWorkflow` key (`isPolicyWorkflowTrigger`), expressed in SQL on the `trigger` jsonb.
 
 - [ ] **Step 1: Failing tests:**
   - `GET /automations reports jobCounts.notMoved for standalone unswitched rows only` (monitor, agent, policy-workflow and switched rows are excluded);
-  - `a site-limited caller's notMoved counts only rows within their sites`.
+  - `a site-limited caller's notMoved counts only rows within their sites`;
+  - `a partner caller with no reachable org gets jobCounts.notMoved 0`.
 - [ ] **Steps 2–4:** implement, run, PASS. **Step 5:** commit.
 
 #### Task B6: Contracts and PR
 
 - [ ] Add binding rows to `services/aiGuardrails.routeBinding.contract.test.ts` (Decision P8): `draft_flow` ↔ `flows.ts` `post /` and `put /:id`; `validate_flow` ↔ `flows.ts` `post /validate`.
+  - The binder adds the router-level `requirePermission('automations', 'read')` of `flows.ts` to each route's set, so `POST /` and `PUT /:id` require `automations:read` and `automations:write`. Add `draft_flow: [{ resource: 'automations', action: 'read' }]` to `TOOL_EXTRA_PERMISSIONS` in `services/aiGuardrails.ts`, with a comment naming this binding (Decision P20). Write the rows first and watch the `draft_flow` rows fail on `automations:read`, then add the entry. Never weaken the expectation and never change the route.
+  - `validate_flow` needs no change: its route requires only the router-level `automations:read`, which the tool already requires.
+  - Add a test in `services/aiGuardrails.test.ts`: `draft_flow requires automations read and write`.
 - [ ] Add a pin in `flows.drafts.test.ts`: `draft_flow is not in MFA_GATED_TOOL_ACTIONS and POST/PUT /flows carry no requireMfa`.
 - [ ] Run in `apps/api`, each `> 0` tests:
   - `src/__tests__/partner-wide-write-coverage.test.ts`
@@ -659,13 +686,15 @@ Route: `DELETE /:id` with `requirePermission('automations', 'delete'), requireMf
   - `src/__tests__/site-ceiling-write-coverage.test.ts`
   - `src/services/aiToolMfaGate.routeParity.contract.test.ts`
   - `src/services/aiGuardrails.routeBinding.contract.test.ts`
+  - `src/services/aiGuardrails.test.ts`
+  - `src/services/aiToolPermissionsCatalogParity.contract.test.ts` (every pair in `TOOL_EXTRA_PERMISSIONS` must be in the permission catalog)
   - `src/services/aiTools.userOwnedRelease.contract.test.ts` (keyed by `file:line`; it has no `aiToolsFlows.ts` entry today, but it scans every `aiTools*.ts` module, so run it after the edit and re-key, never delete, if a key moves)
   - `src/services/aiTools.descriptionBudget.contract.test.ts`
   - `src/services/aiToolIndex.test.ts`
 - [ ] Run `pnpm --filter=@breeze/api test:site-scope-coverage`. This is its own CI step. The scanner matches `:deviceId` routes only, so it stays green.
 - [ ] Integration: `flowDraftRoutes`, `flowsPartnerRls`, `flowToolsRls`, plus `DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage`. Tear down afterwards.
 - [ ] Both typechecks.
-- [ ] Open PR `feat(flows): REST draft create, update, delete and validate (#<sub-issue>)`. The body lists P6, P7 and P8 and the status table. One Opus review round, then the summary comment.
+- [ ] Open PR `feat(flows): REST draft create, update, delete and validate (#<sub-issue>)`. The body lists P6, P7, P8 and P20 (with the seeded-role check result) and the status table. One Opus review round, then the summary comment.
 
 ---
 
@@ -679,21 +708,22 @@ Route: `DELETE /:id` with `requirePermission('automations', 'delete'), requireMf
 
 **Interfaces:**
 - `parseFleetMaxTargets(raw: string | undefined): number | null` (moved from `SwitchDialog`'s `parseMaxTargets`).
-- `FleetMaxTargetsField({ stepId, value, onChange, partnerWide, testIdPrefix }: { stepId: string; value: string; onChange: (v: string) => void; partnerWide: boolean; testIdPrefix: string })`.
+- `FleetMaxTargetsField({ stepId, value, onChange, partnerWide, testIdPrefix, perOrgTestId }: { stepId: string; value: string; onChange: (v: string) => void; partnerWide: boolean; testIdPrefix: string; perOrgTestId: string })`.
 - It renders the number input, the invalid message, and the live-membership, frozen-device and per-org copy.
+- Test ids: the input is `${testIdPrefix}-${stepId}`, the invalid message `${testIdPrefix}-invalid-${stepId}`, and the per-org copy `perOrgTestId` as given. `SwitchDialog` passes `testIdPrefix: 'conversion-switch-maxtargets'` and `perOrgTestId: 'conversion-switch-perorg'`, which reproduces its current ids exactly (`conversion-switch-maxtargets-<id>`, `conversion-switch-maxtargets-invalid-<id>`, `conversion-switch-perorg`). `FlowEnableDialog` passes `testIdPrefix: 'flow-enable-maxtargets'` and `perOrgTestId: 'flow-enable-perorg-<stepId>'`, so the E8a page object types into `flow-enable-maxtargets-<stepId>`.
 - It **reuses the existing keys** `flows:conversion.switch.{maxTargets,maxTargetsInvalid,liveMembership,frozenDevices,perOrgMultiplies}`. No new locale key.
 
 - [ ] **Step 1: Failing tests:**
   - `FleetMaxTargetsField marks 0 and 501 invalid and accepts 1 and 500`;
   - `per-org copy shows only for partner-wide`.
-  - `SwitchDialog.test.tsx` keeps passing with its `conversion-switch-maxtargets-<id>` test ids, now passed as `testIdPrefix`.
+  - `SwitchDialog.test.tsx` keeps passing unchanged with its `conversion-switch-maxtargets-<id>` and `conversion-switch-perorg` test ids, now produced through `testIdPrefix` and `perOrgTestId`.
 - [ ] **Steps 2–4:** implement, run, PASS. **Step 5:** commit.
 
 #### Task C2: `FlowEnableDialog` collects `fleetMaxTargets`; webhook flows offer no pre-approval
 
 **Files:** Modify `apps/web/src/components/flows/FlowEnableDialog.tsx` and `.test.tsx`.
 
-- For a ticked, eligible step whose `validation.steps[].tool` is `run_script_on_targets`, render `FleetMaxTargetsField` (`testIdPrefix: 'flow-enable-maxtargets'`, `partnerWide: flow.ownerScope === 'partner'`).
+- For a ticked, eligible step whose `validation.steps[].tool` is `run_script_on_targets`, render `FleetMaxTargetsField` (`testIdPrefix: 'flow-enable-maxtargets'`, `perOrgTestId: 'flow-enable-perorg-<stepId>'`, `partnerWide: flow.ownerScope === 'partner'`).
 - Confirm is disabled until every ticked fleet step has a valid value.
 - Submit sends `fleetMaxTargets: { [stepId]: n }` for ticked fleet steps only, beside `preApprovedStepIds`.
 - When `flow.definition.trigger.type === 'webhook'`:
@@ -716,7 +746,7 @@ Route: `DELETE /:id` with `requirePermission('automations', 'delete'), requireMf
 #### Task D1: One sidebar entry
 
 **Files:**
-- Modify `apps/web/src/components/layout/Sidebar.tsx` and `Sidebar.flows.test.tsx`.
+- Modify `apps/web/src/components/layout/Sidebar.tsx`, `Sidebar.flows.test.tsx` and `Sidebar.nav.test.tsx` (its `exposes Jobs at top level right after Scripts` test pins the entry this task replaces; rewrite it to pin the Automations entry in the same position), plus any other `Sidebar.*.test.tsx` the change turns red.
 - Modify `lib/paletteIndex.ts` and its test.
 
 **Behaviour:**
@@ -734,7 +764,8 @@ Route: `DELETE /:id` with `requirePermission('automations', 'delete'), requireMf
   - `no Jobs or Flows entry remains`;
   - `without automations.read there is no entry`.
   - The Preview tests are moved or rewritten per Q1.
-- [ ] **Steps 2–4:** implement, run plus `Sidebar.featuregate`, `Sidebar.collapsedrail` and `paletteIndex` tests, PASS. **Step 5:** commit.
+  - In `Sidebar.nav.test.tsx`: `exposes Automations at top level right after Scripts` replaces the Jobs test.
+- [ ] **Steps 2–4:** implement, run every `Sidebar.*.test.tsx` listed in the W01d commands plus `paletteIndex.test.ts`, PASS. **Step 5:** commit.
 
 #### Task D2: The path tab strip on `/flows` and `/jobs`
 
@@ -746,7 +777,7 @@ Route: `DELETE /:id` with `requirePermission('automations', 'delete'), requireMf
 **Behaviour:**
 - `AutomationsTabStrip({ currentPath })` renders `<a href>` tabs with `data-testid="automations-tab-flows"` and `"automations-tab-jobs"`, labelled `nav.flows` and `nav.jobs` (existing keys).
 - The Flows tab is first, and is shown only when the gate is enabled.
-- The Jobs tab label carries the count from `GET /automations?limit=1` → `jobCounts.notMoved`, when that field exists. It is always visible in W1 (spec §3.3: hidden only after R3).
+- The Jobs tab label carries the count from `GET /automations?limit=1` → `jobCounts.notMoved`, when that field exists. Declare the field as a local optional type (`jobCounts?: { notMoved: number }`); do not import a shared DTO, so W01d compiles and passes before W01b merges. It is always visible in W1 (spec §3.3: hidden only after R3).
 - Per the Q1 default, the Flows tab carries `nav.previewTag` (`data-testid="automations-tab-preview"`).
 - `aria-label` is `nav.automationsSections` (new).
 - The strip sits above the page island in both `.astro` files. It is not inside `FlowsPage.tsx` or `AutomationsPage.tsx`; W01e owns `FlowsPage.tsx`.
@@ -784,18 +815,22 @@ Route: `DELETE /:id` with `requirePermission('automations', 'delete'), requireMf
 **Interfaces:**
 - `createFlowDraft(body: { document: FlowDocumentV1 | Record<string, unknown>; ownerScope?: 'organization'|'partner'; orgId?: string }): Promise<{ flow: FlowDetailDto; validation: FlowValidationResult }>`
 - `updateFlowDraft(flowId: string, body: { document; expectedVersion: number })`, same return.
-- `deleteFlowDraft(flowId: string, expectedVersion: number): Promise<void>`
-- `validateFlowDraftDocument(body: { document; ownerScope?; orgId?; flowId? }): Promise<FlowValidationResult>`
+- `deleteFlowDraft(flowId: string, expectedVersion: number): Promise<void>` (DELETE with a JSON body `{ expectedVersion }`; 204 on success)
+- `validateFlowDraftDocument(body: { document; ownerScope?; orgId?; flowId? }): Promise<FlowValidationResult>`, which unwraps the route's `200 { validation }` body and returns `validation`. A 404 (`flow_not_found`) or a 400/403 `owner_invalid` throws an error carrying the status and body, for the caller to render inline.
 
 Rules:
-- The three mutations go through `runAction`. A 422 (`invalid`), a 409 (`version_conflict`, `flow_not_draft`, `flow_has_history`) and `partner_wide_forbidden` are suppressed from the toast and rendered inline (the `ENABLE_INLINE_CODES` pattern).
+- Declare these request types in `api.ts`. Do not import W01b's `flowDrafts` schemas from `@breeze/shared`; W01e must compile before W01b merges.
+- The three mutations go through `runAction`. A 422 (`invalid`), a 409 (`version_conflict`, `flow_not_draft`, `flow_has_history`) and `partner_wide_forbidden` are suppressed from the toast and rendered inline (the `ENABLE_INLINE_CODES` pattern). The `flow_has_history` body carries `conversionId` and `automationId` when a conversion exists.
+- A 422 body is read defensively: `invalid` carries `validation`, but `invalid_slug` (also 422) carries none.
 - `validateFlowDraftDocument` uses plain `fetchWithAuth` with a `// runaction-exempt: read-only validation, inline feedback, no state change` marker.
 
 - [ ] **Step 0:** the baseline check. Copy W01a's `packages/shared/src/flows/form/**` and its `src/flows/index.ts` line verbatim if W01a has not merged.
 - [ ] **Step 1: Failing tests:**
   - `create, update and delete go through runAction`;
   - `a 422 is not toasted and carries validation`;
-  - `validate sends flowId and returns the validation`;
+  - `validate sends flowId and returns the validation` (unwrapped from `{ validation }`);
+  - `a validate 404 or owner_invalid throws with the status and body`;
+  - `a delete 409 flow_has_history carries automationId`;
   - `no-silent-mutations` stays green.
 - [ ] **Steps 2–5:** implement, run, PASS, commit.
 
@@ -814,11 +849,12 @@ Rules:
   - a notice (`flow-editor-not-form-shaped`) says the form cannot show the whole document.
 - **Save.**
   - New: `createFlowDraft`, then navigate to `/flows/<id>/edit`.
-  - Existing: `updateFlowDraft` with `expectedVersion: flow.definitionVersion`.
-  - **No PUT for an unchanged document**: compare structurally against the loaded definition (P17).
-- **Save and enable.** Save (skipped when unchanged), then open `FlowEnableDialog` (from W01c). On success:
-  - when `result.webhookSecretInvalidated === true`, stay and show `flows:enable.webhookSecretInvalidated` with a link to `/flows/<id>#webhook`;
+  - Existing: `updateFlowDraft` with `expectedVersion: flow.definitionVersion`; after a save, hold the returned flow's `definitionVersion` for the next save.
+  - **No PUT for an unchanged document**: `sameFlowDocument(current, loadedDefinition)` from the shared form module, which normalizes both sides first (P17).
+- **Save and enable** (not offered for a webhook-triggered flow, P21). Save (skipped when unchanged), then **re-fetch the flow with `getFlow`** and open `FlowEnableDialog` (from W01c) with the re-fetched `flow` and `validation`. The save response's flow carries an empty `preApprovalEligibility` (only `getFlow` computes it), and the dialog disables every step whose eligibility is missing, so opening it on the save response would make pre-approval impossible. On success:
+  - when `result.webhookSecretInvalidated === true` (not expected from this path, P17), stay and show `flows:enable.webhookSecretInvalidated` with a link to `/flows/<id>#webhook`;
   - otherwise navigate to `/flows/<id>`.
+- **Webhook flows** (P21): Save only. After a successful save, show `flow-editor-webhook-next`, a notice linking to `/flows/<id>#webhook` to create the secret and enable there.
 - **Status.**
   - Enabled: the editor is read-only, and **Disable and edit** opens a `ConfirmDialog` that says disabling cancels queued and waiting runs and pending approvals, and stops running runs at their next checkpoint. On confirm it calls `disableFlow`, then reloads.
   - `draft`, `disabled`, `paused`: editable.
@@ -837,8 +873,10 @@ Rules:
   - `the owner selector shows only for partner-wide-capable users and only on create`;
   - `the tab follows the hash`;
   - `Save and enable with no change sends no PUT`;
-  - `an enable that clears the webhook secret stays on the editor with the notice and a link to the webhook tab`;
-  - `an enable that keeps the secret navigates to the flow`.
+  - `Save and enable re-fetches the flow before opening the enable dialog` (the dialog receives `getFlow`'s eligibility, not the save response's);
+  - `a webhook flow offers Save only and links to the webhook tab after saving`;
+  - `an enable result that reports a cleared webhook secret stays on the editor with the notice and a link to the webhook tab`;
+  - `a successful enable navigates to the flow`.
 - [ ] **Steps 2–5:** implement, run, PASS, commit.
 
 #### Task E3: Form sections
@@ -892,7 +930,7 @@ Rules:
 
 - **`FlowDetailPage`:**
   - **Edit** links `/flows/<id>/edit` when `canWrite` and the flow is editable.
-  - **Delete draft** shows when `status === 'draft'`, `enabledPublicationSeq === null` and `convertedFrom === null`. It needs `can('automations', 'delete')`, confirms, then calls `deleteFlowDraft`. A 409 `flow_has_history` renders inline, linking `/jobs#convert-<automationId>` when a conversion exists.
+  - **Delete draft** shows when `status === 'draft'`, `enabledPublicationSeq === null` and `convertedFrom === null`. It needs `can('automations', 'delete')`, confirms, then calls `deleteFlowDraft`. A 409 `flow_has_history` renders inline, linking `/jobs#convert-<automationId>` with the `automationId` from the 409 body when it is present (the page's own `convertedFrom` is null whenever Delete was offered, so it cannot supply the id).
   - For a partner-wide flow viewed by an organization-scoped user, Edit and Delete are hidden.
 - **`FlowsPage`:**
   - A **New automation** button (`data-testid="flows-new"`, label `scripts:automationsPage.actions.new`, an existing key) links `/flows/new` when `canWrite`.
@@ -903,7 +941,7 @@ Rules:
   - `Edit shows for an editable flow and not for an enabled one`;
   - `Delete draft shows only for a never-published, never-converted draft`;
   - `an org-scoped user sees no Edit or Delete on a partner-wide flow`;
-  - `flow_has_history renders inline with the conversion link`;
+  - `flow_has_history renders inline with the conversion link built from the 409 body's automationId`;
   - `New automation links /flows/new with write access only`.
   - The existing `FlowsPage.test.tsx` empty-state assertions are updated to the new copy.
 - [ ] **Steps 2–5:** implement, run, PASS, commit.
@@ -920,7 +958,7 @@ Rules:
 
 - [ ] Use the `update-breeze-docs` skill.
   - `reference/api.mdx`: a "Flows" table with the four routes, their permissions, MFA on delete only, the status codes, and the `expectedVersion` rule.
-  - `features/flows.mdx`: "Building a flow by hand" (form, Document tab, round trip, Save and enable with `maxTargets`, Disable and edit, Delete draft).
+  - `features/flows.mdx`: "Building a flow by hand" (form, Document tab, round trip, Save and enable with `maxTargets`, webhook flows saved in the editor and enabled from the flow's Webhook tab, Disable and edit, Delete draft).
   - `features/automations.mdx`: one "Automations" entry; the `/flows` and `/jobs` tabs; where `/automations` goes.
 - [ ] Run `npx tsx scripts/build-docs-index.ts`, then `cd apps/docs && pnpm exec astro check` (0 errors), then `cd apps/api && npx vitest run src/services/aiToolsDocs.test.ts`.
 - [ ] Amend the Flows spec. Add a dated **Amendment (Flows completion plan, 2026-11-21)** under the §3 canvas row and in §6.8: humans may author flows through a form and a document editor; a canvas stays a non-goal.
@@ -934,7 +972,7 @@ Rules:
   - enable it with `maxTargets`;
   - open a non-form document read-only;
   - the path tabs;
-  - `/automations` (Flows on).
+  - the redirects that exist after W1, on one stack with Flows on: `/automations` lands on `/flows`, `/automations/new` lands on `/jobs/new`, and `/automations/<id>` lands on `/jobs/<id>` (a seeded Job's id). The Flows-off branch is pinned by the W01d component tests, not here (Decision P22).
 - [ ] **Wave verification**, after W01a–W01d have merged and W01e is rebased on `main`:
   - Run the full W1 test commands for all five parts on the rebased branch.
   - Run both typechecks and the API contract batch from B6.
@@ -986,7 +1024,7 @@ Spec §3.5 and §8 row W2. W2 starts after W1 has merged; W02b needs W1 deployed
 - Runs only on the owner's separate go-ahead, after a release that includes W02a is deployed to both hosted installations.
   - The CLI's own invocation is in its header: `cd apps/api && DATABASE_URL=... npx tsx scripts/automationConversionCensus.ts`.
   - How to run it against a hosted installation (which container or host, which credentials) is the operator's call under `docs/agents/merge-and-deploy.md`. This plan has **not checked** that procedure.
-- **Only the printed JSON aggregates leave the host.** Post them in a comment on the feature issue, one per installation, labelled only "US" and "EU". Never post them to the repo.
+- **Only the printed JSON aggregates leave the host.** Post them in a comment on the feature issue, one per installation, labelled only "hosted installation 1" and "hosted installation 2" (which is which stays in the operator's private notes, never on the issue). Never post them to the repo.
 - Record each of the spec §3.5 live checks 1–8 as pass or fail in a feature-issue comment. Screenshots stay local. A failed check opens a bug issue before W3 is dispatched.
 - **Decision inputs written in that comment, for the owner:**
   - OD5: `webhookScriptJobs`, `approval_each_run`.
@@ -1291,7 +1329,7 @@ Each adopted item's own plan defines its parts, models, commands and migration s
   - §8 order is unchanged.
   - §3.7 needs no task.
 - **Step scan.** Every W1 step names files, signatures, the values the spec pins and its test names. W2 and W3 are at task level, W3a is a placeholder, and W4 and W5 reference the W06 sections by name.
-- **Type consistency.** The same names are used everywhere they appear: `compileFlowForm`, `decodeFlowForm`, `recognizeFlowForm`, `normalizeFlowDocument`, `flowDocumentJsonSchema`, `FlowFormValues`, `emitRunScriptStep`, `emitDeviceItems`, `emitCreateAlertStep`, `emitFailureNoticeSteps`, `validateFlowDraft`, `deleteDraftFlow`, `createFlowDraft`, `updateFlowDraft`, `deleteFlowDraft`, `validateFlowDraftDocument`, `FleetMaxTargetsField`, `parseFleetMaxTargets`, `createRefusalFor`, `jobCounts.notMoved`.
+- **Type consistency.** The same names are used everywhere they appear: `compileFlowForm`, `decodeFlowForm`, `recognizeFlowForm`, `normalizeFlowDocument`, `structurallyEqual`, `sameFlowDocument`, `flowDocumentJsonSchema`, `FlowFormValues`, `emitRunScriptStep`, `emitDeviceItems`, `emitCreateAlertStep`, `emitFailureNoticeSteps`, `validateFlowDraft`, `deleteDraftFlow`, `createFlowDraft`, `updateFlowDraft`, `deleteFlowDraft`, `validateFlowDraftDocument`, `FleetMaxTargetsField`, `parseFleetMaxTargets`, `createRefusalFor`, `jobCounts.notMoved`.
 - **Review Focus.** Each of the five has a named test in its owning task.
 - **Proportion.** Code blocks are limited to the W01a and W01b interfaces, which later parts consume verbatim.
 
@@ -1319,7 +1357,7 @@ These are product or UX calls the spec does not settle. Each part that depends o
    - **(a) Bind the triggering device for every listed event (converter parity).** Pro: one rule, matches legacy Jobs. Con: a run with no device fails visibly.
    - **(b) Bind the device only for events that always carry one, and offer the picker for the rest.** Pro: no failing runs. Con: needs a maintained list of device-bearing events, and differs from converted Jobs.
    - **Recommend (a) for W1**, with a help line under the event picker that says the run needs the event to name a device. The plan is written to (a).
-6. **Should "Disable and edit" warn up front, for a webhook flow, that re-enabling after an edit clears the webhook secret?** By design (#10270), a secret minted against an older draft does not survive publishing an edited one, so the sender must get a new secret. The plan already shows the existing notice after enable (P17).
+6. **Should "Disable and edit" warn up front, for a webhook flow, that re-enabling after an edit clears the webhook secret?** By design (#10270), a secret minted against an older draft does not survive publishing an edited one, so the sender must get a new secret. Webhook flows are enabled from the flow page (P21), which already shows the existing notice after an enable that clears the secret (P17).
    - **(a) Add one sentence to the confirm for webhook flows.** Pro: the person learns before disabling a live integration. Con: one more locale key.
    - **(b) Notice after enable only.** Pro: no new copy. Con: the person finds out after the integration is already refusing requests.
    - **Recommend (a).** W01e is written to (b) until you answer; (a) adds one key in E6.
