@@ -33,6 +33,8 @@
     "jobs": "Tâches",
     "flows": "Flux",
     "previewTag": "Préversion",
+    "automations": "Automatisations",
+    "automationsSections": "Sections des automatisations",
     "monitoring": "Surveillance",
     "networkDiscovery": "Découverte du réseau",
     "edr": "EDR",

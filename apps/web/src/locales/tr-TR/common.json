@@ -33,6 +33,8 @@
     "jobs": "İşler",
     "flows": "Akışlar",
     "previewTag": "Önizleme",
+    "automations": "Otomasyonlar",
+    "automationsSections": "Otomasyon bölümleri",
     "monitoring": "İzleme",
     "networkDiscovery": "Ağ Keşfi",
     "edr": "EDR",

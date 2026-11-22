@@ -1,7 +1,7 @@
 import { navSections, topLevelNav } from '../components/layout/Sidebar';
 import { ALL_TABS } from '../components/settings/partnerSettings/tabRegistry';
 import { SETTINGS_CATALOG } from './settingsCatalog';
-import { isNavGateVisible, type NavGateContext } from './navGates';
+import { isNavGateVisible, navItemHref, type NavGateContext } from './navGates';
 import type { SettingsTranslate } from './settingsSearch';
 
 /**
@@ -135,9 +135,16 @@ export function searchNavPages(
       if (sectionGate && !isNavGateVisible(sectionGate, ctx)) continue;
       if (!isNavGateVisible(item, ctx) || seen.has(item.href)) continue;
       const title = translate(item.labelKey ?? '', item.name);
-      if (matches(needle, title, item.name, sectionLabel, NAV_KEYWORDS[item.href])) {
+      const href = navItemHref(item, ctx.flowsEnabled);
+      // The one Automations entry answers to both the Jobs and the Flows
+      // synonyms (Flows' only while Flows is on).
+      const keywords = [
+        ...(NAV_KEYWORDS[item.href] ?? []),
+        ...(href === item.hrefWhenFlows ? NAV_KEYWORDS[href] ?? [] : []),
+      ];
+      if (matches(needle, title, item.name, sectionLabel, keywords)) {
         seen.add(item.href);
-        hits.push({ id: item.href, title, description: sectionLabel ?? '', href: item.href });
+        hits.push({ id: href, title, description: sectionLabel ?? '', href });
       }
     }
   };

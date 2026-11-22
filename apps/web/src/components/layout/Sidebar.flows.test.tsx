@@ -1,8 +1,7 @@
 /**
- * Tool catalog W3 (#5218) — the Flows nav entry is gated on the SERVER flag
- * (`FLOWS_ENABLED` off makes every `/flows` route answer 404) and sits
- * directly after Jobs. Default CLOSED: an unreachable or older `/config`
- * hides it.
+ * One "Automations" nav entry (#12437). It links `/flows` only while the SERVER
+ * flag is on (`FLOWS_ENABLED` off makes every `/flows` route answer 404), else
+ * `/jobs`. Default CLOSED: an unreachable or older `/config` links `/jobs`.
  */
 import { render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -70,74 +69,100 @@ beforeEach(() => {
 
 afterEach(() => vi.clearAllMocks());
 
-describe('Sidebar — Flows server gate', () => {
-  it('shows the nav item when /config reports features.flows true', async () => {
-    mockConfig({ features: { flows: true } });
-    const { container } = render(<Sidebar currentPath="/flows" />);
-    await waitFor(() =>
-      expect(container.querySelector('a[href="/flows"]')).not.toBeNull(),
-    );
-  });
+describe('Sidebar — one Automations entry (Flows server gate)', () => {
+  const hrefsOf = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('a')).map((a) => a.getAttribute('href'));
+  const automationsLink = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('a')).find((a) => a.textContent?.includes('Automations')) ?? null;
 
-  it('places Flows directly after Jobs', async () => {
-    mockConfig({ features: { flows: true } });
-    const { container } = render(<Sidebar currentPath="/flows" />);
-    await waitFor(() => expect(container.querySelector('a[href="/flows"]')).not.toBeNull());
-    const hrefs = Array.from(container.querySelectorAll('a')).map((a) => a.getAttribute('href'));
-    expect(hrefs.indexOf('/flows')).toBe(hrefs.indexOf('/jobs') + 1);
-  });
-
-  // #12310: Flows is in the nav by default, so the entry says it is a preview.
-  it('tags Flows as a preview, and no other entry', async () => {
+  it('one Automations entry links /flows when Flows is on', async () => {
     mockConfig({ features: { flows: true } });
     const { container } = render(<Sidebar currentPath="/" />);
     await waitFor(() => expect(container.querySelector('a[href="/flows"]')).not.toBeNull());
-    const tags = Array.from(container.querySelectorAll('[data-testid="nav-preview-tag"]'));
-    expect(tags).toHaveLength(1);
-    expect(tags[0]!.closest('a')?.getAttribute('href')).toBe('/flows');
-    expect(tags[0]!.textContent).toBe('Preview');
-    expect(container.querySelector('a[href="/jobs"] [data-testid="nav-preview-tag"]')).toBeNull();
+    expect(automationsLink(container)?.getAttribute('href')).toBe('/flows');
   });
 
-  // The icon rail has no room for the tag, so the tooltip and the link's
-  // accessible name carry it instead.
-  it('on the collapsed rail, names Flows as a preview in its tooltip and label', async () => {
+  it('it links /jobs when Flows is off', async () => {
+    mockConfig({ features: { flows: false } });
+    const { container } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(automationsLink(container)).not.toBeNull());
+    expect(automationsLink(container)?.getAttribute('href')).toBe('/jobs');
+  });
+
+  it('it links /jobs when /config is unreachable (fails closed)', async () => {
+    mockConfig({}, false);
+    const { container } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(automationsLink(container)).not.toBeNull());
+    expect(automationsLink(container)?.getAttribute('href')).toBe('/jobs');
+    expect(container.querySelector('a[href="/flows"]')).toBeNull();
+  });
+
+  it.each([
+    ['/jobs', true],
+    ['/jobs', false],
+    ['/jobs/new', false],
+    ['/flows', true],
+    ['/flows/runs/abc', true],
+    ['/flows/abc/edit', true],
+  ])('it is active on %s (Flows on: %s)', async (path, flowsOn) => {
+    mockConfig({ features: { flows: flowsOn } });
+    const { container } = render(<Sidebar currentPath={path} />);
+    await waitFor(() => expect(automationsLink(container)).not.toBeNull());
+    await waitFor(() =>
+      expect(automationsLink(container)?.getAttribute('href')).toBe(flowsOn ? '/flows' : '/jobs'),
+    );
+    expect(automationsLink(container)?.getAttribute('aria-current')).toBe('page');
+  });
+
+  it('is not active on an unrelated page', async () => {
+    mockConfig({ features: { flows: true } });
+    const { container } = render(<Sidebar currentPath="/scripts" />);
+    await waitFor(() => expect(automationsLink(container)).not.toBeNull());
+    expect(automationsLink(container)?.getAttribute('aria-current')).toBeNull();
+  });
+
+  it('no Jobs or Flows entry remains', async () => {
+    mockConfig({ features: { flows: true } });
+    const { container } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(container.querySelector('a[href="/flows"]')).not.toBeNull());
+    const names = Array.from(container.querySelectorAll('a')).map((a) => a.textContent?.trim());
+    expect(names).not.toContain('Jobs');
+    expect(names).not.toContain('Flows');
+    expect(names).not.toContain('Flows Preview');
+    expect(container.querySelector('a[href="/jobs"]')).toBeNull();
+    expect(hrefsOf(container).filter((h) => h === '/flows' || h === '/jobs')).toHaveLength(1);
+  });
+
+  // Q1 default (option a): the Preview tag moves onto the Flows tab.
+  it('carries no Preview tag on the nav entry', async () => {
+    mockConfig({ features: { flows: true } });
+    const { container } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(container.querySelector('a[href="/flows"]')).not.toBeNull());
+    expect(container.querySelector('[data-testid="nav-preview-tag"]')).toBeNull();
+  });
+
+  it('names the entry on the collapsed rail', async () => {
     localStorage.setItem('sidebar-mode', 'collapsed');
     mockConfig({ features: { flows: true } });
     const { container } = render(<Sidebar currentPath="/" />);
     await waitFor(() => expect(container.querySelector('a[href="/flows"]')).not.toBeNull());
-    const flows = container.querySelector('a[href="/flows"]')!;
-    expect(flows.getAttribute('title')).toBe('Flows (Preview)');
-    expect(flows.textContent).toBe('Flows (Preview)');
-    expect(container.querySelector('[data-testid="nav-preview-tag"]')).toBeNull();
-    expect(container.querySelector('a[href="/jobs"]')!.getAttribute('title')).toBe('Jobs');
+    const link = container.querySelector('a[href="/flows"]')!;
+    expect(link.getAttribute('title')).toBe('Automations');
+    expect(link.textContent).toBe('Automations');
   });
 
-  it('hides the nav item when the flag is false', async () => {
-    mockConfig({ features: { flows: false } });
-    const { container } = render(<Sidebar currentPath="/flows" />);
-    // Wait for the sidebar to be rendered at all before asserting an absence.
-    await waitFor(() => expect(container.querySelector('a[href="/"]')).not.toBeNull());
-    expect(container.querySelector('a[href="/flows"]')).toBeNull();
-  });
-
-  it('hides the nav item from a user without automations:read even when the flag is on', async () => {
+  it('without automations.read there is no entry', async () => {
     mockConfig({ features: { flows: true } });
     state.user.permissions = [{ resource: 'devices', action: 'read' }];
     try {
-      const { container } = render(<Sidebar currentPath="/flows" />);
+      const { container } = render(<Sidebar currentPath="/" />);
       await waitFor(() => expect(container.querySelector('a[href="/"]')).not.toBeNull());
       expect(container.querySelector('a[href="/flows"]')).toBeNull();
+      expect(container.querySelector('a[href="/jobs"]')).toBeNull();
+      expect(automationsLink(container)).toBeNull();
     } finally {
       state.user.permissions = [{ resource: 'automations', action: 'read' }];
     }
-  });
-
-  it('hides the nav item when /config is unreachable (fails closed)', async () => {
-    mockConfig({}, false);
-    const { container } = render(<Sidebar currentPath="/flows" />);
-    await waitFor(() => expect(container.querySelector('a[href="/"]')).not.toBeNull());
-    expect(container.querySelector('a[href="/flows"]')).toBeNull();
   });
 });
 
