@@ -435,6 +435,18 @@ describe('createActionIntent — script_reviewer autonomy (#5612 W04)', () => {
     expect(snap.approvalRequestIds.length).toBeGreaterThan(0);
   });
 
+  it.each([
+    ['ticket autonomy', { autonomy: { kind: 'ticket_autonomy' } }],
+    ['plan approval', { planApproval: { approvalId: 'p1', ordinal: 0 } }],
+    ['task context', { task: { taskId: 't1', taskStepKey: 's', operationKey: 'o', attemptOrdinal: 0 } }],
+  ])('an MCP-filed proposal run carrying %s is refused before anything is written', async (_label, extra) => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    await expect(createActionIntent(makeUserAuth(), proposalRunInput({ source: 'mcp_api', ...(extra as object) })))
+      .rejects.toMatchObject({ code: 'mcp_proposal_autonomy_not_allowed' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+    expect(scriptLaneState.evaluateScriptReviewerAutonomy).not.toHaveBeenCalled();
+  });
+
   it('a missing proposal is a proposal_not_runnable breadcrumb and the evaluator is never called', async () => {
     dbState.insertActionIntentsResults.push(echoInsertedIntent());
     scriptLaneState.loadProposalForRelease.mockResolvedValue(null as never);

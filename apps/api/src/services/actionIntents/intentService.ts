@@ -1404,6 +1404,22 @@ export async function createActionIntent(
   // outright rather than recorded as whatever synthetic user the agent's
   // attribution record carries — or, in the other direction, as a human
   // intent masquerading as an agent proposal.
+  // An MCP-filed run_script { proposalId } is decided by the partner's MCP
+  // unattended proposal ceiling on the MCP route, or by a person. No other
+  // autonomy may approve it at creation: refuse it outright if it carries
+  // ticket-autonomy, task or plan-approval context, so a future caller cannot
+  // add a path that approves it (the lane is refused below as 'mcp_origin').
+  if (
+    input.source === 'mcp_api'
+    && input.toolName === 'run_script'
+    && typeof (input.input as { proposalId?: unknown }).proposalId === 'string'
+    && (input.autonomy !== undefined || input.task !== undefined || input.planApproval !== undefined)
+  ) {
+    throw new ActionIntentError(
+      'an MCP proposal run cannot carry autonomy, task or plan-approval context',
+      'mcp_proposal_autonomy_not_allowed',
+    );
+  }
   if (AGENT_COORDINATOR_CARRIER_TOOLS.has(input.toolName) && input.coordinatorCarrier !== true) {
     throw new ActionIntentError(
       `"${input.toolName}" is an approval carrier only the Wisp coordinator may raise`,
@@ -2708,10 +2724,12 @@ export async function createActionIntent(
         ? (input.input as { proposalId?: unknown }).proposalId
         : undefined;
       let scriptLaneDecision: ScriptReviewerDecision | null = null;
-      if (!autonomyGranted && !planGranted && typeof proposalIdArg === 'string' && input.source === 'mcp_api') {
+      if (typeof proposalIdArg === 'string' && input.source === 'mcp_api') {
         // MCP proposal runs answer to the partner's MCP ceiling, decided on the
         // MCP route before the call is filed here; a call filed here is one
-        // that gate refused, so it waits for a human.
+        // that gate refused, so it waits for a human. Unconditional: the
+        // creation-time guard above already refuses an MCP proposal run that
+        // carries autonomy or plan context, so neither can grant it either.
         scriptLaneDecision = { granted: false, reason: 'mcp_origin' };
       } else if (!autonomyGranted && !planGranted && typeof proposalIdArg === 'string') {
         const proposal = await loadProposalForRelease(db, proposalIdArg, orgId);

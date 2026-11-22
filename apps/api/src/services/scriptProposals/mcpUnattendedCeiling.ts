@@ -109,6 +109,18 @@ export async function mcpUnattendedProposalRefusal(
  * The same evaluation, also returning the MCP ceiling it read (null when it
  * refused before reading one), so the route records in the audit row the
  * exact ceiling that admitted the run rather than a second read.
+ *
+ * Detached system read (`runOutsideDbContext` + `withSystemDbAccessContext`),
+ * which `policy.ts` warns against on a request path (#2417). It is safe at its
+ * two call sites because it only reads and decides, never writes, and both
+ * callers have already bound the proposal's org to the caller's reach:
+ * - the MCP route, before any request transaction exists, after
+ *   `loadProposalGuardrailContextForCaller` proved the caller can reach it;
+ * - the run_script handler's early refusal (via `mcpUnattendedProposalRefusal`),
+ *   on a proposal `assertProposalRunnable` loaded for that org. The handler
+ *   then re-makes the whole decision on its own transaction, under the lane
+ *   lock and FOR SHARE policy reads, in `lockMcpUnattendedLane`; only that
+ *   decision admits a command.
  */
 export async function mcpUnattendedProposalDecision(
   proposalId: string,
