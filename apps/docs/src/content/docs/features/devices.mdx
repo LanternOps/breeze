@@ -5,7 +5,7 @@ description: Work with the device list and device Info tab — customizable colu
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
-The **Devices** page is the home view for every managed endpoint — servers, workstations, laptops, discovered network devices, and hand-entered manual assets across all the organizations you can access. This page covers the device list itself (columns and filters) and the device detail **Info** tab, including VPN presence and battery status.
+The **Devices** page is the home view for every managed endpoint — servers, workstations, laptops, discovered network devices, and hand-entered manual assets across all the organizations you can access. This page covers the device list itself (columns and filters) and the device **Details** tab, including VPN presence and battery status.
 
 ---
 
@@ -322,7 +322,7 @@ Hovering a VPN badge shows the full detail — interface, addresses, and DNS nam
 
 ### On the device Info tab
 
-When a device has reported at least one VPN, its **Info** tab shows a **VPN** section with a card per VPN — connected tunnels first, then any disconnected clients:
+When a device has reported at least one VPN, its **Details** tab shows a **VPN** section with a card per VPN — connected tunnels first, then any disconnected clients:
 
 | Field | Description |
 |-------|-------------|
@@ -383,11 +383,11 @@ The same data is available outside the UI:
 
 ---
 
-## The Device Info Tab
+## The Device Details Tab
 
 The device page header (v0.124.0) shows the display name once, with the hostname in the sub-line, and an **Offline · last seen …** pill when the device is not checking in; CPU and RAM read **—** while the device is offline or its last sample is stale. When the device belongs to an organization other than your working organization, the header says **Viewing a *Org* device** with a **Switch to *Org*** action that changes your working organization and keeps you on the record.
 
-Opening a device and selecting **Info** shows the device's identity and inventory at a glance:
+Opening a device and selecting **Details** shows the device's identity and inventory at a glance:
 
 | Section | Contents |
 |---------|----------|
