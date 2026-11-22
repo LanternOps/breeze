@@ -433,6 +433,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/ticketMailbox/consentSessionService.ts': 'consent start gated in routes/tickets/mailboxConnect.ts; callback consumes its signed session',
   'services/ticketMailbox/markIngestedGmailHandled.ts': 'inbound worker only: records/clears the mark-handled failure code on the same connection generation that ingested the message; the setting itself is written only by the gated PATCH in routes/tickets/mailboxConnect.ts',
   'services/unifi/unifiConnectionService.ts': 'every /unifi route passes the global capability middleware in routes/unifi/index.ts',
+  'services/unifi/unifiKeyService.ts': 'only write is the #11808 D12 legacy-key reconcile in getSyncKeys; callers are the /unifi routes (global capability middleware in routes/unifi/index.ts), get_unifi_status (canManagePartnerWidePolicies in its handler) and the system-context sync worker',
 
   // --- catalog/accounting data on their own permission sets (precedent:
   //     routes/softwareInstallMethods.ts + routes/accounting/index.ts above) --
