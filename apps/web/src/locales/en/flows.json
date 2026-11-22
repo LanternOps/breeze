@@ -123,7 +123,9 @@
     "enableFailed": "Could not enable the flow.",
     "disableFailed": "Could not disable the flow.",
     "runFailed": "Could not start the run.",
-    "cancelFailed": "Could not cancel the run."
+    "cancelFailed": "Could not cancel the run.",
+    "saveFailed": "Could not save the flow.",
+    "deleteFailed": "Could not delete the draft."
   },
   "tabs": {
     "overview": "Overview",
@@ -330,7 +332,9 @@
     "enabled": "Flow enabled",
     "disabled": "Flow disabled",
     "runStarted": "Run started",
-    "runCancelled": "Run cancelled"
+    "runCancelled": "Run cancelled",
+    "draftSaved": "Draft saved",
+    "draftDeleted": "Draft deleted"
   },
   "disable": {
     "title": "Disable flow",
