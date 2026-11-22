@@ -657,13 +657,13 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
       case 'rollback':
         return `Uninstalls a patch from ${deviceCount ?? 'the selected devices'}. ${oneDevice ? 'The device' : 'Devices'} may restart.`;
       case 'approve':
-        return 'Approves the patch. Nothing is installed now; scheduled patch runs may install it later.';
+        return 'Approves the patch. This changes its approval status only; nothing is installed now.';
       case 'bulk_approve':
-        return `Approves ${patchCount ?? 'the selected patches'}. Nothing is installed now; scheduled patch runs may install them later.`;
+        return `Approves ${patchCount ?? 'the selected patches'}. This changes their approval status only; nothing is installed now.`;
       case 'decline':
-        return 'Declines the patch so scheduled patch runs skip it. Nothing is installed or removed now.';
+        return 'Declines the patch. This changes its approval status only; nothing is installed or removed now.';
       case 'defer':
-        return 'Defers the patch so scheduled patch runs skip it for now. Nothing is installed now.';
+        return 'Defers the patch. This changes its approval status only; nothing is installed now.';
       case 'setup_auto_approval':
         return 'Sets up automatic patch approval and a reboot policy in a configuration policy. Matching patches are approved without review.';
       default:
