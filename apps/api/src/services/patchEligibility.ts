@@ -13,8 +13,10 @@
  *    `ineligible` WITH a reason.
  *  - `resolveApprovedPatchesForDevice` — the job executor's entry point
  *    (`jobs/patchJobExecutor.ts`), a thin adapter that keeps its exact
- *    `ApprovedPatch[]` shape and ordering. Superseded patches are NOT excluded
- *    here (parity with the pre-extraction evaluator; recorded as a follow-up).
+ *    `ApprovedPatch[]` shape and ordering. Without a requested patch list,
+ *    superseded patches are NOT excluded here (parity with the pre-extraction
+ *    evaluator; recorded as a follow-up). With one (an AI-initiated install
+ *    job), the caller narrows to those patches and excludes superseded ones.
  *  - `resolvePatchInstallEligibility` — the LIVE composition the AI path
  *    (`aiAgents/patchPlan.ts`) and the release-time effect digest
  *    (`actionIntents/effectDigest.ts` `manage_patches:install`) share: device
@@ -413,14 +415,25 @@ export async function evaluatePatchInstallEligibility(args: {
  * The job executor's entry point (`jobs/patchJobExecutor.ts`). A thin adapter
  * over `evaluatePatchInstallEligibility` that preserves the exact
  * `ApprovedPatch[]` shape and candidate ordering the executor has always
- * consumed. Superseded patches are deliberately NOT excluded on this path.
+ * consumed.
+ *
+ * Without `requested`, every outstanding patch on the device is judged and
+ * superseded patches are deliberately NOT excluded (historical behaviour of
+ * scheduled and policy-driven jobs). With `requested` (a job that names its
+ * patches: `patch_jobs.patches.patchIds`), only those patches are judged,
+ * under the same gates; an empty list resolves to nothing without a read.
  */
 export async function resolveApprovedPatchesForDevice(
   deviceId: string,
   orgId: string,
-  ringConfig: ApprovalEvaluationConfig
+  ringConfig: ApprovalEvaluationConfig,
+  requested?: { patchIds: string[]; excludeSuperseded: boolean }
 ): Promise<ApprovedPatch[]> {
-  const verdict = await evaluatePatchInstallEligibility({ deviceId, orgId, config: ringConfig });
+  // Belt and braces: an empty list means "install nothing", never "everything".
+  if (requested && requested.patchIds.length === 0) return [];
+  const verdict = await evaluatePatchInstallEligibility(requested
+    ? { deviceId, orgId, config: ringConfig, patchIds: requested.patchIds, excludeSuperseded: requested.excludeSuperseded }
+    : { deviceId, orgId, config: ringConfig });
   return verdict.eligible.map((e) => ({
     patchId: e.patchId,
     devicePatchId: e.devicePatchId,
