@@ -5,20 +5,20 @@
  *  - deleteDraftFlow (DELETE /flows/:id): RLS and the partner-wide gate decide
  *    reach; the FOR UPDATE lock serializes it against a concurrent enable; a
  *    delete removes the draft and nothing else.
- *  - standaloneNotMovedCondition (GET /automations jobCounts.notMoved): the SQL
+ *  - notMovedCountColumn (GET /automations jobCounts.notMoved): the SQL
  *    mirror of classifyAutomation() === 'S' && !convertedToFlowId, which the
  *    route unit suite cannot check against its mocked schema.
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { and, eq, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';
 import { automations, flows, flowVersions } from '../../db/schema';
 import { assignUserToOrganization, assignUserToPartner, createOrganization, createPartner, createRole, createUser } from './db-utils';
 import { deleteDraftFlow } from '../../services/flows/deleteDraft';
 import { enableFlow } from '../../services/flows/versions';
-import { standaloneNotMovedCondition } from '../../routes/automations';
+import { notMovedCountColumn } from '../../routes/automations';
 import {
   interactiveOrgAuth,
   interactivePartnerAuth,
@@ -175,8 +175,10 @@ describe('GET /automations jobCounts.notMoved predicate against a real database 
     ];
     await withDbAccessContext(SYSTEM_CTX, () => db.insert(automations).values(rows as never));
 
+    // The handler's own column, over the org's rows (the list's reach condition stands in for whereCondition).
     const [count] = await withDbAccessContext(SYSTEM_CTX, () =>
-      db.select({ n: sql<number>`count(*)::int` }).from(automations).where(and(eq(automations.orgId, org.id), standaloneNotMovedCondition)));
-    expect(count!.n).toBe(2);
+      db.select({ total: sql<number>`count(*)::int`, notMoved: notMovedCountColumn }).from(automations).where(eq(automations.orgId, org.id)));
+    // count(*) is a bigint the driver returns as a string; the handler reads it through Number().
+    expect({ total: count!.total, notMoved: Number(count!.notMoved) }).toEqual({ total: 5, notMoved: 2 });
   });
 });

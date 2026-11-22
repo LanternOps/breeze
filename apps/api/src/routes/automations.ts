@@ -830,13 +830,16 @@ automationRoutes.use('*', authMiddleware);
 // classifyAutomation() === 'S' && !convertedToFlowId in
 // services/flows/conversion/classify.ts. The policy-workflow test is NULL-safe
 // (IS NOT TRUE) so a trigger with no `filter` key still counts.
-export const standaloneNotMovedCondition = and(
+const standaloneNotMovedCondition = and(
   isNull(automations.retiredAt),
   isNull(automations.convertedToFlowId),
   isNull(automations.managedByMonitorId),
   isNull(automations.managedByAgentId),
   sql`(jsonb_typeof(${automations.trigger}->'filter') = 'object' AND jsonb_exists(${automations.trigger}->'filter', '_policyWorkflow')) IS NOT TRUE`,
 );
+
+/** The list's `jobCounts.notMoved` column; exported for the real-DB test (flowDraftRoutes.integration.test.ts). */
+export const notMovedCountColumn = sql<number>`count(*) filter (where ${standaloneNotMovedCondition})`;
 
 automationRoutes.get(
   '/',
@@ -937,7 +940,7 @@ automationRoutes.get(
       const countResult = await db
         .select({
           count: sql<number>`count(*)`,
-          notMoved: sql<number>`count(*) filter (where ${standaloneNotMovedCondition})`,
+          notMoved: notMovedCountColumn,
         })
         .from(automations)
         .where(whereCondition);
