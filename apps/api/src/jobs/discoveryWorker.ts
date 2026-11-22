@@ -54,6 +54,7 @@ import { reconcileTopology } from './reconcileTopology';
 import { withLegacyCollectorAbsence } from '../services/topology/legacyDeleteCause';
 import { markTopologyIdentityDirty } from '../services/topology/identityDirty';
 import {
+  loadDeviceAddresses,
   loadSiteDiscoveryAgentCandidates,
   pinnedAgentNotConnectedMessage,
   rankDiscoveryAgentCandidates,
@@ -61,6 +62,17 @@ import {
 } from './discoveryAgentSelection';
 import { prepareDiscoveryTopologyDispatch, type DiscoveryTopologyCommandBlock } from '../services/topology/discoveryDispatch';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import type { DiscoveryJobError, ExpectedNetwork, IneligibleReason, VerifiedNetwork } from '@breeze/shared';
+import { lockSitesForNetworkGate } from '../services/learnedNetworks/siteLock';
+import { evaluateDiscoveryGate, gateProfileFromRow } from '../services/learnedNetworks/gate';
+import {
+  explainGuardedAgent, explainNoEligibleAgent, loadEligibleGuardedAgents,
+} from '../services/learnedNetworks/eligibility';
+import { buildDiscoveryScanCommand, DISCOVERY_SCAN_FAMILY } from '../services/learnedNetworks/scanCommand';
+import { loadProfileForDispatch, recordDispatchAttempt } from '../services/learnedNetworks/attempt';
+import { attemptFromRecord, verifyDiscoveryResult } from '../services/learnedNetworks/verify';
+import { CROSS_NETWORK_WINDOW_DAYS } from '../services/learnedNetworks/constants';
+import { agentNotEligibleMessage, NO_AGENT_MESSAGES } from '../services/learnedNetworks/messages';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -111,6 +123,8 @@ interface ProcessResultsJobData {
   hostsScanned: number;
   hostsDiscovered: number;
   adjacency?: DeviceAdjacency[];
+  /** Learned networks (#12369): set only for a guarded result; processResults verifies it again before storing. */
+  verifiedNetwork?: VerifiedNetwork;
 }
 
 // LLDP/CDP adjacency contract (mirrors the agent payload; see issue #1728).
@@ -273,9 +287,10 @@ async function validateRequestedAgentForDiscovery(
   requestedAgentId: string,
   orgId: string,
   siteId: string
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<{ ok: true; deviceId: string } | { ok: false; message: string }> {
   const [agentDevice] = await db
     .select({
+      deviceId: devices.id,
       agentId: devices.agentId,
       orgId: devices.orgId,
       siteId: devices.siteId,
@@ -306,7 +321,7 @@ async function validateRequestedAgentForDiscovery(
     return { ok: false, message: 'Requested agent is not online' };
   }
 
-  return { ok: true };
+  return { ok: true, deviceId: agentDevice.deviceId };
 }
 
 async function insertDiscoveryChangeEvent(values: typeof networkChangeEvents.$inferInsert): Promise<boolean> {
@@ -622,13 +637,13 @@ async function processScheduleProfiles(): Promise<{ enqueued: number }> {
 
 /**
  * Outcome of the dispatch-scan read/select phase (final-review fix, #4084 /
- * #1105). Discriminated so each terminal cause (profile missing, requested
- * agent invalid, no candidate agent) is distinct rather than inferred from
- * guard order.
+ * #1105). Discriminated so each terminal cause (profile missing, gate failed,
+ * requested agent invalid, no candidate agent) is distinct rather than
+ * inferred from guard order.
  */
 type DispatchScanInputs =
   | { status: 'profile-missing' }
-  | { status: 'profile-moved' }
+  | { status: 'gate-failed' }
   | { status: 'invalid-agent' }
   | { status: 'no-agent' }
   | { status: 'not-scheduled' }
@@ -645,6 +660,10 @@ type DispatchScanInputs =
       selectionSource: DiscoveryAgentSelectionSource;
       /** Snapshot prepared for candidates[0]; re-prepared if phase 2 picks another. */
       topology: DiscoveryTopologyCommandBlock | null;
+      /** The job row's own placement (#12369): the gate and every later read use it, not the queue payload. */
+      job: { orgId: string; siteId: string };
+      /** Site locks phase 3 takes again: the job's site and the profile's. */
+      lockSiteIds: string[];
     };
 
 /**
@@ -656,10 +675,7 @@ type DispatchScanInputs =
  */
 type DiscoveryAgentSelectionSource = 'requested' | 'pinned' | 'subnet-match' | 'site-auto';
 
-type DispatchAgentCandidate = { agentId: string; label: string };
-
-const PROFILE_MOVED_MESSAGE =
-  'The profile moved to another site or organization after this scan was queued. The scan was not sent.';
+type DispatchAgentCandidate = { agentId: string; deviceId: string; label: string };
 
 /** Cap on websocket-connectivity probes per dispatch (Redis round-trips). */
 const MAX_CONNECTIVITY_PROBES = 25;
@@ -681,14 +697,23 @@ async function prepareTopologyForAgent(
   }
 }
 
+function candidateLabel(row: { displayName: string | null; hostname: string | null; deviceId: string }): string {
+  return row.displayName?.trim() || row.hostname?.trim() || row.deviceId;
+}
+
+function agentNotEligibleError(verdict: { reason: IneligibleReason; label: string }): DiscoveryJobError {
+  return { code: 'agent_not_eligible', reason: verdict.reason, message: agentNotEligibleMessage(verdict.label, verdict.reason) };
+}
+
 /**
- * Phase 1 of a dispatch-scan job: load the profile and resolve/validate the
- * execution agent, inside ONE short system DB context. Every early-failure
- * write (`markJobFailed`) that can be determined from these reads alone
- * happens here too, since none of it involves Redis or the agent WebSocket.
- * The connectivity check (`isAgentConnectedAnywhere`) is NOT here — that is
- * Redis I/O via the agentCommandRelay facade and must run with no context
- * held (#1105).
+ * Phase 1 of a dispatch-scan job: load the profile, decide under the shared
+ * site lock (#12369 spec §8.2), and resolve/validate the execution agent,
+ * inside ONE short system DB context. Every early-failure write
+ * (`markJobFailed`) that can be determined from these reads alone happens
+ * here too, since none of it involves Redis or the agent WebSocket. The
+ * connectivity check (`isAgentConnectedAnywhere`) is NOT here — that is Redis
+ * I/O via the agentCommandRelay facade and must run with no context held
+ * (#1105).
  */
 async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<DispatchScanInputs> {
   // The cancel route (routes/discovery.ts) can only best-effort remove the
@@ -696,15 +721,18 @@ async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<Dispat
   // still reaches here. Re-read the row's live status instead of trusting the
   // queue payload, so a cancelled job neither decrypts SNMP credentials nor
   // dispatches to the agent, and its 'cancelled' status is not overwritten.
-  const [job] = await db
-    .select({ status: discoveryJobs.status })
+  const [jobRow] = await db
+    .select({ status: discoveryJobs.status, orgId: discoveryJobs.orgId, siteId: discoveryJobs.siteId })
     .from(discoveryJobs)
     .where(eq(discoveryJobs.id, data.jobId))
     .limit(1);
-  if (!job || job.status !== 'scheduled') {
-    console.log(`[DiscoveryWorker] Skipping dispatch for job ${data.jobId}: status is ${job?.status ?? 'missing'}, not 'scheduled'`);
+  if (!jobRow || jobRow.status !== 'scheduled') {
+    console.log(`[DiscoveryWorker] Skipping dispatch for job ${data.jobId}: status is ${jobRow?.status ?? 'missing'}, not 'scheduled'`);
     return { status: 'not-scheduled' };
   }
+  // The job records the organization and site it was queued for; agents are
+  // chosen and results are filed against those.
+  const job = { orgId: jobRow.orgId, siteId: jobRow.siteId };
 
   const [profile] = await db
     .select()
@@ -717,17 +745,21 @@ async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<Dispat
     return { status: 'profile-missing' };
   }
 
-  // The job records the organization and site it was queued for; agents are
-  // chosen and results are filed against those. A profile edited to another
-  // site in the meantime no longer describes this job, so the job ends here.
-  // Nothing is re-queued: the next scheduled or manual run is created from
-  // the profile's current site.
-  if (profile.orgId !== data.orgId || profile.siteId !== data.siteId) {
+  // The gate (#12369 spec §8.2), under the shared lock of both sites, ascending.
+  // Row 1 fails a job whose profile moved to another site or organization after
+  // it was queued (nothing is re-queued: the next run is created from the
+  // profile's current site); it is decided before any credential is decrypted.
+  const lockSiteIds = [job.siteId, profile.siteId];
+  await lockSitesForNetworkGate(lockSiteIds, 'shared');
+  const decision = await evaluateDiscoveryGate({
+    orgId: job.orgId, siteId: job.siteId, profile: gateProfileFromRow(profile), job,
+  });
+  if (decision.kind === 'fail') {
     console.warn(
-      `[DiscoveryWorker] Job ${data.jobId} was queued for org=${data.orgId} site=${data.siteId} but profile ${profile.id} is now in org=${profile.orgId} site=${profile.siteId}; not dispatching`
+      `[DiscoveryWorker] Job ${data.jobId} (profile=${profile.id}, org=${job.orgId}, site=${job.siteId}) failed the network gate: ${decision.error.code ?? 'unknown'}; not dispatching`
     );
-    await markJobFailed(data.jobId, PROFILE_MOVED_MESSAGE);
-    return { status: 'profile-moved' };
+    await markJobFailed(data.jobId, decision.error);
+    return { status: 'gate-failed' };
   }
 
   // Resolve who runs the scan (#7969). Precedence: an explicit agent on a
@@ -735,18 +767,55 @@ async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<Dispat
   const requestedAgentId = data.agentId ?? null;
   let selectionSource: DiscoveryAgentSelectionSource;
   let candidates: DispatchAgentCandidate[];
-  if (requestedAgentId) {
-    const validation = await validateRequestedAgentForDiscovery(requestedAgentId, data.orgId, data.siteId);
+  if (decision.kind === 'guarded') {
+    // Guarded (#12369 spec §8.2): the same eligibility rule for a requested, a
+    // pinned and a site agent; a named agent that is not eligible fails naming
+    // it, with no fallback.
+    const guard = {
+      orgId: job.orgId, siteId: job.siteId, commandType: DISCOVERY_SCAN_FAMILY,
+      allowedGatewayIds: decision.allowed.map((g) => g.gatewayId),
+    };
+    if (requestedAgentId || profile.pinnedDeviceId) {
+      const verdict = requestedAgentId
+        ? await explainGuardedAgent({ ...guard, agentId: requestedAgentId })
+        : await explainGuardedAgent({ ...guard, deviceId: profile.pinnedDeviceId! });
+      if (!verdict.eligible) {
+        // Another org's or a parked device's agent id is not recorded on the job.
+        const knownAgentId = requestedAgentId && verdict.reason !== 'not_found' && verdict.reason !== 'parked' ? requestedAgentId : null;
+        console.warn(`[DiscoveryWorker] Scan agent not eligible for guarded job ${data.jobId} (profile=${profile.id}): ${verdict.reason}`);
+        await markJobFailed(data.jobId, agentNotEligibleError(verdict), knownAgentId);
+        return { status: 'invalid-agent' };
+      }
+      selectionSource = requestedAgentId ? 'requested' : 'pinned';
+      candidates = [{ agentId: verdict.agent.agentId, deviceId: verdict.agent.deviceId, label: candidateLabel(verdict.agent) }];
+    } else {
+      const eligible = await loadEligibleGuardedAgents(guard);
+      if (eligible.length === 0) {
+        const reason = await explainNoEligibleAgent(guard);
+        console.warn(`[DiscoveryWorker] No eligible agent for guarded job ${data.jobId} (profile=${profile.id}, site=${job.siteId}): ${reason}`);
+        await markJobFailed(data.jobId, { code: 'no_agent_on_network', reason, message: NO_AGENT_MESSAGES[reason] });
+        return { status: 'no-agent' };
+      }
+      const addresses = await loadDeviceAddresses(eligible.map((a) => a.deviceId));
+      const ranked = rankDiscoveryAgentCandidates(
+        eligible.map((a) => ({ deviceId: a.deviceId, agentId: a.agentId, label: candidateLabel(a), addresses: addresses.get(a.deviceId) ?? [] })),
+        profile.subnets ?? [],
+      );
+      selectionSource = ranked[0]?.subnetMatch ? 'subnet-match' : 'site-auto';
+      candidates = ranked.map(({ agentId, deviceId, label }) => ({ agentId, deviceId, label }));
+    }
+  } else if (requestedAgentId) {
+    const validation = await validateRequestedAgentForDiscovery(requestedAgentId, job.orgId, job.siteId);
     if (!validation.ok) {
       await markJobFailed(data.jobId, validation.message);
       return { status: 'invalid-agent' };
     }
     selectionSource = 'requested';
-    candidates = [{ agentId: requestedAgentId, label: requestedAgentId }];
+    candidates = [{ agentId: requestedAgentId, deviceId: validation.deviceId, label: requestedAgentId }];
   } else if (profile.pinnedDeviceId) {
     // Pinned: that device or nothing. Falling back would scan from a network
     // the operator explicitly ruled out, and hide that the pin is broken.
-    const pinned = await resolvePinnedDiscoveryAgent(profile.pinnedDeviceId, data.orgId, data.siteId);
+    const pinned = await resolvePinnedDiscoveryAgent(profile.pinnedDeviceId, job.orgId, job.siteId);
     if (!pinned.ok) {
       console.warn(
         `[DiscoveryWorker] Pinned agent unavailable for job ${data.jobId} (profile=${data.profileId}, pinnedDevice=${profile.pinnedDeviceId}): ${pinned.message}`
@@ -755,19 +824,19 @@ async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<Dispat
       return { status: 'invalid-agent' };
     }
     selectionSource = 'pinned';
-    candidates = [{ agentId: pinned.agentId, label: pinned.label }];
+    candidates = [{ agentId: pinned.agentId, deviceId: pinned.deviceId, label: pinned.label }];
   } else {
     const ranked = rankDiscoveryAgentCandidates(
-      await loadSiteDiscoveryAgentCandidates(data.orgId, data.siteId),
+      await loadSiteDiscoveryAgentCandidates(job.orgId, job.siteId),
       profile.subnets ?? [],
     );
     selectionSource = ranked[0]?.subnetMatch ? 'subnet-match' : 'site-auto';
-    candidates = ranked.map(({ agentId, label }) => ({ agentId, label }));
+    candidates = ranked.map(({ agentId, deviceId, label }) => ({ agentId, deviceId, label }));
   }
 
   if (candidates.length === 0) {
     console.warn(
-      `[DiscoveryWorker] No candidate agent found for job ${data.jobId} (profile=${data.profileId}, org=${data.orgId}, site=${data.siteId}, source=${selectionSource})`
+      `[DiscoveryWorker] No candidate agent found for job ${data.jobId} (profile=${data.profileId}, org=${job.orgId}, site=${job.siteId}, source=${selectionSource})`
     );
     await markJobFailed(data.jobId, 'No online agent available for this site');
     return { status: 'no-agent' };
@@ -777,7 +846,95 @@ async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<Dispat
   // re-prepares in a fresh context only if it falls through to another agent.
   const topology = await prepareTopologyForAgent(data, profile, candidates[0]!.agentId);
 
-  return { status: 'ok', profile, candidates, requestedAgentId, selectionSource, topology };
+  return { status: 'ok', profile, candidates, requestedAgentId, selectionSource, topology, job, lockSiteIds };
+}
+
+/** Today's network_discovery payload, built from the live profile row (decrypting the saved secrets). */
+function buildDiscoveryScanPayload(
+  jobId: string,
+  profile: typeof discoveryProfiles.$inferSelect,
+  topology: DiscoveryTopologyCommandBlock | null,
+): Record<string, unknown> {
+  return {
+    jobId,
+    subnets: profile.subnets ?? [],
+    excludeIps: profile.excludeIps ?? [],
+    methods: profile.methods ?? [],
+    portRanges: profile.portRanges ?? [],
+    snmpCommunities: decryptSnmpCommunities(profile.snmpCommunities),
+    snmpCredentials: decryptSnmpCredentials(profile.snmpCredentials),
+    deepScan: profile.deepScan ?? false,
+    identifyOS: profile.identifyOS ?? false,
+    resolveHostnames: profile.resolveHostnames ?? false,
+    timeout: profile.timeout ?? 2,
+    concurrency: profile.concurrency ?? 128,
+    // Advertised only when the authorization snapshot was persisted.
+    ...(topology ? { topology } : {}),
+  };
+}
+
+/**
+ * Phase 3 (#12369 spec §8.2, index E9): under the shared site lock again,
+ * re-read the live profile FOR SHARE, re-decide, build the command from THAT
+ * decision and row (never phase 1's), and record the attempt — the job's
+ * 'running' write — before anything is sent. Null: nothing may be sent (the
+ * job was failed here, or it is no longer 'scheduled').
+ */
+async function decideAndRecordDispatch(
+  data: DispatchScanJobData,
+  inputs: Extract<DispatchScanInputs, { status: 'ok' }>,
+  chosen: DispatchAgentCandidate,
+  topology: DiscoveryTopologyCommandBlock | null,
+): Promise<AgentCommand | null> {
+  const { job } = inputs;
+  await lockSitesForNetworkGate(inputs.lockSiteIds, 'shared');
+  const profile = await loadProfileForDispatch(data.profileId);
+  if (!profile) {
+    await markJobFailed(data.jobId, 'Profile not found');
+    return null;
+  }
+  const decision = await evaluateDiscoveryGate({ orgId: job.orgId, siteId: job.siteId, profile: gateProfileFromRow(profile), job });
+  if (decision.kind === 'fail') {
+    await markJobFailed(data.jobId, decision.error);
+    return null;
+  }
+
+  // Unrestricted: the chosen agent is a site agent that is online, not Quick
+  // Support and not parked. Guarded: it must be eligible for what is allowed now.
+  let agentGatewayIds: string[] = [];
+  if (decision.kind === 'guarded') {
+    const verdict = await explainGuardedAgent({
+      orgId: job.orgId, siteId: job.siteId, commandType: DISCOVERY_SCAN_FAMILY,
+      allowedGatewayIds: decision.allowed.map((g) => g.gatewayId), agentId: chosen.agentId,
+    });
+    if (!verdict.eligible) {
+      await markJobFailed(data.jobId, agentNotEligibleError(verdict), chosen.agentId);
+      return null;
+    }
+    agentGatewayIds = verdict.agent.gatewayIds;
+  }
+
+  const command = buildDiscoveryScanCommand({
+    commandId: data.jobId, // Use job ID as command ID so results correlate
+    payload: buildDiscoveryScanPayload(data.jobId, profile, topology),
+    decision,
+    agentGatewayIds,
+  });
+  const sent = decision.kind === 'guarded' ? (command.payload.expectedNetwork as ExpectedNetwork).gateways : [];
+  const recorded = await recordDispatchAttempt(data.jobId, {
+    version: 1,
+    mode: decision.kind,
+    agentId: chosen.agentId,
+    deviceId: chosen.deviceId,
+    allowedNetworkIds: [...new Set(sent.map((g) => g.networkId))],
+    allowedGatewayIds: sent.map((g) => g.gatewayId),
+    decidedAt: new Date().toISOString(),
+  });
+  if (!recorded) {
+    console.log(`[DiscoveryWorker] Not sending job ${data.jobId}: it left 'scheduled' before the attempt was recorded`);
+    return null;
+  }
+  return command;
 }
 
 /**
@@ -790,9 +947,9 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
 }> {
   const startTime = Date.now();
 
-  // Phase 1 — profile load, agent validation/selection and every terminal
-  // failure write reachable from those reads alone: ONE short system DB
-  // context, which then CLOSES before any Redis or WS I/O.
+  // Phase 1 — profile load, the gate, agent validation/selection and every
+  // terminal failure write reachable from those reads alone: ONE short system
+  // DB context, which then CLOSES before any Redis or WS I/O.
   const inputs = await runWithSystemDbAccess(() => loadDispatchScanInputs(data));
 
   if (inputs.status !== 'ok') {
@@ -850,39 +1007,28 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
   }
 
   console.log(
-    `[DiscoveryWorker] Selected agent ${agentId} (${chosen.label}) for job ${data.jobId} (profile=${data.profileId}, org=${data.orgId}, site=${data.siteId}, source=${selectionSource}${requestedAgentId ? `, requestedAgent=${requestedAgentId}` : ''})`
+    `[DiscoveryWorker] Selected agent ${agentId} (${chosen.label}) for job ${data.jobId} (profile=${data.profileId}, org=${inputs.job.orgId}, site=${inputs.job.siteId}, source=${selectionSource}${requestedAgentId ? `, requestedAgent=${requestedAgentId}` : ''})`
   );
 
-  // Build the command payload from the profile
-  const command: AgentCommand = {
-    id: data.jobId, // Use job ID as command ID so results correlate
-    type: 'network_discovery',
-    payload: {
-      jobId: data.jobId,
-      subnets: profile.subnets ?? [],
-      excludeIps: profile.excludeIps ?? [],
-      methods: profile.methods ?? [],
-      portRanges: profile.portRanges ?? [],
-      snmpCommunities: decryptSnmpCommunities(profile.snmpCommunities),
-      snmpCredentials: decryptSnmpCredentials(profile.snmpCredentials),
-      deepScan: profile.deepScan ?? false,
-      identifyOS: profile.identifyOS ?? false,
-      resolveHostnames: profile.resolveHostnames ?? false,
-      timeout: profile.timeout ?? 2,
-      concurrency: profile.concurrency ?? 128,
-      // Advertised only when the authorization snapshot was persisted above.
-      ...(topology ? { topology } : {}),
-    }
-  };
+  // Phase 3 — re-decide and record the attempt ('running', its agent and the
+  // network_dispatch record) in one short system context, BEFORE the send. A
+  // job recorded here whose send never completes is failed by the 15-minute
+  // running expiry; it is not 'scheduled', so the lost-dispatch sweep does not
+  // send it again.
+  const pickedAgent = chosen;
+  const command = await runWithSystemDbAccess(() => decideAndRecordDispatch(data, inputs, pickedAgent, topology));
+  if (!command) {
+    return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
+  }
 
-  // Phase 3 — the WS/relay dispatch itself, no DB context open (#1105).
+  // Phase 4 — the WS/relay dispatch itself, no DB context open (#1105).
   const outcome = await dispatchCommandToAgent(agentId, command);
   if (outcome.status !== 'sent') {
     await runWithSystemDbAccess(() =>
       markJobFailed(
         data.jobId,
         selectionSource === 'pinned'
-          ? `Failed to send command to pinned scan agent "${chosen.label}" (dispatch outcome ${outcome.status}); the scan was not run from any other agent.`
+          ? `Failed to send command to pinned scan agent "${pickedAgent.label}" (dispatch outcome ${outcome.status}); the scan was not run from any other agent.`
           : outcome.status === 'offline'
             ? 'Failed to send command to agent'
             : `Failed to send command to agent (dispatch outcome ${outcome.status})`,
@@ -891,22 +1037,6 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     );
     return { dispatched: false, agentId, durationMs: Date.now() - startTime };
   }
-
-  // Phase 4 — job status flip to running: its own short system DB context.
-  // Conditional on 'scheduled' for the same reason as loadDispatchScanInputs'
-  // re-check above: a cancel that lands between that check and here must not
-  // be overwritten back to 'running' by this dispatch that already fired.
-  await runWithSystemDbAccess(() =>
-    db
-      .update(discoveryJobs)
-      .set({
-        status: 'running',
-        agentId,
-        startedAt: new Date(),
-        updatedAt: new Date()
-      })
-      .where(and(eq(discoveryJobs.id, data.jobId), eq(discoveryJobs.status, 'scheduled')))
-  );
 
   console.log(`[DiscoveryWorker] Scan dispatched to agent ${agentId} for job ${data.jobId}`);
   return { dispatched: true, agentId, durationMs: Date.now() - startTime };
@@ -1037,7 +1167,12 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
 
   // Check if job was cancelled before processing results
   const [currentJob] = await db
-    .select({ status: discoveryJobs.status })
+    .select({
+      status: discoveryJobs.status,
+      siteId: discoveryJobs.siteId,
+      profileId: discoveryJobs.profileId,
+      networkDispatch: discoveryJobs.networkDispatch,
+    })
     .from(discoveryJobs)
     .where(eq(discoveryJobs.id, data.jobId))
     .limit(1);
@@ -1046,6 +1181,30 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     console.log(`[DiscoveryWorker] Job ${data.jobId} was cancelled — skipping result processing`);
     return { newAssets: 0, updatedAssets: 0, durationMs: Date.now() - startTime };
   }
+
+  // Learned networks (#12369 spec §8.4): verify again in the storing
+  // transaction, under the shared site lock held until the assets are written,
+  // so a result admitted under an older assignment cannot write anything the
+  // current state does not allow. Uncaught on purpose: a failed read fails the
+  // transaction rather than being caught next to a later write.
+  const resultSiteId = currentJob?.siteId ?? data.siteId;
+  await lockSitesForNetworkGate([resultSiteId], 'shared');
+  const verification = await verifyDiscoveryResult({
+    orgId: data.orgId,
+    siteId: resultSiteId,
+    profileId: currentJob?.profileId ?? data.profileId ?? null,
+    attempt: attemptFromRecord(currentJob?.networkDispatch ?? null),
+    verifiedNetwork: data.verifiedNetwork,
+  });
+  if (!verification.ok) {
+    console.warn(`[DiscoveryWorker] Discarding results for job ${data.jobId}: ${verification.error.code}`);
+    await markJobFailed(data.jobId, verification.error);
+    return { newAssets: 0, updatedAssets: 0, durationMs: Date.now() - startTime };
+  }
+  // Set only for a verified guarded result: the network every asset this scan writes is stamped with.
+  const scanNetworkId = verification.networkId;
+  const crossNetworkSince = Date.now() - CROSS_NETWORK_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  let crossNetworkCount = 0;
 
   // ── Resolve profileId ─────────────────────────────────────────────────
   let profileId = data.profileId;
@@ -1215,7 +1374,9 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
         typeSource: discoveredAssets.typeSource,
         detectedTypeSource: discoveredAssets.detectedTypeSource,
         autoLinkSuppressedAt: discoveredAssets.autoLinkSuppressedAt,
-        linkSource: discoveredAssets.linkSource
+        linkSource: discoveredAssets.linkSource,
+        lastNetworkId: discoveredAssets.lastNetworkId,
+        lastSeenAt: discoveredAssets.lastSeenAt
       })
       .from(discoveredAssets)
       .where(
@@ -1303,6 +1464,15 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       // the first insert and by manual moves. A scan re-finding an asset that
       // was moved to a sibling site must not drag it back.
       const updateSet = buildScanUpdateSet(assetData, classification);
+      // A verified guarded scan stamps the sighting with its network (#12369),
+      // and counts an asset it last saw on a different network within the window.
+      if (scanNetworkId) {
+        updateSet.lastNetworkId = scanNetworkId;
+        if (existing.lastNetworkId && existing.lastNetworkId !== scanNetworkId
+          && existing.lastSeenAt && existing.lastSeenAt.getTime() >= crossNetworkSince) {
+          crossNetworkCount++;
+        }
+      }
       await db
         .update(discoveredAssets)
         .set(updateSet)
@@ -1409,7 +1579,8 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
         typeSource: 'auto',
         // #5213 — insert side only. A scan that later re-finds a manual row
         // must not relabel it (see buildScanUpdateSet, which omits `source`).
-        source: 'scan'
+        source: 'scan',
+        ...(scanNetworkId ? { lastNetworkId: scanNetworkId } : {}),
       }).returning({ id: discoveredAssets.id });
       upsertedAssetId = inserted?.id ?? null;
       newCount++;
@@ -1816,6 +1987,8 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       hostsScanned: data.hostsScanned,
       hostsDiscovered: data.hostsDiscovered,
       newAssets: newCount,
+      // The network a verified guarded scan ran on, and its cross-network count (#12369 spec §8.4).
+      ...(scanNetworkId ? { networkId: scanNetworkId, crossNetworkAssetUpdates: crossNetworkCount } : {}),
       updatedAt: new Date()
     })
     .where(eq(discoveryJobs.id, data.jobId));
@@ -1928,7 +2101,7 @@ export async function cleanupSpeculativeTopologyLinks(
   return deleted.length;
 }
 
-async function markJobFailed(jobId: string, error: string, agentId?: string | null): Promise<void> {
+async function markJobFailed(jobId: string, error: string | DiscoveryJobError, agentId?: string | null): Promise<void> {
   // Conditional on status: a job the operator already cancelled (or one a
   // concurrent worker attempt already resolved) must not be overwritten with
   // 'failed' — that regression made an explicit cancel invisible in the UI
@@ -1938,7 +2111,7 @@ async function markJobFailed(jobId: string, error: string, agentId?: string | nu
     .set({
       status: 'failed',
       completedAt: new Date(),
-      errors: { message: error },
+      errors: typeof error === 'string' ? { message: error } : error,
       // #7969: a pinned dispatch that could not run records which agent it
       // was bound to, so the job history shows what to fix.
       ...(agentId ? { agentId } : {}),
@@ -2038,6 +2211,7 @@ export async function enqueueDiscoveryResults(
   profileId?: string,
   adjacency?: DeviceAdjacency[],
   meta: QueueActorMeta = DISCOVERY_RESULT_META,
+  verifiedNetwork?: VerifiedNetwork | null,
 ): Promise<string> {
   const queue = getDiscoveryQueue();
   const job = await addUniqueDiscoveryJob(
@@ -2052,7 +2226,8 @@ export async function enqueueDiscoveryResults(
       hosts,
       hostsScanned,
       hostsDiscovered,
-      adjacency
+      adjacency,
+      ...(verifiedNetwork ? { verifiedNetwork } : {}),
     }, meta)),
     `discovery-result-${jobId}`,
     {

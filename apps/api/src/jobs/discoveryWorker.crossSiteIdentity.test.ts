@@ -121,6 +121,14 @@ vi.mock('./networkBaselineWorker', () => ({
   enqueueBaselineComparison: vi.fn(async () => 'enqueued'),
   getNetworkBaselineQueue: vi.fn(),
 }));
+// Learned networks (#12369 W03a): processResults verifies under the site lock first. The lock is a no-op and the
+// site reads as not gated, so these unrestricted results are accepted exactly as before.
+vi.mock('../services/learnedNetworks/siteLock', () => ({ lockSitesForNetworkGate: vi.fn(async () => {}) }));
+vi.mock('../services/learnedNetworks/siteNetworks', () => ({
+  loadSiteGateState: vi.fn(async () => ({ gated: false, assignedNetworkIds: [] })),
+  loadNetworkSiteId: vi.fn(async () => null),
+  loadNetworkGateways: vi.fn(async () => []),
+}));
 
 import { buildApprovalDecision } from '../services/assetApproval';
 import type { DiscoveredHostResult } from './discoveryWorker';

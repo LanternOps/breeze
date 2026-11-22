@@ -13,6 +13,7 @@
  */
 
 import { z } from 'zod';
+import { GUARDED_COMMAND_TYPES, verifiedNetworkSchema } from '@breeze/shared';
 import { CommandTypes } from './commandTypes';
 import { applyWakeRelayResult } from './wakeAttempts';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
@@ -80,6 +81,9 @@ import { handleChatMessageResult, handleChatOpenResult } from './endpointMessagi
 import { handleExecuteContainmentResult } from './incidentContainmentResults';
 import { applyOemUpdateRelease, applyOemUpdateResult } from './oemUpdates/results';
 import { applyOemObserveResult } from './oemUpdates/observe';
+import { lockSitesForNetworkGate } from './learnedNetworks/siteLock';
+import { attemptFromRecord, verifyDiscoveryResult } from './learnedNetworks/verify';
+import { GATE_FAILURE_MESSAGES } from './learnedNetworks/messages';
 
 export type CommandResultHandlerOutcome =
   | { kind: 'pam'; classification: PamActuationResultClassification }
@@ -117,98 +121,179 @@ export function normalizeDiscoveryHosts(hosts: DiscoveredHostResult[]): Discover
   }));
 }
 
-async function handleDiscoveryResult({ agentId, command, result, commandId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+/** Learned networks (#12369): the agent's guarded refusal codes, compared as raw strings (W02c owns the list). */
+const DISCOVERY_REFUSAL_CODES = ['network_mismatch', 'network_changed'] as const;
+type DiscoveryRefusalCode = (typeof DISCOVERY_REFUSAL_CODES)[number];
+
+function discoveryRefusalCode(value: unknown): DiscoveryRefusalCode | null {
+  return (DISCOVERY_REFUSAL_CODES as readonly unknown[]).includes(value) ? (value as DiscoveryRefusalCode) : null;
+}
+
+/**
+ * The upload's `verifiedNetwork`: from the structured result, else from stdout (the REST result route may carry
+ * the body only there, index C7). Anything unreadable is `undefined`; the verifier decides what that means.
+ */
+function discoveryVerifiedNetwork(structured: unknown, stdout: string | undefined): unknown {
+  if (structured && typeof structured === 'object' && 'verifiedNetwork' in structured) {
+    const value = (structured as { verifiedNetwork?: unknown }).verifiedNetwork;
+    if (value !== undefined) return value;
+  }
+  if (!stdout) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as { verifiedNetwork?: unknown }).verifiedNetwork
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function handleDiscoveryResult({ agentId, command, result, commandId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
   const payload = command.payload as Record<string, unknown> | null;
   const expectedJobId = typeof payload?.jobId === 'string' ? payload.jobId : null;
-  try {
-    const discoveryData = result.result as {
-      jobId?: string;
-      hosts?: DiscoveredHostResult[];
-      hostsScanned?: number;
-      hostsDiscovered?: number;
-      adjacency?: DeviceAdjacency[];
-    } | undefined;
 
-    if (discoveryData?.hosts) {
-      if (!expectedJobId || discoveryData.jobId !== expectedJobId) {
-        console.warn(
-          `[AgentWs] Rejecting mismatched discovery result ${commandId} from agent ${agentId}: ` +
-          `sentJob=${discoveryData.jobId ?? 'none'} expected=${expectedJobId ?? 'none'}`
-        );
-        return;
-      }
+  // Learned networks (#12369): a guarded refusal records its code on the job. Only a job-backed command (the AI
+  // tool sends none) and only these two codes; every other failure keeps the behavior below.
+  const refusal = result.status === 'failed' ? discoveryRefusalCode(result.errorCode) : null;
+  if (refusal && expectedJobId) {
+    await db
+      .update(discoveryJobs)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        errors: { code: refusal, message: GATE_FAILURE_MESSAGES[refusal] },
+        updatedAt: new Date()
+      })
+      // A job that already finished or was cancelled keeps its outcome.
+      .where(and(eq(discoveryJobs.id, expectedJobId), inArray(discoveryJobs.status, ['scheduled', 'running'])));
+    console.warn(`[AgentWs] Discovery job ${expectedJobId} refused by agent ${agentId}'s network guard: ${refusal}`);
+    return;
+  }
+
+  const discoveryData = result.result as {
+    jobId?: string;
+    hosts?: DiscoveredHostResult[];
+    hostsScanned?: number;
+    hostsDiscovered?: number;
+    adjacency?: DeviceAdjacency[];
+    verifiedNetwork?: unknown;
+  } | undefined;
+
+  if (discoveryData?.hosts) {
+    if (!expectedJobId || discoveryData.jobId !== expectedJobId) {
+      console.warn(
+        `[AgentWs] Rejecting mismatched discovery result ${commandId} from agent ${agentId}: ` +
+        `sentJob=${discoveryData.jobId ?? 'none'} expected=${expectedJobId ?? 'none'}`
+      );
+      return;
     }
+  }
+  if (!expectedJobId || !discoveryData?.hosts) return;
 
-    if (expectedJobId && discoveryData?.hosts) {
-      // Look up the job to get orgId and siteId
-      const [job] = await db
-        .select({ orgId: discoveryJobs.orgId, siteId: discoveryJobs.siteId })
-        .from(discoveryJobs)
-        .where(eq(discoveryJobs.id, expectedJobId))
-        .limit(1);
+  // Learned networks (#12369, E10): the job read, the shared site lock and the verifier run outside the catch
+  // below, so a failed query fails the transport's transaction instead of being caught beside a later write
+  // (docs/agents/tenancy-rls.md).
+  const [job] = await db
+    .select({
+      orgId: discoveryJobs.orgId,
+      siteId: discoveryJobs.siteId,
+      profileId: discoveryJobs.profileId,
+      networkDispatch: discoveryJobs.networkDispatch,
+    })
+    .from(discoveryJobs)
+    .where(eq(discoveryJobs.id, expectedJobId))
+    .limit(1);
 
-      if (job && isRedisAvailable()) {
-        const normalizedHosts = normalizeDiscoveryHosts(discoveryData.hosts);
-        // Exit the held org-scoped transaction context for the Redis
-        // round-trips (#1105) — see the note on the monitor-result branch.
-        await runOutsideDbContext(() => enqueueDiscoveryResults(
-          expectedJobId,
-          job.orgId,
-          job.siteId,
-          normalizedHosts,
-          discoveryData.hostsScanned ?? 0,
-          discoveryData.hostsDiscovered ?? 0,
-          undefined,
-          discoveryData.adjacency ?? [],
-          {
-            actorType: 'agent',
-            actorId: agentId,
-            source: 'route:agentWs:script-network-scan',
-          }
-        ));
-      } else if (job) {
-        // Redis not available — mark job failed so user knows results weren't processed
-        console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${expectedJobId}`);
-        await db
-          .update(discoveryJobs)
-          .set({
-            status: 'failed',
-            completedAt: new Date(),
-            hostsDiscovered: discoveryData.hostsDiscovered ?? 0,
-            hostsScanned: discoveryData.hostsScanned ?? 0,
-            errors: { message: 'Results received but could not be processed: job queue unavailable' },
-            updatedAt: new Date()
-          })
-          .where(eq(discoveryJobs.id, expectedJobId));
-      } else {
-        console.warn(
-          `[AgentWs] Discovery job ${expectedJobId} not found in DB — ` +
-          `discarding ${discoveryData.hosts.length} host(s) from agent ${agentId}`
-        );
-      }
+  if (!job) {
+    console.warn(
+      `[AgentWs] Discovery job ${expectedJobId} not found in DB — ` +
+      `discarding ${discoveryData.hosts.length} host(s) from agent ${agentId}`
+    );
+    return;
+  }
+
+  const uploadedNetwork = discoveryVerifiedNetwork(discoveryData, stdout);
+  await lockSitesForNetworkGate([job.siteId], 'shared');
+  const outcome = await verifyDiscoveryResult({
+    orgId: job.orgId,
+    siteId: job.siteId,
+    profileId: job.profileId,
+    attempt: attemptFromRecord(job.networkDispatch),
+    verifiedNetwork: uploadedNetwork,
+  });
+  if (!outcome.ok) {
+    console.warn(`[AgentWs] Discarding unverified discovery result for job ${expectedJobId} from agent ${agentId}`);
+    await db
+      .update(discoveryJobs)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        errors: outcome.error,
+        updatedAt: new Date()
+      })
+      .where(and(eq(discoveryJobs.id, expectedJobId), inArray(discoveryJobs.status, ['scheduled', 'running'])));
+    return;
+  }
+  const parsedNetwork = verifiedNetworkSchema.safeParse(uploadedNetwork);
+  const verifiedNetwork = parsedNetwork.success ? parsedNetwork.data : undefined;
+
+  try {
+    if (isRedisAvailable()) {
+      const normalizedHosts = normalizeDiscoveryHosts(discoveryData.hosts);
+      // Exit the held org-scoped transaction context for the Redis
+      // round-trips (#1105) — see the note on the monitor-result branch.
+      await runOutsideDbContext(() => enqueueDiscoveryResults(
+        expectedJobId,
+        job.orgId,
+        job.siteId,
+        normalizedHosts,
+        discoveryData.hostsScanned ?? 0,
+        discoveryData.hostsDiscovered ?? 0,
+        undefined,
+        discoveryData.adjacency ?? [],
+        {
+          actorType: 'agent',
+          actorId: agentId,
+          source: 'route:agentWs:script-network-scan',
+        },
+        verifiedNetwork,
+      ));
+    } else {
+      // Redis not available — mark job failed so user knows results weren't processed
+      console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${expectedJobId}`);
+      await db
+        .update(discoveryJobs)
+        .set({
+          status: 'failed',
+          completedAt: new Date(),
+          hostsDiscovered: discoveryData.hostsDiscovered ?? 0,
+          hostsScanned: discoveryData.hostsScanned ?? 0,
+          errors: { message: 'Results received but could not be processed: job queue unavailable' },
+          updatedAt: new Date()
+        })
+        .where(eq(discoveryJobs.id, expectedJobId));
     }
   } catch (err) {
     console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
     captureException(err);
-    if (expectedJobId) {
-      try {
-        await db
-          .update(discoveryJobs)
-          .set({
-            status: 'failed',
-            completedAt: new Date(),
-            errors: { message: err instanceof Error ? err.message : 'Failed to enqueue discovery results' },
-            updatedAt: new Date()
-          })
-          .where(eq(discoveryJobs.id, expectedJobId));
-      } catch (dbErr) {
-        // #3530: the job would stay 'running' with nothing recorded — neither
-        // the results nor the failure. Propagate so the transport rolls the
-        // command's terminal transition back and parks it as
-        // result_processing_failed instead of reporting it completed.
-        console.error(`[AgentWs] Additionally failed to mark discovery job ${expectedJobId} as failed:`, dbErr);
-        throw dbErr;
-      }
+    try {
+      await db
+        .update(discoveryJobs)
+        .set({
+          status: 'failed',
+          completedAt: new Date(),
+          errors: { message: err instanceof Error ? err.message : 'Failed to enqueue discovery results' },
+          updatedAt: new Date()
+        })
+        .where(eq(discoveryJobs.id, expectedJobId));
+    } catch (dbErr) {
+      // #3530: the job would stay 'running' with nothing recorded — neither
+      // the results nor the failure. Propagate so the transport rolls the
+      // command's terminal transition back and parks it as
+      // result_processing_failed instead of reporting it completed.
+      console.error(`[AgentWs] Additionally failed to mark discovery job ${expectedJobId} as failed:`, dbErr);
+      throw dbErr;
     }
   }
 }
@@ -1321,6 +1406,8 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   [CommandTypes.OEM_UPDATE_RELEASE]: handleOemUpdateReleaseResult,
   [CommandTypes.WAKE_ON_LAN]: handleWakeOnLanResult,
   network_discovery: handleDiscoveryResult,
+  // Learned networks (#12369): the guarded scan's result runs the same handler (and its verification).
+  [GUARDED_COMMAND_TYPES.network_discovery]: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
   backup_test_restore: handleBackupVerificationResult,
   backup_restore: handleVmRestoreResult,

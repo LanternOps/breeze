@@ -160,6 +160,17 @@ function collectSecretLeaves(value: unknown): unknown[] {
 }
 
 /**
+ * Whether a stored profile row holds any saved SNMP secret: one non-empty community, or one non-empty secret
+ * leaf in the credentials. Same leaves as the stored-secret checks in `subnetChangeWouldRetainSnmpSecrets`.
+ * Learned networks (#12369 E5): the gate's `hasSavedSnmpSecrets`; W03b's save-time predicate agrees with it.
+ */
+export function storedProfileHoldsSnmpSecrets(row: { snmpCommunities: string[] | null; snmpCredentials: unknown }): boolean {
+  const hasStoredCommunities = (row.snmpCommunities ?? []).some((value) => Boolean(value));
+  const hasStoredCredentials = collectSecretLeaves(row.snmpCredentials).some((leaf) => typeof leaf === 'string' && leaf.length > 0);
+  return hasStoredCommunities || hasStoredCredentials;
+}
+
+/**
  * Same origin-binding contract as credentialOriginBinding.ts, applied to a discovery profile's
  * effective probe destination instead of a single HTTP origin. A masked or
  * simply omitted `snmpCommunities`/`snmpCredentials` field must not carry the

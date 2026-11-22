@@ -178,6 +178,7 @@ const LIVE: readonly string[] = [
   // (AGENT_BINARY_UPDATE_COMMAND_TYPES, #4093), so `live` is the only
   // self-consistent class for them.
   'network_discovery',
+  'network_discovery_guarded',
   'update_agent',
   'update_watchdog',
   'restart_agent',
@@ -287,6 +288,7 @@ const EXTRA_ROUTE_TYPES: readonly string[] = [
   'set_auto_update',
   'wake',
   'network_discovery',
+  'network_discovery_guarded',
   'update_agent',
   'update_watchdog',
   'restart_agent',

@@ -23,6 +23,10 @@ import {
 } from './desktopWs';
 import { handleTunnelDataFromAgent, isTunnelOwnedByAgent, registerTunnelOwnership } from './tunnelWs';
 import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacency } from '../jobs/discoveryWorker';
+import { verifiedNetworkSchema, type VerifiedNetwork } from '@breeze/shared';
+import { lockSitesForNetworkGate } from '../services/learnedNetworks/siteLock';
+import { attemptFromRecord, verifyDiscoveryResult } from '../services/learnedNetworks/verify';
+import { GATE_FAILURE_MESSAGES } from '../services/learnedNetworks/messages';
 import { enqueueBackupResults } from '../jobs/backupWorker';
 import { deviceHasBackupCatchUp, dispatchBackupCatchUpJobs } from '../jobs/backupCatchUp';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
@@ -1880,7 +1884,9 @@ export async function processOrphanedCommandResult(
       orgId: discoveryJobs.orgId,
       siteId: discoveryJobs.siteId,
       agentId: discoveryJobs.agentId,
-      status: discoveryJobs.status
+      status: discoveryJobs.status,
+      profileId: discoveryJobs.profileId,
+      networkDispatch: discoveryJobs.networkDispatch
     })
     .from(discoveryJobs)
     .where(eq(discoveryJobs.id, result.commandId))
@@ -1903,15 +1909,58 @@ export async function processOrphanedCommandResult(
       return;
     }
     console.log(`[AgentWs] Processing discovery result for job ${discoveryJob.id} from agent ${agentId}`);
-    try {
-      const discoveryData = result.result as {
-        jobId?: string;
-        hosts?: DiscoveredHostResult[];
-        hostsScanned?: number;
-        hostsDiscovered?: number;
-        adjacency?: DeviceAdjacency[];
-      } | undefined;
+    const discoveryData = result.result as {
+      jobId?: string;
+      hosts?: DiscoveredHostResult[];
+      hostsScanned?: number;
+      hostsDiscovered?: number;
+      adjacency?: DeviceAdjacency[];
+      verifiedNetwork?: unknown;
+    } | undefined;
 
+    // Learned networks (#12369 spec §8.2-8.4). Both run before the try below and
+    // outside any catch, so a failed lock or read fails the transaction instead of
+    // being caught next to a later write.
+    // A guarded refusal is recorded with its code; nothing was scanned or kept.
+    if (result.status === 'failed' && (result.errorCode === 'network_mismatch' || result.errorCode === 'network_changed')) {
+      const code = result.errorCode;
+      await db
+        .update(discoveryJobs)
+        .set({
+          status: 'failed',
+          completedAt: new Date(),
+          errors: { code, message: GATE_FAILURE_MESSAGES[code] },
+          updatedAt: new Date()
+        })
+        .where(and(eq(discoveryJobs.id, discoveryJob.id), eq(discoveryJobs.status, 'running')));
+      console.warn(`[AgentWs] Discovery job ${discoveryJob.id} refused by the agent's network guard: ${code}`);
+      return;
+    }
+    // A result with hosts is checked against the attempt record and the current
+    // state before anything is enqueued.
+    let verifiedNetwork: VerifiedNetwork | undefined;
+    if (result.status === 'completed' && discoveryData?.hosts) {
+      await lockSitesForNetworkGate([discoveryJob.siteId], 'shared');
+      const verification = await verifyDiscoveryResult({
+        orgId: discoveryJob.orgId,
+        siteId: discoveryJob.siteId,
+        profileId: discoveryJob.profileId,
+        attempt: attemptFromRecord(discoveryJob.networkDispatch),
+        verifiedNetwork: discoveryData.verifiedNetwork,
+      });
+      if (!verification.ok) {
+        await db
+          .update(discoveryJobs)
+          .set({ status: 'failed', completedAt: new Date(), errors: verification.error, updatedAt: new Date() })
+          .where(and(eq(discoveryJobs.id, discoveryJob.id), eq(discoveryJobs.status, 'running')));
+        console.warn(`[AgentWs] Discarding unverified discovery result for job ${discoveryJob.id}`);
+        return;
+      }
+      const parsedNetwork = verifiedNetworkSchema.safeParse(discoveryData.verifiedNetwork);
+      verifiedNetwork = parsedNetwork.success ? parsedNetwork.data : undefined;
+    }
+
+    try {
       if (result.status !== 'completed' || !discoveryData?.hosts) {
         const errorMsg = result.error || result.stderr || `Agent returned status: ${result.status}`;
         await db
@@ -1944,7 +1993,8 @@ export async function processOrphanedCommandResult(
             actorType: 'agent',
             actorId: agentId,
             source: 'route:agentWs:discovery-result',
-          }
+          },
+          verifiedNetwork,
         ));
       } else {
         console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${discoveryJob.id}`);

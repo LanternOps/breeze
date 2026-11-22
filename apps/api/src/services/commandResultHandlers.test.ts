@@ -28,7 +28,36 @@ vi.mock('./bareMetalRecoveryService', () => ({
   applyRebuildCommandResult: applyRebuildCommandResultMock,
 }));
 
-import { commandResultHandlers } from './commandResultHandlers';
+// Learned networks (#12369) Task 10: the persisted discovery result handler verifies before it enqueues.
+const { discoverySelectMock, discoveryUpdateMock, enqueueDiscoveryResultsMock, lockSitesMock, verifyMock } = vi.hoisted(() => ({
+  discoverySelectMock: vi.fn(),
+  discoveryUpdateMock: vi.fn(),
+  enqueueDiscoveryResultsMock: vi.fn(async (..._a: unknown[]) => 'queued'),
+  lockSitesMock: vi.fn(async (..._a: unknown[]) => undefined),
+  verifyMock: vi.fn(),
+}));
+vi.mock('../db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../db')>();
+  return {
+    ...actual,
+    db: { ...actual.db, select: discoverySelectMock, update: discoveryUpdateMock },
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+  };
+});
+vi.mock('../jobs/discoveryWorker', () => ({
+  enqueueDiscoveryResults: (...a: unknown[]) => enqueueDiscoveryResultsMock(...a),
+}));
+vi.mock('./redis', () => ({ isRedisAvailable: vi.fn(() => true), getRedis: vi.fn(() => null) }));
+vi.mock('./learnedNetworks/siteLock', () => ({
+  lockSitesForNetworkGate: (...a: unknown[]) => lockSitesMock(...a),
+}));
+vi.mock('./learnedNetworks/verify', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./learnedNetworks/verify')>();
+  return { ...actual, verifyDiscoveryResult: (...a: unknown[]) => verifyMock(...a) };
+});
+
+import { commandResultHandlers, type CommandResultHandler } from './commandResultHandlers';
+import { GATE_FAILURE_MESSAGES } from './learnedNetworks/messages';
 
 describe('peripheral policy v2 command result handler', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -190,5 +219,153 @@ describe('bare_metal_rebuild command result handler (W05a)', () => {
     });
     expect(updateRestoreJobByCommandIdMock).toHaveBeenCalledTimes(1);
     expect(applyRebuildCommandResultMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('network discovery results are verified before they are enqueued (#12369)', () => {
+  const CMD_ID = '9a1c2e3f-4b5d-4c6e-8f70-112233445566';
+  const JOB_ID = '9b2d3f40-5c6e-4d7f-8a81-223344556677';
+  const ORG_ID = '9c3e4051-6d7f-4e80-8b92-334455667788';
+  const SITE_ID = '9d4f5162-7e80-4f91-8ca3-445566778899';
+  const PROFILE_ID = '9e506273-8f91-40a2-8db4-5566778899aa';
+  const GATEWAY_ID = '9f617384-90a2-41b3-8ec5-66778899aabb';
+  const NETWORK_ID = 'a0728495-a1b3-42c4-8fd6-778899aabbcc';
+  const VN = {
+    networkId: NETWORK_ID,
+    gatewayId: GATEWAY_ID,
+    gatewayAddress: '192.168.1.1',
+    gatewayMac: 'a4:2b:b0:11:22:9c',
+    interfaceName: 'eth0',
+  };
+  const DISPATCH = {
+    version: 1,
+    mode: 'guarded',
+    agentId: 'agent-1',
+    deviceId: 'a1839516-b2c4-43d5-80e7-8899aabbccdd',
+    allowedNetworkIds: [NETWORK_ID],
+    allowedGatewayIds: [GATEWAY_ID],
+    decidedAt: '2026-11-22T10:00:00.000Z',
+  };
+  const HOST = { ip: '192.168.1.20', hostname: 'LAPTOP-JS', assetType: 'workstation' };
+  const UNVERIFIED = { code: 'network_unverified', message: GATE_FAILURE_MESSAGES.network_unverified };
+  const handler = commandResultHandlers.network_discovery_guarded!;
+  const setSpy = vi.fn((_values: Record<string, unknown>) => ({ where: () => Promise.resolve([]) }));
+
+  function input(
+    type: string,
+    payload: Record<string, unknown>,
+    result: Record<string, unknown>,
+  ): Parameters<CommandResultHandler>[0] {
+    return {
+      agentId: 'agent-1', commandId: CMD_ID,
+      command: { id: CMD_ID, type, payload, submittedOrgId: ORG_ID } as never,
+      resolvedDeviceId: 'dev-1', result: { status: 'completed', ...result } as never, stdout: undefined,
+    };
+  }
+  function updateSet(): Record<string, unknown> | undefined {
+    return setSpy.mock.calls[0]?.[0];
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    discoverySelectMock.mockReturnValue({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([
+        { orgId: ORG_ID, siteId: SITE_ID, profileId: PROFILE_ID, networkDispatch: DISPATCH },
+      ]) }) }),
+    });
+    discoveryUpdateMock.mockReturnValue({ set: setSpy });
+    verifyMock.mockResolvedValue({ ok: true, networkId: NETWORK_ID });
+  });
+
+  it('registers one handler for both discovery types', () => {
+    expect(handler).toBeTypeOf('function');
+    expect(handler).toBe(commandResultHandlers.network_discovery);
+  });
+
+  it('discards an unverified result and enqueues nothing', async () => {
+    verifyMock.mockResolvedValue({ ok: false, error: UNVERIFIED });
+    await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST] } }));
+    expect(updateSet()).toMatchObject({ status: 'failed', errors: UNVERIFIED });
+    expect(enqueueDiscoveryResultsMock).not.toHaveBeenCalled();
+  });
+
+  it('takes the shared site lock before it verifies, with the job placement and the attempt record', async () => {
+    await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST], verifiedNetwork: VN } }));
+    expect(lockSitesMock).toHaveBeenCalledWith([SITE_ID], 'shared');
+    expect(verifyMock).toHaveBeenCalledWith({
+      orgId: ORG_ID,
+      siteId: SITE_ID,
+      profileId: PROFILE_ID,
+      attempt: { mode: 'guarded', allowedGatewayIds: [GATEWAY_ID] },
+      verifiedNetwork: VN,
+    });
+    expect(lockSitesMock.mock.invocationCallOrder[0]!).toBeLessThan(verifyMock.mock.invocationCallOrder[0]!);
+  });
+
+  it('stores a refusal code', async () => {
+    await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { status: 'failed', errorCode: 'network_changed', error: 'x' }));
+    expect(updateSet()).toMatchObject({
+      status: 'failed',
+      errors: { code: 'network_changed', message: GATE_FAILURE_MESSAGES.network_changed },
+    });
+    expect(verifyMock).not.toHaveBeenCalled();
+    expect(enqueueDiscoveryResultsMock).not.toHaveBeenCalled();
+  });
+
+  it('stores a network_mismatch refusal with its message', async () => {
+    await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { status: 'failed', errorCode: 'network_mismatch', error: 'x' }));
+    expect(updateSet()).toMatchObject({
+      status: 'failed',
+      errors: { code: 'network_mismatch', message: GATE_FAILURE_MESSAGES.network_mismatch },
+    });
+  });
+
+  it('leaves any other failure as it was (no job write)', async () => {
+    await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { status: 'failed', errorCode: 'timeout', error: 'x' }));
+    expect(discoveryUpdateMock).not.toHaveBeenCalled();
+    expect(verifyMock).not.toHaveBeenCalled();
+  });
+
+  it('enqueues a verified result with its verifiedNetwork', async () => {
+    await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST], verifiedNetwork: VN } }));
+    expect(enqueueDiscoveryResultsMock).toHaveBeenCalledTimes(1);
+    expect(enqueueDiscoveryResultsMock.mock.calls[0]![9]).toEqual(VN);
+    expect(discoveryUpdateMock).not.toHaveBeenCalled();
+  });
+
+  it('passes no verifiedNetwork to the queue when the upload does not parse', async () => {
+    verifyMock.mockResolvedValue({ ok: true, networkId: null });
+    await handler(input('network_discovery', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST], verifiedNetwork: { gatewayId: 'nope' } } }));
+    expect(enqueueDiscoveryResultsMock).toHaveBeenCalledTimes(1);
+    expect(enqueueDiscoveryResultsMock.mock.calls[0]![9]).toBeUndefined();
+  });
+
+  it('reads verifiedNetwork from stdout when the REST route delivers the body there (C7)', async () => {
+    await handler({
+      ...input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST] } }),
+      stdout: JSON.stringify({ jobId: JOB_ID, hosts: [HOST], verifiedNetwork: VN }),
+    });
+    expect(verifyMock.mock.calls[0]![0]).toMatchObject({ verifiedNetwork: VN });
+    expect(enqueueDiscoveryResultsMock.mock.calls[0]![9]).toEqual(VN);
+  });
+
+  it('treats unparseable stdout as no verifiedNetwork', async () => {
+    await handler({
+      ...input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST] } }),
+      stdout: 'not json',
+    });
+    expect(verifyMock).toHaveBeenCalledTimes(1);
+    expect(verifyMock.mock.calls[0]![0]).toMatchObject({ verifiedNetwork: undefined });
+  });
+
+  it('does nothing for a command without a jobId (the AI tool)', async () => {
+    await handler(input('network_discovery_guarded', { subnets: ['192.168.1.0/24'] }, { result: { hosts: [HOST] } }));
+    await handler(input('network_discovery_guarded', { subnets: ['192.168.1.0/24'] }, { status: 'failed', errorCode: 'network_mismatch' }));
+    expect(discoveryUpdateMock).not.toHaveBeenCalled();
+    expect(lockSitesMock).not.toHaveBeenCalled();
+    expect(verifyMock).not.toHaveBeenCalled();
+    expect(enqueueDiscoveryResultsMock).not.toHaveBeenCalled();
   });
 });
