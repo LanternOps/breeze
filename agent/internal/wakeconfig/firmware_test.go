@@ -205,8 +205,8 @@ func TestFirmwareLayerOnlyAppliesWithAWiredAdapter(t *testing.T) {
 	}
 }
 
-// W02 reads protection but does not act on it: a set password does not change
-// the state (firmware_protected arrives with the W04 write path).
+// Protection alone does not change the state: firmware_protected needs writes
+// on and a wrong setting (TestProtectionSetIsFirmwareProtectedNoApplyCall).
 func TestProtectionIsReportedNotActedOn(t *testing.T) {
 	for p, want := range map[biosconfig.Protection]string{
 		biosconfig.ProtectionNone: "none", biosconfig.ProtectionSet: "set", biosconfig.ProtectionUnknown: "unknown",
