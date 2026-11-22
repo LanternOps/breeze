@@ -1,9 +1,11 @@
 /**
  * Learned networks E1 (#12369, spec §8.2-8.3): the per-site lock every network-gate writer and reader takes.
  *
- * Transaction-scoped advisory locks keyed by site id. Dispatch and profile saves take `shared`; assignment,
- * unassignment, merge and "stop requiring" take `exclusive`. Lock order for every writer: these site locks in
- * ascending id, then the profile row. Never hold one across Redis or WebSocket I/O (#1105).
+ * Transaction-scoped advisory locks keyed by site id. Dispatch, profile saves and the discovery result paths take
+ * `shared`; assignment, unassignment, merge and "stop requiring" take `exclusive`. Lock order for every writer:
+ * these site locks in ascending id, then the profile row. Never hold one across Redis or WebSocket I/O (#1105).
+ * The lock lasts until the outermost transaction ends: a savepoint release and `runOutsideDbContext` do not
+ * release it, so queue work owed by a locked transaction runs after that transaction commits (#12502).
  */
 import { sql } from 'drizzle-orm';
 import { assertInTransaction, db } from '../../db';
