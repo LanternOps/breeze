@@ -354,6 +354,58 @@ describe('AiAgentsPage — circuit breaker (#12347)', () => {
     await waitFor(() => expect(listCalls()).toBeGreaterThan(before));
   });
 
+  it('keeps Confirm gated on a reason the route would refuse (under 3 characters once trimmed)', async () => {
+    mockEndpoints([TRIPPED]);
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-circuit-reset-a1-org-1'));
+    const confirm = await screen.findByTestId('ai-agent-circuit-reset-confirm');
+    const reason = screen.getByTestId('ai-agent-circuit-reset-reason');
+    for (const value of ['ok', '     ', '  ab  ']) {
+      fireEvent.change(reason, { target: { value } });
+      expect(confirm).toHaveAttribute('aria-disabled', 'true');
+    }
+    fireEvent.change(reason, { target: { value: ' abc ' } });
+    expect(confirm).toHaveAttribute('aria-disabled', 'false');
+  });
+
+  // A dialog left open on a circuit that then disappears from the list (an
+  // other admin reset it) must not linger in state and pop back open, still
+  // holding the old reason, the next time that circuit opens.
+  it('drops a pending reset when its circuit leaves the list, and never reopens it by itself', async () => {
+    let agents: unknown[] = [TRIPPED];
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url === '/ai/patch-plan/runs') {
+        return Promise.resolve(json({ success: false, skipped: 'circuit_open', code: 'circuit_open' }, true, 200));
+      }
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: agents, system: SYSTEM_ENABLED }));
+      return Promise.resolve(json({ data: [] }));
+    });
+    const patchTripped = { ...TRIPPED, id: 'p-agent', kind: 'patch' as const };
+    agents = [patchTripped];
+    orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
+    const { rerender } = render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-circuit-reset-p-agent-org-1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-circuit-reset-reason'), {
+      target: { value: 'stale reason' },
+    });
+    // The circuit is gone on the next reload (Run now's circuit_open reload).
+    agents = [{ ...patchTripped, openCircuits: [] }];
+    fireEvent.click(screen.getByTestId('ai-agent-run-now-p-agent'));
+    await waitFor(() => expect(screen.queryByTestId('ai-agent-circuit-open-p-agent-org-1')).toBeNull());
+    expect(screen.queryByTestId('ai-agent-circuit-reset-confirm')).toBeNull();
+
+    // It opens again later: the row is back, the dialog is not.
+    agents = [patchTripped];
+    fireEvent.click(screen.getByTestId('ai-agent-run-now-p-agent'));
+    expect(await screen.findByTestId('ai-agent-circuit-open-p-agent-org-1')).toBeInTheDocument();
+    rerender(<AiAgentsPage />);
+    expect(screen.queryByTestId('ai-agent-circuit-reset-confirm')).toBeNull();
+  });
+
   it('names the two-factor requirement when the session has not satisfied MFA', async () => {
     routes((url) => (url === '/ai/agents/a1/circuit/reset'
       ? json({ error: 'MFA required', code: 'MFA_REQUIRED' }, false, 403)

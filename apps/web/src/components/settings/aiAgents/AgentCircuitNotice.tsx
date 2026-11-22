@@ -1,4 +1,4 @@
-import { useCallback, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AiAgentOpenCircuitDto } from '@breeze/shared';
 import { fetchWithAuth } from '../../../stores/auth';
@@ -32,9 +32,10 @@ type Props = {
  * tripped agent sat skipping its scheduled runs with no visible sign.
  *
  * Reset calls the EXISTING `POST /ai/agents/:id/circuit/reset` and adds no
- * gate of its own: that route already requires `ai_agents:write` and an
- * MFA-satisfied session (`requireMfa()`, a 403 `MFA_REQUIRED` otherwise). It
- * takes no step-up grant, so there is no step-up prompt to show — the MFA
+ * gate of its own: that route already requires `ai_agents:write` and a
+ * session that satisfies the tenant's MFA policy (`requireMfa()`, a 403
+ * `MFA_REQUIRED` otherwise). It takes no step-up grant, so there is no
+ * step-up prompt to show — the MFA
  * refusal is named in the toast instead. The route also requires a reason for
  * its audit row, which is why Reset opens a dialog rather than firing.
  *
@@ -56,6 +57,24 @@ export default function AgentCircuitNotice({
   const [submitting, setSubmitting] = useState(false);
   // Same single-fire latch as the page's re-enable (#3705).
   const submittingRef = useRef(false);
+
+  const shown = !openCircuits
+    ? []
+    : selectedOrgId
+      ? openCircuits.filter((circuit) => circuit.orgId === selectedOrgId)
+      : openCircuits;
+  const targetShown = target !== null && shown.some((circuit) => circuit.orgId === target.orgId);
+
+  // A pending reset whose circuit has left the list (another admin reset it,
+  // the page switched org) is dropped, not parked: left in state it would pop
+  // the dialog back open, old reason and all, the next time that circuit
+  // opened. Never while a request is in flight — that one settles on its own.
+  useEffect(() => {
+    if (target !== null && !targetShown && !submittingRef.current) {
+      setTarget(null);
+      setReason('');
+    }
+  }, [target, targetShown]);
 
   const close = useCallback(() => {
     if (submittingRef.current) return;
@@ -95,10 +114,6 @@ export default function AgentCircuitNotice({
     }
   }, [agentId, onReset, onUnauthorized, reason, t, target]);
 
-  if (!openCircuits || openCircuits.length === 0) return null;
-  const shown = selectedOrgId
-    ? openCircuits.filter((circuit) => circuit.orgId === selectedOrgId)
-    : openCircuits;
   if (shown.length === 0) return null;
 
   return (
@@ -135,7 +150,7 @@ export default function AgentCircuitNotice({
         ))}
       </ul>
       <ConfirmDialog
-        open={target !== null}
+        open={targetShown}
         onClose={close}
         onConfirm={() => void confirmReset()}
         title={t('aiAgentsPage.circuit.dialog.title')}

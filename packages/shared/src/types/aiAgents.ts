@@ -861,6 +861,20 @@ export interface AiAgentRunSkipSummaryDto {
 }
 
 /**
+ * #12347 — one open (org, agent) circuit, as the agents LIST route reports it.
+ * `openedReason` is server-built from machine tokens only (the threshold and
+ * the triggering run's allowlisted error code), never from run output.
+ */
+export interface AiAgentOpenCircuitDto {
+  orgId: string;
+  orgName: string;
+  /** ISO-8601; null only for a row opened by something that set no time. */
+  openedAt: string | null;
+  openedReason: string | null;
+  consecutiveFailures: number;
+}
+
+/**
  * The wire shape of one agent as returned by /api/v1/ai/agents.
  *
  * Declared here, and named as the API handler's return type, so the endpoint
@@ -876,20 +890,6 @@ export interface AiAgentRunSkipSummaryDto {
  * are NOT NULL, so a client writing `toolAllowlist ?? []` would be papering over
  * a contract change rather than handling a real absence.
  */
-/**
- * #12347 — one open (org, agent) circuit, as the agents LIST route reports it.
- * `openedReason` is server-built from machine tokens only (the threshold and
- * the triggering run's allowlisted error code), never from run output.
- */
-export interface AiAgentOpenCircuitDto {
-  orgId: string;
-  orgName: string;
-  /** ISO-8601; null only for a row opened by something that set no time. */
-  openedAt: string | null;
-  openedReason: string | null;
-  consecutiveFailures: number;
-}
-
 export interface AiAgentDto {
   id: string;
   kind: AiAgentKind;
