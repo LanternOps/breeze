@@ -1273,6 +1273,8 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   ['config_policy_monitors', ['configuration_policies']],
   ['ai_messages', ['ai_sessions']],
   ['ai_tool_executions', ['ai_sessions']],
+  // #12421 W01: tool-discovery telemetry, session-keyed like ai_tool_executions.
+  ['ai_tool_search_events', ['ai_sessions']],
   // NOTE: script_execution_batches is NOT here — it carries a denormalized
   // org_id column (2026-05-31 migration) and is auto-discovered as an ordinary
   // org-tenant table, because a nested-RLS join through its nullable-org parent
