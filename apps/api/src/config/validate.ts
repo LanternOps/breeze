@@ -913,6 +913,9 @@ const envObjectSchema = z
     // Vendor updates (#11065): all dark by default. Read at runtime by
     // services/oemUpdates/flags.ts; checked in the superRefine below.
     BREEZE_OEM_UPDATES_ENABLED: z.string().optional(),
+    // Browser remote desktop rollout flag (#9557), default off. Read at runtime
+    // by browserDesktopEnabled() in env.ts; boolean format checked below.
+    BREEZE_BROWSER_DESKTOP_ENABLED: z.string().optional(),
     BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: z.string().optional(),
     BREEZE_OEM_UPDATES_DISABLED_LANES: z.string().optional(),
     BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: z.string().optional(),
@@ -2628,6 +2631,14 @@ const envSchema = envObjectSchema
         code: z.ZodIssueCode.custom,
         path: ['BREEZE_OEM_UPDATES_ENABLED'],
         message: 'BREEZE_OEM_UPDATES_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false.',
+      });
+    }
+    const browserDesktopFlag = (data.BREEZE_BROWSER_DESKTOP_ENABLED ?? '').trim().toLowerCase();
+    if (browserDesktopFlag && !boolValues.has(browserDesktopFlag)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_BROWSER_DESKTOP_ENABLED'],
+        message: 'BREEZE_BROWSER_DESKTOP_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false.',
       });
     }
     if (isProduction && (data.BREEZE_OEM_UPDATES_LAB_DEVICE_IDS ?? '').trim()) {

@@ -1,5 +1,5 @@
 import { Worker, type Job, type Queue } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -7,14 +7,21 @@ import { unifiIntegrations, unifiSiteMappings } from '../db/schema';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { getBullMQConnection } from '../services/redis';
 import { createUnifiClient } from '../services/unifi/unifiClient';
-import { getSyncCredentials, markStatus, markSynced } from '../services/unifi/unifiConnectionService';
-import { collectSyncData, applySyncData } from '../services/unifi/unifiSyncService';
+import { markStatus, markSynced } from '../services/unifi/unifiConnectionService';
+import { getSyncKeys } from '../services/unifi/unifiKeyService';
+import { collectSyncData, applySyncData, type CollectedSync } from '../services/unifi/unifiSyncService';
 import { attachWorkerObservability } from './workerObservability';
 
 export const UNIFI_SYNC_QUEUE = 'unifi-sync';
 const SYNC_SCHEDULER_JOB = 'sync-scheduler';
 const SYNC_INTEGRATION_JOB = 'sync-integration';
 const SYNC_INTERVAL_MS = 30 * 60 * 1000;
+
+const NO_ENABLED_KEY = 'No enabled API key on this connection';
+// Rollout guard (plan D12): this version syncs exactly one key. A connection
+// with several keys (written by a newer version, then rolled back) records a
+// failed run and nothing else, so no sweep ever runs on one key's view alone.
+const MULTI_KEY_REFUSAL = 'This connection has several API keys; this server version supports one';
 
 const jobSchema = z.union([
   z.object({ type: z.literal(SYNC_SCHEDULER_JOB) }),
@@ -72,7 +79,9 @@ async function processScheduler(): Promise<{ queued: number }> {
         partnerId: unifiIntegrations.partnerId,
       })
       .from(unifiIntegrations)
-      .where(eq(unifiIntegrations.isActive, true))
+      // Only cloud connections are synced from Site Manager; self-hosted ones are
+      // polled by their collectors (plan D6).
+      .where(and(eq(unifiIntegrations.isActive, true), eq(unifiIntegrations.connectionType, 'cloud')))
   );
 
   const queue = getUnifiSyncQueue();
@@ -103,10 +112,10 @@ async function processScheduler(): Promise<{ queued: number }> {
 }
 
 async function processSyncIntegration(data: SyncIntegrationJobData): Promise<void> {
-  // 1) Short DB context: read credentials + mappings. No network I/O here, so no
+  // 1) Short DB context: read the keys + mappings. No network I/O here, so no
   //    pooled connection is held while UniFi is being called.
   const prep = await withSystemDbAccessContext(async () => {
-    const creds = await getSyncCredentials(db, data.integrationId, data.partnerId);
+    const creds = await getSyncKeys(db, data.integrationId, data.partnerId);
     if (!creds) return null;
     const mappings = await db
       .select()
@@ -115,23 +124,47 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<voi
     return { creds, mappings };
   });
 
-  if (!prep) {
+  // Gone, inactive or self-hosted: there is nothing to sync and nothing to mark.
+  if (!prep) return;
+
+  const integration = { id: data.integrationId, partnerId: data.partnerId };
+  const { keys, baseUrl } = prep.creds;
+
+  if (keys.length === 0) {
     await withSystemDbAccessContext(() =>
-      markStatus(db, data.integrationId, data.partnerId, 'reauth_required', 'No API key on connection'),
+      markStatus(db, data.integrationId, data.partnerId, 'reauth_required', NO_ENABLED_KEY),
+    );
+    return;
+  }
+
+  if (keys.length > 1) {
+    await withSystemDbAccessContext(() =>
+      applySyncData(db, integration, data.trigger, prep.mappings, {
+        hostsSeen: 0,
+        fatalError: MULTI_KEY_REFUSAL,
+        byMapping: new Map(),
+      }),
     );
     return;
   }
 
   // 2) NO DB context: all UniFi HTTP (listHosts, one devices read and one
   //    ISP-metrics read per run, 429 backoff sleeps) runs here without holding a
-  //    connection idle-in-transaction.
-  const client = createUnifiClient({ baseUrl: prep.creds.baseUrl, apiKey: prep.creds.apiKey });
-  const collected = await collectSyncData(client, prep.mappings);
+  //    connection idle-in-transaction. A key that does not decrypt is a failed
+  //    run, never a silent skip.
+  const key = keys[0]!;
+  let collected: CollectedSync;
+  if (key.apiKey === null) {
+    collected = { hostsSeen: 0, fatalError: key.decryptError, byMapping: new Map() };
+  } else {
+    const client = createUnifiClient({ baseUrl, apiKey: key.apiKey });
+    collected = await collectSyncData(client, prep.mappings);
+  }
 
   // 3) Short DB context(s): persist the run + device reconciliation, then status.
   try {
     const result = await withSystemDbAccessContext(() =>
-      applySyncData(db, { id: data.integrationId, partnerId: data.partnerId }, data.trigger, prep.mappings, collected),
+      applySyncData(db, integration, data.trigger, prep.mappings, collected),
     );
     await withSystemDbAccessContext(async () => {
       await markSynced(db, data.integrationId, data.partnerId, result.status, result.error ?? null);

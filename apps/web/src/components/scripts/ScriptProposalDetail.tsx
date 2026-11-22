@@ -133,6 +133,7 @@ export default function ScriptProposalDetail({ proposalId }: { proposalId: strin
         )}
       </dl>
       {ACTIONABLE_STATUSES.has(rawStatus) && (
+        // bare-hash-anchor-exempt: rendered on /scripts pages only, a real cross-page link
         <a
           href={`/approvals#proposal-${proposalId}`}
           className="mt-4 inline-block text-sm font-medium text-primary hover:underline"
