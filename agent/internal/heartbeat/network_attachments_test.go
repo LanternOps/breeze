@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -293,18 +294,15 @@ func TestNetworkAttachmentsWiredIntoHeartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		`netAttach:                      newNetAttachReporter(filepath.Join(config.GetDataDir(), "network-attachment-state.json")),`,
-		"\th.attachNetworkAttachments(&payload)\n",
-	} {
-		if !strings.Contains(string(src), want) {
-			t.Errorf("heartbeat.go lacks %q", want)
-		}
+	// Whitespace-tolerant: gofmt realigns the struct literal when fields change.
+	ctor := regexp.MustCompile(`netAttach:\s+newNetAttachReporter\(filepath\.Join\(config\.GetDataDir\(\),\s*"network-attachment-state\.json"\)\),`)
+	if !ctor.Match(src) {
+		t.Error("NewWithVersion does not construct netAttach with the data-dir state file")
 	}
+	call := regexp.MustCompile(`\n\s*h\.attachNetworkAttachments\(&payload\)\n`).FindIndex(src)
 	start := strings.Index(string(src), "func (h *Heartbeat) sendHeartbeat() {")
-	call := strings.Index(string(src), "\th.attachNetworkAttachments(&payload)\n")
-	if start < 0 || call < start || strings.Contains(string(src)[start:call], "\n}\n") {
-		t.Errorf("attachNetworkAttachments is not called inside sendHeartbeat")
+	if call == nil || start < 0 || call[0] < start || strings.Contains(string(src)[start:call[0]], "\n}\n") {
+		t.Error("attachNetworkAttachments is not called inside sendHeartbeat")
 	}
 }
 
