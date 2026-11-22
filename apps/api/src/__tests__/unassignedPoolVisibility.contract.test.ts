@@ -199,8 +199,11 @@ const EPHEMERAL_ONLY: Record<string, string> = {
  * hidden-org targets never qualify).
  * 83 → 84 (#11065 observe-first): services/oemUpdates/observe.ts, the vendor
  * canary observe sweep (notParkedDeviceCondition() beside the filter).
+ * 84 → 85 (#11677): services/aiToolsSiteScope.ts, deviceListReachConditions —
+ * query_devices' reach moved there to be shared with the Wisp standing state
+ * (notParkedDeviceCondition() beside the filter; a FANOUT module).
  */
-const EPHEMERAL_DISCOVERED_FILES = 84;
+const EPHEMERAL_DISCOVERED_FILES = 85;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES
