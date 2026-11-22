@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"net/netip"
 	"syscall"
 	"testing"
@@ -37,12 +38,13 @@ func netlinkDumpMessage(typ uint16, payload []byte) []byte {
 
 func netlinkDumpDone() []byte { return netlinkDumpMessage(syscall.NLMSG_DONE, make([]byte, 4)) }
 
-// netlinkDumpRows returns count route payloads; base picks the third octet of
-// the destination so different reads carry different rows.
+// netlinkDumpRows returns count route payloads; base offsets the last octet of
+// both addresses so different reads carry different rows. Addresses stay in
+// 198.51.100.0/24 and 203.0.113.0/24 (documentation ranges).
 func netlinkDumpRows(base byte, count int) [][]byte {
 	out := make([][]byte, count)
 	for i := range out {
-		dst := netip.AddrFrom4([4]byte{198, 51, base + byte(i), 0})
+		dst := netip.AddrFrom4([4]byte{198, 51, 100, base + byte(i)})
 		gw := netip.AddrFrom4([4]byte{203, 0, 113, base + byte(i)})
 		out[i] = netlinkDumpRoutePayload(dst, gw, uint32(2+i))
 	}
@@ -135,8 +137,11 @@ func TestLinuxRoutesContainLookedUpGatewayRoute(t *testing.T) {
 	scope := manifest.Contexts[0]
 	destination := netip.MustParseAddr("203.0.113.20")
 	sel, err := r.LookupRoute(ctx, RouteLookupRequest{Destination: destination, ContextKey: scope.ContextKey})
-	if err != nil {
+	if errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) {
 		t.Skipf("host has no route to %s: %v", destination, err)
+	}
+	if err != nil {
+		t.Fatalf("LookupRoute: %v", err)
 	}
 	if sel.NextHop == nil {
 		t.Skipf("route to %s has no gateway (on-link or no default route)", destination)
