@@ -554,6 +554,7 @@ apps/api/src/services/exchangeRateBoundary.test.ts
 apps/api/src/services/expoPush.test.ts
 apps/api/src/services/featureConfigResolver.test.ts
 apps/api/src/services/featureLinkReaders.contract.test.ts
+apps/api/src/services/flows/conversion/convertAutomation.golden.test.ts
 apps/api/src/services/flows/flowIntentTerminalWriters.contract.test.ts
 apps/api/src/services/ianaEnterprise.test.ts
 apps/api/src/services/inboundEmail/commentNotificationPortalHref.test.ts
