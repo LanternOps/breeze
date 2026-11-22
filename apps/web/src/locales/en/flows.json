@@ -842,7 +842,10 @@
         "resolverPath": "Body field",
         "resolverSystem": "System",
         "webhookHelp": "Save the flow, then create the webhook secret and enable the flow on its Webhook tab.",
-        "manualHelp": "The flow runs only when someone starts it."
+        "manualHelp": "The flow runs only when someone starts it.",
+        "resolverKind": "Identifier comes from",
+        "resolverKindSystem": "An external system",
+        "resolverKindBreezeOrg": "A Breeze organization ID"
       },
       "target": {
         "title": "Devices",
@@ -882,7 +885,7 @@
         "stop": "Stop",
         "stopHelp": "Later actions skip the devices the script couldn't be sent to.",
         "continue": "Continue",
-        "continueHelp": "Carry on with the remaining actions.",
+        "continueHelp": "Later actions still run on the devices the script couldn't be sent to.",
         "notify": "Notify",
         "notifyHelp": "Send a notice to the channels below for each device the script couldn't be sent to. At most 20 notices are sent per run.",
         "noChannels": "Add a notification channel to use Notify."

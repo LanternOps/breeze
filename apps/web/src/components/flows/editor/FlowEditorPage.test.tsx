@@ -252,6 +252,25 @@ describe('FlowEditorPage', () => {
     expect(screen.queryByTestId('flow-editor-owner')).toBeNull();
   });
 
+  it('switching the owner to all organizations drops a group target the new owner cannot keep', async () => {
+    authState.user = { canManagePartnerWide: true };
+    api.createFlowDraft.mockResolvedValue({ flow: flow({ ownerScope: 'partner' }), validation });
+    render(<FlowEditorPage />);
+    fireEvent.click(await screen.findByTestId('flow-editor-owner-org'));
+    fireEvent.click(screen.getByTestId('flow-editor-tab-document'));
+    const doc = JSON.parse((screen.getByTestId('mock-doc') as HTMLTextAreaElement).value);
+    doc.name = 'Grouped';
+    doc.steps[0].input.scriptId = SCRIPT;
+    doc.steps[0].input.target = { type: 'groups', groupIds: ['44444444-4444-4444-8444-444444444444'] };
+    fireEvent.change(screen.getByTestId('mock-doc'), { target: { value: JSON.stringify(doc) } });
+    fireEvent.click(screen.getByTestId('flow-editor-tab-form'));
+    expect(await screen.findByTestId('mock-form-name')).toHaveTextContent('Grouped');
+    fireEvent.click(screen.getByTestId('flow-editor-owner-partner'));
+    fireEvent.click(screen.getByTestId('flow-editor-save'));
+    await waitFor(() => expect(api.createFlowDraft).toHaveBeenCalledTimes(1));
+    expect(api.createFlowDraft.mock.calls[0][0].document.steps[0].input.target).toEqual({ type: 'all' });
+  });
+
   it('the tab follows the hash', async () => {
     window.location.hash = 'document';
     render(<FlowEditorPage flowId={ID} />);

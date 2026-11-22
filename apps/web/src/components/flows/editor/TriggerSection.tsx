@@ -139,7 +139,12 @@ export function TriggerSection({
                 </button>
               </div>
             ))}
-            <button type="button" className="rounded border px-2 py-1 text-xs" disabled={readOnly} data-testid="flow-form-filter-add" onClick={() => setFilter([...filterRows, ['', '']])}>
+            <button type="button" className="rounded border px-2 py-1 text-xs" disabled={readOnly} data-testid="flow-form-filter-add" onClick={() => {
+                // A distinct placeholder key: two empty keys would collapse into one row.
+                let n = filterRows.length + 1;
+                while (filterRows.some(([k]) => k === `field${n}`)) n += 1;
+                setFilter([...filterRows, [`field${n}`, '']]);
+              }}>
               {t('flowEditor.form.trigger.filterAdd')}
             </button>
           </div>
@@ -155,35 +160,60 @@ export function TriggerSection({
               <option value="token">{t('webhook.authMode.token')}</option>
             </select>
           </label>
-          {partnerWide && (
-            <div className="grid gap-3 md:grid-cols-2">
-              <p className="text-xs text-muted-foreground md:col-span-2">{t('flowEditor.form.trigger.resolverHelp')}</p>
-              <label className="space-y-1 text-sm">
-                <span className="font-medium">{t('flowEditor.form.trigger.resolverPath')}</span>
-                <input
-                  className={`${input} font-mono`}
-                  placeholder="body.customer.id"
-                  value={trigger.orgResolver?.path ?? ''}
-                  disabled={readOnly}
-                  data-testid="flow-form-webhook-resolver-path"
-                  onChange={(e) => {
-                    const system = trigger.orgResolver && 'system' in trigger.orgResolver ? trigger.orgResolver.system : '';
-                    onChange({ ...trigger, orgResolver: { path: e.target.value, system } });
-                  }}
-                />
-              </label>
-              <label className="space-y-1 text-sm">
-                <span className="font-medium">{t('flowEditor.form.trigger.resolverSystem')}</span>
-                <input
-                  className={`${input} font-mono`}
-                  value={trigger.orgResolver && 'system' in trigger.orgResolver ? trigger.orgResolver.system : ''}
-                  disabled={readOnly}
-                  data-testid="flow-form-webhook-resolver-system"
-                  onChange={(e) => onChange({ ...trigger, orgResolver: { path: trigger.orgResolver?.path ?? '', system: e.target.value } })}
-                />
-              </label>
-            </div>
-          )}
+          {partnerWide && (() => {
+            const resolver = trigger.orgResolver;
+            const path = resolver?.path ?? '';
+            // Two shapes (validators/flows.ts): an external system's identifier, or a Breeze organization id.
+            const isBreezeOrg = resolver !== undefined && 'kind' in resolver;
+            const system = resolver && 'system' in resolver ? resolver.system : '';
+            return (
+              <div className="grid gap-3 md:grid-cols-2">
+                <p className="text-xs text-muted-foreground md:col-span-2">{t('flowEditor.form.trigger.resolverHelp')}</p>
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">{t('flowEditor.form.trigger.resolverPath')}</span>
+                  <input
+                    className={`${input} font-mono`}
+                    placeholder="body.customer.id"
+                    value={path}
+                    disabled={readOnly}
+                    data-testid="flow-form-webhook-resolver-path"
+                    onChange={(e) => onChange({
+                      ...trigger,
+                      orgResolver: isBreezeOrg ? { path: e.target.value, kind: 'breeze_org_id' } : { path: e.target.value, system },
+                    })}
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">{t('flowEditor.form.trigger.resolverKind')}</span>
+                  <select
+                    className={input}
+                    value={isBreezeOrg ? 'breeze_org_id' : 'system'}
+                    disabled={readOnly}
+                    data-testid="flow-form-webhook-resolver-kind"
+                    onChange={(e) => onChange({
+                      ...trigger,
+                      orgResolver: e.target.value === 'breeze_org_id' ? { path, kind: 'breeze_org_id' } : { path, system: '' },
+                    })}
+                  >
+                    <option value="system">{t('flowEditor.form.trigger.resolverKindSystem')}</option>
+                    <option value="breeze_org_id">{t('flowEditor.form.trigger.resolverKindBreezeOrg')}</option>
+                  </select>
+                </label>
+                {!isBreezeOrg && (
+                  <label className="space-y-1 text-sm">
+                    <span className="font-medium">{t('flowEditor.form.trigger.resolverSystem')}</span>
+                    <input
+                      className={`${input} font-mono`}
+                      value={system}
+                      disabled={readOnly}
+                      data-testid="flow-form-webhook-resolver-system"
+                      onChange={(e) => onChange({ ...trigger, orgResolver: { path, system: e.target.value } })}
+                    />
+                  </label>
+                )}
+              </div>
+            );
+          })()}
           <p className="text-xs text-muted-foreground">{t('flowEditor.form.trigger.webhookHelp')}</p>
         </div>
       )}

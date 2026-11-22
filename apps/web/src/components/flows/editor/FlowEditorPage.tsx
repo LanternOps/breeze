@@ -315,6 +315,27 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
     }
   };
 
+  /**
+   * The owner decides what the form may hold: a partner-wide flow cannot target
+   * an organization's devices or groups, and only a partner-wide webhook names
+   * an organization resolver. Drop what the new owner cannot keep.
+   */
+  const changeOwner = (next: 'organization' | 'partner') => {
+    setOwner(next);
+    setEditor((e) => {
+      const v = e?.formValues;
+      if (!e || !v) return e;
+      let values = v;
+      if (next === 'partner' && v.target.kind === 'target' && (v.target.target.type === 'devices' || v.target.target.type === 'groups')) {
+        values = { ...values, target: { kind: 'target', target: { type: 'all' } } };
+      }
+      if (next === 'organization' && values.trigger.type === 'webhook' && values.trigger.orgResolver) {
+        values = { ...values, trigger: { type: 'webhook', auth: values.trigger.auth } };
+      }
+      return values === v ? e : withFormValues(e, values);
+    });
+  };
+
   const onFormChange = (values: FlowFormValues) => {
     setSavedNotice(false);
     setEditor((e) => (e ? withFormValues(e, values) : e));
@@ -345,11 +366,11 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
         <fieldset className="space-y-2 rounded-md border p-4" data-testid="flow-editor-owner">
           <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">{t('flowEditor.owner.title')}</legend>
           <label className="flex items-center gap-2 text-sm">
-            <input type="radio" name="flow-owner" checked={owner === 'organization'} onChange={() => setOwner('organization')} data-testid="flow-editor-owner-org" />
+            <input type="radio" name="flow-owner" checked={owner === 'organization'} onChange={() => changeOwner('organization')} data-testid="flow-editor-owner-org" />
             {t('flowEditor.owner.organization')}
           </label>
           <label className="flex items-center gap-2 text-sm">
-            <input type="radio" name="flow-owner" checked={owner === 'partner'} onChange={() => setOwner('partner')} data-testid="flow-editor-owner-partner" />
+            <input type="radio" name="flow-owner" checked={owner === 'partner'} onChange={() => changeOwner('partner')} data-testid="flow-editor-owner-partner" />
             {t('flowEditor.owner.partner')}
           </label>
         </fieldset>

@@ -103,6 +103,32 @@ describe('TriggerSection', () => {
     expect(onChange).toHaveBeenLastCalledWith({ type: 'webhook', auth: 'hmac', orgResolver: { path: 'body.customer.id', system: 'psa' } });
   });
 
+  it('a Breeze organization ID resolver is shown as such and kept on edit', () => {
+    const onChange = vi.fn();
+    function Harness() {
+      const [trigger, setTrigger] = useState<FlowFormTrigger>({ type: 'webhook', auth: 'hmac', orgResolver: { path: 'body.org', kind: 'breeze_org_id' } });
+      return <TriggerSection trigger={trigger} onChange={(next) => { setTrigger(next); onChange(next); }} partnerWide issues={[]} />;
+    }
+    render(<Harness />);
+    expect(screen.getByTestId('flow-form-webhook-resolver-kind')).toHaveValue('breeze_org_id');
+    expect(screen.queryByTestId('flow-form-webhook-resolver-system')).toBeNull();
+    fireEvent.change(screen.getByTestId('flow-form-webhook-resolver-path'), { target: { value: 'body.tenant' } });
+    expect(onChange).toHaveBeenLastCalledWith({ type: 'webhook', auth: 'hmac', orgResolver: { path: 'body.tenant', kind: 'breeze_org_id' } });
+    fireEvent.change(screen.getByTestId('flow-form-webhook-resolver-kind'), { target: { value: 'system' } });
+    expect(onChange).toHaveBeenLastCalledWith({ type: 'webhook', auth: 'hmac', orgResolver: { path: 'body.tenant', system: '' } });
+  });
+
+  it('each Add a condition adds a row', () => {
+    function Harness() {
+      const [trigger, setTrigger] = useState<FlowFormTrigger>({ type: 'event', event: 'device.offline', filter: {} });
+      return <TriggerSection trigger={trigger} onChange={setTrigger} partnerWide={false} issues={[]} />;
+    }
+    render(<Harness />);
+    fireEvent.click(screen.getByTestId('flow-form-filter-add'));
+    fireEvent.click(screen.getByTestId('flow-form-filter-add'));
+    expect(screen.getByTestId('flow-form-filter-1-key')).toBeInTheDocument();
+  });
+
   it('an organization webhook has no resolver', () => {
     render(<TriggerSection trigger={{ type: 'webhook', auth: 'hmac' }} onChange={vi.fn()} partnerWide={false} issues={[]} />);
     expect(screen.queryByTestId('flow-form-webhook-resolver-path')).toBeNull();

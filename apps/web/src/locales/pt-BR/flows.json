@@ -842,7 +842,10 @@
         "resolverPath": "Campo do corpo",
         "resolverSystem": "Sistema",
         "webhookHelp": "Salve o fluxo e depois crie o segredo do webhook e ative o fluxo na aba Webhook dele.",
-        "manualHelp": "O fluxo é executado somente quando alguém o inicia."
+        "manualHelp": "O fluxo é executado somente quando alguém o inicia.",
+        "resolverKind": "O identificador vem de",
+        "resolverKindSystem": "Um sistema externo",
+        "resolverKindBreezeOrg": "Um ID de organização do Breeze"
       },
       "target": {
         "title": "Dispositivos",
@@ -882,7 +885,7 @@
         "stop": "Parar",
         "stopHelp": "As ações seguintes ignoram os dispositivos aos quais o script não pôde ser enviado.",
         "continue": "Continuar",
-        "continueHelp": "Seguir com as ações restantes.",
+        "continueHelp": "As ações seguintes também são executadas nos dispositivos aos quais o script não pôde ser enviado.",
         "notify": "Notificar",
         "notifyHelp": "Envia um aviso aos canais abaixo para cada dispositivo ao qual o script não pôde ser enviado. No máximo 20 avisos são enviados por execução.",
         "noChannels": "Adicione um canal de notificação para usar Notificar."

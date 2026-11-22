@@ -842,7 +842,10 @@
         "resolverPath": "Champ du corps",
         "resolverSystem": "Système",
         "webhookHelp": "Enregistrez le flux, puis créez le secret du webhook et activez le flux depuis son onglet Webhook.",
-        "manualHelp": "Le flux ne s'exécute que lorsque quelqu'un le lance."
+        "manualHelp": "Le flux ne s'exécute que lorsque quelqu'un le lance.",
+        "resolverKind": "L'identifiant provient de",
+        "resolverKindSystem": "Un système externe",
+        "resolverKindBreezeOrg": "Un ID d'organisation Breeze"
       },
       "target": {
         "title": "Appareils",
@@ -882,7 +885,7 @@
         "stop": "Arrêter",
         "stopHelp": "Les actions suivantes ignorent les appareils auxquels le script n'a pas pu être envoyé.",
         "continue": "Continuer",
-        "continueHelp": "Poursuivre avec les actions restantes.",
+        "continueHelp": "Les actions suivantes s'exécutent aussi sur les appareils auxquels le script n'a pas pu être envoyé.",
         "notify": "Notifier",
         "notifyHelp": "Envoyer un avis aux canaux ci-dessous pour chaque appareil auquel le script n'a pas pu être envoyé. Au plus 20 avis sont envoyés par exécution.",
         "noChannels": "Ajoutez un canal de notification pour utiliser Notifier."
