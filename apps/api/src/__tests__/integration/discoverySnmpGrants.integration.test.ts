@@ -96,7 +96,7 @@ async function buildFixture(): Promise<Fixture> {
     sub: env.user.id, email: env.user.email, roleId: env.role.id, orgId: env.organization.id, partnerId: env.partner.id,
     scope: 'organization', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
   });
-  const send = (method: string) => (path: string, body: unknown) => app.request(path, {
+  const send = (method: string) => async (path: string, body: unknown) => app.request(path, {
     method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
   const client: Client = { post: send('POST'), patch: send('PATCH') };
@@ -147,7 +147,7 @@ async function gateFor(profileId: string): Promise<GateDecision> {
 
 /** guarded: the allowed gateway ids, sorted; fail: the error code; unrestricted: 'unrestricted'. */
 const allowed = (d: GateDecision): string[] | string =>
-  d.kind === 'guarded' ? d.allowed.map((g) => g.gatewayId).sort() : d.kind === 'fail' ? d.error.code : d.kind;
+  d.kind === 'guarded' ? d.allowed.map((g) => g.gatewayId ?? '<no gateway id>').sort() : d.kind === 'fail' ? d.error.code ?? '<no code>' : d.kind;
 
 async function grantRows(profileId: string): Promise<string[]> {
   const rows = await admin<{ gateway_id: string }>(sql`
