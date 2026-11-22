@@ -14,6 +14,9 @@ import (
 	"golang.org/x/net/route"
 )
 
+// routeReplyDeadline bounds the wait for the RTM_GET reply.
+const routeReplyDeadline = 2 * time.Second
+
 // readRouteSocket reads one reply from the routing socket. It is read(2), not
 // recvfrom(2): the reply's source address has family AF_ROUTE, which Go's
 // Recvfrom cannot convert, so Recvfrom returns EAFNOSUPPORT after the bytes
@@ -66,7 +69,7 @@ func lookupDarwinRoute(ctx context.Context, request RouteLookupRequest, keys map
 	if _, e = syscall.Write(fd, payload); e != nil {
 		return RouteSelection{}, e
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(routeReplyDeadline)
 	buffer := make([]byte, 64*1024)
 	for time.Now().Before(deadline) {
 		if e = ctx.Err(); e != nil {

@@ -147,8 +147,8 @@ func TestLookupDarwinRouteRetriesEAGAINAndEINTRUntilDeadline(t *testing.T) {
 	if !errors.Is(e, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want deadline exceeded", e)
 	}
-	if elapsed := time.Since(started); elapsed < 2*time.Second || elapsed > 10*time.Second {
-		t.Fatalf("gave up after %v, want the two-second deadline", elapsed)
+	if elapsed := time.Since(started); elapsed < routeReplyDeadline || elapsed > routeReplyDeadline+8*time.Second {
+		t.Fatalf("gave up after %v, want the %v deadline", elapsed, routeReplyDeadline)
 	}
 	if calls < 2 {
 		t.Fatalf("reads = %d, want retries", calls)
