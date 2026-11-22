@@ -21,10 +21,12 @@
  *   2. The regression: the cascade deletes the device and its own device-level
  *      assignment, and leaves every other assignment of the same policy alone
  *      (another device's, the site's and the organization's).
- *   3. The route and bulk-purge path (`purgeRemovedDevice`) with the shapes
- *      that take partner-export locks: a partner-owned policy and an org-owned
- *      policy both assigned to the device, and a group membership deleted
- *      earlier in the same cascade. The group's own assignment survives.
+ *   3. `purgeRemovedDevice`, the service the route and the purge jobs share,
+ *      with rows whose delete triggers take partner-export locks: a
+ *      partner-owned policy and an org-owned policy both assigned to the
+ *      device, and a group membership that the generic device_id cascade
+ *      deletes earlier in the same transaction. The group's own assignment
+ *      survives.
  */
 import './setup';
 
@@ -47,7 +49,7 @@ import {
   type DeviceDeletionTx,
 } from '../../services/deviceDeletion';
 import { purgeRemovedDevice } from '../../services/deviceLifecycle';
-import { pgErrorCode } from '../../utils/pgErrors';
+import { pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
 import { createOrganization, createPartner, createSite } from './db-utils';
 
 /** Postgres foreign_key_violation, raised by the owner trigger. */
@@ -180,6 +182,7 @@ describe('device hard-delete vs device-level config policy assignment (#12293)',
 
     expect(err, 'the device owner-delete trigger is missing from this database').not.toBeNull();
     expect(pgErrorCode(err)).toBe(FOREIGN_KEY_VIOLATION);
+    expect(pgErrorConstraint(err)).toBe('config_policy_assignments_target_owner_fk');
   });
 
   it('deletes the device and its own device-level assignment, keeping every other assignment', async () => {

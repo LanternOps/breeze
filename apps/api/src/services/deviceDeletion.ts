@@ -473,9 +473,9 @@ export async function deleteDeviceCascade(
   // an FK reclaims them, and the `ab_config_policy_assignment_device_owner_delete`
   // statement trigger on `devices` refuses the row delete below with 23503
   // `config_policy_assignments_target_owner_fk` while one still names the
-  // device. Same shape as the group delete (deviceGroupDelete.ts) and the
-  // partner cascade (tenantCascade.ts): clear the target's own level only.
-  // Scoped to `level = 'device'`: another level's row never names a device id.
+  // device. Same shape as the `device_group` clears in deviceGroupDelete.ts
+  // and tenantCascade.ts: clear only the deleted target's own level, so a
+  // group, site, organization or partner assignment is never matched here.
   // No new assignment for this device can commit before the row delete: an
   // assignment insert's integrity trigger takes FOR KEY SHARE on its target
   // device, which waits on the FOR UPDATE held since the top of this function.
