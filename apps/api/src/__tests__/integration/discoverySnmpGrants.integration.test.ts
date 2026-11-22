@@ -252,3 +252,136 @@ describe('W03b grant rules', () => {
   });
 });
 
+// ---------------------------------------------------------------------------------------------------------
+// Credential sequences through the real router (spec 15 credential rows)
+// ---------------------------------------------------------------------------------------------------------
+
+/** P on site A with communities and v3 secrets, created through POST: bound with grants on G_A and G_A2. */
+async function credentialedProfileOnA(): Promise<string> {
+  const id = await createProfile({ siteId: fx.siteA, snmpCommunities: ['public-a'], snmpCredentials: V3_A });
+  expect(allowed(await gateFor(id))).toEqual([fx.G_A, fx.G_A2].sort());
+  return id;
+}
+
+async function setNetworkIdDirect(profileId: string, networkId: string | null): Promise<void> {
+  await admin(sql`UPDATE discovery_profiles SET network_id = ${networkId}::uuid WHERE id = ${profileId}::uuid`);
+}
+
+async function shrinkGrantsDirect(profileId: string, keep: string[]): Promise<void> {
+  for (const gatewayId of (await grantRows(profileId)).filter((g) => !keep.includes(g))) {
+    await admin(sql`DELETE FROM discovery_profile_snmp_grants WHERE profile_id = ${profileId}::uuid AND gateway_id = ${gatewayId}::uuid`);
+  }
+}
+
+const patchProfile = (profileId: string, body: unknown) => fx.client.patch(`/discovery/profiles/${profileId}`, body);
+
+describe('W03b credential sequences', () => {
+  it('S3 partial entry grants nothing', async () => {
+    const P = await credentialedProfileOnA();
+    await setNetworkIdDirect(P, fx.N_A);                      // P narrowed, grants already {G_A}
+    await shrinkGrantsDirect(P, [fx.G_A]);
+
+    const res = await patchProfile(P, {
+      snmpCommunities: ['public-b'],
+      snmpCredentials: V3_MASKED,
+      networkId: null,                                         // widen the narrowing in the same save
+    });
+
+    expect(res.status).toBe(200);
+    expect(allowed(await gateFor(P))).toEqual([fx.G_A]);      // never G_A2
+    expect(await storedCommunities(P)).toEqual(['public-b']);
+    expect((await profileRow(P)).networkId).toBeNull();
+  });
+
+  it('S5 grants come from the profile as saved', async () => {
+    const P = await credentialedProfileOnA();
+    const narrowed = await patchProfile(P, { networkId: fx.N_A, snmpCommunities: [MASK] });   // shrink to G_A
+    expect(narrowed.status).toBe(200);
+    expect(allowed(await gateFor(P))).toEqual([fx.G_A]);
+
+    const res = await patchProfile(P, { networkId: fx.N_A2, snmpCommunities: ['public-b'], snmpCredentials: null }); // full re-entry
+    expect(res.status).toBe(200);
+    expect(allowed(await gateFor(P))).toEqual([fx.G_A2]);     // not G_A, not both
+    // Widening the narrowing without a re-entry adds nothing, so a grant left over from before the re-entry would
+    // surface here; the gate's network filter above cannot show it.
+    const widened = await patchProfile(P, { networkId: null, snmpCommunities: [MASK] });
+    expect(widened.status).toBe(200);
+    expect(allowed(await gateFor(P))).toEqual([fx.G_A2]);
+
+    const moved = await patchProfile(P, {
+      siteId: fx.siteB, networkId: null, snmpCommunities: ['public-a'], snmpCredentials: null,
+    });
+    expect(moved.status).toBe(200);
+    expect((await profileRow(P)).siteId).toBe(fx.siteB);
+    expect(allowed(await gateFor(P))).toEqual([fx.G_B]);
+  });
+
+  it('T1 partial rotation shrinks grants', async () => {
+    const P = await credentialedProfileOnA();
+    const narrowed = await patchProfile(P, {
+      networkId: fx.N_A, snmpCommunities: ['public-b'], snmpCredentials: V3_MASKED,
+    });
+    expect(narrowed.status).toBe(200);
+    expect(allowed(await gateFor(P))).toEqual([fx.G_A]);
+
+    const widened = await patchProfile(P, { networkId: null, snmpCommunities: ['public-a'], snmpCredentials: V3_MASKED });
+    expect(widened.status).toBe(200);
+    expect(allowed(await gateFor(P))).toEqual([fx.G_A]);      // the secret supplied while narrowed never reaches N_A2
+    expect((await profileRow(P)).snmpGrantMode).toBe('bound');
+  });
+
+  it("T2a save rejects a network not assigned to the profile's site", async () => {
+    const P = await credentialedProfileOnA();
+    for (const networkId of [fx.N_B, fx.N_C, fx.otherOrgNetwork]) {
+      const res = await patchProfile(P, { networkId, snmpCommunities: ['public-b'], snmpCredentials: null });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: "Choose a network that is assigned to this profile's site.", code: 'NETWORK_NOT_ASSIGNABLE',
+      });
+    }
+    expect(await storedCommunities(P)).toEqual(['public-a']);
+    expect(allowed(await gateFor(P))).toEqual([fx.G_A, fx.G_A2].sort());
+
+    const narrowed = await patchProfile(P, { networkId: fx.N_A, snmpCommunities: [MASK] });
+    expect(narrowed.status).toBe(200);
+    const leftBehind = await patchProfile(P, { siteId: fx.siteB, snmpCommunities: ['public-b'], snmpCredentials: null });
+    expect(leftBehind.status).toBe(400);
+    expect((await leftBehind.json()).code).toBe('NETWORK_NOT_ASSIGNABLE');
+    expect((await profileRow(P)).siteId).toBe(fx.siteA);
+    expect(await storedCommunities(P)).toEqual(['public-a']);
+    expect(allowed(await gateFor(P))).toEqual([fx.G_A]);       // G_B never allowed
+  });
+
+  it('T2a create rejects a network not assigned to the site', async () => {
+    const res = await fx.client.post('/discovery/profiles', {
+      siteId: fx.siteA, name: 'refused', subnets: ['192.168.1.0/24'], methods: ['ping'], schedule: { type: 'manual' },
+      snmpCommunities: ['public-a'], networkId: fx.N_B,
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('NETWORK_NOT_ASSIGNABLE');
+    const [row] = await admin<{ count: number }>(sql`
+      SELECT count(*)::int AS count FROM discovery_profiles WHERE org_id = ${fx.orgId}::uuid`);
+    expect(row!.count).toBe(0);
+  });
+
+  it('a bound profile with secrets on a site that is not gated fails until a full re-entry unbinds it', async () => {
+    // W03a contract note 1: an assigned network cannot exist on a site whose flag is false.
+    const P = await insertProfileDirect({ siteId: fx.siteD, communities: ['public-a'], mode: 'bound' });
+    expect(allowed(await gateFor(P))).toBe('credentials_need_reentry');
+    const res = await patchProfile(P, { snmpCommunities: ['public-b'] });   // rule 1 on a site that is not gated
+    expect(res.status).toBe(200);
+    expect((await profileRow(P)).snmpGrantMode).toBe('unrestricted');
+    expect(allowed(await gateFor(P))).toBe('unrestricted');
+  });
+
+  it('an unrestricted profile on a site that is not gated saves and runs as before', async () => {
+    const P = await createProfile({ siteId: fx.siteD, snmpCommunities: ['public-a'] });
+    const res = await patchProfile(P, { name: 'renamed', snmpCommunities: [MASK] });
+    expect(res.status).toBe(200);
+    expect((await profileRow(P)).snmpGrantMode).toBe('unrestricted');
+    expect(await grantRows(P)).toEqual([]);
+    expect(await storedCommunities(P)).toEqual(['public-a']);
+    expect(allowed(await gateFor(P))).toBe('unrestricted');
+  });
+});
+
