@@ -9,8 +9,11 @@
  * - Unrestricted attempt (or none: a job dispatched before this shipped): accepted only while the site is still
  *   not gated.
  *
- * Callers hold the shared site lock (`lockSitesForNetworkGate`) inside a DB context, and call this outside any
- * catch, so a failed read fails their transaction.
+ * Lock contract (#12502): job-backed host results are verified under the shared site lock (`lockSitesForNetworkGate`)
+ * at receipt; a rejection fails the active job and queues nothing; accepted results are enqueued after commit and
+ * verified again in the transaction that stores discovery assets; adjacency is verified at admission and completed
+ * AI results before hosts are returned; guarded refusal codes are kept. No caller holds the lock across a queue
+ * round trip. Callers run this inside a DB context and outside any catch, so a failed read fails their transaction.
  */
 import { verifiedNetworkSchema, type DiscoveryJobError } from '@breeze/shared';
 import { evaluateDiscoveryGate, loadGateProfile, type GateProfile } from './gate';

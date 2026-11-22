@@ -52,7 +52,12 @@ vi.mock('./scriptCancellation', () => ({
 }));
 vi.mock('../db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../db')>();
-  return { ...actual, db: { ...actual.db, select: selectMock, update: updateMock }, runOutsideDbContext: (fn: () => unknown) => fn() };
+  return {
+    ...actual,
+    db: { ...actual.db, select: selectMock, update: updateMock },
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  };
 });
 vi.mock('../jobs/discoveryWorker', () => ({ enqueueDiscoveryResults: vi.fn(() => Promise.reject(new Error('redis down'))) }));
 vi.mock('../jobs/snmpWorker', () => ({ enqueueSnmpPollResults: vi.fn(() => Promise.reject(new Error('redis down'))) }));
@@ -162,22 +167,31 @@ describe('result handlers propagate persistence failures (#3530)', () => {
     ))).rejects.toBe(boom);
   });
 
+  // #12502: the enqueue runs after the transport's transaction has committed, so its failure can no longer roll
+  // the command back. The delivery records the failure on the job, and never throws.
   it('network_discovery: still records the failure on the job itself when the enqueue fails', async () => {
     selectReturning([{ orgId: 'o', siteId: 's' }]);
     const setSpy = vi.fn(() => ({ where: () => Promise.resolve([]) }));
     updateMock.mockReturnValue({ set: setSpy });
-    await expect(commandResultHandlers.network_discovery!(
+    const outcome = await commandResultHandlers.network_discovery!(
       input('network_discovery', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [] } }),
-    )).resolves.toBeUndefined();
-    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+    );
+    expect(outcome).toMatchObject({ kind: 'afterCommit' });
+    expect(setSpy).not.toHaveBeenCalled();
+    await expect((outcome as { run: () => Promise<void> }).run()).resolves.toBeUndefined();
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', errors: { message: 'redis down' } }));
   });
 
-  it('network_discovery: failing to mark the job failed propagates', async () => {
+  it('network_discovery: failing to mark the job failed is reported, not thrown (the command already committed)', async () => {
     selectReturning([{ orgId: 'o', siteId: 's' }]);
     const markErr = new Error('db unavailable');
     updateMock.mockReturnValue({ set: () => ({ where: () => Promise.reject(markErr) }) });
-    await expect(commandResultHandlers.network_discovery!(
+    const outcome = await commandResultHandlers.network_discovery!(
       input('network_discovery', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [] } }),
-    )).rejects.toBe(markErr);
+    );
+    await expect((outcome as { run: () => Promise<void> }).run()).resolves.toBeUndefined();
+    expect(captureExceptionMock).toHaveBeenCalledWith(markErr, undefined, expect.objectContaining({
+      command_result_phase: 'discovery_mark_failed', discovery_job_id: JOB_ID, source: 'route:agentWs:script-network-scan',
+    }));
   });
 });

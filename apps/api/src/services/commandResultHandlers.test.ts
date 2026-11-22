@@ -42,6 +42,7 @@ vi.mock('../db', async (importOriginal) => {
     ...actual,
     db: { ...actual.db, select: discoverySelectMock, update: discoveryUpdateMock },
     runOutsideDbContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
   };
 });
 vi.mock('../jobs/discoveryWorker', () => ({
@@ -58,6 +59,7 @@ vi.mock('./learnedNetworks/verify', async (importOriginal) => {
 
 import { commandResultHandlers, type CommandResultHandler } from './commandResultHandlers';
 import { GATE_FAILURE_MESSAGES } from './learnedNetworks/messages';
+import { isRedisAvailable } from './redis';
 
 describe('peripheral policy v2 command result handler', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -265,6 +267,12 @@ describe('network discovery results are verified before they are enqueued (#1236
   function updateSet(): Record<string, unknown> | undefined {
     return setSpy.mock.calls[0]?.[0];
   }
+  /** #12502: the handler returns the enqueue; the transport runs it after its transaction commits. */
+  async function deliverAfterCommit(outcome: Awaited<ReturnType<CommandResultHandler>>): Promise<void> {
+    expect(outcome).toMatchObject({ kind: 'afterCommit' });
+    expect(enqueueDiscoveryResultsMock).not.toHaveBeenCalled();
+    await (outcome as { run: () => Promise<void> }).run();
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -286,7 +294,8 @@ describe('network discovery results are verified before they are enqueued (#1236
 
   it('discards an unverified result and enqueues nothing', async () => {
     verifyMock.mockResolvedValue({ ok: false, error: UNVERIFIED });
-    await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST] } }));
+    // #12502: the handler no longer enqueues itself, so 'nothing queued' means it returns no afterCommit work.
+    expect(await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST] } }))).toBeUndefined();
     expect(updateSet()).toMatchObject({ status: 'failed', errors: UNVERIFIED });
     expect(enqueueDiscoveryResultsMock).not.toHaveBeenCalled();
   });
@@ -305,7 +314,7 @@ describe('network discovery results are verified before they are enqueued (#1236
   });
 
   it('stores a refusal code', async () => {
-    await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { status: 'failed', errorCode: 'network_changed', error: 'x' }));
+    expect(await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { status: 'failed', errorCode: 'network_changed', error: 'x' }))).toBeUndefined();
     expect(updateSet()).toMatchObject({
       status: 'failed',
       errors: { code: 'network_changed', message: GATE_FAILURE_MESSAGES.network_changed },
@@ -323,13 +332,13 @@ describe('network discovery results are verified before they are enqueued (#1236
   });
 
   it('leaves any other failure as it was (no job write)', async () => {
-    await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { status: 'failed', errorCode: 'timeout', error: 'x' }));
+    expect(await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { status: 'failed', errorCode: 'timeout', error: 'x' }))).toBeUndefined();
     expect(discoveryUpdateMock).not.toHaveBeenCalled();
     expect(verifyMock).not.toHaveBeenCalled();
   });
 
   it('enqueues a verified result with its verifiedNetwork', async () => {
-    await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST], verifiedNetwork: VN } }));
+    await deliverAfterCommit(await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST], verifiedNetwork: VN } })));
     expect(enqueueDiscoveryResultsMock).toHaveBeenCalledTimes(1);
     expect(enqueueDiscoveryResultsMock.mock.calls[0]![9]).toEqual(VN);
     expect(discoveryUpdateMock).not.toHaveBeenCalled();
@@ -337,18 +346,31 @@ describe('network discovery results are verified before they are enqueued (#1236
 
   it('passes no verifiedNetwork to the queue when the upload does not parse', async () => {
     verifyMock.mockResolvedValue({ ok: true, networkId: null });
-    await handler(input('network_discovery', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST], verifiedNetwork: { gatewayId: 'nope' } } }));
+    await deliverAfterCommit(await handler(input('network_discovery', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST], verifiedNetwork: { gatewayId: 'nope' } } })));
     expect(enqueueDiscoveryResultsMock).toHaveBeenCalledTimes(1);
     expect(enqueueDiscoveryResultsMock.mock.calls[0]![9]).toBeUndefined();
   });
 
   it('reads verifiedNetwork from stdout when the REST route delivers the body there (C7)', async () => {
-    await handler({
+    await deliverAfterCommit(await handler({
       ...input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST] } }),
       stdout: JSON.stringify({ jobId: JOB_ID, hosts: [HOST], verifiedNetwork: VN }),
-    });
+    }));
     expect(verifyMock.mock.calls[0]![0]).toMatchObject({ verifiedNetwork: VN });
     expect(enqueueDiscoveryResultsMock.mock.calls[0]![9]).toEqual(VN);
+  });
+
+  it('with no queue, the delivery fails the job with the counts and enqueues nothing (#12502)', async () => {
+    vi.mocked(isRedisAvailable).mockReturnValueOnce(false);
+    const outcome = await handler(input('network_discovery_guarded', { jobId: JOB_ID },
+      { result: { jobId: JOB_ID, hosts: [HOST], hostsScanned: 4, hostsDiscovered: 1, verifiedNetwork: VN } }));
+    expect(updateSet()).toBeUndefined();
+    await (outcome as { run: () => Promise<void> }).run();
+    expect(enqueueDiscoveryResultsMock).not.toHaveBeenCalled();
+    expect(updateSet()).toMatchObject({
+      status: 'failed', hostsScanned: 4, hostsDiscovered: 1,
+      errors: { message: 'Results received but could not be processed: job queue unavailable' },
+    });
   });
 
   it('treats unparseable stdout as no verifiedNetwork', async () => {
@@ -361,8 +383,8 @@ describe('network discovery results are verified before they are enqueued (#1236
   });
 
   it('does nothing for a command without a jobId (the AI tool)', async () => {
-    await handler(input('network_discovery_guarded', { subnets: ['192.168.1.0/24'] }, { result: { hosts: [HOST] } }));
-    await handler(input('network_discovery_guarded', { subnets: ['192.168.1.0/24'] }, { status: 'failed', errorCode: 'network_mismatch' }));
+    expect(await handler(input('network_discovery_guarded', { subnets: ['192.168.1.0/24'] }, { result: { hosts: [HOST] } }))).toBeUndefined();
+    expect(await handler(input('network_discovery_guarded', { subnets: ['192.168.1.0/24'] }, { status: 'failed', errorCode: 'network_mismatch' }))).toBeUndefined();
     expect(discoveryUpdateMock).not.toHaveBeenCalled();
     expect(lockSitesMock).not.toHaveBeenCalled();
     expect(verifyMock).not.toHaveBeenCalled();

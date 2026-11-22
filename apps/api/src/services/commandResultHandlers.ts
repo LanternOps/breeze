@@ -13,7 +13,7 @@
  */
 
 import { z } from 'zod';
-import { GUARDED_COMMAND_TYPES, verifiedNetworkSchema } from '@breeze/shared';
+import { GUARDED_COMMAND_TYPES, verifiedNetworkSchema, type VerifiedNetwork } from '@breeze/shared';
 import { CommandTypes } from './commandTypes';
 import { applyWakeRelayResult } from './wakeAttempts';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
@@ -25,7 +25,7 @@ import {
 } from './systemCleanup';
 
 import { eq, ne, and, inArray, isNull, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbTransaction } from '../db';
+import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import {
   deviceCommands,
   deviceFilesystemCleanupRuns,
@@ -36,6 +36,7 @@ import {
   backupJobs,
 } from '../db/schema';
 import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacency } from '../jobs/discoveryWorker';
+import type { QueueActorMeta } from '../jobs/queueSchemas';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
 import { isRedisAvailable } from './redis';
 import { processBackupVerificationResult } from '../routes/backup/verificationService';
@@ -87,7 +88,17 @@ import { GATE_FAILURE_MESSAGES } from './learnedNetworks/messages';
 
 export type CommandResultHandlerOutcome =
   | { kind: 'pam'; classification: PamActuationResultClassification }
+  | CommandResultAfterCommit
   | void;
+
+/**
+ * Queue work a handler owes once the transport's transaction has COMMITTED (#12502). The handler's transaction may
+ * hold a lock that must never wait on Redis, so the handler returns the work instead of doing it. The WebSocket
+ * transport awaits `run` after its finalize transaction commits and before it acknowledges the agent; the REST
+ * transport registers it with `runAfterDbContextCommit` once its savepoint returned 'recorded', so it starts when
+ * the request transaction commits and is dropped on a rollback. `run` never throws.
+ */
+export type CommandResultAfterCommit = { kind: 'afterCommit'; label: string; run: () => Promise<void> };
 
 export type CommandResultHandler = (params: {
   agentId: string;
@@ -149,7 +160,7 @@ function discoveryVerifiedNetwork(structured: unknown, stdout: string | undefine
   }
 }
 
-async function handleDiscoveryResult({ agentId, command, result, commandId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+async function handleDiscoveryResult({ agentId, command, result, commandId, stdout }: Parameters<CommandResultHandler>[0]): Promise<CommandResultHandlerOutcome> {
   const payload = command.payload as Record<string, unknown> | null;
   const expectedJobId = typeof payload?.jobId === 'string' ? payload.jobId : null;
 
@@ -191,9 +202,9 @@ async function handleDiscoveryResult({ agentId, command, result, commandId, stdo
   }
   if (!expectedJobId || !discoveryData?.hosts) return;
 
-  // Learned networks (#12369, E10): the job read, the shared site lock and the verifier run outside the catch
-  // below, so a failed query fails the transport's transaction instead of being caught beside a later write
-  // (docs/agents/tenancy-rls.md).
+  // Learned networks (#12369, E10): the job read, the shared site lock and the verifier run in the transport's
+  // transaction and outside any catch, so a failed query fails that transaction instead of being caught beside a
+  // later write (docs/agents/tenancy-rls.md). A rejection is terminal here: the job fails and nothing is queued.
   const [job] = await db
     .select({
       orgId: discoveryJobs.orgId,
@@ -238,64 +249,113 @@ async function handleDiscoveryResult({ agentId, command, result, commandId, stdo
   const parsedNetwork = verifiedNetworkSchema.safeParse(uploadedNetwork);
   const verifiedNetwork = parsedNetwork.success ? parsedNetwork.data : undefined;
 
-  try {
-    if (isRedisAvailable()) {
-      const normalizedHosts = normalizeDiscoveryHosts(discoveryData.hosts);
-      // Exit the held org-scoped transaction context for the Redis
-      // round-trips (#1105) — see the note on the monitor-result branch.
-      await runOutsideDbContext(() => enqueueDiscoveryResults(
-        expectedJobId,
-        job.orgId,
-        job.siteId,
-        normalizedHosts,
-        discoveryData.hostsScanned ?? 0,
-        discoveryData.hostsDiscovered ?? 0,
-        undefined,
-        discoveryData.adjacency ?? [],
-        {
-          actorType: 'agent',
-          actorId: agentId,
-          source: 'route:agentWs:script-network-scan',
-        },
-        verifiedNetwork,
-      ));
-    } else {
-      // Redis not available — mark job failed so user knows results weren't processed
-      console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${expectedJobId}`);
-      await db
-        .update(discoveryJobs)
-        .set({
-          status: 'failed',
-          completedAt: new Date(),
-          hostsDiscovered: discoveryData.hostsDiscovered ?? 0,
-          hostsScanned: discoveryData.hostsScanned ?? 0,
-          errors: { message: 'Results received but could not be processed: job queue unavailable' },
-          updatedAt: new Date()
-        })
-        .where(eq(discoveryJobs.id, expectedJobId));
-    }
-  } catch (err) {
-    console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
-    captureException(err);
-    try {
-      await db
-        .update(discoveryJobs)
-        .set({
-          status: 'failed',
-          completedAt: new Date(),
-          errors: { message: err instanceof Error ? err.message : 'Failed to enqueue discovery results' },
-          updatedAt: new Date()
-        })
-        .where(eq(discoveryJobs.id, expectedJobId));
-    } catch (dbErr) {
-      // #3530: the job would stay 'running' with nothing recorded — neither
-      // the results nor the failure. Propagate so the transport rolls the
-      // command's terminal transition back and parks it as
-      // result_processing_failed instead of reporting it completed.
-      console.error(`[AgentWs] Additionally failed to mark discovery job ${expectedJobId} as failed:`, dbErr);
-      throw dbErr;
-    }
+  // #12502: the transport's transaction holds the shared site lock until it ends, so the enqueue is returned for
+  // the transport to run after that transaction commits (CommandResultAfterCommit), never awaited here.
+  const delivery: DiscoveryResultsDelivery = {
+    agentId,
+    jobId: expectedJobId,
+    orgId: job.orgId,
+    siteId: job.siteId,
+    hosts: discoveryData.hosts,
+    hostsScanned: discoveryData.hostsScanned ?? 0,
+    hostsDiscovered: discoveryData.hostsDiscovered ?? 0,
+    adjacency: discoveryData.adjacency ?? [],
+    meta: {
+      actorType: 'agent',
+      actorId: agentId,
+      source: 'route:agentWs:script-network-scan',
+    },
+    verifiedNetwork,
+    failWhileStatus: ['scheduled', 'running'],
+  };
+  return {
+    kind: 'afterCommit',
+    label: `discovery: enqueue results for job ${expectedJobId}`,
+    run: () => deliverDiscoveryResults(delivery),
+  };
+}
+
+/** An accepted discovery result, ready to enqueue once the transaction that verified it has committed. */
+export interface DiscoveryResultsDelivery {
+  agentId: string;
+  jobId: string;
+  orgId: string;
+  siteId: string;
+  hosts: DiscoveredHostResult[];
+  hostsScanned: number;
+  hostsDiscovered: number;
+  adjacency: DeviceAdjacency[];
+  meta: QueueActorMeta;
+  verifiedNetwork?: VerifiedNetwork;
+  /** A failure is written only while the job is in one of these states: a job that already left keeps its outcome. */
+  failWhileStatus: ReadonlyArray<'scheduled' | 'running'>;
+}
+
+/**
+ * Enqueues an accepted discovery result (#12502). Both result paths (the direct WebSocket branch and the persisted
+ * command result) run this only after the transaction that took the shared site lock and verified the result has
+ * committed, outside any DB context, so the lock is never held across the Redis round trip.
+ *
+ * Never throws. A failed enqueue, or a queue that is unavailable, fails the job in a fresh system context with the
+ * same messages as before, and only while the job is still in `failWhileStatus`. If that write fails too, the job
+ * stays `running` until the stale-running expiry fails it: the command result has already committed, so it can no
+ * longer be parked for resubmission (#3530).
+ */
+export async function deliverDiscoveryResults(d: DiscoveryResultsDelivery): Promise<void> {
+  if (!isRedisAvailable()) {
+    // Redis not available — mark job failed so user knows results weren't processed
+    console.warn(`[AgentWs] Redis unavailable, cannot process ${d.hosts.length} discovery hosts for job ${d.jobId}`);
+    await markDiscoveryDeliveryFailed(d, {
+      hostsDiscovered: d.hostsDiscovered,
+      hostsScanned: d.hostsScanned,
+      errors: { message: 'Results received but could not be processed: job queue unavailable' },
+    });
+    return;
   }
+  try {
+    // Outside any context, even one a caller still holds (#1105).
+    await runOutsideDbContext(() => enqueueDiscoveryResults(
+      d.jobId,
+      d.orgId,
+      d.siteId,
+      normalizeDiscoveryHosts(d.hosts),
+      d.hostsScanned,
+      d.hostsDiscovered,
+      undefined,
+      d.adjacency,
+      d.meta,
+      d.verifiedNetwork,
+    ));
+  } catch (err) {
+    console.error(`[AgentWs] Failed to process discovery results for ${d.agentId}:`, err);
+    captureException(err, undefined, discoveryDeliveryTags(d, 'discovery_enqueue'));
+    await markDiscoveryDeliveryFailed(d, {
+      errors: { message: err instanceof Error ? err.message : 'Failed to enqueue discovery results' },
+    });
+  }
+}
+
+async function markDiscoveryDeliveryFailed(
+  d: DiscoveryResultsDelivery,
+  fields: { errors: { message: string }; hostsDiscovered?: number; hostsScanned?: number },
+): Promise<void> {
+  try {
+    // A fresh context: the transaction that verified the result has already committed.
+    await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db
+        .update(discoveryJobs)
+        .set({ status: 'failed', completedAt: new Date(), ...fields, updatedAt: new Date() })
+        .where(and(eq(discoveryJobs.id, d.jobId), inArray(discoveryJobs.status, [...d.failWhileStatus]))),
+    'discovery.resultDelivery.markFailed'));
+  } catch (dbErr) {
+    console.error(`[AgentWs] Additionally failed to mark discovery job ${d.jobId} as failed:`, dbErr);
+    captureException(dbErr, undefined, discoveryDeliveryTags(d, 'discovery_mark_failed'));
+  }
+}
+
+/** Sentry tags that find the job from the event: after the commit, the event is the only record of a lost delivery. */
+function discoveryDeliveryTags(d: DiscoveryResultsDelivery, phase: string): Record<string, string> {
+  return { command_result_phase: phase, discovery_job_id: d.jobId, org_id: d.orgId, site_id: d.siteId, source: d.meta.source };
 }
 
 // #3530: every persistence handler below PROPAGATES its failure. Both

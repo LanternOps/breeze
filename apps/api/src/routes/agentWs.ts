@@ -6,7 +6,7 @@ import { renewRevocationLease } from '../services/remoteRevocationLease';
 import { applyProbeResult, parseProbeCommandId } from '../services/assetProbe';
 import { eq, and, or, ne, notInArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'crypto';
-import { db, withDbAccessContext, withDbTransaction, withSystemDbAccessContext, runOutsideDbContext } from '../db';
+import { db, withDbAccessContext, withDbTransaction, withSystemDbAccessContext, runAfterDbContextCommit, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
 import { commandCasPriorStatusTags } from '../services/commandCasDiagnostics';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions, supportSessions, organizations } from '../db/schema';
@@ -22,7 +22,7 @@ import {
   settleDesktopStreamStart,
 } from './desktopWs';
 import { handleTunnelDataFromAgent, isTunnelOwnedByAgent, registerTunnelOwnership } from './tunnelWs';
-import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacency } from '../jobs/discoveryWorker';
+import type { DiscoveredHostResult, DeviceAdjacency } from '../jobs/discoveryWorker';
 import { verifiedNetworkSchema, type VerifiedNetwork } from '@breeze/shared';
 import { lockSitesForNetworkGate } from '../services/learnedNetworks/siteLock';
 import { attemptFromRecord, verifyDiscoveryResult } from '../services/learnedNetworks/verify';
@@ -121,7 +121,12 @@ import {
   MAX_AGENT_COMMAND_ID_LENGTH,
   MAX_COMMAND_RESULT_BYTES,
 } from './agents/schemas';
-import { recordSnmpPollFailure, commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
+import {
+  recordSnmpPollFailure,
+  commandResultHandlers,
+  deliverDiscoveryResults,
+  type CommandResultAfterCommit,
+} from '../services/commandResultHandlers';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { applyCommandAutomationTerminal } from '../services/automationTerminalEvidence';
@@ -1508,7 +1513,16 @@ async function updateDeviceStatus(agent: OwnDeviceRowIdentity, status: 'online' 
 export async function processOrphanedCommandResult(
   agentId: string,
   authenticatedDeviceId: string,
-  result: z.infer<typeof commandResultSchema>
+  result: z.infer<typeof commandResultSchema>,
+  options: {
+    /**
+     * #12502: receives queue work owed once the caller's transaction commits
+     * (an accepted discovery result's enqueue), for the caller to await after
+     * that commit. Without it, the work is registered with
+     * runAfterDbContextCommit on the caller's context.
+     */
+    afterCommit?: (work: CommandResultAfterCommit) => void;
+  } = {},
 ): Promise<void> {
   // #2434 chokepoint: redact agent-supplied error/stderr ONCE at ingest so
   // every persistence branch below (discovery job errors, tunnel session
@@ -1960,8 +1974,8 @@ export async function processOrphanedCommandResult(
       verifiedNetwork = parsedNetwork.success ? parsedNetwork.data : undefined;
     }
 
-    try {
-      if (result.status !== 'completed' || !discoveryData?.hosts) {
+    if (result.status !== 'completed' || !discoveryData?.hosts) {
+      try {
         const errorMsg = result.error || result.stderr || `Agent returned status: ${result.status}`;
         await db
           .update(discoveryJobs)
@@ -1973,62 +1987,56 @@ export async function processOrphanedCommandResult(
           })
           .where(and(eq(discoveryJobs.id, discoveryJob.id), eq(discoveryJobs.status, 'running')));
         console.warn(`[AgentWs] Discovery job ${discoveryJob.id} failed: ${errorMsg}`);
-        return;
+      } catch (err) {
+        console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
+        captureException(err);
+        try {
+          await db
+            .update(discoveryJobs)
+            .set({
+              status: 'failed',
+              completedAt: new Date(),
+              errors: { message: err instanceof Error ? err.message : 'Failed to enqueue discovery results' },
+              updatedAt: new Date()
+            })
+            .where(and(eq(discoveryJobs.id, discoveryJob.id), eq(discoveryJobs.status, 'running')));
+        } catch (dbErr) {
+          // #3530: the orphaned-result twin of the registry handler's fallback.
+          console.error(`[AgentWs] Additionally failed to mark discovery job ${discoveryJob.id} as failed:`, dbErr);
+          captureException(dbErr, undefined, { command_result_phase: 'discovery_mark_failed' });
+        }
       }
-
-      if (isRedisAvailable()) {
-        const normalizedHosts = normalizeDiscoveryHosts(discoveryData.hosts);
-        // Exit the held org-scoped transaction context for the Redis
-        // round-trips (#1105) — see the note on the monitor-result branch.
-        await runOutsideDbContext(() => enqueueDiscoveryResults(
-          discoveryJob.id,
-          discoveryJob.orgId,
-          discoveryJob.siteId,
-          normalizedHosts,
-          discoveryData.hostsScanned ?? 0,
-          discoveryData.hostsDiscovered ?? 0,
-          undefined,
-          discoveryData.adjacency ?? [],
-          {
-            actorType: 'agent',
-            actorId: agentId,
-            source: 'route:agentWs:discovery-result',
-          },
-          verifiedNetwork,
-        ));
-      } else {
-        console.warn(`[AgentWs] Redis unavailable, cannot process ${discoveryData.hosts.length} discovery hosts for job ${discoveryJob.id}`);
-        await db
-          .update(discoveryJobs)
-          .set({
-            status: 'failed',
-            completedAt: new Date(),
-            hostsDiscovered: discoveryData.hostsDiscovered ?? 0,
-            hostsScanned: discoveryData.hostsScanned ?? 0,
-            errors: { message: 'Results received but could not be processed: job queue unavailable' },
-            updatedAt: new Date()
-          })
-          .where(and(eq(discoveryJobs.id, discoveryJob.id), eq(discoveryJobs.status, 'running')));
-      }
-    } catch (err) {
-      console.error(`[AgentWs] Failed to process discovery results for ${agentId}:`, err);
-      captureException(err);
-      try {
-        await db
-          .update(discoveryJobs)
-          .set({
-            status: 'failed',
-            completedAt: new Date(),
-            errors: { message: err instanceof Error ? err.message : 'Failed to enqueue discovery results' },
-            updatedAt: new Date()
-          })
-          .where(and(eq(discoveryJobs.id, discoveryJob.id), eq(discoveryJobs.status, 'running')));
-      } catch (dbErr) {
-        // #3530: the orphaned-result twin of the registry handler's fallback.
-        console.error(`[AgentWs] Additionally failed to mark discovery job ${discoveryJob.id} as failed:`, dbErr);
-        captureException(dbErr, undefined, { command_result_phase: 'discovery_mark_failed' });
-      }
+      return;
     }
+
+    // #12502: this transaction holds the shared site lock until it ends,
+    // so the enqueue runs only after it has committed (never after a
+    // rollback). A failed enqueue, or no queue, fails the job then, in a
+    // fresh context, only while it is still 'running'.
+    const hosts = discoveryData.hosts;
+    const delivery: CommandResultAfterCommit = {
+      kind: 'afterCommit',
+      label: `discovery: enqueue results for job ${discoveryJob.id}`,
+      run: () => deliverDiscoveryResults({
+        agentId,
+        jobId: discoveryJob.id,
+        orgId: discoveryJob.orgId,
+        siteId: discoveryJob.siteId,
+        hosts,
+        hostsScanned: discoveryData.hostsScanned ?? 0,
+        hostsDiscovered: discoveryData.hostsDiscovered ?? 0,
+        adjacency: discoveryData.adjacency ?? [],
+        meta: {
+          actorType: 'agent',
+          actorId: agentId,
+          source: 'route:agentWs:discovery-result',
+        },
+        verifiedNetwork,
+        failWhileStatus: ['running'],
+      }),
+    };
+    if (options.afterCommit) options.afterCommit(delivery);
+    else runAfterDbContextCommit(delivery.label, delivery.run);
     return;
   }
 
@@ -2499,6 +2507,18 @@ async function processCommandResult(
     });
     if (consumed) return 'handled';
 
+    // The orphaned branches in a short org wrap (#3021). Queue work they owe
+    // (an accepted discovery result's enqueue, #12502) runs only after that
+    // wrap has committed, and before the agent is acknowledged; a rollback
+    // propagates and delivers nothing. The work never throws.
+    const processOrphanedResultThenDeliver = async (): Promise<void> => {
+      let owed: CommandResultAfterCommit | undefined;
+      await runWithAgentOrgDbAccess('agentWs.commandResult.orphaned', orgId, partnerId, () =>
+        processOrphanedCommandResult(agentId, deviceId ?? '', result, { afterCommit: (work) => { owed = work; } })
+      );
+      if (owed) await owed.run();
+    };
+
     // Non-UUID command IDs (for example mon-* and snmp-*) are dispatched directly
     // over WebSocket and do not have a device_commands row.
     // Short org wrap (#3021): the orphaned branches read/write RLS-guarded
@@ -2506,9 +2526,7 @@ async function processCommandResult(
     // the ambient db, so they need the tenant context the removed
     // message-level wrap used to provide.
     if (!UUID_REGEX.test(result.commandId)) {
-      await runWithAgentOrgDbAccess('agentWs.commandResult.orphaned', orgId, partnerId, () =>
-        processOrphanedCommandResult(agentId, deviceId ?? '', result)
-      );
+      await processOrphanedResultThenDeliver();
       return 'handled';
     }
 
@@ -2621,9 +2639,7 @@ async function processCommandResult(
       // Discovery and SNMP commands are dispatched directly via WebSocket
       // without creating a deviceCommands record. Handle them here (short org
       // wrap for the same reason as the non-UUID branch above, #3021).
-      await runWithAgentOrgDbAccess('agentWs.commandResult.orphaned', orgId, partnerId, () =>
-        processOrphanedCommandResult(agentId, deviceId ?? '', result)
-      );
+      await processOrphanedResultThenDeliver();
       return 'handled';
     }
 
@@ -2777,6 +2793,8 @@ async function processCommandResult(
     };
 
     let finalized: 'stale' | 'queue_ack' | 'recorded';
+    // #12502: queue work the handler owes once the finalize transaction commits.
+    let afterCommit: CommandResultAfterCommit | undefined;
     try {
       finalized = await runWithAgentOrgDbAccess('agentWs.commandResult.finalize', orgId, partnerId, async () => {
         const updatedCommands = await dbWriteExpectingRows(
@@ -2863,7 +2881,10 @@ async function processCommandResult(
         }
 
         const handler = commandResultHandlers[finalizedCommand.type];
-        if (handler) await handler(handlerInput);
+        if (handler) {
+          const outcome = await handler(handlerInput);
+          if (outcome && outcome.kind === 'afterCommit') afterCommit = outcome;
+        }
         return 'recorded';
       });
     } catch (persistErr) {
@@ -2915,6 +2936,11 @@ async function processCommandResult(
       return 'handled';
     }
     if (finalized === 'queue_ack') return 'handled';
+
+    // #12502: the finalize transaction (and any lock its handler took) has
+    // committed. Awaited, so the agent is acknowledged only after the queue
+    // work returned; it never throws and records its own failure.
+    if (afterCommit) await afterCommit.run();
 
     // #4757 W06: terminalise the restore-point ledger only now -- the CAS won
     // and its transaction committed, so a losing duplicate frame never reaches

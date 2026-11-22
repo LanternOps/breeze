@@ -222,14 +222,18 @@ export function createDiscoveryWorker(): Worker<DiscoveryJobData> {
         assertQueueJobName(DISCOVERY_QUEUE, job, 'dispatch-scan');
         return await processDispatchScan(data);
       }
+      // process-results also leaves the blanket context (#12502): its storing
+      // transaction holds the shared site lock, so the baseline comparison is
+      // enqueued only after that transaction has committed.
+      if (data.type === 'process-results') {
+        assertQueueJobName(DISCOVERY_QUEUE, job, 'process-results');
+        return await processResultsJob(data);
+      }
       return runWithSystemDbAccess(async () => {
         switch (data.type) {
           case 'schedule-profiles':
             assertQueueJobName(DISCOVERY_QUEUE, job, 'schedule-profiles');
             return await processScheduleProfiles();
-          case 'process-results':
-            assertQueueJobName(DISCOVERY_QUEUE, job, 'process-results');
-            return await processResults(data);
           default:
             throw new Error(`Unknown job type: ${(data as { type: string }).type}`);
         }
@@ -1049,6 +1053,7 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
 export const __testables = {
   processDispatchScan,
   processScheduleProfiles,
+  recordWorkerJobFailure,
 };
 
 /**
@@ -1158,10 +1163,64 @@ export function buildMonitoredAssetConditions(
 /**
  * Process discovery results — upsert discovered assets
  */
+/** The baseline whose comparison a stored scan owes: the one whose `lastScanJobId` is still this job. */
+type BaselineComparisonTarget = { baselineId: string; orgId: string; siteId: string };
+
+async function loadBaselineComparisonTarget(jobId: string): Promise<BaselineComparisonTarget | undefined> {
+  const [baseline] = await db
+    .select({
+      id: networkBaselines.id,
+      orgId: networkBaselines.orgId,
+      siteId: networkBaselines.siteId
+    })
+    .from(networkBaselines)
+    .where(eq(networkBaselines.lastScanJobId, jobId))
+    .limit(1);
+  return baseline ? { baselineId: baseline.id, orgId: baseline.orgId, siteId: baseline.siteId } : undefined;
+}
+
+/**
+ * The process-results job (#12502): stores the scan in one system transaction (under the shared site lock), then,
+ * after that transaction has committed, enqueues the baseline comparison it owes. A failed enqueue throws so
+ * BullMQ retries the job; the retry finds the discovery job `completed`, stores nothing again, and only delivers
+ * the comparison with the hosts this job data carries.
+ */
+async function processResultsJob(data: ProcessResultsJobData): Promise<{
+  newAssets: number;
+  updatedAssets: number;
+  durationMs: number;
+}> {
+  const { baselineComparison, ...result } = await runWithSystemDbAccess(() => processResults(data));
+  if (baselineComparison) {
+    try {
+      const { enqueueBaselineComparison } = await import('./networkBaselineWorker');
+      await enqueueBaselineComparison(
+        baselineComparison.baselineId,
+        data.jobId,
+        baselineComparison.orgId,
+        baselineComparison.siteId,
+        data.hosts
+      );
+    } catch (error) {
+      console.error(
+        `[DiscoveryWorker] Failed to enqueue baseline comparison for baseline=${baselineComparison.baselineId} job=${data.jobId}:`,
+        error instanceof Error ? error.message : error
+      );
+      throw error; // Let BullMQ retry; the retry only delivers the comparison
+    }
+  }
+  return result;
+}
+
+/**
+ * The storing transaction of a process-results job. Runs inside the caller's DB context and does no queue I/O:
+ * it returns the baseline comparison the scan owes, which `processResultsJob` enqueues after commit (#12502).
+ */
 export async function processResults(data: ProcessResultsJobData): Promise<{
   newAssets: number;
   updatedAssets: number;
   durationMs: number;
+  baselineComparison?: BaselineComparisonTarget;
 }> {
   const startTime = Date.now();
 
@@ -1180,6 +1239,20 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
   if (currentJob?.status === 'cancelled') {
     console.log(`[DiscoveryWorker] Job ${data.jobId} was cancelled — skipping result processing`);
     return { newAssets: 0, updatedAssets: 0, durationMs: Date.now() - startTime };
+  }
+
+  // A retry after the comparison enqueue failed (#12502): the scan was stored and the job completed in an
+  // earlier attempt. Store nothing again, and do not verify again (a later assignment change must not stop the
+  // comparison of a scan already stored); only report the comparison still owed. If the baseline has moved on
+  // to a newer scan, that scan delivers its own comparison and nothing is owed here.
+  if (currentJob?.status === 'completed') {
+    console.log(`[DiscoveryWorker] Job ${data.jobId} already completed — delivering only the baseline comparison`);
+    return {
+      newAssets: 0,
+      updatedAssets: 0,
+      durationMs: Date.now() - startTime,
+      baselineComparison: await loadBaselineComparisonTarget(data.jobId),
+    };
   }
 
   // Learned networks (#12369 spec §8.4): verify again in the storing
@@ -1993,38 +2066,12 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     })
     .where(eq(discoveryJobs.id, data.jobId));
 
-  // If this discovery job was launched by a network baseline, enqueue comparison.
-  const [baseline] = await db
-    .select({
-      id: networkBaselines.id,
-      orgId: networkBaselines.orgId,
-      siteId: networkBaselines.siteId
-    })
-    .from(networkBaselines)
-    .where(eq(networkBaselines.lastScanJobId, data.jobId))
-    .limit(1);
-
-  if (baseline) {
-    try {
-      const { enqueueBaselineComparison } = await import('./networkBaselineWorker');
-      await enqueueBaselineComparison(
-        baseline.id,
-        data.jobId,
-        baseline.orgId,
-        baseline.siteId,
-        data.hosts
-      );
-    } catch (error) {
-      console.error(
-        `[DiscoveryWorker] Failed to enqueue baseline comparison for baseline=${baseline.id} job=${data.jobId}:`,
-        error instanceof Error ? error.message : error
-      );
-      throw error; // Let BullMQ retry
-    }
-  }
+  // If this discovery job was launched by a network baseline, the comparison is
+  // enqueued by processResultsJob once this transaction has committed (#12502).
+  const baselineComparison = await loadBaselineComparisonTarget(data.jobId);
 
   console.log(`[DiscoveryWorker] Job ${data.jobId} completed: ${newCount} new, ${updatedCount} updated`);
-  return { newAssets: newCount, updatedAssets: updatedCount, durationMs: Date.now() - startTime };
+  return { newAssets: newCount, updatedAssets: updatedCount, durationMs: Date.now() - startTime, baselineComparison };
 }
 
 // device_network stores a MAC as the agent reported it; compare in one
@@ -2291,6 +2338,36 @@ async function scheduleRecurringProfilePlanner(): Promise<void> {
   console.log('[DiscoveryWorker] Scheduled repeatable profile scheduler (every 60s)');
 }
 
+/**
+ * The worker's `failed` listener: BullMQ emits it after every failed attempt, retried or not. Updates the
+ * discoveryJobs row so the UI doesn't show "running" forever. Never rewrites a `completed` job: a process-results
+ * job whose baseline comparison enqueue failed after its storing transaction committed is retried only to deliver
+ * that comparison, and its scan is stored (#12502). Never throws.
+ */
+async function recordWorkerJobFailure(
+  job: { data?: { type?: string; jobId?: unknown } } | undefined,
+  error: Error | undefined,
+): Promise<void> {
+  const jobType = job?.data?.type;
+  if (jobType !== 'process-results' && jobType !== 'dispatch-scan') return;
+  const jobId = (job!.data as { jobId: string }).jobId;
+  try {
+    await runWithSystemDbAccess(async () => {
+      await db
+        .update(discoveryJobs)
+        .set({
+          status: 'failed',
+          completedAt: new Date(),
+          errors: { message: error?.message ?? 'Unknown worker error' },
+          updatedAt: new Date()
+        })
+        .where(and(eq(discoveryJobs.id, jobId), ne(discoveryJobs.status, 'completed')));
+    });
+  } catch (dbErr) {
+    console.error(`[DiscoveryWorker] Failed to mark job ${jobId} as failed in DB:`, dbErr);
+  }
+}
+
 // Worker instance (kept for cleanup)
 let discoveryWorkerInstance: Worker<DiscoveryJobData> | null = null;
 
@@ -2309,25 +2386,7 @@ export async function initializeDiscoveryWorker(): Promise<void> {
 
     discoveryWorkerInstance.on('failed', (job, error) => {
       console.error(`[DiscoveryWorker] Job ${job?.id} failed:`, error);
-
-      // Update the discoveryJobs row so the UI doesn't show "running" forever
-      const jobType = job?.data?.type;
-      if (jobType === 'process-results' || jobType === 'dispatch-scan') {
-        const jobId = (job!.data as { jobId: string }).jobId;
-        runWithSystemDbAccess(async () => {
-          await db
-            .update(discoveryJobs)
-            .set({
-              status: 'failed',
-              completedAt: new Date(),
-              errors: { message: error?.message ?? 'Unknown worker error' },
-              updatedAt: new Date()
-            })
-            .where(eq(discoveryJobs.id, jobId));
-        }).catch((dbErr) => {
-          console.error(`[DiscoveryWorker] Failed to mark job ${jobId} as failed in DB:`, dbErr);
-        });
-      }
+      void recordWorkerJobFailure(job, error);
     });
 
     discoveryWorkerInstance.on('completed', (job, result) => {

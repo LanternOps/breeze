@@ -38,6 +38,23 @@ vi.mock('../../jobs/discoveryWorker', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../jobs/discoveryWorker')>()),
   enqueueDiscoveryResults: enqueueResults,
 }));
+// W13 (#12502): the discovery worker's processor is captured from its BullMQ Worker so a test drives the real
+// job entry, and the baseline comparison enqueue is a spy a test can hold on a latch or fail.
+const workerCapture = vi.hoisted(() => ({ processor: undefined as undefined | ((job: unknown) => Promise<unknown>) }));
+vi.mock('bullmq', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('bullmq')>();
+  class CapturingWorker {
+    constructor(_name: string, processor: (job: unknown) => Promise<unknown>) { workerCapture.processor = processor; }
+    on() { return this; }
+    async close() {}
+  }
+  return { ...actual, Worker: CapturingWorker };
+});
+const enqueueComparison = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => 'compare-queued'));
+vi.mock('../../jobs/networkBaselineWorker', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../jobs/networkBaselineWorker')>()),
+  enqueueBaselineComparison: enqueueComparison,
+}));
 vi.mock('../../services/snmpSecrets', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/snmpSecrets')>();
   spies.decryptCommunities.mockImplementation(actual.decryptSnmpCommunities);
@@ -61,6 +78,11 @@ import type { IneligibleReason } from '@breeze/shared';
 import { encryptSnmpCommunities } from '../../services/snmpSecrets';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
+import { createDiscoveryWorker } from '../../jobs/discoveryWorker';
+import { Hono } from 'hono';
+import { createAgentWsHandlers } from '../../routes/agentWs';
+import { commandsRoutes } from '../../routes/agents/commands';
+import { commandResultHandlers } from '../../services/commandResultHandlers';
 
 // ---------------------------------------------------------------------------------------------------------
 // Fixtures (synthetic values only: index "Public repository")
@@ -909,5 +931,463 @@ describe('the AI tool', () => {
     expect(JSON.stringify(out)).toContain('no_network_assigned');
     expect(await commandsFor(deviceId)).toEqual([]);
   }, 30_000);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// W13 (#12502): result paths release the site lock before queue I/O
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * Takes the site lock in `exclusive` mode on its own connection with a short lock_timeout. Resolves 'granted',
+ * or the error (55P03 while a transaction still holds the shared lock).
+ */
+const takeExclusive = (siteId: string) => sys(async () => {
+  await db.execute(sql`set local lock_timeout = '500ms'`);
+  await lockSitesForNetworkGate([siteId], 'exclusive');
+  return 'granted' as const;
+}).catch((e: unknown) => e);
+
+/** A mock implementation that signals entry, then waits for the latch. */
+function latched<T>(value: T) {
+  const entered = deferred(); const release = deferred();
+  const impl = async (..._args: unknown[]) => { entered.resolve(); await release.promise; return value; };
+  return { entered, release, impl };
+}
+
+/** Runs one job through the discovery worker's real processor, as BullMQ does. */
+async function runDiscoveryWorkerJob(data: Record<string, unknown>): Promise<unknown> {
+  if (!workerCapture.processor) createDiscoveryWorker();
+  return workerCapture.processor!({
+    id: `test-${randomUUID()}`,
+    name: String(data.type),
+    data: { ...data, meta: { actorType: 'agent', actorId: null, source: 'route:agentWs:discovery-result' } },
+  });
+}
+
+async function seedBaseline(t: Scope, lastScanJobId: string): Promise<string> {
+  const [b] = await admin<{ id: string }>(sql`
+    INSERT INTO network_baselines (org_id, site_id, subnet, last_scan_job_id)
+    VALUES (${t.orgId}::uuid, ${t.siteId}::uuid, '192.168.1.0/24', ${lastScanJobId}::uuid) RETURNING id`);
+  return b!.id;
+}
+
+async function jobCompletion(jobId: string) {
+  const [row] = await admin<{ status: string; completed_at: Date | null; new_assets: number | null;
+    hosts_scanned: number | null; hosts_discovered: number | null; updated_at: Date }>(sql`
+    SELECT status, completed_at, new_assets, hosts_scanned, hosts_discovered, updated_at
+      FROM discovery_jobs WHERE id = ${jobId}::uuid`);
+  return row!;
+}
+
+async function assetStamps(orgId: string) {
+  return admin<{ id: string; updated_at: Date; last_seen_at: Date | null }>(sql`
+    SELECT id, updated_at, last_seen_at FROM discovered_assets WHERE org_id = ${orgId}::uuid ORDER BY ip_address`);
+}
+
+describe('W13: the baseline comparison is enqueued after the storing transaction', () => {
+  /** An ungated site with an unrestricted running job that a baseline launched. */
+  async function baselineScene() {
+    const t = await seedSite();
+    const agent = await seedAgent({ ...t, hostname: 'DESKTOP-01' });
+    const profileId = await seedProfile(t);
+    const jobId = await runningJob(t, profileId, {
+      version: 1, mode: 'unrestricted', agentId: agent.agentId, deviceId: agent.deviceId,
+      allowedNetworkIds: [], allowedGatewayIds: [], decidedAt: new Date().toISOString(),
+    });
+    const baselineId = await seedBaseline(t, jobId);
+    const hosts = [host('192.168.1.20'), host('192.168.1.21')];
+    const data = { type: 'process-results' as const, jobId, profileId, orgId: t.orgId, siteId: t.siteId,
+      hosts, hostsScanned: 2, hostsDiscovered: 2 };
+    return { t, profileId, jobId, baselineId, hosts, data };
+  }
+
+  beforeEach(() => { enqueueComparison.mockReset(); enqueueComparison.mockImplementation(async () => 'compare-queued'); });
+
+  it('an exclusive site lock is granted while the comparison enqueue is in flight', async () => {
+    const { t, jobId, baselineId, hosts, data } = await baselineScene();
+    const hold = latched('compare-queued');
+    enqueueComparison.mockImplementationOnce(hold.impl);
+
+    const run = runDiscoveryWorkerJob(data);
+    let taken: unknown;
+    try {
+      await hold.entered.promise;
+      taken = await takeExclusive(t.siteId);
+    } finally {
+      hold.release.resolve();
+      await run.catch(() => undefined);
+    }
+
+    expect(taken).toBe('granted');
+    expect(enqueueComparison).toHaveBeenCalledTimes(1);
+    expect(enqueueComparison.mock.calls[0]).toEqual([baselineId, jobId, t.orgId, t.siteId, hosts]);
+    expect(await job(jobId)).toMatchObject({ status: 'completed' });
+  });
+
+  it('a comparison enqueue that fails after commit is retried: the retry stores nothing again and delivers once', async () => {
+    const { t, jobId, baselineId, hosts, data } = await baselineScene();
+    enqueueComparison.mockRejectedValueOnce(new Error('queue down'));
+
+    await expect(runDiscoveryWorkerJob(data)).rejects.toThrow('queue down');
+    const first = await jobCompletion(jobId);
+    const firstAssets = await assetStamps(t.orgId);
+    expect(first).toMatchObject({ status: 'completed', new_assets: 2, hosts_scanned: 2, hosts_discovered: 2 });
+    expect(firstAssets).toHaveLength(2);
+
+    // BullMQ emits 'failed' for the attempt: the listener must leave a completed job completed.
+    await __testables.recordWorkerJobFailure({ data }, new Error('queue down'));
+    expect(await jobCompletion(jobId)).toEqual(first);
+
+    await runDiscoveryWorkerJob(data);
+
+    expect(await jobCompletion(jobId)).toEqual(first);
+    expect(await assetStamps(t.orgId)).toEqual(firstAssets);
+    expect(enqueueComparison).toHaveBeenCalledTimes(2);
+    expect(enqueueComparison.mock.calls[1]).toEqual([baselineId, jobId, t.orgId, t.siteId, hosts]);
+  });
+
+  it('a retry whose baseline moved on to a newer scan stores nothing and delivers nothing', async () => {
+    const { t, profileId, jobId, baselineId, data } = await baselineScene();
+    enqueueComparison.mockRejectedValueOnce(new Error('queue down'));
+    await expect(runDiscoveryWorkerJob(data)).rejects.toThrow('queue down');
+    const first = await jobCompletion(jobId);
+    const newer = await seedJob(t.orgId, t.siteId, profileId);
+    await admin(sql`UPDATE network_baselines SET last_scan_job_id = ${newer}::uuid WHERE id = ${baselineId}::uuid`);
+
+    await runDiscoveryWorkerJob(data);
+
+    expect(await jobCompletion(jobId)).toEqual(first);
+    expect(enqueueComparison).toHaveBeenCalledTimes(1);
+  });
+
+  it('a retry does not verify again: a site gated after the scan was stored still gets its comparison', async () => {
+    const { t, jobId, baselineId, hosts, data } = await baselineScene();
+    enqueueComparison.mockRejectedValueOnce(new Error('queue down'));
+    await expect(runDiscoveryWorkerJob(data)).rejects.toThrow('queue down');
+    const first = await jobCompletion(jobId);
+    await gateSite(t.orgId, t.siteId, [[G1]]);   // would reject this unrestricted result if verified again
+
+    await runDiscoveryWorkerJob(data);
+
+    expect(await jobCompletion(jobId)).toEqual(first);
+    expect(enqueueComparison).toHaveBeenCalledTimes(2);
+    expect(enqueueComparison.mock.calls[1]).toEqual([baselineId, jobId, t.orgId, t.siteId, hosts]);
+  });
+
+  it('the failed listener still fails a running job', async () => {
+    const { jobId, data } = await baselineScene();
+    await __testables.recordWorkerJobFailure({ data }, new Error('worker crashed'));
+    expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { message: 'worker crashed' } });
+  });
+});
+
+type AgentFixture = Scope & { partnerId: string; deviceId: string; agentId: string };
+
+/** An ungated site, its agent, and an unrestricted running job: a result for it is accepted. */
+async function resultScene(): Promise<{ fx: AgentFixture; profileId: string; jobId: string }> {
+  const t = await seedSite();
+  const agent = await seedAgent({ ...t, hostname: 'DESKTOP-01' });
+  const profileId = await seedProfile(t);
+  const jobId = await runningJob(t, profileId, {
+    version: 1, mode: 'unrestricted', agentId: agent.agentId, deviceId: agent.deviceId,
+    allowedNetworkIds: [], allowedGatewayIds: [], decidedAt: new Date().toISOString(),
+  });
+  return { fx: { ...t, ...agent }, profileId, jobId };
+}
+
+/** A persisted discovery command for the job, as the AI tool or a REST-polling agent receives it. */
+async function seedDiscoveryCommand(fx: AgentFixture, jobId: string): Promise<string> {
+  const [row] = await getTestDb().insert(deviceCommands).values({
+    deviceId: fx.deviceId, type: 'network_discovery', targetRole: 'agent', payload: { jobId }, status: 'sent',
+  }).returning({ id: deviceCommands.id });
+  return row!.id;
+}
+
+const discoveryResultBody = (jobId: string) => ({
+  status: 'completed', exitCode: 0,
+  result: { jobId, hosts: [host('192.168.1.20')], hostsScanned: 1, hostsDiscovered: 1 },
+});
+
+/** One command_result frame through the live WebSocket handlers; returns the frames the agent was sent. */
+async function sendWsResult(fx: AgentFixture, commandId: string, body: Record<string, unknown>): Promise<string[]> {
+  const sent: string[] = [];
+  const ws = { send: (frame: string) => { sent.push(frame); } } as unknown as Parameters<
+    ReturnType<typeof createAgentWsHandlers>['onMessage']>[1];
+  const handlers = createAgentWsHandlers(fx.agentId, {
+    agentId: fx.agentId, siteId: fx.siteId, installIncarnation: 1, deviceId: fx.deviceId, orgId: fx.orgId, partnerId: fx.partnerId,
+  });
+  await handlers.onOpen({}, ws);
+  await handlers.onMessage({ data: JSON.stringify({ type: 'command_result', commandId, ...body }) } as MessageEvent, ws);
+  await handlers.onClose({}, ws);
+  return sent;
+}
+
+/**
+ * The real REST result route under the request-long org context agentAuthMiddleware opens. With
+ * `failAfterRoute`, that outer transaction rolls back after the route has answered.
+ */
+async function sendHttpResult(fx: AgentFixture, commandId: string, body: Record<string, unknown>,
+  opts: { failAfterRoute?: boolean } = {}): Promise<Response> {
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('agent', { installIncarnation: 1, deviceId: fx.deviceId, agentId: fx.agentId, orgId: fx.orgId,
+      partnerId: fx.partnerId, siteId: fx.siteId, role: 'agent' } as never);
+    await withDbAccessContext(
+      { scope: 'organization', orgId: fx.orgId, accessibleOrgIds: [fx.orgId], accessiblePartnerIds: [], currentPartnerId: null },
+      async () => {
+        await next();
+        if (opts.failAfterRoute) throw new Error('request transaction rolled back after the route');
+      },
+    );
+  });
+  app.route('/agents', commandsRoutes);
+  return app.request(`/agents/${fx.agentId}/commands/${commandId}/result`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+}
+
+/** Waits for fire-and-forget work started after a commit (the REST route's delivery). */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 20));
+}
+
+describe('W13: a persisted discovery result is enqueued after its transaction commits', () => {
+  beforeEach(() => { enqueueResults.mockReset(); enqueueResults.mockImplementation(async () => 'queued'); });
+
+  it('WebSocket: an exclusive site lock is granted while the results enqueue is in flight, and the ack follows it', async () => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+    const hold = latched('queued');
+    enqueueResults.mockImplementationOnce(hold.impl);
+
+    const sending = sendWsResult(fx, commandId, discoveryResultBody(jobId));
+    let taken: unknown;
+    let framesWhileHeld = -1;
+    let frames: string[] = [];
+    try {
+      await hold.entered.promise;
+      taken = await takeExclusive(fx.siteId);
+      framesWhileHeld = (await Promise.race([sending.then(() => 1), settle().then(() => 0)]));
+    } finally {
+      hold.release.resolve();
+      frames = await sending.catch(() => []);
+    }
+
+    expect(taken).toBe('granted');
+    expect(framesWhileHeld).toBe(0);   // the agent is not acknowledged until the enqueue returned
+    expect(frames.map((f) => JSON.parse(f))).toContainEqual({ type: 'ack', commandId });
+    expect(enqueueResults).toHaveBeenCalledTimes(1);
+    expect(enqueueResults.mock.calls[0]!.slice(0, 3)).toEqual([jobId, fx.orgId, fx.siteId]);
+  });
+
+  it('REST: an exclusive site lock is granted while the results enqueue is in flight', async () => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+    const hold = latched('queued');
+    enqueueResults.mockImplementationOnce(hold.impl);
+
+    const sending = sendHttpResult(fx, commandId, discoveryResultBody(jobId));
+    let taken: unknown;
+    let res: Response | undefined;
+    try {
+      await hold.entered.promise;
+      taken = await takeExclusive(fx.siteId);
+    } finally {
+      hold.release.resolve();
+      res = await sending;
+    }
+
+    expect(taken).toBe('granted');
+    expect(res.status).toBe(200);
+    expect(enqueueResults).toHaveBeenCalledTimes(1);
+    expect(enqueueResults.mock.calls[0]!.slice(0, 3)).toEqual([jobId, fx.orgId, fx.siteId]);
+  });
+
+  it('REST: a result whose savepoint rolls back delivers nothing', async () => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+    const real = commandResultHandlers.network_discovery!;
+    const spy = vi.spyOn(commandResultHandlers, 'network_discovery').mockImplementationOnce(async (input) => {
+      const outcome = await real(input);
+      throw new Error(`simulated failure after the discovery handler (${outcome ? 'delivery returned' : 'no delivery'})`);
+    });
+    try {
+      const res = await sendHttpResult(fx, commandId, discoveryResultBody(jobId));
+      await settle();
+      expect(res.status).toBe(500);
+      expect(enqueueResults).not.toHaveBeenCalled();
+      expect(await job(jobId)).toMatchObject({ status: 'running' });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('REST: a request transaction that rolls back after the route delivers nothing', async () => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+
+    const res = await sendHttpResult(fx, commandId, discoveryResultBody(jobId), { failAfterRoute: true });
+    await settle();
+
+    expect(res.status).toBe(500);
+    expect(enqueueResults).not.toHaveBeenCalled();
+    const [cmd] = await getTestDb().select({ status: deviceCommands.status }).from(deviceCommands)
+      .where(eq(deviceCommands.id, commandId));
+    expect(cmd!.status).toBe('sent');
+  });
+
+  it('WebSocket: a result whose finalize transaction rolls back delivers nothing', async () => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+    const real = commandResultHandlers.network_discovery!;
+    const spy = vi.spyOn(commandResultHandlers, 'network_discovery').mockImplementationOnce(async (input) => {
+      await real(input);
+      throw new Error('simulated failure after the discovery handler');
+    });
+    try {
+      const frames = await sendWsResult(fx, commandId, discoveryResultBody(jobId));
+      await settle();
+      expect(frames.map((f) => JSON.parse(f).code)).toContain('RESULT_PROCESSING_FAILED');
+      expect(enqueueResults).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each(['WebSocket', 'REST'] as const)('%s: a failed enqueue still fails the job with its message', async (transport) => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+    enqueueResults.mockRejectedValueOnce(new Error('queue down'));
+
+    if (transport === 'WebSocket') {
+      const frames = await sendWsResult(fx, commandId, discoveryResultBody(jobId));
+      expect(frames.map((f) => JSON.parse(f))).toContainEqual({ type: 'ack', commandId });
+    } else {
+      expect((await sendHttpResult(fx, commandId, discoveryResultBody(jobId))).status).toBe(200);
+    }
+
+    // REST delivers after the response, so wait for the failure write rather than a fixed delay.
+    await vi.waitFor(async () => {
+      expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { message: 'queue down' } });
+    }, { timeout: 5_000, interval: 50 });
+  });
+
+  it.each(['WebSocket', 'REST'] as const)('%s: a failed enqueue does not fail a job that already left running', async (transport) => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+    enqueueResults.mockImplementationOnce(async () => {
+      await admin(sql`UPDATE discovery_jobs SET status = 'cancelled' WHERE id = ${jobId}::uuid`);
+      throw new Error('queue down');
+    });
+
+    if (transport === 'WebSocket') await sendWsResult(fx, commandId, discoveryResultBody(jobId));
+    else await sendHttpResult(fx, commandId, discoveryResultBody(jobId));
+    // The enqueue must have run (and failed) before the job is read, or this passes vacuously.
+    await vi.waitFor(() => expect(enqueueResults).toHaveBeenCalledTimes(1), { timeout: 5_000, interval: 20 });
+    await settle();
+
+    expect(await job(jobId)).toMatchObject({ status: 'cancelled' });
+  });
+});
+
+describe('W13: a direct WebSocket discovery result is enqueued after its transaction commits', () => {
+  beforeEach(() => { enqueueResults.mockReset(); enqueueResults.mockImplementation(async () => 'queued'); });
+
+  /** resultScene, with the job bound to its agent as a direct dispatch records it. */
+  async function directScene() {
+    const scene = await resultScene();
+    await admin(sql`UPDATE discovery_jobs SET agent_id = ${scene.fx.agentId} WHERE id = ${scene.jobId}::uuid`);
+    return scene;
+  }
+
+  /** The job id is the command id and there is no device_commands row: the live loop's direct branch. */
+  it('an exclusive site lock is granted while the results enqueue is in flight, and the ack follows it', async () => {
+    const { fx, jobId } = await directScene();
+    const hold = latched('queued');
+    enqueueResults.mockImplementationOnce(hold.impl);
+
+    const sending = sendWsResult(fx, jobId, discoveryResultBody(jobId));
+    let taken: unknown;
+    let resolvedWhileHeld = -1;
+    let frames: string[] = [];
+    try {
+      await hold.entered.promise;
+      taken = await takeExclusive(fx.siteId);
+      resolvedWhileHeld = await Promise.race([sending.then(() => 1), settle().then(() => 0)]);
+    } finally {
+      hold.release.resolve();
+      frames = await sending.catch(() => []);
+    }
+
+    expect(taken).toBe('granted');
+    expect(resolvedWhileHeld).toBe(0);
+    expect(frames.map((f) => JSON.parse(f))).toContainEqual({ type: 'ack', commandId: jobId });
+    expect(enqueueResults).toHaveBeenCalledTimes(1);
+    expect(enqueueResults.mock.calls[0]!.slice(0, 3)).toEqual([jobId, fx.orgId, fx.siteId]);
+    expect(await job(jobId)).toMatchObject({ status: 'running' });
+  });
+
+  it('called inside a context it does not own, it enqueues only after that context commits', async () => {
+    const { fx, jobId } = await directScene();
+    const hold = latched('queued');
+    enqueueResults.mockImplementationOnce(hold.impl);
+
+    const running = withDbAccessContext(
+      { scope: 'organization', orgId: fx.orgId, accessibleOrgIds: [fx.orgId], accessiblePartnerIds: [], currentPartnerId: null },
+      () => processOrphanedCommandResult(fx.agentId, fx.deviceId,
+        { type: 'command_result', commandId: jobId, ...discoveryResultBody(jobId) } as never),
+    );
+    let taken: unknown;
+    try {
+      await hold.entered.promise;
+      taken = await takeExclusive(fx.siteId);
+    } finally {
+      hold.release.resolve();
+      await running.catch(() => undefined);
+    }
+
+    expect(taken).toBe('granted');
+    expect(enqueueResults).toHaveBeenCalledTimes(1);
+  });
+
+  it('a context that rolls back after the result was accepted delivers nothing', async () => {
+    const { fx, jobId } = await directScene();
+
+    const err = await withDbAccessContext(
+      { scope: 'organization', orgId: fx.orgId, accessibleOrgIds: [fx.orgId], accessiblePartnerIds: [], currentPartnerId: null },
+      async () => {
+        await processOrphanedCommandResult(fx.agentId, fx.deviceId,
+          { type: 'command_result', commandId: jobId, ...discoveryResultBody(jobId) } as never);
+        throw new Error('rolled back after the handler');
+      },
+    ).catch((e: unknown) => e);
+    await settle();
+
+    expect(String(err)).toContain('rolled back after the handler');
+    expect(enqueueResults).not.toHaveBeenCalled();
+    expect(await job(jobId)).toMatchObject({ status: 'running' });
+  });
+
+  it('a failed enqueue still fails the job with its message, and the agent is still acknowledged', async () => {
+    const { fx, jobId } = await directScene();
+    enqueueResults.mockRejectedValueOnce(new Error('queue down'));
+
+    const frames = await sendWsResult(fx, jobId, discoveryResultBody(jobId));
+
+    expect(frames.map((f) => JSON.parse(f))).toContainEqual({ type: 'ack', commandId: jobId });
+    expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { message: 'queue down' } });
+  });
+
+  it('a failed enqueue does not fail a job that already left running', async () => {
+    const { fx, jobId } = await directScene();
+    enqueueResults.mockImplementationOnce(async () => {
+      await admin(sql`UPDATE discovery_jobs SET status = 'cancelled' WHERE id = ${jobId}::uuid`);
+      throw new Error('queue down');
+    });
+
+    await sendWsResult(fx, jobId, discoveryResultBody(jobId));
+
+    expect(await job(jobId)).toMatchObject({ status: 'cancelled' });
+  });
 });
 
