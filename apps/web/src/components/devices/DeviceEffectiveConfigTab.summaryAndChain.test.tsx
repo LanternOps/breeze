@@ -294,4 +294,29 @@ describe('DeviceEffectiveConfigTab precedence: winner link, level and why others
     render(<DeviceEffectiveConfigTab deviceId="dev-9565" />);
     expect(await screen.findByTestId('effective-config-inherited-from')).toHaveTextContent('Based on Standard');
   });
+
+  it('never links the Breeze Defaults layer, even for a partner-scope caller', async () => {
+    // Hardware collection is enforced from Breeze Defaults, so its card renders
+    // with the sentinel as its "policy"; there is no page to open.
+    currentResponse = {
+      ...response,
+      features: {
+        ...response.features,
+        hardware_monitoring: {
+          featureType: 'hardware_monitoring',
+          featurePolicyId: null,
+          inlineSettings: null,
+          sourceLevel: 'default',
+          sourceTargetId: 'breeze-defaults',
+          sourcePolicyId: 'breeze-defaults',
+          sourcePolicyName: 'Breeze Defaults',
+          sourcePriority: 0,
+        },
+      },
+    };
+    const { container } = render(<DeviceEffectiveConfigTab deviceId="dev-9565" />);
+    await screen.findByRole('heading', { level: 4, name: 'Hardware Monitoring' });
+    expect(within(card('Hardware Monitoring')).queryByTestId('effective-config-winner-link')).toBeNull();
+    expect(container.querySelector('a[href="/configuration-policies/breeze-defaults"]')).toBeNull();
+  });
 });

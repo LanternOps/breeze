@@ -46,10 +46,14 @@ test.describe('config policy applies-to', () => {
 
     // 3. Apply it to one organization; the strip names a target after close.
     await expect(policies.drawer()).toBeVisible();
-    const firstOrg = policies.orgScopeOrgCheckboxes().first();
-    await firstOrg.waitFor();
-    await firstOrg.check();
-    await expect(firstOrg).toBeChecked({ timeout: 15_000 });
+    // The checkbox is controlled and only flips after the POST and refetch, so
+    // click (not .check(), which demands a synchronous state change). Pin the
+    // org by its testid: once assigned it also appears in the assigned list.
+    await policies.orgScopeOrgCheckboxes().first().waitFor();
+    const orgTestId = await policies.orgScopeOrgCheckboxes().first().getAttribute('data-testid');
+    expect(orgTestId).toBeTruthy();
+    await cleanPage.getByTestId(orgTestId!).first().click();
+    await expect(cleanPage.getByTestId(orgTestId!).first()).toBeChecked({ timeout: 15_000 });
     await policies.drawerClose().click();
     await expect(policies.stripTargets().first()).toBeVisible({ timeout: 15_000 });
     await expect(policies.stripNotApplied()).toHaveCount(0);

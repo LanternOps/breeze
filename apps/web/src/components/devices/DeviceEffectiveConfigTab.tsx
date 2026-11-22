@@ -431,9 +431,12 @@ export default function DeviceEffectiveConfigTab({
   }
 
   const { features, inheritanceChain, policyOwners } = data;
-  const canOpen = (policyId: string) => canOpenPolicy(policyId, policyOwners, jwtClaims);
-  const policyName = (policyId: string, name: string, testId?: string) =>
-    canOpen(policyId) ? (
+  // The Breeze Defaults layer (level 'default') is not a policy and has no page;
+  // Hardware Monitoring renders an enforced card from it, so guard on level.
+  const canOpen = (policyId: string, level: AssignmentLevel) =>
+    level !== "default" && canOpenPolicy(policyId, policyOwners, jwtClaims);
+  const policyName = (policyId: string, name: string, level: AssignmentLevel, testId?: string) =>
+    canOpen(policyId, level) ? (
       <a
         href={`/configuration-policies/${policyId}`}
         data-testid={testId}
@@ -525,6 +528,7 @@ export default function DeviceEffectiveConfigTab({
                       {policyName(
                         feature.sourcePolicyId,
                         feature.sourcePolicyName,
+                        feature.sourceLevel,
                         "effective-config-winner-link",
                       )}
                       {" · "}
@@ -534,7 +538,7 @@ export default function DeviceEffectiveConfigTab({
                         })}
                       </span>
                     </p>
-                    {!canOpen(feature.sourcePolicyId) &&
+                    {!canOpen(feature.sourcePolicyId, feature.sourceLevel) &&
                       policyOwners?.[feature.sourcePolicyId] === "partner" && (
                         <p className="mt-0.5 text-xs text-muted-foreground">
                           {t("deviceEffectiveConfigTab.managedByYourMsp")}
@@ -664,7 +668,7 @@ export default function DeviceEffectiveConfigTab({
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      {policyName(entry.policyId, entry.policyName)}
+                      {policyName(entry.policyId, entry.policyName, entry.level)}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1">
