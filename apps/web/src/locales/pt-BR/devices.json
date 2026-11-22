@@ -1048,13 +1048,12 @@
     "linkedPolicy": "Política vinculada:",
     "notEnforced": "Não obrigatório",
     "usingBreezeDefaults": "— usando os padrões do Breeze",
-    "inheritanceChain": "Cadeia de herança",
-    "policiesAreResolvedUsingClosestWins": "As políticas são resolvidas pela prioridade da atribuição mais próxima. Atribuições mais específicas (no nível do dispositivo) substituem as mais abrangentes (no nível da organização).",
+    "inheritanceChain": "Precedência",
     "priority": "Prioridade",
     "level": "Nível",
     "policy2": "Política",
     "features": "Recursos",
-    "inheritedFrom": "Herdado de {{name}}",
+    "inheritedFrom": "Baseada em {{name}}",
     "patchApproval": {
       "label": "aprovação",
       "byRing": "definida pelo anel de atualização vinculado",
@@ -1064,8 +1063,16 @@
       "extraDestinations": "Destinos adicionais durante o isolamento",
       "invalid": "As configurações de contenção desta política não são válidas. Por isso, o isolamento usa os padrões fixos, sem destinos adicionais."
     },
-    "chainResolutionRule": "O nível decide primeiro: Dispositivo vence Grupo de dispositivos, depois Site, Organização e Parceiro. A prioridade (vence o menor número) só desempata políticas do mesmo nível. Recursos riscados foram substituídos por uma política mais próxima.",
-    "featureOverriddenBy": "Substituído por {{policy}}"
+    "featureOverriddenBy": "Substituído por {{policy}}",
+    "viaLevel": "via {{level}}",
+    "managedByYourMsp": "Gerenciada pelo seu MSP",
+    "precedenceLegend": "O mais específico vence, por recurso: Dispositivo › Grupo de dispositivos › Local › Organização › Todas as organizações. Uma política mais próxima substitui o recurso inteiro; não há mesclagem.",
+    "lostClause": "Substituída para {{features}} por {{winner}}: {{reason}}.",
+    "lostReasons": {
+      "more_specific_level": "ela é definida em um nível mais específico",
+      "lower_priority_number": "mesmo nível, número de prioridade menor",
+      "assigned_earlier": "mesmo nível e prioridade, atribuída antes"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Falha ao buscar as atividades",

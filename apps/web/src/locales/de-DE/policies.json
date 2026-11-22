@@ -18,15 +18,15 @@
       "optional2": "(optional)",
       "noRestrictionAppliesToAllOperatingSystems": "Keine Einschränkung – gilt für alle Betriebssysteme",
       "priority": "Priorität",
-      "currentAssignments": "Aktuelle Aufgaben",
-      "noAssignmentsYetAssignThisPolicyTo": "Noch keine Aufgaben. Weisen Sie diese Richtlinie den oben genannten Zielen zu.",
+      "currentAssignments": "Gilt für",
+      "noAssignmentsYetAssignThisPolicyTo": "Noch auf kein Gerät angewendet. Fügen Sie oben ein Ziel hinzu.",
       "level": "Ebene",
       "target": "Ziel",
       "priority2": "Priorität",
       "filters": "Filter",
       "allOrganizations": "Alle Organisationen",
       "allDevices": "Alle Geräte",
-      "addAssignment": "Aufgabe hinzufügen",
+      "addAssignment": "Ziel hinzufügen",
       "level2": "Ebene",
       "target2": "Ziel",
       "target3": "Ziel",
@@ -81,23 +81,23 @@
       "howWouldYouLikeToConfigureThis": "Wie möchten Sie diese Richtlinie konfigurieren?",
       "configureNew": "Neu konfigurieren",
       "startFreshWithCustomSettingsForEach": "Beginnen Sie neu mit benutzerdefinierten Einstellungen für jede Funktion",
-      "linkToExisting": "Link zu Vorhanden",
-      "useAnotherPolicyAsTheMasterBaseline": "Verwenden Sie eine andere Richtlinie als Master-Baseline",
+      "linkToExisting": "Basierend auf einer übergeordneten Richtlinie",
+      "useAnotherPolicyAsTheMasterBaseline": "Einstellungen einer anderen Richtlinie übernehmen und nur Abweichungen ändern",
       "newConfigurationPolicy2": "Neue Konfigurationsrichtlinie",
-      "masterPolicy": "Master-Richtlinie",
-      "selectTheConfigurationPolicyToUseAs": "Wählen Sie die Konfigurationsrichtlinie aus, die als Basis verwendet werden soll. Sie können einzelne Einstellungen pro Funktion überschreiben.",
+      "masterPolicy": "Übergeordnete Richtlinie",
+      "selectTheConfigurationPolicyToUseAs": "Wählen Sie die übergeordnete Richtlinie aus. Sie können einzelne Funktionen für diese Richtlinie ändern.",
       "policyDetails": "Richtliniendetails",
       "eGStandardWorkstationPolicy": "z.B. Standard-Arbeitsplatzrichtlinie",
       "optionalDescriptionOfWhatThisPolicyConfigures": "Optionale Beschreibung dessen, was diese Richtlinie konfiguriert",
-      "scope": "Umfang",
-      "partnerLibrary": "Partnerbibliothek",
-      "assignToOrganizationsAfterCreating": "(Nach dem Erstellen Organisationen zuweisen)",
-      "aSpecificOrganization": "Eine bestimmte Organisation",
+      "scope": "Verwaltet von",
+      "partnerLibrary": "Ihr MSP",
+      "assignToOrganizationsAfterCreating": "(als Nächstes festlegen, wo sie gilt)",
+      "aSpecificOrganization": "Eine Organisation",
       "selectAnOrganization": "Wählen Sie eine Organisation aus",
-      "createAReusablePolicyOwnedByYour": "Erstellen Sie eine wiederverwendbare Richtlinie, die Ihrem Partner gehört. Es gilt für keine Organisationen, bis Sie es auf der Registerkarte „Organisationen“ der Richtlinie zuweisen. Sicherungseinstellungen sind für Richtlinien im Besitz von Partnern nicht verfügbar.",
+      "createAReusablePolicyOwnedByYour": "Verwaltet von Ihrem MSP. Sie gilt für nichts, bis Sie unter „Gilt für“ festlegen, wo sie gilt.",
       "new": "neu",
       "linked": "verlinkt",
-      "createAPolicyLinkedToAnExisting": "Erstellen Sie eine Richtlinie, die mit einem vorhandenen Master verknüpft ist.",
+      "createAPolicyLinkedToAnExisting": "Erstellen Sie eine Richtlinie, die auf einer übergeordneten Richtlinie basiert.",
       "createANewConfigurationPolicyToBundle": "Erstellen Sie eine neue Konfigurationsrichtlinie, um Funktionseinstellungen zu bündeln.",
       "name": "Namen",
       "description": "Beschreibung",
@@ -116,16 +116,15 @@
       "failedToUpdatePolicy": "Die Richtlinie konnte nicht aktualisiert werden",
       "overview": "Übersicht",
       "complianceStatus": "Compliance-Status",
-      "assignments": "Aufgaben",
       "loadingPolicy": "Richtlinie wird geladen...",
       "backToList": "Zurück zur Liste",
       "configurationPolicies": "Konfigurationsrichtlinien",
       "policyDetails": "Richtliniendetails",
       "archived2": "Archiviert",
-      "inheritingFrom": "Erben von",
-      "overrideIndividualTabsToCustomizeSettings": "– Überschreiben Sie einzelne Registerkarten, um Einstellungen anzupassen",
-      "isnTAvailableOnPartnerWidePolicies": "ist für partnerweite Richtlinien nicht verfügbar",
-      "configureThisFeatureOnAnOrganizationScoped": "Konfigurieren Sie diese Funktion für eine organisationsweite Richtlinie.",
+      "inheritingFrom": "Basiert auf",
+      "overrideIndividualTabsToCustomizeSettings": "Ändern Sie eine Funktion, um sie nur für diese Richtlinie festzulegen.",
+      "isnTAvailableOnPartnerWidePolicies": " ist für MSP-verwaltete Richtlinien nicht verfügbar",
+      "configureThisFeatureOnAnOrganizationScoped": "Legen Sie diese Funktion in einer Richtlinie fest, die von einer Organisation verwaltet wird.",
       "thisPolicyStillCarriesAnExisting": "Diese Richtlinie trägt noch eine bestehende",
       "configurationThatWillNeverBeApplied": "Konfiguration, die niemals angewendet wird.",
       "policy": "Richtlinie",
@@ -138,8 +137,11 @@
       "complianceStatus2": "compliance_status",
       "assignments2": "Aufgaben",
       "managedByYourMsp": "Verwaltet von Ihrem MSP",
-      "inheritedByPolicies_one": "Von {{count}} Richtlinie geerbt",
-      "inheritedByPolicies_other": "Von {{count}} Richtlinien geerbt"
+      "inheritedByPolicies_one": "Übergeordnet für {{count}} Richtlinie",
+      "inheritedByPolicies_other": "Übergeordnet für {{count}} Richtlinien",
+      "gatedFeatureTitle": "Für MSP-verwaltete Richtlinien nicht verfügbar. Legen Sie diese Funktion in einer Richtlinie fest, die von einer Organisation verwaltet wird.",
+      "appliesToDrawerTitle": "Gilt für",
+      "detailsSaved": "Richtliniendetails gespeichert"
     },
     "configPolicyList": {
       "archived": "Archiviert",
@@ -151,18 +153,18 @@
       "archived2": "Archiviert",
       "features": "Funktionen",
       "noPoliciesFoundTryAdjustingYourSearch": "Keine Richtlinien gefunden. Versuchen Sie, Ihre Suche anzupassen.",
-      "noPoliciesYet": "Noch keine Konfigurationsrichtlinien. Erstellen Sie eine und weisen Sie sie dann Organisationen, Standorten oder Geräten zu.",
-      "partnerWidePolicyAppliesToEveryOrganization": "Partnerweite Richtlinie – gilt für jede Organisation",
-      "allOrgs": "Partnerweit",
+      "noPoliciesYet": "Noch keine Konfigurationsrichtlinien. Erstellen Sie eine und legen Sie dann fest, wo sie gilt.",
       "page": "Seite",
       "of2": "von",
       "itsOwningOrganization": "seine Eigentümerorganisation",
-      "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}",
       "summary": "{{filtered}} von {{total}} Richtlinien",
       "inheritsBadge": "Erbt",
       "statusFilterLabel": "Status",
-      "partnerPolicy": "Partner",
-      "partnerPolicyAppliesOnlyWhereAssigned": "Partnerrichtlinie – gilt nur dort, wo sie zugewiesen ist. Weisen Sie sie allen Organisationen zu, um sie partnerweit zu machen."
+      "appliesToHeader": "Gilt für",
+      "managedByOrganization": "Verwaltet von {{organization}}",
+      "notAppliedChip": "Nicht angewendet",
+      "inUseChip_one": "In Verwendung über {{count}} Richtlinie",
+      "inUseChip_other": "In Verwendung über {{count}} Richtlinien"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Konfigurationsrichtlinien konnten nicht abgerufen werden",
@@ -191,10 +193,10 @@
       "failedToNarrow": "Eingrenzen fehlgeschlagen",
       "failedToAssignOrg": "Organisation konnte nicht zugewiesen werden",
       "organizations": "Organisationen",
-      "thisPartnerLibraryPolicyAppliesOnlyTo": "Diese Partnerbibliotheksrichtlinie gilt nur für die von Ihnen ausgewählten Organisationen.",
+      "thisPartnerLibraryPolicyAppliesOnlyTo": "Diese MSP-verwaltete Richtlinie gilt nur für die Organisationen, die Sie auswählen.",
       "filtersApplyOnAssign": "Diese Filter gelten bei der Zuweisung unten. Leer bedeutet jede Rolle und jedes Betriebssystem. Um die Filter einer Zuweisung zu ändern, schalten Sie sie aus und wieder ein.",
-      "allOrganizationsPartnerWide": "Alle Organisationen (partnerweit)",
-      "allOrganizationsPartnerWide2": "Alle Organisationen (partnerweit)",
+      "allOrganizationsPartnerWide": "Alle Organisationen",
+      "allOrganizationsPartnerWide2": "Alle Organisationen",
       "assigned": "Zugewiesen",
       "searchOrganizations": "Organisationen suchen...",
       "searching": "Suche...",
@@ -700,7 +702,11 @@
         "revertConfirmTitle": "Auf übergeordnete Richtlinie zurücksetzen?",
         "revertConfirmMessage": "Dadurch wird die {{feature}}-Überschreibung dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Einstellungen der übergeordneten Richtlinie gelten für alle Geräte, die diese Richtlinie verwenden. Dies kann nicht rückgängig gemacht werden.",
         "removeConfirmTitle": "Diese Konfiguration entfernen?",
-        "removeConfirmMessage": "Dadurch wird die {{feature}}-Konfiguration aus dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Funktion wird auf keinem Gerät mehr angewendet, das diese Richtlinie verwendet. Dies kann nicht rückgängig gemacht werden."
+        "removeConfirmMessage": "Dadurch wird die {{feature}}-Konfiguration aus dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Funktion wird auf keinem Gerät mehr angewendet, das diese Richtlinie verwendet. Dies kann nicht rückgängig gemacht werden.",
+        "badgeInherited": "Konfiguriert (geerbt)",
+        "badgeSavedNotDeployed": "Gespeichert (nicht bereitgestellt)",
+        "badgeConfigured": "Konfiguriert",
+        "badgeNotConfigured": "Nicht konfiguriert"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Stellen Sie Breeze Assist auf Geräten bereit",
@@ -1450,8 +1456,8 @@
       }
     },
     "partnerGroupAssignment": {
-      "title": "Gerätegruppen (alle Org.)",
-      "description": "Wählen Sie eine partnerweite Gerätegruppe als Ziel. Eine Gruppenzuweisung gilt auf Gerätegruppenebene und hat daher Vorrang vor Zuweisungen anderer Richtlinien auf Organisations- und Standortebene.",
+      "title": "Gerätegruppen organisationsübergreifend",
+      "description": "Wählen Sie eine MSP-eigene Gerätegruppe als Ziel. Eine Gruppenzuweisung gilt auf Gerätegruppenebene und hat daher Vorrang vor Zuweisungen anderer Richtlinien auf Organisations- und Standortebene.",
       "selectGroup": "Gerätegruppe auswählen",
       "assign": "Zuweisen",
       "remove": "Entfernen",
@@ -1462,6 +1468,96 @@
       "failedToRemove": "Gerätegruppenzuweisung konnte nicht entfernt werden",
       "empty": "Noch keine partnerweiten Gerätegruppen. Erstellen Sie eine unter Gerätegruppen → Alle Org.",
       "loading": "Gerätegruppen werden geladen…"
+    },
+    "featureNames": {
+      "patch": {
+        "label": "Patches"
+      },
+      "monitors": {
+        "label": "Monitore"
+      },
+      "backup": {
+        "label": "Sicherung"
+      },
+      "security": {
+        "label": "Sicherheit"
+      },
+      "maintenance": {
+        "label": "Wartung"
+      },
+      "compliance": {
+        "label": "Compliance"
+      },
+      "automation": {
+        "label": "Automatisierungen"
+      },
+      "event_log": {
+        "label": "Ereignisprotokolle"
+      },
+      "software_policy": {
+        "label": "Software-Richtlinie"
+      },
+      "sensitive_data": {
+        "label": "Datenerkennung"
+      },
+      "peripheral_control": {
+        "label": "Peripheriesteuerung"
+      },
+      "warranty": {
+        "label": "Garantie"
+      },
+      "helper": {
+        "label": "Breeze Assist"
+      },
+      "remote_access": {
+        "label": "Fernzugriff"
+      },
+      "pam": {
+        "label": "Privilegierter Zugriff"
+      },
+      "vulnerability": {
+        "label": "Schwachstellenscans"
+      },
+      "onedrive_helper": {
+        "label": "OneDrive Helper"
+      },
+      "device_lifecycle": {
+        "label": "Gerätelebenszyklus"
+      },
+      "hardware_monitoring": {
+        "label": "Hardware-Überwachung"
+      }
+    },
+    "levelNames": {
+      "partner": {
+        "label": "Alle Organisationen"
+      },
+      "organization": {
+        "label": "Organisation"
+      },
+      "site": {
+        "label": "Standort"
+      },
+      "device_group": {
+        "label": "Gerätegruppe"
+      },
+      "device": {
+        "label": "Gerät"
+      },
+      "default": {
+        "label": "Breeze Defaults"
+      }
+    },
+    "appliesToStrip": {
+      "heading": "Gilt für",
+      "unknownState": "Unbekannt",
+      "notAppliedWarning": "Auf kein Gerät angewendet. Diese Richtlinie gilt für nichts, bis Sie festlegen, wo sie gilt.",
+      "notAppliedNeutral": "Noch nicht angewendet",
+      "inUseCount_one": "In Verwendung über {{count}} Richtlinie",
+      "inUseCount_other": "In Verwendung über {{count}} Richtlinien",
+      "moreTargets_one": "{{count}} weiteres Ziel",
+      "moreTargets_other": "{{count}} weitere Ziele",
+      "assignButton": "Zuweisen"
     }
   },
   "software": {
