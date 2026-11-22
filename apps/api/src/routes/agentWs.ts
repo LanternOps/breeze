@@ -934,7 +934,9 @@ const ipHistoryEntrySchema = z.object({
   dnsServers: z.array(z.string().max(45)).max(8).optional()
 });
 
-const heartbeatMessageSchema = z.object({
+// Exported for agentWs.heartbeatSchema.test.ts: it pins that this message does not carry networkAttachmentsV1
+// (learned networks plan call 2: the learner runs on the REST heartbeat only).
+export const heartbeatMessageSchema = z.object({
   type: z.literal('heartbeat'),
   timestamp: z.number(),
   ipHistoryUpdate: z.object({

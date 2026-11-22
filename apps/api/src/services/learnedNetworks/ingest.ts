@@ -98,6 +98,33 @@ export function planNetworkAttachmentIngest(
   return { kind: 'apply', deviceFields, report, wanAddress: wan };
 }
 
+const SKEW_LOG_INTERVAL_MS = 60 * 60_000;
+const SKEW_LOG_MAX_DEVICES = 10_000;
+const skewLoggedAt = new Map<string, number>();
+
+/**
+ * Review focus 5: a report ignored for `capture_time_out_of_bounds` is logged with the device id and the skew,
+ * at most once per device per hour, so support can find a device whose clock is wrong. The map is bounded:
+ * past its cap the oldest entry goes first (insertion order; an entry is re-inserted when it logs again).
+ */
+export function noteCaptureTimeSkew(deviceId: string, raw: unknown, now: Date): void {
+  const capturedAt = raw && typeof raw === 'object' ? (raw as { capturedAt?: unknown }).capturedAt : undefined;
+  const capturedMs = typeof capturedAt === 'string' ? Date.parse(capturedAt) : Number.NaN;
+  const last = skewLoggedAt.get(deviceId);
+  if (last !== undefined && now.getTime() - last < SKEW_LOG_INTERVAL_MS) return;
+  skewLoggedAt.delete(deviceId);
+  skewLoggedAt.set(deviceId, now.getTime());
+  while (skewLoggedAt.size > SKEW_LOG_MAX_DEVICES) skewLoggedAt.delete(skewLoggedAt.keys().next().value!);
+  console.warn('[learnedNetworks] networkAttachmentsV1 capturedAt outside the accepted bound; report ignored', {
+    deviceId, skewSeconds: Math.round((capturedMs - now.getTime()) / 1000),
+  });
+}
+
+/** Test-only: forget which devices were logged. */
+export function __resetCaptureTimeSkewLogForTests(): void {
+  skewLoggedAt.clear();
+}
+
 type FingerprintAttachment = NetworkAttachment & { gatewayMac: string };
 type ResolvedGateway = { gatewayId: string; networkId: string; attachment: FingerprintAttachment };
 
