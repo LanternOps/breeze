@@ -9,7 +9,7 @@ import { devices, unifiCollectors, unifiDeviceTelemetry, unifiClients, unifiSite
 import { createUnifiClient, UnifiApiError } from '../../services/unifi/unifiClient';
 import { buildMappingHostList } from '../../services/unifi/unifiMappingHosts';
 import { getConnection, upsertConnection, deleteConnection, createSelfHostedIntegration, UnifiMultiKeyError } from '../../services/unifi/unifiConnectionService';
-import { getSyncKeys, listKeys, pickSingleSyncKey, type SingleSyncKey } from '../../services/unifi/unifiKeyService';
+import { countEnabledKeys, getSyncKeys, listKeys, pickSingleSyncKey, type SingleSyncKey } from '../../services/unifi/unifiKeyService';
 import { listControllerSitesForIntegration } from '../../services/unifi/unifiControllerSiteService';
 import { listCollectors, upsertCollector, deleteCollector, upsertSelfHostedController } from '../../services/unifi/unifiCollectorService';
 import { toUnifiTelemetryDevice } from './telemetryReadModel';
@@ -18,6 +18,7 @@ import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
 import { revokeUnifiCollectorDrift, revokeUnifiMappingDrift, snapshotUnifiCollectors, snapshotUnifiMappings } from '../../services/topology/unifiAuthority';
 import {
   diffUnifiMappings,
+  resolveUnifiMappingRemovals,
   resolveUnifiMappingTargets,
   writeUnifiControllerAudits,
   writeUnifiMappingAudits,
@@ -96,8 +97,19 @@ const mappingsSchema = z.object({
   // cleanup is scoped to these hosts so a host transiently absent from the live list is
   // never purged, and a failed/empty host list can't trigger a mass delete. Omitted →
   // upsert-only (no deletes), preserving safe behavior for callers that don't send it.
+  // Refused once the connection has several enabled keys (#11808 D9): one key's
+  // partial view could hide a site another key still sees.
   hostIds: z.array(z.string()).optional(),
+  // Explicit deletes (#11808 D9): exactly these mappings of this connection are
+  // removed. Each must pass the same org and site gates as the replace-all cleanup.
+  removeMappingIds: z.array(z.string().guid()).max(500).optional(),
 });
+
+const EXPLICIT_DELETES_REQUIRED = {
+  success: false as const,
+  code: 'UNIFI_EXPLICIT_DELETES_REQUIRED',
+  message: 'This connection has several API keys. Send removeMappingIds to remove mappings.',
+};
 
 const collectorSchema = z.object({
   unifiHostId: z.string().min(1),
@@ -271,11 +283,24 @@ unifiRoutes.put('/mappings', partnerScopes, writePerm, requireMfa(), zValidator(
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const conn = await getConnection(db, partner.partnerId);
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
-  const { mappings, hostIds } = c.req.valid('json');
-  // Every target is authorized before any write (see resolveUnifiMappingTargets).
+  const { mappings, hostIds, removeMappingIds } = c.req.valid('json');
+  // D9: with several enabled keys a host-scoped replace-all could delete a site
+  // that a failed key hid while another key showed its host. Refuse it before any
+  // write rather than silently ignoring the deletes it asked for.
+  if (hostIds !== undefined && conn.connectionType === 'cloud'
+    && await countEnabledKeys(db, conn.id, conn.partnerId) > 1) {
+    return c.json(EXPLICIT_DELETES_REQUIRED, 409);
+  }
+  // Every target and every explicit removal is authorized before any write
+  // (see resolveUnifiMappingTargets / resolveUnifiMappingRemovals).
   const targets = await resolveUnifiMappingTargets(auth, conn.partnerId, mappings);
   if (!targets.ok) {
     const { status, message, code } = targets.error;
+    return c.json({ success: false, message, ...(code ? { code } : {}) }, status);
+  }
+  const removals = await resolveUnifiMappingRemovals(auth, conn.id, removeMappingIds ?? [], mappings);
+  if (!removals.ok) {
+    const { status, message, code } = removals.error;
     return c.json({ success: false, message, ...(code ? { code } : {}) }, status);
   }
   const resolved = mappings.map((m, i) => ({ m, ...targets.targets[i]! }));
@@ -341,6 +366,13 @@ unifiRoutes.put('/mappings', partnerScopes, writePerm, requireMfa(), zValidator(
         .delete(unifiSiteMappings)
         .where(and(eq(unifiSiteMappings.integrationId, conn.id), inArray(unifiSiteMappings.id, staleIds)));
     }
+  }
+  // Explicit removals (D9), between the two snapshots so revoke and audit cover them.
+  // unifi_devices cascade on a mapping delete.
+  if (removals.ids.length > 0) {
+    await db
+      .delete(unifiSiteMappings)
+      .where(and(eq(unifiSiteMappings.integrationId, conn.id), inArray(unifiSiteMappings.id, removals.ids)));
   }
   await revokeUnifiMappingDrift(conn.id, mappingsBefore);
   const mappingsAfter = await snapshotUnifiMappings(conn.id);

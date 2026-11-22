@@ -529,6 +529,13 @@ export async function collectSyncData(
 // Phase 2 — database only. Persists the run ledger, reconciles devices/assets,
 // and stale-sweeps. Takes the already-collected network data so it can run inside
 // a short-lived DB context.
+//
+// `mappings` is the phase-one snapshot the network data was collected against.
+// Before any device write the current mapping rows are re-read and locked: a
+// mapping deleted or moved to another org or site while the sync was collecting
+// gets no devices and no sweep (#11808 D6), so a late run never writes into the
+// old org. updated_at is not compared: every sync's own WAN-metrics write bumps
+// it, so an overlapping run would refuse every mapping.
 export async function applySyncData(
   db: DbExecutor,
   integration: { id: string; partnerId: string },
@@ -566,6 +573,21 @@ export async function applySyncData(
       const failedMappingIds = new Set<string>();
       let anySiteFailed = false;
 
+      // Obsolete-write guard. FOR UPDATE holds a concurrent remap or delete of
+      // these rows until this transaction commits, so the check cannot go stale
+      // between here and the device writes.
+      const current = await db
+        .select({ id: unifiSiteMappings.id, orgId: unifiSiteMappings.orgId, siteId: unifiSiteMappings.siteId })
+        .from(unifiSiteMappings)
+        .where(eq(unifiSiteMappings.integrationId, integration.id))
+        .for('update');
+      const currentById = new Map((current as Array<{ id: string; orgId: string; siteId: string }>).map((row) => [row.id, row]));
+      const changedMappingIds = new Set<string>();
+      for (const mapping of mappings) {
+        const now = currentById.get(mapping.id);
+        if (!now || now.orgId !== mapping.orgId || now.siteId !== mapping.siteId) changedMappingIds.add(mapping.id);
+      }
+
       if (collected.metricsError) {
         anySiteFailed = true;
         result.error = collected.metricsError;
@@ -578,6 +600,12 @@ export async function applySyncData(
         result.error = clip(`${ids.length} UniFi device(s) were reported under two hosts and were left as they were this run: ${ids.join(', ')}`);
       }
       for (const mapping of mappings) {
+        if (changedMappingIds.has(mapping.id)) {
+          failedMappingIds.add(mapping.id);
+          anySiteFailed = true;
+          result.error = `site ${mapping.unifiSiteId}: mapping changed during the sync; its devices were not synced`;
+          continue;
+        }
         const fetched = collected.byMapping.get(mapping.id);
         if (!fetched) {
           failedMappingIds.add(mapping.id);
@@ -728,6 +756,10 @@ export async function applySyncData(
       // NULL = not recorded: a failed run, or one that read no site list.
       sitesUnmapped: result.status === 'failed' ? null : (collected.sitesUnmapped ?? null),
       error: result.error ?? null,
+      // Per-key outcome without each key's reach (that lives on the key row).
+      keyResults: collected.keyResults.map((r) => ({
+        keyId: r.keyId, label: r.label, status: r.status, hostsSeen: r.hostsSeen, sitesSeen: r.sitesSeen, error: r.error,
+      })),
     })
     .where(eq(unifiSyncRuns.id, run.id));
 

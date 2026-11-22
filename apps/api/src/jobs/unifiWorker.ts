@@ -8,7 +8,7 @@ import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { getBullMQConnection } from '../services/redis';
 import { createUnifiClient } from '../services/unifi/unifiClient';
 import { markStatus, markSynced } from '../services/unifi/unifiConnectionService';
-import { getSyncKeys } from '../services/unifi/unifiKeyService';
+import { getSyncKeys, recordKeyResults, unifiKeyLast4 } from '../services/unifi/unifiKeyService';
 import { collectSyncData, applySyncData, type CollectedSync } from '../services/unifi/unifiSyncService';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -16,12 +16,6 @@ export const UNIFI_SYNC_QUEUE = 'unifi-sync';
 const SYNC_SCHEDULER_JOB = 'sync-scheduler';
 const SYNC_INTEGRATION_JOB = 'sync-integration';
 const SYNC_INTERVAL_MS = 30 * 60 * 1000;
-
-const NO_ENABLED_KEY = 'No enabled API key on this connection';
-// Rollout guard (plan D12): this version syncs exactly one key. A connection
-// with several keys (written by a newer version, then rolled back) records a
-// failed run and nothing else, so no sweep ever runs on one key's view alone.
-const MULTI_KEY_REFUSAL = 'This connection has several API keys; this server version supports one';
 
 const jobSchema = z.union([
   z.object({ type: z.literal(SYNC_SCHEDULER_JOB) }),
@@ -63,8 +57,14 @@ export async function enqueueUnifiSync(
   );
 }
 
-function isAuthFailure(message: string): boolean {
-  return /\b401\b|unauthorized/i.test(message);
+/**
+ * A failed run's integration status (plan D6): `reauth_required` only when every
+ * key failed with a 401 or 403 (typed, never matched on message text), or when
+ * there is no enabled key at all; `error` otherwise.
+ */
+function failedStatus(collected: CollectedSync): 'reauth_required' | 'error' {
+  if (!collected.fatalError) return 'error';
+  return collected.keyResults.every((r) => r.status !== 'success' && r.authFailure) ? 'reauth_required' : 'error';
 }
 
 function errorMessage(error: unknown): string {
@@ -129,60 +129,59 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<voi
 
   const integration = { id: data.integrationId, partnerId: data.partnerId };
   const { keys, baseUrl } = prep.creds;
+  // Each key's status write is conditional on its last_sync_at being older than
+  // this, so a run that finishes late never overwrites a newer run's result.
+  const runStartedAt = new Date();
 
-  if (keys.length === 0) {
-    await withSystemDbAccessContext(() =>
-      markStatus(db, data.integrationId, data.partnerId, 'reauth_required', NO_ENABLED_KEY),
-    );
-    return;
+  // 2) NO DB context: every enabled key's UniFi HTTP (hosts, sites, devices and
+  //    ISP metrics, 429 backoff sleeps) runs here without holding a connection
+  //    idle-in-transaction. A key that does not decrypt gets no client: it is a
+  //    failed key, never a silent skip. Zero keys is a failed run (D6).
+  const collected = await collectSyncData(
+    keys.map((key) => ({
+      id: key.id,
+      label: key.label,
+      client: key.apiKey === null ? null : createUnifiClient({ baseUrl, apiKey: key.apiKey }),
+      decryptError: key.apiKey === null ? key.decryptError : undefined,
+      lastSeenHostIds: key.lastSeenHostIds,
+    })),
+    prep.mappings,
+  );
+  // A backfilled key has no key_last4 yet; it is filled from the key in memory.
+  const keyLast4ById = new Map<string, string>();
+  for (const key of keys) {
+    if (key.apiKey !== null && key.keyLast4 === null) keyLast4ById.set(key.id, unifiKeyLast4(key.apiKey));
   }
+  const recordKeys = () => recordKeyResults(db, {
+    integrationId: data.integrationId,
+    partnerId: data.partnerId,
+    runStartedAt,
+    results: collected.keyResults,
+    keyLast4ById,
+  });
 
-  if (keys.length > 1) {
-    await withSystemDbAccessContext(() =>
-      applySyncData(db, integration, data.trigger, prep.mappings, {
-        hostsSeen: 0,
-        fatalError: MULTI_KEY_REFUSAL,
-        byMapping: new Map(),
-        keyResults: [],
-        uncertainHostIds: 'all',
-        protectedDeviceIds: new Set(),
-        allKeysSucceeded: false,
-      }),
-    );
-    return;
-  }
-
-  // 2) NO DB context: all UniFi HTTP (listHosts, one devices read and one
-  //    ISP-metrics read per run, 429 backoff sleeps) runs here without holding a
-  //    connection idle-in-transaction. A key that does not decrypt is a failed
-  //    run, never a silent skip.
-  const key = keys[0]!;
-  const collected: CollectedSync = await collectSyncData([{
-    id: key.id,
-    label: key.label,
-    client: key.apiKey === null ? null : createUnifiClient({ baseUrl, apiKey: key.apiKey }),
-    decryptError: key.apiKey === null ? key.decryptError : undefined,
-    lastSeenHostIds: key.lastSeenHostIds,
-  }], prep.mappings);
-
-  // 3) Short DB context(s): persist the run + device reconciliation, then status.
+  // 3) Short DB context(s): persist the run + device reconciliation, then the
+  //    key rows, the run summary and the integration status.
   try {
     const result = await withSystemDbAccessContext(() =>
       applySyncData(db, integration, data.trigger, prep.mappings, collected),
     );
     await withSystemDbAccessContext(async () => {
+      await recordKeys();
       await markSynced(db, data.integrationId, data.partnerId, result.status, result.error ?? null);
       if (result.status === 'failed') {
-        const message = result.error ?? 'UniFi sync failed';
-        await markStatus(db, data.integrationId, data.partnerId, isAuthFailure(message) ? 'reauth_required' : 'error', message);
+        await markStatus(db, data.integrationId, data.partnerId, failedStatus(collected), result.error ?? 'UniFi sync failed');
       } else {
+        // Partial (some keys failed) stays connected; last_sync_error names them.
         await markStatus(db, data.integrationId, data.partnerId, 'connected', result.error ?? null);
       }
     });
   } catch (error) {
     const message = errorMessage(error);
     await withSystemDbAccessContext(async () => {
-      await markStatus(db, data.integrationId, data.partnerId, isAuthFailure(message) ? 'reauth_required' : 'error', message);
+      // The keys' outcomes are real even when saving the run failed.
+      await recordKeys();
+      await markStatus(db, data.integrationId, data.partnerId, failedStatus(collected), message);
       await markSynced(db, data.integrationId, data.partnerId, 'failed', message);
     });
   }

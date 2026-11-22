@@ -488,6 +488,10 @@ describe('unifiSyncService.applySyncData: one site failing keeps the other site'
         [failing!.id, { mappingId: failing!.id, devices: [deviceFor(1)] }],
         [healthy!.id, { mappingId: healthy!.id, devices: [deviceFor(2)] }],
       ]),
+      keyResults: [],
+      uncertainHostIds: new Set<string>(),
+      protectedDeviceIds: new Set<string>(),
+      allKeysSucceeded: true,
     };
     await failWritesOn('unifi_devices', { ops: 'INSERT', when: `NEW.mapping_id = '${failing!.id}'` });
     const result = await inHeldSystemContext(t, () => applySyncData(db as never, { id: integration!.id, partnerId: t.partnerId }, 'manual', mappings, collected as never));

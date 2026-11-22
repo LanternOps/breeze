@@ -123,6 +123,9 @@ function scriptedDb(opts: {
       limit(_n: number) {
         return chain;
       },
+      for(_strength: string) {
+        return chain;
+      },
       // insert chain
       values(v: any) {
         ctx.insertValues = v;
@@ -1388,5 +1391,69 @@ describe('multi-key collectSyncData and applySyncData (#11808)', () => {
     expect(collected.hostsSeen).toBe(2);
     expect(collected.keyResults.map((r) => r.hostIds)).toEqual([null, null]);
     expect(keys[0]!.client.listSitesForSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('applySyncData obsolete-write guards and key_results (#11808 W2, Task 2.3)', () => {
+  const runUpdate = (writes: { updates: WriteRecord[] }) => writes.updates.find((w) => w.table === unifiSyncRuns)!.values;
+  const collectedFor = (devicesById: Record<string, any[]>): CollectedSync => ({
+    ...NO_KEY_FIELDS,
+    hostsSeen: 1,
+    byMapping: new Map(Object.entries(devicesById).map(([id, devices]) => [id, { mappingId: id, devices, metrics: undefined }])),
+  });
+
+  it('apply skips a mapping whose org changed since the snapshot', async () => {
+    const snapshot = [{ ...BASE_MAPPING, id: 'm1' }, { ...BASE_MAPPING, id: 'm2', unifiHostId: 'h2', unifiSiteId: 's2' }];
+    // Remapped to another org while the sync was collecting; m2 is unchanged.
+    const { db, writes } = scriptedDb({
+      mappings: [
+        { id: 'm1', orgId: 'org-other', siteId: 'site-other' },
+        { id: 'm2', orgId: BASE_MAPPING.orgId, siteId: BASE_MAPPING.siteId },
+      ],
+      existingDevices: [{ id: 'row-old', unifiDeviceId: 'old', mappingId: 'm1', raw: {} }],
+    });
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', snapshot, collectedFor({
+      m1: [NET_NEW_DEVICE],
+      m2: [{ ...NET_NEW_DEVICE, unifiDeviceId: 'd2', ip: null }],
+    }));
+    // The scripted device lookup finds the existing row, so m2's device is an update.
+    const written = [...writes.inserts, ...writes.updates].filter((w) => w.table === unifiDevices && w.values.mappingId);
+    expect(written.map((w) => w.values.mappingId)).toEqual(['m2']);
+    expect(writes.inserts.filter((w) => w.table === discoveredAssets).map((w) => w.values.orgId)).toEqual([]);
+    expect(writes.updates.filter((w) => w.table === unifiDevices && w.values.isStale)).toHaveLength(0);
+    expect(result.status).toBe('partial');
+    expect(result.error).toBe('site s1: mapping changed during the sync; its devices were not synced');
+  });
+
+  it('apply skips a mapping deleted since the snapshot', async () => {
+    const { db, writes } = scriptedDb({ mappings: [] });
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [BASE_MAPPING], collectedFor({ [BASE_MAPPING.id]: [NET_NEW_DEVICE] }));
+    expect(writes.inserts.filter((w) => w.table === unifiDevices || w.table === discoveredAssets)).toHaveLength(0);
+    expect(result.status).toBe('partial');
+  });
+
+  it('apply stores key_results without host ids', async () => {
+    const { db, writes } = scriptedDb({ mappings: [BASE_MAPPING] });
+    await applySyncData(db, BASE_INTEGRATION, 'manual', [BASE_MAPPING], {
+      ...collectedFor({ [BASE_MAPPING.id]: [] }),
+      keyResults: [
+        { keyId: 'k1', label: 'A', status: 'success', authFailure: false, hostsSeen: 1, sitesSeen: 1, hostIds: ['h1'], error: null },
+        { keyId: 'k2', label: 'B', status: 'failed', authFailure: true, hostsSeen: null, sitesSeen: null, hostIds: null, error: 'nope' },
+      ],
+    });
+    expect(runUpdate(writes).keyResults).toEqual([
+      { keyId: 'k1', label: 'A', status: 'success', hostsSeen: 1, sitesSeen: 1, error: null },
+      { keyId: 'k2', label: 'B', status: 'failed', hostsSeen: null, sitesSeen: null, error: 'nope' },
+    ]);
+  });
+
+  it('a failed run stores key_results too', async () => {
+    const { db, writes } = scriptedDb({ mappings: [BASE_MAPPING] });
+    await applySyncData(db, BASE_INTEGRATION, 'manual', [BASE_MAPPING], {
+      ...collectedFor({}),
+      fatalError: 'nope',
+      keyResults: [{ keyId: 'k1', label: 'A', status: 'failed', authFailure: true, hostsSeen: null, sitesSeen: null, hostIds: null, error: 'nope' }],
+    });
+    expect(runUpdate(writes)).toMatchObject({ status: 'failed', keyResults: [{ keyId: 'k1', status: 'failed', error: 'nope' }] });
   });
 });

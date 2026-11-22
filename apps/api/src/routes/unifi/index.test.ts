@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // The holding-org refusal reads the org; the positional db mocks below do not model it.
 vi.mock('../../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(async () => false) }));
@@ -117,6 +118,7 @@ vi.mock('../../services/unifi/unifiKeyService', async (importActual) => {
     pickSingleSyncKey: actual.pickSingleSyncKey,
     getSyncKeys: vi.fn(),
     listKeys: vi.fn(async () => []),
+    countEnabledKeys: vi.fn(async () => 1),
   };
 });
 
@@ -1434,5 +1436,133 @@ describe('unifi routes', () => {
       expect(second.status).toBe(200);
       expect(writeRouteAudit).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('PUT /unifi/mappings explicit deletes (#11808 D9)', () => {
+  const MAP_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const MAP_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const put = (body: unknown) => unifiRoutes.request('/mappings', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const removalLookup = (rows: unknown[]) => {
+    const where = vi.fn(async () => rows);
+    vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn(() => ({ where })) } as any);
+    return where;
+  };
+  const siteLookup = () => vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]) })) })),
+  } as any);
+  const rowA = { id: MAP_A, orgId: ORG_ID, siteId: SITE_ID, unifiHostId: 'host-1', unifiSiteId: 'site-a' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    vi.mocked(db.delete).mockReset();
+    vi.mocked(svc.getConnection).mockReset();
+    vi.mocked(svc.getConnection).mockResolvedValue(cloudConn());
+    vi.mocked(keySvc.countEnabledKeys).mockReset();
+    vi.mocked(keySvc.countEnabledKeys).mockResolvedValue(1);
+    authState.scope = 'partner';
+    authState.partnerId = PARTNER_ID;
+    authState.partnerOrgAccess = 'all';
+  });
+
+  it('PUT /mappings deletes only the listed removeMappingIds', async () => {
+    removalLookup([rowA]);
+    const deleteWhere = vi.fn(async () => undefined);
+    vi.mocked(db.delete).mockReturnValueOnce({ where: deleteWhere } as any);
+    const res = await put({ mappings: [], removeMappingIds: [MAP_A] });
+    expect(res.status).toBe(200);
+    expect(db.delete).toHaveBeenCalledTimes(1);
+    const rendered = new PgDialect().sqlToQuery((deleteWhere.mock.calls[0] as unknown[])[0] as any);
+    expect(rendered.params).toContain(MAP_A);
+    expect(rendered.params).not.toContain(MAP_B);
+    // Explicit removal reads only the listed ids; no host-scoped replace-all read.
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(topologyAuthority.revokeUnifiMappingDrift).toHaveBeenCalledWith(CONN_ID, [{ id: 'before-mapping' }]);
+    expect(vi.mocked(topologyAuthority.revokeUnifiMappingDrift).mock.invocationCallOrder[0]).toBeGreaterThan(deleteWhere.mock.invocationCallOrder[0]!);
+  });
+
+  it('PUT /mappings refuses a removeMappingId of another connection', async () => {
+    // The lookup is scoped to this connection: MAP_B (another connection's) is not found.
+    removalLookup([rowA]);
+    const res = await put({ mappings: [], removeMappingIds: [MAP_A, MAP_B] });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ success: false, code: 'UNIFI_UNKNOWN_MAPPING' });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('PUT /mappings refuses a removeMappingId outside the caller\'s org reach', async () => {
+    const { authMiddleware } = await import('../../middleware/auth');
+    vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'partner' as const, partnerId: PARTNER_ID, partnerOrgAccess: 'all' as const, orgId: null,
+        canAccessOrg: vi.fn((orgId: string) => orgId !== 'other-org'),
+        user: { id: '55555555-5555-5555-5555-555555555555', email: 'admin@example.com' },
+      });
+      return next();
+    });
+    removalLookup([{ ...rowA, orgId: 'other-org' }]);
+    const res = await put({ mappings: [], removeMappingIds: [MAP_A] });
+    expect(res.status).toBe(403);
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('PUT /mappings refuses removing a mapping the same request upserts', async () => {
+    siteLookup();
+    removalLookup([{ ...rowA, unifiSiteId: 'site-1' }]);
+    const res = await put({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }], removeMappingIds: [MAP_A] });
+    expect(res.status).toBe(400);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('hostIds with two enabled keys returns 409 UNIFI_EXPLICIT_DELETES_REQUIRED and writes nothing', async () => {
+    vi.mocked(keySvc.countEnabledKeys).mockResolvedValue(2);
+    const res = await put({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }], hostIds: ['host-1'] });
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      success: false,
+      code: 'UNIFI_EXPLICIT_DELETES_REQUIRED',
+      message: 'This connection has several API keys. Send removeMappingIds to remove mappings.',
+    });
+    expect(keySvc.countEnabledKeys).toHaveBeenCalledWith(db, CONN_ID, PARTNER_ID);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(topologyAuthority.snapshotUnifiMappings).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('two enabled keys without hostIds still saves (upsert plus explicit deletes)', async () => {
+    vi.mocked(keySvc.countEnabledKeys).mockResolvedValue(2);
+    siteLookup();
+    removalLookup([rowA]);
+    vi.mocked(db.insert).mockReturnValueOnce({ values: vi.fn(() => ({ onConflictDoUpdate: vi.fn(async () => undefined) })) } as any);
+    vi.mocked(db.delete).mockReturnValueOnce({ where: vi.fn(async () => undefined) } as any);
+    const res = await put({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }], removeMappingIds: [MAP_A] });
+    expect(res.status).toBe(200);
+    expect(db.insert).toHaveBeenCalledTimes(1);
+    expect(db.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it('a single-key connection keeps the hostIds replace-all', async () => {
+    siteLookup();
+    vi.mocked(db.insert).mockReturnValueOnce({ values: vi.fn(() => ({ onConflictDoUpdate: vi.fn(async () => undefined) })) } as any);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn(() => ({ where: vi.fn(async () => [{ id: 'keep-1', orgId: ORG_ID, siteId: SITE_ID, unifiHostId: 'host-1', unifiSiteId: 'site-1' }]) })),
+    } as any);
+    const res = await put({ mappings: [{ unifiHostId: 'host-1', unifiSiteId: 'site-1', siteId: SITE_ID }], hostIds: ['host-1'] });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects more than 500 removeMappingIds', async () => {
+    const res = await put({ mappings: [], removeMappingIds: Array.from({ length: 501 }, () => MAP_A) });
+    expect(res.status).toBe(400);
+    expect(db.select).not.toHaveBeenCalled();
   });
 });
