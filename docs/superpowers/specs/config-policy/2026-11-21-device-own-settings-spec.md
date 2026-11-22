@@ -48,7 +48,7 @@ Policies list shows only a count that links to that filter.
   assigned directly to the device. Other features keep resolving as before.
 - Whole-feature replace, as everywhere else, with one exception: **monitors accumulate** in the
   resolver today (closest attachment wins per monitor), so on a device the action is "add or
-  adjust a monitor", not "replace the set" (Open Decision 2).
+  adjust a monitor", not "replace the set" (Decision 2).
 - An explicit empty setting ("no automations on this device") is a real override and must hold.
 - Reset needs the same permission as removing that feature from a policy, because the fallback
   can switch on behaviour the caller could not have configured.
@@ -184,10 +184,10 @@ Device-owned rows must never surface where policies are listed, counted, picked 
 
 | Event | Behaviour |
 |---|---|
-| Decommission (soft delete) and restore | Own settings are kept, so a restored device comes back as it was (Open Decision 3). |
+| Decommission (soft delete) and restore | Own settings are kept, so a restored device comes back as it was (Decision 3). |
 | Permanent delete, single and bulk | Delete device-level assignments for the device, then the device-owned row, then the device. Without the first step the delete fails today with a 409 (#12293). |
 | Site move within the org | Nothing stored changes; the fallback is recomputed. Site-bound execution authority is re-checked at dispatch, as today. |
-| Org move | Open Decision 1. Today a device with any device-level assignment of its own organization's policy cannot change organization: the database refuses the update (an integration test pins this), and the move service has no step that clears such assignments. Reproduce through the service in D0. |
+| Org move | Own settings are removed, and the move confirmation lists the affected features (Decision 1). Today a device with any device-level assignment of its own organization's policy cannot change organization: the database refuses the update (an integration test pins this), and the move service has no step that clears such assignments. Reproduce through the service in D0. |
 | Org merge | **A's main exposure. Expected to fail today (inferred from the trigger and merge code, not yet reproduced).** The assignment re-check on a device or policy org change is an immediate statement trigger, and the validator has no merge exemption (newest definition: `2027-01-12-200200-config-assignment-partner-device-group-targets.sql`, re-read on main). The merge itself repoints organization-level assignments only (`orgMerge.ts`). A device-level assignment of an org-owned policy may therefore block a merge today. Under A every device with own settings carries one; under C none does. Reproduce in D0; it is one of the switch criteria. |
 | Org cascade delete | Already covered: the table is registered and sorts before `devices`. |
 
@@ -216,7 +216,7 @@ the parity fixture.
   classification (`included`).
 - RLS policies are unchanged: the row is org-owned and falls under the existing org isolation.
 - The owner-immutability trigger already rejects `org_id` changes outside system scope; that
-  decides Open Decision 1's cost.
+  cost is why own settings are removed on an org move and not carried (Decision 1).
 - The composite FK follows the repo rule (`DEFERRABLE INITIALLY IMMEDIATE`). It is a new FK
   into `devices`, so it falls under the erasure FK ledger
   (`orgCascadeFkOnDelete.integration.test.ts`); the explicit `ON DELETE CASCADE` is what keeps it
@@ -244,28 +244,25 @@ the parity fixture.
 | D3 | Device Config tab actions, device list badge and filter, "Apply a policy to this device" | D2, reshape W1 |
 | D4 | AI tool `configure_device` | D2 |
 
-## Open Decisions
+## Decisions (Todd, 2026-11-21)
 
-Product calls for Todd. Each has a recommendation.
+The four product calls, as decided. The spec stays `draft` until it is approved as a whole.
 
-1. **Org move.** Carrying own settings across organizations means re-owning the row in system
-   scope and re-validating every linked reference (rings, backup destinations, OneDrive
-   libraries) against the destination; some cannot be valid there.
-   - A. Remove own settings on an org move, and say so in the move confirmation with the list of
-     affected features. The engine already does this for device-group memberships.
-   - B. Carry them, blocking the move until incompatible features are reset or remapped.
-   - **Recommend A.** Org moves are rare, and B is most of the cost of the whole feature.
-2. **Monitors on one device.** Additive (matches the resolver and the "alert me if DYMO
-   disappears from this PC" case), or replace the whole set. **Recommend additive.**
-   Overlap to settle with it: #9408 (plan drafted, no PR) gives a monitor's "Deploy to…" a
-   device target by minting one configuration policy per monitor. Those are the one-off list
-   rows this spec removes. For a single-device target that route should write the device's
-   own settings instead; for a group it keeps its minted policy.
-3. **Decommissioned devices.** Keep own settings so a restore is faithful, or clear them at
-   decommission. **Recommend keep.**
-4. **First release feature set.** Everything that passes the parity fixture, or start with the
-   five most requested (patches, monitors, maintenance, backup, remote access).
-   **Recommend everything that passes**; the per-feature cost is one fixture row.
+1. **Org move: own settings are removed.** The move confirmation lists the affected features.
+   The engine already does this for device-group memberships. Own settings are not carried or
+   remapped: that means re-owning the row in system scope and re-validating every linked
+   reference (rings, backup destinations, OneDrive libraries) against the destination, and
+   some cannot be valid there.
+2. **Monitors on one device are additive.** This matches the resolver and the "alert me if
+   DYMO disappears from this PC" case.
+   - Overlap with #9408 (plan drafted, no PR): that plan gives a monitor's "Deploy to…" a
+     device target by minting one configuration policy per monitor, which are the one-off
+     list rows this spec removes.
+   - Settled with this decision: for a single-device target that route writes the device's
+     own settings. For a group it keeps its minted policy.
+3. **Decommissioned devices keep own settings**, so a restore is faithful.
+4. **The first release offers every feature that passes the parity fixture.** The
+   per-feature cost is one fixture row.
 
 ## Evidence notes
 

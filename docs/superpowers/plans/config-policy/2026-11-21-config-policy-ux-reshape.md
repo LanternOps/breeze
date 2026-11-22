@@ -1,7 +1,7 @@
 ---
 title: Configuration policies UX reshape (implementation plan, W1 W2 W3 W5)
 spec: docs/superpowers/specs/config-policy/2026-11-21-config-policy-ux-reshape-spec.md
-status: plan-drafted
+status: plan-approved (Gate B, Todd 2026-11-21)
 tracking_issue: LanternOps/breeze#12462
 anchor_issue: LanternOps/breeze#12306
 ---
@@ -153,7 +153,7 @@ Each is flagged in its PR body.
 | W03c | Web: Remove / Reset to parent / Change for this policy; reach lines; Activate and Deactivate | W03b | after W03b | opus | M |
 | W03d | Web: one-page create, owner default, Start from, list filters and server paging, docs, E2E | W03a, W03c | with W03a | opus | L |
 | W05a | "Outranked on N devices" | W2 merged | — | opus | M |
-| W05b | Copy | W3 merged; Q1 and Q2 answered | — | opus | M |
+| W05b | Copy | W3 merged | — | opus | M |
 
 **Tracking keys.** The feature's wave sub-issues are keyed in execution order, one per part: W01 = W01a, W02 = W01b, W03 = W02a, W04 = W02b, W05 = W02c, W06 = W03a, W07 = W03b, W08 = W03c, W09 = W03d, W10 = W05a, W11 = W05b. This plan's text uses the part ids. Issue state, not this document, says what is done.
 
@@ -1250,7 +1250,7 @@ Rules:
 
 - [ ] Add the F1–F3 keys to all 8 locales and run the i18n batch.
 - [ ] Run the web typecheck and lint.
-- [ ] Open the PR (`Closes #12263`), then one Opus review.
+- [ ] Open the PR with `Refs #12263`, then one Opus review. #12263 is community-filed and Remove already exists on a policy with no parent, so the reporter's block may be something else: comment on the issue with what shipped and leave it open for the reporter.
 
 ### W03d — One-page create, owner default, list filters (web)
 
@@ -1367,7 +1367,7 @@ Not planned here: the companion spec (`2026-11-21-device-own-settings-spec.md`, 
 
 ## W5 — Outranked on N devices; Copy
 
-**Every W5 part's Step 0:** the baseline check, plus W2 merged (`configPolicyReach.ts` on `main`). W05b also needs W3 merged and Q1 and Q2 answered.
+**Every W5 part's Step 0:** the baseline check, plus W2 merged (`configPolicyReach.ts` on `main`). W05b also needs W3 merged.
 
 ### W05a — "Outranked on N devices" per feature
 
@@ -1430,7 +1430,7 @@ Algorithm:
 
 ### W05b — Copy (#12309, #11776)
 
-**Blocked on Q1 and Q2.** Planned to the recommended answers.
+Q1 and Q2 are decided (see "Decisions by the owner"): Copy is in, and a feature that cannot follow an owner change is dropped with a stated reason.
 
 #### Task K1: Copy service and schema
 
@@ -1537,35 +1537,19 @@ Per the spec:
   - W3 row: one-page create and inactive until activated (W03d), the rail (W03b), the save model (W03b, W03c), the owner default with the read rule (W03a, W03d), the list filter (W03a, W03d).
   - W5 row: W05a, W05b. W4: one line.
   - "API changes" 1–6 map to W02b, W02a, W03a, W03d (activation needs no endpoint), W02b and W03a.
-- **Step scan.** Every part has task blocks with files, interfaces, failing-test names, the command and the commit. Steps that wait on an earlier outcome say so in that step: W02c's Step 0, F2's per-tab check, C2's signal, and W05b's Q1 and Q2.
+- **Step scan.** Every part has task blocks with files, interfaces, failing-test names, the command and the commit. Steps that wait on an earlier outcome say so in that step: W02c's Step 0, F2's per-tab check, and C2's signal.
 - **Type consistency.** The same names are used throughout: `ConfigPolicyAppliesToSummary`, `APPLIES_TO_SUMMARY_TARGET_LIMIT`, `appliesToState`, `loadAppliesToSummaries`, `policyOwners`, `configFeatureLabel`, `configTargetLevelLabel`, `parseAppliesTo`, `formatAppliesToTargets`, `canOpenPolicy`, `lostReason`, `ConfigPolicyReach`, `computePolicyReach`, `expandAssignmentsToDevices`, `applyAssignmentsSchema`, `updateAssignment`, `checkPolicyAssignableBy`, `checkAddArming`, `checkAddLevel`, `policyReadCondition`, `policyAppliesToOrgsSql`, `policyViewerAccess`, `featureState`, `featureEditAction`, `computePolicyPrecedence`, `copyConfigPolicy`.
 - **Review Focus.** Each of the five has a named test in its owning task.
 
-## Questions for the owner
+## Decisions by the owner (Todd, 2026-11-21)
 
-Product calls the spec does not settle. Each part is written to the recommended default and says so in its PR body.
+The six product calls this plan raised, as decided. The Q numbers are kept because the parts refer to them.
 
-1. **Is Copy in this spec (W5) or out of it?** The wave table puts Copy in W5. "Out of scope" excludes "Duplicate and copy-between-orgs themselves (#12309, #11776)".
-   - **(a) In: W05b ships Copy** as the exit the spec relies on (a locked owner or parent, OneDrive Helper on an MSP-managed policy). Pro: those states get an action. Con: it takes over #12309 and #11776.
-   - **(b) Out: W5 ships only "Outranked"**, and W3's exits stay text-only until #12309 lands on its own plan.
-   - **Recommend (a).** Three W3 states name Copy as the only way forward.
-2. **When a copy changes owner and a linked entity cannot be linked there**, should the copy drop that feature or be refused?
-   - **(a) Drop it with a listed reason**, confirmed in a dry run. Pro: the common "make this MSP-managed" case works. Con: the copy is not identical.
-   - **(b) Refuse the whole copy.**
-   - **Recommend (a).**
-3. **"Plus inactive ones" in the org-filtered list** (spec "Policy list").
-   - **(a) Inactive policies that apply nowhere yet** (drafts). Pro: the list stays about the selected org.
-   - **(b) Every inactive policy the caller can read.**
-   - **Recommend (a).** W03a is written to it.
-4. **Rail placement of the 20 features Decision 5 did not place.** D18 is the proposal: compliance under Security, warranty and time sync under Monitoring, OneDrive Helper under Access & end user, maintenance and automations under Lifecycle. Confirm or move.
-5. **What counts as "applies to an organization" for the read rule** (D14)? The two clauses that are choices are:
-   - an MSP-owned device group with a member in that org;
-   - being the parent of a policy that applies there.
+- **Q1. Copy is in this work.** W05b ships Copy as the exit three W3 states name (a locked owner, a locked parent, OneDrive Helper on an MSP-managed policy). It takes over #12309 and #11776.
+- **Q2. A copy that changes owner drops a feature whose linked entity cannot be linked there.** The reason is listed and confirmed in a dry run. The copy is not refused.
+- **Q3. An org-filtered list adds only inactive policies that apply nowhere yet.** It does not add every inactive policy the caller can read.
+- **Q4. The rail map in D18 is confirmed.**
+- **Q5. Both clauses count as "applies to an organization"** for the read rule (D14): an MSP-owned device group with a member in that org, and being the parent of a policy that applies there.
+- **Q6. "Outranked on N devices" is computed for an inactive policy as if it were active**, labelled the same.
 
-   Pro: the device's own precedence and the "Based on X" line stay explainable to that org. Con: a group's membership changes what an org admin can see.
-
-   **Recommend both clauses on.**
-6. **Should "Outranked on N devices" be computed for an inactive policy?**
-   - **(a) Yes, as if active**, labelled the same. Pro: you see the effect before activating.
-   - **(b) Hide it until active.**
-   - **Recommend (a).**
+The state names stay Active and Inactive.
