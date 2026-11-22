@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileFlowForm, type FlowFormValues } from '@breeze/shared';
+import { compileFlowForm, sameFlowDocument, type FlowFormValues } from '@breeze/shared';
 import {
   documentToText,
   editorFromDocument,
@@ -73,6 +73,15 @@ describe('editorState', () => {
     const back = withTabSwitch(withText(editorFromValues(formValues), '{ nope'));
     expect(back.formValues).toBeNull();
     expect(back.formLocked).toBe('invalid_document');
+  });
+
+  it('a single script under continue reopens as stop, and that is not an unsaved change', () => {
+    const asContinue = compileFlowForm({ ...formValues, onFailure: { mode: 'continue' } });
+    const reopened = editorFromDocument(asContinue);
+    expect(reopened.formValues?.onFailure).toEqual({ mode: 'stop' });
+    expect(sameFlowDocument(JSON.parse(reopened.text), asContinue)).toBe(true);
+    // The form's own recompile of the reopened values is the same document too.
+    expect(sameFlowDocument(compileFlowForm(reopened.formValues as FlowFormValues), asContinue)).toBe(true);
   });
 
   it('parseDocumentText reports an error for empty or malformed text', () => {

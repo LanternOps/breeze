@@ -823,6 +823,70 @@
       "loading": "Loading editor…",
       "loadError": "The editor failed to load. Refresh the page to try again.",
       "parseError": "The document is not valid JSON"
+    },
+    "form": {
+      "name": "Name",
+      "description": "Description",
+      "remove": "Remove",
+      "listsFailed": "Could not load your scripts and notification channels. Refresh the page to try again.",
+      "trigger": {
+        "title": "When it runs",
+        "timezone": "Time zone",
+        "eventDeviceHelp": "The actions run on the device that raised the event. If an event arrives without a device, the run fails.",
+        "filter": "Only when the event matches",
+        "filterHelp": "Each field must equal its value exactly. Leave empty to run on every event of this type.",
+        "filterKey": "Event field",
+        "filterValue": "Value",
+        "filterAdd": "Add a condition",
+        "resolverHelp": "A flow for all organizations finds the organization from the request body: name the body field that holds the organization's identifier, and the system that identifier comes from.",
+        "resolverPath": "Body field",
+        "resolverSystem": "System",
+        "webhookHelp": "Save the flow, then create the webhook secret and enable the flow on its Webhook tab.",
+        "manualHelp": "The flow runs only when someone starts it."
+      },
+      "target": {
+        "title": "Devices",
+        "triggerDevice": "The device that raised the event.",
+        "choose": "Choose which devices the actions run on. All devices is only the starting point.",
+        "keep": "Use all devices",
+        "partnerWide": "A flow for all organizations can target all devices or a filter, not specific devices or groups."
+      },
+      "actions": {
+        "title": "Actions",
+        "empty": "Add at least one action.",
+        "position": "Action {{n}}",
+        "runScript": "Run a script",
+        "notify": "Send a notification",
+        "alert": "Raise an alert",
+        "moveUp": "Move up",
+        "moveDown": "Move down",
+        "runAsDefault": "The script's setting",
+        "runAsSystem": "System",
+        "runAsUser": "Signed-in user",
+        "parameters": "Parameters",
+        "parameterName": "Parameter name",
+        "parameterValue": "Parameter value",
+        "parameterAdd": "Add a parameter",
+        "severityInfo": "Info",
+        "severityWarning": "Warning",
+        "severityCritical": "Critical",
+        "title_": "Title",
+        "notifyHelp": "One message is sent each run, not one per device.",
+        "countsHelp": "The number of devices that succeeded and failed is added to the end of the message.",
+        "alertHelp": "An alert is raised on each device the actions reached.",
+        "commandHint": "To run a command, save it as a script first.",
+        "scriptsLink": "Go to Scripts"
+      },
+      "onFailure": {
+        "title": "If the script can't be sent to a device",
+        "stop": "Stop",
+        "stopHelp": "Later actions skip the devices the script couldn't be sent to.",
+        "continue": "Continue",
+        "continueHelp": "Carry on with the remaining actions.",
+        "notify": "Notify",
+        "notifyHelp": "Send a notice to the channels below for each device the script couldn't be sent to. At most 20 notices are sent per run.",
+        "noChannels": "Add a notification channel to use Notify."
+      }
     }
   }
 }
