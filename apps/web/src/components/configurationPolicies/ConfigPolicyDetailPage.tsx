@@ -412,7 +412,7 @@ export default function ConfigPolicyDetailPage({
       icon: featureTabIcons[ft],
       dot: !!linkFor(ft) || !!parentLinkFor(ft),
       title: isGatedFeature(ft)
-        ? "Not available on partner-wide policies — configure this feature on an organization-scoped policy."
+        ? i18n.t("policies:configurationPolicies.configPolicyDetailPage.gatedFeatureTitle")
         : undefined,
     })),
     {

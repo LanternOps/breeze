@@ -227,7 +227,7 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
 
     expect(screen.getByText('OneDrive Helper').closest('button')).toHaveAttribute(
       'title',
-      expect.stringContaining('Not available on partner-wide policies')
+      expect.stringContaining('Not available on MSP-managed policies')
     );
     // Backup graduated to partner-linkable (spec 2026-07-13) — no hint tooltip.
     expect(screen.getByText('Backup').closest('button')).not.toHaveAttribute('title');

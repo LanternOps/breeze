@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import FeatureTabShell from './FeatureTabShell';
-import { i18n } from '../../../lib/i18n';
+import { i18n, loadLocale } from '../../../lib/i18n';
 
 // FeatureTabShell renders the footer controls for EVERY configuration-policy
 // feature tab, so the disabled-state rules below apply fleet-wide, not just to
@@ -156,5 +156,25 @@ describe('FeatureTabShell footer controls', () => {
       await new Promise((r) => setTimeout(r, 20));
       expect(screen.queryByTestId('save-blocked-hint')).toBeNull();
     });
+  });
+});
+
+describe('FeatureTabShell state badge (#12306)', () => {
+  afterEach(async () => {
+    await i18n.changeLanguage('en');
+  });
+
+  it('the state badge text comes from i18n', async () => {
+    await loadLocale('pt-BR');
+    await i18n.changeLanguage('pt-BR');
+    const expected = i18n.t('policies:configurationPolicies.featureTabs.featureTabShell.badgeConfigured');
+    expect(expected).not.toMatch(/badgeConfigured/);
+    expect(expected).not.toBe('Configured');
+    render(
+      <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured>
+        <div />
+      </FeatureTabShell>,
+    );
+    expect(screen.getByText(expected)).toBeTruthy();
   });
 });

@@ -153,12 +153,12 @@ export default function FeatureTabShell({
 
   const savedInactive = !isInherited && isConfigured && !!configuredButInactive;
   const badgeText = isInherited
-    ? "Configured (inherited)"
+    ? i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.badgeInherited")
     : savedInactive
-      ? "Saved (not deployed)"
+      ? i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.badgeSavedNotDeployed")
       : isConfigured
-        ? "Configured"
-        : "Not configured";
+        ? i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.badgeConfigured")
+        : i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.badgeNotConfigured");
   const badgeClass = isInherited
     ? "border-blue-500/40 bg-blue-500/20 text-blue-700"
     : savedInactive

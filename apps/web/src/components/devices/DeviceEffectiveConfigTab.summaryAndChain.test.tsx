@@ -84,8 +84,8 @@ describe('DeviceEffectiveConfigTab per-feature summary (#9565)', () => {
 
   it('summarizes Maintenance by start, duration, recurrence and timezone', async () => {
     render(<DeviceEffectiveConfigTab deviceId="dev-9565" />);
-    await screen.findByRole('heading', { level: 4, name: 'Maintenance Windows' });
-    const lines = summaryLines('Maintenance Windows');
+    await screen.findByRole('heading', { level: 4, name: 'Maintenance' });
+    const lines = summaryLines('Maintenance');
     expect(lines).toHaveLength(4);
     expect(lines[0]).toMatch(/window start: 18:00/);
     expect(lines[1]).toMatch(/duration hours: 3/);
@@ -118,14 +118,14 @@ describe('DeviceEffectiveConfigTab inheritance chain contributions (#9565)', () 
     const contributed = within(partnerRow).getAllByTestId('chain-feature-contributed');
     const overridden = within(partnerRow).getAllByTestId('chain-feature-overridden');
     expect(contributed.map((el) => el.textContent)).toEqual(['Warranty']);
-    expect(overridden.map((el) => el.textContent)).toEqual(['Maintenance Windows']);
+    expect(overridden.map((el) => el.textContent)).toEqual(['Maintenance']);
     // The overridden chip says who won, so the grey-out is explained.
     expect(overridden[0]).toHaveAttribute('title', expect.stringContaining('Org Override'));
 
     const orgRow = chainRow('Org Override');
     expect(within(orgRow).queryAllByTestId('chain-feature-overridden')).toHaveLength(0);
     expect(within(orgRow).getAllByTestId('chain-feature-contributed').map((el) => el.textContent)).toEqual([
-      'Maintenance Windows',
+      'Maintenance',
       'Breeze Assist',
     ]);
   });

@@ -169,7 +169,7 @@ describe('DeviceEffectiveConfigTab baseline labeling', () => {
   it('omits the Not-enforced strip and pluralizes the count when every feature is enforced', async () => {
     render(<DeviceEffectiveConfigTab deviceId="dev-4" />);
     // Both enforced features render as cards...
-    await screen.findByRole('heading', { level: 4, name: 'Patch Management' });
+    await screen.findByRole('heading', { level: 4, name: 'Patches' });
     expect(screen.getByRole('heading', { level: 4, name: 'Warranty' })).toBeInTheDocument();
     // ...the header pluralizes (regression guard for the `!== 1 ? 's'` branch)...
     expect(screen.getByText(/2 enforced features/i)).toBeInTheDocument();
@@ -207,7 +207,7 @@ describe('DeviceEffectiveConfigTab inherited-from provenance (#5080)', () => {
   it('renders nothing for a feature with no inheritedFromPolicyId', async () => {
     render(<DeviceEffectiveConfigTab deviceId="dev-5" />);
 
-    await screen.findByRole('heading', { level: 4, name: 'Patch Management' });
+    await screen.findByRole('heading', { level: 4, name: 'Patches' });
     // Only one feature (patch) in this fixture carries provenance; backup does not.
     expect(screen.getAllByTestId('effective-config-inherited-from')).toHaveLength(1);
   });
@@ -215,7 +215,7 @@ describe('DeviceEffectiveConfigTab inherited-from provenance (#5080)', () => {
   it('renders no inherited-from line for the pre-W02 shape (field absent everywhere)', async () => {
     render(<DeviceEffectiveConfigTab deviceId="dev-2" />);
 
-    await screen.findByRole('heading', { level: 4, name: 'Patch Management' });
+    await screen.findByRole('heading', { level: 4, name: 'Patches' });
     expect(screen.queryByTestId('effective-config-inherited-from')).not.toBeInTheDocument();
   });
 });

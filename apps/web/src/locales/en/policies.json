@@ -139,7 +139,8 @@
       "removing": "Removing...",
       "removeConfiguration": "Remove configuration",
       "complianceStatus2": "compliance_status",
-      "assignments2": "assignments"
+      "assignments2": "assignments",
+      "gatedFeatureTitle": "Not available on MSP-managed policies. Set this feature on a policy managed by one organization."
     },
     "configPolicyList": {
       "archived": "Archived",
@@ -700,7 +701,11 @@
         "revertConfirmTitle": "Revert to parent policy?",
         "revertConfirmMessage": "This deletes the {{feature}} override on this policy. Its settings are lost and the parent policy's settings apply to every device using this policy. This cannot be undone.",
         "removeConfirmTitle": "Remove this configuration?",
-        "removeConfirmMessage": "This deletes the {{feature}} configuration from this policy. Its settings are lost and the feature stops being applied to every device using this policy. This cannot be undone."
+        "removeConfirmMessage": "This deletes the {{feature}} configuration from this policy. Its settings are lost and the feature stops being applied to every device using this policy. This cannot be undone.",
+        "badgeInherited": "Configured (inherited)",
+        "badgeSavedNotDeployed": "Saved (not deployed)",
+        "badgeConfigured": "Configured",
+        "badgeNotConfigured": "Not configured"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Deploy Breeze Assist to devices",
@@ -1462,6 +1467,85 @@
       "failedToRemove": "Failed to remove device group assignment",
       "empty": "No partner-wide device groups yet. Create one under Device Groups → All orgs.",
       "loading": "Loading device groups…"
+    },
+    "featureNames": {
+      "patch": {
+        "label": "Patches"
+      },
+      "monitors": {
+        "label": "Monitors"
+      },
+      "backup": {
+        "label": "Backup"
+      },
+      "security": {
+        "label": "Security"
+      },
+      "maintenance": {
+        "label": "Maintenance"
+      },
+      "compliance": {
+        "label": "Compliance"
+      },
+      "automation": {
+        "label": "Automations"
+      },
+      "event_log": {
+        "label": "Event Logs"
+      },
+      "software_policy": {
+        "label": "Software Policy"
+      },
+      "sensitive_data": {
+        "label": "Data Discovery"
+      },
+      "peripheral_control": {
+        "label": "Peripheral Control"
+      },
+      "warranty": {
+        "label": "Warranty"
+      },
+      "helper": {
+        "label": "Breeze Assist"
+      },
+      "remote_access": {
+        "label": "Remote Access"
+      },
+      "pam": {
+        "label": "Privileged Access"
+      },
+      "vulnerability": {
+        "label": "Vulnerability Scanning"
+      },
+      "onedrive_helper": {
+        "label": "OneDrive Helper"
+      },
+      "device_lifecycle": {
+        "label": "Device Lifecycle"
+      },
+      "hardware_monitoring": {
+        "label": "Hardware Monitoring"
+      }
+    },
+    "levelNames": {
+      "partner": {
+        "label": "All organizations"
+      },
+      "organization": {
+        "label": "Organization"
+      },
+      "site": {
+        "label": "Site"
+      },
+      "device_group": {
+        "label": "Device group"
+      },
+      "device": {
+        "label": "Device"
+      },
+      "default": {
+        "label": "Breeze Defaults"
+      }
     }
   },
   "software": {
