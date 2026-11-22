@@ -55,6 +55,7 @@ import {
   areAllPendingPatchesManagedByVendorLane,
   evaluatePatchInstallEligibility,
   resolveApprovedPatchesForDevice,
+  resolveDevicePatchEvaluation,
   resolveDevicePatchEvaluationConfig,
   resolvePatchInstallEligibility,
 } from './patchEligibility';
@@ -935,6 +936,47 @@ describe('resolveDevicePatchEvaluationConfig — ring app rules (#8184)', () => 
     expect(config.apps ?? []).toEqual([]);
     expect(config.ringReferenceInvalid).toBe(true);
     warn.mockRestore();
+  });
+
+  // A job that names its patches records `ring_unavailable` rather than "not
+  // eligible" when the device's ring is gone; the resolver says which it is.
+  it('ringUnavailable: true only for a disabled (soft-deleted) ring, false for other invalid references', async () => {
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution({
+      classification: 'disabled_ring', valid: false, ringId: null, ringName: null, appRules: [],
+    })) as never);
+    const disabled = await resolveDevicePatchEvaluation(DEV);
+    expect(disabled.ringUnavailable).toBe(true);
+    expect(disabled.config.ringReferenceInvalid).toBe(true);
+
+    for (const classification of ['missing_target', 'legacy_patch_policy', 'config_policy_uuid']) {
+      vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution({
+        classification, valid: false, ringId: null, ringName: null, appRules: [],
+      })) as never);
+      const other = await resolveDevicePatchEvaluation(DEV);
+      expect(other.ringUnavailable, classification).toBe(false);
+      expect(other.config.ringReferenceInvalid, classification).toBe(true);
+    }
+  });
+
+  it('ringUnavailable: true when the ring is disabled or gone between resolution and the read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const ringRow of [[{ deferralDays: 0, partnerId: PARTNER, enabled: false }], []]) {
+      vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution()) as never);
+      vi.mocked(db.select).mockReturnValueOnce(chain('limit', ringRow) as never);
+      const res = await resolveDevicePatchEvaluation(DEV);
+      expect(res.ringUnavailable).toBe(true);
+      expect(res.config.ringReferenceInvalid).toBe(true);
+    }
+    warn.mockRestore();
+  });
+
+  it('ringUnavailable: false for a live ring and for no policy at all', async () => {
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution()) as never);
+    vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: 0, partnerId: PARTNER, enabled: true }]) as never);
+    expect((await resolveDevicePatchEvaluation(DEV)).ringUnavailable).toBe(false);
+
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue(null as never);
+    expect((await resolveDevicePatchEvaluation(DEV)).ringUnavailable).toBe(false);
   });
 });
 

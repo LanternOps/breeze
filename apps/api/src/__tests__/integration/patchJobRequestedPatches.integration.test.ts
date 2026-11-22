@@ -224,7 +224,7 @@ describe('a job that names its patches is judged under the device\'s live policy
     await expectSkipped(job.id, device.id, 'requested_patches_not_eligible');
   });
 
-  it('a resolved ring already disabled at dispatch fails closed: nothing installs', async () => {
+  it('a device ring already disabled at dispatch fails closed: nothing installs, recorded as ring_unavailable', async () => {
     const ring = await makeRingPolicy({ autoApprove: { enabled: true, severities: ['critical'] } });
     const device = await makeDevice();
     const patch = await makeOutstandingPatch(device.id);
@@ -235,7 +235,7 @@ describe('a job that names its patches is judged under the device\'s live policy
     const outcome = await dispatchDevice(job.id, device.id);
 
     expect(outcome.kind).toBe('skipped');
-    await expectSkipped(job.id, device.id, 'requested_patches_not_eligible');
+    await expectSkipped(job.id, device.id, 'ring_unavailable');
   });
 
   it('RACE: a ring delete in flight when the device is dispatched makes the dispatch wait, then skip with ring_unavailable', async () => {

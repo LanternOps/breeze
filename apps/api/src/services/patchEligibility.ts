@@ -517,24 +517,30 @@ export async function resolveDevicePatchEvaluationConfig(deviceId: string): Prom
  * `resolveDevicePatchEvaluationConfig` plus the linked ring's display name,
  * for read-only views that need to say WHICH ring decided (#7625, the device
  * Patches tab). `ringName` is null whenever `config.ringId` is.
+ *
+ * `ringUnavailable` is true when the config is `ringReferenceInvalid` because
+ * the linked ring is disabled or deleted (a delete is a soft delete), as
+ * opposed to a reference that never pointed at a usable ring. The verdict is
+ * the same either way; the job executor uses it only to record the reason.
  */
 export async function resolveDevicePatchEvaluation(
   deviceId: string
-): Promise<{ config: ApprovalEvaluationConfig; ringName: string | null }> {
+): Promise<{ config: ApprovalEvaluationConfig; ringName: string | null; ringUnavailable: boolean }> {
   // Timezone-free on purpose (#7647): the evaluator needs only the winning
   // policy, and the timezone read would open a second pooled connection.
   const resolved = await resolvePatchConfigPolicyForDevice(deviceId);
-  if (!resolved) return { config: NO_POLICY_CONFIG, ringName: null };
+  if (!resolved) return { config: NO_POLICY_CONFIG, ringName: null, ringUnavailable: false };
   const policyLocal = await loadPolicyLocalPatchConfig(resolved.configPolicyId);
-  if (!policyLocal) return { config: NO_POLICY_CONFIG, ringName: null };
+  if (!policyLocal) return { config: NO_POLICY_CONFIG, ringName: null, ringUnavailable: false };
 
   const { settings, ring } = policyLocal;
   const ringId = ring.valid ? ring.ringId : null;
   if (!ring.valid) {
-    // missing / legacy / config-policy uuid: not the `null` no-ring case.
+    // missing / legacy / config-policy uuid / disabled: not the `null` no-ring case.
     return {
       config: { ...NO_POLICY_CONFIG, sources: settings.sources, ringAppRules: [], ringReferenceInvalid: true },
       ringName: null,
+      ringUnavailable: ring.classification === 'disabled_ring',
     };
   }
   const config: ApprovalEvaluationConfig = {
@@ -584,10 +590,11 @@ export async function resolveDevicePatchEvaluation(
       return {
         config: { ...NO_POLICY_CONFIG, sources: config.sources, ringAppRules: [], ringReferenceInvalid: true },
         ringName: null,
+        ringUnavailable: true,
       };
     }
   }
-  return { config, ringName: ringId ? ring.ringName : null };
+  return { config, ringName: ringId ? ring.ringName : null, ringUnavailable: false };
 }
 
 /**

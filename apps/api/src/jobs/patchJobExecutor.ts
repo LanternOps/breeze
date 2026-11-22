@@ -34,7 +34,7 @@ import { ringFeatureUpdatesSchema, DEFAULT_RING_FEATURE_UPDATES, type RingFeatur
 import {
   resolveApprovedPatchesForDevice,
   areAllPendingPatchesManagedByVendorLane,
-  resolveDevicePatchEvaluationConfig,
+  resolveDevicePatchEvaluation,
 } from '../services/patchEligibility';
 import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
 import {
@@ -1314,14 +1314,23 @@ async function prepareDeviceExecution(
   // ring still goes through the locking read below (#8909).
   let liveConfig: RingConfig | undefined;
   if (requestedPatchIds) {
+    let live;
     try {
       // Savepoint: the catch writes the skipped row on this same transaction (#11225).
-      liveConfig = { ...(await dbModule.withDbTransaction(() => resolveDevicePatchEvaluationConfig(deviceId))) };
+      live = await dbModule.withDbTransaction(() => resolveDevicePatchEvaluation(deviceId));
     } catch (err) {
       console.error(`[PatchJobExecutor] Failed to resolve the patch policy for device ${deviceId}:`, err instanceof Error ? err.message : err);
       await markDeviceSkipped(patchJobId, deviceId, 'error_resolving_patches');
       return { kind: 'error', error: 'Failed to resolve patches' };
     }
+    // The device's ring is disabled or deleted. The evaluator would deny every
+    // candidate anyway; record the reason a ring job records (#8909).
+    if (live.ringUnavailable) {
+      console.warn(`[PatchJobExecutor] Skipping device ${deviceId} of job ${patchJobId}: its update ring is deleted or disabled`);
+      await markDeviceSkipped(patchJobId, deviceId, RING_UNAVAILABLE_SKIP_REASON);
+      return { kind: 'skipped', skipped: true, reason: 'Update ring deleted or disabled' };
+    }
+    liveConfig = { ...live.config };
   }
 
   const ringConfig: RingConfig = liveConfig ?? {
