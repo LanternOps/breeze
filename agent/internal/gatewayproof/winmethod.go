@@ -66,12 +66,16 @@ const (
 	nlnsPermanent neighborState = 6
 )
 
-// Win32 codes the sequencing needs. The two "no answer" codes are the ones
-// Microsoft documents for an unanswered request (read from the documentation;
-// the lab confirms which ones it observes, from the trace).
+// Win32 codes the sequencing needs. The "no answer" mapping is read from
+// Microsoft's documentation, not observed: SendARP documents 67 for "no ARP
+// reply" on Vista and later (31 on Server 2003 and earlier, kept as a legacy
+// mapping); ResolveIpNetEntry2 documents 67 as "the network with the neighbor
+// IP address is unreachable". Whether Resolve returns 67 for an unanswered
+// request on the local subnet is a lab unknown; the trace prints every raw
+// code so the lab records what it observes.
 const (
-	errGenFailure uint32 = 31   // ERROR_GEN_FAILURE: SendARP, no reply (documented)
-	errBadNetName uint32 = 67   // ERROR_BAD_NET_NAME: ResolveIpNetEntry2 and SendARP, no reply (documented)
+	errGenFailure uint32 = 31   // ERROR_GEN_FAILURE
+	errBadNetName uint32 = 67   // ERROR_BAD_NET_NAME
 	errNotFound   uint32 = 1168 // ERROR_NOT_FOUND: no neighbour entry
 )
 
@@ -102,14 +106,22 @@ type neighborOps interface {
 	sendARP() (neighborResult, error)                       // SendARP; blocks
 }
 
-// runMethod runs one candidate. It never deletes or flushes a permanent
-// gateway entry: a static entry means the OS will not ask the gateway, so
-// there is no fresh answer and the result is ErrNoAnswer.
+// runMethod runs one candidate. W2 to W4 read the gateway entry's state first
+// and never delete or flush a permanent entry: a static entry means the OS
+// will not ask the gateway, so there is no fresh answer and the result is
+// ErrNoAnswer. W1 makes no pre-check: ResolveIpNetEntry2 is documented to
+// flush a matching entry before resolving, and what it does with a permanent
+// one is a lab unknown (the lab checks the entry is unchanged afterwards).
 //
 // W4 flushes every dynamic neighbour on the interface. Whether
-// FlushIpNetTable2 also drops other permanent entries is not documented; W4 is
-// tried only if W1 to W3 fail, and only on the lab machine.
+// FlushIpNetTable2 also drops other permanent entries is not documented. W4 is
+// meant to be tried only if W1 to W3 fail, and only on the lab machine; the
+// code does not enforce that.
 func runMethod(ctx context.Context, ops neighborOps, m windowsMethod) (net.HardwareAddr, error) {
+	// Touch nothing in the neighbour table for a call that is already over.
+	if err := ctx.Err(); err != nil {
+		return nil, doneErr(err)
+	}
 	tracef(ctx, "method=%s", m)
 	if m != methodResolve {
 		state, found, err := ops.getEntry()

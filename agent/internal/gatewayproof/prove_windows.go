@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// x/sys v0.50.0 wraps none of these; each is checked with Find() before Call()
+// x/sys/windows wraps none of these (checked at v0.50.0); each is checked with Find() before Call()
 // so an export missing on an older build is an error, not a panic.
 var (
 	iphlpapi               = windows.NewLazySystemDLL("iphlpapi.dll")

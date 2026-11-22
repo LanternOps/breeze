@@ -121,3 +121,52 @@ func TestBPFConn_FramesDoNotAliasReadBuffer(t *testing.T) {
 		t.Fatalf("returned frame changed after later reads: %x", got)
 	}
 }
+
+// When Go's poller does not accept the descriptor, bpfConn reads in blocking
+// slices (BIOCSRTIMEOUT on a real device). A slice that captured nothing reads
+// 0 bytes, which os.File reports as io.EOF; that must be a timeout slice, not a
+// closed device. A regular file is never in the poller, so it drives this path.
+func TestBPFConn_NonPollableReadTimeoutSlices(t *testing.T) {
+	empty, err := os.CreateTemp(t.TempDir(), "bpf-empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newBPFConn(empty, 4096)
+	defer func() { _ = c.Close() }()
+	if c.pollable {
+		t.Skip("a regular file took a read deadline on this OS")
+	}
+	start := time.Now()
+	if _, err := c.ReadFrame(start.Add(30 * time.Millisecond)); !errors.Is(err, errReadTimeout) {
+		t.Fatalf("quiet ReadFrame err = %v, want errReadTimeout", err)
+	}
+	if d := time.Since(start); d < 25*time.Millisecond {
+		t.Fatalf("quiet ReadFrame returned after %v, before its deadline", d)
+	}
+	if _, err := c.ReadFrame(time.Unix(0, 0)); !errors.Is(err, errReadTimeout) {
+		t.Fatalf("past-deadline ReadFrame err = %v, want errReadTimeout", err)
+	}
+
+	buf, first, second := twoRecords()
+	full, err := os.CreateTemp(t.TempDir(), "bpf-full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := full.Write(buf); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := full.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	c2 := newBPFConn(full, 4096)
+	defer func() { _ = c2.Close() }()
+	for i, want := range [][]byte{first, second} {
+		got, err := c2.ReadFrame(time.Unix(0, 0)) // queued data is returned even past the deadline
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("ReadFrame %d = %x, %v", i, got, err)
+		}
+	}
+	if _, err := c2.ReadFrame(time.Now().Add(10 * time.Millisecond)); !errors.Is(err, errReadTimeout) {
+		t.Fatalf("drained ReadFrame err = %v, want errReadTimeout", err)
+	}
+}

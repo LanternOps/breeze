@@ -21,16 +21,20 @@ import (
 // Interface names the interface the proof is taken on.
 //
 // Name is used on macOS only (the BSD name for BIOCSETIF); Linux and Windows
-// use Index. Source is the interface's IPv4 address, sent as the ARP sender.
+// use Index, and Index must be non-zero on every OS. Source is the interface's
+// IPv4 address: the ARP sender address on Linux and macOS, the source address
+// that selects the interface on Windows.
 type Interface struct {
 	Name   string
 	Index  uint32
 	Source netip.Addr
 }
 
-// ErrNoAnswer is returned when the deadline passes without a matching answer
-// from the gateway. It is the deadline outcome only: a caller that cancels gets
-// context.Canceled, and a bad request or an OS error is a wrapped error.
+// ErrNoAnswer means the gateway produced no fresh answer: the deadline passed
+// without a matching reply, or (Windows) the OS reported the request
+// unanswered or the gateway entry is static. It is never a cancel or a
+// failure: a caller that cancels gets context.Canceled, and a bad request or
+// an OS error is a wrapped error.
 var ErrNoAnswer = errors.New("gatewayproof: no answer from gateway")
 
 // defaultTimeout applies when the caller's context has no deadline.
@@ -50,9 +54,9 @@ var proveImpl = prove
 // this call. An entry that was only cached before the call does not count.
 //
 // It uses the caller's deadline, or defaultTimeout when ctx has none. The
-// result is the gateway's MAC; ErrNoAnswer when the deadline passes first;
-// context.Canceled when the caller cancels; any other error wrapped with
-// "gatewayproof:".
+// result is the gateway's MAC; ErrNoAnswer when no fresh answer came (see
+// ErrNoAnswer); context.Canceled when the caller cancels; any other error
+// wrapped with "gatewayproof:".
 func Prove(ctx context.Context, iface Interface, gateway netip.Addr) (net.HardwareAddr, error) {
 	if err := validate(iface, gateway); err != nil {
 		return nil, err

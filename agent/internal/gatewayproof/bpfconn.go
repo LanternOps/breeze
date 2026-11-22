@@ -120,6 +120,11 @@ func (c *bpfConn) read(deadline time.Time) (int, error) {
 		return 0, errReadTimeout
 	case errors.Is(err, syscall.EINTR), errors.Is(err, syscall.EAGAIN):
 		return 0, nil
+	case errors.Is(err, io.EOF) && !c.pollable:
+		// A blocking read that hits BIOCSRTIMEOUT with nothing captured
+		// returns 0 bytes, which os.File.Read reports as io.EOF. It is one
+		// timeout slice, not a closed device.
+		return 0, nil
 	case errors.Is(err, io.EOF):
 		return 0, fmt.Errorf("bpf device closed: %w", err)
 	}

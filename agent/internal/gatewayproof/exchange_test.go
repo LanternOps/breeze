@@ -95,7 +95,9 @@ func TestExchange_ReplyQueuedBeforeRequestIgnored(t *testing.T) {
 func TestExchange_Resends(t *testing.T) {
 	c := &fakeConn{}
 	start := time.Now()
-	ctx, cancel := context.WithDeadline(context.Background(), start.Add(600*time.Millisecond))
+	// The plan's table says 600 ms; 650 ms keeps the same three sends (the
+	// fourth would be at 750 ms) with 150 ms of slack for a loaded runner.
+	ctx, cancel := context.WithDeadline(context.Background(), start.Add(650*time.Millisecond))
 	defer cancel()
 	_, err := exchange(ctx, c, request(), matchGateway)
 	if !errors.Is(err, ErrNoAnswer) {

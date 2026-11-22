@@ -7,11 +7,15 @@ import (
 	"net/netip"
 	"testing"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
-// The offsets are computed from netioapi.h (MIB_IPNET_ROW2 after a 28-byte
-// SOCKADDR_INET); this test, run natively, is what confirms them. The same
-// values are also asserted at compile time in prove_windows.go.
+// The offsets are derived by hand from netioapi.h (MIB_IPNET_ROW2 after a
+// 28-byte SOCKADDR_INET) and also asserted at compile time in prove_windows.go;
+// this test re-asserts them under the native toolchain. Whether they match
+// what Windows writes is shown only by a real ResolveIpNetEntry2 result, which
+// the lab records.
 func TestMibIpnetRow2Layout(t *testing.T) {
 	var r mibIpnetRow2
 	if got := unsafe.Sizeof(r); got != 88 {
@@ -64,6 +68,25 @@ func TestProveWindows_BadMethodIsAnError(t *testing.T) {
 	}
 	if n := procCalls.Load() - before; n != 0 {
 		t.Fatalf("%d iphlpapi calls for an unknown method", n)
+	}
+}
+
+// SOCKADDR_IN inside SOCKADDR_INET: family AF_INET (2, little-endian) at 0,
+// port 0 at 2, the address bytes in network order at 4, zero after.
+func TestSetSockaddrInet4Layout(t *testing.T) {
+	var sa windows.RawSockaddrInet
+	for i := range sa.Data {
+		sa.Data[i] = 0xffffffff // must be cleared
+	}
+	setSockaddrInet4(&sa, netip.MustParseAddr("192.168.1.1"))
+	b := (*[28]byte)(unsafe.Pointer(&sa))
+	want := [28]byte{2, 0, 0, 0, 192, 168, 1, 1}
+	if *b != want {
+		t.Fatalf("SOCKADDR_INET bytes = % x\nwant                % x", b[:], want[:])
+	}
+	r := windowsOps{index: 7, gateway: netip.MustParseAddr("192.168.1.1")}.row()
+	if r.InterfaceIndex != 7 || r.Address != sa {
+		t.Fatalf("row = %+v", r)
 	}
 }
 

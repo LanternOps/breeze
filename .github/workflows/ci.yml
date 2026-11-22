@@ -2750,14 +2750,14 @@ jobs:
       # parse and the missing root/HP namespace must map to `absent`.
       #
       # ./internal/gatewayproof (#12369 W02b) carries windows-tagged tests that
-      # run nowhere else: the MIB_IPNET_ROW2 mirror's size and offsets, that the
-      # ResolveIpNetEntry2, GetIpNetEntry2, DeleteIpNetEntry2, FlushIpNetTable2
-      # and SendARP exports resolve on the runner, and that a rejected request
-      # reaches no iphlpapi call. None of them sends a frame; TestProve_Lab skips
-      # unless GATEWAYPROOF_LAB=1. Verified with GOOS=windows GOARCH=amd64
-      # CGO_ENABLED=0: it vets, its test binary compiles, and its dependency
-      # graph has no remote/desktop and no cgo. Not yet run natively before
-      # being added: this job is its first native run.
+      # run nowhere else: that the ResolveIpNetEntry2, GetIpNetEntry2,
+      # DeleteIpNetEntry2, FlushIpNetTable2 and SendARP exports resolve on the
+      # runner, the SOCKADDR_INET bytes the calls are given, and that a rejected
+      # request or an unknown spike method reaches no iphlpapi call (the
+      # MIB_IPNET_ROW2 layout is also asserted at compile time). None of them
+      # sends a frame; TestProve_Lab skips unless GATEWAYPROOF_LAB=1. Verified
+      # with GOOS=windows GOARCH=amd64 CGO_ENABLED=0: it vets, its test binary
+      # compiles, and its dependency graph has no remote/desktop and no cgo.
       - name: Run Windows Go tests
         working-directory: agent
         env:

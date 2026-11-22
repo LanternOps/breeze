@@ -180,6 +180,26 @@ func TestRunMethod_TraceRecordsRowState(t *testing.T) {
 	}
 }
 
+// A call whose context is already over touches nothing in the neighbour table.
+func TestRunMethod_DoneContextTouchesNothing(t *testing.T) {
+	for _, m := range []windowsMethod{methodResolve, methodDeleteResolve, methodDeleteSendARP, methodFlushResolve} {
+		ops := &fakeOps{state: nlnsStale, found: true, result: okResult()}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := runMethod(ctx, ops, m); !errors.Is(err, context.Canceled) {
+			t.Errorf("%v: err = %v, want context.Canceled", m, err)
+		}
+		expired, cancel2 := context.WithDeadline(context.Background(), time.Unix(0, 0))
+		if _, err := runMethod(expired, ops, m); !errors.Is(err, ErrNoAnswer) {
+			t.Errorf("%v: expired err = %v, want ErrNoAnswer", m, err)
+		}
+		cancel2()
+		if got := ops.sequence(); got != "" {
+			t.Errorf("%v: calls %q, want none", m, got)
+		}
+	}
+}
+
 func TestParseWindowsMethod(t *testing.T) {
 	for in, want := range map[string]windowsMethod{
 		"": methodResolve, "W1": methodResolve, "w2": methodDeleteResolve, "resolve": methodResolve,
