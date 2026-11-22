@@ -16,7 +16,7 @@
 
 - **Inert.** `GUARDED_DISCOVERY_MIN_AGENT_VERSION` is `999.0.0` and no route can set `sites.discovery_network_required` or assign a network until W03c. Tests gate a site by writing rows directly: first `UPDATE sites SET discovery_network_required = true`, then insert `learned_networks` with `site_id` (the A6 trigger refuses the other order).
 - **Sites that are not gated keep today's selection, command and payload.** The five visible changes, each one intended:
-  1. Row 1 of 8.2 applies to every site. A job whose profile moved to another site or org after it was queued fails `profile_moved`.
+  1. Row 1 of 8.2 applies to every site. A job whose profile moved to another site or org after it was queued fails `profile_moved`. The failure itself is already on main before this wave: `loadDispatchScanInputs` returns `profile-moved` with this plan's `profile_moved` message (`PROFILE_MOVED_MESSAGE`), comparing the profile with the queue payload. This wave replaces that inline check with the gate's row 1 (which reads the job row), so the visible change is only the stored `code`. The `job and profile placement agree` tests in `jobs/discoveryWorker.agentSelection.test.ts` stay green; the message is unchanged.
   2. The job is written `running` with its `agent_id` and `network_dispatch` before the command is sent.
   3. A job that is no longer `scheduled` when the attempt is recorded is not sent.
   4. A refusal result with `errorCode` `network_mismatch` or `network_changed` stores that code on `discovery_jobs.errors`.
