@@ -40,7 +40,7 @@ const h = vi.hoisted(() => {
       loadAssetMetricHistory: vi.fn(),
       loadSnmpDashboard: vi.fn(),
       getConnection: vi.fn(),
-      getDecryptedApiKey: vi.fn(),
+      getSyncKeys: vi.fn(),
       listCollectors: vi.fn(),
       listControllerSitesForIntegration: vi.fn(),
       enqueueUnifiSync: vi.fn(),
@@ -71,8 +71,11 @@ vi.mock('./assetAccessScope', async (importOriginal) => ({
 vi.mock('./assetProbeRun', () => ({ runAssetProbe: h.svc.runAssetProbe }));
 vi.mock('./snmpMetricHistory', () => ({ loadAssetMetricHistory: h.svc.loadAssetMetricHistory, MAX_INSTANCES_PER_OID: 64 }));
 vi.mock('./snmpDashboard', () => ({ loadSnmpDashboard: h.svc.loadSnmpDashboard }));
-vi.mock('./unifi/unifiConnectionService', () => ({
-  getConnection: h.svc.getConnection, getDecryptedApiKey: h.svc.getDecryptedApiKey,
+vi.mock('./unifi/unifiConnectionService', () => ({ getConnection: h.svc.getConnection }));
+vi.mock('./unifi/unifiKeyService', async (importOriginal) => ({
+  // pickSingleSyncKey is pure: keep the real one.
+  pickSingleSyncKey: (await importOriginal<typeof import('./unifi/unifiKeyService')>()).pickSingleSyncKey,
+  getSyncKeys: h.svc.getSyncKeys,
 }));
 vi.mock('./unifi/unifiCollectorService', () => ({ listCollectors: h.svc.listCollectors }));
 vi.mock('./unifi/unifiControllerSiteService', () => ({ listControllerSitesForIntegration: h.svc.listControllerSitesForIntegration }));
@@ -445,6 +448,10 @@ describe('manage_known_guests', () => {
 
 describe('get_unifi_status / trigger_unifi_sync', () => {
   const conn = { id: 'integration-1', baseUrl: 'https://api.example.test', connectionType: 'cloud', status: 'active', accountLabel: 'Acme', lastSyncAt: null, lastSyncStatus: 'ok', lastSyncError: null };
+  const syncKeys = (apiKey: string) => ({
+    baseUrl: 'https://api.example.test',
+    keys: [{ id: 'key-1', label: 'Global', apiKey, keyLast4: null, lastSeenHostIds: null }],
+  });
 
   it('both tools need full partner scope; an org token gets the partner-scope message', async () => {
     for (const [name, input] of [['get_unifi_status', { action: 'status' }], ['trigger_unifi_sync', {}]] as const) {
@@ -523,7 +530,7 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
 
   it('hosts: a vendor failure is summarised, never relayed', async () => {
     h.svc.getConnection.mockResolvedValue(conn);
-    h.svc.getDecryptedApiKey.mockResolvedValue('secret-key');
+    h.svc.getSyncKeys.mockResolvedValue(syncKeys('secret-key'));
     h.svc.createUnifiClient.mockReturnValue({
       listHosts: vi.fn().mockRejectedValue(new Error('upstream said: Authorization: Bearer secret-key')),
       listSitesForSync: vi.fn(async () => ({ sites: [], hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 0 })),
@@ -537,7 +544,7 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
   it('hosts: a vendor API error is coded, a rejected key says to reconnect, and the body is not relayed', async () => {
     const { UnifiApiError } = await import('./unifi/unifiClient');
     h.svc.getConnection.mockResolvedValue(conn);
-    h.svc.getDecryptedApiKey.mockResolvedValue('k');
+    h.svc.getSyncKeys.mockResolvedValue(syncKeys('k'));
     const failing = (status: number) => h.svc.createUnifiClient.mockReturnValue({
       listHosts: vi.fn().mockRejectedValue(Object.assign(new UnifiApiError('body: secret-key', status), { status })),
       listSitesForSync: vi.fn(async () => ({ sites: [], hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 0 })),
@@ -559,9 +566,34 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
     expect(h.svc.listControllerSitesForIntegration).not.toHaveBeenCalled();
   });
 
+  it('hosts reads the key through getSyncKeys and keeps the site-allowlist refusal', async () => {
+    h.svc.getConnection.mockResolvedValue(conn);
+    h.svc.getSyncKeys.mockResolvedValue(syncKeys('key-from-row'));
+    h.svc.createUnifiClient.mockReturnValue({ listHosts: vi.fn(async () => []), listSites: vi.fn(async () => []) });
+    await call('get_unifi_status', { action: 'hosts' }, partnerAuth());
+    expect(h.svc.getSyncKeys).toHaveBeenCalledWith(h.db, 'integration-1', PARTNER);
+    expect(h.svc.createUnifiClient).toHaveBeenCalledWith({ baseUrl: 'https://api.example.test', apiKey: 'key-from-row' });
+
+    h.svc.getSyncKeys.mockClear();
+    expect((await call('get_unifi_status', { action: 'hosts' }, partnerAuth(restricted([SITE])))).code).toBe('ACCESS_DENIED');
+    expect(h.svc.getSyncKeys).not.toHaveBeenCalled();
+  });
+
+  it('hosts refuses a connection with several keys and reports a missing key as not connected', async () => {
+    h.svc.getConnection.mockResolvedValue(conn);
+    const two = syncKeys('a');
+    h.svc.getSyncKeys.mockResolvedValue({ ...two, keys: [two.keys[0]!, { ...two.keys[0]!, id: 'key-2', apiKey: 'b' }] });
+    const multi = await call('get_unifi_status', { action: 'hosts' }, partnerAuth());
+    expect(multi.code).toBe('UNIFI_MULTI_KEY');
+    expect(h.svc.createUnifiClient).not.toHaveBeenCalled();
+
+    h.svc.getSyncKeys.mockResolvedValue({ baseUrl: 'https://api.example.test', keys: [] });
+    expect((await call('get_unifi_status', { action: 'hosts' }, partnerAuth())).code).toBe('NOT_CONNECTED');
+  });
+
   it('hosts lists every host that has a site, whatever its type', async () => {
     h.svc.getConnection.mockResolvedValue(conn);
-    h.svc.getDecryptedApiKey.mockResolvedValue('k');
+    h.svc.getSyncKeys.mockResolvedValue(syncKeys('k'));
     h.svc.createUnifiClient.mockReturnValue({
       listHosts: vi.fn().mockResolvedValue([
         { id: 'h1', name: 'Console', model: 'UDM', type: 'console' },
@@ -583,7 +615,7 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
     expect(tools.get('get_unifi_status')!.selfManagedDbContext).toEqual(['hosts']);
     const depths: Record<string, number> = {};
     h.svc.getConnection.mockImplementation(async () => { depths.connection = dbContext.depth; return conn; });
-    h.svc.getDecryptedApiKey.mockImplementation(async () => { depths.key = dbContext.depth; return 'k'; });
+    h.svc.getSyncKeys.mockImplementation(async () => { depths.key = dbContext.depth; return syncKeys('k'); });
     h.svc.createUnifiClient.mockReturnValue({
       listHosts: vi.fn(async () => { depths.hosts = dbContext.depth; return []; }),
       listSites: vi.fn(async () => []),

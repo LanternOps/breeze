@@ -61,7 +61,9 @@ export function unifiKeyLast4(apiKey: string): string {
   return apiKey.slice(-4);
 }
 
-const STABLE_ORDER = [asc(unifiIntegrationKeys.createdAt), asc(unifiIntegrationKeys.id)] as const;
+// Precedence order of a connection's keys (plan D4). A function, not a constant, so
+// importing this module never touches the schema objects.
+const stableOrder = () => [asc(unifiIntegrationKeys.createdAt), asc(unifiIntegrationKeys.id)] as const;
 
 export async function listKeys(db: DbExecutor, integrationId: string, partnerId: string): Promise<UnifiKeySummary[]> {
   // Never select api_key_encrypted here: this feeds API responses.
@@ -82,7 +84,7 @@ export async function listKeys(db: DbExecutor, integrationId: string, partnerId:
     })
     .from(unifiIntegrationKeys)
     .where(and(eq(unifiIntegrationKeys.integrationId, integrationId), eq(unifiIntegrationKeys.partnerId, partnerId)))
-    .orderBy(...STABLE_ORDER);
+    .orderBy(...stableOrder());
   return (rows as any[]).map((r) => ({
     id: r.id,
     label: r.label,
@@ -207,7 +209,7 @@ export async function getSyncKeys(
     })
     .from(unifiIntegrationKeys)
     .where(and(eq(unifiIntegrationKeys.integrationId, integrationId), eq(unifiIntegrationKeys.partnerId, partnerId)))
-    .orderBy(...STABLE_ORDER)) as KeyRow[];
+    .orderBy(...stableOrder())) as KeyRow[];
 
   if (rows.length === 1) {
     rows = [await reconcileLegacyKey(db, integrationId, partnerId, integration.apiKeyEncrypted ?? null, rows[0]!)];
@@ -217,4 +219,23 @@ export async function getSyncKeys(
     baseUrl: integration.baseUrl,
     keys: rows.filter((r) => r.isEnabled).map(toSyncKey),
   };
+}
+
+export type SingleSyncKey =
+  | { ok: true; baseUrl: string; apiKey: string }
+  | { ok: false; reason: 'no_key' | 'multi_key' | 'decrypt_error' };
+
+/**
+ * W1 single-key parity for the live reads (`/test`, `/hosts`, the AI `hosts`
+ * view): exactly one enabled, readable key, or the reason there is none. A
+ * connection with several keys is refused rather than read through one of them,
+ * the same rollout guard the worker applies (plan D12). W2 replaces this with a
+ * fan-out across every key.
+ */
+export function pickSingleSyncKey(creds: { baseUrl: string; keys: UnifiSyncKey[] } | null): SingleSyncKey {
+  if (!creds || creds.keys.length === 0) return { ok: false, reason: 'no_key' };
+  if (creds.keys.length > 1) return { ok: false, reason: 'multi_key' };
+  const key = creds.keys[0]!;
+  if (key.apiKey === null) return { ok: false, reason: 'decrypt_error' };
+  return { ok: true, baseUrl: creds.baseUrl, apiKey: key.apiKey };
 }

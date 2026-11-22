@@ -18,6 +18,8 @@ import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContex
 import { unifiIntegrationKeys, unifiIntegrations } from '../../db/schema';
 import { columnAad, UNIFI_KEY_COLUMN_SPEC } from '../../services/encryptedColumnRegistry';
 import { decryptSecret, encryptSecret } from '../../services/secretCrypto';
+import { createSelfHostedIntegration, upsertConnection, UnifiMultiKeyError } from '../../services/unifi/unifiConnectionService';
+import { getSyncKeys, openUnifiKey, sealUnifiKey } from '../../services/unifi/unifiKeyService';
 import { createPartner } from './db-utils';
 import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
@@ -220,5 +222,77 @@ describe('unifi_integration_keys constraints', () => {
       SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = 'public.unifi_integration_keys'::regclass
     `);
     expect(row).toMatchObject({ relrowsecurity: true, relforcerowsecurity: true });
+  });
+});
+
+describe('connection service on unifi_integration_keys (breeze_app)', () => {
+  const asPartner = <T>(partnerId: string, fn: () => Promise<T>) => withDbAccessContext(partnerContext(partnerId), fn);
+
+  runDb('upsertConnection creates the first key, and a reconnect replaces its ciphertext in place', async () => {
+    const partner = await createPartner();
+    await asPartner(partner.id, () => upsertConnection(db, partner.id, { baseUrl: 'https://api.ui.com', apiKey: 'first-key-1111' }));
+    const [integration] = await withSystemDbAccessContext(() =>
+      db.select().from(unifiIntegrations).where(eq(unifiIntegrations.partnerId, partner.id)),
+    );
+    const [first] = await keysOf(integration!.id);
+    expect(first).toMatchObject({ label: 'Global', status: 'connected', keyLast4: '1111', partnerId: partner.id });
+    expect(openUnifiKey(first!.apiKeyEncrypted)).toBe('first-key-1111');
+    // The legacy column carries the same ciphertext (rollback safety, plan D12).
+    expect(integration!.apiKeyEncrypted).toBe(first!.apiKeyEncrypted);
+
+    await asPartner(partner.id, () => upsertConnection(db, partner.id, { baseUrl: 'https://api.ui.com', apiKey: 'second-key-2222' }));
+    const keys = await keysOf(integration!.id);
+    expect(keys).toHaveLength(1);
+    expect(keys[0]!.id).toBe(first!.id);
+    expect(keys[0]!.keyLast4).toBe('2222');
+    expect(openUnifiKey(keys[0]!.apiKeyEncrypted)).toBe('second-key-2222');
+
+    const sync = await asPartner(partner.id, () => getSyncKeys(db, integration!.id, partner.id));
+    expect(sync).toEqual({
+      baseUrl: 'https://api.ui.com',
+      keys: [{ id: first!.id, label: 'Global', apiKey: 'second-key-2222', keyLast4: '2222', lastSeenHostIds: null }],
+    });
+  });
+
+  runDb('upsertConnection refuses a connection with two keys and changes nothing', async () => {
+    const partner = await createPartner();
+    await asPartner(partner.id, () => upsertConnection(db, partner.id, { baseUrl: 'https://api.ui.com', apiKey: 'kept-key-1' }));
+    const [before] = await withSystemDbAccessContext(() =>
+      db.select().from(unifiIntegrations).where(eq(unifiIntegrations.partnerId, partner.id)),
+    );
+    await withSystemDbAccessContext(() => db.insert(unifiIntegrationKeys).values({
+      integrationId: before!.id, partnerId: partner.id, label: 'Fabric', apiKeyEncrypted: sealUnifiKey('fabric-key'),
+    }));
+
+    const err = await asPartner(partner.id, () =>
+      upsertConnection(db, partner.id, { baseUrl: 'https://elsewhere.example', apiKey: 'new-key-9' }),
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(UnifiMultiKeyError);
+
+    const [after] = await withSystemDbAccessContext(() =>
+      db.select().from(unifiIntegrations).where(eq(unifiIntegrations.id, before!.id)),
+    );
+    expect(after!.baseUrl).toBe('https://api.ui.com');
+    expect(after!.apiKeyEncrypted).toBe(before!.apiKeyEncrypted);
+    const keys = await keysOf(before!.id);
+    expect(keys.map((k) => openUnifiKey(k.apiKeyEncrypted)).sort()).toEqual(['fabric-key', 'kept-key-1']);
+  });
+
+  runDb("switching to self-hosted deletes the connection's keys; getSyncKeys then returns null", async () => {
+    const partner = await createPartner();
+    await asPartner(partner.id, () => upsertConnection(db, partner.id, { baseUrl: 'https://api.ui.com', apiKey: 'cloud-key' }));
+    const created = await asPartner(partner.id, () => createSelfHostedIntegration(db, partner.id, { accountLabel: null }));
+    expect(await keysOf(created.id)).toHaveLength(0);
+    await expect(asPartner(partner.id, () => getSyncKeys(db, created.id, partner.id))).resolves.toBeNull();
+  });
+
+  runDb("another partner cannot read a connection's keys through getSyncKeys", async () => {
+    const partner = await createPartner();
+    const other = await createPartner();
+    await asPartner(partner.id, () => upsertConnection(db, partner.id, { baseUrl: 'https://api.ui.com', apiKey: 'private-key' }));
+    const [integration] = await withSystemDbAccessContext(() =>
+      db.select().from(unifiIntegrations).where(eq(unifiIntegrations.partnerId, partner.id)),
+    );
+    await expect(asPartner(other.id, () => getSyncKeys(db, integration!.id, partner.id))).resolves.toBeNull();
   });
 });

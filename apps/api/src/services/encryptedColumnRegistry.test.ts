@@ -324,7 +324,7 @@ describe('encryptedColumnRegistry', () => {
   describe('unifi_integration_keys keeps the legacy unifi_integrations AAD tag (#11808)', () => {
     it('is registered column-bound under the legacy tag', () => {
       expect(columnAad(UNIFI_KEY_COLUMN_SPEC)).toBe('unifi_integrations.api_key_encrypted');
-      expect(UNIFI_KEY_COLUMN_SPEC.aadBinding).toBeUndefined();
+      expect('aadBinding' in UNIFI_KEY_COLUMN_SPEC).toBe(false);
       expect(encryptedColumnRegistry).toContain(UNIFI_KEY_COLUMN_SPEC);
     });
 

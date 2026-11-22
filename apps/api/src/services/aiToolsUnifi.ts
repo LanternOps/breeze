@@ -25,7 +25,8 @@ import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { siteAllowlistOf } from './aiToolsSiteScope';
 import { createUnifiClient, UnifiApiError } from './unifi/unifiClient';
 import { buildMappingHostList } from './unifi/unifiMappingHosts';
-import { getConnection, getDecryptedApiKey } from './unifi/unifiConnectionService';
+import { getConnection } from './unifi/unifiConnectionService';
+import { getSyncKeys, pickSingleSyncKey } from './unifi/unifiKeyService';
 import { listCollectors } from './unifi/unifiCollectorService';
 import { listControllerSitesForIntegration } from './unifi/unifiControllerSiteService';
 import { enqueueUnifiSync } from '../jobs/unifiWorker';
@@ -110,10 +111,18 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
           }
           case 'hosts': {
             if (!conn) return jsonError('Not connected', 'NOT_CONNECTED');
-            const apiKey = await inToolDbPhase(auth, () => getDecryptedApiKey(db, partnerId));
-            if (!apiKey) return jsonError('No API key found', 'NOT_CONNECTED');
+            const key = pickSingleSyncKey(await inToolDbPhase(auth, () => getSyncKeys(db, conn.id, partnerId)));
+            if (!key.ok) {
+              // W1 reads one key (#11808); a connection with several is refused, not read through one of them.
+              if (key.reason === 'multi_key') {
+                return jsonError('This connection has several API keys; this server version supports one', 'UNIFI_MULTI_KEY');
+              }
+              return jsonError(key.reason === 'decrypt_error'
+                ? 'The stored UniFi API key could not be read; reconnect the integration in Settings'
+                : 'No API key found', 'NOT_CONNECTED');
+            }
             try {
-              const client = createUnifiClient({ baseUrl: conn.baseUrl, apiKey });
+              const client = createUnifiClient({ baseUrl: key.baseUrl, apiKey: key.apiKey });
               const [hosts, allSites] = await runOutsideDbContext(() => Promise.all([client.listHosts(), client.listSites()]));
               const list = buildMappingHostList(hosts, allSites);
               return bounded({ hosts: list.hosts, omitted: list.omitted });

@@ -8,7 +8,8 @@ import { db, runOutsideDbContext } from '../../db';
 import { devices, unifiCollectors, unifiDeviceTelemetry, unifiClients, unifiSiteMappings, unifiSyncRuns, sites } from '../../db/schema';
 import { createUnifiClient, UnifiApiError } from '../../services/unifi/unifiClient';
 import { buildMappingHostList } from '../../services/unifi/unifiMappingHosts';
-import { getConnection, getDecryptedApiKey, upsertConnection, deleteConnection, createSelfHostedIntegration } from '../../services/unifi/unifiConnectionService';
+import { getConnection, upsertConnection, deleteConnection, createSelfHostedIntegration, UnifiMultiKeyError } from '../../services/unifi/unifiConnectionService';
+import { getSyncKeys, listKeys, pickSingleSyncKey, type SingleSyncKey } from '../../services/unifi/unifiKeyService';
 import { listControllerSitesForIntegration } from '../../services/unifi/unifiControllerSiteService';
 import { listCollectors, upsertCollector, deleteCollector, upsertSelfHostedController } from '../../services/unifi/unifiCollectorService';
 import { toUnifiTelemetryDevice } from './telemetryReadModel';
@@ -49,6 +50,25 @@ function resolvePartnerId(auth: RouteAuth, requested?: string): { partnerId: str
 const readPerm = requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action);
 const writePerm = requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action);
 const partnerScopes = requireScope('partner', 'system');
+
+const MULTI_KEY_CONNECT_MESSAGE = 'This connection has several API keys. Manage them from the key list.';
+
+// W1 single-key parity (#11808): the live reads use the connection's one key and
+// refuse a connection that holds several (a rollback from a newer version).
+function singleKeyRefusal(picked: Exclude<SingleSyncKey, { ok: true }>):
+  { status: 400 | 409; body: { success: false; message: string; code?: string } } {
+  switch (picked.reason) {
+    case 'multi_key':
+      return {
+        status: 409,
+        body: { success: false, code: 'UNIFI_MULTI_KEY', message: 'This connection has several API keys; this server version supports one' },
+      };
+    case 'decrypt_error':
+      return { status: 400, body: { success: false, message: 'The stored UniFi API key could not be decrypted. Reconnect the integration.' } };
+    default:
+      return { status: 400, body: { success: false, message: 'No API key found' } };
+  }
+}
 
 const connectSchema = z.object({
   apiKey: z.string().min(1),
@@ -103,6 +123,8 @@ unifiRoutes.get('/', partnerScopes, readPerm, async (c) => {
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const conn = await getConnection(db, partner.partnerId);
   if (!conn) return c.json({ connected: false });
+  // Key summaries never carry the ciphertext or the key (listKeys never selects it).
+  const keys = conn.connectionType === 'cloud' ? await listKeys(db, conn.id, conn.partnerId) : [];
   return c.json({
     connected: true,
     connectionType: conn.connectionType,
@@ -111,6 +133,7 @@ unifiRoutes.get('/', partnerScopes, readPerm, async (c) => {
     lastSyncAt: conn.lastSyncAt,
     lastSyncStatus: conn.lastSyncStatus,
     lastSyncError: conn.lastSyncError,
+    keys,
   });
 });
 
@@ -133,12 +156,22 @@ unifiRoutes.post('/connect', partnerScopes, writePerm, requireMfa(), zValidator(
     console.error('[unifi] connect: non-auth failure validating API key:', err);
     return c.json({ success: false, message: 'Could not reach UniFi to validate the key. Please try again shortly.' }, 502);
   }
-  const conn = await withAuthDbAccessContext(auth, () => upsertConnection(db, partner.partnerId, {
-    baseUrl: base,
-    apiKey,
-    accountLabel: accountLabel ?? null,
-    createdBy: auth.user.id,
-  }));
+  let conn;
+  try {
+    conn = await withAuthDbAccessContext(auth, () => upsertConnection(db, partner.partnerId, {
+      baseUrl: base,
+      apiKey,
+      accountLabel: accountLabel ?? null,
+      createdBy: auth.user.id,
+    }));
+  } catch (err) {
+    // Raised before any write (unifiConnectionService), so nothing changed:
+    // neither baseUrl nor any stored key.
+    if (err instanceof UnifiMultiKeyError) {
+      return c.json({ success: false, code: 'UNIFI_MULTI_KEY', message: MULTI_KEY_CONNECT_MESSAGE }, 409);
+    }
+    throw err;
+  }
   return c.json({ connected: true, status: conn.status });
 });
 
@@ -165,14 +198,18 @@ unifiRoutes.post('/test', partnerScopes, writePerm, requireMfa(), async (c) => {
   const partner = resolvePartnerId(auth, requestedPartnerId(c));
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   // One short read; the UniFi call below runs with no transaction held.
-  const { conn, apiKey } = await withAuthDbAccessContext(auth, async () => {
+  const { conn, creds } = await withAuthDbAccessContext(auth, async () => {
     const found = await getConnection(db, partner.partnerId);
-    return { conn: found, apiKey: found ? await getDecryptedApiKey(db, partner.partnerId) : null };
+    return { conn: found, creds: found ? await getSyncKeys(db, found.id, partner.partnerId) : null };
   });
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
-  if (!apiKey) return c.json({ success: false, message: 'No API key found' }, 400);
+  const key = pickSingleSyncKey(creds);
+  if (!key.ok) {
+    const refusal = singleKeyRefusal(key);
+    return c.json(refusal.body, refusal.status);
+  }
   try {
-    const client = createUnifiClient({ baseUrl: conn.baseUrl, apiKey });
+    const client = createUnifiClient({ baseUrl: key.baseUrl, apiKey: key.apiKey });
     const hosts = await runOutsideDbContext(() => client.listHosts());
     return c.json({ success: true, hostsFound: hosts.length });
   } catch (err) {
@@ -203,14 +240,18 @@ unifiRoutes.get('/hosts', partnerScopes, readPerm, async (c) => {
   const partner = resolvePartnerId(auth, requestedPartnerId(c));
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   // One short read; the UniFi call below runs with no transaction held.
-  const { conn, apiKey } = await withAuthDbAccessContext(auth, async () => {
+  const { conn, creds } = await withAuthDbAccessContext(auth, async () => {
     const found = await getConnection(db, partner.partnerId);
-    return { conn: found, apiKey: found ? await getDecryptedApiKey(db, partner.partnerId) : null };
+    return { conn: found, creds: found ? await getSyncKeys(db, found.id, partner.partnerId) : null };
   });
   if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
-  if (!apiKey) return c.json({ success: false, message: 'No API key found' }, 400);
+  const key = pickSingleSyncKey(creds);
+  if (!key.ok) {
+    const refusal = singleKeyRefusal(key);
+    return c.json(refusal.body, refusal.status);
+  }
   try {
-    const client = createUnifiClient({ baseUrl: conn.baseUrl, apiKey });
+    const client = createUnifiClient({ baseUrl: key.baseUrl, apiKey: key.apiKey });
     const [hosts, allSites] = await runOutsideDbContext(() =>
       Promise.all([client.listHosts(), client.listSites()])
     );
