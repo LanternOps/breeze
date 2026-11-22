@@ -12,7 +12,6 @@ import { isBaseUrlRefusal, registryFriendly } from './surfaceLabels';
 import { ConnectionKindForm, type KindDraft } from './connectionForms/ConnectionKindForm';
 import type { OpenAiDraft as OpenAiDraftT } from './connectionForms/OpenAiCompatibleConnectionForm';
 import type { AddableConnectionKind } from './connectionForms/connectionKinds';
-import { useJobPoll } from './useJobPoll';
 
 type CatalogEntry = AiModelsSnapshotDto['catalog'][number];
 
@@ -25,11 +24,13 @@ export interface ConnectionDrawerProps {
   initialKind?: AddableConnectionKind;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
+  /** #12456: Refresh answered 202 and finishes in a background job; the card owns the re-read (it outlives this drawer). */
+  onJobQueued?: () => void;
 }
 
 const onUnauthorized = () => { void navigateTo('/login', { replace: true }); };
 
-export default function ConnectionDrawer({ connection, catalog, catalogEnabled, initialKind, onClose, onSaved }: ConnectionDrawerProps) {
+export default function ConnectionDrawer({ connection, catalog, catalogEnabled, initialKind, onClose, onSaved, onJobQueued }: ConnectionDrawerProps) {
   const { t } = useTranslation('settings');
   const kind: AddableConnectionKind = connection?.kind === 'openai_compatible' ? 'openai_compatible'
     : connection === null ? initialKind ?? 'anthropic_byok' : 'anthropic_byok';
@@ -58,8 +59,6 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
   const [savedEndpoint, setSavedEndpoint] = useState<{ value: string | null } | null>(null);
   const busy = saving || disconnecting || refreshing;
   const friendly = registryFriendly(t);
-  // #12456: Refresh finishes in a background job; re-read the snapshot until discovery stamps the connection again.
-  const pollForRefresh = useJobPoll(`${connection?.lastDiscoveredAt}|${connection?.discoveryError}|${connection?.verifiedAt}`, onSaved);
 
   const storedEndpoint = savedEndpoint ? savedEndpoint.value : connection?.catalogEntryId ?? null;
   const keyDirty = apiKey.trim() !== '';
@@ -279,7 +278,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
         friendly,
         onUnauthorized,
       });
-      pollForRefresh();
+      onJobQueued?.();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.connections.refreshFailed') });
