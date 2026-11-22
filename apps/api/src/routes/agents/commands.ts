@@ -103,6 +103,7 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   'system_cleanup_run',
   'file_delete',
   'network_discovery',
+  'network_discovery_guarded',
   'hyperv_backup',
   'mssql_backup',
   'snmp_poll',

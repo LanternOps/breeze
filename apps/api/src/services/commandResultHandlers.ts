@@ -13,6 +13,7 @@
  */
 
 import { z } from 'zod';
+import { GUARDED_COMMAND_TYPES } from '@breeze/shared';
 import { CommandTypes } from './commandTypes';
 import { applyWakeRelayResult } from './wakeAttempts';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
@@ -1321,6 +1322,8 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   [CommandTypes.OEM_UPDATE_RELEASE]: handleOemUpdateReleaseResult,
   [CommandTypes.WAKE_ON_LAN]: handleWakeOnLanResult,
   network_discovery: handleDiscoveryResult,
+  // Learned networks (#12369): the guarded scan's result runs the same handler (and its verification).
+  [GUARDED_COMMAND_TYPES.network_discovery]: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
   backup_test_restore: handleBackupVerificationResult,
   backup_restore: handleVmRestoreResult,
