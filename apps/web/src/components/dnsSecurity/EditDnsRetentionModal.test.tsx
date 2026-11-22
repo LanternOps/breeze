@@ -74,3 +74,34 @@ describe('EditDnsRetentionModal — store allowed traffic (#10054)', () => {
     expect(sentBody()).toEqual({ retentionDays: 7, storeAllowedTraffic: false });
   });
 });
+
+// #12507 — a Pi-hole integration's API version is correctable after create.
+describe('EditDnsRetentionModal — Pi-hole version (#12507)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows the version select for Pi-hole and PATCHes the change', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(okResponse({ id: 'int-1' }));
+    const onSaved = vi.fn();
+    render(
+      <EditDnsRetentionModal
+        integration={{ id: 'int-1', name: 'Pi', retentionDays: null, storeAllowedTraffic: false, piholeVersion: 'v5' }}
+        onClose={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+    const select = screen.getByLabelText('Pi-hole version') as HTMLSelectElement;
+    expect(select.value).toBe('v5');
+    fireEvent.change(select, { target: { value: 'v6' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(sentBody()).toEqual({ retentionDays: null, storeAllowedTraffic: false, piholeVersion: 'v6' });
+  });
+
+  it('hides the version select (and omits the field) for other providers', () => {
+    renderModal(false);
+    expect(screen.queryByLabelText('Pi-hole version')).toBeNull();
+  });
+});

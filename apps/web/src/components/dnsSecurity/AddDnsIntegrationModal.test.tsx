@@ -98,6 +98,47 @@ describe('AddDnsIntegrationModal', () => {
     expect(screen.getByLabelText('API endpoint')).toBeInTheDocument();
   });
 
+  it('shows the Pi-hole version select only for Pi-hole and sends config.piholeVersion (#12507)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: { id: 'new-2' } }));
+    render(<AddDnsIntegrationModal onClose={() => {}} onCreated={() => {}} />);
+    expect(screen.queryByLabelText('Pi-hole version')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'pihole' } });
+    const version = screen.getByLabelText('Pi-hole version') as HTMLSelectElement;
+    expect(Array.from(version.options).map((o) => o.value)).toEqual(['v5', 'v6']);
+    expect(version.value).toBe('v5');
+    fireEvent.change(version, { target: { value: 'v6' } });
+    expect(screen.getByLabelText('App password')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Office Pi-hole' } });
+    fireEvent.change(screen.getByLabelText('App password'), { target: { value: 'app-pw' } });
+    fireEvent.change(screen.getByLabelText('API endpoint'), { target: { value: 'http://pihole.local' } });
+    fireEvent.click(screen.getByRole('button', { name: /Add integration/i }));
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const body = JSON.parse(String((fetchWithAuthMock.mock.calls[0]![1] as RequestInit).body));
+    expect(body).toMatchObject({
+      provider: 'pihole',
+      apiKey: 'app-pw',
+      config: { apiEndpoint: 'http://pihole.local', piholeVersion: 'v6' },
+    });
+  });
+
+  it('does not leak piholeVersion into other providers after switching away', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: { id: 'new-3' } }));
+    render(<AddDnsIntegrationModal onClose={() => {}} onCreated={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'pihole' } });
+    fireEvent.change(screen.getByLabelText('Pi-hole version'), { target: { value: 'v6' } });
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'cloudflare' } });
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'CF' } });
+    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 't' } });
+    fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: 'abc' } });
+    fireEvent.click(screen.getByRole('button', { name: /Add integration/i }));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const body = JSON.parse(String((fetchWithAuthMock.mock.calls[0]![1] as RequestInit).body));
+    expect(body.config).toEqual({ accountId: 'abc' });
+  });
+
   it('submits a Cloudflare integration via POST /dns-security/integrations with the right shape', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: { id: 'new-1' } }));
     const onCreated = vi.fn();

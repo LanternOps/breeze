@@ -1276,6 +1276,35 @@ describe('dns security routes', () => {
         expect(db.update).not.toHaveBeenCalled();
       });
 
+      // #12507 — Pi-hole API version is editable after create (and only for Pi-hole).
+      it('changes piholeVersion on a Pi-hole integration, keeping the rest of the config', async () => {
+        mockIntegrationLookup({ ...activeRow, provider: 'pihole', config: { apiEndpoint: 'http://pihole.local' } });
+        const set = mockUpdate();
+
+        const res = await patch({ piholeVersion: 'v6' });
+
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({
+          config: { apiEndpoint: 'http://pihole.local', piholeVersion: 'v6' }
+        }));
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'dns.integration.update',
+          details: { piholeVersion: { from: 'v5', to: 'v6' } }
+        }));
+      });
+
+      it('refuses piholeVersion on a non-Pi-hole integration', async () => {
+        mockIntegrationLookup({ ...activeRow, provider: 'umbrella' });
+        const res = await patch({ piholeVersion: 'v6' });
+        expect(res.status).toBe(400);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('rejects an unknown piholeVersion', async () => {
+        const res = await patch({ piholeVersion: 'v7' });
+        expect(res.status).toBe(400);
+      });
+
       it('rejects keys other than retentionDays', async () => {
         const res = await patch({ retentionDays: 30, apiKey: 'x' });
         expect(res.status).toBe(400);

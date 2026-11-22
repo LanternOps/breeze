@@ -1656,7 +1656,9 @@
         "label": "Pi-hole",
         "helpText": "Pi-hole API endpoint + API key. Use the LAN-routable hostname.",
         "apiKeyPlaceholder": "pihole api key from /admin",
-        "apiEndpointPlaceholder": "http://pihole.local"
+        "apiEndpointPlaceholder": "http://pihole.local",
+        "versionHelp": "Pick the major version your Pi-hole runs. v6 signs in with an app password.",
+        "appPasswordPlaceholder": "app password from Settings → Web interface / API"
       },
       "adguardHome": {
         "label": "AdGuard Home",
@@ -1678,7 +1680,9 @@
       "accountIdOptional": "Account ID (optional)",
       "apiEndpoint": "API endpoint",
       "httpBasicUsername": "HTTP Basic username",
-      "httpBasicPassword": "HTTP Basic password"
+      "httpBasicPassword": "HTTP Basic password",
+      "piholeVersion": "Pi-hole version",
+      "appPassword": "App password"
     },
     "placeholders": {
       "displayName": "e.g. Acme HQ Gateway",
@@ -1693,6 +1697,10 @@
       "createFailed": "Failed to create integration",
       "createSuccess": "{{provider}} integration \"{{name}}\" added",
       "networkError": "Network error"
+    },
+    "piholeVersions": {
+      "v5": "Pi-hole v5 (legacy admin API)",
+      "v6": "Pi-hole v6 (session API)"
     }
   },
   "dnsSecurityAddDnsPolicyModal": {
@@ -1825,6 +1833,12 @@
       "label": "Store allowed traffic",
       "helpOff": "Only blocked and redirected queries are stored. Allowed queries are usually almost all of the traffic, and your DNS provider keeps them in its own reports.",
       "helpOn": "Allowed queries are stored too, which is usually around 100 times more rows. Turning this off later does not delete allowed queries already stored; retention removes them."
+    },
+    "piholeVersion": {
+      "label": "Pi-hole version",
+      "v5": "Pi-hole v5 (legacy admin API)",
+      "v6": "Pi-hole v6 (session API)",
+      "help": "Changes how Breeze talks to this Pi-hole. For v6, re-create the integration with an app password if the stored key is a v5 token."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
