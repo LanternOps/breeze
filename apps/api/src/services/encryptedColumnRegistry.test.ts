@@ -11,6 +11,7 @@ import {
   encryptColumnValueForWrite,
   reencryptRegisteredSecrets,
   transformEncryptedColumnValue,
+  UNIFI_KEY_COLUMN_SPEC,
 } from './encryptedColumnRegistry';
 import { decryptForColumn, decryptSecret, encryptSecret } from './secretCrypto';
 import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
@@ -313,6 +314,37 @@ describe('encryptedColumnRegistry', () => {
         // The read path (notificationChannelSecrets) decrypts under the old tag.
         expect(decryptForColumn('notification_channels', 'config', rotated.webhookUrl)).toBe('https://hooks.slack.example/s3cret');
         expect(decryptNotificationChannelConfig('slack', rotated)).toEqual({ webhookUrl: 'https://hooks.slack.example/s3cret' });
+      } finally {
+        if (previous === undefined) delete process.env.ENABLE_AAD_V3;
+        else process.env.ENABLE_AAD_V3 = previous;
+      }
+    });
+  });
+
+  describe('unifi_integration_keys keeps the legacy unifi_integrations AAD tag (#11808)', () => {
+    it('is registered column-bound under the legacy tag', () => {
+      expect(columnAad(UNIFI_KEY_COLUMN_SPEC)).toBe('unifi_integrations.api_key_encrypted');
+      expect(UNIFI_KEY_COLUMN_SPEC.aadBinding).toBeUndefined();
+      expect(encryptedColumnRegistry).toContain(UNIFI_KEY_COLUMN_SPEC);
+    });
+
+    it('a key sealed the way upsertConnection seals it survives the rotation transform and still decrypts', () => {
+      setEncryptionEnv({ APP_ENCRYPTION_KEY: 'old-key-material', APP_ENCRYPTION_KEY_ID: 'old' });
+      // unifiConnectionService.upsertConnection seals with this exact AAD.
+      const sealed = encryptSecret('unifi-site-manager-key', { aad: 'unifi_integrations.api_key_encrypted' })!;
+      setEncryptionEnv({
+        APP_ENCRYPTION_KEY: 'current-key-material',
+        APP_ENCRYPTION_KEY_ID: 'current',
+        APP_ENCRYPTION_KEYRING: JSON.stringify({ old: 'old-key-material', current: 'current-key-material' }),
+      });
+      const previous = process.env.ENABLE_AAD_V3;
+      process.env.ENABLE_AAD_V3 = 'true';
+      try {
+        const rotated = transformEncryptedColumnValue(UNIFI_KEY_COLUMN_SPEC, sealed) as string;
+        expect(rotated).toMatch(/^enc:v3:current:/);
+        expect(decryptSecret(rotated, { aad: columnAad(UNIFI_KEY_COLUMN_SPEC) })).toBe('unifi-site-manager-key');
+        // The new table's own name is NOT the AAD: deriving it from there fails.
+        expect(() => decryptForColumn('unifi_integration_keys', 'api_key_encrypted', rotated)).toThrow();
       } finally {
         if (previous === undefined) delete process.env.ENABLE_AAD_V3;
         else process.env.ENABLE_AAD_V3 = previous;
