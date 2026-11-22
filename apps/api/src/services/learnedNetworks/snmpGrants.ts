@@ -1,12 +1,13 @@
 /**
  * Learned networks E11 (#12369, spec §8.3): saved SNMP secrets follow the fingerprints they were entered for.
- * W03a reads the grants; W03b adds the save-time rules to this file.
+ * W03a reads the grants; W03b adds the secret-state model and the save-time rules (rules 1, 2 and 4).
  */
 import { and, asc, eq, sql, type SQL } from 'drizzle-orm';
 import type { ExpectedGateway } from '@breeze/shared';
-import { db } from '../../db';
-import { discoveryProfileSnmpGrants, learnedNetworkGateways, learnedNetworks } from '../../db/schema';
+import { assertInTransaction, db } from '../../db';
+import { discoveryProfileSnmpGrants, discoveryProfiles, learnedNetworkGateways, learnedNetworks } from '../../db/schema';
 import { SNMP_SECRET_FIELD_NAMES, isMaskedSnmpSecret, storedProfileHoldsSnmpSecrets } from '../snmpSecrets';
+import { loadNetworkGateways, loadSiteGateState } from './siteNetworks';
 
 // ---------------------------------------------------------------------------------------------------------------
 // The secret-state model (pure). Nothing here encrypts or decrypts.
@@ -149,4 +150,149 @@ export async function loadUsableGrantGateways(input: {
     ))
     .where(and(...conditions))
     .orderBy(asc(learnedNetworks.id), asc(learnedNetworkGateways.id));
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Save-time rules (spec 8.3). Every writer uses the ambient `db` inside the caller's held context and opens no
+// savepoint. The caller holds the shared site lock and, on an update, the profile row lock (`lockProfileForSave`).
+// ---------------------------------------------------------------------------------------------------------------
+
+/** Rule 1's fresh set, from the profile as saved: not gated -> unrestricted with none; gated -> bound with the
+ *  fingerprints of the networks assigned to the site (only `networkId`'s when set; none when it is not one of them). */
+export async function freshGrantSet(input: { orgId: string; siteId: string; networkId: string | null }):
+  Promise<{ mode: 'unrestricted' | 'bound'; gatewayIds: string[] }> {
+  assertInTransaction('freshGrantSet');
+  const state = await loadSiteGateState(input.orgId, input.siteId);
+  if (!state.gated) return { mode: 'unrestricted', gatewayIds: [] };
+  const networkIds = input.networkId === null
+    ? state.assignedNetworkIds
+    : state.assignedNetworkIds.filter((id) => id === input.networkId);
+  const gateways = await loadNetworkGateways(input.orgId, networkIds);
+  return { mode: 'bound', gatewayIds: gateways.map((g) => g.gatewayId).sort() };
+}
+
+async function insertGrants(orgId: string, profileId: string, gatewayIds: readonly string[], actorUserId: string): Promise<void> {
+  if (gatewayIds.length === 0) return;
+  const grantedAt = new Date();
+  await db.insert(discoveryProfileSnmpGrants)
+    .values(gatewayIds.map((gatewayId) => ({ orgId, profileId, gatewayId, grantedBy: actorUserId, grantedAt })))
+    .onConflictDoNothing({ target: [discoveryProfileSnmpGrants.profileId, discoveryProfileSnmpGrants.gatewayId] });
+}
+
+async function deleteAllGrants(orgId: string, profileId: string): Promise<void> {
+  await db.delete(discoveryProfileSnmpGrants).where(and(
+    eq(discoveryProfileSnmpGrants.orgId, orgId),
+    eq(discoveryProfileSnmpGrants.profileId, profileId),
+  ));
+}
+
+/**
+ * Called by the profile create and update handlers after the profile row is written, in the same transaction.
+ * - Holds no secret after the save: no write (it can only gain secrets through a full re-entry, which replaces).
+ * - Rule 1 (full re-entry): grants replaced by `freshGrantSet`, mode set to its mode.
+ * - Otherwise (rule 4, or a save that supplies no secret): nothing added, mode unchanged, grants shrunk to those
+ *   effective for the profile as saved (a fingerprint of a network on its site, and of its network when set).
+ */
+export async function applySnmpGrantRulesOnSave(input: {
+  orgId: string; profileId: string; siteId: string; networkId: string | null;
+  fullReentry: boolean; suppliedAnySecret: boolean; willHoldSecrets: boolean; actorUserId: string;
+}): Promise<void> {
+  assertInTransaction('applySnmpGrantRulesOnSave');
+  if (input.fullReentry && !input.suppliedAnySecret) {
+    throw new Error('applySnmpGrantRulesOnSave: a full re-entry must supply a secret');
+  }
+  if (!input.willHoldSecrets) return;
+
+  if (input.fullReentry) {
+    const fresh = await freshGrantSet({ orgId: input.orgId, siteId: input.siteId, networkId: input.networkId });
+    await deleteAllGrants(input.orgId, input.profileId);
+    await insertGrants(input.orgId, input.profileId, fresh.gatewayIds, input.actorUserId);
+    await db.update(discoveryProfiles)
+      .set({ snmpGrantMode: fresh.mode })
+      .where(and(eq(discoveryProfiles.id, input.profileId), eq(discoveryProfiles.orgId, input.orgId)));
+    return;
+  }
+
+  await db.execute(sql`
+    DELETE FROM discovery_profile_snmp_grants g
+     WHERE g.org_id = ${input.orgId}::uuid AND g.profile_id = ${input.profileId}::uuid
+       AND NOT EXISTS (
+         SELECT 1 FROM learned_network_gateways lg
+           JOIN learned_networks ln ON ln.id = lg.network_id AND ln.org_id = lg.org_id
+          WHERE lg.id = g.gateway_id AND lg.org_id = g.org_id
+            AND ln.site_id = ${input.siteId}::uuid
+            AND (${input.networkId}::uuid IS NULL OR ln.id = ${input.networkId}::uuid))`);
+}
+
+export const PROFILE_NETWORK_NOT_ASSIGNABLE_MESSAGE = "Choose a network that is assigned to this profile's site.";
+
+export class ProfileNetworkNotAssignableError extends Error {
+  readonly code = 'NETWORK_NOT_ASSIGNABLE' as const;
+  constructor(message: string = PROFILE_NETWORK_NOT_ASSIGNABLE_MESSAGE) {
+    super(message);
+    this.name = 'ProfileNetworkNotAssignableError';
+  }
+}
+
+/** Spec 8.3: `network_id` may only point at a network assigned to the profile's site (as saved). The query cannot
+ *  fail on a well-formed id, so the throw is an application error and the caller's catch needs no savepoint. */
+export async function assertProfileNetworkAssignable(input: { orgId: string; siteId: string; networkId: string | null }): Promise<void> {
+  if (input.networkId === null) return;
+  assertInTransaction('assertProfileNetworkAssignable');
+  const [row] = await db
+    .select({ id: learnedNetworks.id })
+    .from(learnedNetworks)
+    .where(and(
+      eq(learnedNetworks.id, input.networkId),
+      eq(learnedNetworks.orgId, input.orgId),
+      eq(learnedNetworks.siteId, input.siteId),
+    ))
+    .limit(1);
+  if (!row) throw new ProfileNetworkNotAssignableError();
+}
+
+/**
+ * Rule 2, on every false -> true transition of a site's flag (W03c calls it). The caller holds the EXCLUSIVE site
+ * lock and has already set the flag and assigned `networkId`. Each of the site's `unrestricted` profiles that holds
+ * saved secrets becomes `bound`, with grants for `networkId`'s fingerprints when its `network_id` is null or equal to
+ * `networkId` (a profile pointed at another network gets none). Profiles without secrets, and `bound` profiles, are
+ * untouched. Returns the number of profiles changed.
+ */
+export async function bindUnrestrictedProfilesOnGating(input: {
+  orgId: string; siteId: string; networkId: string; actorUserId: string;
+}): Promise<number> {
+  assertInTransaction('bindUnrestrictedProfilesOnGating');
+  const candidates = await db
+    .select({
+      id: discoveryProfiles.id,
+      networkId: discoveryProfiles.networkId,
+      snmpCommunities: discoveryProfiles.snmpCommunities,
+      snmpCredentials: discoveryProfiles.snmpCredentials,
+    })
+    .from(discoveryProfiles)
+    .where(and(
+      eq(discoveryProfiles.orgId, input.orgId),
+      eq(discoveryProfiles.siteId, input.siteId),
+      eq(discoveryProfiles.snmpGrantMode, 'unrestricted'),
+    ))
+    .orderBy(asc(discoveryProfiles.id))
+    .for('update');
+  const credentialed = candidates.filter((p) => profileWillHoldSnmpSecrets({
+    communities: p.snmpCommunities ?? [], credentials: p.snmpCredentials,
+  }));
+  if (credentialed.length === 0) return 0;
+
+  const gatewayIds = (await loadNetworkGateways(input.orgId, [input.networkId])).map((g) => g.gatewayId);
+  for (const profile of credentialed) {
+    await db.update(discoveryProfiles)
+      .set({ snmpGrantMode: 'bound' })
+      .where(and(eq(discoveryProfiles.id, profile.id), eq(discoveryProfiles.orgId, input.orgId)));
+    // An unrestricted profile holds no grants (rule 1 on a site that is not gated replaces them with none); clear any
+    // so the bound set is exactly what this rule grants.
+    await deleteAllGrants(input.orgId, profile.id);
+    if (profile.networkId === null || profile.networkId === input.networkId) {
+      await insertGrants(input.orgId, profile.id, gatewayIds, input.actorUserId);
+    }
+  }
+  return credentialed.length;
 }
