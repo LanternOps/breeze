@@ -56,7 +56,7 @@ import { REFUSAL_DOCS_URL, listRefusalAlternatives, refusalMessageText, type Ref
 import { describeTurnModel, persistLastTurnModel, turnDisplayFrom, type TurnDisplay } from './aiModels/turnModel';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException, captureMessage } from './sentry';
-import { storeSdkSessionPointer } from './aiSdkSessionPointer';
+import { clearSdkSessionPointer, storeSdkSessionPointer } from './aiSdkSessionPointer';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES, chatToolDomain, listChatSurfaceToolNames } from './aiAgentSdkTools';
 import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
@@ -1824,6 +1824,34 @@ export class StreamingSessionManager {
                 // query was starting: the chat works, the next resume is fresh.
                 if (!stored) console.warn('[StreamingSessionManager] SDK session pointer changed since this query started (retention scrub?); not stored', { breezeSessionId: session.breezeSessionId });
               }).catch((err) => { captureException(err); console.error('[StreamingSessionManager] Failed to store SDK session ID:', err); });
+            }
+
+            if ('subtype' in message && message.subtype === 'session_writes_lost') {
+              // #11818: the CLI could not save (part of) a transcript. Never
+              // log message content — ids and the SDK's own codes only.
+              console.error('[StreamingSessionManager] session_writes_lost: the SDK could not persist session data', {
+                breezeSessionId: session.breezeSessionId,
+                sdkSessionId: session.sdkSessionId,
+                errorCode: message.error_code,
+                lost: message.lost,
+                transcriptSessionIds: message.transcript_session_ids,
+              });
+              const lostId = session.sdkSessionId;
+              if (lostId && message.lost.includes('transcript') && message.transcript_session_ids?.includes(lostId)) {
+                // Resuming it would drop part of the conversation: forget the
+                // id and rebuild the live query without `resume` next turn.
+                session.sdkSessionId = null;
+                session.forceRecreate = true;
+                try {
+                  await clearSdkSessionPointer({
+                    breezeSessionId: session.breezeSessionId, orgId: session.orgId, sdkSessionId: lostId,
+                  });
+                } catch (err) {
+                  captureException(err);
+                  console.error('[StreamingSessionManager] Failed to clear SDK session pointer after session_writes_lost:', err);
+                }
+              }
+              break;
             }
 
             if (session.state === 'initializing') {
