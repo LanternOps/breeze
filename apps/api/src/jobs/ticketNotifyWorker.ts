@@ -38,6 +38,7 @@ import { resolveCommentNotificationPortalHref } from '../services/inboundEmail/c
 import { buildThreadingHeaders, partnerInboundAddress, ticketThreadAnchor } from '../services/inboundEmail/outboundThreading';
 import { resolveOutboundMailbox } from '../services/ticketMailbox/resolveOutboundMailbox';
 import { sendThreadedReply, sendNewMail } from '../services/ticketMailbox/graphReplySender';
+import { requesterReplyAddress } from '../services/inboundEmail/requesterReplyAddress';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
@@ -538,6 +539,11 @@ async function collectRequesterEmail(
   // later skip send (missing submitterEmail).
   beforeSend?.(ticket);
   if (!ticket.submitterEmail) return [];
+  // The requester's reply address: the Reply-To stored on the ticket's creating
+  // inbound row, else submitterEmail (email-first replies W1). submitterEmail
+  // stays the identity used for the portal link and the template variables.
+  const to = await requesterReplyAddress(ticket);
+  if (!to) return [];
 
   // Customer-facing reply routing: if this partner has a connected M365 mailbox, send
   // FROM that mailbox via Graph (native threading). Tech/assignee notifications never
@@ -547,7 +553,7 @@ async function collectRequesterEmail(
   if (!commentId) {
     const composed = await composeLaidOutRequesterMail(ticket, 'ticket_resolved');
     return [{
-      to: ticket.submitterEmail,
+      to,
       subject: subjectOverride ?? composed.subject,
       html: composed.html,
       graphMailbox,
@@ -624,7 +630,7 @@ async function collectRequesterEmail(
   }
 
   return [{
-    to: ticket.submitterEmail,
+    to,
     subject: subjectOverride ?? composed.subject,
     html,
     replyTo: composed.replyTo,
@@ -689,6 +695,8 @@ async function collectMergeNotifications(
     console.warn(`[TicketNotify] merge notice skipped: ticket ${source.id} has no requester email`);
     return [];
   }
+  // Delivered to the source requester's reply address (email-first replies W1).
+  const to = (await requesterReplyAddress(source)) ?? source.submitterEmail;
   let href = '';
   let hasPortalUser = false;
   try {
@@ -733,7 +741,7 @@ async function collectMergeNotifications(
     await db.update(tickets).set({ emailThreadKey: anchor }).where(eq(tickets.id, survivor.id));
   }
   return [{
-    to: source.submitterEmail,
+    to,
     subject: rendered.subject,
     html: rendered.html,
     replyTo: partner.replyTo,

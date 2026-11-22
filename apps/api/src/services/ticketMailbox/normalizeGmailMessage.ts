@@ -3,6 +3,7 @@ import type { InboundEmailAttachment, NormalizedInboundEmail } from '../inboundE
 import { htmlToText } from '../inboundEmail/htmlToText';
 import { buildSenderAuth, leadingAuthservId, stampsUnreadableReason } from '../inboundEmail/authenticationResults';
 import { parseMailboxes } from '../inboundEmail/addressParse';
+import { normalizeReplyTo, replyToUnlessOwn } from '../inboundEmail/replyTo';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 
 // Cap decoded body size defensively (a hostile message must not let us decode an
@@ -253,6 +254,11 @@ export function normalizeGmailMessage(
     dkimSignatures: (headers ?? []).filter((h) => (h.name ?? '').toLowerCase() === 'dkim-signature').map((h) => h.value),
   });
   const references = header(headers, 'References')?.trim().split(/\s+/).filter(Boolean);
+  // Every Reply-To instance: two headers are ambiguous, so neither is used.
+  const replyTo = replyToUnlessOwn(
+    normalizeReplyTo((headers ?? []).filter((h) => (h.name ?? '').toLowerCase() === 'reply-to').map((h) => h.value ?? '')),
+    mailboxAddress,
+  );
 
   const acc: WalkResult = { text: '', html: undefined, attachments: [] };
   walkParts(msg.payload ?? undefined, 0, acc);
@@ -285,6 +291,7 @@ export function normalizeGmailMessage(
     to: mailboxAddress.trim().toLowerCase(),
     from: from.address,
     fromName: from.name,
+    ...(replyTo ? { replyTo } : {}),
     subject: header(headers, 'Subject') ?? '',
     text,
     // Staff-forward detection only for a single, unambiguous From mailbox.

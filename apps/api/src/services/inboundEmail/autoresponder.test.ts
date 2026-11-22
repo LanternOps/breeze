@@ -64,6 +64,15 @@ describe('maybeSendAutoresponse', () => {
     expect(ev.payload.subject).toBe('printer');
   });
 
+  // Email-first replies W1: the guarded Reply-To (ingest cleared any own address)
+  // is where the acknowledgement goes. Suppression and the cap stay keyed on From.
+  it('autoresponse goes to the Reply-To', async () => {
+    await maybeSendAutoresponse(n({ replyTo: 'jane.home@customer.example' }), 'p-1', ticket);
+    expect(emitMock).toHaveBeenCalledTimes(1);
+    expect(emitMock.mock.calls[0]![0].payload.to).toBe('jane.home@customer.example');
+    expect(rateLimiterMock.mock.calls[0]![1]).toBe('autoresponse:p-1:jane@x.com');
+  });
+
   it('THROWS on a partner mismatch (spec §6 write-boundary re-assertion) and never emits', async () => {
     await expect(maybeSendAutoresponse(n(), 'p-OTHER', ticket)).rejects.toThrow(/partner mismatch/);
     expect(emitMock).not.toHaveBeenCalled();

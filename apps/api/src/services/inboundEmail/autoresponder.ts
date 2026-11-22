@@ -142,7 +142,10 @@ export async function maybeSendAutoresponse(
     orgId: ticket.orgId,
     partnerId: ticket.partnerId,
     payload: {
-      to: n.from,
+      // The requester's reply address: the Reply-To ingest stored for this
+      // message (already cleared of our own addresses), else From. Suppression
+      // and the cap above stay keyed on From, the sender identity.
+      to: n.replyTo ?? n.from,
       internalNumber: ticket.internalNumber,
       subject: ticket.subject,
     },

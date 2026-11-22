@@ -52,6 +52,11 @@ vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/ticketMailbox/resolveOutboundMailbox', () => ({
   resolveOutboundMailbox: vi.fn(async () => null)
 }));
+// Email-first replies W1: the requester's reply address has its own suite;
+// here it is today's behaviour, the submitter's address.
+vi.mock('../services/inboundEmail/requesterReplyAddress', () => ({
+  requesterReplyAddress: vi.fn(async (t: { submitterEmail: string | null }) => t.submitterEmail ?? null),
+}));
 vi.mock('../services/inboundEmail/commentNotificationPortalHref', () => ({
   resolveCommentNotificationPortalHref: vi.fn(async () => ({
     href: 'https://example.test/portal/tickets/t-1',

@@ -61,6 +61,11 @@ vi.mock('../db/schema', () => ({
 }));
 // M365 mailbox routing: default to "no connected mailbox" so these existing tests
 // exercise the unchanged EmailService path (and don't consume a selectMock read).
+// Email-first replies W1: the requester's reply address has its own suite;
+// here it is today's behaviour, the submitter's address.
+vi.mock('../services/inboundEmail/requesterReplyAddress', () => ({
+  requesterReplyAddress: vi.fn(async (t: { submitterEmail: string | null }) => t.submitterEmail ?? null),
+}));
 vi.mock('../services/ticketMailbox/resolveOutboundMailbox', () => ({
   resolveOutboundMailbox: vi.fn(async () => null)
 }));

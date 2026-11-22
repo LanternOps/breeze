@@ -1,6 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { HonoRequest } from 'hono';
 import { parseMailboxes, parseSingleMailbox } from './addressParse';
+import { normalizeReplyTo, replyToUnlessOwn } from './replyTo';
 import { dmarcAuthenticatedDomain, leadingAuthservId, parseAuthClausesOrNull, stampsUnreadableReason } from './authenticationResults';
 import { getConfig } from '../../config/validate';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
@@ -84,11 +85,16 @@ export function normalizeMailgunForm(b: Record<string, string>): NormalizedInbou
   });
   const envelopeNull = b.sender !== undefined && ['', '<>'].includes(b.sender.trim());
   const returnPath = returnPathHeader ?? (envelopeNull ? '<>' : undefined);
+  // Reply-To from message-headers only, every instance (two are ambiguous). An
+  // unreadable header list means no Reply-To: the reply goes to From.
+  const to = extractEmail(b.recipient || '');
+  const replyTo = replyToUnlessOwn(normalizeReplyTo(parseHeaderAll(b['message-headers'], 'Reply-To')), to);
   return {
     provider: 'mailgun',
     providerMessageId: messageId || fallbackId,
-    to: extractEmail(b.recipient || ''),
+    to,
     from,
+    ...(replyTo ? { replyTo } : {}),
     ...(envelopeFrom ? { envelopeFrom } : {}),
     fromName: fromName || undefined,
     subject: b.subject || '',

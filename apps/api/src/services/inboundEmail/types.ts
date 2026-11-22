@@ -78,6 +78,13 @@ export interface NormalizedInboundEmail {
   /** The RFC 5322 From mailbox address: the sender identity. Untrusted unless
    *  `senderAuth` is verified for its domain (see SenderAuth.authenticatedDomain). */
   from: string;
+  /** The message's Reply-To, lower-cased, only when it holds exactly one valid
+   *  address that is not the mailbox the message was delivered to
+   *  (normalizeReplyTo). Untrusted: it is where customer mail about a ticket this
+   *  message creates goes (stored as ticket_email_inbound.reply_to_address), never
+   *  an identity. Ingest clears it again when it names one of the partner's own
+   *  addresses (replyToGuard.ts). Absent on jobs queued by an earlier release. */
+  replyTo?: string;
   /** The SMTP envelope sender (MAIL FROM), when the provider reports it. Used only
    *  for loop handling; never an identity. */
   envelopeFrom?: string;

@@ -6,6 +6,7 @@ const DELTA_SELECT = [
   'from',
   'toRecipients',
   'ccRecipients',
+  'replyTo',
   'receivedDateTime',
   'conversationId',
   'body',
@@ -30,6 +31,8 @@ export interface GraphMessage {
   from?: GraphRecipient;
   toRecipients?: GraphRecipient[];
   ccRecipients?: GraphRecipient[];
+  /** The message's Reply-To recipients (email-first replies W1). */
+  replyTo?: GraphRecipient[];
   receivedDateTime?: string;
   conversationId?: string;
   body?: { contentType?: string; content?: string };

@@ -3,6 +3,7 @@ import type { GraphMessage } from './graphMailClient';
 import type { NormalizedInboundEmail, SenderAuth } from '../inboundEmail/types';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 import { htmlToText } from '../inboundEmail/htmlToText';
+import { normalizeReplyTo, replyToUnlessOwn } from '../inboundEmail/replyTo';
 import { addressDomain, authservIdOf, buildSenderAuth, envelopeAllowsStamps, leadingAuthservId, normalizeVerdict, parseAuthClauses, parseAuthClausesOrNull, stampsUnreadableReason } from '../inboundEmail/authenticationResults';
 import { MAX_BODY_BYTES } from './normalizeGmailMessage';
 import type { ArcEvaluation } from './arcSeal';
@@ -329,6 +330,9 @@ export function normalizeGraphMessage(
     ? (msg.body?.content ?? '')
     : (html ? htmlToText(html) : '') || (msg.bodyPreview ?? '');
 
+  // Graph's structured replyTo: exactly one valid address, never the mailbox itself.
+  const replyTo = replyToUnlessOwn(normalizeReplyTo(msg.replyTo ?? []), mailboxAddress);
+
   const { senderAuth, consulted } = graphSenderAuth(msg.internetMessageHeaders, mailboxDomain, fromAddr, options?.arc);
 
   return {
@@ -338,6 +342,7 @@ export function normalizeGraphMessage(
     to: mailboxAddress.trim().toLowerCase(),
     from: fromAddr,
     fromName: msg.from?.emailAddress?.name,
+    ...(replyTo ? { replyTo } : {}),
     subject: msg.subject ?? '',
     text,
     html,
