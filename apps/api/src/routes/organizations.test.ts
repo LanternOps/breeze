@@ -683,6 +683,49 @@ describe('organization routes', () => {
         expect(values.some((v) => typeof v === 'string' && v.startsWith('%'))).toBe(false);
       });
 
+      it('keeps the site ceiling when searching', async () => {
+        const siteA = '22222222-2222-4222-8222-222222222222';
+        vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+          c.set('auth', {
+            scope: 'organization',
+            partnerId: null,
+            orgId,
+            user: { id: 'user-123', email: 'test@example.com' },
+            canAccessOrg: (id: string) => id === orgId
+          });
+          c.set('permissions', { allowedSiteIds: [siteA] });
+          return next();
+        });
+        const countWhere = mockSitesList();
+        const res = await app.request(`/orgs/sites?orgId=${orgId}&search=Main`, {
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(res.status).toBe(200);
+        const values = boundValues(countWhere.mock.calls[0]![0]);
+        expect(values).toContain('%Main%');
+        expect(values).toContain(siteA);
+      });
+
+      it('a caller restricted to no site gets nothing, search or not', async () => {
+        vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+          c.set('auth', {
+            scope: 'organization',
+            partnerId: null,
+            orgId,
+            user: { id: 'user-123', email: 'test@example.com' },
+            canAccessOrg: (id: string) => id === orgId
+          });
+          c.set('permissions', { allowedSiteIds: [] });
+          return next();
+        });
+        const res = await app.request(`/orgs/sites?orgId=${orgId}&search=Main`, {
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(res.status).toBe(200);
+        expect((await res.json()).data).toEqual([]);
+        expect(db.select).not.toHaveBeenCalled();
+      });
+
       it('rejects a search longer than 100 characters', async () => {
         const res = await app.request(`/orgs/sites?orgId=${orgId}&search=${'a'.repeat(101)}`, {
           headers: { Authorization: 'Bearer token' }

@@ -27,6 +27,10 @@ const { selectMock, state, mockResolveSafe, mockAudit, mockAccessCondition } = v
     candidateSelects: 0,
     childWhere: [] as unknown[],
     accessWhere: [] as unknown[],
+    /** Devices the final read no longer returns (deleted between reads). */
+    vanished: [] as string[],
+    tableReads: new Map<unknown, number>(),
+    finalReads: 0,
   },
   mockResolveSafe: vi.fn(async (groupIds: string[]) => ({
     allowedGroupIds: groupIds,
@@ -76,7 +80,10 @@ function answer(cols: Record<string, unknown>, table: unknown, where: unknown): 
   }
   if (table === devices && !('deviceRole' in cols)) {
     const ids = params[0] as string[];
-    return state.devices.filter((d) => ids.includes(d.id)).map((d) => ({ id: d.id, orgId: d.orgId }));
+    state.finalReads += 1;
+    return state.devices
+      .filter((d) => ids.includes(d.id) && !state.vanished.includes(d.id))
+      .map((d) => ({ id: d.id, orgId: d.orgId, siteId: d.siteId }));
   }
   if (table === devices) {
     state.candidateSelects += 1;
@@ -103,7 +110,11 @@ selectMock.mockImplementation((cols: Record<string, unknown>) => {
   let where: unknown;
   const c: Record<string, unknown> = {};
   for (const m of ['innerJoin', 'leftJoin', 'groupBy', 'orderBy', 'limit']) c[m] = () => c;
-  c.from = (t: unknown) => { table = t; return c; };
+  c.from = (t: unknown) => {
+    table = t;
+    state.tableReads.set(t, (state.tableReads.get(t) ?? 0) + 1);
+    return c;
+  };
   c.where = (w: unknown) => { where = w; return c; };
   c.then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
     Promise.resolve().then(() => answer(cols, table, where)).then(resolve, reject);
@@ -129,6 +140,9 @@ afterEach(() => {
   state.candidateSelects = 0;
   state.childWhere = [];
   state.accessWhere = [];
+  state.vanished = [];
+  state.tableReads = new Map();
+  state.finalReads = 0;
   vi.clearAllMocks();
   mockAccessCondition.mockReturnValue(undefined);
 });
@@ -285,6 +299,92 @@ describe('computePolicyReach', () => {
 
     // A (legacy) partner row on an org-owned child is clamped to the child's org.
     expect(reach.get('parent')).toEqual({ direct: 0, throughChildren: 1, organizations: 1 });
+  });
+
+  it('reads policies, children, assignments and the final device set once each, whatever the page size', async () => {
+    state.devices = [device('d1'), device('d2', { siteId: 'site-a2' })];
+    state.policies = [];
+    state.assignments = [];
+    for (let i = 0; i < 3; i += 1) {
+      state.policies.push({ id: `p${i}`, orgId: null, partnerId: PARTNER });
+      state.policies.push({ id: `c${i}`, orgId: ORG_A, partnerId: null, parentPolicyId: `p${i}` });
+      state.assignments.push(row(`p${i}`, 'site', 'site-a1'), row(`c${i}`, 'site', 'site-a2'));
+    }
+
+    await computePolicyReach(auth, ['p0', 'p1', 'p2']);
+
+    expect(state.tableReads.get(configurationPolicies)).toBe(2); // policies, then children
+    expect(state.tableReads.get(configPolicyAssignments)).toBe(1);
+    expect(state.finalReads).toBe(1);
+  });
+
+  it('keys the memo on the owner: an org-owned child never reuses a partner-owned expansion', async () => {
+    // The same partner-level row on a partner-owned parent (unclamped) and on an
+    // org-owned child (clamped to org A) are two expansions, not one.
+    state.devices = [device('a1'), device('b1', { orgId: ORG_B, siteId: 'site-b1' })];
+    state.policies = [
+      { id: 'parent', orgId: null, partnerId: PARTNER },
+      { id: 'child', orgId: ORG_A, partnerId: null, parentPolicyId: 'parent' },
+    ];
+    state.assignments = [row('parent', 'partner', PARTNER), row('child', 'partner', PARTNER)];
+
+    const reach = await computePolicyReach(auth, ['parent', 'child']);
+
+    expect(reach.get('parent')).toEqual({ direct: 2, throughChildren: 0, organizations: 2 });
+    expect(reach.get('child')).toEqual({ direct: 1, throughChildren: 0, organizations: 1 });
+    expect(state.candidateSelects).toBe(2);
+  });
+
+  it('counts only the devices in a site-restricted caller\'s sites', async () => {
+    state.devices = [
+      device('a1'),
+      device('a2', { siteId: 'site-a2' }),
+      device('a3', { siteId: 'site-a2' }),
+    ];
+    state.policies = [
+      { id: 'parent', orgId: ORG_A, partnerId: null },
+      { id: 'child', orgId: ORG_A, partnerId: null, parentPolicyId: 'parent' },
+    ];
+    state.assignments = [row('parent', 'site', 'site-a1'), row('child', 'organization', ORG_A)];
+    const siteAuth = { scope: 'organization', orgId: ORG_A, allowedSiteIds: ['site-a2'] } as never;
+
+    const reach = await computePolicyReach(siteAuth, ['parent']);
+
+    // a1 (site-a1) is outside the caller's sites, so it is in neither count.
+    expect(reach.get('parent')).toEqual({ direct: 0, throughChildren: 2, organizations: 1 });
+    // Control: unrestricted, a1 counts directly.
+    expect((await computePolicyReach(auth, ['parent'])).get('parent')).toEqual({ direct: 1, throughChildren: 2, organizations: 1 });
+  });
+
+  it('counts nothing for a caller restricted to no site', async () => {
+    state.devices = [device('a1')];
+    state.policies = [{ id: 'p1', orgId: ORG_A, partnerId: null }];
+    state.assignments = [row('p1', 'organization', ORG_A)];
+
+    const reach = await computePolicyReach({ scope: 'organization', orgId: ORG_A, allowedSiteIds: [] } as never, ['p1']);
+
+    expect(reach.get('p1')).toEqual({ direct: 0, throughChildren: 0, organizations: 0 });
+  });
+
+  it('counts only the pinned devices of a device-bound caller', async () => {
+    state.devices = [device('a1'), device('a2')];
+    state.policies = [{ id: 'p1', orgId: ORG_A, partnerId: null }];
+    state.assignments = [row('p1', 'organization', ORG_A)];
+
+    const reach = await computePolicyReach({ scope: 'organization', orgId: ORG_A, allowedDeviceIds: ['a2'] } as never, ['p1']);
+
+    expect(reach.get('p1')).toEqual({ direct: 1, throughChildren: 0, organizations: 1 });
+  });
+
+  it('drops a device the final read no longer returns from every count', async () => {
+    state.devices = [device('a1'), device('b1', { orgId: ORG_B, siteId: 'site-b1' })];
+    state.vanished = ['b1'];
+    state.policies = [{ id: 'p1', orgId: null, partnerId: PARTNER }];
+    state.assignments = [row('p1', 'partner', PARTNER)];
+
+    const reach = await computePolicyReach(auth, ['p1']);
+
+    expect(reach.get('p1')).toEqual({ direct: 1, throughChildren: 0, organizations: 1 });
   });
 
   it('issues no statement for an empty id list', async () => {

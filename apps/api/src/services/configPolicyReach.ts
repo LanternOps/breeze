@@ -23,6 +23,9 @@
  * context (`withDbAccessContext`) under forced RLS; never a system context
  * (spec "API changes" 2). So a device count can only include devices the caller
  * may read: a through-children total never reveals another customer's devices.
+ * RLS is organization-axis only, so the final device read also applies the
+ * caller's site ceiling (`allowedSiteIds`) and device pin (`allowedDeviceIds`):
+ * a site-restricted tech counts only the devices in their own sites.
  * Children are additionally narrowed by `policyAccessCondition`, the same set
  * the applies-to summary's `childPolicyCount` counts. The requested ids are
  * trusted to have been read through the route's access filter already (as
@@ -112,6 +115,19 @@ export async function readablePolicyIds(auth: AuthContext, policyIds: readonly s
     .from(configurationPolicies)
     .where(and(...conditions));
   return rows.map((row) => row.id);
+}
+
+/**
+ * The app-layer axes RLS does not enforce (RLS is organization-axis only):
+ * a site-restricted caller counts only devices in its sites, the way
+ * `GET /:id/assignments` and `GET /:id/wake-status` honour the same ceiling,
+ * and a device-bound caller counts only its pinned devices. A device with no
+ * site is outside every site ceiling.
+ */
+function callerMaySeeDevice(auth: AuthContext, deviceId: string, siteId: string | null): boolean {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) return false;
+  if (auth.allowedSiteIds && (siteId === null || !auth.allowedSiteIds.includes(siteId))) return false;
+  return true;
 }
 
 interface OwnedPolicy {
@@ -212,24 +228,39 @@ export async function computePolicyReach(
     for (const deviceId of through) allDevices.add(deviceId);
   }
 
-  // One org read for the whole union, the id set bound as ONE array parameter
-  // (an IN list would hit the bind-parameter limit on a large fleet).
-  const orgByDevice = new Map<string, string>();
+  // One read for the whole union, the id set bound as ONE array parameter (an
+  // IN list would hit the bind-parameter limit on a large fleet). It gives each
+  // device's org, and it is the final say on which devices count: one it no
+  // longer returns (deleted since the expansion) counts nowhere, so the three
+  // numbers always describe the same set.
+  const countable = new Map<string, string>(); // deviceId -> orgId
   if (allDevices.size > 0) {
-    const deviceOrgs = await db
-      .select({ id: devices.id, orgId: devices.orgId })
+    const rows = await db
+      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
       .from(devices)
       .where(sql`${devices.id} = ANY(${sql.param([...allDevices])}::uuid[])`);
-    for (const row of deviceOrgs) orgByDevice.set(row.id, row.orgId);
+    for (const row of rows) {
+      if (callerMaySeeDevice(auth, row.id, row.siteId)) countable.set(row.id, row.orgId);
+    }
   }
 
   for (const [policyId, { direct, through }] of perPolicy) {
+    let directCount = 0;
+    let throughCount = 0;
     const orgs = new Set<string>();
-    for (const deviceId of [...direct, ...through]) {
-      const orgId = orgByDevice.get(deviceId);
-      if (orgId) orgs.add(orgId);
+    for (const deviceId of direct) {
+      const orgId = countable.get(deviceId);
+      if (orgId === undefined) continue;
+      directCount += 1;
+      orgs.add(orgId);
     }
-    result.set(policyId, { direct: direct.size, throughChildren: through.size, organizations: orgs.size });
+    for (const deviceId of through) {
+      const orgId = countable.get(deviceId);
+      if (orgId === undefined) continue;
+      throughCount += 1;
+      orgs.add(orgId);
+    }
+    result.set(policyId, { direct: directCount, throughChildren: throughCount, organizations: orgs.size });
   }
 
   return result;

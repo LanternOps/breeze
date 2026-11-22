@@ -298,6 +298,30 @@ describe('computePolicyReach under forced RLS', () => {
   });
 });
 
+describe('site-restricted caller', () => {
+  it('counts only the devices in the caller\'s sites, though RLS admits the whole organization', async () => {
+    const { partner, orgA, siteA } = await twoOrgs();
+    const siteA2 = await createSite({ orgId: orgA.id, name: 'Acme Branch' });
+    await seedDevice(orgA.id, siteA.id);
+    await seedDevice(orgA.id, siteA2!.id);
+    await seedDevice(orgA.id, siteA2!.id);
+    const policy = await seedPolicy({ orgId: orgA.id, partnerId: null });
+    await assign(policy, 'organization', orgA.id);
+
+    const ctx = orgCtx(orgA.id, partner.id);
+    const full = await reachAs(ctx, orgAuth(orgA.id, partner.id), [policy]);
+    expect(full.get(policy)).toEqual({ direct: 3, throughChildren: 0, organizations: 1 });
+
+    const siteOnly = {
+      ...orgAuth(orgA.id, partner.id),
+      allowedSiteIds: [siteA.id],
+      canAccessSite: (id: string | null | undefined) => id === siteA.id,
+    } as unknown as AuthContext;
+    const limited = await reachAs(ctx, siteOnly, [policy]);
+    expect(limited.get(policy)).toEqual({ direct: 1, throughChildren: 0, organizations: 1 });
+  });
+});
+
 describe('readablePolicyIds under forced RLS', () => {
   it('hides a partner-owned policy from an org-scope caller, as the list does', async () => {
     const { partner, orgA } = await twoOrgs();
