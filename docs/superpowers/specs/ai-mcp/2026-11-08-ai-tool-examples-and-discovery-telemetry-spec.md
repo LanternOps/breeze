@@ -1,7 +1,7 @@
 ---
-status: APPROVED 2026-11-21 (Todd, Gate A) — every Open Decision in §6 resolved to its recommended option. One independent review round (Codex gpt-6-astra xhigh, read-only, 2026-11-08) folded in. Plan: docs/superpowers/plans/ai-mcp/<to be written>
+status: APPROVED 2026-11-21 (Todd, Gate A) — every Open Decision in §6 resolved to its recommended option. One independent review round (Codex gpt-6-astra xhigh, read-only, 2026-11-08) folded in. Plan: docs/superpowers/plans/ai-mcp/2026-11-21-ai-tool-examples-and-discovery-telemetry-plan.md
 date: 2026-11-08
-tracking_issue: (register after the plan)
+tracking_issue: LanternOps/breeze#12421
 covers: "tool-use input examples on the Breeze AI tool registry; tool-discovery telemetry (ToolSearch queries, results, calls, outcomes) that measures them and feeds description/searchHint tuning and the eval harness"
 sibling: 2026-11-08-programmatic-tool-calling-decision.md (asks this spec for its E1 fan-out and E2 shape-catalogue numbers)
 related: "2026-09-17-agent-tool-efficiency-baseline.md (§10 search cost/accuracy on headless agents), 2026-09-17-agent-tool-efficiency-and-mcp-modernization-design.md (A-W02 searchHint, A-W04 ToolSearch), 2026-11-06-small-model-tool-profiles-spec.md (compactSchemas strips advisory keywords; exposure fingerprint), #6151, #10400, #10411, #10065 (W19 lazy index), #7429 (tool search on BYO endpoints), #3094 (dropped -32602 calls)"
