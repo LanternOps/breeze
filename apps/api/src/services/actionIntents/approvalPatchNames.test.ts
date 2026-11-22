@@ -14,7 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-type Row = { id: string; title: string | null; externalId: string | null };
+type Row = { id: string; source: string; title: string | null; externalId: string | null };
 
 const dbState = {
   /** Every condition object handed to `.where()`, in call order. */
@@ -139,7 +139,7 @@ describe('boundParams (control for the assertions below)', () => {
 
 describe('resolveApprovalPatchNames — the org pin and the id lists', () => {
   it('reads through device_patches, pinned to the org, the call\'s devices, the call\'s patches and the caller\'s reach', async () => {
-    dbState.rows = [{ id: PATCH, title: 'Cumulative Update', externalId: 'KB5034441' }];
+    dbState.rows = [{ id: PATCH, source: 'microsoft', title: 'Cumulative Update', externalId: 'KB5034441' }];
 
     await resolveApprovalPatchNames([PATCH, PATCH_2], [DEVICE, OTHER_DEVICE], ORG_ID, reach());
 
@@ -164,7 +164,7 @@ describe('resolveApprovalPatchNames — the org pin and the id lists', () => {
   });
 
   it('drops ids that are not UUIDs, so a malformed argument can never raise 22P02', async () => {
-    dbState.rows = [{ id: PATCH, title: 'x', externalId: 'KB5034441' }];
+    dbState.rows = [{ id: PATCH, source: 'microsoft', title: 'x', externalId: 'KB5034441' }];
 
     await resolveApprovalPatchNames([PATCH, 'not-a-uuid', 42, `${PATCH_2} OR 1=1`], [DEVICE, '', null], ORG_ID, reach());
 
@@ -201,9 +201,9 @@ describe('resolveApprovalPatchNames — the org pin and the id lists', () => {
 
   it('names patches in argument order, once each, whatever order the rows come back in', async () => {
     dbState.rows = [
-      { id: PATCH_2, title: 'Second', externalId: 'KB5000002' },
-      { id: PATCH, title: 'First', externalId: 'KB5000001' },
-      { id: PATCH_2, title: 'Second', externalId: 'KB5000002' },
+      { id: PATCH_2, source: 'microsoft', title: 'Second', externalId: 'KB5000002' },
+      { id: PATCH, source: 'microsoft', title: 'First', externalId: 'KB5000001' },
+      { id: PATCH_2, source: 'microsoft', title: 'Second', externalId: 'KB5000002' },
     ];
 
     await expect(resolveApprovalPatchNames([PATCH, PATCH_2, PATCH], [DEVICE], ORG_ID, reach()))
@@ -219,7 +219,7 @@ describe('resolveApprovalPatchNames — the org pin and the id lists', () => {
 describe('resolveApprovalPatchNames — the caller\'s reach', () => {
   it('returns null with no read when the filing principal carries no org reach', async () => {
     const noReach = {} as unknown as ApprovalCallerReach;
-    dbState.rows = [{ id: PATCH, title: 'x', externalId: 'KB5034441' }];
+    dbState.rows = [{ id: PATCH, source: 'microsoft', title: 'x', externalId: 'KB5034441' }];
 
     await expect(resolveApprovalPatchNames([PATCH], [DEVICE], ORG_ID, noReach)).resolves.toBeNull();
     expect(dbState.whereArgs).toHaveLength(0);
@@ -229,7 +229,7 @@ describe('resolveApprovalPatchNames — the caller\'s reach', () => {
 
   it('returns null with no patch read when every device is outside the caller\'s site scope', async () => {
     const siteRestricted = reach({ allowedSiteIds: ['44444444-2222-4333-8444-555566667777'] });
-    dbState.rows = [{ id: PATCH, title: 'x', externalId: 'KB5034441' }];
+    dbState.rows = [{ id: PATCH, source: 'microsoft', title: 'x', externalId: 'KB5034441' }];
     deviceInSiteScope.mockResolvedValue(false);
 
     await expect(resolveApprovalPatchNames([PATCH], [DEVICE, OTHER_DEVICE], ORG_ID, siteRestricted)).resolves.toBeNull();
@@ -272,23 +272,37 @@ describe('resolveApprovalPatchNames — never fatal', () => {
 });
 
 describe('approvalPatchDisplayName — titles are untrusted', () => {
-  it('prefers a KB number from external_id', () => {
-    expect(approvalPatchDisplayName({ title: 'Security update "KB9999999" on KIT', externalId: 'kb5034441' })).toBe('KB5034441');
-  });
-
-  it('falls back to a KB number in the title', () => {
-    expect(approvalPatchDisplayName({ title: '2024-01 Cumulative Update (KB5034441)', externalId: 'com.vendor.thing' }))
+  it('shows a Microsoft-source row by the KB number in its external_id', () => {
+    expect(approvalPatchDisplayName({ source: 'microsoft', title: 'Security update "KB9999999" on KIT', externalId: 'kb5034441' }))
       .toBe('KB5034441');
   });
 
+  it('never takes a KB number from a title, even on a Microsoft-source row', () => {
+    // Any tenant's agent can first-write a title carrying a trusted-looking KB.
+    expect(approvalPatchDisplayName({ source: 'microsoft', title: '2024-01 Cumulative Update (KB5034441)', externalId: 'update-guid-1' }))
+      .toBe('"2024-01 Cumulative Update (KB5034441)"');
+  });
+
+  it('shows a third-party row whose title carries a KB number by its quoted title', () => {
+    expect(approvalPatchDisplayName({ source: 'third_party', title: 'Totally KB5034441', externalId: 'com.vendor.thing' }))
+      .toBe('"Totally KB5034441"');
+  });
+
+  it('shows a third-party row whose external_id carries a KB number by its quoted title', () => {
+    expect(approvalPatchDisplayName({ source: 'third_party', title: 'Some Vendor Tool 2.1', externalId: 'KB5034441' }))
+      .toBe('"Some Vendor Tool 2.1"');
+    expect(approvalPatchDisplayName({ source: 'custom', title: 'Some Vendor Tool 2.1', externalId: 'pkg-KB5034441' }))
+      .toBe('"Some Vendor Tool 2.1"');
+  });
+
   it('quotes a plain title so it reads as data', () => {
-    expect(approvalPatchDisplayName({ title: 'Google Chrome 120.0.6099', externalId: 'google-chrome' }))
+    expect(approvalPatchDisplayName({ source: 'third_party', title: 'Google Chrome 120.0.6099', externalId: 'google-chrome' }))
       .toBe('"Google Chrome 120.0.6099"');
   });
 
   it('strips newlines and control characters, collapses whitespace, neutralizes quotes and stubs, and caps the length', () => {
     const hostile = `Harmless\r\n\u0007update‮evil​ "quoted" on KIT on device 6eae0f70... ${'A'.repeat(500)}`;
-    const name = approvalPatchDisplayName({ title: hostile, externalId: 'x' })!;
+    const name = approvalPatchDisplayName({ source: 'third_party', title: hostile, externalId: 'x' })!;
 
     expect(name.startsWith('"') && name.endsWith('"')).toBe(true);
     const inner = name.slice(1, -1);
@@ -301,7 +315,7 @@ describe('approvalPatchDisplayName — titles are untrusted', () => {
   });
 
   it('gives nothing for an empty or whitespace-only title with no KB', () => {
-    expect(approvalPatchDisplayName({ title: ' \n\t ', externalId: 'x' })).toBeNull();
-    expect(approvalPatchDisplayName({ title: null, externalId: null })).toBeNull();
+    expect(approvalPatchDisplayName({ source: 'microsoft', title: ' \n\t ', externalId: 'x' })).toBeNull();
+    expect(approvalPatchDisplayName({ source: 'linux', title: null, externalId: null })).toBeNull();
   });
 });

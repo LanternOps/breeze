@@ -19,10 +19,13 @@
  *    its site allowlist and exact-device ceiling are read. A principal with no
  *    org condition gets the count, with no read.
  *  - **Titles are untrusted.** `patches.title` is first-writer-wins from ANY
- *    tenant's agent, and the headline is passkey-approved. A KB number is
- *    preferred. Otherwise the title is stripped of control and format
- *    characters, collapsed, capped and quoted, so it reads as data and can
- *    neither forge a device stub nor close its own quotes.
+ *    tenant's agent, and the headline is passkey-approved. A bare KB number
+ *    is shown only for a Microsoft-source row, taken from its `external_id`
+ *    (its identity: rows are deduped on `(source, external_id)`), never from
+ *    a title or a third-party id, where any tenant could plant a
+ *    trusted-looking KB. Every other row shows its title, stripped of control
+ *    and format characters, collapsed, capped and quoted, so it reads as data
+ *    and can neither forge a device stub nor close its own quotes.
  *  - **Never fatal.** A headline is presentation. A failed read degrades to
  *    the count, reported to Sentry, never swallowed.
  */
@@ -61,13 +64,16 @@ function boundedIds(value: unknown): string[] {
   return ids;
 }
 
+/** The only source whose `external_id` is a Windows Update KB identity. */
+const KB_SOURCE = 'microsoft';
+
 /**
- * The name an approver sees for one patch row: its KB number when its
- * external id or title carries one, otherwise its sanitized title in quotes.
+ * The name an approver sees for one patch row: a Microsoft-source row's KB
+ * number from its `external_id`, otherwise its sanitized title in quotes.
  * Null when there is nothing to show.
  */
-export function approvalPatchDisplayName(row: { title: string | null; externalId: string | null }): string | null {
-  const kb = row.externalId?.match(KB_NUMBER)?.[0] ?? row.title?.match(KB_NUMBER)?.[0];
+export function approvalPatchDisplayName(row: { source: string; title: string | null; externalId: string | null }): string | null {
+  const kb = row.source === KB_SOURCE ? row.externalId?.match(KB_NUMBER)?.[0] : undefined;
   if (kb) return kb.toUpperCase();
   const clean = (row.title ?? '')
     .replace(UNSAFE_CHARS, ' ')
@@ -124,7 +130,7 @@ export async function resolveApprovalPatchNames(
         const reachCondition = reach.orgCondition(devicePatches.orgId);
         if (reachCondition) conditions.push(reachCondition);
         const rows = await db
-          .selectDistinct({ id: patches.id, title: patches.title, externalId: patches.externalId })
+          .selectDistinct({ id: patches.id, source: patches.source, title: patches.title, externalId: patches.externalId })
           .from(devicePatches)
           .innerJoin(patches, eq(patches.id, devicePatches.patchId))
           .where(and(...conditions))
