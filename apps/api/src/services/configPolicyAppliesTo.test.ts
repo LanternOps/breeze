@@ -296,6 +296,25 @@ describe('loadAppliesToSummaries', () => {
     expect(deviceLookups[0]!.values).toEqual(ids.slice(0, 3));
   });
 
+  it('examines at most 50 rows per policy when the caller may list none of them', async () => {
+    // A site-restricted caller and a policy on 120 devices outside their sites.
+    const ids = Array.from({ length: 120 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    tableResults.set(configPolicyAssignments, ids.map((id, i) => assignment({
+      id: `d-${i}`,
+      level: 'device',
+      targetId: id,
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, i)),
+    })));
+    authorizeMock.mockResolvedValue({ valid: false, error: 'restricted' });
+
+    const summary = (await loadAppliesToSummaries(auth, [POLICY_A])).get(POLICY_A)!;
+
+    expect(summary.assignmentCount).toBe(120);
+    expect(summary.targets).toEqual([]);
+    expect(authorizeMock).toHaveBeenCalledTimes(50);
+    expect(fromCalls).not.toContain(devices);
+  });
+
   it('keeps looking past rows it cannot name until the cap fills', async () => {
     // The first five targets are not legible; the sixth and seventh are.
     const ids = Array.from({ length: 7 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);

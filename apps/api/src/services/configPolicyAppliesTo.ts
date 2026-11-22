@@ -55,9 +55,12 @@ type AssertSameLevels<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never)
 const levelsMatchDbEnum: AssertSameLevels<ConfigPolicyTargetLevel, DbAssignmentLevel> = true;
 void levelsMatchDbEnum;
 
-/** Rows per policy examined in the second lazy round; later rounds grow ×4. */
-const LAZY_CHUNK_BASE = 25;
-const LAZY_CHUNK_MAX = 1000;
+/**
+ * The most assignment rows examined (authorized, then named) per policy to fill
+ * `targets`. Past it, `targets` may hold fewer than the limit; every row still
+ * counts toward `assignmentCount`, so the web's "+N" stays honest.
+ */
+const MAX_ROWS_EXAMINED_PER_POLICY = 50;
 
 interface AssignmentRow {
   id: string;
@@ -185,14 +188,15 @@ export async function loadAppliesToSummaries(
     if (row.level === 'partner') summary.allOrganizations = true;
   }
 
-  // Fill `targets` lazily, in rounds. Each round takes, per policy, the next
-  // few rows in display order, authorizes them, names the admitted ones, and
-  // appends those that resolve. A row is examined only while its policy still
-  // has a free slot, so a policy assigned to thousands of devices costs a
-  // handful of ids per round, never one IN list over all of them. Later rounds
-  // take bigger chunks, so a long run of rows the caller cannot list or name
-  // still finishes in a few rounds. Rows within a policy are consumed in order,
-  // so the kept targets stay in display order.
+  // Fill `targets` lazily, in at most two rounds. Round 1 takes, per policy,
+  // as many leading rows (in display order) as it has free slots; round 2 takes
+  // the rest of that policy's first MAX_ROWS_EXAMINED_PER_POLICY rows, only for
+  // a policy still short. Each round authorizes its rows, names the admitted
+  // ones, and appends those that resolve. A policy assigned to thousands of
+  // devices therefore costs 3 ids when its leading rows resolve, and never more
+  // than MAX_ROWS_EXAMINED_PER_POLICY authorizations or names, however many of
+  // its rows the caller cannot list. Rows within a policy are consumed in
+  // order, so the kept targets stay in display order.
   const rowsByPolicy = new Map<string, AssignmentRow[]>();
   for (const row of [...assignmentRows].sort(compareAssignments)) {
     const bucket = rowsByPolicy.get(row.configPolicyId);
@@ -205,15 +209,15 @@ export async function loadAppliesToSummaries(
   const names = new Map<string, string>();
   const namesLookedUp = new Set<string>();
 
-  for (let round = 0; ; round += 1) {
+  for (let round = 0; round < 2; round += 1) {
     const taken: AssignmentRow[] = [];
     for (const [policyId, rows] of rowsByPolicy) {
       const summary = summaries.get(policyId);
       const free = summary ? APPLIES_TO_SUMMARY_TARGET_LIMIT - summary.targets.length : 0;
       const start = cursors.get(policyId) ?? 0;
-      if (free <= 0 || start >= rows.length) continue;
-      const chunk = round === 0 ? free : Math.min(LAZY_CHUNK_MAX, LAZY_CHUNK_BASE * 4 ** (round - 1));
-      const end = Math.min(rows.length, start + chunk);
+      const limit = Math.min(rows.length, MAX_ROWS_EXAMINED_PER_POLICY);
+      if (free <= 0 || start >= limit) continue;
+      const end = round === 0 ? Math.min(limit, start + free) : limit;
       taken.push(...rows.slice(start, end));
       cursors.set(policyId, end);
     }
