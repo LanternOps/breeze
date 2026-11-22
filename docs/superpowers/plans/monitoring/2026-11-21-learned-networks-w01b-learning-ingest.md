@@ -54,8 +54,12 @@ apply to every task here; names in it are fixed.
    an IP, is public, and some attachment is `primary` with a non-null `gatewayMac`. Otherwise it is `null`
    (in the digest too). The WAN row goes to that primary attachment's network.
 5. **MACs.** Six hex octets separated by `:` or `-`, any case, normalized to lower-case colon form.
-   `00:00:00:00:00:00` and `ff:ff:ff:ff:ff:ff` normalize to `null` (incomplete neighbour entries). Any
-   other form makes the report `invalid_report`. More than 64 attachments is `invalid_report` (a parse
+   These normalize to `null`, exactly like an absent MAC, and are never `invalid_report`:
+   `00:00:00:00:00:00` and `ff:ff:ff:ff:ff:ff` (incomplete neighbour entries), `02:00:00:00:00:00`, and any
+   MAC whose first octet has the group bit set (multicast). `02:00:00:00:00:00` is what macOS 27 gives an
+   unprivileged process in place of a real link-layer address; stored, it would give every Mac behind any
+   gateway at one address the same fingerprint (amended 2026-11-22 after a native run). Any other form
+   makes the report `invalid_report`. More than 64 attachments is `invalid_report` (a parse
    bound); 9 to 64 are cut to 8 per B1.
 6. **Null MAC (plan call 6).** An attachment with `gatewayMac: null` protects the device's rows that are
    `is_current` and match its `interfaceName`, `localAddress` and gateway address. Those rows are neither
@@ -580,8 +584,9 @@ UPDATE learned_network_devices m SET last_seen_at = due.seen FROM due WHERE m.id
 
 1. **B1 gains a parse bound.** More than 64 attachments is `invalid_report`; 9 to 64 are cut to 8 as B1
    says. B1 sets no upper bound for parsing.
-2. **B1 normalizes two MAC values to null.** `00:00:00:00:00:00` and `ff:ff:ff:ff:ff:ff` become `null`, so
-   an incomplete neighbour entry behaves as an absent one (plan call 6) instead of becoming a fingerprint.
+2. **B1 normalizes non-gateway MAC values to null.** `00:00:00:00:00:00`, `ff:ff:ff:ff:ff:ff`,
+   `02:00:00:00:00:00` (the macOS placeholder) and any group-bit (multicast) MAC become `null`, so they
+   behave as an absent entry (plan call 6) instead of becoming a fingerprint.
 3. **The WAN refresh source is inferred.** No per-device WAN is stored (spec non-goal). The hourly
    refresh dates WAN rows from `devices.last_seen_ip`, which `middleware/agentAuth.ts:880-963` writes from
    `getTrustedClientIp`, the same source the learner uses. A WAN row written from an IPv4-mapped IPv6
