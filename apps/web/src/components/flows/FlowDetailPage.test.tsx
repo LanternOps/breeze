@@ -314,19 +314,31 @@ describe('FlowDetailPage', () => {
       expect(api.disableFlow).not.toHaveBeenCalled();
     });
 
-    it('an org-scoped user sees no Edit on an enabled partner-wide flow', async () => {
+    it('a viewer who may not change a partner-wide flow sees no Edit on it when enabled', async () => {
       viewer.claims = { status: 'resolved', claims: { scope: 'organization', orgId: 'org-1', partnerId: 'p-1' } };
       withFlow({ status: 'enabled', ownerScope: 'partner', orgId: null, partnerId: 'p-1' });
+      const first = render(<FlowDetailPage flowId={ID} />);
+      await screen.findByTestId('flow-steps');
+      expect(screen.queryByTestId('flow-edit')).toBeNull();
+      first.unmount();
+
+      // A partner user without partner-wide management rights.
+      viewer.claims = { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p-1' } };
+      viewer.canManagePartnerWide = false;
       render(<FlowDetailPage flowId={ID} />);
       await screen.findByTestId('flow-steps');
       expect(screen.queryByTestId('flow-edit')).toBeNull();
     });
 
-    it('Edit is hidden without automations.write', async () => {
+    it('Edit is hidden without automations.write, an enabled flow included', async () => {
       perms.write = false;
-      render(<FlowDetailPage flowId={ID} />);
-      await screen.findByTestId('flow-steps');
-      expect(screen.queryByTestId('flow-edit')).toBeNull();
+      for (const status of ['draft', 'enabled']) {
+        withFlow({ status });
+        const { unmount } = render(<FlowDetailPage flowId={ID} />);
+        await screen.findByTestId('flow-steps');
+        expect(screen.queryByTestId('flow-edit')).toBeNull();
+        unmount();
+      }
     });
 
     it('Delete draft shows only for a never-published, never-converted draft', async () => {

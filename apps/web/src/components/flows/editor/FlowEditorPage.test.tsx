@@ -197,6 +197,44 @@ describe('FlowEditorPage', () => {
     expect(screen.getByTestId('flow-editor-save')).toBeInTheDocument();
   });
 
+  it('cancelling Disable and edit leaves the flow enabled and read-only', async () => {
+    api.getFlow.mockResolvedValue({ flow: flow({ status: 'enabled' }), validation });
+    render(<FlowEditorPage flowId={ID} />);
+    fireEvent.click(await screen.findByTestId('flow-editor-disable-and-edit'));
+    await screen.findByText(/cancels queued and waiting runs/i);
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    await waitFor(() => expect(screen.queryByTestId('flow-editor-disable-confirm')).toBeNull());
+    expect(api.disableFlow).not.toHaveBeenCalled();
+    expect(screen.getByTestId('flow-editor-enabled-readonly')).toBeInTheDocument();
+    expect(screen.getByTestId('mock-form')).toHaveAttribute('data-readonly', 'true');
+  });
+
+  it('Disable and edit is not offered to a viewer who may not change the flow', async () => {
+    // Without automations.write.
+    perms.write = false;
+    api.getFlow.mockResolvedValue({ flow: flow({ status: 'enabled' }), validation });
+    const first = render(<FlowEditorPage flowId={ID} />);
+    expect(await screen.findByTestId('flow-editor-enabled-readonly')).toBeInTheDocument();
+    expect(screen.queryByTestId('flow-editor-disable-and-edit')).toBeNull();
+    first.unmount();
+
+    // An org-scoped viewer on an enabled partner-wide flow.
+    perms.write = true;
+    jwt.value = { status: 'resolved', claims: { scope: 'organization', partnerId: null, orgId: 'org-1' } };
+    api.getFlow.mockResolvedValue({ flow: flow({ status: 'enabled', ownerScope: 'partner', orgId: null, partnerId: 'p1' }), validation });
+    const second = render(<FlowEditorPage flowId={ID} />);
+    expect(await screen.findByTestId('flow-editor-enabled-readonly')).toBeInTheDocument();
+    expect(screen.queryByTestId('flow-editor-disable-and-edit')).toBeNull();
+    second.unmount();
+
+    // A partner viewer who may not manage partner-wide state.
+    jwt.value = { status: 'resolved', claims: { scope: 'partner', partnerId: 'p1', orgId: null } };
+    authState.user = { canManagePartnerWide: false };
+    render(<FlowEditorPage flowId={ID} />);
+    expect(await screen.findByTestId('flow-editor-enabled-readonly')).toBeInTheDocument();
+    expect(screen.queryByTestId('flow-editor-disable-and-edit')).toBeNull();
+  });
+
   it('saving a shadow draft warns that evidence resets', async () => {
     api.getFlow.mockResolvedValue({ flow: flow({ convertedFrom: { automationId: 'a1', name: 'Job', conversionId: 'c1', state: 'shadow' } }), validation });
     api.updateFlowDraft.mockResolvedValue({ flow: flow({ definitionVersion: 4 }, compileFlowForm({ ...values, name: 'Nightly cleanup!' })), validation });
