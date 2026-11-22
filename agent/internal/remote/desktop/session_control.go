@@ -328,7 +328,7 @@ func (s *Session) sendControlJSON(body map[string]any) {
 // Two deliberate departures from the surrounding code:
 //
 //  1. It rides the CONTROL channel, not the input channel. The input channel is
-//     created with maxRetransmits: 0 (apps/viewer/src/lib/webrtc.ts) so a lost
+//     created with maxRetransmits: 0 (packages/remote-desktop-ui/src/webrtc.ts) so a lost
 //     datagram is never retransmitted; that is the right trade for a mouse move
 //     and the wrong one for a paste, where a single dropped message silently
 //     truncates a shell command. The control channel is reliable.

@@ -877,7 +877,7 @@ for (const [label, paths, want] of [
   ['web-only', ['apps/web/src/components/Foo.tsx'], 'false'],
   ['web package.json', ['apps/web/package.json'], 'true'],
   ['portal-only', ['apps/portal/src/pages/index.astro'], 'false'],
-  ['viewer-only', ['apps/viewer/src/lib/protocol.ts', 'apps/viewer/src-tauri/src/main.rs'], 'false'],
+  ['viewer-only', ['apps/viewer/src/lib/deepLink.ts', 'apps/viewer/src-tauri/src/main.rs'], 'false'],
   ['helper-only', ['apps/helper/src-tauri/src/main.rs'], 'false'],
   ['mobile-only', ['apps/mobile/src/App.tsx'], 'false'],
   ['mobile package.json (install input)', ['apps/mobile/package.json'], 'true'],
