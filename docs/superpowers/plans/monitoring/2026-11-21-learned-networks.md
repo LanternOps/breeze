@@ -800,7 +800,9 @@ Profile create and update accept `networkId` (W03b).
 
 ## Code map
 
-Where the work lands. Line numbers are from `2dc66103b6`; open the file before relying on one.
+Where the work lands. Line numbers are from `2dc66103b6`, except those into `jobs/discoveryWorker.ts`,
+`routes/discovery.ts` and `services/aiToolsNetwork.ts`, which are from the tree after #12452 (in the
+index and in every wave plan). Open the file before relying on one.
 
 **API: heartbeat** — `routes/agents/heartbeat.ts`: route `:621`; parked devices return at `:700`; own
 row selected for update `:865` (`selectOwnDeviceRowForUpdate`, full row, includes `isEphemeral`); the
@@ -809,26 +811,26 @@ watchdog branch returns at `:1201`, so ingest sits after `:1211`; `deviceUpdates
 Client address: `getTrustedClientIpOrUndefined(c)` (`services/clientIp.ts:359`). WebSocket heartbeat
 schema: `routes/agentWs.ts:937`.
 
-**API: discovery dispatch** — `jobs/discoveryWorker.ts`: `loadDispatchScanInputs` `:686`,
-`processDispatchScan` `:766`, command built `:837-856`, send `:859`, running write `:879-889`,
-`markJobFailed` `:1911`, `processResults` `:1011`, `enqueueDiscoveryResults` `:2011`.
+**API: discovery dispatch** — `jobs/discoveryWorker.ts`: `loadDispatchScanInputs` `:693`,
+`processDispatchScan` `:786`, command built `:857-876`, send `:879`, running write `:899-909`,
+`markJobFailed` `:1931`, `processResults` `:1031`, `enqueueDiscoveryResults` `:2031`.
 `jobs/discoveryAgentSelection.ts`: `rankDiscoveryAgentCandidates` `:50`,
 `loadSiteDiscoveryAgentCandidates` `:77`, `resolvePinnedDiscoveryAgent` `:138`. Every worker producer
 (run now, schedules, the lost-dispatch sweep, baseline scans) reaches the send through
 `loadDispatchScanInputs`.
 
-**API: AI tool** — `services/aiToolsNetwork.ts:940-980`; it calls `aiExecuteCommand`, which inserts the
+**API: AI tool** — `services/aiToolsNetwork.ts:940-985`; it calls `aiExecuteCommand`, which inserts the
 `device_commands` row before sending and returns the result to the caller.
 
 **API: results** — `routes/agentWs.ts` discovery branch `:1868-1980`;
 `services/commandResultHandlers.ts:120` (`handleDiscoveryResult`, registered `:1323`);
-`routes/agents/topologyAdjacency.ts:32-70` (its body schema and the `process-results` queue schema are strict: a new key must be declared); a new command type also needs entries in `services/commandOfflinePolicy.ts` (`LIVE` `:180`, `EXTRA_ROUTE_TYPES` `:289`); job errors are written at `discoveryWorker.ts:427`, `:1921`,
-`:2128`, `agentWs.ts:1920`, `:1956`, `:1970`, `commandResultHandlers.ts:179`, `:200`,
-`routes/discovery.ts:1073`.
+`routes/agents/topologyAdjacency.ts:32-70` (its body schema and the `process-results` queue schema are strict: a new key must be declared); a new command type also needs entries in `services/commandOfflinePolicy.ts` (`LIVE` `:180`, `EXTRA_ROUTE_TYPES` `:289`); job errors are written at `discoveryWorker.ts:430`, `:1941`,
+`:2148`, `agentWs.ts:1920`, `:1956`, `:1970`, `commandResultHandlers.ts:179`, `:200`,
+`routes/discovery.ts:1076`.
 
-**API: profiles and secrets** — `routes/discovery.ts`: create `:651` (`createProfileSchema` `:402`),
-update `:770` (`updateProfileSchema` `:425`), the retained-secret rejection `:818-843`, list picks
-`:624-645`, jobs list `:1103-1246`, assets list `:1372-1491`. `services/snmpSecrets.ts`: mask `:4`,
+**API: profiles and secrets** — `routes/discovery.ts`: create `:654` (`createProfileSchema` `:405`),
+update `:773` (`updateProfileSchema` `:428`), the retained-secret rejection `:821-846`, list picks
+`:627-648`, jobs list `:1106-1249`, assets list `:1375-1494`. `services/snmpSecrets.ts`: mask `:4`,
 `isMaskedSnmpSecret` `:22`, merge helpers `:54` and `:90`, `subnetChangeWouldRetainSnmpSecrets` `:196`.
 Route helpers: `requireDiscoveryRead/Write/Execute` `:67-78`, `canAccessRecordSite` `:249`,
 `authorizeRequestedSite` `:266`, `writeRouteAudit` exemplar `:1091`. Declared ranges:

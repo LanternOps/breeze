@@ -41,9 +41,9 @@ Review focus and Cross-wave contract apply to every task here (sections F, F1, F
 - Index line numbers checked against this checkout and unchanged: `DiscoveryPage.tsx` `:29`, `:278`,
   `:291`, `:393`, `:458-488`, `:531-546`, `:707`; `DiscoveryJobList.tsx` `:94`, `:135`, `:476-527`;
   `DiscoveredAssetList.tsx` `:167`, `:268-340` (filter state and memos; the chip row renders at
-  `:584-669`); `routes/discovery.ts` `:67-78`, `:249`, `:266`, `:402`, `:425`, `:624-645`, `:818-843`,
-  `:1091`, `:1103-1246`, `:1372-1491`. Profile detail, create and update return
-  `serializeDiscoveryProfile` (`:236`), which spreads the whole row.
+  `:584-669`); `routes/discovery.ts` `:67-78`, `:252`, `:269`, `:405`, `:428`, `:627-648`, `:821-846`,
+  `:1094`, `:1106-1249`, `:1375-1494`. Profile detail, create and update return
+  `serializeDiscoveryProfile` (`:239`), which spreads the whole row.
 
 ## End-to-end decision
 
@@ -68,7 +68,7 @@ Every element a future spec needs carries a test id from the table below.
 |---|---|
 | `apps/api/src/services/learnedNetworks/readFields.ts` | Create. F2 loaders for profiles, jobs and assets. |
 | `apps/api/src/services/learnedNetworks/agentNetworkStatus.ts` | Create. Per-agent network status for the scan-agent picker. |
-| `apps/api/src/routes/discovery.ts` | Modify list and detail picks (`:624-645`, `:733`), jobs (`:1123-1246`), assets (`:1402-1489`). |
+| `apps/api/src/routes/discovery.ts` | Modify list and detail picks (`:627-648`, `:736`), jobs (`:1126-1249`), assets (`:1405-1492`). |
 | `apps/api/src/routes/discoveryNetworks.ts` | Modify: add `GET /sites/:siteId/network-agents`. |
 | `apps/api/src/services/learnedNetworks/list.ts` | Modify: gateway `vendor` (index F1; contract note 1). Display names reuse W03c's `displayNameFor` (`suggestions.ts`). |
 | `apps/api/src/__tests__/integration/learnedNetworkReadFields.integration.test.ts` | Create. |

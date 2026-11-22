@@ -20,7 +20,7 @@
   2. The job is written `running` with its `agent_id` and `network_dispatch` before the command is sent.
   3. A job that is no longer `scheduled` when the attempt is recorded is not sent.
   4. A refusal result with `errorCode` `network_mismatch` or `network_changed` stores that code on `discovery_jobs.errors`.
-  5. A job whose attempt was recorded but whose send never completed (the worker stopped in between) is failed by the 15-minute running expiry (`expireStaleRunningJobs`, `jobs/discoveryWorker.ts:407`). It is `running`, so the 2-minute sweep of `scheduled` jobs does not send it again.
+  5. A job whose attempt was recorded but whose send never completed (the worker stopped in between) is failed by the 15-minute running expiry (`expireStaleRunningJobs`, `jobs/discoveryWorker.ts:410`). It is `running`, so the 2-minute sweep of `scheduled` jobs does not send it again.
 
   Existing tests that must stay green without edits to their assertions prove the rest: `jobs/discoveryWorker.agentSelection.test.ts`, `jobs/discoveryWorker.topologyDispatch.test.ts`, `jobs/discoveryWorker.test.ts` (the `processDispatchScan` block at `:1064-1110` and every `processResults` case), `jobs/discoveryQueue.test.ts`, `services/aiToolsNetwork.discovery.test.ts`, `services/commandResultHandlers.silentFailures.test.ts`, `routes/agentWs.test.ts` (discovery cases near `:3040-3175`), `routes/agents/topologyAdjacency.test.ts`, and the integration suites `discoveryWorker.dispatchAfterCommit.integration.test.ts`, `discoveryWorker.bmc.integration.test.ts`, `discoveryWorker.autoLinkMac.integration.test.ts` (the last three run `processResults`), `discoveryProfilePinnedDevice.integration.test.ts`, `topologyDiscoveryTransport.integration.test.ts`, `topologyDiscoveryPhysicalE2E.integration.test.ts`, `runScriptNoHeldTransaction.integration.test.ts` (it drives `network_discovery` end to end). Those files gain `vi.mock` entries for the new modules (gate returns `{ kind: 'unrestricted' }`, verify returns `{ ok: true, networkId: null }`, the lock is a no-op). One assertion changes on purpose: the event order in `jobs/discoveryWorker.dbcontext.test.ts` (Task 7).
 - **W01a/W01b names this plan relies on** (W01a's schema is not in this tree yet; the Drizzle property names are the camelCase of the A4 columns): `learnedNetworks`, `learnedNetworkGateways`, `learnedNetworkDevices`, `discoveryProfileSnmpGrants`; `sites.discoveryNetworkRequired`; `devices.networkAttachmentsConfirmedAt`; `discoveryProfiles.networkId`, `.snmpGrantMode`; `discoveryJobs.networkId`, `.networkDispatch`, `.crossNetworkAssetUpdates`; `discoveredAssets.lastNetworkId`. Constants from `services/learnedNetworks/constants.ts` (E2): `NETWORK_ATTACHMENT_FRESHNESS_MS`, `CROSS_NETWORK_WINDOW_DAYS`.
@@ -338,8 +338,8 @@ Every non-test hit for the two literals in `apps/api/src` today, and its class i
 
 | File:line | Class |
 |---|---|
-| `jobs/discoveryWorker.ts:839` (`type: 'network_discovery'`) | **builder**: moves to `scanCommand.ts` (Task 7) |
-| `services/aiToolsNetwork.ts:973`, 4th argument of `aiExecuteCommand` | **builder**: the AI tool passes `command.type` (Task 13) |
+| `jobs/discoveryWorker.ts:859` (`type: 'network_discovery'`) | **builder**: moves to `scanCommand.ts` (Task 7) |
+| `services/aiToolsNetwork.ts:978`, 4th argument of `aiExecuteCommand` | **builder**: the AI tool passes `command.type` (Task 13) |
 | `services/commandResultHandlers.ts:1323` (registry) | **must name the guarded type** |
 | `routes/agents/commands.ts:105` (`REGISTRY_DISPATCHED_COMMAND_TYPES`) | **must name the guarded type** |
 | `services/partnerTrust.ts:140` (`GATED_COMMAND_TYPES`; unlisted types fail closed, and `partnerTrust.test.ts:631` requires one class per Go type once W02c lands) | **must name the guarded type** |
@@ -395,14 +395,14 @@ it('finds the known sites (not vacuous)', ...);  // >= 4 paired, >= 14 toolName;
 
 `commandOfflinePolicy.test.ts`: add `'network_discovery_guarded'` to the `extras` list (`:47`) and `expect(defaultOfflinePolicy('network_discovery_guarded')).toEqual({ kind: 'reject' })` beside `:69`. `commandMinVersion.release.test.ts` gains, in its own `it`: the min version is set, `defaultOfflinePolicy(...).kind` is `'reject'`, `EXPLICITLY_CLASSIFIED_COMMAND_TYPES` has it, and `GATED_COMMAND_TYPES` contains it.
 
-- [ ] **Step 2: Run and see it fail.** `cd apps/api && npx vitest run src/services/learnedNetworks/scanCommand src/services/commandOfflinePolicy.test.ts src/services/commandMinVersion.release.test.ts src/services/partnerTrust.test.ts`. Expected: FAIL. (If W02c is already on `main`, `GATED_COMMAND_TYPES` already holds the guarded type, so that one assertion and `partnerTrust.test.ts` are green before this step; every other new assertion is red.) The construction rule also matches `discoveryWorker.ts:839` and `aiToolsNetwork.ts:973`. Commit them in a `PENDING` set the construction check skips (`discoveryWorker.ts` counts as classified while it is pending; `aiToolsNetwork.ts` is classified `toolName`). Step 1 of Task 7 deletes `discoveryWorker.ts` from `PENDING` and Step 1 of Task 13 deletes `aiToolsNetwork.ts`, so each check is red until that task's code lands.
+- [ ] **Step 2: Run and see it fail.** `cd apps/api && npx vitest run src/services/learnedNetworks/scanCommand src/services/commandOfflinePolicy.test.ts src/services/commandMinVersion.release.test.ts src/services/partnerTrust.test.ts`. Expected: FAIL. (If W02c is already on `main`, `GATED_COMMAND_TYPES` already holds the guarded type, so that one assertion and `partnerTrust.test.ts` are green before this step; every other new assertion is red.) The construction rule also matches `discoveryWorker.ts:859` and `aiToolsNetwork.ts:978`. Commit them in a `PENDING` set the construction check skips (`discoveryWorker.ts` counts as classified while it is pending; `aiToolsNetwork.ts` is classified `toolName`). Step 1 of Task 7 deletes `discoveryWorker.ts` from `PENDING` and Step 1 of Task 13 deletes `aiToolsNetwork.ts`, so each check is red until that task's code lands.
 - [ ] **Step 3: Implement.** The guarded order: dedupe by `gatewayId`; fingerprints in `agentGatewayIds` first, then the rest; each group ascending by `gatewayId`; cut to `EXPECTED_GATEWAYS_MAX`. Register `[GUARDED_COMMAND_TYPES.network_discovery]: handleDiscoveryResult`; add the literal `'network_discovery_guarded'` next to each list entry above (classified `GATED`, offline class `live`). In `GATED_COMMAND_TYPES`, add it only if it is not already present: W02c registers the Go handler and adds the entry in its own PR (`partnerTrust.test.ts` parses the Go handler registry), and either PR may land first.
 - [ ] **Step 4: Run and see it pass** (same command, plus `src/services/endpointMessaging/registrations.contract.test.ts src/services/commandResultHandlers.security.test.ts`). Expected: PASS.
 - [ ] **Step 5: Commit** `feat(api): one builder for discovery scan commands`.
 
 ### Task 7: The attempt record and the dispatch order (E9)
 
-**Files:** Create `services/learnedNetworks/attempt.ts`, `attempt.test.ts`, `jobs/discoveryWorker.networkGate.test.ts`. Modify `jobs/discoveryWorker.ts:272-306`, `:686-893`, `:1911-1927`; `jobs/discoveryAgentSelection.ts:126-194`; `db/schema/discovery.ts:150`; the mocks of `jobs/discoveryWorker.{dbcontext,agentSelection,topologyDispatch}.test.ts` and `jobs/discoveryWorker.test.ts`.
+**Files:** Create `services/learnedNetworks/attempt.ts`, `attempt.test.ts`, `jobs/discoveryWorker.networkGate.test.ts`. Modify `jobs/discoveryWorker.ts:272-309`, `:693-913`, `:1931-1947`; `jobs/discoveryAgentSelection.ts:126-194`; `db/schema/discovery.ts:150`; the mocks of `jobs/discoveryWorker.{dbcontext,agentSelection,topologyDispatch}.test.ts` and `jobs/discoveryWorker.test.ts`.
 
 **Interfaces:** Produces E9 `NetworkDispatchRecord` and `recordDispatchAttempt` verbatim, plus, in `attempt.ts` (so every new read sits behind a module the old tests can mock):
 
@@ -435,7 +435,7 @@ Also: `markJobFailed(jobId: string, error: string | DiscoveryJobError, agentId?:
    - `recordDispatchAttempt(jobId, record)` with `decidedAt` now, `mode` from `decision2`. `false` (no longer `scheduled`) → return `{ dispatched: false }`, no write.
 4. **Phase 4, no context:** `dispatchCommandToAgent(agentId, command)` (`:859`). Not `sent`: today's `markJobFailed` messages (`:861-871`); the status is `running`, which `markJobFailed` accepts. The old phase-4 status flip (`:875-889`) is deleted; `recordDispatchAttempt` did it.
 
-**`discovery_jobs.errors` writers:** the column becomes `jsonb('errors').$type<DiscoveryJobError>()`, so every writer is type-checked. Changed: `discoveryWorker.ts:1921` (`markJobFailed`, gate and eligibility codes), `agentWs.ts:1920` (refusal codes, Task 9), new `network_unverified` writes in Tasks 9 to 11. Unchanged literals that already satisfy the type: `discoveryWorker.ts:427`, `:2128`; `agentWs.ts:1956`, `:1970`; `commandResultHandlers.ts:179`, `:200`; `routes/discovery.ts:1073`.
+**`discovery_jobs.errors` writers:** the column becomes `jsonb('errors').$type<DiscoveryJobError>()`, so every writer is type-checked. Changed: `discoveryWorker.ts:1941` (`markJobFailed`, gate and eligibility codes), `agentWs.ts:1920` (refusal codes, Task 9), new `network_unverified` writes in Tasks 9 to 11. Unchanged literals that already satisfy the type: `discoveryWorker.ts:430`, `:2148`; `agentWs.ts:1956`, `:1970`; `commandResultHandlers.ts:179`, `:200`; `routes/discovery.ts:1076`.
 
 - [ ] **Step 1: Write the failing tests.** `attempt.test.ts`: `parseNetworkDispatchRecord(null)` is `null`; a valid record round-trips; `{ version: 2 }`, a missing `mode`, non-array ids are `'invalid'`. `discoveryWorker.networkGate.test.ts` copies the depth-tracking harness of `discoveryWorker.dbcontext.test.ts` and mocks `gate`, `eligibility`, `siteLock`, `attempt`:
 
@@ -559,7 +559,7 @@ it('does nothing for a command without a jobId (the AI tool)', async () => {
 
 ### Task 11: Verify in `processResults` and stamp the network
 
-**Files:** Modify `jobs/discoveryWorker.ts:104-114`, `:1011-1830`, `:2011-2043`; `jobs/queueSchemas.ts:233-244`; `jobs/discoveryWorker.test.ts` (mocks); the integration file.
+**Files:** Modify `jobs/discoveryWorker.ts:104-114`, `:1031-1850`, `:2031-2063`; `jobs/queueSchemas.ts:233-244`; `jobs/discoveryWorker.test.ts` (mocks); the integration file.
 
 **Interfaces:** `ProcessResultsJobData` gains `verifiedNetwork?: VerifiedNetwork`. The `process-results` schema gains `verifiedNetwork: verifiedNetworkSchema.optional()` (the object is `.strict()`). `enqueueDiscoveryResults` gains a 10th parameter `verifiedNetwork?: VerifiedNetwork | null` after `meta`, and puts the key in the job data only when it is set.
 
@@ -620,7 +620,7 @@ it('rejects a report that fails network verification before any section is inges
 - [ ] **Step 4: Run and see it pass** (same command, then the integration suites `topologyDiscoveryTransport` and `topologyDiscoveryPhysicalE2E`). Expected: PASS.
 - [ ] **Step 5: Commit** `feat(api): verify adjacency reports against the discovery attempt`.
 
-### Task 13: The AI tool (`services/aiToolsNetwork.ts:940-980`)
+### Task 13: The AI tool (`services/aiToolsNetwork.ts:940-985`)
 
 **Files:** Modify `services/aiToolsNetwork.ts`, `services/aiToolsNetwork.discovery.test.ts`.
 

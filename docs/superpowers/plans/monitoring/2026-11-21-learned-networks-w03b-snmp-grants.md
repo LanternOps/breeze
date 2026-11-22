@@ -18,7 +18,7 @@
 - **No migration, no new table, no new column.** Nothing here touches tenancy registrations.
 - **Only the two profile handlers write a profile's destination or secrets.** The other writers of `discovery_profiles` are the baseline worker's auto-created profile (`jobs/networkBaselineWorker.ts:294`), which has no secrets and no `networkId`, and the device org move, which clears only `pinned_device_id` (`services/deviceOrgMove/moveDeviceOrgInTransaction.ts:468`). Neither needs the lock order or the grant rules. The route suites that mock `db` and reach `POST`/`PATCH /profiles` are all in `routes/discovery.test.ts`. The other suites that import the router are integration suites on real Postgres: `discoveryProfilesLastRun`, `topology-*`.
 - **Lock order (E1, §8.3):** site locks in ascending id, shared mode, both sites on a move; then the profile row `FOR UPDATE`; retained secrets are read only from that locked row. Every DB write of this wave runs after the last early return of its handler, so the request transaction commits destination, secrets, mode and grants together or not at all. A handler that returns a 4xx without throwing commits an empty transaction; none of the writes may precede such a return.
-- **Kept exactly as is:** the retained-secret rejection (`routes/discovery.ts:818-843`, `subnetChangeWouldRetainSnmpSecrets`), its error string, and every existing route test's assertions. Existing tests may only gain rig setup for the new modules.
+- **Kept exactly as is:** the retained-secret rejection (`routes/discovery.ts:821-846`, `subnetChangeWouldRetainSnmpSecrets`), its error string, and every existing route test's assertions. Existing tests may only gain rig setup for the new modules.
 - **Unaffected:** a profile that holds no secrets, and an `unrestricted` profile on a site that is not gated, save and run exactly as before. The existing tests that show it are listed in Task 3, Step 7.
 - **`networkId` rule (§8.3):** it may be set only to a network assigned to the profile's site at save time, and a save that would leave it pointing anywhere else is rejected. This plan reads the sentence literally: every save whose resulting `networkId` is non-null is checked, including a save that does not mention `networkId`. Changing `networkId` never needs a secret re-entry, because grants are only ever added by rule 1 or rule 2.
 - **Credential tests assert that the secrets are not sent:** each drives `evaluateDiscoveryGate` for the profile and asserts the decision (`unrestricted`, `guarded` with an exact fingerprint set, or `fail` with `credentials_need_reentry`). A grants-table assertion alone is never the proof.
@@ -39,7 +39,7 @@
 | `apps/api/src/services/learnedNetworks/snmpGrants.ts` | Modify (W03a created it) | Secret-state model, predicates, grant writers, `assertProfileNetworkAssignable`, `bindUnrestrictedProfilesOnGating`. |
 | `apps/api/src/services/learnedNetworks/snmpGrants.test.ts` | Create or extend | Pure predicate tests, including T3. |
 | `apps/api/src/services/learnedNetworks/profileSaveLock.ts` | Create | `lockProfileForSave`: the lock order for profile writers, in one place. |
-| `apps/api/src/routes/discovery.ts` | Modify `:402-450`, `:651-710`, `:770-976` | `networkId` on both schemas; lock, rule checks and grant write in create and update. |
+| `apps/api/src/routes/discovery.ts` | Modify `:405-453`, `:654-713`, `:773-979` | `networkId` on both schemas; lock, rule checks and grant write in create and update. |
 | `apps/api/src/routes/discovery.test.ts` | Modify | Rig for the new modules; new describe for the W03b wiring. |
 | `apps/api/src/__tests__/integration/discoverySnmpGrants.integration.test.ts` | Create | S3, S4, S5, T1, T2a, T4 and rule 2 on real Postgres. |
 | `apps/api/src/services/snmpSecrets.ts` `storedProfileHoldsSnmpSecrets` (W03a) | Reuse | `profileWillHoldSnmpSecrets` delegates to it, so the gate (`gateProfileFromRow`) and the grant rules share one definition (Contract notes, item 1). |
@@ -259,7 +259,7 @@ git commit -m "feat(api): SNMP grant writers and rule 2 binding for learned netw
 
 **Files:**
 - Create: `apps/api/src/services/learnedNetworks/profileSaveLock.ts`
-- Modify: `apps/api/src/routes/discovery.ts` (`createProfileSchema` `:402`, `updateProfileSchema` `:425`, create `:651-710`, update `:770-976`)
+- Modify: `apps/api/src/routes/discovery.ts` (`createProfileSchema` `:405`, `updateProfileSchema` `:428`, create `:654-713`, update `:773-979`)
 - Test: `apps/api/src/routes/discovery.test.ts`
 
 **Interfaces:**
