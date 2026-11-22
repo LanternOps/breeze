@@ -3482,32 +3482,64 @@ describe('buildImpactSummary (#5106)', () => {
       expected: 'Records a rollback request for the patch on one device (the first listed). Nothing is uninstalled or restarted now.',
     },
     {
-      name: 'manage_patches approve changes approval status only',
+      // Approvals are partner-wide unless a ringId names one update ring
+      // (upsertPatchApproval with ringId null, aiToolsFleet.ts).
+      name: 'manage_patches approve without a ring names the partner-wide scope',
       toolName: 'manage_patches',
       input: { action: 'approve', patchId: 'p1' },
       guardrailDescription: 'CVEs: get_vulnerability_report.',
-      expected: 'Approves the patch. This changes its approval status only; nothing is installed now.',
+      expected: 'Approves the patch for every organization under the partner. Nothing installs now; patch runs can install it later.',
     },
     {
-      name: 'manage_patches bulk_approve counts the patches',
+      name: 'manage_patches approve in one update ring',
       toolName: 'manage_patches',
-      input: { action: 'bulk_approve', patchIds: ['p1', 'p2'] },
+      input: { action: 'approve', patchId: 'p1', ringId: 'r1' },
       guardrailDescription: 'CVEs: get_vulnerability_report.',
-      expected: 'Approves 2 patches. This changes their approval status only; nothing is installed now.',
+      expected: 'Approves the patch in one update ring. Nothing installs now; patch runs can install it later.',
     },
     {
-      name: 'manage_patches decline installs and removes nothing',
+      // bulk_approve always writes ringId null.
+      name: 'manage_patches bulk_approve counts the patches and names the partner-wide scope',
+      toolName: 'manage_patches',
+      input: { action: 'bulk_approve', patchIds: ['p1', 'p2'], ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Approves 2 patches for every organization under the partner. Nothing installs now; patch runs can install them later.',
+    },
+    {
+      name: 'manage_patches decline without a ring names the partner-wide scope',
       toolName: 'manage_patches',
       input: { action: 'decline', patchId: 'p1' },
       guardrailDescription: 'CVEs: get_vulnerability_report.',
-      expected: 'Declines the patch. This changes its approval status only; nothing is installed or removed now.',
+      expected: 'Declines the patch for every organization under the partner. Nothing is installed or removed now.',
     },
     {
-      name: 'manage_patches defer installs nothing now',
+      name: 'manage_patches decline in one update ring',
+      toolName: 'manage_patches',
+      input: { action: 'decline', patchId: 'p1', ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Declines the patch in one update ring. Nothing is installed or removed now.',
+    },
+    {
+      // allRings wins over ringId in the handler, and also clears the partner-wide row.
+      name: 'manage_patches decline allRings covers the partner and every update ring',
+      toolName: 'manage_patches',
+      input: { action: 'decline', patchId: 'p1', allRings: true, ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Declines the patch for every organization under the partner and in every update ring. Nothing is installed or removed now.',
+    },
+    {
+      name: 'manage_patches defer without a ring names the partner-wide scope',
       toolName: 'manage_patches',
       input: { action: 'defer', patchId: 'p1', deferUntil: '2026-12-01' },
       guardrailDescription: 'CVEs: get_vulnerability_report.',
-      expected: 'Defers the patch. This changes its approval status only; nothing is installed now.',
+      expected: 'Defers the patch for every organization under the partner. Nothing installs now.',
+    },
+    {
+      name: 'manage_patches defer in one update ring',
+      toolName: 'manage_patches',
+      input: { action: 'defer', patchId: 'p1', ringId: 'r1' },
+      guardrailDescription: 'CVEs: get_vulnerability_report.',
+      expected: 'Defers the patch in one update ring. Nothing installs now.',
     },
     {
       // The handler refuses setup_auto_approval unconditionally, so there is

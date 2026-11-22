@@ -647,6 +647,8 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
     const patchCount = count(input.patchIds, 'patch', 'patches');
     const deviceCount = count(input.deviceIds, 'device', 'devices');
     const oneDevice = Array.isArray(input.deviceIds) && input.deviceIds.length === 1;
+    const partnerWide = 'for every organization under the partner';
+    const scope = nonEmptyString(input.ringId) ? 'in one update ring' : partnerWide;
     switch (nonEmptyString(input.action)) {
       case 'install':
         return patchCount && deviceCount
@@ -658,14 +660,18 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
       // and queues no command, so no uninstall or restart is claimed.
       case 'rollback':
         return `Records a rollback request for the patch on one device${Array.isArray(input.deviceIds) && input.deviceIds.length > 1 ? ' (the first listed)' : ''}. Nothing is uninstalled or restarted now.`;
+      // Approval status is partner-wide unless `ringId` names one update ring:
+      // the handler upserts patch_approvals with that ring, or null
+      // (aiToolsFleet.ts). bulk_approve always writes null; decline with
+      // allRings clears the partner-wide row and every ring's.
       case 'approve':
-        return 'Approves the patch. This changes its approval status only; nothing is installed now.';
+        return `Approves the patch ${scope}. Nothing installs now; patch runs can install it later.`;
       case 'bulk_approve':
-        return `Approves ${patchCount ?? 'the selected patches'}. This changes their approval status only; nothing is installed now.`;
+        return `Approves ${patchCount ?? 'the selected patches'} ${partnerWide}. Nothing installs now; patch runs can install them later.`;
       case 'decline':
-        return 'Declines the patch. This changes its approval status only; nothing is installed or removed now.';
+        return `Declines the patch ${input.allRings === true ? `${partnerWide} and in every update ring` : scope}. Nothing is installed or removed now.`;
       case 'defer':
-        return 'Defers the patch. This changes its approval status only; nothing is installed now.';
+        return `Defers the patch ${scope}. Nothing installs now.`;
       default:
         return null;
     }
