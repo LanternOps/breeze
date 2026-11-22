@@ -47,6 +47,13 @@ const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 
 const KB_NUMBER = /\bKB\d{6,8}\b/i;
 
+/**
+ * `"` and what renders like it: initial/final quote punctuation (curly
+ * quotes, guillemets), double prime, fullwidth quote, modifier double prime,
+ * ditto mark, and the low and high-reversed double quotes.
+ */
+const QUOTE_LOOKALIKES = /["\p{Pi}\p{Pf}″＂ʺ〃„‟]/gu;
+
 /** Control, format (bidi overrides, zero-width), and line/paragraph separator characters. */
 const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
@@ -77,8 +84,9 @@ export function approvalPatchDisplayName(row: { source: string; title: string | 
   if (kb) return kb.toUpperCase();
   const clean = (row.title ?? '')
     .replace(UNSAFE_CHARS, ' ')
-    // A double quote would close the quotes this name is shown in.
-    .replace(/["“”]/g, "'")
+    // A double quote, or anything that renders like one, would appear to
+    // close the quotes this name is shown in.
+    .replace(QUOTE_LOOKALIKES, "'")
     // `...` is how a device stub ends; a title must not look like one.
     .replace(/\.{3,}/g, '…')
     .replace(/\s+/g, ' ')

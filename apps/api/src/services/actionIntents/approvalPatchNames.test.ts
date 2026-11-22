@@ -314,6 +314,18 @@ describe('approvalPatchDisplayName — titles are untrusted', () => {
     expect(inner.startsWith('Harmless update evil ')).toBe(true);
   });
 
+  it('folds every double-quote look-alike to a single quote, so a title cannot fake a closing quote', () => {
+    expect(approvalPatchDisplayName({ source: 'third_party', title: 'Chrome 131\u2033 on DC-01, \u2033Edge 120', externalId: 'x' }))
+      .toBe(`"Chrome 131' on DC-01, 'Edge 120"`);
+    // Curly quotes.
+    expect(approvalPatchDisplayName({ source: 'third_party', title: '\u201CChrome\u201D on \u2018DC-01\u2019', externalId: 'x' }))
+      .toBe(`"'Chrome' on 'DC-01'"`);
+    const lookAlikes = ['\uFF02', '\u02BA', '\u3003', '\u201E', '\u201F', '\u00AB', '\u00BB', '\u2039', '\u203A', '"'];
+    for (const q of lookAlikes) {
+      expect(approvalPatchDisplayName({ source: 'third_party', title: `a${q}b`, externalId: 'x' })).toBe(`"a'b"`);
+    }
+  });
+
   it('gives nothing for an empty or whitespace-only title with no KB', () => {
     expect(approvalPatchDisplayName({ source: 'microsoft', title: ' \n\t ', externalId: 'x' })).toBeNull();
     expect(approvalPatchDisplayName({ source: 'linux', title: null, externalId: null })).toBeNull();
