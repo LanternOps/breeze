@@ -32,6 +32,7 @@
     "networkMonitor": "Network",
     "jobs": "Jobs",
     "flows": "Flows",
+    "previewTag": "Preview",
     "monitoring": "Monitoring",
     "networkDiscovery": "Network Discovery",
     "edr": "EDR",

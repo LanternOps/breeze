@@ -80,6 +80,27 @@ describe('FlowsPage', () => {
     expect(screen.queryByTestId('flow-error')).toBeNull();
   });
 
+  // #12310: a new partner could not tell what Flows is or how to make one.
+  it('the empty state says what a flow is, how to make one, and where Jobs are', async () => {
+    api.listFlows.mockResolvedValue({ flows: [], total: 0 });
+    render(<FlowsPage />);
+    const empty = await screen.findByTestId('flow-empty');
+    expect(empty.textContent).toMatch(/follows the same way on every run/i);
+    expect(empty.textContent).toMatch(/ask Breeze AI to draft it/i);
+    expect(empty.textContent).toMatch(/move an existing job/i);
+    expect(empty.querySelector('a[data-testid="flow-empty-jobs-link"]')?.getAttribute('href')).toBe('/jobs');
+  });
+
+  it.each([
+    ['with flows', [flow()], 'flow-row-9f1c0f4e-0000-4000-8000-000000000001'],
+    ['with none', [], 'flow-empty'],
+  ] as const)('marks the page as a preview %s', async (_label, flows, settled) => {
+    api.listFlows.mockResolvedValue({ flows: [...flows], total: flows.length });
+    render(<FlowsPage />);
+    await screen.findByTestId(settled);
+    expect(screen.getByTestId('flows-preview-tag').textContent).toBe('Preview');
+  });
+
   it('a FAILED load says so instead of claiming there are no flows', async () => {
     api.listFlows.mockRejectedValue(new Error('network'));
     render(<FlowsPage />);

@@ -87,6 +87,32 @@ describe('Sidebar — Flows server gate', () => {
     expect(hrefs.indexOf('/flows')).toBe(hrefs.indexOf('/jobs') + 1);
   });
 
+  // #12310: Flows is in the nav by default, so the entry says it is a preview.
+  it('tags Flows as a preview, and no other entry', async () => {
+    mockConfig({ features: { flows: true } });
+    const { container } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(container.querySelector('a[href="/flows"]')).not.toBeNull());
+    const tags = Array.from(container.querySelectorAll('[data-testid="nav-preview-tag"]'));
+    expect(tags).toHaveLength(1);
+    expect(tags[0]!.closest('a')?.getAttribute('href')).toBe('/flows');
+    expect(tags[0]!.textContent).toBe('Preview');
+    expect(container.querySelector('a[href="/jobs"] [data-testid="nav-preview-tag"]')).toBeNull();
+  });
+
+  // The icon rail has no room for the tag, so the tooltip and the link's
+  // accessible name carry it instead.
+  it('on the collapsed rail, names Flows as a preview in its tooltip and label', async () => {
+    localStorage.setItem('sidebar-mode', 'collapsed');
+    mockConfig({ features: { flows: true } });
+    const { container } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(container.querySelector('a[href="/flows"]')).not.toBeNull());
+    const flows = container.querySelector('a[href="/flows"]')!;
+    expect(flows.getAttribute('title')).toBe('Flows (Preview)');
+    expect(flows.textContent).toBe('Flows (Preview)');
+    expect(container.querySelector('[data-testid="nav-preview-tag"]')).toBeNull();
+    expect(container.querySelector('a[href="/jobs"]')!.getAttribute('title')).toBe('Jobs');
+  });
+
   it('hides the nav item when the flag is false', async () => {
     mockConfig({ features: { flows: false } });
     const { container } = render(<Sidebar currentPath="/flows" />);

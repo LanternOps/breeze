@@ -771,7 +771,11 @@ describe('automations routes', () => {
     expect(body.trigger.type).toBe('manual');
   });
 
-  describe('R1 create refusal (#5221 C5, Decision 8)', () => {
+  // #12310: W06 R1 refused new Jobs while Flows was on (410
+  // `automations_moved_to_flows`). A flow can only be drafted in AI chat, so
+  // that left a tenant without AI unable to create any automation. The refusal
+  // returns with the manual flow editor (#10336).
+  describe('Job creation while Flows is on (#12310)', () => {
     const body = {
       name: 'New Job', trigger: { type: 'manual' }, conditions: { type: 'all' },
       actions: [{ type: 'run_script', scriptId: 'script-1' }], onFailure: 'stop',
@@ -781,37 +785,32 @@ describe('automations routes', () => {
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
       body: JSON.stringify(payload),
     });
+    const mockInsert = () => vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: '11111111-1111-4111-8111-111111111111', name: 'New Job', orgId: 'org-123',
+          trigger: { type: 'manual' }, enabled: true,
+        }]),
+      }),
+    } as any);
 
-    it.each([['unset', undefined], ['true', 'true']] as const)(
-      'POST /automations is 410 with flowsUrl when flows are enabled (FLOWS_ENABLED %s)', async (_label, value) => {
+    it.each([['unset', undefined], ['true', 'true'], ['false', 'false']] as const)(
+      'POST /automations creates a Job (FLOWS_ENABLED %s)', async (_label, value) => {
         if (value === undefined) vi.stubEnv('FLOWS_ENABLED', undefined as unknown as string);
         else vi.stubEnv('FLOWS_ENABLED', value);
+        mockInsert();
         const res = await post();
-        expect(res.status).toBe(410);
-        expect(await res.json()).toEqual({ error: 'automations_moved_to_flows', flowsUrl: '/flows' });
-        expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
-        expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+        expect(res.status).toBe(201);
+        expect((await res.json()).id).toBe('11111111-1111-4111-8111-111111111111');
+        expect(vi.mocked(db.insert)).toHaveBeenCalled();
       },
     );
 
-    it('the 410 answers before body validation (an invalid body is still 410, not 400)', async () => {
+    it('an invalid body is refused by validation (400), not by a Flows redirect', async () => {
       vi.stubEnv('FLOWS_ENABLED', 'true');
       const res = await post({ name: '' });
-      expect(res.status).toBe(410);
-    });
-
-    it('POST /automations still creates when FLOWS_ENABLED=false', async () => {
-      vi.stubEnv('FLOWS_ENABLED', 'false');
-      vi.mocked(db.insert).mockReturnValue({
-        values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: '11111111-1111-4111-8111-111111111111', name: 'New Job', orgId: 'org-123',
-            trigger: { type: 'manual' }, enabled: true,
-          }]),
-        }),
-      } as any);
-      const res = await post();
-      expect(res.status).toBe(201);
+      expect(res.status).toBe(400);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     });
   });
 
