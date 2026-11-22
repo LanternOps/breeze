@@ -376,6 +376,38 @@ describe('sanitizeUntrustedToolValue — property names', () => {
     expect(out['[filtered]_4']).toBe('dirty-2');
   });
 
+  // The key count is device-controlled (a 5 MB command result holds hundreds of
+  // thousands of short keys), so resolving N keys that share one filtered base
+  // must stay linear — restarting the suffix search at 2 for each was O(N²).
+  it('stays linear when many distinct keys filter to the same base', () => {
+    // 22 zero-width / bidi / NBSP code points the filter strips; four of them
+    // after "k" give 234,256 distinct keys that all filter to "k".
+    const STRIPPED = [
+      '​', '‌', '‍', '‎', '‏', '‪', '‫', '‬', '‭', '‮', '⁠',
+      '⁡', '⁢', '⁣', '⁤', '⁦', '⁧', '⁨', '⁩', '﻿', '­', ' ',
+    ];
+    const COUNT = 20_000;
+    const input: Record<string, number> = {};
+    for (let i = 0; i < COUNT; i++) {
+      let key = 'k';
+      for (let n = i, d = 0; d < 4; d++, n = Math.floor(n / STRIPPED.length)) key += STRIPPED[n % STRIPPED.length];
+      input[key] = i;
+    }
+    input.k_3 = -1; // a real key sitting on a suffix the scheme would otherwise hand out
+    expect(Object.keys(input)).toHaveLength(COUNT + 1);
+
+    const started = performance.now();
+    const out = sanitizeUntrustedToolValue(input) as Record<string, number>;
+    const elapsed = performance.now() - started;
+
+    const keys = Object.keys(out);
+    expect(new Set(keys).size).toBe(COUNT + 1);
+    expect(out.k_3).toBe(-1);
+    expect(out.k).toBe(0);
+    expect(Object.values(out).sort((a, b) => a - b)).toEqual([-1, ...Array.from({ length: COUNT }, (_, i) => i)]);
+    expect(elapsed).toBeLessThan(2_000);
+  }, 120_000);
+
   it('disambiguates a key whose only change is a stripped NBSP', () => {
     const out = sanitizeUntrustedToolValue({ 'Display\u00A0Name': 'dirty', DisplayName: 'clean' }) as Record<string, unknown>;
     expect(ownKeys(out)).toEqual(['DisplayName_2', 'DisplayName']);

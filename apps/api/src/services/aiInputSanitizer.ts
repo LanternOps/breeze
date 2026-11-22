@@ -277,19 +277,26 @@ export function sanitizeUntrustedToolValue(value: unknown, flags?: string[]): un
  * an unchanged one. A collision raises `key_collision` (the same suffix scheme
  * and flag as `sanitizeRecord` for page context). A Set, not `in`, decides
  * "taken", so `constructor` / `__proto__` are not mistaken for existing keys.
+ *
+ * The key count is device-controlled, so the suffix search resumes from the
+ * last suffix handed out for that base (`nextSuffix`) instead of restarting at
+ * 2: N keys sharing one base cost O(N) lookups, not O(N²). Each candidate is
+ * still checked against `taken`, so a suffixed name never lands on a real key.
  */
 function fenceUntrustedKeys(keys: readonly string[], flags: string[]): string[] {
   const filtered = keys.map((key) => sanitizeUntrustedToolText(key, flags));
   const taken = new Set(keys.filter((key, index) => filtered[index] === key));
+  const nextSuffix = new Map<string, number>();
   return keys.map((key, index) => {
     const safe = filtered[index]!;
     if (safe === key) return key;
     let candidate = safe;
     if (taken.has(candidate)) {
       addFlag(flags, 'key_collision');
-      let suffix = 2;
+      let suffix = nextSuffix.get(safe) ?? 2;
       while (taken.has(`${safe}_${suffix}`)) suffix++;
       candidate = `${safe}_${suffix}`;
+      nextSuffix.set(safe, suffix + 1);
     }
     taken.add(candidate);
     return candidate;
