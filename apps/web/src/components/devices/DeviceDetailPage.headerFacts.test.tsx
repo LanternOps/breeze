@@ -43,7 +43,9 @@ const base = {
 };
 
 async function renderedDevice(payload: Record<string, unknown>) {
-  vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({ ...base, ...payload }), { status: 200 }));
+  const body = JSON.stringify({ ...base, ...payload });
+  // A Response body can be read once: every call gets its own instance.
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(body, { status: 200 }));
   render(<DeviceDetailPage deviceId={DEVICE_ID} />);
   return JSON.parse((await screen.findByTestId('device-prop')).textContent ?? '{}');
 }

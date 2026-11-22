@@ -714,3 +714,20 @@ describe('DeviceActions — wake availability gating (#10838)', () => {
     expect(container.textContent ?? '').not.toMatch(/wake-on-lan|wake on lan|wol/i);
   });
 });
+
+// The overflow item that opened the retired Device Settings modal now emits
+// "edit-details" (DeviceDetailPage reveals the Details tab). The pages are
+// tested by firing that string from stubs, so pin that the real menu emits it.
+describe('DeviceActions — "Edit details" in the overflow menu', () => {
+  it('emits edit-details with the device', async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    render(<DeviceActions device={onlineDevice} onAction={onAction} />);
+
+    await user.click(screen.getByTestId('device-actions-menu'));
+    await user.click(screen.getByRole('menuitem', { name: /^edit details$/i }));
+
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onAction).toHaveBeenCalledWith('edit-details', onlineDevice);
+  });
+});

@@ -28,9 +28,8 @@ vi.mock('../../services/deviceActions', () => ({
 
 // Two call SHAPES — that is the whole contract under test:
 //   * A caller with no dialog of its own fires `onAction('decommission', device)`
-//     with NO third argument, so the PAGE owes it one. (The Device Settings
-//     modal's Danger Zone was that caller until it was retired; the gate keys on
-//     the ABSENCE of `opts`, so it holds for any future caller that omits it.)
+//     with NO third argument, so the PAGE owes it one. The gate keys on the
+//     ABSENCE of `opts`, so it holds for any caller that omits it.
 //   * DeviceActions' kebab already asked the question in its own
 //     RemoveDeviceDialog and fires `onAction('decommission', device, choice)`.
 //     That path must execute straight through — a second dialog would be a bug.
@@ -72,11 +71,7 @@ async function advanceUndoWindow() {
   });
 }
 
-// #3987 follow-up: the detail page had a gate-less `case "decommission"`, so the
-// Settings → Danger Zone button removed the device with no dialog at all — the
-// one Remove surface that still could not choose "leave the agent installed",
-// and it defaulted to uninstall silently. DevicesPage has always split gate from
-// execute; the detail page now does too.
+// #3987: a Remove fired with no agent choice must go through the page's RemoveDeviceDialog; the page splits gate from execute, as DevicesPage does.
 describe('DeviceDetailPage — a Remove with no choice goes through RemoveDeviceDialog (#3987)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

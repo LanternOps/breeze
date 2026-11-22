@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
 import { FactPopover } from './FactPopover';
@@ -35,11 +36,16 @@ describe('FactPopover', () => {
     expect(screen.queryByTestId('b-panel')).not.toBeInTheDocument();
   });
 
-  it('a click on panel text keeps it open (the panel takes focus, so the blur stays inside)', () => {
+  it('a click on panel text moves focus into the panel and keeps it open', async () => {
+    const user = userEvent.setup();
     render(<Two />);
-    fireEvent.click(screen.getByTestId('b'));
-    const panel = screen.getByTestId('b-panel');
-    expect(panel).toHaveAttribute('tabindex', '-1');
+    await user.click(screen.getByTestId('b'));
+    expect(screen.getByTestId('b')).toHaveFocus();
+    await user.click(screen.getByText(/panel b/));
+    // Focus lands on the panel itself, not <body>, so the chip's blur has a
+    // relatedTarget inside the popover and does not count as leaving it.
+    expect(screen.getByTestId('b-panel')).toHaveFocus();
+    expect(screen.getByTestId('b-panel')).toBeInTheDocument();
   });
 
   it('activating a link or button in the panel closes it (the action takes the user elsewhere)', () => {
@@ -54,6 +60,16 @@ describe('FactPopover', () => {
     fireEvent.click(screen.getByTestId('b'));
     fireEvent.click(screen.getByText(/panel b/));
     expect(screen.getByTestId('b-panel')).toBeInTheDocument();
+  });
+
+  it('a mousedown outside closes the open panel; one inside the panel does not', () => {
+    render(<Two />);
+    fireEvent.click(screen.getByTestId('a'));
+    fireEvent.mouseDown(screen.getByText('panel a'));
+    expect(screen.getByTestId('a-panel')).toBeInTheDocument();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByTestId('a-panel')).not.toBeInTheDocument();
+    expect(screen.getByTestId('a')).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('Escape closes the open panel and returns focus to its chip', () => {

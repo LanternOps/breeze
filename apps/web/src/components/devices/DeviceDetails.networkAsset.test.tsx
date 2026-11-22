@@ -118,9 +118,15 @@ describe('DeviceDetails — "Network asset" back-link (#3261)', () => {
 
     render(<DeviceDetails device={baseDevice} />);
 
-    // Wait for the page to settle so this cannot pass merely by rendering
-    // before the fetch resolves.
-    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith(ASSETS_URL));
+    // The header facts row is aria-busy until every source, the asset lookup
+    // included, has answered. Wait for it to settle (busy cleared, or the row
+    // dropped because it has nothing to show), so this cannot pass merely by
+    // asserting before the empty asset list lands.
+    expect(screen.getByTestId('device-header-facts')).toHaveAttribute('aria-busy', 'true');
+    await waitFor(() =>
+      expect(screen.queryByTestId('device-header-facts')?.getAttribute('aria-busy') ?? null).toBeNull(),
+    );
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(ASSETS_URL);
     expect(screen.queryByTestId('device-network-asset-link')).toBeNull();
     expect(screen.queryByTestId('device-network-asset-list')).toBeNull();
   });

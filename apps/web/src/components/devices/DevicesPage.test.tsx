@@ -166,9 +166,6 @@ vi.mock('./ScriptPickerModal', () => ({
       </button>
     ) : null,
 }));
-// A spy, not a bare stub: the modal renders null either way, so the ONLY way a
-// test can observe whether runDeviceAction's `settings` branch ran is whether
-// this component was invoked at all (#4014).
 vi.mock('./AddDeviceModal', () => ({
   default: ({ isOpen }: { isOpen: boolean }) => (isOpen ? <div data-testid="add-device-modal-stub" /> : null),
 }));
@@ -2459,7 +2456,7 @@ describe('DevicesPage — decommission from the row/grid kebab is confirm-gated 
 
 // #4014: the SINGLE-device funnel had no network guard. `handleBulkAction` has
 // dropped network rows since #1322, but `handleDeviceAction` — the shared entry
-// point behind the list kebab, the grid card and the (since retired) DeviceSettingsModal — took any
+// point behind the list kebab and the grid card — took any
 // device it was handed. The real DeviceCard (stubbed in this file) had no
 // deviceClass branch at all, so the grid kebab offered Terminal / Run Script /
 // Reboot / Settings / Remove for a network-discovered asset, whose id is

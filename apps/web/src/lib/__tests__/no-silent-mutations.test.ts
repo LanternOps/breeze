@@ -79,7 +79,7 @@ const TARGET_GLOBS = [
   // Endpoint messaging W1 (#8741): the send POST goes through runAction from birth.
   'src/lib/endpointMessages.ts',
   'src/components/endpointMessages/SendMessageDialog.tsx',
-  // The Details tab's tag and purchase-date editors (replaced DeviceSettingsModal): PATCH via runAction.
+  // The Details tab's tag and purchase-date editors: PATCH via runAction.
   'src/components/devices/DeviceTagsCard.tsx',
   'src/components/devices/PurchaseDateRow.tsx',
   'src/components/billing/PaymentsSettingsTab.tsx',
