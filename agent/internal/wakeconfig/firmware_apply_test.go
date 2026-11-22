@@ -564,18 +564,117 @@ func TestFirmwareAttemptPersistedBeforeWriteAndSaveFailureBlocksIt(t *testing.T)
 }
 
 func TestFirmwareStopsWhenNoLongerAllowed(t *testing.T) {
+	// The grant lapses after the first write: exactly one write.
 	r := newFWRig(goodMachine(), newDellFirmware())
-	var n atomic.Int32
-	r.stillOK = func() bool { return n.Add(1) <= 1 } // allowed for the first check only
+	r.stillOK = func() bool { return len(r.fw.calls()) == 0 }
 	r.run(true, t0)
-	if got := r.fw.calls(); len(got) > 1 {
-		t.Fatalf("writes continued after the grant lapsed: %v", got)
+	if got := r.fw.calls(); !reflect.DeepEqual(got, dellTargetWrites[:1]) {
+		t.Fatalf("writes after the grant lapsed mid-pass: %v", got)
 	}
+	if _, ok := r.state.Limiter.Entries["firmware:dell:DeepSleepCtrl"]; ok {
+		t.Fatal("an attempt was recorded for a write that never ran")
+	}
+
+	// The grant lapses while the BitLocker guard is reading (up to 90 s):
+	// re-checked before the first write, so nothing is written or recorded.
+	var granted atomic.Bool
+	granted.Store(true)
+	fw := newDellFirmware()
+	m := goodMachine()
+	st := &ApplyState{}
+	Apply(context.Background(), ApplyInputs{activated: true, Configure: true, PolicyFingerprint: "p1",
+		Readings: m.read(), State: st, Persist: func(ApplyState) error { return nil }, Now: t0,
+		Reread:   func(ctx context.Context) (*WindowsReadings, error) { return m.read(), nil },
+		Firmware: ReadFirmware(context.Background(), fw), FirmwareAdapter: fw, FirmwareWrites: true,
+		FirmwareStillAllowed: granted.Load,
+		BitLocker: BitLockerReaders{State: func() (string, error) {
+			granted.Store(false)
+			return security.BitLockerStateOff, nil
+		}},
+	})
+	if n := len(fw.calls()); n != 0 || len(st.Limiter.Entries) != 0 {
+		t.Fatalf("grant lapsed during the guard: %d writes, entries %v", n, st.Limiter.Entries)
+	}
+
 	r2 := newFWRig(goodMachine(), newDellFirmware())
 	r2.stillOK = func() bool { return false }
 	r2.run(true, t0)
 	if len(r2.fw.calls()) != 0 || r2.bl.stateN.Load() != 0 {
 		t.Fatal("wrote or read bitlocker with the grant gone")
+	}
+}
+
+// A write whose outcome was never confirmed (it timed out and the read-back
+// failed), followed by a policy change that clears failure counts, is still
+// stored-not-in-effect when it later reads correct in the same boot:
+// needs_reboot, never ready.
+func TestUnconfirmedFirmwareWriteAfterPolicyChangeIsNeedsReboot(t *testing.T) {
+	fw := newDellFirmware()
+	fw.applyErr = errors.New("dell write did not finish and may still take effect")
+	fw.landsOnError = true
+	m := goodMachine()
+	st := &ApplyState{}
+	bl := (&blReaders{state: security.BitLockerStateOff}).readers()
+	in := ReadFirmware(context.Background(), fw)
+	// Every read after the write fails: the outcome is unconfirmed.
+	fw.readErr = errors.New("powershell exit 1")
+	Apply(context.Background(), ApplyInputs{activated: true, Configure: true, PolicyFingerprint: "p1",
+		Readings: m.read(), State: st, Persist: func(ApplyState) error { return nil }, Now: t0,
+		Reread:   func(ctx context.Context) (*WindowsReadings, error) { return m.read(), nil },
+		BootID:   func() (string, error) { return "bootid:1", nil },
+		Firmware: in, FirmwareAdapter: fw, FirmwareWrites: true, BitLocker: bl,
+	})
+	if len(st.Pending) != 0 {
+		t.Fatalf("an unconfirmed write is not yet pending: %v", st.Pending)
+	}
+	fw.readErr = nil
+	rep := Apply(context.Background(), ApplyInputs{activated: true, Configure: false, PolicyFingerprint: "p2",
+		Readings: m.read(), State: st, Persist: func(ApplyState) error { return nil }, Now: t0.Add(time.Hour),
+		Reread:   func(ctx context.Context) (*WindowsReadings, error) { return m.read(), nil },
+		BootID:   func() (string, error) { return "bootid:1", nil },
+		Firmware: ReadFirmware(context.Background(), fw), FirmwareAdapter: fw, BitLocker: bl,
+	})
+	in2 := dellInputs(rep.Firmware, "")
+	in2.Windows = rep.Readings
+	status := rep.Status
+	in2.Apply = &status
+	if s := Compute(in2); s.ReadinessState != StateNeedsReboot {
+		t.Fatalf("got %s %v (pending %v)", s.ReadinessState, s.ReasonCodes, rep.Status.Pending)
+	}
+}
+
+// One pass with a Windows write and a firmware write failing: partial, and
+// every failure counted against len(Attempted) across both layers.
+func TestMixedWindowsAndFirmwareResults(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		winFail     bool
+		fwFail      bool
+		wantResult  string
+		wantFailed  int
+		wantAttempt int
+	}{
+		{"all ok", false, false, "ok", 0, 6},
+		{"windows fails, firmware ok", true, false, "partial", 4, 6},
+		{"windows ok, firmware fails", false, true, "partial", 2, 6},
+		{"both fail", true, true, "failed", 6, 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := badMachine()
+			fw := newDellFirmware()
+			r := newFWRig(m, fw)
+			if tc.winFail {
+				r.writer.fail = map[OpKind]error{OpFastStartupOff: errors.New("x"), OpMagicPacketOn: errors.New("x"),
+					OpEEEOff: errors.New("x"), OpShutdownWakeOn: errors.New("x")}
+			}
+			if tc.fwFail {
+				fw.applyErr = &biosconfig.DellStatusError{Code: 1}
+			}
+			rep := r.run(true, t0)
+			if len(rep.Attempted) != tc.wantAttempt || len(rep.Failed) != tc.wantFailed || rep.Status.LastApplyResult != tc.wantResult {
+				t.Fatalf("attempted %d failed %d result %q", len(rep.Attempted), len(rep.Failed), rep.Status.LastApplyResult)
+			}
+		})
 	}
 }
 

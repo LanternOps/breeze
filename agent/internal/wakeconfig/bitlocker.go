@@ -136,14 +136,30 @@ func readProtectors(ctx context.Context, read func(context.Context) (string, err
 
 const pcrProfileLabel = "pcr validation profile:"
 
-// profilesIncludePCR1 reads every "PCR Validation Profile:" block. Each must
-// start with a list of PCR numbers on the next line; following lines that are
+// profilesIncludePCR1 reads every "PCR Validation Profile:" block; there must
+// be exactly one per listed protector ("ID: {...}"). Each must start with a
+// list of PCR numbers on the next line; following lines that are
 // also bare PCR lists (a wrapped profile) join it. PCRs are compared as
 // integers, never substrings. No profile at all is an error. Errors never
 // repeat the output.
 func profilesIncludePCR1(out string) (bool, error) {
 	lines := strings.Split(strings.ReplaceAll(out, "\r\n", "\n"), "\n")
 	found, pcr1 := false, false
+	// Every listed protector must carry its own profile: a protector whose
+	// profile cannot be found is not assumed to be clean.
+	protectors, profiles := 0, 0
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "ID:") && strings.Contains(t, "{") {
+			protectors++
+		}
+		if strings.ToLower(t) == pcrProfileLabel {
+			profiles++
+		}
+	}
+	if protectors != profiles {
+		return false, fmt.Errorf("%d protectors listed but %d validation profiles", protectors, profiles)
+	}
 	for i, line := range lines {
 		if strings.ToLower(strings.TrimSpace(line)) != pcrProfileLabel {
 			continue

@@ -134,8 +134,9 @@ func firmwareProtectionReason(fw *FirmwareReadings) string {
 }
 
 // firmwareWriteAllowed is the last check before any firmware write: the
-// password state again, then the BitLocker guard. It reports false and a
-// reason on any doubt.
+// password state as read this cycle (not a fresh read; the BIOS itself refuses
+// an unauthenticated write once a password is set), then the BitLocker guard,
+// which does read fresh. It reports false and a reason on any doubt.
 func firmwareWriteAllowed(ctx context.Context, fw *FirmwareReadings, bl BitLockerReaders) (bool, string) {
 	if r := firmwareProtectionReason(fw); r != "" {
 		return false, r
@@ -238,19 +239,26 @@ func applyFirmware(ctx context.Context, in ApplyInputs, st *ApplyState, rep *App
 // reconcileFirmware handles a firmware attempt that was never confirmed but
 // whose value now reads correct. With no reboot since the attempt it is stored
 // but not in effect, so it is marked pending as of the attempt.
+//
+// It does not rely on the failure count alone: a policy change clears failure
+// counts (Limiter.Observe), and an unconfirmed attempt must still not read as
+// ready. Any attempt made in this boot that reads correct and is not pending
+// is marked pending too.
 func reconcileFirmware(st *ApplyState, fw *FirmwareReadings, boot string) {
 	if fw == nil {
 		return
 	}
 	for key, e := range st.Limiter.Entries {
-		if e.Failures == 0 {
+		_, pending := st.Pending[key]
+		sameBoot := boot != "" && e.Boot == boot
+		if e.Failures == 0 && (pending || !sameBoot) {
 			continue
 		}
 		op, ok := firmwareOpFromKey(key)
 		if !ok || !firmwareSatisfied(op, fw) {
 			continue
 		}
-		if boot == "" || e.Boot == "" || boot == e.Boot {
+		if !pending && (boot == "" || e.Boot == "" || boot == e.Boot) {
 			setPending(st, key, PendingWrite{At: e.LastAttemptAt, Boot: e.Boot})
 		}
 		st.Limiter.succeeded(key)

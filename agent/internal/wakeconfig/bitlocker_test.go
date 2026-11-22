@@ -89,6 +89,10 @@ func TestBitLockerGuardTable(t *testing.T) {
 		{"on, profile not numbers", &blReaders{state: security.BitLockerStateOn, listing: tpmListing("seven, eleven")}, false, reasonBitLockerProfileUnreadable, true},
 		{"on, PCR out of range", &blReaders{state: security.BitLockerStateOn, listing: tpmListing("7, 24")}, false, reasonBitLockerProfileUnreadable, true},
 		{"on, negative PCR", &blReaders{state: security.BitLockerStateOn, listing: tpmListing("-1, 7")}, false, reasonBitLockerProfileUnreadable, true},
+		{"on, a listed protector without a profile", &blReaders{state: security.BitLockerStateOn, listing: tpmListing("7, 11") +
+			"    TPM:\r\n      ID: {00000000-0000-4000-8000-000000000009}\r\n"}, false, reasonBitLockerProfileUnreadable, true},
+		{"on, profile label in other case", &blReaders{state: security.BitLockerStateOn, listing: strings.Replace(tpmListing("1, 7"), "PCR Validation Profile:", "pcr validation PROFILE:", 1)}, false, reasonBitLockerPCR1, true},
+		{"on, second profile garbage", &blReaders{state: security.BitLockerStateOn, listing: tpmListing("7, 11", "x")}, false, reasonBitLockerProfileUnreadable, true},
 		{"on, empty profile", &blReaders{state: security.BitLockerStateOn, listing: tpmListing("")}, false, reasonBitLockerProfileUnreadable, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

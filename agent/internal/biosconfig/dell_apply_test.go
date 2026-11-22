@@ -65,7 +65,7 @@ func TestDellReturnCodesMapToApplyFailed(t *testing.T) {
 	ok := []string{
 		`{"status":0,"returnValue":0,"error":null}`,
 		`{"status":0,"returnValue":null,"error":null}`,
-		`{"status":null,"returnValue":0,"error":null}`,
+		"\xef\xbb\xbf" + `{"status":0,"returnValue":0,"error":null}` + "\r\n",
 	}
 	for _, out := range ok {
 		w := &fakeDellWriter{out: []byte(out)}
@@ -91,6 +91,10 @@ func TestDellReturnCodesMapToApplyFailed(t *testing.T) {
 		`{"status":0,"returnValue":1,"error":null}`,
 		`{"status":1,"returnValue":0,"error":null}`,
 		`{"status":null,"returnValue":null,"error":null}`,
+		// Status is Dell's own outcome; a bare ReturnValue 0 only says the
+		// method ran, so it is not success.
+		`{"status":null,"returnValue":0,"error":null}`,
+		`{"status":-0,"returnValue":0,"error":null}`,
 		`{"status":"0","returnValue":0,"error":null}`,
 		`{"status":0.5,"returnValue":0,"error":null}`,
 		`{"status":0,"returnValue":0,"error":"value_not_allowed"}`,

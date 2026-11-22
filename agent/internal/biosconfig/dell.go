@@ -192,10 +192,13 @@ var dellToken = regexp.MustCompile(`^[A-Za-z0-9]{1,64}$`)
 // dellRefusalCode matches the script's own fixed refusal codes.
 var dellRefusalCode = regexp.MustCompile(`^[a-z_]{1,32}$`)
 
-// parseDellApply accepts only a clean success: the script's exact three keys,
-// no refusal, at least one of Status and ReturnValue present, and every one
-// present a bare JSON integer 0. It is pure, and never repeats the output in
-// an error.
+// dellDigits is a bare non-negative JSON integer (no sign, fraction or exponent).
+var dellDigits = regexp.MustCompile(`^[0-9]{1,10}$`)
+
+// parseDellApply accepts only a clean success: the script's three keys all
+// present, no refusal, Status present and a bare JSON integer 0, and
+// ReturnValue, when present, 0 as well. It is pure, and never repeats the
+// output in an error.
 func parseDellApply(raw []byte) error {
 	raw = bytes.TrimPrefix(bytes.TrimSpace(raw), []byte("\xef\xbb\xbf"))
 	var r map[string]json.RawMessage
@@ -216,15 +219,18 @@ func parseDellApply(raw []byte) error {
 		}
 		return fmt.Errorf("%w: write script refused: %s", ErrApplyFailed, code)
 	}
-	if isNull(r["status"]) && isNull(r["returnValue"]) {
+	if isNull(r["status"]) {
+		// Status is Dell's own outcome of the write; ReturnValue only says
+		// the method ran. Without Status the outcome is unknown.
 		return fmt.Errorf("%w: no status reported", ErrApplyFailed)
 	}
 	for _, k := range []string{"status", "returnValue"} {
 		if isNull(r[k]) {
 			continue
 		}
-		v, err := strconv.ParseInt(string(bytes.TrimSpace(r[k])), 10, 64)
-		if err != nil {
+		text := string(bytes.TrimSpace(r[k]))
+		v, err := strconv.ParseInt(text, 10, 64)
+		if err != nil || !dellDigits.MatchString(text) {
 			return fmt.Errorf("%w: %s is not an integer", ErrApplyFailed, k)
 		}
 		if v != 0 {
