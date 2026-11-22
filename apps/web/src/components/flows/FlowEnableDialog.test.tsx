@@ -285,6 +285,44 @@ describe('FlowEnableDialog', () => {
       });
     });
 
+    it('each ticked fleet step needs its own valid value and is sent with it', async () => {
+      const user = userEvent.setup();
+      api.enableFlow.mockResolvedValue({ ok: true });
+      setup();
+      await user.click(screen.getByTestId('flow-enable-preapprove-fleet_a'));
+      await user.type(screen.getByTestId('flow-enable-maxtargets-fleet_a'), '25');
+      await user.click(screen.getByTestId('flow-enable-preapprove-fleet_b'));
+      // fleet_a is valid, fleet_b is blank: Confirm stays disabled.
+      expect(confirmButton().disabled).toBe(true);
+      const b = screen.getByTestId('flow-enable-maxtargets-fleet_b');
+      await user.type(b, '0');
+      expect(confirmButton().disabled).toBe(true);
+      await user.clear(b);
+      await user.type(b, '40');
+      expect(confirmButton().disabled).toBe(false);
+      await user.click(confirmButton());
+      expect(api.enableFlow).toHaveBeenCalledWith('f1', {
+        expectedVersion: 4,
+        preApprovedStepIds: ['fleet_a', 'fleet_b'],
+        fleetMaxTargets: { fleet_a: 25, fleet_b: 40 },
+      });
+    });
+
+    it('a flow that reloads as webhook-triggered drops earlier ticks', async () => {
+      const user = userEvent.setup();
+      api.enableFlow.mockResolvedValue({ ok: true });
+      const { rerender } = setup();
+      await user.click(screen.getByTestId('flow-enable-preapprove-run_a'));
+      await user.click(screen.getByTestId('flow-enable-preapprove-fleet_a'));
+      await user.type(screen.getByTestId('flow-enable-maxtargets-fleet_a'), '25');
+      rerender(flow('webhook'));
+      expect(screen.getByTestId('flow-enable-webhook-no-preapproval')).toBeTruthy();
+      expect(confirmButton().disabled).toBe(false);
+      await user.click(confirmButton());
+      expect(api.enableFlow).toHaveBeenCalledWith('f1', { expectedVersion: 4, preApprovedStepIds: [] });
+      expect('fleetMaxTargets' in lastEnableBody()).toBe(false);
+    });
+
     it('a non-fleet tier-3 step needs no maxTargets', async () => {
       const user = userEvent.setup();
       api.enableFlow.mockResolvedValue({ ok: true });

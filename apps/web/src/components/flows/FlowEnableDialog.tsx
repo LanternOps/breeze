@@ -103,7 +103,10 @@ export function FlowEnableDialog({
     setError(null);
     try {
       const preApprovedStepIds = preApproved.map((p) => p.id);
-      const fleetMaxTargets = Object.fromEntries(fleetPreApproved.map((p) => [p.id, p.maxTargets as number]));
+      // canSubmit guarantees every entry parsed; the guard keeps the compiler checking it.
+      const fleetMaxTargets = Object.fromEntries(
+        fleetPreApproved.flatMap((p) => (typeof p.maxTargets === 'number' ? [[p.id, p.maxTargets] as const] : [])),
+      );
       const result = await enableFlow(flow.id, {
         expectedVersion: flow.definitionVersion,
         preApprovedStepIds,
