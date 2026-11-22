@@ -227,13 +227,17 @@ async function lockTickets(tx: Tx, ids: readonly [string, string]): Promise<Map<
   const byId = new Map(reads.map((r) => [r.id, r]));
   return new Map([...locked.values()].map((r) => {
     const read = byId.get(r.id);
+    // The row is locked in this transaction, so the read under that lock must
+    // see it. Never fall back: an epoch createdAt would let an import link
+    // stamped before the ticket existed pass assertImportWrite's time check.
+    if (!read) throw new Error(`ticket ${r.id} is locked but its read under the lock returned nothing`);
     return [r.id, {
       id: r.id,
       orgId: r.orgId,
       partnerId: r.partnerId,
       deleted: r.deletedAt !== null,
-      number: read ? displayNumber(read) : '',
-      createdAt: read?.createdAt ?? new Date(0),
+      number: displayNumber(read),
+      createdAt: read.createdAt,
     }];
   }));
 }
