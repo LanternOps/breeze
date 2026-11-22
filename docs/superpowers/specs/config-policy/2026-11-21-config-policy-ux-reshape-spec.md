@@ -87,9 +87,11 @@ inheritance mechanisms never share a word. API field names do not change.
   stays in `window.location.hash`. Reuse the pattern in `components/settings/SettingsSectionNav.tsx`.
   Below about 1024px the rail becomes a picker. Proposed groups (Decision 5):
   Updates & software · Monitoring · Security · Backup · Access & end user · Lifecycle.
-- **Remove from this policy** on every *Set here* feature. Today a feature, once saved,
-  cannot be returned to *Not set* from the page (#12263). Remove returns it to *Not set*, or
-  to *From parent* when the parent has it.
+- **Remove from this policy** on every *Set here* feature, with one rule for all 26. Remove
+  returns it to *Not set*, or to *From parent* when the parent has it. Today Remove exists
+  only on a policy with no parent; on a child policy most tabs offer "Revert to parent" even
+  when the parent lacks the feature, and five tabs follow a different rule. #12263 reports a
+  user who could not unset a feature.
 - **Compliance Status** stays as a results view at the foot of the rail.
 
 ### Save model
@@ -173,10 +175,11 @@ a side panel so the feature stays in view.
   that others are based on reads "In use through 3 policies · 148 devices", and its saves carry
   that reach.
 - **Precedence, on the device** (Config tab). Already shipped (#9575): chain rows link to each
-  policy, list what it contributes and mark the features a closer policy won. Still to do: each
-  feature card names the winning policy as a link and the level it arrived through; the chain
-  says why a policy lost (more specific level, or priority; #9565 notes both rows show priority 0
-  with no hint that level decided it); one feature label set, shared with the editor.
+  policy, list what it contributes and mark the features a closer policy won. Each
+  feature card already shows the level its winner arrived through. Still to do: the card links
+  to the winning policy; the chain says why a policy lost (more specific level, lower priority
+  number, or assigned earlier; #9565 notes both rows show priority 0 with no hint that level
+  decided it); one feature label set, shared with the editor.
 - **Precedence, on the policy** (W5). "Outranked on 14 devices" per feature.
 
 ### Device page
@@ -257,8 +260,8 @@ Decided here, with the reason for each.
 - Exclusion targeting ("all except Birch") and field-level merging.
 - Tag and dynamic filters (#7414, #8957).
 - The confirmation rule for destructive links (#3381) and the backup setup pages (#12308).
-- Duplicate and copy-between-orgs themselves (#12309, #11776); this spec only names Copy as the
-  exit from a locked owner or parent.
+- Copy before W5. W5 delivers Copy of one policy, including to a different owner (#12309,
+  #11776). Until then the places that name Copy as the way out state the reason with no action.
 - AI tool changes (`aiToolsConfigPolicy.ts`): the create tool's owner default should follow the
   same rule in a follow-up.
 - Device-own settings: companion spec.
