@@ -1164,7 +1164,8 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_service_monitoring_status: new Set(['name', 'details']),
   // A network check's last error and each result's error/details blob are written by the reporting
   // agent (recordMonitorCheckResult), not by Breeze.
-  manage_monitors: new Set(['lastError', 'error', 'details']),
+  // tlsIssuer and tlsObservedHost come from the certificate the checked host presented.
+  manage_monitors: new Set(['lastError', 'error', 'details', 'tlsIssuer', 'tlsObservedHost']),
   // USB descriptor strings (vendor, product, serial), the peripheral type, event id and details blob are
   // agent-reported (routes/agents/peripherals.ts).
   get_peripheral_activity: new Set(['vendor', 'product', 'serialNumber', 'peripheralType', 'sourceEventId', 'details']),
@@ -1229,7 +1230,7 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_ai_agent_run: new Set([
     'errorMessage', 'summary', 'resultSummary', 'deviceHostname', 'agentName',
     'verifyDetail', 'actTargetName', 'reason', 'intentError', 'downgradeReason',
-    'ticketProposal', 'alertVerdict', 'sweep', 'narrative', 'fleetDesign', 'patch', 'analysis',
+    'ticketProposal', 'alertVerdict', 'sweep', 'narrative', 'fleetDesign', 'patch', 'analysis', 'analysisGoal',
   ]),
   // Full-control W11 (#6781, quorum QW10): every free-text field the security policy tools return, nested included.
   // Device-reported (hostnames, local admin usernames, password-policy rule text, encryption volume labels, audit
