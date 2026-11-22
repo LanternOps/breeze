@@ -1,3 +1,7 @@
+---
+tracking_issue: LanternOps/breeze#12433
+---
+
 # Flows Completion (standalone Jobs: editor through R3) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -27,7 +31,7 @@
 - Flows spec: `docs/superpowers/specs/ai-mcp/2026-09-07-tool-catalog-and-flows-design.md`. W1 amends its §3 (non-goals table, canvas row) and its §6.8.
 - `CLAUDE.md`, `docs/agents/testing.md`, `docs/agents/tenancy-rls.md`.
 
-**Baseline.** This plan was written at `origin/main` `ee33349cea`. PR #12366 (branch `fix/12310-reopen-job-creation`) was in the merge queue and **not yet on `origin/main`**. The plan is written against the state after that PR merges:
+**Baseline.** This plan was written at `origin/main` `ee33349cea`, against the state after PR #12366 (branch `fix/12310-reopen-job-creation`). That PR merged on 2026-11-22 as `affca27e0f`:
 - `POST /automations` creates a Job whatever `FLOWS_ENABLED` says.
 - "New job" opens the Job form.
 - The Flows nav item carries `previewTag: true` (`Sidebar.tsx`, key `common:nav.previewTag`).
@@ -164,18 +168,22 @@ Each one is flagged in its PR body.
 | W01a | Shared flow-form core and converter rewiring | — | W01b, W01c, W01d | sonnet (Opus review of A2, A3) | M | — |
 | W01b | Draft REST routes, delete, validate, `jobCounts` | — | W01a, W01c, W01d | opus | M | — |
 | W01c | Enable dialog: `fleetMaxTargets` and the webhook rule | — | W01a, W01b, W01d | opus | S | — |
-| W01d | One "Automations" nav entry and the path tab strip | — (reads W01b's `jobCounts` when present) | W01a, W01b, W01c | sonnet | S | Q1 decides the Preview tag placement |
+| W01d | One "Automations" nav entry and the path tab strip | — (reads W01b's `jobCounts` when present) | W01a, W01b, W01c | sonnet | S | — (built to the Q1 default, option a) |
 | W01e | Manual flow editor, docs, spec amendment, wave verification | W01a's shared commit (copied); merges after W01a–d | W01b, W01c, W01d (until merge) | opus | L | — |
 | W02a | Census additions | W1 merged | — | opus | S | — |
 | W02b | Census run and the eight live checks (operator, no PR) | W02a + W1 deployed to hosted | — | owner/operator | operator time | **Production census go-ahead** |
 | W03a | Per-trigger create refusal and API pieces | W02b passed; OD5, OD6 decided | W03b | opus | S | **≥ 1 release after W1** |
-| W03b | Web, Preview removal, docs, wave verification | W03a merges first | W03a (until merge) | sonnet | S | same as W03a; Q4 |
+| W03b | Web, Preview removal, docs, wave verification | W03a merges first | W03a (until merge) | sonnet | S | same as W03a (Q4 answered before W3 is briefed; default option a) |
 | W3a-1…4 | Conditional parity prerequisites | census counts | each other | per plan | 0 to L | **Each its own Gate B** |
 | W04a | R2 freeze and pre-create sweep (W06 PR D) | W3 released | W04b | opus | M | **≥ 1 release after W3** |
 | W04b | Partner API read-only flows export | — | W04a | opus | S | same release as W04a or earlier |
 | W04c | R2 banner, read-only edit page, all W4 docs except the env row, wave verification | W04a, W04b merged (starts after) | — | sonnet | S | — |
 | W05a | R3 gate and retirement sweep (W06 PR E) | W4 released; adopted W3a items shipped | — | opus | M | **≥ 1 release after W4; hosted condition** |
 | W05b | R3 banner, Jobs-tab hiding, docs, wave verification | W05a merged (starts after) | — | sonnet | S | — |
+
+**Tracking.** Feature parent: #12433. Sub-issues, in the order of the map above: W01a #12434, W01b #12435, W01c #12436, W01d #12437, W01e #12438, W02a #12439, W02b #12440, W03a #12441, W03b #12442, W04a #12443, W04b #12444, W04c #12445, W05a #12446, W05b #12447. The W3a items have no sub-issue until the census adopts one. The tracker's own wave keys run W01 to W14 in that order; the ids in this plan are the names used in titles and branches.
+
+**Open questions.** The six questions at the end of this plan are open. W1 is built to the default each one names; a different answer is a follow-up change, not a blocker.
 
 ## File structure (W1)
 

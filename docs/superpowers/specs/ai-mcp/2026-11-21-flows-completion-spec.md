@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#10336
+tracking_issue: LanternOps/breeze#12433
 ---
 
 # Finish Flows as the single home for automations
@@ -24,7 +24,7 @@ Breeze has two automation engines, and the move from the old one to the new one 
 
 - The sidebar shows **Jobs** and **Flows** side by side (`apps/web/src/components/layout/Sidebar.tsx:285-287`). The Jobs page is titled "Jobs", its button says "New Automation" (`apps/web/src/locales/en/scripts.json:367-370`), and the docs page is titled "Automations" (`apps/docs/src/content/docs/features/automations.mdx:2`). A new partner asked on 2026-11-20 what Flows is (#12310).
 - **No person can build a flow by hand.** A draft is created only by the `draft_flow` AI tool (`apps/api/src/services/aiToolsFlows.ts:72-105`) or by converting a Job (`apps/api/src/services/flows/conversion/`). `apps/api/src/routes/flows.ts` has list, get, enable, disable, runs and the webhook secret, and no create, update or delete (`routes/flows.ts:1-13` says so). `FlowsPage.tsx:14-16` and `FlowStepList.tsx:132-141` are read-only. A tenant with no AI key, no AI credit, or an active Wisp grant (#10289) cannot author a flow in the web app. `draft_flow` is also reachable over Breeze's MCP server with an `ai:write` key, so an external AI client can author one, but that is not a product path for most technicians.
-- W06 R1 refused new Jobs once Flows were on (`apps/api/src/routes/automations.ts:1322-1333` on `origin/main`). PR #12366 (for #12310) lifts that refusal, tags Flows as "Preview", and adds a dated amendment to the W06 plan at Decision 8: the refusal returns together with a manual editor, and PR D's test list must add `POST /automations is 410` back. The PR entered the merge queue on 2026-11-21. This spec treats the lift as done; the plan checks `origin/main` before wave 3 is written.
+- W06 R1 refused new Jobs once Flows were on (`apps/api/src/routes/automations.ts:1322-1333` on `origin/main`). PR #12366 (for #12310) lifts that refusal, tags Flows as "Preview", and adds a dated amendment to the W06 plan at Decision 8: the refusal returns together with a manual editor, and PR D's test list must add `POST /automations is 410` back. The PR merged on 2026-11-22 as `affca27e0f`.
 - Only class S converts. M, A, P, C and the R dependency still run on the legacy engine core (Flows spec §7, W06 amendment).
 - R2 and R3 are designed (W06 plan PR D and PR E, lines 1234-1320) but unbuilt, and they moved to #10336, which has no plan and no waves.
 - Seven live checks from the #5215 close-out (comment of 2026-10-29) were never run: the census CLI on US and EU, switching a real scheduled Job, a webhook retry against a switched Job, a revert while parked on approval, the `maxTargets` pause (`binding_drift`), the Jobs page in a non-en locale, and chat smokes for the W05 flow tools. Nobody knows how many unswitched Jobs exist in production.
@@ -230,7 +230,7 @@ Todd approved every recommendation below as written. The options and the Codex p
 | OD4 Create refusal | **A.** Returns in wave 3, per trigger, with the named exceptions |
 | OD5 Webhook scripts | **C.** Decided from the census; B (webhook flows always ask a person) is the wave 3 position |
 | OD6 Deployment Jobs | **C.** Decided from the census; defaults to B if the hosted count is small |
-| OD7 Scope | **B.** This feature is standalone-Job completion, editor through R3, under a new parent issue. #10336 stays the roadmap item for the managed classes, the worker deletion and the table drops |
+| OD7 Scope | **B.** This feature is standalone-Job completion, editor through R3, under the new parent issue #12433. #10336 stays the roadmap item for the managed classes, the worker deletion and the table drops |
 | OD8 Deferred items | **B.** Census-driven: blockers become conditional waves (W3a), the rest are filed as roadmap issues, the auto-switch grant is dropped |
 | OD9 Legacy-aimed specs | #9900 split (group targeting proceeds now, multiple triggers re-aimed at flows); #9209 and #11643 re-aimed at flows |
 
