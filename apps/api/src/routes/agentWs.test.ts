@@ -3162,7 +3162,7 @@ describe('agent websocket command results', () => {
       decidedAt: '2026-11-22T01:00:00.000Z' };
     const VN = { networkId: '6c1d2e3f-4a5b-4c6d-8e7f-001122334455', gatewayId: '7c1d2e3f-4a5b-4c6d-8e7f-001122334455',
       gatewayAddress: '192.168.1.1', gatewayMac: 'a4:2b:b0:11:22:9c', interfaceName: 'Ethernet' };
-    const UNVERIFIED = { code: 'network_unverified', message: GATE_FAILURE_MESSAGES.network_unverified };
+    const UNVERIFIED = { code: 'network_unverified' as const, message: GATE_FAILURE_MESSAGES.network_unverified };
     let sets: Array<Record<string, unknown>>;
 
     async function runningDiscoveryJob() {

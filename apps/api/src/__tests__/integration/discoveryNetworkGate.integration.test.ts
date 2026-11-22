@@ -47,6 +47,11 @@ vi.mock('../../services/snmpSecrets', async (importOriginal) => {
 
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { processOrphanedCommandResult } from '../../routes/agentWs';
+import { and, eq, inArray } from 'drizzle-orm';
+import { aiSessions, deviceCommands } from '../../db/schema';
+import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
+import { __test__ as sdkToolsTest } from '../../services/aiAgentSdkTools';
+import { createUser } from './db-utils';
 import { __testables, processResults } from '../../jobs/discoveryWorker';
 import { lockSitesForNetworkGate } from '../../services/learnedNetworks/siteLock';
 import {
@@ -728,3 +733,87 @@ describe('process results', () => {
     void agent;
   });
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// The AI tool (Task 13): the network_discovery tool through the real SDK wrapper
+// (aiAgentSdkTools.__test__.makeHandler applies no tool rate limit; that lives in aiAgentSdk.ts and mcpServer.ts)
+// ---------------------------------------------------------------------------------------------------------
+
+/** A chat caller of the org, with the AI session every device dispatch is attributed to. */
+async function callerAuth(t: { orgId: string; partnerId: string }): Promise<AuthContext> {
+  const { orgId, partnerId } = t;
+  const user = await createUser({ partnerId, orgId, email: `nd-${randomUUID()}@example.test` });
+  const [session] = await getTestDb().insert(aiSessions).values({
+    orgId, userId: user.id, title: 'network-gate', model: 'claude-sonnet-5-5',
+  }).returning({ id: aiSessions.id });
+  const { orgCondition, canAccessOrg } = buildOrgAccessClosures([orgId]);
+  return {
+    principal: { kind: 'user_session' },
+    user: { id: user.id, email: `${user.id}@example.test`, name: 'Test User', isPlatformAdmin: false },
+    token: { sub: user.id, email: `${user.id}@example.test`, roleId: null, orgId, partnerId, scope: 'organization', type: 'access', mfa: true },
+    partnerId, orgId, scope: 'organization', accessibleOrgIds: [orgId], orgCondition, canAccessOrg,
+    aiOrigin: { kind: 'ai_assistant', sessionId: session!.id },
+  } as unknown as AuthContext;
+}
+
+/** Plays the agent: completes the device's queued command the way the result handler does. */
+function fakeAgent(deviceId: string, stdout: string): Promise<void> {
+  return (async () => {
+    const deadline = Date.now() + 20_000;
+    let commandId: string | undefined;
+    while (!commandId && Date.now() < deadline) {
+      const [row] = await getTestDb().select({ id: deviceCommands.id }).from(deviceCommands)
+        .where(and(eq(deviceCommands.deviceId, deviceId), inArray(deviceCommands.status, ['pending', 'sent'])))
+        .limit(1);
+      commandId = row?.id;
+      if (!commandId) await new Promise((r) => setTimeout(r, 100));
+    }
+    if (!commandId) throw new Error('the tool never queued a command');
+    await getTestDb().update(deviceCommands).set({
+      status: 'completed', completedAt: new Date(),
+      result: { status: 'completed', exitCode: 0, stdout, stderr: '', durationMs: 1_000 },
+    }).where(eq(deviceCommands.id, commandId));
+  })();
+}
+
+const parseToolText = (result: { content: Array<{ type: string; text?: string }> }): Record<string, any> =>
+  JSON.parse((result.content[0] as { text: string }).text);
+
+const commandsFor = (deviceId: string) => getTestDb()
+  .select({ type: deviceCommands.type, payload: deviceCommands.payload }).from(deviceCommands)
+  .where(eq(deviceCommands.deviceId, deviceId));
+
+describe('the AI tool', () => {
+  // Task 13
+  it('ungated site: AI tool scan unchanged', async () => {
+    for (const version of ['0.128.0', 'dev']) {
+      const t = await seedSite();
+      const { deviceId } = await seedAgent({ ...t, hostname: 'DESKTOP-01', version });
+      const auth = await callerAuth(t);
+      const agent = fakeAgent(deviceId, JSON.stringify({ hosts: [], hostsScanned: 0, hostsDiscovered: 0 }));
+
+      const out = parseToolText(await sdkToolsTest.makeHandler('network_discovery', () => auth)({ deviceId, subnet: '192.168.1.0/24' }));
+      await agent;
+
+      const [row, ...more] = await commandsFor(deviceId);
+      expect(more).toEqual([]);
+      expect(row).toMatchObject({ type: 'network_discovery', payload: { subnets: ['192.168.1.0/24'], methods: ['ping'] } });
+      expect(row!.payload).not.toHaveProperty('expectedNetwork');
+      expect(out).toMatchObject({ status: 'completed' });
+    }
+  }, 90_000);
+
+  // Task 13
+  it('a gated site with no assigned network sends the AI tool no command', async () => {
+    const t = await seedSite();
+    await admin(sql`UPDATE sites SET discovery_network_required = true WHERE id = ${t.siteId}::uuid`);
+    const { deviceId } = await seedAgent({ ...t, hostname: 'DESKTOP-01' });
+    const auth = await callerAuth(t);
+
+    const out = parseToolText(await sdkToolsTest.makeHandler('network_discovery', () => auth)({ deviceId, subnet: '192.168.1.0/24' }));
+
+    expect(JSON.stringify(out)).toContain('no_network_assigned');
+    expect(await commandsFor(deviceId)).toEqual([]);
+  }, 30_000);
+});
+

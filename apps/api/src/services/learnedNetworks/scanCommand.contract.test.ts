@@ -44,11 +44,8 @@ const CLASSES: Record<string, Class> = {
   'services/llm/toolEval/goldenPrompts.ts': AI_TOOL('eval golden prompts'),
 };
 
-/**
- * Producers not yet moved onto the builder. They count as classified and the construction check skips them.
- * Task 13 removes `services/aiToolsNetwork.ts`.
- */
-const PENDING = new Set<string>(['services/aiToolsNetwork.ts']);
+/** Producers not yet moved onto the builder. They count as classified and the construction check skips them. */
+const PENDING = new Set<string>([]);
 
 /** Strips `//` and block comments, leaving string and template contents (and their `//`) alone. */
 function stripComments(source: string): string {
