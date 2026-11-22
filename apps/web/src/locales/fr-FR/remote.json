@@ -245,6 +245,7 @@
     "unverifiedHint": "L'appareil n'a pas répondu à temps — actualisez pour vérifier"
   },
   "fileManager": {
+    "absolutePathHint": "Saisir le chemin absolu du dossier",
     "activeCount": "{{count}} actif",
     "activity": "Activité",
     "cancelled": "Annulé",
@@ -270,6 +271,7 @@
       "upload": "Impossible de téléverser",
       "uploadTimeout": "Le téléchargement expirait après 2 minutes. Le fichier peut toujours être écrit sur l’appareil — rafraîchir pour vérifier."
     },
+    "folderPath": "Chemin du dossier",
     "freeOf": "{{free}} libre de {{total}}",
     "goUp": "Monte",
     "home": "Accueil",
@@ -284,6 +286,7 @@
       "invalidName": "Le nom du dossier ne peut pas contenir de séparateurs de chemin ni de caractères interdits par le système de fichiers de cet appareil.",
       "nameExists": "Un fichier ou un dossier portant ce nom existe déjà ici."
     },
+    "openFolder": "Ouvrir le dossier",
     "selectedCount": "Comte sélectionné",
     "size": "Taille",
     "title": "Gestionnaire de fichiers",
