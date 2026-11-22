@@ -1,7 +1,8 @@
 import { flowBuiltinTierFor, isFlowBuiltin, isTenantToolName, remediationTriggerSchema, type RemediationTrigger, AI_APPROVAL_TIMEOUT_MAX_MINUTES, AI_APPROVAL_TIMEOUT_MIN_MINUTES } from '@breeze/shared';
-import { buildActionLabel, describePax8Action, describePax8Submit, hasDeviceIdStub, hasTicketIdStub } from './actionLabel';
+import { buildActionLabel, describePax8Action, describePax8Submit, hasDeviceIdStub, hasPatchInstallHeadline, hasTicketIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { argumentTicketId, resolveApprovalTicketNumber } from './approvalTicketNumber';
+import { resolveApprovalPatchNames } from './approvalPatchNames';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { isMcpOriginIntent } from '../mcpIntentEligibility';
@@ -638,6 +639,37 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
   restore_snapshot: () =>
     'Restores data from a backup snapshot. Files at the restore target can be overwritten.',
   trigger_backup: () => 'Starts a backup job now. It uses device and storage resources while it runs.',
+  // The catalog fallback for this tool is its model-facing description
+  // ("CVEs: get_vulnerability_report."), which says nothing about the call.
+  manage_patches: (input) => {
+    const count = (value: unknown, singular: string, pluralForm: string): string | null =>
+      Array.isArray(value) && value.length > 0 ? `${value.length} ${value.length === 1 ? singular : pluralForm}` : null;
+    const patchCount = count(input.patchIds, 'patch', 'patches');
+    const deviceCount = count(input.deviceIds, 'device', 'devices');
+    const oneDevice = Array.isArray(input.deviceIds) && input.deviceIds.length === 1;
+    switch (nonEmptyString(input.action)) {
+      case 'install':
+        return patchCount && deviceCount
+          ? `Installs ${patchCount} on ${deviceCount}. ${oneDevice ? 'The device' : 'Devices'} may restart to finish installing.`
+          : 'Installs the selected patches on the selected devices. Devices may restart to finish installing.';
+      case 'scan':
+        return `Scans ${deviceCount ?? 'the selected devices'} for missing patches. Nothing is installed.`;
+      case 'rollback':
+        return `Uninstalls a patch from ${deviceCount ?? 'the selected devices'}. ${oneDevice ? 'The device' : 'Devices'} may restart.`;
+      case 'approve':
+        return 'Approves the patch. Nothing is installed now; scheduled patch runs may install it later.';
+      case 'bulk_approve':
+        return `Approves ${patchCount ?? 'the selected patches'}. Nothing is installed now; scheduled patch runs may install them later.`;
+      case 'decline':
+        return 'Declines the patch so scheduled patch runs skip it. Nothing is installed or removed now.';
+      case 'defer':
+        return 'Defers the patch so scheduled patch runs skip it for now. Nothing is installed now.';
+      case 'setup_auto_approval':
+        return 'Sets up automatic patch approval and a reboot policy in a configuration policy. Matching patches are approved without review.';
+      default:
+        return null;
+    }
+  },
   manage_invoices: (input) => {
     switch (nonEmptyString(input.action)) {
       case 'issue': return 'Issues the invoice to the customer.';
@@ -2303,6 +2335,15 @@ export async function createActionIntent(
   const labelTicketNumber = labelTicketId && labelReason && hasTicketIdStub(labelReason, labelTicketId)
     ? await resolveApprovalTicketNumber(labelTicketId, orgId, auth)
     : null;
+  // A patch install's headline counts its patches ("Install 3 patches on 2
+  // devices"); name them, so the approver sees WHAT is installed. Read only
+  // when the label leads with the install headline built from THESE
+  // arguments. `patches` is global, so the resolver joins through
+  // `device_patches` pinned to the intent's org, the call's devices and the
+  // FILING principal's reach (`auth`), and sanitizes the cross-tenant title.
+  const labelPatchNames = !flowRunFacts && labelReason && hasPatchInstallHeadline(input.toolName, labelReason, input.input)
+    ? await resolveApprovalPatchNames(input.input.patchIds, input.input.deviceIds, orgId, auth)
+    : null;
   // Tool catalog W04 (#5219), spec §6.5 card copy: a flow step reads
   // "Flow <name>" / "Step <id>: <tool>" — both from the server run.
   const actionLabel = flowRunFacts
@@ -2314,6 +2355,7 @@ export async function createActionIntent(
       deviceHostname: labelDeviceName,
       ticketId: labelTicketId,
       ticketNumber: labelTicketNumber,
+      patchNames: labelPatchNames,
     });
   const expiresAt = computeExpiresAt(input.source, approvalScope, input.chatApprovalWindowMs);
   const requestingClientLabel = flowRunFacts

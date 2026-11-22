@@ -19,7 +19,7 @@ import { rateLimiter } from './rate-limit';
 import { TOOL_RATE_LIMITS, resolveToolRateLimitMultiplier, scaleToolRateLimit, type ToolRateLimitScope } from './aiToolRateLimits';
 export { listEffectiveToolRateLimits, type EffectiveToolRateLimit } from './aiToolRateLimits';
 import { getRedis } from './redis';
-import { describePax8Action, describePax8Submit, humanizeToolAction } from './actionIntents/actionLabel';
+import { describePax8Action, describePax8Submit, humanizeToolAction, patchInstallHeadline } from './actionIntents/actionLabel';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
 import { isFlowToolName } from './flows/toolNames';
@@ -4845,7 +4845,8 @@ export function buildApprovalDescription(
       break;
 
     case 'manage_patches':
-      if (action === 'install') parts.push(`Install ${Array.isArray(input.patchIds) ? input.patchIds.length : 0} patch(es) on ${Array.isArray(input.deviceIds) ? input.deviceIds.length : 0} device(s)`);
+      // The intent service names the patches and the device in place of these (approvalPatchNames.ts).
+      if (action === 'install') parts.push(patchInstallHeadline(input));
       else if (action === 'scan') parts.push(`Trigger patch scan on ${Array.isArray(input.deviceIds) ? input.deviceIds.length : 0} device(s)`);
       else if (action === 'rollback') parts.push(`Rollback patch ${(input.patchId as string)?.slice(0, 8)}...`);
       else if (action === 'setup_auto_approval') parts.push(`Setup auto-approval for ${Array.isArray(input.autoApproveSeverities) ? (input.autoApproveSeverities as string[]).join(', ') : 'critical, important'} patches`);

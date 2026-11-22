@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
-import { buildActionLabel, describePax8Submit, hasTicketIdStub } from './actionLabel';
+import { buildActionLabel, describePax8Submit, hasPatchInstallHeadline, hasTicketIdStub } from './actionLabel';
 import { checkGuardrails } from '../aiGuardrails';
 
 describe('buildActionLabel', () => {
@@ -242,5 +242,91 @@ describe('buildActionLabel — ticket number (#11674)', () => {
     expect(hasTicketIdStub('Set ticket #2AAD0601... status to resolved', TICKET_ID)).toBe(true);
     expect(hasTicketIdStub('Set ticket #2aad0601... status to resolved', OTHER_TICKET_ID)).toBe(false);
     expect(hasTicketIdStub('Manage tickets: merge', TICKET_ID)).toBe(false);
+  });
+});
+
+// A supervised patch install read "Install 1 patch(es) on 1 device(s)": the
+// approver could not see WHICH patch they were signing for. The intent
+// service resolves the patches' names (approvalPatchNames.ts) and the label
+// names them in place of the count. Counts always come from the arguments.
+describe('buildActionLabel — patch names', () => {
+  const DEVICE = '6eae0f70-1111-4222-8333-444455556666';
+  const OTHER_DEVICE = '7eae0f70-1111-4222-8333-444455556666';
+  const patchIds = (n: number) => Array.from({ length: n }, (_, i) => `${String(i).padStart(8, 'a')}-1111-4222-8333-444455556666`);
+  const install = (patchCount: number, deviceIds: string[]) =>
+    ({ action: 'install', patchIds: patchIds(patchCount), deviceIds });
+  const label = (input: Record<string, unknown>, patchNames: string[] | null, deviceHostname?: string) =>
+    buildActionLabel({
+      toolName: 'manage_patches', input, reason: checkGuardrails('manage_patches', input).description, deviceHostname, patchNames,
+    });
+
+  it('names one patch on one device, end-to-end from a real headline', () => {
+    expect(label(install(1, [DEVICE]), ['KB5034441'], 'KIT')).toBe('Install KB5034441 on KIT');
+  });
+
+  it('names the first two patches and counts the rest', () => {
+    expect(label(install(5, [DEVICE, OTHER_DEVICE]), ['KB5034441', '"Google Chrome 120"']))
+      .toBe('Install KB5034441, "Google Chrome 120" +3 more on 2 devices');
+    expect(label(install(2, [DEVICE, OTHER_DEVICE]), ['KB5034441', 'KB5034122']))
+      .toBe('Install KB5034441, KB5034122 on 2 devices');
+  });
+
+  it('counts from the arguments, not from how many names resolved', () => {
+    expect(label(install(3, [DEVICE, OTHER_DEVICE]), ['KB5034441'])).toBe('Install KB5034441 +2 more on 2 devices');
+  });
+
+  it('keeps the counted headline when nothing resolved', () => {
+    expect(label(install(2, [DEVICE, OTHER_DEVICE]), null)).toBe('Install 2 patches on 2 devices');
+    expect(label(install(2, [DEVICE, OTHER_DEVICE]), [])).toBe('Install 2 patches on 2 devices');
+    expect(label(install(1, [DEVICE]), null, 'KIT')).toBe('Install 1 patch on KIT');
+  });
+
+  it('only rewrites the exact leading headline for these arguments', () => {
+    const input = install(2, [DEVICE, OTHER_DEVICE]);
+    const base = { toolName: 'manage_patches', input, patchNames: ['KB5034441'] };
+    // A count that does not match these arguments.
+    expect(buildActionLabel({ ...base, reason: 'Install 3 patches on 2 devices' })).toBe('Install 3 patches on 2 devices');
+    // Not leading: some other text carries it.
+    expect(buildActionLabel({ ...base, reason: "Conflicts with a remembered instruction: 'x'. Install 2 patches on 2 devices" }))
+      .toBe("Conflicts with a remembered instruction: 'x'. Install 2 patches on 2 devices");
+    // Another action or tool.
+    expect(buildActionLabel({ ...base, input: { ...input, action: 'rollback' }, reason: 'Install 2 patches on 2 devices' }))
+      .toBe('Install 2 patches on 2 devices');
+    expect(buildActionLabel({ ...base, toolName: 'run_script', reason: 'Install 2 patches on 2 devices' }))
+      .toBe('Install 2 patches on 2 devices');
+  });
+
+  it('renames the device before inserting names, so a name carrying a device stub is never given the hostname', () => {
+    expect(label(install(1, [DEVICE]), ['"Fix on device 6eae0f70..."'], 'KIT'))
+      .toBe('Install "Fix on device 6eae0f70..." on KIT');
+  });
+
+  it('fits the 140-character cap without cutting the count or the hostname', () => {
+    const title = `"${'T'.repeat(59)}…"`;
+    const host = 'FRONT-DESK-WORKSTATION-01';
+    const many = label(install(4, [DEVICE]), [title, title], host);
+    expect(many.length).toBeLessThanOrEqual(140);
+    expect(many.endsWith(' +3 more on FRONT-DESK-WORKSTATION-01')).toBe(true);
+    expect(many.startsWith('Install "TTT')).toBe(true);
+
+    const one = label(install(1, [DEVICE]), [title], 'H'.repeat(100));
+    expect(one.length).toBeLessThanOrEqual(140);
+    expect(one.endsWith(` on ${'H'.repeat(100)}`)).toBe(true);
+    expect(one).toMatch(/^Install "T+…" on H+$/);
+  });
+
+  it('keeps the counted headline when no name fits beside a very long hostname', () => {
+    const host = 'H'.repeat(130);
+    expect(label(install(1, [DEVICE]), ['"Some title"'], host).startsWith('Install 1 patch on HHH')).toBe(true);
+  });
+
+  it('hasPatchInstallHeadline matches only the leading headline of an install with these counts', () => {
+    const input = install(2, [DEVICE, OTHER_DEVICE]);
+    expect(hasPatchInstallHeadline('manage_patches', 'Install 2 patches on 2 devices', input)).toBe(true);
+    expect(hasPatchInstallHeadline('manage_patches', 'Install 1 patch on device 6eae0f70...', install(1, [DEVICE]))).toBe(true);
+    expect(hasPatchInstallHeadline('manage_patches', 'Install 1 patch on 2 devices', input)).toBe(false);
+    expect(hasPatchInstallHeadline('manage_patches', 'Note. Install 2 patches on 2 devices', input)).toBe(false);
+    expect(hasPatchInstallHeadline('manage_patches', 'Install 2 patches on 2 devices', { ...input, action: 'scan' })).toBe(false);
+    expect(hasPatchInstallHeadline('run_script', 'Install 2 patches on 2 devices', input)).toBe(false);
   });
 });
