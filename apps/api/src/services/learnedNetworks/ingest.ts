@@ -1,9 +1,13 @@
 import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
-import { parseNetworkAttachmentsReport, type NetworkAttachmentsReport } from '@breeze/shared';
+import { sql } from 'drizzle-orm';
+import { parseNetworkAttachmentsReport, type NetworkAttachment, type NetworkAttachmentsReport } from '@breeze/shared';
 import { learnedNetworksIngestEnabled } from '../../config/env';
+import { db } from '../../db';
 import { isNonPublicAddress } from '../ipClassifyOfflineData';
-import { NETWORK_ATTACHMENT_MAX_CAPTURE_SKEW_MS } from './constants';
+import {
+  LEARNED_NETWORKS_PER_ORG_MAX, NETWORK_ATTACHMENT_MAX_CAPTURE_SKEW_MS, WAN_ADDRESSES_PER_NETWORK_MAX,
+} from './constants';
 
 /**
  * Learned networks W01b (#12369): heartbeat ingest. Spec
@@ -92,4 +96,159 @@ export function planNetworkAttachmentIngest(
   };
   if (digest === device.networkAttachmentDigest) return { kind: 'confirm', deviceFields };
   return { kind: 'apply', deviceFields, report, wanAddress: wan };
+}
+
+type FingerprintAttachment = NetworkAttachment & { gatewayMac: string };
+type ResolvedGateway = { gatewayId: string; networkId: string; attachment: FingerprintAttachment };
+
+const fingerprintKey = (a: { gatewayMac: string; gatewayAddress: string }) => `${a.gatewayMac} ${a.gatewayAddress}`;
+
+/** Representative of attachments behind one fingerprint: the primary one, else the lowest interface name. */
+function preferAttachment(a: FingerprintAttachment, b: FingerprintAttachment): FingerprintAttachment {
+  if (a.primary !== b.primary) return a.primary ? a : b;
+  return b.interfaceName < a.interfaceName ? b : a;
+}
+
+async function rows<T>(query: ReturnType<typeof sql>): Promise<T[]> {
+  return (await db.execute(query)) as unknown as T[];
+}
+
+/**
+ * Writes the membership change for an `apply` plan, on the ambient `db` (the caller's context and savepoint).
+ * Writes only learned tables, never `devices`. Lock order: fingerprint advisory locks in ascending
+ * (gateway_mac, gateway_address), then membership rows in ascending gateway_id.
+ */
+export async function applyNetworkAttachmentChange(
+  device: { id: string; orgId: string },
+  plan: Extract<IngestPlan, { kind: 'apply' }>, now: Date,
+): Promise<void> {
+  const { report, wanAddress } = plan;
+  const at = now.toISOString();
+
+  // 1. One representative attachment per fingerprint.
+  const groups = new Map<string, FingerprintAttachment>();
+  for (const a of report.attachments) {
+    if (a.gatewayMac === null) continue;
+    const fa = a as FingerprintAttachment;
+    const key = fingerprintKey(fa);
+    const held = groups.get(key);
+    groups.set(key, held ? preferAttachment(held, fa) : fa);
+  }
+  const wanted = [...groups.values()].sort((x, y) =>
+    compareText(x.gatewayMac, y.gatewayMac) || compareText(x.gatewayAddress, y.gatewayAddress));
+
+  // 2. Existing fingerprints, one read.
+  const resolved: ResolvedGateway[] = [];
+  const found = new Map<string, { id: string; network_id: string }>();
+  if (wanted.length > 0) {
+    const keys = sql.join(wanted.map((a) => sql`(${a.gatewayMac}::macaddr, ${a.gatewayAddress}::inet)`), sql`, `);
+    const existing = await rows<{ id: string; network_id: string; gateway_mac: string; gateway_address: string }>(sql`
+      SELECT id, network_id, gateway_mac::text AS gateway_mac, host(gateway_address) AS gateway_address
+        FROM learned_network_gateways
+       WHERE org_id = ${device.orgId}::uuid AND (gateway_mac, gateway_address) IN (${keys})`);
+    for (const g of existing) found.set(fingerprintKey({ gatewayMac: g.gateway_mac, gatewayAddress: g.gateway_address }), g);
+  }
+
+  // 3. Missing fingerprints, ascending: lock, re-read, then create (soft per-org cap).
+  for (const a of wanted) {
+    let gateway = found.get(fingerprintKey(a));
+    if (!gateway) {
+      await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(
+        'learned_network_fingerprint:' || ${device.orgId}::text || ':' || ${a.gatewayMac}::text || ':' || ${a.gatewayAddress}::text, 0))`);
+      [gateway] = await rows<{ id: string; network_id: string }>(sql`
+        SELECT id, network_id FROM learned_network_gateways
+         WHERE org_id = ${device.orgId}::uuid AND gateway_mac = ${a.gatewayMac}::macaddr
+           AND gateway_address = ${a.gatewayAddress}::inet`);
+    }
+    if (!gateway) {
+      const [{ n } = { n: 0 }] = await rows<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM learned_networks WHERE org_id = ${device.orgId}::uuid`);
+      if (n >= LEARNED_NETWORKS_PER_ORG_MAX) {
+        console.warn('[learnedNetworks] per-org network limit reached; new fingerprint not learned', {
+          orgId: device.orgId, deviceId: device.id, limit: LEARNED_NETWORKS_PER_ORG_MAX,
+        });
+        continue;
+      }
+      [gateway] = await rows<{ id: string; network_id: string }>(sql`
+        WITH network AS (
+          INSERT INTO learned_networks (org_id, prefix, first_seen_at, last_seen_at, created_at, updated_at)
+          VALUES (${device.orgId}::uuid, network(set_masklen(${a.localAddress}::inet, ${a.prefixLength}::int)),
+                  ${at}::timestamptz, ${at}::timestamptz, ${at}::timestamptz, ${at}::timestamptz)
+          RETURNING id)
+        INSERT INTO learned_network_gateways (org_id, network_id, gateway_address, gateway_mac, first_seen_at, last_seen_at)
+        SELECT ${device.orgId}::uuid, network.id, ${a.gatewayAddress}::inet, ${a.gatewayMac}::macaddr,
+               ${at}::timestamptz, ${at}::timestamptz
+          FROM network
+        RETURNING id, network_id`);
+    }
+    if (gateway) resolved.push({ gatewayId: gateway.id, networkId: gateway.network_id, attachment: a });
+  }
+
+  // 4. Memberships, ascending gateway_id.
+  resolved.sort((x, y) => compareText(x.gatewayId, y.gatewayId));
+  if (resolved.length > 0) {
+    const values = sql.join(resolved.map((r) => sql`(${device.orgId}::uuid, ${device.id}::uuid, ${r.gatewayId}::uuid,
+      ${r.attachment.interfaceName}, ${r.attachment.localAddress}::inet, ${r.attachment.primary}, true,
+      ${at}::timestamptz, ${at}::timestamptz)`), sql`, `);
+    await db.execute(sql`
+      INSERT INTO learned_network_devices
+        (org_id, device_id, gateway_id, interface_name, local_address, is_primary, is_current, first_seen_at, last_seen_at)
+      VALUES ${values}
+      ON CONFLICT (device_id, gateway_id) DO UPDATE SET
+        interface_name = EXCLUDED.interface_name, local_address = EXCLUDED.local_address,
+        is_primary = EXCLUDED.is_primary, is_current = true, last_seen_at = EXCLUDED.last_seen_at`);
+  }
+
+  // 5. A complete report clears current rows it no longer lists, except the ones a null-MAC attachment protects
+  //    (same interface, address and gateway address: a gateway that dropped out of the neighbour cache).
+  if (report.complete) {
+    const kept = resolved.length > 0
+      ? sql`AND m.gateway_id NOT IN (${sql.join(resolved.map((r) => sql`${r.gatewayId}::uuid`), sql`, `)})`
+      : sql``;
+    const unresolved = report.attachments.filter((a) => a.gatewayMac === null);
+    const protectedRows = unresolved.length > 0
+      ? sql`AND (m.interface_name, m.local_address, g.gateway_address) NOT IN (${sql.join(unresolved.map((a) =>
+        sql`(${a.interfaceName}::varchar, ${a.localAddress}::inet, ${a.gatewayAddress}::inet)`), sql`, `)})`
+      : sql``;
+    await db.execute(sql`
+      UPDATE learned_network_devices m SET is_current = false
+        FROM learned_network_gateways g
+       WHERE g.id = m.gateway_id AND m.device_id = ${device.id}::uuid AND m.is_current ${kept} ${protectedRows}`);
+  }
+
+  // 6a. Prefix, one per network (its primary attachment, else the lowest interface name), only when different.
+  const perNetwork = new Map<string, FingerprintAttachment>();
+  for (const r of resolved) {
+    const held = perNetwork.get(r.networkId);
+    perNetwork.set(r.networkId, held ? preferAttachment(held, r.attachment) : r.attachment);
+  }
+  for (const networkId of [...perNetwork.keys()].sort(compareText)) {
+    const a = perNetwork.get(networkId)!;
+    await db.execute(sql`
+      UPDATE learned_networks
+         SET prefix = network(set_masklen(${a.localAddress}::inet, ${a.prefixLength}::int)), updated_at = ${at}::timestamptz
+       WHERE id = ${networkId}::uuid
+         AND prefix IS DISTINCT FROM network(set_masklen(${a.localAddress}::inet, ${a.prefixLength}::int))`);
+  }
+
+  // 6b. WAN on the primary attachment's network. An existing row is never rewritten here: the hourly refresh
+  //     dates it, so an office that applies at once does not queue on one row.
+  if (wanAddress !== null) {
+    const primary = resolved.find((r) => r.attachment.primary);
+    if (primary) {
+      const inserted = await rows<{ id: string }>(sql`
+        INSERT INTO learned_network_wan_addresses (org_id, network_id, address, first_seen_at, last_seen_at)
+        VALUES (${device.orgId}::uuid, ${primary.networkId}::uuid, ${wanAddress}::inet, ${at}::timestamptz, ${at}::timestamptz)
+        ON CONFLICT (network_id, address) DO NOTHING
+        RETURNING id`);
+      if (inserted.length > 0) {
+        await db.execute(sql`
+          DELETE FROM learned_network_wan_addresses
+           WHERE network_id = ${primary.networkId}::uuid
+             AND id NOT IN (
+               SELECT id FROM learned_network_wan_addresses WHERE network_id = ${primary.networkId}::uuid
+                ORDER BY last_seen_at DESC, id DESC LIMIT ${WAN_ADDRESSES_PER_NETWORK_MAX})`);
+      }
+    }
+  }
 }
