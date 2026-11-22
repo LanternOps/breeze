@@ -5,19 +5,28 @@
  *   GET /api/v1/flows/:id    one flow + a live re-validation against the
  *                            owner's current catalog
  *
- * Drafts are written only through the `draft_flow` AI tool in W03; enable,
- * pause and runs are W04. Reach is the caller's RLS context (flows_isolation
+ * Drafts are written through the `draft_flow` AI tool and, since Flows
+ * completion W01b (#12435), through POST / and PUT /:id over the same
+ * `saveDraftFlow`; enable, pause and runs are W04. Reach is the caller's RLS context (flows_isolation
  * plus the SELECT-only partner-wide branch). 404 for everything when
  * FLOWS_ENABLED is off (after auth, so an unauthenticated probe still gets
  * the uniform 401 every router returns).
  */
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { FLOW_RUN_STATUSES, flowEnableRequestSchema, flowManualRunRequestSchema } from '@breeze/shared';
+import {
+  FLOW_RUN_STATUSES,
+  flowDraftCreateRequestSchema,
+  flowDraftUpdateRequestSchema,
+  flowEnableRequestSchema,
+  flowManualRunRequestSchema,
+  type FlowValidationResult,
+} from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { flowsEnabled } from '../config/env';
 import { authMiddleware, isInteractiveUserSession, requireMfa, requirePermission, requireScope } from '../middleware/auth';
-import { getFlow, listFlows } from '../services/flows/service';
+import { getFlow, listFlows, saveDraftFlow } from '../services/flows/service';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { cancelFlowRun, getFlowRun, getFlowRunStep, listFlowRuns, startManualRun } from '../services/flows/runService';
 import { disableFlow, enableFlow } from '../services/flows/versions';
 import { createOrRotateWebhookSecret } from '../services/flows/webhook/secret';
@@ -46,13 +55,74 @@ registerFlowLimitsRoutes(flowsRoutes);
 // same reason; inherits the auth, kill switch and automations.read above.
 flowsRoutes.route('/conversions', flowConversionRoutes);
 
+// ── Flows completion W01b (#12435): REST drafts ────────────────────────────
+// POST / and PUT /:id over the same `saveDraftFlow` the draft_flow tool calls.
+// The gate is automations.write WITHOUT requireMfa() (Decision P8, OD2 option
+// i): a draft runs nothing, and enable already requires MFA and an interactive
+// session. So these routes must never use `requireAutomationWrite` below, and
+// each gate is written inline (aiGuardrails.routeBinding.contract.test.ts reads
+// it from the route call). Registered before every `/:id` route, after the
+// literal `/limits` and `/conversions` paths so `PUT /:id` never swallows them.
+
+type DraftStatus = 400 | 403 | 404 | 409 | 422;
+
+const DRAFT_STATUS: Record<string, DraftStatus> = {
+  flow_not_found: 404,
+  flow_not_draft: 409,
+  version_conflict: 409,
+  slug_unavailable: 409,
+  slug_conflict: 409,
+  invalid_slug: 422,
+};
+
+/**
+ * Owner-resolution messages that mean "you may not act for that owner"
+ * (`resolveWritableToolOrgId` in services/aiToolWriteOrg.ts, and owner.ts).
+ * Any other owner message is a malformed request (400).
+ */
+const OWNER_ACCESS_DENIED_MESSAGES: ReadonlySet<string> = new Set([
+  'Cannot access another organization',
+  'Access denied to this organization',
+  'Partner-wide flows require a partner-scoped caller',
+]);
+
+/** Plan Decision P13: one table for every draft failure. The error code is checked before the validation. */
+function draftFailure(c: Context, result: { error?: string; validation?: FlowValidationResult }) {
+  const { error, validation } = result;
+  if (error === undefined) return c.json({ error: 'invalid', validation }, 422);
+  if (error === PARTNER_WIDE_WRITE_DENIED_MESSAGE) return c.json({ error: 'partner_wide_forbidden' }, 403);
+  const status = DRAFT_STATUS[error];
+  if (status !== undefined) return c.json(validation ? { error, validation } : { error }, status);
+  return c.json({ error: 'owner_invalid', message: error }, OWNER_ACCESS_DENIED_MESSAGES.has(error) ? 403 : 400);
+}
+
+const idParamSchema = z.object({ id: z.string().uuid() });
+
+flowsRoutes.post('/', requirePermission('automations', 'write'), zValidator('json', flowDraftCreateRequestSchema), async (c) => {
+  const result = await saveDraftFlow(c.get('auth'), c.req.valid('json'));
+  if (!result.saved) return draftFailure(c, result);
+  return c.json({ flow: result.flow, validation: result.validation }, 201);
+});
+
+flowsRoutes.put(
+  '/:id',
+  requirePermission('automations', 'write'),
+  zValidator('param', idParamSchema),
+  zValidator('json', flowDraftUpdateRequestSchema),
+  async (c) => {
+    const { id } = c.req.valid('param');
+    const result = await saveDraftFlow(c.get('auth'), { ...c.req.valid('json'), flowId: id });
+    if (!result.saved) return draftFailure(c, result);
+    return c.json({ flow: result.flow, validation: result.validation });
+  },
+);
+
 const listQuerySchema = z.object({
   orgId: z.string().uuid().optional(),
   status: z.enum(['draft', 'enabled', 'paused', 'disabled']).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });
-const idParamSchema = z.object({ id: z.string().uuid() });
 
 flowsRoutes.get('/', zValidator('query', listQuerySchema), async (c) => {
   const auth = c.get('auth');
