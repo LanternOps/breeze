@@ -18,6 +18,7 @@ import {
   agentSupportsOemUpdateRelease,
   agentSupportsOemUpdates,
   OEM_LANES,
+  oemLaneHonoursBlockedUpdateIds,
   oemUpdateReleasePayloadSchema,
   oemUpdateRunPayloadSchema,
   type OemCategory,
@@ -167,6 +168,11 @@ async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
   });
   if (applicability.state !== 'applicable') return { ok: false, refusal: 'not_applicable' };
   const { lane } = applicability;
+  // #12265: the agent refuses a Dell run with any blocked ID and runs nothing. The
+  // scheduler already sends none (`blocked_ids_unsupported`), so this is a caller bug.
+  if (input.blockedUpdateIds.length > 0 && !oemLaneHonoursBlockedUpdateIds(lane)) {
+    throw new RangeError(`oem_update_run dispatch with blocked update IDs for the ${lane} lane, which cannot honour them`);
+  }
 
   if (laneDisabledByKillSwitch(lane)) return { ok: false, refusal: 'kill_switch' };
   const gateScope = { deviceId: device.id };

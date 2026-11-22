@@ -115,7 +115,7 @@ function link(over: Record<string, unknown> = {}, vendor: Record<string, unknown
         dell: {
           enabled: true,
           categories: { bios: true, driver: true },
-          blockedUpdateIds: ['BLOCKED-1'],
+          blockedUpdateIds: [],
           ...vendor,
         },
       },
@@ -245,7 +245,7 @@ describe('selectDueDevices: what a due device carries', () => {
       timezone: 'UTC',
       occurrenceKey: OCCURRENCE,
       requestedCategories: ['bios', 'driver'],
-      blockedUpdateIds: ['BLOCKED-1'],
+      blockedUpdateIds: [],
       rebootControlled: true,
       // An hour before the 05:00 close.
       notAfter: new Date('2027-01-20T04:00:00.000Z'),
@@ -267,6 +267,10 @@ describe('selectDueDevices: one exclusion each', () => {
 
   it('the control: a plain due device is selected', async () => {
     await expect(selected(device())).resolves.toEqual([D1]);
+  });
+
+  it('a Dell blocklist stored before #12265: the agent would refuse the run, so none is selected', async () => {
+    await expect(selected(device(), link({}, { blockedUpdateIds: ['BLOCKED-1'] }))).resolves.toEqual([]);
   });
 
   it('virtual, in case the query ever widens', async () => {
@@ -549,5 +553,19 @@ describe('decideScheduledRun', () => {
     expect(decideScheduledRun({ ...base, link: link({}, { enabled: false }) })).toEqual({ due: false, reason: 'vendor_disabled' });
     expect(decideScheduledRun({ ...base, link: link(), now: new Date('2027-01-20T12:00:00.000Z') }))
       .toEqual({ due: false, reason: 'not_in_window' });
+  });
+
+  // #12265: a Dell policy saved with blocked IDs before the validator refused them.
+  it('a stored Dell blocklist is not due, with its own reason; an empty one runs', () => {
+    expect(decideScheduledRun({ ...base, link: link({}, { blockedUpdateIds: ['BLOCKED-1'] }) }))
+      .toEqual({ due: false, reason: 'blocked_ids_unsupported' });
+    expect(decideScheduledRun({ ...base, link: link({}, { blockedUpdateIds: [] }) })).toMatchObject({ due: true, blockedUpdateIds: [] });
+  });
+
+  it("another vendor's blocklist still reaches the run, and a Dell list does not stop the HP lane", () => {
+    const both = link({}, { blockedUpdateIds: ['BLOCKED-1'] });
+    both.settings.vendors.hp = { enabled: true, categories: { driver: true }, blockedUpdateIds: ['HP-1'] };
+    expect(decideScheduledRun({ ...base, lane: 'hp', link: both })).toMatchObject({ due: true, blockedUpdateIds: ['HP-1'] });
+    expect(decideScheduledRun({ ...base, link: both })).toEqual({ due: false, reason: 'blocked_ids_unsupported' });
   });
 });

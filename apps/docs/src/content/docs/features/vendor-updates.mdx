@@ -15,7 +15,8 @@ Scope:
 
 - Windows only. macOS and Linux devices are not covered.
 - Servers, virtual machines and devices from a maker with no lane are not covered, and read **Not managed**. Quick Support devices are left out of the view.
-- There is no per-update approval. You choose categories per maker. You can block individual update IDs by listing them in the policy.
+- There is no per-update approval. You choose categories per maker. For Surface, HP and Lenovo you can block individual update IDs by listing them in the policy.
+- Dell does not support blocking individual updates. Dell Command | Update offers another package for the same component when one is blocked, so a policy cannot list blocked IDs for Dell. To stop Dell updates, turn off the category or the maker. A policy saved with Dell blocked IDs before this rule sends no Dell runs (its devices read **Not managed**) until it is saved without them.
 
 <Aside type="caution">
 **Availability.** A maker's lane opens only after Breeze has validated that vendor's tool in a lab. Today every lane is closed, so real devices read **Not managed** or **Not supported**. This page describes how the feature behaves once lanes open.
@@ -80,6 +81,7 @@ A device reads Not managed when nothing is expected of it:
 - The feature is off for its partner.
 - The maker's lane is closed, or every category the policy asks for is closed.
 - The maker's lane is on its kill switch.
+- The policy lists blocked update IDs for Dell, which Dell cannot honour. Save the policy without them.
 - It is not a device this feature covers: not Windows, a server, a virtual machine, or a maker with no lane.
 - It has a policy but has never run and still has nights left this month, so there is no evidence either way.
 

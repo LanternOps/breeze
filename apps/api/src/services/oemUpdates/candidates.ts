@@ -19,6 +19,7 @@ import {
   agentSupportsOemUpdates,
   canonicalizeTimezone,
   hasArmedCategory,
+  hasUnsupportedBlockedUpdateIds,
   OEM_CATEGORIES,
   OEM_LANES,
   resolveEffectiveTimezone,
@@ -86,6 +87,7 @@ export type ScheduledRunRefusal =
   | 'link_invalid'
   | 'link_disabled'
   | 'vendor_disabled'
+  | 'blocked_ids_unsupported'
   | 'no_open_categories'
   | 'not_in_window'
   | 'past_not_after'
@@ -142,6 +144,10 @@ export function decideScheduledRun(
   if (!settings.enabled) return refused('link_disabled');
   const vendor = settings.vendors[lane];
   if (!vendor?.enabled) return refused('vendor_disabled');
+
+  // #12265: a Dell blocklist stored before the validator refused it. The agent would
+  // refuse the run (`blocked_ids_unsupported`), so none is sent until it is saved without.
+  if (hasUnsupportedBlockedUpdateIds(settings, lane)) return refused('blocked_ids_unsupported');
 
   const requestedCategories = OEM_CATEGORIES.filter((category) => vendor.categories[category] === true);
   const rebootControlled = settings.reboot === 'overnight';
