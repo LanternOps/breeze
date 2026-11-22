@@ -1538,6 +1538,27 @@ describe('processFlowRunJob — a for-each step whose when is false (#12481)', (
     expect(h.state.run).toMatchObject({ status: 'completed', errorCode: null });
   });
 
+  it.each([
+    ['null', { go: null, hosts: null }],
+    ['a missing path', { hosts: null }],
+    ['a non-boolean', { go: 'yes', hosts: null }],
+    ['zero', { go: 0, hosts: null }],
+  ])('a when that evaluates to %s is not true, like the executor: the step is skipped', async (_label, inputs) => {
+    seed({ steps: [{ id: 'fix', when: 'inputs.go', onFailure: 'continue', forEach: { items: 'inputs.hosts' } }, { id: 'after' }], inputs });
+    whenAware((i) => completed({ from: i.step.id }));
+    await run();
+    expect(stepRow('fix')).toMatchObject({ itemIndex: null, status: 'skipped' });
+    expect(h.state.run!.status).toBe('completed');
+  });
+
+  it('the rescued step is the last step: the run completes with the cursor left on it', async () => {
+    seed({ steps: [{ id: 'first' }, { id: 'fix', when: 'inputs.go', forEach: { items: 'inputs.hosts' } }], inputs: { go: false, hosts: null } });
+    whenAware((i) => completed({ from: i.step.id }));
+    await run();
+    expect(stepRow('fix')).toMatchObject({ itemIndex: null, status: 'skipped' });
+    expect(h.state.run).toMatchObject({ status: 'completed', currentStepId: 'fix', currentItemIndex: null });
+  });
+
   it('false when, items not a list, onFailure stop: skipped too (the step does not run, so nothing failed)', async () => {
     seed({ steps: [{ id: 'fix', when: 'inputs.go', forEach: { items: 'inputs.hosts' } }, { id: 'after' }], inputs: { go: false, hosts: 'h1,h2' } });
     whenAware((i) => completed({ from: i.step.id }));

@@ -500,14 +500,14 @@ async function walkForEach(s: Slice, step: FlowStep, index: number): Promise<'co
 
   const scope = scopeFor(s);
   const items = evaluateItems(step, scope);
-  // #12481: items that are not a list under a step-level `when` that is false
-  // (e.g. the form's on-failure notice when nothing failed: the resolve step
-  // it loops over was skipped, so its output is null). The step would not run
-  // for any item, so it is skipped as a whole instead of failing the run.
-  // Only this case changes: a true/absent/item-dependent/unevaluable `when`,
-  // an items expression error, too_many_items, and any step that already has
-  // item rows all keep the failure below.
-  if (!items.ok && items.notList && !hasItemRows(s, step.id) && stepWhenIsFalse(step, scope)) {
+  // #12481: items that are not a list under a step-level `when` that is not
+  // `true` (e.g. the form's on-failure notice when nothing failed: the resolve
+  // step it loops over was skipped, so its output is null). The step would not
+  // run for any item, so it is skipped as a whole instead of failing the run.
+  // Only this case changes: a `when` that is true, absent, references `item`,
+  // or does not parse/evaluate, an items expression error, too_many_items, and
+  // any step that already has item rows all keep the failure below.
+  if (!items.ok && items.notList && !hasItemRows(s, step.id) && stepWhenIsNotTrue(step, scope)) {
     return skipForEachStep(s, step, index, head);
   }
   if (!items.ok || items.value.length > step.forEach!.maxItems) {
@@ -570,13 +570,14 @@ function evaluateItems(
 }
 
 /**
- * #12481: the step's `when` is false for the step as a whole — it parses,
- * does not reference `item` (an unbound `item` reads as null, which would
- * misjudge a per-item condition), and evaluates to a non-true value in the
- * same scope the items were listed in. The executor's rule (stepExecutor.ts
- * step 1: only `true` runs the unit), applied once, before any item.
+ * #12481: the step's `when` rules out every item — it parses, does not
+ * reference `item` (an unbound `item` reads as null, which would misjudge a
+ * per-item condition), and evaluates to anything but `true` (false, null, a
+ * missing path, a non-boolean) in the step scope the items were listed in.
+ * The executor's rule (stepExecutor.ts step 1: only `true` runs the unit),
+ * applied once, before any item.
  */
-function stepWhenIsFalse(step: FlowStep, scope: FlowScope): boolean {
+function stepWhenIsNotTrue(step: FlowStep, scope: FlowScope): boolean {
   if (step.when === undefined) return false;
   const parsed = parseExpr(step.when);
   if (!parsed.ok || parsed.paths.some((p) => p.root === 'item')) return false;
