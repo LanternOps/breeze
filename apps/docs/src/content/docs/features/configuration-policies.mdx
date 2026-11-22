@@ -188,7 +188,7 @@ blocked or unconvertible row deliberately.
 ### Backup
 
 <Aside type="caution">
-  Backup is **not available on partner-wide (all organizations) policies**. Backup settings are always tied to a single organization, so a policy owned at the partner level has no organization to attach them to — attempting to add or save a Backup feature link on a partner-wide policy is rejected. Configure Backup on an organization-owned policy instead.
+  Backup can be set on an MSP-managed policy through a backup profile. Each organization it applies to then needs a default backup destination; see [Backup profiles](/backup/profiles/).
 </Aside>
 
 Backup feature links use **inline settings** stored in the `config_policy_backup_settings` table (one row per feature link).
