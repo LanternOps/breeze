@@ -12,9 +12,13 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 import { ActionError } from '@/lib/runAction';
 import { FlowEnableDialog } from './FlowEnableDialog';
 
-function flow(triggerType: 'schedule' | 'event' = 'schedule') {
+function flow(
+  triggerType: 'schedule' | 'event' | 'webhook' = 'schedule',
+  opts: { ownerScope?: 'organization' | 'partner'; eligibility?: Record<string, unknown> } = {},
+) {
   return {
     id: 'f1',
+    ownerScope: opts.ownerScope ?? 'organization',
     definitionVersion: 4,
     status: 'draft',
     definition: {
@@ -23,14 +27,18 @@ function flow(triggerType: 'schedule' | 'event' = 'schedule') {
       trigger:
         triggerType === 'event'
           ? { type: 'event', event: 'alert.triggered', filter: {} }
-          : { type: 'schedule', cron: '0 2 * * *', timezone: 'UTC' },
+          : triggerType === 'webhook'
+            ? { type: 'webhook', auth: 'hmac' }
+            : { type: 'schedule', cron: '0 2 * * *', timezone: 'UTC' },
       inputs: [],
       steps: [],
     },
-    preApprovalEligibility: {
+    preApprovalEligibility: opts.eligibility ?? {
       run_a: { eligible: true },
       run_b: { eligible: true },
       wipe: { eligible: false, reason: 'four_eyes' },
+      fleet_a: { eligible: true },
+      fleet_b: { eligible: true },
     },
     preApprovedStepIds: [],
   } as never;
@@ -45,6 +53,8 @@ const validation = {
     { id: 'run_a', tool: 'run_script', source: 'core', tier: 3, approval: 'default' },
     { id: 'run_b', tool: 'run_script', source: 'core', tier: 3, approval: 'default' },
     { id: 'wipe', tool: 'x', source: 'core', tier: 3, approval: 'default' },
+    { id: 'fleet_a', tool: 'run_script_on_targets', source: 'core', tier: 3, approval: 'default' },
+    { id: 'fleet_b', tool: 'run_script_on_targets', source: 'core', tier: 3, approval: 'default' },
   ],
 } as never;
 
@@ -52,8 +62,19 @@ function setup(f = flow()) {
   const onEnabled = vi.fn();
   const onClose = vi.fn();
   const onStale = vi.fn();
-  render(<FlowEnableDialog open flow={f} validation={validation} onClose={onClose} onEnabled={onEnabled} onStale={onStale} />);
-  return { onEnabled, onClose, onStale };
+  const view = render(<FlowEnableDialog open flow={f} validation={validation} onClose={onClose} onEnabled={onEnabled} onStale={onStale} />);
+  const rerender = (next: ReturnType<typeof flow>) =>
+    view.rerender(<FlowEnableDialog open flow={next} validation={validation} onClose={onClose} onEnabled={onEnabled} onStale={onStale} />);
+  return { onEnabled, onClose, onStale, rerender };
+}
+
+function confirmButton() {
+  return screen.getByTestId('flow-enable-confirm') as HTMLButtonElement;
+}
+
+function lastEnableBody(): Record<string, unknown> {
+  const calls = api.enableFlow.mock.calls;
+  return calls[calls.length - 1][1] as Record<string, unknown>;
 }
 
 beforeEach(() => {
@@ -211,5 +232,124 @@ describe('FlowEnableDialog', () => {
     await user.click(screen.getByTestId('flow-enable-confirm'));
     await screen.findByTestId('flow-enable-error-version_conflict');
     expect(onStale).toHaveBeenCalledTimes(1);
+  });
+  describe('fleet pre-approval (W01c)', () => {
+    it('pre-approving a fleet step requires maxTargets 1–500', async () => {
+      const user = userEvent.setup();
+      api.enableFlow.mockResolvedValue({ ok: true });
+      setup();
+      // Unticked: no field, Confirm active.
+      expect(screen.queryByTestId('flow-enable-maxtargets-fleet_a')).toBeNull();
+      expect(confirmButton().disabled).toBe(false);
+
+      await user.click(screen.getByTestId('flow-enable-preapprove-fleet_a'));
+      const input = screen.getByTestId('flow-enable-maxtargets-fleet_a') as HTMLInputElement;
+      expect(confirmButton().disabled).toBe(true);
+      expect(screen.getByTestId('flow-enable-maxtargets-invalid-fleet_a')).toBeTruthy();
+
+      for (const bad of ['0', '501', '2.5']) {
+        await user.clear(input);
+        await user.type(input, bad);
+        expect(confirmButton().disabled).toBe(true);
+      }
+      // A disabled Confirm sends nothing.
+      await user.click(confirmButton());
+      expect(api.enableFlow).not.toHaveBeenCalled();
+
+      for (const good of ['1', '500']) {
+        await user.clear(input);
+        await user.type(input, good);
+        expect(confirmButton().disabled).toBe(false);
+      }
+    });
+
+    it('enable sends fleetMaxTargets for ticked fleet steps only', async () => {
+      const user = userEvent.setup();
+      api.enableFlow.mockResolvedValue({ ok: true });
+      setup();
+      await user.click(screen.getByTestId('flow-enable-preapprove-run_b'));
+      await user.click(screen.getByTestId('flow-enable-preapprove-fleet_a'));
+      await user.type(screen.getByTestId('flow-enable-maxtargets-fleet_a'), '25');
+      // fleet_b: ticked, given a value, then unticked — it must not be sent.
+      await user.click(screen.getByTestId('flow-enable-preapprove-fleet_b'));
+      await user.type(screen.getByTestId('flow-enable-maxtargets-fleet_b'), '7');
+      await user.click(screen.getByTestId('flow-enable-preapprove-fleet_b'));
+      expect(screen.queryByTestId('flow-enable-maxtargets-fleet_b')).toBeNull();
+
+      await user.click(confirmButton());
+      expect(api.enableFlow).toHaveBeenCalledTimes(1);
+      expect(api.enableFlow).toHaveBeenCalledWith('f1', {
+        expectedVersion: 4,
+        preApprovedStepIds: ['run_b', 'fleet_a'],
+        fleetMaxTargets: { fleet_a: 25 },
+      });
+    });
+
+    it('a non-fleet tier-3 step needs no maxTargets', async () => {
+      const user = userEvent.setup();
+      api.enableFlow.mockResolvedValue({ ok: true });
+      setup();
+      await user.click(screen.getByTestId('flow-enable-preapprove-run_a'));
+      expect(screen.queryByTestId('flow-enable-maxtargets-run_a')).toBeNull();
+      expect(confirmButton().disabled).toBe(false);
+      await user.click(confirmButton());
+      const body = lastEnableBody();
+      expect(body.preApprovedStepIds).toEqual(['run_a']);
+      expect('fleetMaxTargets' in body).toBe(false);
+    });
+
+    it('a fleet step that is not eligible offers no field and does not block Confirm', async () => {
+      const user = userEvent.setup();
+      api.enableFlow.mockResolvedValue({ ok: true });
+      const eligibleAll = { run_a: { eligible: true }, fleet_a: { eligible: true } };
+      const { rerender } = setup(flow('schedule', { eligibility: eligibleAll }));
+      await user.click(screen.getByTestId('flow-enable-preapprove-fleet_a'));
+      expect(confirmButton().disabled).toBe(true);
+      // The flow reloads and the step is no longer eligible: the stale tick no
+      // longer gates Confirm and is never sent.
+      rerender(flow('schedule', { eligibility: { run_a: { eligible: true }, fleet_a: { eligible: false, reason: 'run_as_elevated' } } }));
+      expect((screen.getByTestId('flow-enable-preapprove-fleet_a') as HTMLInputElement).disabled).toBe(true);
+      expect(screen.queryByTestId('flow-enable-maxtargets-fleet_a')).toBeNull();
+      expect(confirmButton().disabled).toBe(false);
+      await user.click(confirmButton());
+      const body = lastEnableBody();
+      expect(body.preApprovedStepIds).toEqual([]);
+      expect('fleetMaxTargets' in body).toBe(false);
+    });
+
+    it('shows the per-org copy only for a partner-wide flow', async () => {
+      const user = userEvent.setup();
+      setup(flow('schedule', { ownerScope: 'partner' }));
+      await user.click(screen.getByTestId('flow-enable-preapprove-fleet_a'));
+      expect(screen.getByTestId('flow-enable-perorg-fleet_a')).toBeTruthy();
+    });
+
+    it('an org flow shows no per-org copy', async () => {
+      const user = userEvent.setup();
+      setup();
+      await user.click(screen.getByTestId('flow-enable-preapprove-fleet_a'));
+      expect(screen.queryByTestId('flow-enable-perorg-fleet_a')).toBeNull();
+    });
+
+    it('a webhook flow offers no pre-approval', async () => {
+      const user = userEvent.setup();
+      api.enableFlow.mockResolvedValue({ ok: true });
+      setup(flow('webhook'));
+      expect(screen.getByTestId('flow-enable-webhook-no-preapproval').textContent).toMatch(/always wait for approval/i);
+      // The steps that will ask are still listed, but none can be ticked.
+      expect(screen.getByTestId('flow-enable-step-fleet_a')).toBeTruthy();
+      for (const id of ['run_a', 'run_b', 'wipe', 'fleet_a', 'fleet_b']) {
+        expect(screen.queryByTestId(`flow-enable-preapprove-${id}`)).toBeNull();
+      }
+      expect(screen.queryByTestId('flow-enable-maxtargets-fleet_a')).toBeNull();
+      await user.click(confirmButton());
+      expect(api.enableFlow).toHaveBeenCalledWith('f1', { expectedVersion: 4, preApprovedStepIds: [] });
+      expect('fleetMaxTargets' in lastEnableBody()).toBe(false);
+    });
+
+    it('a schedule flow shows no webhook notice', () => {
+      setup();
+      expect(screen.queryByTestId('flow-enable-webhook-no-preapproval')).toBeNull();
+    });
   });
 });
