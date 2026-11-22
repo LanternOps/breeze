@@ -1333,7 +1333,7 @@ async function prepareDeviceExecution(
     liveConfig = { ...live.config };
   }
 
-  const ringConfig: RingConfig = liveConfig ?? {
+  let ringConfig: RingConfig = liveConfig ?? {
     ringId: patchesConfig?.ringId ?? null,
     categoryRules: jobCategoryRules,
     autoApprove: patchesConfig?.autoApprove ?? {},
@@ -1381,6 +1381,36 @@ async function prepareDeviceExecution(
       );
       await markDeviceSkipped(patchJobId, deviceId, RING_UNAVAILABLE_SKIP_REASON);
       return { kind: 'skipped', skipped: true, reason: 'Update ring deleted or disabled' };
+    }
+
+    // A job that names its patches read the ring's rules above WITHOUT a lock.
+    // An edit to the ring (an app block, an excluded category) that committed
+    // while this dispatch waited on FOR SHARE would otherwise be missed, so the
+    // config is read again now: the share lock keeps the ring row as it is
+    // until this dispatch commits. If the device now resolves to a different
+    // ring (or to none), the locked ring no longer decides and the new one is
+    // not locked, so the device is skipped rather than judged under it. Jobs
+    // without a list are untouched.
+    if (liveConfig) {
+      const lockedRingId = ringConfig.ringId;
+      let relocked;
+      try {
+        // Savepoint: the catch writes the skipped row on this same transaction (#11225).
+        relocked = await dbModule.withDbTransaction(() => resolveDevicePatchEvaluation(deviceId));
+      } catch (err) {
+        console.error(`[PatchJobExecutor] Failed to re-read the patch policy for device ${deviceId} under the ring lock:`, err instanceof Error ? err.message : err);
+        await markDeviceSkipped(patchJobId, deviceId, 'error_resolving_patches');
+        return { kind: 'error', error: 'Failed to resolve patches' };
+      }
+      if (relocked.config.ringId !== lockedRingId) {
+        console.error(
+          `[PatchJobExecutor] Skipping device ${deviceId} of job ${patchJobId}: its update ring changed from ${lockedRingId} `
+          + `to ${relocked.config.ringId ?? 'none'} during dispatch`
+        );
+        await markDeviceSkipped(patchJobId, deviceId, 'error_resolving_patches');
+        return { kind: 'error', error: 'Failed to resolve patches' };
+      }
+      ringConfig = { ...relocked.config };
     }
     ringConfig.deferralDays = ring.deferralDays;
     ringConfig.ringPartnerId = ring.partnerId;

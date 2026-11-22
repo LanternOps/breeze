@@ -270,6 +270,39 @@ describe('a job that names its patches is judged under the device\'s live policy
     await expectSkipped(job.id, device.id, 'ring_unavailable');
   });
 
+  it('RACE: a ring edit committed while the dispatch waits on the ring lock is the rule set the dispatch uses', async () => {
+    const ring = await makeRingPolicy({ autoApprove: { enabled: true, severities: ['critical'] } });
+    const device = await makeDevice();
+    const patch = await makeOutstandingPatch(device.id, { category: 'security' });
+    const job = await makeAiJob([patch.id], [device.id]);
+
+    let releaseEdit!: () => void;
+    const editGate = new Promise<void>((resolve) => { releaseEdit = resolve; });
+    let signalLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { signalLocked = resolve; });
+    // An admin's edit in flight: the ring now excludes the patch's category,
+    // written but not yet committed.
+    const editor = getTestDb().transaction(async (tx) => {
+      await tx.update(patchPolicies).set({ excludeCategories: ['security'] }).where(eq(patchPolicies.id, ring.id));
+      signalLocked();
+      await editGate;
+    });
+    await locked;
+
+    let dispatchSettled = false;
+    const dispatch = dispatchDevice(job.id, device.id).finally(() => { dispatchSettled = true; });
+    // The first live read sees the committed (old) rules; the locking read waits.
+    await sleep(750);
+    const settledWhileEditOpen = dispatchSettled;
+    releaseEdit();
+    await editor;
+    const outcome = await dispatch;
+    expect(settledWhileEditOpen).toBe(false);
+
+    expect(outcome.kind).toBe('skipped');
+    await expectSkipped(job.id, device.id, 'requested_patches_not_eligible');
+  });
+
   it('a device with no patch policy keeps the partner-wide-only rule', async () => {
     const otherRing = await makeRingPolicy(); // assigned to the org, then unassigned below
     await getTestDb().delete(configPolicyAssignments).where(eq(configPolicyAssignments.targetId, env.organization.id));

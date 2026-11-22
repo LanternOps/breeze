@@ -3054,7 +3054,7 @@ describe('a job that names its patches installs only those', () => {
   });
 
   it('a resolved ring goes through the locking read and takes its deferral and partner from it', async () => {
-    vi.mocked(resolveDevicePatchEvaluation).mockResolvedValueOnce(evaluation({
+    vi.mocked(resolveDevicePatchEvaluation).mockResolvedValue(evaluation({
       ringId: LIVE_RING, ringPartnerId: null, categoryRules: [], autoApprove: { enabled: true }, deferralDays: 0,
     }));
     primeJob({ patchIds: [A] }, { dispatches: true, ringRow: { deferralDays: 7, partnerId: 'partner-9', enabled: true } });
@@ -3069,6 +3069,80 @@ describe('a job that names its patches installs only those', () => {
     expect(result).toMatchObject({ kind: 'queued', patchCount: 1 });
     const payload = (vi.mocked(dispatchDeviceCommand).mock.calls[0]![0] as unknown as { payload: Record<string, unknown> }).payload;
     expect(payload.evaluationRingId).toBe(LIVE_RING);
+  });
+
+  // Ring-edit race: the first live read takes no lock, so a ring edit that
+  // commits while the dispatch waits on FOR SHARE must still be what decides.
+  // The config is read again once the lock is held.
+  describe('the ring\'s rules are re-read once the ring lock is held', () => {
+    const ringConfigWith = (autoApprove: unknown, ringId = LIVE_RING) =>
+      ({ ringId, ringPartnerId: null, categoryRules: [], autoApprove, deferralDays: 0 });
+    const LOCK = { deferralDays: 7, partnerId: 'partner-9', enabled: true };
+
+    it('evaluates under the post-lock config, with deferral and partner from the locked row', async () => {
+      const lockCallsAtRead: number[] = [];
+      const recordLock = () => {
+        const lockChain = vi.mocked(db.select).mock.results[2]?.value as { for?: { mock: { calls: unknown[] } } } | undefined;
+        lockCallsAtRead.push(lockChain?.for?.mock.calls.length ?? 0);
+      };
+      vi.mocked(resolveDevicePatchEvaluation)
+        .mockImplementationOnce(async () => { recordLock(); return evaluation(ringConfigWith({ before: true })); })
+        .mockImplementationOnce(async () => { recordLock(); return evaluation(ringConfigWith({ after: true })); });
+      primeJob({ patchIds: [A] }, { dispatches: true, ringRow: LOCK });
+      argumentKeyedResolver();
+      queuedDispatch();
+
+      const result: any = await run();
+
+      expect(lockCallsAtRead).toEqual([0, 1]);
+      expect(vi.mocked(resolveApprovedPatchesForDevice).mock.calls[0]![2]).toEqual(expect.objectContaining({
+        ringId: LIVE_RING, autoApprove: { after: true }, deferralDays: 7, ringPartnerId: 'partner-9',
+      }));
+      expect(result).toMatchObject({ kind: 'queued', patchCount: 1 });
+    });
+
+    it('reads once when the live config names no ring', async () => {
+      primeJob({ patchIds: [A] });
+      argumentKeyedResolver();
+      queuedDispatch();
+
+      await run();
+
+      expect(resolveDevicePatchEvaluation).toHaveBeenCalledTimes(1);
+    });
+
+    it('a device that moved to a different ring meanwhile is skipped, not judged under an unlocked ring', async () => {
+      vi.mocked(resolveDevicePatchEvaluation)
+        .mockResolvedValueOnce(evaluation(ringConfigWith({})))
+        .mockResolvedValueOnce(evaluation(ringConfigWith({}, 'cccccccc-0000-4000-8000-00000000000c')));
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      primeJob({ patchIds: [A] }, { dispatches: false, ringRow: LOCK });
+      argumentKeyedResolver();
+
+      const result = await run();
+
+      expect(resolveApprovedPatchesForDevice).not.toHaveBeenCalled();
+      expect(dispatchDeviceCommand).not.toHaveBeenCalled();
+      expect(insertedRows).toContainEqual(expect.objectContaining({ status: 'skipped', errorMessage: 'error_resolving_patches' }));
+      expect(result).toEqual({ kind: 'error', error: 'Failed to resolve patches' });
+    });
+
+    it('a failure of the post-lock read is contained in a savepoint and skips the device', async () => {
+      const depthAtRead: number[] = [];
+      vi.mocked(resolveDevicePatchEvaluation)
+        .mockResolvedValueOnce(evaluation(ringConfigWith({})))
+        .mockImplementationOnce(async () => { depthAtRead.push(shared.savepointDepth); throw new Error('db down'); });
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      primeJob({ patchIds: [A] }, { dispatches: false, ringRow: LOCK });
+      argumentKeyedResolver();
+
+      const result = await run();
+
+      expect(depthAtRead).toEqual([1]);
+      expect(dispatchDeviceCommand).not.toHaveBeenCalled();
+      expect(insertedRows).toContainEqual(expect.objectContaining({ status: 'skipped', errorMessage: 'error_resolving_patches' }));
+      expect(result).toEqual({ kind: 'error', error: 'Failed to resolve patches' });
+    });
   });
 
   it.each([
