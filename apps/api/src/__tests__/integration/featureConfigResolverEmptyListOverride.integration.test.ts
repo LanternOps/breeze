@@ -17,7 +17,7 @@
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   configurationPolicies,
@@ -25,7 +25,10 @@ import {
   configPolicyAssignments,
   configPolicyAutomations,
   configPolicyComplianceRules,
+  deviceGroupMemberships,
+  deviceGroups,
   devices,
+  monitorConversions,
 } from '../../db/schema';
 import {
   resolveAutomationAssignmentForDevice,
@@ -60,9 +63,14 @@ const createdDevices: string[] = [];
 
 afterEach(async () => {
   await withDbAccessContext(SYSTEM_CTX, async () => {
-    for (const id of createdDevices) await db.delete(devices).where(eq(devices.id, id));
+    for (const id of createdConversions) await db.delete(monitorConversions).where(eq(monitorConversions.id, id));
+    for (const id of createdDevices) {
+      await db.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.deviceId, id));
+      await db.delete(devices).where(eq(devices.id, id));
+    }
     for (const id of createdPolicies) await db.delete(configurationPolicies).where(eq(configurationPolicies.id, id));
   });
+  createdConversions.length = 0;
   createdDevices.length = 0;
   createdPolicies.length = 0;
 });
@@ -108,8 +116,10 @@ async function seedTenant(): Promise<Tenant> {
  * the feature (a child that inherits it); `[]` means the link exists with an
  * empty list.
  */
+type Owner = string | { partnerId: string };
+
 async function seedPolicy(
-  orgId: string,
+  owner: Owner,
   feature: Feature,
   items: Item[] | null,
   parentPolicyId?: string,
@@ -118,7 +128,7 @@ async function seedPolicy(
     const [policy] = await db
       .insert(configurationPolicies)
       .values({
-        orgId,
+        ...(typeof owner === 'string' ? { orgId: owner } : { orgId: null, partnerId: owner.partnerId }),
         name: `${feature} policy ${randomUUID()}`,
         status: 'active',
         ...(parentPolicyId ? { parentPolicyId } : {}),
@@ -156,9 +166,63 @@ async function seedPolicy(
   });
 }
 
-async function assign(configPolicyId: string, level: 'organization' | 'site', targetId: string) {
+async function assign(
+  configPolicyId: string,
+  level: 'partner' | 'organization' | 'site' | 'device_group',
+  targetId: string,
+  priority = 0,
+) {
   await withDbAccessContext(SYSTEM_CTX, async () => {
-    await db.insert(configPolicyAssignments).values({ configPolicyId, level, targetId, priority: 0 });
+    await db.insert(configPolicyAssignments).values({ configPolicyId, level, targetId, priority });
+  });
+}
+
+async function seedDeviceGroup(t: Tenant): Promise<string> {
+  return withDbAccessContext(SYSTEM_CTX, async () => {
+    const [g] = await db
+      .insert(deviceGroups)
+      .values({ orgId: t.orgId, name: `group-${randomUUID().slice(0, 8)}`, type: 'static' })
+      .returning({ id: deviceGroups.id });
+    await db.insert(deviceGroupMemberships).values({ deviceId: t.deviceId, groupId: g!.id, orgId: t.orgId });
+    return g!.id;
+  });
+}
+
+/** The automation rows a policy's own link holds, by name. */
+async function automationIdByName(policyId: string, name: string): Promise<string> {
+  return withDbAccessContext(SYSTEM_CTX, async () => {
+    const [row] = await db
+      .select({ id: configPolicyAutomations.id })
+      .from(configPolicyAutomations)
+      .innerJoin(configPolicyFeatureLinks, eq(configPolicyFeatureLinks.id, configPolicyAutomations.featureLinkId))
+      .where(and(eq(configPolicyFeatureLinks.configPolicyId, policyId), eq(configPolicyAutomations.name, name)));
+    return row!.id;
+  });
+}
+
+const createdConversions: string[] = [];
+
+/** A monitor-conversion ledger row for a config-policy automation. */
+async function seedConversion(
+  orgId: string,
+  policyId: string,
+  sourceId: string,
+  opts: { reverted?: boolean; workflowId?: string | null },
+) {
+  await withDbAccessContext(SYSTEM_CTX, async () => {
+    const [row] = await db
+      .insert(monitorConversions)
+      .values({
+        orgId,
+        sourceTable: 'config_policy_automations',
+        sourceId,
+        policyId,
+        previewHash: `hash-${randomUUID()}`,
+        sourceState: opts.workflowId === null ? {} : { workflowId: opts.workflowId ?? randomUUID() },
+        ...(opts.reverted ? { revertedAt: new Date() } : {}),
+      })
+      .returning({ id: monitorConversions.id });
+    createdConversions.push(row!.id);
   });
 }
 
@@ -272,5 +336,99 @@ describe('automation — a closer list whose rows are all retired still wins (#1
     await assign(sitePolicy, 'site', t.siteId);
 
     expect(await resolveWinner(t, 'automation')).toEqual({ policyId: sitePolicy, names: ['Live site item'] });
+  });
+});
+
+describe('automation — retired rows with a monitor conversion (#12488)', () => {
+  it('a retired row with a LIVE conversion carrying a workflow stays in the winner\'s list', async () => {
+    const t = await seedTenant();
+    const sitePolicy = await seedPolicy(t.orgId, 'automation', [{ name: 'Converted', retired: true }]);
+    await assign(sitePolicy, 'site', t.siteId);
+    await seedConversion(t.orgId, sitePolicy, await automationIdByName(sitePolicy, 'Converted'), {});
+
+    expect(await resolveWinner(t, 'automation')).toEqual({ policyId: sitePolicy, names: ['Converted'] });
+  });
+
+  it.each([
+    ['reverted', { reverted: true }],
+    ['carrying no workflow', { workflowId: null }],
+  ] as const)('a retired row whose conversion is %s is dropped; the policy still wins', async (_label, opts) => {
+    const t = await seedTenant();
+    const orgPolicy = await seedPolicy(t.orgId, 'automation', ORG_ITEMS);
+    await assign(orgPolicy, 'organization', t.orgId);
+    const sitePolicy = await seedPolicy(t.orgId, 'automation', [{ name: 'Converted', retired: true }]);
+    await assign(sitePolicy, 'site', t.siteId);
+    await seedConversion(t.orgId, sitePolicy, await automationIdByName(sitePolicy, 'Converted'), opts);
+
+    expect(await resolveWinner(t, 'automation')).toEqual({ policyId: sitePolicy, names: [] });
+  });
+});
+
+describe.each<Feature>(['automation', 'compliance'])('%s — precedence with empty candidates (#12488)', (feature) => {
+  it('within one level the lower priority number wins when it is the populated policy', async () => {
+    const t = await seedTenant();
+    const populated = await seedPolicy(t.orgId, feature, ORG_ITEMS);
+    const empty = await seedPolicy(t.orgId, feature, []);
+    await assign(empty, 'site', t.siteId, 1);
+    await assign(populated, 'site', t.siteId, 0);
+
+    expect(await resolveWinner(t, feature)).toEqual({ policyId: populated, names: ORG_ITEMS.map((i) => i.name) });
+  });
+
+  it('within one level the lower priority number wins when it is the EMPTY policy', async () => {
+    const t = await seedTenant();
+    const populated = await seedPolicy(t.orgId, feature, ORG_ITEMS);
+    const empty = await seedPolicy(t.orgId, feature, []);
+    await assign(populated, 'site', t.siteId, 1);
+    await assign(empty, 'site', t.siteId, 0);
+
+    expect(await resolveWinner(t, feature)).toEqual({ policyId: empty, names: [] });
+  });
+
+  it('equal priority at one level falls back to the earliest assignment', async () => {
+    const t = await seedTenant();
+    const empty = await seedPolicy(t.orgId, feature, []);
+    const populated = await seedPolicy(t.orgId, feature, ORG_ITEMS);
+    await assign(empty, 'site', t.siteId, 0);
+    await assign(populated, 'site', t.siteId, 0);
+
+    expect(await resolveWinner(t, feature)).toEqual({ policyId: empty, names: [] });
+  });
+
+  it('an empty device-group policy overrides a populated site policy', async () => {
+    const t = await seedTenant();
+    const groupId = await seedDeviceGroup(t);
+    const sitePolicy = await seedPolicy(t.orgId, feature, ORG_ITEMS);
+    await assign(sitePolicy, 'site', t.siteId);
+    const groupPolicy = await seedPolicy(t.orgId, feature, []);
+    await assign(groupPolicy, 'device_group', groupId);
+
+    expect(await resolveWinner(t, feature)).toEqual({ policyId: groupPolicy, names: [] });
+  });
+
+  it('a partner-wide policy with items reaches the device under an org-scoped context', async () => {
+    const t = await seedTenant();
+    const partnerPolicy = await seedPolicy({ partnerId: t.partnerId }, feature, ORG_ITEMS);
+    await assign(partnerPolicy, 'partner', t.partnerId);
+
+    expect(await resolveWinner(t, feature)).toEqual({ policyId: partnerPolicy, names: ORG_ITEMS.map((i) => i.name) });
+  });
+
+  it('an empty partner-wide policy wins as an empty list, not null', async () => {
+    const t = await seedTenant();
+    const partnerPolicy = await seedPolicy({ partnerId: t.partnerId }, feature, []);
+    await assign(partnerPolicy, 'partner', t.partnerId);
+
+    expect(await resolveWinner(t, feature)).toEqual({ policyId: partnerPolicy, names: [] });
+  });
+
+  it('an empty org policy overrides a populated partner-wide policy', async () => {
+    const t = await seedTenant();
+    const partnerPolicy = await seedPolicy({ partnerId: t.partnerId }, feature, ORG_ITEMS);
+    await assign(partnerPolicy, 'partner', t.partnerId);
+    const orgPolicy = await seedPolicy(t.orgId, feature, []);
+    await assign(orgPolicy, 'organization', t.orgId);
+
+    expect(await resolveWinner(t, feature)).toEqual({ policyId: orgPolicy, names: [] });
   });
 });

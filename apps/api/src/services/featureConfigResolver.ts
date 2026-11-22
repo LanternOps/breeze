@@ -425,7 +425,10 @@ export async function resolveAutomationsForDeviceWithPolicy(
 
 /**
  * Resolves automations for a device via the hierarchy.
- * Returns all automation rows from the WINNING assignment.
+ * Returns the runnable (non-retired) automation rows of the WINNING
+ * assignment's policy. `[]` covers both "nothing assigned" and "the winning
+ * policy's Automations list is empty"; use
+ * `resolveAutomationsForDeviceWithPolicy` to tell them apart.
  */
 export async function resolveAutomationsForDevice(
   deviceId: string
