@@ -104,6 +104,34 @@ describe('recognizeFlowForm', () => {
     notFormShaped(d, 'differs_after_recompile');
   });
 
+  it('a target the picker cannot show is not form-shaped', () => {
+    const d = clone(doc('scheduled script on a group'));
+    d.steps[0]!.input = { scriptId: d.steps[0]!.input.scriptId, whenOffline: 'queue', target: { type: 'nonsense', siteIds: ['x'] } };
+    notFormShaped(d, 'not_decodable');
+    const stray = clone(doc('scheduled script on a group'));
+    (stray.steps[0]!.input.target as Record<string, unknown>).siteIds = ['x'];
+    notFormShaped(stray); // an unknown key would be dropped on save
+  });
+
+  it('the triggering device is only a form target for an event trigger', () => {
+    const d = clone(doc('event on the triggering device'));
+    d.trigger = { type: 'schedule', cron: '0 2 * * *', timezone: 'UTC' };
+    notFormShaped(d, 'not_decodable');
+  });
+
+  it('different form values that compile to one document reopen as the document says', () => {
+    // continue and stop differ only when a later step chains; a lone script is the same document either way.
+    const lone = FORM_CASES.find(([l]) => l === 'scheduled script on a group')![1];
+    const asContinue = { ...lone, onFailure: { mode: 'continue' as const } };
+    expect(compileFlowForm(asContinue)).toEqual(compileFlowForm(lone));
+    const r = recognizeFlowForm(compileFlowForm(asContinue));
+    expect(r.formShaped && r.values.onFailure).toEqual({ mode: 'stop' });
+    // A notify-only list names no selector, so the target is the trigger's default (the editor must make the person choose on adding a device action).
+    const noticeOnly = { ...lone, actions: [FORM_CASES.find(([l]) => l === 'schedule with a notify-only action list')![1].actions[0]!] };
+    const r2 = recognizeFlowForm(compileFlowForm(noticeOnly));
+    expect(r2.formShaped && r2.values.target).toEqual({ kind: 'target', target: { type: 'all' } });
+  });
+
   it('an invalid document is invalid_document', () => {
     notFormShaped(null, 'invalid_document');
     notFormShaped({ version: 1, name: 'x' }, 'invalid_document');

@@ -1,5 +1,6 @@
 import { ALERT_SEVERITIES } from '../../constants';
 import type { DeploymentTargetConfig } from '../../types/filters';
+import { deploymentTargetConfigSchema } from '../../validators/filters';
 import type { FlowDocumentV1 } from '../../validators/flows';
 import { deviceCountsSuffix, TRIGGER_DEVICE_SELECTOR } from './compile';
 import type { FlowStep } from './emit';
@@ -39,10 +40,15 @@ function decodeTrigger(t: FlowDocumentV1['trigger']): FlowFormTrigger | null {
  * `undefined` when the step chains on an earlier set. `null` when the input
  * is something the form cannot express (legacy conditions, other device ids).
  */
-function selectorOf(input: Record<string, unknown>): FlowFormTarget | undefined | null {
+function selectorOf(input: Record<string, unknown>, triggerType: FlowFormTrigger['type']): FlowFormTarget | undefined | null {
   if (input.fromStep !== undefined) return undefined;
-  if (isTriggerDeviceSelector({ deviceIds: input.deviceIds })) return { kind: 'trigger_device' };
-  if (isRecord(input.target)) return { kind: 'target', target: input.target as unknown as DeploymentTargetConfig };
+  // Only an event payload can name a device: on any other trigger `{{trigger.device.id}}` resolves to nothing.
+  if (isTriggerDeviceSelector({ deviceIds: input.deviceIds })) return triggerType === 'event' ? { kind: 'trigger_device' } : null;
+  if (isRecord(input.target)) {
+    // A target the picker cannot show (unknown type, malformed filter) is not form-editable.
+    const parsed = deploymentTargetConfigSchema.safeParse(input.target);
+    return parsed.success ? { kind: 'target', target: parsed.data as DeploymentTargetConfig } : null;
+  }
   return null;
 }
 
@@ -71,7 +77,7 @@ export function decodeFlowForm(doc: FlowDocumentV1): FlowFormValues | null {
 
   for (const step of doc.steps as FlowStep[]) {
     if (step.id === 'targets') {
-      if (step.tool !== 'resolve_targets' || !setTarget(selectorOf(step.input))) return null;
+      if (step.tool !== 'resolve_targets' || !setTarget(selectorOf(step.input, trigger.type))) return null;
       continue;
     }
     const m = ID_RE.exec(step.id);
@@ -89,7 +95,7 @@ export function decodeFlowForm(doc: FlowDocumentV1): FlowFormValues | null {
     if (kind === 'run_script') {
       if (i !== actions.length || step.tool !== 'run_script_on_targets') return null;
       if (typeof input.scriptId !== 'string') return null;
-      if (!setTarget(selectorOf(input))) return null;
+      if (!setTarget(selectorOf(input, trigger.type))) return null;
       if (isRecord(input.fromStep) && input.fromStep.set === 'dispatched') usesDispatched = true;
       const action: FlowFormAction = {
         type: 'run_script',
