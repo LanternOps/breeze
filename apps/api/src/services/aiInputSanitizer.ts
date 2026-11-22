@@ -225,8 +225,18 @@ export function sanitizeUntrustedText(
  */
 export function sanitizeUntrustedToolText(value: string, flags?: string[]): string {
   const sink = flags ?? [];
-  const unfenced = value.replace(UNTRUSTED_FENCE, '[filtered]').replace(TOOL_OUTPUT_FENCE, '[filtered]');
-  if (unfenced !== value) addFlag(sink, 'fence_forgery');
+  // Strip invisible characters BEFORE the fence match, so it sees the same
+  // text the model will. Matching first let `</tool​_output>` slip past
+  // and then be joined into a real closing tag by the strip in sanitizeField.
+  // Stripping first (rather than re-running the fence after sanitizeField)
+  // keeps one pass: every later step only INSERTS `[filtered]`, which has no
+  // `<`/`>` and so can never assemble a tag, and sanitizeField's own strip is
+  // then a no-op. Clean text is untouched, and a benign NBSP still raises only
+  // `dangerous_unicode` (the same flag sanitizeField would have raised).
+  const visible = value.replace(DANGEROUS_UNICODE, '');
+  if (visible !== value) addFlag(sink, 'dangerous_unicode');
+  const unfenced = visible.replace(UNTRUSTED_FENCE, '[filtered]').replace(TOOL_OUTPUT_FENCE, '[filtered]');
+  if (unfenced !== visible) addFlag(sink, 'fence_forgery');
   return sanitizeField(unfenced, unfenced.length, sink);
 }
 
