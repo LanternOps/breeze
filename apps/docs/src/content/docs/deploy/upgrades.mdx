@@ -647,6 +647,24 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
+### Next release — customer portal Microsoft sign-in links move to their own table
+
+This release stops using the old `entra_oid` and `entra_tenant_id` columns on portal logins; Microsoft sign-in links have lived in the identities table since v0.128.0. On start, one migration copies across any link that was never moved. The API log shows `final backfill inserted N identit(ies)` when it copied something, or `inserted 0 identities` when it did not. A later release drops the old columns.
+
+**The API can refuse to start at this migration.** This happens only when a portal login holds an old Microsoft link that no identity reserves, and the login is already linked to a different Microsoft account. The migration does not guess which one is right. The start log shows `portal identity final backfill refused`, and nothing is changed. To fix it:
+
+<Steps>
+1. Run `apps/api/migrations/preflight/2026-11-21-100000-portal-entra-columns-drop-preflight.sql` against the database. It is read-only. Query `blocking_unreserved_pairs` lists the logins concerned.
+2. For each login, decide which Microsoft account should own it:
+   - If the old link should be free to sign in later as a new login, set that row's `entra_oid` and `entra_tenant_id` to `NULL`.
+   - If the old link is the right owner, point the login's Microsoft row in `portal_user_identities` at it. Set `subject` to `entra_oid`, and set `entra_tenant_id` and the issuer from the old `entra_tenant_id`.
+
+   Disabling the portal login does not clear the refusal.
+3. Restart the API. The migration runs again.
+</Steps>
+
+**More than one API instance?** Do not skip this release. Upgrade every API and `worker` instance to it before you take the release that drops the columns. An older instance still running after the drop would fail when it writes those columns.
+
 ### v0.128.0 — customer portal sign-up options, remote access tool alerts, Wisp check-ins, partner-wide installers
 
 <Aside type="caution" title="Breaking change: breeze-agent enroll --site-id is removed">
