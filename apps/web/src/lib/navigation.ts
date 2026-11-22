@@ -78,6 +78,14 @@ export async function navigateTo(path: string, options: NavigateOptions = {}): P
   // alive, so this is the 'soft' outcome.
   const hashIndex = safePath.indexOf('#');
   if (hashIndex >= 0 && isFragmentOnlyChange(safePath)) {
+    if (options.replace) {
+      // Assigning location.hash always pushes; honour `replace` by rewriting the
+      // entry and emitting the hashchange that replaceState does not.
+      const oldURL = window.location.href;
+      window.history.replaceState(window.history.state, '', safePath);
+      window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL: window.location.href }));
+      return 'soft';
+    }
     window.location.hash = safePath.slice(hashIndex + 1);
     try {
       // Hash assignment pushes null `history.state`; seed it for the router (#8331).

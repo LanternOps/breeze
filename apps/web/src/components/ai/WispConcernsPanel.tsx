@@ -282,7 +282,7 @@ export function WispConcernsPanel({
             href={`/approvals#intent-${encodeURIComponent(c.approvalIntentId)}`}
             // The panel can be open on /approvals itself (#12476).
             onClick={(event) => {
-              claimSamePageHashClick(event, `/approvals#intent-${encodeURIComponent(c.approvalIntentId!)}`);
+              claimSamePageHashClick(event, event.currentTarget.getAttribute('href') ?? '');
             }}
             data-testid={`wisp-concern-approval-${c.id}`}
             className="mt-1 ml-3.5 inline-block text-[11px] font-medium text-primary underline-offset-2 hover:underline"

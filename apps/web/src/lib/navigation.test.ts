@@ -43,6 +43,22 @@ describe('navigateTo same-origin guard', () => {
       }
     });
 
+    it('honours replace: rewrites the entry (no new history entry) and still fires hashchange', async () => {
+      window.history.pushState({}, '', '/approvals#proposal-AAAA');
+      const lengthBefore = window.history.length;
+      const onHashChange = vi.fn();
+      window.addEventListener('hashchange', onHashChange);
+      try {
+        await navigateTo('/approvals#proposal-BBBB', { replace: true });
+        expect(navigateMock).not.toHaveBeenCalled();
+        expect(window.location.hash).toBe('#proposal-BBBB');
+        expect(window.history.length).toBe(lengthBefore);
+        expect(onHashChange).toHaveBeenCalledTimes(1);
+      } finally {
+        window.removeEventListener('hashchange', onHashChange);
+      }
+    });
+
     it('still routes when the path differs', async () => {
       window.history.pushState({}, '', '/approvals#proposal-AAAA');
       await navigateTo('/devices#proposal-BBBB');
@@ -51,7 +67,13 @@ describe('navigateTo same-origin guard', () => {
 
     it('still routes when the query differs', async () => {
       window.history.pushState({}, '', '/approvals?x=1#a');
-      await navigateTo('/approvals?x=2#a');
+      await navigateTo('/approvals?x=2#b');
+      expect(navigateMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves an identical fragment to the router', async () => {
+      window.history.pushState({}, '', '/approvals#a');
+      await navigateTo('/approvals#a');
       expect(navigateMock).toHaveBeenCalledTimes(1);
     });
   });
