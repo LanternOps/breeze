@@ -48,6 +48,7 @@ import {
   evaluateExpr,
   FLOW_RUN_LIMITS,
   flowDocumentV1Schema,
+  isTruthy,
   parseExpr,
   type FlowDocumentV1,
   type FlowPausedReason,
@@ -491,8 +492,24 @@ async function walkForEach(s: Slice, step: FlowStep, index: number): Promise<'co
     s.anyContinueFailure = true;
     return 'continue';
   }
+  if (head && headState === 'done' && head.status === 'skipped') {
+    // #12481: skipped as a whole by an earlier slice (see below); never re-decided.
+    record(s, step.id, 'skipped', null);
+    return 'continue';
+  }
 
-  const items = evaluateItems(step, scopeFor(s));
+  const scope = scopeFor(s);
+  const items = evaluateItems(step, scope);
+  // #12481: items that are not a list under a step-level `when` that is false
+  // (e.g. the form's on-failure notice when nothing failed: the resolve step
+  // it loops over was skipped, so its output is null). The step would not run
+  // for any item, so it is skipped as a whole instead of failing the run.
+  // Only this case changes: a true/absent/item-dependent/unevaluable `when`,
+  // an items expression error, too_many_items, and any step that already has
+  // item rows all keep the failure below.
+  if (!items.ok && items.notList && !hasItemRows(s, step.id) && stepWhenIsFalse(step, scope)) {
+    return skipForEachStep(s, step, index, head);
+  }
   if (!items.ok || items.value.length > step.forEach!.maxItems) {
     const code: FlowStepErrorCode = items.ok ? 'too_many_items' : 'input_invalid';
     const message = items.ok
@@ -540,13 +557,54 @@ async function walkForEach(s: Slice, step: FlowStep, index: number): Promise<'co
   return 'continue';
 }
 
-function evaluateItems(step: FlowStep, scope: FlowScope): { ok: true; value: FlowValue[] } | { ok: false; error: string } {
+function evaluateItems(
+  step: FlowStep,
+  scope: FlowScope,
+): { ok: true; value: FlowValue[] } | { ok: false; error: string; notList: boolean } {
   const parsed = parseExpr(step.forEach!.items);
-  if (!parsed.ok) return { ok: false, error: `forEach.items: ${parsed.error}` };
+  if (!parsed.ok) return { ok: false, error: `forEach.items: ${parsed.error}`, notList: false };
   const evaluated = evaluateExpr(parsed.ast, scope);
-  if (!evaluated.ok) return { ok: false, error: `forEach.items: ${evaluated.error}` };
-  if (!Array.isArray(evaluated.value)) return { ok: false, error: 'forEach.items did not evaluate to a list.' };
+  if (!evaluated.ok) return { ok: false, error: `forEach.items: ${evaluated.error}`, notList: false };
+  if (!Array.isArray(evaluated.value)) return { ok: false, error: 'forEach.items did not evaluate to a list.', notList: true };
   return { ok: true, value: evaluated.value };
+}
+
+/**
+ * #12481: the step's `when` is false for the step as a whole — it parses,
+ * does not reference `item` (an unbound `item` reads as null, which would
+ * misjudge a per-item condition), and evaluates to a non-true value in the
+ * same scope the items were listed in. The executor's rule (stepExecutor.ts
+ * step 1: only `true` runs the unit), applied once, before any item.
+ */
+function stepWhenIsFalse(step: FlowStep, scope: FlowScope): boolean {
+  if (step.when === undefined) return false;
+  const parsed = parseExpr(step.when);
+  if (!parsed.ok || parsed.paths.some((p) => p.root === 'item')) return false;
+  const evaluated = evaluateExpr(parsed.ast, scope);
+  return evaluated.ok && !isTruthy(evaluated.value);
+}
+
+function hasItemRows(s: Slice, stepId: string): boolean {
+  for (const row of s.latest!.values()) {
+    if (row.stepId === stepId && row.itemIndex !== null && row.itemIndex !== undefined) return true;
+  }
+  return false;
+}
+
+/** #12481: one terminal `skipped` head row (item_index NULL) and the cursor past the step, in one fenced write. */
+async function skipForEachStep(s: Slice, step: FlowStep, index: number, head: FlowRunStepRow | undefined): Promise<'continue' | 'stop'> {
+  const pin = s.pins!.get(step.id)!;
+  const now = new Date();
+  const cursor = nextCursor(s, index, null, null);
+  const ok = await checkpoint(s.runId, s.token, { currentStepId: cursor.stepId, currentItemIndex: cursor.itemIndex, activeMs: s.activeMs }, {
+    insert: {
+      id: randomUUID(), runId: s.runId, orgId: s.run.orgId, stepId: step.id, itemIndex: null, attempt: (head?.attempt ?? 0) + 1,
+      tool: pin.tool, toolSource: pin.source, tier: pin.tier, status: 'skipped', startedAt: now, finishedAt: now, durationMs: 0,
+    },
+  });
+  if (!ok) return 'stop';
+  record(s, step.id, 'skipped', null);
+  return 'continue';
 }
 
 /** One unit (a step, or one for-each item) given its latest ledger row. */
