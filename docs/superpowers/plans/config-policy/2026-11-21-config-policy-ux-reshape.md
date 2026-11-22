@@ -2,6 +2,7 @@
 title: Configuration policies UX reshape (implementation plan, W1 W2 W3 W5)
 spec: docs/superpowers/specs/config-policy/2026-11-21-config-policy-ux-reshape-spec.md
 status: plan-drafted
+tracking_issue: LanternOps/breeze#12462
 anchor_issue: LanternOps/breeze#12306
 ---
 
@@ -153,6 +154,8 @@ Each is flagged in its PR body.
 | W03d | Web: one-page create, owner default, Start from, list filters and server paging, docs, E2E | W03a, W03c | with W03a | opus | L |
 | W05a | "Outranked on N devices" | W2 merged | — | opus | M |
 | W05b | Copy | W3 merged; Q1 and Q2 answered | — | opus | M |
+
+**Tracking keys.** The feature's wave sub-issues are keyed in execution order, one per part: W01 = W01a, W02 = W01b, W03 = W02a, W04 = W02b, W05 = W02c, W06 = W03a, W07 = W03b, W08 = W03c, W09 = W03d, W10 = W05a, W11 = W05b. This plan's text uses the part ids. Issue state, not this document, says what is done.
 
 **Release unit W03a + W03d.** The spec ships read scoping with the owner default, not before. W03a does not enqueue until W03d is approved and green. Then they enqueue back to back, W03a first.
 
