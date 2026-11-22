@@ -62,7 +62,7 @@ describe('executeRunScriptOnTargets', () => {
       kind: 'completed', truncated: false,
       output: {
         dispatchedDeviceIds: [id(1), id(2)], succeededDeviceIds: [id(1), id(2)], failedDeviceIds: [], skippedOfflineDeviceIds: [],
-        count: 2, warnings: ['w'],
+        count: 2, succeededCount: 2, failedCount: 0, warnings: ['w'],
       },
     });
   });
@@ -121,6 +121,14 @@ describe('executeRunScriptOnTargets', () => {
         count: 3,
       },
     });
+  });
+
+  it('run_script_on_targets output carries succeeded and failed counts', async () => {
+    const five = [id(1), id(2), id(3), id(4), id(5)];
+    m.resolve.mockResolvedValue({ deviceIds: five, devices: devs(five), warnings: [], problems: [] });
+    dispatchAll((d) => ([id(2), id(4), id(5)].includes(d) ? 'failed' : 'queued'));
+    const out = await executeRunScriptOnTargets({ ...base, conditions: [] } as RunScriptOnTargetsInput, ctx);
+    expect(out).toMatchObject({ output: { count: 5, succeededCount: 2, failedCount: 3 } });
   });
 
   it('zero targets with no problems completes with count 0', async () => {
