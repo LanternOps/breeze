@@ -143,6 +143,21 @@ describe('FlowEditorPage', () => {
     await waitFor(() => expect(nav.navigateTo).toHaveBeenCalledWith(`/flows/${ID}/edit`));
   });
 
+  it('a second Save while leaving for the edit page creates nothing more', async () => {
+    api.createFlowDraft.mockResolvedValue({ flow: flow(), validation });
+    nav.navigateTo.mockReturnValue(new Promise(() => {})); // the page fetch never finishes in this test
+    render(<FlowEditorPage />);
+    fireEvent.click(await screen.findByTestId('mock-form-rename'));
+    fireEvent.click(screen.getByTestId('flow-editor-save'));
+    await waitFor(() => expect(nav.navigateTo).toHaveBeenCalledWith(`/flows/${ID}/edit`));
+    expect(screen.getByTestId('flow-editor-save')).toBeDisabled();
+    expect(screen.getByTestId('flow-editor-save-enable')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('flow-editor-save'));
+    fireEvent.click(screen.getByTestId('flow-editor-save-enable'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(api.createFlowDraft).toHaveBeenCalledTimes(1);
+  });
+
   it('Save on an existing flow sends expectedVersion and holds the returned version and document', async () => {
     const renamed = compileFlowForm({ ...values, name: 'Nightly cleanup!' });
     api.updateFlowDraft.mockResolvedValue({ flow: flow({ definitionVersion: 4 }, renamed), validation });

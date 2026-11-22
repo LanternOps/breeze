@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import {
@@ -108,6 +108,10 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
   const [owner, setOwner] = useState<'organization' | 'partner'>(() => (canManagePartnerWide && !currentOrgId ? 'partner' : 'organization'));
 
   const [saving, setSaving] = useState(false);
+  // Held across a whole Save / Save-and-enable, including the navigation or reload that follows a create.
+  const [busy, setBusy] = useState(false);
+  // Set the moment a create succeeds: this page never POSTs a second flow.
+  const createdIdRef = useRef<string | null>(null);
   const [saveError, setSaveError] = useState<SaveError | null>(null);
   const [savedNotice, setSavedNotice] = useState(false);
   const [savedThisSession, setSavedThisSession] = useState(false);
@@ -195,6 +199,7 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
   /** Save the document as it is (form-compiled or typed). Returns the saved flow, or null on failure. */
   const persist = async (): Promise<{ flow: FlowDetailDto; created: boolean } | null> => {
     if (!parsed.ok) return null;
+    if (isNew && createdIdRef.current !== null) return null;
     const document = parsed.value as Record<string, unknown>;
     if (!isNew && flow && !dirty) return { flow, created: false };
     setSaving(true);
@@ -203,6 +208,7 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
     try {
       if (isNew) {
         const res = await createFlowDraft({ document, ...ownerBody });
+        createdIdRef.current = res.flow.id;
         return { flow: res.flow, created: true };
       }
       const res = await updateFlowDraft(flowId as string, { document, expectedVersion: version as number });
@@ -232,19 +238,26 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
   };
 
   const runSave = async () => {
+    setBusy(true);
     const result = await persist();
-    if (!result) return;
-    if (result.created) {
+    if (result?.created) {
+      // Leaving for the edit page: stay busy so a second click cannot act meanwhile.
       void navigateTo(`/flows/${result.flow.id}/edit`);
       return;
     }
+    setBusy(false);
+    if (!result) return;
     setSavedNotice(true);
     setSavedThisSession(true);
   };
 
   const runSaveAndEnable = async () => {
+    setBusy(true);
     const result = await persist();
-    if (!result) return;
+    if (!result) {
+      setBusy(false);
+      return;
+    }
     try {
       // The save response carries no pre-approval eligibility; only GET computes it.
       const fresh = await getFlow(result.flow.id);
@@ -260,11 +273,12 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
       showToast({ type: 'error', message: t('flowEditor.enableOpenFailed') });
       if (result.created) {
         void navigateTo(`/flows/${result.flow.id}/edit`);
-      } else {
-        setSavedNotice(true);
-        setSavedThisSession(true);
+        return; // leaving: stay busy
       }
+      setSavedNotice(true);
+      setSavedThisSession(true);
     }
+    setBusy(false);
   };
 
   const start = (action: Pending) => {
@@ -344,7 +358,7 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
       {isEnabledFlow && (
         <div role="status" className="flex flex-wrap items-center gap-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200" data-testid="flow-editor-enabled-readonly">
           <span>{t('flowEditor.enabledReadOnly')}</span>
-          {canWrite && (
+          {canWrite && ownerAllowsChange && (
             <button type="button" className="rounded border border-current px-2 py-0.5 text-xs" data-testid="flow-editor-disable-and-edit" onClick={() => setDisableOpen(true)}>
               {t('flowEditor.disableAndEdit')}
             </button>
@@ -457,7 +471,7 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
               type="button"
               className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
               data-testid="flow-editor-save"
-              disabled={saving || !parsed.ok}
+              disabled={saving || busy || !parsed.ok}
               onClick={() => start('save')}
             >
               {t('flowEditor.save')}
@@ -467,7 +481,7 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
                 type="button"
                 className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
                 data-testid="flow-editor-save-enable"
-                disabled={saving || !parsed.ok}
+                disabled={saving || busy || !parsed.ok}
                 onClick={() => start('enable')}
               >
                 {t('flowEditor.saveAndEnable')}
