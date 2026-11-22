@@ -24,7 +24,9 @@
       "publicTo": "Resposta visível ao cliente para {{recipient}}",
       "publicNoRecipient": "Resposta visível ao cliente (enviada por e-mail ao solicitante)",
       "publicNoEmail": "Resposta visível ao cliente (não há e-mail do solicitante cadastrado, então nenhum e-mail é enviado)",
-      "internal": "Nota interna (não visível ao cliente)"
+      "internal": "Nota interna (não visível ao cliente)",
+      "editReplaces": "Substitui o texto de um comentário existente por:",
+      "deleteNotice": "Um comentário existente neste chamado será excluído."
     },
     "memory": {
       "heading": "O Wisp vai lembrar",
