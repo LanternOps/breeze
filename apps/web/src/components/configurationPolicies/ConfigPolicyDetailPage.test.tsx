@@ -179,8 +179,8 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
     openFeatureTab('OneDrive Helper');
 
     expect(screen.queryByTestId('onedrive-tab-editor')).not.toBeInTheDocument();
-    expect(screen.getByText(/isn't available on partner-wide policies/i)).toBeInTheDocument();
-    expect(screen.getByText(/Configure this feature on an organization-scoped policy\./i)).toBeInTheDocument();
+    expect(screen.getByText(/isn't available on MSP-managed policies/i)).toBeInTheDocument();
+    expect(screen.getByText(/Set this feature on a policy managed by one organization\./i)).toBeInTheDocument();
   });
 
   it('renders the Backup tab as fully editable on a partner-wide policy (profiles, spec 2026-07-13)', async () => {
@@ -193,7 +193,7 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
     openFeatureTab('Backup');
 
     expect(screen.getByTestId('backup-tab-editor')).toBeInTheDocument();
-    expect(screen.queryByText(/isn't available on partner-wide policies/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/isn't available on MSP-managed policies/i)).not.toBeInTheDocument();
   });
 
   it('still renders the Patches tab (partner-linkable) as fully editable on a partner-wide policy', async () => {
@@ -204,7 +204,7 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
     openFeatureTab('Patches');
 
     expect(screen.getByTestId('patch-tab-editor')).toBeInTheDocument();
-    expect(screen.queryByText(/organization-scoped policy/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/policy managed by one organization/i)).not.toBeInTheDocument();
   });
 
   it('renders the Backup tab as fully editable (no hint) on an org-owned policy', async () => {
@@ -215,7 +215,7 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
     openFeatureTab('Backup');
 
     expect(screen.getByTestId('backup-tab-editor')).toBeInTheDocument();
-    expect(screen.queryByText(/organization-scoped policy/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/policy managed by one organization/i)).not.toBeInTheDocument();
   });
 
   it('marks the gated tab button with an explanatory title (tooltip) on a partner-wide policy', async () => {
@@ -252,7 +252,7 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
     openFeatureTab('OneDrive Helper');
 
     expect(screen.queryByTestId('onedrive-tab-editor')).not.toBeInTheDocument();
-    expect(screen.getByText(/isn't available on partner-wide policies/i)).toBeInTheDocument();
+    expect(screen.getByText(/isn't available on MSP-managed policies/i)).toBeInTheDocument();
     expect(screen.getByText(/existing onedrive helper configuration/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Remove configuration/i }));
@@ -270,7 +270,7 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
     await waitFor(() =>
       expect(screen.queryByText(/existing onedrive helper configuration/i)).not.toBeInTheDocument()
     );
-    expect(screen.getByText(/isn't available on partner-wide policies/i)).toBeInTheDocument();
+    expect(screen.getByText(/isn't available on MSP-managed policies/i)).toBeInTheDocument();
   });
 
   it('does not show the leftover-link removal affordance when the gated tab has no existing link', async () => {
@@ -440,7 +440,7 @@ describe('ConfigPolicyDetailPage — inheritance from the API (#5080)', () => {
     await screen.findByRole('heading', { name: 'Test Policy' });
     openFeatureTab('Backup');
 
-    expect(screen.getByText(/Inheriting from/i)).toBeInTheDocument();
+    expect(screen.getByText(/Based on/i)).toBeInTheDocument();
     expect(screen.getByText('Baseline')).toBeInTheDocument();
     expect(fetchMock.mock.calls.some((c) => c[0] === '/configuration-policies/parent-1')).toBe(false);
   });
@@ -505,7 +505,7 @@ describe('ConfigPolicyDetailPage — inheritance from the API (#5080)', () => {
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
 
     await screen.findByRole('heading', { name: 'Test Policy' });
-    expect(screen.getByText(/Inherited by 2 polic/i)).toBeInTheDocument();
+    expect(screen.getByText(/Parent of 2 polic/i)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Child A' })).toHaveAttribute('href', '/configuration-policies/child-1');
     expect(screen.getByRole('link', { name: 'Child B' })).toHaveAttribute('href', '/configuration-policies/child-2');
   });
@@ -515,9 +515,9 @@ describe('ConfigPolicyDetailPage — inheritance from the API (#5080)', () => {
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
 
     await screen.findByRole('heading', { name: 'Test Policy' });
-    expect(screen.queryByText(/Inherited by/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Parent of/i)).not.toBeInTheDocument();
     openFeatureTab('Backup');
-    expect(screen.queryByText(/Inheriting from/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Based on/i)).not.toBeInTheDocument();
   });
 
   // Regression guard for #5023: the pre-persistence flow set inheritance state
@@ -533,7 +533,7 @@ describe('ConfigPolicyDetailPage — inheritance from the API (#5080)', () => {
 
       await screen.findByRole('heading', { name: 'Test Policy' });
       openFeatureTab('Backup');
-      expect(screen.queryByText(/Inheriting from/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Based on/i)).not.toBeInTheDocument();
       expect(
         fetchMock.mock.calls.some((c) => c[0] === '/configuration-policies/some-other-policy-id')
       ).toBe(false);

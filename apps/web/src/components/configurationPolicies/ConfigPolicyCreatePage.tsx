@@ -139,7 +139,9 @@ export default function ConfigPolicyCreatePage() {
         ),
         type: "success",
       });
-      void navigateTo(`/configuration-policies/${policy.id}`);
+      // A new policy applies to nothing yet, so land with the Applies-to
+      // drawer open (#12306 item 4; the detail page maps #assignments to it).
+      void navigateTo(`/configuration-policies/${policy.id}#assignments`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     }
@@ -183,6 +185,7 @@ export default function ConfigPolicyCreatePage() {
           <button
             type="button"
             onClick={() => setMode("new")}
+            data-testid="config-policy-create-mode-new"
             className="group flex flex-col items-center gap-3 rounded-lg border-2 border-dashed border-muted p-8 text-center transition hover:border-primary/40 hover:bg-primary/5"
           >
             <div className="flex h-14 w-14 items-center justify-center rounded-full border bg-muted/50 transition group-hover:border-primary/40 group-hover:bg-primary/10">
@@ -313,6 +316,7 @@ export default function ConfigPolicyCreatePage() {
               </label>
               <input
                 id="config-policy-name"
+                data-testid="config-policy-create-name"
                 {...register("name")}
                 className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 placeholder={i18n.t(
@@ -462,6 +466,7 @@ export default function ConfigPolicyCreatePage() {
             </a>
             <button
               type="submit"
+              data-testid="config-policy-create-submit"
               disabled={
                 isSubmitting ||
                 (mode === "linked" && !linkedPolicyId) ||
