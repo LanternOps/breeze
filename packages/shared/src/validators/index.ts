@@ -1285,6 +1285,9 @@ export * from './topology';
 
 export * from './topologyCollection';
 
+// Learned networks heartbeat attachment report (#12369 B1)
+export * from './networkAttachments';
+
 export * from './topologyConfiguration';
 
 export * from './topologyPresence';
