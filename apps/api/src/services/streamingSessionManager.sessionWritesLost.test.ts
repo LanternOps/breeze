@@ -68,7 +68,9 @@ vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
 import { StreamingSessionManager } from './streamingSessionManager';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
-import { baseAuth, baseDbSession, scriptedQuery, sdkResult } from './__testutils__/streamingSessionManagerHarness';
+import {
+  baseAuth, baseDbSession, scriptedQuery, sdkResult, turnScriptedQuery,
+} from './__testutils__/streamingSessionManagerHarness';
 
 let mgr: StreamingSessionManager;
 let errorSpy: ReturnType<typeof vi.spyOn>;
@@ -91,50 +93,77 @@ const lost = (over: Record<string, unknown> = {}) => ({
   error_code: 'ENOSPC', lost: ['transcript'], transcript_session_ids: ['sdk-1'], ...over,
 });
 const lostLines = () => errorSpy.mock.calls.filter((c) => String(c[0]).includes('session_writes_lost'));
+const model = () => makeResolvedModel('anthropic_byok');
+const settle = () => new Promise((r) => setTimeout(r, 25));
 
-/** Runs one turn whose stream is `messages`, then returns the next turn's resume option. */
-async function turnThenNextResume(messages: unknown[]) {
-  m.queryImpl = () => scriptedQuery(messages);
-  const first = await mgr.getOrCreate('s1', { ...baseDbSession }, baseAuth, undefined, 'sys', 1, makeResolvedModel('anthropic_byok'));
-  await first.processorPromise;
+/**
+ * One live query (turnScriptedQuery keeps the processor, and so the session,
+ * alive across turns): turn 1 streams `messages`. `next` is the route's next
+ * getOrCreate, called with the DB row as it would read if the pointer clear
+ * had not landed (still `sdk-1`).
+ */
+async function liveSessionAfterTurn(messages: unknown[]) {
+  m.queryImpl = (args) => turnScriptedQuery(args.prompt, [messages, [sdkResult({})]]);
+  const first = await mgr.getOrCreate('s1', { ...baseDbSession }, baseAuth, undefined, 'sys', 1, model());
+  first.inputController.pushMessage('hello');
+  await settle();
   first.state = 'idle';
-  // The route re-reads ai_sessions each turn: a cleared pointer reads back null, an intact one 'sdk-1'.
-  const cleared = m.clearPointer.mock.calls.length > 0;
-  await mgr.getOrCreate(
-    's1', { ...baseDbSession, sdkSessionId: cleared ? null : 'sdk-1' }, baseAuth, undefined, 'sys', 1,
-    makeResolvedModel('anthropic_byok'),
-  );
-  return m.queryArgs.at(-1)!.options.resume;
+  const next = () =>
+    mgr.getOrCreate('s1', { ...baseDbSession, sdkSessionId: 'sdk-1' }, baseAuth, undefined, 'sys', 1, model());
+  return { first, next };
 }
 
 describe('session_writes_lost (#11818)', () => {
-  it('transcript lost for this session: next turn does not resume, pointer cleared, one error log without content', async () => {
-    const resume = await turnThenNextResume([init('sdk-1'), sdkResult({}), lost()]);
-    expect(m.queryArgs).toHaveLength(2); // the live query was recreated, not reused
-    expect(resume).toBeUndefined();
+  it('transcript lost for this session: next turn recreates the query without resume, pointer cleared, one error log', async () => {
+    const { first, next } = await liveSessionAfterTurn([init('sdk-1'), sdkResult({}), lost()]);
+    expect(first.forceRecreate).toBe(true);
     expect(m.clearPointer).toHaveBeenCalledWith(expect.objectContaining({ breezeSessionId: 's1', sdkSessionId: 'sdk-1' }));
     expect(lostLines()).toHaveLength(1);
     expect(lostLines()[0]![1]).toMatchObject({ breezeSessionId: 's1', sdkSessionId: 'sdk-1', errorCode: 'ENOSPC', lost: ['transcript'] });
+    expect(JSON.stringify(lostLines()[0])).not.toContain('hello');
+
+    const second = await next(); // stale row still says sdk-1: the in-process block must win
+    expect(second).not.toBe(first);
+    expect(m.queryArgs).toHaveLength(2);
+    expect(m.queryArgs[1]!.options.resume).toBeUndefined();
   });
 
-  it('transcript lost for a DIFFERENT session id: resume unchanged', async () => {
-    const resume = await turnThenNextResume([init('sdk-1'), sdkResult({}), lost({ transcript_session_ids: ['sdk-other'] })]);
-    expect(resume).toBe('sdk-1');
+  it('a failed pointer clear still blocks resume in this process', async () => {
+    m.clearPointer.mockRejectedValueOnce(new Error('db down'));
+    const { next } = await liveSessionAfterTurn([init('sdk-1'), sdkResult({}), lost()]);
+    await next();
+    expect(m.queryArgs.at(-1)!.options.resume).toBeUndefined();
+  });
+
+  it('transcript lost for a DIFFERENT session id: live query reused, nothing cleared', async () => {
+    const { first, next } = await liveSessionAfterTurn([init('sdk-1'), sdkResult({}), lost({ transcript_session_ids: ['sdk-other'] })]);
+    expect(first.forceRecreate).toBe(false);
     expect(m.clearPointer).not.toHaveBeenCalled();
+    expect(lostLines()).toHaveLength(1);
+    expect(await next()).toBe(first);
+    expect(m.queryArgs).toHaveLength(1);
   });
 
-  it('only global_config lost: resume unchanged, still logged', async () => {
-    const resume = await turnThenNextResume([
-      init('sdk-1'), sdkResult({}), lost({ lost: ['global_config'], transcript_session_ids: undefined }),
-    ]);
-    expect(resume).toBe('sdk-1');
+  it('transcript lost but no transcript_session_ids: unchanged, logged', async () => {
+    const { first } = await liveSessionAfterTurn([init('sdk-1'), sdkResult({}), lost({ transcript_session_ids: undefined })]);
+    expect(first.forceRecreate).toBe(false);
     expect(m.clearPointer).not.toHaveBeenCalled();
     expect(lostLines()).toHaveLength(1);
   });
 
-  it('a stream that never emits it: no log, resume unchanged', async () => {
-    const resume = await turnThenNextResume([init('sdk-1'), sdkResult({})]);
-    expect(resume).toBe('sdk-1');
+  it('only global_config lost: unchanged, logged', async () => {
+    const { first, next } = await liveSessionAfterTurn([
+      init('sdk-1'), sdkResult({}), lost({ lost: ['global_config'], transcript_session_ids: undefined }),
+    ]);
+    expect(first.forceRecreate).toBe(false);
+    expect(m.clearPointer).not.toHaveBeenCalled();
+    expect(lostLines()).toHaveLength(1);
+    expect(await next()).toBe(first);
+  });
+
+  it('a stream that never emits it: no log, live query reused', async () => {
+    const { first, next } = await liveSessionAfterTurn([init('sdk-1'), sdkResult({})]);
     expect(lostLines()).toHaveLength(0);
+    expect(await next()).toBe(first);
   });
 });

@@ -478,6 +478,8 @@ export interface ActiveSession {
   /** Logs any buffered (redacted) SDK stderr tail. Idempotent; called on teardown. */
   flushSdkStderr?: () => void;
   sdkSessionId: string | null;
+  /** In-flight init pointer store (#11818: a clear must not race it). */
+  sdkPointerStore?: Promise<unknown>;
   query: Query;
   abortController: AbortController;
   inputController: StreamInputController;
@@ -860,6 +862,8 @@ const TURN_LIMIT_ERROR = {
 
 export class StreamingSessionManager {
   private sessions = new Map<string, ActiveSession>();
+  /** #11818: SDK session ids whose transcript lost writes; never resumed, even if the pointer clear failed. */
+  private lostTranscriptSdkIds = new Set<string>();
   private evictionTimer: ReturnType<typeof setInterval> | null = null;
 
   private lastCapacityAlarmAt = 0;
@@ -1156,8 +1160,10 @@ export class StreamingSessionManager {
     const eventBus = new SessionEventBus();
     const abortController = new AbortController();
 
-    if (dbSession.sdkSessionId) {
-      inputController.setSdkSessionId(dbSession.sdkSessionId);
+    const trustedSdkSessionId = dbSession.sdkSessionId && !this.lostTranscriptSdkIds.has(dbSession.sdkSessionId)
+      ? dbSession.sdkSessionId : null;
+    if (trustedSdkSessionId) {
+      inputController.setSdkSessionId(trustedSdkSessionId);
     }
 
     const [approvalMode, approvalWaitBudgetMs] = await timePreStreamPhase('approvalMode', () => Promise.all([
@@ -1256,7 +1262,7 @@ export class StreamingSessionManager {
     // Build partial session object so callbacks can reference it.
     // query and processorPromise are filled in after creation.
     const now = Date.now();
-    const resumeSdkSessionId = dbSession.sdkSessionId ?? undefined;
+    const resumeSdkSessionId = trustedSdkSessionId ?? undefined;
     // W11: the canary is sticky per breeze session — the same session keeps
     // its variant across query re-creations while the registry is unchanged.
     const promptProvenance = promptProvenanceFor({
@@ -1275,7 +1281,7 @@ export class StreamingSessionManager {
       forceRecreate: false,
       budgetReservationId: options?.budgetReservationId,
       revokeEgressGrant: undefined,
-      sdkSessionId: dbSession.sdkSessionId,
+      sdkSessionId: trustedSdkSessionId,
       query: null as unknown as Query, // set below
       abortController,
       inputController,
@@ -1814,12 +1820,14 @@ export class StreamingSessionManager {
               session.sdkSessionId = sid;
               session.inputController.setSdkSessionId(sid);
 
-              storeSdkSessionPointer({
+              const storing = storeSdkSessionPointer({
                 breezeSessionId: session.breezeSessionId,
                 orgId: session.orgId,
                 sdkSessionId: sid,
                 startedFrom,
-              }).then((stored) => {
+              });
+              session.sdkPointerStore = storing.catch(() => undefined);
+              storing.then((stored) => {
                 // Expected only when retention cleared the pointer while this
                 // query was starting: the chat works, the next resume is fresh.
                 if (!stored) console.warn('[StreamingSessionManager] SDK session pointer changed since this query started (retention scrub?); not stored', { breezeSessionId: session.breezeSessionId });
@@ -1842,13 +1850,29 @@ export class StreamingSessionManager {
                 // id and rebuild the live query without `resume` next turn.
                 session.sdkSessionId = null;
                 session.forceRecreate = true;
+                // Durable even if the DB clear below fails: createSession
+                // never resumes an id in this set.
+                this.lostTranscriptSdkIds.add(lostId);
+                captureMessage('SDK session transcript writes lost; session will not be resumed', {
+                  eventCode: 'ai_sdk_session_writes_lost',
+                  level: 'error',
+                  tags: { sdk_error_code: String(message.error_code) },
+                });
                 try {
-                  await clearSdkSessionPointer({
+                  // The init pointer store is fire-and-forget; let it land first
+                  // so the compare-and-clear below cannot miss it.
+                  await session.sdkPointerStore;
+                  const cleared = await clearSdkSessionPointer({
                     breezeSessionId: session.breezeSessionId, orgId: session.orgId, sdkSessionId: lostId,
                   });
+                  if (!cleared) {
+                    console.warn('[StreamingSessionManager] session_writes_lost: SDK session pointer already changed; nothing to clear', {
+                      breezeSessionId: session.breezeSessionId, sdkSessionId: lostId,
+                    });
+                  }
                 } catch (err) {
                   captureException(err);
-                  console.error('[StreamingSessionManager] Failed to clear SDK session pointer after session_writes_lost:', err);
+                  console.error('[StreamingSessionManager] Failed to clear SDK session pointer after session_writes_lost (id stays blocked in this process):', err);
                 }
               }
               break;
