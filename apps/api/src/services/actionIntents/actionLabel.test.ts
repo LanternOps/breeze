@@ -315,6 +315,14 @@ describe('buildActionLabel — patch names', () => {
     expect(one).toMatch(/^Install "T+…" on H+$/);
   });
 
+  it('never cuts a KB number to fit: half of one names a different patch', () => {
+    // Leaves 8 characters for the name: room for a cut-down quoted title, not for KB5034441.
+    const host = 'H'.repeat(120);
+    const result = label(install(1, [DEVICE]), ['KB5034441'], host);
+    expect(result).toBe(`Install 1 patch on ${host}`);
+    expect(result).not.toContain('KB');
+  });
+
   it('keeps the counted headline when no name fits beside a very long hostname', () => {
     const host = 'H'.repeat(130);
     expect(label(install(1, [DEVICE]), ['"Some title"'], host).startsWith('Install 1 patch on HHH')).toBe(true);

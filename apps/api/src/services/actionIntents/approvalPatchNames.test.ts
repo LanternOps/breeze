@@ -21,6 +21,8 @@ const dbState = {
   whereArgs: [] as unknown[],
   /** Every table handed to `.from()`. */
   fromArgs: [] as unknown[],
+  /** Every `[table, condition]` handed to `.innerJoin()`. */
+  joinArgs: [] as Array<[unknown, unknown]>,
   /** Rows the next `.limit()` resolves to. */
   rows: [] as Row[],
   /** When set, `.limit()` rejects with this: the "never fatal" path. */
@@ -37,7 +39,9 @@ vi.mock('../../db', () => ({
       from: (table: unknown) => {
         dbState.fromArgs.push(table);
         return {
-          innerJoin: () => ({
+          innerJoin: (table: unknown, condition: unknown) => {
+            dbState.joinArgs.push([table, condition]);
+            return {
             where: (condition: unknown) => {
               dbState.whereArgs.push(condition);
               return {
@@ -47,7 +51,8 @@ vi.mock('../../db', () => ({
                 },
               };
             },
-          }),
+            };
+          },
         };
       },
     }),
@@ -79,10 +84,11 @@ vi.mock('../../routes/tickets/siteScope', () => ({
   },
 }));
 
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, type SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { approvalPatchDisplayName, resolveApprovalPatchNames } from './approvalPatchNames';
 import type { ApprovalCallerReach } from './approvalDeviceName';
-import { devicePatches } from '../../db/schema/patches';
+import { devicePatches, patches } from '../../db/schema/patches';
 
 const ORG_ID = '11111111-2222-4333-8444-555566667777';
 const REACH_ORG_ID = '33333333-2222-4333-8444-555566667777';
@@ -112,9 +118,24 @@ function boundParams(node: unknown): unknown[] {
   return [];
 }
 
+/**
+ * The condition rendered by the real Postgres dialect, as `column op value`
+ * terms: `"device_patches"."org_id" = <ORG_ID>`, `"device_patches"."patch_id"
+ * in (<ids>)`. Unlike `boundParams`, this ties each bound value to the COLUMN
+ * it is compared with, so moving an id list onto the wrong column fails.
+ */
+function renderedTerms(condition: unknown): string[] {
+  const { sql, params } = new PgDialect().sqlToQuery(condition as SQL);
+  const inlined = sql.replace(/\$(\d+)/g, (_m, n: string) => `<${String(params[Number(n) - 1])}>`);
+  // `and(...)` renders as one parenthesised `a and b and c`.
+  const body = inlined.startsWith('(') && inlined.endsWith(')') && inlined.includes(' and ') ? inlined.slice(1, -1) : inlined;
+  return body.split(' and ');
+}
+
 beforeEach(() => {
   dbState.whereArgs = [];
   dbState.fromArgs = [];
+  dbState.joinArgs = [];
   dbState.rows = [];
   dbState.failWith = null;
   dbState.systemContextLabels = [];
@@ -151,6 +172,22 @@ describe('resolveApprovalPatchNames — the org pin and the id lists', () => {
     expect(params).toContain(ORG_ID);
     expect(params).toContain(REACH_ORG_ID);
     expect(params).toEqual(expect.arrayContaining([DEVICE, OTHER_DEVICE, PATCH, PATCH_2]));
+  });
+
+  it('puts each bound value on its own column, and joins patches on device_patches.patch_id', async () => {
+    await resolveApprovalPatchNames([PATCH, PATCH_2], [DEVICE, OTHER_DEVICE], ORG_ID, reach());
+
+    expect(renderedTerms(dbState.whereArgs[0])).toEqual([
+      `"device_patches"."org_id" = <${ORG_ID}>`,
+      `"device_patches"."device_id" in (<${DEVICE}>, <${OTHER_DEVICE}>)`,
+      `"device_patches"."patch_id" in (<${PATCH}>, <${PATCH_2}>)`,
+      // The caller's reach, on device_patches.org_id.
+      `"device_patches"."org_id" = <${REACH_ORG_ID}>`,
+    ]);
+    expect(dbState.joinArgs).toHaveLength(1);
+    const [joinTable, joinCondition] = dbState.joinArgs[0]!;
+    expect(joinTable).toBe(patches);
+    expect(renderedTerms(joinCondition)).toEqual(['"patches"."id" = "device_patches"."patch_id"']);
   });
 
   it('never reads an id the arguments do not name', async () => {
