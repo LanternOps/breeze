@@ -251,6 +251,10 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   // CORE_DEVICE_ORG_MOVE_DELETE_TABLES (its (incident_id, org_id) names a source-org incident), and
   // breeze_network_isolation_device_moved (BEFORE UPDATE OF org_id on devices) deletes resolved history first.
   'device_network_isolations',
+  // Learned networks (#12369 W01a): listed for the coverage contract, but never restamped. The BEFORE UPDATE OF
+  // org_id trigger breeze_learned_networks_device_moved deletes the device's rows on a cross-org move, and it is in
+  // CORE_DEVICE_ORG_MOVE_DELETE_TABLES, which the restamp loop skips.
+  'learned_network_devices',
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts', 'asset_physical_placements',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
@@ -414,6 +418,10 @@ export const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
   // an episode is unresolved or a release tombstone is unconfirmed (the app-level refusal is W1c); audit_logs
   // keep the record. This loop is the fallback.
   'device_network_isolations',
+  // Learned networks (#12369 W01a): (gateway_id, org_id) names a SOURCE-org fingerprint, so a restamp would 23503;
+  // the next attachment report rebuilds the memberships in the target org. The BEFORE UPDATE OF org_id trigger
+  // breeze_learned_networks_device_moved deletes them first; this loop is the fallback.
+  'learned_network_devices',
 ];
 
 export function getDeviceOrgMoveDeleteTables(): readonly string[] {

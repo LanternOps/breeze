@@ -240,6 +240,13 @@ const moveDiscoveredAssets: CustomMergeExecutor = async (loser, survivor) => ({
   notes: [],
 });
 
+/** learned_networks (#12369 W01a), MOVE half — every network the resolve fold kept under the loser. */
+const moveLearnedNetworks: CustomMergeExecutor = async (loser, survivor) => ({
+  moved: await run(buildRepoint('learned_networks', loser, survivor)),
+  dropped: 0,
+  notes: [],
+});
+
 // ---------------------------------------------------------------------------
 // ticket_drafts (P2-4, #4191) — `ticket_drafts_ticket_org_fk (ticket_id,
 // org_id) -> tickets(id, org_id)`. `tickets` is a plain `repoint`, running
@@ -2098,6 +2105,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   api_keys: mergeApiKeys,
   enrollment_keys: mergeEnrollmentKeys,
   discovered_assets: moveDiscoveredAssets,
+  learned_networks: moveLearnedNetworks,
   plugin_installations: mergePluginInstallations,
   playbook_definitions: mergePlaybookDefinitions,
   custom_field_definitions: mergeCustomFieldDefinitions,

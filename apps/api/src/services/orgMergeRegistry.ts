@@ -753,6 +753,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // The first five re-home their children onto the SURVIVOR's row and then
   // delete the now-unreferenced duplicate. `incidents` does not delete at all
   // (see its note) — an incident is a case file, not a derived row.
+  learned_networks: { kind: 'custom', note: 'fold identical fingerprints (gateway_mac, gateway_address) into the survivor in RESOLVE: re-point device rows and grants to the survivor fingerprint, merge a network whose fingerprints all fold into one survivor network, unassign one that would split; MOVE repoints the rest (learnedNetworks/orgMerge.ts)' },
   discovered_assets: { kind: 'custom', note: 're-home network_monitors/snmp_devices/unifi_* children onto the survivor asset with the same ip_address, then delete the duplicate; SPLIT across phases because discovered_assets rides sites\' ON UPDATE CASCADE (see CUSTOM_RESOLVE_EXECUTORS)' },
   plugin_installations: { kind: 'custom', note: 're-home plugin_logs.installation_id onto the survivor installation for the same catalog_id, then delete the duplicate' },
   playbook_definitions: { kind: 'custom', note: 're-home playbook_executions.playbook_id (and remediation_suggestions.playbook_id) onto the survivor definition with the same lower(name), then delete the duplicate' },
@@ -1070,6 +1071,9 @@ const REPOINT_TABLES: readonly string[] = [
   "device_workloads",
   "devices",
   "discovery_jobs",
+  // Learned networks (#12369 W01a): colliding fingerprints are already gone after the learned_networks resolve
+  // half (CUSTOM_RESOLVE_EXECUTORS), so a plain repoint cannot hit learned_network_gateways_fingerprint_uniq.
+  "discovery_profile_snmp_grants",
   "discovery_profiles",
   "dns_event_aggregations",
   "dns_filter_integrations",
@@ -1153,6 +1157,10 @@ const REPOINT_TABLES: readonly string[] = [
   "invoice_payments",
   "invoice_stripe_payments",
   "invoices",
+  // Learned networks (#12369 W01a): see discovery_profile_snmp_grants above.
+  "learned_network_devices",
+  "learned_network_gateways",
+  "learned_network_wan_addresses",
   "legacy_labour_pricing_archive",
   "local_vaults",
   "log_correlation_rules",
