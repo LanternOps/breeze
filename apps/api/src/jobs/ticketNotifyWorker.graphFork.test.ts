@@ -119,7 +119,7 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
     });
 
     expect(sendThreadedMock).toHaveBeenCalledTimes(1);
-    expect(sendThreadedMock).toHaveBeenCalledWith(MAILBOX, 'orig-1', expect.stringContaining('<!doctype html>'));
+    expect(sendThreadedMock).toHaveBeenCalledWith(MAILBOX, 'orig-1', expect.stringContaining('<!doctype html>'), { to: 'cust@x.com' });
     expect(sendNewMock).not.toHaveBeenCalled();
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
@@ -166,8 +166,10 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
     const call = sendThreadedMock.mock.calls[0]! as unknown as unknown[];
     expect(call[0]).toEqual(MAILBOX);
     expect(call[1]).toBe('orig-1');
-    const opts = call[3] as { subject?: string } | undefined;
+    const opts = call[3] as { to?: string; subject?: string } | undefined;
     expect(opts?.subject).toBe('[KQ04YOHZ-N] We received your request: printer down');
+    // Recipient replace: the autoresponse goes to event.payload.to only.
+    expect(opts?.to).toBe('jane@x.com');
     expect(sendNewMock).not.toHaveBeenCalled();
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
@@ -185,7 +187,28 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
 
     expect(sendThreadedMock).toHaveBeenCalledTimes(1);
     const call = sendThreadedMock.mock.calls[0]! as unknown as unknown[];
-    expect(call[3]).toBeUndefined();
+    // Options carry the recipient only: no subject, so Graph's RE: stays.
+    expect(call[3]).toEqual({ to: 'cust@x.com' });
+  });
+
+  it("a follow-up from a Cc'd colleague: the threaded reply still goes to the requester's reply address only", async () => {
+    // Review focus 1. resolveOutboundMailbox threads on the newest inbound message,
+    // here a colleague's follow-up; createReply would address the colleague. The
+    // worker pins the recipient to the requester's reply address.
+    selectMock
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-1', ticketNumber: 'KQ-1', subject: 'Printer', submitterEmail: 'cust@x.com' }])
+      .mockResolvedValueOnce([{ slug: 'acme', settings: {} }]);
+    resolveMailboxMock.mockResolvedValue({ ...MAILBOX, originalMessageId: 'colleague-followup' });
+    requesterReplyMock.mockResolvedValueOnce('cust.home@x.com');
+
+    await handleTicketEvent({
+      type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', eventId: 'evt-cc', payload: { commentId: 'c-1', isPublic: true },
+    });
+
+    const call = sendThreadedMock.mock.calls[0]! as unknown as unknown[];
+    expect(call[1]).toBe('colleague-followup');
+    expect(call[3]).toEqual({ to: 'cust.home@x.com' });
   });
 
   it('uses sendNewMail when the mailbox is connected but there is no original message id', async () => {

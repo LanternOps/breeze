@@ -1145,11 +1145,13 @@ async function sendEmailPayloads(emailPayloads: EmailPayload[]): Promise<{ attem
       if (payload.graphMailbox) {
         const { tenantId, mailbox, originalMessageId } = payload.graphMailbox;
         if (originalMessageId) {
-          if (payload.threadedReplyUsesSubject) {
-            await sendThreadedReply({ tenantId, mailbox }, originalMessageId, payload.html, { subject: payload.subject });
-          } else {
-            await sendThreadedReply({ tenantId, mailbox }, originalMessageId, payload.html);
-          }
+          // The draft's recipients are replaced with exactly payload.to (the
+          // requester's reply address), Cc/Bcc emptied; a draft Graph did not
+          // re-address is deleted, never sent (graphReplySender, decision 8).
+          await sendThreadedReply({ tenantId, mailbox }, originalMessageId, payload.html, {
+            to: payload.to,
+            ...(payload.threadedReplyUsesSubject ? { subject: payload.subject } : {}),
+          });
         } else {
           await sendNewMail({ tenantId, mailbox }, payload.to, payload.subject, payload.html);
         }
