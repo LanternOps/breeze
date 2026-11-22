@@ -39,7 +39,7 @@ export async function refreshLearnedNetworkLastSeen(
       SELECT m.id, d.network_attachments_confirmed_at AS seen
         FROM learned_network_devices m JOIN devices d ON d.id = m.device_id
        WHERE m.is_current AND d.network_attachments_confirmed_at > m.last_seen_at
-       ORDER BY m.id LIMIT ${BATCH_SIZE} FOR UPDATE OF m SKIP LOCKED)
+       ORDER BY m.id LIMIT ${BATCH_SIZE} FOR NO KEY UPDATE OF m SKIP LOCKED)
     UPDATE learned_network_devices m SET last_seen_at = due.seen FROM due WHERE m.id = due.id
     RETURNING m.id`);
 
@@ -50,7 +50,7 @@ export async function refreshLearnedNetworkLastSeen(
         CROSS JOIN LATERAL (SELECT max(m.last_seen_at) AS seen FROM learned_network_devices m
                              WHERE m.gateway_id = g.id) src
        WHERE src.seen > g.last_seen_at
-       ORDER BY g.id LIMIT ${BATCH_SIZE} FOR UPDATE OF g SKIP LOCKED)
+       ORDER BY g.id LIMIT ${BATCH_SIZE} FOR NO KEY UPDATE OF g SKIP LOCKED)
     UPDATE learned_network_gateways g SET last_seen_at = due.seen FROM due WHERE g.id = due.id
     RETURNING g.id`);
 
@@ -61,7 +61,7 @@ export async function refreshLearnedNetworkLastSeen(
         CROSS JOIN LATERAL (SELECT max(g.last_seen_at) AS seen FROM learned_network_gateways g
                              WHERE g.network_id = n.id) src
        WHERE src.seen > n.last_seen_at
-       ORDER BY n.id LIMIT ${BATCH_SIZE} FOR UPDATE OF n SKIP LOCKED)
+       ORDER BY n.id LIMIT ${BATCH_SIZE} FOR NO KEY UPDATE OF n SKIP LOCKED)
     UPDATE learned_networks n SET last_seen_at = due.seen FROM due WHERE n.id = due.id
     RETURNING n.id`);
 
@@ -81,7 +81,7 @@ export async function refreshLearnedNetworkLastSeen(
         FROM learned_network_wan_addresses w
         JOIN src ON src.network_id = w.network_id AND host(w.address) = src.ip
        WHERE src.seen > w.last_seen_at
-       ORDER BY w.id LIMIT ${BATCH_SIZE} FOR UPDATE OF w SKIP LOCKED)
+       ORDER BY w.id LIMIT ${BATCH_SIZE} FOR NO KEY UPDATE OF w SKIP LOCKED)
     UPDATE learned_network_wan_addresses w SET last_seen_at = due.seen FROM due WHERE w.id = due.id
     RETURNING w.id`);
 

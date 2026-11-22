@@ -528,18 +528,20 @@ it('dispatches each job name to its service function and rethrows a failure', as
   and the integration file. Expected: FAIL, modules not found.
 - [ ] **Step 3: Implement.** `maintenance.ts` runs in `withSystemDbAccessContext`, one transaction per
   batch of 1,000, looping until a batch is short. The refresh's device-row statement is below. The
-  gateway, network and WAN statements have the same `due … FOR UPDATE OF … SKIP LOCKED` shape. The
+  gateway, network and WAN statements have the same `due … FOR NO KEY UPDATE OF … SKIP LOCKED` shape. The
   gateway source is `max(last_seen_at)` of its device rows; the network source is `max` of its gateways.
   The WAN source is `max(d.network_attachments_confirmed_at)` grouped by `(g.network_id, d.last_seen_ip)`
   over current primary rows, matched on `host(w.address) = d.last_seen_ip`. `SKIP LOCKED` keeps the
-  batch from waiting on, or deadlocking with, a heartbeat's apply.
+  batch from waiting on, or deadlocking with, a heartbeat's apply. `NO KEY` (only `last_seen_at`
+  changes) keeps a heartbeat's foreign-key `KEY SHARE` lock on a gateway or network row from waiting on
+  the batch.
 
 ```sql
 WITH due AS (
   SELECT m.id, d.network_attachments_confirmed_at AS seen
     FROM learned_network_devices m JOIN devices d ON d.id = m.device_id
    WHERE m.is_current AND d.network_attachments_confirmed_at > m.last_seen_at
-   ORDER BY m.id LIMIT 1000 FOR UPDATE OF m SKIP LOCKED)
+   ORDER BY m.id LIMIT 1000 FOR NO KEY UPDATE OF m SKIP LOCKED)
 UPDATE learned_network_devices m SET last_seen_at = due.seen FROM due WHERE m.id = due.id;
 ```
 

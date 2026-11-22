@@ -53,6 +53,8 @@ describe('parseNetworkAttachmentsReport', () => {
   it.each([
     { gatewayAddress: 'fe80::1' }, { localAddress: '2001:db8::5' }, { prefixLength: 33 }, { prefixLength: -1 },
     { prefixLength: 24.5 }, { interfaceName: '' }, { interfaceName: 'x'.repeat(129) }, { primary: 'yes' },
+    // PostgreSQL text cannot hold NUL: accepted, it would fail every apply for that device on every beat.
+    { interfaceName: 'Ether\u0000net' },
     { gatewayAddress: undefined },
   ])('rejects attachment %j', (o) => {
     expect(parseNetworkAttachmentsReport(report({ attachments: [att(o)] })))

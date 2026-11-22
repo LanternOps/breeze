@@ -1427,8 +1427,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       Object.assign(deviceUpdates, attachmentPlan.deviceFields);
       recordNetworkAttachmentReport('apply');
     } catch (err) {
-      console.error('[heartbeat] learned network ingest failed', { deviceId: device.id, orgId: device.orgId });
-      captureException(err);
+      console.error('[heartbeat] learned network ingest failed', {
+        deviceId: device.id, orgId: device.orgId, error: err instanceof Error ? err.name : typeof err,
+      });
+      captureException(err, undefined, { phase: 'learned_network_ingest', deviceId: device.id, orgId: device.orgId });
       recordNetworkAttachmentReport('apply_failed');
     }
   } else if (attachmentPlan.kind === 'confirm') {

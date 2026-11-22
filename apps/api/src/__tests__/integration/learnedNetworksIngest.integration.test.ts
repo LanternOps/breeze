@@ -585,18 +585,22 @@ describe('heartbeat route', () => {
 
   it('the watchdog, parked, ephemeral and removed paths learn nothing', async () => {
     const org = await seedOrg('paths');
+    // Watchdog and parked beats return before the learner: nothing is planned, so nothing is counted.
     const watchdog = await enrollDevice(org, 'LAPTOP-JS');
-    await beat(watchdog, liveReport(1), { role: 'watchdog', expectStatus: null });
+    expect(await counterDelta(() => beat(watchdog, liveReport(1), { role: 'watchdog', expectStatus: null }))).toEqual({});
     const parked = await enrollDevice(org, 'DESKTOP-01');
-    await beat(parked, liveReport(1), { isPreAssignment: true, expectStatus: null });
+    expect(await counterDelta(() => beat(parked, liveReport(1), { isPreAssignment: true, expectStatus: null }))).toEqual({});
     const ephemeral = await enrollDevice(org, 'LAPTOP-JS');
     await admin(sql`UPDATE devices SET is_ephemeral = true WHERE id = ${ephemeral.deviceId}::uuid`);
     expect(await counterDelta(() => beat(ephemeral, liveReport(1), { expectStatus: null }))).toEqual({ ephemeral: 1 });
     // A removed device in its uninstall drain still beats; its device write matches no row, so it must not learn.
     const removed = await enrollDevice(org, 'DESKTOP-01');
     await admin(sql`UPDATE devices SET status = 'decommissioned' WHERE id = ${removed.deviceId}::uuid`);
-    await beat(removed, liveReport(1), { expectStatus: null });
-    for (const d of [watchdog, parked, ephemeral, removed]) {
+    expect(await counterDelta(() => beat(removed, liveReport(1), { expectStatus: null }))).toEqual({});
+    const quarantined = await enrollDevice(org, 'LAPTOP-JS');
+    await admin(sql`UPDATE devices SET status = 'quarantined' WHERE id = ${quarantined.deviceId}::uuid`);
+    expect(await counterDelta(() => beat(quarantined, liveReport(1), { expectStatus: null }))).toEqual({});
+    for (const d of [watchdog, parked, ephemeral, removed, quarantined]) {
       expect(attachmentColumns(await deviceColumns(d.deviceId)), d.deviceId).toEqual(NO_COLUMNS);
     }
     expect(await counts(org.orgId)).toEqual(NO_ROWS);

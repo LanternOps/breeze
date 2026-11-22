@@ -109,6 +109,24 @@ describe('refreshLearnedNetworkLastSeen', () => {
     await confirmDevice(t.laptopId, ago(5 * MINUTE), { lastSeenIp: '198.51.100.7' });
     expect((await refreshLearnedNetworkLastSeen(NOW)).wan).toBe(0);
     expect(iso(await lastSeen('learned_network_wan_addresses', otherWan))).toBe(ago(3 * HOUR));
+
+    // A current primary row whose device now comes from another address does not date this WAN row.
+    const u = await tenant();
+    const n = await network(u, ago(3 * HOUR));
+    await member(u, u.laptopId, n.gatewayId, ago(3 * HOUR));
+    const wanRow = await wan(u, n.networkId, '203.0.113.20', ago(3 * HOUR));
+    await confirmDevice(u.laptopId, ago(5 * MINUTE), { lastSeenIp: '198.51.100.7' });
+    expect((await refreshLearnedNetworkLastSeen(NOW)).wan).toBe(0);
+    expect(iso(await lastSeen('learned_network_wan_addresses', wanRow))).toBe(ago(3 * HOUR));
+
+    // A primary row that is no longer current does not date it either.
+    const v = await tenant();
+    const m = await network(v, ago(3 * HOUR));
+    await member(v, v.laptopId, m.gatewayId, ago(3 * HOUR), { current: false });
+    const wanRow2 = await wan(v, m.networkId, '203.0.113.20', ago(3 * HOUR));
+    await confirmDevice(v.laptopId, ago(5 * MINUTE), { lastSeenIp: '203.0.113.20' });
+    expect((await refreshLearnedNetworkLastSeen(NOW)).wan).toBe(0);
+    expect(iso(await lastSeen('learned_network_wan_addresses', wanRow2))).toBe(ago(3 * HOUR));
   });
 
   it('a large backlog is refreshed across batches', async () => {

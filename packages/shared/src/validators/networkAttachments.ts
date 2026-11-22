@@ -57,7 +57,8 @@ const gatewayMacSchema = z.union([
 ]);
 
 const attachmentSchema = z.object({
-  interfaceName: z.string().min(1).max(128),
+  // No NUL: PostgreSQL text cannot store it, so the apply would fail on every beat instead of converging.
+  interfaceName: z.string().min(1).max(128).refine((s) => !s.includes('\u0000')),
   localAddress: z.ipv4(),
   prefixLength: z.number().int().min(0).max(32),
   gatewayAddress: z.ipv4(),
