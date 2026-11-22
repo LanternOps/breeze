@@ -12,8 +12,41 @@ Flows are on by default. An administrator of your Breeze deployment can turn the
 </Aside>
 
 <Aside type="caution" title="Preview">
-Flows is in preview. There is no flow editor yet: you make a flow by asking Breeze AI to draft one, or by moving an existing Job. To run a script on a schedule, on an event or from a webhook without Breeze AI, create a [Job](/features/automations/).
+Flows is in preview. You can build a flow by hand in the flow editor (see [Building a flow by hand](#building-a-flow-by-hand)), ask Breeze AI to draft one, or move an existing Job.
 </Aside>
+
+## Building a flow by hand
+
+Choose **New automation** on the Flows page to open the editor at `/flows/new`. To change an existing flow, choose **Edit** on it (`/flows/<id>/edit`). The editor has two tabs on one document: **Form** (guided) and **Document** (the flow as JSON, with completion and inline validation markers).
+
+### Form
+
+- **Trigger.** A schedule (cron expression and time zone), an event (event type plus an exact-match filter), a webhook (HMAC or token authentication), or manual. For an all-organizations flow, a webhook trigger also asks which body field identifies the organization a delivery belongs to, and whether that value is an external system's identifier (name the system) or a Breeze organization ID.
+- **Target.** An event trigger always runs on the device that raised the event. An all-organizations flow can target all devices or a filter only.
+- **Actions, in order.** Run a script; send a notification (one message per run, with succeeded and failed device counts appended when a script runs first); raise an alert on each device. There is no command action: save the command as a script and run that. Reordering actions renumbers the step ids.
+- **If the script can't be sent to a device.** Stop, continue, or notify channels (one notice per failed device, at most 20 notices per run).
+
+Each run reaches at most 500 devices, and a flow has at most 50 steps.
+
+### Documents the form can't show
+
+If a document contains something the form cannot fully represent (custom timeouts, limits, notices, hand-written conditions, AI or HTTP steps, or per-device notices from a converted Job), it opens read-only in the form. Edit it on the **Document** tab. Saving from the Document tab saves exactly what you typed.
+
+### Saving
+
+Save sends the version you loaded. If someone else saved first, you keep your changes and can reload. An unchanged document is never saved again.
+
+**Save and enable** opens the enable dialog. If you tick pre-approval on a script step, you must enter a maximum number of target devices (1 to 500) before **Confirm** is active.
+
+For a webhook-triggered flow, use **Save** only in the editor, then create the secret and enable the flow on the flow's **Webhook** tab. Saving a draft again after you create a secret invalidates that secret at the next enable.
+
+### Editing, disabling and deleting
+
+- A draft, disabled or paused flow can be edited. **Edit** on an enabled flow opens it read-only; choose **Disable and edit** and confirm to disable it first. Pressing **Edit** never disables a flow. Disabling cancels queued and waiting runs and pending approvals; running runs stop at their next checkpoint.
+- A flow moved from a Job that is still being compared: saving a change resets the comparison evidence, and the editor asks you to confirm.
+- **Delete draft** on the flow page removes a draft that was never enabled and was not moved from a Job. It needs the delete permission and MFA.
+
+The same operations are available over the API: see [Flows in the API reference](/reference/api/#flows).
 
 ## Enabling a flow and what it delegates
 

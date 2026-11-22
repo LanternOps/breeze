@@ -4,7 +4,7 @@
   "empty": {
     "title": "Ainda não há fluxos",
     "body": "Um fluxo é uma lista salva de etapas que o Breeze segue da mesma forma em cada execução. Ele pode começar em um agendamento, em um evento, a partir de um webhook ou quando você o inicia. Use um fluxo quando o trabalho tem várias etapas, precisa de uma aprovação ou chama outras ferramentas. Ele não usa IA, a menos que uma etapa peça. Para executar um script em um agendamento, um job é mais simples.",
-    "how": "Os fluxos estão em prévia. Para criar um, peça ao Breeze AI para elaborá-lo ou mova um job existente da página Jobs.",
+    "how": "Crie um com Nova automação, peça ao Breeze AI para elaborá-lo ou mova um job existente da página Jobs.",
     "jobsLink": "Ir para Jobs"
   },
   "list": {
@@ -43,7 +43,13 @@
     "version": "Versão {{version}}",
     "createdInChat": "Criado no Breeze AI",
     "movedFromJob": "Movido de um job",
-    "movedFromJobReverted": "(movido de volta)"
+    "movedFromJobReverted": "(movido de volta)",
+    "edit": "Editar",
+    "delete": "Excluir rascunho",
+    "deleteConfirmTitle": "Excluir este rascunho?",
+    "deleteConfirmMessage": "O rascunho é removido permanentemente. Isso não pode ser desfeito.",
+    "deleteHasHistory": "Este fluxo foi ativado ou movido de um job, então não pode mais ser excluído. Desative-o em vez disso.",
+    "deleteHasHistoryLink": "Abrir o job"
   },
   "step": {
     "tool": "Ferramenta",
@@ -123,7 +129,9 @@
     "enableFailed": "Não foi possível ativar o fluxo.",
     "disableFailed": "Não foi possível desativar o fluxo.",
     "runFailed": "Não foi possível iniciar a execução.",
-    "cancelFailed": "Não foi possível cancelar a execução."
+    "cancelFailed": "Não foi possível cancelar a execução.",
+    "saveFailed": "Não foi possível salvar o fluxo.",
+    "deleteFailed": "Não foi possível excluir o rascunho."
   },
   "tabs": {
     "overview": "Visão geral",
@@ -330,7 +338,9 @@
     "enabled": "Fluxo ativado",
     "disabled": "Fluxo desativado",
     "runStarted": "Execução iniciada",
-    "runCancelled": "Execução cancelada"
+    "runCancelled": "Execução cancelada",
+    "draftSaved": "Rascunho salvo",
+    "draftDeleted": "Rascunho excluído"
   },
   "disable": {
     "title": "Desativar fluxo",
@@ -775,5 +785,112 @@
       "bulkSummary": "{{created}} iniciados, {{skipped}} ignorados.",
       "newJobOpensFlows": "Novo fluxo"
     }
+  },
+  "flowEditor": {
+    "titleNew": "Nova automação",
+    "titleEdit": "Editar {{name}}",
+    "subtitle": "Crie o fluxo com o formulário ou edite o documento dele diretamente. As duas abas editam o mesmo documento.",
+    "backToFlow": "Voltar ao fluxo",
+    "tabs": {
+      "form": "Formulário",
+      "document": "Documento"
+    },
+    "owner": {
+      "title": "Proprietário",
+      "organization": "Somente esta organização",
+      "partner": "Todas as organizações"
+    },
+    "enabledReadOnly": "Este fluxo está ativado, então não pode ser editado. Desative-o para fazer alterações e ative-o novamente depois.",
+    "disableAndEdit": "Desativar e editar",
+    "disableMessage": "Desativar cancela as execuções na fila e em espera e as aprovações pendentes. As execuções já em andamento param no próximo ponto de verificação. Você pode ativar o fluxo novamente depois de editá-lo.",
+    "notFormShaped": "O formulário não consegue mostrar tudo o que há neste documento, então ele fica somente leitura aqui. Edite o documento.",
+    "openDocument": "Abrir o documento",
+    "validateFailed": "Não foi possível verificar o documento: {{message}}",
+    "conflict": "Outra pessoa salvou este fluxo enquanto você o editava. Suas alterações continuam aqui. Recarregue para obter a versão mais recente; recarregar descarta suas alterações.",
+    "reload": "Recarregar",
+    "saveInvalid": "O fluxo não foi salvo porque o documento tem erros. Corrija os problemas listados e salve novamente.",
+    "notDraft": "Este fluxo está ativado, então não pode ser salvo. Desative-o primeiro.",
+    "webhookNext": "Salvo. Fluxos de webhook são ativados na página do fluxo: crie lá o segredo do webhook, entregue-o ao remetente e depois ative o fluxo.",
+    "webhookTabLink": "Abrir a aba Webhook",
+    "limits": "Cada execução alcança no máximo {{devices}} dispositivos e envia no máximo {{notices}} notificações. Um fluxo tem no máximo {{steps}} etapas.",
+    "save": "Salvar",
+    "saveAndEnable": "Salvar e ativar",
+    "shadow": {
+      "title": "Redefinir a comparação?",
+      "message": "Este fluxo foi movido de um job e ainda está sendo comparado com ele. Salvar uma alteração redefine as evidências da comparação, e a comparação recomeça."
+    },
+    "document": {
+      "loading": "Carregando o editor…",
+      "loadError": "Não foi possível carregar o editor. Atualize a página para tentar novamente.",
+      "parseError": "O documento não é um JSON válido"
+    },
+    "form": {
+      "name": "Nome",
+      "description": "Descrição",
+      "remove": "Remover",
+      "listsFailed": "Não foi possível carregar seus scripts e canais de notificação. Atualize a página para tentar novamente.",
+      "trigger": {
+        "title": "Quando é executado",
+        "timezone": "Fuso horário",
+        "eventDeviceHelp": "As ações são executadas no dispositivo que gerou o evento. Se um evento chegar sem dispositivo, a execução falha.",
+        "filter": "Somente quando o evento corresponder",
+        "filterHelp": "Cada campo deve ser exatamente igual ao seu valor. Deixe vazio para executar em todo evento deste tipo.",
+        "filterKey": "Campo do evento",
+        "filterValue": "Valor",
+        "filterAdd": "Adicionar uma condição",
+        "resolverHelp": "Um fluxo para todas as organizações encontra a organização a partir do corpo da requisição: informe o campo do corpo que contém o identificador da organização e o sistema de onde esse identificador vem.",
+        "resolverPath": "Campo do corpo",
+        "resolverSystem": "Sistema",
+        "webhookHelp": "Salve o fluxo e depois crie o segredo do webhook e ative o fluxo na aba Webhook dele.",
+        "manualHelp": "O fluxo é executado somente quando alguém o inicia.",
+        "resolverKind": "O identificador vem de",
+        "resolverKindSystem": "Um sistema externo",
+        "resolverKindBreezeOrg": "Um ID de organização do Breeze"
+      },
+      "target": {
+        "title": "Dispositivos",
+        "triggerDevice": "O dispositivo que gerou o evento.",
+        "choose": "Escolha em quais dispositivos as ações são executadas. Todos os dispositivos é apenas o ponto de partida.",
+        "keep": "Usar todos os dispositivos",
+        "partnerWide": "Um fluxo para todas as organizações pode ter como alvo todos os dispositivos ou um filtro, não dispositivos ou grupos específicos."
+      },
+      "actions": {
+        "title": "Ações",
+        "empty": "Adicione pelo menos uma ação.",
+        "position": "Ação {{n}}",
+        "runScript": "Executar um script",
+        "notify": "Enviar uma notificação",
+        "alert": "Gerar um alerta",
+        "moveUp": "Mover para cima",
+        "moveDown": "Mover para baixo",
+        "runAsDefault": "A configuração do script",
+        "runAsSystem": "Sistema",
+        "runAsUser": "Usuário conectado",
+        "parameters": "Parâmetros",
+        "parameterName": "Nome do parâmetro",
+        "parameterValue": "Valor do parâmetro",
+        "parameterAdd": "Adicionar um parâmetro",
+        "severityInfo": "Informação",
+        "severityWarning": "Aviso",
+        "severityCritical": "Crítico",
+        "title_": "Título",
+        "notifyHelp": "Uma mensagem é enviada a cada execução, não uma por dispositivo.",
+        "countsHelp": "O número de dispositivos que tiveram sucesso e falha é adicionado ao final da mensagem.",
+        "alertHelp": "Um alerta é gerado em cada dispositivo alcançado pelas ações.",
+        "commandHint": "Para executar um comando, salve-o primeiro como script.",
+        "scriptsLink": "Ir para Scripts"
+      },
+      "onFailure": {
+        "title": "Se o script não puder ser enviado a um dispositivo",
+        "stop": "Parar",
+        "stopHelp": "As ações seguintes ignoram os dispositivos aos quais o script não pôde ser enviado.",
+        "continue": "Continuar",
+        "continueHelp": "As ações seguintes também são executadas nos dispositivos aos quais o script não pôde ser enviado.",
+        "notify": "Notificar",
+        "notifyHelp": "Envia um aviso aos canais abaixo para cada dispositivo ao qual o script não pôde ser enviado. No máximo 20 avisos são enviados por execução.",
+        "noChannels": "Adicione um canal de notificação para usar Notificar."
+      }
+    },
+    "enableOpenFailed": "O rascunho foi salvo, mas não foi possível abrir a caixa de diálogo de ativação. Abra o fluxo para ativá-lo."
   }
 }

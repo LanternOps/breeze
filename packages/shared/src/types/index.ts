@@ -899,6 +899,7 @@ export * from './snmp';
 // ============================================
 
 export * from './discovery';
+export * from './discoveryNetworkGate';
 
 // ============================================
 // Filter System Types

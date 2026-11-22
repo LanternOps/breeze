@@ -137,6 +137,8 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  */
 const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'topology_node_bindings',
+  // Learned networks (#12369 W01a): device memberships; also ON DELETE CASCADE from devices.
+  'learned_network_devices',
   'topology_device_presence',
   'topology_device_presence_days',
   'bare_metal_recoveries',

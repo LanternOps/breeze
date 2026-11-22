@@ -202,8 +202,11 @@ const EPHEMERAL_ONLY: Record<string, string> = {
  * 84 → 85 (#11677): services/aiToolsSiteScope.ts, deviceListReachConditions —
  * query_devices' reach moved there to be shared with the Wisp standing state
  * (notParkedDeviceCondition() beside the filter; a FANOUT module).
+ * 85 → 86 (#12369 W03a): services/learnedNetworks/eligibility.ts, guarded
+ * discovery agent eligibility (notParkedDeviceCondition() beside the filter in
+ * each of its three queries; a parkedFanoutModules entry).
  */
-const EPHEMERAL_DISCOVERED_FILES = 85;
+const EPHEMERAL_DISCOVERED_FILES = 86;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES

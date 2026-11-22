@@ -663,6 +663,8 @@ W03a: the direct result branch in `routes/agentWs.ts`, `handleDiscoveryResult` i
 storing transaction), the adjacency admission in `routes/agents/topologyAdjacency.ts`, and the AI tool's
 response in `services/aiToolsNetwork.ts`. `ProcessResultsJobData` gains `verifiedNetwork`.
 
+**Lock contract (amended by W13, #12502).** Verify job-backed host results under the shared site lock at receipt; a rejection fails the active job and queues nothing; accepted results are enqueued after commit and verified again in the transaction that stores discovery assets; adjacency is verified at admission and completed AI results before hosts are returned; guarded refusal codes are kept. No caller holds the site lock across a queue (Redis) round trip: on the two receipt paths the enqueue of an accepted result runs after the receipt transaction commits, and `processResults` returns the baseline comparison for the job wrapper to enqueue after the storing transaction commits.
+
 **E11. `snmpGrants.ts`** (W03a reads; W03b writes)
 
 ```ts

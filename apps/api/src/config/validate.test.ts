@@ -4235,6 +4235,28 @@ describe('FLOWS_ENABLED boolean guard', () => {
   });
 });
 
+describe('LEARNED_NETWORKS_INGEST_ENABLED boolean guard', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('LEARNED_NETWORKS_INGEST_ENABLED');
+    expect(buildEnvParseInput({ LEARNED_NETWORKS_INGEST_ENABLED: 'sentinel' }).LEARNED_NETWORKS_INGEST_ENABLED).toBe('sentinel');
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off ', ''])(
+    'accepts %j',
+    (value) => {
+      withEnv({ ...validEnv, LEARNED_NETWORKS_INGEST_ENABLED: value }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it.each(['maybe', 'ture', 'enabled', 'y'])('refuses boot on the near-miss value %s', (value) => {
+    withEnv({ ...validEnv, LEARNED_NETWORKS_INGEST_ENABLED: value }, () => {
+      expect(() => validateConfig()).toThrow(/LEARNED_NETWORKS_INGEST_ENABLED must be a boolean/);
+    });
+  });
+});
+
 describe('FLOW_APPROVAL_TTL_HOURS range guard (#5219)', () => {
   it('is declared in the schema, so the superRefine rule actually runs', () => {
     expect(ENV_SCHEMA_KEYS).toContain('FLOW_APPROVAL_TTL_HOURS');

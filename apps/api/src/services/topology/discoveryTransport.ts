@@ -10,6 +10,8 @@ import {
   type AdjacencyDigestFormSection,
 } from './discoveryAdjacency';
 import { discoveryDispatchEpoch, evaluateDiscoveryParent, isDiscoveryTargetAuthorized, type DiscoveryTopologyDispatch } from './discoveryDispatch';
+import { lockSitesForNetworkGate } from '../learnedNetworks/siteLock';
+import { attemptFromRecord, verifyDiscoveryResult } from '../learnedNetworks/verify';
 
 /**
  * M2 D14 admission of one per-target AdjacencyV2 report into the M1 collection
@@ -49,13 +51,20 @@ async function currentRoot(producer: AuthenticatedTopologyProducer, deviceId: st
   return root;
 }
 
-export async function admitDiscoveryAdjacencyReport(input: { deviceId: string; orgId: string; report: AdjacencyV2; now?: Date }): Promise<DiscoveryAdjacencyOutcome> {
+export async function admitDiscoveryAdjacencyReport(input: { deviceId: string; orgId: string; report: AdjacencyV2; verifiedNetwork?: unknown; now?: Date }): Promise<DiscoveryAdjacencyOutcome> {
   assertInTransaction('admitDiscoveryAdjacencyReport');
   const { report } = input;
   const now = input.now ?? new Date();
   const parent = await evaluateDiscoveryParent({ deviceId: input.deviceId, orgId: input.orgId, parentJobId: report.parentJobId, parentCommandId: report.parentCommandId, now });
   if (!parent.ok) return reject(parent.status, parent.reason);
   const { job, snapshot } = parent;
+  // Learned networks C4/E10: the report is admitted only for the network the scan was dispatched to and the
+  // gate still allows. Outside any catch: a failed lock or read fails the transaction. A rejected report
+  // does not fail the job; the scan's own result does.
+  await lockSitesForNetworkGate([job.siteId], 'shared');
+  const verified = await verifyDiscoveryResult({ orgId: job.orgId, siteId: job.siteId, profileId: job.profileId,
+    attempt: attemptFromRecord(job.networkDispatch), verifiedNetwork: input.verifiedNetwork });
+  if (!verified.ok) return reject(403, 'network_unverified');
   const authorityKey = discoveryTargetAuthorityKey(report.source);
   if (report.source.sourceKey !== authorityKey) return reject(400, 'source_key_mismatch');
   if (report.source.zone !== null || !isDiscoveryTargetAuthorized(report.source.address, snapshot)) return reject(403, 'target_not_authorized');
