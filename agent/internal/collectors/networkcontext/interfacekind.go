@@ -91,7 +91,7 @@ func linuxInterfaceKind(f linuxLinkFacts) string {
 // ARPHRD -1 (unknown) rather than a guess.
 func readLinuxLinkFacts(root, name string) linuxLinkFacts {
 	unknown := linuxLinkFacts{ARPHRD: -1}
-	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+	if !singlePathElement(name) {
 		return unknown
 	}
 	dir := filepath.Join(root, name)
@@ -118,6 +118,43 @@ func readLinuxLinkFacts(root, name string) linuxLinkFacts {
 		facts.Hardware = true
 	}
 	return facts
+}
+
+// LinuxBridgedUplink reports whether the bridge or virtual link root/<name>
+// has a physical member: an entry of root/<name>/brif/ (bridge ports) or a
+// root/<name>/lower_<member> entry (macvlan, ipvlan, vlan) whose own sysfs
+// evidence classifies as ethernet or wifi. A bridge whose ports are only tap
+// or veth links is a NAT-only switch and has no uplink. It only reads; a name
+// that is not a single path element, or any read failure, is false.
+func LinuxBridgedUplink(root, name string) bool {
+	if !singlePathElement(name) {
+		return false
+	}
+	dir := filepath.Join(root, name)
+	var members []string
+	if ports, err := os.ReadDir(filepath.Join(dir, "brif")); err == nil {
+		for _, port := range ports {
+			members = append(members, port.Name())
+		}
+	}
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, entry := range entries {
+			if member, ok := strings.CutPrefix(entry.Name(), "lower_"); ok {
+				members = append(members, member)
+			}
+		}
+	}
+	for _, member := range members {
+		switch linuxInterfaceKind(readLinuxLinkFacts(root, member)) {
+		case "ethernet", "wifi":
+			return true
+		}
+	}
+	return false
+}
+
+func singlePathElement(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, `/\`)
 }
 
 // darwinInterfaceKind uses the kernel's fixed interface-name families: utun
