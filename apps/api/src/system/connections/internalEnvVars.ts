@@ -315,6 +315,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   IP_HISTORY_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // IS_*
   IS_HOSTED: 'shown as report.deployMode',
+  // LEARNED_*
+  LEARNED_NETWORKS_INGEST_ENABLED: 'learned networks heartbeat ingest kill switch (default on)',
   // LLM_*
   LLM_EGRESS_EVENTS_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   LLM_EGRESS_EVENTS_RETENTION_DAYS: 'data retention window',

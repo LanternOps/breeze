@@ -176,6 +176,11 @@ export function preAssignmentEnrollmentEnabled(): boolean {
   return envFlag('PRE_ASSIGNMENT_ENROLLMENT_ENABLED', false);
 }
 
+// Learned-network heartbeat ingest kill switch, default on; off stops learning and confirmations and gated sites then fail closed.
+export function learnedNetworksIngestEnabled(): boolean {
+  return envFlag('LEARNED_NETWORKS_INGEST_ENABLED', true);
+}
+
 // Caller verification (anti-vishing, #6354). Default ON as of W05: enforcement
 // ships with the link tier (SMS/email links, callback attestation,
 // administrative). Any explicit value other than the exact string 'true'

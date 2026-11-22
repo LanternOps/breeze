@@ -171,6 +171,8 @@ export const JOB_SCHEDULES = {
   'winget-index-sync': '3 16 * * *',
   'sso-domain-recheck': '23 16 * * *',
   'exchange-rate-sync': '13 17 * * *',
+  // Learned networks W01b (#12369): daily retention of unassigned networks and device rows. :33 was free in hour 17.
+  'learned-network-retention': '33 17 * * *',
   'ai-unattended-exposure-retention': '8 18 * * *',
   'ai-invocation-retention': '13 18 * * *',
   // #4120: daily fold of expired llm_egress_events rows into daily rollups.
@@ -348,6 +350,9 @@ export const JOB_SCHEDULES = {
   // session purges, prune old runs. :51 is free in every hour and outside the
   // ≡0 (mod 5) ticks.
   'portal-directory-recover': '51 * * * *',
+  // Learned networks W01b (#12369): hourly last-seen refresh of shared learned-network rows from device
+  // confirmations. :16 was free in every hour and is outside the ≡0 (mod 5) ticks.
+  'learned-network-last-seen': '16 * * * *',
   // High-volume table retention W1 (#4342, #11588) — device telemetry tables,
   // report-only until each job's _RETENTION_ENFORCE=true. Daily tier lane
   // (≡ 3 mod 5), four slots in hour 11 pre-allocated by the retention plan.
