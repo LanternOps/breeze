@@ -833,6 +833,12 @@ function mainLine(io) {
   catch (error) { throw new GateError('selection_ancestry', `listing main failed: ${failureText(error)}`); }
 }
 
+// A base-revision script runs as this user, in a clone it can write to. select
+// lists main before the first one runs and trustedRecord reads that listing, so
+// nothing a script does to the clone afterwards can say what main is.
+const MAIN_LINES = new WeakMap();
+const rememberMainLine = io => { MAIN_LINES.set(io, mainLine(io)); };
+
 // Unlike classifyAtBase, a classifier that fails here is not read as "everything
 // changed": judging the PR's run under flags it never ran with would blame the PR.
 function prFlagsAtBase(io, baseSha, files) {
@@ -942,7 +948,7 @@ export function trustedRecord(io, { head, pr }, stats = {}) {
   // pointed at. A stacked pull request's merge commit sits on its parent branch,
   // so its anchor's base is not one: the entry runs everything. Every anchor is
   // asked, and before anything of a base is opened.
-  const main = mainLine(io);
+  const main = MAIN_LINES.get(io) ?? mainLine(io);
   if (anchors.some(({ base_sha }) => !main.has(base_sha))) return { reason: 'anchor_base_not_on_main' };
 
   // More than one anchor comes from a close and reopen, or a re-run of the gate.
@@ -1006,6 +1012,8 @@ const SELECTION_MS = 3 * MINUTE;
 
 // The gate's own checks, which the decision in ci-gate-thin.mjs is given.
 const flagsAt = (io, baseSha, headSha) => {
+  // The first base-revision script runs in here. Main is listed first.
+  rememberMainLine(io);
   try { return baseFlags(io, baseSha, headSha).flags; } catch (error) { if (error instanceof GateError) return null; throw error; }
 };
 // Unreadable or unparseable at the base: no W05 block there. Anything else is a bug, so reason=error.

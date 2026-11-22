@@ -3457,6 +3457,29 @@ for (const shape of ['parent', 'chain']) {
   });
 }
 
+test('select: main is listed before any base-revision script runs, so a later change to the clone\'s ref for main does not move the answer', () => {
+  // A base-revision script runs as the gate's own user, in a clone it can write
+  // to. Here the clone's ref for main is moved the moment the first one runs.
+  const r = stackRig();
+  r.addStackEvidence();
+  const { runIsolated } = r.io;
+  let moved = 0;
+  r.io.runIsolated = (...args) => {
+    if (!moved++) {
+      execFileSync('git', ['fetch', '--no-tags', '--quiet', 'origin', r.parent], { cwd: r.clone, stdio: 'ignore' });
+      execFileSync('git', ['update-ref', 'refs/remotes/origin/main', r.parent], { cwd: r.clone, stdio: 'ignore' });
+    }
+    return runIsolated(...args);
+  };
+  const seen = policyReads(r);
+  gate.select(r.io, r.verifyEnv({ THIN_QUEUE: 'enforce' }));
+  assert.ok(moved > 0, 'a base-revision script ran, and the ref moved under it');
+  assert.equal(execFileSync('git', ['rev-parse', 'refs/remotes/origin/main'], { cwd: r.clone, encoding: 'utf8' }).trim(), r.parent);
+  const line = selectionLineOf(r);
+  assert.match(line, /^ci-gate-selection: mode=full reason=anchor_base_not_on_main /, line);
+  for (const revision of new Set(seen.revisions)) assert.ok(r.isAncestor(revision, r.entryA), `read ${revision}`);
+});
+
 test('trustedRecord: one anchor off main refuses the head, whichever anchor is the oldest', () => {
   // The same head with two gate runs: one while the PR was based on main, one
   // while it was based on another branch.
