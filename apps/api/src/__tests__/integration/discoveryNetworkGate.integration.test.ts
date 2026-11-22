@@ -79,6 +79,10 @@ import { encryptSnmpCommunities } from '../../services/snmpSecrets';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 import { createDiscoveryWorker } from '../../jobs/discoveryWorker';
+import { Hono } from 'hono';
+import { createAgentWsHandlers } from '../../routes/agentWs';
+import { commandsRoutes } from '../../routes/agents/commands';
+import { commandResultHandlers } from '../../services/commandResultHandlers';
 
 // ---------------------------------------------------------------------------------------------------------
 // Fixtures (synthetic values only: index "Public repository")
@@ -1060,6 +1064,210 @@ describe('W13: the baseline comparison is enqueued after the storing transaction
     const { jobId, data } = await baselineScene();
     await __testables.recordWorkerJobFailure({ data }, new Error('worker crashed'));
     expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { message: 'worker crashed' } });
+  });
+});
+
+type AgentFixture = Scope & { partnerId: string; deviceId: string; agentId: string };
+
+/** An ungated site, its agent, and an unrestricted running job: a result for it is accepted. */
+async function resultScene(): Promise<{ fx: AgentFixture; profileId: string; jobId: string }> {
+  const t = await seedSite();
+  const agent = await seedAgent({ ...t, hostname: 'DESKTOP-01' });
+  const profileId = await seedProfile(t);
+  const jobId = await runningJob(t, profileId, {
+    version: 1, mode: 'unrestricted', agentId: agent.agentId, deviceId: agent.deviceId,
+    allowedNetworkIds: [], allowedGatewayIds: [], decidedAt: new Date().toISOString(),
+  });
+  return { fx: { ...t, ...agent }, profileId, jobId };
+}
+
+/** A persisted discovery command for the job, as the AI tool or a REST-polling agent receives it. */
+async function seedDiscoveryCommand(fx: AgentFixture, jobId: string): Promise<string> {
+  const [row] = await getTestDb().insert(deviceCommands).values({
+    deviceId: fx.deviceId, type: 'network_discovery', targetRole: 'agent', payload: { jobId }, status: 'sent',
+  }).returning({ id: deviceCommands.id });
+  return row!.id;
+}
+
+const discoveryResultBody = (jobId: string) => ({
+  status: 'completed', exitCode: 0,
+  result: { jobId, hosts: [host('192.168.1.20')], hostsScanned: 1, hostsDiscovered: 1 },
+});
+
+/** One command_result frame through the live WebSocket handlers; returns the frames the agent was sent. */
+async function sendWsResult(fx: AgentFixture, commandId: string, body: Record<string, unknown>): Promise<string[]> {
+  const sent: string[] = [];
+  const ws = { send: (frame: string) => { sent.push(frame); } } as unknown as Parameters<
+    ReturnType<typeof createAgentWsHandlers>['onMessage']>[1];
+  const handlers = createAgentWsHandlers(fx.agentId, {
+    agentId: fx.agentId, siteId: fx.siteId, installIncarnation: 1, deviceId: fx.deviceId, orgId: fx.orgId, partnerId: fx.partnerId,
+  });
+  await handlers.onOpen({}, ws);
+  await handlers.onMessage({ data: JSON.stringify({ type: 'command_result', commandId, ...body }) } as MessageEvent, ws);
+  await handlers.onClose({}, ws);
+  return sent;
+}
+
+/**
+ * The real REST result route under the request-long org context agentAuthMiddleware opens. With
+ * `failAfterRoute`, that outer transaction rolls back after the route has answered.
+ */
+async function sendHttpResult(fx: AgentFixture, commandId: string, body: Record<string, unknown>,
+  opts: { failAfterRoute?: boolean } = {}): Promise<Response> {
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('agent', { installIncarnation: 1, deviceId: fx.deviceId, agentId: fx.agentId, orgId: fx.orgId,
+      partnerId: fx.partnerId, siteId: fx.siteId, role: 'agent' } as never);
+    await withDbAccessContext(
+      { scope: 'organization', orgId: fx.orgId, accessibleOrgIds: [fx.orgId], accessiblePartnerIds: [], currentPartnerId: null },
+      async () => {
+        await next();
+        if (opts.failAfterRoute) throw new Error('request transaction rolled back after the route');
+      },
+    );
+  });
+  app.route('/agents', commandsRoutes);
+  return app.request(`/agents/${fx.agentId}/commands/${commandId}/result`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+}
+
+/** Waits for fire-and-forget work started after a commit (the REST route's delivery). */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 20));
+}
+
+describe('W13: a persisted discovery result is enqueued after its transaction commits', () => {
+  beforeEach(() => { enqueueResults.mockReset(); enqueueResults.mockImplementation(async () => 'queued'); });
+
+  it('WebSocket: an exclusive site lock is granted while the results enqueue is in flight, and the ack follows it', async () => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+    const hold = latched('queued');
+    enqueueResults.mockImplementationOnce(hold.impl);
+
+    const sending = sendWsResult(fx, commandId, discoveryResultBody(jobId));
+    let taken: unknown;
+    let framesWhileHeld = -1;
+    let frames: string[] = [];
+    try {
+      await hold.entered.promise;
+      taken = await takeExclusive(fx.siteId);
+      framesWhileHeld = (await Promise.race([sending.then(() => 1), settle().then(() => 0)]));
+    } finally {
+      hold.release.resolve();
+      frames = await sending.catch(() => []);
+    }
+
+    expect(taken).toBe('granted');
+    expect(framesWhileHeld).toBe(0);   // the agent is not acknowledged until the enqueue returned
+    expect(frames.map((f) => JSON.parse(f))).toContainEqual({ type: 'ack', commandId });
+    expect(enqueueResults).toHaveBeenCalledTimes(1);
+    expect(enqueueResults.mock.calls[0]!.slice(0, 3)).toEqual([jobId, fx.orgId, fx.siteId]);
+  });
+
+  it('REST: an exclusive site lock is granted while the results enqueue is in flight', async () => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+    const hold = latched('queued');
+    enqueueResults.mockImplementationOnce(hold.impl);
+
+    const sending = sendHttpResult(fx, commandId, discoveryResultBody(jobId));
+    let taken: unknown;
+    let res: Response | undefined;
+    try {
+      await hold.entered.promise;
+      taken = await takeExclusive(fx.siteId);
+    } finally {
+      hold.release.resolve();
+      res = await sending;
+    }
+
+    expect(taken).toBe('granted');
+    expect(res.status).toBe(200);
+    expect(enqueueResults).toHaveBeenCalledTimes(1);
+    expect(enqueueResults.mock.calls[0]!.slice(0, 3)).toEqual([jobId, fx.orgId, fx.siteId]);
+  });
+
+  it('REST: a result whose savepoint rolls back delivers nothing', async () => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+    const real = commandResultHandlers.network_discovery!;
+    const spy = vi.spyOn(commandResultHandlers, 'network_discovery').mockImplementationOnce(async (input) => {
+      const outcome = await real(input);
+      throw new Error(`simulated failure after the discovery handler (${outcome ? 'delivery returned' : 'no delivery'})`);
+    });
+    try {
+      const res = await sendHttpResult(fx, commandId, discoveryResultBody(jobId));
+      await settle();
+      expect(res.status).toBe(500);
+      expect(enqueueResults).not.toHaveBeenCalled();
+      expect(await job(jobId)).toMatchObject({ status: 'running' });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('REST: a request transaction that rolls back after the route delivers nothing', async () => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+
+    const res = await sendHttpResult(fx, commandId, discoveryResultBody(jobId), { failAfterRoute: true });
+    await settle();
+
+    expect(res.status).toBe(500);
+    expect(enqueueResults).not.toHaveBeenCalled();
+    const [cmd] = await getTestDb().select({ status: deviceCommands.status }).from(deviceCommands)
+      .where(eq(deviceCommands.id, commandId));
+    expect(cmd!.status).toBe('sent');
+  });
+
+  it('WebSocket: a result whose finalize transaction rolls back delivers nothing', async () => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+    const real = commandResultHandlers.network_discovery!;
+    const spy = vi.spyOn(commandResultHandlers, 'network_discovery').mockImplementationOnce(async (input) => {
+      await real(input);
+      throw new Error('simulated failure after the discovery handler');
+    });
+    try {
+      const frames = await sendWsResult(fx, commandId, discoveryResultBody(jobId));
+      await settle();
+      expect(frames.map((f) => JSON.parse(f).code)).toContain('RESULT_PROCESSING_FAILED');
+      expect(enqueueResults).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each(['WebSocket', 'REST'] as const)('%s: a failed enqueue still fails the job with its message', async (transport) => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+    enqueueResults.mockRejectedValueOnce(new Error('queue down'));
+
+    if (transport === 'WebSocket') {
+      const frames = await sendWsResult(fx, commandId, discoveryResultBody(jobId));
+      expect(frames.map((f) => JSON.parse(f))).toContainEqual({ type: 'ack', commandId });
+    } else {
+      expect((await sendHttpResult(fx, commandId, discoveryResultBody(jobId))).status).toBe(200);
+      await settle();
+    }
+
+    expect(await job(jobId)).toMatchObject({ status: 'failed', errors: { message: 'queue down' } });
+  });
+
+  it.each(['WebSocket', 'REST'] as const)('%s: a failed enqueue does not fail a job that already left running', async (transport) => {
+    const { fx, jobId } = await resultScene();
+    const commandId = await seedDiscoveryCommand(fx, jobId);
+    enqueueResults.mockImplementationOnce(async () => {
+      await admin(sql`UPDATE discovery_jobs SET status = 'cancelled' WHERE id = ${jobId}::uuid`);
+      throw new Error('queue down');
+    });
+
+    if (transport === 'WebSocket') await sendWsResult(fx, commandId, discoveryResultBody(jobId));
+    else { await sendHttpResult(fx, commandId, discoveryResultBody(jobId)); await settle(); }
+
+    expect(await job(jobId)).toMatchObject({ status: 'cancelled' });
   });
 });
 

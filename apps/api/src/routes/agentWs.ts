@@ -121,7 +121,12 @@ import {
   MAX_AGENT_COMMAND_ID_LENGTH,
   MAX_COMMAND_RESULT_BYTES,
 } from './agents/schemas';
-import { recordSnmpPollFailure, commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
+import {
+  recordSnmpPollFailure,
+  commandResultHandlers,
+  normalizeDiscoveryHosts,
+  type CommandResultAfterCommit,
+} from '../services/commandResultHandlers';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { applyCommandAutomationTerminal } from '../services/automationTerminalEvidence';
@@ -2777,6 +2782,8 @@ async function processCommandResult(
     };
 
     let finalized: 'stale' | 'queue_ack' | 'recorded';
+    // #12502: queue work the handler owes once the finalize transaction commits.
+    let afterCommit: CommandResultAfterCommit | undefined;
     try {
       finalized = await runWithAgentOrgDbAccess('agentWs.commandResult.finalize', orgId, partnerId, async () => {
         const updatedCommands = await dbWriteExpectingRows(
@@ -2863,7 +2870,10 @@ async function processCommandResult(
         }
 
         const handler = commandResultHandlers[finalizedCommand.type];
-        if (handler) await handler(handlerInput);
+        if (handler) {
+          const outcome = await handler(handlerInput);
+          if (outcome && outcome.kind === 'afterCommit') afterCommit = outcome;
+        }
         return 'recorded';
       });
     } catch (persistErr) {
@@ -2915,6 +2925,11 @@ async function processCommandResult(
       return 'handled';
     }
     if (finalized === 'queue_ack') return 'handled';
+
+    // #12502: the finalize transaction (and any lock its handler took) has
+    // committed. Awaited, so the agent is acknowledged only after the queue
+    // work returned; it never throws and records its own failure.
+    if (afterCommit) await afterCommit.run();
 
     // #4757 W06: terminalise the restore-point ledger only now -- the CAS won
     // and its transaction committed, so a losing duplicate frame never reaches

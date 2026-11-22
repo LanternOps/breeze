@@ -265,6 +265,12 @@ describe('network discovery results are verified before they are enqueued (#1236
   function updateSet(): Record<string, unknown> | undefined {
     return setSpy.mock.calls[0]?.[0];
   }
+  /** #12502: the handler returns the enqueue; the transport runs it after its transaction commits. */
+  async function deliverAfterCommit(outcome: Awaited<ReturnType<CommandResultHandler>>): Promise<void> {
+    expect(outcome).toMatchObject({ kind: 'afterCommit' });
+    expect(enqueueDiscoveryResultsMock).not.toHaveBeenCalled();
+    await (outcome as { run: () => Promise<void> }).run();
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -329,7 +335,7 @@ describe('network discovery results are verified before they are enqueued (#1236
   });
 
   it('enqueues a verified result with its verifiedNetwork', async () => {
-    await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST], verifiedNetwork: VN } }));
+    await deliverAfterCommit(await handler(input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST], verifiedNetwork: VN } })));
     expect(enqueueDiscoveryResultsMock).toHaveBeenCalledTimes(1);
     expect(enqueueDiscoveryResultsMock.mock.calls[0]![9]).toEqual(VN);
     expect(discoveryUpdateMock).not.toHaveBeenCalled();
@@ -337,16 +343,16 @@ describe('network discovery results are verified before they are enqueued (#1236
 
   it('passes no verifiedNetwork to the queue when the upload does not parse', async () => {
     verifyMock.mockResolvedValue({ ok: true, networkId: null });
-    await handler(input('network_discovery', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST], verifiedNetwork: { gatewayId: 'nope' } } }));
+    await deliverAfterCommit(await handler(input('network_discovery', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST], verifiedNetwork: { gatewayId: 'nope' } } })));
     expect(enqueueDiscoveryResultsMock).toHaveBeenCalledTimes(1);
     expect(enqueueDiscoveryResultsMock.mock.calls[0]![9]).toBeUndefined();
   });
 
   it('reads verifiedNetwork from stdout when the REST route delivers the body there (C7)', async () => {
-    await handler({
+    await deliverAfterCommit(await handler({
       ...input('network_discovery_guarded', { jobId: JOB_ID }, { result: { jobId: JOB_ID, hosts: [HOST] } }),
       stdout: JSON.stringify({ jobId: JOB_ID, hosts: [HOST], verifiedNetwork: VN }),
-    });
+    }));
     expect(verifyMock.mock.calls[0]![0]).toMatchObject({ verifiedNetwork: VN });
     expect(enqueueDiscoveryResultsMock.mock.calls[0]![9]).toEqual(VN);
   });
