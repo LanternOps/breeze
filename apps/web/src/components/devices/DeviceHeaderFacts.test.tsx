@@ -309,6 +309,52 @@ describe('DeviceHeaderFacts', () => {
       expect(errorLog.mock.calls.filter((call: unknown[]) => String(call[0]).includes('DeviceHeaderFacts'))).toEqual([]);
     });
 
+    // The assets route answers 400 ("orgId is required") when a partner
+    // session cannot say which org owns the device: nothing to link, not an outage.
+    it('treats a 400 from the network-assets lookup as nothing to show', async () => {
+      route({ assets: json({ error: 'orgId is required' }, 400) });
+      render(<DeviceHeaderFacts device={device({ model: 'OptiPlex 7060', orgId: '' })} />);
+      await waitFor(() => expect(screen.getByTestId('device-header-facts')).not.toHaveAttribute('aria-busy', 'true'));
+      expect(screen.queryByTestId('device-fact-load-failed')).not.toBeInTheDocument();
+    });
+
+    it('stays on the line when the row is narrow, ahead of the identifiers', async () => {
+      const WIDTHS: Record<string, number> = { model: 150, serial: 120, ip: 110, 'load-failed': 230, more: 60 };
+      const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        const w = WIDTHS[this.getAttribute('data-fact') ?? ''] ?? 0;
+        return { width: w, height: 24, top: 0, left: 0, right: w, bottom: 24, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+      });
+      const client = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.getAttribute('data-testid') === 'device-header-facts' ? 340 : 0;
+      });
+      try {
+        route({ warranty: json({}, 500) });
+        render(<DeviceHeaderFacts device={device({ model: 'OptiPlex 7060', serialNumber: '4XK9P2', lanIp: '10.0.4.21' })} />);
+        // 230 + 60 ("N more") fits 340; no identifier fits beside it.
+        await waitFor(() => expect(screen.getByTestId('device-facts-more')).toHaveTextContent('3 more'));
+        expect(screen.getByTestId('device-fact-load-failed')).toBeVisible();
+        expect(screen.getByTestId('device-fact-model')).not.toBeVisible();
+      } finally {
+        rect.mockRestore();
+        client.mockRestore();
+      }
+    });
+
+    it('Retry keeps the facts that had loaded on screen while it asks again', async () => {
+      const contact = { contactId: 'c1', name: 'Kerri Castellini', email: 'k@example.com', phone: null, mobile: null, title: null, isPrimary: true };
+      route({ warranty: json({}, 500), contacts: json({ responsibilities: [{ role: 'technical', level: 'site', contacts: [contact] }] }) });
+      render(<DeviceHeaderFacts device={device()} />);
+      const failed = await screen.findByTestId('device-fact-load-failed');
+      expect(screen.getByTestId('device-fact-contact')).toBeInTheDocument();
+
+      const slow = deferred<Response>();
+      route({ warranty: json({}, 500), contacts: slow.promise });
+      fireEvent.click(within(failed).getByRole('button', { name: 'Retry' }));
+      await waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.filter(([u]) => String(u).includes('/contact-responsibilities'))).toHaveLength(2));
+      expect(screen.getByTestId('device-fact-contact')).toBeInTheDocument();
+      slow.resolve(json({ responsibilities: [{ role: 'technical', level: 'site', contacts: [contact] }] }));
+    });
+
     it('Retry asks again and shows what comes back', async () => {
       let attempts = 0;
       route({});

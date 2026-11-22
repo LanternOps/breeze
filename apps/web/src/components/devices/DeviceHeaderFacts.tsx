@@ -63,15 +63,17 @@ type Loaded<T> = { ok: true; value: T } | { ok: false };
 
 /**
  * GET `url` as JSON. A 401, 403 or 404 is an answer ("not yours to see", "no
- * such record") and loads as null, so a restricted user gets no warning. Any
- * other error status, a network error, or a body that is not JSON is a failed
- * load.
+ * such record") and loads as null, so a restricted user gets no warning;
+ * `alsoAnswers` adds statuses that mean the same for one route. Any other
+ * error status, a network error, or a body that is not JSON is a failed load.
  */
-async function getJson(url: string, what: string): Promise<Loaded<unknown>> {
+const ANSWER_STATUSES = [401, 403, 404];
+
+async function getJson(url: string, what: string, alsoAnswers: number[] = []): Promise<Loaded<unknown>> {
   try {
     const res = await fetchWithAuth(url);
     if (res.ok) return { ok: true, value: (await res.json()) as unknown };
-    if (res.status === 401 || res.status === 403 || res.status === 404) return { ok: true, value: null };
+    if (ANSWER_STATUSES.includes(res.status) || alsoAnswers.includes(res.status)) return { ok: true, value: null };
     console.error(`[DeviceHeaderFacts] ${what} did not load`, `HTTP ${res.status}`);
   } catch (err) {
     console.error(`[DeviceHeaderFacts] ${what} did not load`, err);
@@ -196,7 +198,9 @@ function networkAssetsQuery(deviceId: string, orgId?: string): string {
 }
 
 async function loadLinkedNetworkAssets(query: string): Promise<Loaded<LinkedNetworkAsset[]>> {
-  const res = await getJson(`/discovery/assets?${query}`, 'linked network assets');
+  // 400: the route cannot tell which org to look in (a partner session and a
+  // device row without an org). Nothing to link, and nothing a retry fixes.
+  const res = await getJson(`/discovery/assets?${query}`, 'linked network assets', [400]);
   if (!res.ok) return res;
   if (res.value === null) return { ok: true, value: NO_ASSETS };
   return {
@@ -264,11 +268,12 @@ type Fact = { key: string; rank: number; node: ReactNode };
 // Asset record.)
 const RANK = {
   warrantyAlert: 1,
-  model: 2,
-  serial: 3,
-  ip: 4,
-  // A failed load may be hiding a warranty alert, so it outranks the context facts.
-  loadFailed: 5,
+  // A failed load may be hiding a warranty alert, so it ranks with one: on a
+  // narrow row it stays put and the identifiers fold instead.
+  loadFailed: 2,
+  model: 3,
+  serial: 4,
+  ip: 5,
   contact: 6,
   warranty: 7,
   placement: 8,

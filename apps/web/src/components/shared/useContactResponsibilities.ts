@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { usePermissions } from '../../lib/permissions';
 
@@ -49,11 +49,17 @@ export function useContactResponsibilities({
   const [items, setItems] = useState<Responsibility[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
+  // What the list on screen was loaded for; a reload of the same thing keeps it.
+  const loadedFor = useRef<string | null>(null);
 
   useEffect(() => {
     if (!canRead || !orgId || (!siteId && !deviceId)) return;
     let cancelled = false;
-    setItems(null);
+    const identity = `${orgId}|${siteId ?? ''}|${deviceId ?? ''}`;
+    // A different site or device: drop the old list. The same one again (a
+    // retry): keep it on screen until the new answer lands.
+    if (loadedFor.current !== identity) setItems(null);
+    loadedFor.current = identity;
     setFailed(false);
     setUnavailable(false);
     const query = deviceId
