@@ -41,6 +41,20 @@ const CASES: GoldenCase[] = [
   { label: 'elevated script is not pre-approvable', r: row({ actions: [{ type: 'run_script', scriptId: SCRIPT_ELEVATED }] }) },
   { label: 'notice after script under notify with two channels', r: row({ actions: [script, notify], onFailure: 'notify', notificationTargets: { channelIds: [CHANNEL, CHANNEL_PD] } }) },
   { label: 'alert with an unsupported placeholder', r: row({ actions: [{ type: 'create_alert', alertTitle: 'x {{foo}}' }] }) },
+  // Added after review: the active set stays on the script step across a<i>_devices steps.
+  { label: 'script, alert, notice under stop (two devices steps on one script)', r: row({ actions: [script, alert, notify], onFailure: 'stop' }) },
+  { label: 'script, alert, script (a later script chains on the first)', r: row({ actions: [script, alert, script], onFailure: 'continue' }) },
+  // Two device steps sharing one targets step.
+  { label: 'alert then notice share one targets step', r: row({ actions: [alert, notify], onFailure: 'stop' }) },
+  { label: 'notice then alert share one targets step', r: row({ actions: [notify, alert], onFailure: 'stop' }) },
+  // A targets step created lazily, after a skipped first action.
+  { label: 'skipped restart_service then alert (lazy targets step)', r: row({ actions: [{ type: 'execute_command', kind: 'restart_service' }, alert], onFailure: 'stop' }) },
+  // Failure blocks.
+  { label: 'two scripts under notify with two channels', r: row({ actions: [script, script], onFailure: 'notify', notificationTargets: { channelIds: [CHANNEL, CHANNEL_PD] } }) },
+  { label: 'command under notify failure block', r: row({ actions: [{ type: 'execute_command', command: 'Get-Date', shell: 'powershell' }], onFailure: 'notify', notificationTargets: { channelIds: [CHANNEL] } }) },
+  { label: 'long name truncated into the failure notice', r: row({ name: 'N'.repeat(130), actions: [script], onFailure: 'notify', notificationTargets: { channelIds: [CHANNEL] } }) },
+  // Alert defaults.
+  { label: 'alert with default severity, title and message', r: row({ actions: [{ type: 'create_alert' }] }) },
 ];
 
 const stored: Record<string, string> = existsSync(GOLDEN_PATH) ? JSON.parse(readFileSync(GOLDEN_PATH, 'utf8')) : {};
