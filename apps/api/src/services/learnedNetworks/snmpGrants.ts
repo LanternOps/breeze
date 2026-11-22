@@ -192,18 +192,26 @@ async function deleteAllGrants(orgId: string, profileId: string): Promise<void> 
  * - Rule 1 (full re-entry): grants replaced by `freshGrantSet`, mode set to its mode.
  * - Otherwise (rule 4, or a save that supplies no secret): nothing added, mode unchanged, grants shrunk to those
  *   effective for the profile as saved (a fingerprint of a network on its site, and of its network when set).
+ *
+ * A full re-entry that supplies no secret is a caller bug. It is logged and handled as rule 4 (shrink, never add)
+ * rather than thrown: the profile row is already written, and a non-DB throw from a route handler does not roll the
+ * request transaction back, so throwing here would commit the new secrets beside grants that were never shrunk.
  */
 export async function applySnmpGrantRulesOnSave(input: {
   orgId: string; profileId: string; siteId: string; networkId: string | null;
   fullReentry: boolean; suppliedAnySecret: boolean; willHoldSecrets: boolean; actorUserId: string;
 }): Promise<void> {
   assertInTransaction('applySnmpGrantRulesOnSave');
-  if (input.fullReentry && !input.suppliedAnySecret) {
-    throw new Error('applySnmpGrantRulesOnSave: a full re-entry must supply a secret');
-  }
   if (!input.willHoldSecrets) return;
 
-  if (input.fullReentry) {
+  const fullReentry = input.fullReentry && input.suppliedAnySecret;
+  if (input.fullReentry && !input.suppliedAnySecret) {
+    console.error('[learnedNetworks] applySnmpGrantRulesOnSave: full re-entry without a supplied secret; shrinking instead', {
+      profileId: input.profileId,
+    });
+  }
+
+  if (fullReentry) {
     const fresh = await freshGrantSet({ orgId: input.orgId, siteId: input.siteId, networkId: input.networkId });
     await deleteAllGrants(input.orgId, input.profileId);
     await insertGrants(input.orgId, input.profileId, fresh.gatewayIds, input.actorUserId);

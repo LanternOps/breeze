@@ -26,6 +26,11 @@ vi.mock('../../services/learnedNetworks/profileSaveLock', async (importOriginal)
   lockSeam.real = actual.lockProfileForSave;
   return { ...actual, lockProfileForSave: vi.fn(actual.lockProfileForSave) };
 });
+// The grant writer behind a spy too, so the atomicity test can make it fail after the profile row is written.
+vi.mock('../../services/learnedNetworks/snmpGrants', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/learnedNetworks/snmpGrants')>();
+  return { ...actual, applySnmpGrantRulesOnSave: vi.fn(actual.applySnmpGrantRulesOnSave) };
+});
 
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { discoveryProfiles } from '../../db/schema';
@@ -34,8 +39,8 @@ import { loadProfileForDispatch } from '../../services/learnedNetworks/attempt';
 import { evaluateDiscoveryGate, gateProfileFromRow, type GateDecision } from '../../services/learnedNetworks/gate';
 import { lockProfileForSave } from '../../services/learnedNetworks/profileSaveLock';
 import { lockSitesForNetworkGate } from '../../services/learnedNetworks/siteLock';
-import { bindUnrestrictedProfilesOnGating } from '../../services/learnedNetworks/snmpGrants';
-import { decryptSnmpCommunities, encryptSnmpCommunities } from '../../services/snmpSecrets';
+import { applySnmpGrantRulesOnSave, bindUnrestrictedProfilesOnGating } from '../../services/learnedNetworks/snmpGrants';
+import { decryptSnmpCommunities, encryptSnmpCommunities, encryptSnmpCredentials } from '../../services/snmpSecrets';
 import { createAccessToken } from '../../services/jwt';
 import { createOrganization, createSite, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -175,15 +180,23 @@ async function createProfile(o: {
 
 /** A profile written directly (no route): for states a route cannot produce in this wave. */
 async function insertProfileDirect(o: {
-  siteId: string; communities?: string[]; mode?: 'unrestricted' | 'bound'; networkId?: string | null;
+  siteId: string; communities?: string[]; credentials?: unknown; mode?: 'unrestricted' | 'bound';
+  networkId?: string | null; orgId?: string;
 }): Promise<string> {
   const [row] = await (getTestDb() as any).insert(discoveryProfiles).values({
-    orgId: fx.orgId, siteId: o.siteId, name: `direct-${Math.random().toString(36).slice(2, 8)}`,
+    orgId: o.orgId ?? fx.orgId, siteId: o.siteId, name: `direct-${Math.random().toString(36).slice(2, 8)}`,
     subnets: ['192.168.1.0/24'], methods: ['ping'],
     snmpCommunities: encryptSnmpCommunities(o.communities ?? []) ?? [],
+    snmpCredentials: o.credentials === undefined ? null : encryptSnmpCredentials(o.credentials),
     snmpGrantMode: o.mode ?? 'unrestricted', networkId: o.networkId ?? null,
   }).returning({ id: discoveryProfiles.id });
   return row.id;
+}
+
+async function insertGrantDirect(profileId: string, gatewayId: string): Promise<void> {
+  await admin(sql`
+    INSERT INTO discovery_profile_snmp_grants (org_id, profile_id, gateway_id)
+    VALUES (${fx.orgId}::uuid, ${profileId}::uuid, ${gatewayId}::uuid)`);
 }
 
 beforeEach(async () => {
@@ -205,19 +218,31 @@ describe('W03b grant rules', () => {
     const P1 = await insertProfileDirect({ siteId: fx.siteC, communities: ['public-a'] });
     const P2 = await insertProfileDirect({ siteId: fx.siteC });
     const P3 = await insertProfileDirect({ siteId: fx.siteC, communities: ['public-a'], mode: 'bound' });
+    // v3 secrets only, already narrowed to the network being assigned: bound with its fingerprints.
+    const P4 = await insertProfileDirect({ siteId: fx.siteC, credentials: V3_A, networkId: fx.N_C });
+    // Another site's unrestricted credentialed profile is not touched.
+    const P5 = await insertProfileDirect({ siteId: fx.siteD, communities: ['public-a'] });
+    // A stray grant on an unrestricted profile is replaced, so the bound set is exactly what rule 2 grants.
+    await insertGrantDirect(P1, fx.G_A);
     expect(allowed(await gateFor(P1))).toBe('unrestricted');
 
     await gateSiteAndAssign(fx.siteC, fx.N_C);
-    const n = await inSystemTx(async () => {
+    const bind = () => inSystemTx(async () => {
       await lockSitesForNetworkGate([fx.siteC], 'exclusive');
       return bindUnrestrictedProfilesOnGating({ orgId: fx.orgId, siteId: fx.siteC, networkId: fx.N_C, actorUserId: fx.actorUserId });
     });
+    const n = await bind();
 
-    expect(n).toBe(1);
+    expect(n).toBe(2);
     expect(allowed(await gateFor(P1))).toEqual([fx.G_C]);
+    expect(await grantRows(P1)).toEqual([fx.G_C]);
+    expect(allowed(await gateFor(P4))).toEqual([fx.G_C]);
     expect(allowed(await gateFor(P3))).toBe('credentials_need_reentry');
     expect((await profileRow(P2)).snmpGrantMode).toBe('unrestricted');
     expect(await grantRows(P2)).toEqual([]);
+    expect((await profileRow(P5)).snmpGrantMode).toBe('unrestricted');
+    expect(allowed(await gateFor(P5))).toBe('unrestricted');
+    expect(await bind()).toBe(0);                              // already bound profiles are untouched
   });
 
   it('rule 2 gives a profile pointed at another network bound with no grants', async () => {
@@ -302,6 +327,7 @@ describe('W03b credential sequences', () => {
 
     expect(res.status).toBe(200);
     expect(allowed(await gateFor(P))).toEqual([fx.G_A]);      // never G_A2
+    expect(await grantRows(P)).toEqual([fx.G_A]);
     expect(await storedCommunities(P)).toEqual(['public-b']);
     expect((await profileRow(P)).networkId).toBeNull();
   });
@@ -340,6 +366,7 @@ describe('W03b credential sequences', () => {
     const widened = await patchProfile(P, { networkId: null, snmpCommunities: ['public-a'], snmpCredentials: V3_MASKED });
     expect(widened.status).toBe(200);
     expect(allowed(await gateFor(P))).toEqual([fx.G_A]);      // the secret supplied while narrowed never reaches N_A2
+    expect(await grantRows(P)).toEqual([fx.G_A]);
     expect((await profileRow(P)).snmpGrantMode).toBe('bound');
   });
 
@@ -395,6 +422,62 @@ describe('W03b credential sequences', () => {
     expect(await grantRows(P)).toEqual([]);
     expect(await storedCommunities(P)).toEqual(['public-a']);
     expect(allowed(await gateFor(P))).toBe('unrestricted');
+  });
+
+  it('first secrets added to a profile without any are a full re-entry', async () => {
+    const onA = await createProfile({ siteId: fx.siteA });
+    const resA = await patchProfile(onA, { snmpCommunities: ['public-a'] });
+    expect(resA.status).toBe(200);
+    expect((await profileRow(onA)).snmpGrantMode).toBe('bound');
+    expect(allowed(await gateFor(onA))).toEqual([fx.G_A, fx.G_A2].sort());
+
+    const onE = await createProfile({ siteId: fx.siteE });
+    const resE = await patchProfile(onE, { snmpCommunities: ['public-a'] });
+    expect(resE.status).toBe(200);
+    expect((await profileRow(onE)).snmpGrantMode).toBe('bound');
+    expect(allowed(await gateFor(onE))).toBe('credentials_need_reentry');
+  });
+
+  it('create narrowed to a network grants only its fingerprints', async () => {
+    const P = await createProfile({ siteId: fx.siteA, snmpCommunities: ['public-a'], networkId: fx.N_A });
+    expect(await grantRows(P)).toEqual([fx.G_A]);              // not G_A2, which the gate's network filter would hide
+    expect(allowed(await gateFor(P))).toEqual([fx.G_A]);
+  });
+
+  it('clearing every secret leaves mode and grants alone; a later re-entry rebuilds them from the profile as saved', async () => {
+    const P = await credentialedProfileOnA();
+    const cleared = await patchProfile(P, { snmpCommunities: [], snmpCredentials: null });
+    expect(cleared.status).toBe(200);
+    expect((await profileRow(P)).snmpGrantMode).toBe('bound');
+    expect(await grantRows(P)).toEqual([fx.G_A, fx.G_A2].sort());
+
+    const reentered = await patchProfile(P, { networkId: fx.N_A, snmpCommunities: ['public-b'] });
+    expect(reentered.status).toBe(200);
+    expect(await grantRows(P)).toEqual([fx.G_A]);
+    expect(allowed(await gateFor(P))).toEqual([fx.G_A]);
+  });
+
+  it('a failure in the grant write rolls back the profile save', async () => {
+    const P = await credentialedProfileOnA();
+    vi.mocked(applySnmpGrantRulesOnSave).mockImplementationOnce(async () => {
+      await db.execute(sql`SELECT 1 / 0`);                     // a real statement failure after the profile row is written
+    });
+    const res = await patchProfile(P, { networkId: fx.N_A, snmpCommunities: ['public-b'], snmpCredentials: null });
+    expect(res.status).toBe(500);
+    expect(await storedCommunities(P)).toEqual(['public-a']);
+    expect((await profileRow(P)).networkId).toBeNull();
+    expect(await grantRows(P)).toEqual([fx.G_A, fx.G_A2].sort());
+  });
+
+  it('a full re-entry flag without a supplied secret shrinks and never adds (fails closed)', async () => {
+    const P = await credentialedProfileOnA();
+    await shrinkGrantsDirect(P, [fx.G_A]);
+    await inSystemTx(() => applySnmpGrantRulesOnSave({
+      orgId: fx.orgId, profileId: P, siteId: fx.siteA, networkId: null,
+      fullReentry: true, suppliedAnySecret: false, willHoldSecrets: true, actorUserId: fx.actorUserId,
+    }));
+    expect(await grantRows(P)).toEqual([fx.G_A]);              // a replace would have added G_A2
+    expect((await profileRow(P)).snmpGrantMode).toBe('bound');
   });
 });
 
@@ -513,6 +596,28 @@ describe('W03b concurrency', () => {
       }
     }, 45_000);
   });
+
+  it('S4 same site: a masked save waiting on a rotation retains the rotated secret, not the one it first read', async () => {
+    const P = await credentialedProfileOnA();
+    const barrier = pauseNextProfileLock();
+    // Rotation: a fresh community, v3 kept masked (rule 4).
+    const rotation = patchProfile(P, { snmpCommunities: ['public-b'], snmpCredentials: V3_MASKED });
+    let masked: Promise<Response> | undefined;
+    let outcomes: PromiseSettledResult<Response>[] = [];
+    try {
+      await bounded(barrier.locked, 'rotation holds its locks');
+      masked = maskedX(P);                                     // its unlocked read still sees 'public-a'
+      await waitBlockedBy(barrier.pid, 'row');
+    } finally {
+      barrier.release();
+      outcomes = await Promise.allSettled([rotation, ...(masked ? [masked] : [])]);
+    }
+    expect(outcomes).toHaveLength(2);
+    expectNo40P01(...outcomes);
+    expect(await storedCommunities(P)).toEqual(['public-b']);
+    expect(allowed(await gateFor(P))).toEqual([fx.G_A, fx.G_A2].sort());
+    expect(outcomes.map((o) => statusOf(o))).toEqual([200, 200]);
+  }, 45_000);
 
   it('a dispatch-shaped reader waits for the save and sees its secrets and grants together', async () => {
     const P = await credentialedProfileOnA();
