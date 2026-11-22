@@ -330,8 +330,15 @@ export function normalizeGraphMessage(
     ? (msg.body?.content ?? '')
     : (html ? htmlToText(html) : '') || (msg.bodyPreview ?? '');
 
-  // Graph's structured replyTo: exactly one valid address, never the mailbox itself.
-  const replyTo = replyToUnlessOwn(normalizeReplyTo(msg.replyTo ?? []), mailboxAddress);
+  // Graph's structured replyTo: exactly one valid address, never the mailbox
+  // itself. A mailbox connected before replyTo joined the delta $select keeps
+  // polling its stored delta link, which carries the old $select and so returns
+  // no replyTo property; read every Reply-To header instance instead
+  // (internetMessageHeaders has always been selected).
+  const replyToSource = msg.replyTo !== undefined
+    ? msg.replyTo
+    : (msg.internetMessageHeaders ?? []).filter((h) => h.name.toLowerCase() === 'reply-to').map((h) => h.value);
+  const replyTo = replyToUnlessOwn(normalizeReplyTo(replyToSource), mailboxAddress);
 
   const { senderAuth, consulted } = graphSenderAuth(msg.internetMessageHeaders, mailboxDomain, fromAddr, options?.arc);
 
