@@ -16,6 +16,8 @@ import { lockSitesForNetworkGate } from '../../services/learnedNetworks/siteLock
 import {
   explainGuardedAgent, explainNoEligibleAgent, loadEligibleGuardedAgents,
 } from '../../services/learnedNetworks/eligibility';
+import { loadNetworkGateways } from '../../services/learnedNetworks/siteNetworks';
+import { loadUsableGrantGateways } from '../../services/learnedNetworks/snmpGrants';
 import type { IneligibleReason } from '@breeze/shared';
 import { encryptSnmpCommunities } from '../../services/snmpSecrets';
 import { createOrganization, createPartner, createSite } from './db-utils';
@@ -323,5 +325,36 @@ describe('eligibility', () => {
     expect(await sys(() => explainGuardedAgent({
       orgId: c.orgId, siteId: c.siteId, allowedGatewayIds: [c.g1], commandType: 'network_discovery', deviceId: desktop.deviceId,
     }))).toMatchObject({ eligible: false, reason: 'not_on_network' });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// E5 / E11: the gate's reads
+// ---------------------------------------------------------------------------------------------------------
+
+describe('gate reads', () => {
+  it('loadNetworkGateways returns host addresses and lower-case MACs, by network then gateway', async () => {
+    const t = await seedSite();
+    const { networkIds, gatewayIds } = await gateSite(t.orgId, t.siteId, [[G1, G3]]);
+    const out = await sys(() => loadNetworkGateways(t.orgId, networkIds));
+    expect(out).toEqual([
+      { networkId: networkIds[0], gatewayId: gatewayIds[0]![0], address: G1.address, mac: G1.mac },
+      { networkId: networkIds[0], gatewayId: gatewayIds[0]![1], address: G3.address, mac: G3.mac },
+    ].sort((a, b) => (a.gatewayId! < b.gatewayId! ? -1 : 1)));
+    expect(out.every((g) => !g.address.includes('/'))).toBe(true);
+  });
+
+  it('loadUsableGrantGateways returns only grants whose network is assigned to the site, and with networkId only its own', async () => {
+    const t = await seedSite();
+    const { networkIds, gatewayIds } = await gateSite(t.orgId, t.siteId, [[G1], [G3]]);
+    const loose = await unassignedNetwork(t.orgId, [G2]);
+    const profileId = await seedProfile({
+      orgId: t.orgId, siteId: t.siteId, withSecrets: true, grantMode: 'bound',
+      grantGatewayIds: [gatewayIds[0]![0]!, gatewayIds[1]![0]!, loose.gatewayIds[0]!],
+    });
+    const all = await sys(() => loadUsableGrantGateways({ orgId: t.orgId, profileId, siteId: t.siteId, networkId: null }));
+    expect(all.map((g) => g.gatewayId).sort()).toEqual([gatewayIds[0]![0]!, gatewayIds[1]![0]!].sort());
+    const narrowed = await sys(() => loadUsableGrantGateways({ orgId: t.orgId, profileId, siteId: t.siteId, networkId: networkIds[1]! }));
+    expect(narrowed).toEqual([{ networkId: networkIds[1], gatewayId: gatewayIds[1]![0], address: G3.address, mac: G3.mac }]);
   });
 });
