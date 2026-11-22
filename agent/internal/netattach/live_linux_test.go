@@ -188,7 +188,7 @@ func procRoutes(path string) ([]osRoute, []netip.Prefix, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var out []osRoute
 	var specific []netip.Prefix
 	sc := bufio.NewScanner(f)
@@ -251,7 +251,7 @@ func hardwareEthernet(root, name string) string {
 		return "tun/tap device"
 	}
 	if uevent, err := os.ReadFile(filepath.Join(dir, "uevent")); err == nil {
-		for _, line := range strings.Split(string(uevent), "\n") {
+		for line := range strings.SplitSeq(string(uevent), "\n") {
 			if v, ok := strings.CutPrefix(strings.TrimSpace(line), "DEVTYPE="); ok && v != "wlan" {
 				return "device type " + v
 			}
@@ -324,7 +324,7 @@ func procARP(path string) (map[arpKey]net.HardwareAddr, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	out := map[arpKey]net.HardwareAddr{}
 	sc := bufio.NewScanner(f)
 	sc.Scan() // header
@@ -357,7 +357,7 @@ func kernelSource(dest string) (netip.Addr, bool) {
 	if err != nil {
 		return netip.Addr{}, false
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	ua, ok := c.LocalAddr().(*net.UDPAddr)
 	if !ok {
 		return netip.Addr{}, false
