@@ -141,7 +141,8 @@
       "inheritedByPolicies_other": "Übergeordnet für {{count}} Richtlinien",
       "gatedFeatureTitle": "Für MSP-verwaltete Richtlinien nicht verfügbar. Legen Sie diese Funktion in einer Richtlinie fest, die von einer Organisation verwaltet wird.",
       "appliesToDrawerTitle": "Gilt für",
-      "detailsSaved": "Richtliniendetails gespeichert"
+      "detailsSaved": "Richtliniendetails gespeichert",
+      "refreshAppliesToFailed": "Der Geltungsbereich dieser Richtlinie konnte nicht aktualisiert werden. Laden Sie die Seite neu, um ihn zu sehen."
     },
     "configPolicyList": {
       "archived": "Archiviert",

@@ -40,8 +40,29 @@ describe('appliesToSummary (#12306)', () => {
     expect(parseAppliesTo({ ...summary(), assignmentCount: '2' })).toBeNull();
     expect(parseAppliesTo({ ...summary(), assignmentCount: -1 })).toBeNull();
     expect(parseAppliesTo({ ...summary(), targets: 'none' })).toBeNull();
-    expect(parseAppliesTo({ ...summary(), targets: [{ assignmentId: 'a', level: 'planet' }] })).toBeNull();
     expect(parseAppliesTo({ ...summary(), childPolicyCount: undefined })).toBeNull();
+  });
+
+  it('parseAppliesTo drops a malformed target but keeps the counts, so it still reads as +N', () => {
+    const parsed = parseAppliesTo({
+      ...summary({ assignmentCount: 3 }),
+      targets: [
+        { assignmentId: 'a', level: 'planet' },
+        target('s', 'site', null), // only a partner row may be unnamed
+        target('o', 'organization', 'Acme'),
+      ],
+    });
+    expect(parsed).not.toBeNull();
+    expect(parsed!.assignmentCount).toBe(3);
+    expect(parsed!.targets.map((t) => t.assignmentId)).toEqual(['o']);
+    expect(formatAppliesToTargets(parsed!).more).toBe(2);
+  });
+
+  it('parseAppliesTo accepts a partner row whose name is omitted', () => {
+    const { name: _omit, ...partnerRow } = target('p', 'partner', null);
+    const parsed = parseAppliesTo({ ...summary({ assignmentCount: 1, allOrganizations: true }), targets: [partnerRow] });
+    expect(parsed!.targets).toHaveLength(1);
+    expect(parsed!.targets[0]!.name).toBeNull();
   });
 
   it('parseAppliesTo keeps a well-formed summary', () => {

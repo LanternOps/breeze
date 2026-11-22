@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The Applies-to strip and drawer on the policy page (#12306). Split from
@@ -123,6 +123,30 @@ describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () =
     expect(screen.getByLabelText('Name')).toBeInTheDocument();
   });
 
+  it('#assignments set while on a feature tab opens the drawer and keeps that tab', async () => {
+    mockPolicy();
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    openFeatureTab('Patches');
+    expect(screen.getByTestId('patch-tab-editor')).toBeInTheDocument();
+    act(() => {
+      window.location.hash = '#assignments';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(await screen.findByTestId('config-policy-applies-to-drawer')).toBeInTheDocument();
+    expect(screen.getByTestId('patch-tab-editor')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#patch');
+  });
+
+  it('a detail read without appliesTo claims nothing', async () => {
+    mockPolicy({ appliesTo: undefined });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    const strip = await screen.findByTestId('config-policy-applies-to-strip');
+    expect(strip).toHaveTextContent('—');
+    expect(screen.queryByTestId('config-policy-applies-to-not-applied')).toBeNull();
+    expect(screen.queryByTestId('config-policy-applies-to-in-use')).toBeNull();
+  });
+
   it('the Edit button opens the drawer', async () => {
     mockPolicy();
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
@@ -188,5 +212,47 @@ describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () =
     openFeatureTab('Backup');
     expect(screen.getByText('Baseline')).toBeInTheDocument();
     expect(screen.getByTestId('config-policy-applies-to-strip')).toHaveTextContent('Acme');
+  });
+
+  it('a failed re-read after the drawer closes drops the old summary instead of keeping it', async () => {
+    mockPolicy();
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    expect(await screen.findByTestId('config-policy-applies-to-strip')).toHaveTextContent('Acme');
+    fetchMock.mockImplementation(async () => json({ error: 'boom' }, false));
+    fireEvent.click(screen.getByTestId('config-policy-applies-to-edit'));
+    fireEvent.click(await screen.findByTestId('config-policy-applies-to-drawer-close'));
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' })),
+    );
+    const strip = screen.getByTestId('config-policy-applies-to-strip');
+    expect(strip).not.toHaveTextContent('Acme');
+    expect(strip).toHaveTextContent('—');
+    expect(screen.queryByTestId('config-policy-applies-to-not-applied')).toBeNull();
+  });
+
+  it('a saved name shows even when the re-read after the save fails', async () => {
+    let patched = false;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/configuration-policies/pol-1' && method === 'PATCH') {
+        patched = true;
+        return json({ id: 'pol-1', name: 'Renamed', status: 'active' });
+      }
+      if (url === '/configuration-policies/pol-1' && method === 'GET') {
+        if (patched) throw new TypeError('network down');
+        return json({
+          id: 'pol-1', name: 'Test Policy', status: 'active', orgId: 'org-1', partnerId: null,
+          featureLinks: [], parentPolicyId: null, parentPolicy: null, childPolicies: [], appliesTo,
+        });
+      }
+      if (url === '/configuration-policies/pol-1/features' && method === 'GET') return json({ data: [] });
+      return json({ error: 'not found' }, false);
+    });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    expect(await screen.findByRole('heading', { name: 'Renamed' })).toBeInTheDocument();
   });
 });

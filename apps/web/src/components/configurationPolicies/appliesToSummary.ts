@@ -58,35 +58,54 @@ function parseTarget(raw: unknown): ConfigPolicyAppliesToTarget | null {
   const t = raw as Record<string, unknown>;
   if (typeof t.assignmentId !== 'string' || typeof t.targetId !== 'string') return null;
   if (!TARGET_LEVEL_ORDER.includes(t.level as ConfigPolicyTargetLevel)) return null;
-  if (t.name !== null && typeof t.name !== 'string') return null;
+  const level = t.level as ConfigPolicyTargetLevel;
+  const name = t.name ?? null;
+  if (name !== null && typeof name !== 'string') return null;
+  // Only a partner row is unnamed ("All organizations"); an unnamed narrower
+  // row would render as an empty chip.
+  if (name === null && level !== 'partner') return null;
   const roleFilter = t.roleFilter ?? null;
   const osFilter = t.osFilter ?? null;
   if (!isStringArrayOrNull(roleFilter) || !isStringArrayOrNull(osFilter)) return null;
-  return {
-    assignmentId: t.assignmentId,
-    level: t.level as ConfigPolicyTargetLevel,
-    targetId: t.targetId,
-    name: t.name,
-    roleFilter,
-    osFilter,
-  };
+  return { assignmentId: t.assignmentId, level, targetId: t.targetId, name, roleFilter, osFilter };
+}
+
+let warnedContract = false;
+function warnContract(detail: string) {
+  // Once per page load: a contract break shows as "unknown" everywhere, and
+  // without this it would look exactly like an API a release behind.
+  if (warnedContract) return;
+  warnedContract = true;
+  console.warn(`[configuration policies] appliesTo does not match the expected shape: ${detail}`);
 }
 
 /**
  * The `appliesTo` field of a list row or detail read, or null when it is
- * absent (an API a release behind) or malformed. Null means "unknown": no
- * reader may turn it into a "not applied" claim.
+ * absent (an API a release behind) or its counts are malformed. Null means
+ * "unknown": no reader may turn it into a "not applied" claim. A malformed
+ * target is dropped rather than discarding the summary; it still counts
+ * toward "+N" through `assignmentCount`.
  */
 export function parseAppliesTo(raw: unknown): ConfigPolicyAppliesToSummary | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    warnContract('not an object');
+    return null;
+  }
   const s = raw as Record<string, unknown>;
-  if (!isCount(s.assignmentCount) || !isCount(s.childPolicyCount)) return null;
-  if (typeof s.allOrganizations !== 'boolean' || !Array.isArray(s.targets)) return null;
+  if (!isCount(s.assignmentCount) || !isCount(s.childPolicyCount)) {
+    warnContract('assignmentCount or childPolicyCount');
+    return null;
+  }
+  if (typeof s.allOrganizations !== 'boolean' || !Array.isArray(s.targets)) {
+    warnContract('allOrganizations or targets');
+    return null;
+  }
   const targets: ConfigPolicyAppliesToTarget[] = [];
   for (const rawTarget of s.targets) {
     const target = parseTarget(rawTarget);
-    if (!target) return null;
-    targets.push(target);
+    if (target) targets.push(target);
+    else warnContract('a target');
   }
   return {
     assignmentCount: s.assignmentCount,

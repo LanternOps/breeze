@@ -141,7 +141,8 @@
       "inheritedByPolicies_other": "Padre di {{count}} criteri",
       "gatedFeatureTitle": "Non disponibile nei criteri gestiti dall'MSP. Imposta questa funzionalità su un criterio gestito da una singola organizzazione.",
       "appliesToDrawerTitle": "Si applica a",
-      "detailsSaved": "Dettagli del criterio salvati"
+      "detailsSaved": "Dettagli del criterio salvati",
+      "refreshAppliesToFailed": "Impossibile aggiornare dove si applica questo criterio. Ricarica la pagina per vederlo."
     },
     "configPolicyList": {
       "archived": "Archiviata",

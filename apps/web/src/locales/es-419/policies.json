@@ -141,7 +141,8 @@
       "inheritedByPolicies_other": "Principal de {{count}} políticas",
       "gatedFeatureTitle": "No disponible en políticas administradas por el MSP. Configure esta función en una política administrada por una sola organización.",
       "appliesToDrawerTitle": "Se aplica a",
-      "detailsSaved": "Detalles de la política guardados"
+      "detailsSaved": "Detalles de la política guardados",
+      "refreshAppliesToFailed": "No se pudo actualizar dónde se aplica esta política. Vuelva a cargar la página para verlo."
     },
     "configPolicyList": {
       "archived": "Archivado",

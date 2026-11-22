@@ -141,7 +141,8 @@
       "assignments2": "assignments",
       "gatedFeatureTitle": "Not available on MSP-managed policies. Set this feature on a policy managed by one organization.",
       "appliesToDrawerTitle": "Applies to",
-      "detailsSaved": "Policy details saved"
+      "detailsSaved": "Policy details saved",
+      "refreshAppliesToFailed": "Couldn't refresh where this policy applies. Reload the page to see it."
     },
     "configPolicyList": {
       "archived": "Archived",

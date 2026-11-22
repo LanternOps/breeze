@@ -318,12 +318,20 @@ export default function ConfigPolicyDetailPage({
     if (!policyId) return;
     try {
       const response = await fetchWithAuth(`/configuration-policies/${policyId}`);
-      if (!response.ok) return; // keep what is on screen; the next load retries
+      if (!response.ok) throw new Error(`${response.status}`);
       const data = await response.json();
       setPolicy(data);
     } catch {
-      // Network failure: the page keeps the last good read rather than
-      // replacing it with an error; nothing was written by this read.
+      // The editors may have changed where the policy applies, so the summary
+      // on screen can no longer be trusted: show it as unknown rather than
+      // keep a claim (e.g. "Not applied") that may now be false, and say so.
+      setPolicy((prev) => (prev ? { ...prev, appliesTo: undefined } : prev));
+      showToast({
+        type: "warning",
+        message: i18n.t(
+          "policies:configurationPolicies.configPolicyDetailPage.refreshAppliesToFailed",
+        ),
+      });
     }
   }, [policyId]);
   const closeAppliesTo = useCallback(() => {
@@ -381,6 +389,17 @@ export default function ConfigPolicyDetailPage({
           "policies:configurationPolicies.configPolicyDetailPage.detailsSaved",
         ),
       });
+      // The save succeeded: show it now, even if the re-read below fails.
+      setPolicy((prev) =>
+        prev
+          ? {
+              ...prev,
+              name: editName,
+              description: editDescription || undefined,
+              status: editStatus as PolicyDetail["status"],
+            }
+          : prev,
+      );
       await refreshPolicy();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it

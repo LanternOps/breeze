@@ -141,7 +141,8 @@
       "inheritedByPolicies_other": "{{count}} politikanın üst politikası",
       "gatedFeatureTitle": "MSP tarafından yönetilen politikalarda kullanılamaz. Bu özelliği tek bir kuruluşun yönettiği bir politikada ayarlayın.",
       "appliesToDrawerTitle": "Uygulandığı yer",
-      "detailsSaved": "Politika ayrıntıları kaydedildi"
+      "detailsSaved": "Politika ayrıntıları kaydedildi",
+      "refreshAppliesToFailed": "Bu politikanın uygulandığı yer yenilenemedi. Görmek için sayfayı yeniden yükleyin."
     },
     "configPolicyList": {
       "archived": "Arşivlendi",
