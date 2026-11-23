@@ -110,7 +110,7 @@ PR-A and PR-B must not ship in the same release. G1 can only be met against v0.1
   - re-apply is a no-op;
   - absent objects are not refused;
   - an insert without `browser_access` fails 23502;
-  - as `breeze_app`, the counts see rows only because the file elects system scope.
+  - the file elects system scope first (pinned statically by `migrationRlsScope.test.ts` as well). A `breeze_app` run is not possible, because the DDL needs the table owner.
 - The W2/W3/W8 migration replay tests restore the columns with the same fixture inside their rolled-back transaction.
 - Remove the `retiring` entries.
 - Delete the preflight's integration test. The SQL file stays as history.
