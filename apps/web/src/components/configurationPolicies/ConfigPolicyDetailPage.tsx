@@ -589,7 +589,6 @@ export default function ConfigPolicyDetailPage({
     const feature = new URLSearchParams(window.location.search).get("feature");
     if (feature && (FEATURE_TYPES as string[]).includes(feature)) goToSection(feature as FeatureType);
     // Mount only: the parameter is how the page was opened.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const linkFor = (t: FeatureType) =>
     featureLinks.find((l) => l.featureType === t);
