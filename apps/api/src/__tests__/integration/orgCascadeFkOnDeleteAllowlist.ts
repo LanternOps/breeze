@@ -410,7 +410,7 @@ export const ORG_CASCADE_FK_PRE_CLEARED: ReadonlyArray<OrgCascadeFkRef> = Object
     reason: 'pre-cleared',
     allColumnsNullable: true,
     note:
-      'The config_policy_assignments pre-clear (#12538) keys off the assignment TARGET (this org, '
+      'Partially pre-cleared. The config_policy_assignments pre-clear (#12538) keys off the assignment TARGET (this org, '
       + 'its sites, device groups and devices), not assigned_by. An org-owned policy\'s rows also go '
       + 'with the policy (config_policy_id ON DELETE CASCADE). A row a user of THIS org assigned to a '
       + 'target outside the org would survive both and then pin `users`; an org user cannot reach '

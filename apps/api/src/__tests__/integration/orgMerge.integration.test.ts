@@ -1429,9 +1429,9 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
   }, 180_000);
 
   // #12538 (the merge side of the org-erasure bug): a PARTNER-owned policy
-  // applied inside the loser at every level. The partner does not change in a
+  // applied inside the loser at every org-scoped level. The partner does not change in a
   // merge, so each owner-update re-validation must accept the moved target.
-  it('#12538: carries a partner-owned policy applied inside the loser at every assignment level', async () => {
+  it('#12538: carries a partner-owned policy applied inside the loser at every org-scoped level', async () => {
     const policyId = randomUUID();
     const a = {
       orgLevel: randomUUID(),
