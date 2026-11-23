@@ -19,7 +19,16 @@ import { unifiIntegrationKeys, unifiIntegrations } from '../../db/schema';
 import { columnAad, UNIFI_KEY_COLUMN_SPEC } from '../../services/encryptedColumnRegistry';
 import { decryptSecret, encryptSecret } from '../../services/secretCrypto';
 import { createSelfHostedIntegration, upsertConnection, UnifiMultiKeyError } from '../../services/unifi/unifiConnectionService';
-import { getSyncKeys, openUnifiKey, sealUnifiKey } from '../../services/unifi/unifiKeyService';
+import {
+  addKey,
+  deleteKey,
+  getSyncKeys,
+  openUnifiKey,
+  sealUnifiKey,
+  UNIFI_MAX_KEYS,
+  UnifiKeyError,
+  updateKey,
+} from '../../services/unifi/unifiKeyService';
 import { createPartner } from './db-utils';
 import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
@@ -278,26 +287,21 @@ describe('connection service on unifi_integration_keys (breeze_app)', () => {
     expect(keys.map((k) => openUnifiKey(k.apiKeyEncrypted)).sort()).toEqual(['fabric-key', 'kept-key-1']);
   });
 
-  runDb('getSyncKeys adopts a reconnect an older API instance wrote to the legacy column, once', async () => {
+  runDb('getSyncKeys no longer adopts the legacy column (W3: the key row is the only source)', async () => {
     const partner = await createPartner();
     await asPartner(partner.id, () => upsertConnection(db, partner.id, { baseUrl: 'https://api.ui.com', apiKey: 'row-key-1111' }));
     const [integration] = await withSystemDbAccessContext(() =>
       db.select().from(unifiIntegrations).where(eq(unifiIntegrations.partnerId, partner.id)),
     );
-    // An older instance's /connect writes the legacy column alone.
-    const legacy = sealUnifiKey('legacy-key-2222');
-    await (getTestDb() as any).update(unifiIntegrations).set({ apiKeyEncrypted: legacy }).where(eq(unifiIntegrations.id, integration!.id));
+    const [before] = await keysOf(integration!.id);
+    await (getTestDb() as any).update(unifiIntegrations)
+      .set({ apiKeyEncrypted: sealUnifiKey('legacy-key-2222') })
+      .where(eq(unifiIntegrations.id, integration!.id));
 
-    const first = await asPartner(partner.id, () => getSyncKeys(db, integration!.id, partner.id));
-    expect(first!.keys[0]).toMatchObject({ apiKey: 'legacy-key-2222', keyLast4: null });
-    const [adopted] = await keysOf(integration!.id);
-    expect(adopted!.apiKeyEncrypted).toBe(legacy);
-    expect(adopted!.keyLast4).toBeNull();
-
-    const second = await asPartner(partner.id, () => getSyncKeys(db, integration!.id, partner.id));
-    expect(second!.keys[0]).toMatchObject({ apiKey: 'legacy-key-2222' });
+    const sync = await asPartner(partner.id, () => getSyncKeys(db, integration!.id, partner.id));
+    expect(sync!.keys[0]).toMatchObject({ apiKey: 'row-key-1111', keyLast4: '1111' });
     const [after] = await keysOf(integration!.id);
-    expect(after!.updatedAt.getTime()).toBe(adopted!.updatedAt.getTime());
+    expect(after!.apiKeyEncrypted).toBe(before!.apiKeyEncrypted);
   });
 
   runDb("switching to self-hosted deletes the connection's keys; getSyncKeys then returns null", async () => {
@@ -316,5 +320,130 @@ describe('connection service on unifi_integration_keys (breeze_app)', () => {
       db.select().from(unifiIntegrations).where(eq(unifiIntegrations.partnerId, partner.id)),
     );
     await expect(asPartner(other.id, () => getSyncKeys(db, integration!.id, partner.id))).resolves.toBeNull();
+  });
+});
+
+describe('key management on unifi_integration_keys (#11808 W3, breeze_app)', () => {
+  const asPartner = <T>(partnerId: string, fn: () => Promise<T>) => withDbAccessContext(partnerContext(partnerId), fn);
+
+  async function connected(apiKey = 'first-key-0001') {
+    const partner = await createPartner();
+    await asPartner(partner.id, () => upsertConnection(db, partner.id, { baseUrl: 'https://api.ui.com', apiKey }));
+    const [integration] = await withSystemDbAccessContext(() =>
+      db.select().from(unifiIntegrations).where(eq(unifiIntegrations.partnerId, partner.id)),
+    );
+    return { partnerId: partner.id, integrationId: integration!.id };
+  }
+
+  async function seedExtraKeys(integrationId: string, partnerId: string, n: number) {
+    const admin = getTestDb() as any;
+    for (let i = 0; i < n; i++) {
+      await admin.insert(unifiIntegrationKeys).values({
+        integrationId, partnerId, label: `Seeded ${i}`, apiKeyEncrypted: sealUnifiKey(`seeded-${i}`),
+      });
+    }
+  }
+
+  async function legacyCiphertext(integrationId: string): Promise<string | null> {
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select({ v: unifiIntegrations.apiKeyEncrypted }).from(unifiIntegrations).where(eq(unifiIntegrations.id, integrationId)),
+    );
+    return row!.v;
+  }
+
+  // Review Focus 5. Each call runs in its own system context (its own pooled
+  // connection and transaction), so the two really overlap. Several rounds,
+  // because one round could serialize by luck: without the integration row
+  // lock, both calls count 24 and both insert.
+  runDb('two concurrent addKey calls with one slot left produce 25 keys', async () => {
+    for (let round = 0; round < 4; round++) {
+      const { partnerId, integrationId } = await connected();
+      await seedExtraKeys(integrationId, partnerId, UNIFI_MAX_KEYS - 2); // 24 keys
+      const add = (label: string) => withSystemDbAccessContext(() => addKey(db, {
+        integrationId, partnerId, label, apiKey: `race-${label}-key`, seenHostIds: [], createdBy: null,
+      }));
+      const results = await Promise.allSettled([add(`Race A${round}`), add(`Race B${round}`)]);
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]!.reason).toBeInstanceOf(UnifiKeyError);
+      expect(rejected[0]!.reason.code).toBe('UNIFI_KEY_LIMIT');
+      expect(await keysOf(integrationId)).toHaveLength(UNIFI_MAX_KEYS);
+    }
+  });
+
+  runDb('two concurrent addKey calls with the same label (case and spaces differ) produce one key', async () => {
+    for (let round = 0; round < 4; round++) {
+      const { partnerId, integrationId } = await connected();
+      const add = (label: string) => withSystemDbAccessContext(() => addKey(db, {
+        integrationId, partnerId, label, apiKey: `dup-${label.length}-key`, seenHostIds: [], createdBy: null,
+      }));
+      const results = await Promise.allSettled([add('Fabric North'), add('  fabric north ')]);
+      const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]!.reason).toBeInstanceOf(UnifiKeyError);
+      expect(rejected[0]!.reason.code).toBe('UNIFI_KEY_LABEL_TAKEN');
+      expect(await keysOf(integrationId)).toHaveLength(2);
+    }
+  });
+
+  runDb('a refused add inside a request context leaves nothing behind and the context still works', async () => {
+    const { partnerId, integrationId } = await connected();
+    const err = await asPartner(partnerId, async () => {
+      const refused = await addKey(db, { integrationId, partnerId, label: 'GLOBAL', apiKey: 'dupe-key', seenHostIds: [], createdBy: null })
+        .catch((e) => e);
+      // The same context keeps working after the refusal (no aborted transaction).
+      await addKey(db, { integrationId, partnerId, label: 'Fabric', apiKey: 'fabric-key-7777', seenHostIds: ['h1'], createdBy: null });
+      return refused;
+    });
+    expect(err).toBeInstanceOf(UnifiKeyError);
+    expect(err.code).toBe('UNIFI_KEY_LABEL_TAKEN');
+    const keys = await keysOf(integrationId);
+    expect(keys.map((k) => k.label).sort()).toEqual(['Fabric', 'Global']);
+    const fabric = keys.find((k) => k.label === 'Fabric')!;
+    expect(fabric).toMatchObject({ status: 'pending', keyLast4: '7777', lastSeenHostIds: ['h1'], isEnabled: true });
+    expect(openUnifiKey(fabric.apiKeyEncrypted)).toBe('fabric-key-7777');
+  });
+
+  runDb('replacing or deleting keys keeps the legacy column on the first key', async () => {
+    const { partnerId, integrationId } = await connected('original-0001');
+    const [first] = await keysOf(integrationId);
+    const second = await asPartner(partnerId, () => addKey(db, {
+      integrationId, partnerId, label: 'Fabric', apiKey: 'second-0002', seenHostIds: [], createdBy: null,
+    }));
+
+    // Replacing the second key leaves the legacy column on the first.
+    await asPartner(partnerId, () => updateKey(db, { integrationId, partnerId, keyId: second.id, apiKey: 'second-new-0003', seenHostIds: [] }));
+    expect(openUnifiKey((await legacyCiphertext(integrationId))!)).toBe('original-0001');
+
+    // Replacing the first key moves it.
+    await asPartner(partnerId, () => updateKey(db, { integrationId, partnerId, keyId: first!.id, apiKey: 'original-new-0004', seenHostIds: ['h1'] }));
+    expect(openUnifiKey((await legacyCiphertext(integrationId))!)).toBe('original-new-0004');
+
+    // Deleting the first key re-points it at the survivor, so a W1/W2 worker's
+    // one-key reconcile finds nothing to adopt.
+    await expect(asPartner(partnerId, () => deleteKey(db, { integrationId, partnerId, keyId: first!.id }))).resolves.toBe(true);
+    const [survivor] = await keysOf(integrationId);
+    expect(survivor!.id).toBe(second.id);
+    expect(await legacyCiphertext(integrationId)).toBe(survivor!.apiKeyEncrypted);
+    expect(openUnifiKey(survivor!.apiKeyEncrypted)).toBe('second-new-0003');
+
+    // The last key cannot go; deleting an absent key is a no-op.
+    await expect(asPartner(partnerId, () => deleteKey(db, { integrationId, partnerId, keyId: second.id })))
+      .rejects.toMatchObject({ code: 'UNIFI_LAST_ENABLED_KEY' });
+    await expect(asPartner(partnerId, () => deleteKey(db, { integrationId, partnerId, keyId: first!.id }))).resolves.toBe(false);
+  });
+
+  runDb('another partner cannot change or remove a key', async () => {
+    const { partnerId, integrationId } = await connected();
+    const other = await createPartner();
+    const [key] = await keysOf(integrationId);
+    await expect(asPartner(other.id, () => updateKey(db, { integrationId, partnerId, keyId: key!.id, label: 'Hijacked' })))
+      .rejects.toMatchObject({ code: 'UNIFI_NOT_CONNECTED' });
+    await expect(asPartner(other.id, () => addKey(db, {
+      integrationId, partnerId, label: 'Planted', apiKey: 'planted', seenHostIds: [], createdBy: null,
+    }))).rejects.toMatchObject({ code: 'UNIFI_NOT_CONNECTED' });
+    expect((await keysOf(integrationId)).map((k) => k.label)).toEqual(['Global']);
   });
 });
