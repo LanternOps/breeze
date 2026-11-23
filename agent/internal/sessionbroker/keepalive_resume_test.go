@@ -269,14 +269,14 @@ func TestBackupHelperDeath_KeepaliveClose_ReportsAgentClosedSession(t *testing.T
 		close(keepaliveDone)
 	}()
 
-	// tickAfter advances the clock, delivers one tick, and waits for what the
+	// deliverTick advances the clock, delivers one tick, and waits for what the
 	// loop did with it. The send returning is not enough: the loop reads the
 	// clock after the receive, so advancing for the next tick as soon as the
 	// send returned let one tick see both advances, close on a 60 s pong age,
 	// and leave the next send blocked until the wait expired (#12545). The
 	// loop pings only after it has read the clock, so waiting for that ping,
 	// or for the loop to exit, keeps the advances in order.
-	tickAfter := func(step string, d time.Duration) string {
+	deliverTick := func(step string, d time.Duration) string {
 		t.Helper()
 		clock.Advance(d)
 		select {
@@ -299,10 +299,10 @@ func TestBackupHelperDeath_KeepaliveClose_ReportsAgentClosedSession(t *testing.T
 
 	// A zero-gap tick first proves the loop has read its start time, so the
 	// gaps below are measured from the fake clock's starting point.
-	requireTick(t, "priming tick", tickAfter("priming tick", 0), "ping")
+	requireTick(t, "priming tick", deliverTick("priming tick", 0), "ping")
 	// Two on-time ticks with no pong: the genuine-wedge close.
-	requireTick(t, "first on-time tick", tickAfter("first on-time tick", 30*time.Second), "ping")
-	requireTick(t, "second on-time tick", tickAfter("second on-time tick", 30*time.Second), "closed")
+	requireTick(t, "first on-time tick", deliverTick("first on-time tick", 30*time.Second), "ping")
+	requireTick(t, "second on-time tick", deliverTick("second on-time tick", 30*time.Second), "closed")
 	if !rig.session.IsClosed() {
 		t.Fatal("keepalive loop exited without closing the session")
 	}
