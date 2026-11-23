@@ -699,8 +699,8 @@ export async function listConfigPolicies(
     );
   }
   if (filters.appliesToOrgId) {
-    // W03a: policies that apply to this org, plus inactive ones that apply
-    // nowhere yet (Q3). The org's partner is read in the caller's context, as
+    // W03a: every policy this org owns (#12567), plus the MSP-managed ones
+    // that apply to it or are inactive and apply nowhere yet (Q3). The org's partner is read in the caller's context, as
     // the orgId filter above reads it; a missing or invisible org fails closed
     // to that org's own policies.
     const [appliesOrg] = await db

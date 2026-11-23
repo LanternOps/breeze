@@ -5,7 +5,7 @@
  * they only narrow what the caller may already read. Every EXISTS is
  * correlated to the outer, unaliased `configuration_policies` row.
  */
-import { and, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { eq, isNull, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { configPolicyAssignments, configurationPolicies } from '../db/schema';
 import { policyAppliesToOrgsSql } from './configPolicyReadScope';
@@ -18,18 +18,21 @@ export function notAppliedCondition(): SQL {
 }
 
 /**
- * Policies that apply to organization `orgId` (plan D14), of any status, plus
- * inactive policies that apply nowhere yet (owner decision Q3), among those
- * the org could be governed by: its own policies and its partner's MSP-managed
- * ones. `orgPartnerId` is the org's partner as the caller's context reads it;
- * null (the org row is missing or not visible) fails closed to the org's own
- * policies. An org-owned policy's assignments all live in its org, so a legacy
- * partner-level row on one cannot make it apply to another org.
+ * The policies organization `orgId`'s list shows:
+ *  - every policy the org owns, of any status, whether or not it applies
+ *    anywhere (#12567), so a policy whose targets were all removed stays in its
+ *    own org's list;
+ *  - its partner's MSP-managed policies that apply to it (plan D14), of any
+ *    status, plus the inactive ones that apply nowhere yet (owner decision Q3).
+ *    An active MSP-managed policy that applies nowhere is not listed.
+ * `orgPartnerId` is the org's partner as the caller's context reads it; null
+ * (the org row is missing or not visible) fails closed to the org's own
+ * policies. Another org's policies never match: an org-owned policy's
+ * assignments all live in its org, so it applies to no other org.
  */
 export function appliesToOrgCondition(orgId: string, orgPartnerId: string | null): SQL {
-  const owner = orgPartnerId
-    ? or(eq(configurationPolicies.orgId, orgId), and(isNull(configurationPolicies.orgId), eq(configurationPolicies.partnerId, orgPartnerId)))!
-    : eq(configurationPolicies.orgId, orgId);
+  const owned = eq(configurationPolicies.orgId, orgId);
+  if (!orgPartnerId) return owned;
   const unassignedInactive = sql`(${configurationPolicies.status} = 'inactive' AND ${notAppliedCondition()})`;
-  return sql`(${owner} AND (${policyAppliesToOrgsSql([orgId], orgPartnerId)} OR ${unassignedInactive}))`;
+  return sql`(${owned} OR (${isNull(configurationPolicies.orgId)} AND ${eq(configurationPolicies.partnerId, orgPartnerId)} AND (${policyAppliesToOrgsSql([orgId], orgPartnerId)} OR ${unassignedInactive})))`;
 }

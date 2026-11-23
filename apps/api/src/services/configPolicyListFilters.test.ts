@@ -17,22 +17,25 @@ const PARTNER = '11111111-1111-4111-8111-111111111111';
 describe('appliesToOrgCondition', () => {
   const q = dialect.sqlToQuery(appliesToOrgCondition(ORG, PARTNER));
 
-  it("returns applying policies plus unassigned inactive ones, owned by the org or the org's partner", () => {
-    expect(q.sql).toMatch(/^\(\("configuration_policies"\."org_id" = \$\d+ or \("configuration_policies"\."org_id" is null and "configuration_policies"\."partner_id" = \$\d+\)\) AND/);
+  it('returns every policy the org owns, of any status, whether or not it applies anywhere (#12567)', () => {
+    // The org's own policies are a bare OR branch: no applies or status test on them.
+    expect(q.sql).toMatch(/^\("configuration_policies"\."org_id" = \$1 OR \("configuration_policies"\."org_id" is null AND "configuration_policies"\."partner_id" = \$2 AND \(/);
+    expect(q.params[0]).toBe(ORG);
+    expect(q.params[1]).toBe(PARTNER);
+  });
+
+  it("returns the partner's MSP-managed policies that apply to the org, plus unassigned inactive ones (Q3)", () => {
     // Applies: the D14 clauses, bound to this one org.
     expect(q.sql).toContain('"rs_a"."config_policy_id" = "configuration_policies"."id"');
     // Or inactive and applying nowhere: no assignment and no child.
     expect(q.sql).toMatch(/"configuration_policies"\."status" = 'inactive' AND \(NOT EXISTS \(SELECT 1 FROM "config_policy_assignments" "lf_a"/);
     expect(q.sql).toContain('NOT EXISTS (SELECT 1 FROM "configuration_policies" "lf_child"');
-    expect(q.params).toContain(ORG);
-    expect(q.params).toContain(PARTNER);
   });
 
-  it('fails closed when the org has no visible partner: org-owned policies of that org only', () => {
+  it("fails closed when the org has no visible partner: the org's own policies only", () => {
     const closed = dialect.sqlToQuery(appliesToOrgCondition(ORG, null));
-    expect(closed.sql).not.toContain('"configuration_policies"."org_id" is null');
-    expect(closed.sql).not.toContain('"rs_child"."org_id" IS NULL');
-    expect(closed.sql).toMatch(/^\("configuration_policies"\."org_id" = \$1 AND/);
+    expect(closed.sql).toBe('"configuration_policies"."org_id" = $1');
+    expect(closed.params).toEqual([ORG]);
   });
 });
 
