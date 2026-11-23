@@ -4,9 +4,7 @@ import { i18n } from '@/lib/i18n';
 import { ActionError, runAction } from '@/lib/runAction';
 import { fetchWithAuth } from '../../../stores/auth';
 import { showToast } from '../../shared/Toast';
-import type { PolicyStatus } from './PolicyHeader';
-
-export type PolicyDetails = { name: string; description: string; status: PolicyStatus };
+export type PolicyDetails = { name: string; description: string };
 
 type PolicyDetailsFormProps = {
   policyId: string;
@@ -22,24 +20,23 @@ const inputClass =
   'mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring';
 
 /**
- * The policy's name, description and status, with Save and Cancel
- * (spec "Save model": a small details form). It replaces the Overview tab.
- * Status stays here until Activate and Deactivate replace it (W03c).
+ * The policy's name and description, with Save and Cancel (spec "Save model":
+ * a small details form). It replaces the Overview tab. Status is not here:
+ * Activate and Deactivate (PolicyStateActions) are its one home (#12470).
  */
 export default function PolicyDetailsForm({ policyId, initial, onSaved, onCancel, onDirtyChange }: PolicyDetailsFormProps) {
   useTranslation(['policies', 'common']);
   const [name, setName] = useState(initial.name);
   const [description, setDescription] = useState(initial.description);
-  const [status, setStatus] = useState<PolicyStatus>(initial.status);
   const [saving, setSaving] = useState(false);
 
-  const dirty = name !== initial.name || description !== initial.description || status !== initial.status;
+  const dirty = name !== initial.name || description !== initial.description;
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
 
   const save = async () => {
-    const next: PolicyDetails = { name: name.trim(), description, status };
+    const next: PolicyDetails = { name: name.trim(), description };
     setSaving(true);
     let saved = false;
     try {
@@ -51,7 +48,6 @@ export default function PolicyDetailsForm({ policyId, initial, onSaved, onCancel
               name: next.name,
               // An empty string clears the description; omitting it would not.
               description: next.description,
-              status: next.status,
             }),
           }),
         errorFallback: i18n.t('policies:configurationPolicies.configPolicyDetailPage.failedToUpdatePolicy'),
@@ -83,7 +79,6 @@ export default function PolicyDetailsForm({ policyId, initial, onSaved, onCancel
   const cancel = () => {
     setName(initial.name);
     setDescription(initial.description);
-    setStatus(initial.status);
     onDirtyChange?.(false);
     onCancel();
   };
@@ -117,21 +112,6 @@ export default function PolicyDetailsForm({ policyId, initial, onSaved, onCancel
             onChange={(e) => setDescription(e.target.value)}
             className="mt-2 h-20 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
-        </div>
-        <div>
-          <label htmlFor="config-policy-status" className="text-sm font-medium">
-            {i18n.t('common:labels.status')}
-          </label>
-          <select
-            id="config-policy-status"
-            value={status}
-            onChange={(e) => setStatus(e.target.value as PolicyStatus)}
-            className={`${inputClass} sm:w-48`}
-          >
-            <option value="active">{i18n.t('common:states.active')}</option>
-            <option value="inactive">{i18n.t('common:states.inactive')}</option>
-            <option value="archived">{i18n.t('policies:configurationPolicies.configPolicyDetailPage.archived2')}</option>
-          </select>
         </div>
       </div>
       <div className="mt-6 flex justify-end gap-3">

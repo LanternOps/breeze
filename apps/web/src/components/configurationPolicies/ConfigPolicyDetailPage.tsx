@@ -29,6 +29,9 @@ import FeatureRail, { type RailKey } from './page/FeatureRail';
 import { FIRST_RAIL_FEATURE } from './page/featureState';
 import PolicyHeader from './page/PolicyHeader';
 import PolicyDetailsForm, { type PolicyDetails } from './page/PolicyDetailsForm';
+import PolicyStateActions from './page/PolicyStateActions';
+import type { PolicyStatus } from './page/PolicyHeader';
+import { FeaturePolicyContext, type FeaturePolicyInfo } from './featureTabs/featurePolicyContext';
 import { resolveViewerAccess } from './page/viewerAccess';
 import { configFeatureLabel } from './configPolicyLabels';
 import PolicyFeatureEditor from './page/PolicyFeatureEditor';
@@ -378,13 +381,42 @@ export default function ConfigPolicyDetailPage({
     (next: PolicyDetails) => {
       // The save succeeded: show it now, even if the re-read below fails.
       setPolicy((prev) =>
-        prev ? { ...prev, name: next.name, description: next.description || undefined, status: next.status } : prev,
+        prev ? { ...prev, name: next.name, description: next.description || undefined } : prev,
       );
       setDetailsOpen(false);
       setDetailsDirty(false);
       void refreshPolicy();
     },
     [refreshPolicy],
+  );
+  // Activate / Deactivate / Archive / Restore committed (#12470). The PATCH
+  // answers with a bare row, so show the new status now and re-read the rest.
+  const handleStatusChanged = useCallback(
+    (next: PolicyStatus) => {
+      setPolicy((prev) => (prev ? { ...prev, status: next } : prev));
+      void refreshPolicy();
+    },
+    [refreshPolicy],
+  );
+  // What every feature's Save, Remove and Reset state (#12470): the reach,
+  // and the parent an inherited feature comes from.
+  const policyStatus = policy?.status;
+  const childPolicyCount = policy?.childPolicies?.length ?? 0;
+  const parentSummary = policy?.parentPolicy ?? null;
+  const featurePolicyInfo = useMemo<FeaturePolicyInfo | null>(
+    () =>
+      policyStatus
+        ? {
+            reach: { status: policyStatus, reach, childPolicyCount },
+            parent: parentSummary
+              ? {
+                  name: parentSummary.name,
+                  href: canOpenParent ? `/configuration-policies/${parentSummary.id}` : null,
+                }
+              : null,
+          }
+        : null,
+    [policyStatus, reach, childPolicyCount, parentSummary, canOpenParent],
   );
   const handleLinkChanged = useCallback(
     (link: FeatureLink | null, featureType: FeatureType) => {
@@ -548,13 +580,25 @@ export default function ConfigPolicyDetailPage({
           readOnly={readOnly}
           readOnlyReason={viewer.reason}
           onEditDetails={readOnly ? undefined : () => setDetailsOpen(true)}
+          actions={
+            policyId && (
+              <PolicyStateActions
+                policyId={policyId}
+                status={policy.status}
+                reach={reach}
+                childPolicyCount={policy.childPolicies?.length ?? 0}
+                readOnly={readOnly}
+                onChanged={handleStatusChanged}
+              />
+            )
+          }
         />
       </div>
 
       {detailsOpen && !readOnly && policyId && (
         <PolicyDetailsForm
           policyId={policyId}
-          initial={{ name: policy.name, description: policy.description ?? "", status: policy.status }}
+          initial={{ name: policy.name, description: policy.description ?? "" }}
           onSaved={handleDetailsSaved}
           onCancel={() => setDetailsOpen(false)}
           onDirtyChange={setDetailsDirty}
@@ -592,6 +636,7 @@ export default function ConfigPolicyDetailPage({
         >
           <FeatureDirtyReporterContext.Provider value={setFeatureDirty}>
           <FeatureReadOnlyContext.Provider value={readOnly}>
+          <FeaturePolicyContext.Provider value={featurePolicyInfo}>
             {shownFeature &&
               (isGatedFeature(shownFeature) ? (
                 renderGatedFeature(shownFeature)
@@ -607,6 +652,7 @@ export default function ConfigPolicyDetailPage({
                   onLinkChanged={handleLinkChanged}
                 />
               ))}
+          </FeaturePolicyContext.Provider>
           </FeatureReadOnlyContext.Provider>
           </FeatureDirtyReporterContext.Provider>
           {/* Compliance Status: read-only results; the `compliance` feature is the rule editor. */}

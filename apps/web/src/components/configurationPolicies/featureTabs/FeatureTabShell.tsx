@@ -5,6 +5,8 @@ import { i18n } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { FeatureDirtyContext, FeatureDirtyReporterContext, useFeatureReadOnly } from "./featureEditing";
 import { featureStateLabel } from "../page/featureState";
+import { deviceCountPhrase, policyCountPhrase, reachPhrase, saveReach } from "../page/ReachLine";
+import { useFeaturePolicy } from "./featurePolicyContext";
 type FeatureTabShellProps = {
   title: string;
   description: string;
@@ -69,6 +71,33 @@ export default function FeatureTabShell({
   // An inherited feature shows the parent's values, locked, until Change for
   // this policy unlocks it (#12470).
   const locked = !!isInherited && !unlocked;
+  // What a save, a Remove or a Reset changes on devices (#12470). Without the
+  // page's facts (or before the reach read answers) no count is claimed.
+  const policyInfo = useFeaturePolicy();
+  const reachValue = saveReach(policyInfo?.reach ?? null);
+  const reachKnown = !!policyInfo?.reach?.reach;
+  const deviceImpact = (action: "remove" | "revert"): string | null => {
+    if (!reachKnown) return null;
+    if (!reachValue) return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.impactNoDeviceNow");
+    const devices = deviceCountPhrase(reachValue.devices, reachValue.partial);
+    if (reachValue.kind === "reaches") {
+      if (action === "remove") return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.removeImpactReaches", { devices, feature: title });
+      return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.resetImpactReaches", { devices, feature: title });
+    }
+    const policies = policyCountPhrase(reachValue.policies);
+    if (action === "remove") return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.removeImpactInUse", { policies, devices, feature: title });
+    return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.resetImpactInUse", { policies, devices, feature: title });
+  };
+  const confirmMessage = (base: string, action: "remove" | "revert"): ReactNode => {
+    const impact = deviceImpact(action);
+    return impact ? (
+      <>
+        {base} <span data-testid="feature-tab-confirm-impact">{impact}</span>
+      </>
+    ) : (
+      base
+    );
+  };
   // #5314: Reset to parent and Remove both fire an irreversible
   // DELETE .../features/:id that destroys this policy's override. The shell
   // renders the footer for every feature tab, so guarding here covers all of
@@ -257,6 +286,25 @@ export default function FeatureTabShell({
             <div>
               <h2 className="text-lg font-semibold">{title}</h2>
               <p className="text-sm text-muted-foreground">{description}</p>
+              {isInherited && policyInfo?.parent && (
+                <p data-testid="feature-tab-from-parent" className="mt-1 text-sm text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.featureTabShell.fromParentPolicy",
+                    { policy: policyInfo.parent.name },
+                  )}
+                  {policyInfo.parent.href && (
+                    <>
+                      {" · "}
+                      <a
+                        href={policyInfo.parent.href}
+                        className="font-medium text-primary underline underline-offset-2 hover:text-primary/80"
+                      >
+                        {i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.openParent")}
+                      </a>
+                    </>
+                  )}
+                </p>
+              )}
             </div>
           </div>
           <span
@@ -371,7 +419,12 @@ export default function FeatureTabShell({
                 ? i18n.t(
                     "policies:configurationPolicies.featureTabs.featureTabShell.saving",
                   )
-                : i18n.t("common:actions.save")}
+                : reachValue
+                  ? i18n.t(
+                      "policies:configurationPolicies.featureTabs.featureTabShell.saveWithReach",
+                      { reach: reachPhrase(reachValue) },
+                    )
+                  : i18n.t("common:actions.save")}
             </button>
             </div>
           )}
@@ -391,9 +444,12 @@ export default function FeatureTabShell({
         title={i18n.t(
           "policies:configurationPolicies.featureTabs.featureTabShell.revertConfirmTitle",
         )}
-        message={i18n.t(
-          "policies:configurationPolicies.featureTabs.featureTabShell.revertConfirmMessage",
-          { feature: title },
+        message={confirmMessage(
+          i18n.t(
+            "policies:configurationPolicies.featureTabs.featureTabShell.revertConfirmMessage",
+            { feature: title },
+          ),
+          "revert",
         )}
         confirmLabel={i18n.t(
           "policies:configurationPolicies.featureTabs.featureTabShell.revertToParent",
@@ -413,9 +469,12 @@ export default function FeatureTabShell({
         title={i18n.t(
           "policies:configurationPolicies.featureTabs.featureTabShell.removeConfirmTitle",
         )}
-        message={i18n.t(
-          "policies:configurationPolicies.featureTabs.featureTabShell.removeConfirmMessage",
-          { feature: title },
+        message={confirmMessage(
+          i18n.t(
+            "policies:configurationPolicies.featureTabs.featureTabShell.removeConfirmMessage",
+            { feature: title },
+          ),
+          "remove",
         )}
         confirmLabel={i18n.t("common:actions.remove")}
         confirmTestId="feature-tab-remove-confirm"

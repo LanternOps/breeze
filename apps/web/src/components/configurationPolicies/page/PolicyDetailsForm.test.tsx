@@ -13,7 +13,7 @@ const fetchMock = vi.mocked(fetchWithAuth);
 const json = (payload: unknown, ok = true): Response =>
   ({ ok, status: ok ? 200 : 400, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
-const initial = { name: 'Workstations', description: 'All desks', status: 'inactive' as const };
+const initial = { name: 'Workstations', description: 'All desks' };
 
 describe('PolicyDetailsForm (#12469)', () => {
   beforeEach(async () => {
@@ -32,7 +32,8 @@ describe('PolicyDetailsForm (#12469)', () => {
     const name = screen.getByLabelText('Name') as HTMLInputElement;
     const description = screen.getByLabelText('Description') as HTMLTextAreaElement;
     expect(name.value).toBe('Workstations');
-    expect(screen.getByLabelText('Status')).toHaveValue('inactive');
+    // Status is not edited here (#12470): Activate and Deactivate are its home.
+    expect(screen.queryByLabelText('Status')).toBeNull();
 
     fireEvent.change(name, { target: { value: 'Desks' } });
     expect(onDirtyChange).toHaveBeenLastCalledWith(true);
@@ -47,11 +48,13 @@ describe('PolicyDetailsForm (#12469)', () => {
 
     fetchMock.mockResolvedValueOnce(json({ id: 'pol-1', name: 'Desks' }));
     fireEvent.click(screen.getByTestId('config-policy-details-save'));
-    await waitFor(() => expect(onSaved).toHaveBeenCalledWith({ name: 'Desks', description: 'All desks', status: 'inactive' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith({ name: 'Desks', description: 'All desks' }));
     const [url, init] = fetchMock.mock.calls[1];
     expect(url).toBe('/configuration-policies/pol-1');
     expect((init as RequestInit).method).toBe('PATCH');
-    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ name: 'Desks', description: 'All desks', status: 'inactive' });
+    // No status in the body: a details save can never re-activate a policy
+    // someone deactivated while the form was open.
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ name: 'Desks', description: 'All desks' });
     expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Policy details saved' }));
   });
 

@@ -643,10 +643,18 @@
         "notSaved": "Not saved: {{reason}}",
         "saveBlocked": "Not saved. Fix the highlighted problem and try again.",
         "revertConfirmTitle": "Reset to the parent policy?",
-        "revertConfirmMessage": "This deletes the {{feature}} override on this policy. Its settings are lost and the parent policy's settings apply to every device using this policy. This cannot be undone.",
+        "revertConfirmMessage": "This deletes this policy's own {{feature}} settings, and the parent policy's settings apply instead. This cannot be undone.",
         "removeConfirmTitle": "Remove this configuration?",
-        "removeConfirmMessage": "This deletes the {{feature}} configuration from this policy. Its settings are lost and the feature stops being applied to every device using this policy. This cannot be undone.",
-        "badgeSavedNotDeployed": "Saved (not deployed)"
+        "removeConfirmMessage": "This deletes the {{feature}} settings from this policy, and the feature goes back to Not set. This cannot be undone.",
+        "badgeSavedNotDeployed": "Saved (not deployed)",
+        "saveWithReach": "Save · {{reach}}",
+        "removeImpactReaches": "This policy reaches {{devices}}: {{feature}} is no longer set on them by this policy.",
+        "removeImpactInUse": "Policies based on this one stop inheriting {{feature}} from it, unless they set their own: {{policies}}, {{devices}}.",
+        "resetImpactReaches": "This policy reaches {{devices}}: they get the parent policy's {{feature}} settings instead.",
+        "resetImpactInUse": "Policies based on this one get the parent policy's {{feature}} settings through it instead, unless they set their own: {{policies}}, {{devices}}.",
+        "impactNoDeviceNow": "No device changes now: this policy is not active and no policy is based on it.",
+        "fromParentPolicy": "From {{policy}}",
+        "openParent": "Open"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Deploy Breeze Assist to devices",
@@ -1618,6 +1626,35 @@
           "message": "View only."
         }
       }
+    },
+    "reachLine": {
+      "deviceCount_one": "{{count}} device",
+      "deviceCount_other": "{{count}} devices",
+      "atLeastDeviceCount_one": "at least {{count}} device",
+      "atLeastDeviceCount_other": "at least {{count}} devices",
+      "noVisibleDevices": "no devices you can see",
+      "policyCount_one": "{{count}} policy",
+      "policyCount_other": "{{count}} policies",
+      "reaches": "reaches {{devices}}",
+      "inUseThrough": "in use through {{policies}} · {{devices}}"
+    },
+    "policyStateActions": {
+      "activateAction": "Activate",
+      "activateWithReach": "Activate · {{reach}}",
+      "deactivateAction": "Deactivate",
+      "archiveAction": "Archive",
+      "restoreAction": "Restore",
+      "restoreHint": "Restores the policy as Inactive.",
+      "deactivateConfirmTitle": "Deactivate this policy?",
+      "deactivateConfirmMessage": "It stops applying its settings to the devices it targets directly. You can activate it again later.",
+      "deactivateImpactDirect": "It targets {{devices}} directly: they stop receiving its settings.",
+      "deactivateImpactChildren": "Policies based on it keep its settings: {{policies}}, {{devices}}.",
+      "activateExecuteRequired": "Activating this policy turns on vendor updates on the devices it applies to. That needs the devices.execute permission and MFA. Ask someone who has it to activate this policy.",
+      "changeFailed": "The policy state was not changed.",
+      "activatedToast": "Policy activated",
+      "deactivatedToast": "Policy deactivated",
+      "archivedToast": "Policy archived",
+      "restoredToast": "Policy restored as Inactive"
     }
   },
   "software": {

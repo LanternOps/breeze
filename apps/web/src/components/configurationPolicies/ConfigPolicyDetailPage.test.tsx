@@ -166,7 +166,7 @@ describe('ConfigPolicyDetailPage — a11y (#7158)', () => {
     );
   });
 
-  it('links the Name, Description and Status fields of the details form to their labels (#7156)', async () => {
+  it('links the Name and Description fields of the details form to their labels (#7156)', async () => {
     mockPolicy({ orgId: 'org-1', partnerId: null });
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
 
@@ -174,7 +174,6 @@ describe('ConfigPolicyDetailPage — a11y (#7158)', () => {
     fireEvent.click(screen.getByTestId('config-policy-edit-details'));
     expect(screen.getByLabelText('Name')).toBeInTheDocument();
     expect(screen.getByLabelText('Description')).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Status' })).toBeInTheDocument();
   });
 });
 
@@ -854,5 +853,82 @@ describe('ConfigPolicyDetailPage — unsaved-changes guard (#12469)', () => {
     const e = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(e);
     expect(e.defaultPrevented).toBe(true);
+  });
+});
+
+describe('ConfigPolicyDetailPage — state actions and reach (#12470)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    await i18n.changeLanguage('en');
+    window.location.hash = '';
+  });
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  // The policy, plus its reach read and the status PATCH.
+  const withReach = (status: string, reach: Record<string, unknown>) => {
+    let current = status;
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/configuration-policies/pol-1/reach' && method === 'GET') return json(reach);
+      if (url === '/configuration-policies/pol-1' && method === 'PATCH') {
+        const body = JSON.parse(String((init as RequestInit).body));
+        if (body.status) current = body.status;
+        return json({ id: 'pol-1', ...body });
+      }
+      if (url === '/configuration-policies/pol-1' && method === 'GET') {
+        const policy = await (await base(input, init)).json();
+        return json({ ...policy, status: current });
+      }
+      return base(input, init);
+    });
+  };
+  const patches = () =>
+    fetchMock.mock.calls
+      .filter(([url, init]) => url === '/configuration-policies/pol-1' && (init as RequestInit | undefined)?.method === 'PATCH')
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+
+  it('status is no longer in the details form: Activate and Deactivate are its one home', async () => {
+    withReach('inactive', { direct: 5, throughChildren: 0, organizations: 1 });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    fireEvent.click(screen.getByTestId('config-policy-edit-details'));
+    expect(screen.queryByRole('combobox', { name: 'Status' })).toBeNull();
+    expect(screen.getByTestId('config-policy-activate')).toBeInTheDocument();
+  });
+
+  it("the open feature's Save states the reach", async () => {
+    withReach('active', { direct: 200, throughChildren: 12, organizations: 2 });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    const editor = screen.getByTestId('patch-tab-editor');
+    await waitFor(() =>
+      expect(within(editor).getByRole('button', { name: /^save/i })).toHaveTextContent('Save · reaches 212 devices'),
+    );
+  });
+
+  it('Activate patches status and the header follows', async () => {
+    withReach('inactive', { direct: 5, throughChildren: 0, organizations: 1 });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    const activate = await screen.findByTestId('config-policy-activate');
+    await waitFor(() => expect(activate).toHaveTextContent('Activate · reaches 5 devices'));
+    fireEvent.click(activate);
+    await waitFor(() => expect(screen.getByTestId('config-policy-status-pill')).toHaveTextContent('Active'));
+    expect(patches()).toEqual([{ status: 'active' }]);
+    expect(screen.getByTestId('config-policy-deactivate')).toBeInTheDocument();
+  });
+
+  it('a read-only viewer gets no state actions', async () => {
+    setUser({ permissions: [{ resource: 'devices', action: 'read' }] });
+    withReach('active', { direct: 5, throughChildren: 0, organizations: 1 });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    expect(screen.queryByTestId('config-policy-state-actions')).toBeNull();
+    expect(screen.queryByTestId('config-policy-deactivate')).toBeNull();
   });
 });

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Eye, Pencil } from 'lucide-react';
 import { i18n } from '@/lib/i18n';
@@ -22,6 +23,8 @@ type PolicyHeaderProps = {
   readOnlyReason: ReadOnlyReason | null;
   /** Opens the details form. Omitted for a read-only viewer: no control is rendered. */
   onEditDetails?: () => void;
+  /** State actions (Activate, Deactivate) beside the state pill. */
+  actions?: ReactNode;
 };
 
 const STATUS_CLASS: Record<PolicyStatus, string> = {
@@ -53,6 +56,7 @@ export default function PolicyHeader({
   readOnly,
   readOnlyReason,
   onEditDetails,
+  actions,
 }: PolicyHeaderProps) {
   useTranslation(['policies', 'common']);
   const p = 'policies:configurationPolicies.policyHeader';
@@ -77,6 +81,7 @@ export default function PolicyHeader({
             {i18n.t("policies:configurationPolicies.policyHeader.editDetails")}
           </button>
         )}
+        {actions}
       </div>
       {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
 
