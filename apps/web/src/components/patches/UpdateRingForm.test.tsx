@@ -595,7 +595,7 @@ describe('UpdateRingForm — default rollout order (#9565)', () => {
 
 // #12305: the hosting dialog needs to know when the form holds unsaved input,
 // so a stray click or Escape does not throw it away.
-describe('UpdateRingForm — onDirtyChange (#12305)', () => {
+describe('UpdateRingForm onDirtyChange (#12305)', () => {
   it('reports clean on mount, dirty after an edit, and clean again when the edit is undone', async () => {
     const onDirtyChange = vi.fn();
     render(<UpdateRingForm onSubmit={vi.fn()} onDirtyChange={onDirtyChange} />);
