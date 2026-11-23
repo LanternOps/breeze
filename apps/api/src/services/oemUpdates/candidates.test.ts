@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import type { OemCategory, OemLane } from '@breeze/shared';
+import { OEM_LANES, type OemCategory, type OemLane } from '@breeze/shared';
 
 const state = vi.hoisted(() => ({
   results: [] as unknown[][],
@@ -61,6 +61,7 @@ import {
   maxDispatchPerTick,
   selectDueDevices,
   type CandidateRow,
+  type ScheduledRunStatus,
 } from './candidates';
 import { stableOffsetMinutes } from './occurrence';
 import { resolveOemUpdatesLinksForDevices, type ResolvedOemUpdatesLink } from './resolver';
@@ -89,6 +90,7 @@ function device(over: Partial<CandidateRow> = {}): CandidateRow {
     attempts: null,
     lastOutcome: null,
     lastAttemptAt: null,
+    lastScheduledAttemptAt: null,
     applicability: null,
     notSupportedToolVersion: null,
     notSupportedModel: null,
@@ -347,18 +349,27 @@ describe('selectDueDevices: one exclusion each', () => {
 
   it('already attempted tonight: one run a night, the next night retries', async () => {
     const tonight = new Date('2027-01-20T01:20:00.000Z');
-    await expect(selected(device({
+    const attempted = {
       occurrenceKey: OCCURRENCE,
       attempts: 1,
       lastOutcome: 'failed',
+      lastTrigger: 'scheduled',
       lastAttemptAt: tonight,
-    }))).resolves.toEqual([]);
+      lastScheduledAttemptAt: tonight,
+      commandStatus: 'completed',
+    } as const;
+    await expect(selected(device(attempted))).resolves.toEqual([]);
+    await expect(selected(device(attempted), link(), new Date('2027-01-21T02:00:00.000Z'))).resolves.toEqual([D1]);
+  });
+
+  it('a Run now inside the window leaves the scheduled run due (#12266)', async () => {
     await expect(selected(device({
-      occurrenceKey: OCCURRENCE,
-      attempts: 1,
-      lastOutcome: 'failed',
-      lastAttemptAt: tonight,
-    }), link(), new Date('2027-01-21T02:00:00.000Z'))).resolves.toEqual([D1]);
+      lastOutcome: 'success',
+      lastTrigger: 'on_demand',
+      lastAttemptAt: new Date('2027-01-20T01:30:00.000Z'),
+      lastScheduledAttemptAt: null,
+      commandStatus: 'completed',
+    }))).resolves.toEqual([D1]);
   });
 
   it('not in window', async () => {
@@ -549,5 +560,112 @@ describe('decideScheduledRun', () => {
     expect(decideScheduledRun({ ...base, link: link({}, { enabled: false }) })).toEqual({ due: false, reason: 'vendor_disabled' });
     expect(decideScheduledRun({ ...base, link: link(), now: new Date('2027-01-20T12:00:00.000Z') }))
       .toEqual({ due: false, reason: 'not_in_window' });
+  });
+});
+
+// #12266: a Run now must not use up the night's scheduled run. The decision is shared
+// by every lane, so each case runs for each of them.
+describe.each(OEM_LANES)('decideScheduledRun: scheduled and on-demand attempts (%s)', (lane) => {
+  // The window opens at 01:00 UTC on the 20th; NOW is 02:00, past every device offset.
+  const BEFORE_WINDOW = new Date('2027-01-20T00:50:00.000Z');
+  const SCHEDULED_AT = new Date('2027-01-20T01:20:00.000Z');
+  const RUN_NOW_AT = new Date('2027-01-20T01:40:00.000Z');
+  const LAST_NIGHT = new Date('2027-01-19T01:20:00.000Z');
+  const laneLink = () => link({
+    vendors: { [lane]: { enabled: true, categories: { driver: true }, blockedUpdateIds: [] } },
+  });
+  const decide = (status: ScheduledRunStatus, now = NOW) =>
+    decideScheduledRun({ deviceId: D1, lane, status, link: laneLink(), timezone: 'UTC', now });
+
+  it('a finished Run now inside the window leaves the scheduled run due', () => {
+    expect(decide({
+      lastTrigger: 'on_demand',
+      lastOutcome: 'success',
+      lastAttemptAt: RUN_NOW_AT,
+      lastScheduledAttemptAt: null,
+      commandStatus: 'completed',
+    })).toMatchObject({ due: true, occurrenceKey: OCCURRENCE });
+  });
+
+  it('a scheduled attempt tonight still refuses a second scheduled attempt', () => {
+    expect(decide({
+      occurrenceKey: OCCURRENCE,
+      attempts: 1,
+      lastTrigger: 'scheduled',
+      lastOutcome: 'failed',
+      lastAttemptAt: SCHEDULED_AT,
+      lastScheduledAttemptAt: SCHEDULED_AT,
+      commandStatus: 'completed',
+    })).toEqual({ due: false, reason: 'attempted_tonight' });
+  });
+
+  it('a Run now after tonight\'s scheduled attempt does not reopen the night', () => {
+    expect(decide({
+      occurrenceKey: OCCURRENCE,
+      attempts: 1,
+      lastTrigger: 'on_demand',
+      lastOutcome: 'failed',
+      lastAttemptAt: RUN_NOW_AT,
+      lastScheduledAttemptAt: SCHEDULED_AT,
+      commandStatus: 'completed',
+    })).toEqual({ due: false, reason: 'attempted_tonight' });
+  });
+
+  it('a scheduled run still in flight tonight reads as attempted, not in progress', () => {
+    expect(decide({
+      occurrenceKey: OCCURRENCE,
+      lastTrigger: 'scheduled',
+      lastAttemptAt: SCHEDULED_AT,
+      lastScheduledAttemptAt: SCHEDULED_AT,
+      commandStatus: 'sent',
+    })).toEqual({ due: false, reason: 'attempted_tonight' });
+  });
+
+  it('a Run now still in flight holds the scheduled run with its own reason, and records nothing', () => {
+    for (const commandStatus of ['pending', 'sent']) {
+      expect(decide({
+        lastTrigger: 'on_demand',
+        lastAttemptAt: BEFORE_WINDOW,
+        lastScheduledAttemptAt: null,
+        commandStatus,
+      }), commandStatus).toEqual({ due: false, reason: 'run_in_progress' });
+    }
+  });
+
+  it('once that Run now settles, the same night\'s scheduled run is due', () => {
+    expect(decide({
+      lastTrigger: 'on_demand',
+      lastOutcome: 'no_updates',
+      lastAttemptAt: BEFORE_WINDOW,
+      lastScheduledAttemptAt: null,
+      commandStatus: 'completed',
+    })).toMatchObject({ due: true });
+  });
+
+  it('a run in flight never hides an earlier reason: the window, the notAfter, a finish, the attempts', () => {
+    const inFlight = { lastTrigger: 'on_demand', lastAttemptAt: BEFORE_WINDOW, commandStatus: 'sent' } as const;
+    expect(decide(inFlight, new Date('2027-01-20T12:00:00.000Z'))).toEqual({ due: false, reason: 'not_in_window' });
+    expect(decide(inFlight, new Date('2027-01-20T04:00:00.000Z'))).toEqual({ due: false, reason: 'past_not_after' });
+    expect(decide({ ...inFlight, occurrenceKey: OCCURRENCE, lastTrigger: 'scheduled', lastOutcome: 'success', attempts: 1 }))
+      .toEqual({ due: false, reason: 'finished' });
+    expect(decide({ ...inFlight, occurrenceKey: OCCURRENCE, lastOutcome: 'failed', attempts: 3 }))
+      .toEqual({ due: false, reason: 'attempts_exhausted' });
+  });
+
+  it('a run in flight is named before a pending reboot', () => {
+    expect(decide({ lastTrigger: 'on_demand', lastAttemptAt: BEFORE_WINDOW, commandStatus: 'pending', rebootPendingSince: BEFORE_WINDOW }))
+      .toEqual({ due: false, reason: 'run_in_progress' });
+  });
+
+  it('last night\'s scheduled attempt does not count tonight', () => {
+    expect(decide({
+      occurrenceKey: OCCURRENCE,
+      attempts: 1,
+      lastTrigger: 'scheduled',
+      lastOutcome: 'failed',
+      lastAttemptAt: LAST_NIGHT,
+      lastScheduledAttemptAt: LAST_NIGHT,
+      commandStatus: 'completed',
+    })).toMatchObject({ due: true });
   });
 });

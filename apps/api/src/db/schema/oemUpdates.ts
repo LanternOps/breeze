@@ -39,6 +39,9 @@ export const deviceOemUpdateStatus = pgTable('device_oem_update_status', {
   occurrenceKey: varchar('occurrence_key', { length: 64 }),
   attempts: integer('attempts').notNull().default(0),
   lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true }),
+  // A scheduled run's dispatch only (#12266): Run Now sets last_attempt_at, never
+  // this, so it cannot use up the night's scheduled attempt.
+  lastScheduledAttemptAt: timestamp('last_scheduled_attempt_at', { withTimezone: true }),
   lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
   lastOutcome: varchar('last_outcome', { length: 32 }).$type<OemOutcome>(),
   lastErrorCode: varchar('last_error_code', { length: 64 }),
