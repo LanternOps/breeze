@@ -251,9 +251,15 @@ async function addRemoteToolGuid(partnerId: string, value: string) {
   }));
 }
 
-async function addOpenSignal(partnerId: string, signalKey: string, score: number, evidence: Record<string, unknown> = {}) {
+async function addOpenSignal(
+  partnerId: string,
+  signalKey: string,
+  score: number,
+  evidence: Record<string, unknown> = {},
+  opts: { resolved?: boolean } = {},
+) {
   await withSystemDbAccessContext(() => db.insert(partnerAbuseSignals).values({
-    partnerId, signalKey, severity: 'alert', score, evidence,
+    partnerId, signalKey, severity: 'alert', score, evidence, resolvedAt: opts.resolved ? new Date() : null,
   }));
 }
 
@@ -320,13 +326,14 @@ const networkDecision = (
   candidateIp: string,
   suspendedIp: string,
   corroboration: { type: string; value: string },
+  prefixLength: 24 | 64 = 24,
 ): HardDenyDecision => ({
   restrict: true,
   reason: 'auto:corroborated_suspended_network',
   evidence: {
     matchedAxes: ['network_prefix', corroboration.type],
     matchedSuspendedPartnerId: suspendedId,
-    network: { candidateIp, suspendedIp, prefixLength: 24 },
+    network: { candidateIp, suspendedIp, prefixLength },
     corroboration,
   },
 });
@@ -473,6 +480,61 @@ async function seedWorld(): Promise<Scenario[]> {
   add('a clean probation partner',
     await probationPartner({ signupIp: '198.18.9.9', email: 'clean@clean-world.test' }), NO_RESTRICT);
 
+  // Network boundaries: the prefix really is /24 (IPv4) and /64 (IPv6).
+  await suspendedPartner({ signupIp: '198.18.10.5', email: 'x@adjacent.test' });
+  add('network + email in the adjacent /24',
+    await probationPartner({ signupIp: '198.18.11.5', email: 'y@adjacent.test' }), NO_RESTRICT);
+
+  const v6 = await suspendedPartner({ signupIp: '2001:db8:aa:1::5', email: 'x@v6-world.test' });
+  add('network + email, same IPv6 /64',
+    await probationPartner({ signupIp: '2001:db8:aa:1::77', email: 'y@v6-world.test' }),
+    networkDecision(v6, '2001:db8:aa:1::77', '2001:db8:aa:1::5', { type: 'email_domain', value: 'v6-world.test' }, 64));
+
+  await suspendedPartner({ signupIp: '2001:db8:aa:2::5', email: 'x@v6-adjacent.test' });
+  add('network + email in the adjacent IPv6 /64',
+    await probationPartner({ signupIp: '2001:db8:aa:3::5', email: 'y@v6-adjacent.test' }), NO_RESTRICT);
+
+  // A partner that is itself on the suspended side never matches itself.
+  const self = await createPartner({ status: 'suspended' });
+  await setPartnerFields(self.id, {
+    trustState: 'probation', signupIpClass: 'residential', signupIp: '198.18.12.5', billingCardFingerprint: 'fp_w_self',
+  });
+  await markSuspendedForAbuse(self.id);
+  await createUser({ partnerId: self.id, email: 'self@self-world.test' });
+  add('a probation partner that is itself suspended for abuse', self.id, NO_RESTRICT);
+
+  await suspendedPartner({ signupIp: '198.18.13.5', email: 'x-world@gmail.com' });
+  add('network + a shared free-mail domain',
+    await probationPartner({ signupIp: '198.18.13.6', email: 'y-world@gmail.com' }), NO_RESTRICT);
+
+  const caseDomain = await suspendedPartner({ signupIp: '198.18.14.5', email: 'x@Case-World.test' });
+  add('network + email domain differing only in case',
+    await probationPartner({ signupIp: '198.18.14.6', email: 'y@case-world.test' }),
+    networkDecision(caseDomain, '198.18.14.6', '198.18.14.5', { type: 'email_domain', value: 'case-world.test' }));
+
+  // An old abuse suspension plus a recent one: still recent.
+  const mixed = await suspendedPartner({ suspendedAt: daysAgo(10), signupIp: '198.18.15.5', email: 'x@mixed-audit.test' });
+  await markSuspendedForAbuse(mixed, daysAgo(200));
+  add('network + email, suspended 200 and again 10 days ago',
+    await probationPartner({ signupIp: '198.18.15.6', email: 'y@mixed-audit.test' }),
+    networkDecision(mixed, '198.18.15.6', '198.18.15.5', { type: 'email_domain', value: 'mixed-audit.test' }));
+
+  // Alert-score boundary and resolved signals.
+  const lowCardTesting = await probationPartner();
+  await addOpenSignal(lowCardTesting, 'billing.card_testing', 69);
+  add('card_testing signal just below the alert score', lowCardTesting, NO_RESTRICT);
+
+  const resolvedCardTesting = await probationPartner();
+  await addOpenSignal(resolvedCardTesting, 'billing.card_testing', 100, {}, { resolved: true });
+  add('resolved card_testing signal', resolvedCardTesting, NO_RESTRICT);
+
+  const lowRecidivist = await suspendedPartner({});
+  await addRemoteToolGuid(lowRecidivist, 'guid-world-low');
+  const lowRecidivistTarget = await probationPartner();
+  await addRemoteToolGuid(lowRecidivistTarget, 'guid-world-low');
+  await addOpenSignal(lowRecidivistTarget, 'rmm.recidivist_endpoint', 69);
+  add('recidivist signal just below the alert score', lowRecidivistTarget, NO_RESTRICT);
+
   return scenarios;
 }
 
@@ -494,5 +556,17 @@ describe('evaluateHardDenies — every axis in one populated database (#11560)',
       expect({ name: scenario.name, batched, single })
         .toEqual({ name: scenario.name, batched: scenario.expected, single: scenario.expected });
     }
+  });
+
+  runDb('a set built before a new abuse suspension misses it; a fresh evaluation does not', async () => {
+    // This is the staleness tryAutoPromote's fresh re-check before `trusted`
+    // exists for: the shared set is a snapshot.
+    const stale = await loadSuspendedAbuseSet();
+    const late = await suspendedPartner({ billingCardFingerprint: 'fp_w_late' });
+    const target = await probationPartner({ billingCardFingerprint: 'fp_w_late' });
+
+    expect(await evaluateHardDenies(target, { suspendedSet: stale })).toEqual(NO_RESTRICT);
+    expect(await evaluateHardDenies(target)).toEqual(cardDecision(late));
+    expect(await evaluateHardDenies(target, { suspendedSet: await loadSuspendedAbuseSet() })).toEqual(cardDecision(late));
   });
 });

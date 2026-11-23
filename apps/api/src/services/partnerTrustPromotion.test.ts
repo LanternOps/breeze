@@ -56,7 +56,8 @@ const billingClient = () => ({
 
 import {
   createSuspendedAbuseSetCache, evaluateHardDenies, gatherPromotionFacts, loadSuspendedAbuseSet,
-  promotionDecision, restrictOnHardDeny, SUSPENDED_SET_MAX_AGE_MS, tryAutoPromote, type PromotionFacts,
+  promotionDecision, restrictOnHardDeny, SUSPENDED_SET_FAILURE_BACKOFF_MS, SUSPENDED_SET_MAX_AGE_MS, tryAutoPromote,
+  type PromotionFacts,
 } from './partnerTrustPromotion';
 
 const now = new Date('2026-09-02T12:00:00.000Z');
@@ -387,7 +388,11 @@ describe('evaluateHardDenies', () => {
     it('rethrows a failed evaluation without the bound suspended set in the message', async () => {
       // Drizzle's DrizzleQueryError puts every bound parameter in its message;
       // here that would be the whole suspended set, logged by every caller.
-      const driverError = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+      const driverError = Object.assign(new Error('canceling statement due to statement timeout'), {
+        code: '57014', severity: 'ERROR', routine: 'ProcessInterrupts',
+      });
+      // postgres.js attaches the statement's parameters to the driver error too.
+      Object.defineProperty(driverError, 'parameters', { value: ['p1', SET_ROW.ips], enumerable: false });
       const drizzleError = Object.assign(
         new Error(`Failed query: WITH target AS (...)\nparams: p1,${SET_ROW.cards},${SET_ROW.recent},${SET_ROW.ips}`),
         { cause: driverError },
@@ -402,6 +407,9 @@ describe('evaluateHardDenies', () => {
       expect(error?.message).not.toContain('203.0.113');
       expect(error?.message).not.toContain('fp_1');
       expect(error).not.toHaveProperty('cause');
+      expect(error).not.toHaveProperty('parameters');
+      // Diagnostic fields survive as properties, so code-based classifiers work.
+      expect(error).toMatchObject({ code: '57014', severity: 'ERROR', routine: 'ProcessInterrupts' });
     });
 
     it.each([
@@ -438,11 +446,19 @@ describe('createSuspendedAbuseSetCache', () => {
     expect(setQueries()).toHaveLength(2);
   });
 
-  it('does not cache a failed build: the next caller builds again', async () => {
-    const cache = createSuspendedAbuseSetCache();
+  it('never caches a failed build as a set: rethrows it for the backoff window, then builds again', async () => {
+    let clock = 1_000_000;
+    const cache = createSuspendedAbuseSetCache(SUSPENDED_SET_MAX_AGE_MS, () => clock);
     execute.mockRejectedValueOnce(new Error('db exploded'));
 
     await expect(cache.get()).rejects.toThrow('db exploded');
+    // Within the backoff: the same failure, and no second full build against
+    // a database that just failed one.
+    clock += SUSPENDED_SET_FAILURE_BACKOFF_MS - 1;
+    await expect(cache.get()).rejects.toThrow('db exploded');
+    expect(execute).toHaveBeenCalledTimes(1);
+
+    clock += 1;
     await expect(cache.get()).resolves.toEqual(expect.objectContaining({ cardsJson: SET_ROW.cards }));
     expect(execute).toHaveBeenCalledTimes(2);
   });

@@ -262,23 +262,42 @@ export async function loadSuspendedAbuseSet(): Promise<SuspendedAbuseSet> {
 export const SUSPENDED_SET_MAX_AGE_MS = 60_000;
 
 /**
+ * After a failed build, how long the cache rethrows that failure instead of
+ * building again. Without it a struggling database (the case #11560 is about)
+ * would get one full set build per probation partner, each failing the same
+ * way. Partners in that window are skipped, never promoted.
+ */
+export const SUSPENDED_SET_FAILURE_BACKOFF_MS = 10_000;
+
+/**
  * A per-run holder for the suspended-for-abuse set: built on first use and
- * rebuilt once it is older than `maxAgeMs`. A failed build is not cached, so
- * the next caller tries again; nothing ever sees an empty set in its place.
+ * rebuilt once it is older than `maxAgeMs`. A failed build is never cached as
+ * a set: callers within `failureBackoffMs` get the same error, and the first
+ * caller after it builds again. Nothing ever sees an empty set in its place.
+ * Not safe for concurrent `get()` calls; the promote job calls it serially.
  */
 export function createSuspendedAbuseSetCache(
   maxAgeMs: number = SUSPENDED_SET_MAX_AGE_MS,
   now: () => number = Date.now,
+  failureBackoffMs: number = SUSPENDED_SET_FAILURE_BACKOFF_MS,
 ): { get(): Promise<SuspendedAbuseSet> } {
   let current: { set: SuspendedAbuseSet; builtAt: number } | null = null;
+  let failure: { error: unknown; at: number } | null = null;
   return {
     async get() {
       if (current && now() - current.builtAt < maxAgeMs) return current.set;
+      if (failure && now() - failure.at < failureBackoffMs) throw failure.error;
       current = null;
+      failure = null;
       const builtAt = now();
-      const set = await loadSuspendedAbuseSet();
-      current = { set, builtAt };
-      return set;
+      try {
+        const set = await loadSuspendedAbuseSet();
+        current = { set, builtAt };
+        return set;
+      } catch (error) {
+        failure = { error, at: now() };
+        throw error;
+      }
     },
   };
 }
@@ -287,15 +306,30 @@ export function createSuspendedAbuseSetCache(
  * The error to rethrow when the per-partner statement fails. Drizzle wraps
  * driver errors in a DrizzleQueryError whose message carries every bound
  * parameter, which here is the whole suspended set (IPs, user agents, card
- * fingerprints, hundreds of kB). Every caller logs what it catches, so keep
- * only the SQLSTATE and the driver's own message, and no `cause`.
+ * fingerprints, hundreds of kB). Every caller logs what it catches, so the
+ * rethrown error carries the driver's message plus an allow-list of its
+ * diagnostic fields (copied as properties, so classifiers that read `code`
+ * still work), and no `cause`: the driver error also holds the statement's
+ * parameters, as non-enumerable `query`/`parameters` in postgres.js.
  */
+const DRIVER_ERROR_FIELDS = [
+  'code', 'severity', 'detail', 'hint', 'position', 'where', 'routine', 'table_name', 'constraint_name',
+] as const;
+
 function withoutBoundParams(error: unknown): Error {
-  const message = pgErrorNode(error)?.message;
-  return new Error(
-    `[partnerTrustPromotion] hard-deny evaluation failed (${pgErrorCode(error) ?? 'unknown'}: `
-    + `${typeof message === 'string' ? message : 'no driver message'})`,
+  const node = pgErrorNode(error);
+  const message = node?.message;
+  const driverMessage = typeof message === 'string'
+    ? message
+    : error instanceof Error && !/params:/.test(error.message) ? error.message : 'no driver message';
+  const scrubbed = new Error(
+    `[partnerTrustPromotion] hard-deny evaluation failed (${pgErrorCode(error) ?? 'unknown'}: ${driverMessage})`,
   );
+  for (const field of DRIVER_ERROR_FIELDS) {
+    const value = node?.[field];
+    if (typeof value === 'string') (scrubbed as unknown as Record<string, string>)[field] = value;
+  }
+  return scrubbed;
 }
 
 export interface HardDenyOptions {
@@ -837,9 +871,11 @@ export async function tryAutoPromote(partnerId: string, options: HardDenyOptions
   }
   // A shared suspended set can be up to SUSPENDED_SET_MAX_AGE_MS old, and no
   // hard-deny axis ever evaluates a trusted partner again. So before that
-  // one-way move, re-check against a freshly built set: a partner suspended
-  // for abuse since the set was built must still block this promotion.
-  // Promotions are rare, so the extra build is cheap.
+  // one-way move, re-check against a freshly built set, so a partner
+  // suspended for abuse since the shared set was built still blocks this
+  // promotion. That narrows the race to the gap between this check and the
+  // CAS below, which the per-call statement also had. Promotions are rare, so
+  // the extra build is cheap.
   if (options.suspendedSet && await restrictOnHardDeny(partnerId)) return false;
   // setTrustState's writeTrust performs the actual UPDATE under
   // `AND trust_state = 'probation'` (expectedFrom), so this is an atomic
