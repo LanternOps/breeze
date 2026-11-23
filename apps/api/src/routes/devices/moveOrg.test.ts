@@ -1570,16 +1570,18 @@ describe('POST /devices/:id/move-org', () => {
       }
     });
 
-    it('#12491: records the removed device-level config policy assignments on BOTH audit rows', async () => {
+    it('#12491: names the removed config policy assignments on the source row and only counts them on the target row', async () => {
       const removed = [{ assignmentId: 'a1', policyId: 'p1', policyName: 'Source org policy' }];
       executeResultFor = (text) => (text.startsWith('DELETE FROM config_policy_assignments') ? removed : null);
       await moveDevice();
 
       const auditRows = vi.mocked(writeRouteAudit).mock.calls.map((call) => call[1] as any);
-      expect(auditRows.map((row) => row.orgId).sort()).toEqual([SOURCE_ORG, TARGET_ORG].sort());
-      for (const row of auditRows) {
-        expect(row.details.removedConfigPolicyAssignments).toEqual(removed);
-      }
+      const sourceRow = auditRows.find((row) => row.orgId === SOURCE_ORG);
+      const targetRow = auditRows.find((row) => row.orgId === TARGET_ORG);
+      expect(sourceRow.details.removedConfigPolicyAssignments).toEqual(removed);
+      expect(sourceRow.details).not.toHaveProperty('removedConfigPolicyAssignmentCount');
+      expect(targetRow.details.removedConfigPolicyAssignmentCount).toBe(1);
+      expect(targetRow.details).not.toHaveProperty('removedConfigPolicyAssignments');
     });
 
     it('#12491: omits the removed-assignments field when the move removed none', async () => {
@@ -1589,6 +1591,7 @@ describe('POST /devices/:id/move-org', () => {
       expect(auditRows).toHaveLength(2);
       for (const row of auditRows) {
         expect(row.details).not.toHaveProperty('removedConfigPolicyAssignments');
+        expect(row.details).not.toHaveProperty('removedConfigPolicyAssignmentCount');
       }
     });
   });

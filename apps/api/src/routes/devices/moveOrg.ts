@@ -436,9 +436,11 @@ moveOrgRoutes.post(
       ...(customFieldRehome.rehomed > 0 || customFieldRehome.dropped > 0
         ? { customFieldValues: customFieldRehome }
         : {}),
-      // #12491: device-level config policy assignments the move removed.
-      ...(removedConfigPolicyAssignments.length > 0 ? { removedConfigPolicyAssignments } : {}),
     } as const;
+    // #12491: device-level config policy assignments the move removed. The
+    // policies belong to the source org, so their names stay in its feed; the
+    // target org gets only a count.
+    const removedCount = removedConfigPolicyAssignments.length;
 
     writeRouteAudit(c, {
       orgId: sourceOrgId,
@@ -446,7 +448,7 @@ moveOrgRoutes.post(
       resourceType: 'device',
       resourceId: deviceId,
       resourceName: updated?.hostname ?? device.hostname,
-      details: auditDetails,
+      details: removedCount > 0 ? { ...auditDetails, removedConfigPolicyAssignments } : auditDetails,
     });
     writeRouteAudit(c, {
       orgId: targetOrgId,
@@ -454,7 +456,7 @@ moveOrgRoutes.post(
       resourceType: 'device',
       resourceId: deviceId,
       resourceName: updated?.hostname ?? device.hostname,
-      details: auditDetails,
+      details: removedCount > 0 ? { ...auditDetails, removedConfigPolicyAssignmentCount: removedCount } : auditDetails,
     });
 
     return c.json({

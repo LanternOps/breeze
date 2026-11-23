@@ -94,6 +94,18 @@ async function seed(policyOwner: 'sourceOrg' | 'partner', crossPartner = false) 
   return { adminDb, orgA, orgB, device, policyId, assignmentId, move, deviceOrg, assignment };
 }
 
+// Todd's rule: the policy names stay in the source org's audit feed; the target org sees only how many.
+function expectSourceNamesTargetCounts(
+  audits: { action: string; details: unknown }[],
+  removed: { assignmentId: string; policyId: string; policyName: string },
+): void {
+  const source = audits.find((a) => a.action === 'device.move_org.source')!;
+  const target = audits.find((a) => a.action === 'device.move_org.target')!;
+  expect(source.details).toMatchObject({ removedConfigPolicyAssignments: [removed] });
+  expect(target.details).toMatchObject({ removedConfigPolicyAssignmentCount: 1 });
+  expect(target.details).not.toHaveProperty('removedConfigPolicyAssignments');
+}
+
 describe('POST /devices/:id/move-org with a device-level config policy assignment (#12491)', () => {
   it('B1: removes the assignment of a source-org policy, moves the device and audits the removal', async () => {
     const f = await seed('sourceOrg');
@@ -110,13 +122,7 @@ describe('POST /devices/:id/move-org with a device-level config policy assignmen
       .from(auditLogs)
       .where(eq(auditLogs.resourceId, f.device.id)), 2);
     expect(audits.map((a) => a.action).sort()).toEqual(['device.move_org.source', 'device.move_org.target']);
-    for (const row of audits) {
-      expect(row.details).toMatchObject({
-        removedConfigPolicyAssignments: [
-          { assignmentId: f.assignmentId, policyId: f.policyId, policyName: 'OrgOwned' },
-        ],
-      });
-    }
+    expectSourceNamesTargetCounts(audits, { assignmentId: f.assignmentId, policyId: f.policyId, policyName: 'OrgOwned' });
   });
 
   it('B2: keeps the assignment of a partner-owned policy when both orgs are under that partner', async () => {
@@ -135,6 +141,7 @@ describe('POST /devices/:id/move-org with a device-level config policy assignmen
       .where(eq(auditLogs.resourceId, f.device.id)), 2);
     for (const row of audits) {
       expect(row.details).not.toHaveProperty('removedConfigPolicyAssignments');
+      expect(row.details).not.toHaveProperty('removedConfigPolicyAssignmentCount');
     }
   });
 
@@ -148,16 +155,10 @@ describe('POST /devices/:id/move-org with a device-level config policy assignmen
     expect(await f.deviceOrg()).toBe(f.orgB.id);
     expect(await f.assignment()).toBeUndefined();
 
-    const audits = await awaitAuditRows<{ details: unknown }>(() => f.adminDb
-      .select({ details: auditLogs.details })
+    const audits = await awaitAuditRows<{ action: string; details: unknown }>(() => f.adminDb
+      .select({ action: auditLogs.action, details: auditLogs.details })
       .from(auditLogs)
       .where(eq(auditLogs.resourceId, f.device.id)), 2);
-    for (const row of audits) {
-      expect(row.details).toMatchObject({
-        removedConfigPolicyAssignments: [
-          { assignmentId: f.assignmentId, policyId: f.policyId, policyName: 'PartnerOwned' },
-        ],
-      });
-    }
+    expectSourceNamesTargetCounts(audits, { assignmentId: f.assignmentId, policyId: f.policyId, policyName: 'PartnerOwned' });
   });
 });

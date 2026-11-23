@@ -463,7 +463,10 @@ function afterCommit(
         ledgerEventId: committed.ledgerEventId,
         ...(collidingDeviceIds.length > 0 ? { identityCollisionAccepted: true, collidingDeviceIds } : {}),
         ...(customFieldRehome.rehomed > 0 || customFieldRehome.dropped > 0 ? { customFieldValues: customFieldRehome } : {}),
-        ...(removedConfigPolicyAssignments.length > 0 ? { removedConfigPolicyAssignments } : {}),
+        // #12491: this row is the target org's, so the holding org's policies are counted, not named.
+        ...(removedConfigPolicyAssignments.length > 0
+          ? { removedConfigPolicyAssignmentCount: removedConfigPolicyAssignments.length }
+          : {}),
       },
     });
   });
