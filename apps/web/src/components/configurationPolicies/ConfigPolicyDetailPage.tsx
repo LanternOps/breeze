@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   ArrowLeft,
   Layers,
@@ -51,7 +51,9 @@ import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared';
 import type { FeatureType, FeatureLink, ParentPolicySummary } from './featureTabs/types';
 import { FEATURE_META } from './featureTabs/types';
 import { useFeatureLink } from './featureTabs/useFeatureLink';
-import AssignmentsTab from './AssignmentsTab';
+import AppliesToPanel from './appliesTo/AppliesToPanel';
+import { fetchPolicyReach, type ConfigPolicyReach } from './appliesTo/appliesToApi';
+import type { PickerOwner } from './appliesTo/TargetPicker';
 import PatchTab from './featureTabs/PatchTab';
 import MonitorsTab from './featureTabs/MonitorsTab';
 import BackupTab from './featureTabs/BackupTab';
@@ -197,6 +199,12 @@ export default function ConfigPolicyDetailPage({
   // The Applies-to drawer is an overlay, not a navigable view, so its open
   // state is local; only the legacy `#assignments` alias opens it from a URL.
   const [appliesToOpen, setAppliesToOpen] = useState(false);
+  // The panel holds a staged draft; while it is dirty the drawer will not close
+  // (Apply or Discard first).
+  const [appliesToDirty, setAppliesToDirty] = useState(false);
+  // The policy's device count (#12467). null = unknown (not loaded, or the read
+  // failed): the counts are left out and the page stays usable.
+  const [reach, setReach] = useState<ConfigPolicyReach | null>(null);
   // The tab showing before a hash change. useHashTab resets an unrecognized
   // hash to Overview before this page's listener runs, so `#assignments`
   // restores the tab from here.
@@ -338,6 +346,38 @@ export default function ConfigPolicyDetailPage({
     setAppliesToOpen(false);
     void refreshPolicy();
   }, [refreshPolicy]);
+  // Only the newest read may set the count: a slow first read must not land
+  // over the one taken after an Apply.
+  const reachReq = useRef(0);
+  const loadReach = useCallback(async () => {
+    if (!policyId) return;
+    const req = ++reachReq.current;
+    try {
+      const next = await fetchPolicyReach(policyId);
+      if (req === reachReq.current) setReach(next);
+    } catch (err) {
+      console.warn("[configuration policies] reach read failed", err);
+      if (req === reachReq.current) setReach(null);
+    }
+  }, [policyId]);
+  useEffect(() => {
+    void loadReach();
+  }, [loadReach]);
+  // An Apply committed: re-read where the policy applies and its count. The
+  // drawer stays open on the reloaded draft.
+  const handleApplied = useCallback(() => {
+    // The old count describes the targets before the Apply: drop it until the
+    // new read answers, so nothing (e.g. a "0 matching" warning) uses it.
+    setReach(null);
+    void refreshPolicy();
+    void loadReach();
+  }, [refreshPolicy, loadReach]);
+  const policyOrgId = policy?.orgId ?? null;
+  const policyOrgName = policy?.orgName ?? null;
+  const appliesToOwner = useMemo<PickerOwner>(
+    () => (policyOrgId ? { kind: "org", orgId: policyOrgId, orgName: policyOrgName } : { kind: "msp" }),
+    [policyOrgId, policyOrgName],
+  );
   const fetchFeatureLinks = useCallback(async () => {
     if (!policyId) return;
     try {
@@ -630,6 +670,7 @@ export default function ConfigPolicyDetailPage({
         summary={parseAppliesTo(policy.appliesTo)}
         status={policy.status}
         onEdit={() => setAppliesToOpen(true)}
+        reach={reach}
       />
 
       {/* Tabs */}
@@ -862,8 +903,9 @@ export default function ConfigPolicyDetailPage({
 
       </div>
 
-      {/* The target editor, unchanged, in a drawer so the feature stays in
-          view. It commits each change at once; closing re-reads the summary. */}
+      {/* The one applies-to editor, in a drawer so the feature stays in view
+          (#12467). It stages changes and commits them with one Apply; while
+          the draft is dirty the drawer will not close. */}
       <Drawer
         open={appliesToOpen}
         onClose={closeAppliesTo}
@@ -872,13 +914,19 @@ export default function ConfigPolicyDetailPage({
         )}
         width="max-w-2xl"
         dataTestId="config-policy-applies-to-drawer"
+        closeDisabled={appliesToDirty}
+        closeDisabledReason={i18n.t(
+          "policies:configurationPolicies.configPolicyDetailPage.appliesToCloseBlocked",
+        )}
       >
         {policyId && (
-          <AssignmentsTab
+          <AppliesToPanel
             policyId={policyId}
-            orgId={policy.orgId}
-            orgName={policy.orgName}
-            partnerId={policy.partnerId}
+            owner={appliesToOwner}
+            summary={parseAppliesTo(policy.appliesTo)}
+            reach={reach}
+            onDirtyChange={setAppliesToDirty}
+            onApplied={handleApplied}
           />
         )}
       </Drawer>

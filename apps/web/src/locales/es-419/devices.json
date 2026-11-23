@@ -1388,7 +1388,8 @@
     "noGroupsMatchFilter": "Ningún grupo coincide con este filtro.",
     "managedByPartner": "Administrado por tu proveedor de servicios. Las reglas de membresía no se muestran; ves los dispositivos de tu organización.",
     "partnerDynamicType": "Dinámico · Todas las org.",
-    "partnerDeleteWarning": "Esto elimina el grupo de todas las organizaciones y borra sus asignaciones de políticas."
+    "partnerDeleteWarning": "Esto elimina el grupo de todas las organizaciones y borra sus asignaciones de políticas.",
+    "policyRefusedForGroup": "No se aplicó nada. {{group}}: {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "No se pudo recuperar el inventario de hardware",

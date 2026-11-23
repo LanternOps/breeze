@@ -1388,7 +1388,8 @@
     "noGroupsMatchFilter": "Keine Gruppen entsprechen diesem Filter.",
     "managedByPartner": "Von Ihrem Dienstleister verwaltet. Mitgliedschaftsregeln werden nicht angezeigt; Sie sehen die Geräte Ihrer Organisation.",
     "partnerDynamicType": "Dynamisch · Alle Org.",
-    "partnerDeleteWarning": "Dadurch wird die Gruppe aus allen Organisationen entfernt und ihre Richtlinienzuweisungen werden gelöscht."
+    "partnerDeleteWarning": "Dadurch wird die Gruppe aus allen Organisationen entfernt und ihre Richtlinienzuweisungen werden gelöscht.",
+    "policyRefusedForGroup": "Es wurde nichts angewendet. {{group}}: {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Das Abrufen des Hardwareinventars ist fehlgeschlagen",

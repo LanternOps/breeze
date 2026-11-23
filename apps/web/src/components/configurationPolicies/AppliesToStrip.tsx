@@ -2,6 +2,8 @@ import { AlertTriangle, Target } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { AssignmentFilterBadges } from "./AssignmentRoleOsFilters";
+import ReachCount from "./appliesTo/ReachCount";
+import type { ConfigPolicyReach } from "./appliesTo/appliesToApi";
 import {
   appliesToState,
   formatAppliesToTargets,
@@ -15,6 +17,8 @@ type AppliesToStripProps = {
   summary: ConfigPolicyAppliesToSummary | null;
   status: ConfigPolicyStatus;
   onEdit: () => void;
+  /** The policy's device count, when the reach read answered (#12467). */
+  reach?: ConfigPolicyReach | null;
 };
 
 const hasFilters = (roleFilter: string[] | null, osFilter: string[] | null) =>
@@ -23,7 +27,7 @@ const hasFilters = (roleFilter: string[] | null, osFilter: string[] | null) =>
 // Where this policy applies, always visible above the feature tabs (#12306).
 // It reads the API's unfiltered count, so a caller who may not list a row
 // still sees the policy as applied ("+1"), never as "Not applied".
-export default function AppliesToStrip({ summary, status, onEdit }: AppliesToStripProps) {
+export default function AppliesToStrip({ summary, status, onEdit, reach = null }: AppliesToStripProps) {
   const { t } = useTranslation(["policies", "common"]);
   const state = summary ? appliesToState(summary) : null;
   const tone = state ? notAppliedTone(status, state) : null;
@@ -112,6 +116,14 @@ export default function AppliesToStrip({ summary, status, onEdit }: AppliesToStr
         {t("policies:configurationPolicies.appliesToStrip.heading")}
       </h2>
       <div className="min-w-0 flex-1">{body}</div>
+      {reach && (state === "applied" || state === "in_use_through_children") && (
+        <ReachCount
+          reach={reach}
+          count={state === "applied" ? "direct" : "throughChildren"}
+          testId="config-policy-applies-to-reach"
+          className="shrink-0 text-sm"
+        />
+      )}
       {showAssign ? (
         <button
           type="button"

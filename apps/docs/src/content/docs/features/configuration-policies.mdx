@@ -333,46 +333,41 @@ Every policy page shows an **Applies to** line above the feature tabs. It stays 
 - **Not applied to any device:** an active policy with no targets shows a warning and an **Assign** button. An inactive policy with no targets reads **Not applied yet**; an archived one shows nothing.
 - **In use through N policies:** a parent policy with no targets of its own still reaches devices through the policies based on it, so it is never marked unapplied.
 
-Click **Edit** (or **Assign**) to open the target editor in a side panel; each change saves as you make it, and the line updates when you close the panel. Older links to a policy's `#assignments` tab open the same panel.
+The line also shows how many devices the policy reaches. The count covers only devices you can see: a technician limited to some sites may see **No devices you can see** on a policy that applies elsewhere, which is not the same as unapplied. On a very large fleet the count may read **At least N devices**.
 
-The policy list has a matching **Applies to** column, with a **Not applied** chip (a warning when the policy is active) or **In use through N policies** beside the status.
+The policy list has a matching **Applies to** column with the same device count, plus a **Not applied** chip (a warning when the policy is active) or **In use through N policies** beside the status.
 
-What the target editor shows depends on who manages the policy.
+### The Applies to editor
 
-### MSP-managed policy
-
-The editor is an organization checklist, not a level picker.
+Click **Edit** (or **Assign**) to open the **Applies to** editor in a side panel. There is one editor for every policy. Nothing you change in it is saved until you click **Apply**:
 
 <Steps>
 
-1. Optionally set **Role Filter** and **OS Filter**. Leave them empty to apply to every device in the chosen organizations.
+1. On an MSP-managed policy, choose **All organizations** (every organization you manage, including ones added later) or **Specific targets**. An organization-managed policy shows its organization locked; it can only apply within that organization.
 
-2. Turn on **All organizations** to apply the policy across every organization you manage, or check individual organizations.
+2. To add a target, pick a level (**Organization**, **Site**, **Device group** or **Device**) and search. Results are searched on the server, so large fleets work the same as small ones. On an MSP-managed policy you first choose the organization, then the site, group or device inside it. Device groups owned by your MSP, which span organizations, are offered only on an MSP-managed policy.
 
-3. Assigned rows show the role and OS filters that were saved with that assignment. To change filters, turn the assignment off and on again with the new chips selected.
+3. Each target row edits in place: its **Role Filter** and **OS Filter** (empty means every device in that target), and its **Priority** under **Advanced**. Remove a row with the bin icon; **Undo** brings it back before you apply.
 
-</Steps>
+4. The panel foot states what the change does before you commit it, for example **Apply · adds 12 devices, removes 3**. On a very large change the numbers are an estimate (**adds about …**). If the change would leave the policy matching **0 devices** you can see, the panel warns you. If the change is not allowed (for example, a policy that arms vendor updates needs the execute permission), the reason shows at the foot and **Apply** stays disabled.
 
-A partner-wide "servers only" assignment reaches server-role devices in every assigned organization. Workstations skip it. You cannot put two different role sets on the same policy at the same target; make a second policy if servers and workstations need different settings.
-
-### Organization-managed policy
-
-<Steps>
-
-1. Choose a **Level**: Organization, Site, Device Group, or Device.
-
-2. For Site, Device Group, or Device, select the specific target. An organization-level assignment always targets the policy's own organization.
-
-3. Optionally set the same **Role Filter** and **OS Filter**. Empty means every device in that target.
-
-4. Set a **Priority** number. When two policies at the same level both define the same feature, the lower priority number wins (priority `1` takes precedence over priority `2`). On an exact tie, the assignment created first wins.
-
-5. Click **Assign**.
+5. Click **Apply**. All of the staged changes are saved together, or none are.
 
 </Steps>
+
+While you have unapplied changes, the panel will not close: click **Apply**, or **Discard changes** to drop them. If someone else changed where the policy applies after you opened the panel, **Apply** saves nothing, keeps your changes on screen and offers **Reload**. Targets you are not allowed to see are never changed by **Apply**; the panel says how many there are. Older links to a policy's `#assignments` tab open the same panel.
+
+The panel always shows the precedence rule: **Most specific wins, per feature: Device › Device group › Site › Organization › All organizations. A closer policy replaces the whole feature; it does not merge.**
+
+- **Priority** breaks ties between policies at the same level that define the same feature: the lower number wins (priority `1` takes precedence over priority `2`). On an exact tie, the assignment created first wins.
+- **Role and OS filters** narrow a target: an "All organizations, servers only" assignment reaches server-role devices in every organization, and workstations skip it. You cannot put two different role sets on the same policy at the same target; make a second policy if servers and workstations need different settings.
+
+An MSP-managed policy assigned at a site, device group or device in an organization also shows on that site's page for users who can see the policy.
+
+To apply one policy to several device groups at once, select the groups on **Devices → Groups** and click **Apply policy**. The groups are added in one change: all of them, or none if one of them already has the policy.
 
 <Aside>
-  A device-level assignment always takes precedence over all group, site, organization, and partner assignments, regardless of priority number. A partner-wide assignment is the broadest scope and is overridden by any more-specific assignment.
+  A device-level assignment always takes precedence over all group, site, organization, and partner assignments, regardless of priority number. An **All organizations** assignment is the broadest scope and is overridden by any more-specific assignment.
 </Aside>
 
 ## Per-device compliance status
@@ -477,6 +472,9 @@ All paths are relative to `/api/v1`.
 | DELETE | `/configuration-policies/:id/features/:linkId` | Remove feature |
 | GET | `/configuration-policies/:id/assignments` | List assignments |
 | POST | `/configuration-policies/:id/assignments` | Assign policy to a target |
+| POST | `/configuration-policies/:id/assignments/apply` | Staged Apply: `add`, `update` (priority and filters) and `remove` in one all-or-nothing change, each list capped at 200. `dryRun: true` writes nothing and returns `{ dryRun: true, delta: { added, removed, partial? } }`. A changed or colliding row answers `409 { error: "assignment_conflict", message, entry }` and nothing is applied. |
+| GET | `/configuration-policies/:id/reach` | Device counts for one policy: `{ direct, throughChildren, organizations, partial? }`, counting only devices the caller can see. `partial: true` means each number is a lower bound. |
+| GET | `/configuration-policies/reach?ids=…` | The same counts for up to 100 policies: `{ data: { [policyId]: reach } }`. Policies the caller cannot read are absent. |
 | DELETE | `/configuration-policies/:id/assignments/:aid` | Unassign |
 | GET | `/configuration-policies/effective/:deviceId` | Resolve effective config for a device |
 | POST | `/configuration-policies/effective/:deviceId/diff` | Preview change diff |

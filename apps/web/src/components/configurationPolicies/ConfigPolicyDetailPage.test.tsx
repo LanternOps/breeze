@@ -35,7 +35,7 @@ vi.mock('./featureTabs/MonitorsTab', () => ({
     <div data-testid="monitors-tab-editor" data-sibling-types={(props.siblingLinks ?? []).map((l) => l.featureType).join(',')} />
   ),
 }));
-vi.mock('./AssignmentsTab', () => ({ default: () => <div data-testid="assignments-tab" /> }));
+vi.mock('./appliesTo/AppliesToPanel', () => ({ default: () => <div data-testid="applies-to-panel" /> }));
 
 import ConfigPolicyDetailPage from './ConfigPolicyDetailPage';
 import { fetchWithAuth } from '../../stores/auth';

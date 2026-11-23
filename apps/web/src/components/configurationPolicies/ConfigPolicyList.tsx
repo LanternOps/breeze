@@ -19,6 +19,8 @@ import {
   notAppliedTone,
   parseAppliesTo,
 } from "./appliesToSummary";
+import ReachCount from "./appliesTo/ReachCount";
+import { fetchReach, type ConfigPolicyReach } from "./appliesTo/appliesToApi";
 export type ConfigPolicyStatus = "active" | "inactive" | "archived";
 export type ConfigPolicy = {
   id: string;
@@ -81,29 +83,39 @@ function featureTypeLabel(featureType: string): string {
 type AppliesTo = ReturnType<typeof parseAppliesTo>;
 
 // The first targets and +N, from the API's unfiltered count (#12306). An absent
-// or malformed summary is unknown: an em dash, never "Not applied".
-function AppliesToCell({ summary }: { summary: AppliesTo }) {
-  if (!summary || appliesToState(summary) !== "applied") {
+// or malformed summary is unknown: an em dash, never "Not applied". The device
+// count follows when the page's reach read answered (#12467).
+function AppliesToCell({ summary, reach }: { summary: AppliesTo; reach?: ConfigPolicyReach }) {
+  const state = summary ? appliesToState(summary) : null;
+  if (!summary || state !== "applied") {
     return (
-      <span className="text-muted-foreground" aria-hidden="true">
-        &mdash;
-      </span>
+      <div className="flex flex-col gap-0.5">
+        <span className="text-muted-foreground" aria-hidden="true">
+          &mdash;
+        </span>
+        {reach && state === "in_use_through_children" && (
+          <ReachCount reach={reach} count="throughChildren" testId="config-policy-applies-to-reach" />
+        )}
+      </div>
     );
   }
   const { shown, more } = formatAppliesToTargets(summary);
   return (
-    <div className="flex flex-wrap items-center gap-1">
-      {shown.map((target) => (
-        <span
-          key={target.key}
-          className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2 py-0.5 text-xs text-foreground"
-        >
-          {target.text}
-        </span>
-      ))}
-      {more > 0 && (
-        <span className="text-xs font-medium text-muted-foreground">+{more}</span>
-      )}
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-1">
+        {shown.map((target) => (
+          <span
+            key={target.key}
+            className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2 py-0.5 text-xs text-foreground"
+          >
+            {target.text}
+          </span>
+        ))}
+        {more > 0 && (
+          <span className="text-xs font-medium text-muted-foreground">+{more}</span>
+        )}
+      </div>
+      {reach && <ReachCount reach={reach} count="direct" testId="config-policy-applies-to-reach" />}
     </div>
   );
 }
@@ -217,6 +229,36 @@ export default function ConfigPolicyList({
     startIndex,
     startIndex + pageSize,
   );
+  // Device counts for the rows on this page, one reach read per page (#12467).
+  // A failed read leaves the counts out; the list stays usable. An id absent
+  // from the answer is unknown, never 0.
+  const pageIdsKey = paginatedPolicies.map((p) => p.id).join(",");
+  const [reachById, setReachById] = useState<Record<string, ConfigPolicyReach>>({});
+  useEffect(() => {
+    if (!pageIdsKey) return;
+    let cancelled = false;
+    const ids = pageIdsKey.split(",");
+    // The newest read owns this page's counts: an id it leaves out, or a read
+    // that fails, shows no count rather than an older one.
+    const replacePage = (reach: Record<string, ConfigPolicyReach>) =>
+      setReachById((prev) => {
+        const next = { ...prev };
+        for (const id of ids) delete next[id];
+        return Object.assign(next, reach);
+      });
+    fetchReach(ids)
+      .then((reach) => {
+        if (!cancelled) replacePage(reach);
+      })
+      .catch((err: unknown) => {
+        // Counts are an addition to the row; without them the row still reads.
+        console.warn("[configuration policies] reach read failed", err);
+        if (!cancelled) replacePage({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pageIdsKey]);
   // Retire the out-of-range value so it cannot come back. Without this the
   // clamp above is purely cosmetic: a later create + refetch that grows the
   // list past the stored page would teleport the user forward to a page they
@@ -383,7 +425,7 @@ export default function ConfigPolicyList({
                     )}
                   </td>
                   <td className="px-4 py-3" data-testid="config-policy-applies-to-cell">
-                    <AppliesToCell summary={appliesTo} />
+                    <AppliesToCell summary={appliesTo} reach={reachById[policy.id]} />
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap items-center gap-1.5">

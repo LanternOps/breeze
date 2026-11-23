@@ -4,7 +4,8 @@ import { AuthPage } from '../pages/AuthPage';
 import { ConfigPolicyPage } from '../pages/ConfigPolicyPage';
 
 // #12306: a saved policy says where it applies, on its page and in the list.
-// Needs an API that sends `appliesTo` (plan W01a).
+// Needs an API that sends `appliesTo` (plan W01a) and the staged Apply and
+// reach routes (W02a, W02b).
 test.describe.configure({ mode: 'serial' });
 test.beforeEach(clearRefreshState);
 
@@ -44,19 +45,44 @@ test.describe('config policy applies-to', () => {
     await expect(policies.stripNotApplied()).toBeVisible();
     await policies.stripAssign().click();
 
-    // 3. Apply it to one organization; the strip names a target after close.
+    // 3. Stage a device and a site target on the MSP-managed policy (#12467),
+    // see the delta, Apply, and see the strip name a target and count devices.
     await expect(policies.drawer()).toBeVisible();
-    // The checkbox is controlled and only flips after the POST and refetch, so
-    // click (not .check(), which demands a synchronous state change). Pin the
-    // org by its testid: once assigned it also appears in the assigned list.
-    await policies.orgScopeOrgCheckboxes().first().waitFor();
-    const orgTestId = await policies.orgScopeOrgCheckboxes().first().getAttribute('data-testid');
-    expect(orgTestId).toBeTruthy();
-    await cleanPage.getByTestId(orgTestId!).first().click();
-    await expect(cleanPage.getByTestId(orgTestId!).first()).toBeChecked({ timeout: 15_000 });
+    await expect(policies.panel()).toBeVisible();
+    await expect(policies.legend()).toBeVisible();
+    await expect(policies.specificTargets()).toBeChecked();
+
+    // Device: drill into the organization that holds a seeded device.
+    await policies.pickerLevel('device').click();
+    await policies.pickerOrgOptions().first().waitFor();
+    const orgCount = await policies.pickerOrgOptions().count();
+    let foundDevice = false;
+    for (let i = 0; i < orgCount && !foundDevice; i += 1) {
+      await policies.pickerOrgOptions().nth(i).click();
+      await policies.pickerSearch().fill('e2e-');
+      foundDevice = await policies.pickerOptions().first().waitFor({ timeout: 5_000 }).then(() => true, () => false);
+      if (!foundDevice) await policies.pickerChangeOrg().click();
+    }
+    expect(foundDevice, 'a seeded e2e- device in one of the partner organizations').toBe(true);
+    await policies.pickerOptions().first().click();
+
+    // Site: the chosen organization carries over to the Site level.
+    await policies.pickerLevel('site').click();
+    await policies.pickerOptions().first().waitFor();
+    await policies.pickerOptions().first().click();
+    await expect(policies.panelRows('added')).toHaveCount(2);
+
+    // The foot states the delta before anything is written.
+    await expect(policies.applyButton()).toHaveText(/Apply · adds \d+ devices?, removes 0/, { timeout: 15_000 });
+    await policies.applyButton().click();
+    // Applied: the draft reloads clean, with the two stored rows.
+    await expect(policies.applyButton()).toBeDisabled({ timeout: 15_000 });
+    await expect(policies.panelRows('unchanged')).toHaveCount(2);
     await policies.drawerClose().click();
+    await expect(policies.drawer()).toBeHidden();
     await expect(policies.stripTargets().first()).toBeVisible({ timeout: 15_000 });
     await expect(policies.stripNotApplied()).toHaveCount(0);
+    await expect(policies.stripReach()).toHaveText(/\d+ devices?/, { timeout: 15_000 });
 
     // 4. The list row shows where it applies, with no Not applied chip.
     await cleanPage.goto(policies.listUrl);

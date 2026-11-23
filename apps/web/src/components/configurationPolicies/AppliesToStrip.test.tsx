@@ -127,4 +127,39 @@ describe('AppliesToStrip (#12306)', () => {
     expect(screen.getByTestId('config-policy-applies-to-strip')).toHaveTextContent('—');
     expect(screen.getByTestId('config-policy-applies-to-edit')).toBeTruthy();
   });
+
+  describe('device count (#12467)', () => {
+    const applied = summary({ assignmentCount: 1, targets: [target('a', 'Acme')] });
+
+    it('the strip shows the direct device count when reach is known', () => {
+      render(<AppliesToStrip summary={applied} status="active" onEdit={vi.fn()} reach={{ direct: 12, throughChildren: 4, organizations: 2 }} />);
+      expect(screen.getByTestId('config-policy-applies-to-reach')).toHaveTextContent('12 devices');
+    });
+
+    it('a partial count reads at least N', () => {
+      render(<AppliesToStrip summary={applied} status="active" onEdit={vi.fn()} reach={{ direct: 12, throughChildren: 0, organizations: 2, partial: true }} />);
+      expect(screen.getByTestId('config-policy-applies-to-reach')).toHaveTextContent('At least 12 devices');
+    });
+
+    it('zero visible devices on an applied policy is not Not applied', () => {
+      render(<AppliesToStrip summary={applied} status="active" onEdit={vi.fn()} reach={{ direct: 0, throughChildren: 0, organizations: 0 }} />);
+      expect(screen.getByTestId('config-policy-applies-to-reach')).toHaveTextContent('No devices you can see');
+      expect(screen.queryByTestId('config-policy-applies-to-not-applied')).toBeNull();
+    });
+
+    it('a parent counts the devices it reaches through its children', () => {
+      render(
+        <AppliesToStrip summary={summary({ childPolicyCount: 2 })} status="active" onEdit={vi.fn()} reach={{ direct: 0, throughChildren: 148, organizations: 3 }} />,
+      );
+      expect(screen.getByTestId('config-policy-applies-to-reach')).toHaveTextContent('148 devices');
+    });
+
+    it('no count without a reach, and none on an unknown summary', () => {
+      const { unmount } = render(<AppliesToStrip summary={applied} status="active" onEdit={vi.fn()} reach={null} />);
+      expect(screen.queryByTestId('config-policy-applies-to-reach')).toBeNull();
+      unmount();
+      render(<AppliesToStrip summary={null} status="active" onEdit={vi.fn()} reach={{ direct: 3, throughChildren: 0, organizations: 1 }} />);
+      expect(screen.queryByTestId('config-policy-applies-to-reach')).toBeNull();
+    });
+  });
 });

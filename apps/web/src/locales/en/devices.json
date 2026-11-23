@@ -1388,7 +1388,8 @@
     "noGroupsMatchFilter": "No groups match this filter.",
     "managedByPartner": "Managed by your service provider. Membership rules are not shown; you see the devices from your organization.",
     "partnerDynamicType": "Dynamic · All orgs",
-    "partnerDeleteWarning": "This removes the group from every organization and deletes its policy assignments."
+    "partnerDeleteWarning": "This removes the group from every organization and deletes its policy assignments.",
+    "policyRefusedForGroup": "Nothing was applied. {{group}}: {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Failed to fetch hardware inventory",

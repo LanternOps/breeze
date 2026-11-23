@@ -25,8 +25,21 @@ export class ConfigPolicyPage {
   // Applies-to drawer
   drawer = () => this.page.getByTestId('config-policy-applies-to-drawer');
   drawerClose = () => this.page.getByTestId('config-policy-applies-to-drawer-close');
-  orgScopeAllOrgs = () => this.page.getByTestId('org-scope-all-orgs');
-  orgScopeOrgCheckboxes = () => this.page.locator('[data-testid^="org-scope-org-"]');
+  stripReach = () => this.page.getByTestId('config-policy-applies-to-reach');
+
+  // Applies-to panel in the drawer (#12467)
+  panel = () => this.page.getByTestId('applies-to-panel');
+  allOrgs = () => this.page.getByTestId('applies-to-all-orgs');
+  specificTargets = () => this.page.getByTestId('applies-to-specific');
+  panelRows = (state: 'added' | 'changed' | 'removed' | 'unchanged') =>
+    this.page.locator(`[data-testid^="applies-to-row-"][data-state="${state}"]`);
+  applyButton = () => this.page.getByTestId('applies-to-apply');
+  legend = () => this.page.getByTestId('applies-to-legend');
+  pickerLevel = (level: 'organization' | 'site' | 'device_group' | 'device') => this.page.getByTestId(`target-picker-level-${level}`);
+  pickerSearch = () => this.page.getByTestId('target-picker-search');
+  pickerOptions = () => this.page.locator('[data-testid^="target-picker-option-"]');
+  pickerOrgOptions = () => this.page.locator('[data-testid^="target-picker-org-"]');
+  pickerChangeOrg = () => this.page.getByTestId('target-picker-change-org');
 
   // List page
   row = (id: string) => this.page.locator(`[data-testid="config-policy-row"][data-policy-id="${id}"]`);
