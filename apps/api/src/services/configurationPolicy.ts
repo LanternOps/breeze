@@ -2627,6 +2627,69 @@ export async function assignPolicy(
   return assignment ?? null;
 }
 
+/** Filters compare as sets; `[]` and null both mean "no filter", as `assignPolicy` stores them. */
+function normalizeAssignmentFilter(filter: readonly string[] | null | undefined): string[] | null {
+  return filter?.length ? [...filter] : null;
+}
+
+function sameAssignmentFilter(a: readonly string[] | null, b: readonly string[] | null): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.length !== b.length) return false;
+  const sortedB = [...b].sort();
+  return [...a].sort().every((value, index) => value === sortedB[index]);
+}
+
+/**
+ * Edit one assignment's priority and filters in place (#12466, plan W02b G2).
+ * The row is matched on (id, policy), so a row of another policy is never
+ * touched, and level, target and policy never change. An omitted field is left
+ * as it is; a null or empty filter means every device, as in `assignPolicy`.
+ *
+ * Returns null only when no such row exists on this policy (or it vanished
+ * before the write). Otherwise `changed` says whether THIS call wrote: a row
+ * whose values already match is returned as it is (`changed: false`), with no
+ * write and no reconcile. The comparison runs against the row read here, in the
+ * caller's transaction, so a caller audits on `changed` rather than on an
+ * earlier snapshot of its own. When a column changed it schedules the same
+ * three reconciles as `assignPolicy`: priority and filters decide which policy
+ * a device follows.
+ */
+export async function updateAssignment(
+  assignmentId: string,
+  configPolicyId: string,
+  patch: { priority?: number; roleFilter?: string[] | null; osFilter?: string[] | null },
+  executor: DbExecutor = db,
+): Promise<{ assignment: typeof configPolicyAssignments.$inferSelect; changed: boolean } | null> {
+  const match = and(
+    eq(configPolicyAssignments.id, assignmentId),
+    eq(configPolicyAssignments.configPolicyId, configPolicyId),
+  );
+  const [existing] = await executor.select().from(configPolicyAssignments).where(match).limit(1);
+  if (!existing) return null;
+
+  const changes: { priority?: number; roleFilter?: string[] | null; osFilter?: string[] | null } = {};
+  if (patch.priority !== undefined && patch.priority !== existing.priority) changes.priority = patch.priority;
+  if (patch.roleFilter !== undefined) {
+    const roleFilter = normalizeAssignmentFilter(patch.roleFilter);
+    if (!sameAssignmentFilter(roleFilter, existing.roleFilter ?? null)) changes.roleFilter = roleFilter;
+  }
+  if (patch.osFilter !== undefined) {
+    const osFilter = normalizeAssignmentFilter(patch.osFilter);
+    if (!sameAssignmentFilter(osFilter, existing.osFilter ?? null)) changes.osFilter = osFilter;
+  }
+  if (Object.keys(changes).length === 0) return { assignment: existing, changed: false };
+
+  const [updated] = await executor.update(configPolicyAssignments).set(changes).where(match).returning();
+  if (!updated) return null;
+  scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-update');
+  scheduleOemPolicySideRefresh({ configPolicyId, onlyIfOemLinked: true }, 'assignment-update');
+  schedulePeripheralLinkReconcile(
+    { configPolicyId, assignments: [{ level: updated.level, targetId: updated.targetId }] },
+    'assignment-update',
+  );
+  return { assignment: updated, changed: true };
+}
+
 export async function validateAssignmentTarget(
   policyOwner: { orgId: string | null; partnerId: string | null },
   level: ConfigAssignmentLevel,
@@ -3001,6 +3064,32 @@ export async function getAssignment(assignmentId: string, configPolicyId: string
   return row ?? null;
 }
 
+/**
+ * The stored rows among `assignmentIds` that belong to `configPolicyId`, in one
+ * statement. The staged Apply reads every update and remove target this way
+ * before it re-runs the site-axis check on them; an id of another policy is
+ * simply absent.
+ */
+export async function getAssignments(assignmentIds: readonly string[], configPolicyId: string) {
+  if (assignmentIds.length === 0) return [];
+  return db
+    .select({
+      id: configPolicyAssignments.id,
+      level: configPolicyAssignments.level,
+      targetId: configPolicyAssignments.targetId,
+      priority: configPolicyAssignments.priority,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
+    })
+    .from(configPolicyAssignments)
+    .where(
+      and(
+        inArray(configPolicyAssignments.id, [...assignmentIds]),
+        eq(configPolicyAssignments.configPolicyId, configPolicyId)
+      )
+    );
+}
+
 export async function unassignPolicy(assignmentId: string, configPolicyId: string) {
   const [deleted] = await db
     .delete(configPolicyAssignments)
@@ -3037,6 +3126,7 @@ export async function listAssignmentsForTarget(level: ConfigAssignmentLevel, tar
       policyName: configurationPolicies.name,
       policyStatus: configurationPolicies.status,
       policyOrgId: configurationPolicies.orgId,
+      policyPartnerId: configurationPolicies.partnerId,
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))

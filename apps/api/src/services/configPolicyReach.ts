@@ -367,3 +367,89 @@ export async function computePolicyReach(
 
   return result;
 }
+
+/**
+ * The device delta of one policy's own assignment change (#12466, plan W02b
+ * G4 and decision D10): the staged Apply's dry run. Nothing is written.
+ *
+ * `current` is the policy's rows as stored; `proposed` is the set the Apply
+ * would leave (removes dropped, filter edits applied, adds appended). Both are
+ * expanded with the shared resolver under the POLICY's owner (`owner`), through
+ * the same memo, and counted through the same final device read and caller
+ * ceiling as `computePolicyReach`: a site-restricted or device-bound caller
+ * counts only devices it may see. Children are out of scope (D10: the delta of
+ * the policy's own targets).
+ *
+ *  - `added`: devices the proposed set reaches that the current one does not.
+ *  - `removed`: devices the current set reaches that the proposed one does not.
+ *
+ * BOUND. One request runs at most `statementBudget` statements, the final
+ * device read included (default REACH_STATEMENT_BUDGET, the reach bound). The
+ * changed rows (in one set and not the other) are expanded before the kept
+ * rows, so the budget goes first to the rows that move devices.
+ *
+ * `partial: true` means a row was skipped under the bound. The numbers are then
+ * APPROXIMATE, NOT A BOUND in either direction: a skipped kept row can make a
+ * device it still reaches look added (or removed), and a skipped changed row
+ * hides the devices it moves. Consumers (W02c) must not present them as exact,
+ * nor as "at least" or "at most". Absent means exact.
+ */
+export interface AssignmentDelta {
+  added: number;
+  removed: number;
+  partial?: true;
+}
+
+export async function computeAssignmentDelta(
+  auth: AuthContext,
+  owner: { orgId: string | null; partnerId: string | null },
+  current: readonly AssignmentToExpand[],
+  proposed: readonly AssignmentToExpand[],
+  limits: Pick<ReachLimits, 'statementBudget'> = REACH_LIMITS,
+): Promise<AssignmentDelta> {
+  const scope: AssignmentExpansionScope = { policyOrgId: owner.orgId, policyPartnerId: owner.partnerId };
+  const currentKeys = new Set(current.map((row) => expansionMemoKey(row, scope)));
+  const proposedKeys = new Set(proposed.map((row) => expansionMemoKey(row, scope)));
+  const changed = [
+    ...current.filter((row) => !proposedKeys.has(expansionMemoKey(row, scope))),
+    ...proposed.filter((row) => !currentKeys.has(expansionMemoKey(row, scope))),
+  ];
+  // The same set of (target, filter) rows reaches the same devices.
+  if (changed.length === 0) return { added: 0, removed: 0 };
+
+  const memo = new Map<string, string[]>();
+  // One statement is held back for the final device read.
+  const budget: ReachBudget = { remaining: limits.statementBudget - 1 };
+  // Spend the budget on the changed rows first; the two set expansions below
+  // then hit the memo for them.
+  const changedPass = await expandAssignmentsToDevices(changed, scope, memo, budget);
+  const before = await expandAssignmentsToDevices(current, scope, memo, budget);
+  const after = await expandAssignmentsToDevices(proposed, scope, memo, budget);
+  const complete = changedPass.complete && before.complete && after.complete;
+
+  const union = new Set<string>([...before.deviceIds, ...after.deviceIds]);
+  const countable = new Set<string>();
+  if (union.size > 0) {
+    // One array parameter, as in computePolicyReach. A device the read no
+    // longer returns (deleted since the expansion) counts nowhere.
+    const rows = await db
+      .select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
+      .where(sql`${devices.id} = ANY(${sql.param([...union])}::uuid[])`);
+    for (const row of rows) {
+      if (callerMaySeeDevice(auth, row.id, row.siteId)) countable.add(row.id);
+    }
+  }
+
+  let added = 0;
+  let removed = 0;
+  for (const deviceId of countable) {
+    const inBefore = before.deviceIds.has(deviceId);
+    const inAfter = after.deviceIds.has(deviceId);
+    if (inAfter && !inBefore) added += 1;
+    if (inBefore && !inAfter) removed += 1;
+  }
+  const delta: AssignmentDelta = { added, removed };
+  if (!complete) delta.partial = true;
+  return delta;
+}
