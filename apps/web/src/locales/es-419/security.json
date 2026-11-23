@@ -1656,7 +1656,9 @@
         "label": "Pi-hole",
         "helpText": "Punto final Pi-hole API + clave API. Utilice el nombre de host enrutable LAN-.",
         "apiKeyPlaceholder": "clave api pihole de /admin",
-        "apiEndpointPlaceholder": "http://pihole.local"
+        "apiEndpointPlaceholder": "http://pihole.local",
+        "versionHelp": "Elige la versión principal de tu Pi-hole. v6 inicia sesión con una contraseña de aplicación.",
+        "appPasswordPlaceholder": "contraseña de aplicación de Configuración → Interfaz web / API"
       },
       "adguardHome": {
         "label": "AdGuard Home",
@@ -1678,7 +1680,9 @@
       "accountIdOptional": "Cuenta ID (opcional)",
       "apiEndpoint": "punto final API",
       "httpBasicUsername": "HTTP Nombre de usuario básico",
-      "httpBasicPassword": "HTTP Contraseña básica"
+      "httpBasicPassword": "HTTP Contraseña básica",
+      "piholeVersion": "Versión de Pi-hole",
+      "appPassword": "Contraseña de aplicación"
     },
     "placeholders": {
       "displayName": "p.ej. Puerta de enlace Acme HQ",
@@ -1693,6 +1697,10 @@
       "createFailed": "No se pudo crear la integración",
       "createSuccess": "Integración {{provider}} \"{{name}}\" agregada",
       "networkError": "error de red"
+    },
+    "piholeVersions": {
+      "v5": "Pi-hole v5 (API de administración heredada)",
+      "v6": "Pi-hole v6 (API de sesión)"
     }
   },
   "dnsSecurityAddDnsPolicyModal": {
@@ -1825,6 +1833,12 @@
       "label": "Almacenar tráfico permitido",
       "helpOff": "Solo se almacenan las consultas bloqueadas y redirigidas. Las consultas permitidas suelen ser casi todo el tráfico, y tu proveedor de DNS las conserva en sus propios informes.",
       "helpOn": "También se almacenan las consultas permitidas, lo que suele suponer unas 100 veces más filas. Desactivarlo más adelante no elimina las consultas permitidas ya almacenadas; la retención las elimina."
+    },
+    "piholeVersion": {
+      "label": "Versión de Pi-hole",
+      "v5": "Pi-hole v5 (API de administración heredada)",
+      "v6": "Pi-hole v6 (API de sesión)",
+      "help": "Cambia cómo Breeze se comunica con este Pi-hole. Para v6, vuelve a crear la integración con una contraseña de aplicación si la clave guardada es un token de v5."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

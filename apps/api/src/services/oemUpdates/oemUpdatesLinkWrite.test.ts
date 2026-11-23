@@ -33,6 +33,14 @@ const settings = (over: Record<string, unknown> = {}, dell: Record<string, unkno
   ...over,
 });
 const OFF = settings({ enabled: false });
+/** `base` with an HP lane: a vendor whose tool honours a blocklist (Dell's cannot, #12265). */
+const withHp = (base: Record<string, unknown>, blockedUpdateIds: string[] = []) => ({
+  ...base,
+  vendors: {
+    ...(base.vendors as Record<string, unknown>),
+    hp: { enabled: true, categories: { driver: true }, blockedUpdateIds },
+  },
+});
 
 // Driver and application open for Dell; bios and firmware closed; every other lane closed.
 const DRIVER_OPEN = (lane: string, category: string) => lane === 'dell' && (category === 'driver' || category === 'application');
@@ -65,11 +73,11 @@ describe('checkOemUpdatesLinkWrite', () => {
   });
 
   it('narrowing with devices.write passes: switching off, removing a category, adding a blocked ID', () => {
-    const armed = settings({}, { categories: { driver: true, application: true } });
+    const armed = withHp(settings({}, { categories: { driver: true, application: true } }));
     for (const next of [
-      settings({ enabled: false }, { categories: { driver: true, application: true } }),
-      settings({}, { categories: { driver: true } }),
-      settings({}, { categories: { driver: true, application: true }, blockedUpdateIds: ['ABC12'] }),
+      withHp(settings({ enabled: false }, { categories: { driver: true, application: true } })),
+      withHp(settings({}, { categories: { driver: true } })),
+      withHp(settings({}, { categories: { driver: true, application: true } }), ['ABC12']),
       settings({ schedule: { ...SCHEDULE, windowStart: '00:00' } }, { categories: { driver: true, application: true } }),
     ]) {
       expect(code({ featurePolicyId: null, previous: armed, next, armAuthorized: false })).toBe('ok');
@@ -127,11 +135,11 @@ describe('checkOemUpdatesLinkWrite', () => {
   });
 
   it('a category already stored true may be resent on a closed gate, so narrowing never fails on it', () => {
-    const stored = settings({}, { categories: { bios: true, driver: true } });
-    // Switching off and blocking an update, with bios still true from when its gate was open.
+    const stored = withHp(settings({}, { categories: { bios: true, driver: true } }));
+    // Switching off and blocking an update (on HP: Dell cannot block, #12265), with bios still true from when its gate was open.
     for (const next of [
-      settings({ enabled: false }, { categories: { bios: true, driver: true } }),
-      settings({}, { categories: { bios: true, driver: true }, blockedUpdateIds: ['X1'] }),
+      withHp(settings({ enabled: false }, { categories: { bios: true, driver: true } })),
+      withHp(settings({}, { categories: { bios: true, driver: true } }), ['X1']),
     ]) {
       expect(code({ featurePolicyId: null, previous: stored, next, armAuthorized: false })).toBe('ok');
     }
@@ -175,6 +183,58 @@ describe('checkOemUpdatesLinkWrite', () => {
     );
     expect(result.ok).toBe(false);
     expect(JSON.stringify(result)).not.toContain('hunter2');
+  });
+});
+
+// #12265: Dell cannot honour a blocklist, and the agent refuses any Dell run with one.
+describe('Dell blocked update IDs (#12265)', () => {
+  const DELL_BLOCKED = settings({ enabled: false }, { blockedUpdateIds: ['ABC12'] });
+
+  it('a Dell blocklist is 400 naming the field, even with the policy off', () => {
+    const result = checkOemUpdatesLinkWrite(
+      { featurePolicyId: null, previous: null, next: DELL_BLOCKED, armAuthorized: true },
+      { isCategoryGateOpen: DRIVER_OPEN },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.refusal.status).toBe(400);
+    expect(result.refusal.body.code).toBe('oem_updates_invalid_settings');
+    expect(result.refusal.body.error).toContain('vendors.dell.blockedUpdateIds');
+    expect(result.refusal.body.error).toContain('Dell does not support blocking individual updates');
+  });
+
+  it("other vendors' blocklists still save, and an empty Dell list is fine", () => {
+    const hpDriverOpen = (lane: string, category: string) => DRIVER_OPEN(lane, category) || (lane === 'hp' && category === 'driver');
+    expect(code({ featurePolicyId: null, previous: null, next: withHp(OFF, ['ABC12']), armAuthorized: true }, hpDriverOpen)).toBe('ok');
+    expect(code({ featurePolicyId: null, previous: null, next: OFF, armAuthorized: true })).toBe('ok');
+  });
+
+  it('a Dell blocklist stored before the rule cannot be resent, but saving without it passes', () => {
+    expect(code({ featurePolicyId: null, previous: DELL_BLOCKED, next: DELL_BLOCKED, armAuthorized: false }))
+      .toBe('oem_updates_invalid_settings');
+    expect(code({ featurePolicyId: null, previous: DELL_BLOCKED, next: OFF, armAuthorized: false })).toBe('ok');
+  });
+
+  it('clearing a stored Dell blocklist while Dell is armed still needs execute: Dell runs start again', () => {
+    const stored = settings({}, { blockedUpdateIds: ['ABC12'] });
+    expect(code({ featurePolicyId: null, previous: stored, next: settings(), armAuthorized: false }))
+      .toBe('oem_updates_execute_required');
+    expect(code({ featurePolicyId: null, previous: stored, next: settings(), armAuthorized: true })).toBe('ok');
+  });
+
+  it('the service backstop refuses a Dell blocklist on add and update', async () => {
+    effectiveRows.value = [];
+    await expect(addFeatureLink(POLICY_ID, 'oem_updates', null, DELL_BLOCKED))
+      .rejects.toMatchObject({ code: 'oem_updates_invalid_settings', status: 400 });
+    const existing = { id: 'link-1', configPolicyId: POLICY_ID, featureType: 'oem_updates', featurePolicyId: null, inlineSettings: OFF };
+    const tx = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [existing] }) }) }),
+      update: vi.fn(() => { throw new Error('must not write'); }),
+    };
+    const executor = { transaction: async (fn: (t: unknown) => unknown) => fn(tx) } as any;
+    await expect(updateFeatureLink('link-1', { inlineSettings: DELL_BLOCKED }, POLICY_ID, undefined, executor))
+      .rejects.toMatchObject({ code: 'oem_updates_invalid_settings', status: 400 });
+    expect(tx.update).not.toHaveBeenCalled();
   });
 });
 

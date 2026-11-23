@@ -34,6 +34,9 @@ const response = {
   ],
 };
 
+// The tab reads JWT scope to decide which policy names link (#12306); these
+// cases do not exercise links, so the scope stays unresolved.
+vi.mock('../../lib/authScope', () => ({ useJwtClaims: () => ({ status: 'unresolved' as const }) }));
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(async () => ({ ok: true, status: 200, statusText: 'OK', json: async () => response })),
 }));

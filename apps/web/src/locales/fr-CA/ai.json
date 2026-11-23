@@ -24,7 +24,9 @@
       "publicTo": "Réponse visible par le client à {{recipient}}",
       "publicNoRecipient": "Réponse visible par le client (envoyée par courriel au demandeur)",
       "publicNoEmail": "Réponse visible par le client (aucun courriel du demandeur au dossier, donc aucun courriel n'est envoyé)",
-      "internal": "Note interne (non visible par le client)"
+      "internal": "Note interne (non visible par le client)",
+      "editReplaces": "Remplace le texte d’un commentaire existant par :",
+      "deleteNotice": "Un commentaire existant de ce billet sera supprimé."
     },
     "memory": {
       "heading": "Wisp retiendra",

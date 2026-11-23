@@ -22,6 +22,7 @@ import {
   resolveBackupConfigForDevice,
   resolveMaintenanceConfigForDevice,
   resolveComplianceRulesForDevice,
+  resolveComplianceAssignmentForDevice,
   resolveSoftwarePolicyForDevice,
   resolveVulnerabilityEnabledForDevice,
   resolveDeviceIdsForSoftwarePolicy,
@@ -30,6 +31,8 @@ import {
 } from './featureConfigResolver';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
+  configPolicyAutomations,
+  configPolicyComplianceRules,
   configPolicyEffectiveFeatureLinks,
   configPolicyFeatureLinks,
   partners,
@@ -41,7 +44,7 @@ interface Recorder {
   joined: unknown[];
 }
 
-function chain(rows: unknown[], rec: Recorder) {
+function chain(rows: unknown[], rec: Recorder, own: Recorder) {
   const c: any = {
     then(resolve: (v: unknown) => void) {
       resolve(rows);
@@ -51,18 +54,23 @@ function chain(rows: unknown[], rec: Recorder) {
   for (const m of ['innerJoin', 'leftJoin']) {
     c[m] = (table: unknown) => {
       rec.joined.push(table);
+      own.joined.push(table);
       return c;
     };
   }
   // `.from()` is also a table reference worth recording.
   c.from = (table: unknown) => {
     rec.joined.push(table);
+    own.joined.push(table);
     return c;
   };
   return c;
 }
 
 let rec: Recorder;
+// The tables each query touched, one entry per queued `db.select()` in call
+// order, so a test can ask what ONE query joined rather than the whole call.
+let perQuery: unknown[][];
 
 beforeEach(() => {
   // mockReset, not clearAllMocks: `mockReturnValueOnce` values survive a clear,
@@ -70,11 +78,16 @@ beforeEach(() => {
   // first query and every assertion after it would be about the wrong call.
   vi.mocked(db.select).mockReset();
   rec = { joined: [] };
+  perQuery = [];
 });
 
 function queue(...rowSets: unknown[][]) {
   const m = vi.mocked(db.select);
-  for (const rows of rowSets) m.mockReturnValueOnce(chain(rows, rec) as any);
+  for (const rows of rowSets) {
+    const own: Recorder = { joined: [] };
+    perQuery.push(own.joined);
+    m.mockReturnValueOnce(chain(rows, rec, own) as any);
+  }
 }
 
 const DEVICE = {
@@ -173,28 +186,32 @@ describe('featureConfigResolver reads effective feature links', () => {
   });
 });
 
+// #12488: both list resolvers pick the winning LINK first (no child join, so a
+// link with an empty list is still a candidate), then load that link's rows.
+// Query order after loadDeviceHierarchy's three: [candidates], [winner's rows].
+const candidate = (over: Record<string, unknown>) => ({
+  assignmentLevel: 'organization',
+  assignmentPriority: 0,
+  assignmentCreatedAt: new Date('2026-01-01T00:00:00Z'),
+  ...over,
+});
+const ORG = { assignmentId: 'asg-org', policyId: 'policy-org', policyName: 'Org', featureLinkId: 'fl-org' };
+const SITE = { assignmentLevel: 'site', assignmentId: 'asg-site', policyId: 'policy-site', policyName: 'Site', featureLinkId: 'fl-site' };
+
 describe('resolveAutomationsForDeviceWithPolicy', () => {
   it('returns the WINNING assignment\'s policy id alongside its automations', async () => {
     // Sorted by hierarchy: the device-level assignment beats the org-level one,
-    // so only its policy and its automations come back.
-    queueHierarchy([
-      {
-        automation: { id: 'auto-device' },
-        assignmentLevel: 'device',
-        assignmentPriority: 0,
-        assignmentCreatedAt: new Date('2026-01-02T00:00:00Z'),
-        assignmentId: 'asg-device',
-        policyId: 'policy-device',
-      },
-      {
-        automation: { id: 'auto-org' },
-        assignmentLevel: 'organization',
-        assignmentPriority: 0,
-        assignmentCreatedAt: new Date('2026-01-01T00:00:00Z'),
-        assignmentId: 'asg-org',
-        policyId: 'policy-org',
-      },
-    ]);
+    // so only its policy and its link's automations come back.
+    queueHierarchy(
+      [
+        candidate(ORG),
+        candidate({
+          assignmentLevel: 'device', assignmentCreatedAt: new Date('2026-01-02T00:00:00Z'),
+          assignmentId: 'asg-device', policyId: 'policy-device', policyName: 'Device', featureLinkId: 'fl-device',
+        }),
+      ],
+      [{ id: 'auto-device', featureLinkId: 'fl-device', retiredAt: null }],
+    );
 
     const resolved = await resolveAutomationsForDeviceWithPolicy('dev-1');
     expect(resolved).not.toBeNull();
@@ -213,19 +230,55 @@ describe('resolveAutomationsForDeviceWithPolicy', () => {
   });
 });
 
+describe('an empty closer list overrides a broader one (#12488)', () => {
+  it('automations: the candidate query does not join the automation rows, so an empty link can win', async () => {
+    queueHierarchy([candidate(ORG), candidate(SITE)], []); // the site link has no automations
+    expect(await resolveAutomationAssignmentForDevice('dev-1')).toEqual({ configPolicyId: 'policy-site', automations: [] });
+    // perQuery[3] is the candidate query (after loadDeviceHierarchy's three).
+    expect(perQuery[3]).toContain(configPolicyEffectiveFeatureLinks);
+    expect(perQuery[3]).not.toContain(configPolicyAutomations);
+    expect(perQuery[4]).toContain(configPolicyAutomations);
+  });
+
+  it('compliance: the candidate query does not join the rule rows, so an empty link can win', async () => {
+    queueHierarchy([candidate(ORG), candidate(SITE)], []); // the site link has no rules
+    expect(await resolveComplianceAssignmentForDevice('dev-1')).toEqual({
+      configPolicyId: 'policy-site', configPolicyName: 'Site', rules: [],
+    });
+    expect(perQuery[3]).toContain(configPolicyEffectiveFeatureLinks);
+    expect(perQuery[3]).not.toContain(configPolicyComplianceRules);
+    expect(perQuery[4]).toContain(configPolicyComplianceRules);
+  });
+
+  it('compliance: with no closer link the broader policy\'s rules come back', async () => {
+    const rules = [{ id: 'r-1', name: 'Disk', featureLinkId: 'fl-org' }];
+    queueHierarchy([candidate(ORG)], rules);
+    expect(await resolveComplianceAssignmentForDevice('dev-1')).toEqual({
+      configPolicyId: 'policy-org', configPolicyName: 'Org', rules,
+    });
+  });
+
+  it('nothing assigned is null for both, and no child query runs', async () => {
+    queueHierarchy([]);
+    expect(await resolveComplianceAssignmentForDevice('dev-1')).toBeNull();
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(4);
+    vi.mocked(db.select).mockReset();
+    queueHierarchy([]);
+    expect(await resolveAutomationAssignmentForDevice('dev-1')).toBeNull();
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(4);
+  });
+});
+
 it('a converted child still wins; only its legacy executable rows disappear', async () => {
-  const rows = [
-    { automation: { id: 'parent-auto', retiredAt: null }, policyId: 'parent', assignmentId: 'parent-asg',
-      assignmentLevel: 'organization', assignmentPriority: 0, assignmentCreatedAt: new Date(0) },
-    { automation: { id: 'child-auto', retiredAt: new Date(0) }, policyId: 'child', assignmentId: 'child-asg',
-      assignmentLevel: 'site', assignmentPriority: 0, assignmentCreatedAt: new Date(0) },
-  ];
-  queueHierarchy([...rows]);
-  expect(await resolveAutomationAssignmentForDevice('dev-1')).toEqual({ configPolicyId: 'child', automations: [rows[1]!.automation] });
-  queueHierarchy([...rows]);
-  expect(await resolveAutomationsForDeviceWithPolicy('dev-1')).toEqual({ configPolicyId: 'child', automations: [] });
-  queueHierarchy(rows.slice(0, 1));
-  expect((await resolveAutomationsForDeviceWithPolicy('dev-1'))?.automations.map((a) => a.id)).toEqual(['parent-auto']);
+  const converted = { id: 'child-auto', featureLinkId: 'fl-site', retiredAt: new Date(0) };
+  queueHierarchy([candidate(ORG), candidate(SITE)], [converted]);
+  expect(await resolveAutomationAssignmentForDevice('dev-1')).toEqual({ configPolicyId: 'policy-site', automations: [converted] });
+  queueHierarchy([candidate(ORG), candidate(SITE)], [converted]);
+  expect(await resolveAutomationsForDeviceWithPolicy('dev-1')).toEqual({ configPolicyId: 'policy-site', automations: [] });
+  // A link whose rows are ALL retired with no live conversion is not a
+  // candidate (it falls through to the broader policy). That is decided in the
+  // candidate query's SQL, so the mocked suite cannot show it: the real-DB
+  // featureConfigResolverEmptyListOverride.integration.test.ts does.
 });
 
 // #7647: the ring-aware approval evaluator only needs WHICH config policy won.

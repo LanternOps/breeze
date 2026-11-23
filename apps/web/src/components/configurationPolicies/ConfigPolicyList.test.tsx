@@ -29,47 +29,125 @@ describe('ConfigPolicyList status filter select accessible name (#7156)', () => 
   });
 });
 
-describe('ConfigPolicyList ownership badges', () => {
-  it('shows the Partner-wide badge only on partner-wide policies', () => {
+const summary = (over: Record<string, unknown> = {}) => ({
+  assignmentCount: 0,
+  allOrganizations: false,
+  targets: [] as unknown[],
+  childPolicyCount: 0,
+  ...over,
+});
+const orgTarget = (id: string, name: string) => ({
+  assignmentId: id,
+  level: 'organization',
+  targetId: `org-${id}`,
+  name,
+  roleFilter: null,
+  osFilter: null,
+});
+
+describe('ConfigPolicyList Applies to column (#12306)', () => {
+  it('sits between Name and Status', () => {
+    render(<ConfigPolicyList policies={[orgOwned]} />);
+    const headers = screen.getAllByRole('columnheader').map((h) => h.textContent);
+    expect(headers.slice(0, 3)).toEqual(['Name', 'Applies to', 'Status']);
+  });
+
+  it('shows the first targets and +N in the Applies to cell', () => {
+    render(
+      <ConfigPolicyList
+        policies={[
+          {
+            ...partnerWide,
+            appliesTo: summary({
+              assignmentCount: 5,
+              targets: [orgTarget('a', 'Acme'), orgTarget('b', 'Birch'), orgTarget('c', 'Cedar')],
+            }),
+          },
+        ]}
+      />,
+    );
+    const cell = screen.getByTestId('config-policy-applies-to-cell');
+    expect(cell).toHaveTextContent('Acme');
+    expect(cell).toHaveTextContent('Birch');
+    expect(cell).toHaveTextContent('Cedar');
+    expect(cell).toHaveTextContent('+2');
+    expect(screen.queryByTestId('config-policy-not-applied-badge')).toBeNull();
+  });
+
+  it('names a partner-level row All organizations', () => {
+    render(
+      <ConfigPolicyList
+        policies={[
+          {
+            ...partnerWide,
+            appliesTo: summary({
+              assignmentCount: 1,
+              allOrganizations: true,
+              targets: [{ ...orgTarget('p', ''), level: 'partner', name: null }],
+            }),
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByTestId('config-policy-applies-to-cell')).toHaveTextContent('All organizations');
+  });
+
+  it('marks an active unassigned policy with no children with a warning chip', () => {
+    render(<ConfigPolicyList policies={[{ ...partnerWide, appliesTo: summary() }]} />);
+    const chip = screen.getByTestId('config-policy-not-applied-badge');
+    expect(chip).toHaveTextContent('Not applied');
+    expect(chip).toHaveAttribute('data-tone', 'warning');
+  });
+
+  it('marks an inactive unassigned policy with a neutral chip and an archived one with none', () => {
+    const { rerender } = render(
+      <ConfigPolicyList policies={[{ ...partnerWide, status: 'inactive', appliesTo: summary() }]} />,
+    );
+    expect(screen.getByTestId('config-policy-not-applied-badge')).toHaveAttribute('data-tone', 'neutral');
+    rerender(<ConfigPolicyList policies={[{ ...partnerWide, status: 'archived', appliesTo: summary() }]} />);
+    expect(screen.queryByTestId('config-policy-not-applied-badge')).toBeNull();
+  });
+
+  it('marks a parent with children In use through N policies, not Not applied', () => {
+    render(<ConfigPolicyList policies={[{ ...partnerWide, appliesTo: summary({ childPolicyCount: 3 }) }]} />);
+    expect(screen.getByTestId('config-policy-in-use-badge')).toHaveTextContent('In use through 3 policies');
+    expect(screen.queryByTestId('config-policy-not-applied-badge')).toBeNull();
+  });
+
+  it('never says Not applied when rows exist that the caller may not list', () => {
+    render(<ConfigPolicyList policies={[{ ...partnerWide, appliesTo: summary({ assignmentCount: 2 }) }]} />);
+    expect(screen.queryByTestId('config-policy-not-applied-badge')).toBeNull();
+    expect(screen.getByTestId('config-policy-applies-to-cell')).toHaveTextContent('+2');
+  });
+
+  it('renders an em dash and no chip when appliesTo is absent', () => {
+    render(<ConfigPolicyList policies={[partnerWide, { ...orgOwned, appliesTo: { assignmentCount: 'x' } }]} />);
+    const cells = screen.getAllByTestId('config-policy-applies-to-cell');
+    expect(cells).toHaveLength(2);
+    for (const cell of cells) expect(cell).toHaveTextContent('—');
+    expect(screen.queryByTestId('config-policy-not-applied-badge')).toBeNull();
+    expect(screen.queryByTestId('config-policy-in-use-badge')).toBeNull();
+  });
+
+  it('shows Managed by <org> only on org-managed rows', () => {
     render(<ConfigPolicyList policies={[partnerWide, orgOwned]} />);
-
-    const badges = screen.getAllByTestId('partner-wide-badge');
-    expect(badges).toHaveLength(1);
-    expect(badges[0]).toHaveTextContent('Partner-wide');
+    const managed = screen.getAllByTestId('config-policy-managed-by');
+    expect(managed).toHaveLength(1);
+    expect(managed[0]).toHaveTextContent('Managed by Fabrikam MSP');
   });
 
-  // #9565: a partner-owned policy with no partner-level ("all organizations")
-  // assignment applies to no organization until it is assigned, so it must not
-  // claim to be partner-wide.
-  it('shows a neutral Partner badge, not Partner-wide, on an unassigned partner policy', () => {
-    render(<ConfigPolicyList policies={[{ ...partnerWide, hasPartnerWideAssignment: false }]} />);
-
-    expect(screen.queryByTestId('partner-wide-badge')).not.toBeInTheDocument();
-    const badge = screen.getByTestId('partner-policy-badge');
-    expect(badge).toHaveTextContent('Partner');
-    expect(badge).toHaveAttribute('title', expect.stringMatching(/only where it is assigned/i));
+  it('no longer renders the Partner-wide or Partner policy badges', () => {
+    render(<ConfigPolicyList policies={[partnerWide, { ...partnerWide, id: 'p2', hasPartnerWideAssignment: false }, orgOwned]} />);
+    expect(screen.queryByTestId('partner-wide-badge')).toBeNull();
+    expect(screen.queryByTestId('partner-policy-badge')).toBeNull();
+    expect(screen.queryByTestId('org-badge')).toBeNull();
   });
 
-  it('treats a missing assignment flag as not partner-wide (fail-closed)', () => {
-    const { hasPartnerWideAssignment: _omit, ...legacy } = partnerWide;
-    render(<ConfigPolicyList policies={[legacy]} />);
-
-    expect(screen.queryByTestId('partner-wide-badge')).not.toBeInTheDocument();
-    expect(screen.getByTestId('partner-policy-badge')).toBeInTheDocument();
-  });
-
-  it('shows an org badge with the owning org name on org-owned policies', () => {
-    render(<ConfigPolicyList policies={[partnerWide, orgOwned]} />);
-
-    const badges = screen.getAllByTestId('org-badge');
-    expect(badges).toHaveLength(1);
-    expect(badges[0]).toHaveTextContent('Fabrikam MSP');
-  });
-
-  it('falls back to a generic label when the org name is missing', () => {
-    render(<ConfigPolicyList policies={[{ ...orgOwned, orgName: undefined }]} />);
-
-    expect(screen.getByTestId('org-badge')).toHaveTextContent('Organization');
+  it('keeps the empty-state row spanning every column', () => {
+    render(<ConfigPolicyList policies={[]} />);
+    const columns = screen.getAllByRole('columnheader').length;
+    const cell = screen.getByText(/No configuration policies yet/i).closest('td');
+    expect(cell).toHaveAttribute('colspan', String(columns));
   });
 });
 

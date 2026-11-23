@@ -23,6 +23,7 @@ import {
   parentPolicyArmsOemUpdates,
 } from '../../services/configurationPolicy';
 import { checkOemUpdatesArmAllowed, policyArmsOemUpdates } from './oemUpdatesGate';
+import { loadAppliesToSummaries } from '../../services/configPolicyAppliesTo';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import {
@@ -55,7 +56,19 @@ crudRoutes.get(
       orgId: query.orgId,
     }, { page, limit });
 
-    return c.json(result);
+    // Applies-to summary (#12306 W01a). Merged here, not in listConfigPolicies,
+    // because that service also feeds AI tools whose output must not grow (D3).
+    // Only the page's ids, read in the caller's own request context. A row the
+    // read model did not return carries no `appliesTo`, which the web treats as
+    // unknown rather than "Not applied".
+    const summaries = await loadAppliesToSummaries(auth, result.data.map((row) => row.id));
+    return c.json({
+      ...result,
+      data: result.data.map((row) => {
+        const appliesTo = summaries.get(row.id);
+        return appliesTo ? { ...row, appliesTo } : row;
+      }),
+    });
   }
 );
 
@@ -248,7 +261,9 @@ crudRoutes.get(
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
-    return c.json(policy);
+    // After the 404, never before: an invisible policy loads nothing (D3).
+    const appliesTo = (await loadAppliesToSummaries(auth, [policy.id])).get(policy.id);
+    return c.json(appliesTo ? { ...policy, appliesTo } : policy);
   }
 );
 

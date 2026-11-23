@@ -2627,6 +2627,69 @@ export async function assignPolicy(
   return assignment ?? null;
 }
 
+/** Filters compare as sets; `[]` and null both mean "no filter", as `assignPolicy` stores them. */
+function normalizeAssignmentFilter(filter: readonly string[] | null | undefined): string[] | null {
+  return filter?.length ? [...filter] : null;
+}
+
+function sameAssignmentFilter(a: readonly string[] | null, b: readonly string[] | null): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.length !== b.length) return false;
+  const sortedB = [...b].sort();
+  return [...a].sort().every((value, index) => value === sortedB[index]);
+}
+
+/**
+ * Edit one assignment's priority and filters in place (#12466, plan W02b G2).
+ * The row is matched on (id, policy), so a row of another policy is never
+ * touched, and level, target and policy never change. An omitted field is left
+ * as it is; a null or empty filter means every device, as in `assignPolicy`.
+ *
+ * Returns null only when no such row exists on this policy (or it vanished
+ * before the write). Otherwise `changed` says whether THIS call wrote: a row
+ * whose values already match is returned as it is (`changed: false`), with no
+ * write and no reconcile. The comparison runs against the row read here, in the
+ * caller's transaction, so a caller audits on `changed` rather than on an
+ * earlier snapshot of its own. When a column changed it schedules the same
+ * three reconciles as `assignPolicy`: priority and filters decide which policy
+ * a device follows.
+ */
+export async function updateAssignment(
+  assignmentId: string,
+  configPolicyId: string,
+  patch: { priority?: number; roleFilter?: string[] | null; osFilter?: string[] | null },
+  executor: DbExecutor = db,
+): Promise<{ assignment: typeof configPolicyAssignments.$inferSelect; changed: boolean } | null> {
+  const match = and(
+    eq(configPolicyAssignments.id, assignmentId),
+    eq(configPolicyAssignments.configPolicyId, configPolicyId),
+  );
+  const [existing] = await executor.select().from(configPolicyAssignments).where(match).limit(1);
+  if (!existing) return null;
+
+  const changes: { priority?: number; roleFilter?: string[] | null; osFilter?: string[] | null } = {};
+  if (patch.priority !== undefined && patch.priority !== existing.priority) changes.priority = patch.priority;
+  if (patch.roleFilter !== undefined) {
+    const roleFilter = normalizeAssignmentFilter(patch.roleFilter);
+    if (!sameAssignmentFilter(roleFilter, existing.roleFilter ?? null)) changes.roleFilter = roleFilter;
+  }
+  if (patch.osFilter !== undefined) {
+    const osFilter = normalizeAssignmentFilter(patch.osFilter);
+    if (!sameAssignmentFilter(osFilter, existing.osFilter ?? null)) changes.osFilter = osFilter;
+  }
+  if (Object.keys(changes).length === 0) return { assignment: existing, changed: false };
+
+  const [updated] = await executor.update(configPolicyAssignments).set(changes).where(match).returning();
+  if (!updated) return null;
+  scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-update');
+  scheduleOemPolicySideRefresh({ configPolicyId, onlyIfOemLinked: true }, 'assignment-update');
+  schedulePeripheralLinkReconcile(
+    { configPolicyId, assignments: [{ level: updated.level, targetId: updated.targetId }] },
+    'assignment-update',
+  );
+  return { assignment: updated, changed: true };
+}
+
 export async function validateAssignmentTarget(
   policyOwner: { orgId: string | null; partnerId: string | null },
   level: ConfigAssignmentLevel,
@@ -2881,6 +2944,103 @@ export async function authorizeAssignmentTarget(
   }
 }
 
+/** Key for {@link authorizeAssignmentTargets} results: `${level}:${targetId}`. */
+export function assignmentTargetKey(level: ConfigAssignmentLevel, targetId: string): string {
+  return `${level}:${targetId}`;
+}
+
+/**
+ * Set-based {@link authorizeAssignmentTarget} for read models that check many
+ * targets at once (the policy list's applies-to summary, #12306). Same rules,
+ * same fail-closed outcomes, keyed by {@link assignmentTargetKey}; but at most
+ * three statements however many targets are passed (device sites, device-group
+ * sites, device-group membership), and none for an unrestricted caller.
+ *
+ * KEEP IN LOCKSTEP with `authorizeAssignmentTarget` above: a rule changed there
+ * must change here. configPolicyAppliesToSummary.integration.test.ts checks the
+ * two agree on real rows.
+ */
+export async function authorizeAssignmentTargets(
+  auth: AuthContext,
+  targets: ReadonlyArray<{ level: ConfigAssignmentLevel; targetId: string }>,
+): Promise<Map<string, boolean>> {
+  const result = new Map<string, boolean>();
+  if (targets.length === 0) return result;
+
+  const allowedDevices = auth.allowedDeviceIds ? new Set(auth.allowedDeviceIds) : null;
+  const siteRestricted = !!(auth.allowedSiteIds && auth.canAccessSite);
+  if (!siteRestricted && !allowedDevices) {
+    for (const t of targets) result.set(assignmentTargetKey(t.level, t.targetId), true);
+    return result;
+  }
+  const canAccessSite = siteRestricted ? auth.canAccessSite! : () => true;
+
+  const groupIds = new Set<string>();
+  const deviceIds = new Set<string>();
+  for (const t of targets) {
+    const key = assignmentTargetKey(t.level, t.targetId);
+    if (result.has(key)) continue;
+    switch (t.level) {
+      case 'site':
+        result.set(key, !allowedDevices && canAccessSite(t.targetId));
+        break;
+      case 'device_group':
+        groupIds.add(t.targetId);
+        break;
+      case 'device':
+        if (allowedDevices && !allowedDevices.has(t.targetId)) result.set(key, false);
+        else deviceIds.add(t.targetId);
+        break;
+      // 'partner', 'organization', and anything unknown: denied, no query.
+      default:
+        result.set(key, false);
+    }
+  }
+
+  if (groupIds.size > 0) {
+    const ids = [...groupIds];
+    const groups = await db
+      .select({ id: deviceGroups.id, siteId: deviceGroups.siteId })
+      .from(deviceGroups)
+      .where(inArray(deviceGroups.id, ids));
+    // Unknown (or not legible) group, or one with no single site: denied.
+    const siteOk = new Set(groups.filter((g) => canAccessSite(g.siteId)).map((g) => g.id));
+    let membersInScope: Set<string> | null = null;
+    if (allowedDevices && siteOk.size > 0) {
+      // Every member must be in scope, and an EMPTY group is denied (#6096 I8):
+      // a group with no membership row never appears here, so it stays denied.
+      const allowed = [...allowedDevices];
+      const rows = await db
+        .select({
+          groupId: deviceGroupMemberships.groupId,
+          allInScope: allowed.length > 0
+            ? sql<boolean>`bool_and(${inArray(deviceGroupMemberships.deviceId, allowed)})`
+            : sql<boolean>`false`,
+        })
+        .from(deviceGroupMemberships)
+        .where(inArray(deviceGroupMemberships.groupId, [...siteOk]))
+        .groupBy(deviceGroupMemberships.groupId);
+      membersInScope = new Set(rows.filter((r) => r.allInScope === true).map((r) => r.groupId));
+    }
+    for (const id of ids) {
+      const ok = siteOk.has(id) && (membersInScope === null || membersInScope.has(id));
+      result.set(assignmentTargetKey('device_group', id), ok);
+    }
+  }
+
+  if (deviceIds.size > 0) {
+    const ids = [...deviceIds];
+    const rows = await db
+      .select({ id: devices.id, siteId: devices.siteId })
+      .from(devices)
+      .where(inArray(devices.id, ids));
+    const ok = new Set(rows.filter((d) => canAccessSite(d.siteId)).map((d) => d.id));
+    for (const id of ids) result.set(assignmentTargetKey('device', id), ok.has(id));
+  }
+
+  return result;
+}
+
 /**
  * Fetch a single assignment's identity (level + targetId) scoped to its policy.
  * Used by the REST delete route to re-run the site-axis check against the
@@ -2902,6 +3062,32 @@ export async function getAssignment(assignmentId: string, configPolicyId: string
     )
     .limit(1);
   return row ?? null;
+}
+
+/**
+ * The stored rows among `assignmentIds` that belong to `configPolicyId`, in one
+ * statement. The staged Apply reads every update and remove target this way
+ * before it re-runs the site-axis check on them; an id of another policy is
+ * simply absent.
+ */
+export async function getAssignments(assignmentIds: readonly string[], configPolicyId: string) {
+  if (assignmentIds.length === 0) return [];
+  return db
+    .select({
+      id: configPolicyAssignments.id,
+      level: configPolicyAssignments.level,
+      targetId: configPolicyAssignments.targetId,
+      priority: configPolicyAssignments.priority,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
+    })
+    .from(configPolicyAssignments)
+    .where(
+      and(
+        inArray(configPolicyAssignments.id, [...assignmentIds]),
+        eq(configPolicyAssignments.configPolicyId, configPolicyId)
+      )
+    );
 }
 
 export async function unassignPolicy(assignmentId: string, configPolicyId: string) {
@@ -2940,6 +3126,7 @@ export async function listAssignmentsForTarget(level: ConfigAssignmentLevel, tar
       policyName: configurationPolicies.name,
       policyStatus: configurationPolicies.status,
       policyOrgId: configurationPolicies.orgId,
+      policyPartnerId: configurationPolicies.partnerId,
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))

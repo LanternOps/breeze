@@ -112,7 +112,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/orgs/sites` | List sites |
+| `GET` | `/orgs/sites` | List sites (`?search=` filters by name) |
 | `POST` | `/orgs/sites` | Create site |
 | `GET` | `/orgs/sites/:id` | Get site details |
 | `PATCH` | `/orgs/sites/:id` | Update site. Also accepts `latitude`/`longitude` (both or neither) and `geofenceRadiusM`; requires `sites:write` and MFA |
@@ -485,6 +485,33 @@ See [Running on device groups](/features/scripts/#running-on-device-groups) for 
 | `POST` | `/automations/:id/trigger` | Trigger automation |
 | `POST` | `/automations/:id/run` | Run automation immediately |
 | `GET` | `/automations/:id/runs` | List runs for automation |
+
+## Flows
+
+Flow routes are mounted only when `FLOWS_ENABLED` is on; with it off they all answer `404`. Editing routes work on a flow's draft document. A flow in status `draft`, `disabled` or `paused` can be edited; an enabled flow must be disabled first.
+
+| Method | Path | Permission | Description |
+|---|---|---|---|
+| `POST` | `/flows` | `automations.read` and `automations.write` | Create a draft. Body `{ document, ownerScope?, orgId?, slug? }`, where `ownerScope` is `organization` (default) or `partner`. Returns `201 { flow, validation }`. No MFA. |
+| `PUT` | `/flows/:id` | `automations.read` and `automations.write` | Replace a draft's document. Body `{ document, expectedVersion }`. Returns `200 { flow, validation }`. No MFA. |
+| `DELETE` | `/flows/:id` | `automations.delete` | Delete a draft. Body `{ expectedVersion }`. Returns `204` with no body. Requires MFA. |
+| `POST` | `/flows/validate` | `automations.read` | Validate a document without saving. Body `{ document, ownerScope?, orgId?, flowId? }`. Always `200 { validation }`, whether the document is valid or not. With `flowId`, the owner comes from the stored flow. |
+
+`expectedVersion` is required on `PUT` and `DELETE`: send the version you loaded. A request without it is a `400`, and a stale value is a `409 version_conflict`. Delete is only for a draft that was never published and never converted from a Job; any other flow answers `409 { error: "flow_has_history" }` (with `conversionId` or `automationId` when they apply).
+
+A partner-wide ("all organizations") flow also needs the caller to be allowed to manage partner-wide policies for create, update and delete; otherwise the answer is `403 { error: "partner_wide_forbidden" }`. An organization-scoped token acting on a partner-wide flow gets `404`, not `403`.
+
+| Status | Body | Meaning |
+|---|---|---|
+| `400` / `403` | `{ error: "owner_invalid", message }` | The owner could not be resolved (`403` when access is denied). |
+| `404` | `{ error: "flow_not_found" }` | No such flow, or not visible to the caller. |
+| `409` | `version_conflict` | `expectedVersion` is stale. |
+| `409` | `flow_not_draft` | The flow is enabled; disable it before editing. |
+| `409` | `slug_unavailable`, `slug_conflict` | The slug is taken or collides with another flow. |
+| `409` | `flow_has_history` | Delete refused: the flow was published or converted. |
+| `422` | `{ error: "invalid", validation }` | The document is invalid (`invalid_slug` is also `422`). |
+
+Breeze AI's `draft_flow` tool follows the same version rule: an update without `expectedVersion` still works for now but returns an `expected_version_required_soon` warning, and a later release will refuse it. See [Flows](/features/flows/) for the editor.
 
 ## Patching
 

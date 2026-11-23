@@ -295,7 +295,13 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
     allColumnsNullable: true,
     note:
       'SET NULL would fire the assignment-integrity and partner-export UPDATE triggers on this '
-      + 'table, which have not been reviewed for a referential-action write; needs its own change.',
+      + 'table, which have not been reviewed for a referential-action write; needs its own change. '
+      + 'Erasure does delete some of these rows, but not as a step-1b pre-clear, so this ledger '
+      + 'cannot see it: an org-owned policy\'s rows go with the policy (ON DELETE CASCADE), and rows '
+      + 'targeting this org\'s own sites, groups, devices or org row go in that target\'s walk step '
+      + '(CONFIG_POLICY_ASSIGNMENT_TARGET_CLEARS, #12538; kept out of step 1b because the '
+      + 'legal-hold re-check reads them). A row a user of this org assigned to a target outside '
+      + 'the org is not deleted and would still pin `users`.',
   },
   {
     childTable: 'partner_service_principal_keys',

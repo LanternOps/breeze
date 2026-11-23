@@ -3,8 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Wrench } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { pickReauthTier, type ReauthTier } from '../settings/StepUpPrompt';
+import { discoverReauthTier } from '../../lib/reauthTier';
 import { mintStepUpGrant, StepUpMintError } from '../../lib/mfaStepUp';
-import { fetchWithAuth } from '../../stores/auth';
 import {
   canonicalMaintenanceResource,
   MAINTENANCE_DURATION_OPTIONS,
@@ -34,6 +34,8 @@ export interface MaintenanceModeDialogProps {
    */
   passkeyCount?: number;
   mfaMethod?: string | null;
+  /** Whether an authenticator app is enrolled (`GET /users/me`), as primary or backup. */
+  totpEnrolled?: boolean;
   onClose: () => void;
   onCompleted: (result: unknown) => void;
 }
@@ -57,6 +59,7 @@ export default function MaintenanceModeDialog({
   devices,
   passkeyCount,
   mfaMethod,
+  totpEnrolled,
   onClose,
   onCompleted,
 }: MaintenanceModeDialogProps) {
@@ -96,8 +99,8 @@ export default function MaintenanceModeDialog({
     () =>
       passkeyCount === undefined || mfaMethod === undefined
         ? discoveredTier
-        : pickReauthTier(passkeyCount, mfaMethod),
-    [passkeyCount, mfaMethod, discoveredTier],
+        : pickReauthTier(passkeyCount, mfaMethod, totpEnrolled),
+    [passkeyCount, mfaMethod, totpEnrolled, discoveredTier],
   );
   // `password` is not a valid step-up method for device_maintenance and there
   // is no authenticated step-up SMS sender, so a submit could only ever 403.
@@ -159,18 +162,7 @@ export default function MaintenanceModeDialog({
         // the server requires step-up, so disabled-2FA deployments still work.
         if (tier === null) {
           try {
-            const [userResponse, passkeyResponse] = await Promise.all([
-              fetchWithAuth('/users/me'),
-              fetchWithAuth('/auth/passkeys'),
-            ]);
-            if (!userResponse.ok || !passkeyResponse.ok) throw new Error();
-            const user = await userResponse.json();
-            const passkeyData = await passkeyResponse.json();
-            const passkeys = Array.isArray(passkeyData) ? passkeyData : passkeyData?.passkeys;
-            if (!user || typeof user !== 'object' || !('mfaMethod' in user) || !Array.isArray(passkeys)) {
-              throw new Error();
-            }
-            setDiscoveredTier(pickReauthTier(passkeys.length, user.mfaMethod));
+            setDiscoveredTier(await discoverReauthTier());
           } catch {
             setError(t('maintenanceModeDialog.genericError'));
             return;

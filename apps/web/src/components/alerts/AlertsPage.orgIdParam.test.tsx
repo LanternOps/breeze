@@ -44,7 +44,7 @@ const json = (payload: unknown) =>
   ({ ok: true, status: 200, json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
 const alertListRequests = () =>
-  fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/alerts?status='));
+  fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/alerts?'));
 
 function setUrl(url: string) {
   window.history.replaceState(null, '', url);

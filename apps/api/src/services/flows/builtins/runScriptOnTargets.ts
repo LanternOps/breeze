@@ -160,12 +160,15 @@ export async function executeRunScriptOnTargets(
   const failedNow = result.perDevice.filter((d) => d.outcome === 'failed' || d.outcome === 'skipped_offline').map((d) => d.deviceId);
   const failed = sorted([...refused, ...failedNow]);
   const failedSet = new Set(failed);
+  const succeeded = sorted(attempted.filter((id) => !failedSet.has(id)));
   const output: FlowFleetStepOutput = {
     dispatchedDeviceIds: sorted(attempted),
-    succeededDeviceIds: sorted(attempted.filter((id) => !failedSet.has(id))),
+    succeededDeviceIds: succeeded,
     failedDeviceIds: failed,
     skippedOfflineDeviceIds: sorted(result.perDevice.filter((d) => d.outcome === 'skipped_offline').map((d) => d.deviceId)),
     count: requested.length,
+    succeededCount: succeeded.length,
+    failedCount: failed.length,
     warnings,
   };
   const out = output as unknown as FlowValue;

@@ -17,6 +17,7 @@ vi.mock('../../../db/schema', () => ({
     status: 'scriptExecutions.status',
     exitCode: 'scriptExecutions.exitCode',
     stdout: 'scriptExecutions.stdout',
+    errorMessage: 'scriptExecutions.errorMessage',
     completedAt: 'scriptExecutions.completedAt',
     createdAt: 'scriptExecutions.createdAt',
   },
@@ -47,6 +48,7 @@ function makeExecution(overrides: Record<string, unknown> = {}) {
     status: 'completed',
     exitCode: 0,
     stdout: '',
+    errorMessage: null,
     completedAt: new Date('2026-09-13T00:00:00.000Z'),
     createdAt: new Date('2026-09-13T00:00:00.000Z'),
     ...overrides,
@@ -177,6 +179,145 @@ describe('scriptMonitorHandler', () => {
 
     expect(result.passed).toBe(false);
     expect(result.description).toMatch(/did not complete/i);
+  });
+
+  // #12325 — the row production actually writes for a script that ran and
+  // exited non-zero: handleScriptResult (commandResultHandlers.ts) stores it
+  // as status 'failed' with the real exit code and no error message. The
+  // fixtures above use status 'completed' + exitCode 1, a row nothing writes.
+  describe('a script that ran and exited non-zero (status "failed", real exit code, no error) (#12325)', () => {
+    const ranAndExited = (overrides: Record<string, unknown> = {}) =>
+      makeExecution({ status: 'failed', exitCode: 1, errorMessage: null, stdout: 'checkpoint found', ...overrides });
+
+    it('breachOnNonZeroExit true: breaches', async () => {
+      setRows([ranAndExited()]);
+
+      const result = await scriptMonitorHandler.evaluate(condition({ breachOnNonZeroExit: true }), DEVICE_ID);
+
+      expect(result.passed).toBe(true);
+      expect(result.description).toBe('Script exited with code 1');
+      expect(result.dataAvailable).not.toBe(false);
+    });
+
+    it('treats an empty-string error message like no error', async () => {
+      setRows([ranAndExited({ errorMessage: '' })]);
+
+      const result = await scriptMonitorHandler.evaluate(condition({ breachOnNonZeroExit: true }), DEVICE_ID);
+
+      expect(result.passed).toBe(true);
+    });
+
+    it('breachOnNonZeroExit false: observed, not a breach', async () => {
+      setRows([ranAndExited()]);
+
+      const result = await scriptMonitorHandler.evaluate(condition({ breachOnNonZeroExit: false }), DEVICE_ID);
+
+      expect(result.passed).toBe(false);
+      expect(result.dataAvailable).not.toBe(false);
+    });
+
+    it('a breach marker still wins', async () => {
+      setRows([ranAndExited({ stdout: '::breeze:monitor:: {"state":"breach","detail":"2 checkpoints"}' })]);
+
+      const result = await scriptMonitorHandler.evaluate(condition({ breachOnNonZeroExit: false }), DEVICE_ID);
+
+      expect(result.passed).toBe(true);
+      expect(result.description).toBe('2 checkpoints');
+    });
+
+    it('an ok marker still wins over the non-zero exit', async () => {
+      setRows([ranAndExited({ stdout: '::breeze:monitor:: {"state":"ok","detail":"nothing to report"}' })]);
+
+      const result = await scriptMonitorHandler.evaluate(condition({ breachOnNonZeroExit: true }), DEVICE_ID);
+
+      expect(result.passed).toBe(false);
+      expect(result.description).toBe('nothing to report');
+      expect(result.dataAvailable).not.toBe(false);
+    });
+  });
+
+  describe('runs that produced no verdict read as no data, never as OK (#12325)', () => {
+    it.each([
+      ['agent refused before any process ran (synthetic exit 1 + error)', { status: 'failed', exitCode: 1, errorMessage: 'script content is empty' }],
+      ['executor failure (exit -1 + error)', { status: 'failed', exitCode: -1, errorMessage: 'failed to start' }],
+      ['killed by a signal (exit -1, no error)', { status: 'failed', exitCode: -1, errorMessage: null }],
+      ['never delivered / reaped (no exit code + error)', { status: 'failed', exitCode: null, errorMessage: 'Command expired before delivery' }],
+      ['timed out', { status: 'timeout', exitCode: null, errorMessage: 'execution timed out after 300 seconds' }],
+      ['cancelled', { status: 'cancelled', exitCode: -1, errorMessage: 'execution cancelled' }],
+    ])('%s', async (_label, overrides) => {
+      setRows([makeExecution(overrides)]);
+
+      const result = await scriptMonitorHandler.evaluate(condition({ breachOnNonZeroExit: true }), DEVICE_ID);
+
+      expect(result.passed).toBe(false);
+      expect(result.dataAvailable).toBe(false);
+      expect(result.description).toMatch(/did not complete/i);
+    });
+
+    it('names the cause so a run that can never start is diagnosable', async () => {
+      setRows([makeExecution({ status: 'failed', exitCode: 1, errorMessage: 'script content is empty' })]);
+
+      const result = await scriptMonitorHandler.evaluate(condition(), DEVICE_ID);
+
+      expect(result.description).toBe('Script probe did not complete (status: failed): script content is empty');
+    });
+
+    it('keeps the cause to its first line, capped', async () => {
+      setRows([makeExecution({ status: 'failed', exitCode: -1, errorMessage: `${'x'.repeat(300)}\nsecond line` })]);
+
+      const result = await scriptMonitorHandler.evaluate(condition(), DEVICE_ID);
+
+      expect(result.description).toBe(`Script probe did not complete (status: failed): ${'x'.repeat(200)}…`);
+    });
+
+    it('a breach marker in a timed-out run does not breach', async () => {
+      setRows([makeExecution({
+        status: 'timeout',
+        exitCode: -1,
+        errorMessage: 'execution timed out after 300 seconds',
+        stdout: '::breeze:monitor:: {"state":"breach","detail":"partial"}',
+      })]);
+
+      const result = await scriptMonitorHandler.evaluate(condition(), DEVICE_ID);
+
+      expect(result.passed).toBe(false);
+      expect(result.dataAvailable).toBe(false);
+    });
+
+    it('a run still in flight is no data', async () => {
+      setRows([makeExecution({ status: 'running', exitCode: null, completedAt: null })]);
+
+      const result = await scriptMonitorHandler.evaluate(condition(), DEVICE_ID);
+
+      expect(result.passed).toBe(false);
+      expect(result.dataAvailable).toBe(false);
+    });
+
+    it('no row at all is no data', async () => {
+      setRows([]);
+
+      const result = await scriptMonitorHandler.evaluate(condition(), DEVICE_ID);
+
+      expect(result.dataAvailable).toBe(false);
+    });
+
+    it('a stale probe is no data', async () => {
+      setRows([makeExecution({ exitCode: 0, completedAt: new Date('2026-09-12T20:40:00.000Z') })]);
+
+      const result = await scriptMonitorHandler.evaluate(condition({ intervalMinutes: 60 }), DEVICE_ID);
+
+      expect(result.passed).toBe(false);
+      expect(result.dataAvailable).toBe(false);
+    });
+
+    it('a clean exit-0 run is observed data', async () => {
+      setRows([makeExecution({ exitCode: 0 })]);
+
+      const result = await scriptMonitorHandler.evaluate(condition(), DEVICE_ID);
+
+      expect(result.passed).toBe(false);
+      expect(result.dataAvailable).not.toBe(false);
+    });
   });
 
   it('no row at all: no recent probe result, not a breach', async () => {

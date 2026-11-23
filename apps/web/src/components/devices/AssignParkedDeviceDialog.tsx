@@ -46,6 +46,8 @@ export interface AssignParkedDeviceDialogProps {
   devices: ParkedDeviceSummary[];
   passkeyCount?: number;
   mfaMethod?: string | null;
+  /** Whether an authenticator app is enrolled (`GET /users/me`), as primary or backup. */
+  totpEnrolled?: boolean;
   onClose: () => void;
   onCompleted: () => void;
   /**
@@ -73,6 +75,7 @@ export default function AssignParkedDeviceDialog({
   devices,
   passkeyCount,
   mfaMethod,
+  totpEnrolled,
   onClose,
   onCompleted,
   offerReattach = false,
@@ -117,7 +120,7 @@ export default function AssignParkedDeviceDialog({
   const canReattach = useCanReattachDevice();
   const reattach = useReinstallCandidates(open && offerReattach && !bulk && single ? single.id : null);
 
-  const { tier, ensureTier, resetTier } = useReauthTier(passkeyCount, mfaMethod);
+  const { tier, ensureTier, resetTier } = useReauthTier(passkeyCount, mfaMethod, totpEnrolled);
 
   useEffect(() => {
     if (!open) return;
@@ -361,6 +364,7 @@ export default function AssignParkedDeviceDialog({
           candidate={reattachCandidate}
           passkeyCount={passkeyCount}
           mfaMethod={mfaMethod}
+          totpEnrolled={totpEnrolled}
           onClose={onClose}
           onRequested={() => { setReattachRequested(true); onCompleted(); }}
           // Any 409: re-read, and the form follows the current rows (a

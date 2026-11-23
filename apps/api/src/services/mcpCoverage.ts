@@ -445,9 +445,11 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'clientAi/templates.ts': { exempt: 'addin_surface' },
   'config.ts': { exempt: 'internal_plumbing' },
   'configurationPolicies/assignments.ts': { tools: ['apply_configuration_policy', 'remove_configuration_policy_assignment'] },
+  'configurationPolicies/assignmentsApply.ts': { tools: ['apply_configuration_policy', 'remove_configuration_policy_assignment'] },
   'configurationPolicies/crud.ts': { tools: ['manage_configuration_policy', 'list_configuration_policies', 'get_configuration_policy'] },
   'configurationPolicies/featureLinks.ts': { tools: ['manage_policy_feature_link', 'manage_service_monitors'] },
   'configurationPolicies/patchJobs.ts': { tools: ['manage_patches'] },
+  'configurationPolicies/reach.ts': { exempt: 'tool_in_later_wave', note: "reach counts for the policy page and list (#12465); an AI read follows the spec's AI follow-up, tracked on feature #12462" },
   'configurationPolicies/resolution.ts': { tools: ['get_effective_configuration', 'preview_configuration_change', 'configuration_policy_compliance'] },
   'configurationPolicies/wakeStatus.ts': { exempt: 'tool_in_later_wave', note: 'Wake-on-LAN status panel feed and the audited "allow wake again" reset (#10838 W02); no MCP tool planned until the feature activates in W06.' },
   'connectedApps.ts': { exempt: 'identity' },
@@ -857,7 +859,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/templateApplications.ts': { tools: ['apply_topology_template'] }, // W08 (#6778): preview, apply (supervised), status
   // The topology template library and version publishing have no registered AI tool.
   'topology/templates.ts': { tools: ['manage_topology_templates'] }, // W08 (#6778): templates, versions, publish (supervised), site options
-  'flows.ts': { tools: ['list_flows', 'get_flow', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run'] }, // Tool Catalog W03/W04 (#5218/#5219): list/detail + run/runs/cancel; drafts via draft_flow, enable/disable are UI-only.
+  'flows.ts': { tools: ['list_flows', 'get_flow', 'draft_flow', 'validate_flow', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run'] }, // Tool Catalog W03/W04 (#5218/#5219) + Flows completion W01b (#12435): list/detail, draft create/update (draft_flow), validate (validate_flow), run/runs/cancel. Draft delete, enable and disable are UI-only.
   'flowLimits.ts': { exempt: 'tool_in_later_wave', note: 'Flow limits settings (partner default / org lower-only override, Tool Catalog W05 #5220); no MCP tool planned yet — caps are read through get_flow usage.' },
   'flowConversions.ts': { exempt: 'tool_in_later_wave', note: 'Legacy Job → flow conversions (preview, create, bulk, list/get; Tool Catalog W06 #5221). Converting is an interactive-session action; manage_automations list/get/history report each Job\'s conversion.' },
   'flowWebhooks.ts': { exempt: 'inbound_integration', note: 'Public flow webhook ingress (Tool Catalog W05); HMAC/token authenticated, not an operator surface.' },

@@ -27,7 +27,8 @@ export default function EditDnsRetentionModal({
   onClose,
   onSaved,
 }: {
-  integration: { id: string; name: string; retentionDays: number | null; storeAllowedTraffic: boolean };
+  // `piholeVersion` is passed only for a Pi-hole integration (#12507); its presence shows the version select.
+  integration: { id: string; name: string; retentionDays: number | null; storeAllowedTraffic: boolean; piholeVersion?: 'v5' | 'v6' };
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -37,6 +38,8 @@ export default function EditDnsRetentionModal({
   const allowedHelpId = useId();
   const [value, setValue] = useState(integration.retentionDays?.toString() ?? '');
   const [storeAllowedTraffic, setStoreAllowedTraffic] = useState(integration.storeAllowedTraffic);
+  const [piholeVersion, setPiholeVersion] = useState<'v5' | 'v6'>(integration.piholeVersion ?? 'v5');
+  const versionId = useId();
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -60,7 +63,12 @@ export default function EditDnsRetentionModal({
       await runAction({
         request: () => fetchWithAuth(`/dns-security/integrations/${integration.id}`, {
           method: 'PATCH',
-          body: JSON.stringify({ retentionDays, storeAllowedTraffic }),
+          body: JSON.stringify({
+            retentionDays,
+            storeAllowedTraffic,
+            // Only when changed, so a retention-only save does not write a v5 default or a no-op audit entry.
+            ...(integration.piholeVersion !== undefined && piholeVersion !== integration.piholeVersion ? { piholeVersion } : {}),
+          }),
         }),
         errorFallback: t('dnsSecurityEditDnsRetentionModal.messages.saveFailed', { name: integration.name }),
         successMessage: t('dnsSecurityEditDnsRetentionModal.messages.saved', { name: integration.name }),
@@ -112,6 +120,26 @@ export default function EditDnsRetentionModal({
               : t('dnsSecurityEditDnsRetentionModal.storeAllowedTraffic.helpOff')}
           </p>
         </div>
+
+        {integration.piholeVersion !== undefined && (
+          <div>
+            <label htmlFor={versionId} className="mb-1 block text-sm font-medium">
+              {t('dnsSecurityEditDnsRetentionModal.piholeVersion.label')}
+            </label>
+            <select
+              id={versionId}
+              value={piholeVersion}
+              onChange={(e) => setPiholeVersion(e.target.value as 'v5' | 'v6')}
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+            >
+              <option value="v5">{t('dnsSecurityEditDnsRetentionModal.piholeVersion.v5')}</option>
+              <option value="v6">{t('dnsSecurityEditDnsRetentionModal.piholeVersion.v6')}</option>
+            </select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t('dnsSecurityEditDnsRetentionModal.piholeVersion.help')}
+            </p>
+          </div>
+        )}
 
         <div>
           <label htmlFor={inputId} className="mb-1 block text-sm font-medium">

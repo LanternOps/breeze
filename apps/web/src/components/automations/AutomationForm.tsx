@@ -184,7 +184,8 @@ const getTriggerTypeOptions = (t: ScriptsT): { value: TriggerType; label: string
   }
 ];
 
-const getEventTypeOptions = (t: ScriptsT) => [
+/** The event types a Job (and a hand-built flow, flows completion W01e) can trigger on. */
+export const getEventTypeOptions = (t: ScriptsT) => [
   { value: 'device.online', label: t('automationForm.eventTypes.deviceOnline') },
   { value: 'device.offline', label: t('automationForm.eventTypes.deviceOffline') },
   { value: 'alert.triggered', label: t('automationForm.eventTypes.alertTriggered') },

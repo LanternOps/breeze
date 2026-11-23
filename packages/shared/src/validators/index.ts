@@ -1063,6 +1063,44 @@ export const assignPolicySchema = z.object({
   osFilter: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
 });
 
+/**
+ * The staged Apply (#12466, plan W02b G3): one diff-shaped request that adds,
+ * edits and removes assignments of one policy. Each list is capped at 200.
+ * `update` changes only priority and filters; level, target and policy never
+ * change. Per-field checks stay on the fields (zod 4.6 skips a superRefine once
+ * a field fails); the superRefine holds only the cross-entry rules: an id
+ * appears at most once across `update` and `remove`.
+ */
+export const applyAssignmentsSchema = z.object({
+  add: z.array(assignPolicySchema).max(200).default([]),
+  update: z.array(z.object({
+    id: z.string().guid(),
+    priority: z.number().int().min(0).max(1000).optional(),
+    roleFilter: z.array(z.enum(DEVICE_ROLES)).nullable().optional(),
+    osFilter: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional(),
+  })).max(200).default([]),
+  remove: z.array(z.string().guid()).max(200).default([]),
+  dryRun: z.boolean().optional(),
+}).superRefine((data, ctx) => {
+  const updateIds = new Set<string>();
+  data.update.forEach((entry, index) => {
+    if (updateIds.has(entry.id)) {
+      ctx.addIssue({ code: 'custom', path: ['update', index, 'id'], message: 'An assignment appears more than once in update' });
+    }
+    updateIds.add(entry.id);
+  });
+  const removeIds = new Set<string>();
+  data.remove.forEach((id, index) => {
+    if (updateIds.has(id)) {
+      ctx.addIssue({ code: 'custom', path: ['remove', index], message: 'An assignment cannot be both updated and removed' });
+    } else if (removeIds.has(id)) {
+      ctx.addIssue({ code: 'custom', path: ['remove', index], message: 'An assignment appears more than once in remove' });
+    }
+    removeIds.add(id);
+  });
+});
+export type ApplyAssignmentsInput = z.infer<typeof applyAssignmentsSchema>;
+
 export const diffSchema = z.object({
   add: z.array(z.object({
     configPolicyId: z.string().guid(),
@@ -1285,6 +1323,9 @@ export * from './topology';
 
 export * from './topologyCollection';
 
+// Learned networks heartbeat attachment report (#12369 B1)
+export * from './networkAttachments';
+
 export * from './topologyConfiguration';
 
 export * from './topologyPresence';
@@ -1500,6 +1541,7 @@ export * from './flowRuns';
 export * from './flowBudgets';
 export * from './flowWebhooks';
 export * from './flowConversions';
+export * from './flowDrafts';
 export * from './networkIsolation';
 export * from './oemUpdates';
 export * from './oemObserve';

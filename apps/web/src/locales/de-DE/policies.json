@@ -1,50 +1,17 @@
 {
   "configurationPolicies": {
     "assignmentsTab": {
-      "deviceGroup": "Gerätegruppe",
       "windows": "Windows",
       "macOS": "macOS",
       "linux": "Linux",
-      "failedToFetchAssignments": "Aufgaben konnten nicht abgerufen werden",
-      "thisPolicyHasNoOrganizationSoAssignment": "Diese Richtlinie hat keine Organisation, daher können Zuweisungsziele nicht aufgelistet werden.",
-      "failedToAddAssignment": "Aufgabe konnte nicht hinzugefügt werden",
-      "failedToRemoveAssignment": "Die Zuweisung konnte nicht entfernt werden",
-      "assignmentAdded": "Aufgabe hinzugefügt",
-      "assignmentRemoved": "Zuweisung entfernt",
       "roleFilter": "Rollenfilter",
       "optional": "(optional)",
       "noRestrictionAppliesToAllDeviceRoles": "Keine Einschränkung – gilt für alle Geräterollen",
       "oSFilter": "Betriebssystemfilter",
       "optional2": "(optional)",
       "noRestrictionAppliesToAllOperatingSystems": "Keine Einschränkung – gilt für alle Betriebssysteme",
-      "priority": "Priorität",
-      "currentAssignments": "Aktuelle Aufgaben",
-      "noAssignmentsYetAssignThisPolicyTo": "Noch keine Aufgaben. Weisen Sie diese Richtlinie den oben genannten Zielen zu.",
-      "level": "Ebene",
-      "target": "Ziel",
-      "priority2": "Priorität",
-      "filters": "Filter",
-      "allOrganizations": "Alle Organisationen",
       "allDevices": "Alle Geräte",
-      "addAssignment": "Aufgabe hinzufügen",
-      "level2": "Ebene",
-      "target2": "Ziel",
-      "target3": "Ziel",
-      "search": "Suchen...",
-      "loading": "Laden...",
-      "restrictThisAssignmentToDevicesWithSpecific": "Beschränken Sie diese Zuweisung auf Geräte mit bestimmten Rollen. Lassen Sie das Feld leer, um es auf alle Rollen anzuwenden.",
-      "lowerValuesOverrideHigherOnesWhenMultiple": "Niedrigere Werte haben Vorrang vor höheren, wenn mehrere Richtlinien auf derselben Ebene auf dasselbe Gerät abzielen.",
-      "partner": "Partner",
-      "scopeOfTheAssignmentMoreSpecificLevels": "Umfang des Auftrags. Spezifischere Ebenen (Gerät) haben Vorrang vor umfassenderen (Organisation).",
-      "organization": "Organisation",
-      "anOrganizationPolicyAlwaysTargetsItsOwn": "Eine Organisationsrichtlinie zielt immer auf die eigene Organisation ab. Wählen Sie eine engere Ebene (Standort, Gerätegruppe, Gerät), um den Bereich weiter einzuschränken.",
-      "thisOrganization": "Diese Organisation",
-      "selectATarget": "Wählen Sie ein Ziel aus...",
-      "noTargetsAvailable": "Keine Ziele verfügbar",
-      "noMatchesFound": "Keine Übereinstimmungen gefunden",
-      "assigning": "Zuweisen...",
-      "assign": "Zuweisen",
-      "failedToLoadTargetsHttp": "Ziele konnten nicht geladen werden (HTTP {{status}})"
+      "restrictThisAssignmentToDevicesWithSpecific": "Beschränken Sie diese Zuweisung auf Geräte mit bestimmten Rollen. Lassen Sie das Feld leer, um es auf alle Rollen anzuwenden."
     },
     "breezeDefaultsPage": {
       "receivedAnInvalidResponseFromTheServer": "Vom Server wurde eine ungültige Antwort erhalten.",
@@ -81,23 +48,23 @@
       "howWouldYouLikeToConfigureThis": "Wie möchten Sie diese Richtlinie konfigurieren?",
       "configureNew": "Neu konfigurieren",
       "startFreshWithCustomSettingsForEach": "Beginnen Sie neu mit benutzerdefinierten Einstellungen für jede Funktion",
-      "linkToExisting": "Link zu Vorhanden",
-      "useAnotherPolicyAsTheMasterBaseline": "Verwenden Sie eine andere Richtlinie als Master-Baseline",
+      "linkToExisting": "Basierend auf einer übergeordneten Richtlinie",
+      "useAnotherPolicyAsTheMasterBaseline": "Einstellungen einer anderen Richtlinie übernehmen und nur Abweichungen ändern",
       "newConfigurationPolicy2": "Neue Konfigurationsrichtlinie",
-      "masterPolicy": "Master-Richtlinie",
-      "selectTheConfigurationPolicyToUseAs": "Wählen Sie die Konfigurationsrichtlinie aus, die als Basis verwendet werden soll. Sie können einzelne Einstellungen pro Funktion überschreiben.",
+      "masterPolicy": "Übergeordnete Richtlinie",
+      "selectTheConfigurationPolicyToUseAs": "Wählen Sie die übergeordnete Richtlinie aus. Sie können einzelne Funktionen für diese Richtlinie ändern.",
       "policyDetails": "Richtliniendetails",
       "eGStandardWorkstationPolicy": "z.B. Standard-Arbeitsplatzrichtlinie",
       "optionalDescriptionOfWhatThisPolicyConfigures": "Optionale Beschreibung dessen, was diese Richtlinie konfiguriert",
-      "scope": "Umfang",
-      "partnerLibrary": "Partnerbibliothek",
-      "assignToOrganizationsAfterCreating": "(Nach dem Erstellen Organisationen zuweisen)",
-      "aSpecificOrganization": "Eine bestimmte Organisation",
+      "scope": "Verwaltet von",
+      "partnerLibrary": "Ihr MSP",
+      "assignToOrganizationsAfterCreating": "(als Nächstes festlegen, wo sie gilt)",
+      "aSpecificOrganization": "Eine Organisation",
       "selectAnOrganization": "Wählen Sie eine Organisation aus",
-      "createAReusablePolicyOwnedByYour": "Erstellen Sie eine wiederverwendbare Richtlinie, die Ihrem Partner gehört. Es gilt für keine Organisationen, bis Sie es auf der Registerkarte „Organisationen“ der Richtlinie zuweisen. Sicherungseinstellungen sind für Richtlinien im Besitz von Partnern nicht verfügbar.",
+      "createAReusablePolicyOwnedByYour": "Verwaltet von Ihrem MSP. Sie gilt für nichts, bis Sie unter „Gilt für“ festlegen, wo sie gilt.",
       "new": "neu",
       "linked": "verlinkt",
-      "createAPolicyLinkedToAnExisting": "Erstellen Sie eine Richtlinie, die mit einem vorhandenen Master verknüpft ist.",
+      "createAPolicyLinkedToAnExisting": "Erstellen Sie eine Richtlinie, die auf einer übergeordneten Richtlinie basiert.",
       "createANewConfigurationPolicyToBundle": "Erstellen Sie eine neue Konfigurationsrichtlinie, um Funktionseinstellungen zu bündeln.",
       "name": "Namen",
       "description": "Beschreibung",
@@ -116,16 +83,15 @@
       "failedToUpdatePolicy": "Die Richtlinie konnte nicht aktualisiert werden",
       "overview": "Übersicht",
       "complianceStatus": "Compliance-Status",
-      "assignments": "Aufgaben",
       "loadingPolicy": "Richtlinie wird geladen...",
       "backToList": "Zurück zur Liste",
       "configurationPolicies": "Konfigurationsrichtlinien",
       "policyDetails": "Richtliniendetails",
       "archived2": "Archiviert",
-      "inheritingFrom": "Erben von",
-      "overrideIndividualTabsToCustomizeSettings": "– Überschreiben Sie einzelne Registerkarten, um Einstellungen anzupassen",
-      "isnTAvailableOnPartnerWidePolicies": "ist für partnerweite Richtlinien nicht verfügbar",
-      "configureThisFeatureOnAnOrganizationScoped": "Konfigurieren Sie diese Funktion für eine organisationsweite Richtlinie.",
+      "inheritingFrom": "Basiert auf",
+      "overrideIndividualTabsToCustomizeSettings": "Ändern Sie eine Funktion, um sie nur für diese Richtlinie festzulegen.",
+      "isnTAvailableOnPartnerWidePolicies": " ist für MSP-verwaltete Richtlinien nicht verfügbar",
+      "configureThisFeatureOnAnOrganizationScoped": "Legen Sie diese Funktion in einer Richtlinie fest, die von einer Organisation verwaltet wird.",
       "thisPolicyStillCarriesAnExisting": "Diese Richtlinie trägt noch eine bestehende",
       "configurationThatWillNeverBeApplied": "Konfiguration, die niemals angewendet wird.",
       "policy": "Richtlinie",
@@ -138,8 +104,13 @@
       "complianceStatus2": "compliance_status",
       "assignments2": "Aufgaben",
       "managedByYourMsp": "Verwaltet von Ihrem MSP",
-      "inheritedByPolicies_one": "Von {{count}} Richtlinie geerbt",
-      "inheritedByPolicies_other": "Von {{count}} Richtlinien geerbt"
+      "inheritedByPolicies_one": "Übergeordnet für {{count}} Richtlinie",
+      "inheritedByPolicies_other": "Übergeordnet für {{count}} Richtlinien",
+      "gatedFeatureTitle": "Für MSP-verwaltete Richtlinien nicht verfügbar. Legen Sie diese Funktion in einer Richtlinie fest, die von einer Organisation verwaltet wird.",
+      "appliesToDrawerTitle": "Gilt für",
+      "detailsSaved": "Richtliniendetails gespeichert",
+      "refreshAppliesToFailed": "Der Geltungsbereich dieser Richtlinie konnte nicht aktualisiert werden. Laden Sie die Seite neu, um ihn zu sehen.",
+      "appliesToCloseBlocked": "Wenden Sie Ihre Änderungen zuerst an oder verwerfen Sie sie."
     },
     "configPolicyList": {
       "archived": "Archiviert",
@@ -151,18 +122,18 @@
       "archived2": "Archiviert",
       "features": "Funktionen",
       "noPoliciesFoundTryAdjustingYourSearch": "Keine Richtlinien gefunden. Versuchen Sie, Ihre Suche anzupassen.",
-      "noPoliciesYet": "Noch keine Konfigurationsrichtlinien. Erstellen Sie eine und weisen Sie sie dann Organisationen, Standorten oder Geräten zu.",
-      "partnerWidePolicyAppliesToEveryOrganization": "Partnerweite Richtlinie – gilt für jede Organisation",
-      "allOrgs": "Partnerweit",
+      "noPoliciesYet": "Noch keine Konfigurationsrichtlinien. Erstellen Sie eine und legen Sie dann fest, wo sie gilt.",
       "page": "Seite",
       "of2": "von",
       "itsOwningOrganization": "seine Eigentümerorganisation",
-      "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}",
       "summary": "{{filtered}} von {{total}} Richtlinien",
       "inheritsBadge": "Erbt",
       "statusFilterLabel": "Status",
-      "partnerPolicy": "Partner",
-      "partnerPolicyAppliesOnlyWhereAssigned": "Partnerrichtlinie – gilt nur dort, wo sie zugewiesen ist. Weisen Sie sie allen Organisationen zu, um sie partnerweit zu machen."
+      "appliesToHeader": "Gilt für",
+      "managedByOrganization": "Verwaltet von {{organization}}",
+      "notAppliedChip": "Nicht angewendet",
+      "inUseChip_one": "In Verwendung über {{count}} Richtlinie",
+      "inUseChip_other": "In Verwendung über {{count}} Richtlinien"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Konfigurationsrichtlinien konnten nicht abgerufen werden",
@@ -180,31 +151,6 @@
       "delete": "löschen",
       "deleting": "Löschen...",
       "deleteBlockedByChildren": "Löschen Sie zuerst die Richtlinien, die von dieser erben:"
-    },
-    "organizationScopePanel": {
-      "failedToLoadAssignments": "Zuweisungen konnten nicht geladen werden",
-      "failedToLoadOrganizations": "Die Organisationen konnten nicht geladen werden",
-      "failedToRemove": "Fehler beim Entfernen",
-      "failedToRemove2": "Fehler beim Entfernen",
-      "failedToAssignAllOrgs": "Es konnten nicht alle Organisationen zugewiesen werden",
-      "failedToRemove3": "Fehler beim Entfernen",
-      "failedToNarrow": "Eingrenzen fehlgeschlagen",
-      "failedToAssignOrg": "Organisation konnte nicht zugewiesen werden",
-      "organizations": "Organisationen",
-      "thisPartnerLibraryPolicyAppliesOnlyTo": "Diese Partnerbibliotheksrichtlinie gilt nur für die von Ihnen ausgewählten Organisationen.",
-      "filtersApplyOnAssign": "Diese Filter gelten bei der Zuweisung unten. Leer bedeutet jede Rolle und jedes Betriebssystem. Um die Filter einer Zuweisung zu ändern, schalten Sie sie aus und wieder ein.",
-      "allOrganizationsPartnerWide": "Alle Organisationen (partnerweit)",
-      "allOrganizationsPartnerWide2": "Alle Organisationen (partnerweit)",
-      "assigned": "Zugewiesen",
-      "searchOrganizations": "Organisationen suchen...",
-      "searching": "Suche...",
-      "noOrganizationsMatchYourSearch": "Keine Organisationen entsprechen Ihrer Suche.",
-      "appliedToAllOrganizationsUncheckAllOrganizations": "Gilt für alle Organisationen. Deaktivieren Sie „Alle Organisationen“, um eine Teilmenge auszuwählen.",
-      "polite": "höflich",
-      "loading": "Laden…",
-      "loadMoreOrganizations": "Weitere Organisationen laden",
-      "appliedToAllOrgs": "Richtlinie gilt jetzt für alle Organisationen",
-      "removedFromAllOrgs": "Richtlinie gilt nicht mehr für alle Organisationen"
     },
     "featureTabs": {
       "automationTab": {
@@ -700,7 +646,11 @@
         "revertConfirmTitle": "Auf übergeordnete Richtlinie zurücksetzen?",
         "revertConfirmMessage": "Dadurch wird die {{feature}}-Überschreibung dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Einstellungen der übergeordneten Richtlinie gelten für alle Geräte, die diese Richtlinie verwenden. Dies kann nicht rückgängig gemacht werden.",
         "removeConfirmTitle": "Diese Konfiguration entfernen?",
-        "removeConfirmMessage": "Dadurch wird die {{feature}}-Konfiguration aus dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Funktion wird auf keinem Gerät mehr angewendet, das diese Richtlinie verwendet. Dies kann nicht rückgängig gemacht werden."
+        "removeConfirmMessage": "Dadurch wird die {{feature}}-Konfiguration aus dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Funktion wird auf keinem Gerät mehr angewendet, das diese Richtlinie verwendet. Dies kann nicht rückgängig gemacht werden.",
+        "badgeInherited": "Konfiguriert (geerbt)",
+        "badgeSavedNotDeployed": "Gespeichert (nicht bereitgestellt)",
+        "badgeConfigured": "Konfiguriert",
+        "badgeNotConfigured": "Nicht konfiguriert"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Stellen Sie Breeze Assist auf Geräten bereit",
@@ -818,6 +768,7 @@
         "overridesLabel": "Überschreibungen:",
         "failedToLoadMonitors": "Überwachungen konnten nicht geladen werden",
         "createMonitor": "Monitor erstellen",
+        "helpText": "Monitordefinitionen finden Sie unter Warnungen > Monitore. Hier legen Sie fest, welche Monitore für diese Richtlinie gelten, und können den Wert eines Monitors überschreiben.",
         "notAttachable": "Dieser Monitor kann dieser Richtlinie nicht zugewiesen werden. Partnereigene Richtlinien können nur partnerweite Monitore verwenden.",
         "monitorDeleted": "Monitor gelöscht",
         "recommended": {
@@ -1388,6 +1339,8 @@
         "blockedLabel": "Gesperrte Updates",
         "blockedPlaceholder": "Update-IDs, durch Kommas getrennt",
         "blockedHelp": "Breeze installiert niemals ein hier aufgeführtes Update.",
+        "blockedUnsupported": "{{vendor}} unterstützt das Sperren einzelner Updates nicht. Um die Updates zu stoppen, schalten Sie die Kategorie oder den Hersteller aus.",
+        "blockedStoredUnsupported": "Diese Richtlinie sperrt die {{vendor}}-Updates {{ids}}. {{vendor}} unterstützt das nicht, daher werden unter ihr keine {{vendor}}-Updates ausgeführt. Beim Speichern werden die gesperrten Updates entfernt.",
         "executeRequired": "Zum Aktivieren von Hersteller-Updates, Hinzufügen einer Kategorie, Aktivieren von Neustarts über Nacht oder Entsperren eines Updates sind die Berechtigung devices.execute und MFA erforderlich. Bitten Sie jemanden mit dieser Berechtigung, diese Änderung zu speichern.",
         "gateClosedRefusal": "Eine der ausgewählten Update-Kategorien ist noch nicht verfügbar, daher wurde die Richtlinie nicht gespeichert. Entfernen Sie sie und speichern Sie erneut.",
         "invalid": "Prüfen Sie den Zeitplan: Das Fenster umfasst 1 bis 8 volle Stunden, das Nachholen 0 bis 14 Nächte, und die Startzeit hat das Format HH:MM.",
@@ -1450,19 +1403,159 @@
         "body": "Diese Bedingungen existieren sowohl als angehängter Monitor als auch als Alt-Regel oder -Überwachung: {{names}}"
       }
     },
-    "partnerGroupAssignment": {
-      "title": "Gerätegruppen (alle Org.)",
-      "description": "Wählen Sie eine partnerweite Gerätegruppe als Ziel. Eine Gruppenzuweisung gilt auf Gerätegruppenebene und hat daher Vorrang vor Zuweisungen anderer Richtlinien auf Organisations- und Standortebene.",
-      "selectGroup": "Gerätegruppe auswählen",
-      "assign": "Zuweisen",
-      "remove": "Entfernen",
-      "assigned": "Gerätegruppe zugewiesen",
-      "removed": "Gerätegruppenzuweisung entfernt",
-      "failedToLoad": "Gerätegruppen konnten nicht geladen werden",
-      "failedToAssign": "Gerätegruppe konnte nicht zugewiesen werden",
-      "failedToRemove": "Gerätegruppenzuweisung konnte nicht entfernt werden",
-      "empty": "Noch keine partnerweiten Gerätegruppen. Erstellen Sie eine unter Gerätegruppen → Alle Org.",
-      "loading": "Gerätegruppen werden geladen…"
+    "featureNames": {
+      "patch": {
+        "label": "Patches"
+      },
+      "monitors": {
+        "label": "Monitore"
+      },
+      "backup": {
+        "label": "Sicherung"
+      },
+      "security": {
+        "label": "Sicherheit"
+      },
+      "maintenance": {
+        "label": "Wartung"
+      },
+      "compliance": {
+        "label": "Compliance"
+      },
+      "automation": {
+        "label": "Automatisierungen"
+      },
+      "event_log": {
+        "label": "Ereignisprotokolle"
+      },
+      "software_policy": {
+        "label": "Software-Richtlinie"
+      },
+      "sensitive_data": {
+        "label": "Datenerkennung"
+      },
+      "peripheral_control": {
+        "label": "Peripheriesteuerung"
+      },
+      "warranty": {
+        "label": "Garantie"
+      },
+      "helper": {
+        "label": "Breeze Assist"
+      },
+      "remote_access": {
+        "label": "Fernzugriff"
+      },
+      "pam": {
+        "label": "Privilegierter Zugriff"
+      },
+      "vulnerability": {
+        "label": "Schwachstellenscans"
+      },
+      "onedrive_helper": {
+        "label": "OneDrive Helper"
+      },
+      "device_lifecycle": {
+        "label": "Gerätelebenszyklus"
+      },
+      "hardware_monitoring": {
+        "label": "Hardware-Überwachung"
+      }
+    },
+    "levelNames": {
+      "partner": {
+        "label": "Alle Organisationen"
+      },
+      "organization": {
+        "label": "Organisation"
+      },
+      "site": {
+        "label": "Standort"
+      },
+      "device_group": {
+        "label": "Gerätegruppe"
+      },
+      "device": {
+        "label": "Gerät"
+      },
+      "default": {
+        "label": "Breeze Defaults"
+      }
+    },
+    "appliesToStrip": {
+      "heading": "Gilt für",
+      "unknownState": "Unbekannt",
+      "notAppliedWarning": "Auf kein Gerät angewendet. Diese Richtlinie gilt für nichts, bis Sie festlegen, wo sie gilt.",
+      "notAppliedNeutral": "Noch nicht angewendet",
+      "inUseCount_one": "In Verwendung über {{count}} Richtlinie",
+      "inUseCount_other": "In Verwendung über {{count}} Richtlinien",
+      "moreTargets_one": "{{count}} weiteres Ziel",
+      "moreTargets_other": "{{count}} weitere Ziele",
+      "assignButton": "Zuweisen"
+    },
+    "appliesToPanel": {
+      "loadFailed": "Der Geltungsbereich dieser Richtlinie konnte nicht geladen werden",
+      "applyFailed": "Die Änderungen konnten nicht angewendet werden",
+      "applied": "Änderungen angewendet",
+      "loading": "Geltungsbereich dieser Richtlinie wird geladen",
+      "retry": "Erneut versuchen",
+      "unnamedTarget": "Ziel {{id}}",
+      "rowStateAdded": "Neu",
+      "rowStateChanged": "Geändert",
+      "rowStateRemoved": "Wird entfernt",
+      "undoRemove": "Rückgängig",
+      "removeTarget": "{{name}} entfernen",
+      "advanced": "Erweitert",
+      "priorityLabel": "Priorität",
+      "priorityHint": "Auf derselben Ebene gewinnt die niedrigere Zahl.",
+      "entryRefused": "Diese Änderung wurde abgelehnt.",
+      "conflictFallback": "Der Geltungsbereich dieser Richtlinie hat sich geändert, seit Sie sie geöffnet haben. Es wurde nichts angewendet.",
+      "lockedOrganization": "Verwaltet von {{organization}}. Gilt nur innerhalb dieser Organisation.",
+      "scopeLegend": "Gilt für",
+      "scopeAllOrganizations": "Alle Organisationen",
+      "scopeAllOrganizationsHint": "Jede Organisation, die Ihr MSP verwaltet, einschließlich später hinzugefügter.",
+      "scopeSpecificTargets": "Bestimmte Ziele",
+      "scopeSpecificTargetsHint": "Nur die unten aufgeführten Organisationen, Standorte, Gerätegruppen und Geräte.",
+      "targetsHeading": "Ziele",
+      "noTargets": "Noch keine Ziele. Fügen Sie unten eines hinzu.",
+      "hiddenRows_one": "{{count}} weiteres Ziel gilt, auf das Sie keinen Zugriff haben. Beim Anwenden bleibt es unverändert.",
+      "hiddenRows_other": "{{count}} weitere Ziele gelten, auf die Sie keinen Zugriff haben. Beim Anwenden bleiben sie unverändert.",
+      "addTargetHeading": "Ziel hinzufügen",
+      "precedenceLegend": "Das Spezifischste gewinnt, je Funktion: Gerät › Gerätegruppe › Standort › Organisation › Alle Organisationen. Eine näher liegende Richtlinie ersetzt die gesamte Funktion; sie wird nicht zusammengeführt.",
+      "reload": "Neu laden",
+      "zeroMatching": "0 passende Geräte. Nach dieser Änderung erreicht die Richtlinie kein Gerät, das Sie sehen können.",
+      "counting": "Geräte werden gezählt…",
+      "countUnavailable": "Die von dieser Änderung betroffenen Geräte konnten nicht gezählt werden.",
+      "estimateNote": "Schätzung: zu viele Ziele für eine genaue Zählung.",
+      "discard": "Änderungen verwerfen",
+      "discardConfirmQuestion": "Die vorbereiteten Änderungen verwerfen?",
+      "discardConfirm": "Verwerfen",
+      "keepEditing": "Weiter bearbeiten",
+      "applying": "Wird angewendet…",
+      "applyButton": "Anwenden",
+      "applyWithDelta_one": "Anwenden · fügt {{added}} Gerät hinzu, entfernt {{removed}}",
+      "applyWithDelta_other": "Anwenden · fügt {{added}} Geräte hinzu, entfernt {{removed}}",
+      "applyWithEstimate_one": "Anwenden · fügt etwa {{added}} Gerät hinzu, entfernt etwa {{removed}}",
+      "applyWithEstimate_other": "Anwenden · fügt etwa {{added}} Geräte hinzu, entfernt etwa {{removed}}"
+    },
+    "targetPicker": {
+      "levelGroupLabel": "Zielebene",
+      "searchPlaceholder": "Suchen",
+      "loading": "Wird geladen…",
+      "loadFailed": "Ziele konnten nicht geladen werden",
+      "noResults": "Keine Treffer",
+      "alreadyListed": "Bereits aufgeführt",
+      "changeOrganization": "Organisation ändern",
+      "chooseOrganizationFirst": "Wählen Sie zuerst die Organisation aus.",
+      "lockedOrganizationHint": "Eine von der Organisation verwaltete Richtlinie gilt nur innerhalb ihrer eigenen Organisation.",
+      "mspGroupsHeading": "Gerätegruppen organisationsübergreifend"
+    },
+    "reachCount": {
+      "devices_one": "{{count}} Gerät",
+      "devices_other": "{{count}} Geräte",
+      "atLeastDevices_one": "Mindestens {{count}} Gerät",
+      "atLeastDevices_other": "Mindestens {{count}} Geräte",
+      "noneVisible": "Keine Geräte, die Sie sehen können"
     }
   },
   "software": {

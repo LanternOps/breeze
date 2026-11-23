@@ -5,6 +5,7 @@ export {
   addFeatureLinkSchema,
   updateFeatureLinkSchema,
   assignPolicySchema,
+  applyAssignmentsSchema,
   diffSchema,
   listConfigPoliciesSchema,
   targetQuerySchema,

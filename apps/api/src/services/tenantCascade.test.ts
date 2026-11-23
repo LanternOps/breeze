@@ -568,8 +568,8 @@ describe('cascadeDeleteOrg', () => {
 
   it('re-throws and aborts cascade on a non-42P01 error', async () => {
     // FK edge query returns []; the first DELETE call AFTER the associated
-    // pre-clears (ASSOCIATED_SYSTEM_SCOPED_TABLES — seven of them now, not the
-    // three this comment used to name) throws a
+    // pre-clears (ASSOCIATED_SYSTEM_SCOPED_TABLES; counted below, not named
+    // here, because the list keeps growing) throws a
     // non-42P01 — i.e. the first ordered cascade-table DELETE, which is the
     // path that wraps errors with `DELETE from "<table>"` context.
     const associatedCount = __testOnly.ASSOCIATED_SYSTEM_SCOPED_TABLES.length;

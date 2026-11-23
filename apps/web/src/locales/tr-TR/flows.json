@@ -3,7 +3,9 @@
   "subtitle": "Araçları birbirine zincirleyen çok adımlı otomasyonlar.",
   "empty": {
     "title": "Henüz akış yok",
-    "body": "Breeze AI'dan bir akış taslağı hazırlamasını isteyin, ardından burada inceleyin."
+    "body": "Akış, Breeze'in her çalıştırmada aynı şekilde izlediği kayıtlı bir adım listesidir. Bir zamanlamayla, bir olayda, bir webhook'tan veya siz başlattığınızda çalışabilir. Görev birden fazla adım içeriyorsa, onay gerektiriyorsa veya başka araçları çağırıyorsa akış kullanın. Bir adım istemedikçe yapay zeka kullanmaz. Bir betiği zamanlamayla çalıştırmak için iş daha basittir.",
+    "how": "Yeni Otomasyon ile bir akış oluşturun, Breeze AI'dan taslağını hazırlamasını isteyin veya İşler sayfasından mevcut bir işi taşıyın.",
+    "jobsLink": "İşler'e git"
   },
   "list": {
     "name": "Ad",
@@ -41,7 +43,13 @@
     "version": "Sürüm {{version}}",
     "createdInChat": "Breeze AI'da oluşturuldu",
     "movedFromJob": "İşten taşındı",
-    "movedFromJobReverted": "(geri taşındı)"
+    "movedFromJobReverted": "(geri taşındı)",
+    "edit": "Düzenle",
+    "delete": "Taslağı sil",
+    "deleteConfirmTitle": "Bu taslak silinsin mi?",
+    "deleteConfirmMessage": "Taslak kalıcı olarak kaldırılır. Bu işlem geri alınamaz.",
+    "deleteHasHistory": "Bu akış etkinleştirildi veya bir işten taşındı, bu nedenle artık silinemez. Bunun yerine devre dışı bırakın.",
+    "deleteHasHistoryLink": "İşi aç"
   },
   "step": {
     "tool": "Araç",
@@ -121,7 +129,9 @@
     "enableFailed": "Akış etkinleştirilemedi.",
     "disableFailed": "Akış devre dışı bırakılamadı.",
     "runFailed": "Çalıştırma başlatılamadı.",
-    "cancelFailed": "Çalıştırma iptal edilemedi."
+    "cancelFailed": "Çalıştırma iptal edilemedi.",
+    "saveFailed": "Akış kaydedilemedi.",
+    "deleteFailed": "Taslak silinemedi."
   },
   "tabs": {
     "overview": "Genel bakış",
@@ -328,7 +338,9 @@
     "enabled": "Akış etkinleştirildi",
     "disabled": "Akış devre dışı bırakıldı",
     "runStarted": "Çalıştırma başlatıldı",
-    "runCancelled": "Çalıştırma iptal edildi"
+    "runCancelled": "Çalıştırma iptal edildi",
+    "draftSaved": "Taslak kaydedildi",
+    "draftDeleted": "Taslak silindi"
   },
   "disable": {
     "title": "Akışı devre dışı bırak",
@@ -766,12 +778,119 @@
     "migration": {
       "banner": {
         "r1": "İşler Akışlar'a taşınıyor.",
-        "r1Body": "Yeni işler Akışlar'da oluşturulur. Gölgesi eşleşince her işi taşıyın; geri de taşıyabilirsiniz."
+        "r1Body": "İşleri burada oluşturmaya ve düzenlemeye devam edebilirsiniz. Gölgesi eşleşince bir işi taşıyın; geri de taşıyabilirsiniz."
       },
       "convertAll": "Dönüştürülebilir tümü için gölge başlat",
       "converting": "Başlatılıyor…",
       "bulkSummary": "{{created}} başlatıldı, {{skipped}} atlandı.",
       "newJobOpensFlows": "Yeni akış"
     }
+  },
+  "flowEditor": {
+    "titleNew": "Yeni Otomasyon",
+    "titleEdit": "{{name}} düzenle",
+    "subtitle": "Akışı form ile oluşturun veya belgesini doğrudan düzenleyin. Her iki sekme de aynı belgeyi düzenler.",
+    "backToFlow": "Akışa dön",
+    "tabs": {
+      "form": "Form görünümü",
+      "document": "Belge"
+    },
+    "owner": {
+      "title": "Sahip",
+      "organization": "Yalnızca bu kuruluş",
+      "partner": "Tüm kuruluşlar"
+    },
+    "enabledReadOnly": "Bu akış etkin olduğundan düzenlenemez. Değişiklik yapmak için devre dışı bırakın, ardından yeniden etkinleştirin.",
+    "disableAndEdit": "Devre dışı bırak ve düzenle",
+    "disableMessage": "Devre dışı bırakmak sıradaki ve bekleyen çalıştırmaları ile bekleyen onayları iptal eder. Hâlihazırda devam eden çalıştırmalar bir sonraki kontrol noktasında durur. Düzenledikten sonra akışı yeniden etkinleştirebilirsiniz.",
+    "notFormShaped": "Form bu belgedeki her şeyi gösteremediği için burada salt okunurdur. Bunun yerine belgeyi düzenleyin.",
+    "openDocument": "Belgeyi aç",
+    "validateFailed": "Belge denetlenemedi: {{message}}",
+    "conflict": "Siz düzenlerken başka biri bu akışı kaydetti. Değişiklikleriniz hâlâ burada. En son sürümü almak için yeniden yükleyin; yeniden yüklemek değişikliklerinizi siler.",
+    "reload": "Yeniden yükle",
+    "saveInvalid": "Belgede hatalar olduğu için akış kaydedilmedi. Listelenen sorunları düzeltin ve yeniden kaydedin.",
+    "notDraft": "Bu akış etkin olduğundan kaydedilemez. Önce devre dışı bırakın.",
+    "webhookNext": "Kaydedildi. Webhook akışları akış sayfasından etkinleştirilir: webhook gizli anahtarını orada oluşturun, göndericiye verin, ardından akışı etkinleştirin.",
+    "webhookTabLink": "Webhook sekmesini aç",
+    "limits": "Her çalıştırma en fazla {{devices}} cihaza ulaşır ve en fazla {{notices}} bildirim gönderir. Bir akışta en fazla {{steps}} adım olabilir.",
+    "save": "Kaydet",
+    "saveAndEnable": "Kaydet ve etkinleştir",
+    "shadow": {
+      "title": "Karşılaştırma sıfırlansın mı?",
+      "message": "Bu akış bir işten taşındı ve hâlâ onunla karşılaştırılıyor. Bir değişikliği kaydetmek karşılaştırma kanıtlarını sıfırlar ve karşılaştırma yeniden başlar."
+    },
+    "document": {
+      "loading": "Düzenleyici yükleniyor…",
+      "loadError": "Düzenleyici yüklenemedi. Yeniden denemek için sayfayı yenileyin.",
+      "parseError": "Belge geçerli bir JSON değil"
+    },
+    "form": {
+      "name": "Ad",
+      "description": "Açıklama",
+      "remove": "Kaldır",
+      "listsFailed": "Betikleriniz ve bildirim kanallarınız yüklenemedi. Yeniden denemek için sayfayı yenileyin.",
+      "trigger": {
+        "title": "Ne zaman çalışır",
+        "timezone": "Saat dilimi",
+        "eventDeviceHelp": "Eylemler, olayı oluşturan cihazda çalışır. Bir olay cihaz bilgisi olmadan gelirse çalıştırma başarısız olur.",
+        "filter": "Yalnızca olay eşleştiğinde",
+        "filterHelp": "Her alan değeriyle tam olarak eşit olmalıdır. Bu türdeki her olayda çalıştırmak için boş bırakın.",
+        "filterKey": "Olay alanı",
+        "filterValue": "Değer",
+        "filterAdd": "Koşul ekle",
+        "resolverHelp": "Tüm kuruluşlar için bir akış, kuruluşu istek gövdesinden bulur: kuruluşun tanımlayıcısını içeren gövde alanını ve bu tanımlayıcının geldiği sistemi belirtin.",
+        "resolverPath": "Gövde alanı",
+        "resolverSystem": "Sistem",
+        "webhookHelp": "Akışı kaydedin, ardından webhook gizli anahtarını oluşturup akışı Webhook sekmesinden etkinleştirin.",
+        "manualHelp": "Akış yalnızca biri başlattığında çalışır.",
+        "resolverKind": "Tanımlayıcının kaynağı",
+        "resolverKindSystem": "Harici bir sistem",
+        "resolverKindBreezeOrg": "Bir Breeze kuruluş kimliği"
+      },
+      "target": {
+        "title": "Cihazlar",
+        "triggerDevice": "Olayı oluşturan cihaz.",
+        "choose": "Eylemlerin hangi cihazlarda çalışacağını seçin. Tüm cihazlar yalnızca başlangıç noktasıdır.",
+        "keep": "Tüm cihazları kullan",
+        "partnerWide": "Tüm kuruluşlar için bir akış, tüm cihazları veya bir filtreyi hedefleyebilir; belirli cihazları veya grupları hedefleyemez."
+      },
+      "actions": {
+        "title": "Eylemler",
+        "empty": "En az bir eylem ekleyin.",
+        "position": "Eylem {{n}}",
+        "runScript": "Betik çalıştır",
+        "notify": "Bildirim gönder",
+        "alert": "Uyarı oluştur",
+        "moveUp": "Yukarı taşı",
+        "moveDown": "Aşağı taşı",
+        "runAsDefault": "Betiğin ayarı",
+        "runAsSystem": "Sistem",
+        "runAsUser": "Oturum açmış kullanıcı",
+        "parameters": "Parametreler",
+        "parameterName": "Parametre adı",
+        "parameterValue": "Parametre değeri",
+        "parameterAdd": "Parametre ekle",
+        "severityInfo": "Bilgi",
+        "severityWarning": "Uyarı",
+        "severityCritical": "Kritik",
+        "title_": "Başlık",
+        "notifyHelp": "Her çalıştırmada cihaz başına değil, tek bir ileti gönderilir.",
+        "countsHelp": "Başarılı ve başarısız olan cihaz sayısı iletinin sonuna eklenir.",
+        "alertHelp": "Eylemlerin ulaştığı her cihazda bir uyarı oluşturulur.",
+        "commandHint": "Bir komut çalıştırmak için önce onu betik olarak kaydedin.",
+        "scriptsLink": "Betiklere git"
+      },
+      "onFailure": {
+        "title": "Betik bir cihaza gönderilemezse",
+        "stop": "Durdur",
+        "stopHelp": "Sonraki eylemler, betiğin gönderilemediği cihazları atlar.",
+        "continue": "Devam et",
+        "continueHelp": "Sonraki eylemler, betiğin gönderilemediği cihazlarda da çalışır.",
+        "notify": "Bildir",
+        "notifyHelp": "Betiğin gönderilemediği her cihaz için aşağıdaki kanallara bir bildirim gönderin. Çalıştırma başına en fazla 20 bildirim gönderilir.",
+        "noChannels": "Bildir seçeneğini kullanmak için bir bildirim kanalı ekleyin."
+      }
+    },
+    "enableOpenFailed": "Taslak kaydedildi, ancak etkinleştirme penceresi açılamadı. Etkinleştirmek için akışı açın."
   }
 }

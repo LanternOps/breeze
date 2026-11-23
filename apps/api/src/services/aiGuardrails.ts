@@ -3091,6 +3091,11 @@ const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string 
     { resource: 'devices', action: 'write' },
     { resource: 'alerts', action: 'write' },
   ],
+  // Flows completion W01b (#12435, Decision P20): primary automations.write in
+  // TOOL_PERMISSIONS, plus read. The REST twins (routes/flows.ts POST / and
+  // PUT /:id) inherit the router-level requirePermission('automations', 'read'),
+  // so the tool requires both, as aiGuardrails.routeBinding.contract.test.ts binds.
+  draft_flow: [{ resource: 'automations', action: 'read' }],
   restore_snapshot: [{ resource: 'backup', action: 'read' }],
   restore_as_vm: [{ resource: 'backup', action: 'read' }],
   instant_boot_vm: [{ resource: 'backup', action: 'read' }],
@@ -4746,6 +4751,16 @@ export function buildApprovalDescription(
       } else if (action === 'draft') {
         const kindLabel = input.kind === 'resolution_note' ? 'resolution note' : 'reply';
         parts.push(`Store AI ${kindLabel} draft on ticket #${shortTicketId}`);
+      } else if (action === 'edit_comment' || action === 'delete_comment') {
+        // #11674: these act on `expectedTicketId` and never read `ticketId`
+        // (intentRowTarget.ts), so the stub names that ticket. Never the
+        // replacement text, and not public/internal: the input does not say.
+        const commentTicketId = typeof input.expectedTicketId === 'string'
+          ? `${input.expectedTicketId.slice(0, 8)}...`
+          : 'unknown';
+        parts.push(action === 'edit_comment'
+          ? `Edit a comment on ticket #${commentTicketId} (replaces its text)`
+          : `Delete a comment on ticket #${commentTicketId}`);
       } else {
         parts.push(humanizeToolAction(toolName, action));
       }

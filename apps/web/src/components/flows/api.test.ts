@@ -34,6 +34,8 @@ vi.mock('../../lib/trustProbation', () => ({ dispatchTrustDenied: vi.fn(), isTru
 import { ActionError } from '../../lib/runAction';
 import {
   cancelFlowRun,
+  createFlowDraft,
+  deleteFlowDraft,
   disableFlow,
   enableFlow,
   getFlowLimits,
@@ -44,6 +46,8 @@ import {
   rotateWebhookSecret,
   saveFlowLimits,
   startFlowRun,
+  updateFlowDraft,
+  validateFlowDraftDocument,
 } from './api';
 
 function json(status: number, body: unknown): Response {
@@ -322,5 +326,106 @@ describe('W05 locale key lists match the shared const arrays', () => {
     expect(keys(w.step.builtin)).toEqual([
       'ai', 'create_alert', 'http_request', 'notify', 'resolve_targets', 'run_script_on_targets',
     ]);
+  });
+});
+
+describe('flows completion W01e: draft create, update, delete and validate client', () => {
+  const doc = { version: 1, name: 'n', trigger: { type: 'manual' }, steps: [] };
+  const validation = { valid: false, effectiveTier: null, steps: [], issues: [{ code: 'schema', severity: 'error', message: 'bad' }] };
+
+  it('create, update and delete go through runAction', async () => {
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(201, { flow: { id: 'f1' }, validation }));
+    const created = await createFlowDraft({ document: doc, ownerScope: 'partner' });
+    expect(created.flow.id).toBe('f1');
+    const [url, init] = mocks.fetchWithAuth.mock.calls[0];
+    expect(url).toBe('/flows');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ document: doc, ownerScope: 'partner' });
+    expect(init.orgIdOverride).toBeNull();
+
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(200, { flow: { id: 'f1' }, validation }));
+    await updateFlowDraft('f1', { document: doc, expectedVersion: 3 });
+    const [url2, init2] = mocks.fetchWithAuth.mock.calls[1];
+    expect(url2).toBe('/flows/f1');
+    expect(init2.method).toBe('PUT');
+    expect(JSON.parse(init2.body)).toEqual({ document: doc, expectedVersion: 3 });
+
+    mocks.fetchWithAuth.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await expect(deleteFlowDraft('f1', 4)).resolves.toBeUndefined();
+    const [url3, init3] = mocks.fetchWithAuth.mock.calls[2];
+    expect(url3).toBe('/flows/f1');
+    expect(init3.method).toBe('DELETE');
+    expect(JSON.parse(init3.body)).toEqual({ expectedVersion: 4 });
+
+    // A transport failure is toasted (runAction), proving the wrapper is in the path.
+    mocks.fetchWithAuth.mockRejectedValueOnce(new Error('offline'));
+    await expect(createFlowDraft({ document: doc })).rejects.toBeInstanceOf(ActionError);
+    // Three success toasts and one error toast: every outcome reported by runAction.
+    expect(mocks.showToast.mock.calls.map(([arg]) => arg.type)).toEqual(['success', 'success', 'success', 'error']);
+  });
+
+  it('a 422 is not toasted and carries validation', async () => {
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(422, { error: 'invalid', validation }));
+    const err = await createFlowDraft({ document: doc }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).status).toBe(422);
+    expect((err as ActionError).body).toEqual({ error: 'invalid', validation });
+    // 409 version_conflict and 403 partner_wide_forbidden are rendered inline too.
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(409, { error: 'version_conflict' }));
+    await expect(updateFlowDraft('f1', { document: doc, expectedVersion: 1 })).rejects.toBeInstanceOf(ActionError);
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(403, { error: 'partner_wide_forbidden' }));
+    await expect(createFlowDraft({ document: doc, ownerScope: 'partner' })).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).not.toHaveBeenCalled();
+  });
+
+  it('validate sends flowId and returns the validation', async () => {
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(200, { validation }));
+    const result = await validateFlowDraftDocument({ document: doc, flowId: 'f1' });
+    expect(result).toEqual(validation);
+    const [url, init] = mocks.fetchWithAuth.mock.calls[0];
+    expect(url).toBe('/flows/validate');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ document: doc, flowId: 'f1' });
+    expect(mocks.showToast).not.toHaveBeenCalled();
+  });
+
+  it('a validate 404 or owner_invalid throws with the status and body', async () => {
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(404, { error: 'flow_not_found' }));
+    const notFound = await validateFlowDraftDocument({ document: doc, flowId: 'x' }).catch((e: unknown) => e);
+    expect(notFound).toBeInstanceOf(ActionError);
+    expect((notFound as ActionError).status).toBe(404);
+    expect((notFound as ActionError).body).toEqual({ error: 'flow_not_found' });
+
+    const ownerBody = { error: 'owner_invalid', message: 'Organization context required' };
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(400, ownerBody));
+    const owner = await validateFlowDraftDocument({ document: doc }).catch((e: unknown) => e);
+    expect((owner as ActionError).status).toBe(400);
+    expect((owner as ActionError).body).toEqual(ownerBody);
+    expect(mocks.showToast).not.toHaveBeenCalled();
+  });
+
+  it('every other delete refusal is toasted, a stale version included', async () => {
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(409, { error: 'version_conflict' }));
+    await expect(deleteFlowDraft('f1', 1)).rejects.toBeInstanceOf(ActionError);
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(409, { error: 'flow_not_draft' }));
+    await expect(deleteFlowDraft('f1', 1)).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast.mock.calls.map(([arg]) => arg.type)).toEqual(['error', 'error']);
+    expect(mocks.showToast.mock.calls[0][0].message).toBe(lookup('enable.versionConflict'));
+  });
+
+  it('an unmapped save failure is toasted', async () => {
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(500, { error: 'boom' }));
+    await expect(updateFlowDraft('f1', { document: doc, expectedVersion: 1 })).rejects.toBeInstanceOf(ActionError);
+    expect(mocks.showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('a delete 409 flow_has_history carries automationId', async () => {
+    const body = { error: 'flow_has_history', conversionId: 'c1', automationId: 'a1' };
+    mocks.fetchWithAuth.mockResolvedValueOnce(json(409, body));
+    const err = await deleteFlowDraft('f1', 1).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ActionError);
+    expect((err as ActionError).status).toBe(409);
+    expect((err as ActionError).body).toEqual(body);
+    expect(mocks.showToast).not.toHaveBeenCalled();
   });
 });

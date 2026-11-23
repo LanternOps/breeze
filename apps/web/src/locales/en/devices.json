@@ -1046,11 +1046,10 @@
     "refresh": "Refresh",
     "from": "From:",
     "linkedPolicy": "Linked policy:",
-    "inheritedFrom": "Inherited from {{name}}",
+    "inheritedFrom": "Based on {{name}}",
     "notEnforced": "Not enforced",
     "usingBreezeDefaults": "— using Breeze Defaults",
-    "inheritanceChain": "Inheritance Chain",
-    "policiesAreResolvedUsingClosestWins": "Policies are resolved using closest-wins priority. More specific assignments (device level) override broader ones (organization level).",
+    "inheritanceChain": "Precedence",
     "priority": "Priority",
     "level": "Level",
     "policy2": "Policy",
@@ -1064,8 +1063,16 @@
       "extraDestinations": "Extra destinations while isolated",
       "invalid": "This policy’s containment settings are not valid, so isolation uses the fixed defaults with no extra destinations."
     },
-    "chainResolutionRule": "Level decides first: Device beats Device Group, then Site, Organization, and Partner. Priority (lower number wins) only breaks ties between policies at the same level. Struck-through features were overridden by a closer policy.",
-    "featureOverriddenBy": "Overridden by {{policy}}"
+    "featureOverriddenBy": "Overridden by {{policy}}",
+    "viaLevel": "via {{level}}",
+    "managedByYourMsp": "Managed by your MSP",
+    "precedenceLegend": "Most specific wins, per feature: Device › Device group › Site › Organization › All organizations. A closer policy replaces the whole feature; it does not merge.",
+    "lostClause": "Replaced for {{features}} by {{winner}}: {{reason}}.",
+    "lostReasons": {
+      "more_specific_level": "it is set at a more specific level",
+      "lower_priority_number": "same level, lower priority number",
+      "assigned_earlier": "same level and priority, assigned earlier"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Failed to fetch activities",
@@ -1381,7 +1388,8 @@
     "noGroupsMatchFilter": "No groups match this filter.",
     "managedByPartner": "Managed by your service provider. Membership rules are not shown; you see the devices from your organization.",
     "partnerDynamicType": "Dynamic · All orgs",
-    "partnerDeleteWarning": "This removes the group from every organization and deletes its policy assignments."
+    "partnerDeleteWarning": "This removes the group from every organization and deletes its policy assignments.",
+    "policyRefusedForGroup": "Nothing was applied. {{group}}: {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Failed to fetch hardware inventory",

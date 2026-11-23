@@ -22,7 +22,8 @@ import { useOrgScope } from '@/hooks/useOrgScope';
 import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { mintStepUpGrant, StepUpMintError, type StepUpReauth } from '../../lib/mfaStepUp';
-import StepUpPrompt, { pickReauthTier, type ReauthTier } from './StepUpPrompt';
+import StepUpPrompt, { type ReauthTier } from './StepUpPrompt';
+import { discoverReauthTier } from '../../lib/reauthTier';
 import { listField, numberField } from './aiAgents/agentFields';
 import { useStableT } from '@/lib/i18n/useStableT';
 import ModelDefaultsLink from './aiModels/ModelDefaultsLink';
@@ -173,22 +174,13 @@ function draftValues(draft: OrgDraft | PartnerDraft): ScriptLaneEnableSaveBody {
   };
 }
 
-/** Discovers the strongest available step-up factor the same way
- *  MaintenanceModeDialog does — GET /users/me + GET /auth/passkeys — since
- *  this page (unlike that dialog) always needs the grant BEFORE the first
- *  submit rather than discovering it off a 403. */
-async function discoverReauthTier(): Promise<ReauthTier | null> {
+/** The strongest available step-up factor (lib/reauthTier.ts, the same read
+ *  the device dialogs use), or null when it cannot be read: this page (unlike
+ *  those dialogs) needs the grant BEFORE the first submit rather than
+ *  discovering it off a 403. */
+async function discoverReauthTierOrNull(): Promise<ReauthTier | null> {
   try {
-    const [userRes, passkeyRes] = await Promise.all([
-      fetchWithAuth('/users/me'),
-      fetchWithAuth('/auth/passkeys'),
-    ]);
-    if (!userRes.ok || !passkeyRes.ok) return null;
-    const user = await userRes.json();
-    const passkeyData = await passkeyRes.json();
-    const passkeys = Array.isArray(passkeyData) ? passkeyData : passkeyData?.passkeys;
-    if (!user || typeof user !== 'object' || !('mfaMethod' in user) || !Array.isArray(passkeys)) return null;
-    return pickReauthTier(passkeys.length, user.mfaMethod);
+    return await discoverReauthTier();
   } catch {
     return null;
   }
@@ -294,7 +286,7 @@ export default function ScriptAuthoringPage() {
     if (reauthTier) return reauthTier;
     setResolvingReauth(true);
     try {
-      const tier = await discoverReauthTier();
+      const tier = await discoverReauthTierOrNull();
       setReauthTier(tier);
       return tier;
     } finally {

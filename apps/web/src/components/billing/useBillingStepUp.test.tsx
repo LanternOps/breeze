@@ -124,6 +124,14 @@ it('tells the user when the verification cannot be started, and does not leave a
   expect(screen.queryByRole('alert')).toBeNull();
 });
 
+it('offers the backup authenticator app when the account has no passkey left (#10650)', async () => {
+  h.fetch.mockImplementation(async (url: string) => url === '/users/me'
+    ? Response.json({ mfaEnabled: true, mfaMethod: 'passkey', totpEnrolled: true }) : Response.json([]));
+  render(<Harness submit={async () => { throw stepUpError(); }} />);
+  fireEvent.click(screen.getByTestId('go'));
+  expect(await screen.findByTestId('billing-stepup-code')).toBeTruthy();
+});
+
 it('names text-message codes when they are the account\'s only factor', async () => {
   h.fetch.mockImplementation(async (url: string) => url === '/users/me'
     ? Response.json({ mfaEnabled: true, mfaMethod: 'sms' }) : Response.json([]));

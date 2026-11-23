@@ -889,6 +889,15 @@ describe('alert routes', () => {
           from: vi.fn().mockReturnValue({
             leftJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 3 }]) })
           })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                groupBy: vi.fn().mockResolvedValue([{ severity: 'critical', count: 3 }])
+              })
+            })
+          })
         } as any);
 
       const res = await app.request('/alerts/summary', {
@@ -904,6 +913,7 @@ describe('alert routes', () => {
       expect(body.byStatus.active).toBe(2);
       expect(body.byStatus.resolved).toBe(1);
       expect(body.byStatus.acknowledged).toBe(0);
+      expect(body.openBySeverity).toEqual({ critical: 3, high: 0, medium: 0, low: 0, info: 0 });
       expect(body.total).toBe(3);
     });
   });

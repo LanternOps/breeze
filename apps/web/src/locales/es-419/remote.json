@@ -245,6 +245,7 @@
     "unverifiedHint": "El dispositivo no respondió a tiempo — actualice para verificar"
   },
   "fileManager": {
+    "absolutePathHint": "Ingresa una ruta absoluta de carpeta",
     "activeCount": "{{count}} activo",
     "activity": "Actividad",
     "cancelled": "Cancelado",
@@ -270,6 +271,7 @@
       "upload": "No se pudo cargar",
       "uploadTimeout": "La carga expiró después de 2 minutos. Es posible que el archivo aún esté escrito en el dispositivo; actualice para verificarlo."
     },
+    "folderPath": "Ruta de la carpeta",
     "freeOf": "{{free}} libre de {{total}}",
     "goUp": "Subir",
     "home": "Inicio",
@@ -284,6 +286,7 @@
       "invalidName": "El nombre de la carpeta no puede contener separadores de ruta ni caracteres que el sistema de archivos de este dispositivo no permita.",
       "nameExists": "Ya existe un archivo o una carpeta con este nombre aquí."
     },
+    "openFolder": "Abrir carpeta",
     "selectedCount": "Recuento seleccionado",
     "size": "Tamaño",
     "title": "Administrador de archivos",

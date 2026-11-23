@@ -1,0 +1,11 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import FlowEditorPage from '../../../components/flows/editor/FlowEditorPage';
+// Flows completion W01e (#12438): the page title reuses an existing key (Decision P11).
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout titleKey="titles.flowDetail">
+  <FlowEditorPage flowId={id as string} client:load />
+</DashboardLayout>

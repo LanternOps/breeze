@@ -17,6 +17,13 @@ import {
   PlacementLinkConflictError,
   reconcilePlacementOnLinkOrThrow,
 } from '../services/assetPlacement';
+import { lockSitesForNetworkGate } from '../services/learnedNetworks/siteLock';
+import { lockProfileForSave } from '../services/learnedNetworks/profileSaveLock';
+import {
+  applySnmpGrantRulesOnSave,
+  assertProfileNetworkAssignable,
+  ProfileNetworkNotAssignableError,
+} from '../services/learnedNetworks/snmpGrants';
 
 // W01 (spec §4.4): the route now derives `reachability` through the batched
 // loader. The derivation is pinned by services/assetReachability.test.ts; this
@@ -37,6 +44,23 @@ vi.mock('../services/discoveredAssetSiteMove', () => ({
   DiscoveredAssetSiteMoveError: class DiscoveredAssetSiteMoveError extends Error {
     constructor(public code: string, message: string) { super(message); }
   },
+}));
+
+// Learned networks W03b: the lock order and the grant rules are proven on real Postgres
+// (discoverySnmpGrants.integration.test.ts). Here the site lock and the grant writers resolve, the pure
+// predicates and the error class stay real, and lockProfileForSave returns the row the handler's unlocked
+// profile read just returned (the last `limit()` a describe's limitSelect resolved), unless a test overrides it.
+const profileSaveRig = vi.hoisted(() => ({ lastLimitRows: [] as unknown[] }));
+vi.mock('../services/learnedNetworks/siteLock', () => ({
+  lockSitesForNetworkGate: vi.fn(async () => {}),
+}));
+vi.mock('../services/learnedNetworks/snmpGrants', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/learnedNetworks/snmpGrants')>(),
+  applySnmpGrantRulesOnSave: vi.fn(async () => {}),
+  assertProfileNetworkAssignable: vi.fn(async () => {}),
+}));
+vi.mock('../services/learnedNetworks/profileSaveLock', () => ({
+  lockProfileForSave: vi.fn(async () => profileSaveRig.lastLimitRows[0] ?? null),
 }));
 
 // The service's authorization, real transaction/replay and cross-site node
@@ -244,6 +268,14 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
+/** A `limit()` that records what it resolved, for the lockProfileForSave rig above. */
+function recordingLimit(rows: unknown[]) {
+  return vi.fn(async () => {
+    profileSaveRig.lastLimitRows = rows;
+    return rows;
+  });
+}
+
 function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: string[] = []): string[] {
   if (typeof node === 'string') {
     acc.push(node);
@@ -268,6 +300,7 @@ describe('discovery routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     reachabilityByAsset.clear();
+    profileSaveRig.lastLimitRows = [];
     app = new Hono();
     app.route('/discovery', discoveryRoutes);
   });
@@ -1302,6 +1335,33 @@ describe('discovery routes', () => {
       expect(res.status).toBe(403);
       const body = await res.json();
       expect(body.error).toContain('same site');
+    });
+
+    it('rejects a requested agent that is a Quick Support session machine', async () => {
+      const profileId = '00000000-0000-0000-0000-000000000010';
+      const agentId = '00000000-0000-0000-0000-000000000012';
+      const orgId = '00000000-0000-0000-0000-000000000000';
+      const siteId = '00000000-0000-0000-0000-000000000001';
+      const row = (value: Record<string, unknown>) => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([value]) }),
+        }),
+      } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(row({ id: profileId, orgId, siteId }))
+        .mockReturnValueOnce(row({
+          id: '00000000-0000-0000-0000-000000000011', orgId, siteId, agentId, status: 'online', isEphemeral: true,
+        }));
+
+      const res = await app.request('/discovery/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ profileId, agentId })
+      });
+
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toBe('Requested agent not found');
+      expect(enqueueDiscoveryScanAfterCommit).not.toHaveBeenCalled();
     });
   });
 
@@ -3227,7 +3287,7 @@ describe('discovery routes', () => {
 
     const limitSelect = (rows: unknown[]) => ({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+        where: vi.fn().mockReturnValue({ limit: recordingLimit(rows) }),
       }),
     } as any);
 
@@ -3436,7 +3496,7 @@ describe('discovery routes', () => {
 
     const limitSelect = (rows: unknown[]) => ({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+        where: vi.fn().mockReturnValue({ limit: recordingLimit(rows) }),
       }),
     } as any);
 
@@ -3677,7 +3737,7 @@ describe('discovery routes', () => {
 
     const limitSelect = (rows: unknown[]) => ({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+        where: vi.fn().mockReturnValue({ limit: recordingLimit(rows) }),
       }),
     } as any);
 
@@ -3865,6 +3925,267 @@ describe('discovery routes', () => {
 
       expect(res.status).toBe(200);
       expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ siteId: SITE_TO, pinnedDeviceId: DEVICE }));
+    });
+  });
+
+  describe('W03b profile saves: lock order and SNMP grants', () => {
+    const ORG = '00000000-0000-0000-0000-000000000000';
+    const PROFILE_ID = '00000000-0000-0000-0000-000000000040';
+    const SITE = '00000000-0000-0000-0000-0000000000c1';
+    const SITE_B = '00000000-0000-0000-0000-0000000000c2';
+    const NETWORK_ID = '00000000-0000-0000-0000-0000000000f1';
+    const PROFILE = {
+      id: PROFILE_ID, orgId: ORG, siteId: SITE, subnets: ['192.168.1.0/24'], excludeIps: [],
+      snmpCommunities: [] as string[], snmpCredentials: null as unknown, deepScan: false, pinnedDeviceId: null,
+      networkId: null as string | null, snmpGrantMode: 'unrestricted' as const, name: 'p',
+    };
+    const VALID_CREATE = {
+      name: 'Grants', siteId: SITE, subnets: ['192.168.1.0/24'], methods: ['ping'], schedule: { type: 'manual' },
+    };
+
+    const limitSelect = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: recordingLimit(rows) }),
+      }),
+    } as any);
+
+    beforeEach(() => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'organization', orgId: ORG, partnerId: null,
+          canAccessOrg: (orgId: string) => orgId === ORG, accessibleOrgIds: null,
+        });
+        c.set('permissions', {});
+        return next();
+      });
+      vi.mocked(db.select).mockReset();
+      vi.mocked(db.update).mockReset();
+      vi.mocked(db.insert).mockClear();
+      vi.mocked(db.transaction).mockReset();
+    });
+
+    /** The handler's unlocked read, then (by default) the same row under the lock. */
+    function mockUnlocked(row: unknown) {
+      vi.mocked(db.select).mockReturnValueOnce(limitSelect([row]));
+    }
+    function mockLocked(row: unknown) {
+      vi.mocked(lockProfileForSave).mockResolvedValueOnce(row as any);
+    }
+    /** Every later select (target site, pin) answers with a row that exists. */
+    function mockTargetSite(siteId: string) {
+      vi.mocked(db.select).mockReturnValueOnce(limitSelect([{ id: siteId }]));
+    }
+    function mockProfileUpdate(updatedRow: unknown) {
+      const setSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([updatedRow]) }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+      return setSpy;
+    }
+
+    const patch = (body: unknown) => app.request(`/discovery/profiles/${PROFILE_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(body),
+    });
+    const post = (body: unknown) => app.request('/discovery/profiles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(body),
+    });
+
+    it('reads retained secrets from the locked row, not the unlocked read', async () => {
+      mockUnlocked({ ...PROFILE, snmpCommunities: [], snmpCredentials: null });
+      mockLocked({ ...PROFILE, snmpCommunities: ['enc:v1:mock-community'] });
+
+      const res = await patch({ siteId: SITE_B });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Adding or changing subnets requires re-entering the SNMP credentials, or clearing them',
+      });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(applySnmpGrantRulesOnSave).not.toHaveBeenCalled();
+    });
+
+    it('merges a masked community against the locked row', async () => {
+      mockUnlocked({ ...PROFILE, snmpCommunities: ['enc:v1:unlocked'] });
+      mockLocked({ ...PROFILE, snmpCommunities: ['enc:v1:locked'] });
+      const setSpy = mockProfileUpdate({ ...PROFILE, snmpCommunities: ['enc:v1:locked'] });
+
+      const res = await patch({ snmpCommunities: ['********'] });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ snmpCommunities: ['enc:v1:locked'] }));
+    });
+
+    it('locks both sites of a move before the profile row', async () => {
+      mockUnlocked(PROFILE);
+      mockTargetSite(SITE_B);
+      mockProfileUpdate({ ...PROFILE, siteId: SITE_B, snmpCommunities: ['enc:new'] });
+
+      const res = await patch({ siteId: SITE_B, snmpCommunities: ['public-b'] });
+
+      expect(res.status).toBe(200);
+      expect(lockProfileForSave).toHaveBeenCalledWith({ orgId: ORG, profileId: PROFILE_ID, siteIds: [SITE, SITE_B] });
+      expect(vi.mocked(lockProfileForSave).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(db.update).mock.invocationCallOrder[0]!);
+    });
+
+    it('locks only the current site when the save does not move the profile', async () => {
+      mockUnlocked(PROFILE);
+      mockProfileUpdate({ ...PROFILE, name: 'renamed' });
+
+      await patch({ name: 'renamed' });
+
+      expect(lockProfileForSave).toHaveBeenCalledWith({ orgId: ORG, profileId: PROFILE_ID, siteIds: [SITE] });
+    });
+
+    it('returns 404 when the profile is gone by the time it is locked', async () => {
+      mockUnlocked(PROFILE);
+      mockLocked(null);
+
+      const res = await patch({ name: 'renamed' });
+
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 PROFILE_CHANGED when the locked row is on another site', async () => {
+      mockUnlocked(PROFILE);
+      mockLocked({ ...PROFILE, siteId: SITE_B });
+
+      const res = await patch({ name: 'renamed' });
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('PROFILE_CHANGED');
+      expect(db.update).not.toHaveBeenCalled();
+      expect(applySnmpGrantRulesOnSave).not.toHaveBeenCalled();
+    });
+
+    it('maps a refused networkId to 400 NETWORK_NOT_ASSIGNABLE without writing', async () => {
+      mockUnlocked(PROFILE);
+      vi.mocked(assertProfileNetworkAssignable).mockRejectedValueOnce(new ProfileNetworkNotAssignableError('x'));
+
+      const res = await patch({ networkId: NETWORK_ID });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('NETWORK_NOT_ASSIGNABLE');
+      expect(db.update).not.toHaveBeenCalled();
+      expect(applySnmpGrantRulesOnSave).not.toHaveBeenCalled();
+    });
+
+    it('rethrows any other error from the networkId check', async () => {
+      mockUnlocked(PROFILE);
+      vi.mocked(assertProfileNetworkAssignable).mockRejectedValueOnce(new Error('boom'));
+
+      const res = await patch({ networkId: NETWORK_ID });
+
+      expect(res.status).toBe(500);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('checks a stored networkId against the destination of a site move', async () => {
+      mockUnlocked(PROFILE);
+      mockLocked({ ...PROFILE, networkId: NETWORK_ID, snmpCommunities: [] });
+      mockTargetSite(SITE_B);
+      mockProfileUpdate({ ...PROFILE, siteId: SITE_B, networkId: NETWORK_ID });
+
+      await patch({ siteId: SITE_B });
+
+      expect(assertProfileNetworkAssignable).toHaveBeenCalledWith({ orgId: ORG, siteId: SITE_B, networkId: NETWORK_ID });
+    });
+
+    it('checks a stored networkId on a save that does not mention it, and writes networkId only when given', async () => {
+      mockUnlocked(PROFILE);
+      mockLocked({ ...PROFILE, networkId: NETWORK_ID });
+      const setSpy = mockProfileUpdate({ ...PROFILE, networkId: NETWORK_ID, name: 'renamed' });
+
+      await patch({ name: 'renamed' });
+
+      expect(assertProfileNetworkAssignable).toHaveBeenCalledWith({ orgId: ORG, siteId: SITE, networkId: NETWORK_ID });
+      expect(setSpy.mock.calls[0]![0]).not.toHaveProperty('networkId');
+
+      mockUnlocked(PROFILE);
+      const second = mockProfileUpdate({ ...PROFILE, networkId: null });
+      await patch({ networkId: null });
+      expect(second).toHaveBeenCalledWith(expect.objectContaining({ networkId: null }));
+    });
+
+    it('passes the save classification to applySnmpGrantRulesOnSave after the update', async () => {
+      mockUnlocked(PROFILE);
+      mockLocked({ ...PROFILE, snmpCommunities: ['enc:c1'], snmpCredentials: null });
+      mockProfileUpdate({ ...PROFILE, snmpCommunities: ['enc:new'], networkId: null });
+
+      const res = await patch({ snmpCommunities: ['public-b'] });
+
+      expect(res.status).toBe(200);
+      expect(applySnmpGrantRulesOnSave).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: ORG, profileId: PROFILE_ID, siteId: SITE, networkId: null,
+        fullReentry: true, suppliedAnySecret: true, willHoldSecrets: true, actorUserId: 'user-123',
+      }));
+      expect(vi.mocked(db.update).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(applySnmpGrantRulesOnSave).mock.invocationCallOrder[0]!);
+      expect(vi.mocked(applySnmpGrantRulesOnSave).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(writeRouteAudit).mock.invocationCallOrder[0]!);
+    });
+
+    it('classifies a masked rotation as not a full re-entry', async () => {
+      mockUnlocked(PROFILE);
+      mockLocked({ ...PROFILE, snmpCommunities: ['enc:c1', 'enc:c2'] });
+      mockProfileUpdate({ ...PROFILE, snmpCommunities: ['enc:new', 'enc:c2'] });
+
+      await patch({ snmpCommunities: ['public-b', '********'] });
+
+      expect(applySnmpGrantRulesOnSave).toHaveBeenCalledWith(expect.objectContaining({
+        fullReentry: false, suppliedAnySecret: true, willHoldSecrets: true,
+      }));
+    });
+
+    it('does not apply grant rules when the update writes no row', async () => {
+      mockUnlocked(PROFILE);
+      mockProfileUpdate(undefined);
+
+      const res = await patch({ name: 'renamed' });
+
+      expect(res.status).toBe(500);
+      expect(applySnmpGrantRulesOnSave).not.toHaveBeenCalled();
+    });
+
+    it('create takes the shared site lock and applies rule 1 for a create with secrets', async () => {
+      mockTargetSite(SITE);
+      const values = vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{
+        ...PROFILE, id: PROFILE_ID, snmpCommunities: ['enc:new'],
+      }])) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+      const res = await post({ ...VALID_CREATE, snmpCommunities: ['public-a'] });
+
+      expect(res.status).toBe(201);
+      expect(lockSitesForNetworkGate).toHaveBeenCalledWith([SITE], 'shared');
+      expect(vi.mocked(lockSitesForNetworkGate).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(db.insert).mock.invocationCallOrder[0]!);
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ networkId: null }));
+      expect(applySnmpGrantRulesOnSave).toHaveBeenCalledWith(expect.objectContaining({
+        profileId: PROFILE_ID, siteId: SITE, networkId: null,
+        fullReentry: true, suppliedAnySecret: true, willHoldSecrets: true, actorUserId: 'user-123',
+      }));
+    });
+
+    it('create refuses a networkId not assigned to the site without inserting', async () => {
+      mockTargetSite(SITE);
+      vi.mocked(assertProfileNetworkAssignable).mockRejectedValueOnce(new ProfileNetworkNotAssignableError());
+
+      const res = await post({ ...VALID_CREATE, networkId: NETWORK_ID });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: "Choose a network that is assigned to this profile's site.", code: 'NETWORK_NOT_ASSIGNABLE',
+      });
+      expect(assertProfileNetworkAssignable).toHaveBeenCalledWith({ orgId: ORG, siteId: SITE, networkId: NETWORK_ID });
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(applySnmpGrantRulesOnSave).not.toHaveBeenCalled();
     });
   });
 });

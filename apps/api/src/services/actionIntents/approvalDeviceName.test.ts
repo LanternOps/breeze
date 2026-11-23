@@ -59,8 +59,13 @@ vi.mock('../../db', () => ({
 const captureException = vi.fn();
 vi.mock('../sentry', () => ({ captureException: (e: unknown) => captureException(e) }));
 
+const deviceInSiteScope = vi.fn(async (_auth: unknown, _deviceId: string) => true);
+vi.mock('../../routes/tickets/siteScope', () => ({
+  deviceInSiteScope: (auth: unknown, deviceId: string) => deviceInSiteScope(auth, deviceId),
+}));
+
 import { and, eq } from 'drizzle-orm';
-import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
+import { argumentDeviceId, resolveApprovalDeviceName, type ApprovalCallerReach } from './approvalDeviceName';
 import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
 import { checkGuardrails } from '../aiGuardrails';
 import { devices } from '../../db/schema/devices';
@@ -68,6 +73,12 @@ import { devices } from '../../db/schema/devices';
 const DEVICE_ID = '6eae0f70-1111-4222-8333-444455556666';
 const ORG_ID = '11111111-2222-4333-8444-555566667777';
 const OTHER_ORG_ID = '99999999-2222-4333-8444-555566667777';
+const REACH_ORG_ID = '33333333-2222-4333-8444-555566667777';
+
+/** The filing caller's reach. `orgCondition` binds a distinct org id, so its term shows in the bound params. */
+function reach(overrides: Partial<ApprovalCallerReach> = {}): ApprovalCallerReach {
+  return { orgCondition: (column) => eq(column, REACH_ORG_ID), ...overrides };
+}
 
 /**
  * Every value bound as a parameter anywhere inside a drizzle SQL condition.
@@ -92,6 +103,68 @@ beforeEach(() => {
   dbState.systemContextLabels = [];
   dbState.outsideContextCalls = 0;
   captureException.mockClear();
+  deviceInSiteScope.mockReset();
+  deviceInSiteScope.mockResolvedValue(true);
+});
+
+describe('resolveApprovalDeviceName — the caller\'s site scope', () => {
+  it('cuts the read to the caller\'s org condition', async () => {
+    dbState.rows = [{ hostname: 'kit', displayName: 'KIT' }];
+
+    await resolveApprovalDeviceName(DEVICE_ID, ORG_ID, reach());
+
+    expect(boundParams(dbState.whereArgs[0])).toContain(REACH_ORG_ID);
+  });
+
+  it('resolves to nothing for a device outside the caller\'s site scope', async () => {
+    const siteRestricted = reach({ allowedSiteIds: ['44444444-2222-4333-8444-555566667777'] });
+    dbState.rows = [{ hostname: 'kit', displayName: 'KIT' }];
+    deviceInSiteScope.mockResolvedValueOnce(false);
+
+    await expect(resolveApprovalDeviceName(DEVICE_ID, ORG_ID, siteRestricted)).resolves.toBeNull();
+    expect(deviceInSiteScope).toHaveBeenCalledWith(siteRestricted, DEVICE_ID);
+  });
+
+  it('resolves to nothing for a device outside the caller\'s exact-device ceiling', async () => {
+    const deviceBound = reach({ allowedDeviceIds: ['7eae0f70-1111-4222-8333-444455556666'] });
+    dbState.rows = [{ hostname: 'kit', displayName: 'KIT' }];
+    deviceInSiteScope.mockResolvedValueOnce(false);
+
+    await expect(resolveApprovalDeviceName(DEVICE_ID, ORG_ID, deviceBound)).resolves.toBeNull();
+    expect(deviceInSiteScope).toHaveBeenCalledWith(deviceBound, DEVICE_ID);
+  });
+
+  it('names a device inside the caller\'s site scope', async () => {
+    const siteRestricted = reach({ allowedSiteIds: ['44444444-2222-4333-8444-555566667777'] });
+    dbState.rows = [{ hostname: 'kit', displayName: 'KIT' }];
+
+    await expect(resolveApprovalDeviceName(DEVICE_ID, ORG_ID, siteRestricted)).resolves.toBe('KIT');
+    expect(deviceInSiteScope).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the stub (null, no read, no report) when the filing principal carries no org reach', async () => {
+    const noReach = {} as unknown as ApprovalCallerReach;
+    dbState.rows = [{ hostname: 'kit', displayName: 'KIT' }];
+
+    await expect(resolveApprovalDeviceName(DEVICE_ID, ORG_ID, noReach)).resolves.toBeNull();
+    expect(dbState.whereArgs).toHaveLength(0);
+    expect(dbState.systemContextLabels).toHaveLength(0);
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('a site-restricted caller naming an out-of-site device keeps the stub in the stored label', async () => {
+    const input = { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' };
+    const reason = checkGuardrails('manage_services', input).description!;
+    const argDeviceId = argumentDeviceId(input)!;
+    expect(hasDeviceIdStub(reason, argDeviceId)).toBe(true);
+    dbState.rows = [{ hostname: 'kit', displayName: 'KIT' }];
+    deviceInSiteScope.mockResolvedValueOnce(false);
+
+    const name = await resolveApprovalDeviceName(argDeviceId, ORG_ID, reach({ allowedSiteIds: [] }));
+
+    expect(buildActionLabel({ toolName: 'manage_services', input, reason, deviceHostname: name }))
+      .toBe('Restart service "Spooler" on device 6eae0f70...');
+  });
 });
 
 describe('boundParams (control for the assertions below)', () => {
@@ -108,7 +181,7 @@ describe('resolveApprovalDeviceName — the org pin', () => {
   it('pins the read to BOTH the device id and the intent org', async () => {
     dbState.rows = [{ hostname: 'kit', displayName: 'KIT' }];
 
-    await resolveApprovalDeviceName(DEVICE_ID, ORG_ID);
+    await resolveApprovalDeviceName(DEVICE_ID, ORG_ID, reach());
 
     expect(dbState.whereArgs).toHaveLength(1);
     const params = boundParams(dbState.whereArgs[0]);
@@ -126,7 +199,7 @@ describe('resolveApprovalDeviceName — the org pin', () => {
     // rows and quietly leaving the id stub in the headline.
     dbState.rows = [{ hostname: 'kit', displayName: 'KIT' }];
 
-    await resolveApprovalDeviceName(DEVICE_ID, ORG_ID);
+    await resolveApprovalDeviceName(DEVICE_ID, ORG_ID, reach());
 
     expect(dbState.outsideContextCalls).toBe(1);
     expect(dbState.systemContextLabels).toEqual(['actionIntents.approvalDeviceName']);
@@ -134,19 +207,19 @@ describe('resolveApprovalDeviceName — the org pin', () => {
 
   it('prefers the display name over the hostname', async () => {
     dbState.rows = [{ hostname: 'kit', displayName: 'KIT' }];
-    await expect(resolveApprovalDeviceName(DEVICE_ID, ORG_ID)).resolves.toBe('KIT');
+    await expect(resolveApprovalDeviceName(DEVICE_ID, ORG_ID, reach())).resolves.toBe('KIT');
   });
 
   it('falls back to the hostname when there is no display name', async () => {
     dbState.rows = [{ hostname: 'kit-01', displayName: null }];
-    await expect(resolveApprovalDeviceName(DEVICE_ID, ORG_ID)).resolves.toBe('kit-01');
+    await expect(resolveApprovalDeviceName(DEVICE_ID, ORG_ID, reach())).resolves.toBe('kit-01');
   });
 
   it('resolves to nothing when the org pin matches no row', async () => {
     // What a foreign or deleted device id looks like from here: the caller
     // leaves the id stub in place rather than leaking another tenant's name.
     dbState.rows = [];
-    await expect(resolveApprovalDeviceName(DEVICE_ID, ORG_ID)).resolves.toBeNull();
+    await expect(resolveApprovalDeviceName(DEVICE_ID, ORG_ID, reach())).resolves.toBeNull();
   });
 
   it('reports a failed read to Sentry and degrades to null instead of throwing', async () => {
@@ -154,7 +227,7 @@ describe('resolveApprovalDeviceName — the org pin', () => {
     // created must not fail because a display-name lookup blipped.
     dbState.failWith = new Error('connection terminated');
 
-    await expect(resolveApprovalDeviceName(DEVICE_ID, ORG_ID)).resolves.toBeNull();
+    await expect(resolveApprovalDeviceName(DEVICE_ID, ORG_ID, reach())).resolves.toBeNull();
     expect(captureException).toHaveBeenCalledTimes(1);
     expect(captureException.mock.calls[0]?.[0]).toBeInstanceOf(Error);
   });

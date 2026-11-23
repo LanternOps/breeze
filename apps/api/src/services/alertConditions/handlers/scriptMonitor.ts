@@ -15,24 +15,35 @@
  * sane verdict (or explicitly "no data yet") no matter when it happens to be
  * called relative to the worker's own schedule.
  *
- * Verdict precedence, evaluated in order:
+ * Verdict precedence, evaluated in order. Every "no data" verdict below
+ * returns `dataAvailable: false`, so the evaluator reports `dataState:
+ * 'unknown'`: it neither opens an episode nor auto-resolves an open alert
+ * (#12325 — before, these read as an observed all-clear).
  *   1. No row at all, or the newest row is older than
- *      `3 * intervalMinutes` -> NOT a breach ("No recent probe result").
+ *      `3 * intervalMinutes` -> no data ("No recent probe result").
  *      A stale probe must never LATCH a breach (or a clear) — an execution
  *      pipeline outage must read as "no data", not as a silent all-clear.
- *   2. The newest row's `status` is a non-'completed' TERMINAL outcome
- *      ('failed' | 'timeout' | 'cancelled') -> NOT a breach. The PROBE itself
- *      didn't produce a verdict; that is an execution-infrastructure problem,
- *      not evidence that whatever the script checks is broken. Per spec, a
- *      timeout is explicitly NOT a breach.
+ *   2. The script did not run to an exit code of its own -> no data. That is
+ *      'timeout' | 'cancelled', and a 'failed' row that is not a real exit
+ *      (see `ranToExitCode`): the agent refused or could not start it, it
+ *      was never delivered and the reaper closed it, or it was killed by a
+ *      signal. The PROBE didn't produce a verdict; that is an
+ *      execution-infrastructure problem, not evidence that whatever the
+ *      script checks is broken. Per spec, a timeout is explicitly NOT a
+ *      breach — and a marker in a timed-out run's partial stdout is ignored.
  *   3. The newest row's `status` is still in flight (pending/queued/running/
- *      cancelling, which also means `completedAt` is NULL) -> NOT a breach;
- *      the probe simply hasn't finished yet.
- *   4. `status === 'completed'`:
+ *      cancelling, which also means `completedAt` is NULL) -> no data; the
+ *      probe simply hasn't finished yet.
+ *   4. The script ran and exited: `status === 'completed'` (exit 0), or
+ *      `status === 'failed'` with the script's own non-zero exit code.
+ *      `handleScriptResult` (commandResultHandlers.ts) stores EVERY non-zero
+ *      exit as 'failed', so this is the only row a non-zero exit ever
+ *      produces (#12325: treating all of 'failed' as rule 2 made
+ *      `breachOnNonZeroExit` unreachable).
  *      a. A `::breeze:monitor::` marker line is present in `stdout` (the
- *         LAST such line, parsed as JSON) -> the marker's own verdict wins:
- *         `state: 'breach'` -> passed, `state: 'ok'` -> not passed;
- *         `description` comes from the marker's `detail` when present.
+ *         LAST such line, parsed as JSON) -> the marker's own verdict wins
+ *         over the exit code: `state: 'breach'` -> passed, `state: 'ok'` ->
+ *         not passed; `description` comes from the marker's `detail`.
  *      b. No marker (missing OR malformed) -> fall back to the exit-code
  *         rule: `breachOnNonZeroExit` decides whether `exitCode !== 0`
  *         counts as a breach. A malformed marker is a SCRIPT bug, not an
@@ -113,12 +124,55 @@ function parseLastMonitorMarker(stdout: string | null): ParsedMonitorMarker | nu
   return null;
 }
 
-// Terminal statuses that mean "the probe did not produce a verdict" —
-// distinct from 'completed', which means it did. Never a breach: see the
-// header comment. `executionStatusEnum` (db/schema/scripts.ts) is
-// ['pending','queued','running','cancelling','completed','failed','timeout','cancelled'];
-// these are the three terminal members other than 'completed'.
+// Terminal statuses other than 'completed'. `executionStatusEnum`
+// (db/schema/scripts.ts) is
+// ['pending','queued','running','cancelling','completed','failed','timeout','cancelled'].
+// 'timeout' and 'cancelled' never carry a verdict; 'failed' does when it is a
+// real exit (`ranToExitCode`).
 const NON_COMPLETED_TERMINAL_STATUSES = new Set(['failed', 'timeout', 'cancelled']);
+
+const CAUSE_MAX_CHARS = 200;
+
+/**
+ * The run's own error (already secret-redacted at persistence), first line,
+ * capped — appended to the no-data description so a monitor whose script can
+ * never start says why in its activity, instead of a bare "status: failed".
+ */
+function causeSuffix(errorMessage: string | null): string {
+  const firstLine = errorMessage?.split(/\r?\n/, 1)[0]?.trim();
+  if (!firstLine) return '';
+  return `: ${firstLine.length > CAUSE_MAX_CHARS ? `${firstLine.slice(0, CAUSE_MAX_CHARS)}…` : firstLine}`;
+}
+
+interface ProbeRow {
+  status: string;
+  exitCode: number | null;
+  errorMessage: string | null;
+}
+
+/**
+ * True when the script itself ran and exited, so its exit code (and stdout
+ * marker) is a verdict.
+ *
+ * A 'failed' row is ambiguous, and only `exitCode` + `errorMessage` tell the
+ * cases apart (the agent contract is `tools.CommandResult.ExitCode`,
+ * agent/internal/remote/tools/types.go):
+ *   - the script exited N > 0: the agent sends the real code and no error;
+ *   - no process ran (refused, empty script, no user helper, ...): the agent
+ *     sends a SYNTHETIC exit 1 WITH an error, so a code alone proves nothing;
+ *   - executor failure, timeout or cancel: -1 with an error;
+ *   - killed by a signal (Unix): -1 with no error — an abnormal end, not the
+ *     script's answer;
+ *   - never delivered / reaped / cancel-propagated: no exit code, with the
+ *     server's own error message.
+ * `errorMessage` is tested for falsiness, not null: an empty agent error may
+ * be persisted as ''.
+ */
+function ranToExitCode(row: ProbeRow): boolean {
+  if (row.status === 'completed') return true;
+  if (row.status !== 'failed') return false;
+  return typeof row.exitCode === 'number' && row.exitCode > 0 && !row.errorMessage;
+}
 
 export const scriptMonitorHandler: ConditionHandler = {
   type: 'script_monitor',
@@ -131,6 +185,7 @@ export const scriptMonitorHandler: ConditionHandler = {
         status: scriptExecutions.status,
         exitCode: scriptExecutions.exitCode,
         stdout: scriptExecutions.stdout,
+        errorMessage: scriptExecutions.errorMessage,
         completedAt: scriptExecutions.completedAt,
         createdAt: scriptExecutions.createdAt,
       })
@@ -143,7 +198,7 @@ export const scriptMonitorHandler: ConditionHandler = {
       .limit(1);
 
     if (!latest) {
-      return { passed: false, description: 'No recent probe result' };
+      return { passed: false, dataAvailable: false, description: 'No recent probe result' };
     }
 
     // completedAt is written for every terminal outcome (completed, failed,
@@ -155,20 +210,27 @@ export const scriptMonitorHandler: ConditionHandler = {
     if (ageMs > cond.intervalMinutes * MS_PER_MINUTE * STALE_PROBE_INTERVAL_MULTIPLIER) {
       // A stale probe must never latch a breach (nor a clear): an execution
       // pipeline outage must read as "no data", not as a silent all-clear.
-      return { passed: false, description: 'No recent probe result' };
+      return { passed: false, dataAvailable: false, description: 'No recent probe result' };
     }
 
-    if (NON_COMPLETED_TERMINAL_STATUSES.has(latest.status)) {
-      // Per spec, a timeout (and, by the same reasoning, a failed or
-      // cancelled run) is NOT a breach: the probe itself never produced a
-      // verdict, so there is nothing to breach on.
-      return { passed: false, description: `Script probe did not complete (status: ${latest.status})` };
-    }
-
-    if (latest.status !== 'completed') {
+    if (!ranToExitCode(latest)) {
+      if (NON_COMPLETED_TERMINAL_STATUSES.has(latest.status)) {
+        // Per spec, a timeout (and, by the same reasoning, a cancelled run or
+        // one that never ran to an exit code) is NOT a breach — nor an
+        // all-clear: the probe itself never produced a verdict.
+        return {
+          passed: false,
+          dataAvailable: false,
+          description: `Script probe did not complete (status: ${latest.status})${causeSuffix(latest.errorMessage)}`,
+        };
+      }
       // pending / queued / running / cancelling — the probe simply hasn't
-      // finished yet. Not a breach.
-      return { passed: false, description: `Script probe still in progress (status: ${latest.status})` };
+      // finished yet.
+      return {
+        passed: false,
+        dataAvailable: false,
+        description: `Script probe still in progress (status: ${latest.status})`,
+      };
     }
 
     const marker = parseLastMonitorMarker(latest.stdout);
