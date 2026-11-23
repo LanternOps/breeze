@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -60,6 +61,7 @@ type presenceGate struct {
 	cond        *sync.Cond
 	lastPresent time.Time
 	done        bool
+	waits       int // times a waiter went (back) to sleep; lets a test see it blocked
 }
 
 func newPresenceGate() *presenceGate {
@@ -95,6 +97,7 @@ func (g *presenceGate) waitPresentAfter(t time.Time) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for !g.lastPresent.After(t) && !g.done {
+		g.waits++
 		g.cond.Wait()
 	}
 	return g.lastPresent.After(t)
@@ -150,6 +153,19 @@ func TestCheckInjectedGapReport(t *testing.T) {
 			report:  absenceReport{persistent: gone, persistentEvidence: absence(800, 900), excused: []excusedAbsence{excused(80, 180, 710)}},
 			budget:  1,
 			wantErr: "excused an absence overlapping the injected gap",
+		},
+		{
+			name:    "an excuse that healed inside the gap fails",
+			report:  absenceReport{persistent: gone, persistentEvidence: absence(800, 900), excused: []excusedAbsence{excused(150, 190, 400)}},
+			budget:  1,
+			wantErr: "excused an absence overlapping the injected gap",
+		},
+		{
+			// The gap's first miss may be stamped just before opened: the
+			// reader can stamp a probe and run it only after the rename-away.
+			name:   "a persistent absence first stamped just before the gap opened holds",
+			report: absenceReport{persistent: gone, persistentEvidence: absence(199, 300)},
+			budget: 1,
 		},
 		{
 			name:    "a persistent absence that ended before the gap opened fails",
@@ -219,6 +235,10 @@ func TestInjectedGapAfterAnExcusedRenameRaceIsReportedPersistent(t *testing.T) {
 			rename.end, rename.done = clock.t, true
 			return nil
 		case calls <= 64:
+			// Real time passes between the heal and the gap (the rest of
+			// that publish and the next install's setup), so the gap opens
+			// strictly after the excused absence healed.
+			clock.t = clock.t.Add(time.Millisecond)
 			return nil
 		default:
 			if opened.IsZero() {
@@ -278,14 +298,47 @@ func TestPresenceGate(t *testing.T) {
 			t.Fatal("waitPresentAfter = false after a probe that found the name")
 		}
 	})
-	t.Run("a waiter blocks until the watch catches up", func(t *testing.T) {
+	// awaitWaits returns once the waiter has gone to sleep n times in total.
+	// The count is read under the gate's lock, which cond.Wait releases only
+	// once the waiter is asleep, so the waiter is blocked when this returns.
+	// A waiter that returns instead fails the test rather than hanging it.
+	awaitWaits := func(t *testing.T, g *presenceGate, got <-chan bool, n int, after string) {
+		t.Helper()
+		for {
+			g.mu.Lock()
+			w := g.waits
+			g.mu.Unlock()
+			if w >= n {
+				return
+			}
+			select {
+			case v := <-got:
+				t.Fatalf("waiter released (%v) %s", v, after)
+			default:
+			}
+			runtime.Gosched()
+		}
+	}
+	t.Run("a blocked waiter stays blocked on a stale present probe and wakes on a fresh one", func(t *testing.T) {
 		g := newPresenceGate()
-		got := make(chan bool)
+		got := make(chan bool, 1)
 		go func() { got <- g.waitPresentAfter(at(10)) }()
-		g.observe(at(5), nil)
+		awaitWaits(t, g, got, 1, "with no probe observed")
+		g.observe(at(5), nil) // wakes the waiter, which must go back to sleep
+		awaitWaits(t, g, got, 2, "by a present probe issued before t")
 		g.observe(at(12), nil)
 		if !<-got {
 			t.Fatal("waiter released without a present probe after t")
+		}
+	})
+	t.Run("ending the watch releases a blocked waiter", func(t *testing.T) {
+		g := newPresenceGate()
+		got := make(chan bool, 1)
+		go func() { got <- g.waitPresentAfter(at(10)) }()
+		awaitWaits(t, g, got, 1, "with no probe observed")
+		g.close()
+		if <-got {
+			t.Fatal("waitPresentAfter = true after the watch ended with no present probe after t")
 		}
 	})
 }
