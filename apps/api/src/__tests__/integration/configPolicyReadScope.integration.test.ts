@@ -139,6 +139,17 @@ function principal(kind: 'org' | 'selected' | 'mcp' | 'full' | 'system', partner
   return { auth, ctx };
 }
 
+/** The same principal with a site allowlist and/or a device pin (SR5-07, #6096). */
+function restricted(base: { auth: AuthContext; ctx: DbAccessContext }, limits: { sites?: string[]; devices?: string[] }) {
+  const auth = {
+    ...base.auth,
+    allowedSiteIds: limits.sites,
+    canAccessSite: limits.sites ? (id: string | null | undefined) => !!id && limits.sites!.includes(id) : undefined,
+    allowedDeviceIds: limits.devices,
+  } as unknown as AuthContext;
+  return { auth, ctx: base.ctx };
+}
+
 async function seedMatrix() {
   const tdb = getTestDb() as any;
   const partner = await createPartner();
@@ -189,7 +200,7 @@ async function seedMatrix() {
   const readable = { P2, P3, P5, P7, P8, P9, P10 };
   const hidden = { P1, P4, P6, K };
   const all = { ...readable, ...hidden };
-  return { partner, orgA, orgB, siteA, siteB, deviceA, deviceB, readable, hidden, all, C5, P1, P2, P3, P5, P6, K };
+  return { partner, orgA, orgB, siteA, siteB, deviceA, deviceB, groupB, groupMixed, readable, hidden, all, C5, P1, P2, P3, P5, P6, K };
 }
 
 type Matrix = Awaited<ReturnType<typeof seedMatrix>>;
@@ -441,5 +452,99 @@ describe('configuration policy read scoping on real Postgres (#12462 W03a)', () 
     const birch = await idsFor(m.orgB.id);
     for (const id of [m.P1, m.P2, m.P3, m.hidden.P4, m.K]) expect(birch.has(id)).toBe(true);
     for (const id of [m.P5, m.P6, m.readable.P7, m.readable.P8, m.readable.P9, m.readable.P10, m.C5]) expect(birch.has(id)).toBe(false);
+  });
+
+  runDb('the AI get tool keeps a site-restricted and a device-pinned caller to the targets they may reach (Strix round two)', async () => {
+    const tdb = getTestDb() as any;
+    const m = await seedMatrix();
+    const siteA2 = await createSite({ orgId: m.orgA.id, name: 'Acme Annex' });
+    const deviceA2 = await createDevice({ orgId: m.orgA.id, siteId: siteA2.id });
+    const insertPolicy = async (orgId: string | null, name: string) => {
+      const [row] = await tdb.insert(configurationPolicies).values({
+        orgId, partnerId: orgId ? null : m.partner.id, name: `${name} ${randomUUID().slice(0, 6)}`, status: 'active',
+      }).returning({ id: configurationPolicies.id });
+      return row.id as string;
+    };
+    const assign = (configPolicyId: string, level: string, targetId: string) =>
+      tdb.insert(configPolicyAssignments).values({ configPolicyId, level, targetId, priority: 0 });
+
+    // An MSP-managed policy across Acme's two sites (and Birch), and an Acme-owned one.
+    const Q = await insertPolicy(null, 'Q Acme wide');
+    for (const [level, id] of [
+      ['organization', m.orgA.id], ['site', m.siteA.id], ['site', siteA2.id],
+      ['device', m.deviceA.id], ['device', deviceA2.id], ['site', m.siteB.id],
+    ] as const) await assign(Q, level, id);
+    const O = await insertPolicy(m.orgA.id, 'O Acme own');
+    for (const [level, id] of [
+      ['organization', m.orgA.id], ['site', m.siteA.id], ['site', siteA2.id], ['device', deviceA2.id],
+    ] as const) await assign(O, level, id);
+
+    const tools = new Map<string, AiTool>();
+    registerConfigPolicyTools(tools);
+    const org = principal('org', m.partner.id, m.orgA.id, [m.orgA.id, m.orgB.id]);
+    const targetsOf = async (who: { auth: AuthContext; ctx: DbAccessContext }, policyId: string) => {
+      const got = await withDbAccessContext(who.ctx, async () =>
+        JSON.parse(await tools.get('get_configuration_policy')!.handler({ policyId }, who.auth)));
+      expect(got.error, `get ${policyId}`).toBeUndefined();
+      return { count: got.assignmentCount as number, ids: (got.assignments as Array<{ targetId: string }>).map((a) => a.targetId).sort() };
+    };
+
+    // Control: an unrestricted Acme user sees every Acme target, never Birch's.
+    expect(await targetsOf(org, Q)).toEqual({ count: 6, ids: [m.orgA.id, m.siteA.id, siteA2.id, m.deviceA.id, deviceA2.id].sort() });
+    expect((await targetsOf(org, O)).ids).toEqual([m.orgA.id, m.siteA.id, siteA2.id, deviceA2.id].sort());
+
+    // Restricted to Acme HQ: that site and its device; never the org row or the annex.
+    const siteTech = restricted(org, { sites: [m.siteA.id] });
+    expect(await targetsOf(siteTech, Q)).toEqual({ count: 6, ids: [m.siteA.id, m.deviceA.id].sort() });
+    expect(await targetsOf(siteTech, O)).toEqual({ count: 4, ids: [m.siteA.id] });
+
+    // Pinned to one device (a device-bound agent run): that device row only.
+    const pinned = restricted(org, { devices: [m.deviceA.id] });
+    expect(await targetsOf(pinned, Q)).toEqual({ count: 6, ids: [m.deviceA.id] });
+    expect(await targetsOf(pinned, O)).toEqual({ count: 4, ids: [] });
+    // Both axes at once: the pin and the site must both admit the row.
+    const both = restricted(org, { sites: [m.siteA.id], devices: [deviceA2.id] });
+    expect((await targetsOf(both, Q)).ids).toEqual([]);
+  });
+
+  runDb('the fleet-design evidence for one org carries no target id of another org on a shared MSP-managed policy (Strix round two)', async () => {
+    const tdb = getTestDb() as any;
+    const m = await seedMatrix();
+    const [ownB] = await tdb.insert(deviceGroups).values({ orgId: m.orgB.id, partnerId: null, name: `Birch own ${randomUUID().slice(0, 6)}` })
+      .returning({ id: deviceGroups.id });
+    const [S] = await tdb.insert(configurationPolicies).values({
+      orgId: null, partnerId: m.partner.id, name: `S shared ${randomUUID().slice(0, 6)}`, status: 'active',
+    }).returning({ id: configurationPolicies.id });
+    for (const [level, id] of [
+      ['partner', m.partner.id],
+      ['organization', m.orgA.id], ['organization', m.orgB.id],
+      ['site', m.siteA.id], ['site', m.siteB.id],
+      ['device', m.deviceA.id], ['device', m.deviceB.id],
+      ['device_group', m.groupMixed], ['device_group', m.groupB], ['device_group', ownB.id],
+    ] as const) await tdb.insert(configPolicyAssignments).values({ configPolicyId: S.id, level, targetId: id, priority: 0 });
+
+    const evidence = await withSystemDbAccessContext(() => loadDesignEvidence(m.orgA.id, {}));
+    // A failing statement lands silently in `unavailable` with no rows: assert it did not.
+    expect(evidence.unavailable).not.toContain('configuration');
+    const rowsOf = (policyId: string) => evidence.configuration.assignments
+      .filter((a) => a.policyId === policyId).map((a) => `${a.level}:${a.targetId}`).sort();
+
+    // Acme's own rows of the shared policy are all there.
+    expect(rowsOf(S.id)).toEqual([
+      `partner:${m.partner.id}`, `organization:${m.orgA.id}`, `site:${m.siteA.id}`,
+      `device:${m.deviceA.id}`, `device_group:${m.groupMixed}`,
+    ].sort());
+    expect(rowsOf(m.P3)).toEqual([`site:${m.siteA.id}`]);
+    expect(rowsOf(m.P2)).toEqual([`partner:${m.partner.id}`]);
+
+    // Nowhere in the bundle: Birch, its site, device and groups, or an MSP group only Birch uses.
+    const bundle = JSON.stringify(evidence);
+    for (const id of [m.orgB.id, m.siteB.id, m.deviceB.id, ownB.id, m.groupB]) expect(bundle).not.toContain(id);
+
+    // Birch's own bundle still carries Birch's rows of the same policy.
+    const birch = await withSystemDbAccessContext(() => loadDesignEvidence(m.orgB.id, {}));
+    const birchRows = birch.configuration.assignments.filter((a) => a.policyId === S.id).map((a) => a.targetId);
+    expect(birchRows.sort()).toEqual([m.partner.id, m.orgB.id, m.siteB.id, m.deviceB.id, m.groupB, ownB.id].sort());
+    expect(JSON.stringify(birch)).not.toContain(m.siteA.id);
   });
 });

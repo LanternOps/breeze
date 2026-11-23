@@ -837,11 +837,31 @@ async function loadConfiguration(orgId: string, partnerId: string | null): Promi
     rulesByPolicy.set(r.policy_id, list);
   }
 
+  // Only the rows whose target belongs to THIS org. An MSP-managed policy is
+  // usually assigned into several customers, and this read runs in system
+  // context with no RLS, so without the target test a shared policy would
+  // carry the partner's other customers' site/device/group/org ids into a
+  // report this org reads. Kept: the policy's own partner-level row (it names
+  // no customer), this org's row, a site or device in this org, a group this
+  // org owns, and an MSP-owned group of this org's partner with a member here
+  // (the D14 rule). The REST/AI readers apply the same rule per caller
+  // (`filterLegibleAssignments`).
   const assignments = policyIds.length === 0 ? [] : await query<AssignmentRow>(sql`
     SELECT a.config_policy_id AS policy_id, a.level::text AS level, a.target_id::text AS target_id, a.priority, a.role_filter
     FROM config_policy_assignments a
     JOIN configuration_policies cp ON cp.id = a.config_policy_id AND ${ownerPredicate}
     WHERE a.config_policy_id = ANY(${uuidArray(policyIds)})
+      AND (
+        (a.level = 'partner' AND a.target_id = cp.partner_id)
+        OR (a.level = 'organization' AND a.target_id = ${orgId})
+        OR (a.level = 'site' AND EXISTS (SELECT 1 FROM sites s WHERE s.id = a.target_id AND s.org_id = ${orgId}))
+        OR (a.level = 'device' AND EXISTS (SELECT 1 FROM devices d WHERE d.id = a.target_id AND d.org_id = ${orgId}))
+        OR (a.level = 'device_group' AND EXISTS (SELECT 1 FROM device_groups g WHERE g.id = a.target_id AND (
+          g.org_id = ${orgId}
+          OR (g.org_id IS NULL AND g.partner_id = ${partnerId}
+              AND EXISTS (SELECT 1 FROM device_group_memberships m WHERE m.group_id = g.id AND m.org_id = ${orgId}))
+        )))
+      )
   `);
 
   const alertTemplates = await query<AlertTemplateRow>(sql`
