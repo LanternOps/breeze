@@ -110,6 +110,14 @@ func winPreflight(ctx context.Context, r *run) error {
 	if err != nil {
 		return err
 	}
+	// Say when the plan formats an ESP whose filesystem the snapshot never
+	// recorded (windowsPlannedFilesystem, #12576), so the default is
+	// visible in the result rather than silent.
+	for _, p := range src.Partitions {
+		if p.Role == layout.RoleEFI && p.Filesystem == "" {
+			r.warn("partition %d (EFI system partition) has no recorded filesystem; formatting it FAT32", p.Number)
+		}
+	}
 	plan.TargetPath = r.opts.Target.Path
 	if r.opts.Target.Kind == TargetVHDX {
 		free, err := r.opts.WinSystem.FreeSpace(filepath.Dir(r.opts.Target.Path))

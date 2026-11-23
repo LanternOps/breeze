@@ -1,6 +1,9 @@
 package layout
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const windowsLayoutJSON = `{"firmware":"UEFI","os":"Microsoft Windows Server 2022 Standard","hostname":"WIN-A",
 "disks":[{"Number":0,"FriendlyName":"Msft Virtual Disk","SerialNumber":"6002248","Size":137438953472,"PartitionStyle":"GPT","IsSystem":true,"IsBoot":true,"LogicalSectorSize":512,"BusType":"SAS"},
@@ -136,5 +139,26 @@ func TestParseWindowsLayout_UnlinkedESPIsRecordedAsFAT32(t *testing.T) {
 	}
 	if v := Assess(m); !v.Restorable {
 		t.Errorf("verdict = %+v", v)
+	}
+}
+
+// The fat32 default is only for an ESP the collector could not link to a
+// volume. An ESP linked to a volume that reports no filesystem (RAW) is
+// recorded as read; the rebuild plan defaults it to fat32 on its own.
+func TestParseWindowsLayout_LinkedRAWESPKeepsTheFilesystemItRead(t *testing.T) {
+	doc := strings.Replace(windowsServer2016UnlinkedESPJSON,
+		`"Type":"System","AccessPaths":null`, `"Type":"System","AccessPaths":["\\\\?\\Volume{efi-guid}\\"]`, 1)
+	doc = strings.Replace(doc, `"volumes":[`,
+		`"volumes":[{"DriveLetter":null,"Path":"\\\\?\\Volume{efi-guid}\\","UniqueId":"\\\\?\\Volume{efi-guid}\\","FileSystem":"","FileSystemLabel":"","Size":104857600,"SizeRemaining":0},`, 1)
+	if !strings.Contains(doc, `Volume{efi-guid}\\"]`) || !strings.Contains(doc, `"FileSystem":"","FileSystemLabel":""`) {
+		t.Fatal("fixture rewrite did not apply")
+	}
+	m, err := parseWindowsLayout([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	esp := m.Disks[0].Partitions[1]
+	if esp.Role != RoleEFI || esp.Filesystem != "" || esp.FSUUID != "efi-guid" {
+		t.Errorf("esp = %+v, want role efi linked to volume efi-guid with the empty filesystem it reported", esp)
 	}
 }

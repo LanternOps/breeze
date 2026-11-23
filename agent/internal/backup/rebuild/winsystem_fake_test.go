@@ -452,13 +452,13 @@ func (f *fakeWinSystem) SetPartitionAttributes(diskNumber, number int, attrs uin
 }
 
 // WaitForVolumes runs the real seam's poll loop (waitForPartitionVolumes)
-// over the fake's VolumesOnDisk, with a short timeout and poll interval.
+// over the fake's VolumesOnDisk, with a 1 s timeout and a 1 ms poll interval.
 // The recorded line names the wanted partitions sorted
 // ("WaitForVolumes <disk> partitions=1,2,4") so tests can assert them.
 func (f *fakeWinSystem) WaitForVolumes(ctx context.Context, diskNumber int, partitions []int) ([]WinVolume, error) {
 	_, _ = f.record("WaitForVolumes", fmt.Sprint(diskNumber), "partitions="+strings.ReplaceAll(joinPartitionNumbers(partitions), ", ", ","))
 	list := func() ([]WinVolume, error) { return f.VolumesOnDisk(diskNumber) }
-	return waitForPartitionVolumes(ctx, list, diskNumber, partitions, 200*time.Millisecond, time.Millisecond)
+	return waitForPartitionVolumes(ctx, list, diskNumber, partitions, time.Second, time.Millisecond)
 }
 func (f *fakeWinSystem) Format(_ context.Context, volumeGUIDPath, filesystem, label string) error {
 	_, err := f.record("format.com", volumeGUIDPath, "/FS:"+strings.ToUpper(filesystem), "/Q", "/Y", "/V:"+label)

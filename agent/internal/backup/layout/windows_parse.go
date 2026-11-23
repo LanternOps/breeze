@@ -219,9 +219,11 @@ func parseWindowsLayout(data []byte) (*Manifest, error) {
 		// to a volume above: Windows Server 2016 (build 14393) exposes no
 		// volume for it at all (#12576). The UEFI spec requires FAT for the
 		// ESP, so record fat32 rather than leaving it empty. Without it the
-		// Windows rebuild would treat the ESP like the MSR and never format
-		// it. Label, FSUUID and UsedBytes stay empty: nothing was read.
-		if part.Role == RoleEFI && part.Filesystem == "" {
+		// Windows rebuild (winProvision) would treat the ESP like the MSR
+		// and never format it. Label, FSUUID and UsedBytes stay empty:
+		// nothing was read. A linked volume's own filesystem is kept as
+		// read, even when empty; the rebuild plan defaults that case too.
+		if part.Role == RoleEFI && vol == nil && part.Filesystem == "" {
 			part.Filesystem = "fat32"
 		}
 		disk.Partitions = append(disk.Partitions, part)

@@ -300,6 +300,14 @@ func TestWinProvision_ESPWithNoRecordedFilesystemIsFormattedFAT32(t *testing.T) 
 			if res == nil || res.Status != "completed" || !phaseCompleted(res, PhaseBoot) {
 				t.Fatalf("run did not complete through boot: err=%v res=%+v", err, res)
 			}
+			wantWarn := fmt.Sprintf("partition %d (EFI system partition) has no recorded filesystem; formatting it FAT32", tc.espNumber)
+			found := false
+			for _, w := range res.Warnings {
+				found = found || w == wantWarn
+			}
+			if !found {
+				t.Fatalf("warnings = %q, want %q", res.Warnings, wantWarn)
+			}
 			formats := countCalls(sys.cmds, "format.com")
 			if len(formats) != len(tc.wantFS) {
 				t.Fatalf("format.com calls = %v, want one each for partitions %v (never the MSR)", formats, tc.wantFS)
