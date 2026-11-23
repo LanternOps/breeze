@@ -3344,6 +3344,36 @@ describe('agent websocket command results', () => {
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
+  // #11813: a verification the agent failed without starting it carries why
+  // in errorCode; the verification row persists it as its reasonCode.
+  it('hands a failed verification result its errorCode', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([
+        { id: 'cmd-verify-queued', type: 'backup_verify', payload: {}, deviceId: 'device-123' },
+      ]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'cmd-verify-queued' }]) as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '77777777-7777-4777-8777-777777777777',
+        status: 'failed',
+        exitCode: 1,
+        error: 'verification was not started',
+        errorCode: 'verification_queue_expired',
+      })
+    } as any, ws as any);
+
+    expect(vi.mocked(processBackupVerificationResult)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(processBackupVerificationResult).mock.calls[0]![1]).toMatchObject({
+      status: 'failed',
+      errorCode: 'verification_queue_expired',
+    });
+  });
+
   it('fails the backup_verifications record when verification stdout exceeds the size limit', async () => {
     const preValidatedAgent = { deviceId: 'device-123', agentId: 'agent-test', siteId: 'site-test', installIncarnation: 1, orgId: 'org-123', partnerId: 'partner-123' };
     const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);

@@ -408,12 +408,16 @@ function deriveVerificationReason(params: {
  * `storage_session_lost`: the run stopped because its brokered storage session
  * ended (revoked or expired); the files it did not reach are counted in
  * `details.filesUnchecked`, not failed — distinct from corruption.
+ * `verification_queue_expired` (#11813): the verification waited on the
+ * agent's verification lane until too little of its budget was left for a
+ * useful run, so the agent failed it without starting it. It arrives as the
+ * failed command's `errorCode`, not in a verification body.
  */
-const PERSISTED_AGENT_VERIFICATION_CODES = new Set(['storage_session_lost']);
+const PERSISTED_AGENT_VERIFICATION_CODES = new Set(['storage_session_lost', 'verification_queue_expired']);
 
 export async function processBackupVerificationResult(
   commandId: string,
-  commandResult: { status: string; stdout?: string; error?: string }
+  commandResult: { status: string; stdout?: string; error?: string; errorCode?: string }
 ): Promise<void> {
   let pending = await findPendingVerificationByCommandId(commandId);
   if (!pending) {
@@ -436,10 +440,12 @@ export async function processBackupVerificationResult(
   const resultNow = new Date().toISOString();
 
   if (commandResult.status !== 'completed' || !commandResult.stdout) {
+    const errorCode = commandResult.errorCode ?? '';
     await markVerificationFailedAndRefreshReadiness({
       verification: pending,
       orgId,
       reason: commandResult.error || 'Agent command failed',
+      reasonCode: PERSISTED_AGENT_VERIFICATION_CODES.has(errorCode) ? errorCode : undefined,
       source: 'agent.result',
     });
     return;

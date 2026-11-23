@@ -108,7 +108,7 @@ describe('storage session resolve endpoint', () => {
     const res = await post(resolvePath, { keys });
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('no-store');
-    expect(authenticateMock).toHaveBeenCalledWith({ sessionId: SESSION_ID, token: TOKEN, agent: { deviceId: DEVICE, orgId: ORG } });
+    expect(authenticateMock).toHaveBeenCalledWith({ sessionId: SESSION_ID, token: TOKEN, agent: { deviceId: DEVICE, orgId: ORG }, op: 'resolve' });
     expect(contexts.opened).toEqual([
       expect.objectContaining({ scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG], accessiblePartnerIds: [] }),
     ]);
@@ -173,6 +173,20 @@ describe('storage session renew endpoint', () => {
     renewMock.mockResolvedValue({ status: 410, error: 'expired' });
     const res = await post(renewPath, {});
     expect(res.status).toBe(410);
+  });
+
+  // #11813: only a renew may re-arm the lapsed lease of an unused
+  // verification read session, so only this endpoint names itself one.
+  it('authenticates as a renew; every other endpoint does not', async () => {
+    await post(renewPath, {});
+    expect(authenticateMock).toHaveBeenLastCalledWith(expect.objectContaining({ op: 'renew' }));
+    await post(resolvePath, { keys: ['k'] });
+    expect(authenticateMock).toHaveBeenLastCalledWith(expect.objectContaining({ op: 'resolve' }));
+    await buildApp().request(`/agent-7c1d/storage-sessions/${SESSION_ID}/object?key=k`, { headers: { 'X-Breeze-Storage-Session': TOKEN } });
+    expect(authenticateMock).toHaveBeenLastCalledWith(expect.objectContaining({ op: 'object' }));
+    await post(`/agent-7c1d/storage-sessions/${SESSION_ID}/multipart:create`, { key: 'k' });
+    expect(authenticateMock).toHaveBeenLastCalledWith(expect.objectContaining({ op: 'write' }));
+    expect(authenticateMock).toHaveBeenCalledTimes(4);
   });
 
   it('answers a renew throttled by the session call budget 429 with its Retry-After', async () => {
