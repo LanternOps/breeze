@@ -131,8 +131,10 @@ vi.mock('./configurationPolicy', () => ({
   addFeatureLink: vi.fn(),
   updateFeatureLink: vi.fn(),
   removeFeatureLink: vi.fn(),
-  listFeatureLinks: vi.fn(),
-  listAssignments: vi.fn(),
+  // #12594: apply_configuration_policy reads the policy's own links for the
+  // Helper branding check; default to none so every other case keeps its meaning.
+  listFeatureLinks: vi.fn(async () => []),
+  listAssignments: vi.fn(async () => []),
   validateAssignmentTarget: validateAssignmentTargetMock,
   authorizeAssignmentTarget: authorizeAssignmentTargetMock,
   canManagePartnerWidePolicies: canManagePartnerWidePoliciesMock,
@@ -2459,5 +2461,128 @@ describe('manage_configuration_policy create owner, checked before filing (#1143
     const properties = policyTool().definition.input_schema.properties;
     expect(properties.ownerScope.description).toMatch(/partner-wide/i);
     expect(properties.orgId.description).toMatch(/never the partner id/i);
+  });
+});
+
+// #12594: the AI tools run the same Helper branding write checks as the web API
+// (checkAddLevel on assignment, brandingWriteError on helper feature-link writes).
+describe('Helper branding write checks (#12594)', () => {
+  const ASSIGNMENT_REFUSAL =
+    'Helper branding is partner- and organization-scoped; this policy cannot take a site, device group or device assignment';
+  const LINK_REFUSAL =
+    'Helper branding is partner- and organization-scoped; remove site, device group and device assignments first';
+  const BRANDED_HELPER = { featureType: 'helper', inlineSettings: { enabled: true, branding: { displayName: 'Acme IT' } } };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getConfigPolicy).mockReset();
+    vi.mocked(addFeatureLink).mockReset();
+    vi.mocked(updateFeatureLink).mockReset();
+    vi.mocked(listFeatureLinks).mockReset().mockResolvedValue([]);
+    vi.mocked(listAssignments).mockReset().mockResolvedValue([]);
+    assignPolicyMock.mockReset();
+    enable2faState.value = true;
+    canManagePartnerWidePoliciesMock.mockReset().mockReturnValue(true);
+    policyAccessConditionMock.mockReset().mockReturnValue(undefined);
+    validateAssignmentTargetMock.mockReset().mockResolvedValue({ valid: true });
+    authorizeAssignmentTargetMock.mockReset().mockResolvedValue({ valid: true });
+    policyEffectivelyEnablesHpCmslCollectionMock.mockReset().mockResolvedValue(false);
+    policyEffectivelyArmsOemUpdatesMock.mockReset().mockResolvedValue(false);
+  });
+
+  function tools() {
+    const map = new Map<string, any>();
+    registerConfigPolicyTools(map);
+    return map;
+  }
+
+  describe('apply_configuration_policy', () => {
+    async function apply(level: string, ownLinks: unknown[]) {
+      mockSelectRows([{ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Branded' }]);
+      vi.mocked(listFeatureLinks).mockResolvedValue(ownLinks as any);
+      assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
+      const targetId = level === 'organization' ? ORG_ID : DEVICE_ID;
+      return JSON.parse(await tools().get('apply_configuration_policy')!.handler(
+        { configPolicyId: POLICY_ID, level, targetId },
+        makeAuth(),
+      ));
+    }
+
+    it.each(['site', 'device_group', 'device'])('refuses a %s assignment on a policy whose own helper link carries branding', async (level) => {
+      const out = await apply(level, [BRANDED_HELPER]);
+      expect(out).toEqual({ error: ASSIGNMENT_REFUSAL });
+      expect(assignPolicyMock).not.toHaveBeenCalled();
+      expect(listFeatureLinks).toHaveBeenCalledWith(POLICY_ID);
+    });
+
+    it('allows an organization assignment on a branded policy', async () => {
+      const out = await apply('organization', [BRANDED_HELPER]);
+      expect(out.success).toBe(true);
+      expect(assignPolicyMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows a device assignment on a policy whose helper link has no branding', async () => {
+      const out = await apply('device', [
+        { featureType: 'helper', inlineSettings: { enabled: true, branding: {} } },
+        { featureType: 'patch', inlineSettings: { branding: { displayName: 'not a helper link' } } },
+      ]);
+      expect(out.success).toBe(true);
+      expect(assignPolicyMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('manage_policy_feature_link', () => {
+    function toolWithPolicy(assignmentLevels: string[]) {
+      vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy', featureLinks: [] } as any);
+      vi.mocked(listAssignments).mockResolvedValue(assignmentLevels.map((level, i) => ({ id: `a-${i}`, level })) as any);
+      vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'helper' } as any);
+      vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'helper' } as any);
+      return tools().get('manage_policy_feature_link')!;
+    }
+
+    async function write(action: 'add' | 'update', inlineSettings: unknown, assignmentLevels: string[] = []) {
+      const tool = toolWithPolicy(assignmentLevels);
+      if (action === 'update') mockSelectRows([{ featureType: 'helper', inlineSettings: { enabled: true } }]);
+      const args = action === 'add'
+        ? { action, configPolicyId: POLICY_ID, featureType: 'helper', inlineSettings }
+        : { action, configPolicyId: POLICY_ID, featureLinkId: 'link-1', inlineSettings };
+      return JSON.parse(await tool.handler(args, makeAuth()));
+    }
+
+    const writer = (action: 'add' | 'update') => (action === 'add' ? addFeatureLink : updateFeatureLink);
+
+    describe.each(['add', 'update'] as const)('%s', (action) => {
+      it('refuses invalid branding values with the validation details', async () => {
+        const out = await write(action, { enabled: true, branding: { displayName: '', tagline: 'x' } });
+        expect(out).toEqual({ error: 'Invalid Helper branding', details: ['empty:displayName', 'unknown:tagline'] });
+        expect(writer(action)).not.toHaveBeenCalled();
+      });
+
+      it('refuses branding that is not an object', async () => {
+        const out = await write(action, { enabled: true, branding: 'Acme IT' });
+        expect(out).toEqual({ error: 'Invalid Helper branding', details: ['not-an-object'] });
+        expect(writer(action)).not.toHaveBeenCalled();
+      });
+
+      it.each(['site', 'device_group', 'device'])('refuses valid branding on a policy with a %s assignment', async (level) => {
+        const out = await write(action, BRANDED_HELPER.inlineSettings, ['organization', level]);
+        expect(out).toEqual({ error: LINK_REFUSAL });
+        expect(listAssignments).toHaveBeenCalledWith(POLICY_ID);
+        expect(writer(action)).not.toHaveBeenCalled();
+      });
+
+      it('allows valid branding on a policy with only partner and organization assignments', async () => {
+        const out = await write(action, BRANDED_HELPER.inlineSettings, ['partner', 'organization']);
+        expect(out.success).toBe(true);
+        expect(writer(action)).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([null, {}])('allows clearing branding (%j) on a policy with a device assignment', async (branding) => {
+        const out = await write(action, { enabled: true, branding }, ['device']);
+        expect(out.success).toBe(true);
+        expect(writer(action)).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 });
