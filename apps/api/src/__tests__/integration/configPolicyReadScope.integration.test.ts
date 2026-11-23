@@ -39,7 +39,8 @@ import {
   deviceGroups,
   partnerUsers,
 } from '../../db/schema';
-import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { loadDesignEvidence } from '../../services/aiAgents/designEvidence';
 import { buildDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { createAccessToken } from '../../services/jwt';
 import { listConfigPolicies } from '../../services/configurationPolicy';
@@ -116,8 +117,9 @@ async function partnerToken(partnerId: string, orgAccess: 'all' | 'selected', se
 }
 
 /** AuthContext + DB context for the service-level surfaces (AI tools, id filters). */
-function principal(kind: 'org' | 'selected' | 'full' | 'system', partnerId: string, orgA: string, allOrgs: string[]) {
-  const orgIds = kind === 'org' || kind === 'selected' ? [orgA] : kind === 'full' ? allOrgs : null;
+function principal(kind: 'org' | 'selected' | 'mcp' | 'full' | 'system', partnerId: string, orgA: string, allOrgs: string[]) {
+  // `mcp`: a partner MCP credential, whose context never carries partnerOrgAccess.
+  const orgIds = kind === 'org' || kind === 'selected' || kind === 'mcp' ? [orgA] : kind === 'full' ? allOrgs : null;
   const scope = kind === 'org' ? 'organization' : kind === 'system' ? 'system' : 'partner';
   const auth = {
     principal: { kind: 'user_session' },
@@ -331,8 +333,16 @@ describe('configuration policy read scoping on real Postgres (#12462 W03a)', () 
       expect((await call(app, t.selected, 'PATCH', `/configuration-policies/${id}`, { name: 'x' })).status).toBe(403);
       expect((await call(app, t.selected, 'DELETE', `/configuration-policies/${id}`)).status).toBe(403);
     }
-    // A limited partner can no longer reach an unreadable one even to be refused.
+    // A limited partner can no longer reach an unreadable one even to be refused,
+    // on every write door, not only PATCH.
     expect((await call(app, t.selected, 'PATCH', `/configuration-policies/${m.P1}`, { name: 'x' })).status).toBe(404);
+    const assignBody = { level: 'site', targetId: m.siteA.id };
+    expect((await call(app, t.selected, 'POST', `/configuration-policies/${m.P1}/assignments`, assignBody)).status).toBe(404);
+    expect((await call(app, t.selected, 'POST', `/configuration-policies/${m.P1}/assignments/apply`, { add: [assignBody] })).status).toBe(404);
+    const featureBody = { featureType: 'event_log', inlineSettings: {} };
+    expect((await call(app, t.selected, 'POST', `/configuration-policies/${m.P1}/features`, featureBody)).status).toBe(404);
+    // Control: a readable one reaches the capability gate.
+    expect((await call(app, t.selected, 'POST', `/configuration-policies/${m.P3}/assignments`, assignBody)).status).toBe(403);
   });
 
   runDb('the effective-config preview refuses a policy the caller may not read', async () => {
@@ -368,6 +378,10 @@ describe('configuration policy read scoping on real Postgres (#12462 W03a)', () 
     // orgId keeps its meaning: Birch's own policies plus every MSP-managed one of its partner.
     const byOrg = pick(await listedIds(app, t.full, `&orgId=${m.orgB.id}`));
     expect(byOrg).toEqual(Object.values(m.all).sort());
+    // ...and never widens what a limited caller may read.
+    for (const token of [t.org, t.selected]) {
+      expect(pick(await listedIds(app, token, `&orgId=${m.orgA.id}`))).toEqual([...Object.values(m.readable), m.C5].sort());
+    }
   });
 
   runDb('the AI read tools, the id filter and system scope follow the same rule', async () => {
@@ -377,9 +391,9 @@ describe('configuration policy read scoping on real Postgres (#12462 W03a)', () 
     registerConfigPolicyTools(tools);
     const everything = Object.values(m.all);
 
-    for (const kind of ['org', 'selected', 'full', 'system'] as const) {
+    for (const kind of ['org', 'selected', 'mcp', 'full', 'system'] as const) {
       const { auth, ctx } = principal(kind, m.partner.id, m.orgA.id, allOrgs);
-      const expected = kind === 'org' || kind === 'selected' ? Object.values(m.readable) : everything;
+      const expected = kind === 'full' || kind === 'system' ? everything : Object.values(m.readable);
 
       const listed = await withDbAccessContext(ctx, async () =>
         JSON.parse(await tools.get('list_configuration_policies')!.handler({ limit: 100 }, auth)));
@@ -409,5 +423,23 @@ describe('configuration policy read scoping on real Postgres (#12462 W03a)', () 
       JSON.parse(await tools.get('get_configuration_policy')!.handler({ policyId: m.P3 }, auth)));
     expect(p3.assignmentCount).toBe(2);
     expect(p3.assignments.map((a: { targetId: string }) => a.targetId)).toEqual([m.siteA.id]);
+  });
+
+  runDb('the fleet-design evidence for an org names only the MSP-managed policies that apply to it', async () => {
+    const m = await seedMatrix();
+    const idsFor = async (orgId: string) => {
+      const evidence = await withSystemDbAccessContext(() => loadDesignEvidence(orgId, {}));
+      // A failing statement would land here silently: assert it did not.
+      expect(evidence.unavailable).not.toContain('configuration');
+      return new Set(evidence.configuration.policies.map((p) => p.id));
+    };
+    const acme = await idsFor(m.orgA.id);
+    for (const id of [...Object.values(m.readable), m.C5]) expect(acme.has(id)).toBe(true);
+    for (const id of Object.values(m.hidden)) expect(acme.has(id)).toBe(false);
+
+    // Birch is governed by P1, P2, P3, P4 and K; not by the Acme-only ones.
+    const birch = await idsFor(m.orgB.id);
+    for (const id of [m.P1, m.P2, m.P3, m.hidden.P4, m.K]) expect(birch.has(id)).toBe(true);
+    for (const id of [m.P5, m.P6, m.readable.P7, m.readable.P8, m.readable.P9, m.readable.P10, m.C5]) expect(birch.has(id)).toBe(false);
   });
 });

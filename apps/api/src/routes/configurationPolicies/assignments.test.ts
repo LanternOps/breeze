@@ -732,6 +732,20 @@ describe('configurationPolicies assignment routes', () => {
       expect(readablePolicyIdsMock).toHaveBeenCalledWith(expect.anything(), ['msp-managed']);
     });
 
+    it('omits an MSP-managed row from an org-scope caller when the read predicate does not admit it', async () => {
+      listAssignmentsForTargetMock.mockResolvedValue([row('msp-managed', null, PARTNER_ID)]);
+      resolveTargetOwnerMock.mockResolvedValue({ kind: 'organization', orgId: ORG_ID });
+      readablePolicyIdsMock.mockResolvedValue([]);
+      const orgApp = new Hono();
+      orgApp.use('*', async (c, next) => {
+        c.set('auth', makeAuth({ partnerId: PARTNER_ID }));
+        await next();
+      });
+      orgApp.route('/', assignmentRoutes);
+
+      expect(await listIds(`level=site&targetId=${SITE_ID}`, orgApp)).toEqual([]);
+    });
+
     it('an org-scope caller without a partner still sees no MSP-managed row', async () => {
       listAssignmentsForTargetMock.mockResolvedValue([
         row('org-owned', ORG_ID, null),

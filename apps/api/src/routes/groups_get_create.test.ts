@@ -14,6 +14,11 @@ const SITE_ID_2 = '12121212-1212-4121-8121-121212121212';
 
 vi.mock('../services', () => ({}));
 
+const { keepReadableMock } = vi.hoisted(() => ({ keepReadableMock: vi.fn() }));
+// Pass-through unless a case narrows it (the read rule itself is proven on
+// Postgres in configPolicyReadScope.integration.test.ts).
+vi.mock('../services/configPolicyReadable', () => ({ keepReadablePolicies: keepReadableMock }));
+
 // These org-only route regressions do not enter the separate OD5 read view.
 // Preserve ownership/locking helpers used by the real membership code, while
 // keeping the new cross-owner lookups out of their queued Drizzle responses.
@@ -185,6 +190,7 @@ describe('groups routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    keepReadableMock.mockImplementation(async (_auth: unknown, rows: unknown[]) => [...rows]);
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
@@ -294,6 +300,36 @@ describe('groups routes', () => {
       const body = await res.json();
       expect(body.data.id).toBe(GROUP_ID);
       expect(body.data.policy).toEqual({ id: 'policy-123', name: 'Standard Workstation' });
+    });
+
+    it('names the first assigned policy the caller may read, not a hidden MSP-managed one ahead of it (#12462 W03a)', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([makeGroup()]) }) }),
+        } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 5 }]) }) } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([
+                    { policyId: 'policy-hidden', policyOrgId: null, policyName: 'Birch lockdown' },
+                    { policyId: 'policy-readable', policyOrgId: null, policyName: 'MSP baseline' },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        } as any);
+      keepReadableMock.mockImplementation(async (_auth: unknown, rows: Array<{ policyId: string; policyOrgId: string | null }>, pick: (r: unknown) => { id: string; orgId: string | null }) => {
+        expect(pick(rows[0])).toEqual({ id: 'policy-hidden', orgId: null });
+        return rows.filter((r) => r.policyId !== 'policy-hidden');
+      });
+
+      const res = await app.request(`/groups/${GROUP_ID}`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.policy).toEqual({ id: 'policy-readable', name: 'MSP baseline' });
     });
 
     it('should return 404 when group not found', async () => {

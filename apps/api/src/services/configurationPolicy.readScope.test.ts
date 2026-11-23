@@ -128,6 +128,15 @@ describe('list reads', () => {
     expect(listWhere).toContain('"lf_a"');
   });
 
+  it('appliesToOrgId fails closed to the org\'s own policies when the org row is not visible', async () => {
+    queue.push([], [{ count: 0 }], []);
+    await listConfigPolicies(auth, { appliesToOrgId: 'org-hidden' }, { page: 1, limit: 25 });
+    const listWhere = rendered().find((w) => w.includes('READ_SENTINEL'))!;
+    expect(listWhere).toContain('"rs_a"');
+    expect(listWhere).not.toContain('"configuration_policies"."org_id" is null');
+    expect(listWhere).not.toContain('"rs_child"."org_id" IS NULL');
+  });
+
   it('notApplied filters to policies with no rows and no children', async () => {
     queue.push([{ count: 0 }], []);
     await listConfigPolicies(auth, { notApplied: true }, { page: 1, limit: 25 });

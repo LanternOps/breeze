@@ -39,6 +39,11 @@ vi.mock('./configurationPolicy', () => ({
 // Real pre-check replaced with a controllable mock — its own ownership-axis
 // logic is unit tested in monitors/monitorAttachability.test.ts. Defaults to
 // attachable; tests that need a refusal override with mockResolvedValueOnce(false).
+const { keepReadableMock } = vi.hoisted(() => ({ keepReadableMock: vi.fn() }));
+// Pass-through unless a case narrows it; the read rule itself is proven on
+// Postgres in configPolicyReadScope.integration.test.ts.
+vi.mock('./configPolicyReadable', () => ({ keepReadablePolicies: keepReadableMock }));
+
 const { isMonitorAttachableToPolicyMock } = vi.hoisted(() => ({
   isMonitorAttachableToPolicyMock: vi.fn(async () => true),
 }));
@@ -172,7 +177,34 @@ describe('list_monitors', () => {
 });
 
 describe('get_monitor', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    keepReadableMock.mockImplementation(async (_auth: unknown, rows: unknown[]) => [...rows]);
+  });
+
+  it('names only the attaching policies the caller may read, without the owner column (#12462 W03a)', async () => {
+    let selectCall = 0;
+    mockDb.select.mockImplementation(() => {
+      selectCall++;
+      if (selectCall === 1) {
+        return { from: () => ({ where: () => ({ limit: () => Promise.resolve([
+          { id: 'm1', name: 'CPU high', orgId: null, partnerId: 'pt', compiledAlertTemplateId: null, compiledAlertRuleId: null, compiledAutomationId: null },
+        ]) }) }) };
+      }
+      return { from: () => ({ innerJoin: () => ({ innerJoin: () => ({ where: () => Promise.resolve([
+        { id: 'att1', configPolicyId: 'p-mine', policyOrgId: null, policyName: 'Acme baseline', enabled: true, overrides: null },
+        { id: 'att2', configPolicyId: 'p-hidden', policyOrgId: null, policyName: 'Birch lockdown', enabled: true, overrides: null },
+      ]) }) }) }) };
+    });
+    keepReadableMock.mockImplementation(async (_auth: unknown, rows: Array<{ configPolicyId: string }>, pick: (r: unknown) => unknown) => {
+      expect(pick(rows[1])).toEqual({ id: 'p-hidden', orgId: null });
+      return rows.filter((r) => r.configPolicyId !== 'p-hidden');
+    });
+
+    const result = await call('get_monitor', { monitorId: 'm1' });
+    expect(result.attachments.map((a: { configPolicyId: string }) => a.configPolicyId)).toEqual(['p-mine']);
+    expect(result.attachments[0]).not.toHaveProperty('policyOrgId');
+  });
 
   it("returns a not-found shape for an id the caller cannot see", async () => {
     mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) });
