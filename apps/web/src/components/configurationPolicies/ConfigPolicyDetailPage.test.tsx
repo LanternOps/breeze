@@ -8,6 +8,8 @@ const { authState } = vi.hoisted(() => ({
 }));
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // The page reads the org store, which registers with auth on import.
+  registerOrgIdProvider: vi.fn(),
   useAuthStore: (selector: (s: typeof authState) => unknown) => selector(authState),
 }));
 
@@ -646,7 +648,8 @@ describe('ConfigPolicyDetailPage — inheritance from the API (#5080)', () => {
 
     await screen.findByRole('heading', { name: 'Test Policy' });
     expect(screen.queryByText(/Parent of/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Based on/i)).not.toBeInTheDocument();
+    // The Based-on line, not the fixed-at-first-save note (#12471).
+    expect(screen.queryByTestId('config-policy-based-on')).not.toBeInTheDocument();
   });
 
   // Regression guard for #5023: the pre-persistence flow set inheritance state
@@ -661,7 +664,8 @@ describe('ConfigPolicyDetailPage — inheritance from the API (#5080)', () => {
       render(<ConfigPolicyDetailPage policyId="pol-1" />);
 
       await screen.findByRole('heading', { name: 'Test Policy' });
-      expect(screen.queryByText(/Based on/i)).not.toBeInTheDocument();
+      // The Based-on line, not the fixed-at-first-save note (#12471).
+    expect(screen.queryByTestId('config-policy-based-on')).not.toBeInTheDocument();
       expect(
         fetchMock.mock.calls.some((c) => c[0] === '/configuration-policies/some-other-policy-id')
       ).toBe(false);

@@ -366,3 +366,84 @@ describe('AppliesToPanel', () => {
     });
   });
 });
+
+describe('activation mode (W03d C3)', () => {
+  const activationProps = () => ({
+    onActivate: vi.fn(async (_payload: unknown) => null as string | null),
+    onDontApply: vi.fn(async () => null as string | null),
+  });
+
+  it("Activate needs a target or Don't apply yet", async () => {
+    assignments = [];
+    const activation = activationProps();
+    renderPanel({ activation, reach: { direct: 0, throughChildren: 0, organizations: 0 } });
+    const activate = await screen.findByTestId('config-policy-activation-activate');
+    expect(activate).toBeDisabled();
+    expect(screen.getByTestId('config-policy-activation-needs-decision')).toHaveTextContent(/at least one target/);
+    // The ordinary Apply is not offered in this mode.
+    expect(screen.queryByTestId('applies-to-apply')).toBeNull();
+    expect(screen.getByTestId('config-policy-activation-dont-apply')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('config-policy-activation-dont-apply'));
+    await waitFor(() => expect(activation.onDontApply).toHaveBeenCalledTimes(1));
+    expect(activation.onActivate).not.toHaveBeenCalled();
+  });
+
+  it('a staged target enables Activate, which states its reach and hands over the staged change', async () => {
+    assignments = [];
+    const activation = activationProps();
+    renderPanel({ activation, reach: { direct: 0, throughChildren: 0, organizations: 0 } });
+    await addSite();
+    const activate = screen.getByTestId('config-policy-activation-activate');
+    await waitFor(() => expect(activate).toHaveTextContent('Activate · reaches 5 devices'));
+    fireEvent.click(activate);
+    await waitFor(() => expect(activation.onActivate).toHaveBeenCalledTimes(1));
+    expect(activation.onActivate).toHaveBeenCalledWith(
+      expect.objectContaining({ add: [expect.objectContaining({ level: 'site', targetId: SITE })] }),
+    );
+    // The panel itself never applies in this mode: the page sequences it.
+    expect(applyCalls().filter((c) => !JSON.parse(String((c[1] as RequestInit).body)).dryRun)).toHaveLength(0);
+  });
+
+  it('with no policy yet nothing is read or counted, and Activate claims no number', async () => {
+    const activation = activationProps();
+    renderPanel({ policyId: null, activation });
+    expect(await screen.findByTestId('applies-to-empty')).toBeInTheDocument();
+    await addSite();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 450));
+    });
+    expect(fetchWithAuth.mock.calls.filter((c) => String(c[0]).startsWith('/configuration-policies'))).toEqual([]);
+    expect(screen.getByTestId('config-policy-activation-activate')).toHaveTextContent(/^Activate$/);
+    expect(screen.getByTestId('config-policy-activation-activate')).toBeEnabled();
+  });
+
+  it('shows the reason Activate failed and stays open', async () => {
+    assignments = [];
+    const activation = activationProps();
+    activation.onActivate.mockResolvedValueOnce('The targets were not applied, so nothing was activated. The policy stays inactive.');
+    renderPanel({ activation, reach: { direct: 0, throughChildren: 0, organizations: 0 } });
+    await addSite();
+    await waitFor(() => expect(screen.getByTestId('config-policy-activation-activate')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('config-policy-activation-activate'));
+    expect(await screen.findByTestId('config-policy-activation-error')).toHaveTextContent(/stays inactive/);
+  });
+
+  it('no target is pre-selected; the switcher org is first', async () => {
+    const OTHER = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/orgs/organizations')) return jsonResponse({ data: [{ id: OTHER, name: 'Birch' }, { id: ORG, name: 'Acme' }] });
+      return jsonResponse({ data: [] });
+    });
+    renderPanel({ policyId: null, owner: { kind: 'msp' }, activation: activationProps(), suggestedOrg: { id: ORG, name: 'Acme' } });
+    expect(await screen.findByTestId('applies-to-empty')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('applies-to-specific'));
+    fireEvent.click(await screen.findByTestId('target-picker-level-organization'));
+    await screen.findByTestId(`target-picker-option-${ORG}`);
+    const options = screen.getAllByTestId(/^target-picker-option-/);
+    expect(options[0]).toHaveAttribute('data-testid', `target-picker-option-${ORG}`);
+    expect(options[1]).toHaveAttribute('data-testid', `target-picker-option-${OTHER}`);
+    // Still nothing staged until the user picks.
+    expect(screen.getByTestId('applies-to-empty')).toBeInTheDocument();
+    expect(screen.getByTestId('config-policy-activation-activate')).toBeDisabled();
+  });
+});

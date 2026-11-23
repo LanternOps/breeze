@@ -2,14 +2,13 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Archive, Pause, Play, RotateCcw } from 'lucide-react';
 import { i18n } from '@/lib/i18n';
-import { ActionError, runAction } from '@/lib/runAction';
-import { navigateTo } from '@/lib/navigation';
-import { fetchWithAuth } from '../../../stores/auth';
+import { ActionError } from '@/lib/runAction';
 import { showToast } from '../../shared/Toast';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import type { ConfigPolicyReach } from '../appliesTo/appliesToApi';
 import type { PolicyStatus } from './PolicyHeader';
 import { deviceCountPhrase, policyCountPhrase, reachPhrase } from './ReachLine';
+import { changePolicyStatus } from './policyStatusApi';
 
 type PolicyStateActionsProps = {
   policyId: string;
@@ -22,9 +21,13 @@ type PolicyStateActionsProps = {
   readOnly: boolean;
   /** The PATCH succeeded; the page shows the new status and re-reads the policy. */
   onChanged: (next: PolicyStatus) => void;
+  /**
+   * Set when the policy applies nowhere yet (W03d C3): Activate then asks for
+   * an applies-to decision (stage a target, or Don't apply yet) instead of
+   * switching on a policy that would reach no device.
+   */
+  onActivateRequest?: () => void;
 };
-
-const EXECUTE_REQUIRED = 'oem_updates_execute_required';
 
 const btn =
   'inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition disabled:opacity-50';
@@ -50,6 +53,7 @@ export default function PolicyStateActions({
   childPolicyCount,
   readOnly,
   onChanged,
+  onActivateRequest,
 }: PolicyStateActionsProps) {
   useTranslation('policies');
   const [busy, setBusy] = useState(false);
@@ -62,32 +66,12 @@ export default function PolicyStateActions({
     ? reachPhrase({ kind: 'reaches', devices: reach.direct, partial: reach.partial === true })
     : null;
 
-  const successMessage = (next: PolicyStatus, from: PolicyStatus): string => {
-    if (next === 'active') return i18n.t('policies:configurationPolicies.policyStateActions.activatedToast');
-    if (next === 'archived') return i18n.t('policies:configurationPolicies.policyStateActions.archivedToast');
-    if (from === 'archived') return i18n.t('policies:configurationPolicies.policyStateActions.restoredToast');
-    return i18n.t('policies:configurationPolicies.policyStateActions.deactivatedToast');
-  };
-
   const change = async (next: PolicyStatus) => {
     setBusy(true);
     setError(null);
     let changed = false;
     try {
-      await runAction({
-        request: () =>
-          fetchWithAuth(`/configuration-policies/${policyId}`, {
-            method: 'PATCH',
-            body: JSON.stringify({ status: next }),
-          }),
-        errorFallback: i18n.t('policies:configurationPolicies.policyStateActions.changeFailed'),
-        friendly: (code) =>
-          code === EXECUTE_REQUIRED
-            ? i18n.t('policies:configurationPolicies.policyStateActions.activateExecuteRequired')
-            : undefined,
-        successMessage: successMessage(next, status),
-        onUnauthorized: () => void navigateTo('/login', { replace: true }),
-      });
+      await changePolicyStatus(policyId, next, status);
       changed = true;
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
@@ -147,11 +131,11 @@ export default function PolicyStateActions({
           type="button"
           data-testid="config-policy-activate"
           disabled={busy}
-          onClick={() => void change('active')}
+          onClick={() => (onActivateRequest ? onActivateRequest() : void change('active'))}
           className={`${btn} border-primary/40 bg-primary text-primary-foreground hover:opacity-90`}
         >
           <Play className="h-3.5 w-3.5" aria-hidden="true" />
-          {directReach
+          {directReach && !onActivateRequest
             ? i18n.t('policies:configurationPolicies.policyStateActions.activateWithReach', { reach: directReach })
             : i18n.t('policies:configurationPolicies.policyStateActions.activateAction')}
         </button>

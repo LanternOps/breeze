@@ -12,6 +12,11 @@ export type FeaturePolicyInfo = {
   reach: ReachContext | null;
   /** The parent policy, for "From <parent> · Open". href null = the caller may not open it. */
   parent: { name: string; href: string | null } | null;
+  /**
+   * MSP-managed: the linked pickers state the trade (spec Decision 1, plan
+   * W03d C2). Absent = not known, and nothing is stated.
+   */
+  mspManaged?: boolean;
 };
 
 export const FeaturePolicyContext = createContext<FeaturePolicyInfo | null>(null);

@@ -131,7 +131,8 @@ export default function WakeOnLanTab({
     {/* A status view, not a form: outside the shell so a read-only viewer's
         disabled fieldset does not lock its filter chips and paging, and its
         clicks never mark the feature dirty (#12469). */}
-    {effectiveLink && <WakeStatusPanel policyId={policyId} />}
+    {/* No wake status for a policy that does not exist yet (the create page). */}
+    {effectiveLink && policyId && <WakeStatusPanel policyId={policyId} />}
     </div>
   );
 }

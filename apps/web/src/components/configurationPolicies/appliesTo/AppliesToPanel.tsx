@@ -14,9 +14,11 @@ import {
   effectiveRow,
   rowIsLive,
   rowKeyForEntry,
+  type ApplyPayload,
   type ApplyPayloadKeys,
   type DraftRow,
 } from './appliesToDraft';
+import { reachPhrase } from '../page/ReachLine';
 import {
   applyAssignments,
   dryRunAssignments,
@@ -39,7 +41,12 @@ export const DRY_RUN_DEBOUNCE_MS = 400;
 const TRANSIENT_STATUSES = new Set([408, 425, 429]);
 
 type AppliesToPanelProps = {
-  policyId: string;
+  /**
+   * null = the policy does not exist yet (the create page, W03d C3): nothing
+   * is read and no dry run runs; the staged targets are committed by
+   * Activate, after the create.
+   */
+  policyId: string | null;
   owner: PickerOwner;
   /** The page's applies-to summary; its unfiltered count tells the panel about rows the caller cannot list. */
   summary: ConfigPolicyAppliesToSummary | null;
@@ -49,6 +56,19 @@ type AppliesToPanelProps = {
   onDirtyChange: (dirty: boolean) => void;
   /** An Apply committed; the page re-reads the summary and reach. */
   onApplied: () => void;
+  /**
+   * Activation mode (W03d C3): the policy applies nowhere yet, and the footer
+   * asks for the decision instead of offering Apply. Activate needs at least
+   * one staged target; Don't apply yet keeps the policy inactive. Each
+   * resolves to an error message, '' when there is nothing to show, or null
+   * when it succeeded (the page then closes the drawer).
+   */
+  activation?: {
+    onActivate: (payload: ApplyPayload) => Promise<string | null>;
+    onDontApply: () => Promise<string | null>;
+  };
+  /** The org switcher's organization: offered first in the picker, never pre-selected. */
+  suggestedOrg?: { id: string; name: string } | null;
 };
 
 type DeltaState =
@@ -59,7 +79,16 @@ type DeltaState =
   | { kind: 'refused'; failure: ApplyFailure; keys: ApplyPayloadKeys }
   | { kind: 'unavailable' };
 
-export default function AppliesToPanel({ policyId, owner, summary, reach, onDirtyChange, onApplied }: AppliesToPanelProps) {
+export default function AppliesToPanel({
+  policyId,
+  owner,
+  summary,
+  reach,
+  onDirtyChange,
+  onApplied,
+  activation,
+  suggestedOrg = null,
+}: AppliesToPanelProps) {
   const { t } = useTranslation('policies');
   const [rows, dispatch] = useReducer(appliesToDraftReducer, [] as DraftRow[]);
   const [storedCount, setStoredCount] = useState(0);
@@ -70,6 +99,8 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
   const [conflict, setConflict] = useState<string | null>(null);
   const [rowProblems, setRowProblems] = useState<Record<string, string>>({});
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [activating, setActivating] = useState(false);
+  const [activationError, setActivationError] = useState<string | null>(null);
   const dryRunReq = useRef(0);
   const loadReq = useRef(0);
 
@@ -80,6 +111,13 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
 
   const load = useCallback(async () => {
     const req = ++loadReq.current;
+    if (!policyId) {
+      // Nothing is stored yet: start from an empty draft.
+      dispatch({ type: 'reset', assignments: [] });
+      setStoredCount(0);
+      setLoadState('ready');
+      return;
+    }
     setLoadState('loading');
     setLoadError(undefined);
     try {
@@ -119,7 +157,8 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
   useEffect(() => {
     const req = ++dryRunReq.current;
     setRowProblems({});
-    if (!dirty) {
+    if (!dirty || !policyId) {
+      // No policy yet: there is nothing to count against, and no number is claimed.
       setDelta({ kind: 'idle' });
       return;
     }
@@ -144,7 +183,7 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
   };
 
   const handleApply = async () => {
-    if (!dirty || applying) return;
+    if (!dirty || applying || !policyId) return;
     setApplying(true);
     setConflict(null);
     setRowProblems({});
@@ -196,6 +235,24 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
     : null;
   const zeroMatching = summary !== null && projectedTotal === 0 && hiddenCount === 0 && (liveRows.length > 0 || dirty);
 
+  // Activation: the count is the policy's projected direct reach, known only
+  // when the policy exists and both counts are exact.
+  const activateLabel =
+    projectedTotal !== null && dirty && deltaReady
+      ? t('configurationPolicies.activation.activateWithReach', {
+          reach: reachPhrase({ kind: 'reaches', devices: projectedTotal, partial: false }),
+        })
+      : t('configurationPolicies.policyStateActions.activateAction');
+  const canActivate =
+    liveRows.length > 0 && !activating && delta.kind !== 'refused' && delta.kind !== 'counting';
+  const runActivation = async (run: () => Promise<string | null>) => {
+    setActivating(true);
+    setActivationError(null);
+    const message = await run();
+    setActivating(false);
+    if (message) setActivationError(message);
+  };
+
   const applyLabel = (() => {
     if (applying) return t('configurationPolicies.appliesToPanel.applying');
     if (!deltaReady) return t('configurationPolicies.appliesToPanel.applyButton');
@@ -238,7 +295,7 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
           <label className="flex items-start gap-3 rounded-md border p-3 text-sm">
             <input
               type="radio"
-              name={`applies-to-scope-${policyId}`}
+              name={`applies-to-scope-${policyId ?? 'new'}`}
               data-testid="applies-to-all-orgs"
               checked={allOrgs}
               disabled={applying}
@@ -253,7 +310,7 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
           <label className="flex items-start gap-3 rounded-md border p-3 text-sm">
             <input
               type="radio"
-              name={`applies-to-scope-${policyId}`}
+              name={`applies-to-scope-${policyId ?? 'new'}`}
               data-testid="applies-to-specific"
               checked={!allOrgs}
               disabled={applying}
@@ -307,7 +364,8 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
           owner={owner}
           offerOrganization={!allOrgs}
           isListed={isListed}
-          disabled={applying}
+          disabled={applying || activating}
+          suggestedOrg={suggestedOrg}
           onPick={(target) => dispatch({ type: 'add', target })}
         />
       </section>
@@ -349,6 +407,41 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
             </span>
           )}
         </div>
+        {activation ? (
+          <div className="space-y-2" data-testid="config-policy-activation">
+            {activationError && (
+              <p data-testid="config-policy-activation-error" role="alert" className="text-sm text-destructive">
+                {activationError}
+              </p>
+            )}
+            {liveRows.length === 0 && (
+              <p data-testid="config-policy-activation-needs-decision" className="text-xs text-muted-foreground">
+                {t('configurationPolicies.activation.needsDecision')}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                data-testid="config-policy-activation-dont-apply"
+                title={t('configurationPolicies.activation.dontApplyHint')}
+                disabled={activating}
+                onClick={() => void runActivation(activation.onDontApply)}
+                className="h-9 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50"
+              >
+                {t('configurationPolicies.activation.dontApplyYet')}
+              </button>
+              <button
+                type="button"
+                data-testid="config-policy-activation-activate"
+                disabled={!canActivate}
+                onClick={() => void runActivation(() => activation.onActivate(payload))}
+                className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+              >
+                {activateLabel}
+              </button>
+            </div>
+          </div>
+        ) : (
         <div className="flex flex-wrap items-center justify-end gap-2">
           {dirty && !confirmDiscard && (
             <button
@@ -394,6 +487,7 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
             {applyLabel}
           </button>
         </div>
+        )}
       </div>
     </div>
   );

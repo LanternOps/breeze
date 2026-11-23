@@ -623,6 +623,11 @@ const TARGET_GLOBS = [
   'src/components/configurationPolicies/page/PolicyDetailsForm.tsx',
   // #12470: Activate / Deactivate / Archive / Restore (the status PATCH) toast their outcome.
   'src/components/configurationPolicies/page/PolicyStateActions.tsx',
+  // #12471: the status PATCH moved into a module Activate shares; the
+  // create POST of the one-page create; Activate's apply-then-activate.
+  'src/components/configurationPolicies/page/policyStatusApi.ts',
+  'src/components/configurationPolicies/page/usePolicyDraft.ts',
+  'src/components/configurationPolicies/page/usePolicyActivation.ts',
   // Operator Recipe Library W06 R1b (#6171): "allow these tools" widens what an
   // AI agent may call on customer systems; a silent failure leaves the tech
   // believing the recipe is set up when it is not.
