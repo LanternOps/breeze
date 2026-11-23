@@ -174,7 +174,7 @@ func TestWinSystem_VHDXProvisionRoundTrip(t *testing.T) {
 			t.Errorf("partition %d read back as %+v, want %+v", i, g, p)
 		}
 	}
-	vols, err := sys.WaitForVolumes(ctx, disk, 2)
+	vols, err := sys.WaitForVolumes(ctx, disk, []int{1, 2})
 	if err != nil {
 		t.Fatalf("WaitForVolumes: %v", err)
 	}

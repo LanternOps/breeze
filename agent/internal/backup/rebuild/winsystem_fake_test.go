@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
@@ -154,6 +155,14 @@ type fakeWinSystem struct {
 	// volumes — a freshly attached VHDX whose volumes the host has not
 	// surfaced yet. WaitForVolumes polls through it.
 	hideVolumesCalls int
+	// volumeDelay hides one partition's volume (partition number -> N) for
+	// the first N VolumesOnDisk calls that would otherwise report it — a
+	// large partition whose volume the host surfaces after the others.
+	volumeDelay map[int]int
+	// strayVolumePartitions makes WriteGPT also surface a volume for each
+	// listed partition number — a volume the plan never asked for, which
+	// a count-based wait would mistake for one it needs.
+	strayVolumePartitions []int
 
 	staleHiveCount     int // preset by a test to simulate leftover mounts
 	staleHivesUnloaded []string
@@ -178,7 +187,7 @@ func newFakeWinSystem(dir string) *fakeWinSystem {
 			sizeBytes int64
 			sector    int
 		}{},
-		hasWindowsTree: map[string]bool{},
+		hasWindowsTree: map[string]bool{}, volumeDelay: map[int]int{},
 	}
 }
 
@@ -290,19 +299,21 @@ func (f *fakeWinSystem) DiskInfo(n int) (WinDiskInfo, error) {
 }
 func (f *fakeWinSystem) VolumesOnDisk(diskNumber int) ([]WinVolume, error) {
 	f.mu.Lock()
-	hidden := f.hideVolumesCalls > 0
-	if hidden {
+	defer f.mu.Unlock()
+	if f.hideVolumesCalls > 0 {
 		f.hideVolumesCalls--
-	}
-	f.mu.Unlock()
-	if hidden {
 		return nil, nil
 	}
 	var out []WinVolume
 	for _, v := range f.volumes {
-		if v.diskNumber == diskNumber {
-			out = append(out, WinVolume{GUIDPath: v.guidPath, DiskNumber: v.diskNumber, PartitionNumber: v.partitionNumber, DriveLetter: f.letters[v.guidPath]})
+		if v.diskNumber != diskNumber {
+			continue
 		}
+		if f.volumeDelay[v.partitionNumber] > 0 {
+			f.volumeDelay[v.partitionNumber]--
+			continue
+		}
+		out = append(out, WinVolume{GUIDPath: v.guidPath, DiskNumber: v.diskNumber, PartitionNumber: v.partitionNumber, DriveLetter: f.letters[v.guidPath]})
 	}
 	return out, nil
 }
@@ -401,6 +412,15 @@ func (f *fakeWinSystem) WriteGPT(diskNumber int, diskGUID string, parts []WinGPT
 		f.volumes = append(f.volumes, fakeVolume{guidPath: volDir, dir: volDir, diskNumber: diskNumber, partitionNumber: p.Number})
 		f.mu.Unlock()
 	}
+	for _, n := range f.strayVolumePartitions {
+		volDir := filepath.Join(f.dir, fmt.Sprintf("vol-stray-%d-%d", diskNumber, n))
+		if err := os.MkdirAll(volDir, 0o755); err != nil {
+			return err
+		}
+		f.mu.Lock()
+		f.volumes = append(f.volumes, fakeVolume{guidPath: volDir, dir: volDir, diskNumber: diskNumber, partitionNumber: n})
+		f.mu.Unlock()
+	}
 	return nil
 }
 func (f *fakeWinSystem) ReadGPT(diskNumber int) (string, []WinGPTPartition, error) {
@@ -431,21 +451,14 @@ func (f *fakeWinSystem) SetPartitionAttributes(diskNumber, number int, attrs uin
 	return fmt.Errorf("fakeWinSystem: no partition %d on disk %d", number, diskNumber)
 }
 
-// WaitForVolumes polls VolumesOnDisk like the real seam (without the
-// sleep), giving up after a bounded number of polls.
-func (f *fakeWinSystem) WaitForVolumes(_ context.Context, diskNumber int, want int) ([]WinVolume, error) {
-	_, _ = f.record("WaitForVolumes", fmt.Sprint(diskNumber), fmt.Sprint(want))
-	var vols []WinVolume
-	for attempt := 0; attempt < 50; attempt++ {
-		var err error
-		if vols, err = f.VolumesOnDisk(diskNumber); err != nil {
-			return nil, err
-		}
-		if len(vols) >= want {
-			return vols, nil
-		}
-	}
-	return vols, fmt.Errorf("fakeWinSystem: only %d of %d expected volumes appeared on disk %d", len(vols), want, diskNumber)
+// WaitForVolumes runs the real seam's poll loop (waitForPartitionVolumes)
+// over the fake's VolumesOnDisk, with a short timeout and poll interval.
+// The recorded line names the wanted partitions sorted
+// ("WaitForVolumes <disk> partitions=1,2,4") so tests can assert them.
+func (f *fakeWinSystem) WaitForVolumes(ctx context.Context, diskNumber int, partitions []int) ([]WinVolume, error) {
+	_, _ = f.record("WaitForVolumes", fmt.Sprint(diskNumber), "partitions="+strings.ReplaceAll(joinPartitionNumbers(partitions), ", ", ","))
+	list := func() ([]WinVolume, error) { return f.VolumesOnDisk(diskNumber) }
+	return waitForPartitionVolumes(ctx, list, diskNumber, partitions, 200*time.Millisecond, time.Millisecond)
 }
 func (f *fakeWinSystem) Format(_ context.Context, volumeGUIDPath, filesystem, label string) error {
 	_, err := f.record("format.com", volumeGUIDPath, "/FS:"+strings.ToUpper(filesystem), "/Q", "/Y", "/V:"+label)

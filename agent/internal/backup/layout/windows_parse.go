@@ -215,6 +215,15 @@ func parseWindowsLayout(data []byte) (*Manifest, error) {
 		case part.Filesystem != "" || part.MountPoint != "":
 			part.Role = RoleData
 		}
+		// An ESP with no drive letter and no AccessPaths cannot be linked
+		// to a volume above: Windows Server 2016 (build 14393) exposes no
+		// volume for it at all (#12576). The UEFI spec requires FAT for the
+		// ESP, so record fat32 rather than leaving it empty. Without it the
+		// Windows rebuild would treat the ESP like the MSR and never format
+		// it. Label, FSUUID and UsedBytes stay empty: nothing was read.
+		if part.Role == RoleEFI && part.Filesystem == "" {
+			part.Filesystem = "fat32"
+		}
 		disk.Partitions = append(disk.Partitions, part)
 	}
 	return m, nil

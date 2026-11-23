@@ -66,7 +66,12 @@ type WinSystem interface {
 	// provision's per-partition flags go through WriteGPT instead (it
 	// already holds the whole table).
 	SetPartitionAttributes(diskNumber, number int, attrs uint64) error
-	WaitForVolumes(ctx context.Context, diskNumber int, want int) ([]WinVolume, error)
+	// WaitForVolumes polls VolumesOnDisk until every partition number in
+	// partitions has a volume, and returns the whole listing. It waits for
+	// those partitions, never for a count: an unrelated volume appearing
+	// first must not satisfy it (#12576). On timeout the error names the
+	// partitions still missing.
+	WaitForVolumes(ctx context.Context, diskNumber int, partitions []int) ([]WinVolume, error)
 	// Format runs format.com <vol> /FS:<NTFS|FAT32> /Q /Y [/V:<label>].
 	Format(ctx context.Context, volumeGUIDPath, filesystem, label string) error
 	// MountVolume creates dir and mounts volumeGUIDPath at it

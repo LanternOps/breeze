@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -267,4 +268,88 @@ func captureAfterProvision(t *testing.T, opts *Options, sys *fakeWinSystem) *pro
 		snap.state = b
 	}
 	return snap
+}
+
+// #12576: a Server 2016 snapshot records its ESP with no filesystem. The
+// rebuild formats it FAT32 (the plan defaults it), leaves the MSR alone, and
+// waits for exactly the partitions it formats — before the fix, the ESP was
+// skipped like the MSR, never formatted, and the count-based wait could
+// return before C:'s volume existed ("volume for partition 4 did not appear
+// after WriteGPT").
+func TestWinProvision_ESPWithNoRecordedFilesystemIsFormattedFAT32(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		espNumber int
+		msr       int
+		wantFS    map[int]string
+		wantWait  string
+	}{
+		{"reported Server 2016 layout (ESP at 2)", 2, 3, map[int]string{1: "/FS:NTFS", 2: "/FS:FAT32", 4: "/FS:NTFS"}, "partitions=1,2,4"},
+		{"ESP at partition 4", 4, 2, map[int]string{1: "/FS:NTFS", 3: "/FS:NTFS", 4: "/FS:FAT32"}, "partitions=1,3,4"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withHostPlatformWindows(t)
+			dir := t.TempDir()
+			opts, sys := winFakeOptions(t, dir)
+			lay := testLayoutWindows()
+			lay.Disks[0] = *windowsUnlinkedESPDisk(tc.espNumber)
+			opts.Layout = lay
+			opts.SkipBoot = false // the boot phase needs the provisioned ESP ("no EFI system partition was provisioned" otherwise)
+			atRestore := captureAfterProvision(t, &opts, sys)
+			res, err := Run(context.Background(), opts)
+			if res == nil || res.Status != "completed" || !phaseCompleted(res, PhaseBoot) {
+				t.Fatalf("run did not complete through boot: err=%v res=%+v", err, res)
+			}
+			formats := countCalls(sys.cmds, "format.com")
+			if len(formats) != len(tc.wantFS) {
+				t.Fatalf("format.com calls = %v, want one each for partitions %v (never the MSR)", formats, tc.wantFS)
+			}
+			for n, fs := range tc.wantFS {
+				vol := sys.volumeDirForPartition(t, n)
+				if len(countCalls(formats, "format.com "+vol+" "+fs+" ")) != 1 {
+					t.Fatalf("partition %d not formatted %s: %v", n, fs, formats)
+				}
+			}
+			disk := sys.vhdxDiskNumber[opts.Target.Path]
+			want := fmt.Sprintf("WaitForVolumes %d %s", disk, tc.wantWait)
+			if waits := countCalls(sys.cmds, "WaitForVolumes"); len(waits) != 1 || waits[0] != want {
+				t.Fatalf("WaitForVolumes calls = %v, want exactly %q", waits, want)
+			}
+			var st runState
+			if err := json.Unmarshal(atRestore.state, &st); err != nil {
+				t.Fatal(err)
+			}
+			if st.Volumes[tc.espNumber] == "" || st.Volumes[tc.msr] != "" {
+				t.Fatalf("persisted volumes = %v, want the ESP (partition %d) recorded and the MSR (partition %d) absent", st.Volumes, tc.espNumber, tc.msr)
+			}
+		})
+	}
+}
+
+// #12576: the provision wait asks for the partitions it formats, not for a
+// number of volumes. Here the host surfaces a volume the plan never asked
+// for (partition 7) at once and C:'s volume (partition 4) only after a few
+// polls; a count-based wait returns on {1, 2, 7} and provision then fails
+// with "volume for partition 4 did not appear after WriteGPT".
+func TestWinProvision_UnrelatedVolumeAppearingFirstDoesNotSatisfyTheWait(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	lay := testLayoutWindows()
+	lay.Disks[0] = *windowsUnlinkedESPDisk(2)
+	opts.Layout = lay
+	sys.strayVolumePartitions = []int{7}
+	sys.volumeDelay[4] = 3
+	res, _ := Run(context.Background(), opts)
+	if res == nil || !phaseCompleted(res, PhaseProvision) {
+		t.Fatalf("provision did not complete: %+v", res)
+	}
+	root := sys.volumeDirForPartition(t, 4)
+	if len(countCalls(sys.cmds, "format.com "+root+" /FS:NTFS ")) != 1 {
+		t.Fatalf("C: (partition 4) not formatted: %v", countCalls(sys.cmds, "format.com"))
+	}
+	stray := sys.volumeDirForPartition(t, 7)
+	if len(countCalls(sys.cmds, "format.com "+stray+" ")) != 0 {
+		t.Fatalf("the unrelated volume was formatted: %v", countCalls(sys.cmds, "format.com"))
+	}
 }
