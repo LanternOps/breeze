@@ -132,7 +132,9 @@ describe('list reads', () => {
     queue.push([], [{ count: 0 }], []);
     await listConfigPolicies(auth, { appliesToOrgId: 'org-hidden' }, { page: 1, limit: 25 });
     const listWhere = rendered().find((w) => w.includes('READ_SENTINEL'))!;
-    expect(listWhere).toContain('"rs_a"');
+    // Every policy the org owns (#12567), and nothing MSP-managed: no applies test is needed.
+    expect(listWhere).toContain('"configuration_policies"."org_id" = ');
+    expect(listWhere).not.toContain('"rs_a"');
     expect(listWhere).not.toContain('"configuration_policies"."org_id" is null');
     expect(listWhere).not.toContain('"rs_child"."org_id" IS NULL');
   });

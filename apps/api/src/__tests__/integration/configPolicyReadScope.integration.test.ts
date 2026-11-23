@@ -417,12 +417,13 @@ describe('configuration policy read scoping on real Postgres (#12462 W03a)', () 
     const ours = new Set<string>([...Object.values(m.all), m.C5]);
     const pick = (ids: Set<string>) => [...ids].filter((id) => ours.has(id)).sort();
 
-    // Full access: applying to Acme, plus the inactive policy that applies nowhere (Q3).
+    // Full access: applying to Acme, plus the inactive policy that applies nowhere (Q3),
+    // plus Acme's own C5, which applies nowhere itself (#12567).
     expect(pick(await listedIds(app, t.full, `&appliesToOrgId=${m.orgA.id}`)))
-      .toEqual([...Object.values(m.readable), m.P6].sort());
+      .toEqual([...Object.values(m.readable), m.P6, m.C5].sort());
     // The org user: the same rule, ANDed with what it may read.
     expect(pick(await listedIds(app, t.org, `&appliesToOrgId=${m.orgA.id}`)))
-      .toEqual(Object.values(m.readable).sort());
+      .toEqual([...Object.values(m.readable), m.C5].sort());
     // No rows and no children: P6, and the org-owned child C5.
     expect(pick(await listedIds(app, t.full, '&notApplied=true'))).toEqual([m.P6, m.C5].sort());
     // Another org the caller cannot access is refused.
@@ -433,6 +434,92 @@ describe('configuration policy read scoping on real Postgres (#12462 W03a)', () 
     // ...and never widens what a limited caller may read.
     for (const token of [t.org, t.selected]) {
       expect(pick(await listedIds(app, token, `&orgId=${m.orgA.id}`))).toEqual([...Object.values(m.readable), m.C5].sort());
+    }
+  });
+
+  runDb("an organization's list includes every policy it owns, applied or not, and nothing of another org's (#12567)", async () => {
+    const app = buildApp();
+    const m = await seedMatrix();
+    const t = await tokens(m);
+    const tdb = getTestDb() as any;
+    const insertPolicy = async (name: string, orgId: string | null, status: 'active' | 'inactive' | 'archived') => {
+      const [row] = await tdb.insert(configurationPolicies).values({
+        orgId, partnerId: orgId ? null : m.partner.id, name: `${name} ${randomUUID().slice(0, 6)}`, status,
+      }).returning({ id: configurationPolicies.id });
+      return row.id as string;
+    };
+    // Owned by Acme and applying nowhere. OA, active, is the case the issue reports.
+    const OA = await insertPolicy('OA Acme active nowhere', m.orgA.id, 'active');
+    const OX = await insertPolicy('OX Acme archived nowhere', m.orgA.id, 'archived');
+    // MSP-managed, active and applying nowhere: an org filter does not add it.
+    const PN = await insertPolicy('PN MSP active nowhere', null, 'active');
+    const ownedA = [m.C5, OA, OX];
+
+    const callers = [['org', t.org], ['selected', t.selected], ['full', t.full]] as const;
+    const list = async (token: string, query: string) => {
+      const res = await call(app, token, 'GET', `/configuration-policies?${query}`);
+      expect(res.status).toBe(200);
+      return res.json() as Promise<{ data: Array<{ id: string }>; pagination: { total: number } }>;
+    };
+
+    for (const [who, token] of callers) {
+      // Each caller's partner is this test's own, so the lists hold only this matrix.
+      const mspA = who === 'full' ? [...Object.values(m.readable), m.P6] : Object.values(m.readable);
+      const all = await list(token, `limit=100&appliesToOrgId=${m.orgA.id}`);
+      const allIds = all.data.map((p) => p.id);
+      expect([...allIds].sort(), `${who} Acme list`).toEqual([...mspA, ...ownedA].sort());
+      expect(allIds, `${who} never lists PN`).not.toContain(PN);
+      expect(all.pagination.total, `${who} total`).toBe(allIds.length);
+
+      // Paged, the total stays the row count and the pages cover the list once.
+      const paged: string[] = [];
+      for (let page = 1; page <= Math.ceil(allIds.length / 3); page++) {
+        const p = await list(token, `limit=3&page=${page}&appliesToOrgId=${m.orgA.id}`);
+        expect(p.pagination.total, `${who} page ${page} total`).toBe(allIds.length);
+        paged.push(...p.data.map((r) => r.id));
+      }
+      expect(paged, `${who} pages`).toEqual(allIds);
+
+      // "Not applied" with the org filter now finds Acme's own unapplied policies.
+      const nowhere = await list(token, `limit=100&appliesToOrgId=${m.orgA.id}&notApplied=true`);
+      const nowhereIds = nowhere.data.map((p) => p.id).sort();
+      expect(nowhereIds, `${who} Acme not applied`).toEqual((who === 'full' ? [...ownedA, m.P6] : ownedA).sort());
+      expect(nowhere.pagination.total, `${who} not-applied total`).toBe(nowhereIds.length);
+    }
+
+    // Birch's own policies, of every status, applied or not, change nothing in
+    // Acme's list for any caller, the full-access one included (its read rule
+    // would let it see them; only the owner test keeps them out).
+    const paths = [
+      `/configuration-policies?limit=100&appliesToOrgId=${m.orgA.id}`,
+      `/configuration-policies?limit=100&appliesToOrgId=${m.orgA.id}&notApplied=true`,
+    ];
+    const snapshot = async (token: string) => Promise.all(paths.map(async (path) => {
+      const res = await call(app, token, 'GET', path);
+      expect(res.status).toBe(200);
+      return res.text();
+    }));
+    const before = new Map<string, string[]>();
+    for (const [who, token] of callers) before.set(who, await snapshot(token));
+
+    const birch = [
+      await insertPolicy('B1 Birch active nowhere', m.orgB.id, 'active'),
+      await insertPolicy('B2 Birch inactive nowhere', m.orgB.id, 'inactive'),
+      await insertPolicy('B3 Birch archived nowhere', m.orgB.id, 'archived'),
+      await insertPolicy('B4 Birch applied', m.orgB.id, 'active'),
+    ];
+    await tdb.insert(configPolicyAssignments).values({ configPolicyId: birch[3], level: 'organization', targetId: m.orgB.id, priority: 0 });
+
+    for (const [who, token] of callers) {
+      expect(await snapshot(token), `${who} Acme list after Birch's additions`).toEqual(before.get(who));
+    }
+    // The additions are real: the full caller lists all four under Birch, and
+    // still not the MSP-managed PN; the callers limited to Acme are refused.
+    const birchIds = (await list(t.full, `limit=100&appliesToOrgId=${m.orgB.id}`)).data.map((p) => p.id);
+    expect(birchIds).toEqual(expect.arrayContaining(birch));
+    expect(birchIds).not.toContain(PN);
+    for (const token of [t.org, t.selected]) {
+      expect((await call(app, token, 'GET', `/configuration-policies?appliesToOrgId=${m.orgB.id}`)).status).toBe(403);
     }
   });
 

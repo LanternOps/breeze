@@ -400,7 +400,7 @@ The policy list has a matching **Applies to** column with the same device count,
 
 ### Filtering the policy list
 
-With one organization selected in the organization switcher, the list shows the policies that apply to that organization, whoever manages them, plus inactive policies that apply nowhere yet. Choose **All organizations** in the **Organization** filter to see every policy you can read. The list also filters by state (Active, Inactive, Archived) and **Not applied** (no targets and no policies based on it). Search, filters and paging run on the server, so the counts above the list are totals, not the rows on screen.
+With one organization selected in the organization switcher, the list shows every policy that organization owns, whether or not it applies anywhere, the MSP-managed policies that apply to it, and inactive MSP-managed policies that apply nowhere yet. Choose **All organizations** in the **Organization** filter to see every policy you can read. The list also filters by state (Active, Inactive, Archived) and **Not applied** (no targets and no policies based on it). Search, filters and paging run on the server, so the counts above the list are totals, not the rows on screen.
 
 ### The Applies to editor
 
@@ -535,7 +535,7 @@ All paths are relative to `/api/v1`.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/configuration-policies` | List policies. Filters: `status`, `search`, `appliesToOrgId` (policies that apply to that organization, any status, plus inactive policies with no targets; `403` for an organization the caller cannot access), `notApplied=true` (no targets and no child policies), `orgId` (the organization's own policies plus its partner's MSP-managed ones). Paged with `page` and `limit` (at most 100); the answer is `{ data, pagination: { page, limit, total } }`. |
+| GET | `/configuration-policies` | List policies. Filters: `status`, `search`, `appliesToOrgId` (every policy that organization owns, any status, applied or not; the MSP-managed policies that apply to it, any status; and inactive MSP-managed policies with no targets; `403` for an organization the caller cannot access), `notApplied=true` (no targets and no child policies), `orgId` (the organization's own policies plus its partner's MSP-managed ones). Paged with `page` and `limit` (at most 100); the answer is `{ data, pagination: { page, limit, total } }`. |
 | POST | `/configuration-policies` | Create policy |
 | GET | `/configuration-policies/eligible-parents` | List baseline policies eligible as a parent for a given ownership scope (`?ownerScope=organization&orgId=…` or `?ownerScope=partner`) |
 | GET | `/configuration-policies/:id` | Get policy — includes `parentPolicyId`, an embedded `parentPolicy` (read-only, with its own feature links), `childPolicies`, and `access: { canEdit, reason }`, which says why the caller can only read it |

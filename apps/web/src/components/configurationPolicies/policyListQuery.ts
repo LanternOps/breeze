@@ -15,8 +15,9 @@ export type PolicyListFilters = {
 
 /**
  * The GET /configuration-policies querystring (no leading `?`). Empty values
- * are omitted. The legacy `orgId` parameter is never sent: the list asks which
- * policies apply to an org (`appliesToOrgId`), not which an org owns. The
+ * are omitted. The legacy `orgId` parameter is never sent: the list asks for
+ * the policies an org owns and those that apply to it (`appliesToOrgId`), not
+ * for every MSP-managed policy of its partner. The
  * caller must also stop fetchWithAuth adding the switcher's org as `orgId`
  * (`skipOrgIdInjection`).
  */
