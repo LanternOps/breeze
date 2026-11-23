@@ -322,6 +322,50 @@ describe('site-restricted caller', () => {
   });
 });
 
+describe('work bound (#12465 round two)', () => {
+  it('past the statement budget the count is a lower bound marked partial; under it, exact', async () => {
+    const { partner, orgA, siteA } = await twoOrgs();
+    const siteA2 = await createSite({ orgId: orgA.id, name: 'Acme Branch' });
+    const siteA3 = await createSite({ orgId: orgA.id, name: 'Acme Depot' });
+    await seedDevice(orgA.id, siteA.id);
+    await seedDevice(orgA.id, siteA2!.id);
+    await seedDevice(orgA.id, siteA3!.id);
+    const policy = await seedPolicy({ orgId: orgA.id, partnerId: null });
+    await assign(policy, 'site', siteA.id);
+    await assign(policy, 'site', siteA2!.id);
+    await assign(policy, 'site', siteA3!.id);
+
+    const ctx = orgCtx(orgA.id, partner.id);
+    const auth = orgAuth(orgA.id, partner.id);
+    const exact = await reachAs(ctx, auth, [policy]);
+    expect(exact.get(policy)).toEqual({ direct: 3, throughChildren: 0, organizations: 1 });
+
+    // 4 fixed reads + 2 site expansions: the third site row is not expanded.
+    const bounded = await withDbAccessContext(ctx, () =>
+      computePolicyReach(auth, [policy], { statementBudget: 6, childPolicyLimit: 500 }));
+    expect(bounded.get(policy)).toEqual({ direct: 2, throughChildren: 0, organizations: 1, partial: true });
+  });
+
+  it('the child cap cuts in Postgres uuid order: only the parent sorting after the cut is partial', async () => {
+    const { partner, orgA, siteA } = await twoOrgs();
+    const d1 = await seedDevice(orgA.id, siteA.id);
+    const d2 = await seedDevice(orgA.id, siteA.id);
+    const owner = { orgId: null, partnerId: partner.id };
+    const [first, second] = [await seedPolicy(owner), await seedPolicy(owner)].sort();
+    await assign(await seedPolicy(owner, first!), 'device', d1);
+    await assign(await seedPolicy(owner, second!), 'device', d2);
+
+    const ctx = partnerCtx(partner.id, [orgA.id]);
+    const auth = partnerAuth(partner.id, [orgA.id]);
+    // A cap of 1 reads two child rows (one past the cap): first's, then second's.
+    // If ORDER BY disagreed with the string order, `first` would be flagged too.
+    const reach = await withDbAccessContext(ctx, () =>
+      computePolicyReach(auth, [first!, second!], { statementBudget: 200, childPolicyLimit: 1 }));
+    expect(reach.get(first!)).toEqual({ direct: 0, throughChildren: 1, organizations: 1 });
+    expect(reach.get(second!)).toEqual({ direct: 0, throughChildren: 0, organizations: 0, partial: true });
+  });
+});
+
 describe('readablePolicyIds under forced RLS', () => {
   it('hides a partner-owned policy from an org-scope caller, as the list does', async () => {
     const { partner, orgA } = await twoOrgs();

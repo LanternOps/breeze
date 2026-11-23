@@ -26,6 +26,8 @@ const { selectMock, state, mockResolveSafe, mockAudit, mockAccessCondition } = v
     devices: [] as Array<{ id: string; orgId: string; siteId: string; partnerId: string; groups: string[]; deviceRole: string | null; osType: string | null }>,
     candidateSelects: 0,
     childWhere: [] as unknown[],
+    /** The LIMIT each child read carried (undefined: none). */
+    childLimits: [] as Array<number | undefined>,
     accessWhere: [] as unknown[],
     /** Devices the final read no longer returns (deleted between reads). */
     vanished: [] as string[],
@@ -57,12 +59,18 @@ import {
   deviceGroupMemberships,
   devices,
 } from '../db/schema';
-import { computePolicyReach, expandAssignmentsToDevices, readablePolicyIds } from './configPolicyReach';
+import {
+  REACH_CHILD_POLICY_LIMIT,
+  REACH_STATEMENT_BUDGET,
+  computePolicyReach,
+  expandAssignmentsToDevices,
+  readablePolicyIds,
+} from './configPolicyReach';
 
 const dialect = new PgDialect();
 const compile = (condition: unknown) => dialect.sqlToQuery(condition as SQL);
 
-function answer(cols: Record<string, unknown>, table: unknown, where: unknown): unknown[] {
+function answer(cols: Record<string, unknown>, table: unknown, where: unknown, limit?: number): unknown[] {
   const { sql, params } = where ? compile(where) : { sql: '', params: [] as unknown[] };
   if (table === configurationPolicies) {
     if (!sql.includes('"parent_policy_id"') && sql.includes('access_marker')) {
@@ -71,7 +79,12 @@ function answer(cols: Record<string, unknown>, table: unknown, where: unknown): 
     }
     if (sql.includes('"parent_policy_id"')) {
       state.childWhere.push(where);
-      return state.policies.filter((p) => p.parentPolicyId && params.includes(p.parentPolicyId));
+      state.childLimits.push(limit);
+      // The child read is ordered (parent, id) and capped, like the real SQL.
+      const children = state.policies
+        .filter((p) => p.parentPolicyId && params.includes(p.parentPolicyId))
+        .sort((a, b) => `${a.parentPolicyId}|${a.id}`.localeCompare(`${b.parentPolicyId}|${b.id}`));
+      return limit === undefined ? children : children.slice(0, limit);
     }
     return state.policies.filter((p) => params.includes(p.id));
   }
@@ -108,8 +121,10 @@ function answer(cols: Record<string, unknown>, table: unknown, where: unknown): 
 selectMock.mockImplementation((cols: Record<string, unknown>) => {
   let table: unknown;
   let where: unknown;
+  let limit: number | undefined;
   const c: Record<string, unknown> = {};
-  for (const m of ['innerJoin', 'leftJoin', 'groupBy', 'orderBy', 'limit']) c[m] = () => c;
+  for (const m of ['innerJoin', 'leftJoin', 'groupBy', 'orderBy']) c[m] = () => c;
+  c.limit = (n: number) => { limit = n; return c; };
   c.from = (t: unknown) => {
     table = t;
     state.tableReads.set(t, (state.tableReads.get(t) ?? 0) + 1);
@@ -117,7 +132,7 @@ selectMock.mockImplementation((cols: Record<string, unknown>) => {
   };
   c.where = (w: unknown) => { where = w; return c; };
   c.then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
-    Promise.resolve().then(() => answer(cols, table, where)).then(resolve, reject);
+    Promise.resolve().then(() => answer(cols, table, where, limit)).then(resolve, reject);
   return c;
 });
 
@@ -139,6 +154,7 @@ afterEach(() => {
   state.devices = [];
   state.candidateSelects = 0;
   state.childWhere = [];
+  state.childLimits = [];
   state.accessWhere = [];
   state.vanished = [];
   state.tableReads = new Map();
@@ -399,17 +415,170 @@ describe('expandAssignmentsToDevices', () => {
     const memo = new Map<string, string[]>();
     const scope = { policyOrgId: ORG_A, policyPartnerId: null };
 
+    const budget = { remaining: 10 };
+
     const first = await expandAssignmentsToDevices(
       [row('x', 'site', 'site-a1'), row('x', 'organization', ORG_A)],
       scope,
       memo,
+      budget,
     );
-    const second = await expandAssignmentsToDevices([row('y', 'site', 'site-a1')], scope, memo);
+    const second = await expandAssignmentsToDevices([row('y', 'site', 'site-a1')], scope, memo, budget);
 
-    expect([...first].sort()).toEqual(['d1', 'd2']);
-    expect([...second]).toEqual(['d1']);
+    expect([...first.deviceIds].sort()).toEqual(['d1', 'd2']);
+    expect(first.complete).toBe(true);
+    expect([...second.deviceIds]).toEqual(['d1']);
+    expect(second.complete).toBe(true);
     expect(memo.size).toBe(2);
     expect(state.candidateSelects).toBe(2);
+    // A memo hit is free: only the two misses were charged.
+    expect(budget.remaining).toBe(8);
+  });
+
+  it('charges a device group two statements and skips a row it cannot afford', async () => {
+    state.devices = [device('d1', { groups: ['g1'] }), device('d2', { siteId: 'site-a2' })];
+    const memo = new Map<string, string[]>();
+    const budget = { remaining: 2 };
+
+    const out = await expandAssignmentsToDevices(
+      [row('x', 'device_group', 'g1'), row('x', 'site', 'site-a2')],
+      { policyOrgId: ORG_A, policyPartnerId: null },
+      memo,
+      budget,
+    );
+
+    expect([...out.deviceIds]).toEqual(['d1']);
+    expect(out.complete).toBe(false);
+    expect(budget.remaining).toBe(0);
+    expect(mockResolveSafe).toHaveBeenCalledTimes(1);
+    expect(state.candidateSelects).toBe(1);
+  });
+});
+
+/** Every statement the service issued: driver selects plus the (mocked) group gating read. */
+const statementsRun = () => selectMock.mock.calls.length + mockResolveSafe.mock.calls.length;
+
+describe('computePolicyReach work bound (#12465 round two)', () => {
+  it('a policy set past the budget runs at most REACH_STATEMENT_BUDGET statements and is marked partial', async () => {
+    // One distinct site target per row: every row is a memo miss.
+    state.policies = [];
+    state.assignments = [];
+    state.devices = [];
+    for (let i = 0; i < 3; i += 1) state.policies.push({ id: `p${i}`, orgId: null, partnerId: PARTNER });
+    for (let i = 0; i < REACH_STATEMENT_BUDGET; i += 1) {
+      state.devices.push(device(`d${i}`, { siteId: `s${i}` }));
+      state.assignments.push(row(`p${i % 3}`, i % 5 === 0 ? 'device_group' : 'site', `s${i}`));
+    }
+
+    const reach = await computePolicyReach(auth, ['p0', 'p1', 'p2']);
+
+    // Unbounded, this set costs 4 fixed reads + 160 site rows + 40 group rows x 2.
+    expect(statementsRun()).toBeLessThanOrEqual(REACH_STATEMENT_BUDGET);
+    // Policies expand in id order: p0 (81 statements) and p1 (80) fit, p2 runs out.
+    expect(reach.get('p0')).toEqual({ direct: 53, throughChildren: 0, organizations: 1 });
+    expect(reach.get('p1')?.partial).toBeUndefined();
+    expect(reach.get('p2')?.partial).toBe(true);
+    // A lower bound: p2 has 53 site rows, each reaching one device.
+    expect(reach.get('p2')!.direct).toBeGreaterThan(0);
+    expect(reach.get('p2')!.direct).toBeLessThan(53);
+  });
+
+  it('keeps answering memo hits after the budget runs out, so a policy whose rows are all cached stays exact', async () => {
+    state.devices = [device('d1'), device('d2', { siteId: 'site-a2' })];
+    state.policies = [
+      { id: 'p1', orgId: null, partnerId: PARTNER },
+      { id: 'p2', orgId: null, partnerId: PARTNER },
+      { id: 'p3', orgId: null, partnerId: PARTNER },
+    ];
+    // Fixed reads (4) + one site expansion = 5: p1's second row cannot be afforded.
+    state.assignments = [
+      row('p1', 'site', 'site-a1'),
+      row('p1', 'site', 'site-a2'),
+      row('p2', 'site', 'site-a1'),
+      // A skipped miss does not stop the policy: the cached row after it still counts.
+      row('p3', 'site', 'site-a2'),
+      row('p3', 'site', 'site-a1'),
+    ];
+
+    const reach = await computePolicyReach(auth, ['p1', 'p2', 'p3'], { statementBudget: 5, childPolicyLimit: 10 });
+
+    expect(statementsRun()).toBeLessThanOrEqual(5);
+    expect(reach.get('p1')).toEqual({ direct: 1, throughChildren: 0, organizations: 1, partial: true });
+    expect(reach.get('p2')).toEqual({ direct: 1, throughChildren: 0, organizations: 1 });
+    expect(reach.get('p3')).toEqual({ direct: 1, throughChildren: 0, organizations: 1, partial: true });
+  });
+
+  it('a parent whose child ran out of budget is partial and its throughChildren is a lower bound', async () => {
+    state.devices = [device('d1'), device('d2', { siteId: 'site-a2' }), device('d3', { siteId: 'site-a3' })];
+    state.policies = [
+      { id: 'parent', orgId: null, partnerId: PARTNER },
+      { id: 'child', orgId: null, partnerId: PARTNER, parentPolicyId: 'parent' },
+    ];
+    // Fixed 4 + parent's row + child's first row = 6; the child's second row is skipped.
+    state.assignments = [row('parent', 'site', 'site-a1'), row('child', 'site', 'site-a2'), row('child', 'site', 'site-a3')];
+
+    const reach = await computePolicyReach(auth, ['parent'], { statementBudget: 6, childPolicyLimit: 10 });
+
+    expect(reach.get('parent')).toEqual({ direct: 1, throughChildren: 1, organizations: 1, partial: true });
+  });
+
+  it("expands every parent's own rows before any child's, and reports no throughChildren for a parent it could not finish", async () => {
+    // A complete child next to a parent whose own rows ran out would count the
+    // parent's unexpanded devices as "through children": an overcount.
+    state.devices = [device('d1'), device('d2', { siteId: 'site-a2', groups: ['g2'] })];
+    state.policies = [
+      { id: 'parent', orgId: null, partnerId: PARTNER },
+      { id: 'child', orgId: null, partnerId: PARTNER, parentPolicyId: 'parent' },
+    ];
+    // Fixed 4 + the parent's site row leaves 1: the parent's group row (2) is
+    // skipped, the child's site row (1) still fits. d2 is truly a direct
+    // device (through the group), so "through children: 1" would be wrong.
+    state.assignments = [row('parent', 'site', 'site-a1'), row('parent', 'device_group', 'g2'), row('child', 'site', 'site-a2')];
+
+    const reach = await computePolicyReach(auth, ['parent'], { statementBudget: 6, childPolicyLimit: 10 });
+
+    expect(state.candidateSelects).toBe(2); // the child's row did run
+
+    expect(reach.get('parent')).toEqual({ direct: 1, throughChildren: 0, organizations: 1, partial: true });
+  });
+
+  it('caps the child policies read and marks only the parents the cap cut as partial', async () => {
+    state.devices = [device('d1'), device('d2', { siteId: 'site-a2' }), device('d3', { siteId: 'site-a3' })];
+    state.policies = [
+      { id: 'pa', orgId: null, partnerId: PARTNER },
+      { id: 'pb', orgId: null, partnerId: PARTNER },
+      { id: 'pc', orgId: null, partnerId: PARTNER },
+      { id: 'ca1', orgId: null, partnerId: PARTNER, parentPolicyId: 'pa' },
+      { id: 'cb1', orgId: null, partnerId: PARTNER, parentPolicyId: 'pb' },
+      { id: 'cb2', orgId: null, partnerId: PARTNER, parentPolicyId: 'pb' },
+      { id: 'cc1', orgId: null, partnerId: PARTNER, parentPolicyId: 'pc' },
+    ];
+    state.assignments = [row('ca1', 'site', 'site-a1'), row('cb1', 'site', 'site-a2'), row('cb2', 'site', 'site-a3'), row('cc1', 'site', 'site-a1')];
+
+    // Ordered (parent, id), a cap of 2 keeps ca1 and cb1: pb lost cb2, and pc
+    // sorts after the cut, so nothing says it is complete.
+    const reach = await computePolicyReach(auth, ['pa', 'pb', 'pc'], { statementBudget: 100, childPolicyLimit: 2 });
+
+    expect(reach.get('pa')).toEqual({ direct: 0, throughChildren: 1, organizations: 1 });
+    expect(reach.get('pb')).toEqual({ direct: 0, throughChildren: 1, organizations: 1, partial: true });
+    expect(reach.get('pc')).toEqual({ direct: 0, throughChildren: 0, organizations: 0, partial: true });
+    // The database reads one row past the cap, never the whole child set.
+    expect(state.childLimits).toEqual([3]);
+  });
+
+  it('an under-budget request is unchanged and carries no partial key', async () => {
+    state.devices = [device('d1'), device('d2', { siteId: 'site-a2' })];
+    state.policies = [
+      { id: 'parent', orgId: null, partnerId: PARTNER },
+      { id: 'child', orgId: null, partnerId: PARTNER, parentPolicyId: 'parent' },
+    ];
+    state.assignments = [row('parent', 'site', 'site-a1'), row('child', 'site', 'site-a2')];
+
+    const reach = await computePolicyReach(auth, ['parent']);
+
+    expect(reach.get('parent')).toEqual({ direct: 1, throughChildren: 1, organizations: 1 });
+    expect(Object.keys(reach.get('parent')!)).not.toContain('partial');
+    expect(REACH_CHILD_POLICY_LIMIT).toBeGreaterThan(0);
   });
 });
 
