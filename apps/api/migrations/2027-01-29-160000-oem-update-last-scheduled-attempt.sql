@@ -9,8 +9,9 @@
 -- CORE_TENANT_EXPORT_POLICY. No RLS change: the table's policies are row-level.
 --
 -- Backfill, conservative: a row whose last run is not known to be a Run Now
--- keeps the old behaviour for the night it was attempted (its last_attempt_at
--- counts as scheduled). Erring the other way could send a second scheduled run
+-- (including a row with no linked command, or one retention has removed) keeps
+-- the old behaviour for the night it was attempted (its last_attempt_at counts
+-- as scheduled). Erring the other way could send a second scheduled run
 -- on the night this ships. Idempotent: only rows still NULL are written.
 
 ALTER TABLE device_oem_update_status

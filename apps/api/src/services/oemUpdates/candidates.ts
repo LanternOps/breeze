@@ -81,7 +81,10 @@ export type ScheduledRunStatus = {
   lastAttemptAt?: Date | null;
   /** A scheduled run's dispatch only: what uses up the night (#12266). */
   lastScheduledAttemptAt?: Date | null;
-  /** The status of the last run's command, whatever its trigger. */
+  /**
+   * The status of the last run's command, either trigger. Read after `attempted_tonight`,
+   * so a scheduled run in flight tonight reads as attempted, not in progress.
+   */
   commandStatus?: string | null;
   rebootPendingSince?: Date | null;
 };
@@ -342,8 +345,9 @@ async function loadPage(scope: SQL, after: string | null, upTo: string | null): 
 /** The lane, when nothing about the device alone already rules a run out. */
 function laneWithoutALink(row: CandidateRow): OemLane | null {
   if (!oemUpdatesEnabled(row.partnerId)) return null;
-  // A run in flight is the decision's call (`run_in_progress`), after the window and
-  // the night's scheduled attempt, so the reason it names is the right one.
+  // A run in flight is refused by decideScheduledRun as `run_in_progress`, after the
+  // window and attempted-tonight checks, so a device outside its window or already
+  // attempted tonight reports that reason instead.
   // A release on its way would undo the takeover a run makes. The sweep settles it first.
   if (row.takeoverState === 'releasing') return null;
 

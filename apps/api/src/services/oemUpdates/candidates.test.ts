@@ -61,6 +61,7 @@ import {
   maxDispatchPerTick,
   selectDueDevices,
   type CandidateRow,
+  type ScheduledRunStatus,
 } from './candidates';
 import { stableOffsetMinutes } from './occurrence';
 import { resolveOemUpdatesLinksForDevices, type ResolvedOemUpdatesLink } from './resolver';
@@ -573,8 +574,8 @@ describe.each(OEM_LANES)('decideScheduledRun: scheduled and on-demand attempts (
   const laneLink = () => link({
     vendors: { [lane]: { enabled: true, categories: { driver: true }, blockedUpdateIds: [] } },
   });
-  const decide = (status: Record<string, unknown>) =>
-    decideScheduledRun({ deviceId: D1, lane, status, link: laneLink(), timezone: 'UTC', now: NOW });
+  const decide = (status: ScheduledRunStatus, now = NOW) =>
+    decideScheduledRun({ deviceId: D1, lane, status, link: laneLink(), timezone: 'UTC', now });
 
   it('a finished Run now inside the window leaves the scheduled run due', () => {
     expect(decide({
@@ -639,6 +640,21 @@ describe.each(OEM_LANES)('decideScheduledRun: scheduled and on-demand attempts (
       lastScheduledAttemptAt: null,
       commandStatus: 'completed',
     })).toMatchObject({ due: true });
+  });
+
+  it('a run in flight never hides an earlier reason: the window, the notAfter, a finish, the attempts', () => {
+    const inFlight = { lastTrigger: 'on_demand', lastAttemptAt: BEFORE_WINDOW, commandStatus: 'sent' } as const;
+    expect(decide(inFlight, new Date('2027-01-20T12:00:00.000Z'))).toEqual({ due: false, reason: 'not_in_window' });
+    expect(decide(inFlight, new Date('2027-01-20T04:00:00.000Z'))).toEqual({ due: false, reason: 'past_not_after' });
+    expect(decide({ ...inFlight, occurrenceKey: OCCURRENCE, lastTrigger: 'scheduled', lastOutcome: 'success', attempts: 1 }))
+      .toEqual({ due: false, reason: 'finished' });
+    expect(decide({ ...inFlight, occurrenceKey: OCCURRENCE, lastOutcome: 'failed', attempts: 3 }))
+      .toEqual({ due: false, reason: 'attempts_exhausted' });
+  });
+
+  it('a run in flight is named before a pending reboot', () => {
+    expect(decide({ lastTrigger: 'on_demand', lastAttemptAt: BEFORE_WINDOW, commandStatus: 'pending', rebootPendingSince: BEFORE_WINDOW }))
+      .toEqual({ due: false, reason: 'run_in_progress' });
   });
 
   it('last night\'s scheduled attempt does not count tonight', () => {

@@ -8,7 +8,7 @@ import { Aside } from '@astrojs/starlight/components';
 Vendor updates keep the update tool each hardware maker ships (Dell, Microsoft Surface, HP, Lenovo) running on a monthly schedule. BIOS, firmware, drivers and vendor applications are handled by the maker's own tool, not by Windows Update, and Breeze controls when it runs and when the machine restarts.
 
 - **Policy.** The **Vendor updates** tab of a [configuration policy](/features/configuration-policies/) sets the schedule (by default the third Wednesday of the month from 01:00 for 4 hours, with 7 catch-up nights), which makers and categories to run, and whether Breeze restarts the device overnight.
-- **Run now.** On a device, **Run vendor updates** starts a run immediately, outside the schedule. It does not use up that night's scheduled run, which may ask for categories or a restart the manual run did not. If the manual run is still going when the device's window opens, the scheduled run waits for it to finish, until the window's last start time.
+- **Run now.** On a device, **Run vendor updates** starts a run immediately, outside the schedule. It does not use up that night's scheduled run, which may ask for categories or a restart the manual run did not. If the manual run is still going when the device is due to start, the scheduled run waits for it to finish. If it is still going at the window's last start time, that night's scheduled run is skipped and the next catch-up night tries again.
 - **Fleet view.** The **Vendor updates** tab on the Patches page (`#vendor-updates`) shows every device's state, filterable by maker.
 
 Scope:
