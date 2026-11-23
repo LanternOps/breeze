@@ -323,7 +323,7 @@ function crudDb(opts: {
       where() { return chain; },
       orderBy() { return chain; },
       limit() { return chain; },
-      for(mode: string) { locked = mode === 'update'; return chain; },
+      for(mode: string) { locked = mode === 'no key update'; return chain; },
       then(resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) {
         return Promise.resolve().then(rows).then(resolve, reject);
       },
@@ -506,6 +506,8 @@ describe('key CRUD (#11808 W3)', () => {
     await updateKey(db, { integrationId: 'int-1', partnerId: 'p-1', keyId: 'key-2', apiKey: 'replacement-9876', seenHostIds: ['h9'] });
     const set = updates.find((u) => u.table === unifiIntegrationKeys)!.set;
     expect(set).toMatchObject({ keyLast4: '9876', status: 'pending', lastSyncError: null, lastSyncStatus: null, lastSeenHostIds: ['h9'] });
+    // Fences off a sync already in flight with the old secret.
+    expect(set.lastSyncAt).toBeInstanceOf(Date);
     expect(decryptSecret(set.apiKeyEncrypted as string, { aad: LEGACY_AAD })).toBe('replacement-9876');
     // The legacy column follows the first key (rollback to W1/W2 code, plan D12).
     expect(ops.indexOf('mirror-legacy')).toBeGreaterThan(ops.indexOf('update-key'));

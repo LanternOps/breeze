@@ -24,6 +24,7 @@ import {
   deleteKey,
   getSyncKeys,
   openUnifiKey,
+  recordKeyResults,
   sealUnifiKey,
   UNIFI_MAX_KEYS,
   UnifiKeyError,
@@ -440,6 +441,30 @@ describe('key management on unifi_integration_keys (#11808 W3, breeze_app)', () 
     await expect(asPartner(partnerId, () => deleteKey(db, { integrationId, partnerId, keyId: second.id })))
       .rejects.toMatchObject({ code: 'UNIFI_LAST_ENABLED_KEY' });
     await expect(asPartner(partnerId, () => deleteKey(db, { integrationId, partnerId, keyId: first!.id }))).resolves.toBe(false);
+  });
+
+  // A sync that read the OLD secret and finishes after a replace must not land
+  // its verdict (typically "rejected") on the freshly reset key.
+  runDb('a sync run that started before a key was replaced never records over it', async () => {
+    const { partnerId, integrationId } = await connected('old-secret-0001');
+    const [key] = await keysOf(integrationId);
+    const runStartedAt = new Date(Date.now() - 5_000);
+    await asPartner(partnerId, () => updateKey(db, { integrationId, partnerId, keyId: key!.id, apiKey: 'new-secret-0002', seenHostIds: ['h1'] }));
+
+    await withSystemDbAccessContext(() => recordKeyResults(db, {
+      integrationId, partnerId, runStartedAt, keyLast4ById: new Map(),
+      results: [{ keyId: key!.id, label: 'Global', status: 'failed', authFailure: true, hostsSeen: null, sitesSeen: null, hostIds: null, error: 'UniFi API error 401' }],
+    }));
+    const [after] = await keysOf(integrationId);
+    expect(after).toMatchObject({ status: 'pending', lastSyncStatus: null, lastSyncError: null, keyLast4: '0002', lastSeenHostIds: ['h1'] });
+
+    // A run that starts after the replace records normally.
+    await withSystemDbAccessContext(() => recordKeyResults(db, {
+      integrationId, partnerId, runStartedAt: new Date(Date.now() + 1_000), keyLast4ById: new Map(),
+      results: [{ keyId: key!.id, label: 'Global', status: 'success', authFailure: false, hostsSeen: 1, sitesSeen: 2, hostIds: ['h1'], error: null }],
+    }));
+    const [synced] = await keysOf(integrationId);
+    expect(synced).toMatchObject({ status: 'connected', lastSyncStatus: 'success', sitesSeen: 2 });
   });
 
   runDb('another partner cannot change or remove a key', async () => {

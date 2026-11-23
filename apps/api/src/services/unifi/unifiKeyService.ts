@@ -259,7 +259,7 @@ export async function recordKeyResults(
 // Key management (#11808 W3).
 //
 // Every write runs in one transaction that first locks the active integration
-// row FOR UPDATE. That lock serializes the cap, label and last-enabled checks
+// row (FOR NO KEY UPDATE). That lock serializes the cap, label and last-enabled checks
 // against each other and against `/connect` (upsertConnection takes the same
 // lock), so two concurrent adds with one slot left end with 25 keys, not 26.
 // The label unique index is the backstop; its 23505 is mapped OUTSIDE the
@@ -328,7 +328,10 @@ async function lockCloudIntegration(tx: DbExecutor, integrationId: string, partn
       eq(unifiIntegrations.isActive, true),
     ))
     .limit(1)
-    .for('update');
+    // NO KEY UPDATE conflicts with itself and with upsertConnection's FOR
+    // UPDATE, so key writes stay serialized, but not with the KEY SHARE locks
+    // the sync apply's foreign-key checks take on this row.
+    .for('no key update');
   if (!row) throw new UnifiKeyError('UNIFI_NOT_CONNECTED');
   if (row.connectionType !== 'cloud') throw new UnifiKeyError('UNIFI_NOT_CLOUD');
 }
@@ -432,6 +435,9 @@ export async function updateKey(
     if (a.isEnabled !== undefined) set.isEnabled = a.isEnabled;
     if (replacement) {
       // A new secret starts over: no verdict from the old key carries across.
+      // last_sync_at = now fences off runs already in flight with the old
+      // secret: recordKeyResults writes only when last_sync_at < run start.
+      set.lastSyncAt = new Date();
       set.apiKeyEncrypted = replacement.sealed;
       set.keyLast4 = replacement.last4;
       set.status = 'pending';
