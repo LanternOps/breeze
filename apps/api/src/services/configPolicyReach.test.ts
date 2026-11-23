@@ -62,6 +62,7 @@ import {
 import {
   REACH_CHILD_POLICY_LIMIT,
   REACH_STATEMENT_BUDGET,
+  computeAssignmentDelta,
   computePolicyReach,
   expandAssignmentsToDevices,
   readablePolicyIds,
@@ -598,5 +599,137 @@ describe('readablePolicyIds', () => {
   it('issues no statement for an empty list', async () => {
     expect(await readablePolicyIds(auth, [])).toEqual([]);
     expect(selectMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('computeAssignmentDelta (the staged Apply dry run, #12466)', () => {
+  const owner = { orgId: ORG_A, partnerId: null };
+  const r = (level: string, targetId: string, filters: { roleFilter?: string[] | null; osFilter?: string[] | null } = {}) => ({
+    level, targetId, roleFilter: filters.roleFilter ?? null, osFilter: filters.osFilter ?? null,
+  });
+
+  it('counts the devices the proposed set gains and loses', async () => {
+    state.devices = [device('d1'), device('d2', { siteId: 'site-a2' }), device('d3', { siteId: 'site-a3' })];
+
+    const delta = await computeAssignmentDelta(
+      auth,
+      owner,
+      [r('site', 'site-a1'), r('device', 'd3')],
+      [r('site', 'site-a1'), r('site', 'site-a2')],
+    );
+
+    expect(delta).toEqual({ added: 1, removed: 1 });
+  });
+
+  it('a device still reached by a kept row is neither added nor removed', async () => {
+    state.devices = [device('d1'), device('d2', { siteId: 'site-a2' })];
+
+    // The org row keeps both devices; dropping the site row and adding the
+    // device row changes no device.
+    const delta = await computeAssignmentDelta(
+      auth,
+      owner,
+      [r('organization', ORG_A), r('site', 'site-a2')],
+      [r('organization', ORG_A), r('device', 'd1')],
+    );
+
+    expect(delta).toEqual({ added: 0, removed: 0 });
+  });
+
+  it('a filter change counts the devices it narrows away', async () => {
+    state.devices = [device('ws'), device('srv', { deviceRole: 'server' })];
+
+    const delta = await computeAssignmentDelta(
+      auth,
+      owner,
+      [r('organization', ORG_A)],
+      [r('organization', ORG_A, { roleFilter: ['server'] })],
+    );
+
+    expect(delta).toEqual({ added: 0, removed: 1 });
+  });
+
+  it("counts only the devices in a site-restricted caller's sites", async () => {
+    state.devices = [device('a1'), device('a2', { siteId: 'site-a2' })];
+    const siteAuth = { scope: 'organization', orgId: ORG_A, allowedSiteIds: ['site-a2'] } as never;
+
+    const delta = await computeAssignmentDelta(siteAuth, owner, [], [r('organization', ORG_A)]);
+
+    // a1 sits outside the caller's sites: the dry run never counts it.
+    expect(delta).toEqual({ added: 1, removed: 0 });
+    // Control: unrestricted, both count.
+    expect(await computeAssignmentDelta(auth, owner, [], [r('organization', ORG_A)])).toEqual({ added: 2, removed: 0 });
+  });
+
+  it('counts only the pinned devices of a device-bound caller', async () => {
+    state.devices = [device('a1'), device('a2')];
+    const pinned = { scope: 'organization', orgId: ORG_A, allowedDeviceIds: ['a2'] } as never;
+
+    expect(await computeAssignmentDelta(pinned, owner, [r('organization', ORG_A)], [])).toEqual({ added: 0, removed: 1 });
+  });
+
+  it('expands under the policy owner, never the caller', async () => {
+    state.devices = [device('a1'), device('b1', { orgId: ORG_B, siteId: 'site-b1' })];
+
+    // An org-owned policy is clamped to its org: a partner-level row reaches
+    // only that org's devices.
+    const delta = await computeAssignmentDelta(auth, owner, [], [r('partner', PARTNER)]);
+
+    expect(delta).toEqual({ added: 1, removed: 0 });
+  });
+
+  it('issues no statement when the sets are the same', async () => {
+    const rows = [r('site', 'site-a1'), r('device', 'd1', { osFilter: ['windows'] })];
+
+    const delta = await computeAssignmentDelta(auth, owner, rows, [...rows].reverse());
+
+    expect(delta).toEqual({ added: 0, removed: 0 });
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('never writes an audit row', async () => {
+    state.devices = [device('d1', { groups: ['g1'] })];
+    mockResolveSafe.mockResolvedValueOnce({ allowedGroupIds: [], refusedGroups: [{ id: 'g1', refusedFields: ['x'] }] });
+
+    await computeAssignmentDelta(auth, owner, [], [r('device_group', 'g1')]);
+
+    expect(mockAudit).not.toHaveBeenCalled();
+  });
+
+  it('past the statement budget it is partial: approximate, not a bound', async () => {
+    for (let i = 0; i < 10; i += 1) state.devices.push(device(`d${i}`, { siteId: `s${i}` }));
+    const proposed = Array.from({ length: 10 }, (_, i) => r('site', `s${i}`));
+
+    const delta = await computeAssignmentDelta(auth, owner, [], proposed, { statementBudget: 5 });
+
+    // One final device read plus at most four expansions.
+    expect(statementsRun()).toBeLessThanOrEqual(5);
+    expect(delta.partial).toBe(true);
+    expect(delta.added).toBeLessThan(10);
+  });
+
+  it('an under-budget dry run carries no partial key', async () => {
+    state.devices = [device('d1')];
+
+    const delta = await computeAssignmentDelta(auth, owner, [], [r('site', 'site-a1')]);
+
+    expect(delta).toEqual({ added: 1, removed: 0 });
+    expect('partial' in delta).toBe(false);
+  });
+
+  it('spends the budget on the changed rows before the kept ones', async () => {
+    state.devices = [device('kept', { siteId: 'site-k' }), device('new', { siteId: 'site-n' })];
+
+    // Budget for one final read and ONE expansion: the added row wins it.
+    const delta = await computeAssignmentDelta(
+      auth,
+      owner,
+      [r('site', 'site-k')],
+      [r('site', 'site-k'), r('site', 'site-n')],
+      { statementBudget: 2 },
+    );
+
+    expect(delta.added).toBe(1);
+    expect(delta.partial).toBe(true);
   });
 });

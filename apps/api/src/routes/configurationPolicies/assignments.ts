@@ -25,8 +25,11 @@ import {
 
 import type { UserPermissions } from '../../services/permissions';
 import { checkAddArming, checkAddLevel, checkPolicyAssignableBy } from './assignmentGates';
+import { assignmentApplyRoutes } from './assignmentsApply';
 
 export const assignmentRoutes = new Hono();
+// POST /:id/assignments/apply — the staged Apply (#12466); its own file.
+assignmentRoutes.route('/', assignmentApplyRoutes);
 const requireConfigPolicyRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireConfigPolicyWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 

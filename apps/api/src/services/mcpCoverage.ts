@@ -445,6 +445,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'clientAi/templates.ts': { exempt: 'addin_surface' },
   'config.ts': { exempt: 'internal_plumbing' },
   'configurationPolicies/assignments.ts': { tools: ['apply_configuration_policy', 'remove_configuration_policy_assignment'] },
+  'configurationPolicies/assignmentsApply.ts': { tools: ['apply_configuration_policy', 'remove_configuration_policy_assignment'] },
   'configurationPolicies/crud.ts': { tools: ['manage_configuration_policy', 'list_configuration_policies', 'get_configuration_policy'] },
   'configurationPolicies/featureLinks.ts': { tools: ['manage_policy_feature_link', 'manage_service_monitors'] },
   'configurationPolicies/patchJobs.ts': { tools: ['manage_patches'] },

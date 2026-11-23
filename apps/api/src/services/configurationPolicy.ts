@@ -3061,6 +3061,32 @@ export async function getAssignment(assignmentId: string, configPolicyId: string
   return row ?? null;
 }
 
+/**
+ * The stored rows among `assignmentIds` that belong to `configPolicyId`, in one
+ * statement. The staged Apply reads every update and remove target this way
+ * before it re-runs the site-axis check on them; an id of another policy is
+ * simply absent.
+ */
+export async function getAssignments(assignmentIds: readonly string[], configPolicyId: string) {
+  if (assignmentIds.length === 0) return [];
+  return db
+    .select({
+      id: configPolicyAssignments.id,
+      level: configPolicyAssignments.level,
+      targetId: configPolicyAssignments.targetId,
+      priority: configPolicyAssignments.priority,
+      roleFilter: configPolicyAssignments.roleFilter,
+      osFilter: configPolicyAssignments.osFilter,
+    })
+    .from(configPolicyAssignments)
+    .where(
+      and(
+        inArray(configPolicyAssignments.id, [...assignmentIds]),
+        eq(configPolicyAssignments.configPolicyId, configPolicyId)
+      )
+    );
+}
+
 export async function unassignPolicy(assignmentId: string, configPolicyId: string) {
   const [deleted] = await db
     .delete(configPolicyAssignments)
