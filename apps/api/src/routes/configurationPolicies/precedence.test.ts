@@ -53,7 +53,9 @@ describe('GET /:id/precedence', () => {
   it('returns the per-feature counts, read through the access-filtered policy read', async () => {
     const res = await makeApp().request(`/${POLICY}/precedence`);
     expect(res.status).toBe(200);
-    expect(getConfigPolicyMock).toHaveBeenCalledWith(POLICY, AUTH);
+    // The read predicate (W03a): an org admin sees the counts of an MSP-managed
+    // policy that applies to its organization, as on reach.
+    expect(getConfigPolicyMock).toHaveBeenCalledWith(POLICY, AUTH, { access: 'read' });
     expect(computeMock).toHaveBeenCalledWith(AUTH, POLICY);
     expect(await res.json()).toEqual({ capped: false, features: { patch: { reached: 4, outranked: 1 } } });
   });

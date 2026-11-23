@@ -64,6 +64,9 @@ function partnerAuth(partnerId: string, orgIds: string[]): AuthContext {
     partnerId,
     orgId: null,
     scope: 'partner',
+    // Full org access over the listed orgs (#12462 W03a reads a limited
+    // partner caller through the applies-to rule).
+    partnerOrgAccess: 'all',
     accessibleOrgIds: orgIds,
     orgCondition: (col: unknown) => inArray(col as never, orgIds),
     canAccessOrg: (id: string) => orgIds.includes(id),

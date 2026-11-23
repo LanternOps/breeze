@@ -58,7 +58,7 @@ reachRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const { id } = c.req.valid('param');
 
-    const policy = await getConfigPolicy(id, auth);
+    const policy = await getConfigPolicy(id, auth, { access: 'read' });
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
     // computePolicyReach answers for every policy its RLS context reads, so a

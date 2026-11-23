@@ -203,7 +203,9 @@ featureLinkRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const { id } = c.req.valid('param');
 
-    const policy = await getConfigPolicy(id, auth);
+    // A read (W03a): the read predicate, so an org admin sees the features of
+    // an MSP-managed policy that applies to its organization.
+    const policy = await getConfigPolicy(id, auth, { access: 'read' });
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
     const links = await listFeatureLinks(id);

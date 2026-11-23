@@ -21,6 +21,8 @@ import {
   PolicyHasChildrenError,
   parentPolicyEnablesHpCmslCollection,
   parentPolicyArmsOemUpdates,
+  policyViewerAccess,
+  readablePolicyIds,
 } from '../../services/configurationPolicy';
 import { checkOemUpdatesArmAllowed, policyArmsOemUpdates } from './oemUpdatesGate';
 import { loadAppliesToSummaries } from '../../services/configPolicyAppliesTo';
@@ -50,10 +52,17 @@ crudRoutes.get(
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(Math.max(1, Number(query.limit) || 25), 100);
 
+    // W03a: the org a list is filtered to must be one the caller can access.
+    if (query.appliesToOrgId && !auth.canAccessOrg(query.appliesToOrgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+
     const result = await listConfigPolicies(auth, {
       status: query.status,
       search: query.search,
       orgId: query.orgId,
+      appliesToOrgId: query.appliesToOrgId,
+      notApplied: query.notApplied === 'true',
     }, { page, limit });
 
     // Applies-to summary (#12306 W01a). Merged here, not in listConfigPolicies,
@@ -85,6 +94,19 @@ crudRoutes.post(
       return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
     }
     const data = c.req.valid('json');
+
+    // A parent the caller may not read is refused with the same 400 as every
+    // other invalid parent (W03a). Without this, naming any MSP-managed policy
+    // id as the parent of a new org-owned policy would make that parent
+    // readable through D14 clause 5. It runs before the parent gates below,
+    // whose 403s would otherwise reveal a hidden parent's armed state.
+    if (data.parentPolicyId) {
+      const [readable] = await readablePolicyIds(auth, [data.parentPolicyId]);
+      if (!readable) {
+        const err = new InvalidParentPolicyError();
+        return c.json({ error: err.code, message: err.message }, 400);
+      }
+    }
 
     // #5511 W02 (contract D4): gating follows EFFECTIVENESS, not the verb.
     // Creating a child of a parent whose warranty link collects HP warranty
@@ -222,9 +244,8 @@ crudRoutes.post(
 //
 // MUST stay above `GET /:id`, or Hono captures "eligible-parents" as an id.
 // Returns NAMES ONLY. For an org-scoped caller this includes their partner's
-// partner-wide policies — the one narrow widening of org-scoped read
-// visibility, and the whole point of the feature (an org tech inheriting the
-// MSP baseline). policyAccessCondition is NOT relaxed anywhere else.
+// partner-wide policies that apply to their organization (W03a read rule), so
+// an org tech can inherit the MSP baseline that governs them.
 crudRoutes.get(
   '/eligible-parents',
   requireScope('organization', 'partner', 'system'),
@@ -258,12 +279,16 @@ crudRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const { id } = c.req.valid('param');
 
-    const policy = await getConfigPolicy(id, auth);
+    // The read predicate (W03a): an org admin opens the MSP-managed policies
+    // that apply to its organization, read-only; `access` says why it cannot
+    // edit, so the page can state the reason up front.
+    const policy = await getConfigPolicy(id, auth, { access: 'read' });
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
+    const access = policyViewerAccess(auth, policy);
     // After the 404, never before: an invisible policy loads nothing (D3).
     const appliesTo = (await loadAppliesToSummaries(auth, [policy.id])).get(policy.id);
-    return c.json(appliesTo ? { ...policy, appliesTo } : policy);
+    return c.json(appliesTo ? { ...policy, appliesTo, access } : { ...policy, access });
   }
 );
 

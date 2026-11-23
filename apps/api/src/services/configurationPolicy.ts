@@ -45,6 +45,8 @@ import {
 } from '../db/schema';
 import { and, eq, desc, or, isNull, isNotNull, sql, inArray, notInArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
+import { policyAccessCondition, policyReadCondition } from './configPolicyReadScope';
+import { appliesToOrgCondition, notAppliedCondition } from './configPolicyListFilters';
 import { buildRoleOsFilterConditions } from './featureConfigResolver';
 import {
   InvalidParentPolicyError,
@@ -256,43 +258,18 @@ export interface EffectiveConfiguration {
 // CRUD
 // ============================================
 
-/**
- * Access condition for a configuration_policies row, honoring both ownership
- * axes (#1724). A caller may reach a row that is owned by an org they can
- * access (the original shape) OR owned by their own partner (partner-wide /
- * all-orgs policies, org_id NULL). System scope returns undefined (no filter).
- *
- * This app-layer condition keeps partner-owned policies visible to
- * partner-scoped reads that filter by `auth.orgCondition` (which would
- * otherwise exclude org_id IS NULL rows).
- *
- * Relationship to RLS, as of #2468: the DB no longer blocks an org token from
- * READING its own partner's partner-wide rows —
- * `configuration_policies_partner_wide_select`
- * (2026-10-05-110000-config-policy-partner-wide-select.sql) grants exactly
- * that, SELECT-only. So this function is now the STRICTER of the two layers,
- * not the looser one: it still excludes `org_id IS NULL` rows for every
- * non-partner scope. That gate is deliberate and load-bearing — the org-scoped
- * list/get/update/delete endpoints and the AI tools all route through here, and
- * relaxing it would silently start showing (and offering to edit) the MSP's
- * shared policies in org-scoped UI. Do NOT relax it on the assumption that RLS
- * is the backstop for reads; RLS is only the backstop for WRITES, which stay
- * gated on breeze_has_partner_access.
- *
- * Read-visibility contracts: configPolicyPartnerWideSelect.integration.test.ts
- * (DB layer) and configurationPoliciesPartnerRls.integration.test.ts.
- */
-export function policyAccessCondition(auth: AuthContext): SQL | undefined {
-  const orgCond = auth.orgCondition(configurationPolicies.orgId);
-  // System scope: no filter on either axis.
-  if (!orgCond) return undefined;
-  if (auth.scope === 'partner' && auth.partnerId) {
-    return and(
-      sql`(${orgCond} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${auth.partnerId}))`
-    );
-  }
-  return orgCond;
-}
+// The two configuration-policy readers live in the leaf module
+// services/configPolicyReadScope.ts (#12462 W03a): `policyAccessCondition` is
+// the write-side reader, `policyReadCondition` decides which MSP-managed
+// policies a caller may list, open or name. Re-exported here so routes, AI
+// tools and their test mocks keep importing them from this service.
+export {
+  policyAccessCondition,
+  policyReadCondition,
+  policyAppliesToOrgsSql,
+  policyViewerAccess,
+  type PolicyViewerAccess,
+} from './configPolicyReadScope';
 
 // The partner-wide capability gate lives in the dependency-free leaf module
 // services/partnerWideAccess.ts (so routes/workers/AI tools can import it
@@ -330,6 +307,12 @@ function isInvalidParentDbError(err: unknown): boolean {
   if (code === '23514') return INVALID_PARENT_CHECK_CONSTRAINTS.has(constraint);
   return false;
 }
+
+// readablePolicyIds lives in services/configPolicyReadable.ts (W03a) so name
+// readers outside this service can use it without this module's graph.
+export { readablePolicyIds } from './configPolicyReadable';
+import { readablePolicyIds } from './configPolicyReadable';
+
 
 export async function createConfigPolicy(
   owner: { orgId: string; partnerId?: null } | { orgId?: null; partnerId: string },
@@ -418,9 +401,22 @@ export async function createConfigPolicy(
   });
 }
 
-export async function getConfigPolicy(id: string, auth: AuthContext) {
+/**
+ * One policy with its links, parent embed and children.
+ *
+ * `access` picks the reader (plan D13). `'write'`, the default, is
+ * `policyAccessCondition`: every write path and every caller that acts on the
+ * policy keeps it. `'read'` is `policyReadCondition`, which also admits an
+ * org-scope caller to the MSP-managed policies that apply to its organization;
+ * only read routes and read embeds pass it.
+ */
+export async function getConfigPolicy(
+  id: string,
+  auth: AuthContext,
+  opts: { access?: 'read' | 'write' } = {},
+) {
   const conditions: SQL[] = [eq(configurationPolicies.id, id)];
-  const accessCond = policyAccessCondition(auth);
+  const accessCond = opts.access === 'read' ? policyReadCondition(auth) : policyAccessCondition(auth);
   if (accessCond) conditions.push(accessCond);
 
   // orgName lets the UI label org-owned policies with their owning org
@@ -456,6 +452,10 @@ export async function getConfigPolicy(id: string, auth: AuthContext) {
     // visibility the agent config path relies on. Without it, an org-scoped
     // caller viewing a child of a partner-wide baseline would 404 on the parent
     // and silently render no inherited state at all.
+    //
+    // It also satisfies the read rule (W03a) without a filter of its own: D14
+    // clause 5 admits the parent of every child the caller may read, so naming
+    // this parent never names a policy the read predicate would hide.
     const [parent] = await db
       .select({
         id: configurationPolicies.id,
@@ -482,11 +482,16 @@ export async function getConfigPolicy(id: string, auth: AuthContext) {
   }
 
   // Blast radius of editing or deleting this policy. Also what the delete route
-  // needs to explain a 409.
+  // needs to explain a 409. Only children the caller may read are named
+  // (W03a): a partner-owned child that applies to none of the caller's orgs is
+  // another customer's policy. RLS alone would show every partner-owned child.
+  const childReadCond = policyReadCondition(auth);
   const childPolicies = await db
     .select({ id: configurationPolicies.id, name: configurationPolicies.name })
     .from(configurationPolicies)
-    .where(eq(configurationPolicies.parentPolicyId, id))
+    .where(childReadCond
+      ? and(eq(configurationPolicies.parentPolicyId, id), childReadCond)
+      : eq(configurationPolicies.parentPolicyId, id))
     .orderBy(asc(configurationPolicies.name));
 
   return { ...policy, featureLinks, parentPolicy, childPolicies };
@@ -640,6 +645,10 @@ export async function listEligibleParentPolicies(
       : and(rootOnly, own)!;
   }
 
+  // Only policies the caller may read are offered (W03a, spec Decision 2): an
+  // org admin is offered the MSP-managed policies that apply to its
+  // organization, a limited partner those that apply to one of its orgs.
+  const readCond = policyReadCondition(auth);
   const rows = await db
     .select({
       id: configurationPolicies.id,
@@ -647,7 +656,7 @@ export async function listEligibleParentPolicies(
       orgId: configurationPolicies.orgId,
     })
     .from(configurationPolicies)
-    .where(where)
+    .where(readCond ? and(where, readCond) : where)
     .orderBy(asc(configurationPolicies.name));
 
   return rows.map((r) => ({
@@ -659,11 +668,11 @@ export async function listEligibleParentPolicies(
 
 export async function listConfigPolicies(
   auth: AuthContext,
-  filters: { status?: string; search?: string; orgId?: string },
+  filters: { status?: string; search?: string; orgId?: string; appliesToOrgId?: string; notApplied?: boolean },
   pagination: { page: number; limit: number }
 ) {
   const conditions: SQL[] = [];
-  const accessCond = policyAccessCondition(auth);
+  const accessCond = policyReadCondition(auth);
   if (accessCond) conditions.push(accessCond);
 
   if (filters.orgId) {
@@ -689,6 +698,19 @@ export async function listConfigPolicies(
         : eq(configurationPolicies.orgId, filters.orgId)
     );
   }
+  if (filters.appliesToOrgId) {
+    // W03a: policies that apply to this org, plus inactive ones that apply
+    // nowhere yet (Q3). The org's partner is read in the caller's context, as
+    // the orgId filter above reads it; a missing or invisible org fails closed
+    // to that org's own policies.
+    const [appliesOrg] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, filters.appliesToOrgId))
+      .limit(1);
+    conditions.push(appliesToOrgCondition(filters.appliesToOrgId, appliesOrg?.partnerId ?? null));
+  }
+  if (filters.notApplied) conditions.push(notAppliedCondition());
   if (filters.status) {
     conditions.push(eq(configurationPolicies.status, filters.status as 'active' | 'inactive' | 'archived'));
   }
@@ -3479,11 +3501,29 @@ export async function resolveEffectiveConfig(
 // Preview — diff current vs proposed
 // ============================================
 
+/** A preview named a policy the caller may not read. Routes answer 404. */
+export class PolicyNotReadableError extends Error {
+  readonly code = 'CONFIG_POLICY_NOT_FOUND';
+  constructor() {
+    super('Configuration policy not found');
+    this.name = 'PolicyNotReadableError';
+  }
+}
+
 export async function previewEffectiveConfig(
   deviceId: string,
   changes: { add?: Array<{ configPolicyId: string; level: ConfigAssignmentLevel; targetId: string; priority?: number }>; remove?: string[] },
   auth: AuthContext
 ): Promise<{ current: EffectiveConfiguration | null; proposed: EffectiveConfiguration | null } | null> {
+  // An added policy is named in the proposed result. Refuse one the caller may
+  // not read (W03a) before anything else runs, so the preview is never a way
+  // to learn a hidden policy's name or settings from its id.
+  const addedIds = [...new Set((changes.add ?? []).map((a) => a.configPolicyId))];
+  if (addedIds.length > 0) {
+    const readable = new Set(await readablePolicyIds(auth, addedIds));
+    if (addedIds.some((id) => !readable.has(id))) throw new PolicyNotReadableError();
+  }
+
   // Resolve current config outside the transaction (read-only)
   const current = await resolveEffectiveConfig(deviceId, auth);
   if (!current) return null;

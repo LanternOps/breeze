@@ -26,7 +26,7 @@
  * RLS is organization-axis only, so the final device read also applies the
  * caller's site ceiling (`allowedSiteIds`) and device pin (`allowedDeviceIds`):
  * a site-restricted tech counts only the devices in their own sites.
- * Children are additionally narrowed by `policyAccessCondition`, the same set
+ * Children are additionally narrowed by `policyReadCondition`, the same set
  * the applies-to summary's `childPolicyCount` counts. The requested ids are
  * trusted to have been read through the route's access filter already (as
  * `loadAppliesToSummaries` trusts them); a policy the RLS context cannot read
@@ -55,7 +55,7 @@ import {
   type AssignmentExpansionScope,
   type AssignmentToExpand,
 } from './configPolicyAssignmentDevices';
-import { policyAccessCondition } from './configurationPolicy';
+import { policyReadCondition } from './configurationPolicy';
 
 export interface ConfigPolicyReach {
   direct: number;
@@ -167,24 +167,8 @@ export async function expandAssignmentsToDevices(
   return { deviceIds, complete };
 }
 
-/**
- * The subset of `policyIds` the caller may read, through the same access
- * condition `listConfigPolicies` and `getConfigPolicy` apply. The batch reach
- * route runs the client's list through this before counting; it never trusts
- * the list itself.
- */
-export async function readablePolicyIds(auth: AuthContext, policyIds: readonly string[]): Promise<string[]> {
-  const ids = [...new Set(policyIds)];
-  if (ids.length === 0) return [];
-  const conditions: SQL[] = [inArray(configurationPolicies.id, ids)];
-  const accessCond = policyAccessCondition(auth);
-  if (accessCond) conditions.push(accessCond);
-  const rows = await db
-    .select({ id: configurationPolicies.id })
-    .from(configurationPolicies)
-    .where(and(...conditions));
-  return rows.map((row) => row.id);
-}
+// The batch reach route's id filter moved to the read-scope leaf (W03a).
+export { readablePolicyIds } from './configurationPolicy';
 
 /**
  * The app-layer axes RLS does not enforce (RLS is organization-axis only):
@@ -231,7 +215,7 @@ export async function computePolicyReach(
   const visibleIds = policies.map((policy) => policy.id);
 
   const childConditions: SQL[] = [inArray(configurationPolicies.parentPolicyId, visibleIds)];
-  const accessCond = policyAccessCondition(auth);
+  const accessCond = policyReadCondition(auth);
   if (accessCond) childConditions.push(accessCond);
   // Ordered (parent, id) and capped. One row past the cap says the cap bit:
   // that row's parent lost children, and every parent sorting after it may

@@ -15,9 +15,15 @@
  * delivers a protective feature but not an execution-gated one.
  */
 import './setup';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
+import { Hono } from 'hono';
 import { eq, inArray, sql } from 'drizzle-orm';
+import { configPolicyRoutes } from '../../routes/configurationPolicies';
+import { createAccessToken } from '../../services/jwt';
+import { shutdownPeripheralJobs } from '../../jobs/peripheralJobs';
+import { shutdownPolicyEvaluationWorker } from '../../jobs/policyEvaluationWorker';
+import { closeRedis } from '../../services/redis';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   configPolicyAssignments,
@@ -30,7 +36,17 @@ import {
 import { computePolicyPrecedence, type PolicyPrecedence } from '../../services/configPolicyPrecedence';
 import { resolveEffectiveConfig } from '../../services/configurationPolicy';
 import { buildDbAccessContext, type AuthContext } from '../../middleware/auth';
-import { createDevice, createOrganization, createPartner, createSite } from './db-utils';
+import {
+  assignUserToOrganization,
+  assignUserToPartner,
+  createDevice,
+  createOrganization,
+  createPartner,
+  createRole,
+  createSite,
+  createUser,
+  grantRolePermissions,
+} from './db-utils';
 
 const FEATURES = ['patch', 'automation', 'backup'] as const;
 type Feature = (typeof FEATURES)[number];
@@ -456,5 +472,149 @@ describe('computePolicyPrecedence under forced RLS', () => {
     await expect(
       precedenceAs(orgCtx(otherOrg.id, other.id), orgAuth(otherOrg.id, other.id), t.subject.id),
     ).resolves.toBeNull();
+  });
+});
+
+/**
+ * GET /:id/precedence through the REAL route (authMiddleware → requireScope →
+ * requirePermission → the W03a read gate → computePolicyPrecedence) with
+ * minted org-session tokens, on `breeze_app` under forced RLS.
+ *
+ * The subject is MSP-managed and applies to organizations A and B, with
+ * competitors in both. An org-scope session of A is answered over A's devices
+ * only; one of organization C (same partner, no target of the subject) is
+ * refused by the read gate, not by RLS.
+ */
+describe('GET /configuration-policies/:id/precedence for an organization session', () => {
+  afterAll(async () => {
+    await shutdownPeripheralJobs();
+    await shutdownPolicyEvaluationWorker();
+    await closeRedis();
+  });
+
+  function buildApp(): Hono {
+    const app = new Hono();
+    app.route('/configuration-policies', configPolicyRoutes);
+    return app;
+  }
+
+  function get(app: Hono, token: string, path: string) {
+    return app.request(path, { method: 'GET', headers: { Authorization: `Bearer ${token}` } });
+  }
+
+  const READ = [{ resource: 'devices', action: 'read' }];
+
+  async function orgToken(partnerId: string, orgId: string) {
+    const user = await createUser({ partnerId, orgId, email: `prec-o-${randomUUID().slice(0, 8)}@example.test` });
+    const role = await createRole({ scope: 'organization', orgId, partnerId });
+    await grantRolePermissions(role.id, READ);
+    await assignUserToOrganization(user.id, orgId, role.id);
+    // A real org session carries its org's partner (bindOrganizationSessionPartner).
+    return createAccessToken({
+      sub: user.id, email: user.email, roleId: role.id, scope: 'organization',
+      orgId, partnerId, mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    });
+  }
+
+  async function partnerToken(partnerId: string) {
+    const user = await createUser({ partnerId, orgId: null, email: `prec-p-${randomUUID().slice(0, 8)}@example.test` });
+    const role = await createRole({ scope: 'partner', partnerId });
+    await grantRolePermissions(role.id, READ);
+    await assignUserToPartner(user.id, partnerId, role.id, 'all');
+    return createAccessToken({
+      sub: user.id, email: user.email, roleId: role.id, scope: 'partner',
+      orgId: null, partnerId, mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    });
+  }
+
+  it("counts org A's devices only for an org A session, names nothing, and 404s an org the policy does not apply to", async () => {
+    const app = buildApp();
+    const t = await seedTree();
+    // Same partner as the subject, with a device, and no target of the subject.
+    const orgC = (await createOrganization({ partnerId: t.partner.id, name: 'Cedar' }))!;
+    const siteC = (await createSite({ orgId: orgC.id, name: 'Cedar HQ' }))!;
+    const c1 = await seedDevice(orgC.id, siteC.id);
+
+    const orgA = await orgToken(t.partner.id, t.orgA.id);
+    const msp = await partnerToken(t.partner.id);
+    const path = `/configuration-policies/${t.subject.id}/precedence`;
+
+    // A's devices only: a2 (patch, backup) and a3 (automation). B's devices and
+    // the Birch patching win on them are not in the answer.
+    const first = await get(app, orgA, path);
+    expect(first.status).toBe(200);
+    const firstText = await first.text();
+    expect(JSON.parse(firstText)).toEqual({
+      capped: false,
+      features: {
+        patch: { reached: 3, outranked: 1 },
+        automation: { reached: 3, outranked: 1 },
+        backup: { reached: 3, outranked: 1 },
+      },
+    });
+
+    // The partner sees A and B, so organization B really is in this policy's reach.
+    const mspBefore = await get(app, msp, path);
+    expect(mspBefore.status).toBe(200);
+    expect(await mspBefore.json()).toEqual({
+      capped: false,
+      features: {
+        patch: { reached: 5, outranked: 3 },
+        automation: { reached: 5, outranked: 1 },
+        backup: { reached: 5, outranked: 1 },
+      },
+    });
+
+    // Org B only: a new device the subject reaches, and a site-level competitor
+    // that beats the subject's org-B row for backup on every B device.
+    const b3 = await seedDevice(t.orgB.id, t.siteB.id);
+    const birchBackup = await seedPolicy(
+      { orgId: t.orgB.id, partnerId: null },
+      { name: 'Birch backup', status: 'active', features: ['backup'] },
+    );
+    await assign(birchBackup.id, 'site', t.siteB.id, 0, at(8));
+
+    // The additions move the partner's numbers ...
+    const mspAfter = await get(app, msp, path);
+    expect(await mspAfter.json()).toEqual({
+      capped: false,
+      features: {
+        patch: { reached: 6, outranked: 4 },
+        automation: { reached: 6, outranked: 1 },
+        backup: { reached: 6, outranked: 4 },
+      },
+    });
+    // ... and change nothing in org A's answer.
+    const second = await get(app, orgA, path);
+    expect(second.status).toBe(200);
+    const secondText = await second.text();
+    expect(secondText).toBe(firstText);
+
+    // Counts only: no policy, organization, site or device of any tenant, A's included.
+    for (const body of [firstText, secondText]) {
+      expect(Object.keys(JSON.parse(body)).sort()).toEqual(['capped', 'features']);
+      for (const policy of [...t.competitors, birchBackup]) {
+        expect(body).not.toContain(policy.id);
+        expect(body).not.toContain(policy.name);
+      }
+      for (const id of [
+        t.subject.id, t.partner.id, t.orgA.id, t.orgB.id, orgC.id, t.siteA1.id, t.siteA2.id, t.siteB.id, siteC.id,
+        t.a1, t.a2, t.a3, t.b1, t.b2, b3, c1,
+      ]) {
+        expect(body).not.toContain(id);
+      }
+      for (const name of ['Acme', 'Birch', 'Cedar']) expect(body).not.toContain(name);
+    }
+
+    // Organization C is the subject's partner's but no target: the read gate
+    // refuses it. Under RLS alone the count would run and answer zero, so the
+    // 404 below is the gate's, not the database's.
+    const underRlsAlone = await precedenceAs(orgCtx(orgC.id, t.partner.id), orgAuth(orgC.id, t.partner.id), t.subject.id);
+    expect(underRlsAlone).toMatchObject({ capped: false, features: { patch: { reached: 0, outranked: 0 } } });
+    const orgCToken = await orgToken(t.partner.id, orgC.id);
+    const refused = await get(app, orgCToken, path);
+    expect(refused.status).toBe(404);
+    expect(await refused.text()).not.toContain(t.subject.id);
+    expect((await get(app, orgCToken, `/configuration-policies/${t.subject.id}`)).status).toBe(404);
   });
 });

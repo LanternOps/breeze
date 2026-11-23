@@ -264,6 +264,9 @@ describe('configuration_policies RLS — dual-axis (2026-06-27 migration)', () =
     const auth = {
       scope: 'partner',
       partnerId: partner.id,
+      // A partner admin (full org access): since #12462 W03a a limited caller
+      // reads only the partner-wide policies that apply to one of its orgs.
+      partnerOrgAccess: 'all',
       orgId: null,
       accessibleOrgIds: [org.id],
       orgCondition: (col: PgColumn): SQL | undefined => eq(col, org.id),

@@ -32,6 +32,7 @@ const {
 }));
 
 vi.mock('../../services/configurationPolicy', () => ({
+  PolicyNotReadableError: class PolicyNotReadableError extends Error {},
   CONFIG_FEATURE_TYPES: configFeatureTypes,
   resolveEffectiveConfig: resolveEffectiveConfigMock,
   previewEffectiveConfig: previewEffectiveConfigMock,
@@ -55,6 +56,7 @@ vi.mock('../../db/schema', () => ({
 }));
 
 import { resolutionRoutes } from './resolution';
+import { PolicyNotReadableError } from '../../services/configurationPolicy';
 import { getPolicyBaselineDefaults } from '../../services/policyBaselineDefaults';
 import { requireScope, requirePermission } from '../../middleware/auth';
 
@@ -143,6 +145,17 @@ describe('GET /effective/:deviceId policyOwners', () => {
       await next();
     });
     app.route('/', resolutionRoutes);
+  });
+
+  it('POST /effective/:deviceId/diff answers 404 when the preview names a policy the caller may not read', async () => {
+    previewEffectiveConfigMock.mockRejectedValue(new PolicyNotReadableError());
+    const res = await app.request(`/effective/${DEVICE_ID}/diff`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ add: [{ configPolicyId: HIDDEN_POLICY, level: 'device', targetId: DEVICE_ID }] }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Configuration policy not found' });
   });
 
   it('GET /effective/:deviceId carries policyOwners for winners and chain rows', async () => {
