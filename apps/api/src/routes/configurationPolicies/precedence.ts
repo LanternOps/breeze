@@ -27,9 +27,10 @@ precedenceRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const { id } = c.req.valid('param');
 
-    // The access-filtered read decides who may ask; the count itself reads
-    // under RLS (see the service header).
-    const policy = await getConfigPolicy(id, auth);
+    // The read predicate (W03a) decides who may ask, as on reach: an org admin
+    // gets the counts of an MSP-managed policy that applies to its
+    // organization. The count itself reads under RLS (see the service header).
+    const policy = await getConfigPolicy(id, auth, { access: 'read' });
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
     const precedence = await computePolicyPrecedence(auth, id);
