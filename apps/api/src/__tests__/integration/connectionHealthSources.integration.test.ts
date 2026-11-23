@@ -124,7 +124,8 @@ describe('vendor sources', () => {
       ]);
     });
     const untracked = await observe(unifiSource);
-    expect(untracked.filter((o) => [conn, failing, working, disabled].includes(o.sourceId))).toEqual([
+    const mine = new Set<string>([conn, failing, working, disabled]);
+    expect(untracked.filter((o) => mine.has(o.sourceId))).toEqual([
       expect.objectContaining({ sourceId: failing, state: 'broken', severity: 'permanent', condition: 'reauth_required', partnerId: p, orgId: null, displayName: 'UniFi: Macera', detail: 'UniFi API error 401' }),
     ]);
     const tracked = await observe(unifiSource, [conn, working, disabled, gone]);
