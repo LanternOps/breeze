@@ -1532,8 +1532,10 @@
       "keepEditing": "Keep editing",
       "applying": "Applying…",
       "applyButton": "Apply",
-      "applyWithDelta": "Apply · adds {{added}} devices, removes {{removed}}",
-      "applyWithEstimate": "Apply · adds about {{added}} devices, removes about {{removed}}"
+      "applyWithDelta_one": "Apply · adds {{added}} device, removes {{removed}}",
+      "applyWithDelta_other": "Apply · adds {{added}} devices, removes {{removed}}",
+      "applyWithEstimate_one": "Apply · adds about {{added}} device, removes about {{removed}}",
+      "applyWithEstimate_other": "Apply · adds about {{added}} devices, removes about {{removed}}"
     },
     "targetPicker": {
       "levelGroupLabel": "Target level",

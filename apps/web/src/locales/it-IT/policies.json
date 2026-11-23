@@ -1532,8 +1532,10 @@
       "keepEditing": "Continua a modificare",
       "applying": "Applicazione in corso…",
       "applyButton": "Applica",
-      "applyWithDelta": "Applica · aggiunge {{added}} dispositivi, rimuove {{removed}}",
-      "applyWithEstimate": "Applica · aggiunge circa {{added}} dispositivi, rimuove circa {{removed}}"
+      "applyWithDelta_one": "Applica · aggiunge {{added}} dispositivo, rimuove {{removed}}",
+      "applyWithDelta_other": "Applica · aggiunge {{added}} dispositivi, rimuove {{removed}}",
+      "applyWithEstimate_one": "Applica · aggiunge circa {{added}} dispositivo, rimuove circa {{removed}}",
+      "applyWithEstimate_other": "Applica · aggiunge circa {{added}} dispositivi, rimuove circa {{removed}}"
     },
     "targetPicker": {
       "levelGroupLabel": "Livello di destinazione",

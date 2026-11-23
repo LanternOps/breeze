@@ -1532,8 +1532,10 @@
       "keepEditing": "Düzenlemeye devam et",
       "applying": "Uygulanıyor…",
       "applyButton": "Uygula",
-      "applyWithDelta": "Uygula · {{added}} cihaz ekler, {{removed}} cihaz kaldırır",
-      "applyWithEstimate": "Uygula · yaklaşık {{added}} cihaz ekler, yaklaşık {{removed}} cihaz kaldırır"
+      "applyWithDelta_one": "Uygula · {{added}} cihaz ekler, {{removed}} cihaz kaldırır",
+      "applyWithDelta_other": "Uygula · {{added}} cihaz ekler, {{removed}} cihaz kaldırır",
+      "applyWithEstimate_one": "Uygula · yaklaşık {{added}} cihaz ekler, yaklaşık {{removed}} cihaz kaldırır",
+      "applyWithEstimate_other": "Uygula · yaklaşık {{added}} cihaz ekler, yaklaşık {{removed}} cihaz kaldırır"
     },
     "targetPicker": {
       "levelGroupLabel": "Hedef düzeyi",

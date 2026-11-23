@@ -178,20 +178,20 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
     if (applying) return t('configurationPolicies.appliesToPanel.applying');
     if (!deltaReady) return t('configurationPolicies.appliesToPanel.applyButton');
     return deltaReady.partial
-      ? t('configurationPolicies.appliesToPanel.applyWithEstimate', { added: deltaReady.added, removed: deltaReady.removed })
-      : t('configurationPolicies.appliesToPanel.applyWithDelta', { added: deltaReady.added, removed: deltaReady.removed });
+      ? t('configurationPolicies.appliesToPanel.applyWithEstimate', { count: deltaReady.added, added: deltaReady.added, removed: deltaReady.removed })
+      : t('configurationPolicies.appliesToPanel.applyWithDelta', { count: deltaReady.added, added: deltaReady.added, removed: deltaReady.removed });
   })();
 
   if (loadState === 'loading' && rows.length === 0) {
     return (
-      <div data-testid="applies-to-panel" className="flex justify-center py-8">
+      <div data-testid="applies-to-panel" className="flex flex-1 justify-center px-5 py-8">
         <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" role="status" aria-label={t('configurationPolicies.appliesToPanel.loading')} />
       </div>
     );
   }
   if (loadState === 'error') {
     return (
-      <div data-testid="applies-to-panel" className="space-y-3">
+      <div data-testid="applies-to-panel" className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
         <p data-testid="applies-to-load-error" role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
           {loadError ?? t('configurationPolicies.appliesToPanel.loadFailed')}
         </p>
@@ -203,7 +203,8 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
   }
 
   return (
-    <div data-testid="applies-to-panel" className="flex min-h-full flex-col gap-5">
+    <div data-testid="applies-to-panel" className="flex min-h-0 flex-1 flex-col">
+      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
       {owner.kind === 'org' ? (
         <p data-testid="applies-to-locked-org" className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
           <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -292,7 +293,9 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
         {t('configurationPolicies.appliesToPanel.precedenceLegend')}
       </p>
 
-      <div className="sticky bottom-0 mt-auto space-y-2 border-t bg-background pt-3">
+      </div>
+
+      <div className="space-y-2 border-t bg-card px-5 py-3">
         {conflict && (
           <div data-testid="applies-to-conflict" role="alert" className="flex flex-wrap items-center gap-3 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
             <span className="min-w-0 flex-1">{conflict}</span>

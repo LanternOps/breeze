@@ -1532,8 +1532,10 @@
       "keepEditing": "Weiter bearbeiten",
       "applying": "Wird angewendet…",
       "applyButton": "Anwenden",
-      "applyWithDelta": "Anwenden · fügt {{added}} Geräte hinzu, entfernt {{removed}}",
-      "applyWithEstimate": "Anwenden · fügt etwa {{added}} Geräte hinzu, entfernt etwa {{removed}}"
+      "applyWithDelta_one": "Anwenden · fügt {{added}} Gerät hinzu, entfernt {{removed}}",
+      "applyWithDelta_other": "Anwenden · fügt {{added}} Geräte hinzu, entfernt {{removed}}",
+      "applyWithEstimate_one": "Anwenden · fügt etwa {{added}} Gerät hinzu, entfernt etwa {{removed}}",
+      "applyWithEstimate_other": "Anwenden · fügt etwa {{added}} Geräte hinzu, entfernt etwa {{removed}}"
     },
     "targetPicker": {
       "levelGroupLabel": "Zielebene",
