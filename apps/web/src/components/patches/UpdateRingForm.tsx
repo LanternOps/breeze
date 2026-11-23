@@ -7,6 +7,7 @@ import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import RingAppRulesSection, { type RingAppRule } from './RingAppRulesSection';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import type { RingFeatureUpdates } from './UpdateRingList';
 
 /** A Windows release token like 25H2. Mirrors the API's ringFeatureUpdatesSchema. */
@@ -287,6 +288,24 @@ function HoldField({ field, testId, t }: { field: UseFormRegisterReturn; testId?
         <span className="text-xs text-muted-foreground">{t('updateRingForm.days')}</span>
       </div>
     </div>
+  );
+}
+
+/** Asks before a closing ring editor throws away unsaved input (#12305). A
+ *  warning, not destructive: nothing saved is removed. Render it beside the
+ *  editor's Dialog, not inside it, so its Escape does not also reach the editor. */
+export function DiscardRingChangesDialog(props: { open: boolean; onClose: () => void; onConfirm: () => void }) {
+  const { t } = useTranslation('patches');
+  return (
+    <ConfirmDialog
+      {...props}
+      variant="warning"
+      title={t('updateRingForm.discardChanges.title')}
+      message={t('updateRingForm.discardChanges.message')}
+      confirmLabel={t('updateRingForm.discardChanges.confirm')}
+      confirmTestId="discard-ring-changes-confirm"
+      dialogTestId="discard-ring-changes-dialog"
+    />
   );
 }
 

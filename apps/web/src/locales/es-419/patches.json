@@ -512,6 +512,11 @@
     }
   },
   "updateRingForm": {
+    "discardChanges": {
+      "title": "¿Descartar los cambios sin guardar?",
+      "message": "Este anillo tiene cambios sin guardar. Al cerrar el editor, se descartan.",
+      "confirm": "Descartar"
+    },
     "validation": {
       "selectCategory": "Seleccione una categoría",
       "selectSeverity": "Seleccione al menos una gravedad para la aprobación automática.",

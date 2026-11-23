@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import PatchTab from './PatchTab';
 import { fetchWithAuth } from '../../../stores/auth';
+import { useUiStore } from '../../../stores/uiStore';
 
 const saveMock = vi.fn();
 const removeMock = vi.fn();
@@ -540,59 +541,58 @@ describe('PatchTab', () => {
     describe('unsaved changes guard (#12305)', () => {
       const backdrop = () => document.querySelector('.dialog-backdrop') as HTMLElement;
       const nameInput = () => screen.getByPlaceholderText('e.g. Pilot, Broad') as HTMLInputElement;
+      const ringDialog = () => screen.getAllByRole('dialog')[0];
+      const discardDialog = () => screen.queryByTestId('discard-ring-changes-dialog');
+
+      beforeEach(() => useUiStore.setState({ dirtyFormCount: 0 }));
 
       async function openAndType() {
         render(<PatchTab {...baseProps} />);
         fireEvent.click(await screen.findByRole('button', { name: /new ring/i }));
         fireEvent.change(nameInput(), { target: { value: 'Pilot' } });
-        await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+        await waitFor(() => expect(useUiStore.getState().dirtyFormCount).toBe(1));
       }
 
       it('still closes an untouched form on a backdrop click, with no prompt', async () => {
-        const confirmSpy = vi.spyOn(window, 'confirm');
         render(<PatchTab {...baseProps} />);
         fireEvent.click(await screen.findByRole('button', { name: /new ring/i }));
 
         fireEvent.click(backdrop());
 
         await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-        expect(confirmSpy).not.toHaveBeenCalled();
-        confirmSpy.mockRestore();
+        expect(discardDialog()).not.toBeInTheDocument();
       });
 
       it('ignores a backdrop click once the form has changes, and keeps what was typed', async () => {
-        const confirmSpy = vi.spyOn(window, 'confirm');
         await openAndType();
 
         fireEvent.click(backdrop());
 
-        expect(screen.getByRole('dialog')).toBeInTheDocument();
+        expect(ringDialog()).toBeInTheDocument();
         expect(nameInput().value).toBe('Pilot');
-        expect(confirmSpy).not.toHaveBeenCalled();
-        confirmSpy.mockRestore();
+        expect(discardDialog()).not.toBeInTheDocument();
       });
 
       it.each([
-        ['Escape', () => fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })],
-        ['the close button', () => fireEvent.click(screen.getByRole('button', { name: /^close$/i }))],
-        ['Cancel', () => fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }))],
-      ])('asks before %s discards changes: no keeps the form, yes closes it', async (_label, dismiss) => {
-        const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+        ['Escape', () => fireEvent.keyDown(ringDialog(), { key: 'Escape' })],
+        ['the close button', () => fireEvent.click(within(ringDialog()).getByRole('button', { name: /^close$/i }))],
+        ['Cancel', () => fireEvent.click(within(ringDialog()).getByRole('button', { name: /^cancel$/i }))],
+      ])('asks before %s discards changes: keep editing keeps the form, discard closes it', async (_label, dismiss) => {
         await openAndType();
 
         dismiss();
-        expect(confirmSpy).toHaveBeenCalledTimes(1);
-        expect(screen.getByRole('dialog')).toBeInTheDocument();
+        const confirm = (await screen.findByTestId('discard-ring-changes-dialog')).closest('[role="dialog"]') as HTMLElement;
+        fireEvent.click(within(confirm).getByRole('button', { name: /^cancel$/i }));
+        await waitFor(() => expect(discardDialog()).not.toBeInTheDocument());
         expect(nameInput().value).toBe('Pilot');
 
-        confirmSpy.mockReturnValue(true);
         dismiss();
+        fireEvent.click(await screen.findByTestId('discard-ring-changes-confirm'));
         await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-        confirmSpy.mockRestore();
+        expect(useUiStore.getState().dirtyFormCount).toBe(0);
       });
 
       it('opens an existing ring for edit as unchanged, so a backdrop click still closes it', async () => {
-        const confirmSpy = vi.spyOn(window, 'confirm');
         const ring = {
           id: 'ring-1', name: 'Pilot', description: null, enabled: true, ringOrder: 1, deferralDays: 3,
           deadlineDays: 7, gracePeriodHours: 4,
@@ -610,12 +610,12 @@ describe('PatchTab', () => {
         );
         fireEvent.click(await screen.findByTestId('patch-edit-ring'));
         expect(await screen.findByText('Firefox')).toBeInTheDocument();
+        expect(useUiStore.getState().dirtyFormCount).toBe(0);
 
         fireEvent.click(backdrop());
 
         await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-        expect(confirmSpy).not.toHaveBeenCalled();
-        confirmSpy.mockRestore();
+        expect(discardDialog()).not.toBeInTheDocument();
       });
     });
 
