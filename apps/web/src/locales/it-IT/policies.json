@@ -1555,6 +1555,50 @@
       "atLeastDevices_one": "Almeno {{count}} dispositivo",
       "atLeastDevices_other": "Almeno {{count}} dispositivi",
       "noneVisible": "Nessun dispositivo che puoi vedere"
+    },
+    "featureStates": {
+      "set_here": {
+        "label": "Impostato qui"
+      },
+      "from_parent": {
+        "label": "Dal criterio padre"
+      },
+      "changed_from_parent": {
+        "label": "Modificato qui"
+      },
+      "not_set": {
+        "label": "Non impostato"
+      },
+      "unavailable": {
+        "label": "Non disponibile in questo criterio"
+      }
+    },
+    "featureRail": {
+      "navLabel": "Funzionalità del criterio",
+      "selectLabel": "Funzionalità del criterio",
+      "groups": {
+        "updates_software": {
+          "label": "Aggiornamenti e software"
+        },
+        "monitoring": {
+          "label": "Monitoraggio"
+        },
+        "security": {
+          "label": "Sicurezza"
+        },
+        "backup": {
+          "label": "Backup"
+        },
+        "access_end_user": {
+          "label": "Accesso e utente finale"
+        },
+        "lifecycle": {
+          "label": "Ciclo di vita"
+        },
+        "results": {
+          "label": "Risultati"
+        }
+      }
     }
   },
   "software": {

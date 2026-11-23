@@ -1555,6 +1555,50 @@
       "atLeastDevices_one": "Mindestens {{count}} Gerät",
       "atLeastDevices_other": "Mindestens {{count}} Geräte",
       "noneVisible": "Keine Geräte, die Sie sehen können"
+    },
+    "featureStates": {
+      "set_here": {
+        "label": "Hier festgelegt"
+      },
+      "from_parent": {
+        "label": "Aus übergeordneter Richtlinie"
+      },
+      "changed_from_parent": {
+        "label": "Hier geändert"
+      },
+      "not_set": {
+        "label": "Nicht festgelegt"
+      },
+      "unavailable": {
+        "label": "Für diese Richtlinie nicht verfügbar"
+      }
+    },
+    "featureRail": {
+      "navLabel": "Richtlinienfunktionen",
+      "selectLabel": "Richtlinienfunktion",
+      "groups": {
+        "updates_software": {
+          "label": "Updates & Software"
+        },
+        "monitoring": {
+          "label": "Überwachung"
+        },
+        "security": {
+          "label": "Sicherheit"
+        },
+        "backup": {
+          "label": "Sicherung"
+        },
+        "access_end_user": {
+          "label": "Zugriff & Endbenutzer"
+        },
+        "lifecycle": {
+          "label": "Lebenszyklus"
+        },
+        "results": {
+          "label": "Ergebnisse"
+        }
+      }
     }
   },
   "software": {

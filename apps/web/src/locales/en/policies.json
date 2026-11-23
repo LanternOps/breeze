@@ -1555,6 +1555,50 @@
       "atLeastDevices_one": "At least {{count}} device",
       "atLeastDevices_other": "At least {{count}} devices",
       "noneVisible": "No devices you can see"
+    },
+    "featureStates": {
+      "set_here": {
+        "label": "Set here"
+      },
+      "from_parent": {
+        "label": "From parent"
+      },
+      "changed_from_parent": {
+        "label": "Changed here"
+      },
+      "not_set": {
+        "label": "Not set"
+      },
+      "unavailable": {
+        "label": "Unavailable on this policy"
+      }
+    },
+    "featureRail": {
+      "navLabel": "Policy features",
+      "selectLabel": "Policy feature",
+      "groups": {
+        "updates_software": {
+          "label": "Updates & software"
+        },
+        "monitoring": {
+          "label": "Monitoring"
+        },
+        "security": {
+          "label": "Security"
+        },
+        "backup": {
+          "label": "Backup"
+        },
+        "access_end_user": {
+          "label": "Access & end user"
+        },
+        "lifecycle": {
+          "label": "Lifecycle"
+        },
+        "results": {
+          "label": "Results"
+        }
+      }
     }
   },
   "software": {

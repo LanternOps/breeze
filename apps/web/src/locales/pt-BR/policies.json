@@ -1555,6 +1555,50 @@
       "atLeastDevices_one": "Pelo menos {{count}} dispositivo",
       "atLeastDevices_other": "Pelo menos {{count}} dispositivos",
       "noneVisible": "Nenhum dispositivo que você possa ver"
+    },
+    "featureStates": {
+      "set_here": {
+        "label": "Definido aqui"
+      },
+      "from_parent": {
+        "label": "Da política principal"
+      },
+      "changed_from_parent": {
+        "label": "Alterado aqui"
+      },
+      "not_set": {
+        "label": "Não definido"
+      },
+      "unavailable": {
+        "label": "Indisponível nesta política"
+      }
+    },
+    "featureRail": {
+      "navLabel": "Recursos da política",
+      "selectLabel": "Recurso da política",
+      "groups": {
+        "updates_software": {
+          "label": "Atualizações e software"
+        },
+        "monitoring": {
+          "label": "Monitoramento"
+        },
+        "security": {
+          "label": "Segurança"
+        },
+        "backup": {
+          "label": "Backup"
+        },
+        "access_end_user": {
+          "label": "Acesso e usuário final"
+        },
+        "lifecycle": {
+          "label": "Ciclo de vida"
+        },
+        "results": {
+          "label": "Resultados"
+        }
+      }
     }
   },
   "software": {

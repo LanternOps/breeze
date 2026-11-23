@@ -1555,6 +1555,50 @@
       "atLeastDevices_one": "En az {{count}} cihaz",
       "atLeastDevices_other": "En az {{count}} cihaz",
       "noneVisible": "Görebileceğiniz cihaz yok"
+    },
+    "featureStates": {
+      "set_here": {
+        "label": "Burada ayarlandı"
+      },
+      "from_parent": {
+        "label": "Üst politikadan"
+      },
+      "changed_from_parent": {
+        "label": "Burada değiştirildi"
+      },
+      "not_set": {
+        "label": "Ayarlanmadı"
+      },
+      "unavailable": {
+        "label": "Bu politikada kullanılamaz"
+      }
+    },
+    "featureRail": {
+      "navLabel": "Politika özellikleri",
+      "selectLabel": "Politika özelliği",
+      "groups": {
+        "updates_software": {
+          "label": "Güncellemeler ve yazılım"
+        },
+        "monitoring": {
+          "label": "İzleme"
+        },
+        "security": {
+          "label": "Güvenlik"
+        },
+        "backup": {
+          "label": "Yedekleme"
+        },
+        "access_end_user": {
+          "label": "Erişim ve son kullanıcı"
+        },
+        "lifecycle": {
+          "label": "Yaşam döngüsü"
+        },
+        "results": {
+          "label": "Sonuçlar"
+        }
+      }
     }
   },
   "software": {
