@@ -326,7 +326,8 @@ test('agent area: shared and unknown inputs set it (fail open)', () => {
   assert.equal(classifyPr(['packages/shared/src/testing/topology-unifi-v1.json']).agent_code, 'true');
 });
 test('agent area: files the Go tests read set it', () => {
-  for (const path of ['apps/api/src/routes/agents/schemas.ts', 'apps/api/src/routes/agentWs.ts', 'apps/web/public/scripts/uninstall.sh',
+  for (const path of ['apps/api/src/routes/agents/schemas.ts', 'apps/api/src/services/agentCommandResultValidation.ts',
+    'apps/api/src/routes/agentWs.ts', 'apps/web/public/scripts/uninstall.sh',
     'apps/api/src/__tests__/integration/agentHotPathQueryBudget.integration.test.ts']) {
     assert.equal(classifyPr([path]).agent_code, 'true', path);
   }

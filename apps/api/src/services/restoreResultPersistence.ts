@@ -114,6 +114,15 @@ export function buildRestoreResultMetadata(
     }
   }
 
+  // How many failedFiles / warnings entries were left out to fit the result
+  // limits (agent or validator); kept only as non-negative integers.
+  for (const key of ['failedFilesOmitted', 'warningsOmitted']) {
+    const value = restoreData[key];
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
+      metadata[key] = value;
+    }
+  }
+
   if (metadata.securityDescriptorQuarantinedPaths !== undefined) {
     const bounded = boundQuarantinedPaths(metadata.securityDescriptorQuarantinedPaths);
     if (bounded === undefined) delete metadata.securityDescriptorQuarantinedPaths;
