@@ -1388,7 +1388,8 @@
     "noGroupsMatchFilter": "Bu filtreyle eşleşen grup yok.",
     "managedByPartner": "Hizmet sağlayıcınız tarafından yönetilir. Üyelik kuralları gösterilmez; kuruluşunuzun cihazlarını görürsünüz.",
     "partnerDynamicType": "Dinamik · Tüm kuruluşlar",
-    "partnerDeleteWarning": "Bu işlem grubu tüm kuruluşlardan kaldırır ve ilke atamalarını siler."
+    "partnerDeleteWarning": "Bu işlem grubu tüm kuruluşlardan kaldırır ve ilke atamalarını siler.",
+    "policyRefusedForGroup": "Hiçbir şey uygulanmadı. {{group}}: {{reason}}"
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Donanım envanteri getirilemedi",
