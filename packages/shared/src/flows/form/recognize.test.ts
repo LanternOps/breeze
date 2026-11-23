@@ -91,6 +91,24 @@ describe('recognizeFlowForm', () => {
       'a1_run_script', 'a1_failsummary_0', 'a1_failsummary_1', 'a2_notify',
     ]);
     notFormShaped(mixed, 'not_decodable');
+    // And the other way round: a summary on the first script, per-device on the second.
+    const reversed = clone(perDevice);
+    reversed.steps = [
+      ...clone(summary.steps.filter((s) => s.id.startsWith('a0_'))),
+      ...clone(perDevice.steps.filter((s) => !s.id.startsWith('a0_'))),
+    ];
+    expect(reversed.steps.map((s) => s.id)).toEqual([
+      'a0_run_script', 'a0_failsummary_0', 'a0_failsummary_1',
+      'a1_run_script', 'a1_failed', 'a1_failnotice_0', 'a1_failnotice_1', 'a2_notify',
+    ]);
+    notFormShaped(reversed, 'not_decodable');
+  });
+
+  it('a stray per-device resolve step in a summary document is not decodable', () => {
+    const d = clone(doc('onFailure summary with two channels over two scripts'));
+    const failed = doc('onFailure notify with two channels over two scripts').steps.find((s) => s.id === 'a0_failed')!;
+    d.steps.splice(1, 0, clone(failed));
+    notFormShaped(d, 'not_decodable');
   });
 
   it('a summary notice carrying a for-each or a different when is not form-shaped', () => {

@@ -210,6 +210,16 @@ describe('OnFailureSection', () => {
     expect(onChange).toHaveBeenLastCalledWith({ mode: 'notify', channelIds: [CHANNEL, CHANNEL_2], notice: 'perDevice' });
   });
 
+  it('choosing Stop on a per-device flow, then Notify again, creates a summary (an explicit choice, not a silent rewrite)', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<OnFailureSection onFailure={{ mode: 'notify', channelIds: [CHANNEL], notice: 'perDevice' }} onChange={onChange} channels={channels} />);
+    fireEvent.click(screen.getByTestId('flow-form-onfailure-stop'));
+    expect(onChange).toHaveBeenLastCalledWith({ mode: 'stop' });
+    rerender(<OnFailureSection onFailure={{ mode: 'stop' }} onChange={onChange} channels={channels} />);
+    fireEvent.click(screen.getByTestId('flow-form-onfailure-notify'));
+    expect(onChange).toHaveBeenLastCalledWith({ mode: 'notify', channelIds: [CHANNEL], notice: 'summary' });
+  });
+
   it('the notify help describes the notice the flow sends: one summary per script, or one per failed device', () => {
     const { rerender } = render(<OnFailureSection onFailure={{ mode: 'stop' }} onChange={vi.fn()} channels={channels} />);
     const help = () => screen.getByTestId('flow-form-onfailure-notify-help').textContent ?? '';

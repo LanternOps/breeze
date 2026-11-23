@@ -1750,5 +1750,30 @@ describe('processFlowRunJob — a for-each step whose when is false (#12481)', (
         [CHANNEL_B, 'Automation Nightly action 2 could not be sent to every device.\n\nDevices: 2 succeeded, 2 failed.'],
       ]);
     });
+
+    it('every device failed: one notice per channel says 0 succeeded', async () => {
+      seedDoc(summaryDoc());
+      summaryTools({ a0_run_script: ['d1', 'd2', 'd3', 'd4'] });
+      await run();
+      expect(notices.map(([c, , m]) => [c, m])).toEqual([
+        [CHANNEL_A, 'Automation Nightly action 1 could not be sent to every device.\n\nDevices: 0 succeeded, 4 failed.'],
+        [CHANNEL_B, 'Automation Nightly action 1 could not be sent to every device.\n\nDevices: 0 succeeded, 4 failed.'],
+      ]);
+    });
+
+    it('a notice that cannot be sent does not stop the other channel or the next action (onFailure continue)', async () => {
+      seedDoc(summaryDoc());
+      summaryTools({ a0_run_script: ['d2'] });
+      const sendAware = h.execute.getMockImplementation()!;
+      h.execute.mockImplementation(async (i: ExecInput) => (i.step.id === 'a0_failsummary_0'
+        ? { kind: 'failed', code: 'step_failed', message: 'channel down', policy: false, renderedInput: {} }
+        : sendAware(i)));
+      await run();
+      expect(stepRow('a0_failsummary_0')).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+      expect(notices.map(([c]) => c)).toEqual([CHANNEL_B]);
+      expect(ran).toContain('a1_run_script');
+      // The engine's continue rule: later steps run, and the run reports the failed step.
+      expect(h.state.run).toMatchObject({ status: 'failed', errorCode: 'step_failed' });
+    });
   });
 });

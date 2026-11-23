@@ -158,8 +158,9 @@ export function decodeFlowForm(doc: FlowDocumentV1): FlowFormValues | null {
   const resolvedTarget: FlowFormTarget = target
     ?? (trigger.type === 'event' ? { kind: 'trigger_device' } : { kind: 'target', target: { type: 'all' } });
 
-  const onFailure: FlowFormOnFailure = sawFailureBlock
-    ? { mode: 'notify', channelIds: failureChannels, notice: failureNotice ?? 'perDevice' }
+  // A notice step always records its shape first, so a failure block has one.
+  const onFailure: FlowFormOnFailure = sawFailureBlock && failureNotice !== null
+    ? { mode: 'notify', channelIds: failureChannels, notice: failureNotice }
     : { mode: usesDispatched ? 'continue' : 'stop' };
 
   return {
