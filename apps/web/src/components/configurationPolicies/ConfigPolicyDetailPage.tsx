@@ -346,12 +346,18 @@ export default function ConfigPolicyDetailPage({
     setAppliesToOpen(false);
     void refreshPolicy();
   }, [refreshPolicy]);
+  // Only the newest read may set the count: a slow first read must not land
+  // over the one taken after an Apply.
+  const reachReq = useRef(0);
   const loadReach = useCallback(async () => {
     if (!policyId) return;
+    const req = ++reachReq.current;
     try {
-      setReach(await fetchPolicyReach(policyId));
-    } catch {
-      setReach(null);
+      const next = await fetchPolicyReach(policyId);
+      if (req === reachReq.current) setReach(next);
+    } catch (err) {
+      console.warn("[configuration policies] reach read failed", err);
+      if (req === reachReq.current) setReach(null);
     }
   }, [policyId]);
   useEffect(() => {
@@ -360,6 +366,9 @@ export default function ConfigPolicyDetailPage({
   // An Apply committed: re-read where the policy applies and its count. The
   // drawer stays open on the reloaded draft.
   const handleApplied = useCallback(() => {
+    // The old count describes the targets before the Apply: drop it until the
+    // new read answers, so nothing (e.g. a "0 matching" warning) uses it.
+    setReach(null);
     void refreshPolicy();
     void loadReach();
   }, [refreshPolicy, loadReach]);

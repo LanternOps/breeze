@@ -237,12 +237,23 @@ export default function ConfigPolicyList({
   useEffect(() => {
     if (!pageIdsKey) return;
     let cancelled = false;
-    fetchReach(pageIdsKey.split(","))
+    const ids = pageIdsKey.split(",");
+    // The newest read owns this page's counts: an id it leaves out, or a read
+    // that fails, shows no count rather than an older one.
+    const replacePage = (reach: Record<string, ConfigPolicyReach>) =>
+      setReachById((prev) => {
+        const next = { ...prev };
+        for (const id of ids) delete next[id];
+        return Object.assign(next, reach);
+      });
+    fetchReach(ids)
       .then((reach) => {
-        if (!cancelled) setReachById((prev) => ({ ...prev, ...reach }));
+        if (!cancelled) replacePage(reach);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         // Counts are an addition to the row; without them the row still reads.
+        console.warn("[configuration policies] reach read failed", err);
+        if (!cancelled) replacePage({});
       });
     return () => {
       cancelled = true;

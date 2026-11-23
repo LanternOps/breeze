@@ -992,12 +992,13 @@ export default function DeviceGroupsPage() {
         {
           toastConflict: true,
           friendly: (_code, message, body) => {
-            const entry = parseApplyFailure(body).entry;
+            const failure = parseApplyFailure(body);
+            const entry = failure.entry;
             if (entry?.op !== "add") return undefined;
             const groupId = groupIds[entry.index];
             const group = groups.find((g) => g.id === groupId)?.name ?? groupId;
             return group
-              ? t("deviceGroupsPage.policyRefusedForGroup", { group, reason: message })
+              ? t("deviceGroupsPage.policyRefusedForGroup", { group, reason: failure.message ?? message })
               : undefined;
           },
         },

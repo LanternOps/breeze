@@ -28,6 +28,8 @@ type TargetPickerProps = {
   isListed?: (level: ConfigPolicyTargetLevel, targetId: string) => boolean;
   /** Offer the Organization level (an MSP policy set to All organizations has no use for it). */
   offerOrganization?: boolean;
+  /** No pick is accepted (e.g. while an Apply runs). */
+  disabled?: boolean;
 };
 
 type Option = { id: string; name: string; extra?: string };
@@ -58,7 +60,7 @@ async function load(url: string, init: { skipOrgIdInjection?: boolean } | undefi
   return rows(body).map((r) => toOption(r, withSite)).filter((o): o is Option => o !== null);
 }
 
-export default function TargetPicker({ owner, onPick, isListed, offerOrganization = true }: TargetPickerProps) {
+export default function TargetPicker({ owner, onPick, isListed, offerOrganization = true, disabled = false }: TargetPickerProps) {
   const { t } = useTranslation('policies');
   const levels = useMemo(
     () => (offerOrganization ? LEVELS : LEVELS.filter((l) => l !== 'organization')),
@@ -133,10 +135,22 @@ export default function TargetPicker({ owner, onPick, isListed, offerOrganizatio
     // `org` is derived from owner and mspOrg, both listed.
   }, [owner.kind, owner.kind === 'org' ? owner.orgId : null, mspOrg?.id, level, debounced, choosingOrg, t]);
 
-  const selectLevel = (next: PickerLevel) => {
-    setLevel(next);
+  const clearResults = () => {
+    setOptions([]);
+    setMspGroups([]);
     setQuery('');
     setDebounced('');
+  };
+
+  const selectLevel = (next: PickerLevel) => {
+    if (next === level) return;
+    setLevel(next);
+    clearResults();
+  };
+
+  const chooseOrg = (next: Option | null) => {
+    setMspOrg(next);
+    clearResults();
   };
 
   const pick = (pickLevel: ConfigPolicyTargetLevel, option: Option) => {
@@ -151,7 +165,7 @@ export default function TargetPicker({ owner, onPick, isListed, offerOrganizatio
         <button
           type="button"
           data-testid={testid}
-          disabled={listed}
+          disabled={listed || disabled}
           onClick={onClick}
           className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
         >
@@ -194,7 +208,7 @@ export default function TargetPicker({ owner, onPick, isListed, offerOrganizatio
           <button
             type="button"
             data-testid="target-picker-change-org"
-            onClick={() => { setMspOrg(null); setQuery(''); setDebounced(''); }}
+            onClick={() => chooseOrg(null)}
             className="inline-flex items-center gap-1 text-xs text-primary underline-offset-4 hover:underline"
           >
             <ChevronLeft className="h-3 w-3" aria-hidden="true" />
@@ -249,7 +263,7 @@ export default function TargetPicker({ owner, onPick, isListed, offerOrganizatio
             <ul className="max-h-64 divide-y overflow-y-auto rounded-md border">
               {options.map((o) =>
                 choosingOrg && level !== 'organization'
-                  ? optionButton('organization', o, `target-picker-org-${o.id}`, () => { setMspOrg(o); setQuery(''); setDebounced(''); }, true)
+                  ? optionButton('organization', o, `target-picker-org-${o.id}`, () => chooseOrg(o), true)
                   : optionButton(level, o, `target-picker-option-${o.id}`, () => pick(level, o)),
               )}
             </ul>

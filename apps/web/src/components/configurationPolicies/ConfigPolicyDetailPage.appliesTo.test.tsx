@@ -208,6 +208,26 @@ describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () =
     expect(screen.getByTestId('applies-to-panel')).toBeInTheDocument();
   });
 
+  it('a slow first reach that answers after the post-Apply one does not overwrite it', async () => {
+    const pending: Array<(r: Response) => void> = [];
+    reachResponse = () => undefined as unknown as Response;
+    mockPolicy();
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input) === '/configuration-policies/pol-1/reach'
+        ? new Promise<Response>((resolve) => { pending.push(resolve); })
+        : base(input, init));
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    fireEvent.click(await screen.findByTestId('config-policy-applies-to-edit'));
+    await screen.findByTestId('applies-to-panel');
+    await waitFor(() => expect(pending).toHaveLength(1));
+    fireEvent.click(screen.getByTestId('stub-applied'));
+    await waitFor(() => expect(pending).toHaveLength(2));
+    await act(async () => pending[1]!(json({ direct: 7, throughChildren: 0, organizations: 1 })));
+    await act(async () => pending[0]!(json({ direct: 12, throughChildren: 0, organizations: 1 })));
+    expect(panelProps.current?.reach).toEqual({ direct: 7, throughChildren: 0, organizations: 1 });
+  });
+
   it('the strip shows the reach count', async () => {
     mockPolicy();
     render(<ConfigPolicyDetailPage policyId="pol-1" />);

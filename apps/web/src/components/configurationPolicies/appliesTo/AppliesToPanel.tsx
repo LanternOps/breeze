@@ -35,6 +35,8 @@ import { targetNameKey, useTargetNames } from './useTargetNames';
 // (a dry run of the same request, debounced). Nothing is written before Apply.
 
 export const DRY_RUN_DEBOUNCE_MS = 400;
+/** Answers that say "try again later", not "this change is not allowed". */
+const TRANSIENT_STATUSES = new Set([408, 425, 429]);
 
 type AppliesToPanelProps = {
   policyId: string;
@@ -53,7 +55,8 @@ type DeltaState =
   | { kind: 'idle' }
   | { kind: 'counting' }
   | { kind: 'ready'; delta: AssignmentDelta }
-  | { kind: 'refused'; failure: ApplyFailure }
+  /** The API refused the draft; `keys` maps its `entry` back to the row. */
+  | { kind: 'refused'; failure: ApplyFailure; keys: ApplyPayloadKeys }
   | { kind: 'unavailable' };
 
 export default function AppliesToPanel({ policyId, owner, summary, reach, onDirtyChange, onApplied }: AppliesToPanelProps) {
@@ -68,6 +71,7 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
   const [rowProblems, setRowProblems] = useState<Record<string, string>>({});
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const dryRunReq = useRef(0);
+  const loadReq = useRef(0);
 
   const dirty = draftIsDirty(rows);
   const names = useTargetNames(rows, owner, summary);
@@ -75,10 +79,12 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
   const payloadSig = JSON.stringify(payload);
 
   const load = useCallback(async () => {
+    const req = ++loadReq.current;
     setLoadState('loading');
     setLoadError(undefined);
     try {
       const stored = await fetchAssignments(policyId);
+      if (req !== loadReq.current) return;
       dispatch({ type: 'reset', assignments: stored });
       setStoredCount(stored.length);
       setConflict(null);
@@ -86,6 +92,14 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
       setConfirmDiscard(false);
       setLoadState('ready');
     } catch (err) {
+      if (req !== loadReq.current) return;
+      // Drop the draft: it was built on rows that may no longer be current,
+      // and a dirty draft hidden behind the error view would keep the drawer
+      // from closing. Retry loads a fresh one.
+      dispatch({ type: 'reset', assignments: [] });
+      setStoredCount(0);
+      setConflict(null);
+      setRowProblems({});
       setLoadError(err instanceof Error ? err.message : undefined);
       setLoadState('error');
     }
@@ -104,6 +118,7 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
   // never states numbers for a change it is not about to make.
   useEffect(() => {
     const req = ++dryRunReq.current;
+    setRowProblems({});
     if (!dirty) {
       setDelta({ kind: 'idle' });
       return;
@@ -113,7 +128,9 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
       void dryRunAssignments(policyId, payload).then((outcome) => {
         if (req !== dryRunReq.current) return;
         if (outcome.ok) setDelta({ kind: 'ready', delta: outcome.delta });
-        else if (outcome.status >= 400 && outcome.status < 500) setDelta({ kind: 'refused', failure: outcome.failure });
+        else if (outcome.status >= 400 && outcome.status < 500 && !TRANSIENT_STATUSES.has(outcome.status)) {
+          setDelta({ kind: 'refused', failure: outcome.failure, keys });
+        }
         else setDelta({ kind: 'unavailable' });
       });
     }, DRY_RUN_DEBOUNCE_MS);
@@ -121,10 +138,9 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
     // payloadSig stands for payload: the effect runs when the request would change.
   }, [payloadSig, dirty, policyId]);
 
-  const markEntry = (entryKeys: ApplyPayloadKeys, failure: ApplyFailure) => {
-    if (!failure.entry) return;
-    const key = rowKeyForEntry(entryKeys, failure.entry);
-    if (key) setRowProblems({ [key]: failure.message ?? t('configurationPolicies.appliesToPanel.entryRefused') });
+  const problemFor = (entryKeys: ApplyPayloadKeys, failure: ApplyFailure): Record<string, string> => {
+    const key = failure.entry ? rowKeyForEntry(entryKeys, failure.entry) : undefined;
+    return key ? { [key]: failure.message ?? t('configurationPolicies.appliesToPanel.entryRefused') } : {};
   };
 
   const handleApply = async () => {
@@ -133,11 +149,12 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
     setConflict(null);
     setRowProblems({});
     const sentKeys = keys;
+    let applied = false;
     try {
       await applyAssignments(policyId, payload);
-      onApplied();
-      await load();
+      applied = true;
     } catch (err) {
+      setApplying(false);
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
         showToast({ type: 'error', message: t('configurationPolicies.appliesToPanel.applyFailed') });
@@ -145,13 +162,18 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
       }
       // Already toasted, except a conflict, which is shown here with Reload.
       const failure = parseApplyFailure(err.body);
-      markEntry(sentKeys, failure);
+      setRowProblems(problemFor(sentKeys, failure));
       if (failure.conflict) setConflict(failure.message ?? t('configurationPolicies.appliesToPanel.conflictFallback'));
-    } finally {
+      return;
+    }
+    if (applied) {
+      onApplied();
+      await load();
       setApplying(false);
     }
   };
 
+  const shownProblems = delta.kind === 'refused' ? { ...rowProblems, ...problemFor(delta.keys, delta.failure) } : rowProblems;
   const liveRows = rows.filter(rowIsLive);
   const allOrgs = liveRows.some((row) => effectiveRow(row).level === 'partner');
   const isListed = useCallback(
@@ -172,7 +194,7 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
         ? reach.direct + deltaReady.added - deltaReady.removed
         : null
     : null;
-  const zeroMatching = projectedTotal === 0 && hiddenCount === 0 && (liveRows.length > 0 || dirty);
+  const zeroMatching = summary !== null && projectedTotal === 0 && hiddenCount === 0 && (liveRows.length > 0 || dirty);
 
   const applyLabel = (() => {
     if (applying) return t('configurationPolicies.appliesToPanel.applying');
@@ -264,7 +286,7 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
                   onEdit={(patch) => dispatch({ type: 'edit', key: row.key, patch })}
                   onRemove={() => dispatch({ type: 'remove', key: row.key })}
                   onRestore={() => dispatch({ type: 'restore', key: row.key })}
-                  problem={rowProblems[row.key]}
+                  problem={shownProblems[row.key]}
                   disabled={applying}
                 />
               );
@@ -285,6 +307,7 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
           owner={owner}
           offerOrganization={!allOrgs}
           isListed={isListed}
+          disabled={applying}
           onPick={(target) => dispatch({ type: 'add', target })}
         />
       </section>
@@ -363,7 +386,7 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
             type="button"
             data-testid="applies-to-apply"
             onClick={() => void handleApply()}
-            disabled={!dirty || applying || delta.kind === 'refused'}
+            disabled={!dirty || applying || delta.kind === 'refused' || delta.kind === 'counting'}
             className={cn(
               'h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50',
             )}

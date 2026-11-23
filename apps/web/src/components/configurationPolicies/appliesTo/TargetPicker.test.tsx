@@ -128,4 +128,20 @@ describe('TargetPicker', () => {
     fireEvent.click(screen.getByTestId('target-picker-level-site'));
     expect(await screen.findByRole('alert')).toBeInTheDocument();
   });
+
+  it('switching level never leaves the old level’s results clickable', async () => {
+    render(<TargetPicker owner={{ kind: 'org', orgId: ORG, orgName: 'Acme' }} onPick={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('target-picker-level-site'));
+    await screen.findByTestId(`target-picker-option-${SITE}`);
+    // The device list is slow to answer.
+    fetchWithAuth.mockImplementation(() => new Promise(() => {}));
+    fireEvent.click(screen.getByTestId('target-picker-level-device'));
+    expect(screen.queryByTestId(`target-picker-option-${SITE}`)).toBeNull();
+  });
+
+  it('nothing can be picked while disabled', async () => {
+    render(<TargetPicker owner={{ kind: 'org', orgId: ORG, orgName: 'Acme' }} onPick={vi.fn()} disabled />);
+    fireEvent.click(screen.getByTestId('target-picker-level-site'));
+    expect(await screen.findByTestId(`target-picker-option-${SITE}`)).toBeDisabled();
+  });
 });

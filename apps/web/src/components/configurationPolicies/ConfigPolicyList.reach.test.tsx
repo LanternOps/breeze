@@ -68,6 +68,29 @@ describe('ConfigPolicyList device counts', () => {
     expect(screen.getAllByTestId('config-policy-applies-to-cell')[0]).toHaveTextContent('Acme');
   });
 
+  it('a later read that leaves a policy out, or fails, shows no old count for it', async () => {
+    const two = policies(2);
+    let answer: (ids: string[]) => Response = (ids) =>
+      jsonResponse({ data: Object.fromEntries(ids.map((pid) => [pid, { direct: 5, throughChildren: 0, organizations: 1 }])) });
+    fetchWithAuth.mockImplementation(async (url: string) => answer(new URL(url, 'http://x').searchParams.get('ids')!.split(',')));
+    const { rerender } = render(<ConfigPolicyList policies={two} pageSize={10} />);
+    await waitFor(() => expect(screen.getAllByTestId('config-policy-applies-to-reach')).toHaveLength(2));
+
+    // The second policy is no longer readable.
+    answer = (ids) => jsonResponse({ data: { [ids[0]!]: { direct: 6, throughChildren: 0, organizations: 1 } } });
+    rerender(<ConfigPolicyList policies={[two[0]!]} pageSize={10} />);
+    await waitFor(() => expect(screen.getByTestId('config-policy-applies-to-reach')).toHaveTextContent('6 devices'));
+    rerender(<ConfigPolicyList policies={two} pageSize={10} />);
+    await waitFor(() => expect(reachCalls()).toHaveLength(3));
+    await waitFor(() => expect(screen.getAllByTestId('config-policy-applies-to-reach')).toHaveLength(1));
+
+    // A failed read drops the page's counts rather than keeping old ones.
+    answer = () => jsonResponse({ error: 'boom' }, 500);
+    rerender(<ConfigPolicyList policies={[two[0]!]} pageSize={10} />);
+    await waitFor(() => expect(reachCalls()).toHaveLength(4));
+    await waitFor(() => expect(screen.queryByTestId('config-policy-applies-to-reach')).toBeNull());
+  });
+
   it('asks nothing for an empty list', () => {
     render(<ConfigPolicyList policies={[]} pageSize={10} />);
     expect(reachCalls()).toHaveLength(0);

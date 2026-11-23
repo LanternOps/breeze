@@ -103,6 +103,9 @@ describe('DeviceGroupsPage bulk apply policy', () => {
     await waitFor(() => expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
     const toast = mockToast.mock.calls.find(([arg]) => (arg as { type: string }).type === 'error')![0] as { message: string };
     expect(toast.message).toContain('Workstations');
+    // The reason is the API's sentence, never the machine token.
+    expect(toast.message).toContain('already assigned');
+    expect(toast.message).not.toContain('assignment_conflict');
     // Nothing was applied, so the modal stays open with both groups selected.
     expect(within(dialog).getByRole('heading', { name: /apply policy to groups/i })).toBeInTheDocument();
     expect(policyWrites()).toHaveLength(1);

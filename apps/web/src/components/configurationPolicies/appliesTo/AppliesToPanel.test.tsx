@@ -24,6 +24,7 @@ const PARTNER_ROW = '22222222-2222-4222-8222-222222222222';
 const ORG_OWNER = { kind: 'org', orgId: ORG, orgName: 'Acme' } as const;
 
 const ORG_ROW = { id: A1, configPolicyId: POLICY, level: 'organization', targetId: ORG, priority: 0, roleFilter: null, osFilter: null };
+const ONE_ROW: ConfigPolicyAppliesToSummary = { assignmentCount: 1, allOrganizations: false, targets: [], childPolicyCount: 0 };
 
 type Handler = (url: string, init?: RequestInit) => Response | Promise<Response> | undefined;
 
@@ -157,7 +158,7 @@ describe('AppliesToPanel', () => {
 
   it('zero matching devices is a warning', async () => {
     dryRun = () => jsonResponse({ dryRun: true, delta: { added: 0, removed: 2 } });
-    renderPanel({ reach: { direct: 2, throughChildren: 0, organizations: 1 } satisfies ConfigPolicyReach });
+    renderPanel({ reach: { direct: 2, throughChildren: 0, organizations: 1 } satisfies ConfigPolicyReach, summary: ONE_ROW });
     await screen.findByTestId(`applies-to-row-${A1}`);
     fireEvent.click(screen.getByTestId(`applies-to-row-remove-${A1}`));
     expect(await screen.findByTestId('applies-to-zero-warning', {}, { timeout: 3000 })).toBeInTheDocument();
@@ -257,5 +258,111 @@ describe('AppliesToPanel', () => {
     expect(await screen.findByTestId('applies-to-load-error')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('applies-to-load-retry'));
     expect(await screen.findByTestId(`applies-to-row-${A1}`)).toBeInTheDocument();
+  });
+
+  describe('review round (#12544)', () => {
+    it('a failed reload after Apply drops the draft so the drawer can close', async () => {
+      const { onDirtyChange, onApplied } = renderPanel();
+      await screen.findByTestId(`applies-to-row-${A1}`);
+      fireEvent.click(screen.getByTestId(`applies-to-row-remove-${A1}`));
+      await waitFor(() => expect(screen.getByTestId('applies-to-apply')).toHaveTextContent('removes'), { timeout: 3000 });
+      const base = fetchWithAuth.getMockImplementation()!;
+      fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) =>
+        url === `/configuration-policies/${POLICY}/assignments` ? jsonResponse({ error: 'down' }, 503) : base(url, init));
+      fireEvent.click(screen.getByTestId('applies-to-apply'));
+      await waitFor(() => expect(onApplied).toHaveBeenCalled());
+      expect(await screen.findByTestId('applies-to-load-error')).toBeInTheDocument();
+      expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    });
+
+    it('Apply waits for the count before it can commit', async () => {
+      let release!: () => void;
+      dryRun = () => new Promise<Response>((resolve) => { release = () => resolve(jsonResponse({ dryRun: true, delta: { added: 3, removed: 0 } })); });
+      renderPanel();
+      await screen.findByTestId(`applies-to-row-${A1}`);
+      await addSite();
+      expect(screen.getByTestId('applies-to-apply')).toBeDisabled();
+      await waitFor(() => expect(release).toBeTypeOf('function'), { timeout: 3000 });
+      await act(async () => release());
+      await waitFor(() => expect(screen.getByTestId('applies-to-apply')).toBeEnabled());
+    });
+
+    it('a count that could not be read still lets Apply run', async () => {
+      dryRun = () => jsonResponse({ error: 'boom' }, 500);
+      renderPanel();
+      await screen.findByTestId(`applies-to-row-${A1}`);
+      await addSite();
+      await waitFor(() => expect(screen.getByTestId('applies-to-delta')).toHaveTextContent('Could not count'), { timeout: 3000 });
+      expect(screen.getByTestId('applies-to-apply')).toBeEnabled();
+    });
+
+    it('a rate-limited dry run is a missing count, not a refusal', async () => {
+      dryRun = () => jsonResponse({ error: 'Too many requests' }, 429);
+      renderPanel();
+      await screen.findByTestId(`applies-to-row-${A1}`);
+      await addSite();
+      await waitFor(() => expect(screen.getByTestId('applies-to-delta')).toHaveTextContent('Could not count'), { timeout: 3000 });
+      expect(screen.queryByTestId('applies-to-delta-refused')).toBeNull();
+      expect(screen.getByTestId('applies-to-apply')).toBeEnabled();
+    });
+
+    it('a refusal names the row it refused, and editing that row clears it', async () => {
+      // One remove, one edit, two adds: the refusal names the SECOND add.
+      assignments = [ORG_ROW, { ...ORG_ROW, id: PARTNER_ROW, level: 'site', targetId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' }];
+      dryRun = (_url, init) => {
+        const body = JSON.parse(String(init!.body));
+        return body.add.length === 2
+          ? jsonResponse({ error: 'Target device is not in this partner', entry: { op: 'add', index: 1 } }, 403)
+          : jsonResponse({ dryRun: true, delta: { added: 1, removed: 0 } });
+      };
+      fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === `/configuration-policies/${POLICY}/assignments`) return jsonResponse({ data: assignments });
+        if (url.endsWith('/assignments/apply')) return dryRun(url, init)!;
+        if (url.startsWith('/orgs/sites?')) return jsonResponse({ data: [{ id: SITE, name: 'HQ' }] });
+        if (url.startsWith('/devices?')) return jsonResponse({ data: [{ id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', hostname: 'PC-9' }] });
+        return jsonResponse({ data: [] });
+      });
+      renderPanel();
+      await screen.findByTestId(`applies-to-row-${A1}`);
+      fireEvent.click(screen.getByTestId(`applies-to-row-remove-${A1}`));
+      fireEvent.change(screen.getByTestId(`applies-to-row-priority-${PARTNER_ROW}`), { target: { value: '7' } });
+      await addSite();
+      fireEvent.click(screen.getByTestId('target-picker-level-device'));
+      fireEvent.click(await screen.findByTestId('target-picker-option-ffffffff-ffff-4fff-8fff-ffffffffffff'));
+
+      await screen.findByTestId('applies-to-delta-refused', {}, { timeout: 3000 });
+      const added = screen.getAllByTestId(/^applies-to-row-added-/).filter((el) => el.hasAttribute('data-state'));
+      expect(added).toHaveLength(2);
+      expect(within(added[1]!).getByRole('alert')).toHaveTextContent('Target device is not in this partner');
+      expect(within(added[0]!).queryByRole('alert')).toBeNull();
+      expect(within(screen.getByTestId(`applies-to-row-${A1}`)).queryByRole('alert')).toBeNull();
+
+      // Removing the refused row changes the draft: the old message goes.
+      fireEvent.click(within(added[1]!).getByTestId(/^applies-to-row-remove-/));
+      await waitFor(() => expect(screen.queryAllByRole('alert')).toHaveLength(0));
+    });
+
+    it('no zero warning while the summary is unknown (hidden rows may exist)', async () => {
+      dryRun = () => jsonResponse({ dryRun: true, delta: { added: 0, removed: 2 } });
+      renderPanel({ reach: { direct: 2, throughChildren: 0, organizations: 1 }, summary: null });
+      await screen.findByTestId(`applies-to-row-${A1}`);
+      fireEvent.click(screen.getByTestId(`applies-to-row-remove-${A1}`));
+      await waitFor(() => expect(screen.getByTestId('applies-to-apply')).toHaveTextContent('removes 2'), { timeout: 3000 });
+      expect(screen.queryByTestId('applies-to-zero-warning')).toBeNull();
+    });
+
+    it('the picker is inert while an Apply runs', async () => {
+      let release!: () => void;
+      apply = () => new Promise<Response>((resolve) => { release = () => resolve(jsonResponse({ added: [], updated: [], removed: [] }, 201)); });
+      renderPanel();
+      await screen.findByTestId(`applies-to-row-${A1}`);
+      fireEvent.click(screen.getByTestId(`applies-to-row-remove-${A1}`));
+      await waitFor(() => expect(screen.getByTestId('applies-to-apply')).toBeEnabled(), { timeout: 3000 });
+      fireEvent.click(screen.getByTestId('applies-to-apply'));
+      await waitFor(() => expect(release).toBeTypeOf('function'));
+      fireEvent.click(screen.getByTestId('target-picker-level-site'));
+      expect(await screen.findByTestId(`target-picker-option-${SITE}`)).toBeDisabled();
+      await act(async () => release());
+    });
   });
 });
