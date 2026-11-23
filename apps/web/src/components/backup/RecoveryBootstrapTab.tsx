@@ -513,6 +513,9 @@ export default function RecoveryBootstrapTab() {
   const [loadingSnapshots, setLoadingSnapshots] = useState(true);
   const [refreshingTokenId, setRefreshingTokenId] = useState<string | null>(null);
   const [previewingTokenId, setPreviewingTokenId] = useState<string | null>(null);
+  // Tokens this page previewed successfully: their session is the Preview's
+  // own, so the "Preview is unavailable" note is not shown beside the bundle.
+  const [previewedTokenIds, setPreviewedTokenIds] = useState<string[]>([]);
   const [copyStatusId, setCopyStatusId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
   const [errorReasons, setErrorReasons] = useState<string[]>([]);
@@ -965,6 +968,7 @@ export default function RecoveryBootstrapTab() {
           targetConfig: toMaybeRecord(payload.targetConfig) ?? current.targetConfig ?? null,
         }));
         setSelectedTokenId(tokenId);
+        setPreviewedTokenIds((prev) => (prev.includes(tokenId) ? prev : [...prev, tokenId]));
         setTokenMessage('Bootstrap preview loaded. The token has been authenticated for the recovery session.');
       } catch (err) {
         setError(err instanceof Error ? err.message : t('recoveryBootstrapTab.failedToPreviewBootstrap'));
@@ -1335,7 +1339,8 @@ export default function RecoveryBootstrapTab() {
                       ) : null}
                     </div>
                   </div>
-                  {selectedToken.token && selectedPreviewBlock ? (
+                  {/* Not beside a bundle this page's own Preview just loaded. */}
+                  {selectedToken.token && selectedPreviewBlock && !previewedTokenIds.includes(selectedToken.id) ? (
                     <p data-testid="preview-unavailable-reason" className="mt-2 text-xs text-muted-foreground">
                       {previewBlockMessage(selectedPreviewBlock)}
                     </p>

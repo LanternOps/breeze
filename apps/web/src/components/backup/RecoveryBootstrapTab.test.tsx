@@ -798,6 +798,9 @@ describe('RecoveryBootstrapTab', () => {
       const authIndex = fetchMock.mock.calls.findIndex(([url]) => String(url) === '/backup/bmr/recover/authenticate');
       expect(refetchIndex).toBeGreaterThanOrEqual(0);
       expect(refetchIndex).toBeLessThan(authIndex);
+      // The loaded bundle is shown; no "unavailable" note beside it.
+      expect(await screen.findByText('Bootstrap bundle')).toBeInTheDocument();
+      expect(screen.queryByTestId('preview-unavailable-reason')).toBeNull();
     });
   });
 });
