@@ -23,8 +23,9 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '..', '..'));
 // #12526: a child that never exits must fail the test that spawned it, by name.
-// spawnSync blocks the event loop, so neither a test timeout nor the reporter
-// can act until it returns; a stuck child otherwise hangs the whole file.
+// spawnSync blocks the event loop, so a per-test timeout cannot fire until it
+// returns; only the file-level --test-timeout (CI) would end the run, and that
+// names the file, not the test, or nothing does when run without the flag.
 const SPAWN = { timeout: 60000, killSignal: 'SIGKILL' };
 const spawnFailure = (run) => [run.error && String(run.error), run.stdout, run.stderr].filter(Boolean).join('\n');
 // Deliberately omit the QEMU list: these harnesses retain its fail-closed behavior.
