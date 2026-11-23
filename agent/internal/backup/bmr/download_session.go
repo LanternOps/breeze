@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"time"
 )
@@ -13,7 +14,10 @@ import (
 // The recovery download route serves objects only until the descriptor's
 // expiresAt (authenticated_at + 1 h, capped by the token's own expiry) and
 // answers 401 after that. /bmr/recover/authenticate re-opens the window
-// (#5634) but is rate-limited to 3 calls per hour per token. The client used
+// (#5634) but is rate-limited per token: 3 first sign-ins an hour, and (since
+// #12566) 3 renewals an hour for a client that sends the session renewal
+// credential a previous sign-in returned (sessionRenewal), counted apart from
+// other sign-ins with the same token such as a browser Preview. The client used
 // to re-authenticate reactively, once per failed file, with no cap or
 // backoff: the W04b KIT proof (recovery 61f8f8d5) turned one expiry into 3
 // successful authenticates, ~300 × 429 and tens of thousands of per-file
@@ -21,40 +25,86 @@ import (
 //
 // The session is now handled once per provider, not once per file:
 //
-//   - Proactive: shortly before expiresAt, one download refreshes the
-//     session (single attempt, never blocking; downloads keep using the
-//     still-valid descriptor if it fails). At most one attempt per expiresAt
-//     value, and never within proactiveRefreshMinInterval of the last
-//     successful authenticate on the local monotonic clock — recovery media
-//     often boots with an unset RTC, so a server expiresAt can look
-//     permanently imminent.
+//   - Proactive: from sessionRefreshLead before expiresAt, a download
+//     refreshes the session (never blocking; downloads keep using the
+//     still-valid descriptor if it fails). A refused attempt is retried after
+//     the server's Retry-After (at least proactiveRetryInterval, jittered),
+//     up to proactiveMaxAttempts per expiresAt value, so one refusal does not
+//     cost the session (#12566). Never within proactiveRefreshMinInterval of
+//     the last successful authenticate on the local monotonic clock —
+//     recovery media often boots with an unset RTC, so a server expiresAt can
+//     look permanently imminent.
 //   - Reactive: a 401 triggers one single-flight refresh (a generation
 //     counter lets concurrent 401s share it), backing off between attempts:
 //     the server's Retry-After when sent (clamped to 5 minutes by
 //     httputil.ParseRetryAfter, the agent-wide policy), else exponential
-//     from reauthInitialDelay to reauthMaxDelay.
-//   - Run-level failure: repeated 429s, a rejected token, exhausted
-//     transient retries, or a fresh session that
+//     from reauthInitialDelay to reauthMaxDelay. A 429 is waited out, with
+//     jitter, for up to reauthRateLimitedBudget in total and at most
+//     reauthMaxRateLimitedAttempts calls (#12566: it used to give up after
+//     three quick 429s).
+//   - Run-level failure: a rate limit outlasting that budget, a rejected
+//     token, exhausted transient retries, or a fresh session that
 //     still answers 401 mark the session lost. Every later Download returns
 //     ErrRecoverySessionLost immediately, and restoreFiles aborts the run on
-//     it instead of logging one warning per remaining file.
+//     it instead of logging one warning per remaining file, keeping what was
+//     already restored and saying how to finish (a new recovery token).
+//
+// Server allowance (3 renewals per rolling hour, refused renewals not
+// counted): a normal run renews once per session, about every 45 minutes
+// (sessionRefreshLead before a one-hour expiry), so at most 2 renewals fall
+// in any hour and one refused attempt (or two) still fits.
 const (
 	// sessionRefreshLead is how long before expiresAt the proactive
-	// refresh fires.
-	sessionRefreshLead = 5 * time.Minute
-	// proactiveRefreshMinInterval bounds proactive refreshes to 2/h
-	// whatever the clocks say, inside the server's 3/h authenticate limit.
+	// refresh starts: long enough for proactiveMaxAttempts tries spaced by
+	// a clamped (5 minute) Retry-After before the session closes.
+	sessionRefreshLead = 15 * time.Minute
+	// proactiveRefreshMinInterval bounds successful proactive refreshes to
+	// 2/h whatever the clocks say, inside the server's 3/h renewal limit.
 	proactiveRefreshMinInterval = 30 * time.Minute
+	// proactiveMaxAttempts caps proactive refresh attempts per expiresAt;
+	// proactiveRetryInterval is the least time between two of them.
+	proactiveMaxAttempts   = 3
+	proactiveRetryInterval = 2 * time.Minute
 
 	reauthInitialDelay = 15 * time.Second
 	reauthMaxDelay     = 60 * time.Second
-	// reauthMaxAttempts caps authenticate calls per reactive refresh;
-	// reauthMaxRateLimited caps how many of those may be 429s. With the 5
-	// minute Retry-After clamp, a rate-limited session is declared lost
-	// after at most ~10 minutes of waiting.
-	reauthMaxAttempts    = 5
-	reauthMaxRateLimited = 3
+	// reauthMaxAttempts caps the non-429 authenticate calls per reactive
+	// refresh. 429s are bounded separately: at most
+	// reauthMaxRateLimitedAttempts calls and reauthRateLimitedBudget of
+	// waiting in total (each wait is the server's Retry-After, clamped to
+	// 5 minutes, plus up to 20% jitter).
+	reauthMaxAttempts            = 5
+	reauthMaxRateLimitedAttempts = 6
+	reauthRateLimitedBudget      = 20 * time.Minute
 )
+
+// sessionRetryJitter spreads a retry wait over [d, 1.2d], so helpers that
+// were refused together do not retry in lockstep. A var for tests.
+var sessionRetryJitter = func(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	return d + time.Duration(rand.Int64N(int64(d/5)+1))
+}
+
+// recoverySessionLostResumeHint is appended to the abort message when the
+// download session is lost: restored files are kept (nothing removes them),
+// and a recovery token is spent by the run, so finishing needs a new one.
+const recoverySessionLostResumeHint = "files restored so far stay in place; to restore the rest, create a new recovery token in Breeze and run the restore again (it restores every file in the snapshot again)"
+
+// setSessionRenewal installs the session renewal credential a bootstrap
+// carried (#12566); "" leaves renewals sent without one.
+func (p *recoveryDownloadProvider) setSessionRenewal(credential string) {
+	p.sessionMu.Lock()
+	defer p.sessionMu.Unlock()
+	p.sessionRenewal = credential
+}
+
+func (p *recoveryDownloadProvider) currentSessionRenewal() string {
+	p.sessionMu.Lock()
+	defer p.sessionMu.Unlock()
+	return p.sessionRenewal
+}
 
 // ErrRecoverySessionLost marks a run-level failure of the recovery download
 // session: the helper could not keep or re-establish it, so every remaining
@@ -111,9 +161,12 @@ func (p *recoveryDownloadProvider) descriptorExpiry() (expiresAt time.Time, ok b
 // authenticateAndSwap performs one authenticate and, on success, installs
 // the refreshed descriptor as a new generation. Caller holds sessionMu.
 func (p *recoveryDownloadProvider) authenticateAndSwap() error {
-	bootstrap, err := authenticateRecoverySessionContext(p.ctx, p.serverURL, p.token)
+	bootstrap, err := authenticateRecoverySessionRenewal(p.ctx, p.serverURL, p.token, p.sessionRenewal)
 	if err != nil {
 		return err
+	}
+	if bootstrap.SessionRenewal != "" {
+		p.sessionRenewal = bootstrap.SessionRenewal
 	}
 	if bootstrap.Download == nil {
 		return errRefreshMissingDescriptor
@@ -143,8 +196,9 @@ func (p *recoveryDownloadProvider) authenticateAndSwap() error {
 
 // maybeRefreshBeforeExpiry is the proactive refresh. It never blocks a
 // download on a refresh another caller is running (TryLock), never sleeps,
-// and a failure only logs: the current descriptor is still valid until
-// expiresAt, and the reactive path takes over if it does lapse.
+// and a failure only logs and schedules the next attempt: the current
+// descriptor is still valid until expiresAt, and the reactive path takes
+// over if it does lapse.
 func (p *recoveryDownloadProvider) maybeRefreshBeforeExpiry() {
 	expiresAt, ok := p.descriptorExpiry()
 	if !ok {
@@ -159,20 +213,27 @@ func (p *recoveryDownloadProvider) maybeRefreshBeforeExpiry() {
 	}
 	defer p.sessionMu.Unlock()
 
-	if p.proactiveTriedFor.Equal(expiresAt) ||
+	if !p.proactiveFor.Equal(expiresAt) {
+		p.proactiveFor = expiresAt
+		p.proactiveAttempts = 0
+	}
+	if p.proactiveAttempts >= proactiveMaxAttempts ||
 		now.Sub(p.lastAuthAt) < proactiveRefreshMinInterval ||
 		now.Before(p.authNotBefore) {
 		return
 	}
-	p.proactiveTriedFor = expiresAt
+	p.proactiveAttempts++
 
 	if err := p.authenticateAndSwap(); err != nil {
+		wait := proactiveRetryInterval
 		var statusErr *authenticateStatusError
-		if errors.As(err, &statusErr) && statusErr.retryAfter > 0 {
-			p.authNotBefore = now.Add(statusErr.retryAfter)
+		if errors.As(err, &statusErr) && statusErr.retryAfter > wait {
+			wait = statusErr.retryAfter
 		}
+		wait = sessionRetryJitter(wait)
+		p.authNotBefore = now.Add(wait)
 		slog.Warn("bmr: proactive recovery session refresh failed; continuing on the current session",
-			"expiresAt", expiresAt, "error", err.Error())
+			"expiresAt", expiresAt, "attempt", p.proactiveAttempts, "nextAttemptIn", wait, "error", err.Error())
 	}
 }
 
@@ -195,6 +256,7 @@ func (p *recoveryDownloadProvider) refreshAfterUnauthorized(observed uint64) err
 
 	delay := reauthInitialDelay
 	rateLimited := 0
+	var rateLimitedWaited time.Duration
 	for attempt := 1; ; attempt++ {
 		if wait := p.authNotBefore.Sub(p.now()); wait > 0 {
 			slog.Warn("bmr: waiting before re-authenticating the recovery session", "wait", wait)
@@ -245,7 +307,7 @@ func (p *recoveryDownloadProvider) refreshAfterUnauthorized(observed uint64) err
 			if negErr.Code != "snapshot_index_pending" {
 				return p.markSessionLost(err)
 			}
-			if attempt >= reauthMaxAttempts {
+			if attempt-rateLimited >= reauthMaxAttempts {
 				return p.markSessionLost(fmt.Errorf("re-authenticate still pending after %d attempts: %w", attempt, err))
 			}
 			wait := time.Duration(negErr.RetryAfterSeconds) * time.Second
@@ -266,17 +328,37 @@ func (p *recoveryDownloadProvider) refreshAfterUnauthorized(observed uint64) err
 		isStatus := errors.As(err, &statusErr)
 		switch {
 		case isStatus && statusErr.statusCode == http.StatusTooManyRequests:
+			// #12566: wait out the server's Retry-After (else the backoff),
+			// within a total budget, instead of giving up after a few
+			// quick tries. These calls do not count toward
+			// reauthMaxAttempts.
 			rateLimited++
-			if rateLimited >= reauthMaxRateLimited {
+			if rateLimited >= reauthMaxRateLimitedAttempts {
 				return p.markSessionLost(fmt.Errorf("re-authenticate rate-limited %d times in a row: %w", rateLimited, err))
 			}
+			wait := delay
+			if statusErr.retryAfter > 0 {
+				wait = statusErr.retryAfter
+			}
+			if rateLimitedWaited+wait > reauthRateLimitedBudget {
+				return p.markSessionLost(fmt.Errorf("re-authenticate still rate-limited after waiting %s: %w", rateLimitedWaited, err))
+			}
+			rateLimitedWaited += wait
+			p.authNotBefore = p.now().Add(sessionRetryJitter(wait))
+			slog.Warn("bmr: re-authenticate rate-limited, waiting before the next try",
+				"attempt", attempt, "wait", wait, "waitedSoFar", rateLimitedWaited)
+			delay *= 2
+			if delay > reauthMaxDelay {
+				delay = reauthMaxDelay
+			}
+			continue
 		case isStatus && statusErr.statusCode >= 400 && statusErr.statusCode < 500,
 			errors.Is(err, errRefreshMissingDescriptor):
 			// The server rejected the token (revoked, expired, used) or
 			// answered without a way to download: no retry can fix it.
 			return p.markSessionLost(fmt.Errorf("re-authenticate rejected: %w", err))
 		}
-		if attempt >= reauthMaxAttempts {
+		if attempt-rateLimited >= reauthMaxAttempts {
 			return p.markSessionLost(fmt.Errorf("re-authenticate failed after %d attempts: %w", attempt, err))
 		}
 

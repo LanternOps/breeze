@@ -70,7 +70,13 @@ func withClockSleep(t *testing.T, clock *fakeClock) func() []time.Duration {
 		clock.Advance(d)
 		return ctx.Err()
 	}
-	t.Cleanup(func() { retrySleep = orig })
+	// Exact waits: the jitter itself is pinned by TestSessionRetryJitterIsBounded.
+	origJitter := sessionRetryJitter
+	sessionRetryJitter = func(d time.Duration) time.Duration { return d }
+	t.Cleanup(func() {
+		retrySleep = orig
+		sessionRetryJitter = origJitter
+	})
 	return func() []time.Duration {
 		mu.Lock()
 		defer mu.Unlock()
@@ -109,6 +115,12 @@ type sessionFakeServer struct {
 	authCalls        int
 	downloadCalls    int
 	unauthorized     int
+
+	// issueRenewal is returned as bootstrap.sessionRenewal on a 200 (#12566);
+	// renewalsSeen records the sessionRenewal each authenticate carried
+	// ("" when the field was absent).
+	issueRenewal string
+	renewalsSeen []string
 }
 
 func newSessionFakeServer(t *testing.T, clock *fakeClock) *sessionFakeServer {
@@ -128,6 +140,10 @@ func (s *sessionFakeServer) handle(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	switch r.URL.Path {
 	case "/api/v1/backup/bmr/recover/authenticate":
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		seen, _ := req["sessionRenewal"].(string)
+		s.renewalsSeen = append(s.renewalsSeen, seen)
 		idx := s.authCalls
 		s.authCalls++
 		if idx >= len(s.authResponses) {
@@ -152,12 +168,13 @@ func (s *sessionFakeServer) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		s.sessionExpiresAt = expires
 		_ = json.NewEncoder(w).Encode(map[string]any{"bootstrap": BootstrapResponse{
-			Version:    BootstrapResponseVersion,
-			TokenID:    "token-1",
-			DeviceID:   "device-1",
-			SnapshotID: "db-snapshot-1",
-			Snapshot:   &AuthenticatedSnapshot{ID: "db-snapshot-1", SnapshotID: "snap-1"},
-			Download:   s.descriptorLocked(),
+			Version:        BootstrapResponseVersion,
+			TokenID:        "token-1",
+			DeviceID:       "device-1",
+			SnapshotID:     "db-snapshot-1",
+			Snapshot:       &AuthenticatedSnapshot{ID: "db-snapshot-1", SnapshotID: "snap-1"},
+			Download:       s.descriptorLocked(),
+			SessionRenewal: s.issueRenewal,
 		}})
 	case "/download":
 		s.downloadCalls++
@@ -204,6 +221,12 @@ func (s *sessionFakeServer) setAuthResponses(r ...fakeAuthResponse) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.authResponses = r
+}
+
+func (s *sessionFakeServer) renewals() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.renewalsSeen...)
 }
 
 func (s *sessionFakeServer) counts() (auth, downloads, unauthorized int) {
@@ -261,12 +284,25 @@ func TestRecoverySessionReauthFailuresBecomeRunLevel(t *testing.T) {
 		wantErrSubstr string
 	}{
 		{
+			// #12566: a rate-limited renewal keeps waiting out the
+			// server's Retry-After instead of giving up after three
+			// quick tries; the attempt cap still ends the run.
 			name:          "repeated 429 honours Retry-After then fails the run",
 			auth:          []fakeAuthResponse{tooMany("30")},
-			wantAuthCalls: reauthMaxRateLimited,
-			wantSleeps:    []time.Duration{30 * time.Second, 30 * time.Second},
+			wantAuthCalls: reauthMaxRateLimitedAttempts,
+			wantSleeps:    []time.Duration{30 * time.Second, 30 * time.Second, 30 * time.Second, 30 * time.Second, 30 * time.Second},
 			wantLost:      true,
 			wantErrSubstr: "Too many requests",
+		},
+		{
+			// #12566: the reported failure. Refused renewals used to be
+			// counted by the server, so the first Retry-After was short
+			// and the helper's three quick retries were all refused. A
+			// renewal that is refused for a few minutes now survives.
+			name:          "429 for several minutes then success keeps the run going",
+			auth:          []fakeAuthResponse{tooMany("12"), tooMany("2"), tooMany("120"), ok},
+			wantAuthCalls: 4,
+			wantSleeps:    []time.Duration{12 * time.Second, 2 * time.Second, 120 * time.Second},
 		},
 		{
 			name:          "429 without Retry-After backs off exponentially",
@@ -277,13 +313,13 @@ func TestRecoverySessionReauthFailuresBecomeRunLevel(t *testing.T) {
 		{
 			// The per-token limit's window is an hour; the agent-wide
 			// Retry-After clamp (httputil.ParseRetryAfter, 5m) bounds
-			// each wait, and the 429 cap still ends the run.
+			// each wait, and the total wait budget ends the run.
 			name:          "hour-long Retry-After is clamped and still bounded",
 			auth:          []fakeAuthResponse{tooMany("3000")},
-			wantAuthCalls: reauthMaxRateLimited,
-			wantSleeps:    []time.Duration{5 * time.Minute, 5 * time.Minute},
+			wantAuthCalls: 5,
+			wantSleeps:    []time.Duration{5 * time.Minute, 5 * time.Minute, 5 * time.Minute, 5 * time.Minute},
 			wantLost:      true,
-			wantErrSubstr: "rate-limited 3 times",
+			wantErrSubstr: "still rate-limited after waiting 20m0s",
 		},
 		{
 			name:          "transient failures back off to the ceiling then fail",
@@ -847,5 +883,155 @@ func TestDownloadSession_RefreshWithoutCapabilityReturnsDowngradeError(t *testin
 	}
 	if !p.MembershipNegotiated() {
 		t.Fatal("the previous descriptor's capability must be restored, not dropped")
+	}
+}
+
+// #12566: the renewal credential a successful sign-in returned rides on every
+// later authenticate, so the server counts the helper's renewals in their own
+// allowance, and a rotated credential replaces the old one.
+func TestRecoverySessionRenewalCarriesCredential(t *testing.T) {
+	clock := newFakeClock()
+	withClockSleep(t, clock)
+	server := newSessionFakeServer(t, clock)
+	server.issueRenewal = "brz_rsr_second"
+	p := server.provider(clock, server.openSession(clock.Now().Add(time.Hour)))
+	p.setSessionRenewal("brz_rsr_first")
+
+	clock.Advance(time.Hour - sessionRefreshLead + time.Minute)
+	requireAllNil(t, downloadN(t, p, 2))
+	clock.Advance(time.Hour - sessionRefreshLead)
+	requireAllNil(t, downloadN(t, p, 2))
+
+	if got := server.renewals(); fmt.Sprint(got) != fmt.Sprint([]string{"brz_rsr_first", "brz_rsr_second"}) {
+		t.Fatalf("sessionRenewal sent = %q, want the bootstrap credential, then the refreshed one", got)
+	}
+}
+
+// A server that predates the credential (or a provider built without one)
+// sends no sessionRenewal field at all.
+func TestRecoverySessionRenewalOmittedWithoutCredential(t *testing.T) {
+	clock := newFakeClock()
+	withClockSleep(t, clock)
+	server := newSessionFakeServer(t, clock)
+	p := server.provider(clock, server.openSession(clock.Now().Add(-time.Second)))
+
+	requireAllNil(t, downloadN(t, p, 1))
+	if got := server.renewals(); fmt.Sprint(got) != fmt.Sprint([]string{""}) {
+		t.Fatalf("sessionRenewal sent = %q, want the field absent", got)
+	}
+}
+
+func TestNewRecoveryProviderKeepsBootstrapRenewalCredential(t *testing.T) {
+	bs := &BootstrapResponse{
+		Download:       &AuthenticatedDownloadDescriptor{Type: "breeze_proxy", URL: "https://example.invalid/download"},
+		SessionRenewal: "brz_rsr_bootstrap",
+	}
+	provider, err := NewRecoveryProvider(context.Background(), "https://example.invalid", "brz_rec_test", bs)
+	if err != nil {
+		t.Fatalf("NewRecoveryProvider: %v", err)
+	}
+	p, ok := provider.(*recoveryDownloadProvider)
+	if !ok {
+		t.Fatalf("provider type = %T", provider)
+	}
+	if got := p.currentSessionRenewal(); got != "brz_rsr_bootstrap" {
+		t.Fatalf("session renewal = %q, want the bootstrap credential", got)
+	}
+}
+
+// #12566: the proactive refresh starts early enough that one refused renewal
+// does not cost the session: it tries again, after the server's Retry-After,
+// while the current session is still valid, and never blocks a download.
+func TestRecoverySessionProactiveRefreshRetriesBeforeExpiry(t *testing.T) {
+	clock := newFakeClock()
+	sleeps := withClockSleep(t, clock)
+	server := newSessionFakeServer(t, clock)
+	server.setAuthResponses(
+		fakeAuthResponse{status: http.StatusTooManyRequests, retryAfter: "300"},
+		fakeAuthResponse{status: http.StatusTooManyRequests, retryAfter: "300"},
+		fakeAuthResponse{status: http.StatusOK},
+	)
+	start := clock.Now()
+	p := server.provider(clock, server.openSession(start.Add(time.Hour)))
+
+	clock.Advance(time.Hour - sessionRefreshLead + time.Minute)
+	for clock.Now().Before(start.Add(time.Hour + 10*time.Minute)) {
+		requireAllNil(t, downloadN(t, p, 1))
+		clock.Advance(time.Minute)
+	}
+
+	auth, _, unauthorized := server.counts()
+	if auth != 3 || unauthorized != 0 {
+		t.Fatalf("authenticate=%d unauthorized=%d, want 3 and 0 (two refusals, then a renewal before expiry)", auth, unauthorized)
+	}
+	if got := sleeps(); len(got) != 0 {
+		t.Fatalf("proactive refresh must not block downloads; slept %v", got)
+	}
+}
+
+// The proactive retries are bounded per expiry: a renewal that keeps being
+// refused costs at most proactiveMaxAttempts calls before the session closes.
+func TestRecoverySessionProactiveRetriesAreBounded(t *testing.T) {
+	clock := newFakeClock()
+	withClockSleep(t, clock)
+	server := newSessionFakeServer(t, clock)
+	server.setAuthResponses(fakeAuthResponse{status: http.StatusTooManyRequests, retryAfter: "1"})
+	start := clock.Now()
+	p := server.provider(clock, server.openSession(start.Add(time.Hour)))
+
+	clock.Advance(time.Hour - sessionRefreshLead)
+	for clock.Now().Before(start.Add(time.Hour - time.Second)) {
+		requireAllNil(t, downloadN(t, p, 1))
+		clock.Advance(10 * time.Second)
+	}
+	if auth, _, _ := server.counts(); auth != proactiveMaxAttempts {
+		t.Fatalf("proactive authenticate calls = %d, want %d", auth, proactiveMaxAttempts)
+	}
+}
+
+func TestSessionRetryJitterIsBounded(t *testing.T) {
+	for _, d := range []time.Duration{0, time.Second, 30 * time.Second, 5 * time.Minute} {
+		for range 200 {
+			got := sessionRetryJitter(d)
+			if got < d || got > d+d/5 {
+				t.Fatalf("sessionRetryJitter(%v) = %v, want within [d, 1.2d]", d, got)
+			}
+		}
+	}
+}
+
+// #12566: when the session is finally lost, the restore says how to finish,
+// and nothing already restored is removed.
+func TestRestoreFilesSessionLostSaysHowToResume(t *testing.T) {
+	restoreRoot := t.TempDir()
+	provider := &breakerFakeProvider{
+		downloadErr: func(idx int) error {
+			if idx < 2 {
+				return nil
+			}
+			return fmt.Errorf("%w: re-authenticate still rate-limited", ErrRecoverySessionLost)
+		},
+	}
+	files := make([]manifestFile, 5)
+	for i := range files {
+		files[i] = manifestFile{
+			SourcePath: filepath.Join(restoreRoot, fmt.Sprintf("f%d", i)),
+			BackupPath: path.Join("snapshots", "resume-hint", "files", fmt.Sprintf("f%d.gz", i)),
+			Size:       10,
+		}
+	}
+	manifest := &snapshotManifest{ID: "resume-hint", Files: files, Size: 50}
+
+	_, _, warnings, _, err := restoreFiles(context.Background(), manifest, RecoveryConfig{}, provider)
+	if !errors.Is(err, ErrRecoverySessionLost) {
+		t.Fatalf("err = %v, want ErrRecoverySessionLost", err)
+	}
+	for _, text := range []string{err.Error(), strings.Join(warnings, "\n")} {
+		if !strings.Contains(text, "create a new recovery token") {
+			t.Fatalf("%q does not say how to resume", text)
+		}
+		if !strings.Contains(text, "stay in place") {
+			t.Fatalf("%q does not say restored files are kept", text)
+		}
 	}
 }
