@@ -370,6 +370,16 @@ To apply one policy to several device groups at once, select the groups on **Dev
   A device-level assignment always takes precedence over all group, site, organization, and partner assignments, regardless of priority number. An **All organizations** assignment is the broadest scope and is overridden by any more-specific assignment.
 </Aside>
 
+### Where another policy wins a feature
+
+A policy can reach a device and still not decide a feature there: a policy assigned closer to the device, or at the same level with a lower priority number (or, on an exact tie, assigned earlier), wins that feature instead. The policy page says where this happens, feature by feature:
+
+- **Outranked on N devices:** the open feature shows how many of the devices this policy reaches get that feature from another policy. The same count follows the feature's state in the feature list on the left, for example **Set here · Outranked on 3 devices**.
+- **Nothing shown:** no other policy wins the feature on any device this policy reaches, or the count could not be read. The page never shows "outranked on 0 devices" for a count it does not have.
+- **Too many devices to count:** on a very large fleet the page does not guess a number. Open a device's **Configuration** tab to see which policy won each feature there and why (see [Viewing effective configuration](#viewing-effective-configuration)).
+
+The count covers only devices you can see, and it counts a feature this policy inherits from its [parent](#parent-policies) as well as its own. It includes other policies you cannot open, such as one managed by your MSP, without naming them. An inactive policy is counted as if it were active, so you can see what activating it would change.
+
 ## Per-device compliance status
 
 Each device's detail page surfaces how that device measures against every compliance rule from its assigned policies — separate from the Effective Configuration view. Open any device page and select the **Compliance** tab to see a row for every assigned policy's compliance rules, including the rule name, current status (compliant, non-compliant, pending, or error), the last evaluation time, and any remediation attempts. This makes it easy to audit a single machine's standing without leaving the device page.
@@ -475,6 +485,7 @@ All paths are relative to `/api/v1`.
 | POST | `/configuration-policies/:id/assignments/apply` | Staged Apply: `add`, `update` (priority and filters) and `remove` in one all-or-nothing change, each list capped at 200. `dryRun: true` writes nothing and returns `{ dryRun: true, delta: { added, removed, partial? } }`. A changed or colliding row answers `409 { error: "assignment_conflict", message, entry }` and nothing is applied. |
 | GET | `/configuration-policies/:id/reach` | Device counts for one policy: `{ direct, throughChildren, organizations, partial? }`, counting only devices the caller can see. `partial: true` means each number is a lower bound. |
 | GET | `/configuration-policies/reach?ids=…` | The same counts for up to 100 policies: `{ data: { [policyId]: reach } }`. Policies the caller cannot read are absent. |
+| GET | `/configuration-policies/:id/precedence` | Where another policy wins each feature: `{ capped: false, features: { [featureType]: { reached, outranked } } }`, counting only devices the caller can see, or `{ capped: true }` with no numbers when there are too many devices to count. A feature absent from `features` has no count. |
 | DELETE | `/configuration-policies/:id/assignments/:aid` | Unassign |
 | GET | `/configuration-policies/effective/:deviceId` | Resolve effective config for a device |
 | POST | `/configuration-policies/effective/:deviceId/diff` | Preview change diff |

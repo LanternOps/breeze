@@ -31,6 +31,7 @@ import SettingsSectionNav, { type SettingsNavGroup } from '../../settings/Settin
 import { configFeatureLabel } from '../configPolicyLabels';
 import { FEATURE_META, type FeatureLink, type FeatureType } from '../featureTabs/types';
 import { FEATURE_RAIL_GROUPS, featureState, featureStateLabel } from './featureState';
+import { outrankedFor, type PolicyPrecedence } from './precedenceApi';
 
 /** A rail entry: a feature, or the Compliance status results view at the foot. */
 export type RailKey = FeatureType | 'compliance_status';
@@ -78,6 +79,12 @@ type FeatureRailProps = {
   dirtyKey: RailKey | null;
   /** The page decides whether to switch (it may ask about unsaved changes first). */
   onNavigate: (key: RailKey) => void;
+  /**
+   * Where another policy wins each feature (#12472). A count above zero joins
+   * the state line; capped, unknown and zero leave the plain state (the open
+   * feature's line says capped).
+   */
+  precedence?: PolicyPrecedence | null;
 };
 
 /**
@@ -86,7 +93,15 @@ type FeatureRailProps = {
  * vertical rail at lg+ and a picker below. Each entry's href is the raw
  * feature type (`#onedrive_helper`), which inbound links already use.
  */
-export default function FeatureRail({ activeKey, ownLinks, parentLinks, isGated, dirtyKey, onNavigate }: FeatureRailProps) {
+export default function FeatureRail({
+  activeKey,
+  ownLinks,
+  parentLinks,
+  isGated,
+  dirtyKey,
+  onNavigate,
+  precedence = null,
+}: FeatureRailProps) {
   useTranslation('policies');
   const groups: SettingsNavGroup[] = [
     ...FEATURE_RAIL_GROUPS.map((group) => ({
@@ -97,12 +112,20 @@ export default function FeatureRail({ activeKey, ownLinks, parentLinks, isGated,
           parentLinks.find((l) => l.featureType === featureType),
           isGated(featureType),
         );
+        const outranked = outrankedFor(precedence, featureType, state);
+        const status =
+          outranked?.kind === 'outranked'
+            ? i18n.t('policies:configurationPolicies.featureRail.statusOutranked', {
+                state: featureStateLabel(state),
+                count: outranked.count,
+              })
+            : featureStateLabel(state);
         return {
           key: featureType,
           hash: featureType,
           label: configFeatureLabel(featureType),
           description: FEATURE_META[featureType].description,
-          status: featureStateLabel(state),
+          status,
           icon: FEATURE_ICONS[featureType],
           dirty: dirtyKey === featureType,
         };

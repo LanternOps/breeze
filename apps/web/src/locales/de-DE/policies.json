@@ -1593,7 +1593,9 @@
         "results": {
           "label": "Ergebnisse"
         }
-      }
+      },
+      "statusOutranked_one": "{{state}} · Auf {{count}} Gerät übersteuert",
+      "statusOutranked_other": "{{state}} · Auf {{count}} Geräten übersteuert"
     },
     "policyHeader": {
       "editDetails": "Details bearbeiten",
@@ -1618,6 +1620,13 @@
           "message": "Nur Ansicht."
         }
       }
+    },
+    "outranked": {
+      "line_one": "Auf {{count}} Gerät übersteuert",
+      "line_other": "Auf {{count}} Geräten übersteuert",
+      "detail": "Dort setzt sich eine spezifischere oder höher priorisierte Richtlinie für diese Funktion durch. Von den Geräten, die Sie sehen können, erreicht diese Richtlinie {{reached}}.",
+      "capped": "Zu viele Geräte, um zu zählen, wo sich eine andere Richtlinie für diese Funktion durchsetzt.",
+      "openDevice": "Öffnen Sie auf einem Gerät den Tab „Konfiguration“, um zu sehen, welche Richtlinie dort gilt."
     }
   },
   "software": {

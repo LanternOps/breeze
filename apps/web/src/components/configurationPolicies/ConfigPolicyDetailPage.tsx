@@ -26,7 +26,9 @@ import AppliesToPanel from './appliesTo/AppliesToPanel';
 import { fetchPolicyReach, type ConfigPolicyReach } from './appliesTo/appliesToApi';
 import type { PickerOwner } from './appliesTo/TargetPicker';
 import FeatureRail, { type RailKey } from './page/FeatureRail';
-import { FIRST_RAIL_FEATURE } from './page/featureState';
+import { FIRST_RAIL_FEATURE, featureState } from './page/featureState';
+import OutrankedLine from './page/OutrankedLine';
+import { usePolicyPrecedence } from './page/usePolicyPrecedence';
 import PolicyHeader from './page/PolicyHeader';
 import PolicyDetailsForm, { type PolicyDetails } from './page/PolicyDetailsForm';
 import { resolveViewerAccess } from './page/viewerAccess';
@@ -137,6 +139,8 @@ export default function ConfigPolicyDetailPage({
   // The policy's device count (#12467). null = unknown (not loaded, or the read
   // failed): the counts are left out and the page stays usable.
   const [reach, setReach] = useState<ConfigPolicyReach | null>(null);
+  // Where another policy wins each feature (#12472). null = unknown: no line.
+  const { precedence, reload: reloadPrecedence } = usePolicyPrecedence(policyId);
 
   useIsomorphicLayoutEffect(() => {
     const current = shownRef.current;
@@ -337,7 +341,8 @@ export default function ConfigPolicyDetailPage({
     setReach(null);
     void refreshPolicy();
     void loadReach();
-  }, [refreshPolicy, loadReach]);
+    reloadPrecedence();
+  }, [refreshPolicy, loadReach, reloadPrecedence]);
   const policyOrgId = policy?.orgId ?? null;
   const policyOrgName = policy?.orgName ?? null;
   const appliesToOwner = useMemo<PickerOwner>(
@@ -400,8 +405,10 @@ export default function ConfigPolicyDetailPage({
         }
         return [...prev, link];
       });
+      // The features in effect may have changed: re-count who wins them.
+      reloadPrecedence();
     },
-    [],
+    [reloadPrecedence],
   );
   const linkFor = (t: FeatureType) =>
     featureLinks.find((l) => l.featureType === t);
@@ -584,6 +591,7 @@ export default function ConfigPolicyDetailPage({
           isGated={isGatedFeature}
           dirtyKey={featureDirty ? shown : null}
           onNavigate={selectSection}
+          precedence={precedence}
         />
         <section
           aria-label={sectionLabel}
@@ -596,6 +604,16 @@ export default function ConfigPolicyDetailPage({
               (isGatedFeature(shownFeature) ? (
                 renderGatedFeature(shownFeature)
               ) : (
+                <>
+                <OutrankedLine
+                  featureType={shownFeature}
+                  state={featureState(
+                    linkFor(shownFeature),
+                    parentFeatureLinks.find((l) => l.featureType === shownFeature),
+                    false,
+                  )}
+                  precedence={precedence}
+                />
                 <PolicyFeatureEditor
                   featureType={shownFeature}
                   policyId={policyId!}
@@ -606,6 +624,7 @@ export default function ConfigPolicyDetailPage({
                   partnerId={policy.partnerId}
                   onLinkChanged={handleLinkChanged}
                 />
+                </>
               ))}
           </FeatureReadOnlyContext.Provider>
           </FeatureDirtyReporterContext.Provider>
