@@ -149,7 +149,7 @@ export function searchNavPages(
         ...(href === item.hrefWhenFlows ? NAV_KEYWORDS[href] ?? [] : []),
       ];
       const jobsTab =
-        item.href === '/jobs' && href !== item.href && matches(needle, JOBS_TAB_KEYWORDS) &&
+        item.href === '/jobs' && href !== item.href && (JOBS_TAB_KEYWORDS as readonly string[]).includes(needle) &&
         !matches(needle, title, item.name, sectionLabel);
       if (jobsTab || matches(needle, title, item.name, sectionLabel, keywords)) {
         const target = jobsTab ? item.href : href;

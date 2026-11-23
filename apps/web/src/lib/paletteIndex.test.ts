@@ -35,6 +35,10 @@ describe('searchNavPages (#12210)', () => {
     }
   });
 
+  it('a partial "jo" does not hijack Automations to /jobs when Flows is on', () => {
+    expect(hrefs('jo')).not.toContain('/jobs');
+  });
+
   it('finds Automations at /flows when Flows is on and /jobs when it is off', () => {
     expect(hrefs('automations')).toContain('/flows');
     expect(hrefs('automations')).not.toContain('/jobs');
