@@ -563,6 +563,11 @@ describe('config policy inheritance — ownership (live DB)', () => {
     const t = await seedTenancy();
     const own = await seedPolicy({ orgId: t.a1, name: 'AAA own root' });
     const wide = await seedPolicy({ partnerId: t.p1, name: 'BBB msp root' });
+    // #12462 W03a: an org admin is offered only the MSP-managed policies that
+    // apply to its organization. The baseline applies to a1; the second MSP
+    // root applies nowhere and is not offered.
+    await seedAssignment(wide.id, 'organization', t.a1);
+    const unapplied = await seedPolicy({ partnerId: t.p1, name: 'BBA msp root, applies nowhere' });
     const otherOrg = await seedPolicy({ orgId: t.a2, name: 'CCC other org root' });
     const otherPartner = await seedPolicy({ partnerId: t.p2, name: 'DDD other msp root' });
     // A non-root must never be offered as a parent.
@@ -576,6 +581,7 @@ describe('config policy inheritance — ownership (live DB)', () => {
     expect(ids).toContain(wide.id);
     expect(ids).not.toContain(otherOrg.id);
     expect(ids).not.toContain(otherPartner.id);
+    expect(ids).not.toContain(unapplied.id);
     expect(rows.find((r) => r.id === wide.id)?.ownerScope).toBe('partner');
     expect(rows.find((r) => r.id === own.id)?.ownerScope).toBe('organization');
   });
