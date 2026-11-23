@@ -19,10 +19,14 @@
  * 404 to anyone else. A device the user cannot reach (or whose site they
  * cannot) is a 404.
  *
- * One system transaction:
+ * First, unlocked: reachability and the site. A device out of reach is a 404
+ * and its row is never locked (deviceReattach/reachability.ts).
+ *
+ * Then one system transaction:
  *  1. the device row FOR UPDATE (the tpm_* writers lock it first, so the key
  *     state read next cannot move; deviceReattach/evidence.ts);
- *  2. reachability, the live org, the access rule;
+ *  2. reachability and the site again (authoritative), the access rule, the
+ *     live org;
  *  3. the version the operator reviewed (version.ts): no hold, or another
  *     hold, is 409 `mismatch_changed`;
  *  4. an open reattach naming the device, read in system scope (a technician
@@ -34,7 +38,7 @@
  */
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { auditLogs, deviceHardware, users } from '../../db/schema';
+import { auditLogs, deviceHardware, devices, users } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import type { CreateAuditLogParams } from '../auditService';
 import { markRequestAuditWritten } from '../auditRequestTracking';
@@ -42,7 +46,7 @@ import { canActorActOnReattachEvidence, loadReattachActor, type ReattachAccessDe
 import { reattachRefusal, ReattachRefusedError, type ReattachRefusal } from '../deviceReattach/errors';
 import { lockTpmKey } from '../deviceReattach/evidence';
 import { anyDeviceInOpenIntent, lockReattachDevices } from '../deviceReattach/intentStore';
-import { isReattachDeviceReachable } from '../deviceReattach/reachability';
+import { isReattachDeviceReachable, readReattachDeviceLocations } from '../deviceReattach/reachability';
 import { isLiveOrg } from '../deviceReattach/revalidation';
 import {
   consumeStepUpGrant,
@@ -168,6 +172,36 @@ export async function reviewTpmKeyMismatch(input: ReviewTpmMismatchInput): Promi
   if (stepUp?.kind === 'grant' && stepUp.auth.user.id !== input.actor.userId) {
     throw new Error('reviewTpmKeyMismatch: the step-up actor is not the requester');
   }
+
+  // Reachability, BEFORE any lock (deviceReattach/reachability.ts, as the
+  // reattach request): a device the user may not reach, or whose site they
+  // may not, is the same 404 as one that does not exist, and its row is never
+  // locked. Checked again under the lock below, where it is authoritative.
+  const pre = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [user] = await db
+      .select({ partnerId: users.partnerId })
+      .from(users)
+      .where(eq(users.id, input.actor.userId))
+      .limit(1);
+    if (!user?.partnerId) return reattachRefusal(403, 'not_partner_user', DENIAL_MESSAGES.not_partner_user);
+    const actor = await loadReattachActor(db, input.actor.userId, user.partnerId);
+    const [device] = await db
+      .select({ siteId: devices.siteId })
+      .from(devices)
+      .where(eq(devices.id, input.deviceId))
+      .limit(1);
+    const location = (await readReattachDeviceLocations(db, [input.deviceId])).get(input.deviceId);
+    const parked = location ? isUnassignedPoolOrgType(location.orgType) : false;
+    if (
+      !device
+      || !isReattachDeviceReachable(actor, user.partnerId, location, parked ? 'source' : 'target')
+      || !input.canAccessSite(device.siteId)
+    ) {
+      return DEVICE_NOT_FOUND;
+    }
+    return null;
+  }));
+  if (pre) return pre;
 
   let orgId: string;
   try {

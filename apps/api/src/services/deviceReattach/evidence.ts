@@ -22,7 +22,7 @@
  * authoritative one (tpmBaselineWriters.contract.test.ts pins the writers).
  * The holder count is kept still by a per-key advisory lock (lockTpmKey).
  */
-import { and, eq, inArray, notExists, notInArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, notExists, notInArray, or, sql } from 'drizzle-orm';
 import { deviceHardware, deviceReattachments, devices, organizations } from '../../db/schema';
 import type { ReattachTx } from './intentStore';
 
@@ -58,7 +58,7 @@ export interface TpmEvidenceInput {
   target: TpmKeyState;
   /**
    * Other devices of the partner, besides the source and the target, whose
-   * baseline is the same key, retired reattach sources excluded (their row
+   * baseline is the same key or that hold it as a key change, retired reattach sources excluded (their row
    * keeps the key of the machine that moved on). Any is `key_shared`: a
    * cloned VM template, not one machine. Ephemeral and decommissioned rows
    * count: fail toward `hint`.
@@ -129,7 +129,8 @@ type Locker = Pick<ReattachTx, 'select' | 'execute'>;
  * becoming a holder between the holder count and the commit (two clones
  * attesting while a reattach confirms). Taken after the caller's device row
  * locks, by the count (readTpmEvidence with `lockKey`) and by every writer
- * that sets a baseline (services/tpmAttestation, services/tpmBaseline). Keyed
+ * that sets a baseline or holds a key change (services/tpmAttestation,
+ * services/tpmBaseline). Keyed
  * by the hash alone: a collision across partners only serializes.
  */
 export async function lockTpmKey(tx: Pick<ReattachTx, 'execute'>, ekSha256: string): Promise<void> {
@@ -155,7 +156,12 @@ export async function readTpmKeyStates(reader: Reader, deviceIds: readonly strin
 
 /**
  * How many devices of `partnerId`, other than `excludeDeviceIds`, carry
- * `ekSha256` as their baseline, retired reattach sources not counted. Needs
+ * `ekSha256` as their baseline OR hold it as an unreviewed key change,
+ * retired reattach sources not counted. A held key is still a key proven on
+ * that machine, so it counts: a key seen on a third record lowers the
+ * evidence to `hint` whether or not anyone has reviewed it yet. The
+ * attestation completion takes the key lock for both writes (lockTpmKey), so
+ * a new hold serializes with the count as a new baseline does. Needs
  * a system DB context (partner-wide, and the ledger). Counts at most 1: the
  * rule only asks "any".
  */
@@ -175,7 +181,7 @@ export async function countOtherKeyHolders(
     .innerJoin(devices, eq(devices.id, deviceHardware.deviceId))
     .innerJoin(organizations, eq(organizations.id, devices.orgId))
     .where(and(
-      eq(deviceHardware.tpmEkPubSha256, input.ekSha256),
+      or(eq(deviceHardware.tpmEkPubSha256, input.ekSha256), eq(deviceHardware.tpmEkMismatchSha256, input.ekSha256)),
       eq(organizations.partnerId, input.partnerId),
       input.excludeDeviceIds.length > 0 ? notInArray(devices.id, [...input.excludeDeviceIds]) : sql`true`,
       notExists(retired),

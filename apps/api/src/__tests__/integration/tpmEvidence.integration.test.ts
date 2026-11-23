@@ -122,6 +122,15 @@ describe('TPM key evidence (#8318 wave T2)', () => {
     expect(await evidenceOf(tenant, source.id, target.id)).toEqual({ level: 'hint', gap: 'key_shared' });
   });
 
+  it('a third record holding the key only as an unreviewed key change also makes it shared', async () => {
+    const tenant = await seedReattachTenant();
+    const target = await oldKeyedTarget(tenant.orgA, K1);
+    const source = await newKeyedSource(tenant.orgA, K1);
+    const clone = await silentTarget(tenant.orgB);
+    await setKey(clone, { ek: K3, mismatch: K1 });
+    expect(await evidenceOf(tenant, source.id, target.id)).toEqual({ level: 'hint', gap: 'key_shared' });
+  });
+
   it('a key held in ANOTHER partner neither counts as shared nor matches', async () => {
     const tenant = await seedReattachTenant();
     const target = await oldKeyedTarget(tenant.orgA, K1);
@@ -353,6 +362,40 @@ describe('reviewing a held key change (#8318 wave T2)', () => {
     // A parked device is a 404 to a technician: not even its existence leaks.
     expect(await review(tenant.techA.id, parked.device.id, 'dismiss', parked.version)).toMatchObject({ status: 404, code: 'device_not_found' });
     expect((await review(tenant.admin.id, parked.device.id, 'accept', parked.version)).ok).toBe(true);
+  });
+
+  it('an out-of-reach id is not found without its row being locked', async () => {
+    const tenant = await seedReattachTenant();
+    const other = await seedReattachTenant();
+    const inB = await held(tenant, tenant.orgB);
+    const elsewhere = await held(other, other.orgA);
+
+    // Another transaction holds both rows FOR UPDATE. A review that locked
+    // before judging reach would wait on it; one that judges first answers.
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let ready!: () => void;
+    const holding = new Promise<void>((resolve) => { ready = resolve; });
+    const holder = getTestDb().transaction(async (tx: any) => {
+      await tx.execute(sql`SELECT id FROM devices WHERE id IN (${inB.device.id}, ${elsewhere.device.id}) FOR UPDATE`);
+      ready();
+      await released;
+    });
+    await Promise.race([holding, holder]);
+    try {
+      const timeout = <T>(p: Promise<T>) => Promise.race([
+        p,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('the review waited on the row lock')), 5_000)),
+      ]);
+      expect(await timeout(review(tenant.techA.id, inB.device.id, 'dismiss', inB.version)))
+        .toMatchObject({ status: 404, code: 'device_not_found' });
+      expect(await timeout(review(tenant.admin.id, elsewhere.device.id, 'dismiss', elsewhere.version)))
+        .toMatchObject({ status: 404, code: 'device_not_found' });
+    } finally {
+      release();
+      await holder;
+    }
+    expect(await keyRow(inB.device.id)).toMatchObject({ tpmEkMismatchSha256: K2 });
   });
 
   it('refuses while the device is in an open reattach', async () => {

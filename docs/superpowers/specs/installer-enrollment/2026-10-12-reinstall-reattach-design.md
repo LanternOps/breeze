@@ -1296,8 +1296,10 @@ Go-generated test vectors and an **independent review before merge** (#8318).
   (source, target) pair only when the source has a baseline it proved at or after its CURRENT
   install started, neither device holds
   a key change for review, both baselines are the same key, and no other device of the partner
-  carries that key (retired reattach sources not counted; ephemeral and removed rows counted). A key
-  on a third record is a cloned VM template, not one machine. Anything short is `hint`, with a gap
+  carries that key, as its baseline or as a key change held for review (retired reattach sources
+  not counted; ephemeral and removed rows counted). A key on a third record is a cloned VM
+  template, not one machine; a held change is still a key proven there, so it counts before anyone
+  reviews it (T2 review; index `device_hardware_tpm_ek_mismatch_sha256_idx`, 2027-01-29-170200). Anything short is `hint`, with a gap
   code (`source_no_key`, `source_key_changed`, `source_key_not_proven_by_install`,
   `target_no_key`, `target_key_changed`, `keys_differ`, `key_shared`) the candidates read returns,
   never a key.
@@ -1309,7 +1311,8 @@ Go-generated test vectors and an **independent review before merge** (#8318).
   `enrolled_at`, `install_enrolled_at` and `incarnation_started_at` (a reattach confirm), and only
   a key proof made after it counts (found in the independent review of T2: without it, a stolen
   agent token re-enrolled from another machine inherited the previous install's proof).
-- **The holder count is serialized** with every writer that sets a baseline by a per-key advisory
+- **The holder count is serialized** with every writer that sets a baseline or holds a key change
+  by a per-key advisory
   lock (`lockTpmKey`), taken after the device row locks: a third device becoming a holder of the
   key waits for a request or confirm that is counting, and is counted by the next one.
 - **What it says.** "The new install proved the same endorsement key this record proved": key
@@ -1346,7 +1349,9 @@ Go-generated test vectors and an **independent review before merge** (#8318).
   never a hash; `version` is an HMAC over the device, the baseline and the held key.
   `POST /devices/:id/tpm-baseline/mismatch { action: accept | dismiss, version, stepUpGrant? }` has
   the §8 gates and the reattach access rule on that device (a parked device needs a full partner
-  admin), decided by the user on 2026-11-21. `accept` makes the held key the baseline
+  admin), decided by the user on 2026-11-21. Reach and site are judged unlocked first, as the
+  reattach request does (§9.3 reachability): an out-of-reach id is a 404 and its row is never
+  locked; they are judged again under the row lock. `accept` makes the held key the baseline
   (`tpm_attested_at` := when it was proven) and needs step-up `device_tpm_baseline_accept` bound to
   `{ deviceId, baselineVersion }`; `dismiss` keeps the baseline and needs none. Both refuse 409
   `mismatch_changed` for another hold and `reattach_in_progress` while the device is in an open

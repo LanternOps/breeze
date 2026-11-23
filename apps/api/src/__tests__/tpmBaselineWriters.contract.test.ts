@@ -14,8 +14,10 @@
  *    (`deviceHardware.…`, a select list), and raw SQL that sets one
  *    (`SET tpm_… =`), in every non-test file of apps/api/src except the schema.
  *  - When it fails: such a site sits in a file not listed below, or a listed
- *    file no longer takes its device row lock, or a listed file has no site
- *    left (stale entry).
+ *    file does not take its device row lock and then the key advisory lock
+ *    BEFORE its first write site (by position in the file), or a listed file
+ *    has no site left (stale entry). Each listed file has one writing
+ *    function, so position in the file is the order the calls run in.
  *
  * Known residual: a write through a spread object built elsewhere is not
  * seen; the inventory writer never sets these columns (db/schema/devices.ts).
@@ -56,16 +58,28 @@ function sourceFiles(dir: string): string[] {
   return out;
 }
 
+function isWriteLine(line: string): boolean {
+  return !/^\s*(\*|\/\/)/.test(line) && (KEY_WRITE.test(line) || RAW_WRITE.test(line));
+}
+
 function writeSites(): Map<string, number> {
   const sites = new Map<string, number>();
   for (const file of sourceFiles(SRC_ROOT)) {
     const rel = relative(SRC_ROOT, file).split(sep).join('/');
     if (rel.startsWith('db/schema/')) continue;
-    const lines = readFileSync(file, 'utf8').split('\n');
-    const count = lines.filter((line) => !/^\s*(\*|\/\/)/.test(line) && (KEY_WRITE.test(line) || RAW_WRITE.test(line))).length;
+    const count = readFileSync(file, 'utf8').split('\n').filter(isWriteLine).length;
     if (count > 0) sites.set(rel, count);
   }
   return sites;
+}
+
+/** The line index of the first write site, and of the first line matching `pattern` (-1: none). */
+function firstLines(file: string, pattern: RegExp): { write: number; match: number } {
+  const lines = readFileSync(resolve(SRC_ROOT, file), 'utf8').split('\n');
+  return {
+    write: lines.findIndex(isWriteLine),
+    match: lines.findIndex((line) => !/^\s*(\*|\/\/)/.test(line) && pattern.test(line)),
+  };
 }
 
 describe('device_hardware tpm_* writers lock the device row first (#8318 wave T2)', () => {
@@ -75,12 +89,16 @@ describe('device_hardware tpm_* writers lock the device row first (#8318 wave T2
     expect([...sites.keys()].filter((file) => !(file in WRITERS)).sort()).toEqual([]);
   });
 
-  it.each(Object.entries(WRITERS))('%s takes its device row lock (%s)', (file, { lock }) => {
-    expect(readFileSync(resolve(SRC_ROOT, file), 'utf8')).toMatch(lock);
+  it.each(Object.entries(WRITERS))('%s takes its device row lock before its first write', (file, { lock }) => {
+    const { write, match } = firstLines(file, lock);
+    expect(match).toBeGreaterThanOrEqual(0);
+    expect(match).toBeLessThan(write);
   });
 
-  it.each(Object.keys(WRITERS))('%s takes the key advisory lock before it sets a baseline', (file) => {
-    expect(readFileSync(resolve(SRC_ROOT, file), 'utf8')).toMatch(/await lockTpmKey\(tx, /);
+  it.each(Object.entries(WRITERS))('%s takes the key advisory lock after the row lock and before its first write', (file, { lock }) => {
+    const { write, match: keyLock } = firstLines(file, /await lockTpmKey\(tx, /);
+    expect(keyLock).toBeGreaterThan(firstLines(file, lock).match);
+    expect(keyLock).toBeLessThan(write);
   });
 
   it('no allowed writer is stale', () => {
