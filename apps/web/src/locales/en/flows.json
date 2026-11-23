@@ -44,6 +44,8 @@
     "createdInChat": "Created in Breeze AI",
     "movedFromJob": "Moved from Job",
     "movedFromJobReverted": "(moved back)",
+    "shadowingNotice": "This flow is shadowing the job {{name}}. It goes live when you switch from the job.",
+    "shadowingLink": "Open the job's Move dialog",
     "edit": "Edit",
     "delete": "Delete draft",
     "deleteConfirmTitle": "Delete this draft?",
@@ -184,6 +186,7 @@
     "generic": "Could not enable the flow.",
     "webhookSecretMissing": "Create a webhook secret before you enable this flow.",
     "aiBudgetUnavailable": "This organization has no AI budget to spend, so a flow with an AI step cannot be enabled.",
+    "conversionNotSwitched": "This flow is shadowing a job, so it goes live when you switch from the job, not from here.",
     "webhookSecretInvalidated": "Enabling this version cleared the webhook secret, because the secret was created for an older draft. Every request is refused until you create a new secret and give it to the sender."
   },
   "run": {

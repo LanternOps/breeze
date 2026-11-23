@@ -5,6 +5,7 @@ const navigateToMock = vi.hoisted(() => vi.fn(async () => 'soft' as const));
 vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
 
 import { useUiStore } from '../../stores/uiStore';
+import { useFeaturesStore } from '../../stores/featuresStore';
 import { useRegisterDirtyForm } from './useRegisterDirtyForm';
 import { resetTypingCadence } from './bareKeyGuard';
 import { useQueueKeyboard } from '../../components/tickets/useQueueKeyboard';
@@ -179,6 +180,18 @@ describe('useGlobalShortcuts', () => {
       press(key);
       expect(navigateToMock).toHaveBeenLastCalledWith(href);
     }
+  });
+
+  it('g j goes where the Automations nav entry goes: /flows with Flows on, /jobs off (#12498)', () => {
+    renderHook(() => useGlobalShortcuts());
+    useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, flows: true } });
+    press('g');
+    press('j');
+    expect(navigateToMock).toHaveBeenLastCalledWith('/flows');
+    useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, flows: false } });
+    press('g');
+    press('j');
+    expect(navigateToMock).toHaveBeenLastCalledWith('/jobs');
   });
 
   it('c-then-key opens a create form directly when the page has its own route', () => {

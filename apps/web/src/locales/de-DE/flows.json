@@ -44,6 +44,8 @@
     "createdInChat": "In Breeze AI erstellt",
     "movedFromJob": "Aus Auftrag verschoben",
     "movedFromJobReverted": "(zurückverschoben)",
+    "shadowingNotice": "Dieser Ablauf spiegelt den Auftrag {{name}}. Er geht live, sobald Sie am Auftrag umschalten.",
+    "shadowingLink": "Verschieben-Dialog des Auftrags öffnen",
     "edit": "Bearbeiten",
     "delete": "Entwurf löschen",
     "deleteConfirmTitle": "Diesen Entwurf löschen?",
@@ -184,6 +186,7 @@
     "generic": "Der Flow konnte nicht aktiviert werden.",
     "webhookSecretMissing": "Erstellen Sie ein Webhook-Geheimnis, bevor Sie diesen Ablauf aktivieren.",
     "aiBudgetUnavailable": "Diese Organisation hat kein KI-Budget, daher kann ein Ablauf mit einem KI-Schritt nicht aktiviert werden.",
+    "conversionNotSwitched": "Dieser Ablauf spiegelt einen Auftrag und geht erst live, wenn Sie am Auftrag umschalten, nicht von hier aus.",
     "webhookSecretInvalidated": "Durch das Aktivieren dieser Version wurde das Webhook-Geheimnis gelöscht, weil es für einen älteren Entwurf erstellt wurde. Alle Anfragen werden abgelehnt, bis Sie ein neues Geheimnis erstellen und dem Absender übergeben."
   },
   "run": {

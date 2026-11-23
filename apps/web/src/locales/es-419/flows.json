@@ -44,6 +44,8 @@
     "createdInChat": "Creado en Breeze AI",
     "movedFromJob": "Movido desde un trabajo",
     "movedFromJobReverted": "(devuelto)",
+    "shadowingNotice": "Este flujo está en modo sombra del trabajo {{name}}. Se activa cuando cambia desde el trabajo.",
+    "shadowingLink": "Abrir el diálogo Mover del trabajo",
     "edit": "Editar",
     "delete": "Eliminar borrador",
     "deleteConfirmTitle": "¿Eliminar este borrador?",
@@ -184,6 +186,7 @@
     "generic": "No se pudo activar el flujo.",
     "webhookSecretMissing": "Crea un secreto de webhook antes de activar este flujo.",
     "aiBudgetUnavailable": "Esta organización no tiene presupuesto de IA, por lo que no se puede activar un flujo con un paso de IA.",
+    "conversionNotSwitched": "Este flujo está en modo sombra de un trabajo, así que se activa al cambiar desde el trabajo, no desde aquí.",
     "webhookSecretInvalidated": "Al activar esta versión se borró el secreto del webhook, porque se creó para un borrador anterior. Se rechazarán todas las solicitudes hasta que crees un secreto nuevo y se lo entregues al remitente."
   },
   "run": {

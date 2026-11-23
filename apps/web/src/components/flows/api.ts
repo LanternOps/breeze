@@ -220,6 +220,7 @@ const ENABLE_INLINE_CODES = new Set([
   'pre_approval_not_eligible',
   'webhook_secret_missing',
   'ai_budget_unavailable',
+  'flow_conversion_not_switched',
 ]);
 
 /** Failures the run dialog renders inline. */

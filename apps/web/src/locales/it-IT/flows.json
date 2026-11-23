@@ -44,6 +44,8 @@
     "createdInChat": "Creato in Breeze AI",
     "movedFromJob": "Spostato da un'attività",
     "movedFromJobReverted": "(riportato indietro)",
+    "shadowingNotice": "Questo flusso sta replicando l’attività {{name}}. Diventa attivo quando passi dall’attività.",
+    "shadowingLink": "Apri la finestra Sposta dell’attività",
     "edit": "Modifica",
     "delete": "Elimina bozza",
     "deleteConfirmTitle": "Eliminare questa bozza?",
@@ -184,6 +186,7 @@
     "generic": "Impossibile attivare il flusso.",
     "webhookSecretMissing": "Crea un segreto del webhook prima di attivare questo flusso.",
     "aiBudgetUnavailable": "Questa organizzazione non ha budget IA, quindi un flusso con un passaggio IA non può essere attivato.",
+    "conversionNotSwitched": "Questo flusso sta replicando un’attività, quindi diventa attivo quando passi dall’attività, non da qui.",
     "webhookSecretInvalidated": "L’attivazione di questa versione ha cancellato il segreto del webhook, perché era stato creato per una bozza precedente. Tutte le richieste vengono rifiutate finché non crei un nuovo segreto e lo consegni al mittente."
   },
   "run": {
