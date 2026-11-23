@@ -449,6 +449,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'configurationPolicies/crud.ts': { tools: ['manage_configuration_policy', 'list_configuration_policies', 'get_configuration_policy'] },
   'configurationPolicies/featureLinks.ts': { tools: ['manage_policy_feature_link', 'manage_service_monitors'] },
   'configurationPolicies/patchJobs.ts': { tools: ['manage_patches'] },
+  'configurationPolicies/precedence.ts': { exempt: 'tool_in_later_wave', note: "outranked counts per feature for the policy page (#12472); an AI read follows the spec's AI follow-up, tracked on feature #12462" },
   'configurationPolicies/reach.ts': { exempt: 'tool_in_later_wave', note: "reach counts for the policy page and list (#12465); an AI read follows the spec's AI follow-up, tracked on feature #12462" },
   'configurationPolicies/resolution.ts': { tools: ['get_effective_configuration', 'preview_configuration_change', 'configuration_policy_compliance'] },
   'configurationPolicies/wakeStatus.ts': { exempt: 'tool_in_later_wave', note: 'Wake-on-LAN status panel feed and the audited "allow wake again" reset (#10838 W02); no MCP tool planned until the feature activates in W06.' },

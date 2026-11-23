@@ -123,6 +123,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/configPolicyAppliesTo.ts': 'list and detail read model; no fan-out',
   'services/configPolicyLegibleAssignments.ts': 'read model: which assignment rows of a policy the caller may see (W03a); resolves target orgs, selects no fan-out targets',
   'services/configPolicyReach.ts': 'policy reach counts; no fan-out',
+  'services/configPolicyPrecedence.ts': 'per-feature outranked counts over a policy reach; no fan-out',
   'services/partnerGroupPreview.ts': 'read-only partner-group preview; eligible org discovery excludes Quick Support/holding orgs and evaluation intersects the caller accessible orgs',
   'services/accounting/accountingMappingService.ts': 'billing: accounting device counts',
   'services/archivedOrgReads.ts': 'listing: archived org reads',
