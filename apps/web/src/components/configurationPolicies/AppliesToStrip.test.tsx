@@ -162,4 +162,16 @@ describe('AppliesToStrip (#12306)', () => {
       expect(screen.queryByTestId('config-policy-applies-to-reach')).toBeNull();
     });
   });
+
+  it('a read-only viewer (no onEdit) gets no Edit or Assign control (#12469)', () => {
+    const applied = summary({ assignmentCount: 1, targets: [target('a', 'Acme')] });
+    const { unmount } = render(<AppliesToStrip summary={applied} status="active" />);
+    expect(screen.queryByTestId('config-policy-applies-to-edit')).toBeNull();
+    expect(screen.queryByRole('button')).toBeNull();
+    unmount();
+    render(<AppliesToStrip summary={summary()} status="active" />);
+    expect(screen.getByTestId('config-policy-applies-to-not-applied')).toBeInTheDocument();
+    expect(screen.queryByTestId('config-policy-applies-to-assign')).toBeNull();
+    expect(screen.queryByRole('button')).toBeNull();
+  });
 });

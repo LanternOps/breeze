@@ -81,7 +81,6 @@
       "failedToFetchPolicy": "Politika getirilemedi",
       "failedToFetchFeatures": "Özellikler getirilemedi",
       "failedToUpdatePolicy": "Politika güncellenemedi",
-      "overview": "Genel Bakış",
       "complianceStatus": "Uyumluluk Durumu",
       "loadingPolicy": "Politika yükleniyor...",
       "backToList": "Listeye dön",
@@ -89,28 +88,27 @@
       "policyDetails": "Politika Ayrıntıları",
       "archived2": "Arşivlendi",
       "inheritingFrom": "Dayandığı politika:",
-      "overrideIndividualTabsToCustomizeSettings": "Yalnızca bu politika için ayarlamak üzere bir özelliği değiştirin.",
-      "isnTAvailableOnPartnerWidePolicies": " MSP tarafından yönetilen politikalarda kullanılamaz",
-      "configureThisFeatureOnAnOrganizationScoped": "Bu özelliği tek bir kuruluşun yönettiği bir politikada ayarlayın.",
       "thisPolicyStillCarriesAnExisting": "Bu politika hâlâ mevcut bir politikayı taşımaktadır",
       "configurationThatWillNeverBeApplied": "hiçbir zaman uygulanmayacak yapılandırma.",
       "policy": "Politika",
-      "overview2": "genel bakış",
       "saving": "Kaydediliyor...",
       "saveChanges": "Değişiklikleri Kaydet",
-      "parentPolicy": "ebeveyn politikası",
       "removing": "Kaldırılıyor...",
       "removeConfiguration": "Yapılandırmayı kaldır",
-      "complianceStatus2": "compliance_status",
-      "assignments2": "ödevler",
       "managedByYourMsp": "MSP'niz tarafından yönetiliyor",
       "inheritedByPolicies_one": "{{count}} politikanın üst politikası",
       "inheritedByPolicies_other": "{{count}} politikanın üst politikası",
-      "gatedFeatureTitle": "MSP tarafından yönetilen politikalarda kullanılamaz. Bu özelliği tek bir kuruluşun yönettiği bir politikada ayarlayın.",
       "appliesToDrawerTitle": "Uygulandığı yer",
       "detailsSaved": "Politika ayrıntıları kaydedildi",
       "refreshAppliesToFailed": "Bu politikanın uygulandığı yer yenilenemedi. Görmek için sayfayı yeniden yükleyin.",
-      "appliesToCloseBlocked": "Önce değişikliklerinizi uygulayın veya atın."
+      "appliesToCloseBlocked": "Önce değişikliklerinizi uygulayın veya atın.",
+      "gatedFeatureUnavailable": "{{feature}} bu politikada kullanılamaz",
+      "gatedFeatureReason": "{{feature}} bir kuruluşun kendi hesapları ve hizmetleriyle çalışır, bu yüzden yalnızca o kuruluşun yönettiği bir politika bunu ayarlayabilir. Bu politika MSP'niz tarafından yönetiliyor.",
+      "unsavedLeaveConfirm": "Bu politikada kaydedilmemiş değişiklikleriniz var. Çıkıp bunları atmak istiyor musunuz?",
+      "discardChangesTitle": "Kaydedilmemiş değişiklikler atılsın mı?",
+      "discardChangesMessage": "{{feature}} üzerindeki değişiklikleriniz kaydedilmedi. Bunları atın ya da kalıp önce kaydedin.",
+      "discardChanges": "At",
+      "stayOnFeature": "Kal"
     },
     "configPolicyList": {
       "archived": "Arşivlendi",
@@ -647,10 +645,7 @@
         "revertConfirmMessage": "Bu işlem bu ilkedeki {{feature}} geçersiz kılmasını siler. Ayarları kaybolur ve bu ilkeyi kullanan tüm cihazlarda üst ilkenin ayarları geçerli olur. Bu işlem geri alınamaz.",
         "removeConfirmTitle": "Bu yapılandırma kaldırılsın mı?",
         "removeConfirmMessage": "Bu işlem {{feature}} yapılandırmasını bu ilkeden siler. Ayarları kaybolur ve özellik bu ilkeyi kullanan tüm cihazlara uygulanmayı bırakır. Bu işlem geri alınamaz.",
-        "badgeInherited": "Yapılandırıldı (devralındı)",
-        "badgeSavedNotDeployed": "Kaydedildi (dağıtılmadı)",
-        "badgeConfigured": "Yapılandırıldı",
-        "badgeNotConfigured": "Yapılandırılmadı"
+        "badgeSavedNotDeployed": "Kaydedildi (dağıtılmadı)"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Cihazlara Breeze Assist'i dağıtın",
@@ -1555,6 +1550,74 @@
       "atLeastDevices_one": "En az {{count}} cihaz",
       "atLeastDevices_other": "En az {{count}} cihaz",
       "noneVisible": "Görebileceğiniz cihaz yok"
+    },
+    "featureStates": {
+      "set_here": {
+        "label": "Burada ayarlandı"
+      },
+      "from_parent": {
+        "label": "Üst politikadan"
+      },
+      "changed_from_parent": {
+        "label": "Burada değiştirildi"
+      },
+      "not_set": {
+        "label": "Ayarlanmadı"
+      },
+      "unavailable": {
+        "label": "Bu politikada kullanılamaz"
+      }
+    },
+    "featureRail": {
+      "navLabel": "Politika özellikleri",
+      "selectLabel": "Politika özelliği",
+      "groups": {
+        "updates_software": {
+          "label": "Güncellemeler ve yazılım"
+        },
+        "monitoring": {
+          "label": "İzleme"
+        },
+        "security": {
+          "label": "Güvenlik"
+        },
+        "backup": {
+          "label": "Yedekleme"
+        },
+        "access_end_user": {
+          "label": "Erişim ve son kullanıcı"
+        },
+        "lifecycle": {
+          "label": "Yaşam döngüsü"
+        },
+        "results": {
+          "label": "Sonuçlar"
+        }
+      }
+    },
+    "policyHeader": {
+      "editDetails": "Ayrıntıları düzenle",
+      "managedByOrganization": "Yöneten: {{organization}}",
+      "readOnly": {
+        "msp_managed_org_user": {
+          "message": "Yalnızca görüntüleme. Bu politikayı MSP'niz yönetiyor, bu yüzden yalnızca MSP'niz değiştirebilir."
+        },
+        "msp_managed_limited_access": {
+          "message": "Yalnızca görüntüleme. Bu politikayı MSP'niz yönetiyor ve erişiminiz yalnızca bazı kuruluşları kapsıyor."
+        },
+        "site_restricted": {
+          "message": "Yalnızca görüntüleme. Erişiminiz bazı sitelerle sınırlı ve bu politika bunların ötesine uzanıyor."
+        },
+        "no_write_permission": {
+          "message": "Yalnızca görüntüleme. Rolünüz yapılandırma politikalarını görüntüleyebilir ancak değiştiremez."
+        },
+        "not_editable": {
+          "message": "Yalnızca görüntüleme. Bu politikayı görüntüleyebilir ancak değiştiremezsiniz."
+        },
+        "unexplained": {
+          "message": "Yalnızca görüntüleme."
+        }
+      }
     }
   },
   "software": {

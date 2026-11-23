@@ -339,6 +339,7 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
               type="button"
               data-testid="onedrive-add-library-btn"
               onClick={() => setShowPicker(true)}
+              aria-haspopup="dialog"
               className="inline-flex items-center gap-2 rounded-md border border-primary/40 px-3 py-2 text-sm font-medium text-primary transition hover:bg-primary/10"
             >
               <Plus className="h-4 w-4" />

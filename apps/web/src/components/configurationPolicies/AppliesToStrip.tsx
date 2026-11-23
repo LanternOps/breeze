@@ -16,7 +16,8 @@ type AppliesToStripProps = {
   /** null = the API did not send a usable summary: claim nothing. */
   summary: ConfigPolicyAppliesToSummary | null;
   status: ConfigPolicyStatus;
-  onEdit: () => void;
+  /** Opens the editor. Omitted for a read-only viewer: no Edit or Assign is rendered. */
+  onEdit?: () => void;
   /** The policy's device count, when the reach read answered (#12467). */
   reach?: ConfigPolicyReach | null;
 };
@@ -124,7 +125,7 @@ export default function AppliesToStrip({ summary, status, onEdit, reach = null }
           className="shrink-0 text-sm"
         />
       )}
-      {showAssign ? (
+      {!onEdit ? null : showAssign ? (
         <button
           type="button"
           onClick={onEdit}

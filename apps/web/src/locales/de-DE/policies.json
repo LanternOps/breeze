@@ -81,7 +81,6 @@
       "failedToFetchPolicy": "Die Richtlinie konnte nicht abgerufen werden",
       "failedToFetchFeatures": "Funktionen konnten nicht abgerufen werden",
       "failedToUpdatePolicy": "Die Richtlinie konnte nicht aktualisiert werden",
-      "overview": "Übersicht",
       "complianceStatus": "Compliance-Status",
       "loadingPolicy": "Richtlinie wird geladen...",
       "backToList": "Zurück zur Liste",
@@ -89,28 +88,27 @@
       "policyDetails": "Richtliniendetails",
       "archived2": "Archiviert",
       "inheritingFrom": "Basiert auf",
-      "overrideIndividualTabsToCustomizeSettings": "Ändern Sie eine Funktion, um sie nur für diese Richtlinie festzulegen.",
-      "isnTAvailableOnPartnerWidePolicies": " ist für MSP-verwaltete Richtlinien nicht verfügbar",
-      "configureThisFeatureOnAnOrganizationScoped": "Legen Sie diese Funktion in einer Richtlinie fest, die von einer Organisation verwaltet wird.",
       "thisPolicyStillCarriesAnExisting": "Diese Richtlinie trägt noch eine bestehende",
       "configurationThatWillNeverBeApplied": "Konfiguration, die niemals angewendet wird.",
       "policy": "Richtlinie",
-      "overview2": "Übersicht",
       "saving": "Speichern...",
       "saveChanges": "Änderungen speichern",
-      "parentPolicy": "Elternrichtlinie",
       "removing": "Entfernen...",
       "removeConfiguration": "Konfiguration entfernen",
-      "complianceStatus2": "compliance_status",
-      "assignments2": "Aufgaben",
       "managedByYourMsp": "Verwaltet von Ihrem MSP",
       "inheritedByPolicies_one": "Übergeordnet für {{count}} Richtlinie",
       "inheritedByPolicies_other": "Übergeordnet für {{count}} Richtlinien",
-      "gatedFeatureTitle": "Für MSP-verwaltete Richtlinien nicht verfügbar. Legen Sie diese Funktion in einer Richtlinie fest, die von einer Organisation verwaltet wird.",
       "appliesToDrawerTitle": "Gilt für",
       "detailsSaved": "Richtliniendetails gespeichert",
       "refreshAppliesToFailed": "Der Geltungsbereich dieser Richtlinie konnte nicht aktualisiert werden. Laden Sie die Seite neu, um ihn zu sehen.",
-      "appliesToCloseBlocked": "Wenden Sie Ihre Änderungen zuerst an oder verwerfen Sie sie."
+      "appliesToCloseBlocked": "Wenden Sie Ihre Änderungen zuerst an oder verwerfen Sie sie.",
+      "gatedFeatureUnavailable": "{{feature}} ist für diese Richtlinie nicht verfügbar",
+      "gatedFeatureReason": "{{feature}} arbeitet mit den eigenen Konten und Diensten einer Organisation, daher kann nur eine von dieser Organisation verwaltete Richtlinie die Funktion festlegen. Diese Richtlinie wird von Ihrem MSP verwaltet.",
+      "unsavedLeaveConfirm": "Sie haben ungespeicherte Änderungen an dieser Richtlinie. Seite verlassen und Änderungen verwerfen?",
+      "discardChangesTitle": "Ungespeicherte Änderungen verwerfen?",
+      "discardChangesMessage": "Ihre Änderungen an {{feature}} sind nicht gespeichert. Verwerfen Sie sie, oder bleiben Sie und speichern Sie sie zuerst.",
+      "discardChanges": "Verwerfen",
+      "stayOnFeature": "Bleiben"
     },
     "configPolicyList": {
       "archived": "Archiviert",
@@ -647,10 +645,7 @@
         "revertConfirmMessage": "Dadurch wird die {{feature}}-Überschreibung dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Einstellungen der übergeordneten Richtlinie gelten für alle Geräte, die diese Richtlinie verwenden. Dies kann nicht rückgängig gemacht werden.",
         "removeConfirmTitle": "Diese Konfiguration entfernen?",
         "removeConfirmMessage": "Dadurch wird die {{feature}}-Konfiguration aus dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Funktion wird auf keinem Gerät mehr angewendet, das diese Richtlinie verwendet. Dies kann nicht rückgängig gemacht werden.",
-        "badgeInherited": "Konfiguriert (geerbt)",
-        "badgeSavedNotDeployed": "Gespeichert (nicht bereitgestellt)",
-        "badgeConfigured": "Konfiguriert",
-        "badgeNotConfigured": "Nicht konfiguriert"
+        "badgeSavedNotDeployed": "Gespeichert (nicht bereitgestellt)"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Stellen Sie Breeze Assist auf Geräten bereit",
@@ -1555,6 +1550,74 @@
       "atLeastDevices_one": "Mindestens {{count}} Gerät",
       "atLeastDevices_other": "Mindestens {{count}} Geräte",
       "noneVisible": "Keine Geräte, die Sie sehen können"
+    },
+    "featureStates": {
+      "set_here": {
+        "label": "Hier festgelegt"
+      },
+      "from_parent": {
+        "label": "Aus übergeordneter Richtlinie"
+      },
+      "changed_from_parent": {
+        "label": "Hier geändert"
+      },
+      "not_set": {
+        "label": "Nicht festgelegt"
+      },
+      "unavailable": {
+        "label": "Für diese Richtlinie nicht verfügbar"
+      }
+    },
+    "featureRail": {
+      "navLabel": "Richtlinienfunktionen",
+      "selectLabel": "Richtlinienfunktion",
+      "groups": {
+        "updates_software": {
+          "label": "Updates & Software"
+        },
+        "monitoring": {
+          "label": "Überwachung"
+        },
+        "security": {
+          "label": "Sicherheit"
+        },
+        "backup": {
+          "label": "Sicherung"
+        },
+        "access_end_user": {
+          "label": "Zugriff & Endbenutzer"
+        },
+        "lifecycle": {
+          "label": "Lebenszyklus"
+        },
+        "results": {
+          "label": "Ergebnisse"
+        }
+      }
+    },
+    "policyHeader": {
+      "editDetails": "Details bearbeiten",
+      "managedByOrganization": "Verwaltet von {{organization}}",
+      "readOnly": {
+        "msp_managed_org_user": {
+          "message": "Nur Ansicht. Ihr MSP verwaltet diese Richtlinie, daher kann nur Ihr MSP sie ändern."
+        },
+        "msp_managed_limited_access": {
+          "message": "Nur Ansicht. Ihr MSP verwaltet diese Richtlinie, und Ihr Zugriff umfasst nur einige Organisationen."
+        },
+        "site_restricted": {
+          "message": "Nur Ansicht. Ihr Zugriff ist auf einige Standorte beschränkt, und diese Richtlinie reicht darüber hinaus."
+        },
+        "no_write_permission": {
+          "message": "Nur Ansicht. Ihre Rolle kann Konfigurationsrichtlinien anzeigen, aber nicht ändern."
+        },
+        "not_editable": {
+          "message": "Nur Ansicht. Sie können diese Richtlinie anzeigen, aber nicht ändern."
+        },
+        "unexplained": {
+          "message": "Nur Ansicht."
+        }
+      }
     }
   },
   "software": {

@@ -43,12 +43,12 @@ describe('SensitiveDataTab inheritance (#5080)', () => {
     onLinkChanged.mockClear();
   });
 
-  it('shows Configured (inherited) and seeds the form from parentLink when only a parent link exists', () => {
+  it('shows From parent and seeds the form from parentLink when only a parent link exists', () => {
     const { container } = render(
       <SensitiveDataTab {...baseProps} parentLink={parentLinkWith({ workers: 17 })} />,
     );
 
-    expect(screen.getByText(/Configured \(inherited\)/i)).toBeTruthy();
+    expect(screen.getByText('From parent')).toBeTruthy();
     // Distinctive setting from the parent link (workers defaults to 4).
     expect(container.textContent).toContain('17workers');
   });

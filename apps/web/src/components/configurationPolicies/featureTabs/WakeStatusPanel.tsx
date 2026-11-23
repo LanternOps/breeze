@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '@/stores/auth';
 import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '../../shared/Toast';
+import { useFeatureReadOnly } from './featureEditing';
 
 // Per-policy Wake-on-LAN status (#10838 W02). Reads GET
 // /configuration-policies/:id/wake-status. "Send test wake" deliberately reuses
@@ -47,6 +48,7 @@ interface WakePage {
 
 export default function WakeStatusPanel({ policyId }: { policyId: string }) {
   const { t } = useTranslation('policies');
+  const readOnly = useFeatureReadOnly();
   const [state, setState] = useState<string>('');
   const [page, setPage] = useState(1);
   const [result, setResult] = useState<WakePage | null>(null);
@@ -219,7 +221,7 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
                       )}
                     </td>
                     <td className="space-x-2 py-2 pr-3">
-                      {row.testWakeAllowed && (
+                      {!readOnly && row.testWakeAllowed && (
                         <button
                           type="button"
                           data-testid={`wake-test-${row.deviceId}`}
@@ -230,7 +232,7 @@ export default function WakeStatusPanel({ policyId }: { policyId: string }) {
                           {t('configurationPolicies.featureTabs.wakeOnLanTab.panel.testWake')}
                         </button>
                       )}
-                      {flagged && (
+                      {!readOnly && flagged && (
                         <button
                           type="button"
                           data-testid={`wake-allow-${row.deviceId}`}

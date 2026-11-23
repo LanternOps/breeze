@@ -8,6 +8,7 @@ import type { FeatureLink, FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useFeatureReadOnly } from "./featureEditing";
 import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -82,6 +83,7 @@ export default function MonitorsTab({
 }: FeatureTabProps) {
   // Explicit null = partner-owned policy (#1724); undefined = unknown, so no filtering.
   const isPartnerPolicy = orgId === null;
+  const readOnly = useFeatureReadOnly();
   const { t } = useTranslation("policies");
   const linkOf = (type: string) => allLinks.find((link) => link.featureType === type);
   const inlineRules = (linkOf("alert_rule")?.inlineSettings as { items?: Array<{ name?: string; conditions?: Array<Record<string, unknown>> }> } | undefined)?.items ?? [];
@@ -596,8 +598,14 @@ export default function MonitorsTab({
           </ul>
         )}
         {/* Retired links are hidden by the policy API; conversion checks its own sources and hides empty previews. */}
-        <NeedsConversionPanel key={policyId} policyId={policyId} hasLegacyRows onChanged={() => void refreshLinks()} />
-        <ConversionLedger policyId={policyId} revision={ledgerRevision} onChanged={() => void refreshLinks()} />
+        {/* Conversion writes its own records and is not part of this form's
+            Save (#12469); a read-only viewer gets none of its controls. */}
+        {!readOnly && (
+          <div data-feature-dirty-ignore>
+            <NeedsConversionPanel key={policyId} policyId={policyId} hasLegacyRows onChanged={() => void refreshLinks()} />
+            <ConversionLedger policyId={policyId} revision={ledgerRevision} onChanged={() => void refreshLinks()} />
+          </div>
+        )}
       </div>
     </FeatureTabShell>
   );

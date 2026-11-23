@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { useFeatureDirty } from "./featureEditing";
 type EntityOption = {
   id: string;
   name: string;
@@ -36,6 +37,7 @@ export default function InlineEntityPicker({
   compact = false,
 }: InlineEntityPickerProps) {
   useTranslation("policies");
+  const { markDirty } = useFeatureDirty();
   const [options, setOptions] = useState<EntityOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string>();
@@ -102,6 +104,8 @@ export default function InlineEntityPicker({
         <button
           type="button"
           onClick={() => setOpen(!open)}
+          aria-haspopup="listbox"
+          aria-expanded={open}
           className={cn(
             "flex w-full items-center justify-between rounded-md border bg-background px-2",
             height,
@@ -122,7 +126,10 @@ export default function InlineEntityPicker({
         {value && (
           <button
             type="button"
-            onClick={() => onChange("")}
+            onClick={() => {
+              markDirty();
+              onChange("");
+            }}
             className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
           >
             <X className="h-3.5 w-3.5" />
@@ -130,7 +137,10 @@ export default function InlineEntityPicker({
         )}
       </div>
       {open && (
-        <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-lg">
+        <div
+          data-feature-dirty-ignore
+          className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-lg"
+        >
           <div className="flex items-center border-b px-2 py-1.5">
             <Search className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
             <input
@@ -168,6 +178,7 @@ export default function InlineEntityPicker({
                   key={option.id}
                   type="button"
                   onClick={() => {
+                    markDirty();
                     onChange(option.id);
                     setOpen(false);
                     setSearch("");

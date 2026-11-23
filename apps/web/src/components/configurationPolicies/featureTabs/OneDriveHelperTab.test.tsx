@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import OneDriveHelperTab from './OneDriveHelperTab';
+import { FeatureDirtyReporterContext } from './featureEditing';
 import type { FeatureLink } from './types';
 import * as onedriveApi from '../../../lib/api/onedrive';
 import type { OneDriveLibrary } from '../../../lib/api/onedrive';
@@ -370,5 +371,27 @@ describe('OneDriveHelperTab', () => {
 
     expect(screen.getByRole('button', { name: /Override/i })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Save$/i })).toBeNull();
+  });
+
+  it('opening and closing the library picker does not mark the feature dirty; adding a library does (#12469)', async () => {
+    const reporter = vi.fn();
+    mockedStatus.mockResolvedValue(true);
+    mockedLibraries.mockResolvedValue({ libraries: [graphLib()], skippedSites: [] });
+    render(
+      <FeatureDirtyReporterContext.Provider value={reporter}>
+        <OneDriveHelperTab {...baseProps} existingLink={undefined} />
+      </FeatureDirtyReporterContext.Provider>,
+    );
+
+    fireEvent.click(screen.getByTestId('onedrive-add-library-btn'));
+    await waitFor(() => expect(screen.getByTestId('onedrive-picker-add-drive-1')).toBeTruthy());
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'fin' } });
+    fireEvent.click(screen.getByTestId('onedrive-picker-close'));
+    expect(reporter).not.toHaveBeenCalledWith(true);
+
+    fireEvent.click(screen.getByTestId('onedrive-add-library-btn'));
+    await waitFor(() => expect(screen.getByTestId('onedrive-picker-add-drive-1')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('onedrive-picker-add-drive-1'));
+    expect(reporter).toHaveBeenCalledWith(true);
   });
 });
