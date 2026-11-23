@@ -8,6 +8,8 @@ import type { FeatureLink, FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
+import { featureEditProps } from "./featureEditAction";
 import { useFeatureReadOnly } from "./featureEditing";
 import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
@@ -76,7 +78,6 @@ export default function MonitorsTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
   allLinks = [],
   orgId,
@@ -107,6 +108,7 @@ export default function MonitorsTab({
 
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
 
   const [items, setItems] = useState<MonitorAttachmentItem[]>(() =>
     seedItems(existingLink ?? parentLink),
@@ -252,7 +254,9 @@ export default function MonitorsTab({
     }));
 
   const saveAttachments = async (): Promise<boolean> => {
-    if (!existingLink && items.length === 0 && !checkIntervalEdited && inheritance === "cumulative") return true;
+    // Nothing chosen on a feature that is Not set: no link to write. An
+    // inherited feature unlocked with Change for this policy always writes.
+    if (!existingLink && !parentLink && items.length === 0 && !checkIntervalEdited && inheritance === "cumulative") return true;
     const result = await save(existingLink?.id ?? null, {
       featureType: "monitors",
       featurePolicyId: null,
@@ -303,24 +307,6 @@ export default function MonitorsTab({
     }
   };
 
-  // Creates this policy's own link, seeded with a copy of whatever is
-  // currently displayed (the parent's items) — the same one-shot pattern
-  // every other inheritance-capable tab uses (see VulnerabilityTab). Once the
-  // own link exists, FeatureTabShell stops disabling the editor and the
-  // attach/detach/toggle/override controls below become live.
-  const handleOverride = async () => {
-    clearError();
-    if (!validateCheckInterval()) return;
-    const result = await save(null, {
-      featureType: "monitors",
-      featurePolicyId: null,
-      inlineSettings: { items: buildPayloadItems(), inheritance, ...intervalPayload() },
-    });
-    if (result) {
-      setCheckIntervalEdited(false);
-      onLinkChanged(result, "monitors");
-    }
-  };
 
   const handleRevert = async () => {
     if (!existingLink) return;
@@ -339,12 +325,9 @@ export default function MonitorsTab({
       saving={saving}
       error={error ?? catalogError}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined
-      }
+      {...change.shellProps}
     >
       <DuplicateConditionNotice hits={findDuplicateConditions({ attached: items, catalog, inlineRules, watches })} />
       <div className="space-y-6">
@@ -422,7 +405,7 @@ export default function MonitorsTab({
             max={CHECK_INTERVAL_MAX}
             step={1}
             value={checkInterval}
-            disabled={isInherited}
+            disabled={change.locked}
             onChange={(e) => { setCheckInterval(e.target.value); setCheckIntervalEdited(true); setCheckIntervalError(undefined); }}
             className="mt-1 h-9 w-40 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
@@ -448,7 +431,7 @@ export default function MonitorsTab({
                 name="monitors-tab-inheritance"
                 data-testid={`monitors-tab-inheritance-${mode}`}
                 checked={inheritance === mode}
-                disabled={isInherited}
+                disabled={change.locked}
                 onChange={() => setInheritance(mode)}
               />
               <span>

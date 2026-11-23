@@ -86,7 +86,6 @@
       "backToList": "Zurück zur Liste",
       "configurationPolicies": "Konfigurationsrichtlinien",
       "policyDetails": "Richtliniendetails",
-      "archived2": "Archiviert",
       "inheritingFrom": "Basiert auf",
       "thisPolicyStillCarriesAnExisting": "Diese Richtlinie trägt noch eine bestehende",
       "configurationThatWillNeverBeApplied": "Konfiguration, die niemals angewendet wird.",
@@ -636,16 +635,25 @@
         "providerLimit": "{{total}} von {{max}} zusätzlichen Anbietern"
       },
       "featureTabShell": {
-        "override": "Überschreiben",
-        "revertToParent": "Zurück zum übergeordneten Element",
+        "unlockAction": "Für diese Richtlinie ändern",
+        "unlockedHint": "Änderung für diese Richtlinie. Nichts wird gespeichert, bis Sie auf Speichern klicken.",
+        "revertToParent": "Auf übergeordnete Richtlinie zurücksetzen",
         "saving": "Speichern...",
         "notSaved": "Nicht gespeichert: {{reason}}",
         "saveBlocked": "Nicht gespeichert. Beheben Sie das markierte Problem und versuchen Sie es erneut.",
-        "revertConfirmTitle": "Auf übergeordnete Richtlinie zurücksetzen?",
-        "revertConfirmMessage": "Dadurch wird die {{feature}}-Überschreibung dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Einstellungen der übergeordneten Richtlinie gelten für alle Geräte, die diese Richtlinie verwenden. Dies kann nicht rückgängig gemacht werden.",
+        "revertConfirmTitle": "Auf die übergeordnete Richtlinie zurücksetzen?",
+        "revertConfirmMessage": "Dadurch werden die eigenen Einstellungen dieser Richtlinie für {{feature}} gelöscht, und stattdessen gelten die Einstellungen der übergeordneten Richtlinie. Das kann nicht rückgängig gemacht werden.",
         "removeConfirmTitle": "Diese Konfiguration entfernen?",
-        "removeConfirmMessage": "Dadurch wird die {{feature}}-Konfiguration aus dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Funktion wird auf keinem Gerät mehr angewendet, das diese Richtlinie verwendet. Dies kann nicht rückgängig gemacht werden.",
-        "badgeSavedNotDeployed": "Gespeichert (nicht bereitgestellt)"
+        "removeConfirmMessage": "Dadurch werden die Einstellungen für {{feature}} aus dieser Richtlinie gelöscht, und die Funktion wechselt zu Nicht festgelegt. Das kann nicht rückgängig gemacht werden.",
+        "badgeSavedNotDeployed": "Gespeichert (nicht bereitgestellt)",
+        "saveWithReach": "Speichern · {{reach}}",
+        "removeImpactReaches": "Diese Richtlinie erreicht {{devices}}: {{feature}} wird dort nicht mehr von dieser Richtlinie festgelegt.",
+        "removeImpactInUse": "Richtlinien, die auf dieser basieren, erben {{feature}} nicht mehr von ihr, sofern sie keine eigenen Einstellungen festlegen: {{policies}}, {{devices}}.",
+        "resetImpactReaches": "Diese Richtlinie erreicht {{devices}}: Dort gelten stattdessen die Einstellungen der übergeordneten Richtlinie für {{feature}}.",
+        "resetImpactInUse": "Richtlinien, die auf dieser basieren, erhalten stattdessen über sie die Einstellungen der übergeordneten Richtlinie für {{feature}}, sofern sie keine eigenen festlegen: {{policies}}, {{devices}}.",
+        "impactNoDeviceNow": "Derzeit ändert sich auf keinem Gerät etwas: Diese Richtlinie ist nicht aktiv, und keine Richtlinie basiert auf ihr.",
+        "fromParentPolicy": "Von {{policy}}",
+        "openParent": "Öffnen"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Stellen Sie Breeze Assist auf Geräten bereit",
@@ -810,7 +818,6 @@
         "failedToLoadUpdateRings": "Aktualisierungsringe konnten nicht geladen werden",
         "patchSettingsSaved": "Patch-Einstellungen gespeichert",
         "patchSettingsRemoved": "Patch-Einstellungen entfernt",
-        "patchSettingsOverridden": "Patch-Einstellungen wurden überschrieben",
         "revertedToInheritedPatchSettings": "Auf die übernommenen Patch-Einstellungen zurückgesetzt",
         "approvalRing": "Genehmigungsring",
         "selectWhichUpdateRingGovernsPatchApprovals": "Wählen Sie aus, welcher Update-Ring die Patch-Genehmigungen für diese Richtlinie regelt. Bei rein manuellen Genehmigungen leer lassen.",
@@ -1620,6 +1627,36 @@
           "message": "Nur Ansicht."
         }
       }
+    },
+    "reachLine": {
+      "deviceCount_one": "{{count}} Gerät",
+      "deviceCount_other": "{{count}} Geräte",
+      "atLeastDeviceCount_one": "mindestens {{count}} Gerät",
+      "atLeastDeviceCount_other": "mindestens {{count}} Geräte",
+      "noVisibleDevices": "keine Geräte, die Sie sehen können",
+      "policyCount_one": "{{count}} Richtlinie",
+      "policyCount_other": "{{count}} Richtlinien",
+      "reaches": "erreicht {{devices}}",
+      "inUseThrough": "in Verwendung über {{policies}} · {{devices}}"
+    },
+    "policyStateActions": {
+      "activateAction": "Aktivieren",
+      "activateWithReach": "Aktivieren · {{reach}}",
+      "deactivateAction": "Deaktivieren",
+      "archiveAction": "Archivieren",
+      "restoreAction": "Wiederherstellen",
+      "restoreHint": "Stellt die Richtlinie als Inaktiv wieder her.",
+      "deactivateConfirmTitle": "Diese Richtlinie deaktivieren?",
+      "deactivateConfirmMessage": "Sie wendet ihre Einstellungen nicht mehr auf die Geräte an, die sie direkt anvisiert. Sie können sie später wieder aktivieren.",
+      "deactivateImpactDirect": "Sie gilt direkt für {{devices}}: Diese erhalten ihre Einstellungen nicht mehr.",
+      "deactivateImpactNoneVisible": "Sie richtet sich direkt an keine Geräte, die Sie sehen können.",
+      "deactivateImpactChildren": "Richtlinien, die auf ihr basieren, behalten ihre Einstellungen: {{policies}}, {{devices}}.",
+      "activateExecuteRequired": "Das Aktivieren dieser Richtlinie schaltet Herstellerupdates auf den Geräten ein, für die sie gilt. Dafür sind die Berechtigung devices.execute und MFA erforderlich. Bitten Sie jemanden mit dieser Berechtigung, diese Richtlinie zu aktivieren.",
+      "changeFailed": "Der Richtlinienstatus wurde nicht geändert.",
+      "activatedToast": "Richtlinie aktiviert",
+      "deactivatedToast": "Richtlinie deaktiviert",
+      "archivedToast": "Richtlinie archiviert",
+      "restoredToast": "Richtlinie als Inaktiv wiederhergestellt"
     },
     "outranked": {
       "line_one": "Auf {{count}} Gerät übersteuert",

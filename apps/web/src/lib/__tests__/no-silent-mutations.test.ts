@@ -621,6 +621,8 @@ const TARGET_GLOBS = [
   'src/components/configurationPolicies/ConfigPolicyDetailPage.tsx',
   // #12469: the details save moved off the page into the details form.
   'src/components/configurationPolicies/page/PolicyDetailsForm.tsx',
+  // #12470: Activate / Deactivate / Archive / Restore (the status PATCH) toast their outcome.
+  'src/components/configurationPolicies/page/PolicyStateActions.tsx',
   // Operator Recipe Library W06 R1b (#6171): "allow these tools" widens what an
   // AI agent may call on customer systems; a silent failure leaves the tech
   // believing the recipe is set up when it is not.

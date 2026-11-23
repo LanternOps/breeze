@@ -53,10 +53,12 @@ describe('SensitiveDataTab inheritance (#5080)', () => {
     expect(container.textContent).toContain('17workers');
   });
 
-  it('Override saves a copy of the inherited settings as the policy\'s own link', () => {
+  it('Change for this policy saves a copy of the inherited settings as the policy\'s own link', () => {
     render(<SensitiveDataTab {...baseProps} parentLink={parentLinkWith({ workers: 17 })} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /override/i }));
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+    expect(saveMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
 
     expect(saveMock).toHaveBeenCalled();
     const [existingId, payload] = saveMock.mock.calls[0] as unknown as [
@@ -84,7 +86,7 @@ describe('SensitiveDataTab inheritance (#5080)', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /revert to parent/i }));
+    fireEvent.click(screen.getByRole('button', { name: /reset to parent/i }));
     // #5314: Revert to Parent now asks for confirmation first.
     fireEvent.click(screen.getByTestId('feature-tab-revert-confirm'));
 

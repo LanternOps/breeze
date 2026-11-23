@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import type { FeatureLink, FeatureTabProps, FeatureType } from '../featureTabs/types';
 import PatchTab from '../featureTabs/PatchTab';
 import MonitorsTab from '../featureTabs/MonitorsTab';
@@ -68,6 +69,28 @@ const EDITORS: Record<FeatureType, (props: FeatureTabProps) => React.ReactElemen
   wake_on_lan: WakeOnLanTab,
 };
 
+/**
+ * The page re-reads the policy after Activate, an Apply or a details save, and
+ * every parent link then arrives as a new object. Tabs re-seed their form when
+ * `parentLink` changes, so an unlocked inherited feature (Change for this
+ * policy) would lose its unsaved edits to a re-read that changed nothing, and a
+ * later Save would write the parent's values. Keep each link's identity while
+ * its content is the same (#12470).
+ */
+function useStableLinks(links: FeatureLink[]): FeatureLink[] {
+  const cache = useRef(new Map<string, { key: string; link: FeatureLink }>());
+  const next = new Map<string, { key: string; link: FeatureLink }>();
+  const out = links.map((link) => {
+    const key = JSON.stringify(link);
+    const prev = cache.current.get(link.id);
+    const kept = prev && prev.key === key ? prev.link : link;
+    next.set(link.id, { key, link: kept });
+    return kept;
+  });
+  cache.current = next;
+  return out;
+}
+
 /** The editor for one feature of a policy, with this policy's and its parent's links. */
 export default function PolicyFeatureEditor({
   featureType,
@@ -79,11 +102,12 @@ export default function PolicyFeatureEditor({
   partnerId,
   onLinkChanged,
 }: PolicyFeatureEditorProps) {
+  const stableParentLinks = useStableLinks(parentFeatureLinks);
   const linkFor = (t: FeatureType) => featureLinks.find((l) => l.featureType === t);
-  const parentLinkFor = (t: FeatureType) => parentFeatureLinks.find((l) => l.featureType === t);
+  const parentLinkFor = (t: FeatureType) => stableParentLinks.find((l) => l.featureType === t);
   // Closest-wins advisory links. Monitor detection also receives the parent's
   // attachments for cumulative resolution; existingLink still governs saves.
-  const effectiveLinks = [...featureLinks, ...parentFeatureLinks.filter((link) => !linkFor(link.featureType))];
+  const effectiveLinks = [...featureLinks, ...stableParentLinks.filter((link) => !linkFor(link.featureType))];
   const Editor = EDITORS[featureType];
   return (
     <Editor

@@ -5,6 +5,8 @@ import { i18n } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { FeatureDirtyContext, FeatureDirtyReporterContext, useFeatureReadOnly } from "./featureEditing";
 import { featureStateLabel } from "../page/featureState";
+import { deviceCountPhrase, policyCountPhrase, reachPhrase, saveReach } from "../page/ReachLine";
+import { useFeaturePolicy } from "./featurePolicyContext";
 type FeatureTabShellProps = {
   title: string;
   description: string;
@@ -19,7 +21,7 @@ type FeatureTabShellProps = {
   configuredButInactive?: boolean;
   saving: boolean;
   /**
-   * When true, the Save (and Override) button is disabled independent of the
+   * When true, the Save button is disabled independent of the
    * saving state — used by tabs with client-side validation (e.g. an invalid
    * library targeting row) to block a save the server would 400 on anyway.
    */
@@ -32,9 +34,15 @@ type FeatureTabShellProps = {
   onRemove?: () => void;
   /** True when this tab is showing inherited settings from a parent policy */
   isInherited?: boolean;
-  /** Called when user clicks "Override" on an inherited tab */
-  onOverride?: () => void;
-  /** Called when user clicks "Revert to Parent" on an overridden tab */
+  /**
+   * An inherited tab the user unlocked with Change for this policy
+   * (useChangeForPolicy): the form is live and Save creates this policy's own
+   * link. Nothing is written until Save.
+   */
+  unlocked?: boolean;
+  /** Change for this policy. Writes nothing; offered only with this. */
+  onUnlock?: () => void;
+  /** Called when user clicks "Reset to parent" on an overridden tab */
   onRevert?: () => void;
   children: ReactNode;
 };
@@ -51,15 +59,46 @@ export default function FeatureTabShell({
   onSave,
   onRemove,
   isInherited,
-  onOverride,
+  unlocked,
+  onUnlock,
   onRevert,
   children,
 }: FeatureTabShellProps) {
   useTranslation("policies");
   // A read-only viewer (#12469) gets the form disabled and no footer action:
-  // Save, Remove, Revert and Override are not rendered at all.
+  // Save, Remove, Reset and Change for this policy are not rendered at all.
   const readOnly = useFeatureReadOnly();
-  // #5314: Revert to Parent and Remove both fire an irreversible
+  // An inherited feature shows the parent's values, locked, until Change for
+  // this policy unlocks it (#12470).
+  const locked = !!isInherited && !unlocked;
+  // What a save, a Remove or a Reset changes on devices (#12470). Without the
+  // page's facts (or before the reach read answers) no count is claimed.
+  const policyInfo = useFeaturePolicy();
+  const reachValue = saveReach(policyInfo?.reach ?? null);
+  const reachKnown = !!policyInfo?.reach?.reach;
+  const deviceImpact = (action: "remove" | "revert"): string | null => {
+    if (!reachKnown) return null;
+    if (!reachValue) return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.impactNoDeviceNow");
+    const devices = deviceCountPhrase(reachValue.devices, reachValue.partial);
+    if (reachValue.kind === "reaches") {
+      if (action === "remove") return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.removeImpactReaches", { devices, feature: title });
+      return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.resetImpactReaches", { devices, feature: title });
+    }
+    const policies = policyCountPhrase(reachValue.policies);
+    if (action === "remove") return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.removeImpactInUse", { policies, devices, feature: title });
+    return i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.resetImpactInUse", { policies, devices, feature: title });
+  };
+  const confirmMessage = (base: string, action: "remove" | "revert"): ReactNode => {
+    const impact = deviceImpact(action);
+    return impact ? (
+      <>
+        {base} <span data-testid="feature-tab-confirm-impact">{impact}</span>
+      </>
+    ) : (
+      base
+    );
+  };
+  // #5314: Reset to parent and Remove both fire an irreversible
   // DELETE .../features/:id that destroys this policy's override. The shell
   // renders the footer for every feature tab, so guarding here covers all of
   // them at once rather than per-tab.
@@ -247,6 +286,25 @@ export default function FeatureTabShell({
             <div>
               <h2 className="text-lg font-semibold">{title}</h2>
               <p className="text-sm text-muted-foreground">{description}</p>
+              {isInherited && policyInfo?.parent && (
+                <p data-testid="feature-tab-from-parent" className="mt-1 text-sm text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.featureTabShell.fromParentPolicy",
+                    { policy: policyInfo.parent.name },
+                  )}
+                  {policyInfo.parent.href && (
+                    <>
+                      {" · "}
+                      <a
+                        href={policyInfo.parent.href}
+                        className="font-medium text-primary underline underline-offset-2 hover:text-primary/80"
+                      >
+                        {i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.openParent")}
+                      </a>
+                    </>
+                  )}
+                </p>
+              )}
             </div>
           </div>
           <span
@@ -272,29 +330,39 @@ export default function FeatureTabShell({
         {/* Inline settings form */}
         <div
           ref={bodyRef}
-          className={`mt-6 ${isInherited ? "opacity-60 pointer-events-none" : ""}`}
+          className={`mt-6 ${locked ? "opacity-60 pointer-events-none" : ""}`}
         >
-          <fieldset disabled={readOnly} className="min-w-0">
+          <fieldset disabled={readOnly || locked} className="min-w-0">
             <FeatureDirtyContext.Provider value={dirtyApi}>{children}</FeatureDirtyContext.Provider>
           </fieldset>
         </div>
 
         {/* Footer */}
         {!readOnly && (
-        <div className="mt-6 flex items-center justify-between border-t pt-4">
+        <div data-testid="feature-tab-footer" className="mt-6 flex items-center justify-between border-t pt-4">
           <div>
-            {isInherited && onOverride && (
+            {locked && onUnlock && (
               <button
                 type="button"
-                onClick={onOverride}
-                disabled={saving || saveDisabled}
+                data-testid="feature-tab-change-for-policy"
+                onClick={onUnlock}
                 className="inline-flex items-center gap-2 rounded-md border border-primary/40 px-3 py-2 text-sm font-medium text-primary transition hover:bg-primary/10 disabled:opacity-50"
               >
                 <PenLine className="h-4 w-4" />
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.featureTabShell.override",
+                  "policies:configurationPolicies.featureTabs.featureTabShell.unlockAction",
                 )}
               </button>
+            )}
+            {isInherited && !locked && (
+              <p
+                data-testid="feature-tab-changing-hint"
+                className="max-w-xs text-sm text-muted-foreground"
+              >
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.featureTabShell.unlockedHint",
+                )}
+              </p>
             )}
             {!isInherited && onRevert && (
               <button
@@ -321,7 +389,7 @@ export default function FeatureTabShell({
               </button>
             )}
           </div>
-          {!isInherited && (
+          {!locked && (
             <div className="flex items-center gap-3">
             {(blockedHint ?? thrownMessage) !== null && !saving && (
               <p
@@ -351,7 +419,12 @@ export default function FeatureTabShell({
                 ? i18n.t(
                     "policies:configurationPolicies.featureTabs.featureTabShell.saving",
                   )
-                : i18n.t("common:actions.save")}
+                : reachValue
+                  ? i18n.t(
+                      "policies:configurationPolicies.featureTabs.featureTabShell.saveWithReach",
+                      { reach: reachPhrase(reachValue) },
+                    )
+                  : i18n.t("common:actions.save")}
             </button>
             </div>
           )}
@@ -371,9 +444,12 @@ export default function FeatureTabShell({
         title={i18n.t(
           "policies:configurationPolicies.featureTabs.featureTabShell.revertConfirmTitle",
         )}
-        message={i18n.t(
-          "policies:configurationPolicies.featureTabs.featureTabShell.revertConfirmMessage",
-          { feature: title },
+        message={confirmMessage(
+          i18n.t(
+            "policies:configurationPolicies.featureTabs.featureTabShell.revertConfirmMessage",
+            { feature: title },
+          ),
+          "revert",
         )}
         confirmLabel={i18n.t(
           "policies:configurationPolicies.featureTabs.featureTabShell.revertToParent",
@@ -393,9 +469,12 @@ export default function FeatureTabShell({
         title={i18n.t(
           "policies:configurationPolicies.featureTabs.featureTabShell.removeConfirmTitle",
         )}
-        message={i18n.t(
-          "policies:configurationPolicies.featureTabs.featureTabShell.removeConfirmMessage",
-          { feature: title },
+        message={confirmMessage(
+          i18n.t(
+            "policies:configurationPolicies.featureTabs.featureTabShell.removeConfirmMessage",
+            { feature: title },
+          ),
+          "remove",
         )}
         confirmLabel={i18n.t("common:actions.remove")}
         confirmTestId="feature-tab-remove-confirm"

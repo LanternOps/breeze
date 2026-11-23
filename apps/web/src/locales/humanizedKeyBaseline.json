@@ -2424,7 +2424,6 @@
   "policies.configurationPolicies.featureTabs.patchTab.neverReboot",
   "policies.configurationPolicies.featureTabs.patchTab.newRing",
   "policies.configurationPolicies.featureTabs.patchTab.offlineDevices",
-  "policies.configurationPolicies.featureTabs.patchTab.patchSettingsOverridden",
   "policies.configurationPolicies.featureTabs.patchTab.patchSettingsRemoved",
   "policies.configurationPolicies.featureTabs.patchTab.patchSettingsSaved",
   "policies.configurationPolicies.featureTabs.patchTab.patchSources",

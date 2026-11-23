@@ -11,6 +11,8 @@ import {
 import { type FeatureTabProps } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { useChangeForPolicy } from './useChangeForPolicy';
+import { featureEditProps } from './featureEditAction';
 import '@/lib/i18n';
 
 type RuntimeToggle = 'dockerEnabled' | 'podmanEnabled' | 'hypervEnabled' | 'proxmoxEnabled';
@@ -38,7 +40,6 @@ export default function WorkloadInventoryTab({
   policyId,
   existingLink,
   parentLink,
-  linkedPolicyId,
   onLinkChanged,
 }: FeatureTabProps) {
   const { t } = useTranslation('devices');
@@ -70,6 +71,7 @@ export default function WorkloadInventoryTab({
     intervalMinutes: interval.trim() === '' ? NaN : Number(interval),
   });
   const inherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(inherited);
 
   const persist = async (id: string | null) => {
     if (!parsed.success) return;
@@ -95,13 +97,12 @@ export default function WorkloadInventoryTab({
       saveDisabled={!parsed.success}
       error={error}
       onSave={() => void persist(existingLink?.id ?? null)}
-      onRemove={existingLink && !linkedPolicyId ? discard : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: discard })}
       isInherited={inherited}
-      onOverride={inherited ? () => void persist(null) : undefined}
-      onRevert={!inherited && !!linkedPolicyId && !!existingLink ? discard : undefined}
+      {...change.shellProps}
     >
       <p className="mb-4 text-sm text-muted-foreground">{t('workloads.policy.offNote')}</p>
-      <fieldset disabled={inherited || saving} className="space-y-4">
+      <fieldset disabled={change.locked || saving} className="space-y-4">
         <label className="flex items-center gap-2">
           <input
             data-testid="workload-inventory-enabled"

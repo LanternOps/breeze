@@ -86,7 +86,6 @@
       "backToList": "Retour à la liste",
       "configurationPolicies": "Politiques de configuration",
       "policyDetails": "Détails de la politique",
-      "archived2": "Archivé",
       "inheritingFrom": "Basée sur",
       "thisPolicyStillCarriesAnExisting": "Cette politique conserve toujours une",
       "configurationThatWillNeverBeApplied": " Une configuration qui ne sera jamais appliquée.",
@@ -636,16 +635,25 @@
         "providerLimit": "{{total}} sur {{max}} fournisseurs supplémentaires"
       },
       "featureTabShell": {
-        "override": "Outremise",
-        "revertToParent": "Retour au nom de parent",
+        "unlockAction": "Modifier pour cette politique",
+        "unlockedHint": "Modification pour cette politique. Rien n’est enregistré tant que vous n’avez pas cliqué sur Enregistrer.",
+        "revertToParent": "Rétablir la politique parente",
         "saving": "Enregistrement...",
         "notSaved": "Non enregistré : {{reason}}",
         "saveBlocked": "Non enregistré. Corrigez le problème signalé et réessayez.",
-        "revertConfirmTitle": "Revenir à la stratégie parente ?",
-        "revertConfirmMessage": "Cette action supprime la substitution {{feature}} de cette stratégie. Ses paramètres sont perdus et ceux de la stratégie parente s'appliquent à tous les appareils utilisant cette stratégie. Action irréversible.",
+        "revertConfirmTitle": "Rétablir la politique parente ?",
+        "revertConfirmMessage": "Cela supprime les paramètres propres de {{feature}} de cette politique, et ceux de la politique parente s’appliquent à la place. Cette action est irréversible.",
         "removeConfirmTitle": "Supprimer cette configuration ?",
-        "removeConfirmMessage": "Cette action supprime la configuration {{feature}} de cette stratégie. Ses paramètres sont perdus et la fonctionnalité cesse de s'appliquer à tous les appareils utilisant cette stratégie. Action irréversible.",
-        "badgeSavedNotDeployed": "Enregistré (non déployé)"
+        "removeConfirmMessage": "Cela supprime les paramètres de {{feature}} de cette politique, et la fonctionnalité repasse à Non défini. Cette action est irréversible.",
+        "badgeSavedNotDeployed": "Enregistré (non déployé)",
+        "saveWithReach": "Enregistrer · {{reach}}",
+        "removeImpactReaches": "Cette politique atteint {{devices}} : {{feature}} n’y est plus défini par cette politique.",
+        "removeImpactInUse": "Les politiques basées sur celle-ci cessent d’hériter de {{feature}} par son intermédiaire, sauf si elles définissent leurs propres paramètres : {{policies}}, {{devices}}.",
+        "resetImpactReaches": "Cette politique atteint {{devices}} : ils reçoivent à la place les paramètres de {{feature}} de la politique parente.",
+        "resetImpactInUse": "Les politiques basées sur celle-ci reçoivent à la place, par son intermédiaire, les paramètres de {{feature}} de la politique parente, sauf si elles définissent les leurs : {{policies}}, {{devices}}.",
+        "impactNoDeviceNow": "Aucun appareil ne change pour l’instant : cette politique n’est pas active et aucune politique n’est basée sur elle.",
+        "fromParentPolicy": "De {{policy}}",
+        "openParent": "Ouvrir"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Déployer Breeze Assist sur les appareils",
@@ -810,7 +818,6 @@
         "failedToLoadUpdateRings": "Impossible de charger les anneaux de mise à jour",
         "patchSettingsSaved": "Paramètres du patch enregistrés",
         "patchSettingsRemoved": "Paramètres de patch supprimés",
-        "patchSettingsOverridden": "Paramètres du correctif dépassés",
         "revertedToInheritedPatchSettings": "Retour aux réglages hérités du patch",
         "approvalRing": "Anneau d’approbation",
         "selectWhichUpdateRingGovernsPatchApprovals": "Sélectionnez quel anneau de mise à jour régit les approbations des correctifs pour cette politique. Laissez vide pour les approbations uniquement manuelles.",
@@ -1620,6 +1627,36 @@
           "message": "Consultation uniquement."
         }
       }
+    },
+    "reachLine": {
+      "deviceCount_one": "{{count}} appareil",
+      "deviceCount_other": "{{count}} appareils",
+      "atLeastDeviceCount_one": "au moins {{count}} appareil",
+      "atLeastDeviceCount_other": "au moins {{count}} appareils",
+      "noVisibleDevices": "aucun appareil que vous pouvez voir",
+      "policyCount_one": "{{count}} politique",
+      "policyCount_other": "{{count}} politiques",
+      "reaches": "atteint {{devices}}",
+      "inUseThrough": "utilisée via {{policies}} · {{devices}}"
+    },
+    "policyStateActions": {
+      "activateAction": "Activer",
+      "activateWithReach": "Activer · {{reach}}",
+      "deactivateAction": "Désactiver",
+      "archiveAction": "Archiver",
+      "restoreAction": "Restaurer",
+      "restoreHint": "Restaure la politique comme Inactive.",
+      "deactivateConfirmTitle": "Désactiver cette politique ?",
+      "deactivateConfirmMessage": "Elle cesse d’appliquer ses paramètres aux appareils qu’elle cible directement. Vous pouvez la réactiver plus tard.",
+      "deactivateImpactDirect": "Elle cible directement {{devices}} : ils ne reçoivent plus ses paramètres.",
+      "deactivateImpactNoneVisible": "Elle ne cible directement aucun appareil que vous pouvez voir.",
+      "deactivateImpactChildren": "Les politiques basées sur elle conservent ses paramètres : {{policies}}, {{devices}}.",
+      "activateExecuteRequired": "L’activation de cette politique active les mises à jour des fournisseurs sur les appareils auxquels elle s’applique. Cela exige l’autorisation devices.execute et la MFA. Demandez à une personne qui l’a d’activer cette politique.",
+      "changeFailed": "L’état de la politique n’a pas été modifié.",
+      "activatedToast": "Politique activée",
+      "deactivatedToast": "Politique désactivée",
+      "archivedToast": "Politique archivée",
+      "restoredToast": "Politique restaurée comme Inactive"
     },
     "outranked": {
       "line_one": "Supplantée sur {{count}} appareil",

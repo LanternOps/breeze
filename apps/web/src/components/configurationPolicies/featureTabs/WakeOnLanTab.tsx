@@ -6,6 +6,8 @@ import type { FeatureTabProps } from './types';
 import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { useChangeForPolicy } from './useChangeForPolicy';
+import { featureEditProps } from './featureEditAction';
 import WakeStatusPanel from './WakeStatusPanel';
 
 // Inline settings for the `wake_on_lan` feature (#10838): when the Wake button
@@ -26,12 +28,12 @@ export default function WakeOnLanTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   const { t } = useTranslation('policies');
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [mode, setMode] = useState<WakeButtonMode>(() => modeFrom(effectiveLink?.inlineSettings));
 
@@ -56,11 +58,6 @@ export default function WakeOnLanTab({
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, 'wake_on_lan');
   };
-  const handleOverride = async () => {
-    clearError();
-    const result = await save(null, payload());
-    if (result) onLinkChanged(result, 'wake_on_lan');
-  };
 
   const meta = FEATURE_META.wake_on_lan;
   const isPlatformDefault = !existingLink && !parentLink;
@@ -76,10 +73,9 @@ export default function WakeOnLanTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
-      onRevert={!isInherited && !!linkedPolicyId && !!existingLink ? handleRemove : undefined}
+      {...change.shellProps}
     >
       <div className="space-y-6">
         {isPlatformDefault && (

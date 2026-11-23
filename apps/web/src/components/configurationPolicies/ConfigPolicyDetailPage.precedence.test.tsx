@@ -42,14 +42,17 @@ const json = (payload: unknown, status = 200): Response =>
 
 const PATCH_LINK = { id: 'link-patch', featureType: 'patch', featurePolicyId: null, inlineSettings: {} };
 
-function mockPage(precedence: () => Response) {
-  fetchMock.mockImplementation(async (input) => {
+function mockPage(precedence: () => Response, status = 'active') {
+  fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
+    if (url === '/configuration-policies/pol-1' && init?.method === 'PATCH') {
+      return json({ id: 'pol-1', status: 'active' });
+    }
     if (url === '/configuration-policies/pol-1') {
       return json({
         id: 'pol-1',
         name: 'Test Policy',
-        status: 'active',
+        status,
         orgId: 'org-1',
         partnerId: null,
         featureLinks: [PATCH_LINK],
@@ -154,5 +157,12 @@ describe('ConfigPolicyDetailPage — outranked on N devices (#12472)', () => {
 
     await act(async () => second(json({ capped: false, features: { patch: { reached: 41, outranked: 5 } } })));
     expect(await screen.findByTestId('config-policy-outranked')).toHaveTextContent('Outranked on 5 devices');
+  });
+
+  it('Activate re-reads the count', async () => {
+    mockPage(() => json({ capped: false, features: { patch: { reached: 40, outranked: 3 } } }), 'inactive');
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    fireEvent.click(await screen.findByTestId('config-policy-activate'));
+    await waitFor(() => expect(precedenceCalls()).toBe(2));
   });
 });

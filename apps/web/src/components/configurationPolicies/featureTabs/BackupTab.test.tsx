@@ -1141,7 +1141,7 @@ describe('BackupTab', () => {
       });
     });
 
-    it('overriding an inherited link copies its retention unchanged', async () => {
+    it('changing an inherited link for this policy copies its retention unchanged', async () => {
       render(
         <BackupTab
           policyId="policy-1"
@@ -1153,7 +1153,9 @@ describe('BackupTab', () => {
       );
 
       await screen.findByText('Primary S3');
-      fireEvent.click(screen.getByRole('button', { name: /^Override$/i }));
+      fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+      expect(saveMock).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
 
       await waitFor(() => expect(saveMock).toHaveBeenCalled());
       const [linkId, payload] = saveMock.mock.calls[0]!;

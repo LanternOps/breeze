@@ -183,7 +183,7 @@ describe('MonitorsTab', () => {
     expect(removeMock).not.toHaveBeenCalled();
   });
 
-  it('renders an inherited parent row as inherited without submitting it until Override is used', async () => {
+  it('renders an inherited parent row as inherited without submitting it until Change for this policy and Save are used', async () => {
     const parentLink = {
       id: 'parent-link-1',
       featureType: 'monitors' as const,
@@ -198,15 +198,14 @@ describe('MonitorsTab', () => {
     const row = await screen.findByTestId('monitors-tab-item-m2');
     expect(row.textContent).toContain('Inherited');
 
-    // No Save button while fully inherited — only Override is available.
+    // No Save button while fully inherited — only Change for this policy is available.
     expect(
       screen.queryAllByRole('button').find((b) => /^save$/i.test((b.textContent ?? '').trim())),
     ).toBeUndefined();
 
-    const overrideButton = screen
-      .getAllByRole('button')
-      .find((b) => /override/i.test(b.textContent ?? '')) as HTMLButtonElement;
-    fireEvent.click(overrideButton);
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+    expect(saveMock).not.toHaveBeenCalled();
+    clickSave();
 
     await waitFor(() => expect(saveMock).toHaveBeenCalled());
     const call = saveMock.mock.calls[0] as unknown as [string | null, unknown];
@@ -313,11 +312,13 @@ describe('MonitorsTab — check interval on monitors (W05d)', () => {
     expect(screen.getByTestId('monitors-tab-item-m1')).toBeInTheDocument();
   });
 
-  it('Override does not pin or validate an unedited inherited interval', async () => {
+  it('Change for this policy does not pin or validate an unedited inherited interval', async () => {
     render(<MonitorsTab {...baseProps} parentLink={{ ...ownMonitorsLink,
       inlineSettings: { ...ownMonitorsLink.inlineSettings, checkIntervalSeconds: 5 } }} />);
     await screen.findByTestId('monitors-tab-check-interval');
-    fireEvent.click(screen.getByRole('button', { name: /override/i }));
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+    expect(saveMock).not.toHaveBeenCalled();
+    clickSave();
     await waitFor(() => expect(saveMock).toHaveBeenCalled());
     expect(inlineSettingsFromCall(saveMock.mock.calls[0])).not.toHaveProperty('checkIntervalSeconds');
     expect(removeMock).not.toHaveBeenCalled();
@@ -369,9 +370,11 @@ describe('MonitorsTab — check interval on monitors (W05d)', () => {
     const retained = { ...ownMonitorsLink, inlineSettings: { items: [], inheritance: 'cumulative', checkIntervalSeconds: 30 } };
     fetchWithAuthMock.mockImplementationOnce((async () => ({ ok: true, json: async () => ({ data: [] }) })) as never)
       .mockImplementationOnce((async () => ({ ok: true, json: async () => ({ data: kept ? [retained] : [] }) })) as never);
-    const view = render(<MonitorsTab {...baseProps} existingLink={retained} linkedPolicyId="parent-policy" />);
+    // Reset to parent needs a parent that has the feature (#12263).
+    const parentMonitors = { id: 'link-parent', featureType: 'monitors' as const, featurePolicyId: null, inlineSettings: { items: [] } };
+    const view = render(<MonitorsTab {...baseProps} existingLink={retained} parentLink={parentMonitors} linkedPolicyId="parent-policy" />);
     fireEvent.change(await screen.findByTestId('monitors-tab-check-interval'), { target: { value: '120' } });
-    fireEvent.click(screen.getByRole('button', { name: /revert to parent/i }));
+    fireEvent.click(screen.getByRole('button', { name: /reset to parent/i }));
     fireEvent.click(await screen.findByTestId('feature-tab-revert-confirm'));
     await waitFor(() => expect(baseProps.onLinkChanged).toHaveBeenCalledWith(kept ? retained : null, 'monitors'));
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/configuration-policies/policy-1/features');
@@ -390,6 +393,20 @@ describe('MonitorsTab — check interval on monitors (W05d)', () => {
     expect(await screen.findByText(/between 10 and 3600/i)).toBeInTheDocument();
     expect(saveMock).not.toHaveBeenCalled();
     expect(removeMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('MonitorsTab — Change for this policy (#12470)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('MonitorsTab creates its own link from inherited values on Save, even when the parent attaches no monitor', async () => {
+    const parentLink = { id: 'link-parent', featureType: 'monitors' as const, featurePolicyId: null, inlineSettings: { items: [], inheritance: 'cumulative', checkIntervalSeconds: 30 } };
+    render(<MonitorsTab {...baseProps} parentLink={parentLink} linkedPolicyId="parent-policy" />);
+    fireEvent.click(await screen.findByTestId('feature-tab-change-for-policy'));
+    expect(saveMock).not.toHaveBeenCalled();
+    clickSave();
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1));
+    expect((saveMock.mock.calls[0] as unknown[])[0]).toBeNull();
   });
 });
 

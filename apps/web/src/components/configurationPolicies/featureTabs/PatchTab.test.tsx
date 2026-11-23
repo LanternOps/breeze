@@ -161,14 +161,16 @@ describe('PatchTab', () => {
     expect(payload.inlineSettings.sources).toEqual(['third_party']);
   });
 
-  it('Override does not copy approval or application-rule keys from the parent', async () => {
+  it('Change for this policy does not copy approval or application-rule keys from the parent', async () => {
     render(
       <PatchTab
         {...baseProps}
         parentLink={{ id: 'parent-link', featureType: 'patch', featurePolicyId: null, inlineSettings: STORED_LEGACY_INLINE }}
       />
     );
-    fireEvent.click(await screen.findByRole('button', { name: /override/i }));
+    fireEvent.click(await screen.findByTestId('feature-tab-change-for-policy'));
+    expect(saveMock).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: /^Save$/i }));
     await waitFor(() => expect(saveMock).toHaveBeenCalled());
     const [linkId, payload] = saveMock.mock.calls[0];
     expect(linkId).toBeNull();
