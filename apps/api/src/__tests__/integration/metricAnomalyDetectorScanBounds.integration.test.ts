@@ -19,9 +19,11 @@ import { getTestDb } from './setup';
  * constant superset bounds on `bucket_start`. Two halves:
  *
  * 1. Window pins. The exact per-row windows (baseline [r-24h, r-15min), growth
- *    (a-30min, a], novelty [window_start-7d, window_start)) must not move. Each
- *    case puts a bucket on both sides of every edge, crossing a monthly
- *    partition boundary, and reads the edge back from the written row.
+ *    (a-30min, a], novelty [window_start-7d, window_start)) must not move. Both
+ *    baseline edges and the growth/novelty lower edges (the ones the new
+ *    bounds sit next to) get a bucket on each side, across a monthly partition
+ *    boundary, on one-bucket and production-shaped 15-minute ranges. The
+ *    growth/novelty upper edges are bare column compares the PR did not touch.
  * 2. Plan guard. Under the RLS policy a per-row `b.bucket_start >= r.x - interval`
  *    bound is not leakproof, so it was never an index condition and every probe
  *    walked the series' whole month of history. The guard EXPLAINs each
@@ -148,17 +150,26 @@ describe('metric anomaly detector scan bounds (#11559)', () => {
     expect((row.baselineSummary as Record<string, unknown>).baselineBuckets).toBe(285);
   });
 
-  it('baseline: the last anchor of a production-shaped 15-minute scan keeps its full window', async () => {
+  it.each([
+    ['baseline', CPU, 'spike', 80, 95],
+    ['process-runaway', PROC_CPU, 'process_runaway', 85, 99],
+  ] as const)('%s: the last anchor of a production-shaped 15-minute scan keeps its full window', async (
+    _name,
+    metric,
+    anomalyType,
+    outside,
+    observed,
+  ) => {
     // The scan cron's window is [to - 15min, to): r is the last of three
     // anchors, so the upper scan bound (derived from `to`, not `from`) is the
     // one that must still admit r's buckets up to r - 20min.
-    const device = await insertDevice('baseline-scan-window');
+    const device = await insertDevice(`scan-window-${anomalyType}`);
     const r = new Date('2026-12-01T06:00:00.000Z');
-    await seed(device, CPU, baselineEdgePoints(r, 10, 20, 80, 95));
+    await seed(device, metric, baselineEdgePoints(r, 10, 20, outside, observed));
 
     await detectMetricAnomaliesRange({ orgId, from: bucketAt(r, -2), to: bucketAt(r, 1) });
 
-    const row = (await anomaliesFor(device, 'spike')).find((a) => a.windowStart.toISOString() === r.toISOString());
+    const row = (await anomaliesFor(device, anomalyType)).find((a) => a.windowStart.toISOString() === r.toISOString());
     expect(row).toBeDefined();
     expect(row!.baselineMax).toBe(20);
     expect((row!.baselineSummary as Record<string, unknown>).baselineBuckets).toBe(285);
@@ -218,6 +229,31 @@ describe('metric anomaly detector scan bounds (#11559)', () => {
     expect(await anomaliesFor(suppressed, 'memory_growth')).toHaveLength(0);
     expect(await anomaliesFor(fires, 'memory_growth')).toHaveLength(1);
   });
+
+  it('growth + novelty: the FIRST anchor of a production-shaped 15-minute scan keeps both windows', async () => {
+    // The series ends at `from`, so the first anchor is the only one. Its trend
+    // window starts at from - 25min and its novelty window at from - 25min - 7d:
+    // the floors derived from `from` (not `to`) must still admit both.
+    const from = new Date('2026-12-01T00:10:00.000Z');
+    const to = bucketAt(from, 3);
+    const windowStart = bucketAt(from, -5);
+    const sevenDaysBuckets = (7 * 24 * 3600) / RAW_BUCKET_SECONDS;
+    const climb: Array<[Date, number]> = [10, 14, 18, 22, 26, 30].map((v, i) => [bucketAt(windowStart, i), v]);
+
+    const suppressed = await insertDevice('novelty-multi-anchor');
+    await seed(suppressed, RAM, [[bucketAt(windowStart, -sevenDaysBuckets), 35], ...climb]);
+    const fires = await insertDevice('growth-multi-anchor');
+    await seed(fires, RAM, climb);
+
+    await detectMetricAnomaliesRange({ orgId, from, to });
+
+    expect(await anomaliesFor(suppressed, 'memory_growth')).toHaveLength(0);
+    const rows = await anomaliesFor(fires, 'memory_growth');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.windowStart.toISOString()).toBe(windowStart.toISOString());
+    expect(rows[0]!.baselineValue).toBe(10);
+    expect((rows[0]!.baselineSummary as Record<string, unknown>).trendBuckets).toBe(6);
+  });
 });
 
 type PlanNode = {
@@ -235,9 +271,10 @@ function collectNodes(node: PlanNode, out: PlanNode[] = []): PlanNode[] {
 }
 
 /**
- * EXPLAIN `statement` as breeze_app (system scope) with the probe shape forced
- * — a parameterized nested loop into an index scan, the shape production runs —
- * and return every scan of a `metric_rollups` partition under one of `aliases`.
+ * EXPLAIN `statement` as breeze_app (system scope) with the probe shape under
+ * test forced — a parameterized nested loop into an index scan; the enable_*
+ * GUCs pin it because empty tables would otherwise plan differently — and
+ * return every scan of a `metric_rollups` partition under one of `aliases`.
  */
 async function historyProbes(statement: SQL, aliases: string[]): Promise<PlanNode[]> {
   const plan = await withSystemDbAccessContext(async () => {

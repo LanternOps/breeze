@@ -329,25 +329,31 @@ function normalizeRange(from: Date, to: Date): { from: Date; to: Date } {
   return { from, to };
 }
 
-/**
+/*
  * Constant scan bounds for the self-joined `metric_rollups` probes (#11559).
  *
  * Every detector joins each new bucket `r` to the same series' history with a
- * per-row window such as `b.bucket_start >= r.bucket_start - 24h`. Under the
- * table's RLS policy that predicate can never be an index condition: Postgres
- * only lets LEAKPROOF quals run ahead of the policy qual, and
- * `timestamp - interval` is not leakproof. So each probe walked the series'
- * whole history in the month partition and discarded all but ~285 rows in a
- * Filter, and cost grew with days-into-month (seen in local EXPLAINs as
- * breeze_app; the likely driver of the per-call reads on US prod, #11559).
- * A bare `b.bucket_start >= $param` compare IS leakproof, so these
- * bounds are computed here and bound as plain timestamp params. They are
- * supersets of the per-row windows (every `r` lies in [from, to)), and the
- * per-row predicates stay in place, so the rows each detector reads — and its
- * output — are unchanged; only the index range each probe walks shrinks.
- * Computed in JS rather than as `$from::timestamp - interval` in SQL so they
- * stay leakproof under a generic plan too (postgres.js prepares statements).
+ * per-row window such as `b.bucket_start >= r.bucket_start - <lookback>`. Under
+ * the table's RLS policy that predicate cannot be an index condition: Postgres
+ * only lets quals built from LEAKPROOF functions run ahead of the policy qual,
+ * and `timestamp - interval` is not leakproof. So each probe walked the
+ * series' whole history in the month partition and discarded all but the
+ * window in a Filter (seen in EXPLAIN as breeze_app). Bare column-to-column
+ * compares such as `w.bucket_start <= a.anchor_bucket_start` are leakproof and
+ * were already index conditions; only the arithmetic bounds were not.
+ *
+ * A bare `b.bucket_start >= $param` compare is leakproof, so the bounds below
+ * are bound as plain timestamp params. They are supersets of the per-row
+ * windows (every `r` lies in [from, to)), and the per-row predicates stay in
+ * place, so the rows each detector reads — and its output — are unchanged;
+ * only the index range each probe walks shrinks, to the scan range plus the
+ * lookback. They are computed in JS, not as `$from::timestamp - interval` in
+ * SQL: a generic plan (postgres.js uses named prepared statements) would not
+ * constant-fold that expression, leaving a non-leakproof call again. The plan
+ * guard test plans with bound values, so it does not cover the generic case.
  */
+
+/** `at` shifted by `ms`, as an ISO string for a `::timestamp` bind. */
 function shiftIso(at: Date, ms: number): string {
   return new Date(at.getTime() + ms).toISOString();
 }
@@ -356,7 +362,10 @@ const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 
-/** Baseline window for r in [from, to): [r - 24h, r - 15min) ⊆ [from - 24h, to - 15min). */
+/**
+ * Baseline window for r in [from, to): [r - BASELINE_LOOKBACK_HOURS,
+ * r - BASELINE_GAP_MINUTES) ⊆ [from - lookback, to - gap).
+ */
 function baselineScanBounds(from: Date, to: Date): { fromIso: string; toIso: string } {
   return {
     fromIso: shiftIso(from, -BASELINE_LOOKBACK_HOURS * HOUR_MS),
@@ -365,9 +374,12 @@ function baselineScanBounds(from: Date, to: Date): { fromIso: string; toIso: str
 }
 
 /**
- * Growth trend window for anchor a in [from, to): (a - 30min, a], so every
- * window bucket is > from - 30min. Novelty window: [window_start - 7d,
- * window_start) with window_start > from - 30min, so >= from - 30min - 7d.
+ * Lower bounds only; the upper edges (`<= a.anchor_bucket_start`,
+ * `< r.window_start`) are bare column compares and already index conditions.
+ * Trend window for anchor a in [from, to): (a - span, a] with
+ * span = MIN_TREND_BUCKETS x RAW_BUCKET_SECONDS, so every window bucket is
+ * > from - span. Novelty window: [window_start - GROWTH_NOVELTY_LOOKBACK_DAYS,
+ * window_start) with window_start > from - span, so >= from - span - lookback.
  */
 function growthScanBounds(from: Date): { windowFloorIso: string; noveltyFromIso: string } {
   const trendSpanMs = MIN_TREND_BUCKETS * RAW_BUCKET_SECONDS * 1000;
@@ -578,7 +590,7 @@ export function buildBaselineDeviationsSql(options: MetricAnomalyRange): SQL {
        AND b.bucket_start >= r.bucket_start - (${BASELINE_LOOKBACK_HOURS} * interval '1 hour')
        AND b.bucket_start < r.bucket_start - (${BASELINE_GAP_MINUTES} * interval '1 minute')
        -- #11559: leakproof superset of the two lines above, so the probe's
-       -- index range is ~24 h instead of the series' whole partition.
+       -- index range is the scan range plus 24 h, not the whole partition.
        AND b.bucket_start >= ${scan.fromIso}::timestamp
        AND b.bucket_start < ${scan.toIso}::timestamp
       LEFT JOIN open_episode_buckets oeb
@@ -967,7 +979,7 @@ export function buildProcessSampleRunawaysSql(options: MetricAnomalyRange): SQL 
        AND b.bucket_start >= r.bucket_start - (${BASELINE_LOOKBACK_HOURS} * interval '1 hour')
        AND b.bucket_start < r.bucket_start - (${BASELINE_GAP_MINUTES} * interval '1 minute')
        -- #11559: leakproof superset of the two lines above, so the probe's
-       -- index range is ~24 h instead of the series' whole partition.
+       -- index range is the scan range plus 24 h, not the whole partition.
        AND b.bucket_start >= ${scan.fromIso}::timestamp
        AND b.bucket_start < ${scan.toIso}::timestamp
       LEFT JOIN open_episode_buckets oeb
