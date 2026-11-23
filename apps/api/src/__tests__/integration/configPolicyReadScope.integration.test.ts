@@ -301,6 +301,47 @@ describe('configuration policy read scoping on real Postgres (#12462 W03a)', () 
     expect(fullIds.sort()).toEqual(roots.sort());
   });
 
+  runDb('an org user reads an untargeted MSP-managed parent through an MSP-managed child that applies to its org (D14 clause 5)', async () => {
+    // The matrix covers clause 5 only through an org-owned child (P5 ← C5);
+    // K's parent P2 is readable on its own (clause 1). Here the parent has no
+    // rows of its own and its only child is MSP-managed too.
+    const app = buildApp();
+    const tdb = getTestDb() as any;
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id, name: 'Acme' });
+    const orgB = await createOrganization({ partnerId: partner.id, name: 'Birch' });
+    const msp = async (name: string, parentPolicyId?: string) => {
+      const [row] = await tdb.insert(configurationPolicies).values({
+        orgId: null, partnerId: partner.id, name: `${name} ${randomUUID().slice(0, 6)}`, status: 'active',
+        ...(parentPolicyId ? { parentPolicyId } : {}),
+      }).returning({ id: configurationPolicies.id });
+      return row.id as string;
+    };
+    const parentA = await msp('Parent of an Acme MSP child');
+    const childA = await msp('Acme MSP child', parentA);
+    const parentB = await msp('Parent of a Birch MSP child');
+    const childB = await msp('Birch MSP child', parentB);
+    await tdb.insert(configPolicyAssignments).values([
+      { configPolicyId: childA, level: 'organization', targetId: orgA.id, priority: 0 },
+      { configPolicyId: childB, level: 'organization', targetId: orgB.id, priority: 0 },
+    ]);
+
+    const token = await orgToken(partner.id, orgA.id);
+    const listed = await listedIds(app, token);
+    expect(listed.has(parentA)).toBe(true);
+    expect(listed.has(childA)).toBe(true);
+    expect((await call(app, token, 'GET', `/configuration-policies/${parentA}`)).status).toBe(200);
+    const child = await (await call(app, token, 'GET', `/configuration-policies/${childA}`)).json();
+    expect(child.parentPolicy?.id).toBe(parentA);
+    const parents = await call(app, token, 'GET', `/configuration-policies/eligible-parents?ownerScope=organization&orgId=${orgA.id}`);
+    expect(((await parents.json()).data as Array<{ id: string }>).map((p) => p.id)).toContain(parentA);
+
+    // Control: the parent whose MSP-managed child applies only to Birch stays hidden.
+    expect(listed.has(parentB)).toBe(false);
+    expect(listed.has(childB)).toBe(false);
+    expect((await call(app, token, 'GET', `/configuration-policies/${parentB}`)).status).toBe(404);
+  });
+
   runDb('a caller cannot make a hidden policy readable by naming it as a parent', async () => {
     const app = buildApp();
     const m = await seedMatrix();
