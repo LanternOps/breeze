@@ -86,7 +86,6 @@
       "backToList": "Torna all'elenco",
       "configurationPolicies": "Criteri di configurazione",
       "policyDetails": "Dettagli criterio",
-      "archived2": "Archiviato",
       "inheritingFrom": "Basato su",
       "thisPolicyStillCarriesAnExisting": "Questo criterio contiene ancora una configurazione",
       "configurationThatWillNeverBeApplied": " esistente che non verrà mai applicata.",
@@ -636,16 +635,25 @@
         "providerLimit": "{{total}} di {{max}} provider aggiuntivi"
       },
       "featureTabShell": {
-        "override": "Sovrascrivi",
-        "revertToParent": "Ripristina dal padre",
+        "unlockAction": "Modifica per questo criterio",
+        "unlockedHint": "Modifica per questo criterio. Nulla viene salvato finché non fai clic su Salva.",
+        "revertToParent": "Ripristina il criterio padre",
         "saving": "Salvataggio...",
         "notSaved": "Non salvato: {{reason}}",
         "saveBlocked": "Non salvato. Correggi il problema evidenziato e riprova.",
-        "revertConfirmTitle": "Ripristinare i criteri padre?",
-        "revertConfirmMessage": "Questa operazione elimina l'override {{feature}} di questo criterio. Le impostazioni vanno perse e vengono applicate quelle del criterio padre a tutti i dispositivi che usano questo criterio. Non può essere annullata.",
+        "revertConfirmTitle": "Ripristinare il criterio padre?",
+        "revertConfirmMessage": "Questa azione elimina le impostazioni di {{feature}} proprie di questo criterio e si applicano invece quelle del criterio padre. L'azione non può essere annullata.",
         "removeConfirmTitle": "Rimuovere questa configurazione?",
-        "removeConfirmMessage": "Questa operazione elimina la configurazione {{feature}} da questo criterio. Le impostazioni vanno perse e la funzione non viene più applicata ai dispositivi che usano questo criterio. Non può essere annullata.",
-        "badgeSavedNotDeployed": "Salvato (non distribuito)"
+        "removeConfirmMessage": "Questa azione elimina le impostazioni di {{feature}} da questo criterio e la funzionalità torna a Non impostato. L'azione non può essere annullata.",
+        "badgeSavedNotDeployed": "Salvato (non distribuito)",
+        "saveWithReach": "Salva · {{reach}}",
+        "removeImpactReaches": "Questo criterio raggiunge {{devices}}: su di essi {{feature}} non è più impostato da questo criterio.",
+        "removeImpactInUse": "I criteri basati su questo smettono di ereditare {{feature}} da esso, a meno che non impostino il proprio: {{policies}}, {{devices}}.",
+        "resetImpactReaches": "Questo criterio raggiunge {{devices}}: su di essi si applicano invece le impostazioni di {{feature}} del criterio padre.",
+        "resetImpactInUse": "I criteri basati su questo ricevono invece, tramite esso, le impostazioni di {{feature}} del criterio padre, a meno che non impostino le proprie: {{policies}}, {{devices}}.",
+        "impactNoDeviceNow": "Nessun dispositivo cambia per ora: questo criterio non è attivo e nessun criterio si basa su di esso.",
+        "fromParentPolicy": "Da {{policy}}",
+        "openParent": "Apri"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Distribuisci Breeze Assist sui dispositivi",
@@ -810,7 +818,6 @@
         "failedToLoadUpdateRings": "Impossibile caricare gli anelli di aggiornamento",
         "patchSettingsSaved": "Impostazioni patch salvate",
         "patchSettingsRemoved": "Impostazioni patch rimosse",
-        "patchSettingsOverridden": "Impostazioni patch sovrascritte",
         "revertedToInheritedPatchSettings": "Ripristinate le impostazioni patch ereditate",
         "approvalRing": "Anello di approvazione",
         "selectWhichUpdateRingGovernsPatchApprovals": "Seleziona quale anello di aggiornamento governa le approvazioni delle patch per questo criterio. Lascia vuoto per approvazioni solo manuali.",
@@ -1618,6 +1625,35 @@
           "message": "Sola visualizzazione."
         }
       }
+    },
+    "reachLine": {
+      "deviceCount_one": "{{count}} dispositivo",
+      "deviceCount_other": "{{count}} dispositivi",
+      "atLeastDeviceCount_one": "almeno {{count}} dispositivo",
+      "atLeastDeviceCount_other": "almeno {{count}} dispositivi",
+      "noVisibleDevices": "nessun dispositivo che puoi vedere",
+      "policyCount_one": "{{count}} criterio",
+      "policyCount_other": "{{count}} criteri",
+      "reaches": "raggiunge {{devices}}",
+      "inUseThrough": "in uso tramite {{policies}} · {{devices}}"
+    },
+    "policyStateActions": {
+      "activateAction": "Attiva",
+      "activateWithReach": "Attiva · {{reach}}",
+      "deactivateAction": "Disattiva",
+      "archiveAction": "Archivia",
+      "restoreAction": "Ripristina",
+      "restoreHint": "Ripristina il criterio come Inattivo.",
+      "deactivateConfirmTitle": "Disattivare questo criterio?",
+      "deactivateConfirmMessage": "Smette di applicare le sue impostazioni ai dispositivi che ha come destinazione diretta. Puoi riattivarlo in seguito.",
+      "deactivateImpactDirect": "Ha come destinazione diretta {{devices}}: smettono di ricevere le sue impostazioni.",
+      "deactivateImpactChildren": "I criteri basati su di esso mantengono le sue impostazioni: {{policies}}, {{devices}}.",
+      "activateExecuteRequired": "L'attivazione di questo criterio abilita gli aggiornamenti dei fornitori sui dispositivi a cui si applica. Servono l'autorizzazione devices.execute e MFA. Chiedi a chi ce l'ha di attivare questo criterio.",
+      "changeFailed": "Lo stato del criterio non è stato modificato.",
+      "activatedToast": "Criterio attivato",
+      "deactivatedToast": "Criterio disattivato",
+      "archivedToast": "Criterio archiviato",
+      "restoredToast": "Criterio ripristinato come Inattivo"
     }
   },
   "software": {

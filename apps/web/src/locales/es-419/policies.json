@@ -86,7 +86,6 @@
       "backToList": "volver a la lista",
       "configurationPolicies": "Políticas de configuración",
       "policyDetails": "Detalles de la política",
-      "archived2": "Archivado",
       "inheritingFrom": "Basada en",
       "thisPolicyStillCarriesAnExisting": "Esta política todavía conlleva una",
       "configurationThatWillNeverBeApplied": "configuración que nunca se aplicará.",
@@ -636,16 +635,25 @@
         "providerLimit": "{{total}} de {{max}} proveedores adicionales"
       },
       "featureTabShell": {
-        "override": "Anular",
-        "revertToParent": "Volver a padre",
+        "unlockAction": "Cambiar para esta política",
+        "unlockedHint": "Cambiando para esta política. No se guarda nada hasta que haga clic en Guardar.",
+        "revertToParent": "Restablecer a la política principal",
         "saving": "Guardando...",
         "notSaved": "No se guardó: {{reason}}",
         "saveBlocked": "No se guardó. Corrige el problema resaltado e inténtalo de nuevo.",
-        "revertConfirmTitle": "¿Volver a la política principal?",
-        "revertConfirmMessage": "Esto elimina la anulación de {{feature}} en esta política. Su configuración se pierde y se aplica la configuración de la política principal a todos los dispositivos que usan esta política. No se puede deshacer.",
+        "revertConfirmTitle": "¿Restablecer a la política principal?",
+        "revertConfirmMessage": "Esto elimina la configuración propia de {{feature}} de esta política, y se aplica en su lugar la de la política principal. Esta acción no se puede deshacer.",
         "removeConfirmTitle": "¿Quitar esta configuración?",
-        "removeConfirmMessage": "Esto elimina la configuración de {{feature}} de esta política. Su configuración se pierde y la función deja de aplicarse a todos los dispositivos que usan esta política. No se puede deshacer.",
-        "badgeSavedNotDeployed": "Guardada (sin implementar)"
+        "removeConfirmMessage": "Esto elimina la configuración de {{feature}} de esta política, y la función vuelve a Sin definir. Esta acción no se puede deshacer.",
+        "badgeSavedNotDeployed": "Guardada (sin implementar)",
+        "saveWithReach": "Guardar · {{reach}}",
+        "removeImpactReaches": "Esta política llega a {{devices}}: esta política ya no define {{feature}} en ellos.",
+        "removeImpactInUse": "Las políticas basadas en esta dejan de heredar {{feature}} de ella, salvo que definan la suya: {{policies}}, {{devices}}.",
+        "resetImpactReaches": "Esta política llega a {{devices}}: en su lugar, reciben la configuración de {{feature}} de la política principal.",
+        "resetImpactInUse": "Las políticas basadas en esta reciben en su lugar, a través de ella, la configuración de {{feature}} de la política principal, salvo que definan la suya: {{policies}}, {{devices}}.",
+        "impactNoDeviceNow": "Ningún dispositivo cambia por ahora: esta política no está activa y ninguna política se basa en ella.",
+        "fromParentPolicy": "De {{policy}}",
+        "openParent": "Abrir"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Implementar Breeze Assist en dispositivos",
@@ -810,7 +818,6 @@
         "failedToLoadUpdateRings": "No se pudieron cargar los anillos de actualización",
         "patchSettingsSaved": "Configuración del parche guardada",
         "patchSettingsRemoved": "Configuración de parche eliminada",
-        "patchSettingsOverridden": "Configuración de parche anulada",
         "revertedToInheritedPatchSettings": "Revertido a la configuración de parche heredada",
         "approvalRing": "Anillo de aprobación",
         "selectWhichUpdateRingGovernsPatchApprovals": "Seleccione qué anillo de actualización rige las aprobaciones de parches para esta política. Déjelo vacío para aprobaciones solo manuales.",
@@ -1618,6 +1625,35 @@
           "message": "Solo lectura."
         }
       }
+    },
+    "reachLine": {
+      "deviceCount_one": "{{count}} dispositivo",
+      "deviceCount_other": "{{count}} dispositivos",
+      "atLeastDeviceCount_one": "al menos {{count}} dispositivo",
+      "atLeastDeviceCount_other": "al menos {{count}} dispositivos",
+      "noVisibleDevices": "ningún dispositivo que usted pueda ver",
+      "policyCount_one": "{{count}} política",
+      "policyCount_other": "{{count}} políticas",
+      "reaches": "llega a {{devices}}",
+      "inUseThrough": "en uso mediante {{policies}} · {{devices}}"
+    },
+    "policyStateActions": {
+      "activateAction": "Activar",
+      "activateWithReach": "Activar · {{reach}}",
+      "deactivateAction": "Desactivar",
+      "archiveAction": "Archivar",
+      "restoreAction": "Restaurar",
+      "restoreHint": "Restaura la política como Inactiva.",
+      "deactivateConfirmTitle": "¿Desactivar esta política?",
+      "deactivateConfirmMessage": "Deja de aplicar su configuración a los dispositivos a los que se dirige directamente. Puede activarla de nuevo más adelante.",
+      "deactivateImpactDirect": "Se dirige directamente a {{devices}}: dejan de recibir su configuración.",
+      "deactivateImpactChildren": "Las políticas basadas en ella conservan su configuración: {{policies}}, {{devices}}.",
+      "activateExecuteRequired": "Activar esta política habilita las actualizaciones de proveedores en los dispositivos a los que se aplica. Para eso se necesitan el permiso devices.execute y MFA. Pida a alguien que lo tenga que active esta política.",
+      "changeFailed": "No se cambió el estado de la política.",
+      "activatedToast": "Política activada",
+      "deactivatedToast": "Política desactivada",
+      "archivedToast": "Política archivada",
+      "restoredToast": "Política restaurada como Inactiva"
     }
   },
   "software": {

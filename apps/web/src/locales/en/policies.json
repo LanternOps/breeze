@@ -86,7 +86,6 @@
       "backToList": "Back to list",
       "configurationPolicies": "Configuration Policies",
       "policyDetails": "Policy Details",
-      "archived2": "Archived",
       "inheritingFrom": "Based on",
       "managedByYourMsp": "Managed by your MSP",
       "inheritedByPolicies_one": "Parent of {{count}} policy",

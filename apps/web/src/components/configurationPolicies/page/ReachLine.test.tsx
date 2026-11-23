@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { i18n } from '@/lib/i18n';
+import { i18n, loadLocale } from '@/lib/i18n';
 import ReachLine, { deviceCountPhrase, reachPhrase, saveReach } from './ReachLine';
 
 const reach = (direct: number, throughChildren: number, partial = false) => ({
@@ -55,6 +55,7 @@ describe('saveReach (plan W03c F3)', () => {
   });
 
   it('the phrases are translated', async () => {
+    await loadLocale('de-DE');
     await i18n.changeLanguage('de-DE');
     const r = saveReach({ status: 'active', reach: reach(200, 12), childPolicyCount: 0 });
     expect(reachPhrase(r!)).not.toBe('reaches 212 devices');
