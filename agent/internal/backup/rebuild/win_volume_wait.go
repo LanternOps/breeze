@@ -16,8 +16,9 @@ import (
 // has a volume, then returns the whole listing (which may hold volumes for
 // other partitions too). It waits for the named partitions rather than for
 // a number of volumes: a volume for a partition the caller did not ask for
-// must not satisfy the wait while one it needs is still missing (#12576). After timeout the error names the
-// missing partition numbers and the ones that did appear.
+// must not satisfy the wait while one it needs is still missing (#12576).
+// After timeout the error names the missing partition numbers and the ones
+// that did appear.
 func waitForPartitionVolumes(ctx context.Context, list func() ([]WinVolume, error), diskNumber int, want []int, timeout, interval time.Duration) ([]WinVolume, error) {
 	deadline := time.Now().Add(timeout)
 	for {
