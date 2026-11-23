@@ -25,6 +25,9 @@ type bootCheck struct {
 
 	done          bool
 	holdJournaled bool
+	// notFoundPending: the previous check said not found. One more, on
+	// fresh evidence, is needed before recovery starts.
+	notFoundPending bool
 }
 
 func newBootCheck(now time.Time, deadline time.Duration, queryService func() watchdog.AgentServiceStatus, process watchdog.ProcessChecker) *bootCheck {
@@ -84,6 +87,9 @@ func (b *bootCheck) evaluate(now time.Time, statePID int, agentAlive bool, wd *w
 		"boot_check":      decision.String(),
 		"agent_heartbeat": agentAlive,
 	}
+	if decision != watchdog.BootNotFound {
+		b.notFoundPending = false
+	}
 	switch decision {
 	case watchdog.BootHold:
 		if !b.holdJournaled {
@@ -92,6 +98,16 @@ func (b *bootCheck) evaluate(now time.Time, statePID int, agentAlive bool, wd *w
 		}
 		return true
 	case watchdog.BootNotFound:
+		// Act only on a second consecutive not-found, so the verdict and the
+		// recovery dispatch that follows it rest on evidence from the same
+		// tick. At watchdog start SCM may simply not have started the agent
+		// yet. The first check runs at startup and the second on the first
+		// process tick, which is when the first recovery attempt ran before
+		// #12291 too, so a dead agent is recovered no later than before.
+		if !b.notFoundPending {
+			b.notFoundPending = true
+			return true
+		}
 		b.done = true
 		wd.HandleEvent(watchdog.EventAgentNotFound)
 		journal.Log(watchdog.LevelWarn, "agent.not_found", fields)

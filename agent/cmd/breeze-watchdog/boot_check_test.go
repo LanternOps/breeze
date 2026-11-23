@@ -126,6 +126,10 @@ func TestBootCheck_StalePIDServiceStoppedRecovers(t *testing.T) {
 	b := newBootCheck(t0, bootTestDeadline, svc.query, fakeProcesses{})
 
 	b.evaluate(t0, 5824, false, wd, journal)
+	if wd.State() != watchdog.StateConnecting {
+		t.Fatalf("state = %s after one not-found check, want CONNECTING", wd.State())
+	}
+	b.evaluate(t0.Add(5*time.Second), 5824, false, wd, journal)
 	if wd.State() != watchdog.StateRecovering {
 		t.Fatalf("state = %s, want RECOVERING", wd.State())
 	}
@@ -148,6 +152,7 @@ func TestBootCheck_ReusedStalePIDNotMistakenForAgent(t *testing.T) {
 	b := newBootCheck(t0, bootTestDeadline, svc.query, fakeProcesses{5824: true})
 
 	b.evaluate(t0, 5824, false, wd, journal)
+	b.evaluate(t0.Add(5*time.Second), 5824, false, wd, journal)
 	if wd.State() != watchdog.StateRecovering {
 		t.Fatalf("state = %s, want RECOVERING", wd.State())
 	}
@@ -168,6 +173,7 @@ func TestBootCheck_HoldExpiresIntoRecovery(t *testing.T) {
 		t.Fatalf("state = %s before the deadline, want CONNECTING", wd.State())
 	}
 	b.evaluate(t0.Add(bootTestDeadline), 3412, false, wd, journal)
+	b.evaluate(t0.Add(bootTestDeadline+5*time.Second), 3412, false, wd, journal)
 	if wd.State() != watchdog.StateRecovering {
 		t.Fatalf("state = %s after the deadline, want RECOVERING", wd.State())
 	}
@@ -180,6 +186,7 @@ func TestBootCheck_UnknownServiceKeepsPriorBehaviour(t *testing.T) {
 	journal := newBootTestJournal(t)
 	wd := watchdog.NewWatchdog(watchdog.Config{})
 	b := newBootCheck(time.Now(), bootTestDeadline, (&fakeService{status: unknown}).query, fakeProcesses{})
+	b.evaluate(time.Now(), 5824, false, wd, journal)
 	b.evaluate(time.Now(), 5824, false, wd, journal)
 	if wd.State() != watchdog.StateRecovering {
 		t.Fatalf("dead PID: state = %s, want RECOVERING", wd.State())
@@ -201,6 +208,66 @@ func TestBootCheckDeadlineCoversTwoIPCReconnects(t *testing.T) {
 	}
 	if got := bootCheckDeadline(20*time.Second, 30*time.Second); got != 60*time.Second {
 		t.Fatalf("got %v, want 60s", got)
+	}
+}
+
+// At watchdog start SCM may not have started the agent yet (both services are
+// auto-start, with no ordering), so "stopped" at t0 is not yet an answer. A
+// not-found verdict must be seen again on the next check, on fresh evidence,
+// before recovery starts.
+func TestBootCheck_StoppedAtStartRunningAtFirstTickNeverRecovers(t *testing.T) {
+	journal := newBootTestJournal(t)
+	wd := watchdog.NewWatchdog(watchdog.Config{})
+	svc := &fakeService{status: watchdog.AgentServiceStatus{State: watchdog.AgentServiceStopped}}
+	t0 := time.Now()
+	b := newBootCheck(t0, bootTestDeadline, svc.query, fakeProcesses{3412: true})
+
+	b.evaluate(t0, 5824, false, wd, journal)
+	if wd.State() != watchdog.StateConnecting {
+		t.Fatalf("state = %s after one stopped answer, want CONNECTING", wd.State())
+	}
+	svc.status = watchdog.AgentServiceStatus{State: watchdog.AgentServiceRunning, PID: 3412}
+	b.evaluate(t0.Add(5*time.Second), 3412, false, wd, journal)
+	if everRecovering(wd) || !b.active(wd) {
+		t.Fatalf("state = %s active = %v, want a held CONNECTING", wd.State(), b.active(wd))
+	}
+}
+
+// Same with no service-manager answer: dead previous-boot PID at t0, the new
+// agent's live PID in the state file at the first tick.
+func TestBootCheck_UnknownDeadPIDThenLivePIDNeverRecovers(t *testing.T) {
+	journal := newBootTestJournal(t)
+	wd := watchdog.NewWatchdog(watchdog.Config{})
+	svc := &fakeService{status: watchdog.AgentServiceStatus{State: watchdog.AgentServiceUnknown}}
+	t0 := time.Now()
+	b := newBootCheck(t0, bootTestDeadline, svc.query, fakeProcesses{3412: true})
+
+	b.evaluate(t0, 5824, false, wd, journal)
+	b.evaluate(t0.Add(5*time.Second), 3412, false, wd, journal)
+	if everRecovering(wd) {
+		t.Fatalf("watchdog entered RECOVERING: %+v", wd.StateHistory())
+	}
+}
+
+// A hold between two not-found answers resets the confirmation.
+func TestBootCheck_NotFoundConfirmationResetsOnHold(t *testing.T) {
+	journal := newBootTestJournal(t)
+	wd := watchdog.NewWatchdog(watchdog.Config{})
+	svc := &fakeService{status: watchdog.AgentServiceStatus{State: watchdog.AgentServiceStopped}}
+	t0 := time.Now()
+	b := newBootCheck(t0, bootTestDeadline, svc.query, fakeProcesses{})
+
+	b.evaluate(t0, 5824, false, wd, journal)
+	svc.status = watchdog.AgentServiceStatus{State: watchdog.AgentServiceStarting}
+	b.evaluate(t0.Add(5*time.Second), 5824, false, wd, journal)
+	svc.status = watchdog.AgentServiceStatus{State: watchdog.AgentServiceStopped}
+	b.evaluate(t0.Add(10*time.Second), 5824, false, wd, journal)
+	if wd.State() != watchdog.StateConnecting {
+		t.Fatalf("state = %s, want CONNECTING (not-found seen once since the hold)", wd.State())
+	}
+	b.evaluate(t0.Add(15*time.Second), 5824, false, wd, journal)
+	if wd.State() != watchdog.StateRecovering {
+		t.Fatalf("state = %s, want RECOVERING", wd.State())
 	}
 }
 

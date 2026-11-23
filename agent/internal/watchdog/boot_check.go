@@ -108,8 +108,11 @@ func EvaluateBootCheck(in BootCheckInput) BootDecision {
 
 // agentServiceStatusFromSnapshot maps an SCM observation (see
 // recovery_windows_logic.go). STOP_PENDING, PAUSE_PENDING and PAUSED are not a
-// firm "up" or "down" answer, so they read as unknown.
-func agentServiceStatusFromSnapshot(snap serviceSnapshot) AgentServiceStatus {
+// firm "up" or "down" answer, so they read as unknown. neverStarted is SCM's
+// ERROR_SERVICE_NEVER_STARTED exit code on a stopped service: it has not run
+// since boot, which during boot means SCM has not reached it yet (the agent and
+// watchdog services are both auto-start, with no ordering between them).
+func agentServiceStatusFromSnapshot(snap serviceSnapshot, neverStarted bool) AgentServiceStatus {
 	status := AgentServiceStatus{State: AgentServiceUnknown, PID: snap.PID, Detail: string(snap.State)}
 	switch snap.State {
 	case serviceRunning:
@@ -118,6 +121,10 @@ func agentServiceStatusFromSnapshot(snap serviceSnapshot) AgentServiceStatus {
 		status.State = AgentServiceStarting
 	case serviceStopped:
 		status.State = AgentServiceStopped
+		if neverStarted {
+			status.State = AgentServiceStarting
+			status.Detail = "stopped_never_started"
+		}
 	}
 	return status
 }
@@ -126,7 +133,7 @@ func agentServiceStatusFromSnapshot(snap serviceSnapshot) AgentServiceStatus {
 // --property=ActiveState --property=MainPID <unit>` output.
 func parseSystemctlShow(output string) AgentServiceStatus {
 	props := map[string]string{}
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if ok {
 			props[key] = value
@@ -161,7 +168,7 @@ func parseSystemctlShow(output string) AgentServiceStatus {
 func parseLaunchctlPrint(output string) AgentServiceStatus {
 	status := AgentServiceStatus{State: AgentServiceUnknown}
 	depth := 0
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if depth == 1 {
 			if key, value, ok := strings.Cut(trimmed, " = "); ok {

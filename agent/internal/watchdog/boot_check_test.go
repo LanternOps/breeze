@@ -112,18 +112,22 @@ func TestEvaluateBootCheck_HoldEndsAtDeadline(t *testing.T) {
 
 func TestAgentServiceStatusFromSnapshot(t *testing.T) {
 	cases := []struct {
-		in    serviceSnapshot
-		state AgentServiceState
+		in           serviceSnapshot
+		neverStarted bool
+		state        AgentServiceState
 	}{
-		{serviceSnapshot{State: serviceRunning, PID: 3412}, AgentServiceRunning},
-		{serviceSnapshot{State: serviceStartPending}, AgentServiceStarting},
-		{serviceSnapshot{State: serviceContinuePending}, AgentServiceStarting},
-		{serviceSnapshot{State: serviceStopped}, AgentServiceStopped},
-		{serviceSnapshot{State: serviceStopPending, PID: 3412}, AgentServiceUnknown},
-		{serviceSnapshot{State: servicePaused}, AgentServiceUnknown},
+		{serviceSnapshot{State: serviceRunning, PID: 3412}, false, AgentServiceRunning},
+		{serviceSnapshot{State: serviceStartPending}, false, AgentServiceStarting},
+		{serviceSnapshot{State: serviceContinuePending}, false, AgentServiceStarting},
+		{serviceSnapshot{State: serviceStopped}, false, AgentServiceStopped},
+		// Not started since boot (ERROR_SERVICE_NEVER_STARTED): SCM has not
+		// reached the auto-start agent yet. Waiting is bounded by the deadline.
+		{serviceSnapshot{State: serviceStopped}, true, AgentServiceStarting},
+		{serviceSnapshot{State: serviceStopPending, PID: 3412}, false, AgentServiceUnknown},
+		{serviceSnapshot{State: servicePaused}, false, AgentServiceUnknown},
 	}
 	for _, tc := range cases {
-		got := agentServiceStatusFromSnapshot(tc.in)
+		got := agentServiceStatusFromSnapshot(tc.in, tc.neverStarted)
 		if got.State != tc.state || got.PID != tc.in.PID {
 			t.Errorf("%s: got %+v, want state=%s pid=%d", tc.in.State, got, tc.state, tc.in.PID)
 		}
