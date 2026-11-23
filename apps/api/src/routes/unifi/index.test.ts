@@ -219,6 +219,12 @@ describe('unifi routes', () => {
     ['POST', '/sync'],
     ['GET', '/sync-runs'],
     ['GET', '/controller-sites'],
+    // #11808 W3: the key routes are mounted behind the same guard.
+    ['GET', '/keys'],
+    ['POST', '/keys'],
+    ['PATCH', '/keys/77777777-7777-4777-8777-777777777777'],
+    ['DELETE', '/keys/77777777-7777-4777-8777-777777777777'],
+    ['POST', '/keys/77777777-7777-4777-8777-777777777777/test'],
   ])('rejects selected-org partner access before shared integration work: %s %s', async (method, path) => {
     authState.partnerOrgAccess = 'selected';
 

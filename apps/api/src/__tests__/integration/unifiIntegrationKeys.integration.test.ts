@@ -388,9 +388,16 @@ describe('key management on unifi_integration_keys (#11808 W3, breeze_app)', () 
     }
   });
 
-  runDb('a refused add inside a request context leaves nothing behind and the context still works', async () => {
+  // DELETE /unifi/keys/:id runs in the request transaction and maps a refusal
+  // to 409 with the catch outside deleteKey's savepoint; the request must then
+  // still commit.
+  runDb('a refused add or delete inside a request context leaves nothing behind and the context still works', async () => {
     const { partnerId, integrationId } = await connected();
+    const [only] = await keysOf(integrationId);
     const err = await asPartner(partnerId, async () => {
+      const refusedDelete = await deleteKey(db, { integrationId, partnerId, keyId: only!.id }).catch((e) => e);
+      expect(refusedDelete).toBeInstanceOf(UnifiKeyError);
+      expect(refusedDelete.code).toBe('UNIFI_LAST_ENABLED_KEY');
       const refused = await addKey(db, { integrationId, partnerId, label: 'GLOBAL', apiKey: 'dupe-key', seenHostIds: [], createdBy: null })
         .catch((e) => e);
       // The same context keeps working after the refusal (no aborted transaction).

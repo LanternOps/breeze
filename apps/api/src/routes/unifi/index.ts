@@ -2,8 +2,10 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray } from 'drizzle-orm';
-import { authMiddleware, withAuthDbAccessContext, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
+import { authMiddleware, withAuthDbAccessContext, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
+import { requestedPartnerId, resolvePartnerId } from './routeAuth';
+import { unifiKeyRoutes } from './keys';
 import { db, runOutsideDbContext } from '../../db';
 import { devices, unifiCollectors, unifiDeviceTelemetry, unifiClients, unifiSiteMappings, unifiSyncRuns, sites } from '../../db/schema';
 import { createUnifiClient, UnifiApiError } from '../../services/unifi/unifiClient';
@@ -29,25 +31,6 @@ import {
 export const unifiRoutes = new Hono();
 
 const MANUAL_MAPPING_AUDIT: UnifiMappingAuditMeta = { source: 'manual', sourceVerified: true, matchTier: null, matchKey: null };
-
-type RouteAuth = Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'partnerOrgAccess' | 'canAccessOrg'>;
-
-function requestedPartnerId(c: { req: { query: (key: string) => string | undefined } }): string | undefined {
-  return c.req.query('partnerId');
-}
-
-function resolvePartnerId(auth: RouteAuth, requested?: string): { partnerId: string } | { error: string; status: 400 | 403 } {
-  if (auth.scope === 'partner') {
-    if (!auth.partnerId) return { error: 'Partner context required', status: 403 };
-    if (requested && requested !== auth.partnerId) return { error: 'Access to this partner denied', status: 403 };
-    return { partnerId: auth.partnerId };
-  }
-  if (auth.scope === 'organization') {
-    return { error: 'UniFi network integrations are managed at partner scope', status: 403 };
-  }
-  if (!requested) return { error: 'partnerId is required for system scope', status: 400 };
-  return { partnerId: requested };
-}
 
 const readPerm = requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action);
 const writePerm = requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action);
@@ -587,3 +570,8 @@ unifiRoutes.get('/controller-sites', partnerScopes, readPerm, async (c) => {
   const sitesOut = await listControllerSitesForIntegration(db, conn.id);
   return c.json({ sites: sitesOut });
 });
+
+// /unifi/keys — Site Manager key management (#11808 W3). Mounted after the
+// use('*') guards above, so authMiddleware and the partner-wide capability
+// check run first.
+unifiRoutes.route('/keys', unifiKeyRoutes);
