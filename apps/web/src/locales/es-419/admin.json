@@ -1247,6 +1247,7 @@
       "tunnel_allowlist": "Lista de permitidos del túnel",
       "tunnel_session": "Sesión de túnel",
       "unifi_collector": "Controlador de UniFi",
+      "unifi_integration_key": "Clave de API de UniFi",
       "unifi_site_mapping": "Asignación de sitio de UniFi",
       "update_ring": "Anillo de actualización",
       "user": "Usuario",

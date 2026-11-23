@@ -1247,6 +1247,7 @@
       "tunnel_allowlist": "Liste autorisée du tunnel",
       "tunnel_session": "Session de tunnel",
       "unifi_collector": "Contrôleur UniFi",
+      "unifi_integration_key": "Clé API UniFi",
       "unifi_site_mapping": "Correspondance de site UniFi",
       "update_ring": "Anneau de mise à jour",
       "user": "Utilisateur",

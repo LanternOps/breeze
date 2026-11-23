@@ -1247,6 +1247,7 @@
       "tunnel_allowlist": "Tünel izin listesi",
       "tunnel_session": "Tünel oturumu",
       "unifi_collector": "UniFi denetleyicisi",
+      "unifi_integration_key": "UniFi API anahtarı",
       "unifi_site_mapping": "UniFi site eşlemesi",
       "update_ring": "Güncelleme halkası",
       "user": "Kullanıcı",
