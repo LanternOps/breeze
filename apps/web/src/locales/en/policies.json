@@ -1692,7 +1692,8 @@
       "executeRequired": "This policy turns on features that install software or move files on devices, so copying it needs the devices:execute permission.",
       "mfaRequired": "Confirm your identity with MFA to copy this policy.",
       "copyToOrganization": "Copy to one organization",
-      "changeWithCopy": "Copy with a different owner or parent"
+      "changeWithCopy": "Copy with a different owner or parent",
+      "droppedSincePreview": "Copied, but these features were not copied because something changed since the check: {{features}}."
     }
   },
   "software": {

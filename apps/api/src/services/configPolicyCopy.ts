@@ -43,6 +43,7 @@
  * `createConfigPolicy` and `addFeatureLink` every other writer uses.
  */
 import { and, eq } from 'drizzle-orm';
+import { z } from 'zod';
 import {
   ORG_SCOPED_ONLY_FEATURE_TYPES,
   type ConfigFeatureType,
@@ -64,7 +65,11 @@ import {
   parentPolicyArmsOemUpdates,
   parentPolicyEnablesHpCmslCollection,
   validateFeaturePolicyExists,
+  featureLinkSettingsWritable,
   BackupDestinationNotInOrgError,
+  ComplianceItemNameTooLongError,
+  ComplianceRegistryPathNotCollectedError,
+  DuplicateComplianceItemNameError,
   WarrantyConsentError,
   PARTNER_LINKABLE_FEATURE_TYPES,
   type FeatureLinkWriteOptions,
@@ -299,7 +304,12 @@ async function planLink(ctx: PlanContext, featureType: ConfigFeatureType, link: 
 
   let inlineSettings = cloneSettings(link.inlineSettings);
   const options: FeatureLinkWriteOptions = {};
-  const carry = (): LinkDecision => ({ carry: { featureType, featurePolicyId, inlineSettings, options } });
+  // The last step for every carried link: the settings the write will store
+  // must pass the write's own checks, or the dry run would say "carried" and
+  // the real copy fail.
+  const carry = (): LinkDecision => (featureLinkSettingsWritable(featureType, inlineSettings)
+    ? { carry: { featureType, featurePolicyId, inlineSettings, options } }
+    : { drop: 'settings_not_valid' });
 
   switch (featureType) {
     case 'monitors': {
@@ -361,7 +371,13 @@ async function planLink(ctx: PlanContext, featureType: ConfigFeatureType, link: 
 
     case 'helper': {
       // A copy has no assignments, so only the branding values themselves can fail.
-      return brandingWriteError(inlineSettings, []) ? { drop: 'settings_not_valid' } : carry();
+      if (brandingWriteError(inlineSettings, [])) return { drop: 'settings_not_valid' };
+      // Settings with no `enabled` resolve to off (HELPER_DEFAULTS), but a new
+      // link without it is created on (OD-11). Say off, so the copy keeps the
+      // source's real state rather than deploying Breeze Assist.
+      const helper = isRecord(inlineSettings) ? inlineSettings : {};
+      if (typeof helper.enabled !== 'boolean') inlineSettings = { ...helper, enabled: false };
+      return carry();
     }
 
     case 'warranty': {
@@ -551,6 +567,15 @@ async function writeCopy(
     }
     if (err instanceof BackupDestinationNotInOrgError) throw refuse(400, { error: err.message, code: err.code });
     if (err instanceof WarrantyConsentError) throw refuse(400, { error: err.message, code: err.code });
+    // Backstop for the settings check the plan ran (featureLinkSettingsWritable).
+    if (
+      err instanceof z.ZodError
+      || err instanceof DuplicateComplianceItemNameError
+      || err instanceof ComplianceItemNameTooLongError
+      || err instanceof ComplianceRegistryPathNotCollectedError
+    ) {
+      throw refuse(400, { error: 'A feature of this policy has settings that no longer pass today\'s checks.', code: 'COPY_SETTINGS_NOT_VALID' });
+    }
     throw err;
   }
 }

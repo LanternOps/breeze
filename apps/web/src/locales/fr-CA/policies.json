@@ -1692,7 +1692,8 @@
       "executeRequired": "Cette politique active des fonctionnalités qui installent des logiciels ou déplacent des fichiers sur les appareils; la copier nécessite donc l’autorisation devices:execute.",
       "mfaRequired": "Confirmez votre identité avec MFA pour copier cette politique.",
       "copyToOrganization": "Copier vers une organisation",
-      "changeWithCopy": "Copier avec un autre propriétaire ou une autre politique parente"
+      "changeWithCopy": "Copier avec un autre propriétaire ou une autre politique parente",
+      "droppedSincePreview": "Copiée, mais ces fonctionnalités n’ont pas été copiées, car quelque chose a changé depuis la vérification : {{features}}."
     }
   },
   "software": {

@@ -7,6 +7,7 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { showToast } from '../../shared/Toast';
 import { i18n } from '@/lib/i18n';
 import CopyPolicyDialog from './CopyPolicyDialog';
 
@@ -144,6 +145,33 @@ describe('CopyPolicyDialog', () => {
       i18n.t('policies:configurationPolicies.copyPolicy.executeRequired'),
     );
     expect(screen.getByTestId('config-policy-copy-confirm')).toBeDisabled();
+  });
+
+  it('says so when the real copy left behind more than the check showed', async () => {
+    route = (url, body) =>
+      url.endsWith('/copy') && body && !body.dryRun
+        ? res(201, { dryRun: false, policyId: 'pol-new', orgId: null, dropped: [{ featureType: 'monitors', reason: 'linked_item_unavailable' }] })
+        : undefined;
+    open();
+    await screen.findByTestId('config-policy-copy-carried');
+    fireEvent.click(screen.getByTestId('config-policy-copy-confirm'));
+
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/configuration-policies/pol-new'));
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning', message: expect.stringContaining('Monitors') }));
+  });
+
+  it('Copy stays off until the check for the owner now chosen has answered', async () => {
+    let release: (r: Response) => void = () => {};
+    open();
+    await screen.findByTestId('config-policy-copy-carried');
+    expect(screen.getByTestId('config-policy-copy-confirm')).toBeEnabled();
+
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { release = resolve; }));
+    fireEvent.change(screen.getByTestId('config-policy-copy-owner'), { target: { value: BIRCH.id } });
+    expect(screen.getByTestId('config-policy-copy-confirm')).toBeDisabled();
+
+    release(res(200, { dryRun: true, carried: ['patch'], dropped: [] }));
+    await waitFor(() => expect(screen.getByTestId('config-policy-copy-confirm')).toBeEnabled());
   });
 
   it('keeps the source\'s parent for the same owner and clears it for another', async () => {

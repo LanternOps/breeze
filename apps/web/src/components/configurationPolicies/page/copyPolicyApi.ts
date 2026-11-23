@@ -97,18 +97,18 @@ export async function previewCopy(sourceId: string, body: CopyBody): Promise<Cop
   return { ok: true, carried, dropped };
 }
 
-/** The copy itself, through runAction. Resolves with the new policy's id. */
-export async function copyPolicy(sourceId: string, body: CopyBody): Promise<string> {
-  return runAction<string>({
+/** The copy itself, through runAction: the new policy's id and what it left behind. */
+export async function copyPolicy(sourceId: string, body: CopyBody): Promise<{ policyId: string; dropped: CopyDrop[] }> {
+  return runAction<{ policyId: string; dropped: CopyDrop[] }>({
     request: () =>
       fetchWithAuth(`/configuration-policies/${sourceId}/copy`, {
         method: 'POST',
         body: JSON.stringify(body),
       }),
     parseSuccess: (data) => {
-      const id = (data as { policyId?: unknown } | null)?.policyId;
-      if (typeof id !== 'string') throw new Error('copy: no policyId in the response');
-      return id;
+      const row = data as { policyId?: unknown; dropped?: unknown } | null;
+      if (typeof row?.policyId !== 'string') throw new Error('copy: no policyId in the response');
+      return { policyId: row.policyId, dropped: parseDrops(row.dropped) ?? [] };
     },
     errorFallback: i18n.t('policies:configurationPolicies.copyPolicy.failed'),
     friendly: (code) => copyRefusalMessage(code),

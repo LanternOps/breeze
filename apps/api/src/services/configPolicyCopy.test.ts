@@ -20,6 +20,7 @@ const m = vi.hoisted(() => ({
   checkSecurityRuleSetsWrite: vi.fn(),
   resolveAutomationReferencesForOwner: vi.fn(),
   readOwnerCatalog: vi.fn(),
+  checkOemUpdatesLinkWrite: vi.fn(),
   dbRows: [] as unknown[][],
   withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
@@ -66,6 +67,11 @@ vi.mock('./automationRuntime', async (importOriginal) => {
   const original = await importOriginal<typeof import('./automationRuntime')>();
   return { ...original, resolveAutomationReferencesForOwner: m.resolveAutomationReferencesForOwner };
 });
+vi.mock('./oemUpdates/oemUpdatesLinkWrite', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./oemUpdates/oemUpdatesLinkWrite')>();
+  m.checkOemUpdatesLinkWrite.mockImplementation(original.checkOemUpdatesLinkWrite);
+  return { ...original, checkOemUpdatesLinkWrite: m.checkOemUpdatesLinkWrite };
+});
 vi.mock('./securityAgents/managedPolicyOwnerCatalog', async (importOriginal) => {
   const original = await importOriginal<typeof import('./securityAgents/managedPolicyOwnerCatalog')>();
   return { ...original, readOwnerCatalog: m.readOwnerCatalog };
@@ -73,6 +79,8 @@ vi.mock('./securityAgents/managedPolicyOwnerCatalog', async (importOriginal) => 
 
 import { copyConfigPolicy, ConfigPolicyCopyRefusedError } from './configPolicyCopy';
 import { AutomationReferenceAuthorizationError } from './automationReferenceAuthorization';
+import { SecurityAgentsLinkWriteError } from './securityAgents/securityAgentsLinkWrite';
+import { BackupDestinationNotInOrgError, InvalidParentPolicyError, WarrantyConsentError } from './configurationPolicy';
 import type { AuthContext } from '../middleware/auth';
 
 const PARTNER = 'aaaaaaaa-0000-4000-8000-000000000001';
@@ -412,8 +420,9 @@ describe('copyConfigPolicy', () => {
       expect(m.createConfigPolicy).not.toHaveBeenCalled();
 
       await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A }, { permissions: ALL });
-      const options = m.addFeatureLink.mock.calls[0]![6] as { executionAuthority?: { authorityUserId?: string } };
-      expect(options.executionAuthority).toBeTruthy();
+      const options = m.addFeatureLink.mock.calls[0]![6] as { executionAuthority?: { executionAuthorityUserId?: string | null } };
+      // Captured from this session, for the copier: never the source author's.
+      expect(options.executionAuthority?.executionAuthorityUserId).toBe('user-1');
     });
 
     it('vendor updates and security agents arm only for devices.execute', async () => {
@@ -505,6 +514,104 @@ describe('copyConfigPolicy', () => {
       m.dbRows = [[{ id: dest }]];
       const same = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A, dryRun: true }, { permissions: ALL });
       expect(same).toEqual({ dryRun: true, carried: ['backup'], dropped: [] });
+    });
+  });
+
+  describe('review round (#12572)', () => {
+    it('stored settings the write would refuse are left behind in both modes', async () => {
+      // Two rule sets with one name: saved before that rule, refused by the write today.
+      setLinks([
+        link('compliance', null, { items: [{ name: 'Same', rules: [] }, { name: 'Same', rules: [] }] }),
+        link('maintenance', null, { recurrence: 'never-ever' }),
+        link('event_log', null, { retentionDays: 30 }),
+      ]);
+      const input = { name: 'X', ownerScope: 'organization' as const, orgId: ORG_A };
+
+      const dry = await copyConfigPolicy(partnerAuth(), SOURCE, { ...input, dryRun: true }, { permissions: ALL });
+      const real = await copyConfigPolicy(partnerAuth(), SOURCE, input, { permissions: ALL });
+
+      const expected = [
+        { featureType: 'compliance', reason: 'settings_not_valid' },
+        { featureType: 'maintenance', reason: 'settings_not_valid' },
+      ];
+      expect(dry).toEqual({ dryRun: true, carried: ['event_log'], dropped: expected });
+      expect(real).toMatchObject({ dryRun: false, dropped: expected });
+      expect(m.addFeatureLink.mock.calls.map((c) => c[1])).toEqual(['event_log']);
+    });
+
+    it('a helper link with no enabled key is copied off, as it resolves today', async () => {
+      setLinks([link('helper', null, { showOpenPortal: true })]);
+      await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A }, { permissions: ALL });
+      expect(m.addFeatureLink.mock.calls[0]![3]).toEqual({ showOpenPortal: true, enabled: false });
+
+      m.addFeatureLink.mockClear();
+      setLinks([link('helper', null, { enabled: true })]);
+      await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A }, { permissions: ALL });
+      expect(m.addFeatureLink.mock.calls[0]![3]).toEqual({ enabled: true });
+    });
+
+    it('vendor updates: armed only for devices.execute, compared with the NEW parent\'s link', async () => {
+      const parentSettings = { version: 1, enabled: true };
+      m.getConfigPolicy.mockImplementation(async (id: string) => {
+        if (id === SOURCE) return source();
+        if (id === PARENT) {
+          return { id: PARENT, orgId: ORG_A, partnerId: null, parentPolicyId: null, featureLinks: [link('oem_updates', null, parentSettings)] };
+        }
+        return null;
+      });
+      setLinks([link('oem_updates', null, { version: 1, enabled: true })]);
+      const input = { name: 'X', ownerScope: 'organization' as const, orgId: ORG_A, parentPolicyId: PARENT };
+
+      m.checkOemUpdatesLinkWrite.mockReturnValueOnce({ ok: false, refusal: { status: 403, body: { code: 'oem_updates_execute_required' } } });
+      const denied = await refusal(copyConfigPolicy(partnerAuth(), SOURCE, input, { permissions: WRITE_ONLY }));
+      expect(denied.status).toBe(403);
+      expect(m.checkOemUpdatesLinkWrite).toHaveBeenLastCalledWith(expect.objectContaining({ armAuthorized: false, previous: parentSettings }));
+      expect(m.createConfigPolicy).not.toHaveBeenCalled();
+
+      m.checkOemUpdatesLinkWrite.mockReturnValueOnce({ ok: true, inlineSettings: { version: 1, enabled: true, checked: true } });
+      await copyConfigPolicy(partnerAuth(), SOURCE, input, { permissions: ALL });
+      expect(m.checkOemUpdatesLinkWrite).toHaveBeenLastCalledWith(expect.objectContaining({ armAuthorized: true }));
+      expect(m.addFeatureLink.mock.calls[0]![3]).toEqual({ version: 1, enabled: true, checked: true });
+      expect(m.addFeatureLink.mock.calls[0]![6]).toEqual({ oemUpdatesArmAuthorized: true });
+
+      m.checkOemUpdatesLinkWrite.mockReturnValueOnce({ ok: false, refusal: { status: 400, body: { code: 'closed' } } });
+      const closed = await copyConfigPolicy(partnerAuth(), SOURCE, { ...input, dryRun: true }, { permissions: ALL });
+      expect(closed).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'oem_updates', reason: 'settings_not_valid' }] });
+    });
+
+    it('security agents: a package missing from the catalog is left behind; an armed carry says so', async () => {
+      const agents = { version: 1, agents: [{ vendor: 'huntress', enabled: true, platforms: ['windows'] }] };
+      setLinks([link('security_agents', null, agents)]);
+      const result = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A, dryRun: true }, { permissions: ALL });
+      expect(result).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'security_agents', reason: 'linked_item_unavailable' }] });
+
+      setLinks([link('security_agents', null, { version: 1, agents: [] })]);
+      await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A }, { permissions: ALL });
+      expect(m.addFeatureLink.mock.calls[0]![6]).toEqual({ securityAgentsArmAuthorized: true });
+    });
+
+    it('a write-time refusal is mapped and rolled back; anything else propagates', async () => {
+      setLinks([link('event_log', null, { retentionDays: 30 })]);
+      const input = { name: 'X', ownerScope: 'organization' as const, orgId: ORG_A };
+      const cases: Array<[Error, number]> = [
+        [new InvalidParentPolicyError(), 400],
+        [new SecurityAgentsLinkWriteError({ status: 403, body: { code: 'x' } } as never), 403],
+        [new AutomationReferenceAuthorizationError(), 400],
+        [new BackupDestinationNotInOrgError(), 400],
+        [new WarrantyConsentError('x'), 400],
+      ];
+      for (const [error, status] of cases) {
+        m.addFeatureLink.mockRejectedValueOnce(error);
+        const err = await refusal(copyConfigPolicy(partnerAuth(), SOURCE, input, { permissions: ALL }));
+        expect(err.status, error.name).toBe(status);
+      }
+      m.addFeatureLink.mockRejectedValueOnce(new Error('database went away'));
+      await expect(copyConfigPolicy(partnerAuth(), SOURCE, input, { permissions: ALL })).rejects.toThrow('database went away');
+      // A duplicate link means the plan is wrong: an error, never a refusal.
+      m.addFeatureLink.mockResolvedValueOnce(null);
+      await expect(copyConfigPolicy(partnerAuth(), SOURCE, input, { permissions: ALL })).rejects.toThrow(/planned the event_log feature twice/);
+      // Every attempt ran inside the one transaction.
+      expect(m.withDbTransaction).toHaveBeenCalledTimes(cases.length + 2);
     });
   });
 });

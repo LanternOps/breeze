@@ -1692,7 +1692,8 @@
       "executeRequired": "Esta política ativa recursos que instalam software ou movem arquivos nos dispositivos, então copiá-la exige a permissão devices:execute.",
       "mfaRequired": "Confirme sua identidade com MFA para copiar esta política.",
       "copyToOrganization": "Copiar para uma organização",
-      "changeWithCopy": "Copiar com outro proprietário ou política pai"
+      "changeWithCopy": "Copiar com outro proprietário ou política pai",
+      "droppedSincePreview": "Copiado, mas estes recursos não foram copiados porque algo mudou desde a verificação: {{features}}."
     }
   },
   "software": {

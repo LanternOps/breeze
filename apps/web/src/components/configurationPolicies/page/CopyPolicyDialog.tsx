@@ -56,7 +56,8 @@ function bodyFor(name: string, owner: OwnerChoice, parentPolicyId: string | null
   return { name, ownerScope: 'organization', orgId: owner.orgId, parentPolicyId };
 }
 
-type PreviewState = { status: 'idle' } | { status: 'loading' } | { status: 'done'; result: CopyPreview };
+/** `key` is the owner and parent the dry run was for. */
+type PreviewState = { status: 'idle' } | { status: 'loading' } | { status: 'done'; key: string; result: CopyPreview };
 
 /**
  * Copy a policy (#12309, #11776; plan W05b K3), to the same owner or to
@@ -85,20 +86,22 @@ export default function CopyPolicyDialog(props: CopyPolicyDialogProps) {
   const trimmed = name.trim();
   const body = bodyFor(trimmed, owner, parentId);
   const ownerKey = owner.kind === 'msp' ? MSP_VALUE : (owner.orgId ?? '');
+  const previewKey = `${ownerKey}|${parentId ?? ''}`;
 
   // The dry run follows the owner and the parent, which decide what can be
   // carried. The name does not, so typing does not re-run it.
   useEffect(() => {
     if (!open) return;
     const draft = bodyFor(nameRef.current.trim() || source.name, owner, parentId);
+    const seq = ++previewSeq.current;
     if (!draft) {
       setPreview({ status: 'idle' });
       return;
     }
-    const seq = ++previewSeq.current;
     setPreview({ status: 'loading' });
+    const key = previewKey;
     void previewCopy(source.id, draft).then((result) => {
-      if (seq === previewSeq.current) setPreview({ status: 'done', result });
+      if (seq === previewSeq.current) setPreview({ status: 'done', key, result });
     });
     // `ownerKey` stands for `owner`: the same owner as a new object must not re-run it.
   }, [open, source.id, source.name, ownerKey, parentId]);
@@ -109,13 +112,27 @@ export default function CopyPolicyDialog(props: CopyPolicyDialogProps) {
     setParentId(sameOwnerAsSource(next, source) ? source.parentPolicyId : null);
   };
 
-  const ready = preview.status === 'done' && preview.result.ok && !!body && trimmed.length > 0 && !copying;
+  // Only the dry run for the owner and parent now chosen can enable Copy.
+  const ready = preview.status === 'done' && preview.key === previewKey && preview.result.ok
+    && !!body && trimmed.length > 0 && !copying;
 
   const confirm = async () => {
     if (!ready || !body) return;
     setCopying(true);
     try {
-      const policyId = await copyPolicy(source.id, body);
+      const { policyId, dropped } = await copyPolicy(source.id, body);
+      // The real run decides again: say so if it left behind more than the
+      // dry run showed (something changed in between).
+      const shown = new Set(preview.status === 'done' && preview.result.ok ? preview.result.dropped.map((d) => d.featureType) : []);
+      const unexpected = dropped.filter((d) => !shown.has(d.featureType));
+      if (unexpected.length > 0) {
+        showToast({
+          type: 'warning',
+          message: i18n.t('policies:configurationPolicies.copyPolicy.droppedSincePreview', {
+            features: unexpected.map((d) => configFeatureLabel(d.featureType)).join(', '),
+          }),
+        });
+      }
       onClose();
       void navigateTo(`/configuration-policies/${policyId}`);
     } catch (err) {

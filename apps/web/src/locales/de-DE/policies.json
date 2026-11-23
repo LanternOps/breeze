@@ -1692,7 +1692,8 @@
       "executeRequired": "Diese Richtlinie aktiviert Funktionen, die Software installieren oder Dateien auf Geräten verschieben. Zum Kopieren ist daher die Berechtigung devices:execute erforderlich.",
       "mfaRequired": "Bestätigen Sie Ihre Identität mit MFA, um diese Richtlinie zu kopieren.",
       "copyToOrganization": "In eine Organisation kopieren",
-      "changeWithCopy": "Mit anderem Eigentümer oder anderer übergeordneter Richtlinie kopieren"
+      "changeWithCopy": "Mit anderem Eigentümer oder anderer übergeordneter Richtlinie kopieren",
+      "droppedSincePreview": "Kopiert, aber diese Funktionen wurden nicht übernommen, weil sich seit der Prüfung etwas geändert hat: {{features}}."
     }
   },
   "software": {

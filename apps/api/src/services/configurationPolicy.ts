@@ -2032,6 +2032,49 @@ function withHelperCreateDefaults(inlineSettings: unknown): Record<string, unkno
   return settings.enabled === undefined ? { ...settings, enabled: true } : settings;
 }
 
+/**
+ * Whether `addFeatureLink` would accept these settings for a new link: the
+ * same per-feature schema and rule-set-name checks it and
+ * `decomposeInlineSettings` run, read-only. Copy (#12309) runs it before any
+ * write, so stored settings that no longer pass today's checks are left behind
+ * in the dry run too, instead of failing the real copy. Keep it in step with
+ * the parses at the top of `addFeatureLink`.
+ *
+ * False only for a validation failure; anything else is rethrown.
+ */
+export function featureLinkSettingsWritable(featureType: ConfigFeatureType, inlineSettings: unknown): boolean {
+  try {
+    if (inlineSettings !== undefined && inlineSettings !== null) {
+      configFeatureInlineSettingsSchema.parse(inlineSettings);
+      switch (featureType) {
+        case 'pam': pamInlineSettingsSchema.parse(inlineSettings); break;
+        case 'vulnerability': vulnerabilityInlineSettingsSchema.parse(inlineSettings); break;
+        case 'device_lifecycle': deviceLifecycleInlineSettingsSchema.parse(inlineSettings); break;
+        case 'system_protection': systemProtectionInlineSettingsSchema.parse(inlineSettings); break;
+        case 'warranty': warrantyInlineSettingsSchema.parse(inlineSettings); break;
+        case 'remote_access': remoteAccessInlineSettingsSchema.parse(inlineSettings); break;
+        default: break;
+      }
+    }
+    // These two parse even an absent value.
+    if (featureType === 'containment') containmentInlineSettingsSchema.parse(inlineSettings);
+    if (featureType === 'wake_on_lan') wakeOnLanInlineSettingsSchema.parse(inlineSettings);
+    if (featureType === 'compliance') assertValidComplianceItemNames(inlineSettings);
+    assertDecomposableInlineSettings(featureType, inlineSettings);
+    return true;
+  } catch (err) {
+    if (
+      err instanceof z.ZodError
+      || err instanceof DuplicateComplianceItemNameError
+      || err instanceof ComplianceItemNameTooLongError
+      || err instanceof ComplianceRegistryPathNotCollectedError
+    ) {
+      return false;
+    }
+    throw err;
+  }
+}
+
 export async function addFeatureLink(
   configPolicyId: string,
   featureType: ConfigFeatureType,

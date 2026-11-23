@@ -1692,7 +1692,8 @@
       "executeRequired": "Questo criterio attiva funzionalità che installano software o spostano file sui dispositivi, quindi per copiarlo serve l'autorizzazione devices:execute.",
       "mfaRequired": "Conferma la tua identità con MFA per copiare questo criterio.",
       "copyToOrganization": "Copia in una organizzazione",
-      "changeWithCopy": "Copia con un proprietario o un criterio padre diverso"
+      "changeWithCopy": "Copia con un proprietario o un criterio padre diverso",
+      "droppedSincePreview": "Copiato, ma queste funzionalità non sono state copiate perché qualcosa è cambiato dopo il controllo: {{features}}."
     }
   },
   "software": {

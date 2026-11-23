@@ -1692,7 +1692,8 @@
       "executeRequired": "Bu politika, cihazlara yazılım yükleyen veya dosya taşıyan özellikleri açtığı için kopyalamak devices:execute iznini gerektirir.",
       "mfaRequired": "Bu politikayı kopyalamak için kimliğinizi MFA ile doğrulayın.",
       "copyToOrganization": "Tek bir kuruluşa kopyala",
-      "changeWithCopy": "Farklı bir sahip veya üst politika ile kopyala"
+      "changeWithCopy": "Farklı bir sahip veya üst politika ile kopyala",
+      "droppedSincePreview": "Kopyalandı, ancak denetimden bu yana bir şey değiştiği için şu özellikler kopyalanmadı: {{features}}."
     }
   },
   "software": {
