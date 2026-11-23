@@ -537,6 +537,8 @@
     "createTicket": "Criar chamado"
   },
   "scriptProposal": {
+    "unavailable": "Esta proposta não está mais disponível. Ela pode ter sido decidida, ter expirado ou pertencer a outra organização.",
+    "loadFailed": "Não foi possível carregar esta proposta. Tente novamente em instantes.",
     "title": "Script criado por IA",
     "goal": "Objetivo",
     "expectedEffect": "Efeito esperado",
