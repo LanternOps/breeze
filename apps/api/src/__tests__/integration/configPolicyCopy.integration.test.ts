@@ -23,11 +23,13 @@ import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { configPolicyRoutes } from '../../routes/configurationPolicies';
 import {
+  backupProfiles,
   configPolicyAssignments,
   configPolicyFeatureLinks,
   configurationPolicies,
   monitorDefinitions,
   patchPolicies,
+  scripts,
   softwarePolicies,
 } from '../../db/schema';
 import { createAccessToken } from '../../services/jwt';
@@ -298,6 +300,73 @@ describe('POST /configuration-policies/:id/copy on real Postgres (#12309, #11776
     const consentOf = (s: unknown) => ((s as { hpCmsl?: { consent?: { acceptedAt?: string } } }).hpCmsl?.consent);
     expect(consentOf(after.warranty!.inlineSettings)).toBeTruthy();
     expect(consentOf(after.warranty!.inlineSettings)?.acceptedAt).not.toBe(consentOf(before.warranty!.inlineSettings)?.acceptedAt);
+  });
+
+  runDb('the rest of the feature types round-trip, and an organization\'s own scripts stay with it', async () => {
+    const app = buildApp();
+    const f = await seed();
+    const db = getTestDb() as any;
+    const [script] = await db.insert(scripts).values({
+      orgId: f.orgA.id, partnerId: f.partner.id, name: `copy-${randomUUID().slice(0, 8)}`, osTypes: ['windows'], language: 'powershell',
+      content: 'Write-Output ok', runAs: 'system', timeoutSeconds: 300,
+    }).returning({ id: scripts.id });
+    const [profile] = await db.insert(backupProfiles)
+      .values({ orgId: null, partnerId: f.partner.id, name: `Profile ${randomUUID().slice(0, 6)}`, selections: {} })
+      .returning({ id: backupProfiles.id });
+
+    const sourceId = await createPolicy(app, f.token, { name: 'Everything', orgId: f.orgA.id });
+    const sourceLinks = [
+      { featureType: 'backup', featurePolicyId: profile.id, inlineSettings: { schedule: { frequency: 'daily', time: '02:00' }, retention: { preset: 'standard' } } },
+      { featureType: 'maintenance', inlineSettings: { recurrence: 'weekly', windowStart: '02:00', dayOfWeek: 'sun', durationHours: 2, timezone: 'UTC', suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, rebootIfPending: false, notifyOnStart: true, notifyOnEnd: true } },
+      { featureType: 'compliance', inlineSettings: { items: [{ name: 'Agent present', enforcementLevel: 'monitor', rules: [{ type: 'required_software', softwareName: 'Contoso Agent', remediation: { type: 'script', scriptId: script.id } }] }] } },
+      { featureType: 'automation', inlineSettings: { items: [{ name: 'Nightly', enabled: true, triggerType: 'manual', actions: [{ type: 'run_script', scriptId: script.id }], onFailure: 'stop' }] } },
+      { featureType: 'containment', inlineSettings: { version: 1 } },
+      { featureType: 'wake_on_lan', inlineSettings: { configureSettings: false, buttonMode: 'verified' } },
+      { featureType: 'device_lifecycle', inlineSettings: { purgeRemovedAfterDays: 90 } },
+      { featureType: 'system_protection', inlineSettings: { beforePatching: true, beforeScripts: false, beforeSoftwareInstall: false, labelPrefix: 'Breeze' } },
+      { featureType: 'pam', inlineSettings: { uacInterceptionEnabled: false } },
+      { featureType: 'vulnerability', inlineSettings: { enabled: true } },
+      { featureType: 'oem_updates', inlineSettings: { version: 1, enabled: false, schedule: { weekOfMonth: 'first', dayOfWeek: 'sun', windowStart: '02:00', windowHours: 2 }, catchUpNights: 0, reboot: 'never', vendors: {} } },
+      { featureType: 'hardware_monitoring', inlineSettings: { enabled: true } },
+      { featureType: 'time_sync', inlineSettings: { enforceNtp: false } },
+      { featureType: 'workload_inventory', inlineSettings: { enabled: false } },
+      { featureType: 'sensitive_data', inlineSettings: { detectionClasses: ['credential'] } },
+      // Bound to org A's Microsoft 365 tenant: it stays with org A.
+      { featureType: 'onedrive_helper', inlineSettings: { tenantAssociationId: 'acme-tenant', libraries: [{ libraryId: 'lib-1', displayName: 'Shared Documents' }] } },
+    ];
+    for (const link of sourceLinks) await addLink(app, f.token, sourceId, link);
+
+    const read = async (id: string) => {
+      const r = await call(app, f.token, 'GET', `/configuration-policies/${id}/features`);
+      const rows = (await r.json() as { data: Array<Record<string, unknown>> }).data;
+      return Object.fromEntries(rows.map((l) => [l.featureType as string, { featurePolicyId: l.featurePolicyId, inlineSettings: l.inlineSettings }]));
+    };
+
+    // Same owner: everything is carried, with the same settings.
+    const same = await call(app, f.token, 'POST', `/configuration-policies/${sourceId}/copy`, { name: 'Everything (copy)', ownerScope: 'organization', orgId: f.orgA.id });
+    expect(same.status, await same.clone().text()).toBe(201);
+    const sameCopy = await same.json() as { policyId: string; dropped: unknown[] };
+    expect(sameCopy.dropped).toEqual([]);
+    const before = await read(sourceId);
+    const after = await read(sameCopy.policyId);
+    expect(Object.keys(after).sort()).toEqual(Object.keys(before).sort());
+    for (const featureType of Object.keys(before)) expect(after[featureType], featureType).toEqual(before[featureType]);
+
+    // Another organization: org A's script and Microsoft 365 tenant cannot be used there.
+    const body = { name: 'Everything (Birch)', ownerScope: 'organization', orgId: f.orgB.id };
+    const dry = await (await call(app, f.token, 'POST', `/configuration-policies/${sourceId}/copy`, { ...body, dryRun: true })).json() as { dropped: unknown[] };
+    const other = await call(app, f.token, 'POST', `/configuration-policies/${sourceId}/copy`, body);
+    expect(other.status, await other.clone().text()).toBe(201);
+    const otherCopy = await other.json() as { policyId: string; dropped: unknown[] };
+    expect(otherCopy.dropped).toEqual([
+      { featureType: 'automation', reason: 'linked_item_unavailable' },
+      { featureType: 'compliance', reason: 'linked_item_unavailable' },
+      { featureType: 'onedrive_helper', reason: 'linked_item_unavailable' },
+    ]);
+    expect(dry.dropped).toEqual(otherCopy.dropped);
+    const left = new Set(['automation', 'compliance', 'onedrive_helper']);
+    const otherLinks = (await linksOf(otherCopy.policyId)).map((l) => l.featureType).sort();
+    expect(otherLinks).toEqual(sourceLinks.map((l) => l.featureType).filter((t) => !left.has(t)).sort());
   });
 
   runDb('an organization admin copies an MSP-managed policy that applies to it, and cannot read one that does not', async () => {

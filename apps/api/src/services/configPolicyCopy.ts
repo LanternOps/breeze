@@ -124,6 +124,8 @@ type PlanContext = {
   auth: AuthContext;
   permissions: UserPermissions | undefined;
   owner: CopyOwner;
+  /** The source policy's organization; null for an MSP-managed source. */
+  sourceOrgId: string | null;
   /** The new parent's own links (for vendor updates, the link in effect). */
   parent: { id: string; featureLinks: ReadonlyArray<SourceLink> } | null;
 };
@@ -194,7 +196,7 @@ export async function copyConfigPolicy(
   }
 
   const plan = await planCopy(
-    { auth, permissions: opts.permissions, owner, parent },
+    { auth, permissions: opts.permissions, owner, sourceOrgId: source.orgId ?? null, parent },
     source.featureLinks as ReadonlyArray<SourceLink>,
   );
 
@@ -319,9 +321,8 @@ async function planLink(ctx: PlanContext, featureType: ConfigFeatureType, link: 
     }
 
     case 'compliance': {
-      // Remediation scripts and catalog packages are not checked by the link
-      // write, so a copy checks them itself: the new owner must be able to run
-      // each one, by the automation reference rule.
+      // Each remediation script and catalog package must be one the new owner
+      // may use, by the same reference rule automations use.
       return (await ownerMayUseReferences(owner, complianceRemediationReferences(inlineSettings)))
         ? carry()
         : { drop: 'linked_item_unavailable' };
@@ -417,9 +418,53 @@ async function planLink(ctx: PlanContext, featureType: ConfigFeatureType, link: 
       return carry();
     }
 
-    default:
+    case 'onedrive_helper': {
+      // The Microsoft 365 tenant and the libraries are the source
+      // organization's own (one tenant per organization). In another
+      // organization they would name a tenant that is not its own.
+      if (owner.orgId !== ctx.sourceOrgId && oneDriveNamesTenant(inlineSettings)) {
+        return { drop: 'linked_item_unavailable' };
+      }
       return carry();
+    }
+
+    // Inline settings with no reference to a tenant's own item, or whose only
+    // reference is featurePolicyId, validated above.
+    case 'patch':
+    case 'maintenance':
+    case 'software_policy':
+    case 'sensitive_data':
+    case 'peripheral_control':
+    case 'event_log':
+    case 'remote_access':
+    case 'pam':
+    case 'vulnerability':
+    case 'device_lifecycle':
+    case 'hardware_monitoring':
+    case 'time_sync':
+    case 'workload_inventory':
+    case 'system_protection':
+    case 'containment':
+    case 'wake_on_lan':
+      return carry();
+
+    default: {
+      // Exhaustive: a feature type added later fails to compile here until
+      // someone decides how a copy carries it. At run time a type this copy
+      // does not know (a retired one) is left behind, never carried unchecked.
+      const unclassified: never = featureType;
+      void unclassified;
+      return { drop: 'settings_not_valid' };
+    }
   }
+}
+
+/** True when OneDrive Helper settings name a Microsoft 365 tenant or a library. */
+function oneDriveNamesTenant(settings: unknown): boolean {
+  if (!isRecord(settings)) return false;
+  const tenant = typeof settings.tenantAssociationId === 'string' && settings.tenantAssociationId.trim() !== '';
+  const libraries = Array.isArray(settings.libraries) && settings.libraries.length > 0;
+  return tenant || libraries;
 }
 
 /**

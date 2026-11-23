@@ -236,6 +236,26 @@ describe('copyConfigPolicy', () => {
     expect(m.addFeatureLink.mock.calls.map((c) => c[1])).toEqual(['onedrive_helper']);
   });
 
+  it('OneDrive Helper naming a Microsoft 365 tenant stays with its organization', async () => {
+    setLinks([link('onedrive_helper', null, { tenantAssociationId: 'contoso-tenant', libraries: [] })]);
+
+    const other = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_B, dryRun: true }, { permissions: ALL });
+    expect(other).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'onedrive_helper', reason: 'linked_item_unavailable' }] });
+
+    const same = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A, dryRun: true }, { permissions: ALL });
+    expect(same).toEqual({ dryRun: true, carried: ['onedrive_helper'], dropped: [] });
+
+    setLinks([link('onedrive_helper', null, { libraries: [{ libraryId: 'lib-1', displayName: 'Docs' }] })]);
+    const libraries = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_B, dryRun: true }, { permissions: ALL });
+    expect(libraries).toMatchObject({ dropped: [{ featureType: 'onedrive_helper', reason: 'linked_item_unavailable' }] });
+  });
+
+  it('a feature type the copy does not know is left behind, not carried', async () => {
+    setLinks([link('alert_rule', null, { items: [] })]);
+    const result = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A, dryRun: true }, { permissions: ALL });
+    expect(result).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'alert_rule', reason: 'settings_not_valid' }] });
+  });
+
   it('a dry run writes nothing', async () => {
     setLinks([link('patch', RING), link('onedrive_helper', null, { libraries: [] })]);
 
