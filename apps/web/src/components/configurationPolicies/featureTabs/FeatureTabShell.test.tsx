@@ -285,6 +285,33 @@ describe('FeatureTabShell unsaved changes (#12469)', () => {
     expect(report).toHaveBeenLastCalledWith(true);
   });
 
+  it('a switch, checkbox, radio, option or pressed-button control marks it dirty', () => {
+    for (const attrs of [
+      { role: 'switch', 'aria-checked': 'false' },
+      { role: 'checkbox', 'aria-checked': 'false' },
+      { role: 'radio', 'aria-checked': 'false' },
+      { role: 'option', 'aria-selected': 'false' },
+      { 'aria-pressed': 'false' },
+    ]) {
+      const report = vi.fn();
+      const { unmount } = render(
+        <FeatureDirtyReporterContext.Provider value={report}>
+          <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured saving={false} onSave={vi.fn()}>
+            <button type="button" data-testid="control" {...attrs}>
+              <span data-testid="inner">x</span>
+            </button>
+            <button type="button" data-testid="disclosure" aria-expanded="false">more</button>
+          </FeatureTabShell>
+        </FeatureDirtyReporterContext.Provider>,
+      );
+      fireEvent.click(screen.getByTestId('disclosure'));
+      expect(report).not.toHaveBeenCalledWith(true);
+      fireEvent.click(screen.getByTestId('inner'));
+      expect(report).toHaveBeenLastCalledWith(true);
+      unmount();
+    }
+  });
+
   it('a picker selection marks it dirty', () => {
     const { report } = renderShell();
     fireEvent.click(screen.getByTestId('pick'));

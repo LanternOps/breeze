@@ -96,11 +96,22 @@ export default function FeatureTabShell({
     const body = bodyRef.current;
     if (!body) return;
     const onEdit = () => setDirty(true);
+    // Toggles and segmented choices are buttons (role="switch" etc.) that
+    // fire no input/change event; a click on one is an edit. A disclosure
+    // (aria-expanded) or a plain action button is not.
+    const onClick = (e: MouseEvent) => {
+      const control = (e.target as Element | null)?.closest?.(
+        '[role="switch"], [role="checkbox"], [role="radio"], [role="option"], [aria-pressed]',
+      );
+      if (control && body.contains(control)) setDirty(true);
+    };
     body.addEventListener("input", onEdit);
     body.addEventListener("change", onEdit);
+    body.addEventListener("click", onClick);
     return () => {
       body.removeEventListener("input", onEdit);
       body.removeEventListener("change", onEdit);
+      body.removeEventListener("click", onClick);
     };
   }, []);
 
