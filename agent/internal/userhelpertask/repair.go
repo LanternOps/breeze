@@ -6,7 +6,8 @@
 // longer starts at logon, and nothing brought it back short of a reinstall.
 // The agent now checks for it and, when it is missing and the helper
 // executable is on disk, registers it again from the installer's own task
-// definition (embedded from service/windows, never a copy) and reads it back.
+// definition (embedded from service/windows, never a copy), reads it back,
+// and asks Task Scheduler whether it can run it (see settle).
 //
 // It never fights a removal in a loop: after MaxRepairs re-registrations
 // within RepairWindow it stops until the next agent start, and it never
@@ -53,8 +54,15 @@ type Outcome string
 const (
 	// OutcomePresent: the task is registered; nothing was written.
 	OutcomePresent Outcome = "present"
-	// OutcomeRepaired: the task was missing and was registered and read back.
+	// OutcomeRepaired: the task was missing and was registered, read back,
+	// and Task Scheduler reports it ready to run.
 	OutcomeRepaired Outcome = "repaired"
+	// OutcomeRepairedPendingReboot: the task was registered and reads back
+	// as the installer's, but Task Scheduler cannot run it, even after one
+	// clean re-registration. Seen when the task's cache entries were removed
+	// from under the service: it runs again after the next reboot. Not a
+	// healthy repair, and the checks that follow only probe it again.
+	OutcomeRepairedPendingReboot Outcome = "repaired_pending_reboot"
 	// OutcomeHelperMissing: the task is missing, and so is the helper
 	// executable it would start; nothing was registered.
 	OutcomeHelperMissing Outcome = "helper_missing"
@@ -85,11 +93,42 @@ type Deps struct {
 	// Schtasks runs schtasks.exe (resolved from the system directory) and
 	// returns its output.
 	Schtasks func(args ...string) ([]byte, error)
+	// RunState reports whether Task Scheduler can run TaskName. An error
+	// means the probe itself could not run (the service could not be
+	// reached), which is never read as "not runnable"; a *StateReadError
+	// means the service answered but could not report the task's state,
+	// which is.
+	RunState func() (RunState, error)
 	// TempDir holds the task file schtasks reads. Production uses the
 	// agent's SYSTEM-only data directory, never a shared temp directory.
 	TempDir string
 	Now     func() time.Time
 }
+
+// RunState is the task's TASK_STATE as Task Scheduler reports it, or
+// StateUnreadable when the service answered but could not report it.
+type RunState int
+
+const (
+	StateUnreadable RunState = -1
+	StateUnknown    RunState = 0 // TASK_STATE_UNKNOWN
+	StateDisabled   RunState = 1 // TASK_STATE_DISABLED
+	StateQueued     RunState = 2 // TASK_STATE_QUEUED
+	StateReady      RunState = 3 // TASK_STATE_READY
+	StateRunning    RunState = 4 // TASK_STATE_RUNNING
+)
+
+// Runnable: only a state Task Scheduler reports positively.
+func (s RunState) Runnable() bool {
+	return s == StateQueued || s == StateReady || s == StateRunning
+}
+
+// StateReadError: Task Scheduler was reached but could not report the
+// task's state. The task is then not runnable, not unknown.
+type StateReadError struct{ Err error }
+
+func (e *StateReadError) Error() string { return "read the task's state: " + e.Err.Error() }
+func (e *StateReadError) Unwrap() error { return e.Err }
 
 // Repairer checks for the task and registers it again when it is missing.
 // Its backoff lives in memory: it resets when the agent restarts.
@@ -104,7 +143,24 @@ type Repairer struct {
 	// the installer's task. A task that exists is then read back again
 	// rather than taken as present.
 	unverified bool
+	// runnable tracks the last registration until Task Scheduler reports it
+	// runnable. While it is not settled, a task that exists is probed again
+	// rather than taken as present.
+	runnable runnableState
 }
+
+type runnableState int
+
+const (
+	// runnableSettled: no registration of ours is waiting on the probe.
+	runnableSettled runnableState = iota
+	// runnableAwaiting: registered, not yet reported runnable; the one
+	// clean re-registration is still available.
+	runnableAwaiting
+	// runnableRetrySpent: the clean re-registration has been used (or
+	// attempted); later checks only probe.
+	runnableRetrySpent
+)
 
 // New returns a Repairer over deps.
 func New(deps Deps) *Repairer { return &Repairer{deps: deps} }
@@ -129,6 +185,9 @@ func (r *Repairer) Check() (Outcome, error) {
 				return OutcomeRepairFailed, err
 			}
 			r.unverified = false
+		}
+		if r.runnable != runnableSettled {
+			return r.settle(OutcomePresent)
 		}
 		return OutcomePresent, nil
 	}
@@ -159,11 +218,89 @@ func (r *Repairer) Check() (Outcome, error) {
 		// create that keeps failing is retried on the normal cadence.
 		r.repairs = append(r.repairs, now)
 		r.unverified = err != nil
+		r.runnable = runnableAwaiting
 	}
 	if err != nil {
 		return OutcomeRepairFailed, err
 	}
-	return OutcomeRepaired, nil
+	return r.settle(OutcomeRepaired)
+}
+
+// settle asks Task Scheduler whether the task it registered can run. A task
+// whose cache entries were removed from under the service can be registered
+// again and read back while the service still cannot run it until a reboot
+// (lab, #12580). Such a task gets one clean re-registration (delete, then
+// create); if that does not help either, it is reported as pending a reboot
+// and only probed from then on. runnable is the outcome when the task can run.
+// Neither the delete nor the second create counts toward the backoff: the
+// whole sequence is the one repair already counted.
+func (r *Repairer) settle(runnable Outcome) (Outcome, error) {
+	state, err := r.deps.RunState()
+	if err != nil && !isStateReadError(err) {
+		return OutcomeCheckFailed, fmt.Errorf("ask Task Scheduler whether the task can run: %w", err)
+	}
+	if err == nil && state.Runnable() {
+		r.runnable = runnableSettled
+		return runnable, nil
+	}
+	notRunnable := notRunnableError(state, err)
+	if r.runnable != runnableAwaiting {
+		return OutcomeRepairedPendingReboot, notRunnable
+	}
+	// An uninstall may have started since the create: check again before
+	// writing.
+	if outcome, stop, err := r.uninstallGate(); stop {
+		return outcome, err
+	}
+	// Spent before the writes, so it happens at most once whatever follows.
+	r.runnable = runnableRetrySpent
+	if _, err := r.deps.Schtasks("/Delete", "/TN", TaskName, "/F"); err != nil {
+		// Still registered, still not runnable: nothing more to try.
+		return OutcomeRepairedPendingReboot, fmt.Errorf("%w; clean re-registration: schtasks /Delete: %w", notRunnable, err)
+	}
+	created, err := r.register()
+	if !created {
+		// The task is gone now; the next check registers it on the normal
+		// path, which counts toward the backoff.
+		r.runnable = runnableSettled
+		return OutcomeRepairFailed, fmt.Errorf("clean re-registration after %w: %w", notRunnable, err)
+	}
+	if err != nil {
+		r.unverified = true
+		return OutcomeRepairFailed, fmt.Errorf("clean re-registration: %w", err)
+	}
+	state, err = r.deps.RunState()
+	if err != nil && !isStateReadError(err) {
+		return OutcomeCheckFailed, fmt.Errorf("ask Task Scheduler whether the re-registered task can run: %w", err)
+	}
+	if err == nil && state.Runnable() {
+		r.runnable = runnableSettled
+		return OutcomeRepaired, nil
+	}
+	return OutcomeRepairedPendingReboot, fmt.Errorf("after a clean re-registration: %w", notRunnableError(state, err))
+}
+
+// taskFolderAndLeaf splits TaskName for the Task Scheduler API, which gets a
+// task by name from its folder.
+func taskFolderAndLeaf() (folder, leaf string) {
+	i := strings.LastIndex(TaskName, `\`)
+	folder, leaf = TaskName[:i], TaskName[i+1:]
+	if folder == "" {
+		folder = `\`
+	}
+	return folder, leaf
+}
+
+func isStateReadError(err error) bool {
+	var stateErr *StateReadError
+	return errors.As(err, &stateErr)
+}
+
+func notRunnableError(state RunState, err error) error {
+	if err != nil {
+		return fmt.Errorf("the task is registered but Task Scheduler cannot run it: %w", err)
+	}
+	return fmt.Errorf("the task is registered but Task Scheduler cannot run it (state %d)", int(state))
 }
 
 // uninstallGate stops a check while an uninstall is in progress, and when it

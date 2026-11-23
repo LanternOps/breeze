@@ -1,9 +1,12 @@
 package heartbeat
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -123,6 +126,7 @@ func TestUserHelperTaskReportsHealthComponent(t *testing.T) {
 	}{
 		{userhelpertask.OutcomePresent, health.Healthy, ""},
 		{userhelpertask.OutcomeRepaired, health.Degraded, "repaired"},
+		{userhelpertask.OutcomeRepairedPendingReboot, health.Degraded, "repaired_pending_reboot"},
 		{userhelpertask.OutcomeHelperMissing, health.Degraded, "helper_missing"},
 		{userhelpertask.OutcomeBackedOff, health.Unhealthy, "backed_off"},
 		{userhelpertask.OutcomeRepairFailed, health.Unhealthy, "repair_failed"},
@@ -141,6 +145,29 @@ func TestUserHelperTaskReportsHealthComponent(t *testing.T) {
 				t.Fatalf("component = %s/%q, want %s/%q", got.Status, got.Message, tc.wantStatus, tc.wantReason)
 			}
 		})
+	}
+}
+
+// A repair Task Scheduler cannot run yet warns once when it starts, not on
+// every re-probe, and never reads as healthy.
+func TestUserHelperTaskPendingRebootWarnsOnceAndIsNotHealthy(t *testing.T) {
+	var logs bytes.Buffer
+	previous := log
+	log = slog.New(slog.NewTextHandler(&logs, nil))
+	t.Cleanup(func() { log = previous })
+	h := &Heartbeat{healthMon: health.NewMonitor()}
+	pending := userhelpertask.OutcomeRepairedPendingReboot
+	h.reportUserHelperTask(&scriptedTaskChecker{}, pending, errors.New("state unreadable"), "")
+	h.reportUserHelperTask(&scriptedTaskChecker{}, pending, errors.New("state unreadable"), pending)
+	if n := strings.Count(logs.String(), "level=WARN"); n != 1 {
+		t.Fatalf("warn logs = %d, want 1:\n%s", n, logs.String())
+	}
+	if !strings.Contains(logs.String(), "cannot run it until the next reboot") {
+		t.Fatalf("logs = %q", logs.String())
+	}
+	got, _ := h.healthMon.Get(userHelperTaskComponent)
+	if got.Status == health.Healthy || got.Message != string(pending) {
+		t.Fatalf("component = %s/%q, want not healthy/%q", got.Status, got.Message, pending)
 	}
 }
 

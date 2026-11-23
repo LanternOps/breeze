@@ -143,6 +143,16 @@ func (h *Heartbeat) reportUserHelperTask(c userHelperTaskChecker, outcome userhe
 			"task", userhelpertask.TaskName, "helperPath", userhelpertask.HelperPath(),
 			"repairsInWindow", c.RepairsInWindow(), "maxRepairs", userhelpertask.MaxRepairs,
 			"window", userhelpertask.RepairWindow.String())
+	case userhelpertask.OutcomeRepairedPendingReboot:
+		// Registered and reads back, but Task Scheduler cannot run it until
+		// the next reboot. Not a healthy repair; the checks that follow only
+		// probe it again, so this is a standing condition.
+		status = health.Degraded
+		if changed {
+			log.Warn("user-helper logon task was registered again but Task Scheduler cannot run it until the next reboot",
+				"task", userhelpertask.TaskName, "error", errText,
+				"repairsInWindow", c.RepairsInWindow(), "maxRepairs", userhelpertask.MaxRepairs)
+		}
 	case userhelpertask.OutcomeHelperMissing:
 		status = health.Degraded
 		if changed {

@@ -27,7 +27,36 @@ type fakeScheduler struct {
 	queryRender func(doc []byte) []byte
 	// afterCreate runs once a create lands (e.g. something deletes it again).
 	afterCreate func()
+	deleteErr   error
+	// states, when set, are what successive run-state probes return; the
+	// last one repeats. Unset: Ready while a task is registered.
+	states []stateReply
+	probes int
 }
+
+type stateReply struct {
+	state RunState
+	err   error
+}
+
+func (f *fakeScheduler) runState() (RunState, error) {
+	f.probes++
+	if len(f.states) == 0 {
+		if f.registered == nil {
+			return StateUnreadable, &StateReadError{Err: errors.New("0x80070002")}
+		}
+		return StateReady, nil
+	}
+	reply := f.states[0]
+	if len(f.states) > 1 {
+		f.states = f.states[1:]
+	}
+	return reply.state, reply.err
+}
+
+// brokenRegistration is the half-deleted lab state: the task reads back but
+// Task Scheduler cannot report or run it until a reboot (0x80070057).
+var brokenRegistration = stateReply{StateUnreadable, &StateReadError{Err: errors.New("HRESULT 0x80070057")}}
 
 func (f *fakeScheduler) exists() (bool, error) {
 	if f.existsErr != nil {
@@ -69,15 +98,28 @@ func (f *fakeScheduler) run(args ...string) ([]byte, error) {
 			doc = f.queryRender(doc)
 		}
 		return utf16le(doc), nil
+	case len(args) == 4 && args[0] == "/Delete" && args[1] == "/TN" && args[3] == "/F":
+		if args[2] != TaskName {
+			f.t.Fatalf("deleted task %q, want %q", args[2], TaskName)
+		}
+		if f.deleteErr != nil {
+			return nil, f.deleteErr
+		}
+		f.registered = nil
+		return []byte("SUCCESS"), nil
 	}
 	f.t.Fatalf("unexpected schtasks call: %q", args)
 	return nil, nil
 }
 
-func (f *fakeScheduler) createCalls() int {
+func (f *fakeScheduler) createCalls() int { return f.countCalls("/Create") }
+
+func (f *fakeScheduler) deleteCalls() int { return f.countCalls("/Delete") }
+
+func (f *fakeScheduler) countCalls(verb string) int {
 	n := 0
 	for _, c := range f.calls {
-		if strings.HasPrefix(c, "/Create") {
+		if strings.HasPrefix(c, verb+" ") {
 			n++
 		}
 	}
@@ -115,6 +157,7 @@ func newRig(t *testing.T) *rig {
 		},
 		Uninstalling: func() (bool, error) { return g.uninstalling, g.uninstallErr },
 		Schtasks:     g.sched.run,
+		RunState:     g.sched.runState,
 		TempDir:      t.TempDir(),
 		Now:          func() time.Time { return g.now },
 	})
@@ -416,5 +459,176 @@ func TestTaskDefinitionIsTheProductLogonTask(t *testing.T) {
 	}
 	if HelperPath() != `C:\Program Files\Breeze\breeze-user-helper.exe` {
 		t.Fatalf("HelperPath() = %q", HelperPath())
+	}
+}
+
+// --- A registered task must also be runnable (#12580, lab round 2) ---
+
+func TestRunnableAfterCreateIsRepaired(t *testing.T) {
+	g := newRig(t)
+	mustCheck(t, g.r, OutcomeRepaired)
+	if g.sched.probes != 1 {
+		t.Fatalf("run-state probes = %d, want 1", g.sched.probes)
+	}
+	if g.sched.deleteCalls() != 0 || g.sched.createCalls() != 1 {
+		t.Fatalf("a runnable task was re-registered: %q", g.sched.calls)
+	}
+	// Runnable once: later checks are presence only.
+	mustCheck(t, g.r, OutcomePresent)
+	if g.sched.probes != 1 {
+		t.Fatalf("a settled task was probed again: probes = %d", g.sched.probes)
+	}
+}
+
+func TestNotRunnableAfterCreateIsReregisteredCleanlyOnce(t *testing.T) {
+	g := newRig(t)
+	g.sched.states = []stateReply{brokenRegistration, {StateReady, nil}}
+	mustCheck(t, g.r, OutcomeRepaired)
+	want := []string{
+		"/Create /TN " + TaskName,
+		"/Query /TN " + TaskName + " /XML",
+		"/Delete /TN " + TaskName + " /F",
+		"/Create /TN " + TaskName,
+		"/Query /TN " + TaskName + " /XML",
+	}
+	if len(g.sched.calls) != len(want) {
+		t.Fatalf("calls = %q, want %q", g.sched.calls, want)
+	}
+	for i, prefix := range want {
+		if !strings.HasPrefix(g.sched.calls[i], prefix) {
+			t.Fatalf("call %d = %q, want %q...", i, g.sched.calls[i], prefix)
+		}
+	}
+	if got := g.r.RepairsInWindow(); got != 1 {
+		t.Fatalf("RepairsInWindow = %d, want 1: the clean re-registration is part of one repair", got)
+	}
+	mustCheck(t, g.r, OutcomePresent)
+}
+
+func TestNotRunnableAfterCleanReregistrationIsPendingReboot(t *testing.T) {
+	for name, broken := range map[string]stateReply{
+		"state unreadable": brokenRegistration,
+		"state unknown":    {StateUnknown, nil},
+		"state disabled":   {StateDisabled, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newRig(t)
+			g.sched.states = []stateReply{broken}
+			mustCheck(t, g.r, OutcomeRepairedPendingReboot)
+			if g.sched.createCalls() != 2 || g.sched.deleteCalls() != 1 {
+				t.Fatalf("want one create, one delete, one create: %q", g.sched.calls)
+			}
+			if got := g.r.RepairsInWindow(); got != 1 {
+				t.Fatalf("RepairsInWindow = %d, want 1 (charged once)", got)
+			}
+			// Sticky, and never another write: later checks only probe.
+			writes := len(g.sched.calls)
+			for range 3 {
+				g.now = g.now.Add(4 * time.Hour)
+				mustCheck(t, g.r, OutcomeRepairedPendingReboot)
+			}
+			if len(g.sched.calls) != writes {
+				t.Fatalf("a pending task was written again: %q", g.sched.calls[writes:])
+			}
+			if got := g.r.RepairsInWindow(); got > 1 {
+				t.Fatalf("RepairsInWindow = %d after re-probes", got)
+			}
+			// Runnable at last (e.g. after Task Scheduler restarted): present.
+			g.sched.states = []stateReply{{StateReady, nil}}
+			mustCheck(t, g.r, OutcomePresent)
+		})
+	}
+}
+
+// A pending task that keeps being removed still runs into the backoff.
+func TestPendingRebootRepairsCountTowardTheBackoff(t *testing.T) {
+	g := newRig(t)
+	g.sched.states = []stateReply{brokenRegistration}
+	for range MaxRepairs {
+		mustCheck(t, g.r, OutcomeRepairedPendingReboot)
+		g.sched.registered = nil
+		g.now = g.now.Add(time.Hour)
+	}
+	mustCheck(t, g.r, OutcomeBackedOff)
+	if got := g.sched.createCalls(); got != 2*MaxRepairs {
+		t.Fatalf("creates = %d, want %d", got, 2*MaxRepairs)
+	}
+}
+
+func TestRunStateProbeFailureIsACheckFailure(t *testing.T) {
+	g := newRig(t)
+	g.sched.states = []stateReply{{0, errors.New("connect to Task Scheduler: 0x80070005")}}
+	mustCheck(t, g.r, OutcomeCheckFailed)
+	if g.sched.deleteCalls() != 0 || g.sched.createCalls() != 1 {
+		t.Fatalf("re-registered on a probe that did not run: %q", g.sched.calls)
+	}
+	// Not taken as present while the probe cannot run.
+	mustCheck(t, g.r, OutcomeCheckFailed)
+	if g.sched.createCalls() != 1 {
+		t.Fatalf("re-created while the probe cannot run: %q", g.sched.calls)
+	}
+	// The probe runs again and reports a runnable task.
+	g.sched.states = []stateReply{{StateReady, nil}}
+	mustCheck(t, g.r, OutcomePresent)
+	if got := g.r.RepairsInWindow(); got != 1 {
+		t.Fatalf("RepairsInWindow = %d, want 1", got)
+	}
+}
+
+func TestDeleteFailureDuringCleanReregistrationIsPendingReboot(t *testing.T) {
+	g := newRig(t)
+	g.sched.states = []stateReply{brokenRegistration}
+	g.sched.deleteErr = errors.New("exit status 1")
+	mustCheck(t, g.r, OutcomeRepairedPendingReboot)
+	if g.sched.createCalls() != 1 {
+		t.Fatalf("created again after the delete failed: %q", g.sched.calls)
+	}
+	mustCheck(t, g.r, OutcomeRepairedPendingReboot)
+	if g.sched.deleteCalls() != 1 {
+		t.Fatalf("delete retried: %q", g.sched.calls)
+	}
+}
+
+func TestSecondCreateFailureIsAFailedRepairChargedOnce(t *testing.T) {
+	g := newRig(t)
+	g.sched.states = []stateReply{brokenRegistration, {StateReady, nil}}
+	g.sched.afterCreate = func() { g.sched.createErr = errors.New("exit status 1") }
+	mustCheck(t, g.r, OutcomeRepairFailed)
+	if got := g.r.RepairsInWindow(); got != 1 {
+		t.Fatalf("RepairsInWindow = %d, want 1", got)
+	}
+	// The task is gone now; the next check repairs it on the normal path.
+	g.sched.createErr, g.sched.afterCreate = nil, nil
+	mustCheck(t, g.r, OutcomeRepaired)
+	if got := g.r.RepairsInWindow(); got != 2 {
+		t.Fatalf("RepairsInWindow = %d, want 2", got)
+	}
+}
+
+func TestUninstallStartingBeforeCleanReregistrationStopsIt(t *testing.T) {
+	g := newRig(t)
+	g.sched.states = []stateReply{brokenRegistration}
+	g.sched.afterCreate = func() { g.uninstalling = true }
+	mustCheck(t, g.r, OutcomeUninstalling)
+	if g.sched.deleteCalls() != 0 || g.sched.createCalls() != 1 {
+		t.Fatalf("re-registered during an uninstall: %q", g.sched.calls)
+	}
+}
+
+func TestTaskFolderAndLeaf(t *testing.T) {
+	folder, leaf := taskFolderAndLeaf()
+	if folder != `\Breeze` || leaf != "AgentUserHelper" {
+		t.Fatalf("taskFolderAndLeaf() = %q, %q", folder, leaf)
+	}
+}
+
+func TestRunStateRunnable(t *testing.T) {
+	for state, want := range map[RunState]bool{
+		StateUnreadable: false, StateUnknown: false, StateDisabled: false,
+		StateQueued: true, StateReady: true, StateRunning: true, RunState(5): false,
+	} {
+		if got := state.Runnable(); got != want {
+			t.Errorf("RunState(%d).Runnable() = %v, want %v", state, got, want)
+		}
 	}
 }
