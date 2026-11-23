@@ -14,10 +14,15 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, withSystemDbAccessContext } from '../../db';
-import { auditLogs, partners } from '../../db/schema';
+import { abuseEndpointFingerprints, auditLogs, devices, partnerAbuseSignals, partners } from '../../db/schema';
 import type { IpClass, PartnerTrustState } from '../../db/schema/orgs';
-import { evaluateHardDenies } from '../../services/partnerTrustPromotion';
-import { createPartner, createUser } from './db-utils';
+import {
+  evaluateHardDenies,
+  loadSuspendedAbuseSet,
+  type HardDenyDecision,
+} from '../../services/partnerTrustPromotion';
+import { createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -26,7 +31,9 @@ async function setPartnerFields(partnerId: string, fields: {
   signupIp?: string;
   signupIpClass?: IpClass;
   billingCardFingerprint?: string | null;
+  signupUserAgent?: string | null;
 }) {
+  if (Object.values(fields).every((value) => value === undefined)) return;
   await withSystemDbAccessContext(() => db
     .update(partners)
     .set(fields)
@@ -204,5 +211,288 @@ describe('evaluateHardDenies — real Postgres (Task 5.3 fix round 1)', () => {
         corroboration: { type: 'email_domain', value: 'example.com' },
       },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #11560: the promote job builds the suspended-for-abuse side once and
+// evaluates every probation partner against it. These scenarios pin each
+// hard-deny axis to a literal decision (written and run green against the
+// per-call query before the change), then prove the shared-set path and the
+// single-partner path agree with those literals for every partner in one
+// populated database — so a wrong set build (a missing population, a narrowed
+// window, a dropped device IP) cannot hide behind "both paths agree".
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
+const daysAgo = (days: number) => new Date(Date.now() - days * DAY_MS);
+
+async function addDevice(partnerId: string, opts: { hostname: string; enrollmentIp: string | null }) {
+  const org = await createOrganization({ partnerId });
+  const site = await createSite({ orgId: org.id });
+  await getTestDb().insert(devices).values({
+    orgId: org.id,
+    siteId: site.id,
+    agentId: randomUUID(),
+    hostname: opts.hostname,
+    osType: 'windows',
+    osVersion: '11',
+    architecture: 'x86_64',
+    agentVersion: '0.0.0-test',
+    status: 'offline',
+    enrollmentIp: opts.enrollmentIp,
+    enrolledAt: new Date(),
+  });
+}
+
+async function addRemoteToolGuid(partnerId: string, value: string) {
+  await withSystemDbAccessContext(() => db.insert(abuseEndpointFingerprints).values({
+    partnerId, kind: 'remote_tool_guid', value,
+  }));
+}
+
+async function addOpenSignal(partnerId: string, signalKey: string, score: number, evidence: Record<string, unknown> = {}) {
+  await withSystemDbAccessContext(() => db.insert(partnerAbuseSignals).values({
+    partnerId, signalKey, severity: 'alert', score, evidence,
+  }));
+}
+
+/**
+ * A partner on the suspended side: status `suspended` plus the abuse audit row
+ * by default. `suspendedAt: null` skips the audit row (suspended for another
+ * reason); `status: 'active'` models a reinstated partner.
+ */
+async function suspendedPartner(opts: {
+  suspendedAt?: Date | null;
+  status?: 'suspended' | 'active';
+  signupIp?: string;
+  signupUserAgent?: string;
+  billingCardFingerprint?: string;
+  email?: string;
+}) {
+  const partner = await createPartner({ status: opts.status ?? 'suspended' });
+  await setPartnerFields(partner.id, {
+    signupIp: opts.signupIp,
+    signupUserAgent: opts.signupUserAgent,
+    billingCardFingerprint: opts.billingCardFingerprint,
+  });
+  if (opts.suspendedAt !== null) await markSuspendedForAbuse(partner.id, opts.suspendedAt ?? new Date());
+  if (opts.email) await createUser({ partnerId: partner.id, email: opts.email });
+  return partner.id;
+}
+
+async function probationPartner(opts: {
+  trustState?: PartnerTrustState;
+  signupIp?: string;
+  signupIpClass?: IpClass;
+  signupUserAgent?: string;
+  billingCardFingerprint?: string;
+  email?: string;
+} = {}) {
+  const partner = await createPartner();
+  await setPartnerFields(partner.id, {
+    trustState: opts.trustState ?? 'probation',
+    signupIpClass: opts.signupIpClass ?? 'residential',
+    signupIp: opts.signupIp,
+    signupUserAgent: opts.signupUserAgent,
+    billingCardFingerprint: opts.billingCardFingerprint,
+  });
+  if (opts.email) await createUser({ partnerId: partner.id, email: opts.email });
+  return partner.id;
+}
+
+const TOR_DECISION: HardDenyDecision = {
+  restrict: true,
+  reason: 'auto:tor_signup',
+  evidence: { matchedAxes: ['signup_ip_class'], signupIpClass: 'tor' },
+};
+
+const NO_RESTRICT: HardDenyDecision = { restrict: false };
+
+const cardDecision = (suspendedId: string): HardDenyDecision => ({
+  restrict: true,
+  reason: 'auto:fraud_identity_match',
+  evidence: { matchedAxes: ['billing_card_fingerprint', 'suspended_for_abuse'], matchedSuspendedPartnerId: suspendedId },
+});
+
+const networkDecision = (
+  suspendedId: string,
+  candidateIp: string,
+  suspendedIp: string,
+  corroboration: { type: string; value: string },
+): HardDenyDecision => ({
+  restrict: true,
+  reason: 'auto:corroborated_suspended_network',
+  evidence: {
+    matchedAxes: ['network_prefix', corroboration.type],
+    matchedSuspendedPartnerId: suspendedId,
+    network: { candidateIp, suspendedIp, prefixLength: 24 },
+    corroboration,
+  },
+});
+
+type Scenario = { name: string; partnerId: string; expected: HardDenyDecision };
+
+/**
+ * One database holding every axis at once, each scenario on its own /24,
+ * email domain, card fingerprint, user agent, hostname prefix and remote-tool
+ * id so scenarios cannot corroborate each other. Shared on purpose: the
+ * batched path evaluates many partners against one set, so cross-partner
+ * leakage in that set has to be visible here.
+ */
+async function seedWorld(): Promise<Scenario[]> {
+  const scenarios: Scenario[] = [];
+  const add = (name: string, partnerId: string, expected: HardDenyDecision) => {
+    scenarios.push({ name, partnerId, expected });
+  };
+
+  add('tor signup', await probationPartner({ signupIpClass: 'tor' }), TOR_DECISION);
+
+  // The card axis has no window: a suspension 200 days old still counts.
+  const oldCard = await suspendedPartner({ suspendedAt: daysAgo(200), billingCardFingerprint: 'fp_w_old' });
+  add('card vs a suspension older than 90 days',
+    await probationPartner({ billingCardFingerprint: 'fp_w_old' }), cardDecision(oldCard));
+
+  await suspendedPartner({ suspendedAt: null, billingCardFingerprint: 'fp_w_nonabuse' });
+  add('card vs a partner suspended for a non-abuse reason',
+    await probationPartner({ billingCardFingerprint: 'fp_w_nonabuse' }), NO_RESTRICT);
+
+  await suspendedPartner({ status: 'active', billingCardFingerprint: 'fp_w_reinstated' });
+  add('card vs a reinstated (no longer suspended) partner',
+    await probationPartner({ billingCardFingerprint: 'fp_w_reinstated' }), NO_RESTRICT);
+
+  const inWindow = await suspendedPartner({ suspendedAt: daysAgo(89), signupIp: '198.18.1.5', email: 'x@in-window.test' });
+  add('network + email, suspension 89 days ago',
+    await probationPartner({ signupIp: '198.18.1.77', email: 'y@in-window.test' }),
+    networkDecision(inWindow, '198.18.1.77', '198.18.1.5', { type: 'email_domain', value: 'in-window.test' }));
+
+  await suspendedPartner({ suspendedAt: daysAgo(91), signupIp: '198.18.2.5', email: 'x@out-window.test' });
+  add('network + email, suspension 91 days ago',
+    await probationPartner({ signupIp: '198.18.2.77', email: 'y@out-window.test' }), NO_RESTRICT);
+
+  const tDevice = await suspendedPartner({ signupIp: '198.18.3.5', email: 'x@dev-t.test' });
+  const tDeviceTarget = await probationPartner({ signupIp: '198.18.240.1', email: 'y@dev-t.test' });
+  await addDevice(tDeviceTarget, { hostname: 'tdvtgt-01', enrollmentIp: '198.18.3.200' });
+  add('network via the target device enrollment IP', tDeviceTarget,
+    networkDecision(tDevice, '198.18.3.200', '198.18.3.5', { type: 'email_domain', value: 'dev-t.test' }));
+
+  const sDevice = await suspendedPartner({ email: 'x@dev-s.test' });
+  await addDevice(sDevice, { hostname: 'sdvsus-01', enrollmentIp: '198.18.4.9' });
+  add('network via the suspended partner device enrollment IP',
+    await probationPartner({ signupIp: '198.18.4.100', email: 'y@dev-s.test' }),
+    networkDecision(sDevice, '198.18.4.100', '198.18.4.9', { type: 'email_domain', value: 'dev-s.test' }));
+
+  const uaHost = await suspendedPartner({ signupIp: '198.18.5.5', signupUserAgent: 'UA-world-host' });
+  await addDevice(uaHost, { hostname: 'QXHOST-SUSP', enrollmentIp: '198.18.241.1' });
+  const uaHostTarget = await probationPartner({ signupIp: '198.18.5.6', signupUserAgent: 'UA-world-host' });
+  await addDevice(uaHostTarget, { hostname: 'qxhost-tgt', enrollmentIp: '198.18.242.1' });
+  add('network + user agent + hostname prefix', uaHostTarget,
+    networkDecision(uaHost, '198.18.5.6', '198.18.5.5', { type: 'signup_user_agent_hostname_prefix', value: 'qxhost' }));
+
+  const uaOnly = await suspendedPartner({ signupIp: '198.18.6.5', signupUserAgent: 'UA-world-only' });
+  await addDevice(uaOnly, { hostname: 'AAAAAA-SUSP', enrollmentIp: '198.18.243.1' });
+  const uaOnlyTarget = await probationPartner({ signupIp: '198.18.6.6', signupUserAgent: 'UA-world-only' });
+  await addDevice(uaOnlyTarget, { hostname: 'BBBBBB-TGT', enrollmentIp: '198.18.244.1' });
+  add('network + user agent without a hostname prefix match', uaOnlyTarget, NO_RESTRICT);
+
+  // Several suspended matches on the network axis: the lowest suspended id
+  // wins, then the lowest candidate IP.
+  const netA = await suspendedPartner({ signupIp: '198.18.7.5', email: 'x@multi-net.test' });
+  const netB = await suspendedPartner({ signupIp: '198.18.7.6', email: 'z@multi-net.test' });
+  const multiNetTarget = await probationPartner({ signupIp: '198.18.7.50', email: 'y@multi-net.test' });
+  await addDevice(multiNetTarget, { hostname: 'mnettg-01', enrollmentIp: '198.18.7.20' });
+  const netWinner = [netA, netB].sort()[0]!;
+  add('network, several suspended matches', multiNetTarget,
+    networkDecision(netWinner, '198.18.7.20', netWinner === netA ? '198.18.7.5' : '198.18.7.6',
+      { type: 'email_domain', value: 'multi-net.test' }));
+
+  const cardA = await suspendedPartner({ billingCardFingerprint: 'fp_w_multi' });
+  const cardB = await suspendedPartner({ suspendedAt: daysAgo(300), billingCardFingerprint: 'fp_w_multi' });
+  add('card, several suspended matches',
+    await probationPartner({ billingCardFingerprint: 'fp_w_multi' }), cardDecision([cardA, cardB].sort()[0]!));
+
+  const both = await suspendedPartner({ signupIp: '198.18.8.5', email: 'x@both.test', billingCardFingerprint: 'fp_w_both' });
+  add('card takes precedence over network',
+    await probationPartner({ signupIp: '198.18.8.6', email: 'y@both.test', billingCardFingerprint: 'fp_w_both' }),
+    cardDecision(both));
+
+  await suspendedPartner({ billingCardFingerprint: 'fp_w_tor' });
+  add('tor takes precedence over card',
+    await probationPartner({ signupIpClass: 'tor', billingCardFingerprint: 'fp_w_tor' }), TOR_DECISION);
+
+  const recidivist = await suspendedPartner({});
+  await addRemoteToolGuid(recidivist, 'guid-world-r');
+  const recidivistTarget = await probationPartner();
+  await addRemoteToolGuid(recidivistTarget, 'guid-world-r');
+  await addOpenSignal(recidivistTarget, 'rmm.recidivist_endpoint', 100);
+  add('recidivist remote-tool id + open signal', recidivistTarget, {
+    restrict: true,
+    reason: 'auto:recidivist_endpoint',
+    evidence: { matchedAxes: ['remote_tool_guid', 'suspended_for_abuse'], matchedSuspendedPartnerId: recidivist },
+  });
+
+  const oldRecidivist = await suspendedPartner({ suspendedAt: daysAgo(120) });
+  await addRemoteToolGuid(oldRecidivist, 'guid-world-old');
+  const oldRecidivistTarget = await probationPartner();
+  await addRemoteToolGuid(oldRecidivistTarget, 'guid-world-old');
+  await addOpenSignal(oldRecidivistTarget, 'rmm.recidivist_endpoint', 100);
+  add('recidivist vs a suspension older than 90 days', oldRecidivistTarget, NO_RESTRICT);
+
+  const noSignal = await suspendedPartner({});
+  await addRemoteToolGuid(noSignal, 'guid-world-nosig');
+  const noSignalTarget = await probationPartner();
+  await addRemoteToolGuid(noSignalTarget, 'guid-world-nosig');
+  add('recidivist remote-tool id without an open signal', noSignalTarget, NO_RESTRICT);
+
+  const cardTesting = await probationPartner();
+  await addOpenSignal(cardTesting, 'billing.card_testing', 100, {
+    partnerName: 'not copied', distinctPaymentMethods: 17, failedAttempts: 11, spanMinutes: 41,
+  });
+  const [signal] = await withSystemDbAccessContext(() => db
+    .select({ id: partnerAbuseSignals.id })
+    .from(partnerAbuseSignals)
+    .where(eq(partnerAbuseSignals.partnerId, cardTesting)));
+  add('open card_testing signal', cardTesting, {
+    restrict: true,
+    reason: 'auto:card_testing',
+    evidence: {
+      matchedAxes: ['billing.card_testing'],
+      signalId: signal!.id,
+      score: 100,
+      alertScore: 70,
+      distinctPaymentMethods: 17,
+      failedAttempts: 11,
+      spanMinutes: 41,
+    },
+  });
+
+  await suspendedPartner({ billingCardFingerprint: 'fp_w_trusted' });
+  add('a trusted partner is never evaluated',
+    await probationPartner({ trustState: 'trusted', billingCardFingerprint: 'fp_w_trusted' }), NO_RESTRICT);
+
+  add('a clean probation partner',
+    await probationPartner({ signupIp: '198.18.9.9', email: 'clean@clean-world.test' }), NO_RESTRICT);
+
+  return scenarios;
+}
+
+describe('evaluateHardDenies — every axis in one populated database (#11560)', () => {
+  runDb('returns the pinned decision for every scenario (single-partner path)', async () => {
+    const scenarios = await seedWorld();
+    for (const scenario of scenarios) {
+      expect({ name: scenario.name, decision: await evaluateHardDenies(scenario.partnerId) })
+        .toEqual({ name: scenario.name, decision: scenario.expected });
+    }
+  });
+
+  runDb('a suspended set built once returns the same decisions as the single-partner path', async () => {
+    const scenarios = await seedWorld();
+    const suspendedSet = await loadSuspendedAbuseSet();
+    for (const scenario of scenarios) {
+      const batched = await evaluateHardDenies(scenario.partnerId, { suspendedSet });
+      const single = await evaluateHardDenies(scenario.partnerId);
+      expect({ name: scenario.name, batched, single })
+        .toEqual({ name: scenario.name, batched: scenario.expected, single: scenario.expected });
+    }
   });
 });

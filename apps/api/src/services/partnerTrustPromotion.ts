@@ -143,16 +143,172 @@ interface HardDenyRow {
 }
 
 /**
+ * The suspended-for-abuse side of the hard-deny comparison, built once and
+ * reused across many evaluations (#11560). None of it depends on the partner
+ * being evaluated, and rebuilding it per partner was most of the cost of the
+ * promote job (an audit_logs probe per suspended partner, plus a re-scan of
+ * every suspended IP once per suspended partner).
+ *
+ * The three payloads are JSON arrays, bound as single parameters into the
+ * per-partner statement in place of the CTEs they replace there:
+ *   - `cardsJson`  → suspended_abuse: every partner with status 'suspended'
+ *     and a `partner.suspended_for_abuse` audit row, ever (the card axis has
+ *     no window). Rows without a card fingerprint are left out; they can never
+ *     match it.
+ *   - `recentJson` → recent_suspended_abuse: the same, with an audit row in
+ *     the last 90 days (the network and recidivist axes).
+ *   - `ipsJson`    → suspended_ips: the recent partners' signup and device
+ *     enrollment IPs, de-duplicated, each with its /24 (IPv4) or /64 (IPv6)
+ *     network computed by Postgres with the same expression the target side
+ *     uses.
+ *
+ * Only `loadSuspendedAbuseSet` builds one. The 90-day window is evaluated
+ * when the set is built, so a set is as old as `loadedAt`.
+ */
+export interface SuspendedAbuseSet {
+  readonly loadedAt: Date;
+  readonly cardsJson: string;
+  readonly recentJson: string;
+  readonly ipsJson: string;
+}
+
+interface SuspendedAbuseSetRow {
+  cards: string;
+  recent: string;
+  ips: string;
+}
+
+/**
+ * Builds the suspended-for-abuse set in one short system-scope statement. It
+ * throws on failure rather than returning an empty set: an empty set would
+ * switch off the card, network and recidivist axes and let partners through.
+ */
+export async function loadSuspendedAbuseSet(): Promise<SuspendedAbuseSet> {
+  const row = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const rows = (await db.execute(sql`
+      WITH abuse AS MATERIALIZED (
+        SELECT
+          p.id,
+          p.signup_ip,
+          p.signup_user_agent,
+          p.billing_card_fingerprint,
+          last_abuse.at >= now() - interval '90 days' AS recent
+        FROM partners p
+        CROSS JOIN LATERAL (
+          SELECT max(a.timestamp) AS at
+          FROM audit_logs a
+          WHERE a.resource_id = p.id
+            AND a.resource_type = 'partner'
+            AND a.action = 'partner.suspended_for_abuse'
+        ) last_abuse
+        WHERE p.status = 'suspended'
+          AND last_abuse.at IS NOT NULL
+      ),
+      recent_ips AS (
+        SELECT DISTINCT
+          x.partner_id,
+          x.ip,
+          set_masklen(
+            host(x.ip::inet)::inet,
+            CASE WHEN family(host(x.ip::inet)::inet) = 4 THEN 24 ELSE 64 END
+          )::cidr AS net
+        FROM (
+          SELECT s.id AS partner_id, s.signup_ip AS ip
+          FROM abuse s
+          WHERE s.recent AND s.signup_ip IS NOT NULL
+          UNION ALL
+          SELECT s.id AS partner_id, d.enrollment_ip AS ip
+          FROM abuse s
+          JOIN organizations o ON o.partner_id = s.id
+          JOIN devices d ON d.org_id = o.id
+          WHERE s.recent AND d.enrollment_ip IS NOT NULL
+        ) x
+      )
+      SELECT
+        (SELECT COALESCE(json_agg(json_build_object(
+            'id', s.id,
+            'billing_card_fingerprint', s.billing_card_fingerprint
+          ) ORDER BY s.id), '[]'::json)
+         FROM abuse s WHERE s.billing_card_fingerprint IS NOT NULL)::text AS cards,
+        (SELECT COALESCE(json_agg(json_build_object(
+            'id', s.id,
+            'signup_ip', s.signup_ip,
+            'signup_user_agent', s.signup_user_agent,
+            'billing_card_fingerprint', s.billing_card_fingerprint
+          ) ORDER BY s.id), '[]'::json)
+         FROM abuse s WHERE s.recent)::text AS recent,
+        (SELECT COALESCE(json_agg(json_build_object(
+            'partner_id', i.partner_id,
+            'ip', i.ip,
+            'net', i.net
+          ) ORDER BY i.partner_id, i.ip), '[]'::json)
+         FROM recent_ips i)::text AS ips
+    `)) as unknown as SuspendedAbuseSetRow[];
+    return rows[0];
+  }, 'partnerTrustPromotion.suspendedSet'));
+  if (!row || typeof row.cards !== 'string' || typeof row.recent !== 'string' || typeof row.ips !== 'string') {
+    throw new Error('[partnerTrustPromotion] suspended-for-abuse set query returned no row');
+  }
+  return { loadedAt: new Date(), cardsJson: row.cards, recentJson: row.recent, ipsJson: row.ips };
+}
+
+/**
+ * How long the promote job reuses one suspended-for-abuse set. A partner
+ * suspended for abuse mid-run is seen by evaluations at most this much later;
+ * the one-way move to `trusted` re-checks against a fresh set regardless (see
+ * tryAutoPromote).
+ */
+export const SUSPENDED_SET_MAX_AGE_MS = 60_000;
+
+/**
+ * A per-run holder for the suspended-for-abuse set: built on first use and
+ * rebuilt once it is older than `maxAgeMs`. A failed build is not cached, so
+ * the next caller tries again; nothing ever sees an empty set in its place.
+ */
+export function createSuspendedAbuseSetCache(
+  maxAgeMs: number = SUSPENDED_SET_MAX_AGE_MS,
+  now: () => number = Date.now,
+): { get(): Promise<SuspendedAbuseSet> } {
+  let current: { set: SuspendedAbuseSet; builtAt: number } | null = null;
+  return {
+    async get() {
+      if (current && now() - current.builtAt < maxAgeMs) return current.set;
+      current = null;
+      const builtAt = now();
+      const set = await loadSuspendedAbuseSet();
+      current = { set, builtAt };
+      return set;
+    },
+  };
+}
+
+export interface HardDenyOptions {
+  /**
+   * A set from loadSuspendedAbuseSet (or the job's cache) to evaluate against.
+   * Without one, a fresh set is built for this call.
+   */
+  suspendedSet?: SuspendedAbuseSet;
+}
+
+/**
  * Evaluates local, independently sufficient abuse signals under a system DB
  * context. Returning no row means the partner is absent or no longer in
  * probation, which also prevents a billing outage from affecting trusted or
  * already-restricted partners.
+ *
+ * The suspended-for-abuse side comes from `options.suspendedSet`, or from a
+ * set built for this call. Everything about the evaluated partner is read
+ * fresh, in the per-partner statement below.
  */
-export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDecision> {
+export async function evaluateHardDenies(
+  partnerId: string,
+  options: HardDenyOptions = {},
+): Promise<HardDenyDecision> {
   // Read per evaluation (not module load) so ABUSE_SIGNAL_OVERRIDES applies,
   // and so this gate always agrees with the threshold that made the signal an
   // alert in the first place.
   const alertScore = loadSignalConfig()['severity.alert_score'];
+  const set = options.suspendedSet ?? await loadSuspendedAbuseSet();
   const freeMailDomains = sql.join(
     [...FREE_MAIL_DOMAINS].map((domain) => sql`${domain}`),
     sql`, `,
@@ -164,43 +320,39 @@ export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDec
         FROM partners
         WHERE id = ${partnerId} AND trust_state = 'probation'
       ),
-      suspended_abuse AS (
-        SELECT DISTINCT p.id, p.signup_ip, p.signup_user_agent, p.billing_card_fingerprint
-        FROM partners p
-        JOIN audit_logs a
-          ON a.resource_id = p.id
-         AND a.resource_type = 'partner'
-         AND a.action = 'partner.suspended_for_abuse'
-        WHERE p.status = 'suspended'
+      suspended_abuse AS MATERIALIZED (
+        SELECT s.id, s.billing_card_fingerprint
+        FROM jsonb_to_recordset(${set.cardsJson}::jsonb) AS s(id uuid, billing_card_fingerprint text)
       ),
-      recent_suspended_abuse AS (
-        SELECT DISTINCT p.id, p.signup_ip, p.signup_user_agent, p.billing_card_fingerprint
-        FROM partners p
-        JOIN audit_logs a
-          ON a.resource_id = p.id
-         AND a.resource_type = 'partner'
-         AND a.action = 'partner.suspended_for_abuse'
-         AND a.timestamp >= now() - interval '90 days'
-        WHERE p.status = 'suspended'
+      recent_suspended_abuse AS MATERIALIZED (
+        SELECT s.id, s.signup_ip, s.signup_user_agent, s.billing_card_fingerprint
+        FROM jsonb_to_recordset(${set.recentJson}::jsonb)
+          AS s(id uuid, signup_ip text, signup_user_agent text, billing_card_fingerprint text)
       ),
-      target_ips AS (
-        SELECT t.signup_ip AS ip FROM target t WHERE t.signup_ip IS NOT NULL
-        UNION ALL
-        SELECT d.enrollment_ip AS ip
-        FROM devices d
-        JOIN organizations o ON o.id = d.org_id
-        JOIN target t ON t.id = o.partner_id
-        WHERE d.enrollment_ip IS NOT NULL
+      target_ips AS MATERIALIZED (
+        SELECT
+          x.ip,
+          -- inet retains the host bits after set_masklen (only cidr zeroes
+          -- them), so the network is compared as ::cidr: two distinct IPs
+          -- sharing a prefix get the same value. Same expression as the
+          -- suspended side's net in loadSuspendedAbuseSet.
+          set_masklen(
+            host(x.ip::inet)::inet,
+            CASE WHEN family(host(x.ip::inet)::inet) = 4 THEN 24 ELSE 64 END
+          )::cidr AS net
+        FROM (
+          SELECT t.signup_ip AS ip FROM target t WHERE t.signup_ip IS NOT NULL
+          UNION ALL
+          SELECT d.enrollment_ip AS ip
+          FROM devices d
+          JOIN organizations o ON o.id = d.org_id
+          JOIN target t ON t.id = o.partner_id
+          WHERE d.enrollment_ip IS NOT NULL
+        ) x
       ),
-      suspended_ips AS (
-        SELECT s.id AS partner_id, s.signup_ip AS ip
-        FROM recent_suspended_abuse s WHERE s.signup_ip IS NOT NULL
-        UNION ALL
-        SELECT s.id AS partner_id, d.enrollment_ip AS ip
-        FROM recent_suspended_abuse s
-        JOIN organizations o ON o.partner_id = s.id
-        JOIN devices d ON d.org_id = o.id
-        WHERE d.enrollment_ip IS NOT NULL
+      suspended_ips AS MATERIALIZED (
+        SELECT si.partner_id, si.ip, si.net
+        FROM jsonb_to_recordset(${set.ipsJson}::jsonb) AS si(partner_id uuid, ip text, net cidr)
       ),
       network_matches AS (
         SELECT
@@ -227,19 +379,9 @@ export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDec
           ) AS corroboration_value
         FROM target t
         CROSS JOIN target_ips ti
-        JOIN suspended_ips si
-          ON family(host(ti.ip::inet)::inet) = family(host(si.ip::inet)::inet)
-         -- inet retains the host bits after set_masklen (only cidr zeroes
-         -- them), so comparing two set_masklen(...)::inet values only matches
-         -- byte-identical addresses, never two distinct IPs sharing a
-         -- prefix. Cast to ::cidr to compare actual network addresses.
-         AND set_masklen(
-           host(ti.ip::inet)::inet,
-           CASE WHEN family(host(ti.ip::inet)::inet) = 4 THEN 24 ELSE 64 END
-         )::cidr = set_masklen(
-           host(si.ip::inet)::inet,
-           CASE WHEN family(host(si.ip::inet)::inet) = 4 THEN 24 ELSE 64 END
-         )::cidr
+        -- cidr equality compares family, prefix length and network address,
+        -- so this also enforces the same address family on both sides.
+        JOIN suspended_ips si ON si.net = ti.net
         JOIN recent_suspended_abuse s ON s.id = si.partner_id AND s.id <> t.id
         LEFT JOIN LATERAL (
           SELECT lower(split_part(tu.email, '@', 2)) AS domain
@@ -612,9 +754,13 @@ export async function closeOpenCheckoutsAfterRestrict(partnerId: string, reason:
  * it — `tryAutoPromote` calls it first, so no caller can promote a partner
  * that should have been restricted. The ip-classify job still calls it
  * directly, since that path restricts without attempting a promotion.
+ *
+ * `options.suspendedSet` lets a caller that evaluates many partners (the
+ * promote job) share one suspended-for-abuse set; without it the evaluation
+ * builds its own.
  */
-export async function restrictOnHardDeny(partnerId: string): Promise<boolean> {
-  const decision = await evaluateHardDenies(partnerId);
+export async function restrictOnHardDeny(partnerId: string, options: HardDenyOptions = {}): Promise<boolean> {
+  const decision = await evaluateHardDenies(partnerId, options);
   if (!decision.restrict) return false;
   const restricted = await setTrustState(
     partnerId,
@@ -643,13 +789,13 @@ export async function restrictOnHardDeny(partnerId: string): Promise<boolean> {
   return restricted;
 }
 
-export async function tryAutoPromote(partnerId: string): Promise<boolean> {
+export async function tryAutoPromote(partnerId: string, options: HardDenyOptions = {}): Promise<boolean> {
   const current = await readTrust(partnerId);
   if (current?.trustState !== 'probation') return false;
   // Hard denies are evaluated here, not at the call site, so a direct caller
   // can never promote past a signal that should restrict. A failure to
   // evaluate them propagates rather than falling through to promotion.
-  if (await restrictOnHardDeny(partnerId)) return false;
+  if (await restrictOnHardDeny(partnerId, options)) return false;
   const facts = await gatherPromotionFacts(partnerId);
   const decision = promotionDecision(facts, new Date());
   if (!decision.promote) {
@@ -661,6 +807,12 @@ export async function tryAutoPromote(partnerId: string): Promise<boolean> {
     }
     return false;
   }
+  // A shared suspended set can be up to SUSPENDED_SET_MAX_AGE_MS old, and no
+  // hard-deny axis ever evaluates a trusted partner again. So before that
+  // one-way move, re-check against a freshly built set: a partner suspended
+  // for abuse since the set was built must still block this promotion.
+  // Promotions are rare, so the extra build is cheap.
+  if (options.suspendedSet && await restrictOnHardDeny(partnerId)) return false;
   // setTrustState's writeTrust performs the actual UPDATE under
   // `AND trust_state = 'probation'` (expectedFrom), so this is an atomic
   // compare-and-swap: an admin restriction (or a second, concurrent

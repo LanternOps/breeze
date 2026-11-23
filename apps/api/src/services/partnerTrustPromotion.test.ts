@@ -55,8 +55,8 @@ const billingClient = () => ({
 });
 
 import {
-  evaluateHardDenies, gatherPromotionFacts, promotionDecision, restrictOnHardDeny,
-  tryAutoPromote, type PromotionFacts,
+  createSuspendedAbuseSetCache, evaluateHardDenies, gatherPromotionFacts, loadSuspendedAbuseSet,
+  promotionDecision, restrictOnHardDeny, SUSPENDED_SET_MAX_AGE_MS, tryAutoPromote, type PromotionFacts,
 } from './partnerTrustPromotion';
 
 const now = new Date('2026-09-02T12:00:00.000Z');
@@ -114,17 +114,51 @@ function renderSql(query: unknown): { text: string; params: unknown[] } {
   return { text: walk(query), params };
 }
 
+// evaluateHardDenies runs two statements: the suspended-for-abuse set build
+// (unless a set is passed in) and the per-partner evaluation. The mock routes
+// each to its own result so a test of one cannot pass on the other's rows.
+const SET_ROW = {
+  cards: '[{"id":"sus-card","billing_card_fingerprint":"fp_1"}]',
+  recent: '[{"id":"sus-recent","signup_ip":"203.0.113.5","signup_user_agent":null,"billing_card_fingerprint":null}]',
+  ips: '[{"partner_id":"sus-recent","ip":"203.0.113.5","net":"203.0.113.0/24"}]',
+};
+const isSetQuery = (query: unknown) => renderSql(query).text.includes('WITH abuse AS MATERIALIZED');
+let setRows: unknown[] = [SET_ROW];
+
+function evaluationReturns(rows: unknown[]) {
+  execute.mockImplementation(async (query: unknown) => (isSetQuery(query) ? setRows : rows));
+}
+
+function evaluationRejects(error: Error) {
+  execute.mockImplementation(async (query: unknown) => {
+    if (isSetQuery(query)) return setRows;
+    throw error;
+  });
+}
+
+const setQueries = () => execute.mock.calls.filter(([query]) => isSetQuery(query));
+const evaluationQueries = () => execute.mock.calls.filter(([query]) => !isSetQuery(query));
+function evaluationQuery(): unknown {
+  const [call] = evaluationQueries();
+  if (!call) throw new Error('no per-partner evaluation statement was executed');
+  return call[0];
+}
+
+beforeEach(() => {
+  setRows = [SET_ROW];
+});
+
 describe('evaluateHardDenies', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.ABUSE_SIGNAL_OVERRIDES;
     getBillingClient.mockImplementation(billingClient);
-    execute.mockResolvedValue([hardDenyRow()]);
+    evaluationReturns([hardDenyRow()]);
     hasFraudulentRefundMatch.mockResolvedValue(false);
   });
 
   it('restricts a probation partner that signed up over Tor', async () => {
-    execute.mockResolvedValue([hardDenyRow({ signup_ip_class: 'tor' })]);
+    evaluationReturns([hardDenyRow({ signup_ip_class: 'tor' })]);
 
     await expect(evaluateHardDenies('p1')).resolves.toEqual({
       restrict: true,
@@ -137,13 +171,13 @@ describe('evaluateHardDenies', () => {
   it('does not restrict on a suspended-partner network match alone', async () => {
     // No network result is returned unless SQL found a second, corroborating
     // axis; sharing an IP prefix by itself remains deliberately insufficient.
-    execute.mockResolvedValue([hardDenyRow()]);
+    evaluationReturns([hardDenyRow()]);
 
     await expect(evaluateHardDenies('p1')).resolves.toEqual({ restrict: false });
   });
 
   it('restricts on an IP prefix plus the same email domain and names both axes', async () => {
-    execute.mockResolvedValue([hardDenyRow({
+    evaluationReturns([hardDenyRow({
       network_partner_id: 'suspended-1',
       candidate_ip: '198.51.100.9',
       suspended_ip: '198.51.100.25',
@@ -166,7 +200,7 @@ describe('evaluateHardDenies', () => {
   });
 
   it('restricts on a card fingerprint belonging to a suspended-for-abuse partner', async () => {
-    execute.mockResolvedValue([hardDenyRow({ card_partner_id: 'suspended-1' })]);
+    evaluationReturns([hardDenyRow({ card_partner_id: 'suspended-1' })]);
 
     await expect(evaluateHardDenies('p1')).resolves.toEqual(expect.objectContaining({
       restrict: true,
@@ -186,7 +220,7 @@ describe('evaluateHardDenies', () => {
   });
 
   it('restricts on an open card_testing signal at alert score and carries its evidence', async () => {
-    execute.mockResolvedValue([hardDenyRow({
+    evaluationReturns([hardDenyRow({
       card_testing_signal_id: 'sig-1',
       card_testing_score: 100,
       card_testing_evidence: {
@@ -224,7 +258,7 @@ describe('evaluateHardDenies', () => {
 
     await evaluateHardDenies('p1');
 
-    const { text, params } = renderSql(execute.mock.calls[0]![0]);
+    const { text, params } = renderSql(evaluationQuery());
     expect(text).toContain("signal_key = 'billing.card_testing'");
     expect(text).toMatch(/pas\.score >= \$/);
     expect(params).toContain(85);
@@ -232,7 +266,7 @@ describe('evaluateHardDenies', () => {
   });
 
   it('restricts on a remote-tool instance match with a suspended-for-abuse partner', async () => {
-    execute.mockResolvedValue([hardDenyRow({ recidivist_partner_id: 'suspended-9' })]);
+    evaluationReturns([hardDenyRow({ recidivist_partner_id: 'suspended-9' })]);
 
     await expect(evaluateHardDenies('p1')).resolves.toEqual({
       restrict: true,
@@ -248,7 +282,7 @@ describe('evaluateHardDenies', () => {
   it('only matches the recidivist axis on the stable remote-tool instance id behind an open signal', async () => {
     await evaluateHardDenies('p1');
 
-    const { text } = renderSql(execute.mock.calls[0]![0]);
+    const { text } = renderSql(evaluationQuery());
     expect(text).toContain("sf.kind = 'remote_tool_guid'");
     expect(text).toContain("tf.kind = 'remote_tool_guid'");
     expect(text).toContain("signal_key = 'rmm.recidivist_endpoint'");
@@ -262,7 +296,7 @@ describe('evaluateHardDenies', () => {
     // it on the mocked row anyway (rather than an unconditional empty array
     // for both cases) to exercise evaluateHardDenies' own belt-and-suspenders
     // trust_state check independently of the SQL filter.
-    execute.mockResolvedValue([hardDenyRow({
+    evaluationReturns([hardDenyRow({
       trust_state: trustState,
       card_testing_signal_id: 'sig-1',
       card_testing_score: 100,
@@ -272,6 +306,95 @@ describe('evaluateHardDenies', () => {
 
     await expect(evaluateHardDenies('p1')).resolves.toEqual({ restrict: false });
     expect(hasFraudulentRefundMatch).not.toHaveBeenCalled();
+  });
+
+  describe('the suspended-for-abuse set (#11560)', () => {
+    it('builds a set first and binds its three payloads into the per-partner statement', async () => {
+      await evaluateHardDenies('p1');
+
+      expect(setQueries()).toHaveLength(1);
+      expect(execute.mock.calls.findIndex(([query]) => isSetQuery(query))).toBe(0);
+      const { text } = renderSql(evaluationQuery());
+      expect(text).toContain(`jsonb_to_recordset(${SET_ROW.cards}::jsonb)`);
+      expect(text).toContain(`jsonb_to_recordset(${SET_ROW.recent}::jsonb)`);
+      expect(text).toContain(`jsonb_to_recordset(${SET_ROW.ips}::jsonb)`);
+      // The suspended side is no longer derived from audit_logs per partner.
+      expect(text).not.toContain('audit_logs');
+    });
+
+    it('builds the set from status=suspended partners with an abuse suspension, recent = 90 days', async () => {
+      await evaluateHardDenies('p1');
+
+      const { text } = renderSql(setQueries()[0]![0]);
+      expect(text).toContain("a.action = 'partner.suspended_for_abuse'");
+      expect(text).toContain("a.resource_type = 'partner'");
+      expect(text).toContain("WHERE p.status = 'suspended'");
+      expect(text).toContain("last_abuse.at >= now() - interval '90 days' AS recent");
+    });
+
+    it('uses a supplied set without building another', async () => {
+      const suspendedSet = await loadSuspendedAbuseSet();
+      execute.mockClear();
+
+      await evaluateHardDenies('p1', { suspendedSet });
+      await evaluateHardDenies('p2', { suspendedSet });
+
+      expect(setQueries()).toHaveLength(0);
+      expect(evaluationQueries()).toHaveLength(2);
+    });
+
+    it('fails closed when the set cannot be built: it rejects and never evaluates', async () => {
+      execute.mockImplementation(async (query: unknown) => {
+        if (isSetQuery(query)) throw new Error('db exploded');
+        return [hardDenyRow()];
+      });
+
+      await expect(evaluateHardDenies('p1')).rejects.toThrow('db exploded');
+      expect(evaluationQueries()).toHaveLength(0);
+      expect(hasFraudulentRefundMatch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no row', []],
+      ['a row without payloads', [{ cards: null, recent: '[]', ips: '[]' }]],
+    ])('rejects rather than treating %s as an empty set', async (_label, rows) => {
+      setRows = rows;
+
+      await expect(loadSuspendedAbuseSet()).rejects.toThrow('suspended-for-abuse set query returned no row');
+      await expect(evaluateHardDenies('p1')).rejects.toThrow('suspended-for-abuse set query returned no row');
+      expect(evaluationQueries()).toHaveLength(0);
+    });
+  });
+});
+
+describe('createSuspendedAbuseSetCache', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    evaluationReturns([hardDenyRow()]);
+  });
+
+  it('reuses one set until it is max-age old, then rebuilds', async () => {
+    let clock = 1_000_000;
+    const cache = createSuspendedAbuseSetCache(SUSPENDED_SET_MAX_AGE_MS, () => clock);
+
+    const first = await cache.get();
+    clock += SUSPENDED_SET_MAX_AGE_MS - 1;
+    expect(await cache.get()).toBe(first);
+    expect(setQueries()).toHaveLength(1);
+
+    clock += 1;
+    const second = await cache.get();
+    expect(second).not.toBe(first);
+    expect(setQueries()).toHaveLength(2);
+  });
+
+  it('does not cache a failed build: the next caller builds again', async () => {
+    const cache = createSuspendedAbuseSetCache();
+    execute.mockRejectedValueOnce(new Error('db exploded'));
+
+    await expect(cache.get()).rejects.toThrow('db exploded');
+    await expect(cache.get()).resolves.toEqual(expect.objectContaining({ cardsJson: SET_ROW.cards }));
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -370,7 +493,7 @@ describe('tryAutoPromote', () => {
     // fails closed (see the billing-hold-unknown tests below).
     getSignupRiskHold.mockResolvedValue({ status: 'none' });
     setTrustState.mockResolvedValue(true);
-    execute.mockResolvedValue([hardDenyRow()]);
+    evaluationReturns([hardDenyRow()]);
     hasFraudulentRefundMatch.mockResolvedValue(false);
     sendEvidenceCard.mockResolvedValue(undefined);
 
@@ -393,9 +516,59 @@ describe('tryAutoPromote', () => {
       expect.objectContaining({ settledCard: { chargeId: 'ch_1', settledAt: hoursAgo(24) } }),
       { expectedFrom: 'probation' },
     );
-    // One system context for the hard-deny query, one for the local facts.
-    expect(runOutside).toHaveBeenCalledTimes(2);
-    expect(withSystem).toHaveBeenCalledTimes(2);
+    // One system context each for the suspended-set build, the hard-deny
+    // query and the local facts; no connection is held across them.
+    expect(runOutside).toHaveBeenCalledTimes(3);
+    expect(withSystem).toHaveBeenCalledTimes(3);
+    expect(setQueries()).toHaveLength(1);
+    expect(evaluationQueries()).toHaveLength(1);
+  });
+
+  describe('with a shared suspended set (the promote job, #11560)', () => {
+    const shared = {
+      loadedAt: new Date(), cardsJson: '[]', recentJson: '[]', ipsJson: '[]',
+    };
+
+    it('evaluates against the shared set, then re-checks against a fresh one before promoting', async () => {
+      await expect(tryAutoPromote('p1', { suspendedSet: shared })).resolves.toBe(true);
+
+      expect(setQueries()).toHaveLength(1);
+      const [first, second] = evaluationQueries().map(([query]) => renderSql(query).text);
+      expect(first).toContain(`jsonb_to_recordset(${shared.ipsJson}::jsonb)`);
+      expect(second).toContain(`jsonb_to_recordset(${SET_ROW.ips}::jsonb)`);
+      expect(setTrustState).toHaveBeenCalledWith(
+        'p1', 'trusted', 'auto:settled_card_24h', null, expect.any(Object), { expectedFrom: 'probation' },
+      );
+    });
+
+    it('does not promote when the fresh re-check restricts the partner', async () => {
+      // The stale shared set has no match; the fresh one does (a partner
+      // suspended for abuse after the shared set was built).
+      execute.mockImplementation(async (query: unknown) => {
+        if (isSetQuery(query)) return [SET_ROW];
+        const { text } = renderSql(query);
+        return text.includes(SET_ROW.cards)
+          ? [hardDenyRow({ card_partner_id: 'sus-card' })]
+          : [hardDenyRow()];
+      });
+
+      await expect(tryAutoPromote('p1', { suspendedSet: shared })).resolves.toBe(false);
+
+      expect(setTrustState).toHaveBeenCalledTimes(1);
+      expect(setTrustState).toHaveBeenCalledWith(
+        'p1', 'restricted', 'auto:fraud_identity_match', null, expect.any(Object), { expectedFrom: 'probation' },
+      );
+      expect(setTrustState).not.toHaveBeenCalledWith('p1', 'trusted', expect.anything(), expect.anything(), expect.anything(), expect.anything());
+    });
+
+    it('skips the fresh re-check when the partner is not promoted anyway', async () => {
+      getSignupRiskHold.mockResolvedValue({ status: 'hold' });
+
+      await expect(tryAutoPromote('p1', { suspendedSet: shared })).resolves.toBe(false);
+
+      expect(setQueries()).toHaveLength(0);
+      expect(evaluationQueries()).toHaveLength(1);
+    });
   });
 
   it.each([
@@ -466,7 +639,7 @@ describe('tryAutoPromote', () => {
 
   describe('hard-deny evaluation is inside tryAutoPromote', () => {
     it('restricts instead of promoting when a hard deny matches', async () => {
-      execute.mockResolvedValue([hardDenyRow({ signup_ip_class: 'tor' })]);
+      evaluationReturns([hardDenyRow({ signup_ip_class: 'tor' })]);
 
       await expect(tryAutoPromote('p1')).resolves.toBe(false);
 
@@ -482,7 +655,7 @@ describe('tryAutoPromote', () => {
     });
 
     it('does not send the evidence card when the restrict CAS loses', async () => {
-      execute.mockResolvedValue([hardDenyRow({ signup_ip_class: 'tor' })]);
+      evaluationReturns([hardDenyRow({ signup_ip_class: 'tor' })]);
       setTrustState.mockResolvedValue(false);
 
       await expect(tryAutoPromote('p1')).resolves.toBe(false);
@@ -490,7 +663,7 @@ describe('tryAutoPromote', () => {
     });
 
     it('does not fail when the restricted evidence card throws (best effort)', async () => {
-      execute.mockResolvedValue([hardDenyRow({ signup_ip_class: 'tor' })]);
+      evaluationReturns([hardDenyRow({ signup_ip_class: 'tor' })]);
       sendEvidenceCard.mockRejectedValue(new Error('smtp down'));
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
@@ -499,14 +672,14 @@ describe('tryAutoPromote', () => {
     });
 
     it('propagates a hard-deny evaluation failure rather than promoting past it', async () => {
-      execute.mockRejectedValue(new Error('db exploded'));
+      evaluationRejects(new Error('db exploded'));
 
       await expect(tryAutoPromote('p1')).rejects.toThrow('db exploded');
       expect(setTrustState).not.toHaveBeenCalled();
     });
 
     it('is exported for the ip-classify path, which restricts without promoting', async () => {
-      execute.mockResolvedValue([hardDenyRow({ signup_ip_class: 'tor' })]);
+      evaluationReturns([hardDenyRow({ signup_ip_class: 'tor' })]);
 
       await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
       expect(setTrustState).toHaveBeenCalledWith(
@@ -557,7 +730,7 @@ describe('restrictOnHardDeny — closing open checkouts on an auto-restrict', ()
   });
 
   it('restricts, then expires open checkouts and records what was closed in an audit row', async () => {
-    execute.mockResolvedValue([cardTestingRow()]);
+    evaluationReturns([cardTestingRow()]);
 
     await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
 
@@ -595,14 +768,14 @@ describe('restrictOnHardDeny — closing open checkouts on an auto-restrict', ()
     }, 'auto:corroborated_suspended_network'],
     ['recidivist endpoint', { recidivist_partner_id: 'suspended-9' }, 'auto:recidivist_endpoint'],
   ] as const)('closes checkouts on every auto-restrict reason (%s)', async (_name, overrides, reason) => {
-    execute.mockResolvedValue([hardDenyRow(overrides)]);
+    evaluationReturns([hardDenyRow(overrides)]);
 
     await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
     expect(closeOpenCheckouts).toHaveBeenCalledWith({ partnerId: 'p1', reason });
   });
 
   it('keeps the restriction and records the failure when the billing service cannot close checkouts', async () => {
-    execute.mockResolvedValue([cardTestingRow()]);
+    evaluationReturns([cardTestingRow()]);
     closeOpenCheckouts.mockResolvedValue({ status: 'failed', detail: 'Billing service returned 502' });
 
     await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
@@ -623,7 +796,7 @@ describe('restrictOnHardDeny — closing open checkouts on an auto-restrict', ()
   });
 
   it('escapes the billing detail in the checkouts-not-closed ops alert', async () => {
-    execute.mockResolvedValue([cardTestingRow()]);
+    evaluationReturns([cardTestingRow()]);
     closeOpenCheckouts.mockResolvedValue({ status: 'failed', detail: HOSTILE });
     await restrictOnHardDeny('p1');
     const { body } = sendOpsAlert.mock.calls[0]![0] as { body: string };
@@ -634,7 +807,7 @@ describe('restrictOnHardDeny — closing open checkouts on an auto-restrict', ()
   });
 
   it('alerts an operator (without a Sentry event) when the billing endpoint is unavailable', async () => {
-    execute.mockResolvedValue([cardTestingRow()]);
+    evaluationReturns([cardTestingRow()]);
     closeOpenCheckouts.mockResolvedValue({ status: 'unavailable', detail: 'Billing service returned 404: Not Found' });
 
     await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
@@ -646,7 +819,7 @@ describe('restrictOnHardDeny — closing open checkouts on an auto-restrict', ()
   });
 
   it('does not fail the restriction when the ops alert throws', async () => {
-    execute.mockResolvedValue([cardTestingRow()]);
+    evaluationReturns([cardTestingRow()]);
     closeOpenCheckouts.mockResolvedValue({ status: 'failed', detail: 'timeout' });
     sendOpsAlert.mockRejectedValue(new Error('webhook down'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -657,7 +830,7 @@ describe('restrictOnHardDeny — closing open checkouts on an auto-restrict', ()
   });
 
   it('restricts but never closes checkouts in shadow mode (the restriction is not enforced there)', async () => {
-    execute.mockResolvedValue([cardTestingRow()]);
+    evaluationReturns([cardTestingRow()]);
     partnerTrustMode.mockReturnValue('shadow');
 
     await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
@@ -672,7 +845,7 @@ describe('restrictOnHardDeny — closing open checkouts on an auto-restrict', ()
   });
 
   it('records a failure (and still reports the restriction) when billing is not configured', async () => {
-    execute.mockResolvedValue([cardTestingRow()]);
+    evaluationReturns([cardTestingRow()]);
     getBillingClient.mockImplementation(() => { throw new Error('BREEZE_BILLING_URL not configured.'); });
 
     await expect(restrictOnHardDeny('p1')).resolves.toBe(true);
@@ -685,7 +858,7 @@ describe('restrictOnHardDeny — closing open checkouts on an auto-restrict', ()
   });
 
   it('never touches billing when the restrict CAS loses (already moved out of probation)', async () => {
-    execute.mockResolvedValue([cardTestingRow()]);
+    evaluationReturns([cardTestingRow()]);
     setTrustState.mockResolvedValue(false);
 
     await expect(restrictOnHardDeny('p1')).resolves.toBe(false);
@@ -694,7 +867,7 @@ describe('restrictOnHardDeny — closing open checkouts on an auto-restrict', ()
   });
 
   it('never touches billing or trust state when nothing matches', async () => {
-    execute.mockResolvedValue([hardDenyRow()]);
+    evaluationReturns([hardDenyRow()]);
 
     await expect(restrictOnHardDeny('p1')).resolves.toBe(false);
     expect(setTrustState).not.toHaveBeenCalled();
@@ -702,7 +875,7 @@ describe('restrictOnHardDeny — closing open checkouts on an auto-restrict', ()
   });
 
   it.each(['trusted', 'restricted'] as const)('never touches an already-%s partner', async (trustState) => {
-    execute.mockResolvedValue([{ ...cardTestingRow(), trust_state: trustState }]);
+    evaluationReturns([{ ...cardTestingRow(), trust_state: trustState }]);
 
     await expect(restrictOnHardDeny('p1')).resolves.toBe(false);
     expect(setTrustState).not.toHaveBeenCalled();
