@@ -1,6 +1,19 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Plus, Layers } from "lucide-react";
-import ConfigPolicyList, { type ConfigPolicy } from "./ConfigPolicyList";
+import ConfigPolicyList, {
+  type ConfigPolicy,
+  type ListViewFilters,
+} from "./ConfigPolicyList";
+import {
+  DEFAULT_LIST_STATE,
+  LIST_PAGE_SIZE,
+  buildPolicyListQuery,
+  parseListHash,
+  parsePolicyListResponse,
+  serializeListHash,
+  type ListHashState,
+} from "./policyListQuery";
+import { useHashState } from "@/lib/useHashState";
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
 import { navigateTo } from "@/lib/navigation";
@@ -8,10 +21,20 @@ import { runAction, handleActionError, ActionError } from "@/lib/runAction";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type ModalMode = "closed" | "delete";
+// A count that is still loading reads as an ellipsis; one whose read failed as
+// a dash. Neither is ever shown as 0.
+const formatCount = (count: number | null | undefined) =>
+  count === undefined ? "\u2026" : count === null ? "\u2014" : count;
 export default function ConfigurationPoliciesPage() {
   useTranslation("policies");
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const [policies, setPolicies] = useState<ConfigPolicy[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  // undefined = still reading, null = the count read failed (shown as a dash).
+  const [activeCount, setActiveCount] = useState<number | null | undefined>();
+  const [inactiveCount, setInactiveCount] = useState<number | null | undefined>();
+  const [orgFilterForbidden, setOrgFilterForbidden] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [modalMode, setModalMode] = useState<ModalMode>("closed");
@@ -25,15 +48,100 @@ export default function ConfigurationPoliciesPage() {
   const [deleteBlockedChildren, setDeleteBlockedChildren] = useState<
     { id: string; name: string }[] | null
   >(null);
+
+  // Filters, search and the page live in the URL hash (default org = the org
+  // switcher's). Writes go through updateState, which keeps the ref current so
+  // the stable callback the list's debounce depends on never reads stale state.
+  const [state, setState] = useHashState<ListHashState>(
+    DEFAULT_LIST_STATE,
+    parseListHash,
+  );
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const updateState = useCallback(
+    (patch: Partial<ListHashState>) => {
+      // Any filter change goes back to page 1; only an explicit page keeps it.
+      const next = { ...stateRef.current, page: 1, ...patch };
+      stateRef.current = next;
+      setState(next);
+      window.location.hash = serializeListHash(next);
+    },
+    [setState],
+  );
+
+  const orgValue = state.org ?? currentOrgId ?? "all";
+  const appliesToOrgId = orgValue === "all" ? null : orgValue;
+  const statusParam = state.status === "all" ? undefined : state.status;
+  const listQuery = buildPolicyListQuery({
+    page: state.page,
+    limit: LIST_PAGE_SIZE,
+    search: state.search,
+    status: statusParam,
+    notApplied: state.notApplied,
+    appliesToOrgId,
+  });
+  // The Active and Inactive cards are their own reads: the same filters, minus
+  // the state filter, with the state forced and one row asked for.
+  const countQuery = (status: "active" | "inactive") =>
+    buildPolicyListQuery({
+      page: 1,
+      limit: 1,
+      search: state.search,
+      status,
+      notApplied: state.notApplied,
+      appliesToOrgId,
+    });
+  const activeCountQuery = countQuery("active");
+  const inactiveCountQuery = countQuery("inactive");
+  const hasActiveFilters =
+    state.search.trim().length > 0 ||
+    state.status !== "all" ||
+    state.notApplied ||
+    appliesToOrgId !== null;
+
+  // Only the newest request may set state: a slow earlier answer must never
+  // overwrite a newer one.
+  const seqRef = useRef(0);
+  // The hash is adopted post-mount; fetching before that would send the
+  // default filters for a deep link.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => setHydrated(true), []);
+
+  const readCount = useCallback(
+    async (query: string): Promise<number | null> => {
+      try {
+        const response = await fetchWithAuth(`/configuration-policies?${query}`);
+        if (!response.ok) return null;
+        return parsePolicyListResponse(await response.json())?.total ?? null;
+      } catch {
+        return null;
+      }
+    },
+    [],
+  );
+
   const fetchPolicies = useCallback(async () => {
+    const seq = ++seqRef.current;
+    const isNewest = () => seq === seqRef.current;
+    setLoading(true);
+    setError(undefined);
+    setOrgFilterForbidden(false);
+    setActiveCount(undefined);
+    setInactiveCount(undefined);
+    void readCount(activeCountQuery).then((n) => isNewest() && setActiveCount(n));
+    void readCount(inactiveCountQuery).then((n) => isNewest() && setInactiveCount(n));
     try {
-      setLoading(true);
-      setError(undefined);
-      const params = new URLSearchParams();
-      if (currentOrgId) params.set("orgId", currentOrgId);
-      const response = await fetchWithAuth(
-        `/configuration-policies?${params.toString()}`,
-      );
+      const response = await fetchWithAuth(`/configuration-policies?${listQuery}`);
+      if (!isNewest()) return;
+      if (response.status === 403 && new URLSearchParams(listQuery).has("appliesToOrgId")) {
+        // The org filter names an organization the caller cannot use. Say so
+        // inline; the filter row stays so another organization can be chosen.
+        setOrgFilterForbidden(true);
+        setPolicies([]);
+        setTotal(0);
+        setLoaded(true);
+        return;
+      }
       if (!response.ok) {
         throw new Error(
           i18n.t(
@@ -41,22 +149,44 @@ export default function ConfigurationPoliciesPage() {
           ),
         );
       }
-      const data = await response.json();
-      const items = Array.isArray(data.data)
-        ? data.data
-        : Array.isArray(data)
-          ? data
-          : [];
-      setPolicies(items);
+      const parsed = parsePolicyListResponse(await response.json());
+      if (!isNewest()) return;
+      if (!parsed) {
+        throw new Error(
+          i18n.t(
+            "policies:configurationPolicies.configurationPoliciesPage.failedToFetchConfigurationPolicies",
+          ),
+        );
+      }
+      setPolicies(parsed.data);
+      setTotal(parsed.total);
+      setLoaded(true);
+      // A delete (or a stale link) can leave the page past the last one: move
+      // to the last page that still exists.
+      const lastPage = Math.max(1, Math.ceil(parsed.total / LIST_PAGE_SIZE));
+      if (stateRef.current.page > lastPage) updateState({ page: lastPage });
     } catch (err) {
+      if (!isNewest()) return;
+      setPolicies([]);
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
-      setLoading(false);
+      if (isNewest()) setLoading(false);
     }
-  }, [currentOrgId]);
+  }, [listQuery, activeCountQuery, inactiveCountQuery, readCount, updateState]);
   useEffect(() => {
-    fetchPolicies();
-  }, [fetchPolicies]);
+    if (hydrated) void fetchPolicies();
+  }, [hydrated, fetchPolicies]);
+
+  const handleFiltersChange = useCallback(
+    (patch: Partial<ListViewFilters>) => {
+      const { org, ...rest } = patch;
+      updateState({ ...rest, ...(org !== undefined ? { org } : {}) });
+    },
+    [updateState],
+  );
+  const organizations = useOrgStore((s) => s.organizations);
+  const orgOptions = organizations.map((o) => ({ id: o.id, name: o.name }));
+
   const handleEdit = (policy: ConfigPolicy) => {
     void navigateTo(`/configuration-policies/${policy.id}`);
   };
@@ -126,9 +256,7 @@ export default function ConfigurationPoliciesPage() {
       setSubmitting(false);
     }
   };
-  const activeCount = policies.filter((p) => p.status === "active").length;
-  const inactiveCount = policies.filter((p) => p.status === "inactive").length;
-  if (loading) {
+  if (loading && !loaded) {
     return (
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
@@ -201,7 +329,18 @@ export default function ConfigurationPoliciesPage() {
         </div>
       )}
 
-      {policies.length > 0 && (
+      {orgFilterForbidden && (
+        <div
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          data-testid="config-policies-org-filter-error"
+        >
+          {i18n.t(
+            "policies:configurationPolicies.configurationPoliciesPage.orgFilterForbidden",
+          )}
+        </div>
+      )}
+
+      {(total > 0 || hasActiveFilters) && (
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="rounded-lg border bg-card p-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -210,25 +349,49 @@ export default function ConfigurationPoliciesPage() {
                 "policies:configurationPolicies.configurationPoliciesPage.totalPolicies",
               )}
             </div>
-            <p className="mt-2 text-2xl font-bold">{policies.length}</p>
+            <p className="mt-2 text-2xl font-bold" data-testid="config-policies-total-count">
+              {orgFilterForbidden ? "\u2014" : total}
+            </p>
           </div>
           <div className="rounded-lg border bg-card p-4">
             <p className="text-sm text-muted-foreground">
               {i18n.t("common:states.active")}
             </p>
-            <p className="mt-2 text-2xl font-bold">{activeCount}</p>
+            <p className="mt-2 text-2xl font-bold" data-testid="config-policies-active-count">
+              {formatCount(activeCount)}
+            </p>
           </div>
           <div className="rounded-lg border bg-card p-4">
             <p className="text-sm text-muted-foreground">
               {i18n.t("common:states.inactive")}
             </p>
-            <p className="mt-2 text-2xl font-bold">{inactiveCount}</p>
+            <p className="mt-2 text-2xl font-bold" data-testid="config-policies-inactive-count">
+              {formatCount(inactiveCount)}
+            </p>
           </div>
         </div>
       )}
 
       <ConfigPolicyList
         policies={policies}
+        total={total}
+        page={state.page}
+        pageSize={LIST_PAGE_SIZE}
+        filters={{
+          search: state.search,
+          status: state.status,
+          notApplied: state.notApplied,
+          org: orgValue,
+        }}
+        orgOptions={orgOptions}
+        onFiltersChange={handleFiltersChange}
+        onPageChange={(next) => updateState({ page: next })}
+        filtersAtRest={
+          state.search.trim().length === 0 &&
+          state.status === "all" &&
+          !state.notApplied &&
+          state.org === undefined
+        }
         onEdit={handleEdit}
         onDelete={handleDelete}
       />

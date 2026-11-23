@@ -43,9 +43,10 @@ beforeEach(async () => {
 });
 
 describe('ConfigPolicyList device counts', () => {
-  it('the list asks for reach once per page', async () => {
+  it('the list asks for reach once per page of rows it shows', async () => {
     const user = userEvent.setup();
-    const { rerender } = render(<ConfigPolicyList policies={policies(12)} pageSize={10} />);
+    const all = policies(12);
+    const { rerender } = render(<ConfigPolicyList policies={all.slice(0, 10)} total={12} page={1} pageSize={10} />);
     await waitFor(() => expect(reachCalls()).toHaveLength(1));
     expect(askedIds(reachCalls()[0]!)).toHaveLength(10);
     const rows = screen.getAllByTestId('config-policy-row');
@@ -53,8 +54,10 @@ describe('ConfigPolicyList device counts', () => {
     expect(within(rows[1]!).getByTestId('config-policy-applies-to-reach')).toHaveTextContent('At least 2 devices');
 
     // A re-render of the same page asks again only when its rows change.
-    rerender(<ConfigPolicyList policies={policies(12)} pageSize={10} />);
+    rerender(<ConfigPolicyList policies={all.slice(0, 10)} total={12} page={1} pageSize={10} />);
+    // The next page is the server's answer: the parent hands down its rows.
     await user.click(screen.getByTestId('config-policy-next-page'));
+    rerender(<ConfigPolicyList policies={all.slice(10)} total={12} page={2} pageSize={10} />);
     await waitFor(() => expect(reachCalls()).toHaveLength(2));
     expect(askedIds(reachCalls()[1]!)).toEqual([id(10), id(11)]);
   });
