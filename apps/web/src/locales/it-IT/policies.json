@@ -1600,7 +1600,9 @@
         "results": {
           "label": "Risultati"
         }
-      }
+      },
+      "statusOutranked_one": "{{state}} · Superato su {{count}} dispositivo",
+      "statusOutranked_other": "{{state}} · Superato su {{count}} dispositivi"
     },
     "policyHeader": {
       "editDetails": "Modifica dettagli",
@@ -1655,6 +1657,13 @@
       "deactivatedToast": "Criterio disattivato",
       "archivedToast": "Criterio archiviato",
       "restoredToast": "Criterio ripristinato come Inattivo"
+    },
+    "outranked": {
+      "line_one": "Superato su {{count}} dispositivo",
+      "line_other": "Superato su {{count}} dispositivi",
+      "detail": "Lì prevale un criterio più specifico o con priorità più alta per questa funzionalità. Dei dispositivi che puoi vedere, questo criterio ne raggiunge {{reached}}.",
+      "capped": "Troppi dispositivi per contare dove un altro criterio prevale per questa funzionalità.",
+      "openDevice": "Apri la scheda Configurazione di un dispositivo per vedere quale criterio gli si applica."
     }
   },
   "software": {

@@ -1600,7 +1600,9 @@
         "results": {
           "label": "Resultados"
         }
-      }
+      },
+      "statusOutranked_one": "{{state}} · Superada em {{count}} dispositivo",
+      "statusOutranked_other": "{{state}} · Superada em {{count}} dispositivos"
     },
     "policyHeader": {
       "editDetails": "Editar detalhes",
@@ -1655,6 +1657,13 @@
       "deactivatedToast": "Política desativada",
       "archivedToast": "Política arquivada",
       "restoredToast": "Política restaurada como Inativa"
+    },
+    "outranked": {
+      "line_one": "Superada em {{count}} dispositivo",
+      "line_other": "Superada em {{count}} dispositivos",
+      "detail": "Lá, uma política mais específica ou de maior prioridade prevalece para este recurso. Dos dispositivos que você pode ver, esta política alcança {{reached}}.",
+      "capped": "Dispositivos demais para contar onde outra política prevalece para este recurso.",
+      "openDevice": "Abra a aba Configuração de um dispositivo para ver qual política se aplica a ele."
     }
   },
   "software": {

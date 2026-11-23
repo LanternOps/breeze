@@ -66,6 +66,8 @@ Lab checks owed before the next tag:
 - **Devices → Groups → Apply policy** applies the policy to every selected group in one change.
 - New routes: `POST /configuration-policies/:id/assignments/apply` (staged add, update and remove, with `dryRun`), `GET /configuration-policies/:id/reach` and `GET /configuration-policies/reach?ids=…`. `GET /orgs/sites` accepts `search`.
 
+- **"Outranked on N devices" on each feature of a configuration policy** (#12472) shows where a more specific policy wins that feature. The open feature and its entry in the feature list show the count; it covers only devices you can see. On a very large fleet the page says there are too many devices to count instead of showing a number. New route: `GET /configuration-policies/:id/precedence`.
+
 ## Migrations
 
 - `2027-01-24-170000-portal-access-requests-google-hosted-domain.sql`: adds nullable `portal_access_requests.google_hosted_domain` and the CHECK `portal_access_requests_google_hd_chk` (validated in the same file when no Google request lacks a domain, which is every existing database). DDL only; fast.
