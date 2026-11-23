@@ -78,6 +78,25 @@ describe('__proto__ keys in a fenced tool result', () => {
     expect(out).toContain('[filtered]');
   });
 
+  it('a command-style result keeps __proto__ keys at the top level and inside its JSON stdout, filtered', () => {
+    const stdout = `{"path":"/tmp/x","__proto__":{"content":${JSON.stringify(INJECTION)},"marker":"STDOUT"}}`;
+    const rawCommand = `{"status":"completed","exitCode":0,"stdout":${JSON.stringify(stdout)},`
+      + `"__proto__":{"error":${JSON.stringify(INJECTION)},"marker":"CMD"}}`;
+    const out = compactToolResultForChat('file_operations', rawCommand);
+    expect(out).not.toMatch(INJECTION_RE);
+    const parsed = JSON.parse(out) as unknown;
+    const top = own(parsed, '__proto__') as Record<string, unknown>;
+    expect(top.marker).toBe('CMD');
+    expect(String(top.error)).toContain('[filtered]');
+    const decodedStdout = own(parsed, 'stdout');
+    const inner = own(typeof decodedStdout === 'string' ? JSON.parse(decodedStdout) : decodedStdout, '__proto__') as Record<
+      string,
+      unknown
+    >;
+    expect(inner.marker).toBe('STDOUT');
+    expect(String(inner.content)).toContain('[filtered]');
+  });
+
   it('the device hoist keeps a __proto__ key and keys named like Object.prototype members', () => {
     const rawDevice = `{"device":{"id":"d-1","hostname":"pc-1","toString":"t","__proto__":{"hostname":${JSON.stringify(INJECTION)},"marker":"DEV"}}}`;
     const out = compactToolResultForChat('get_device_details', rawDevice);
