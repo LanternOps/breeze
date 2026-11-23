@@ -312,7 +312,7 @@ export default function ApprovalsInbox() {
   // entry), so a reload does not bring it back and the same link can be
   // followed again. Both deep-link kinds share it.
   const clearDeepLinkHash = () => {
-    window.history.replaceState(window.history.state, '',window.location.pathname + window.location.search);
+    window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
     setHashProposalId(null);
     setHashIntentId(null);
     hashIntentHandledRef.current = null;

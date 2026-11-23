@@ -180,7 +180,7 @@ describe('ApprovalsInbox + script proposals', () => {
       const alert = await screen.findByTestId('script-proposal-error');
       expect(alert).not.toHaveTextContent('internal_error');
       expect(alert).not.toHaveTextContent('no longer available');
-      expect(alert.textContent?.trim().length).toBeGreaterThan(0);
+      expect(alert).toHaveTextContent('This proposal could not be loaded');
     });
 
     it('dismiss clears the hash and removes the alert', async () => {
