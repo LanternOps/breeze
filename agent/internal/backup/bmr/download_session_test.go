@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // Tests for #5635: the recovery download client's session handling.
@@ -1033,5 +1035,141 @@ func TestRestoreFilesSessionLostSaysHowToResume(t *testing.T) {
 		if !strings.Contains(text, "stay in place") {
 			t.Fatalf("%q does not say restored files are kept", text)
 		}
+	}
+}
+
+// A refused renewal keeps the credential it had and sends it again.
+func TestRecoverySessionRefusedRenewalKeepsCredential(t *testing.T) {
+	clock := newFakeClock()
+	withClockSleep(t, clock)
+	server := newSessionFakeServer(t, clock)
+	server.issueRenewal = "brz_rsr_second"
+	server.setAuthResponses(
+		fakeAuthResponse{status: http.StatusTooManyRequests, retryAfter: "30"},
+		fakeAuthResponse{status: http.StatusOK},
+	)
+	p := server.provider(clock, server.openSession(clock.Now().Add(-time.Second)))
+	p.setSessionRenewal("brz_rsr_first")
+
+	requireAllNil(t, downloadN(t, p, 1))
+	if got := server.renewals(); fmt.Sprint(got) != fmt.Sprint([]string{"brz_rsr_first", "brz_rsr_first"}) {
+		t.Fatalf("sessionRenewal sent = %q, want the same credential on the retry", got)
+	}
+	if got := p.currentSessionRenewal(); got != "brz_rsr_second" {
+		t.Fatalf("credential after a successful renewal = %q, want the server's new one", got)
+	}
+}
+
+// Cancelling while waiting out a 429 ends the wait without marking the
+// session lost: a user cancel is not a server refusal.
+func TestRecoverySessionCancelDuringRateLimitWait(t *testing.T) {
+	clock := newFakeClock()
+	server := newSessionFakeServer(t, clock)
+	server.setAuthResponses(fakeAuthResponse{status: http.StatusTooManyRequests, retryAfter: "120"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	orig := retrySleep
+	retrySleep = func(ctx context.Context, d time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}
+	t.Cleanup(func() { retrySleep = orig })
+
+	desc := server.openSession(clock.Now().Add(-time.Second))
+	p := newRecoveryDownloadProvider(ctx, server.srv.URL, "brz_rec_test", desc)
+	p.now = clock.Now
+	p.lastAuthAt = clock.Now()
+
+	err := p.Download("snapshots/snap-1/f0", filepath.Join(t.TempDir(), "f0"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if errors.Is(err, ErrRecoverySessionLost) || p.sessionLost() != nil {
+		t.Fatalf("cancellation must not mark the session lost (err=%v, lost=%v)", err, p.sessionLost())
+	}
+}
+
+// 429s do not use up the attempts a pending file index gets, and pending
+// answers do not use up the 429 budget: each keeps its own bound.
+func TestRecoverySessionPendingAndRateLimitKeepSeparateBounds(t *testing.T) {
+	pending := fakeAuthResponse{status: http.StatusConflict, message: "snapshot_index_pending"}
+	tooMany := fakeAuthResponse{status: http.StatusTooManyRequests, retryAfter: "5"}
+	ok := fakeAuthResponse{status: http.StatusOK}
+
+	t.Run("interleaved, then success", func(t *testing.T) {
+		clock := newFakeClock()
+		withClockSleep(t, clock)
+		server := newSessionFakeServer(t, clock)
+		server.setAuthResponses(pending, tooMany, pending, tooMany, pending, tooMany, pending, ok)
+		p := server.provider(clock, server.openSession(clock.Now().Add(-time.Second)))
+
+		requireAllNil(t, downloadN(t, p, 1))
+		if auth, _, _ := server.counts(); auth != 8 {
+			t.Fatalf("authenticate calls = %d, want 8", auth)
+		}
+	})
+
+	t.Run("pending still ends after reauthMaxAttempts", func(t *testing.T) {
+		clock := newFakeClock()
+		withClockSleep(t, clock)
+		server := newSessionFakeServer(t, clock)
+		server.setAuthResponses(tooMany, pending, tooMany, pending, pending, pending, pending)
+		p := server.provider(clock, server.openSession(clock.Now().Add(-time.Second)))
+
+		err := downloadN(t, p, 1)[0]
+		if !errors.Is(err, ErrRecoverySessionLost) || !strings.Contains(err.Error(), "still pending after") {
+			t.Fatalf("err = %v, want a lost session after the pending attempts", err)
+		}
+		if auth, _, _ := server.counts(); auth != 2+reauthMaxAttempts {
+			t.Fatalf("authenticate calls = %d, want %d (two 429s plus the pending cap)", auth, 2+reauthMaxAttempts)
+		}
+	})
+}
+
+// The token-driven run hands the bootstrap's credential to the download
+// provider it builds, so the helper's renewals carry it from the start.
+func TestRunRecoveryWithTokenWiresSessionRenewal(t *testing.T) {
+	origRunRecovery := runRecovery
+	defer func() { runRecovery = origRunRecovery }()
+	var gotRenewal string
+	runRecovery = func(ctx context.Context, cfg RecoveryConfig, provider providers.BackupProvider) (*RecoveryResult, error) {
+		if p, ok := provider.(*recoveryDownloadProvider); ok {
+			gotRenewal = p.currentSessionRenewal()
+		}
+		return &RecoveryResult{Status: "completed"}, nil
+	}
+
+	var srvURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/backup/bmr/recover/authenticate":
+			_ = json.NewEncoder(w).Encode(map[string]any{"bootstrap": BootstrapResponse{
+				Version:    BootstrapResponseVersion,
+				TokenID:    "token-1",
+				DeviceID:   "device-1",
+				SnapshotID: "db-snapshot-1",
+				Snapshot:   &AuthenticatedSnapshot{ID: "db-snapshot-1", SnapshotID: "snap-1"},
+				Download: &AuthenticatedDownloadDescriptor{
+					Type: "breeze_proxy", URL: srvURL + "/download", PathQueryParam: "path",
+					TokenHeaderName: "authorization", TokenHeaderFormat: "Bearer <recovery-token>",
+					PathPrefix: "snapshots/snap-1",
+				},
+				SessionRenewal: "brz_rsr_run",
+			}})
+		case "/api/v1/backup/bmr/recover/complete":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "completed"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	srvURL = server.URL
+
+	if _, err := RunRecoveryWithTokenContext(context.Background(), RecoveryConfig{RecoveryToken: "brz_rec_test", ServerURL: server.URL}); err != nil {
+		t.Fatalf("RunRecoveryWithTokenContext: %v", err)
+	}
+	if gotRenewal != "brz_rsr_run" {
+		t.Fatalf("download provider session renewal = %q, want the bootstrap's credential", gotRenewal)
 	}
 }

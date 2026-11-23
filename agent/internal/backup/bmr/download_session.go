@@ -51,7 +51,7 @@ import (
 //
 // Server allowance (3 renewals per rolling hour, refused renewals not
 // counted): a normal run renews once per session, about every 45 minutes
-// (sessionRefreshLead before a one-hour expiry), so at most 2 renewals fall
+// (sessionRefreshLead before a one-hour expiry), so typically 2 renewals fall
 // in any hour and one refused attempt (or two) still fits.
 const (
 	// sessionRefreshLead is how long before expiresAt the proactive
@@ -59,7 +59,8 @@ const (
 	// a clamped (5 minute) Retry-After before the session closes.
 	sessionRefreshLead = 15 * time.Minute
 	// proactiveRefreshMinInterval bounds successful proactive refreshes to
-	// 2/h whatever the clocks say, inside the server's 3/h renewal limit.
+	// about 2/h whatever the clocks say, inside the server's 3/h renewal
+	// limit.
 	proactiveRefreshMinInterval = 30 * time.Minute
 	// proactiveMaxAttempts caps proactive refresh attempts per expiresAt;
 	// proactiveRetryInterval is the least time between two of them.
@@ -71,8 +72,8 @@ const (
 	// reauthMaxAttempts caps the non-429 authenticate calls per reactive
 	// refresh. 429s are bounded separately: at most
 	// reauthMaxRateLimitedAttempts calls and reauthRateLimitedBudget of
-	// waiting in total (each wait is the server's Retry-After, clamped to
-	// 5 minutes, plus up to 20% jitter).
+	// waiting in total, jitter included (each wait is the server's
+	// Retry-After, clamped to 5 minutes, plus up to 20% jitter).
 	reauthMaxAttempts            = 5
 	reauthMaxRateLimitedAttempts = 6
 	reauthRateLimitedBudget      = 20 * time.Minute
@@ -88,9 +89,10 @@ var sessionRetryJitter = func(d time.Duration) time.Duration {
 }
 
 // recoverySessionLostResumeHint is appended to the abort message when the
-// download session is lost: restored files are kept (nothing removes them),
-// and a recovery token is spent by the run, so finishing needs a new one.
-const recoverySessionLostResumeHint = "files restored so far stay in place; to restore the rest, create a new recovery token in Breeze and run the restore again (it restores every file in the snapshot again)"
+// download session is lost: files already restored are kept (only a file
+// whose download was cut short is removed), and a recovery token is spent by
+// the run, so finishing needs a new one.
+const recoverySessionLostResumeHint = "files restored so far stay in place; to restore the rest, create a new recovery token in Breeze and run the restore again (it downloads every file in the snapshot again)"
 
 // setSessionRenewal installs the session renewal credential a bootstrap
 // carried (#12566); "" leaves renewals sent without one.
@@ -334,17 +336,18 @@ func (p *recoveryDownloadProvider) refreshAfterUnauthorized(observed uint64) err
 			// reauthMaxAttempts.
 			rateLimited++
 			if rateLimited >= reauthMaxRateLimitedAttempts {
-				return p.markSessionLost(fmt.Errorf("re-authenticate rate-limited %d times in a row: %w", rateLimited, err))
+				return p.markSessionLost(fmt.Errorf("re-authenticate rate-limited %d times: %w", rateLimited, err))
 			}
 			wait := delay
 			if statusErr.retryAfter > 0 {
 				wait = statusErr.retryAfter
 			}
+			wait = sessionRetryJitter(wait)
 			if rateLimitedWaited+wait > reauthRateLimitedBudget {
 				return p.markSessionLost(fmt.Errorf("re-authenticate still rate-limited after waiting %s: %w", rateLimitedWaited, err))
 			}
 			rateLimitedWaited += wait
-			p.authNotBefore = p.now().Add(sessionRetryJitter(wait))
+			p.authNotBefore = p.now().Add(wait)
 			slog.Warn("bmr: re-authenticate rate-limited, waiting before the next try",
 				"attempt", attempt, "wait", wait, "waitedSoFar", rateLimitedWaited)
 			delay *= 2
