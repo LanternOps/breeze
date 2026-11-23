@@ -1,4 +1,5 @@
 import { REATTACH_TARGET_VERSION_PATTERN } from '../../services/deviceReattach/protocol';
+import { TPM_BASELINE_VERSION_PATTERN } from '../../services/tpmBaseline/version';
 import { z } from 'zod';
 import { isMfaRecoveryCode, orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, launchPurchaseSelectionSchema, signupIntentSchema, migrationWindowOpenStepUpResourceSchema } from '@breeze/shared';
 import { envFlag } from '../../utils/envFlag';
@@ -190,6 +191,7 @@ const STEP_UP_OPERATIONS = [
   'caller_verification_administrative_disable',
   'wisp_grant',
   'device_reattach',
+  'device_tpm_baseline_accept',
 ] as const satisfies readonly Exclude<
   StepUpOperation,
   'enroll_first_factor' | 'sso_reauth_manage_factor' | 'approval_decide'
@@ -253,6 +255,13 @@ export const deviceReattachStepUpResource = z.object({
   targetVersion: z.string().regex(REATTACH_TARGET_VERSION_PATTERN),
   evidenceLevel: z.enum(['hint', 'tpm_continuity']),
   restoreDecommissioned: z.boolean(),
+}).strict();
+// Accepting a held TPM key change (#8318 wave T2): mirrors what
+// POST /devices/:id/tpm-baseline/mismatch binds. Strict, and first in the
+// coarse union, so no looser `deviceId` binding swallows it.
+export const deviceTpmBaselineAcceptStepUpResource = z.object({
+  deviceId: z.string().uuid(),
+  baselineVersion: z.string().regex(TPM_BASELINE_VERSION_PATTERN),
 }).strict();
 // Turning ON deploy-key enrollment for a partner: bound to the partner, and
 // only ever to enabled=true (turning it off needs no step-up).
@@ -357,7 +366,7 @@ export const wispGrantStepUpResource = z.object({
   orgId: z.string().uuid().nullable(),
   requestedCeilingHash: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
-const stepUpResource = z.union([deviceReattachStepUpResource, wispGrantStepUpResource, callerVerificationAdministrativeStepUpResource, rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, forceRebootStepUpResource]);
+const stepUpResource = z.union([deviceTpmBaselineAcceptStepUpResource, deviceReattachStepUpResource, wispGrantStepUpResource, callerVerificationAdministrativeStepUpResource, rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, forceRebootStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),

@@ -528,6 +528,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/processSamples.ts': { tools: ['get_process_samples'] }, // W13 (#6783): the at-or-before sample; range markers are chart data
   'devices/provision.ts': { exempt: 'identity' },
   'devices/reattach.ts': { exempt: 'human_only_tenant_restructure', note: 'Reinstall reattach (#8318 §8): retires one device record and hands another\'s identity to a new install, across orgs of a partner; interactive session, MFA and a device_reattach step-up. The candidates read serves only the reattach dialog.' },
+  'devices/tpmBaseline.ts': { exempt: 'human_only_tenant_restructure', note: 'TPM key baseline review (#8318 wave T2): accepting a held key change moves the anchor every later reattach compares against; interactive session, MFA, the reattach access rule and a device_tpm_baseline_accept step-up. The GET serves the device detail panel.' },
   'devices/removalConfig.ts': { exempt: 'internal_plumbing' },
   'devices/restorePoints.ts': { tools: ['list_device_restore_point_attempts'] },
   'devices/siteAssignmentConfirmation.ts': { exempt: 'internal_plumbing', note: 'Wrong-site suggestion dismissal ("Keep at <site>", site location W3, #7887). Deliberately not an AI/MCP surface: spec S§14 keeps AI/MCP out of presence, and a suggestion is accepted or dismissed only by a technician in the topology UI.' },

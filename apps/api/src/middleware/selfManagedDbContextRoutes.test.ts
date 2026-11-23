@@ -887,6 +887,17 @@ it('self-manages the reattach request and the candidates read, and nothing near 
   expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/abc-123')).toBe(false);
 });
 
+// #8318 wave T2: the key-change review holds the device row while it consumes
+// the step-up grant; the GET is an ordinary request-context read.
+it('self-manages the TPM key-change review POST only', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/tpm-baseline/mismatch')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/tpm-baseline/mismatch/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/abc-123/tpm-baseline')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/devices/abc-123/tpm-baseline/mismatch')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/tpm-baseline')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/devices/abc-123/tpm-baseline/mismatch/extra')).toBe(false);
+});
+
 describe('routes that wait on another host self-manage their DB context', () => {
   const ID = '3f2c1b9e-8a7d-4e6f-9c5b-1a2b3c4d5e6f';
   it.each([

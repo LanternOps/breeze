@@ -221,6 +221,9 @@ describe('TPM EK collection (real Postgres and Redis, as breeze_app)', () => {
       await untilBlockedBehind(holderPid, 2);
     } finally {
       release();
+      // Settle both before leaving, even when the wait throws, so no
+      // completion is left running against the fixture.
+      await Promise.allSettled([holder, racing]);
     }
     await holder;
     const results = await racing;

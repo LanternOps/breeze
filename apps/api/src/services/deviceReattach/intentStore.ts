@@ -42,6 +42,8 @@ export interface LockedReattachDevice {
   installIncarnation: number;
   rebindProtocolVersion: number;
   createdAt: Date;
+  /** devices.enrolled_at: when this install enrolled (null on rows older than the column). */
+  enrolledAt: Date | null;
   decommissionedAt: Date | null;
   lastSeenAt: Date | null;
   watchdogLastSeen: Date | null;
@@ -73,6 +75,7 @@ const lockedDeviceColumns = {
   installIncarnation: devices.installIncarnation,
   rebindProtocolVersion: devices.rebindProtocolVersion,
   createdAt: devices.createdAt,
+  enrolledAt: devices.enrolledAt,
   decommissionedAt: devices.decommissionedAt,
   lastSeenAt: devices.lastSeenAt,
   watchdogLastSeen: devices.watchdogLastSeen,

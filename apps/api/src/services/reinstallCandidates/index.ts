@@ -4,8 +4,9 @@
  *
  * After an enrollment and after a hardware report, look for an OLDER, SILENT
  * record in the source's partner that the newly enrolled (source) device is
- * probably a reinstall of, by evidence: the SMBIOS system UUID (either byte
- * order), then serial + manufacturer, then hostname. Flag the best one on the
+ * probably a reinstall of, by evidence: the TPM endorsement key the source
+ * proved (wave T2), the SMBIOS system UUID (either byte order), then serial +
+ * manufacturer, then hostname. Flag the best one on the
  * SOURCE row only (`possible_replacement_of_device_id`, `_reason`,
  * `_detected_at`) and, when the flag was written or upgraded, notify the
  * TARGET's org (notify.ts). Nothing is reattached here; a human decides (§8).
@@ -22,7 +23,7 @@
  * Never throws to its caller: a failure is logged and swallowed, because the
  * enrollment or the report that triggered it has already committed.
  */
-import { and, asc, eq, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, ne, notExists, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { deviceHardware, deviceReattachments, devices, organizations } from '../../db/schema';
 import { updateOwnDeviceRow } from '../agentOwnDeviceRow';
@@ -30,6 +31,7 @@ import { captureException } from '../sentry';
 import { Semaphore } from '../../utils/semaphore';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
 import { isHiddenOrgType, notHiddenOrgType } from '../unassignedPool/visibility';
+import { sourceKeyUsable, type TpmKeyState } from '../deviceReattach/evidence';
 import { serialManufacturerKey } from './hardwareIdentity';
 import {
   decideFlagWrite,
@@ -49,7 +51,12 @@ import {
 } from './notify';
 import { systemUuidMatchForms } from './systemUuid';
 
-export type ReinstallTrigger = 'enroll' | 'hardware_report';
+/**
+ * `tpm_baseline`: the source's first EK baseline was just recorded, or an
+ * operator accepted a held key change (routes/devices/tpmBaseline.ts), and
+ * another device of the partner carries that key.
+ */
+export type ReinstallTrigger = 'enroll' | 'hardware_report' | 'tpm_baseline';
 
 /** At most this many matches are read per kind of evidence. */
 export const MAX_MATCHES_PER_EVIDENCE = 25;
@@ -76,6 +83,8 @@ interface SourceSnapshot extends CandidateSource {
   systemUuid: string | null;
   serialNumber: string | null;
   manufacturer: string | null;
+  /** The source's TPM key state (wave T2): searched by only when sourceKeyUsable. */
+  tpm: TpmKeyState;
   storedTargetId: string | null;
   storedReason: string | null;
 }
@@ -117,6 +126,9 @@ async function readSource(sourceDeviceId: string): Promise<SourceSnapshot | null
       systemUuid: deviceHardware.systemUuid,
       serialNumber: deviceHardware.serialNumber,
       manufacturer: deviceHardware.manufacturer,
+      tpmEkSha256: deviceHardware.tpmEkPubSha256,
+      tpmAttestedAt: deviceHardware.tpmAttestedAt,
+      tpmMismatchSha256: deviceHardware.tpmEkMismatchSha256,
     })
     .from(devices)
     .innerJoin(organizations, eq(organizations.id, devices.orgId))
@@ -124,7 +136,13 @@ async function readSource(sourceDeviceId: string): Promise<SourceSnapshot | null
     .where(eq(devices.id, sourceDeviceId))
     .limit(1);
   if (!row || !row.agentId) return null;
-  return { ...row, agentId: row.agentId, enrolledAt: row.enrolledAt ?? row.createdAt };
+  const { tpmEkSha256, tpmAttestedAt, tpmMismatchSha256, ...rest } = row;
+  return {
+    ...rest,
+    agentId: row.agentId,
+    enrolledAt: row.enrolledAt ?? row.createdAt,
+    tpm: { ekSha256: tpmEkSha256, attestedAt: tpmAttestedAt, mismatchSha256: tpmMismatchSha256 },
+  };
 }
 
 /** Devices of the source's partner (any org), the source excluded. */
@@ -162,6 +180,31 @@ function candidateOrder(source: SourceSnapshot) {
 
 async function readMatches(source: SourceSnapshot): Promise<Array<{ target: CandidateRow; evidence: ReinstallEvidence }>> {
   const matches: Array<{ target: CandidateRow; evidence: ReinstallEvidence }> = [];
+
+  // Key evidence (wave T2): partner-wide, and only when the key names ONE
+  // other device. Unlike the hardware reads, no cheap qualifiers in SQL: the
+  // holders are counted before any target rule (a key on two other records is
+  // a cloned template, not one machine, whichever of them qualifies), with
+  // retired reattach sources left out (their row keeps the key of the machine
+  // that moved on). targetIneligibility judges the one holder like any other
+  // match; one holding a key change of its own is no continuity.
+  if (sourceKeyUsable(source.tpm, source.enrolledAt)) {
+    const retired = db
+      .select({ one: sql`1` })
+      .from(deviceReattachments)
+      .where(eq(deviceReattachments.sourceDeviceId, devices.id));
+    const holders = await db
+      .select({ ...candidateColumns, mismatch: deviceHardware.tpmEkMismatchSha256 })
+      .from(deviceHardware)
+      .innerJoin(devices, eq(devices.id, deviceHardware.deviceId))
+      .innerJoin(organizations, eq(organizations.id, devices.orgId))
+      .where(and(inSourcePartner(source), eq(deviceHardware.tpmEkPubSha256, source.tpm.ekSha256), notExists(retired)))
+      .limit(2);
+    if (holders.length === 1 && !holders[0]!.mismatch) {
+      const { mismatch: _mismatch, ...target } = holders[0]!;
+      matches.push({ target, evidence: 'tpm_ek' });
+    }
+  }
 
   // Hardware evidence: partner-wide (a reinstall may land in another org of
   // the partner, or in its holding area).
@@ -443,6 +486,43 @@ async function detectNow(input: DetectReinstallCandidatesInput): Promise<DetectR
     captureException(err);
     return { written: false, why: 'error' };
   }
+}
+
+/**
+ * After a device's key baseline is set (its first one recorded, or a held
+ * change accepted): search for the record it may be a reinstall of, but only
+ * when another device of its partner already carries that key. Turning
+ * TPM_ATTESTATION_ENABLED on records a first baseline on every device of the
+ * fleet; without this gate each would run the whole partner-wide search.
+ * Call with no DB context held, after the baseline committed. Never throws.
+ */
+export async function detectAfterKeyBaseline(sourceDeviceId: string): Promise<DetectReinstallCandidatesResult> {
+  try {
+    const shared = await withSystemDbAccessContext(async () => {
+      const [row] = await db
+        .select({ id: deviceHardware.deviceId })
+        .from(deviceHardware)
+        .innerJoin(devices, eq(devices.id, deviceHardware.deviceId))
+        .innerJoin(organizations, eq(organizations.id, devices.orgId))
+        .where(and(
+          ne(deviceHardware.deviceId, sourceDeviceId),
+          sql`${deviceHardware.tpmEkPubSha256} = (
+            SELECT h.tpm_ek_pub_sha256 FROM device_hardware h WHERE h.device_id = ${sourceDeviceId}::uuid
+          )`,
+          sql`${organizations.partnerId} = (
+            SELECT o.partner_id FROM devices d JOIN organizations o ON o.id = d.org_id WHERE d.id = ${sourceDeviceId}::uuid
+          )`,
+        ))
+        .limit(1);
+      return Boolean(row);
+    }, 'reinstall-candidates:key-precheck');
+    if (!shared) return { written: false, why: 'key_not_shared' };
+  } catch (err) {
+    console.error(`[reinstallCandidates] key pre-check failed for source ${sourceDeviceId}:`, err instanceof Error ? err.message : err);
+    captureException(err);
+    return { written: false, why: 'error' };
+  }
+  return detectReinstallCandidates({ sourceDeviceId, trigger: 'tpm_baseline' });
 }
 
 export { normalizeSystemUuid, systemUuidMatchForms, byteSwapSystemUuid } from './systemUuid';

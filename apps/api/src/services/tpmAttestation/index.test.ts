@@ -46,6 +46,12 @@ describe('completeAttestation DB scope', () => {
 
   it('gives a parked device no partner scope, like the agentAuth request wrap', async () => {
     expect(await completeAttestation({ ...agent, isPreAssignment: true }, input, audit)).toBe('not_found');
-    expect(contexts).toEqual([expect.objectContaining({ orgId: 'org-1', currentPartnerId: null })]);
+    expect(contexts).toEqual([{
+      scope: 'organization',
+      orgId: 'org-1',
+      accessibleOrgIds: ['org-1'],
+      accessiblePartnerIds: [],
+      currentPartnerId: null,
+    }]);
   });
 });

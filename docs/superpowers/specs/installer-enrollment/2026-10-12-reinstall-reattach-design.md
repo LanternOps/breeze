@@ -1176,6 +1176,7 @@ customer row. Install: `breeze-agent enroll <deploy-key>` for images and scripts
 | **D — deploy keys** (independent) | §10 table, routes, UI, enrollment branch, limits, parked certificates, controls | — |
 | **T1 — TPM EK collection** (independent, early) | §12.1–§12.2: possession-proven EK baselines recorded before anyone reformats | — |
 | **T2 — TPM evidence** | `tpm_continuity` evidence level in candidates and the dialog; the attestation routes join the parked allow-list, so a parked source can prove continuity; independent review of `MakeCredential` before merge | T1, 2 |
+| **T3 — EK certificate validation** | Validate the EK certificate chain against TPM vendor roots, so a baseline can say "a TPM from a known vendor" and not only "the same key"; the wording of `tpm_continuity` and the coverage metric change only then (§12.2) | T2 |
 
 Manual reattach (wave 2) does not depend on D or T: a source enrolled with an ordinary org key and
 flagged by the #2764 collision path can be reattached from the banner.
@@ -1288,6 +1289,59 @@ Go-generated test vectors and an **independent review before merge** (#8318).
 - **The coverage metric** is `GET /devices/tpm-coverage[?orgId=]`: `{ devices, attested, noTpm,
   notAttested, ekMismatch }` over the caller's device-list scope, decommissioned and parked
   devices left out. `ekMismatch` counts attested devices holding a mismatch for review.
+
+**Decided in wave T2 (the API part), where this section was open:**
+- **The evidence rule** (services/deviceReattach/evidence.ts, one function for every reader:
+  detection, the candidates read, the request, phase 1 and confirm). `tpm_continuity` for a
+  (source, target) pair only when the source has a baseline it proved at or after its own
+  `enrolled_at` (a re-enrolled row keeps the previous install's hardware row), neither device holds
+  a key change for review, both baselines are the same key, and no other device of the partner
+  carries that key (retired reattach sources not counted; ephemeral and removed rows counted). A key
+  on a third record is a cloned VM template, not one machine. Anything short is `hint`, with a gap
+  code (`source_no_key`, `source_key_changed`, `source_key_not_proven_by_install`,
+  `target_no_key`, `target_key_changed`, `keys_differ`, `key_shared`) the candidates read returns,
+  never a key.
+- **What it says.** "The new install proved the same endorsement key this record proved": key
+  continuity, not a genuine TPM (the #11956 condition). It replaces the typed hostname, nothing
+  else: possession, the OS acknowledgement, the restore choice, the access rule and the step-up
+  stay.
+- **Detection.** A new evidence kind `tpm_ek`, ranked above the system UUID, records reason `tpm`.
+  It is searched partner-wide and only when the key names exactly one other device; that holder is
+  then judged by the §7.3 target rules like any match. A first baseline (`recorded`) runs the
+  search (trigger `tpm_baseline`) only when another device of the partner already carries the key,
+  so turning `TPM_ATTESTATION_ENABLED` on does not run a fleet-wide search; an accepted key change
+  runs it too. Index `device_hardware_tpm_ek_pub_sha256_idx` (2027-01-29-160000, CONCURRENTLY).
+- **The request** carries `expectedEvidenceLevel` (default `hint`, so older clients keep
+  working), the level the candidates read showed and the step-up is bound to. The server computes
+  the level under both row locks and records the weaker: shown `hint`, now `tpm_continuity` →
+  proceeds as `hint`, with the typed name; shown `tpm_continuity`, now `hint` → 409
+  `evidence_changed`, judged after the access rule and the target version (no oracle), before the
+  grant (not spent).
+- **Re-check.** `revalidateLockedIntent` re-reads the evidence of a `tpm_continuity` intent at
+  phase 1 and at confirm and cancels with `evidence_changed`. Confirm's check is the authoritative
+  one: confirm holds both device rows `FOR UPDATE`; phase 1 holds `FOR KEY SHARE`, which the tpm
+  writers' `FOR NO KEY UPDATE` does not wait for. The invariant: every writer of the tpm_* columns
+  locks the device row first, so device_hardware is read without a lock of its own. Confirm leaves
+  device_hardware as it is: a `hint` reattach onto new hardware leaves the target with its old
+  baseline, and the new install's first proof is held as a key change to review.
+- **Parked sources.** `attestation/challenge` and `attestation/complete` join the parked allow-list
+  (exact two-segment match), and the main agent's parked beat carries
+  `configUpdate.tpm_attestation_enabled` only. No agent change was needed. The added exposure of a
+  leaked deploy key (§9.3): its parked devices may also record a baseline. A planted software key
+  matches no existing record's baseline, so it gains no continuity; it can at most make a real
+  key look shared, which lowers evidence to `hint`.
+- **Reviewing a held key change.** `GET /devices/:id/tpm-baseline` (devices:read, the device's org
+  and site) returns `{ tpmAvailable, attested, attestedAt, mismatch: { heldAt, version } | null }`,
+  never a hash; `version` is an HMAC over the device, the baseline and the held key.
+  `POST /devices/:id/tpm-baseline/mismatch { action: accept | dismiss, version, stepUpGrant? }` has
+  the §8 gates and the reattach access rule on that device (a parked device needs a full partner
+  admin), decided by the user on 2026-11-21. `accept` makes the held key the baseline
+  (`tpm_attested_at` := when it was proven) and needs step-up `device_tpm_baseline_accept` bound to
+  `{ deviceId, baselineVersion }`; `dismiss` keeps the baseline and needs none. Both refuse 409
+  `mismatch_changed` for another hold and `reattach_in_progress` while the device is in an open
+  intent (read in system scope), and are audited in their transaction
+  (`device.tpm_baseline.mismatch_accepted` / `mismatch_dismissed`, no hash).
+- **No EK certificate validation** in T2 (decided by the user on 2026-11-21): it is wave T3.
 
 ## 13. Decisions confirmed in review
 
