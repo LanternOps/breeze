@@ -335,6 +335,18 @@ describe('listConfigPoliciesSchema', () => {
       listConfigPoliciesSchema.safeParse({ status: 'deleted' }).success
     ).toBe(false);
   });
+
+  it('accepts the applies-to filters (#12462 W03a)', () => {
+    const result = listConfigPoliciesSchema.safeParse({ appliesToOrgId: VALID_UUID, notApplied: 'true' });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data).toMatchObject({ appliesToOrgId: VALID_UUID, notApplied: 'true' });
+  });
+
+  it('rejects a malformed appliesToOrgId and any notApplied other than "true"', () => {
+    expect(listConfigPoliciesSchema.safeParse({ appliesToOrgId: 'not-a-uuid' }).success).toBe(false);
+    expect(listConfigPoliciesSchema.safeParse({ notApplied: 'false' }).success).toBe(false);
+    expect(listConfigPoliciesSchema.safeParse({ notApplied: '1' }).success).toBe(false);
+  });
 });
 
 describe('targetQuerySchema', () => {
