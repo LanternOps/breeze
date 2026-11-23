@@ -23,7 +23,7 @@ const schtasksTimeout = 30 * time.Second
 // NewWindows returns the production Repairer. dataDir is the agent's
 // SYSTEM-only data directory, where the task file is written for schtasks to
 // read; uninstalling reports an uninstall in progress.
-func NewWindows(dataDir string, uninstalling func() bool) *Repairer {
+func NewWindows(dataDir string, uninstalling func() (bool, error)) *Repairer {
 	return New(Deps{
 		TaskExists:    func() (bool, error) { return selfuninstall.ScheduledTaskExists(TaskName) },
 		HelperPresent: helperPresent,

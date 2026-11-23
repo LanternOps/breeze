@@ -99,6 +99,7 @@ type rig struct {
 	helperErr    error
 	helperPath   string
 	uninstalling bool
+	uninstallErr error
 	now          time.Time
 	r            *Repairer
 }
@@ -112,7 +113,7 @@ func newRig(t *testing.T) *rig {
 			g.helperPath = path
 			return g.helper, g.helperErr
 		},
-		Uninstalling: func() bool { return g.uninstalling },
+		Uninstalling: func() (bool, error) { return g.uninstalling, g.uninstallErr },
 		Schtasks:     g.sched.run,
 		TempDir:      t.TempDir(),
 		Now:          func() time.Time { return g.now },
@@ -252,6 +253,81 @@ func TestCreateFailureIsReported(t *testing.T) {
 	g := newRig(t)
 	g.sched.createErr = errors.New("exit status 1")
 	mustCheck(t, g.r, OutcomeRepairFailed)
+	if entries, _ := os.ReadDir(g.r.deps.TempDir); len(entries) != 0 {
+		t.Fatalf("task file left behind after a failed create: %v", entries)
+	}
+}
+
+// Only a re-creation that landed counts toward the backoff: a create that
+// keeps failing is retried on the normal cadence, not latched off.
+func TestFailedCreatesDoNotSpendTheBackoff(t *testing.T) {
+	g := newRig(t)
+	g.sched.createErr = errors.New("exit status 1")
+	for range MaxRepairs + 2 {
+		mustCheck(t, g.r, OutcomeRepairFailed)
+		g.now = g.now.Add(time.Hour)
+	}
+	g.sched.createErr = nil
+	mustCheck(t, g.r, OutcomeRepaired)
+	if got := g.r.RepairsInWindow(); got != 1 {
+		t.Fatalf("RepairsInWindow = %d, want 1", got)
+	}
+}
+
+func TestUnreadableUninstallStateIsACheckFailure(t *testing.T) {
+	g := newRig(t)
+	g.uninstallErr = errors.New("service manager unavailable")
+	mustCheck(t, g.r, OutcomeCheckFailed)
+	if len(g.sched.calls) != 0 {
+		t.Fatalf("schtasks run with the uninstall state unknown: %q", g.sched.calls)
+	}
+}
+
+// Every field that decides whether the task starts the helper at logon, as
+// the user, is compared on read-back.
+func TestReadBackRejectsEachMeaningfulDifference(t *testing.T) {
+	cases := map[string][2]string{
+		"run level elevated": {"<RunLevel>LeastPrivilege</RunLevel>", "<RunLevel>HighestAvailable</RunLevel>"},
+		"other group":        {"<GroupId>S-1-5-32-545</GroupId>", "<GroupId>S-1-5-32-544</GroupId>"},
+		"user principal":     {"<GroupId>S-1-5-32-545</GroupId>", "<UserId>S-1-5-18</UserId>"},
+		"task disabled":      {"<Hidden>true</Hidden>", "<Hidden>true</Hidden>\n    <Enabled>false</Enabled>"},
+		"trigger disabled":   {"<LogonTrigger>\n      <Enabled>true</Enabled>", "<LogonTrigger>\n      <Enabled>false</Enabled>"},
+		"time trigger":       {"LogonTrigger>", "BootTrigger>"},
+		"other command":      {`breeze-user-helper.exe"`, `breeze-agent.exe"`},
+		"second action":      {"</Exec>", "</Exec>\n    <Exec><Command>cmd.exe</Command></Exec>"},
+	}
+	for name, edit := range cases {
+		t.Run(name, func(t *testing.T) {
+			g := newRig(t)
+			g.sched.queryRender = func(doc []byte) []byte {
+				out := strings.ReplaceAll(string(doc), edit[0], edit[1])
+				if out == string(doc) {
+					t.Fatalf("edit %q matched nothing", edit[0])
+				}
+				return []byte(out)
+			}
+			mustCheck(t, g.r, OutcomeRepairFailed)
+		})
+	}
+}
+
+// A task the agent registered but could not verify is not taken as healthy
+// just because it now exists: it is read back again on later checks.
+func TestUnverifiedTaskIsReverifiedNotTakenAsPresent(t *testing.T) {
+	g := newRig(t)
+	bad := func(doc []byte) []byte {
+		return bytes.Replace(doc, []byte("--role user"), []byte("--role system"), 1)
+	}
+	g.sched.queryRender = bad
+	mustCheck(t, g.r, OutcomeRepairFailed)
+	mustCheck(t, g.r, OutcomeRepairFailed)
+	if got := g.sched.createCalls(); got != 1 {
+		t.Fatalf("re-verification created the task again: creates = %d", got)
+	}
+	g.sched.queryRender = nil
+	mustCheck(t, g.r, OutcomePresent)
+	g.sched.queryRender = bad // verified once: back to presence only
+	mustCheck(t, g.r, OutcomePresent)
 }
 
 func TestReadBackMismatchIsAFailedRepair(t *testing.T) {

@@ -79,8 +79,9 @@ type Deps struct {
 	// HelperPresent reports whether the helper executable is on disk. An
 	// error means it could not be determined.
 	HelperPresent func(path string) (bool, error)
-	// Uninstalling reports an uninstall in progress.
-	Uninstalling func() bool
+	// Uninstalling reports an uninstall in progress. An error means it
+	// could not be determined, which stops the check without a write.
+	Uninstalling func() (bool, error)
 	// Schtasks runs schtasks.exe (resolved from the system directory) and
 	// returns its output.
 	Schtasks func(args ...string) ([]byte, error)
@@ -95,9 +96,14 @@ type Deps struct {
 type Repairer struct {
 	deps Deps
 
-	mu        sync.Mutex
+	mu sync.Mutex
+	// repairs are the registrations that landed within RepairWindow.
 	repairs   []time.Time
 	backedOff bool
+	// unverified: the last registration landed but did not read back as
+	// the installer's task. A task that exists is then read back again
+	// rather than taken as present.
+	unverified bool
 }
 
 // New returns a Repairer over deps.
@@ -110,14 +116,20 @@ func (r *Repairer) Check() (Outcome, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.deps.Uninstalling() {
-		return OutcomeUninstalling, nil
+	if outcome, stop, err := r.uninstallGate(); stop {
+		return outcome, err
 	}
 	exists, err := r.deps.TaskExists()
 	if err != nil {
 		return OutcomeCheckFailed, fmt.Errorf("read the task registration: %w", err)
 	}
 	if exists {
+		if r.unverified {
+			if err := r.readBack(installerDocument()); err != nil {
+				return OutcomeRepairFailed, err
+			}
+			r.unverified = false
+		}
 		return OutcomePresent, nil
 	}
 	if r.backedOff {
@@ -138,15 +150,33 @@ func (r *Repairer) Check() (Outcome, error) {
 	}
 	// An uninstall may have started since the first look: check again right
 	// before the write.
-	if r.deps.Uninstalling() {
-		return OutcomeUninstalling, nil
+	if outcome, stop, err := r.uninstallGate(); stop {
+		return outcome, err
 	}
-	// Counted before the write, so a failing registration is bounded too.
-	r.repairs = append(r.repairs, now)
-	if err := r.register(); err != nil {
+	created, err := r.register()
+	if created {
+		// Only a registration that landed counts toward the backoff; a
+		// create that keeps failing is retried on the normal cadence.
+		r.repairs = append(r.repairs, now)
+		r.unverified = err != nil
+	}
+	if err != nil {
 		return OutcomeRepairFailed, err
 	}
 	return OutcomeRepaired, nil
+}
+
+// uninstallGate stops a check while an uninstall is in progress, and when it
+// cannot be told whether one is: never a write on an unknown state.
+func (r *Repairer) uninstallGate() (outcome Outcome, stop bool, err error) {
+	uninstalling, err := r.deps.Uninstalling()
+	switch {
+	case err != nil:
+		return OutcomeCheckFailed, true, fmt.Errorf("check for an uninstall in progress: %w", err)
+	case uninstalling:
+		return OutcomeUninstalling, true, nil
+	}
+	return "", false, nil
 }
 
 // RepairsInWindow is how many repairs count toward the backoff now.
@@ -169,25 +199,26 @@ func (r *Repairer) pruneRepairs(now time.Time) {
 
 // register writes the installer's document to a file, registers it with
 // schtasks /Create /XML /F, then reads the task back and compares what
-// decides whether it starts the helper at logon.
-func (r *Repairer) register() error {
+// decides whether it starts the helper at logon. created reports whether the
+// create itself succeeded.
+func (r *Repairer) register() (created bool, err error) {
 	doc := installerDocument()
 	file, err := os.CreateTemp(r.deps.TempDir, "breeze-user-helper-task-*.xml")
 	if err != nil {
-		return fmt.Errorf("create task file: %w", err)
+		return false, fmt.Errorf("create task file: %w", err)
 	}
 	defer func() { _ = os.Remove(file.Name()) }()
 	if _, err := file.Write(encodeTaskXML(doc)); err != nil {
 		_ = file.Close()
-		return fmt.Errorf("write task file: %w", err)
+		return false, fmt.Errorf("write task file: %w", err)
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("close task file: %w", err)
+		return false, fmt.Errorf("close task file: %w", err)
 	}
 	if _, err := r.deps.Schtasks("/Create", "/TN", TaskName, "/XML", file.Name(), "/F"); err != nil {
-		return fmt.Errorf("schtasks /Create: %w", err)
+		return false, fmt.Errorf("schtasks /Create: %w", err)
 	}
-	return r.readBack(doc)
+	return true, r.readBack(doc)
 }
 
 func (r *Repairer) readBack(doc []byte) error {

@@ -87,9 +87,9 @@ func startTaskLoop(t *testing.T, h *Heartbeat, c userHelperTaskChecker, timing u
 func TestUserHelperTaskLoopChecksAtStartThenOnTheInterval(t *testing.T) {
 	c := &scriptedTaskChecker{calls: make(chan userhelpertask.Outcome, 8)}
 	h := &Heartbeat{healthMon: health.NewMonitor()}
-	startTaskLoop(t, h, c, userHelperTaskTiming{startDelay: 10 * time.Millisecond, interval: 150 * time.Millisecond, retry: time.Hour})
+	startTaskLoop(t, h, c, userHelperTaskTiming{startDelay: 10 * time.Millisecond, interval: 600 * time.Millisecond, retry: time.Hour})
 	waitCheck(t, c.calls, time.Second)
-	noCheck(t, c.calls, 80*time.Millisecond)
+	noCheck(t, c.calls, 100*time.Millisecond)
 	waitCheck(t, c.calls, time.Second)
 }
 
@@ -198,6 +198,63 @@ func TestKickWithoutALoopNeverBlocks(t *testing.T) {
 	h := &Heartbeat{userHelperTaskKick: make(chan struct{}, 1)}
 	h.kickUserHelperTaskCheck()
 	h.kickUserHelperTaskCheck() // buffer full: dropped, not blocked
+}
+
+func TestUserHelperTaskUninstallState(t *testing.T) {
+	t.Cleanup(func() {
+		selfUninstallInProgress.Store(false)
+		uninstallHelperWatch.Store(nil)
+	})
+	enabled := func() (bool, error) { return false, nil }
+	disabled := func() (bool, error) { return true, nil }
+	unreadable := func() (bool, error) { return false, errors.New("access denied") }
+	cases := []struct {
+		name       string
+		inProgress bool
+		watched    bool
+		service    func() (bool, error)
+		want       bool
+		wantErr    bool
+	}{
+		{"idle, service enabled", false, false, enabled, false, false},
+		{"self-uninstall handing off", true, false, enabled, true, false},
+		{"teardown helper watched", false, true, enabled, true, false},
+		{"service disabled (phase 1 done)", false, false, disabled, true, false},
+		{"service config unreadable", false, false, unreadable, false, true},
+		{"in progress wins over an unreadable config", true, false, unreadable, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			selfUninstallInProgress.Store(tc.inProgress)
+			uninstallHelperWatch.Store(nil)
+			if tc.watched {
+				uninstallHelperWatch.Store(&uninstallHelperState{commandID: "c", exited: make(chan int)})
+			}
+			got, err := userHelperTaskUninstallState(tc.service)
+			if got != tc.want || (err != nil) != tc.wantErr {
+				t.Fatalf("got %v, %v; want %v, err=%v", got, err, tc.want, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestUserHelperTaskRepairRunsOnlyForTheInstalledService(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *config.Config
+		want bool
+	}{
+		{"installed service", &config.Config{IsService: true, IsInstalledAgent: true}, true},
+		{"foreground run", &config.Config{IsService: false, IsInstalledAgent: true}, false},
+		{"not the installed agent", &config.Config{IsService: true, IsInstalledAgent: false}, false},
+		{"support session", &config.Config{IsService: true, IsInstalledAgent: true, SupportMode: true}, false},
+		{"no config", nil, false},
+	}
+	for _, tc := range cases {
+		if got := userHelperTaskRepairEnabled(tc.cfg); got != tc.want {
+			t.Errorf("%s: userHelperTaskRepairEnabled = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
 
 // The backoff can only trip if a task removed after every repair is seen

@@ -1,10 +1,12 @@
 package heartbeat
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"sync/atomic"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/userhelpertask"
 )
@@ -51,6 +53,30 @@ type userHelperTaskChecker interface {
 // and stays set once it has been: the task repair must never put back the
 // task the teardown is removing. Cleared when the hand-off fails.
 var selfUninstallInProgress atomic.Bool
+
+// userHelperTaskUninstallState reports an uninstall in progress: this
+// process's own self_uninstall hand-off, a watched teardown helper, or the
+// agent service configured disabled, which is what phase 1 of a self-uninstall
+// leaves for any agent process that outlives it. serviceDisabled reads that
+// configuration; its error is returned (the repair then writes nothing and
+// reports check_failed) unless an in-process uninstall already answers.
+func userHelperTaskUninstallState(serviceDisabled func() (bool, error)) (bool, error) {
+	if selfUninstallInProgress.Load() || uninstallHelperWatch.Load() != nil {
+		return true, nil
+	}
+	disabled, err := serviceDisabled()
+	if err != nil {
+		return false, fmt.Errorf("read the agent service configuration: %w", err)
+	}
+	return disabled, nil
+}
+
+// userHelperTaskRepairEnabled: only the installed agent running as the
+// service owns the machine's install; never a support session or a
+// foreground run.
+func userHelperTaskRepairEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.IsService && cfg.IsInstalledAgent && !cfg.SupportMode
+}
 
 // kickUserHelperTaskCheck asks the repair loop for a check now. It never
 // blocks, and is a no-op when the loop is not running.
@@ -141,7 +167,13 @@ func (h *Heartbeat) reportUserHelperTask(c userHelperTaskChecker, outcome userhe
 				"task", userhelpertask.TaskName, "error", errText)
 		}
 	case userhelpertask.OutcomeUninstalling:
-		log.Debug("uninstall in progress; not checking the user-helper logon task")
+		// Includes an admin-disabled agent service. The health component is
+		// left as it was: the device is on its way out, or someone stopped
+		// it from starting on purpose.
+		if changed {
+			log.Info("uninstall in progress or agent service disabled; not checking the user-helper logon task",
+				"task", userhelpertask.TaskName)
+		}
 		return
 	default:
 		log.Warn("unexpected user-helper logon task check outcome", "outcome", string(outcome), "error", errText)
