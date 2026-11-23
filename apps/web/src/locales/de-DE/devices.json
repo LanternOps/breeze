@@ -3269,6 +3269,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} nicht abgerechnete Zeiteinträge und {{parts}} nicht abgerechnete Teile behalten nach dem Verschieben ihre ursprüngliche Währung.",
     "currencyMismatchAccept": "Verstanden – Gerät verschieben und diese Einträge in ihrer ursprünglichen Währung belassen",
     "currencyMismatchNoPermission": "Dafür ist die Berechtigung zum Schreiben von Rechnungen nötig. Bitten Sie einen Abrechnungsadministrator, die offene Arbeit zuerst abzurechnen oder zu bereinigen.",
+    "policyAssignmentsHeading": "Konfigurationsrichtlinien, die von diesem Gerät entfernt werden",
+    "policyAssignmentsDetail": "Diese Richtlinien sind diesem Gerät direkt zugewiesen und können in der neuen Organisation nicht gelten. Beim Verschieben werden die Zuweisungen entfernt. Die Richtlinien selbst bleiben unverändert.",
     "stepUpHeading": "Bestätigen Sie Ihre Identität",
     "stepUpIntro": "Das Verschieben eines Geräts zwischen Organisationen erfordert einen zweiten Faktor.",
     "stepUpCodeLabel": "Authenticator-Code",

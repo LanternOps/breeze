@@ -3269,6 +3269,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} registrazioni di tempo non fatturate e {{parts}} parti non fatturate mantengono la valuta originale dopo lo spostamento.",
     "currencyMismatchAccept": "Ho capito: sposta il dispositivo e mantieni quelle righe nella valuta originale",
     "currencyMismatchNoPermission": "Per accettare serve il permesso di scrittura delle fatture. Chiedi a un amministratore della fatturazione di fatturare o chiudere prima il lavoro aperto.",
+    "policyAssignmentsHeading": "Criteri di configurazione rimossi da questo dispositivo",
+    "policyAssignmentsDetail": "Questi criteri sono assegnati direttamente a questo dispositivo e non possono essere applicati nella nuova organizzazione. Lo spostamento rimuove le assegnazioni. I criteri stessi non cambiano.",
     "stepUpHeading": "Conferma la tua identità",
     "stepUpIntro": "Spostare un dispositivo tra organizzazioni richiede un secondo fattore.",
     "stepUpCodeLabel": "Codice dell'app di autenticazione",

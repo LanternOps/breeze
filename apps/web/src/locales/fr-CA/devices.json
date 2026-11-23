@@ -3269,6 +3269,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}} : {{timeEntries}} entrées de temps non facturées et {{parts}} pièces non facturées conservent leur devise d'origine après le déplacement.",
     "currencyMismatchAccept": "Je comprends – déplacer l'appareil et conserver ces lignes dans leur devise d'origine",
     "currencyMismatchNoPermission": "Cette acceptation exige la permission d'écriture des factures. Demandez à un administrateur de facturation de facturer ou de régler le travail en suspens d'abord.",
+    "policyAssignmentsHeading": "Politiques de configuration retirées de cet appareil",
+    "policyAssignmentsDetail": "Ces politiques sont attribuées directement à cet appareil et ne peuvent pas s'appliquer dans la nouvelle organisation. Le déplacement retire ces attributions. Les politiques elles-mêmes ne changent pas.",
     "stepUpHeading": "Confirmez votre identité",
     "stepUpIntro": "Déplacer un appareil entre organisations exige un second facteur.",
     "stepUpCodeLabel": "Code de l'authentificateur",

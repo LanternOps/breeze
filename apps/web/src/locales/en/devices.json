@@ -3269,6 +3269,8 @@
     "currencyMismatchDetail": "{{sourceCurrency}} → {{targetCurrency}}: {{timeEntries}} unbilled time entries and {{parts}} unbilled parts keep their original currency after the move.",
     "currencyMismatchAccept": "I understand — move the device and keep those rows in their original currency",
     "currencyMismatchNoPermission": "Accepting this needs invoice write permission. Ask a billing administrator to bill or clear the open work first.",
+    "policyAssignmentsHeading": "Configuration policies removed from this device",
+    "policyAssignmentsDetail": "These policies are assigned directly to this device and cannot apply in the new organization. The move removes the assignments. The policies themselves are not changed.",
     "stepUpHeading": "Confirm it's you",
     "stepUpIntro": "Moving a device between organizations requires a second factor.",
     "stepUpCodeLabel": "Authenticator code",

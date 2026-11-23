@@ -1,5 +1,5 @@
 import '@/lib/i18n';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -13,7 +13,7 @@ const { moveMock, mintMock, fetchMock, canMock, orgState } = vi.hoisted(() => ({
       { id: 'o1', name: 'Current Org', status: 'active' },
       { id: 'o2', name: 'Target Org', status: 'active' },
       { id: 'o3', name: 'Archived Org', status: 'archived' },
-    ],
+    ] as Array<{ id: string; name: string; status: string; partnerId?: string }>,
     fetchOrganizations: vi.fn(async () => undefined),
   },
 }));
@@ -382,6 +382,67 @@ describe('MoveDeviceOrgDialog (device move-org step-up D5)', () => {
     await chooseTarget();
     await userEvent.click(screen.getByTestId('move-org-submit'));
     await waitFor(() => expect(screen.getByText(/may still be completing/i)).toBeInTheDocument());
+  });
+
+  describe('device-level configuration policy assignments the move removes (#12491)', () => {
+    const ASSIGNMENTS_PATH = '/configuration-policies/assignments/target?level=device&targetId=d1';
+    const originalOrgs = orgState.organizations;
+    const respondWith = (assignments: { ok: boolean; data?: unknown[] }) => {
+      fetchMock.mockImplementation(async (path: string) => {
+        if (path === ASSIGNMENTS_PATH) return { ok: assignments.ok, status: assignments.ok ? 200 : 403, json: async () => ({ data: assignments.data }) };
+        return {
+          ok: true,
+          json: async () => (path.startsWith('/orgs/sites?organizationId=o2') ? { data: [{ id: 's2', name: 'Site Two', orgId: 'o2' }] } : {}),
+        };
+      });
+    };
+    const ROWS = [
+      { assignment: { id: 'a1' }, policyName: 'Org Policy', policyOrgId: 'o1', policyPartnerId: null },
+      { assignment: { id: 'a2' }, policyName: 'MSP Policy', policyOrgId: null, policyPartnerId: 'p1' },
+    ];
+    const withTargetPartner = (partnerId: string) => {
+      orgState.organizations = [
+        { id: 'o1', name: 'Current Org', status: 'active', partnerId: 'p1' },
+        { id: 'o2', name: 'Target Org', status: 'active', partnerId },
+      ];
+    };
+    afterEach(() => { orgState.organizations = originalOrgs; });
+
+    it('lists the org-owned policy and leaves out the partner-owned one on a same-partner move', async () => {
+      withTargetPartner('p1');
+      respondWith({ ok: true, data: ROWS });
+      renderDialog();
+
+      const block = await screen.findByTestId('move-org-policy-assignments');
+      expect(block).toHaveTextContent('Org Policy');
+      await chooseTarget();
+      expect(screen.getByTestId('move-org-policy-assignments')).toHaveTextContent('Org Policy');
+      expect(screen.getByTestId('move-org-policy-assignments')).not.toHaveTextContent('MSP Policy');
+    });
+
+    it('lists the partner-owned policy too when the target organization is under another partner', async () => {
+      withTargetPartner('p2');
+      respondWith({ ok: true, data: ROWS });
+      renderDialog();
+
+      await screen.findByTestId('move-org-policy-assignments');
+      await chooseTarget();
+      expect(screen.getByTestId('move-org-policy-assignments')).toHaveTextContent('MSP Policy');
+    });
+
+    it('shows nothing and still moves the device when the assignments read fails', async () => {
+      withTargetPartner('p1');
+      respondWith({ ok: false });
+      moveMock.mockResolvedValueOnce(undefined);
+      const onCompleted = vi.fn();
+      renderDialog({ onCompleted });
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(ASSIGNMENTS_PATH));
+      await chooseTarget();
+      expect(screen.queryByTestId('move-org-policy-assignments')).not.toBeInTheDocument();
+      await userEvent.click(screen.getByTestId('move-org-submit'));
+      await waitFor(() => expect(onCompleted).toHaveBeenCalledWith({ targetOrgId: 'o2', targetOrgName: 'Target Org' }));
+    });
   });
 
   it('shows the no-other-org state when every other org is inactive', () => {
