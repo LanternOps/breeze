@@ -266,9 +266,12 @@ async function planCopy(
 ): Promise<{ carried: CarriedLink[]; dropped: ConfigPolicyCopyDrop[] }> {
   const carried: CarriedLink[] = [];
   const dropped: ConfigPolicyCopyDrop[] = [];
+  // In feature-type order: the links are read with no ORDER BY, and the dry
+  // run and the real run must list the same features in the same order.
+  const ordered = [...links].sort((a, b) => (a.featureType < b.featureType ? -1 : a.featureType > b.featureType ? 1 : 0));
   // Sequential on purpose: some checks open a savepoint, which must never run
   // beside siblings in a Promise.all.
-  for (const link of links) {
+  for (const link of ordered) {
     const featureType = link.featureType as ConfigFeatureType;
     const decision = await planLink(ctx, featureType, link);
     if ('drop' in decision) dropped.push({ featureType, reason: decision.drop });

@@ -26,10 +26,12 @@ import {
 } from '../../services/configurationPolicy';
 import { checkOemUpdatesArmAllowed, policyArmsOemUpdates } from './oemUpdatesGate';
 import { loadAppliesToSummaries } from '../../services/configPolicyAppliesTo';
+import { copyConfigPolicy, ConfigPolicyCopyRefusedError } from '../../services/configPolicyCopy';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import {
   createConfigPolicySchema,
+  copyConfigPolicySchema,
   updateConfigPolicySchema,
   listConfigPoliciesSchema,
   idParamSchema,
@@ -289,6 +291,55 @@ crudRoutes.get(
     // After the 404, never before: an invisible policy loads nothing (D3).
     const appliesTo = (await loadAppliesToSummaries(auth, [policy.id])).get(policy.id);
     return c.json(appliesTo ? { ...policy, appliesTo, access } : { ...policy, access });
+  }
+);
+
+// POST /:id/copy — copy a policy, to the same owner or to another
+// organization or the MSP (#12309, #11776). The copy is always inactive and
+// applies nowhere. `dryRun: true` answers what would be carried and what left
+// behind, and writes nothing. The service (services/configPolicyCopy.ts) owns
+// every gate: the read predicate on the source, write access to the new owner
+// from this body (canManagePartnerWidePolicies for the MSP), the parent, and
+// each carried link's arming gates with this caller's own permissions.
+crudRoutes.post(
+  '/:id/copy',
+  requireScope('organization', 'partner', 'system'),
+  requireConfigPolicyWrite,
+  requireMfa(),
+  zValidator('param', idParamSchema),
+  zValidator('json', copyConfigPolicySchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
+    const { id } = c.req.valid('param');
+    const data = c.req.valid('json');
+
+    let result;
+    try {
+      result = await copyConfigPolicy(auth, id, data, {
+        permissions: c.get('permissions') as UserPermissions | undefined,
+      });
+    } catch (err) {
+      if (err instanceof ConfigPolicyCopyRefusedError) return c.json(err.body, err.status);
+      throw err;
+    }
+    if (result.dryRun) return c.json(result);
+
+    writeRouteAudit(c, {
+      orgId: result.orgId,
+      action: 'config_policy.copy',
+      resourceType: 'configuration_policy',
+      resourceId: result.policyId,
+      resourceName: data.name,
+      details: {
+        sourcePolicyId: id,
+        ownerScope: data.ownerScope,
+        dropped: result.dropped.map((d) => d.featureType),
+      },
+    });
+    return c.json(result, 201);
   }
 );
 

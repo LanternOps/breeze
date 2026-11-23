@@ -203,7 +203,7 @@ describe('copyConfigPolicy', () => {
 
     expect(result).toEqual({ dryRun: false, policyId: NEW_ID, orgId: null, dropped: [{ featureType: 'software_policy', reason: 'linked_item_unavailable' }] });
     expect(m.createConfigPolicy).toHaveBeenCalledWith({ orgId: null, partnerId: PARTNER }, expect.objectContaining({ status: 'inactive' }), 'user-1');
-    expect(m.addFeatureLink.mock.calls.map((c) => c[1])).toEqual(['patch', 'event_log']);
+    expect(m.addFeatureLink.mock.calls.map((c) => c[1])).toEqual(['event_log', 'patch']);
     // The reason is a code: the validator's text (which names the id) never leaves.
     expect(JSON.stringify(result)).not.toContain(SW);
   });
@@ -264,12 +264,13 @@ describe('copyConfigPolicy', () => {
     const dry = await copyConfigPolicy(partnerAuth(), SOURCE, { ...input, dryRun: true }, { permissions: ALL });
     const real = await copyConfigPolicy(partnerAuth(), SOURCE, input, { permissions: ALL });
 
+    // In feature-type order, whatever order the source's links are read in.
     const expected = [
-      { featureType: 'onedrive_helper', reason: 'org_only_feature' },
-      { featureType: 'software_policy', reason: 'linked_item_unavailable' },
-      { featureType: 'monitors', reason: 'linked_item_unavailable' },
       { featureType: 'backup', reason: 'linked_item_unavailable' },
       { featureType: 'helper', reason: 'settings_not_valid' },
+      { featureType: 'monitors', reason: 'linked_item_unavailable' },
+      { featureType: 'onedrive_helper', reason: 'org_only_feature' },
+      { featureType: 'software_policy', reason: 'linked_item_unavailable' },
     ];
     expect(dry).toMatchObject({ dryRun: true, carried: ['patch'], dropped: expected });
     expect(real).toMatchObject({ dryRun: false, dropped: expected });
