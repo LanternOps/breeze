@@ -245,31 +245,39 @@ fn register_url_scheme() -> Result<(), String> {
         std::env::current_exe().ok().as_deref(),
         std::env::var("XDG_DATA_HOME").ok().as_deref(),
         std::env::var("HOME").ok().as_deref(),
-        &|p: &Path| p.is_file(),
+        &is_executable_file,
     )?;
 
-    // Unreadable and non-UTF-8 files count as missing, so a bad file self-heals.
-    let existing = std::fs::read_to_string(&plan.entry_path).ok();
-    let path_env = std::env::var("PATH").ok();
+    let existing = linux_desktop_entry::existing_entry_text(
+        std::fs::read(&plan.entry_path),
+        &plan.entry_path,
+    )?;
     let action = linux_desktop_entry::entry_action(
         existing.as_deref(),
         &plan.contents,
         &|launcher: &str| escape_desktop_exec(launcher).map(|q| desktop_entry_contents(&q)),
-        &|program: &str| {
-            linux_desktop_entry::program_resolves(program, path_env.as_deref(), &is_executable_file)
-        },
+        &is_executable_file,
     );
     match action {
         linux_desktop_entry::EntryAction::Write(reason) => {
+            let why = reason.describe();
             std::fs::create_dir_all(&plan.dir)
                 .map_err(|e| format!("could not create {}: {}", plan.dir.display(), e))?;
             std::fs::write(&plan.entry_path, &plan.contents).map_err(|e| {
                 format!(
-                    "could not write {} ({reason:?}): {}",
-                    plan.entry_path.display(),
-                    e
+                    "could not write {} (rewriting it because {why}): {e}",
+                    plan.entry_path.display()
                 )
             })?;
+            let previous = existing
+                .as_deref()
+                .and_then(linux_desktop_entry::exec_program)
+                .map(|p| format!(" (Exec was {p})"))
+                .unwrap_or_default();
+            eprintln!(
+                "wrote {} because {why}{previous}",
+                plan.entry_path.display()
+            );
         }
         linux_desktop_entry::EntryAction::UpToDate => {}
         linux_desktop_entry::EntryAction::KeepUserEdited { program } => eprintln!(
@@ -1846,6 +1854,59 @@ mod tests {
         assert_eq!(
             resolve_launcher_path(None, Some(&exe), &no_files),
             Some(exe.clone())
+        );
+    }
+
+    /// The shipped entry, byte for byte. `entry_action` recognises its own
+    /// entries by regenerating them, so any change to this template makes every
+    /// entry already on a user's disk look hand-edited: they would then be kept
+    /// instead of repointed. Change it only together with a way to recognise
+    /// the old text.
+    #[test]
+    fn desktop_entry_template_is_pinned() {
+        assert_eq!(
+            desktop_entry_contents("\"/x\""),
+            "[Desktop Entry]\nType=Application\nName=Breeze Viewer\n\
+             Comment=Breeze remote desktop viewer\nExec=\"/x\" %u\nTerminal=false\n\
+             NoDisplay=true\nStartupNotify=true\nStartupWMClass=breeze-viewer\n\
+             Categories=Network;RemoteAccess;\nMimeType=x-scheme-handler/breeze;\n"
+        );
+    }
+
+    /// The real generator and the real decision, together: the entry 0.130.0
+    /// wrote for an extracted AppImage is repointed at AppRun, and the entry
+    /// this install writes is then left alone.
+    #[test]
+    fn real_entries_heal_then_settle() {
+        let regenerate =
+            |launcher: &str| escape_desktop_exec(launcher).map(|q| desktop_entry_contents(&q));
+        let exe = Path::new("/home/u/My Apps/squashfs-root/usr/bin/breeze-viewer");
+        let apprun = Path::new("/home/u/My Apps/squashfs-root/AppRun");
+        let executable = |p: &Path| p == exe || p == apprun;
+        let plan = linux_registration_plan(None, Some(exe), None, Some("/home/u"), &executable)
+            .expect("plan");
+        let old = regenerate(&exe.to_string_lossy()).unwrap();
+        assert_eq!(
+            linux_desktop_entry::entry_action(Some(&old), &plan.contents, &regenerate, &executable),
+            linux_desktop_entry::EntryAction::Write(
+                linux_desktop_entry::WriteReason::OursForAnotherLauncher
+            )
+        );
+        assert_eq!(
+            linux_desktop_entry::entry_action(
+                Some(&plan.contents),
+                &plan.contents,
+                &regenerate,
+                &executable
+            ),
+            linux_desktop_entry::EntryAction::UpToDate
+        );
+        // The plan forwards the probe: Exec= is the AppRun, not the binary.
+        assert!(
+            plan.contents
+                .contains("Exec=\"/home/u/My Apps/squashfs-root/AppRun\" %u\n"),
+            "{}",
+            plan.contents
         );
     }
 

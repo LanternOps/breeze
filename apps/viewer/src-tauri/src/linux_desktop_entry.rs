@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 pub(crate) const BREEZE_SCHEME_MIME: &str = "x-scheme-handler/breeze";
 
 /// `<AppDir>/AppRun` when `exe` is `<AppDir>/usr/bin/<binary>` and that AppDir
-/// has an `AppRun`.
+/// has an `AppRun` (`is_file` is given the `AppRun` path; Linux passes an
+/// executable-file check).
 ///
 /// Derived from the executable path, not from `$APPDIR`: the environment is
 /// inherited by child processes, so `$APPDIR` can name another app's AppDir.
@@ -41,15 +42,35 @@ pub(crate) fn appdir_launcher(exe: &Path, is_file: &dyn Fn(&Path) -> bool) -> Op
 /// Why the entry is (re)written. Logged, so a field report says which rule fired.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WriteReason {
-    /// No file, or one that could not be read as text.
+    /// No file.
     Missing,
     /// An untouched entry this app generated, for a different launcher (an
     /// older install, a moved AppImage, the pre-#12550 AppDir binary path).
     OursForAnotherLauncher,
-    /// `Exec=` is absent or names a program that is not there.
+    /// `Exec=` is absent or names a program that cannot start
+    /// ([`program_is_missing`]).
     BrokenExec,
     /// The entry no longer claims `x-scheme-handler/breeze`.
     NoSchemeHandler,
+    /// `Exec=` starts an AppDir's `usr/bin` binary directly, skipping the
+    /// `AppRun` beside it, with no `Path=` to set the working directory: the
+    /// #12550 handler that opens with "Connection Error: Load failed".
+    BypassesAppRun,
+}
+
+impl WriteReason {
+    /// Plain-language reason, for the log line and the idle card.
+    pub(crate) fn describe(self) -> &'static str {
+        match self {
+            Self::Missing => "it did not exist",
+            Self::OursForAnotherLauncher => "it was written for a different launcher",
+            Self::BrokenExec => "its Exec= program does not exist",
+            Self::NoSchemeHandler => "it no longer handles breeze:// links",
+            Self::BypassesAppRun => {
+                "its Exec= starts the AppImage's binary directly, skipping AppRun"
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,19 +84,39 @@ pub(crate) enum EntryAction {
     },
 }
 
+/// The existing entry's text from the result of reading it.
+///
+/// Missing is `Ok(None)`. Bytes that are not UTF-8 are decoded lossily, so a
+/// corrupt file still goes through [`entry_action`] (and is rewritten as
+/// broken) instead of being taken for absent. Any other error, such as a file
+/// the user cannot read or a directory at that path, is returned: writing would
+/// fail the same way, and "could not read" is the accurate message.
+pub(crate) fn existing_entry_text(
+    read: std::io::Result<Vec<u8>>,
+    path: &Path,
+) -> Result<Option<String>, String> {
+    match read {
+        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("could not read {}: {err}", path.display())),
+    }
+}
+
 /// Decide what to do with the existing desktop entry.
 ///
-/// - `existing`: the file's text, `None` when it is missing or unreadable.
+/// - `existing`: the file's text (see [`existing_entry_text`]), `None` when it
+///   is missing.
 /// - `ours`: what this install would write.
 /// - `regenerate`: the entry this app writes for a given launcher path, or
 ///   `None` when that path cannot be written into `Exec=`.
-/// - `program_runs`: whether an `Exec=` program resolves to an executable.
+/// - `is_executable`: whether a path is an executable file.
 pub(crate) fn entry_action(
     existing: Option<&str>,
     ours: &str,
     regenerate: &dyn Fn(&str) -> Option<String>,
-    program_runs: &dyn Fn(&str) -> bool,
+    is_executable: &dyn Fn(&Path) -> bool,
 ) -> EntryAction {
+    let program_runs = |program: &str| !program_is_missing(program, is_executable);
     let Some(existing) = existing else {
         return EntryAction::Write(WriteReason::Missing);
     };
@@ -94,6 +135,13 @@ pub(crate) fn entry_action(
     }
     if !program_runs(&program) {
         return EntryAction::Write(WriteReason::BrokenExec);
+    }
+    // The 0.130.0 shape, edited: launching the AppDir binary itself fails
+    // unless `Path=` gives it the working directory `AppRun` would have.
+    if appdir_launcher(Path::new(&program), is_executable).is_some()
+        && desktop_entry_value(existing, "Path").is_none()
+    {
+        return EntryAction::Write(WriteReason::BypassesAppRun);
     }
     if !claims_breeze_scheme(existing) {
         return EntryAction::Write(WriteReason::NoSchemeHandler);
@@ -183,27 +231,19 @@ pub(crate) fn claims_breeze_scheme(contents: &str) -> bool {
     })
 }
 
-/// Whether `program` resolves to an executable: an absolute path is checked
-/// as is, a bare name is looked up on `path_env`, and a relative path with a
-/// `/` never resolves (`Exec=` runs from an unspecified directory).
-pub(crate) fn program_resolves(
-    program: &str,
-    path_env: Option<&str>,
-    is_executable: &dyn Fn(&Path) -> bool,
-) -> bool {
+/// Whether `Exec=`'s program certainly cannot start.
+///
+/// An absolute path must be an executable file. A bare name is never called
+/// missing: the desktop resolves it on its own `PATH`, which can include
+/// directories (`~/.local/bin`) this process's does not, and a false "missing"
+/// would overwrite a working edit. A relative path with a `/`, or an empty
+/// program, cannot work: `Exec=` runs from an unspecified directory.
+pub(crate) fn program_is_missing(program: &str, is_executable: &dyn Fn(&Path) -> bool) -> bool {
     let path = Path::new(program);
     if path.is_absolute() {
-        return is_executable(path);
+        return !is_executable(path);
     }
-    if program.is_empty() || program.contains('/') {
-        return false;
-    }
-    path_env
-        .unwrap_or_default()
-        .split(':')
-        .map(Path::new)
-        .filter(|dir| dir.is_absolute())
-        .any(|dir| is_executable(&dir.join(program)))
+    program.is_empty() || program.contains('/')
 }
 
 #[cfg(test)]
@@ -331,25 +371,45 @@ mod tests {
     // ── program_resolves ─────────────────────────────────────────────────
 
     #[test]
-    fn program_resolves_cases() {
-        let exe = files(&["/home/u/wrapper.sh", "/usr/bin/env"]);
-        assert!(program_resolves("/home/u/wrapper.sh", None, &exe));
-        assert!(!program_resolves("/home/u/gone.AppImage", None, &exe));
-        assert!(program_resolves(
-            "env",
-            Some("/usr/local/bin:/usr/bin"),
-            &exe
-        ));
-        assert!(!program_resolves("env", Some("/usr/local/bin"), &exe));
-        assert!(!program_resolves("env", None, &exe));
-        // Relative PATH entries are skipped, as are relative programs with `/`.
-        assert!(!program_resolves(
-            "env",
-            Some("usr/bin"),
-            &files(&["usr/bin/env"])
-        ));
-        assert!(!program_resolves("./wrapper.sh", Some("/usr/bin"), &exe));
-        assert!(!program_resolves("", Some("/usr/bin"), &exe));
+    fn program_is_missing_cases() {
+        let exe = files(&["/home/u/wrapper.sh"]);
+        assert!(!program_is_missing("/home/u/wrapper.sh", &exe));
+        assert!(program_is_missing("/home/u/gone.AppImage", &exe));
+        // A bare name is looked up on the PATH the desktop's launcher has,
+        // which is not necessarily this process's: never call it missing.
+        assert!(!program_is_missing("breeze-wrapper", &exe));
+        assert!(!program_is_missing("env", &files(&[])));
+        // A relative path runs from an unspecified directory, and an empty
+        // program runs nothing.
+        assert!(program_is_missing("./wrapper.sh", &exe));
+        assert!(program_is_missing("bin/wrapper.sh", &exe));
+        assert!(program_is_missing("", &exe));
+    }
+
+    // ── existing_entry_text ──────────────────────────────────────────────
+
+    #[test]
+    fn existing_entry_text_cases() {
+        use std::io::{Error, ErrorKind};
+        let path = Path::new("/home/u/.local/share/applications/breeze-viewer.desktop");
+        assert_eq!(
+            existing_entry_text(Ok(b"[Desktop Entry]\n".to_vec()), path),
+            Ok(Some("[Desktop Entry]\n".to_string()))
+        );
+        assert_eq!(
+            existing_entry_text(Err(Error::from(ErrorKind::NotFound)), path),
+            Ok(None)
+        );
+        // Not UTF-8: still text, so it is judged (and replaced), not "missing".
+        let lossy = existing_entry_text(Ok(b"Exec=/x\xff\n".to_vec()), path)
+            .unwrap()
+            .unwrap();
+        assert!(lossy.starts_with("Exec=/x"), "{lossy}");
+        // Anything else is a real error, naming the file.
+        let err =
+            existing_entry_text(Err(Error::from(ErrorKind::PermissionDenied)), path).unwrap_err();
+        assert!(err.contains("could not read"), "{err}");
+        assert!(err.contains("breeze-viewer.desktop"), "{err}");
     }
 
     // ── entry_action ─────────────────────────────────────────────────────
@@ -365,9 +425,9 @@ mod tests {
         ))
     }
 
-    fn act(existing: Option<&str>, ours: &str, runs: &[&str]) -> EntryAction {
-        let runs: HashSet<String> = runs.iter().map(|s| s.to_string()).collect();
-        entry_action(existing, ours, &generated, &|p: &str| runs.contains(p))
+    /// `executables`: the absolute paths that exist and are executable.
+    fn act(existing: Option<&str>, ours: &str, executables: &[&str]) -> EntryAction {
+        entry_action(existing, ours, &generated, &files(executables))
     }
 
     #[test]
@@ -421,17 +481,61 @@ mod tests {
                 program: "/home/u/bin/breeze-wrapper".into()
             }
         );
-        // An extra key on an otherwise generated entry also counts as an edit.
-        let tweaked = format!(
+        // A bare program name is not checked against this process's PATH.
+        let bare = "[Desktop Entry]\nExec=breeze-wrapper %u\nMimeType=x-scheme-handler/breeze;\n";
+        assert_eq!(
+            act(Some(bare), &ours, &[]),
+            EntryAction::KeepUserEdited {
+                program: "breeze-wrapper".into()
+            }
+        );
+        // The raw AppDir binary is fine when the user set its working
+        // directory with `Path=` (the fix the issue asked for).
+        let with_path = format!(
             "{}Path=/home/u/sq/usr\n",
             generated("/home/u/sq/usr/bin/breeze-viewer").unwrap()
         );
         assert_eq!(
-            act(Some(&tweaked), &ours, &["/home/u/sq/usr/bin/breeze-viewer"]),
+            act(
+                Some(&with_path),
+                &ours,
+                &["/home/u/sq/usr/bin/breeze-viewer", "/home/u/sq/AppRun"]
+            ),
             EntryAction::KeepUserEdited {
                 program: "/home/u/sq/usr/bin/breeze-viewer".into()
             }
         );
+    }
+
+    /// A 0.130.0 entry the user touched (here, a renamed `Name=`) still starts
+    /// the raw AppDir binary. Keeping it would keep #12550.
+    #[test]
+    fn edited_entry_that_skips_apprun_is_replaced() {
+        let ours = generated("/home/u/sq/AppRun").unwrap();
+        let renamed = generated("/home/u/sq/usr/bin/breeze-viewer")
+            .unwrap()
+            .replace("Type=Application\n", "Type=Application\nName=Remote\n");
+        assert_eq!(
+            act(
+                Some(&renamed),
+                &ours,
+                &["/home/u/sq/usr/bin/breeze-viewer", "/home/u/sq/AppRun"]
+            ),
+            EntryAction::Write(WriteReason::BypassesAppRun)
+        );
+    }
+
+    #[test]
+    fn every_write_reason_has_a_description() {
+        for reason in [
+            WriteReason::Missing,
+            WriteReason::OursForAnotherLauncher,
+            WriteReason::BrokenExec,
+            WriteReason::NoSchemeHandler,
+            WriteReason::BypassesAppRun,
+        ] {
+            assert!(!reason.describe().is_empty(), "{reason:?}");
+        }
     }
 
     #[test]
