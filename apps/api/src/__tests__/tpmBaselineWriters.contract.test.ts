@@ -79,6 +79,10 @@ describe('device_hardware tpm_* writers lock the device row first (#8318 wave T2
     expect(readFileSync(resolve(SRC_ROOT, file), 'utf8')).toMatch(lock);
   });
 
+  it.each(Object.keys(WRITERS))('%s takes the key advisory lock before it sets a baseline', (file) => {
+    expect(readFileSync(resolve(SRC_ROOT, file), 'utf8')).toMatch(/await lockTpmKey\(tx, /);
+  });
+
   it('no allowed writer is stale', () => {
     expect(Object.keys(WRITERS).filter((file) => !sites.has(file))).toEqual([]);
   });

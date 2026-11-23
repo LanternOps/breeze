@@ -308,6 +308,7 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
         sourceDeviceId: source.id,
         sourceEnrolledAt: source.enrolledAt ?? source.createdAt,
         targetDeviceId: target.id,
+        lockKey: true,
       });
       if (input.expectedEvidenceLevel === 'tpm_continuity' && evidence.level !== 'tpm_continuity') {
         refuse(409, 'evidence_changed', 'The TPM key evidence changed since it was shown; reload and try again');

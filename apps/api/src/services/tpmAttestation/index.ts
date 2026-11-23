@@ -6,6 +6,7 @@ import { ownDeviceRowChangedHands, selectOwnDeviceRowForUpdate } from '../agentO
 import type { CreateAuditLogParams } from '../auditService';
 import { markRequestAuditWritten } from '../auditService';
 import { getRedis } from '../redis';
+import { lockTpmKey } from '../deviceReattach/evidence';
 import { makeCredential } from './makeCredential';
 import {
   akTemplateRefusal,
@@ -185,6 +186,9 @@ export async function completeAttestation(
       // records a mismatch instead of overwriting it.
       const device = await selectOwnDeviceRowForUpdate(tx, agent, { orgId: devices.orgId });
       if (!device) return (await ownDeviceRowChangedHands(tx, agent)) ? 'stale' as const : 'not_found' as const;
+      // #8318 wave T2: a new holder of this key waits for any reattach that
+      // is counting its holders (deviceReattach/evidence.ts lockTpmKey).
+      await lockTpmKey(tx, stored.ekSha256);
       const [current] = await tx
         .select({ ek: deviceHardware.tpmEkPubSha256 })
         .from(deviceHardware)

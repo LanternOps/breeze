@@ -20,6 +20,7 @@
  * both device rows FOR UPDATE. Phase 1 (stage) holds FOR KEY SHARE, which does
  * not block those writers: its re-check is advisory, confirm's is the
  * authoritative one (tpmBaselineWriters.contract.test.ts pins the writers).
+ * The holder count is kept still by a per-key advisory lock (lockTpmKey).
  */
 import { and, eq, inArray, notExists, notInArray, sql } from 'drizzle-orm';
 import { deviceHardware, deviceReattachments, devices, organizations } from '../../db/schema';
@@ -101,6 +102,21 @@ export function sourceKeyUsable(source: TpmKeyState, sourceEnrolledAt: Date): so
 }
 
 type Reader = Pick<ReattachTx, 'select'>;
+type Locker = Pick<ReattachTx, 'select' | 'execute'>;
+
+/**
+ * Serialize everyone who makes, or counts, holders of one key: a
+ * transaction-scoped advisory lock on the key hash. The device row locks keep
+ * the source's and the target's key still; this keeps a THIRD device from
+ * becoming a holder between the holder count and the commit (two clones
+ * attesting while a reattach confirms). Taken after the caller's device row
+ * locks, by the count (readTpmEvidence with `lockKey`) and by every writer
+ * that sets a baseline (services/tpmAttestation, services/tpmBaseline). Keyed
+ * by the hash alone: a collision across partners only serializes.
+ */
+export async function lockTpmKey(tx: Pick<ReattachTx, 'execute'>, ekSha256: string): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`device-tpm-ek:${ekSha256}`}, 0))`);
+}
 
 /** The tpm_* columns of these devices (absent rows are NO_TPM_KEY). */
 export async function readTpmKeyStates(reader: Reader, deviceIds: readonly string[]): Promise<Map<string, TpmKeyState>> {
@@ -156,8 +172,15 @@ export async function countOtherKeyHolders(
  * rows FOR UPDATE (see the module comment).
  */
 export async function readTpmEvidence(
-  reader: Reader,
-  input: { partnerId: string; sourceDeviceId: string; sourceEnrolledAt: Date; targetDeviceId: string },
+  reader: Locker,
+  input: {
+    partnerId: string;
+    sourceDeviceId: string;
+    sourceEnrolledAt: Date;
+    targetDeviceId: string;
+    /** Hold the key's advisory lock to commit (lockTpmKey): the request and the stage/confirm re-check. */
+    lockKey?: boolean;
+  },
 ): Promise<TpmEvidence> {
   const states = await readTpmKeyStates(reader, [input.sourceDeviceId, input.targetDeviceId]);
   const source = states.get(input.sourceDeviceId) ?? NO_TPM_KEY;
@@ -167,6 +190,7 @@ export async function readTpmEvidence(
   // partner-wide read.
   const otherwise = tpmEvidence({ ...base, otherHolders: 0 });
   if (otherwise.level === 'hint') return otherwise;
+  if (input.lockKey) await lockTpmKey(reader, source.ekSha256!);
   const otherHolders = await countOtherKeyHolders(reader, {
     partnerId: input.partnerId,
     ekSha256: source.ekSha256!,

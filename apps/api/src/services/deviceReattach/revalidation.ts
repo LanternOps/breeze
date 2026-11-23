@@ -85,6 +85,7 @@ export async function revalidateLockedIntent(
       sourceDeviceId: source.id,
       sourceEnrolledAt: source.enrolledAt ?? source.createdAt,
       targetDeviceId: target.id,
+      lockKey: true,
     });
     if (evidence.level !== 'tpm_continuity') return 'evidence_changed';
   }

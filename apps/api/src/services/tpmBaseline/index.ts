@@ -15,8 +15,9 @@
  *
  * Who: the §8 reattach rule on that device (canActorActOnReattachEvidence):
  * a partner user with devices:write + devices:delete whose reachable orgs
- * include the device's; a parked device needs a full partner admin. A device
- * the user cannot reach (or whose site they cannot) is a 404.
+ * include the device's; a parked device needs a full partner admin, and is a
+ * 404 to anyone else. A device the user cannot reach (or whose site they
+ * cannot) is a 404.
  *
  * One system transaction:
  *  1. the device row FOR UPDATE (the tpm_* writers lock it first, so the key
@@ -39,6 +40,7 @@ import type { CreateAuditLogParams } from '../auditService';
 import { markRequestAuditWritten } from '../auditRequestTracking';
 import { canActorActOnReattachEvidence, loadReattachActor, type ReattachAccessDenial } from '../deviceReattach/access';
 import { reattachRefusal, ReattachRefusedError, type ReattachRefusal } from '../deviceReattach/errors';
+import { lockTpmKey } from '../deviceReattach/evidence';
 import { anyDeviceInOpenIntent, lockReattachDevices } from '../deviceReattach/intentStore';
 import { isReattachDeviceReachable } from '../deviceReattach/reachability';
 import { isLiveOrg } from '../deviceReattach/revalidation';
@@ -190,9 +192,13 @@ export async function reviewTpmKeyMismatch(input: ReviewTpmMismatchInput): Promi
       ) {
         refuse(DEVICE_NOT_FOUND);
       }
-      if (!isLiveOrg(device)) refuse(reattachRefusal(409, 'org_draining', 'The device\'s organization is not active'));
       const access = canActorActOnReattachEvidence(actor, { partnerId, orgId: device.orgId, parked });
+      // A parked device is visible only to full partner admins (§9): anyone
+      // else learns nothing about it, not even that it exists.
+      if (!access.allowed && access.code === 'full_admin_required') refuse(DEVICE_NOT_FOUND);
       if (!access.allowed) refuse(reattachRefusal(DENIAL_STATUS[access.code], access.code, DENIAL_MESSAGES[access.code]));
+      // After the access rule: no state answer for someone who may not act.
+      if (!isLiveOrg(device)) refuse(reattachRefusal(409, 'org_draining', 'The device\'s organization is not active'));
 
       const [hw] = await tx
         .select({ ek: deviceHardware.tpmEkPubSha256, mismatch: deviceHardware.tpmEkMismatchSha256, mismatchAt: deviceHardware.tpmEkMismatchAt })
@@ -227,6 +233,9 @@ export async function reviewTpmKeyMismatch(input: ReviewTpmMismatchInput): Promi
         if (!(await consumeStepUpGrant(grantId, binding))) refuse(STEP_UP_REQUIRED);
       }
 
+      // A new holder of the accepted key waits for any reattach counting its
+      // holders (deviceReattach/evidence.ts lockTpmKey).
+      if (input.action === 'accept') await lockTpmKey(tx, hw.mismatch);
       await tx
         .update(deviceHardware)
         .set(input.action === 'accept'

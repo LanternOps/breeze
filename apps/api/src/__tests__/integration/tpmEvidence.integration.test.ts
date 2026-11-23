@@ -21,7 +21,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, withSystemDbAccessContext } from '../../db';
 import { auditLogs, deviceHardware } from '../../db/schema';
-import { readTpmEvidence } from '../../services/deviceReattach/evidence';
+import { lockTpmKey, readTpmEvidence } from '../../services/deviceReattach/evidence';
 import { lockReattachDevices } from '../../services/deviceReattach/intentStore';
 import { requestDeviceReattach } from '../../services/deviceReattach/requestIntent';
 import { revalidateLockedIntent } from '../../services/deviceReattach/revalidation';
@@ -336,7 +336,8 @@ describe('reviewing a held key change (#8318 wave T2)', () => {
     const parked = await held(tenant, tenant.pool, true);
     expect((await review(tenant.techA.id, inA.device.id, 'dismiss', inA.version)).ok).toBe(true);
     expect(await review(tenant.techA.id, inB.device.id, 'dismiss', inB.version)).toMatchObject({ status: 404, code: 'device_not_found' });
-    expect(await review(tenant.techA.id, parked.device.id, 'dismiss', parked.version)).toMatchObject({ status: 403, code: 'full_admin_required' });
+    // A parked device is a 404 to a technician: not even its existence leaks.
+    expect(await review(tenant.techA.id, parked.device.id, 'dismiss', parked.version)).toMatchObject({ status: 404, code: 'device_not_found' });
     expect((await review(tenant.admin.id, parked.device.id, 'accept', parked.version)).ok).toBe(true);
   });
 
@@ -357,5 +358,56 @@ describe('reviewing a held key change (#8318 wave T2)', () => {
     const version = (await withSystemDbAccessContext(() => readTpmBaselineView(source.id))).mismatch!.version;
     expect((await review(tenant.admin.id, source.id, 'accept', version)).ok).toBe(true);
     expect(await detectAfterKeyBaseline(source.id)).toMatchObject({ written: true, targetDeviceId: old.id, reason: 'tpm' });
+  });
+});
+
+describe('the holder count and a new holder of the key serialize (#8318 wave T2 review)', () => {
+  it('accepting a key on a third device waits for a transaction holding that key\'s lock, then counts as shared', async () => {
+    const tenant = await seedReattachTenant();
+    const target = await oldKeyedTarget(tenant.orgA, K1);
+    const source = await newKeyedSource(tenant.orgA, K1);
+    const third = await seedAgentDevice(tenant.orgB, { status: 'online' });
+    await setKey(third, { ek: K3, mismatch: K1 });
+    const version = (await withSystemDbAccessContext(() => readTpmBaselineView(third.id))).mismatch!.version;
+
+    // A counting transaction (as the request or confirm) holds K1's lock.
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let holderPid!: number;
+    let ready!: () => void;
+    const holding = new Promise<void>((resolve) => { ready = resolve; });
+    const holder = getTestDb().transaction(async (tx: any) => {
+      const [row] = (await tx.execute(sql`SELECT pg_backend_pid()::int AS pid`)) as unknown as Array<{ pid: number }>;
+      holderPid = row!.pid;
+      await lockTpmKey(tx, K1);
+      ready();
+      await released;
+    });
+    await Promise.race([holding, holder]);
+    const accepting = reviewTpmKeyMismatch({
+      actor: { userId: tenant.admin.id },
+      deviceId: third.id,
+      action: 'accept',
+      version,
+      canAccessSite: () => true,
+      stepUp: { kind: 'not_required' },
+      audit: (action, orgId) => ({ orgId, action, resourceType: 'device', resourceId: third.id, actorType: 'user', actorId: tenant.admin.id, result: 'success', details: {} }),
+    });
+    try {
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const rows = (await getTestDb().execute(
+          sql`SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND ${holderPid} = ANY(pg_blocking_pids(pid))`,
+        )) as unknown as unknown[];
+        if (rows.length > 0) break;
+        if (Date.now() > deadline) throw new Error('the accept never waited on the key lock');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    } finally {
+      release();
+      await Promise.allSettled([holder, accepting]);
+    }
+    expect((await accepting).ok).toBe(true);
+    expect(await evidenceOf(tenant, source.id, target.id)).toEqual({ level: 'hint', gap: 'key_shared' });
   });
 });
