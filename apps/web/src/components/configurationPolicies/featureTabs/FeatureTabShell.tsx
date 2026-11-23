@@ -3,6 +3,7 @@ import { Loader2, Trash2, RotateCcw, PenLine } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
+import { useFeatureReadOnly } from "./featureEditing";
 type FeatureTabShellProps = {
   title: string;
   description: string;
@@ -54,6 +55,9 @@ export default function FeatureTabShell({
   children,
 }: FeatureTabShellProps) {
   useTranslation("policies");
+  // A read-only viewer (#12469) gets the form disabled and no footer action:
+  // Save, Remove, Revert and Override are not rendered at all.
+  const readOnly = useFeatureReadOnly();
   // #5314: Revert to Parent and Remove both fire an irreversible
   // DELETE .../features/:id that destroys this policy's override. The shell
   // renders the footer for every feature tab, so guarding here covers all of
@@ -205,10 +209,13 @@ export default function FeatureTabShell({
           ref={bodyRef}
           className={`mt-6 ${isInherited ? "opacity-60 pointer-events-none" : ""}`}
         >
-          {children}
+          <fieldset disabled={readOnly} className="min-w-0">
+            {children}
+          </fieldset>
         </div>
 
         {/* Footer */}
+        {!readOnly && (
         <div className="mt-6 flex items-center justify-between border-t pt-4">
           <div>
             {isInherited && onOverride && (
@@ -284,6 +291,7 @@ export default function FeatureTabShell({
             </div>
           )}
         </div>
+        )}
       </div>
 
       <ConfirmDialog

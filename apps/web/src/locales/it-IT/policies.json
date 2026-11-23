@@ -81,7 +81,6 @@
       "failedToFetchPolicy": "Impossibile recuperare il criterio",
       "failedToFetchFeatures": "Impossibile recuperare le funzionalità",
       "failedToUpdatePolicy": "Impossibile aggiornare il criterio",
-      "overview": "Panoramica",
       "complianceStatus": "Stato conformità",
       "loadingPolicy": "Caricamento criterio...",
       "backToList": "Torna all'elenco",
@@ -90,27 +89,23 @@
       "archived2": "Archiviato",
       "inheritingFrom": "Basato su",
       "overrideIndividualTabsToCustomizeSettings": "Modifica una funzionalità per impostarla solo per questo criterio.",
-      "isnTAvailableOnPartnerWidePolicies": " non è disponibile nei criteri gestiti dall'MSP",
-      "configureThisFeatureOnAnOrganizationScoped": "Imposta questa funzionalità su un criterio gestito da una singola organizzazione.",
       "thisPolicyStillCarriesAnExisting": "Questo criterio contiene ancora una configurazione",
       "configurationThatWillNeverBeApplied": " esistente che non verrà mai applicata.",
       "policy": "Criterio",
-      "overview2": "overview",
       "saving": "Salvataggio...",
       "saveChanges": "Salva modifiche",
       "parentPolicy": "criterio padre",
       "removing": "Rimozione...",
       "removeConfiguration": "Rimuovi configurazione",
-      "complianceStatus2": "compliance_status",
-      "assignments2": "assignments",
       "managedByYourMsp": "Gestito dal tuo MSP",
       "inheritedByPolicies_one": "Padre di {{count}} criterio",
       "inheritedByPolicies_other": "Padre di {{count}} criteri",
-      "gatedFeatureTitle": "Non disponibile nei criteri gestiti dall'MSP. Imposta questa funzionalità su un criterio gestito da una singola organizzazione.",
       "appliesToDrawerTitle": "Si applica a",
       "detailsSaved": "Dettagli del criterio salvati",
       "refreshAppliesToFailed": "Impossibile aggiornare dove si applica questo criterio. Ricarica la pagina per vederlo.",
-      "appliesToCloseBlocked": "Prima applica o scarta le modifiche."
+      "appliesToCloseBlocked": "Prima applica o scarta le modifiche.",
+      "gatedFeatureUnavailable": "{{feature}} non è disponibile in questo criterio",
+      "gatedFeatureReason": "{{feature}} funziona con gli account e i servizi propri di un'organizzazione, quindi solo un criterio gestito da quell'organizzazione può impostarlo. Questo criterio è gestito dal tuo MSP."
     },
     "configPolicyList": {
       "archived": "Archiviata",
@@ -1597,6 +1592,30 @@
         },
         "results": {
           "label": "Risultati"
+        }
+      }
+    },
+    "policyHeader": {
+      "editDetails": "Modifica dettagli",
+      "managedByOrganization": "Gestito da {{organization}}",
+      "readOnly": {
+        "msp_managed_org_user": {
+          "message": "Sola visualizzazione. Il tuo MSP gestisce questo criterio, quindi solo il tuo MSP può modificarlo."
+        },
+        "msp_managed_limited_access": {
+          "message": "Sola visualizzazione. Il tuo MSP gestisce questo criterio e il tuo accesso copre solo alcune organizzazioni."
+        },
+        "site_restricted": {
+          "message": "Sola visualizzazione. Il tuo accesso è limitato ad alcune sedi e questo criterio va oltre."
+        },
+        "no_write_permission": {
+          "message": "Sola visualizzazione. Il tuo ruolo può visualizzare i criteri di configurazione ma non modificarli."
+        },
+        "not_editable": {
+          "message": "Sola visualizzazione. Puoi visualizzare questo criterio ma non modificarlo."
+        },
+        "unexplained": {
+          "message": "Sola visualizzazione."
         }
       }
     }

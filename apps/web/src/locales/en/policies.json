@@ -81,7 +81,6 @@
       "failedToFetchPolicy": "Failed to fetch policy",
       "failedToFetchFeatures": "Failed to fetch features",
       "failedToUpdatePolicy": "Failed to update policy",
-      "overview": "Overview",
       "complianceStatus": "Compliance Status",
       "loadingPolicy": "Loading policy...",
       "backToList": "Back to list",
@@ -93,24 +92,20 @@
       "managedByYourMsp": "Managed by your MSP",
       "inheritedByPolicies_one": "Parent of {{count}} policy",
       "inheritedByPolicies_other": "Parent of {{count}} policies",
-      "isnTAvailableOnPartnerWidePolicies": " isn't available on MSP-managed policies",
-      "configureThisFeatureOnAnOrganizationScoped": "Set this feature on a policy managed by one organization.",
       "thisPolicyStillCarriesAnExisting": "This policy still carries an existing",
       "configurationThatWillNeverBeApplied": " configuration that will never be applied.",
       "policy": "Policy",
-      "overview2": "overview",
       "saving": "Saving...",
       "saveChanges": "Save Changes",
       "parentPolicy": "parent policy",
       "removing": "Removing...",
       "removeConfiguration": "Remove configuration",
-      "complianceStatus2": "compliance_status",
-      "assignments2": "assignments",
-      "gatedFeatureTitle": "Not available on MSP-managed policies. Set this feature on a policy managed by one organization.",
       "appliesToDrawerTitle": "Applies to",
       "detailsSaved": "Policy details saved",
       "refreshAppliesToFailed": "Couldn't refresh where this policy applies. Reload the page to see it.",
-      "appliesToCloseBlocked": "Apply or discard your changes first."
+      "appliesToCloseBlocked": "Apply or discard your changes first.",
+      "gatedFeatureUnavailable": "{{feature}} is unavailable on this policy",
+      "gatedFeatureReason": "{{feature}} works with one organization's own accounts and services, so only a policy managed by that organization can set it. This policy is managed by your MSP."
     },
     "configPolicyList": {
       "archived": "Archived",
@@ -1597,6 +1592,30 @@
         },
         "results": {
           "label": "Results"
+        }
+      }
+    },
+    "policyHeader": {
+      "editDetails": "Edit details",
+      "managedByOrganization": "Managed by {{organization}}",
+      "readOnly": {
+        "msp_managed_org_user": {
+          "message": "View only. Your MSP manages this policy, so only your MSP can change it."
+        },
+        "msp_managed_limited_access": {
+          "message": "View only. Your MSP manages this policy, and your access covers only some organizations."
+        },
+        "site_restricted": {
+          "message": "View only. Your access is limited to some sites, and this policy reaches beyond them."
+        },
+        "no_write_permission": {
+          "message": "View only. Your role can view configuration policies but not change them."
+        },
+        "not_editable": {
+          "message": "View only. You can view this policy but not change it."
+        },
+        "unexplained": {
+          "message": "View only."
         }
       }
     }

@@ -12,6 +12,7 @@ vi.mock('../../shared/Toast', () => ({ showToast: m.showToast }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import StorageKeyRevocationCard from './StorageKeyRevocationCard';
+import { FeatureReadOnlyContext } from './featureEditing';
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -133,5 +134,20 @@ describe('StorageKeyRevocationCard', () => {
     render(<StorageKeyRevocationCard orgId={ORG} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(m.fetchWithAuth).toHaveBeenCalledTimes(2));
+  });
+
+  it('a read-only viewer gets no check or confirm controls, only the reload (#12469)', async () => {
+    m.fetchWithAuth.mockResolvedValue(json({ data: [REPLACED] }));
+    render(
+      <FeatureReadOnlyContext.Provider value={true}>
+        <StorageKeyRevocationCard orgId={ORG} />
+      </FeatureReadOnlyContext.Provider>,
+    );
+    await screen.findByTestId('storage-credential-revocation');
+    expect(screen.getByText('Primary')).toBeInTheDocument();
+    expect(screen.queryByTestId('storage-credential-check')).toBeNull();
+    expect(screen.queryByTestId('storage-credential-confirm-disabled')).toBeNull();
+    expect(screen.queryByTestId('storage-credential-confirm')).toBeNull();
+    expect(screen.queryByTestId('storage-credential-confirm-cancel')).toBeNull();
   });
 });

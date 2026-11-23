@@ -6,6 +6,7 @@ import { ActionError, runAction } from "@/lib/runAction";
 import { formatDate, formatDateTime } from "@/lib/dateTimeFormat";
 import { navigateTo } from "@/lib/navigation";
 import { showToast } from "../../shared/Toast";
+import { useFeatureReadOnly } from "./featureEditing";
 
 /**
  * Storage keys this organization's S3 backup destinations used before backups
@@ -43,6 +44,7 @@ export default function StorageKeyRevocationCard({ orgId }: {
   orgId: string | null;
 }) {
   const { t } = useTranslation("policies");
+  const readOnly = useFeatureReadOnly();
   const outcomeMessage = ({ outcome, code }: CheckResult): string => {
     if (outcome === "revoked") return t("configurationPolicies.featureTabs.backupTab.storageKeys.outcome.revoked");
     if (outcome === "still_live") return t("configurationPolicies.featureTabs.backupTab.storageKeys.outcome.stillLive");
@@ -186,7 +188,7 @@ export default function StorageKeyRevocationCard({ orgId }: {
                     <p className="mt-1 text-xs text-amber-700">{outcomeMessage(outcome)}</p>
                   ) : null}
                   {!row.canCheck ? <p className="mt-1 text-xs text-muted-foreground">{t("configurationPolicies.featureTabs.backupTab.storageKeys.cannotCheck")}</p> : null}
-                  {confirmingId === row.id ? (
+                  {readOnly ? null : confirmingId === row.id ? (
                     <div className="mt-2 space-y-2 rounded-md border border-muted bg-muted/20 p-2 text-xs">
                       <p>{t("configurationPolicies.featureTabs.backupTab.storageKeys.confirmPrompt")}</p>
                       <div className="flex gap-2">

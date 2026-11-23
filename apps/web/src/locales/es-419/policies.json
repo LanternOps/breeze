@@ -81,7 +81,6 @@
       "failedToFetchPolicy": "No se pudo recuperar la política",
       "failedToFetchFeatures": "No se pudieron recuperar las funciones",
       "failedToUpdatePolicy": "No se pudo actualizar la política",
-      "overview": "Descripción general",
       "complianceStatus": "Estado de cumplimiento",
       "loadingPolicy": "Cargando política...",
       "backToList": "volver a la lista",
@@ -90,27 +89,23 @@
       "archived2": "Archivado",
       "inheritingFrom": "Basada en",
       "overrideIndividualTabsToCustomizeSettings": "Cambie una función para configurarla solo en esta política.",
-      "isnTAvailableOnPartnerWidePolicies": " no está disponible en políticas administradas por el MSP",
-      "configureThisFeatureOnAnOrganizationScoped": "Configure esta función en una política administrada por una sola organización.",
       "thisPolicyStillCarriesAnExisting": "Esta política todavía conlleva una",
       "configurationThatWillNeverBeApplied": "configuración que nunca se aplicará.",
       "policy": "Política",
-      "overview2": "descripción general",
       "saving": "Guardando...",
       "saveChanges": "Guardar cambios",
       "parentPolicy": "política de padres",
       "removing": "Eliminando...",
       "removeConfiguration": "Eliminar configuración",
-      "complianceStatus2": "compliance_status",
-      "assignments2": "asignaciones",
       "managedByYourMsp": "Administrado por su MSP",
       "inheritedByPolicies_one": "Principal de {{count}} política",
       "inheritedByPolicies_other": "Principal de {{count}} políticas",
-      "gatedFeatureTitle": "No disponible en políticas administradas por el MSP. Configure esta función en una política administrada por una sola organización.",
       "appliesToDrawerTitle": "Se aplica a",
       "detailsSaved": "Detalles de la política guardados",
       "refreshAppliesToFailed": "No se pudo actualizar dónde se aplica esta política. Vuelva a cargar la página para verlo.",
-      "appliesToCloseBlocked": "Primero aplique o descarte sus cambios."
+      "appliesToCloseBlocked": "Primero aplique o descarte sus cambios.",
+      "gatedFeatureUnavailable": "{{feature}} no está disponible en esta política",
+      "gatedFeatureReason": "{{feature}} trabaja con las cuentas y los servicios propios de una organización, así que solo una política administrada por esa organización puede definirlo. Esta política la administra su MSP."
     },
     "configPolicyList": {
       "archived": "Archivado",
@@ -1597,6 +1592,30 @@
         },
         "results": {
           "label": "Resultados"
+        }
+      }
+    },
+    "policyHeader": {
+      "editDetails": "Editar detalles",
+      "managedByOrganization": "Administrada por {{organization}}",
+      "readOnly": {
+        "msp_managed_org_user": {
+          "message": "Solo lectura. Su MSP administra esta política, así que solo su MSP puede cambiarla."
+        },
+        "msp_managed_limited_access": {
+          "message": "Solo lectura. Su MSP administra esta política y su acceso abarca solo algunas organizaciones."
+        },
+        "site_restricted": {
+          "message": "Solo lectura. Su acceso se limita a algunos sitios y esta política llega más allá de ellos."
+        },
+        "no_write_permission": {
+          "message": "Solo lectura. Su rol puede ver las políticas de configuración, pero no cambiarlas."
+        },
+        "not_editable": {
+          "message": "Solo lectura. Puede ver esta política, pero no cambiarla."
+        },
+        "unexplained": {
+          "message": "Solo lectura."
         }
       }
     }

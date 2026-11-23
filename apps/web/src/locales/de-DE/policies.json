@@ -81,7 +81,6 @@
       "failedToFetchPolicy": "Die Richtlinie konnte nicht abgerufen werden",
       "failedToFetchFeatures": "Funktionen konnten nicht abgerufen werden",
       "failedToUpdatePolicy": "Die Richtlinie konnte nicht aktualisiert werden",
-      "overview": "Übersicht",
       "complianceStatus": "Compliance-Status",
       "loadingPolicy": "Richtlinie wird geladen...",
       "backToList": "Zurück zur Liste",
@@ -90,27 +89,23 @@
       "archived2": "Archiviert",
       "inheritingFrom": "Basiert auf",
       "overrideIndividualTabsToCustomizeSettings": "Ändern Sie eine Funktion, um sie nur für diese Richtlinie festzulegen.",
-      "isnTAvailableOnPartnerWidePolicies": " ist für MSP-verwaltete Richtlinien nicht verfügbar",
-      "configureThisFeatureOnAnOrganizationScoped": "Legen Sie diese Funktion in einer Richtlinie fest, die von einer Organisation verwaltet wird.",
       "thisPolicyStillCarriesAnExisting": "Diese Richtlinie trägt noch eine bestehende",
       "configurationThatWillNeverBeApplied": "Konfiguration, die niemals angewendet wird.",
       "policy": "Richtlinie",
-      "overview2": "Übersicht",
       "saving": "Speichern...",
       "saveChanges": "Änderungen speichern",
       "parentPolicy": "Elternrichtlinie",
       "removing": "Entfernen...",
       "removeConfiguration": "Konfiguration entfernen",
-      "complianceStatus2": "compliance_status",
-      "assignments2": "Aufgaben",
       "managedByYourMsp": "Verwaltet von Ihrem MSP",
       "inheritedByPolicies_one": "Übergeordnet für {{count}} Richtlinie",
       "inheritedByPolicies_other": "Übergeordnet für {{count}} Richtlinien",
-      "gatedFeatureTitle": "Für MSP-verwaltete Richtlinien nicht verfügbar. Legen Sie diese Funktion in einer Richtlinie fest, die von einer Organisation verwaltet wird.",
       "appliesToDrawerTitle": "Gilt für",
       "detailsSaved": "Richtliniendetails gespeichert",
       "refreshAppliesToFailed": "Der Geltungsbereich dieser Richtlinie konnte nicht aktualisiert werden. Laden Sie die Seite neu, um ihn zu sehen.",
-      "appliesToCloseBlocked": "Wenden Sie Ihre Änderungen zuerst an oder verwerfen Sie sie."
+      "appliesToCloseBlocked": "Wenden Sie Ihre Änderungen zuerst an oder verwerfen Sie sie.",
+      "gatedFeatureUnavailable": "{{feature}} ist für diese Richtlinie nicht verfügbar",
+      "gatedFeatureReason": "{{feature}} arbeitet mit den eigenen Konten und Diensten einer Organisation, daher kann nur eine von dieser Organisation verwaltete Richtlinie die Funktion festlegen. Diese Richtlinie wird von Ihrem MSP verwaltet."
     },
     "configPolicyList": {
       "archived": "Archiviert",
@@ -1597,6 +1592,30 @@
         },
         "results": {
           "label": "Ergebnisse"
+        }
+      }
+    },
+    "policyHeader": {
+      "editDetails": "Details bearbeiten",
+      "managedByOrganization": "Verwaltet von {{organization}}",
+      "readOnly": {
+        "msp_managed_org_user": {
+          "message": "Nur Ansicht. Ihr MSP verwaltet diese Richtlinie, daher kann nur Ihr MSP sie ändern."
+        },
+        "msp_managed_limited_access": {
+          "message": "Nur Ansicht. Ihr MSP verwaltet diese Richtlinie, und Ihr Zugriff umfasst nur einige Organisationen."
+        },
+        "site_restricted": {
+          "message": "Nur Ansicht. Ihr Zugriff ist auf einige Standorte beschränkt, und diese Richtlinie reicht darüber hinaus."
+        },
+        "no_write_permission": {
+          "message": "Nur Ansicht. Ihre Rolle kann Konfigurationsrichtlinien anzeigen, aber nicht ändern."
+        },
+        "not_editable": {
+          "message": "Nur Ansicht. Sie können diese Richtlinie anzeigen, aber nicht ändern."
+        },
+        "unexplained": {
+          "message": "Nur Ansicht."
         }
       }
     }

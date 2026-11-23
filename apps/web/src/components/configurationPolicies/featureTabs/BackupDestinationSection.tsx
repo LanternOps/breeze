@@ -1,3 +1,4 @@
+import { useFeatureReadOnly } from "./featureEditing";
 import {
   CheckCircle2,
   Cloud,
@@ -218,6 +219,8 @@ function DestinationCard({
   onTest: () => void;
   testStatus: TestStatus;
 }) {
+  // A read-only viewer (#12469) gets no Edit or Test: Test writes a result.
+  const readOnly = useFeatureReadOnly();
   const detailLine =
     config.provider === "s3"
       ? [config.details.bucket, config.details.region]
@@ -302,7 +305,7 @@ function DestinationCard({
             {objectLockText(config)}
           </span>
         </span>
-        {selected && (
+        {selected && !readOnly && (
           <div className="flex items-center gap-1.5">
             <button
               type="button"
@@ -403,6 +406,9 @@ export default function BackupDestinationSection({
     defaultName: string | null;
   };
 }) {
+  // A read-only viewer (#12469) gets no New destination: it opens a form whose
+  // save creates a destination.
+  const readOnly = useFeatureReadOnly();
   const selectedConfig = configs.find((c) => c.id === selectedConfigId);
   const showForm = mode === "create" || mode === "edit";
   const prefixError = showForm ? destinationPrefixError(form) : null;
@@ -437,17 +443,19 @@ export default function BackupDestinationSection({
           {/* The grid's "New destination" tile only renders when destinations
               exist, so the empty state needs its own create action — without
               it an org with zero destinations has no way to make one (#8152). */}
-          <button
-            type="button"
-            onClick={onStartCreate}
-            data-testid="backup-destination-empty-create"
-            className="mt-3 inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition hover:border-primary/40 hover:text-primary"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            {i18n.t(
-              "policies:configurationPolicies.featureTabs.backupTab.newDestination",
-            )}
-          </button>
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={onStartCreate}
+              data-testid="backup-destination-empty-create"
+              className="mt-3 inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition hover:border-primary/40 hover:text-primary"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.backupTab.newDestination",
+              )}
+            </button>
+          )}
         </div>
       )}
 
@@ -506,16 +514,18 @@ export default function BackupDestinationSection({
               testStatus={config.id === selectedConfigId ? testStatus : "idle"}
             />
           ))}
-          <button
-            type="button"
-            onClick={onStartCreate}
-            className="flex min-h-24 flex-col items-center justify-center gap-1 rounded-md border border-dashed p-3 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-primary"
-          >
-            <Plus className="h-4 w-4" />
-            {i18n.t(
-              "policies:configurationPolicies.featureTabs.backupTab.newDestination",
-            )}
-          </button>
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={onStartCreate}
+              className="flex min-h-24 flex-col items-center justify-center gap-1 rounded-md border border-dashed p-3 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-primary"
+            >
+              <Plus className="h-4 w-4" />
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.backupTab.newDestination",
+              )}
+            </button>
+          )}
         </div>
       )}
 

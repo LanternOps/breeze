@@ -15,6 +15,7 @@ import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
 import StorageKeyRevocationCard from "./StorageKeyRevocationCard";
+import { useFeatureReadOnly } from "./featureEditing";
 import BackupDestinationSection, {
   emptyConfigForm,
   capabilitySummary,
@@ -591,6 +592,7 @@ export default function BackupTab({
   const osPresets = createOsPresets();
   const exclusionGroups = createExclusionGroups();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
+  const readOnly = useFeatureReadOnly();
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
   const meta = FEATURE_META.backup;
@@ -2533,6 +2535,7 @@ export default function BackupTab({
               <p className="mt-1 text-xs text-amber-900/80">
                 {capabilitySummary(selectedConfig)}
               </p>
+              {!readOnly && (
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -2557,6 +2560,7 @@ export default function BackupTab({
                   )}
                 </button>
               </div>
+              )}
             </div>
           )}
 

@@ -81,7 +81,6 @@
       "failedToFetchPolicy": "Impossible de récupérer la stratégie",
       "failedToFetchFeatures": "Impossible de récupérer les fonctionnalités",
       "failedToUpdatePolicy": "Impossible de mettre à jour la politique",
-      "overview": "Aperçu",
       "complianceStatus": "Statut de conformité",
       "loadingPolicy": "Politique de chargement...",
       "backToList": "Retour à la liste",
@@ -90,27 +89,23 @@
       "archived2": "Archivé",
       "inheritingFrom": "Basée sur",
       "overrideIndividualTabsToCustomizeSettings": "Modifiez une fonctionnalité pour la définir uniquement pour cette politique.",
-      "isnTAvailableOnPartnerWidePolicies": " n’est pas disponible sur les politiques gérées par le MSP",
-      "configureThisFeatureOnAnOrganizationScoped": "Définissez cette fonctionnalité sur une politique gérée par une seule organisation.",
       "thisPolicyStillCarriesAnExisting": "Cette politique conserve toujours une",
       "configurationThatWillNeverBeApplied": " Une configuration qui ne sera jamais appliquée.",
       "policy": "Politique",
-      "overview2": "Aperçu",
       "saving": "Enregistrement...",
       "saveChanges": "Enregistrer les modifications",
       "parentPolicy": "Politique parentale",
       "removing": "Enlèvement...",
       "removeConfiguration": "Supprimer la configuration",
-      "complianceStatus2": "compliance_status",
-      "assignments2": "Affectations",
       "managedByYourMsp": "Géré par votre MSP",
       "inheritedByPolicies_one": "Parente de {{count}} politique",
       "inheritedByPolicies_other": "Parente de {{count}} politiques",
-      "gatedFeatureTitle": "Non disponible sur les politiques gérées par le MSP. Définissez cette fonctionnalité sur une politique gérée par une seule organisation.",
       "appliesToDrawerTitle": "S’applique à",
       "detailsSaved": "Détails de la politique enregistrés",
       "refreshAppliesToFailed": "Impossible d'actualiser l'endroit où s'applique cette politique. Rechargez la page pour le voir.",
-      "appliesToCloseBlocked": "Appliquez ou abandonnez d’abord vos modifications."
+      "appliesToCloseBlocked": "Appliquez ou abandonnez d’abord vos modifications.",
+      "gatedFeatureUnavailable": "{{feature}} n’est pas disponible sur cette politique",
+      "gatedFeatureReason": "{{feature}} fonctionne avec les comptes et services propres à une organisation ; seule une politique gérée par cette organisation peut le définir. Cette politique est gérée par votre MSP."
     },
     "configPolicyList": {
       "archived": "Archivé",
@@ -1597,6 +1592,30 @@
         },
         "results": {
           "label": "Résultats"
+        }
+      }
+    },
+    "policyHeader": {
+      "editDetails": "Modifier les détails",
+      "managedByOrganization": "Gérée par {{organization}}",
+      "readOnly": {
+        "msp_managed_org_user": {
+          "message": "Consultation uniquement. Votre MSP gère cette politique ; seul votre MSP peut la modifier."
+        },
+        "msp_managed_limited_access": {
+          "message": "Consultation uniquement. Votre MSP gère cette politique et votre accès ne couvre que certaines organisations."
+        },
+        "site_restricted": {
+          "message": "Consultation uniquement. Votre accès est limité à certains sites et cette politique s’étend au-delà."
+        },
+        "no_write_permission": {
+          "message": "Consultation uniquement. Votre rôle permet de consulter les politiques de configuration, mais pas de les modifier."
+        },
+        "not_editable": {
+          "message": "Consultation uniquement. Vous pouvez consulter cette politique, mais pas la modifier."
+        },
+        "unexplained": {
+          "message": "Consultation uniquement."
         }
       }
     }

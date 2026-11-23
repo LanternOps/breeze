@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import PatchTab from './PatchTab';
+import { FeatureReadOnlyContext } from './featureEditing';
 import { fetchWithAuth } from '../../../stores/auth';
 
 const saveMock = vi.fn();
@@ -741,5 +742,27 @@ describe('PatchTab', () => {
       fireEvent.click(screen.getByTestId('patch-reboot-allow-deferral-toggle'));
       expect(screen.getByTestId('reboot-preview-postpone')).toHaveTextContent(/^Postpone until /);
     });
+  });
+
+  it('a read-only viewer gets no ring edit or create controls (#12469)', async () => {
+    const ring = { id: 'ring-1', name: 'Pilot', enabled: true, ringOrder: 1, deferralDays: 0, gracePeriodHours: 4 };
+    fetchMock.mockResolvedValue({
+      ok: true, status: 200, json: vi.fn().mockResolvedValue({ data: [ring] }),
+    } as unknown as Response);
+    const link = { id: 'link-1', featureType: 'patch', featurePolicyId: 'ring-1', inlineSettings: { sources: ['os'] } };
+
+    const editable = render(<PatchTab {...baseProps} existingLink={link} />);
+    expect(await screen.findByTestId('patch-edit-ring')).toBeInTheDocument();
+    expect(screen.getByTestId('patch-new-ring')).toBeInTheDocument();
+    editable.unmount();
+
+    render(
+      <FeatureReadOnlyContext.Provider value={true}>
+        <PatchTab {...baseProps} existingLink={link} />
+      </FeatureReadOnlyContext.Provider>,
+    );
+    await screen.findByTestId('approval-ring-details');
+    expect(screen.queryByTestId('patch-edit-ring')).toBeNull();
+    expect(screen.queryByTestId('patch-new-ring')).toBeNull();
   });
 });

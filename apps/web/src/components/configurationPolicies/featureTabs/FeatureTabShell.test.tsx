@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import FeatureTabShell from './FeatureTabShell';
+import { FeatureReadOnlyContext } from './featureEditing';
 import { i18n, loadLocale } from '../../../lib/i18n';
 
 // FeatureTabShell renders the footer controls for EVERY configuration-policy
@@ -176,5 +177,46 @@ describe('FeatureTabShell state badge (#12306)', () => {
       </FeatureTabShell>,
     );
     expect(screen.getByText(expected)).toBeTruthy();
+  });
+});
+
+describe('FeatureTabShell for a read-only viewer (#12469)', () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
+  });
+
+  it('renders no footer action and a disabled form', () => {
+    render(
+      <FeatureReadOnlyContext.Provider value>
+        <FeatureTabShell
+          title="Patches"
+          description="d"
+          icon={<span />}
+          isConfigured
+          saving={false}
+          onSave={vi.fn()}
+          onRemove={vi.fn()}
+          onRevert={vi.fn()}
+        >
+          <input data-testid="field" />
+        </FeatureTabShell>
+      </FeatureReadOnlyContext.Provider>,
+    );
+    // Not rendered, not merely disabled.
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByTestId('field')).toBeDisabled();
+    // The state still shows.
+    expect(screen.getByText('Configured')).toBeInTheDocument();
+  });
+
+  it('offers no Override on an inherited feature', () => {
+    render(
+      <FeatureReadOnlyContext.Provider value>
+        <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured={false} isInherited onOverride={vi.fn()} saving={false} onSave={vi.fn()}>
+          <div />
+        </FeatureTabShell>
+      </FeatureReadOnlyContext.Provider>,
+    );
+    expect(screen.queryByRole('button')).toBeNull();
   });
 });

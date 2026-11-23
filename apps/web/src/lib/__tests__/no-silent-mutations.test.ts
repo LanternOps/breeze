@@ -619,6 +619,8 @@ const TARGET_GLOBS = [
   'src/components/peripherals/PeripheralPolicyForm.tsx',
   // #12306: the policy details save (name, description, status) toasts its outcome.
   'src/components/configurationPolicies/ConfigPolicyDetailPage.tsx',
+  // #12469: the details save moved off the page into the details form.
+  'src/components/configurationPolicies/page/PolicyDetailsForm.tsx',
   // Operator Recipe Library W06 R1b (#6171): "allow these tools" widens what an
   // AI agent may call on customer systems; a silent failure leaves the tech
   // believing the recipe is set up when it is not.

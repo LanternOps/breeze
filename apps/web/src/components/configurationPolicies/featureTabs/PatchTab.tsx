@@ -5,6 +5,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useFeatureReadOnly } from "./featureEditing";
 import RebootPromptPreview from "./RebootPromptPreview";
 import { fetchWithAuth } from "../../../stores/auth";
 import { extractApiError } from "@/lib/apiError";
@@ -241,6 +242,7 @@ export default function PatchTab({
   const offlineBehaviorOptions = createOfflineBehaviorOptions();
   const dayOfWeekOptions = createDayOfWeekOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
+  const readOnly = useFeatureReadOnly();
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
   const [selectedRingId, setSelectedRingId] = useState<string>(
@@ -558,7 +560,7 @@ export default function PatchTab({
                 </option>
               ))}
             </select>
-            {selectedRing && (
+            {selectedRing && !readOnly && (
               <button
                 type="button"
                 onClick={openEditRing}
@@ -569,6 +571,7 @@ export default function PatchTab({
                 {i18n.t("common:actions.edit")}
               </button>
             )}
+            {!readOnly && (
             <button
               type="button"
               onClick={openCreateRing}
@@ -580,6 +583,7 @@ export default function PatchTab({
                 "policies:configurationPolicies.featureTabs.patchTab.newRing",
               )}
             </button>
+            )}
           </div>
         )}
         {selectedRing && (
