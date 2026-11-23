@@ -494,6 +494,9 @@ const TARGET_GLOBS = [
   // assign/unassign mutations here were bare fetchWithAuth calls with no
   // toast — a failed assign or unassign looked identical to a successful one.
   'src/components/configurationPolicies/AssignmentsTab.tsx',
+  // #12467 — the unified applies-to panel's client: Apply goes through
+  // runAction; the dry run carries a reasoned runaction-exempt marker.
+  'src/components/configurationPolicies/appliesTo/appliesToApi.ts',
   // #4767 — Stop / Force-stop wires the long-dormant cancel endpoint to the UI
   // for the first time. A bare fetchWithAuth here would silently no-op a
   // Force-stop click, which is exactly the "did it work?" ambiguity runAction

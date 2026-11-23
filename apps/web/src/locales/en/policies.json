@@ -1562,6 +1562,11 @@
       "moreTargets_one": "{{count}} more target",
       "moreTargets_other": "{{count}} more targets",
       "assignButton": "Assign"
+    },
+    "appliesToPanel": {
+      "loadFailed": "Could not load where this policy applies",
+      "applyFailed": "Could not apply the changes",
+      "applied": "Changes applied"
     }
   },
   "software": {
