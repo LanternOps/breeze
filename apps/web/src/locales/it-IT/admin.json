@@ -972,7 +972,10 @@
       "unifi.controller.register": "Controller UniFi registrato",
       "unifi.controller.remove": "Controller UniFi rimosso",
       "unifi.site.map": "Sito UniFi associato",
-      "unifi.site.unmap": "Associazione del sito UniFi rimossa"
+      "unifi.site.unmap": "Associazione del sito UniFi rimossa",
+      "unifi.key.add": "Chiave API UniFi aggiunta",
+      "unifi.key.update": "Chiave API UniFi aggiornata",
+      "unifi.key.remove": "Chiave API UniFi rimossa"
     },
     "resourceTypes": {
       "abuse_signal": "Segnale di abuso",

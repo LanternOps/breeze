@@ -5,11 +5,16 @@
 // merged, so each JSX branch stays a verbatim move (#2382, no behavior change).
 
 import type { Dispatch, SetStateAction } from "react";
-import { Loader2, Plug, RefreshCw } from "lucide-react";
+import { AlertTriangle, Loader2, Plug, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { mapKey } from "./unifiTypes";
-import type { ControllerSite, SiteGroup, UnifiHostOption } from "./unifiTypes";
+import type {
+  ControllerSite,
+  HostKeyOutcome,
+  SiteGroup,
+  UnifiHostOption,
+} from "./unifiTypes";
 
 type SiteMappingCardProps =
   | {
@@ -17,6 +22,9 @@ type SiteMappingCardProps =
       hosts: UnifiHostOption[] | null;
       hostsLoading: boolean;
       hostsError: string | null;
+      // False when a key failed during the live read (#11808).
+      hostsComplete?: boolean;
+      hostKeys?: HostKeyOutcome[];
       selection: Record<string, string>;
       setSelection: Dispatch<SetStateAction<Record<string, string>>>;
       sitesByOrg: SiteGroup[];
@@ -155,7 +163,16 @@ export default function SiteMappingCard(props: SiteMappingCardProps) {
     );
   }
 
-  const { hosts, hostsLoading, hostsError, savingMappings } = props;
+  const {
+    hosts,
+    hostsLoading,
+    hostsError,
+    savingMappings,
+    hostsComplete = true,
+    hostKeys = [],
+  } = props;
+  const keyLabel = (id: string) =>
+    hostKeys.find((k) => k.id === id)?.label ?? id;
   return (
     <div
       className="rounded-xl border bg-card p-5 shadow-xs"
@@ -183,6 +200,16 @@ export default function SiteMappingCard(props: SiteMappingCardProps) {
       <p className="mb-4 text-sm text-muted-foreground">
         {t("unifiIntegration.mapEachDiscoveredUniFiSiteToABreeze")}
       </p>
+
+      {!hostsComplete && (
+        <div
+          className="mb-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+          data-testid="unifi-hosts-incomplete-banner"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{t("unifiIntegration.hostsIncompleteBanner")}</span>
+        </div>
+      )}
 
       {hostsLoading ? (
         <div
@@ -245,6 +272,17 @@ export default function SiteMappingCard(props: SiteMappingCardProps) {
                         </td>
                         <td className="px-3 py-2 text-muted-foreground">
                           {s.name}
+                          {(s.keyIds ?? []).map((id) => (
+                            <span
+                              key={id}
+                              className="ml-2 rounded-full border bg-muted px-2 py-0.5 text-xs"
+                              data-testid="unifi-mapping-via-chip"
+                            >
+                              {t("unifiIntegration.viaKey", {
+                                label: keyLabel(id),
+                              })}
+                            </span>
+                          ))}
                         </td>
                         <td className="px-3 py-2">
                           <select

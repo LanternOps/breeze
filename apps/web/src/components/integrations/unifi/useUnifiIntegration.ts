@@ -13,10 +13,16 @@ import { loginPathWithNext, getJwtClaims } from "../../../lib/authScope";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import {
+  computeRemoveMappingIds,
   defaultControllerSiteId,
   groupSitesByOrg,
   loadAgentDevices,
 } from "./unifiHelpers";
+import {
+  parseHostsResponse,
+  parseSyncRuns,
+  parseUnifiStatus,
+} from "./unifiParsers";
 import {
   mapKey,
   type AgentDevice,
@@ -31,6 +37,7 @@ import {
   type TelemetryClient,
   type TelemetryDevice,
   type UnifiCollector,
+  type HostKeyOutcome,
   type UnifiConnectionType,
   type UnifiHostOption,
   type UnifiStatus,
@@ -106,6 +113,11 @@ export function useUnifiIntegration() {
   const [hosts, setHosts] = useState<UnifiHostOption[] | null>(null);
   const [hostsLoading, setHostsLoading] = useState(false);
   const [hostsError, setHostsError] = useState<string | null>(null);
+  // False when a key failed during the last GET /unifi/hosts, so the list may
+  // be short (#11808). Per-key outcomes drive the "via <label>" chips.
+  const [hostsComplete, setHostsComplete] = useState(true);
+  const [hostKeys, setHostKeys] = useState<HostKeyOutcome[]>([]);
+  const [savedMappings, setSavedMappings] = useState<SavedMapping[]>([]);
   const [breezeSites, setBreezeSites] = useState<BreezeSiteOption[]>([]);
   const [orgs, setOrgs] = useState<OrgOption[]>([]);
   const [selection, setSelection] = useState<Record<string, string>>({});
@@ -188,7 +200,7 @@ export function useUnifiIntegration() {
         t("unifiIntegration.failedToLoadStatusCode", { status: res.status }),
       );
     }
-    return json as UnifiStatus;
+    return parseUnifiStatus(json);
   }, [onUnauthorized]);
 
   const load = useCallback(async () => {
@@ -238,7 +250,10 @@ export function useUnifiIntegration() {
         );
         return;
       }
-      setHosts((json as { hosts?: UnifiHostOption[] }).hosts ?? []);
+      const parsed = parseHostsResponse(json);
+      setHosts(parsed.hosts);
+      setHostsComplete(parsed.complete);
+      setHostKeys(parsed.keys);
     } catch {
       setHosts(null);
       setHostsError(t("unifiIntegration.couldNotReachUniFi"));
@@ -288,6 +303,7 @@ export function useUnifiIntegration() {
       if (mappingsRes.ok) {
         const saved =
           (mappingsJson as { mappings?: SavedMapping[] }).mappings ?? [];
+        setSavedMappings(saved);
         // Seed the picker selections from what's already persisted.
         setSelection(
           Object.fromEntries(
@@ -296,8 +312,7 @@ export function useUnifiIntegration() {
         );
       } else failed.push("mappings");
       const runsJson = await runsRes.json().catch(() => ({}));
-      if (runsRes.ok)
-        setSyncRuns((runsJson as { runs?: SyncRun[] }).runs ?? []);
+      if (runsRes.ok) setSyncRuns(parseSyncRuns(runsJson));
       else failed.push("sync history");
       const collectorsJson = await collectorsRes.json().catch(() => ({}));
       if (collectorsRes.ok) {
@@ -475,30 +490,60 @@ export function useUnifiIntegration() {
         ];
       }),
     );
+    // Deletions are explicit (#11808): only mappings the user cleared on a row
+    // that is in the live list. Never `hostIds` - a key that failed to read
+    // makes hosts disappear, and absence must not delete a mapping.
+    const removeMappingIds = computeRemoveMappingIds(
+      savedMappings,
+      hosts,
+      selection,
+      mappings,
+    );
     setSavingMappings(true);
     try {
       await runAction({
-        // Send the full enumerated host set so the server's replace-all cleanup is
-        // scoped to hosts the user actually saw — a host transiently missing from this
-        // live list must not have its mapping (and synced devices) deleted.
         request: () =>
           fetchWithAuth("/unifi/mappings", {
             method: "PUT",
-            body: JSON.stringify({ mappings, hostIds: hosts.map((h) => h.id) }),
+            body: JSON.stringify({ mappings, removeMappingIds }),
           }),
         errorFallback: t("unifiIntegration.failedToSaveSiteMappings"),
         successMessage: t("unifiIntegration.siteMappingsSaved"),
+        // A stale tab (loaded before this release) cannot name its deletions.
+        friendly: (code) =>
+          code === "UNIFI_EXPLICIT_DELETES_REQUIRED"
+            ? t("unifiIntegration.saveNeedsReload")
+            : undefined,
         onUnauthorized,
       });
       await loadDetails();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
+      if (
+        err instanceof ActionError &&
+        err.code === "UNIFI_EXPLICIT_DELETES_REQUIRED"
+      ) {
+        setLoadError(t("unifiIntegration.saveNeedsReload"));
+        return;
+      }
       if (!(err instanceof ActionError))
         handleActionError(err, t("unifiIntegration.failedToSaveSiteMappings"));
     } finally {
       setSavingMappings(false);
     }
-  }, [hosts, selection, onUnauthorized, loadDetails]);
+  }, [hosts, selection, savedMappings, onUnauthorized, loadDetails]);
+
+  // After a key mutation: refresh the key list (from GET /unifi) and the live
+  // hosts/mappings WITHOUT the full-panel loading state `load()` shows.
+  const handleKeysChanged = useCallback(async () => {
+    try {
+      const data = await fetchStatus();
+      if (data) setStatus(data);
+      await loadDetails();
+    } catch {
+      setDetailsError(t("unifiIntegration.couldNotLoadConfiguration"));
+    }
+  }, [fetchStatus, loadDetails]);
 
   // Register/update a self-hosted controller, then reload collectors + controller sites.
   const handleRegisterController = useCallback(async () => {
@@ -827,6 +872,10 @@ export function useUnifiIntegration() {
     hosts,
     hostsLoading,
     hostsError,
+    hostsComplete,
+    hostKeys,
+    savedMappings,
+    handleKeysChanged,
     selection,
     setSelection,
     savingMappings,

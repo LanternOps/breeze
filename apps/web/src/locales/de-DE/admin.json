@@ -972,7 +972,10 @@
       "unifi.controller.register": "UniFi-Controller registriert",
       "unifi.controller.remove": "UniFi-Controller entfernt",
       "unifi.site.map": "UniFi-Standort zugeordnet",
-      "unifi.site.unmap": "UniFi-Standortzuordnung aufgehoben"
+      "unifi.site.unmap": "UniFi-Standortzuordnung aufgehoben",
+      "unifi.key.add": "UniFi-API-Schlüssel hinzugefügt",
+      "unifi.key.update": "UniFi-API-Schlüssel aktualisiert",
+      "unifi.key.remove": "UniFi-API-Schlüssel entfernt"
     },
     "resourceTypes": {
       "abuse_signal": "Missbrauchssignal",

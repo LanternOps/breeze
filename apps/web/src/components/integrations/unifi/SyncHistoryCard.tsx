@@ -1,7 +1,8 @@
 // Sync-run ledger, newest first (cloud). Split out of UnifiIntegration.tsx
 // (#2382); the unmapped-sites column was added in #11502.
 
-import { History } from "lucide-react";
+import { Fragment, useState } from "react";
+import { ChevronDown, ChevronRight, History } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -14,6 +15,14 @@ interface SyncHistoryCardProps {
 
 export default function SyncHistoryCard({ syncRuns }: SyncHistoryCardProps) {
   const { t } = useTranslation("integrations");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggle = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   return (
     <div
       className="rounded-xl border bg-card p-5 shadow-xs"
@@ -90,8 +99,25 @@ export default function SyncHistoryCard({ syncRuns }: SyncHistoryCardProps) {
             </thead>
             <tbody className="divide-y">
               {syncRuns.map((run) => (
-                <tr key={run.id} data-testid="unifi-history-row">
+                <Fragment key={run.id}>
+                <tr data-testid="unifi-history-row">
                   <td className="px-3 py-2 whitespace-nowrap">
+                    {run.keyResults && run.keyResults.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => toggle(run.id)}
+                        aria-expanded={expanded.has(run.id)}
+                        aria-label={t("unifiIntegration.runKeyResults")}
+                        className="mr-1 inline-flex h-5 w-5 items-center justify-center rounded hover:bg-muted"
+                        data-testid="unifi-history-expand"
+                      >
+                        {expanded.has(run.id) ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </button>
+                    )}
                     {formatDateTime(run.startedAt)}
                   </td>
                   <td className="px-3 py-2 text-muted-foreground">
@@ -126,6 +152,43 @@ export default function SyncHistoryCard({ syncRuns }: SyncHistoryCardProps) {
                     {run.sitesUnmapped ?? "—"}
                   </td>
                 </tr>
+                {expanded.has(run.id) && run.keyResults && (
+                  <tr data-testid="unifi-history-key-results">
+                    <td colSpan={9} className="bg-muted/30 px-3 py-2">
+                      <ul className="space-y-1 text-xs">
+                        {run.keyResults.map((kr) => (
+                          <li
+                            key={kr.keyId}
+                            className="flex flex-wrap items-center gap-2"
+                            data-testid="unifi-history-key-result"
+                          >
+                            <span className="font-medium">{kr.label}</span>
+                            <span
+                              className={`inline-flex items-center rounded-full border px-2 py-0.5 ${runStatusClasses(kr.status)}`}
+                            >
+                              {kr.status}
+                            </span>
+                            {kr.authFailure && (
+                              <span className="text-amber-700">
+                                {t("unifiIntegration.runKeyRejected")}
+                              </span>
+                            )}
+                            <span className="text-muted-foreground">
+                              {t("unifiIntegration.runKeySeen", {
+                                hosts: kr.hostsSeen ?? "—",
+                                sites: kr.sitesSeen ?? "—",
+                              })}
+                            </span>
+                            {kr.error && (
+                              <span className="text-red-700">{kr.error}</span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>

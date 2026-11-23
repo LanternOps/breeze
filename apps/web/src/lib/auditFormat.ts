@@ -149,6 +149,9 @@ const ACTION_DISPLAY: Record<string, string> = {
   'unifi.controller.remove': 'Removed UniFi controller',
   'unifi.site.map': 'Mapped UniFi site',
   'unifi.site.unmap': 'Unmapped UniFi site',
+  'unifi.key.add': 'Added UniFi API key',
+  'unifi.key.update': 'Updated UniFi API key',
+  'unifi.key.remove': 'Removed UniFi API key',
 
   // Verb templates for catch-all HTTP audit rows (`api.<verb>.<path>`, #3991).
   // `{target}` is the path with ids stripped - see `formatFallbackAction`.
