@@ -338,8 +338,9 @@ function normalizeRange(from: Date, to: Date): { from: Date; to: Date } {
  * only lets LEAKPROOF quals run ahead of the policy qual, and
  * `timestamp - interval` is not leakproof. So each probe walked the series'
  * whole history in the month partition and discarded all but ~285 rows in a
- * Filter — cost grew with days-into-month, ~285 MB of reads per call on US
- * prod. A bare `b.bucket_start >= $param` compare IS leakproof, so these
+ * Filter, and cost grew with days-into-month (seen in local EXPLAINs as
+ * breeze_app; the likely driver of the per-call reads on US prod, #11559).
+ * A bare `b.bucket_start >= $param` compare IS leakproof, so these
  * bounds are computed here and bound as plain timestamp params. They are
  * supersets of the per-row windows (every `r` lies in [from, to)), and the
  * per-row predicates stay in place, so the rows each detector reads — and its

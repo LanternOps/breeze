@@ -148,6 +148,22 @@ describe('metric anomaly detector scan bounds (#11559)', () => {
     expect((row.baselineSummary as Record<string, unknown>).baselineBuckets).toBe(285);
   });
 
+  it('baseline: the last anchor of a production-shaped 15-minute scan keeps its full window', async () => {
+    // The scan cron's window is [to - 15min, to): r is the last of three
+    // anchors, so the upper scan bound (derived from `to`, not `from`) is the
+    // one that must still admit r's buckets up to r - 20min.
+    const device = await insertDevice('baseline-scan-window');
+    const r = new Date('2026-12-01T06:00:00.000Z');
+    await seed(device, CPU, baselineEdgePoints(r, 10, 20, 80, 95));
+
+    await detectMetricAnomaliesRange({ orgId, from: bucketAt(r, -2), to: bucketAt(r, 1) });
+
+    const row = (await anomaliesFor(device, 'spike')).find((a) => a.windowStart.toISOString() === r.toISOString());
+    expect(row).toBeDefined();
+    expect(row!.baselineMax).toBe(20);
+    expect((row!.baselineSummary as Record<string, unknown>).baselineBuckets).toBe(285);
+  });
+
   it('process-runaway: the same [r - 24h, r - 15min) window', async () => {
     const device = await insertDevice('process-edges');
     const r = new Date('2026-12-01T06:00:00.000Z');
