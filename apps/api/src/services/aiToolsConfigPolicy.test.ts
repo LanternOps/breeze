@@ -2530,6 +2530,23 @@ describe('Helper branding write checks (#12594)', () => {
       expect(out.success).toBe(true);
       expect(assignPolicyMock).toHaveBeenCalledTimes(1);
     });
+
+    it('checks only the policy own links: branding inherited from the parent does not refuse a device assignment', async () => {
+      const PARENT_ID = '55555555-5555-5555-5555-555555555555';
+      mockSelectRows([{ id: POLICY_ID, orgId: ORG_ID, partnerId: null, parentPolicyId: PARENT_ID, name: 'Child' }]);
+      vi.mocked(listFeatureLinks).mockImplementation((async (id: string) => (id === PARENT_ID ? [BRANDED_HELPER] : [])) as any);
+      assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
+
+      const out = JSON.parse(await tools().get('apply_configuration_policy')!.handler(
+        { configPolicyId: POLICY_ID, level: 'device', targetId: DEVICE_ID },
+        makeAuth(),
+      ));
+
+      expect(out.success).toBe(true);
+      expect(listFeatureLinks).toHaveBeenCalledWith(POLICY_ID);
+      expect(listFeatureLinks).not.toHaveBeenCalledWith(PARENT_ID);
+      expect(assignPolicyMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('manage_policy_feature_link', () => {
