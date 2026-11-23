@@ -350,6 +350,19 @@ describe('dispatchOemUpdateRun: the row', () => {
     expect(dispatchDeviceCommand).not.toHaveBeenCalled();
   });
 
+  // #12265: the agent refuses a Dell run with any blocked ID, so the seam never queues one.
+  // The scheduler already sends none (`blocked_ids_unsupported`); reaching here is a caller bug.
+  it('blocked IDs for Dell are a caller bug, and queue nothing', async () => {
+    await expect(dispatchOemUpdateRun(input({ blockedUpdateIds: ['ABC12'] }))).rejects.toThrow(/blocked update IDs/);
+    expect(dispatchDeviceCommand).not.toHaveBeenCalled();
+  });
+
+  it('a lane that honours a blocklist still carries it to the payload', async () => {
+    state.device = { ...eligibleDevice(), manufacturer: 'HP', model: 'HP EliteBook 840 G8' };
+    await expect(dispatchOemUpdateRun(input({ blockedUpdateIds: ['ABC12'] }))).resolves.toMatchObject({ ok: true });
+    expect(sentPayload()).toMatchObject({ lane: 'hp', blockedUpdateIds: ['ABC12'] });
+  });
+
   it('never skips the delivery leg contract: the row is written before the socket push', async () => {
     const deliver = vi.fn(async () => queued({ delivery: 'delivered' }));
     vi.mocked(dispatchDeviceCommand).mockResolvedValue(queued({ deliver }));
@@ -388,14 +401,14 @@ describe('dispatchOemUpdateRun: the payload', () => {
     await dispatchOemUpdateRun(input({
       trigger: 'scheduled',
       occurrenceKey: '2027-01',
-      blockedUpdateIds: ['ABC12'],
+      blockedUpdateIds: [],
     }));
     const parsed = oemUpdateRunPayloadSchema.parse(sentPayload());
     expect(parsed).toMatchObject({
       lane: 'dell',
       trigger: 'scheduled',
       occurrenceKey: '2027-01',
-      blockedUpdateIds: ['ABC12'],
+      blockedUpdateIds: [], // Dell never carries one (#12265)
       escrowedProtectorIds: [PROTECTOR_ID],
       // Dell's tool is pinned (W10), so the payload names it for a fresh install.
       tool: {

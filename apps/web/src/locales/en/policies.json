@@ -1395,6 +1395,8 @@
         "blockedLabel": "Blocked updates",
         "blockedPlaceholder": "Update IDs, separated by commas",
         "blockedHelp": "Breeze never installs an update listed here.",
+        "blockedUnsupported": "{{vendor}} does not support blocking individual updates. To stop its updates, turn off the category or the vendor.",
+        "blockedStoredUnsupported": "This policy blocks {{vendor}} updates {{ids}}, which {{vendor}} does not support, so no {{vendor}} updates run under it. Saving removes the blocked updates.",
         "executeRequired": "Turning on vendor updates, adding a category, switching on overnight restarts or unblocking an update needs the devices.execute permission and MFA. Ask someone who has it to save this change.",
         "gateClosedRefusal": "One of the selected update categories is not available yet, so the policy was not saved. Clear it and save again.",
         "invalid": "Check the schedule: the window is 1 to 8 whole hours, catch-up is 0 to 14 nights, and the start time is HH:MM.",

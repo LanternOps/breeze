@@ -65,7 +65,8 @@ function armedSettings(over: Record<string, unknown> = {}) {
     schedule: scheduleOpenNow(),
     catchUpNights: 0,
     reboot: 'overnight',
-    vendors: { dell: { enabled: true, categories: { driver: true }, blockedUpdateIds: ['SKIP-ME'] } },
+    // Empty: Dell cannot honour a blocklist, and the scheduler sends no Dell run with one (#12265).
+    vendors: { dell: { enabled: true, categories: { driver: true }, blockedUpdateIds: [] } },
     ...over,
   };
 }
@@ -208,7 +209,7 @@ describe('oemUpdates fan-out against real Postgres', () => {
       trigger: 'scheduled',
       occurrenceKey: key,
       categories: ['driver'],
-      blockedUpdateIds: ['SKIP-ME'],
+      blockedUpdateIds: [],
       rebootControlled: true,
     });
     expect(command!.submittedOrgId).toBe(orgA.id);

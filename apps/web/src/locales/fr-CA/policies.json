@@ -1395,6 +1395,8 @@
         "blockedLabel": "Mises à jour bloquées",
         "blockedPlaceholder": "ID de mise à jour, séparés par des virgules",
         "blockedHelp": "Breeze n’installe jamais une mise à jour listée ici.",
+        "blockedUnsupported": "{{vendor}} ne prend pas en charge le blocage de mises à jour individuelles. Pour arrêter ses mises à jour, désactivez la catégorie ou le fabricant.",
+        "blockedStoredUnsupported": "Cette politique bloque les mises à jour {{vendor}} {{ids}}, ce que {{vendor}} ne prend pas en charge : aucune mise à jour {{vendor}} n’est donc exécutée avec cette politique. L’enregistrement retire les mises à jour bloquées.",
         "executeRequired": "L’activation des mises à jour fabricant, l’ajout d’une catégorie, l’activation des redémarrages de nuit ou le déblocage d’une mise à jour nécessitent l’autorisation devices.execute et l’authentification MFA. Demandez à une personne qui la possède d’enregistrer cette modification.",
         "gateClosedRefusal": "L’une des catégories de mise à jour sélectionnées n’est pas encore disponible; la politique n’a donc pas été enregistrée. Retirez-la, puis enregistrez de nouveau.",
         "invalid": "Vérifiez l’horaire : la fenêtre dure de 1 à 8 heures entières, le rattrapage de 0 à 14 nuits, et l’heure de début est au format HH:MM.",

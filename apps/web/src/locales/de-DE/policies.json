@@ -1395,6 +1395,8 @@
         "blockedLabel": "Gesperrte Updates",
         "blockedPlaceholder": "Update-IDs, durch Kommas getrennt",
         "blockedHelp": "Breeze installiert niemals ein hier aufgeführtes Update.",
+        "blockedUnsupported": "{{vendor}} unterstützt das Sperren einzelner Updates nicht. Um die Updates zu stoppen, schalten Sie die Kategorie oder den Hersteller aus.",
+        "blockedStoredUnsupported": "Diese Richtlinie sperrt die {{vendor}}-Updates {{ids}}. {{vendor}} unterstützt das nicht, daher werden unter ihr keine {{vendor}}-Updates ausgeführt. Beim Speichern werden die gesperrten Updates entfernt.",
         "executeRequired": "Zum Aktivieren von Hersteller-Updates, Hinzufügen einer Kategorie, Aktivieren von Neustarts über Nacht oder Entsperren eines Updates sind die Berechtigung devices.execute und MFA erforderlich. Bitten Sie jemanden mit dieser Berechtigung, diese Änderung zu speichern.",
         "gateClosedRefusal": "Eine der ausgewählten Update-Kategorien ist noch nicht verfügbar, daher wurde die Richtlinie nicht gespeichert. Entfernen Sie sie und speichern Sie erneut.",
         "invalid": "Prüfen Sie den Zeitplan: Das Fenster umfasst 1 bis 8 volle Stunden, das Nachholen 0 bis 14 Nächte, und die Startzeit hat das Format HH:MM.",

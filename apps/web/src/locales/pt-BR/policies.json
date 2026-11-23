@@ -1395,6 +1395,8 @@
         "blockedLabel": "Atualizações bloqueadas",
         "blockedPlaceholder": "IDs de atualização, separados por vírgulas",
         "blockedHelp": "O Breeze nunca instala uma atualização listada aqui.",
+        "blockedUnsupported": "A {{vendor}} não oferece suporte ao bloqueio de atualizações individuais. Para interromper as atualizações, desative a categoria ou o fabricante.",
+        "blockedStoredUnsupported": "Esta política bloqueia as atualizações {{ids}} da {{vendor}}, o que a {{vendor}} não suporta, por isso nenhuma atualização da {{vendor}} é executada com ela. Ao salvar, as atualizações bloqueadas são removidas.",
         "executeRequired": "Ativar atualizações de fabricantes, adicionar uma categoria, ativar reinicializações noturnas ou desbloquear uma atualização exige a permissão devices.execute e MFA. Peça a alguém que a tenha para salvar esta alteração.",
         "gateClosedRefusal": "Uma das categorias de atualização selecionadas ainda não está disponível, então a política não foi salva. Remova-a e salve novamente.",
         "invalid": "Verifique a programação: a janela é de 1 a 8 horas inteiras, a recuperação é de 0 a 14 noites e o horário de início está no formato HH:MM.",

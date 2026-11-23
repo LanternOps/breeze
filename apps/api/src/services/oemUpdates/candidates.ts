@@ -19,6 +19,7 @@ import {
   agentSupportsOemUpdates,
   canonicalizeTimezone,
   hasArmedCategory,
+  hasUnsupportedBlockedUpdateIds,
   OEM_CATEGORIES,
   OEM_LANES,
   resolveEffectiveTimezone,
@@ -94,6 +95,7 @@ export type ScheduledRunRefusal =
   | 'link_invalid'
   | 'link_disabled'
   | 'vendor_disabled'
+  | 'blocked_ids_unsupported'
   | 'no_open_categories'
   | 'not_in_window'
   | 'past_not_after'
@@ -151,6 +153,10 @@ export function decideScheduledRun(
   if (!settings.enabled) return refused('link_disabled');
   const vendor = settings.vendors[lane];
   if (!vendor?.enabled) return refused('vendor_disabled');
+
+  // #12265: a Dell blocklist stored before the validator refused it. The agent would
+  // refuse the run (`blocked_ids_unsupported`), so none is sent until it is saved without.
+  if (hasUnsupportedBlockedUpdateIds(settings, lane)) return refused('blocked_ids_unsupported');
 
   const requestedCategories = OEM_CATEGORIES.filter((category) => vendor.categories[category] === true);
   const rebootControlled = settings.reboot === 'overnight';
@@ -385,6 +391,22 @@ export async function maintenanceAllowsRun(deviceId: string, orgId: string, now:
   }
 }
 
+const reportedUnsupportedBlocklists = new Set<string>();
+
+/**
+ * #12265: a link whose stored blocked IDs its lane cannot honour (a Dell list saved
+ * before the validator refused one) sends that lane nothing. Once per link per
+ * process, so the skip reaches someone without logging every device every tick.
+ */
+function reportUnsupportedBlocklist(link: ResolvedOemUpdatesLink | null, lane: OemLane, orgId: string): void {
+  if (!link || reportedUnsupportedBlocklists.has(link.linkId)) return;
+  reportedUnsupportedBlocklists.add(link.linkId);
+  const message = `oem_updates link ${link.linkId} stores blocked update IDs for ${lane}, which cannot honour them; `
+    + `no ${lane} runs are sent until the policy is saved without them`;
+  console.warn(`[OemUpdates] ${message}`, { linkId: link.linkId, configPolicyId: link.configPolicyId });
+  captureException(new Error(message), undefined, { worker: 'oemUpdatesWorker', org_id: orgId });
+}
+
 /**
  * Up to `limit` devices due a run now. `startAfter` resumes where the last tick
  * stopped, then wraps round: a device the seam keeps refusing (a partner's trust
@@ -434,7 +456,10 @@ export async function selectDueDevices(
             return occurrence;
           },
         );
-        if (!decision.due) continue;
+        if (!decision.due) {
+          if (decision.reason === 'blocked_ids_unsupported') reportUnsupportedBlocklist(link, lane, row.orgId);
+          continue;
+        }
         if (!await maintenanceAllowsRun(row.deviceId, row.orgId, now)) continue;
         due.push({ ...decision, deviceId: row.deviceId, orgId: row.orgId, lane, timezone, status: row });
         if (due.length >= options.limit) return;

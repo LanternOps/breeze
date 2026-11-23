@@ -15,7 +15,7 @@ import {
   systemProtectionInlineSettingsSchema,
   containmentInlineSettingsSchema,
   wakeOnLanInlineSettingsSchema,
-  oemUpdatesInlineSettingsSchema,
+  oemUpdatesInlineSettingsWriteSchema,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { checkSecurityAgentsLinkWrite, SecurityAgentsLinkWriteError } from './securityAgents/securityAgentsLinkWrite';
@@ -126,7 +126,7 @@ export const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (r
   security_agents: { schema: securityAgentsInlineSettingsSchema, normalize: true },
   // #11070: strict. Arming, featurePolicyId and closed gates are refused
   // earlier, by oemUpdatesToolRefusal.
-  oem_updates: { schema: oemUpdatesInlineSettingsSchema, normalize: true },
+  oem_updates: { schema: oemUpdatesInlineSettingsWriteSchema, normalize: true },
   // #10838: strict; configureSettings must be false until writes ship.
   wake_on_lan: { schema: wakeOnLanInlineSettingsSchema, normalize: true },
 };
@@ -162,7 +162,7 @@ export const OEM_UPDATES_AI_REFUSAL_MESSAGE =
   + 'reboot, unblocking an update, assigning or activating a policy that has them on all install vendor drivers, '
   + 'firmware or BIOS updates and can reboot devices, which needs a person with the devices.execute permission and '
   + "MFA. Ask them to make this change from the policy's Vendor updates tab. The assistant can still turn vendor "
-  + 'updates off, remove a category or block an update.';
+  + 'updates off, remove a category or block an update (not on Dell).';
 
 const OEM_UPDATES_AI_REFUSAL = JSON.stringify({ error: OEM_UPDATES_AI_REFUSAL_MESSAGE, code: 'oem_updates_execute_required' });
 
@@ -350,7 +350,7 @@ export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFea
   time_sync: `{ enforceNtp: false, ntpServers: [], pollIntervalMinutes: 60, timezone: { expected: 'site', pinnedTimezone: null, autoFix: false } } — inline-only domain-aware Windows time settings. Up to 5 NTP hosts, no flags or ports; at least one host when enforceNtp is true. pollIntervalMinutes is an integer in 15..1440. A pinned IANA timezone must have a Windows mapping and overrides the site timezone. Workgroup, Entra-only and forest-root PDC devices use manual peers; members, DCs and other PDCs use the domain hierarchy. Unknown roles are skipped. GPO wins. autoFix defaults to false.`,
   workload_inventory: `{ enabled: false, dockerEnabled: true, podmanEnabled: true, hypervEnabled: true, proxmoxEnabled: true, intervalMinutes: 60 } — inline-only workload inventory settings. enabled defaults to false (opt-in): runtimes are always detected, but containers and VMs are listed only when enabled is true and the runtime's own flag is true. Turning a runtime off deletes its listed workloads. intervalMinutes is an integer in 15..1440. Collection is read-only.`,
   security_agents: `{ version: 1, agents: [{ vendor: "huntress"|"sentinelone"|"controld"|"nextdns"|"bitdefender", enabled: boolean, platforms?: ["windows"|"macos"|"linux"] }] } — inline-only third-party security agent selection. Strict: no keys, tokens or other fields (per-customer keys come from the vendor integration). Each vendor at most once; agents: [] opts the assigned devices out. No featurePolicyId. This tool cannot enable a vendor (enabling installs software, which needs a person with devices.execute); it can only list vendors as disabled.`,
-  oem_updates: `{ version: 1, enabled: false, schedule: { weekOfMonth: "first"|"second"|"third"|"fourth"|"last", dayOfWeek: "sun".."sat", windowStart: "HH:MM", windowHours: 1..8 }, catchUpNights: 0..14, reboot: "overnight"|"never", vendors: { dell?|surface?|hp?|lenovo?: { enabled: boolean, categories: { bios?, firmware?, driver?, application?: boolean }, blockedUpdateIds: [] (at most 200 unique IDs) } } } — inline-only vendor (Dell, Surface, HP, Lenovo) update schedule. Strict; every field but blockedUpdateIds is required. An absent vendor or category is off. A category whose rollout gate is still closed cannot be set true. No featurePolicyId. This tool cannot turn vendor updates on (on, a new category, overnight reboot, unblocking an update, assigning or activating a policy that has them on all need a person with devices.execute); it can turn them off, remove a category or block an update.`,
+  oem_updates: `{ version: 1, enabled: false, schedule: { weekOfMonth: "first"|"second"|"third"|"fourth"|"last", dayOfWeek: "sun".."sat", windowStart: "HH:MM", windowHours: 1..8 }, catchUpNights: 0..14, reboot: "overnight"|"never", vendors: { dell?|surface?|hp?|lenovo?: { enabled: boolean, categories: { bios?, firmware?, driver?, application?: boolean }, blockedUpdateIds: [] (at most 200 unique IDs; Dell does not support blockedUpdateIds, so keep it [] for dell) } } } — inline-only vendor (Dell, Surface, HP, Lenovo) update schedule. Strict; every field but blockedUpdateIds is required. An absent vendor or category is off. A category whose rollout gate is still closed cannot be set true. No featurePolicyId. This tool cannot turn vendor updates on (on, a new category, overnight reboot, unblocking an update, assigning or activating a policy that has them on all need a person with devices.execute); it can turn them off, remove a category or block an update (not on Dell).`,
   wake_on_lan: `{ configureSettings: false, buttonMode: "verified"|"always" } — strict inline-only Wake-on-LAN setting. buttonMode "always" shows the Wake button on every offline device; "verified" shows it only where wake readiness is proven. configureSettings must be false (Breeze does not change WOL settings yet). No featurePolicyId.`,
   containment: `{ version: 1, extraAllow: [], defaultTtlHours: 72, deadManMinutes: 0, remoteRelay: true, requireSignedReleaseToken: false } — strict inline-only containment configuration (not consumed yet); version is required, other fields default as shown. No featurePolicyId. defaultTtlHours: integer 1..720; deadManMinutes: 0 or integer 15..1440. extraAllow: at most 32 strict { host? (DNS name), cidr?, proto: "tcp"|"udp"|"udp+tcp", ports: 1..16 unique integers 1..65535, label: trimmed 1..100 characters }; exactly one of host/cidr, no wildcard or localhost hosts, loopback networks, IPv4 prefixes shorter than /8, or IPv6 prefixes shorter than /32.`,
   system_protection: `{ beforePatching: true, beforeScripts: false, beforeSoftwareInstall: false, labelPrefix: 'Breeze' } — inline-only Windows System Restore checkpoint toggles. Strict: unknown keys are rejected, so there is no onFailure/abort setting. beforePatching defaults to true (matches existing agent behaviour); the other two default to false (opt-in). labelPrefix is 1..64 characters with no control characters. A checkpoint is best-effort and not a backup: Windows may throttle or later remove it.`,
