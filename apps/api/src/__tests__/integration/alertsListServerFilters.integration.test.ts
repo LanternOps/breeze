@@ -10,14 +10,29 @@
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { eq, sql } from 'drizzle-orm';
 import { alertRoutes } from '../../routes/alerts';
-import { alerts, devices, organizationUsers, users } from '../../db/schema';
+import { aiAgents, aiAgentRuns, aiAlertVerdicts, alerts, devices, organizationUsers, partnerUsers, users } from '../../db/schema';
 import { clearPermissionCache } from '../../services/permissions';
 import { createIntegrationTestClient, createOrganization, createSite } from './db-utils';
 import { getAppDb, getTestDb } from './setup';
+
+// Pass-through, except a filter whose hostname value is TIMEOUT_SENTINEL
+// throws the engine's statement-timeout error, so the 422 path runs here
+// without a pathological query. Every other case uses the real engine.
+const TIMEOUT_SENTINEL = 'force-filter-timeout';
+vi.mock('../../services/filterEngine', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/filterEngine')>();
+  return {
+    ...actual,
+    evaluateFilterInOrgs: vi.fn(async (filter: Parameters<typeof actual.evaluateFilterInOrgs>[0], options: Parameters<typeof actual.evaluateFilterInOrgs>[1]) => {
+      if (JSON.stringify(filter).includes(TIMEOUT_SENTINEL)) throw new actual.FilterQueryTimeoutError();
+      return actual.evaluateFilterInOrgs(filter, options);
+    }),
+  };
+});
 
 const app = new Hono().route('/alerts', alertRoutes);
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -154,6 +169,40 @@ describe('GET /alerts server-side filters (#12324)', () => {
     const unscoped = await client.get(`/alerts?deviceFilter=${deviceFilterParam(hostname)}`);
     expect(unscoped.status).toBe(200);
     expect(((await unscoped.json()) as ListBody).pagination.total).toBe(0);
+  });
+
+  runDb('a partner limited to selected orgs never matches devices in its other orgs', async () => {
+    const f = await fixture();
+    // Same partner, but the user may now see only the noisy org.
+    await getTestDb().update(partnerUsers).set({ orgAccess: 'selected', orgIds: [f.noisyOrg.id] })
+      .where(eq(partnerUsers.userId, f.client.env.user.id));
+    await clearPermissionCache(f.client.env.user.id);
+    const suffix = f.targetHostname.slice('target-'.length);
+    const contains = encodeURIComponent(JSON.stringify({
+      operator: 'AND', conditions: [{ field: 'hostname', operator: 'contains', value: suffix }],
+    }));
+    const { status, body } = await list(f, `deviceFilter=${contains}&limit=100`);
+    expect(status).toBe(200);
+    expect(body.pagination.total).toBe(60);
+    expect(body.data.map((a) => a.id)).not.toContain(f.targetActiveId);
+    expect((await f.client.get(`/alerts?orgId=${f.targetOrg.id}&deviceFilter=${contains}`)).status).toBe(403);
+  });
+
+  runDb('hideAiNoise and the device filter intersect, in the page and the total', async () => {
+    const f = await fixture();
+    const [agent] = await getTestDb().insert(aiAgents).values({ orgId: f.targetOrg.id, kind: 'triage', name: 'Noise fixture', createdBy: f.client.env.user.id }).returning();
+    const [run] = await getTestDb().insert(aiAgentRuns).values({ agentId: agent!.id, orgId: f.targetOrg.id, profile: 'verdict', triggerKind: 'manual', dedupeKey: randomUUID(), modeAtStart: 'shadow', policySnapshot: { schemaVersion: 1 } as never }).returning();
+    await getTestDb().insert(aiAlertVerdicts).values({ orgId: f.targetOrg.id, runId: run!.id, alertId: f.targetResolvedId, classification: 'recurring_pattern', confidence: '0.95', rationale: 'noise' });
+    const { body } = await list(f, `deviceFilter=${deviceFilterParam(f.targetHostname)}&hideAiNoise=true`);
+    expect(body.data.map((a) => a.id)).toEqual([f.targetActiveId]);
+    expect(body.pagination.total).toBe(1);
+  });
+
+  runDb('a device filter that hits the statement timeout answers 422 with the preview body', async () => {
+    const f = await fixture();
+    const response = await f.client.get(`/alerts?deviceFilter=${deviceFilterParam(TIMEOUT_SENTINEL)}`);
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ code: 'filter_query_timeout' });
   });
 
   runDb('a device filter matching nothing returns an empty page, not the unfiltered list', async () => {

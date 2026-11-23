@@ -118,7 +118,10 @@ function alertsListParams(
 function readListTotal(body: unknown, rowCount: number): number {
   const total = (body as { pagination?: { total?: unknown } } | null)?.pagination?.total;
   const n = Number(total);
-  return total !== undefined && total !== null && Number.isFinite(n) && n >= 0 ? n : rowCount;
+  if (total !== undefined && total !== null && Number.isFinite(n) && n >= 0) return n;
+  // A full page with no total may hide later pages; say so rather than guess.
+  if (rowCount >= ALERTS_PAGE_SIZE) console.warn('GET /alerts returned no pagination.total; paging may be incomplete');
+  return rowCount;
 }
 
 /** GET /alerts/summary `openBySeverity` → the summary strip's counts, or null. */
@@ -273,6 +276,9 @@ export default function AlertsPage() {
   if (listScopeKey !== scopeKey) {
     setListScopeKey(scopeKey);
     if (listQuery.page !== 1) setListQuery((prev) => ({ ...prev, page: 1 }));
+    // The old scope's counts must not sit on screen while the new ones load.
+    setOpenSeverityCounts(null);
+    setScopeAlertTotal(null);
   }
   const deviceFilterParam = deviceFilter && hasValidConditions(deviceFilter) ? JSON.stringify(deviceFilter) : null;
   const deviceOptions = useMemo(
@@ -364,7 +370,7 @@ export default function AlertsPage() {
       setOpenSeverityCounts(null);
       setScopeAlertTotal(null);
     }
-  }, [currentOrgId]);
+  }, [scopeKey]);
 
   // Id of the alert the drawer is currently for. Detail/ticket responses for
   // any other alert (a superseded click, or a drawer already closed) are
@@ -515,7 +521,15 @@ export default function AlertsPage() {
     void (async () => {
       try {
         const response = await fetchWithAuth(`/alerts/${alertId}`);
-        if (!response.ok) return;
+        if (!response.ok) {
+          // 404 = another org or purged: the plain list is the answer. Any
+          // other failure is logged and may be retried on the next list load.
+          if (response.status !== 404 && response.status !== 401) {
+            console.error('Failed to load linked alert:', response.status);
+            if (openedHashAlertRef.current === alertId) openedHashAlertRef.current = null;
+          }
+          return;
+        }
         const row = await response.json() as Record<string, unknown> & { device?: { hostname?: string } | null };
         if (openedHashAlertRef.current !== alertId) return;
         // Open only a well-formed alert row for this id; anything else leaves
@@ -533,6 +547,7 @@ export default function AlertsPage() {
         if (alert) void handleSelect(alert);
       } catch (err) {
         console.error('Failed to load linked alert:', err);
+        if (openedHashAlertRef.current === alertId) openedHashAlertRef.current = null;
       }
     })();
     // handleSelect is recreated every render; the ref guard makes this one-shot per id.
@@ -716,6 +731,7 @@ export default function AlertsPage() {
       </div>}
       {listFailed && deviceFilterParam === null && alerts.length === 0 && filtersActive && (
         <div role="alert" data-testid="alert-list-fetch-error" className="flex items-center gap-3 text-sm">
+          <span>{t('alertsPage.failedToFetchAlerts')}</span>
           <button
             type="button"
             onClick={() => void fetchAlerts({ background: true, filterChange: true })}

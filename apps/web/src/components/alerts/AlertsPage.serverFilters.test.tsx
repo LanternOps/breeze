@@ -234,6 +234,38 @@ describe('AlertsPage server-side filters (#12324)', () => {
     expect(await screen.findByText('Resolved row')).toBeInTheDocument();
   });
 
+  it('a page past the end (its rows were just closed) moves back to the last page', async () => {
+    let shrunk = false;
+    mockApi((params) => {
+      if (params.get('page') === '2') return shrunk ? { data: [], total: 25 } : { data: [alertRow('p2', 'Second page row')], total: 26 };
+      return { data: NOISE, total: shrunk ? 25 : 26 };
+    });
+    render(<AlertsPage />);
+    await screen.findByText('Noise 0');
+    shrunk = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    // Page 2 came back empty with 25 total: the page settles on page 1.
+    await waitFor(() => expect(lastAlertsCall().get('page')).toBe('1'));
+    expect(await screen.findByText('Noise 0')).toBeInTheDocument();
+    const pages = alertsCalls().map((p) => p.get('page'));
+    expect(pages.filter((p) => p === '2')).toHaveLength(1);
+  });
+
+  it('switching scope starts the list at page 1 without fetching the old page in the new scope', async () => {
+    mockApi((params) => ({ data: params.get('page') === '2' ? [alertRow('p2', 'Second page row')] : NOISE, total: 26 }));
+    const { rerender } = render(<AlertsPage />);
+    await screen.findByText('Noise 0');
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    await screen.findByText('Second page row');
+    const before = alertsCalls().length;
+    mockCurrentOrgId = 'org-a';
+    rerender(<AlertsPage />);
+    await screen.findByText('Noise 0');
+    const after = alertsCalls().slice(before);
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.every((p) => p.get('page') === '1')).toBe(true);
+  });
+
   it('reads the summary strip from /alerts/summary, not from the loaded page', async () => {
     mockApi(() => ({ data: NOISE, total: 60 }));
     render(<AlertsPage />);
