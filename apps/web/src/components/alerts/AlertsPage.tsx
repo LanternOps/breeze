@@ -178,6 +178,11 @@ export default function AlertsPage() {
   // The last filter/scope fetch failed; its rows were cleared.
   const [listFailed, setListFailed] = useState(false);
   const [openSeverityCounts, setOpenSeverityCounts] = useState<{ severity: AlertSeverity; count: number }[] | null>(null);
+  // Every alert in scope, any status (summary `total`). The default list
+  // hides dismissed alerts, so an empty list is not proof the scope has none:
+  // when this is above zero the list (and its Dismissed filter) stays on
+  // screen instead of the "All clear" state. null = unknown.
+  const [scopeAlertTotal, setScopeAlertTotal] = useState<number | null>(null);
   const [debouncedSearch, setDebouncedSearch] = useState('');
 
   const [pendingBulk, setPendingBulk] = useState<{ action: string; alerts: Alert[] } | null>(null);
@@ -345,15 +350,19 @@ export default function AlertsPage() {
       const response = await fetchWithAuth('/alerts/summary');
       if (fetchId !== summaryFetchId.current) return;
       if (!response.ok) throw new Error(`alerts summary: ${response.status}`);
-      const counts = readOpenSeverityCounts(await response.json());
+      const body = await response.json();
       if (fetchId !== summaryFetchId.current) return;
+      const counts = readOpenSeverityCounts(body);
       if (!counts) throw new Error('alerts summary: no openBySeverity');
       setOpenSeverityCounts(counts);
+      const total = Number((body as { total?: unknown }).total);
+      setScopeAlertTotal(Number.isFinite(total) && total >= 0 ? total : null);
     } catch (err) {
       if (fetchId !== summaryFetchId.current) return;
       // Hide the strip rather than show zeros the server never reported.
       console.error('Failed to fetch alert summary:', err);
       setOpenSeverityCounts(null);
+      setScopeAlertTotal(null);
     }
   }, [currentOrgId]);
 
@@ -440,6 +449,10 @@ export default function AlertsPage() {
   const filtersActive = deviceFilterParam !== null || hideAiNoise
     || listQuery.search.trim() !== '' || listQuery.status !== 'all' || listQuery.severity.length > 0
     || listQuery.deviceId !== 'all' || listQuery.dateRange !== 'all' || listQuery.page !== 1;
+  // The empty states make a claim about the whole scope ("All clear", "no
+  // devices"); only make it when no filter narrows the list and the scope
+  // holds no alert in any status.
+  const showEmptyState = !filtersActive && alerts.length === 0 && !(scopeAlertTotal !== null && scopeAlertTotal > 0);
   const listServerMode = useMemo<AlertListServerMode>(
     () => ({ query: listQuery, onQueryChange: setListQuery, total: listTotal }),
     [listQuery, listTotal],
@@ -509,6 +522,10 @@ export default function AlertsPage() {
         // the plain list, as an unknown id always has.
         if (!row || row.id !== alertId || typeof row.title !== 'string'
           || !(severityOrder as readonly unknown[]).includes(row.severity)) return;
+        // The detail route answers for any org the caller can reach; with one
+        // org selected, open only that org's alerts (the list never showed
+        // another org's alert in that view either).
+        if (currentOrgId && row.orgId !== currentOrgId) return;
         const [alert] = normalizeAlertRows(
           [{ ...row, deviceHostname: row.device?.hostname }],
           stableT('alertsPage.unknownDevice'),
@@ -697,6 +714,17 @@ export default function AlertsPage() {
         {t('devices:deviceList.advancedFilterFailed')}
         <button type="button" onClick={() => void fetchAlerts({ background: true, filterChange: true })}>{t('common:actions.retry')}</button>
       </div>}
+      {listFailed && deviceFilterParam === null && alerts.length === 0 && filtersActive && (
+        <div role="alert" data-testid="alert-list-fetch-error" className="flex items-center gap-3 text-sm">
+          <button
+            type="button"
+            onClick={() => void fetchAlerts({ background: true, filterChange: true })}
+            className="rounded-md border px-3 py-1.5 font-medium hover:bg-muted"
+          >
+            {t('alertsPage.tryAgain')}
+          </button>
+        </div>
+      )}
       {/* Bulk action confirmation bar */}
       {pendingBulk && (
         <div className="flex items-center gap-3 rounded-md border border-warning/40 bg-warning/10 px-4 py-3">
@@ -737,7 +765,7 @@ export default function AlertsPage() {
         </div>
       )}
 
-      {!filtersActive && alerts.length === 0 && deviceStatus === 'success' && deviceCount === 0 ? (
+      {showEmptyState && deviceStatus === 'success' && deviceCount === 0 ? (
         // No devices are enrolled yet, so "all clear" would be a false health
         // signal. Point the user at enrolling their first device instead.
         <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -756,13 +784,13 @@ export default function AlertsPage() {
             {t('alertsPage.installYourFirstDevice')}
           </a>
         </div>
-      ) : !filtersActive && alerts.length === 0 && deviceStatus === 'loading' ? (
+      ) : showEmptyState && deviceStatus === 'loading' ? (
         // Device status not yet known — show a neutral spinner rather than
         // flashing either "no devices" or "your fleet is healthy".
         <div className="flex items-center justify-center py-16" data-testid="alerts-device-status-loading">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
         </div>
-      ) : !filtersActive && alerts.length === 0 && deviceStatus === 'error' ? (
+      ) : showEmptyState && deviceStatus === 'error' ? (
         // The devices request failed, so we cannot prove the fleet is empty OR
         // healthy. State the one fact we have (no active alerts) and flag the
         // unknown device status instead of asserting all-clear.
@@ -775,7 +803,7 @@ export default function AlertsPage() {
             {t('alertsPage.deviceStatusUnavailable')}
           </p>
         </div>
-      ) : !filtersActive && alerts.length === 0 ? (
+      ) : showEmptyState ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <div className="rounded-full bg-success/10 p-4 mb-4">
             <CheckCircle className="h-8 w-8 text-success" />

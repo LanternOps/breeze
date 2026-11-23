@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { eq, sql } from 'drizzle-orm';
 import { alertRoutes } from '../../routes/alerts';
-import { alerts, devices, organizationUsers } from '../../db/schema';
+import { alerts, devices, organizationUsers, users } from '../../db/schema';
 import { clearPermissionCache } from '../../services/permissions';
 import { createIntegrationTestClient, createOrganization, createSite } from './db-utils';
 import { getAppDb, getTestDb } from './setup';
@@ -109,6 +109,51 @@ describe('GET /alerts server-side filters (#12324)', () => {
     const { body } = await list(f, `deviceFilter=${deviceFilterParam(f.targetHostname)}&status=active`);
     expect(body.pagination.total).toBe(1);
     expect(body.data.map((a) => a.id)).toEqual([f.targetActiveId]);
+  });
+
+  runDb('one device filter matches devices in every accessible org, never another partner', async () => {
+    const f = await fixture();
+    const suffix = f.targetHostname.slice('target-'.length);
+    const contains = encodeURIComponent(JSON.stringify({
+      operator: 'AND', conditions: [{ field: 'hostname', operator: 'contains', value: suffix }],
+    }));
+    // Both orgs' devices carry the suffix (60 noise + 2 target alerts, dismissed
+    // excluded by default). The other partner's device does too, and stays out.
+    const { status, body } = await list(f, `deviceFilter=${contains}&limit=100`);
+    expect(status).toBe(200);
+    expect(body.pagination.total).toBe(62);
+    expect(body.data.map((a) => a.id)).not.toContain(f.foreignAlertId);
+  });
+
+  runDb('deviceId and startDate (the device and date-range dropdowns) filter before the limit', async () => {
+    const f = await fixture();
+    const byDevice = await list(f, `deviceId=${f.targetDevice}`);
+    expect(byDevice.body.pagination.total).toBe(2);
+    const since = new Date(Date.now() - 72 * HOUR).toISOString();
+    const recent = await list(f, `deviceId=${f.targetDevice}&startDate=${encodeURIComponent(since)}`);
+    expect(recent.body.data.map((a) => a.id)).toEqual([f.targetActiveId]);
+    expect(recent.body.pagination.total).toBe(1);
+  });
+
+  runDb('a system-scope caller filters by device within a chosen org', async () => {
+    const client = await createIntegrationTestClient(app, { scope: 'system' });
+    const { organization: org, site, user } = client.env;
+    // A system-scope token is authorized off the live platform-admin flag.
+    await getTestDb().update(users).set({ isPlatformAdmin: true }).where(eq(users.id, user.id));
+    await clearPermissionCache(user.id);
+    const hostname = `system-${randomUUID().slice(0, 8)}`;
+    const deviceId = await insertDevice(org.id, site.id, hostname);
+    const [alert] = await getTestDb().insert(alerts).values({
+      orgId: org.id, deviceId, status: 'active', severity: 'high', title: 'System view', message: 'm',
+    }).returning({ id: alerts.id });
+    const scoped = await client.get(`/alerts?orgId=${org.id}&deviceFilter=${deviceFilterParam(hostname)}`);
+    expect(scoped.status).toBe(200);
+    expect(((await scoped.json()) as ListBody).data.map((a) => a.id)).toEqual([alert!.id]);
+    // No org chosen: like POST /filters/preview, a system caller's device
+    // filter has no org to evaluate in and matches nothing.
+    const unscoped = await client.get(`/alerts?deviceFilter=${deviceFilterParam(hostname)}`);
+    expect(unscoped.status).toBe(200);
+    expect(((await unscoped.json()) as ListBody).pagination.total).toBe(0);
   });
 
   runDb('a device filter matching nothing returns an empty page, not the unfiltered list', async () => {

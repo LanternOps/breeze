@@ -41,7 +41,7 @@ import { publishEvent } from '../../services/eventBus';
 import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
 import { latestVerdictsForAlerts, projectAlertAiVerdictSummary } from '../../services/aiAgents/alertVerdicts';
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, unsuppressAlertSchema, bulkAlertActionSchema, type AlertSeverityValue, type AlertStatusValue } from './schemas';
-import { escapeLikePattern, evaluateFilter, FilterQueryTimeoutError, validateFilter, type FilterConditionGroup } from '../../services/filterEngine';
+import { escapeLikePattern, evaluateFilterInOrgs, FilterQueryTimeoutError, validateFilter, type FilterConditionGroup } from '../../services/filterEngine';
 import { FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS, reportFilterPreviewTimeout } from '../../services/filterPreviewTimeout';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck, alertSiteScopeCondition } from './helpers';
 import { fillStoredAlertCopy } from './alertCopy';
@@ -373,19 +373,16 @@ alertsRoutes.get(
       if (!validation.valid) {
         return c.json({ error: 'Invalid filter', details: validation.errors }, 400);
       }
-      const deviceIds: string[] = [];
-      let evaluatingOrgId: string | null = null;
+      // One statement across every org in scope: this runs on each page fetch,
+      // not once per filter change. Its own savepoint keeps a timeout from
+      // poisoning the request transaction.
+      const filterOrgIds = deviceFilterOrgIds(auth, query.orgId);
+      let deviceIds: string[];
       try {
-        // Sequential, not Promise.all: each evaluation opens a savepoint on
-        // the request transaction.
-        for (const orgId of deviceFilterOrgIds(auth, query.orgId)) {
-          evaluatingOrgId = orgId;
-          const result = await evaluateFilter(filter, { orgId, allowedSiteIds: auth.allowedSiteIds });
-          deviceIds.push(...result.deviceIds);
-        }
+        ({ deviceIds } = await evaluateFilterInOrgs(filter, { orgIds: filterOrgIds, allowedSiteIds: auth.allowedSiteIds }));
       } catch (error) {
         if (!(error instanceof FilterQueryTimeoutError)) throw error;
-        reportFilterPreviewTimeout(evaluatingOrgId);
+        reportFilterPreviewTimeout(filterOrgIds.length === 1 ? filterOrgIds[0]! : null);
         return c.json(FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS);
       }
       conditions.push(deviceIdsCondition(deviceIds));

@@ -8,7 +8,7 @@
  * which response fields are read). That the API applies them is proved in
  * apps/api/src/__tests__/integration/alertsListServerFilters.integration.test.ts.
  */
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AlertsPage from './AlertsPage';
@@ -28,10 +28,12 @@ vi.mock('../filters/DeviceFilterBar', () => ({
   ),
 }));
 
-// All-organizations view: no current org, fleet toggle on.
+// All-organizations view by default (no current org, fleet toggle on); a test
+// can pin one org instead.
+let mockCurrentOrgId: string | null = null;
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({ orgScope: 'all', currentOrgId: null, allOrgs: true, error: null, organizationsLoaded: true, organizations: [] }),
+    selector({ orgScope: mockCurrentOrgId ? 'current' : 'all', currentOrgId: mockCurrentOrgId, allOrgs: !mockCurrentOrgId, error: null, organizationsLoaded: true, organizations: [] }),
 }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -80,6 +82,7 @@ function mockApi(handler: Handler, summary: unknown = { openBySeverity: { critic
 beforeEach(() => {
   vi.clearAllMocks();
   window.location.hash = '';
+  mockCurrentOrgId = null;
 });
 
 describe('AlertsPage server-side filters (#12324)', () => {
@@ -192,6 +195,43 @@ describe('AlertsPage server-side filters (#12324)', () => {
     render(<AlertsPage />);
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveTextContent('Old linked alert');
+  });
+
+  it('with one org selected, a #<alertId> link to another org\'s alert does not open it', async () => {
+    mockCurrentOrgId = 'org-a';
+    const OTHER_ID = '7b6a5c4d-1111-4222-8333-444455556666';
+    window.location.hash = OTHER_ID;
+    mockApi(() => ({ data: NOISE, total: 60 }));
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === `/alerts/${OTHER_ID}`) {
+        return json({ ...alertRow(OTHER_ID, 'Other org alert'), id: OTHER_ID, orgId: 'org-b', notifications: [] });
+      }
+      return base(input, init);
+    });
+    render(<AlertsPage />);
+    await screen.findByText('Noise 0');
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === `/alerts/${OTHER_ID}`)).toBe(true));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('a failed filtered fetch without a device filter offers a retry', async () => {
+    let fail = true;
+    mockApi((params) => {
+      if (params.get('status') === 'resolved') {
+        return fail ? json({ error: 'nope' }, false, 503) : { data: [alertRow('r', 'Resolved row', { status: 'resolved' })], total: 1 };
+      }
+      return { data: NOISE, total: 60 };
+    });
+    render(<AlertsPage />);
+    await screen.findByText('Noise 0');
+    fireEvent.click(screen.getByRole('button', { name: /Filters/i }));
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'resolved' } });
+    const retry = await screen.findByTestId('alert-list-fetch-error');
+    expect(screen.queryByText('Noise 0')).not.toBeInTheDocument();
+    fail = false;
+    await act(async () => { fireEvent.click(within(retry).getByRole('button')); });
+    expect(await screen.findByText('Resolved row')).toBeInTheDocument();
   });
 
   it('reads the summary strip from /alerts/summary, not from the loaded page', async () => {

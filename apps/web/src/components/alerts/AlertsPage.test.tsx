@@ -849,6 +849,10 @@ describe('AlertsPage — dismiss', () => {
         const data = (rows as Array<{ status: string }>).filter((r) => (status ? r.status === status : r.status !== 'dismissed'));
         return Promise.resolve(makeJsonResponse({ data, pagination: { page: 1, limit: 25, total: data.length } }));
       }
+      if (url === '/alerts/summary' && method === 'GET') {
+        // `total` counts every status, dismissed included.
+        return Promise.resolve(makeJsonResponse({ openBySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 }, total: rows.length }));
+      }
       if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
@@ -899,14 +903,13 @@ describe('AlertsPage — dismiss', () => {
   });
 
   it('hides a dismissed alert from the default view, and shows it without a Dismiss button under the Dismissed filter', async () => {
-    // A second, open alert keeps the list on screen: the default view now comes
-    // from the server, and a scope whose only alerts are dismissed shows the
-    // empty state.
-    dismissMock([{ ...activeAlert, status: 'dismissed' }, { ...activeAlert, id: 'other-open', title: 'Disk almost full' }]);
+    dismissMock([{ ...activeAlert, status: 'dismissed' }]);
     render(<AlertsPage />);
 
-    // Default "All Status" view excludes dismissed alerts entirely.
-    await screen.findByText('Disk almost full');
+    // Default "All Status" view excludes dismissed alerts entirely — but the
+    // scope still holds one (summary total), so the list and its filters stay
+    // on screen rather than an "All clear" with no way to reach Dismissed.
+    expect(await screen.findByText('No alerts match your filters.')).toBeInTheDocument();
     expect(screen.queryByText('High CPU on SRV-01')).not.toBeInTheDocument();
 
     // Select the Dismissed filter: the row now shows, but with no Dismiss action
