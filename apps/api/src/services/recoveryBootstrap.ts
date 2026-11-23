@@ -79,7 +79,8 @@ export function isValidRecoveryTokenFormat(token: string): boolean {
 // charged to its own per-token bucket instead of the first-sign-in bucket.
 // That keeps other sign-ins with the same token (a browser Preview, a retried
 // helper start) from using up the allowance a running restore needs to renew
-// its download session.
+// its download session. Helpers that predate the credential do not send it
+// and renew on the first-sign-in bucket, as before.
 //
 // It only selects a rate-limit bucket. It is not an authorization: every
 // authenticate still runs the full token checks (expiry, status, snapshot,
@@ -96,7 +97,7 @@ function recoverySessionRenewalMac(key: Buffer, tokenHash: string): Buffer {
   return createHmac('sha256', key).update(`${RECOVERY_SESSION_RENEWAL_DOMAIN}.${tokenHash}`).digest();
 }
 
-/** The renewal credential for this token, or null when no key is configured. */
+/** The renewal credential for this token, or null when the key cannot be derived. */
 export function issueRecoverySessionRenewal(tokenHash: string): string | null {
   try {
     const { key } = getSecretDerivedKeyMaterials(RECOVERY_SESSION_RENEWAL_DOMAIN).active;

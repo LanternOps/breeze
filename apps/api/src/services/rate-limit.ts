@@ -218,8 +218,9 @@ export async function rateLimiter(
 
 /**
  * Give back the slots an earlier rateLimiter() call took, by the exact
- * members it returned in `entries`. Returns whether the removal landed;
- * never throws. A failure only leaves the caller charged, as before.
+ * members it returned in `entries`. Returns whether the removal landed.
+ * Redis errors are caught (false); only the strict held-DB-context tripwire
+ * can throw, as in rateLimiter. A failure only leaves the caller charged.
  */
 export async function refundRateLimitEntries(
   redis: Redis | null,

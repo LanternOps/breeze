@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import { afterAll, beforeEach, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
-import { getTestDb } from './setup';
+import { getTestDb, getTestRedis } from './setup';
 import { createHash, randomUUID } from 'node:crypto';
 import { attestSnapshotForTest } from './restoreIntegrityFixture';
 import { createOrganization, createPartner, createSite } from './db-utils';
@@ -540,6 +540,18 @@ runDb('#12566: refused Previews do not starve the helper, renewals have their ow
   const renewal = await authenticate({ ...HELPER, sessionRenewal });
   expect(renewal.status).toBe(200);
   expect((await renewal.json()).bootstrap.download.expiresAt).toBeTruthy();
+
+  // 5b. Renewals are bounded too: three per hour, and a refused renewal is
+  //     not charged (the bucket stays exactly full, it does not grow).
+  expect((await authenticate({ ...HELPER, sessionRenewal })).status).toBe(200);
+  expect((await authenticate({ ...HELPER, sessionRenewal })).status).toBe(200);
+  for (let i = 0; i < 2; i += 1) {
+    const limited = await authenticate({ ...HELPER, sessionRenewal });
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get('Retry-After'))).toBeGreaterThan(0);
+  }
+  const renewalEntries = await getTestRedis().zcard(`bmr:authenticate-renewal:token:${hashRecoveryToken(token)}`);
+  expect(renewalEntries).toBe(3);
 
   // 6. A wrong credential is just another first sign-in: still limited.
   expect((await authenticate({ ...HELPER, sessionRenewal: `brz_rsr_${'A'.repeat(43)}` })).status).toBe(429);

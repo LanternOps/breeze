@@ -161,14 +161,15 @@ type RecoveryTokenRecord = {
   notes?: string | null;
 };
 
-// #12566: a Preview is a real sign-in with the token. It is never sent when
-// it cannot succeed: the token already has a recovery session (a helper is
-// signed in, or the restore finished), or the snapshot needs the helper.
+// #12566: a Preview is a real sign-in with the token. It is not sent when it
+// is known to be refused or to compete with a running restore: the token
+// already has a recovery session (a helper signed in, or the restore
+// finished), or the snapshot needs the helper.
 type PreviewBlockReason = 'sessionActive' | 'needsRecoveryHelper';
 
 function previewBlockReason(token: RecoveryTokenRecord): PreviewBlockReason | null {
   const session = token.sessionStatus ?? null;
-  if (token.authenticatedAt || (session !== null && session !== 'pending')) return 'sessionActive';
+  if (token.authenticatedAt || session === 'authenticated' || session === 'completed') return 'sessionActive';
   if (token.requiresRecoveryHelper) return 'needsRecoveryHelper';
   return null;
 }

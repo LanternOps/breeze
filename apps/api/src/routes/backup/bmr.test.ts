@@ -1167,7 +1167,7 @@ describe('bmr routes', () => {
     // The token's snapshot references earlier snapshots and the helper
     // already negotiated the capability, so a capability-less sign-in (the
     // browser Preview) is refused with capability_downgrade.
-    const downgradeRows = () => {
+    const downgradeRows = (snapshotStorageIdentity = 's3::::my-bucket') => {
       selectMock
         .mockReturnValueOnce(chainMock([{
           id: TOKEN_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID,
@@ -1182,13 +1182,13 @@ describe('bmr routes', () => {
           timestamp: new Date('2026-03-29T12:34:56.000Z'), size: 1234, fileCount: 12,
           metadata: { providerType: 's3', providerConfig: { bucket: 'my-bucket' } },
           backupType: 'file', isIncremental: true, hardwareProfile: null,
-          systemStateManifest: null, storageIdentity: 's3::::my-bucket',
+          systemStateManifest: null, storageIdentity: snapshotStorageIdentity,
         }]))
         .mockReturnValueOnce(chainMock([{ configId: null }]))
         .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'srv-01', osType: 'windows' }]))
         .mockReturnValueOnce(chainMock([{
           status: 'complete', manifestSha256: 'a'.repeat(64), externalCount: 3, error: null,
-          jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', storageIdentity: 's3::::my-bucket',
+          jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', storageIdentity: snapshotStorageIdentity,
         }]))
         .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
         .mockReturnValueOnce(chainMock([{ originSnapshotId: 'older' }]));
@@ -1275,6 +1275,69 @@ describe('bmr routes', () => {
       const res = await authenticate({});
 
       expect(res.status).toBe(409);
+      expect(refundRateLimitEntriesMock).not.toHaveBeenCalled();
+    });
+
+    // Only the two capability refusals move. Every other refusal on a token
+    // that was found keeps its first-sign-in charge.
+    const chargeEverything = () => rateLimiterMock.mockImplementation(async () => ({
+      allowed: true,
+      remaining: 2,
+      resetAt: new Date(Date.now() + 60_000),
+      entries: ['entry'],
+    }));
+
+    it('keeps the charge for an expired token', async () => {
+      chargeEverything();
+      selectMock.mockReturnValueOnce(chainMock([{
+        id: TOKEN_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID,
+        restoreType: 'bare_metal', targetConfig: null, status: 'active',
+        createdAt: new Date('2026-03-29T00:00:00.000Z'), expiresAt: new Date('2020-01-01T00:00:00.000Z'),
+        authenticatedAt: null, completedAt: null,
+      }]));
+      const res = await authenticate({});
+
+      expect(res.status).toBe(401);
+      expect(rateLimitKeys()).not.toContain(REFUSED_KEY);
+      expect(refundRateLimitEntriesMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps the charge for an integrity refusal', async () => {
+      chargeEverything();
+      evaluateRecoveryIntegrityMock.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        body: { error: 'recovery_client_update_required', message: 'too old' },
+      });
+      authenticateRows();
+      const res = await authenticate({});
+
+      expect(res.status).toBe(409);
+      expect(rateLimitKeys()).not.toContain(REFUSED_KEY);
+      expect(refundRateLimitEntriesMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps the charge for a negotiation refusal outside the two capability codes', async () => {
+      chargeEverything();
+      // The helper reports the capability, but the destination drifted.
+      downgradeRows('s3::::another-bucket');
+      const res = await authenticate({ capabilities: ['snapshot-file-membership-v1'] });
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe('storage_identity_drift');
+      expect(rateLimitKeys()).not.toContain(REFUSED_KEY);
+      expect(refundRateLimitEntriesMock).not.toHaveBeenCalled();
+    });
+
+    it('never moves a refused renewal out of the renewal bucket', async () => {
+      chargeEverything();
+      downgradeRows();
+      const res = await authenticate({ sessionRenewal: issueRecoverySessionRenewal(TOKEN_HASH) });
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe('capability_downgrade');
+      expect(rateLimitKeys()).toContain(RENEWAL_KEY);
+      expect(rateLimitKeys()).not.toContain(REFUSED_KEY);
       expect(refundRateLimitEntriesMock).not.toHaveBeenCalled();
     });
 

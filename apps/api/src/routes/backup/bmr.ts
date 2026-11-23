@@ -100,7 +100,12 @@ const BMR_AUTHENTICATE_TOKEN_WINDOW_SECONDS = 60 * 60;
 //     `bmr:authenticate-refused:token:<hash>`, and left in it once that is full.
 // Before this, two refused browser Previews plus the helper's own first
 // sign-in used the whole hour, and the helper's 55-minute renewal (and its
-// own refused retries) were rejected until the restore aborted.
+// own refused retries) were rejected until the restore aborted. A helper
+// that predates the credential renews on the first-sign-in bucket; for it,
+// moving the refused Previews out of that bucket is what keeps the renewal
+// possible. The three buckets together allow a valid token's holder up to
+// 3 first sign-ins, 3 refused ones and 3 renewals an hour; an unknown or
+// guessed token still gets only the first-sign-in bucket.
 const BMR_AUTHENTICATE_RENEWAL_TOKEN_LIMIT = BMR_AUTHENTICATE_TOKEN_LIMIT;
 const BMR_AUTHENTICATE_REFUSED_TOKEN_LIMIT = BMR_AUTHENTICATE_TOKEN_LIMIT;
 // Negotiation refusals reached only after the token row was found, was
@@ -471,8 +476,9 @@ async function chargeAuthenticateTokenLimit(
 }
 
 // #12566: charge the refused-sign-in bucket first and only then give back the
-// first-sign-in slot. If that bucket is full, or Redis fails at either step,
-// the first-sign-in charge stays, so the bound on the token never loosens.
+// first-sign-in slot. The first-sign-in slot is given back only when the
+// refused bucket accepted the charge; if that bucket is full, or Redis fails
+// at either step, the first-sign-in charge stays.
 async function moveRefusedSignInCharge(tokenHash: string, entries: string[]): Promise<void> {
   if (entries.length === 0) return;
   try {
