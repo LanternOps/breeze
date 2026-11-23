@@ -17,20 +17,24 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { auditLogs, configPolicyAssignments, devices } from '../../db/schema';
-import { createOrganization, createSite, setupTestEnvironment } from './db-utils';
+import { auditLogs, configPolicyAssignments, devices, users } from '../../db/schema';
+import { createOrganization, createPartner, createSite, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
 import { createAccessToken } from '../../services/jwt';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
 import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
 import { awaitAuditRows } from './auditWait';
 
-async function seed(policyOwner: 'sourceOrg' | 'partner') {
+async function seed(policyOwner: 'sourceOrg' | 'partner', crossPartner = false) {
   const adminDb = getTestDb() as any;
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-  const { partner, organization: orgA, site: siteA, user, role } = await setupTestEnvironment({ scope: 'partner' });
-  const orgB = await createOrganization({ partnerId: partner.id });
+  // A cross-partner move needs system scope (moveOrg.ts refuses it otherwise).
+  const scope = crossPartner ? 'system' : 'partner';
+  const { partner, organization: orgA, site: siteA, user, role } = await setupTestEnvironment({ scope });
+  const orgB = await createOrganization({ partnerId: crossPartner ? (await createPartner()).id : partner.id });
+  // auth.ts accepts a system token only from a platform admin.
+  if (crossPartner) await adminDb.update(users).set({ isPlatformAdmin: true }).where(eq(users.id, user.id));
   const siteB = await createSite({ orgId: orgB.id });
 
   const [device] = await adminDb.insert(devices).values({
@@ -66,8 +70,8 @@ async function seed(policyOwner: 'sourceOrg' | 'partner') {
     email: user.email,
     roleId: role.id,
     orgId: null,
-    partnerId: partner.id,
-    scope: 'partner',
+    partnerId: crossPartner ? null : partner.id,
+    scope,
     mfa: true,
     aep: 1,
     mep: 1,
@@ -131,6 +135,29 @@ describe('POST /devices/:id/move-org with a device-level config policy assignmen
       .where(eq(auditLogs.resourceId, f.device.id)), 2);
     for (const row of audits) {
       expect(row.details).not.toHaveProperty('removedConfigPolicyAssignments');
+    }
+  });
+
+  it('B3: removes the assignment of the old partner\'s policy on a system-scope move to another partner', async () => {
+    const f = await seed('partner', true);
+
+    const res = await f.move();
+    const body = (await res.json()) as any;
+    expect(res.status, JSON.stringify(body)).toBe(200);
+
+    expect(await f.deviceOrg()).toBe(f.orgB.id);
+    expect(await f.assignment()).toBeUndefined();
+
+    const audits = await awaitAuditRows<{ details: unknown }>(() => f.adminDb
+      .select({ details: auditLogs.details })
+      .from(auditLogs)
+      .where(eq(auditLogs.resourceId, f.device.id)), 2);
+    for (const row of audits) {
+      expect(row.details).toMatchObject({
+        removedConfigPolicyAssignments: [
+          { assignmentId: f.assignmentId, policyId: f.policyId, policyName: 'PartnerOwned' },
+        ],
+      });
     }
   });
 });
