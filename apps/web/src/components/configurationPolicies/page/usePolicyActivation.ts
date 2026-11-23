@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { i18n } from '@/lib/i18n';
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '../../shared/Toast';
@@ -30,13 +30,22 @@ const errorText = (err: unknown): string =>
  * login redirect handles it, or null on success.
  */
 export function usePolicyActivation({ ensurePolicy, onActivated, onAppliedOnly, onLeftInactive }: Options) {
+  // The change last applied, per policy. When the targets were applied but the
+  // activation was refused, a retry of the same change only activates: sending
+  // the same targets again would be refused as already assigned.
+  const applied = useRef<{ policyId: string; change: string } | null>(null);
   const onActivate = useCallback(
     async (payload: ApplyPayload): Promise<string | null> => {
       const ensured = await ensurePolicy();
       if (!ensured.ok) return ensured.message ?? '';
       const policyId = ensured.id;
+      const change = JSON.stringify(payload);
+      const alreadyApplied = applied.current?.policyId === policyId && applied.current.change === change;
       try {
-        await applyAssignments(policyId, payload, { silentSuccess: true, toastConflict: true });
+        if (!alreadyApplied) {
+          await applyAssignments(policyId, payload, { silentSuccess: true, toastConflict: true });
+          applied.current = { policyId, change };
+        }
       } catch (err) {
         if (err instanceof ActionError && err.status === 401) return '';
         if (!(err instanceof ActionError)) {

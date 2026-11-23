@@ -457,3 +457,54 @@ describe('ConfigurationPoliciesPage empty state under the switcher org (W03d C4)
     expect(await screen.findByText('xx:policies:configurationPolicies.configPolicyList.noPoliciesFoundTryAdjustingYourSearch')).toBeInTheDocument();
   });
 });
+
+describe('ConfigurationPoliciesPage failures name their cause (review round)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    orgState.value = { currentOrgId: ORG_A, organizations: [{ id: ORG_A, name: 'Org A' }, { id: ORG_B, name: 'Org B' }] };
+  });
+
+  it('a 403 that is not the org refusal is a plain fetch error, not blamed on the filter', async () => {
+    routeFetch(() => ({ status: 403, body: { error: 'Permission denied' } }));
+    render(<ConfigurationPoliciesPage />);
+    expect(await screen.findByText('xx:policies:configurationPolicies.configurationPoliciesPage.failedToFetchConfigurationPolicies')).toBeInTheDocument();
+    expect(screen.queryByTestId('config-policies-org-filter-error')).toBeNull();
+  });
+
+  it('a failed read after a good one never shows the previous total', async () => {
+    routeFetch((q) => (q.get('search') ? { status: 500, body: {} } : page(rows(25), 40)));
+    render(<ConfigurationPoliciesPage />);
+    await waitFor(() => expect(screen.getByTestId('config-policies-total-count')).toHaveTextContent('40'));
+    window.location.hash = '#q=x';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await waitFor(() => expect(mainCalls().some((q) => q.get('search') === 'x')).toBe(true));
+    await waitFor(() => expect(screen.queryByText('40')).toBeNull());
+  });
+});
+
+describe('ConfigurationPoliciesPage never sends the switcher org as orgId (review round)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    orgState.value = { currentOrgId: ORG_A, organizations: [{ id: ORG_A, name: 'Org A' }, { id: ORG_B, name: 'Org B' }] };
+  });
+
+  it('the list and both count reads opt out of the ambient orgId injection', async () => {
+    window.location.hash = `#org=${ORG_B}`;
+    routeFetch(() => page(rows(1), 1));
+    render(<ConfigurationPoliciesPage />);
+    await screen.findAllByTestId('config-policy-row');
+    const reads = fetchWithAuthMock.mock.calls.filter(([url]) => String(url).startsWith('/configuration-policies?'));
+    expect(reads.length).toBeGreaterThanOrEqual(3);
+    for (const [, init] of reads) expect(init).toEqual({ skipOrgIdInjection: true });
+  });
+
+  it('with that option the real orgId injection adds nothing', async () => {
+    const { applyOrgId } = await vi.importActual<typeof import('../../stores/auth')>('../../stores/auth');
+    const url = `/configuration-policies?page=1&limit=25&appliesToOrgId=${ORG_B}`;
+    expect(applyOrgId(url, { skipOrgIdInjection: true, ambient: ORG_A })).not.toContain('orgId=' + ORG_A);
+    // Without it, the switcher's org would be added and ANDed by the API.
+    expect(applyOrgId(url, { ambient: ORG_A })).toContain(`orgId=${ORG_A}`);
+  });
+});

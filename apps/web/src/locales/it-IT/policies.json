@@ -1647,6 +1647,7 @@
       "startFromParent": "Basato su un criterio padre",
       "parentNeedsOrganization": "Scegli prima l'organizzazione. I criteri padre utilizzabili sono elencati per essa.",
       "parentHint": "Le funzionalità che questo criterio non imposta provengono dal criterio padre.",
+      "parentReadFailed": "Non è stato possibile leggere le funzionalità del criterio padre, quindi l'elenco delle funzionalità non mostra ciò che imposta. Salvando, questo criterio si baserà comunque su di esso.",
       "fixedAtFirstSave": "«Gestito da» e «Basato su» vengono fissati al primo salvataggio del criterio.",
       "fixedNote": "«Gestito da» e «Basato su» sono stati fissati al primo salvataggio di questo criterio.",
       "firstSaveFailed": "Il criterio è stato salvato come Inattivo e non si applica ad alcun dispositivo, ma {{feature}} non è stato salvato. Correggi il problema qui sotto e salva di nuovo.",

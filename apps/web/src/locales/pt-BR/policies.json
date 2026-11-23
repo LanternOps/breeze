@@ -1647,6 +1647,7 @@
       "startFromParent": "Baseada em uma política pai",
       "parentNeedsOrganization": "Escolha primeiro a organização. As políticas pai que ela pode usar são listadas para ela.",
       "parentHint": "Os recursos que esta política não define vêm da política pai.",
+      "parentReadFailed": "Não foi possível ler os recursos da política pai, então a lista de recursos não mostra o que ela define. Ao salvar, esta política ainda será baseada nela.",
       "fixedAtFirstSave": "«Gerenciada por» e «Baseada em» são definidos quando a política é salva pela primeira vez.",
       "fixedNote": "«Gerenciada por» e «Baseada em» foram definidos quando esta política foi salva pela primeira vez.",
       "firstSaveFailed": "A política foi salva como Inativa e não se aplica a nenhum dispositivo, mas {{feature}} não foi salvo. Corrija o problema abaixo e salve novamente.",

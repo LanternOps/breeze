@@ -91,7 +91,13 @@ export function usePolicyDraft({ enabled, onCreated }: Options) {
   // first save only.
   useEffect(() => {
     if (!enabled || ownerTouched.current || createdRef.current) return;
-    setOwnerState(ownerDefault(kind, currentOrgId, ownOrgId));
+    const next = ownerDefault(kind, currentOrgId, ownOrgId);
+    setOwnerState((prev) => {
+      if (JSON.stringify(prev) === JSON.stringify(next)) return prev;
+      // A parent is eligible for one owner only: a new default drops it.
+      setParentState(null);
+      return next;
+    });
   }, [enabled, kind, currentOrgId, ownOrgId]);
 
   // MSP-managed is never kept for a caller who may not manage it.

@@ -21,6 +21,10 @@ import { runAction, handleActionError, ActionError } from "@/lib/runAction";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type ModalMode = "closed" | "delete";
+// The list reads pass `skipOrgIdInjection`: the list scopes itself with
+// `appliesToOrgId` (W03d C4). fetchWithAuth would otherwise add the switcher's
+// org as `orgId`, which the API ANDs with it: "All organizations" would show
+// one org's policies, and another org's own policies would vanish.
 // A count that is still loading reads as an ellipsis; one whose read failed as
 // a dash. Neither is ever shown as 0.
 const formatCount = (count: number | null | undefined) =>
@@ -35,6 +39,9 @@ export default function ConfigurationPoliciesPage() {
   const [activeCount, setActiveCount] = useState<number | null | undefined>();
   const [inactiveCount, setInactiveCount] = useState<number | null | undefined>();
   const [orgFilterForbidden, setOrgFilterForbidden] = useState(false);
+  // The last list read failed: the Total card shows a dash, never the
+  // previous query's number.
+  const [totalUnknown, setTotalUnknown] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [modalMode, setModalMode] = useState<ModalMode>("closed");
@@ -110,7 +117,7 @@ export default function ConfigurationPoliciesPage() {
   const readCount = useCallback(
     async (query: string): Promise<number | null> => {
       try {
-        const response = await fetchWithAuth(`/configuration-policies?${query}`);
+        const response = await fetchWithAuth(`/configuration-policies?${query}`, { skipOrgIdInjection: true });
         if (!response.ok) return null;
         return parsePolicyListResponse(await response.json())?.total ?? null;
       } catch {
@@ -131,11 +138,23 @@ export default function ConfigurationPoliciesPage() {
     void readCount(activeCountQuery).then((n) => isNewest() && setActiveCount(n));
     void readCount(inactiveCountQuery).then((n) => isNewest() && setInactiveCount(n));
     try {
-      const response = await fetchWithAuth(`/configuration-policies?${listQuery}`);
+      const response = await fetchWithAuth(`/configuration-policies?${listQuery}`, { skipOrgIdInjection: true });
       if (!isNewest()) return;
-      if (response.status === 403 && new URLSearchParams(listQuery).has("appliesToOrgId")) {
+      // Only the route's own org-access refusal is about the filter; any other
+      // 403 (a permission, MFA) is a plain fetch failure below.
+      // (A 403 is never a list, so its body is read here and nowhere else.)
+      const forbiddenBody =
+        response.status === 403 ? await response.json().catch(() => null) : null;
+      if (
+        forbiddenBody &&
+        typeof forbiddenBody === "object" &&
+        (forbiddenBody as { error?: unknown }).error === "Access to this organization denied" &&
+        new URLSearchParams(listQuery).has("appliesToOrgId")
+      ) {
+        if (!isNewest()) return;
         // The org filter names an organization the caller cannot use. Say so
         // inline; the filter row stays so another organization can be chosen.
+        setTotalUnknown(true);
         setOrgFilterForbidden(true);
         setPolicies([]);
         setTotal(0);
@@ -160,6 +179,7 @@ export default function ConfigurationPoliciesPage() {
       }
       setPolicies(parsed.data);
       setTotal(parsed.total);
+      setTotalUnknown(false);
       setLoaded(true);
       // A delete (or a stale link) can leave the page past the last one: move
       // to the last page that still exists.
@@ -168,6 +188,8 @@ export default function ConfigurationPoliciesPage() {
     } catch (err) {
       if (!isNewest()) return;
       setPolicies([]);
+      setTotal(0);
+      setTotalUnknown(true);
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
       if (isNewest()) setLoading(false);
@@ -350,7 +372,7 @@ export default function ConfigurationPoliciesPage() {
               )}
             </div>
             <p className="mt-2 text-2xl font-bold" data-testid="config-policies-total-count">
-              {orgFilterForbidden ? "\u2014" : total}
+              {orgFilterForbidden || totalUnknown ? "\u2014" : total}
             </p>
           </div>
           <div className="rounded-lg border bg-card p-4">

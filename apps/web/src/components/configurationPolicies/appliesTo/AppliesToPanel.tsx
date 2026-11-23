@@ -248,9 +248,15 @@ export default function AppliesToPanel({
   const runActivation = async (run: () => Promise<string | null>) => {
     setActivating(true);
     setActivationError(null);
-    const message = await run();
-    setActivating(false);
-    if (message) setActivationError(message);
+    try {
+      const message = await run();
+      if (message) setActivationError(message);
+    } catch (err) {
+      console.error('[configuration policies] activation failed', err);
+      setActivationError(t('configurationPolicies.policyStateActions.changeFailed'));
+    } finally {
+      setActivating(false);
+    }
   };
 
   const applyLabel = (() => {

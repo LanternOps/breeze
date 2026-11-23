@@ -169,3 +169,16 @@ describe('usePolicyDraft', () => {
     expect(out).toEqual({ ok: true, id: 'new-1', created: true });
   });
 });
+
+describe('usePolicyDraft owner default and parent (review round)', () => {
+  it('a default that changes on its own drops a parent picked for the old owner', () => {
+    state.user = { canManagePartnerWide: undefined };
+    const { result, rerender } = renderHook(() => usePolicyDraft({ enabled: true, onCreated: vi.fn() }));
+    act(() => result.current.setParent({ id: 'p-org-a', name: 'Org A baseline' }));
+    expect(result.current.draft.parent).not.toBeNull();
+    state.user = { canManagePartnerWide: true };
+    rerender();
+    expect(result.current.draft.owner).toEqual({ kind: 'msp' });
+    expect(result.current.draft.parent).toBeNull();
+  });
+});

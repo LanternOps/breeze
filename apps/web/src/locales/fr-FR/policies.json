@@ -1647,6 +1647,7 @@
       "startFromParent": "Basée sur une politique parente",
       "parentNeedsOrganization": "Choisissez d'abord l'organisation. Les politiques parentes utilisables sont listées pour elle.",
       "parentHint": "Les fonctionnalités que cette politique ne définit pas proviennent de la politique parente.",
+      "parentReadFailed": "Les fonctionnalités de la politique parente n'ont pas pu être lues ; la liste des fonctionnalités n'indique donc pas ce qu'elle définit. L'enregistrement basera quand même cette politique sur elle.",
       "fixedAtFirstSave": "« Gérée par » et « Basée sur » sont fixés au premier enregistrement de la politique.",
       "fixedNote": "« Gérée par » et « Basée sur » ont été fixés au premier enregistrement de cette politique.",
       "firstSaveFailed": "La politique a été enregistrée comme Inactive et ne s'applique à aucun appareil, mais {{feature}} n'a pas été enregistré. Corrigez le problème ci-dessous et enregistrez de nouveau.",

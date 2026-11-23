@@ -1647,6 +1647,7 @@
       "startFromParent": "Based on a parent policy",
       "parentNeedsOrganization": "Choose the organization first. The parents it can use are listed for it.",
       "parentHint": "Features this policy does not set come from the parent.",
+      "parentReadFailed": "The parent policy's features could not be read, so the feature list does not show what it sets. Saving still bases this policy on it.",
       "fixedAtFirstSave": "Managed by and Based on are fixed when the policy is first saved.",
       "fixedNote": "Managed by and Based on were fixed when this policy was first saved.",
       "firstSaveFailed": "The policy was saved as Inactive and applies to no device, but {{feature}} was not saved. Fix the problem below and save again.",

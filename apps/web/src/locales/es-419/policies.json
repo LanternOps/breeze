@@ -1647,6 +1647,7 @@
       "startFromParent": "Basada en una política principal",
       "parentNeedsOrganization": "Elija primero la organización. Se muestran las políticas principales que puede usar.",
       "parentHint": "Las funciones que esta política no define provienen de la política principal.",
+      "parentReadFailed": "No se pudieron leer las funciones de la política principal, por lo que la lista de funciones no muestra lo que define. Al guardar, esta política se basará igualmente en ella.",
       "fixedAtFirstSave": "«Administrada por» y «Basada en» se fijan al guardar la política por primera vez.",
       "fixedNote": "«Administrada por» y «Basada en» se fijaron al guardar esta política por primera vez.",
       "firstSaveFailed": "La política se guardó como Inactiva y no se aplica a ningún dispositivo, pero no se guardó {{feature}}. Corrija el problema que se indica abajo y guarde de nuevo.",

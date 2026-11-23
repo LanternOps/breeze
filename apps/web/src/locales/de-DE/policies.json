@@ -1647,6 +1647,7 @@
       "startFromParent": "Basierend auf einer übergeordneten Richtlinie",
       "parentNeedsOrganization": "Wählen Sie zuerst die Organisation. Die verwendbaren übergeordneten Richtlinien werden für sie aufgelistet.",
       "parentHint": "Funktionen, die diese Richtlinie nicht festlegt, stammen von der übergeordneten Richtlinie.",
+      "parentReadFailed": "Die Funktionen der übergeordneten Richtlinie konnten nicht gelesen werden, daher zeigt die Funktionsliste nicht, was sie festlegt. Beim Speichern basiert diese Richtlinie trotzdem darauf.",
       "fixedAtFirstSave": "„Verwaltet von“ und „Basiert auf“ werden beim ersten Speichern der Richtlinie festgelegt.",
       "fixedNote": "„Verwaltet von“ und „Basiert auf“ wurden beim ersten Speichern dieser Richtlinie festgelegt.",
       "firstSaveFailed": "Die Richtlinie wurde als Inaktiv gespeichert und gilt für kein Gerät, aber {{feature}} wurde nicht gespeichert. Beheben Sie das Problem unten und speichern Sie erneut.",

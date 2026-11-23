@@ -1647,6 +1647,7 @@
       "startFromParent": "Bir üst politikaya dayalı",
       "parentNeedsOrganization": "Önce kuruluşu seçin. Kullanabileceği üst politikalar onun için listelenir.",
       "parentHint": "Bu politikanın ayarlamadığı özellikler üst politikadan gelir.",
+      "parentReadFailed": "Üst politikanın özellikleri okunamadı; bu nedenle özellik listesi neleri ayarladığını göstermiyor. Kaydettiğinizde bu politika yine de ona dayanır.",
       "fixedAtFirstSave": "Yöneten ve Dayandığı politika, politika ilk kez kaydedilirken sabitlenir.",
       "fixedNote": "Yöneten ve Dayandığı politika, bu politika ilk kez kaydedilirken sabitlendi.",
       "firstSaveFailed": "Politika Etkin değil olarak kaydedildi ve hiçbir cihaza uygulanmıyor, ancak {{feature}} kaydedilmedi. Aşağıdaki sorunu düzeltip yeniden kaydedin.",

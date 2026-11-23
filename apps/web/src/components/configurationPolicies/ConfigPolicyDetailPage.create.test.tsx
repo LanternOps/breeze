@@ -447,3 +447,97 @@ describe('Activate on an existing policy (C3)', () => {
     expect(screen.queryByTestId('applies-to-panel')).toBeNull();
   });
 });
+
+describe('Activate failure paths (review round)', () => {
+  it('a refused activation after the targets applied says so and re-reads where the policy applies', async () => {
+    mockApi({ patch: ok({ error: 'oem_updates_execute_required' }, 403) });
+    await renderCreate();
+    fireEvent.change(screen.getByTestId('config-policy-create-name'), { target: { value: 'Workstations' } });
+    fireEvent.click(screen.getByTestId('config-policy-activate'));
+    fireEvent.click(await screen.findByTestId('stub-activate'));
+    await waitFor(() =>
+      expect(document.body.getAttribute('data-activate-result')).toMatch(/targets were applied, but the policy is still inactive/),
+    );
+    expect(writes()[1]).toMatchObject({
+      url: `/configuration-policies/${NEW_ID}/assignments/apply`,
+      body: { add: [{ level: 'organization', targetId: 'org-a', priority: 0 }], update: [], remove: [] },
+    });
+    // The page re-reads the policy (its targets changed) and stays inactive.
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === 'GET' && c.url === `/configuration-policies/${NEW_ID}`)).toBe(true),
+    );
+    expect(screen.getByTestId('applies-to-panel')).toBeInTheDocument();
+  });
+
+  it('a retry after a failed apply never creates a second policy', async () => {
+    mockApi({ apply: ok({ error: 'Target not allowed' }, 403) });
+    await renderCreate();
+    fireEvent.change(screen.getByTestId('config-policy-create-name'), { target: { value: 'Workstations' } });
+    fireEvent.click(screen.getByTestId('config-policy-activate'));
+    fireEvent.click(await screen.findByTestId('stub-activate'));
+    await waitFor(() => expect(document.body.getAttribute('data-activate-result')).toMatch(/stays inactive/));
+    document.body.removeAttribute('data-activate-result');
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/assignments/apply')) {
+        calls.push({ url: String(input), method: 'POST', body: JSON.parse(String((init as RequestInit).body)) });
+        return ok({ added: [{ id: 'a-1' }], updated: [], removed: [] }, 201);
+      }
+      return base(input, init);
+    });
+    fireEvent.click(screen.getByTestId('stub-activate'));
+    await waitFor(() => expect(document.body.getAttribute('data-activate-result')).toBe('ok'));
+    expect(writes().filter((c) => c.url === '/configuration-policies' && c.method === 'POST')).toHaveLength(1);
+    expect(writes().map((c) => `${c.method} ${c.url}`).slice(-2)).toEqual([
+      `POST /configuration-policies/${NEW_ID}/assignments/apply`,
+      `PATCH /configuration-policies/${NEW_ID}`,
+    ]);
+  });
+});
+
+describe('Start from: a parent that cannot be read (review round)', () => {
+  it('says the parent features could not be read instead of showing none', async () => {
+    const PARENT = '20000000-0000-4000-8000-0000000000cc';
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/configuration-policies/eligible-parents?ownerScope=partner') {
+        return ok({ data: [{ id: PARENT, name: 'MSP baseline', ownerScope: 'partner' }] });
+      }
+      if (url === `/configuration-policies/${PARENT}`) return ok({ error: 'not found' }, 404);
+      return base(input, init);
+    });
+    await renderCreate();
+    expect(screen.queryByTestId('config-policy-parent-read-failed')).toBeNull();
+    fireEvent.click(screen.getByTestId('config-policy-start-parent'));
+    fireEvent.change(await screen.findByTestId('policy-link-selector'), { target: { value: PARENT } });
+    expect(await screen.findByTestId('config-policy-parent-read-failed')).toHaveTextContent(/could not be read/);
+    // Back to Blank clears it.
+    fireEvent.click(screen.getByTestId('config-policy-start-blank'));
+    await waitFor(() => expect(screen.queryByTestId('config-policy-parent-read-failed')).toBeNull());
+  });
+});
+
+describe('Activate retry after a refused activation (review round)', () => {
+  it('only activates: the applied targets are not sent again', async () => {
+    mockApi({ patch: ok({ error: 'oem_updates_execute_required' }, 403) });
+    await renderCreate();
+    fireEvent.change(screen.getByTestId('config-policy-create-name'), { target: { value: 'Workstations' } });
+    fireEvent.click(screen.getByTestId('config-policy-activate'));
+    fireEvent.click(await screen.findByTestId('stub-activate'));
+    await waitFor(() => expect(document.body.getAttribute('data-activate-result')).toMatch(/still inactive/));
+    document.body.removeAttribute('data-activate-result');
+    const before = writes().length;
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === `/configuration-policies/${NEW_ID}` && (init as RequestInit | undefined)?.method === 'PATCH') {
+        calls.push({ url: String(input), method: 'PATCH', body: JSON.parse(String((init as RequestInit).body)) });
+        return ok({ id: NEW_ID, status: 'active' });
+      }
+      return base(input, init);
+    });
+    fireEvent.click(screen.getByTestId('stub-activate'));
+    await waitFor(() => expect(document.body.getAttribute('data-activate-result')).toBe('ok'));
+    expect(writes().slice(before).map((c) => `${c.method} ${c.url}`)).toEqual([`PATCH /configuration-policies/${NEW_ID}`]);
+  });
+});

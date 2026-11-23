@@ -174,7 +174,12 @@ export default function ConfigPolicyDetailPage({
   // failed): the counts are left out and the page stays usable.
   const [reach, setReach] = useState<ConfigPolicyReach | null>(null);
   // Where another policy wins each feature (#12472). null = unknown: no line.
-  const { precedence, reload: reloadPrecedence } = usePolicyPrecedence(id);
+  const { precedence, reload: reloadPrecedenceNow } = usePolicyPrecedence(id);
+  // A save or Activate that created the policy runs in a closure from before
+  // the create, where the id was still unknown: always reload the current one.
+  const reloadPrecedenceRef = useRef(reloadPrecedenceNow);
+  reloadPrecedenceRef.current = reloadPrecedenceNow;
+  const reloadPrecedence = useCallback(() => reloadPrecedenceRef.current(), []);
 
   useIsomorphicLayoutEffect(() => {
     const current = shownRef.current;
@@ -249,7 +254,9 @@ export default function ConfigPolicyDetailPage({
   const [featureLinks, setFeatureLinks] = useState<FeatureLink[]>([]);
   // Before the create, the page renders the draft as an inactive policy that
   // applies nowhere, owned as the Managed-by line says.
-  const draftParent = useDraftParent(isCreatePage && !policy ? draftApi.draft.parent : null);
+  const { summary: draftParent, failed: draftParentFailed } = useDraftParent(
+    isCreatePage && !policy ? draftApi.draft.parent : null,
+  );
   const draftPolicy = useMemo<PolicyDetail | null>(() => {
     if (!createMode) return null;
     const d = draftApi.draft;
@@ -755,6 +762,16 @@ export default function ConfigPolicyDetailPage({
         />
         )}
       </div>
+
+      {createMode && draftParentFailed && (
+        <p
+          role="alert"
+          data-testid="config-policy-parent-read-failed"
+          className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
+        >
+          {i18n.t("policies:configurationPolicies.policyCreate.parentReadFailed")}
+        </p>
+      )}
 
       {firstSaveFailed && (
         <p

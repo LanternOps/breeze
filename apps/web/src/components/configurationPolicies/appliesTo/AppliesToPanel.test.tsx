@@ -447,3 +447,21 @@ describe('activation mode (W03d C3)', () => {
     expect(screen.getByTestId('config-policy-activation-activate')).toBeDisabled();
   });
 });
+
+describe('activation mode never sticks (review round)', () => {
+  it('an Activate that throws shows an error and enables the button again', async () => {
+    assignments = [];
+    const activation = {
+      onActivate: vi.fn(async () => {
+        throw new Error('boom');
+      }),
+      onDontApply: vi.fn(async () => null as string | null),
+    };
+    renderPanel({ activation, reach: { direct: 0, throughChildren: 0, organizations: 0 } });
+    await addSite();
+    await waitFor(() => expect(screen.getByTestId('config-policy-activation-activate')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('config-policy-activation-activate'));
+    expect(await screen.findByTestId('config-policy-activation-error')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('config-policy-activation-activate')).toBeEnabled());
+  });
+});
