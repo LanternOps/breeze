@@ -19,6 +19,7 @@ import {
   pax8Integrations,
   s1Integrations,
   ticketMailboxConnections,
+  unifiIntegrationKeys,
   unifiIntegrations,
 } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
@@ -105,6 +106,32 @@ describe('vendor sources', () => {
     expect((await observe(unifiSource)).find((o) => o.sourceId === u)).toMatchObject({ state: 'broken', severity: 'permanent' });
     expect((await observe(backupProviderSource)).find((o) => o.sourceId === b)).toMatchObject({ state: 'broken', displayName: 'Main' });
     expect((await observe(edrSource)).find((o) => o.sourceId === e)).toMatchObject({ state: 'broken', detail: '503' });
+  });
+
+  // #11808 W3: one observation per UniFi API key beside the connection's own.
+  it('unifi: one failing key of two is broken while the connection stays healthy; disabled and deleted keys retire', async () => {
+    const [conn, failing, working, disabled, gone] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    const p = await partner();
+    await asSystem(async () => {
+      await db.insert(unifiIntegrations).values({
+        id: conn, partnerId: p, apiKeyEncrypted: 'x', status: 'connected', lastSyncStatus: 'partial', lastSyncAt: NOW,
+        lastSyncError: '1 of 2 keys failed', createdAt: OLD,
+      });
+      await db.insert(unifiIntegrationKeys).values([
+        { id: failing, integrationId: conn, partnerId: p, label: 'Macera', apiKeyEncrypted: 'x', status: 'reauth_required', lastSyncStatus: 'failed', lastSyncError: 'UniFi API error 401', createdAt: OLD },
+        { id: working, integrationId: conn, partnerId: p, label: 'Independent', apiKeyEncrypted: 'x', status: 'connected', lastSyncStatus: 'success', createdAt: OLD },
+        { id: disabled, integrationId: conn, partnerId: p, label: 'Old Fabric', apiKeyEncrypted: 'x', isEnabled: false, status: 'error', lastSyncStatus: 'failed', createdAt: OLD },
+      ]);
+    });
+    const untracked = await observe(unifiSource);
+    expect(untracked.filter((o) => [conn, failing, working, disabled].includes(o.sourceId))).toEqual([
+      expect.objectContaining({ sourceId: failing, state: 'broken', severity: 'permanent', condition: 'reauth_required', partnerId: p, orgId: null, displayName: 'UniFi: Macera', detail: 'UniFi API error 401' }),
+    ]);
+    const tracked = await observe(unifiSource, [conn, working, disabled, gone]);
+    expect(tracked.find((o) => o.sourceId === conn)).toMatchObject({ state: 'healthy', displayName: 'UniFi' });
+    expect(tracked.find((o) => o.sourceId === working)).toMatchObject({ state: 'healthy', displayName: 'UniFi: Independent' });
+    expect(tracked.find((o) => o.sourceId === disabled)).toMatchObject({ state: 'retired' });
+    expect(ids(tracked)).not.toContain(gone);
   });
 
   it('backup: a retry in progress (running, error cleared) reports unknown for a tracked incident', async () => {

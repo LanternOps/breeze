@@ -226,6 +226,21 @@ export function unifiHealth(row: { isActive: boolean; status: string; lastSyncSt
 }
 
 /**
+ * One UniFi Site Manager API key (#11808 W3). The worker writes each key's
+ * status and last_sync_status after every run (recordKeyResults). Only an
+ * explicit success proves a key healthy: a skipped key (sync budget spent) or
+ * a new key that has not synced yet is unknown. No stale arm: the integration
+ * observation already catches a dead scheduler.
+ */
+export function unifiKeyHealth(row: { integrationActive: boolean; isEnabled: boolean; status: string; lastSyncStatus: string | null }): HealthVerdict {
+  if (!row.integrationActive || !row.isEnabled) return RETIRED;
+  if (row.status === 'reauth_required') return permanent('reauth_required');
+  if (row.status === 'error' || row.lastSyncStatus === 'failed') return transient('sync_failed');
+  if (row.status === 'connected' && row.lastSyncStatus === 'success') return HEALTHY;
+  return UNKNOWN;
+}
+
+/**
  * Backup provider. A retry sets last_sync_status = 'running' and clears the
  * error (jobs/backupProviderSync.ts), so running is unknown, not recovery.
  * `partial` is written only when alert evaluation fails after a successful
