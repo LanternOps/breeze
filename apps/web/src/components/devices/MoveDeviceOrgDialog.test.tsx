@@ -79,6 +79,12 @@ describe('MoveDeviceOrgDialog (device move-org step-up D5)', () => {
     expect(options).not.toContain('Archived Org');
   });
 
+  it('does not claim policies move with the device, since the move removes its own policy assignments (#12491)', () => {
+    renderDialog();
+    expect(screen.getByText(/history and tickets move with it/i)).toBeTruthy();
+    expect(screen.queryByText(/policies move with it/i)).toBeNull();
+  });
+
   it('loads the chosen organization\'s sites and disables submit until both are chosen', async () => {
     renderDialog();
     expect(screen.getByTestId('move-org-submit')).toBeDisabled();

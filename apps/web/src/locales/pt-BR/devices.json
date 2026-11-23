@@ -3257,7 +3257,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "Mover para outra organização",
-    "description": "Move {{hostname}} para fora de {{orgName}}. Histórico, tickets e políticas vão junto, e o agente reconecta sob a nova organização.",
+    "description": "Move {{hostname}} para fora de {{orgName}}. Histórico e tickets vão junto, e o agente reconecta sob a nova organização.",
     "targetOrgLabel": "Organização de destino",
     "targetOrgPlaceholder": "Escolha uma organização",
     "targetSiteLabel": "Local de destino",

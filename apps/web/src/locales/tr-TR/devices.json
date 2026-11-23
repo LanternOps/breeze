@@ -3257,7 +3257,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "Başka bir kuruluşa taşı",
-    "description": "{{hostname}} cihazını {{orgName}} kuruluşundan çıkarır. Geçmişi, biletleri ve ilkeleri onunla birlikte taşınır ve aracı yeni kuruluş altında yeniden bağlanır.",
+    "description": "{{hostname}} cihazını {{orgName}} kuruluşundan çıkarır. Geçmişi ve biletleri onunla birlikte taşınır ve aracı yeni kuruluş altında yeniden bağlanır.",
     "targetOrgLabel": "Hedef kuruluş",
     "targetOrgPlaceholder": "Bir kuruluş seçin",
     "targetSiteLabel": "Hedef konum",

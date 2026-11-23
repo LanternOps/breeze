@@ -3257,7 +3257,7 @@
   },
   "moveDeviceOrgDialog": {
     "title": "Sposta in un'altra organizzazione",
-    "description": "Sposta {{hostname}} fuori da {{orgName}}. Cronologia, ticket e criteri lo seguono e l'agente si riconnette sotto la nuova organizzazione.",
+    "description": "Sposta {{hostname}} fuori da {{orgName}}. Cronologia e ticket lo seguono e l'agente si riconnette sotto la nuova organizzazione.",
     "targetOrgLabel": "Organizzazione di destinazione",
     "targetOrgPlaceholder": "Scegli un'organizzazione",
     "targetSiteLabel": "Sede di destinazione",
