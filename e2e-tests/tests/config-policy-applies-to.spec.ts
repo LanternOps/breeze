@@ -32,8 +32,9 @@ test.describe('config policy applies-to', () => {
     // 1. Create an MSP-managed policy (the admin's default owner, #12471),
     // saved inactive and applied nowhere with Don't apply yet.
     await expect(policies.createHeader()).toBeVisible();
-    await policies.createName().fill(`E2E applies-to ${Date.now()}`);
+    // The owner default is set after hydration; typing before it is lost.
     await expect(policies.managedBySelect()).toHaveValue('__msp__');
+    await policies.createName().fill(`E2E applies-to ${Date.now()}`);
     await policies.activate().click();
     await policies.activationDontApply().click();
     // The page becomes the policy's own page in place (replaceState, no load).
