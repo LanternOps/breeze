@@ -59,6 +59,13 @@ Lab checks owed before the next tag:
 - The create page, editors and device tab use one vocabulary: Applies to, Managed by, Parent policy / Based on, Precedence. A new policy now opens with the Applies-to editor open.
 - `GET /configuration-policies` rows and `GET /configuration-policies/:id` gain `appliesTo`; `GET /configuration-policies/effective/:deviceId` gains `policyOwners` (additive). Old `#assignments` links still work.
 
+- **One Applies-to editor for every configuration policy** (#12462, #12467). Changes are staged and committed with one **Apply**, which first states how many devices it adds and removes. All staged changes land together or none do; if someone else changed the policy's targets meanwhile, nothing is applied and the editor offers **Reload**. A change that would leave the policy matching 0 devices you can see shows a warning.
+- MSP-managed policies can now target sites, device groups and devices, picked by organization and searched on the server.
+- Device counts show on the policy page and in the list. They count only devices you can see, and read "At least N" on very large fleets.
+- An MSP-managed policy assigned at a site now shows on that Site page for users who can see the policy.
+- **Devices → Groups → Apply policy** applies the policy to every selected group in one change.
+- New routes: `POST /configuration-policies/:id/assignments/apply` (staged add, update and remove, with `dryRun`), `GET /configuration-policies/:id/reach` and `GET /configuration-policies/reach?ids=…`. `GET /orgs/sites` accepts `search`.
+
 ## Migrations
 
 - `2027-01-24-170000-portal-access-requests-google-hosted-domain.sql`: adds nullable `portal_access_requests.google_hosted_domain` and the CHECK `portal_access_requests_google_hd_chk` (validated in the same file when no Google request lacks a domain, which is every existing database). DDL only; fast.
