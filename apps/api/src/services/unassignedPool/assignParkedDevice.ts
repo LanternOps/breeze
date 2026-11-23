@@ -443,7 +443,7 @@ function afterCommit(
   safely(item.deviceId, 'ticket link notes', () => scheduleTicketLinkRemovalNotes(committed.move.removedTicketLinks));
 
   safely(item.deviceId, 'audit', () => {
-    const { customFieldRehome } = committed.move;
+    const { customFieldRehome, removedConfigPolicyAssignments } = committed.move;
     writeAuditEvent(audit, {
       orgId: item.targetOrgId,
       action: 'device.parked.assigned',
@@ -463,6 +463,7 @@ function afterCommit(
         ledgerEventId: committed.ledgerEventId,
         ...(collidingDeviceIds.length > 0 ? { identityCollisionAccepted: true, collidingDeviceIds } : {}),
         ...(customFieldRehome.rehomed > 0 || customFieldRehome.dropped > 0 ? { customFieldValues: customFieldRehome } : {}),
+        ...(removedConfigPolicyAssignments.length > 0 ? { removedConfigPolicyAssignments } : {}),
       },
     });
   });

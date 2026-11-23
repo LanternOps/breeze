@@ -360,7 +360,7 @@ moveOrgRoutes.post(
       return c.json({ error: 'Failed to move device between organizations' }, 500);
     }
 
-    const { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome } = moved!;
+    const { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome, removedConfigPolicyAssignments } = moved!;
 
     // #7900 W02: notes on tickets that lost a link to one of this device's
     // tickets. Registered here, once the move is final, and run only after
@@ -436,6 +436,8 @@ moveOrgRoutes.post(
       ...(customFieldRehome.rehomed > 0 || customFieldRehome.dropped > 0
         ? { customFieldValues: customFieldRehome }
         : {}),
+      // #12491: device-level config policy assignments the move removed.
+      ...(removedConfigPolicyAssignments.length > 0 ? { removedConfigPolicyAssignments } : {}),
     } as const;
 
     writeRouteAudit(c, {
