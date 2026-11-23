@@ -1593,7 +1593,9 @@
         "results": {
           "label": "Results"
         }
-      }
+      },
+      "statusOutranked_one": "{{state}} · Outranked on {{count}} device",
+      "statusOutranked_other": "{{state}} · Outranked on {{count}} devices"
     },
     "policyHeader": {
       "editDetails": "Edit details",
@@ -1618,6 +1620,13 @@
           "message": "View only."
         }
       }
+    },
+    "outranked": {
+      "line_one": "Outranked on {{count}} device",
+      "line_other": "Outranked on {{count}} devices",
+      "detail": "A more specific or higher-priority policy wins this feature there. Of the devices you can see, this policy reaches {{reached}}.",
+      "capped": "Too many devices to count where another policy wins this feature.",
+      "openDevice": "Open a device's Configuration tab to see which policy applies to it."
     }
   },
   "software": {

@@ -1593,7 +1593,9 @@
         "results": {
           "label": "Sonuçlar"
         }
-      }
+      },
+      "statusOutranked_one": "{{state}} · {{count}} cihazda geçersiz kılındı",
+      "statusOutranked_other": "{{state}} · {{count}} cihazda geçersiz kılındı"
     },
     "policyHeader": {
       "editDetails": "Ayrıntıları düzenle",
@@ -1618,6 +1620,13 @@
           "message": "Yalnızca görüntüleme."
         }
       }
+    },
+    "outranked": {
+      "line_one": "{{count}} cihazda geçersiz kılındı",
+      "line_other": "{{count}} cihazda geçersiz kılındı",
+      "detail": "Orada bu özellik için daha özel veya daha yüksek öncelikli bir politika geçerli olur. Görebildiğiniz cihazlardan bu politika {{reached}} cihaza ulaşıyor.",
+      "capped": "Bu özellik için başka bir politikanın geçerli olduğu cihazları saymak için çok fazla cihaz var.",
+      "openDevice": "Hangi politikanın geçerli olduğunu görmek için bir cihazın Yapılandırma sekmesini açın."
     }
   },
   "software": {

@@ -93,6 +93,52 @@ describe('FeatureRail (#12469)', () => {
     expect(onNavigate).toHaveBeenCalledWith('compliance_status');
   });
 
+  it('a feature another policy outranks says so in its status (#12472)', () => {
+    renderRail({
+      ownLinks: [link('patch'), link('backup')],
+      parentLinks: [link('pam')],
+      precedence: {
+        capped: false,
+        features: {
+          patch: { reached: 40, outranked: 3 },
+          backup: { reached: 40, outranked: 0 },
+          pam: { reached: 40, outranked: 1 },
+        },
+      },
+    });
+    const patch = screen.getByTestId('config-policy-rail-tab-patch');
+    expect(patch).toHaveAccessibleName('Patches, Set here · Outranked on 3 devices');
+    expect(patch).toHaveTextContent('Set here · Outranked on 3 devices');
+    expect(screen.getByTestId('config-policy-rail-tab-pam')).toHaveAccessibleName(
+      'Privileged Access, From parent · Outranked on 1 device',
+    );
+    // Zero outranked: the plain state.
+    expect(screen.getByTestId('config-policy-rail-tab-backup')).toHaveAccessibleName('Backup, Set here');
+  });
+
+  it('capped, unknown or a feature not in effect leaves the plain state, with no number (#12472)', () => {
+    renderRail({ ownLinks: [link('patch')], precedence: { capped: true } });
+    expect(screen.getByTestId('config-policy-rail-tab-patch')).toHaveAccessibleName('Patches, Set here');
+    expect(screen.getByTestId('config-policy-rail-tab-patch').textContent).not.toMatch(/\d/);
+
+    renderRail({ ownLinks: [link('patch')], precedence: null });
+    expect(screen.getAllByTestId('config-policy-rail-tab-patch')[1]).toHaveAccessibleName('Patches, Set here');
+
+    // A stale answer for a feature that is no longer set here, or a gated one, says nothing.
+    renderRail({
+      ownLinks: [],
+      isGated: (ft) => ft === 'onedrive_helper',
+      precedence: {
+        capped: false,
+        features: { patch: { reached: 4, outranked: 2 }, onedrive_helper: { reached: 4, outranked: 2 } },
+      },
+    });
+    expect(screen.getAllByTestId('config-policy-rail-tab-patch')[2]).toHaveAccessibleName('Patches, Not set');
+    expect(screen.getAllByTestId('config-policy-rail-tab-onedrive_helper')[2]).toHaveAccessibleName(
+      'OneDrive Helper, Unavailable on this policy',
+    );
+  });
+
   it('marks the open feature as current', () => {
     renderRail({ activeKey: 'wake_on_lan' });
     expect(screen.getByTestId('config-policy-rail-tab-wake_on_lan')).toHaveAttribute('aria-current', 'page');

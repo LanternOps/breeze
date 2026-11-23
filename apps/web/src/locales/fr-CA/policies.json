@@ -1593,7 +1593,9 @@
         "results": {
           "label": "Résultats"
         }
-      }
+      },
+      "statusOutranked_one": "{{state}} · Supplantée sur {{count}} appareil",
+      "statusOutranked_other": "{{state}} · Supplantée sur {{count}} appareils"
     },
     "policyHeader": {
       "editDetails": "Modifier les détails",
@@ -1618,6 +1620,13 @@
           "message": "Consultation seulement."
         }
       }
+    },
+    "outranked": {
+      "line_one": "Supplantée sur {{count}} appareil",
+      "line_other": "Supplantée sur {{count}} appareils",
+      "detail": "Une politique plus précise ou plus prioritaire l’emporte pour cette fonctionnalité sur ces appareils. Parmi les appareils que vous pouvez voir, cette politique en atteint {{reached}}.",
+      "capped": "Trop d’appareils pour compter ceux où une autre politique l’emporte pour cette fonctionnalité.",
+      "openDevice": "Ouvrez l’onglet Configuration appliquée d’un appareil pour voir quelle politique s’y applique."
     }
   },
   "software": {
