@@ -102,7 +102,7 @@ describe('filterLegibleAssignments', () => {
       new Map(targets.map((t) => [`${t.level}:${t.targetId}`, !keys.includes(`${t.level}:${t.targetId}`)])));
 
     it('drops the rows a site-restricted caller may not reach, on an org-owned policy too', async () => {
-      const siteAuth = auth({ allowedSiteIds: ['site-a'], canAccessSite: (id: string | null) => id === 'site-a' });
+      const siteAuth = auth({ allowedSiteIds: ['site-a'], canAccessSite: (id: string | null | undefined) => id === 'site-a' });
       refuse('organization:org-a', 'site:site-a2');
       const orgRows = [
         { id: 'o', level: 'organization', targetId: ORG_A },
