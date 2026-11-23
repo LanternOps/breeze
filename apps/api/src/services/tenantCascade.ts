@@ -1363,6 +1363,30 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
       WHERE role_id IN (SELECT id FROM roles WHERE org_id = ${orgId})
     `,
   },
+  // config_policy_assignments has no org_id: it is keyed by a polymorphic
+  // level/target_id pair with no FK. An ORG-owned policy's assignments go with
+  // the policy (config_policy_id is ON DELETE CASCADE), but a PARTNER-owned
+  // policy outlives the org, and so do its assignments that target this org,
+  // one of its sites, device groups or devices. The owner-delete statement
+  // triggers on organizations/sites/device_groups/devices
+  // (ab_config_policy_assignment_*_owner_delete) re-validate every assignment
+  // still naming a deleted target and raise 23503
+  // config_policy_assignments_target_owner_fk, so the walk aborts on the
+  // first target table it reaches (#12538). Clear by target, regardless of
+  // policy owner, before the walk. Scoped to rows inside this org: a
+  // partner-owned group (org_id NULL) and the partner-level assignment are
+  // not this org's and stay. The partner purge clears its own groups'
+  // assignments in partnerAssociatedPreClears.
+  {
+    table: 'config_policy_assignments',
+    clearSql: (orgId) => sql`
+      DELETE FROM config_policy_assignments
+      WHERE (level = 'organization' AND target_id = ${orgId}::uuid)
+         OR (level = 'site' AND target_id IN (SELECT id FROM sites WHERE org_id = ${orgId}::uuid))
+         OR (level = 'device_group' AND target_id IN (SELECT id FROM device_groups WHERE org_id = ${orgId}::uuid))
+         OR (level = 'device' AND target_id IN (SELECT id FROM devices WHERE org_id = ${orgId}::uuid))
+    `,
+  },
   // psa_ticket_mappings has NO org_id/partner_id column, so neither the org
   // cascade list nor the partner-axis sweep reaches it — yet it holds THREE
   // FKs into the cascade set, every one of them declared without an explicit

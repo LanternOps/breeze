@@ -1428,6 +1428,49 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
       .toHaveLength(1);
   }, 180_000);
 
+  // #12538 (the merge side of the org-erasure bug): a PARTNER-owned policy
+  // applied inside the loser at every level. The partner does not change in a
+  // merge, so each owner-update re-validation must accept the moved target.
+  it('#12538: carries a partner-owned policy applied inside the loser at every assignment level', async () => {
+    const policyId = randomUUID();
+    const a = {
+      orgLevel: randomUUID(),
+      siteLevel: randomUUID(),
+      groupLevel: randomUUID(),
+      deviceLevel: randomUUID(),
+    };
+    await withSystemDbAccessContext(async () => {
+      await db.execute(sql`
+        INSERT INTO configuration_policies (id, org_id, partner_id, name)
+        VALUES (${policyId}::uuid, NULL, ${f.partner}::uuid, ${`PartnerWide ${f.suffix}`})`);
+      await db.execute(sql`
+        INSERT INTO config_policy_assignments (id, config_policy_id, level, target_id) VALUES
+          (${a.orgLevel}::uuid,    ${policyId}::uuid, 'organization', ${f.loser}::uuid),
+          (${a.siteLevel}::uuid,   ${policyId}::uuid, 'site',         ${f.siteL2}::uuid),
+          (${a.groupLevel}::uuid,  ${policyId}::uuid, 'device_group', ${f.groupL}::uuid),
+          (${a.deviceLevel}::uuid, ${policyId}::uuid, 'device',       ${f.deviceL}::uuid)`);
+    });
+
+    await orgMergeModule.executeOrgMerge({
+      loserOrgId: f.loser,
+      survivorOrgId: f.survivor,
+      partnerId: f.partner,
+      performedBy: f.actor,
+      performedByEmail: f.actorEmail,
+    });
+
+    const assignments = await query<{ id: string; target_id: string }>(sql`
+      SELECT id, target_id FROM config_policy_assignments
+       WHERE id IN (${sql.join(Object.values(a).map((id) => sql`${id}::uuid`), sql`, `)})`);
+    const target = (id: string) => assignments.find((row) => row.id === id)?.target_id;
+    expect(assignments).toHaveLength(Object.keys(a).length);
+    expect(target(a.orgLevel)).toBe(f.survivor);
+    expect(target(a.siteLevel)).toBe(f.siteL2);
+    expect(target(a.groupLevel)).toBe(f.groupL);
+    expect(target(a.deviceLevel)).toBe(f.deviceL);
+    expect(await orgIdOf('devices', 'id', f.deviceL)).toBe(f.survivor);
+  }, 180_000);
+
   // #12490, the other half: the merge flag DEFERS the owner check to commit; it
   // never skips it. Each case leaves an org-owned policy and its target in
   // different orgs at commit, which must still be refused. Every case runs both
