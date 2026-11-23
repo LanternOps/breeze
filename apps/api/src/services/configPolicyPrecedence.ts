@@ -31,8 +31,11 @@
  * ever leaves this function. Competitors are read under RLS alone, with no
  * `policyAccessCondition`, because a policy the caller may not list (an
  * MSP-managed one, for an organization tech) still really wins on the caller's
- * devices; the number is about the caller's own policy on devices the caller
- * can see. Reach and the caller's site ceiling / device pin decide which
+ * devices. The number is about the policy the caller asked for, on devices the
+ * caller can see. That is the caller's own policy, or, since read scoping
+ * (W03a), an MSP-managed policy that applies to the caller's organization: the
+ * route reads it with `{ access: 'read' }`, so an organization caller can ask
+ * for it. Reach and the caller's site ceiling / device pin decide which
  * devices are counted (`callerMaySeeDevice`, shared with reach), before any
  * cap is compared.
  *

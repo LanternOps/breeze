@@ -4,7 +4,7 @@ import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { zodValidationErrorBody } from '../../lib/zodIssues';
 import type { AuthContext } from '../../middleware/auth';
-import { hasSatisfiedMfa, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import {
   backupInlineSettingsSchema,
   backupProfileLinkedInlineSettingsSchema,
@@ -30,7 +30,7 @@ import { ORG_SCOPED_ONLY_FEATURE_TYPES, isRetiredConfigFeatureType } from '@bree
 import { writeRouteAudit } from '../../services/auditEvents';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
-import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import {
   checkSecurityAgentsLinkWrite,
   SecurityAgentsLinkWriteError,
@@ -82,6 +82,7 @@ import { AutomationReferenceAuthorizationError } from '../../services/automation
 import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
 import { checkSecurityQuarantineWrite } from './securityQuarantineGate';
 import { checkSecurityRuleSetsWrite } from './securityRuleSetGate';
+import { mayArmSecurityAgents } from './securityAgentsGate';
 import {
   uncollectableComplianceRegistryPathMessage,
   uncollectableComplianceRegistryPaths,
@@ -235,14 +236,6 @@ const rejectRetiredFeatureType = async (c: Context, next: Next) => {
   await next();
 };
 
-// #6960: enabling a security agent arms installs, so the link write needs the
-// software-deployment grant (devices.execute + MFA), mirroring the HP CMSL gate.
-// Fail closed when permissions were not resolved.
-function mayArmSecurityAgents(auth: AuthContext, perms: UserPermissions | undefined): boolean {
-  return !!perms
-    && hasPermission(perms, PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action)
-    && hasSatisfiedMfa(auth);
-}
 
 // A remote_access link write changes what resolveRemoteAccessForDevice returns;
 // its cache (served to the heartbeat for up to HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS,
