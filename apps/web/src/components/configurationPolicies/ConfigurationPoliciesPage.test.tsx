@@ -125,7 +125,11 @@ describe('ConfigurationPoliciesPage delete flow (#2950)', () => {
     render(<ConfigurationPoliciesPage />);
 
     await waitFor(() =>
-      expect(screen.getByTestId('config-policy-feature-badge')).toHaveTextContent('Patches'),
+      // Feature labels are translated now (#12306), so under this file's
+      // stand-in locale the badge reads the label key, not English.
+      expect(screen.getByTestId('config-policy-feature-badge')).toHaveTextContent(
+        'xx:policies:configurationPolicies.featureNames.patch.label',
+      ),
     );
   });
 });
@@ -191,5 +195,36 @@ describe('ConfigurationPoliciesPage delete blocked by children (#5080)', () => {
     // Reopening the modal (even on the same policy) must not show stale state.
     await user.click(screen.getByTestId('config-policy-delete-button'));
     expect(screen.queryByTestId('config-policy-delete-children')).toBeNull();
+  });
+});
+
+describe('ConfigurationPoliciesPage carries appliesTo to the list (#12306)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders the Applies to cell from the list response, not a placeholder', async () => {
+    fetchWithAuthMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            ...POLICY,
+            appliesTo: {
+              assignmentCount: 1,
+              allOrganizations: false,
+              targets: [
+                { assignmentId: 'a-1', level: 'site', targetId: 's-1', name: 'Birch HQ', roleFilter: null, osFilter: null },
+              ],
+              childPolicyCount: 0,
+            },
+          },
+        ],
+      }),
+    });
+    render(<ConfigurationPoliciesPage />);
+    const cell = await screen.findByTestId('config-policy-applies-to-cell');
+    expect(cell).toHaveTextContent('Birch HQ');
+    expect(screen.queryByTestId('config-policy-not-applied-badge')).toBeNull();
   });
 });

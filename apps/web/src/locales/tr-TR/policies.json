@@ -18,15 +18,15 @@
       "optional2": "(isteğe bağlı)",
       "noRestrictionAppliesToAllOperatingSystems": "Kısıtlama yok - tüm işletim sistemleri için geçerlidir",
       "priority": "Öncelik",
-      "currentAssignments": "Güncel Ödevler",
-      "noAssignmentsYetAssignThisPolicyTo": "Henüz ödev yok. Bu politikayı yukarıdaki hedeflere atayın.",
+      "currentAssignments": "Uygulandığı yer",
+      "noAssignmentsYetAssignThisPolicyTo": "Henüz hiçbir cihaza uygulanmıyor. Yukarıdan bir hedef ekleyin.",
       "level": "Seviye",
       "target": "Hedef",
       "priority2": "Öncelik",
       "filters": "Filtreler",
       "allOrganizations": "Tüm Organizasyonlar",
       "allDevices": "Tüm cihazlar",
-      "addAssignment": "Ödev Ekle",
+      "addAssignment": "Hedef ekle",
       "level2": "Seviye",
       "target2": "Hedef",
       "target3": "Hedef",
@@ -81,23 +81,23 @@
       "howWouldYouLikeToConfigureThis": "Bu politikayı nasıl yapılandırmak istersiniz?",
       "configureNew": "Yeni Yapılandır",
       "startFreshWithCustomSettingsForEach": "Her özellik için özel ayarlarla yeni bir başlangıç yapın",
-      "linkToExisting": "Mevcut Bağlantı",
-      "useAnotherPolicyAsTheMasterBaseline": "Ana temel olarak başka bir politika kullanın",
+      "linkToExisting": "Bir üst politikaya dayalı",
+      "useAnotherPolicyAsTheMasterBaseline": "Başka bir politikanın ayarlarıyla başlayın ve farklı olanları değiştirin",
       "newConfigurationPolicy2": "Yeni Yapılandırma Politikası",
-      "masterPolicy": "Ana Politika",
-      "selectTheConfigurationPolicyToUseAs": "Temel olarak kullanılacak yapılandırma ilkesini seçin. Özellik başına ayrı ayarları geçersiz kılabilirsiniz.",
+      "masterPolicy": "Üst politika",
+      "selectTheConfigurationPolicyToUseAs": "Üst politikayı seçin. Bu politika için tek tek özellikleri değiştirebilirsiniz.",
       "policyDetails": "Politika Ayrıntıları",
       "eGStandardWorkstationPolicy": "ör. Standart İş İstasyonu Politikası",
       "optionalDescriptionOfWhatThisPolicyConfigures": "Bu politikanın neyi yapılandırdığına ilişkin isteğe bağlı açıklama",
-      "scope": "Kapsam",
-      "partnerLibrary": "İş ortağı kitaplığı",
-      "assignToOrganizationsAfterCreating": "(oluşturduktan sonra kuruluşlara atayın)",
-      "aSpecificOrganization": "Belirli bir kuruluş",
+      "scope": "Yöneten",
+      "partnerLibrary": "MSP'niz",
+      "assignToOrganizationsAfterCreating": "(sonra nereye uygulanacağını seçin)",
+      "aSpecificOrganization": "Tek bir kuruluş",
       "selectAnOrganization": "Bir kuruluş seçin",
-      "createAReusablePolicyOwnedByYour": "Partnerinize ait yeniden kullanılabilir bir politika oluşturun. Politikanın Kuruluşlar sekmesinde atanana kadar hiçbir kuruluş için geçerli değildir. Yedekleme ayarları iş ortağına ait politikalarda kullanılamaz.",
+      "createAReusablePolicyOwnedByYour": "MSP'niz tarafından yönetilir. Uygulandığı yer altında nereye uygulanacağını seçene kadar hiçbir yere uygulanmaz.",
       "new": "yeni",
       "linked": "bağlantılı",
-      "createAPolicyLinkedToAnExisting": "Mevcut bir ana öğeye bağlı bir ilke oluşturun.",
+      "createAPolicyLinkedToAnExisting": "Bir üst politikaya dayalı bir politika oluşturun.",
       "createANewConfigurationPolicyToBundle": "Özellik ayarlarını bir araya getirmek için yeni bir yapılandırma ilkesi oluşturun.",
       "name": "isim",
       "description": "açıklama",
@@ -116,16 +116,15 @@
       "failedToUpdatePolicy": "Politika güncellenemedi",
       "overview": "Genel Bakış",
       "complianceStatus": "Uyumluluk Durumu",
-      "assignments": "Ödevler",
       "loadingPolicy": "Politika yükleniyor...",
       "backToList": "Listeye dön",
       "configurationPolicies": "Yapılandırma Politikaları",
       "policyDetails": "Politika Ayrıntıları",
       "archived2": "Arşivlendi",
-      "inheritingFrom": "Şuradan devralınıyor:",
-      "overrideIndividualTabsToCustomizeSettings": "— Ayarları özelleştirmek için ayrı ayrı sekmeleri geçersiz kılın",
-      "isnTAvailableOnPartnerWidePolicies": ", iş ortağı çapındaki politikalarda kullanılamaz",
-      "configureThisFeatureOnAnOrganizationScoped": "Bu özelliği kuruluş kapsamlı bir ilkede yapılandırın.",
+      "inheritingFrom": "Dayandığı politika:",
+      "overrideIndividualTabsToCustomizeSettings": "Yalnızca bu politika için ayarlamak üzere bir özelliği değiştirin.",
+      "isnTAvailableOnPartnerWidePolicies": " MSP tarafından yönetilen politikalarda kullanılamaz",
+      "configureThisFeatureOnAnOrganizationScoped": "Bu özelliği tek bir kuruluşun yönettiği bir politikada ayarlayın.",
       "thisPolicyStillCarriesAnExisting": "Bu politika hâlâ mevcut bir politikayı taşımaktadır",
       "configurationThatWillNeverBeApplied": "hiçbir zaman uygulanmayacak yapılandırma.",
       "policy": "Politika",
@@ -138,8 +137,12 @@
       "complianceStatus2": "compliance_status",
       "assignments2": "ödevler",
       "managedByYourMsp": "MSP'niz tarafından yönetiliyor",
-      "inheritedByPolicies_one": "{{count}} politika bundan devralıyor",
-      "inheritedByPolicies_other": "{{count}} politika bundan devralıyor"
+      "inheritedByPolicies_one": "{{count}} politikanın üst politikası",
+      "inheritedByPolicies_other": "{{count}} politikanın üst politikası",
+      "gatedFeatureTitle": "MSP tarafından yönetilen politikalarda kullanılamaz. Bu özelliği tek bir kuruluşun yönettiği bir politikada ayarlayın.",
+      "appliesToDrawerTitle": "Uygulandığı yer",
+      "detailsSaved": "Politika ayrıntıları kaydedildi",
+      "refreshAppliesToFailed": "Bu politikanın uygulandığı yer yenilenemedi. Görmek için sayfayı yeniden yükleyin."
     },
     "configPolicyList": {
       "archived": "Arşivlendi",
@@ -151,18 +154,18 @@
       "archived2": "Arşivlendi",
       "features": "Özellikler",
       "noPoliciesFoundTryAdjustingYourSearch": "Politika bulunamadı. Aramanızı ayarlamayı deneyin.",
-      "noPoliciesYet": "Henüz yapılandırma politikası yok. Bir tane oluşturun, ardından kuruluşlara, sitelere veya cihazlara atayın.",
-      "partnerWidePolicyAppliesToEveryOrganization": "İş ortağı çapında politika — her kuruluş için geçerlidir",
-      "allOrgs": "İş ortağı çapında",
+      "noPoliciesYet": "Henüz yapılandırma politikası yok. Bir tane oluşturun, ardından nereye uygulanacağını seçin.",
       "page": "Sayfa",
       "of2": "arasında",
       "itsOwningOrganization": "kendi sahibi kuruluş",
-      "organizationPolicyTitle": "Organizasyon politikası — yalnızca {{organization}} için geçerlidir",
       "summary": "{{filtered}} / {{total}} politikaları",
       "inheritsBadge": "Devralıyor",
       "statusFilterLabel": "Durum",
-      "partnerPolicy": "İş ortağı",
-      "partnerPolicyAppliesOnlyWhereAssigned": "İş ortağı politikası — yalnızca atandığı yerde geçerlidir. İş ortağı çapında olması için tüm kuruluşlara atayın."
+      "appliesToHeader": "Uygulandığı yer",
+      "managedByOrganization": "Yöneten: {{organization}}",
+      "notAppliedChip": "Uygulanmıyor",
+      "inUseChip_one": "{{count}} politika aracılığıyla kullanımda",
+      "inUseChip_other": "{{count}} politika aracılığıyla kullanımda"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Yapılandırma politikaları getirilemedi",
@@ -191,10 +194,10 @@
       "failedToNarrow": "daraltılamadı",
       "failedToAssignOrg": "Kuruluş atanamadı",
       "organizations": "Kuruluşlar",
-      "thisPartnerLibraryPolicyAppliesOnlyTo": "Bu ortak kütüphane politikası yalnızca seçtiğiniz kuruluşlar için geçerlidir.",
+      "thisPartnerLibraryPolicyAppliesOnlyTo": "MSP tarafından yönetilen bu politika yalnızca seçtiğiniz kuruluşlara uygulanır.",
       "filtersApplyOnAssign": "Bu filtreler aşağıda atama yaptığınızda geçerli olur. Boş, her rol ve her işletim sistemi anlamına gelir. Bir atamanın filtrelerini değiştirmek için kapatıp yeniden açın.",
-      "allOrganizationsPartnerWide": "Tüm kuruluşlar (iş ortağı çapında)",
-      "allOrganizationsPartnerWide2": "Tüm kuruluşlar (iş ortağı çapında)",
+      "allOrganizationsPartnerWide": "Tüm kuruluşlar",
+      "allOrganizationsPartnerWide2": "Tüm kuruluşlar",
       "assigned": "Atandı",
       "searchOrganizations": "Arama kuruluşları...",
       "searching": "Aranıyor…",
@@ -700,7 +703,11 @@
         "revertConfirmTitle": "Üst ilkeye geri dönülsün mü?",
         "revertConfirmMessage": "Bu işlem bu ilkedeki {{feature}} geçersiz kılmasını siler. Ayarları kaybolur ve bu ilkeyi kullanan tüm cihazlarda üst ilkenin ayarları geçerli olur. Bu işlem geri alınamaz.",
         "removeConfirmTitle": "Bu yapılandırma kaldırılsın mı?",
-        "removeConfirmMessage": "Bu işlem {{feature}} yapılandırmasını bu ilkeden siler. Ayarları kaybolur ve özellik bu ilkeyi kullanan tüm cihazlara uygulanmayı bırakır. Bu işlem geri alınamaz."
+        "removeConfirmMessage": "Bu işlem {{feature}} yapılandırmasını bu ilkeden siler. Ayarları kaybolur ve özellik bu ilkeyi kullanan tüm cihazlara uygulanmayı bırakır. Bu işlem geri alınamaz.",
+        "badgeInherited": "Yapılandırıldı (devralındı)",
+        "badgeSavedNotDeployed": "Kaydedildi (dağıtılmadı)",
+        "badgeConfigured": "Yapılandırıldı",
+        "badgeNotConfigured": "Yapılandırılmadı"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Cihazlara Breeze Assist'i dağıtın",
@@ -1451,8 +1458,8 @@
       }
     },
     "partnerGroupAssignment": {
-      "title": "Cihaz grupları (tüm kuruluşlar)",
-      "description": "İş ortağı genelindeki bir cihaz grubunu hedefleyin. Grup ataması cihaz grubu düzeyinde uygulanır; bu nedenle diğer ilkelerin kuruluş ve site düzeyindeki atamalarından önceliklidir.",
+      "title": "Kuruluşlar arası cihaz grupları",
+      "description": "MSP'ye ait bir cihaz grubunu hedefleyin. Grup ataması cihaz grubu düzeyinde uygulanır; bu nedenle diğer politikaların kuruluş ve site düzeyindeki atamalarından önceliklidir.",
       "selectGroup": "Bir cihaz grubu seçin",
       "assign": "Ata",
       "remove": "Kaldır",
@@ -1463,6 +1470,96 @@
       "failedToRemove": "Cihaz grubu ataması kaldırılamadı",
       "empty": "Henüz iş ortağı genelinde cihaz grubu yok. Cihaz Grupları → Tüm kuruluşlar altında bir tane oluşturun.",
       "loading": "Cihaz grupları yükleniyor…"
+    },
+    "featureNames": {
+      "patch": {
+        "label": "Yamalar"
+      },
+      "monitors": {
+        "label": "İzleyiciler"
+      },
+      "backup": {
+        "label": "Yedekleme"
+      },
+      "security": {
+        "label": "Güvenlik"
+      },
+      "maintenance": {
+        "label": "Bakım"
+      },
+      "compliance": {
+        "label": "Uyumluluk"
+      },
+      "automation": {
+        "label": "Otomasyonlar"
+      },
+      "event_log": {
+        "label": "Olay Günlükleri"
+      },
+      "software_policy": {
+        "label": "Yazılım Politikası"
+      },
+      "sensitive_data": {
+        "label": "Veri Keşfi"
+      },
+      "peripheral_control": {
+        "label": "Çevre Birimi Denetimi"
+      },
+      "warranty": {
+        "label": "Garanti"
+      },
+      "helper": {
+        "label": "Breeze Assist"
+      },
+      "remote_access": {
+        "label": "Uzaktan Erişim"
+      },
+      "pam": {
+        "label": "Ayrıcalıklı Erişim"
+      },
+      "vulnerability": {
+        "label": "Güvenlik Açığı Taraması"
+      },
+      "onedrive_helper": {
+        "label": "OneDrive Helper"
+      },
+      "device_lifecycle": {
+        "label": "Cihaz Yaşam Döngüsü"
+      },
+      "hardware_monitoring": {
+        "label": "Donanım İzleme"
+      }
+    },
+    "levelNames": {
+      "partner": {
+        "label": "Tüm kuruluşlar"
+      },
+      "organization": {
+        "label": "Kuruluş"
+      },
+      "site": {
+        "label": "Site"
+      },
+      "device_group": {
+        "label": "Cihaz grubu"
+      },
+      "device": {
+        "label": "Cihaz"
+      },
+      "default": {
+        "label": "Breeze Defaults"
+      }
+    },
+    "appliesToStrip": {
+      "heading": "Uygulandığı yer",
+      "unknownState": "Bilinmiyor",
+      "notAppliedWarning": "Hiçbir cihaza uygulanmıyor. Nereye uygulanacağını seçene kadar bu politika hiçbir yere uygulanmaz.",
+      "notAppliedNeutral": "Henüz uygulanmıyor",
+      "inUseCount_one": "{{count}} politika aracılığıyla kullanımda",
+      "inUseCount_other": "{{count}} politika aracılığıyla kullanımda",
+      "moreTargets_one": "{{count}} hedef daha",
+      "moreTargets_other": "{{count}} hedef daha",
+      "assignButton": "Ata"
     }
   },
   "software": {
