@@ -19,7 +19,18 @@ vi.mock('./featureTabs/PatchTab', () => ({
 vi.mock('./featureTabs/BackupTab', () => ({
   default: () => <div data-testid="backup-tab-editor">Backup editor</div>,
 }));
-vi.mock('./AssignmentsTab', () => ({ default: () => <div data-testid="assignments-tab" /> }));
+const { panelProps } = vi.hoisted(() => ({ panelProps: { current: null as null | Record<string, any> } }));
+vi.mock('./appliesTo/AppliesToPanel', () => ({
+  default: (props: Record<string, any>) => {
+    panelProps.current = props;
+    return (
+      <div data-testid="applies-to-panel">
+        <button type="button" data-testid="stub-make-dirty" onClick={() => props.onDirtyChange(true)} />
+        <button type="button" data-testid="stub-applied" onClick={() => props.onApplied()} />
+      </div>
+    );
+  },
+}));
 
 import ConfigPolicyDetailPage from './ConfigPolicyDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
@@ -38,6 +49,8 @@ const appliesTo = {
   ],
   childPolicyCount: 0,
 };
+
+let reachResponse: () => Response = () => json({ direct: 12, throughChildren: 0, organizations: 1 });
 
 function mockPolicy(extra: Record<string, unknown> = {}) {
   fetchMock.mockImplementation(async (input, init) => {
@@ -59,6 +72,7 @@ function mockPolicy(extra: Record<string, unknown> = {}) {
       });
     }
     if (url === '/configuration-policies/pol-1/features' && method === 'GET') return json({ data: [] });
+    if (url === '/configuration-policies/pol-1/reach' && method === 'GET') return reachResponse();
     return json({ error: 'not found' }, false);
   });
 }
@@ -77,6 +91,8 @@ function openFeatureTab(label: string) {
 describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    panelProps.current = null;
+    reachResponse = () => json({ direct: 12, throughChildren: 0, organizations: 1 });
     await i18n.changeLanguage('en');
     window.location.hash = '';
   });
@@ -117,7 +133,7 @@ describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () =
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
     const drawer = await screen.findByTestId('config-policy-applies-to-drawer');
     expect(drawer).toHaveTextContent('Applies to');
-    expect(screen.getByTestId('assignments-tab')).toBeInTheDocument();
+    expect(screen.getByTestId('applies-to-panel')).toBeInTheDocument();
     // The alias is canonicalized away and the page stays on Overview.
     await waitFor(() => expect(window.location.hash).not.toBe('#assignments'));
     expect(screen.getByLabelText('Name')).toBeInTheDocument();
@@ -145,6 +161,69 @@ describe('ConfigPolicyDetailPage — Applies-to strip and drawer (#12306)', () =
     expect(strip).toHaveTextContent('—');
     expect(screen.queryByTestId('config-policy-applies-to-not-applied')).toBeNull();
     expect(screen.queryByTestId('config-policy-applies-to-in-use')).toBeNull();
+  });
+
+  it('the drawer renders the applies-to panel', async () => {
+    mockPolicy({ orgName: 'Acme' });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    fireEvent.click(await screen.findByTestId('config-policy-applies-to-edit'));
+    expect(await screen.findByTestId('applies-to-panel')).toBeInTheDocument();
+    expect(panelProps.current).toMatchObject({
+      policyId: 'pol-1',
+      owner: { kind: 'org', orgId: 'org-1', orgName: 'Acme' },
+      summary: { assignmentCount: 1 },
+    });
+    await waitFor(() => expect(panelProps.current?.reach).toEqual({ direct: 12, throughChildren: 0, organizations: 1 }));
+  });
+
+  it('an MSP-managed policy opens the panel as MSP-managed', async () => {
+    mockPolicy({ orgId: null, partnerId: 'p-1' });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    fireEvent.click(await screen.findByTestId('config-policy-applies-to-edit'));
+    await screen.findByTestId('applies-to-panel');
+    expect(panelProps.current?.owner).toEqual({ kind: 'msp' });
+  });
+
+  it('a dirty draft blocks closing the drawer', async () => {
+    mockPolicy();
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    fireEvent.click(await screen.findByTestId('config-policy-applies-to-edit'));
+    fireEvent.click(await screen.findByTestId('stub-make-dirty'));
+    expect(screen.getByTestId('config-policy-applies-to-drawer-close')).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByText('Apply or discard your changes first.')).toBeInTheDocument();
+  });
+
+  it('an Apply re-reads the policy and its reach', async () => {
+    mockPolicy();
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    fireEvent.click(await screen.findByTestId('config-policy-applies-to-edit'));
+    await screen.findByTestId('applies-to-panel');
+    const reachGets = () => fetchMock.mock.calls.filter((c) => c[0] === '/configuration-policies/pol-1/reach').length;
+    await waitFor(() => expect(reachGets()).toBe(1));
+    const before = policyGets();
+    fireEvent.click(screen.getByTestId('stub-applied'));
+    await waitFor(() => expect(policyGets()).toBe(before + 1));
+    await waitFor(() => expect(reachGets()).toBe(2));
+    // The drawer stays open after an Apply.
+    expect(screen.getByTestId('applies-to-panel')).toBeInTheDocument();
+  });
+
+  it('the strip shows the reach count', async () => {
+    mockPolicy();
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    expect(await screen.findByTestId('config-policy-applies-to-reach')).toHaveTextContent('12 devices');
+  });
+
+  it('a reach failure leaves the counts out and the page usable', async () => {
+    reachResponse = () => json({ error: 'boom' }, false);
+    mockPolicy();
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByTestId('config-policy-applies-to-target');
+    await waitFor(() => expect(fetchMock.mock.calls.some((c) => c[0] === '/configuration-policies/pol-1/reach')).toBe(true));
+    expect(screen.queryByTestId('config-policy-applies-to-reach')).toBeNull();
+    fireEvent.click(screen.getByTestId('config-policy-applies-to-edit'));
+    expect(await screen.findByTestId('applies-to-panel')).toBeInTheDocument();
+    expect(panelProps.current?.reach).toBeNull();
   });
 
   it('the Edit button opens the drawer', async () => {

@@ -1,50 +1,17 @@
 {
   "configurationPolicies": {
     "assignmentsTab": {
-      "deviceGroup": "Device Group",
       "windows": "Windows",
       "macOS": "macOS",
       "linux": "Linux",
-      "failedToFetchAssignments": "Failed to fetch assignments",
-      "thisPolicyHasNoOrganizationSoAssignment": "This policy has no organization, so assignment targets cannot be listed.",
-      "failedToAddAssignment": "Failed to add assignment",
-      "failedToRemoveAssignment": "Failed to remove assignment",
-      "assignmentAdded": "Assignment added",
-      "assignmentRemoved": "Assignment removed",
       "roleFilter": "Role Filter",
       "optional": "(optional)",
       "noRestrictionAppliesToAllDeviceRoles": "No restriction - applies to all device roles",
       "oSFilter": "OS Filter",
       "optional2": "(optional)",
       "noRestrictionAppliesToAllOperatingSystems": "No restriction - applies to all operating systems",
-      "priority": "Priority",
-      "currentAssignments": "Applies to",
-      "noAssignmentsYetAssignThisPolicyTo": "Not applied to any device yet. Add a target above.",
-      "level": "Level",
-      "target": "Target",
-      "priority2": "Priority",
-      "filters": "Filters",
-      "allOrganizations": "All Organizations",
       "allDevices": "All devices",
-      "addAssignment": "Add target",
-      "level2": "Level",
-      "target2": "Target",
-      "target3": "Target",
-      "search": "Search...",
-      "loading": "Loading...",
-      "restrictThisAssignmentToDevicesWithSpecific": "Restrict this assignment to devices with specific roles. Leave empty to apply to all roles.",
-      "lowerValuesOverrideHigherOnesWhenMultiple": "Lower values override higher ones when multiple policies target the same device at the same level.",
-      "partner": "partner",
-      "scopeOfTheAssignmentMoreSpecificLevels": "Scope of the assignment. More specific levels (device) take precedence over broader ones (organization).",
-      "organization": "organization",
-      "anOrganizationPolicyAlwaysTargetsItsOwn": "An organization policy always targets its own organization. Pick a narrower level (site, device group, device) to scope it further.",
-      "thisOrganization": "This organization",
-      "selectATarget": "Select a target...",
-      "noTargetsAvailable": "No targets available",
-      "noMatchesFound": "No matches found",
-      "assigning": "Assigning...",
-      "assign": "Assign",
-      "failedToLoadTargetsHttp": "Failed to load targets (HTTP {{status}})"
+      "restrictThisAssignmentToDevicesWithSpecific": "Restrict this assignment to devices with specific roles. Leave empty to apply to all roles."
     },
     "breezeDefaultsPage": {
       "receivedAnInvalidResponseFromTheServer": "Received an invalid response from the server.",
@@ -142,7 +109,8 @@
       "gatedFeatureTitle": "Not available on MSP-managed policies. Set this feature on a policy managed by one organization.",
       "appliesToDrawerTitle": "Applies to",
       "detailsSaved": "Policy details saved",
-      "refreshAppliesToFailed": "Couldn't refresh where this policy applies. Reload the page to see it."
+      "refreshAppliesToFailed": "Couldn't refresh where this policy applies. Reload the page to see it.",
+      "appliesToCloseBlocked": "Apply or discard your changes first."
     },
     "configPolicyList": {
       "archived": "Archived",
@@ -183,31 +151,6 @@
       "thisWillAlsoRemoveAllFeatureLinks": "? This will also remove all feature links and assignments. This action cannot be undone.",
       "delete": "delete",
       "deleting": "Deleting..."
-    },
-    "organizationScopePanel": {
-      "failedToLoadAssignments": "Failed to load assignments",
-      "failedToLoadOrganizations": "Failed to load organizations",
-      "failedToRemove": "Failed to remove",
-      "failedToRemove2": "Failed to remove",
-      "failedToAssignAllOrgs": "Failed to assign all orgs",
-      "failedToRemove3": "Failed to remove",
-      "failedToNarrow": "Failed to narrow",
-      "failedToAssignOrg": "Failed to assign org",
-      "organizations": "Organizations",
-      "thisPartnerLibraryPolicyAppliesOnlyTo": "This MSP-managed policy applies only to the organizations you choose.",
-      "filtersApplyOnAssign": "These filters apply when you assign below. Empty means every role and OS. To change filters on an assignment, turn it off and on again.",
-      "allOrganizationsPartnerWide": "All organizations",
-      "allOrganizationsPartnerWide2": "All organizations",
-      "assigned": "Assigned",
-      "searchOrganizations": "Search organizations...",
-      "searching": "Searching…",
-      "noOrganizationsMatchYourSearch": "No organizations match your search.",
-      "appliedToAllOrganizationsUncheckAllOrganizations": "Applied to all organizations. Uncheck “All organizations” to pick a subset.",
-      "polite": "polite",
-      "loading": "Loading…",
-      "loadMoreOrganizations": "Load more organizations",
-      "appliedToAllOrgs": "Policy now applies to all organizations",
-      "removedFromAllOrgs": "Policy no longer applies to all organizations"
     },
     "featureTabs": {
       "automationTab": {
@@ -1459,20 +1402,6 @@
         "body": "These conditions exist both as an attached monitor and as a legacy rule or watch: {{names}}"
       }
     },
-    "partnerGroupAssignment": {
-      "title": "Device groups across organizations",
-      "description": "Target an MSP-owned device group. A group assignment applies at device-group level, so it takes precedence over organization- and site-level assignments of other policies.",
-      "selectGroup": "Select a device group",
-      "assign": "Assign",
-      "remove": "Remove",
-      "assigned": "Device group assigned",
-      "removed": "Device group assignment removed",
-      "failedToLoad": "Failed to load device groups",
-      "failedToAssign": "Failed to assign device group",
-      "failedToRemove": "Failed to remove device group assignment",
-      "empty": "No partner-wide device groups yet. Create one under Device Groups → All orgs.",
-      "loading": "Loading device groups…"
-    },
     "featureNames": {
       "patch": {
         "label": "Patches"
@@ -1617,6 +1546,13 @@
       "chooseOrganizationFirst": "Choose the organization first.",
       "lockedOrganizationHint": "An org-managed policy applies only within its own organization.",
       "mspGroupsHeading": "Device groups across organizations"
+    },
+    "reachCount": {
+      "devices_one": "{{count}} device",
+      "devices_other": "{{count}} devices",
+      "atLeastDevices_one": "At least {{count}} device",
+      "atLeastDevices_other": "At least {{count}} devices",
+      "noneVisible": "No devices you can see"
     }
   },
   "software": {
