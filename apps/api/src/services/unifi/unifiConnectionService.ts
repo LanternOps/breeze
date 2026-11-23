@@ -158,8 +158,12 @@ export async function upsertConnection(
           apiKeyEncrypted,
           keyLast4,
           status: 'connected',
+          lastSyncStatus: null,
           lastSyncError: null,
           lastSeenHostIds: null,
+          // Fences off a sync already in flight with the old secret:
+          // recordKeyResults writes only when last_sync_at < run start (#11808 W3).
+          lastSyncAt: new Date(),
           updatedAt: new Date(),
         })
         .where(and(

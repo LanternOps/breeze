@@ -4,11 +4,14 @@
 
 import { fetchAllDevices } from "@/lib/devicesFetch";
 import { fetchWithAuth } from "@/stores/auth";
-import type {
-  AgentDevice,
-  BreezeSiteOption,
-  OrgOption,
-  SiteGroup,
+import {
+  mapKey,
+  type AgentDevice,
+  type BreezeSiteOption,
+  type OrgOption,
+  type SavedMapping,
+  type SiteGroup,
+  type UnifiHostOption,
 } from "./unifiTypes";
 
 // Label for a collector-agent <option>. Empty/whitespace names must fall
@@ -218,4 +221,52 @@ export function defaultControllerSiteId(
   const internal = groups.filter((g) => g.isInternal);
   if (internal.length !== 1 || internal[0]!.sites.length !== 1) return null;
   return internal[0]!.sites[0]!.id;
+}
+
+// Sites visible through exactly one API key (this one). A site with no keyIds
+// (an older API) is never counted: absence of data is not uniqueness.
+export interface UniqueSite {
+  hostId: string;
+  hostName: string;
+  siteId: string;
+  siteName: string;
+}
+export function uniqueSitesForKey(
+  hosts: ReadonlyArray<UnifiHostOption>,
+  keyId: string,
+): UniqueSite[] {
+  return hosts.flatMap((h) =>
+    h.sites
+      .filter((s) => s.keyIds?.length === 1 && s.keyIds[0] === keyId)
+      .map((s) => ({
+        hostId: h.id,
+        hostName: h.name,
+        siteId: s.id,
+        siteName: s.name,
+      })),
+  );
+}
+
+// Ids of saved mappings the user explicitly cleared. A cloud save must name
+// deletions: a mapping whose host/site is missing from the live list (a key
+// that failed this read) is NEVER eligible, and neither is one the same
+// request upserts (the API refuses that combination).
+export function computeRemoveMappingIds(
+  saved: ReadonlyArray<SavedMapping>,
+  hosts: ReadonlyArray<UnifiHostOption>,
+  selection: Readonly<Record<string, string>>,
+  submitted: ReadonlyArray<{ unifiHostId: string; unifiSiteId: string }>,
+): string[] {
+  const live = new Set(
+    hosts.flatMap((h) => h.sites.map((s) => mapKey(h.id, s.id))),
+  );
+  const upserted = new Set(
+    submitted.map((m) => mapKey(m.unifiHostId, m.unifiSiteId)),
+  );
+  return saved
+    .filter((m) => {
+      const key = mapKey(m.unifiHostId, m.unifiSiteId);
+      return live.has(key) && !selection[key] && !upserted.has(key);
+    })
+    .map((m) => m.id);
 }

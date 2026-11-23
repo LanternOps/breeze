@@ -63,6 +63,12 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/google\/connection\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/unifi\/(?:connect|test)\/?$/ },
   { method: 'GET', pattern: /^\/api\/v1\/unifi\/hosts\/?$/ },
+  // UniFi key add and replace validate the key against UniFi first; the key
+  // test reads with it (#11808 W3). Rename, enable and delete need no call
+  // but share the PATCH path, so they open their own short context too.
+  { method: 'POST', pattern: /^\/api\/v1\/unifi\/keys\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/unifi\/keys\/[0-9a-f-]{36}\/?$/i },
+  { method: 'POST', pattern: /^\/api\/v1\/unifi\/keys\/[0-9a-f-]{36}\/test\/?$/i },
   { method: 'POST', pattern: /^\/api\/v1\/pax8\/integration\/test\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/integrations\/monitoring\/test\/?$/ },
   // Catalog image import downloads a caller-supplied URL between a short

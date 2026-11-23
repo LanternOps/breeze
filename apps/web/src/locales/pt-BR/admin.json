@@ -972,7 +972,10 @@
       "unifi.controller.register": "Controlador UniFi registrado",
       "unifi.controller.remove": "Controlador UniFi removido",
       "unifi.site.map": "Site UniFi mapeado",
-      "unifi.site.unmap": "Mapeamento de site UniFi removido"
+      "unifi.site.unmap": "Mapeamento de site UniFi removido",
+      "unifi.key.add": "Chave de API do UniFi adicionada",
+      "unifi.key.update": "Chave de API do UniFi atualizada",
+      "unifi.key.remove": "Chave de API do UniFi removida"
     },
     "resourceTypes": {
       "abuse_signal": "Sinal de abuso",
@@ -1244,6 +1247,7 @@
       "tunnel_allowlist": "Lista de permissões do túnel",
       "tunnel_session": "Sessão de túnel",
       "unifi_collector": "Controlador UniFi",
+      "unifi_integration_key": "Chave de API do UniFi",
       "unifi_site_mapping": "Mapeamento de site do UniFi",
       "update_ring": "Anel de atualização",
       "user": "Usuário",

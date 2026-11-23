@@ -10,6 +10,7 @@ import SiteMappingCard from "./unifi/SiteMappingCard";
 import TelemetryCollectorsCard from "./unifi/TelemetryCollectorsCard";
 import TelemetryViewerCard from "./unifi/TelemetryViewerCard";
 import SyncHistoryCard from "./unifi/SyncHistoryCard";
+import ApiKeysCard from "./unifi/ApiKeysCard";
 
 export default function UnifiIntegration() {
   const { t } = useTranslation("integrations");
@@ -30,6 +31,10 @@ export default function UnifiIntegration() {
     hosts,
     hostsLoading,
     hostsError,
+    hostsComplete,
+    hostKeys,
+    savedMappings,
+    handleKeysChanged,
     selection,
     setSelection,
     savingMappings,
@@ -208,11 +213,23 @@ export default function UnifiIntegration() {
       )}
 
       {isCloud && (
+        <ApiKeysCard
+          keys={status?.keys ?? []}
+          hosts={hosts ?? []}
+          mappings={savedMappings}
+          hostsComplete={hostsComplete && hosts !== null}
+          onChanged={() => void handleKeysChanged()}
+        />
+      )}
+
+      {isCloud && (
         <SiteMappingCard
           variant="cloud"
           hosts={hosts}
           hostsLoading={hostsLoading}
           hostsError={hostsError}
+          hostsComplete={hostsComplete}
+          hostKeys={hostKeys}
           selection={selection}
           setSelection={setSelection}
           sitesByOrg={sitesByOrg}

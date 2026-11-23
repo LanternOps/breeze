@@ -198,6 +198,21 @@ describe('unifi worker syncs every enabled key (#11808)', () => {
     expect(recorded.runStartedAt).toBeInstanceOf(Date);
   });
 
+  // A key replaced after this run read the old secret stamps last_sync_at; the
+  // run's start must predate that read, or its stale verdict lands (#11808 W3).
+  it('takes runStartedAt before the keys are read', async () => {
+    let readAt = 0;
+    vi.mocked(getSyncKeys).mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      readAt = Date.now();
+      return { baseUrl: 'https://api.ui.com', keys: [okKey('key-1', 'k')] };
+    });
+    const run = await processor();
+    await run(syncJob());
+    const recorded = vi.mocked(recordKeyResults).mock.calls[0]![1];
+    expect(recorded.runStartedAt.getTime()).toBeLessThan(readAt);
+  });
+
   it('records key results, then the run, then the integration status, in that order', async () => {
     vi.mocked(getSyncKeys).mockResolvedValue({ baseUrl: 'https://api.ui.com', keys: [okKey('key-1', 'new')] });
     const results = [keyResult({})];

@@ -42,6 +42,8 @@ const PARTNER_AXIS_TABLES = new Set([
   's1_integrations',
   'pax8_integrations',
   'unifi_integrations',
+  // #11808 W3: at most 25 Site Manager keys per UniFi connection, one connection per partner.
+  'unifi_integration_keys',
   'backup_provider_connections',
   'edr_connections',
   'accounting_connections',

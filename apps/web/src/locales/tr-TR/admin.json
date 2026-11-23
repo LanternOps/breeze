@@ -972,7 +972,10 @@
       "unifi.controller.register": "UniFi denetleyicisi kaydedildi",
       "unifi.controller.remove": "UniFi denetleyicisi kaldırıldı",
       "unifi.site.map": "UniFi sitesi eşlendi",
-      "unifi.site.unmap": "UniFi sitesi eşlemesi kaldırıldı"
+      "unifi.site.unmap": "UniFi sitesi eşlemesi kaldırıldı",
+      "unifi.key.add": "UniFi API anahtarı eklendi",
+      "unifi.key.update": "UniFi API anahtarı güncellendi",
+      "unifi.key.remove": "UniFi API anahtarı kaldırıldı"
     },
     "resourceTypes": {
       "abuse_signal": "Kötüye kullanım sinyali",
@@ -1244,6 +1247,7 @@
       "tunnel_allowlist": "Tünel izin listesi",
       "tunnel_session": "Tünel oturumu",
       "unifi_collector": "UniFi denetleyicisi",
+      "unifi_integration_key": "UniFi API anahtarı",
       "unifi_site_mapping": "UniFi site eşlemesi",
       "update_ring": "Güncelleme halkası",
       "user": "Kullanıcı",

@@ -2,7 +2,7 @@
 // sync/disconnect actions. Split out of UnifiIntegration.tsx (#2382) —
 // verbatim move, no behavior change.
 
-import { Loader2, Plug, RefreshCw, Unplug } from "lucide-react";
+import { KeyRound, Loader2, RefreshCw, Unplug } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -44,7 +44,7 @@ export default function ConnectedSummaryCard({
           data-testid="unifi-reauth-banner"
         >
           <p className="font-medium">
-            {t("unifiIntegration.unifiNeedsToBeReconnectedTheStoredAPI")}
+            {t("unifiIntegration.reauthKeysBanner")}
           </p>
           {status.lastSyncError && (
             <p
@@ -54,19 +54,20 @@ export default function ConnectedSummaryCard({
               {status.lastSyncError}
             </p>
           )}
+          {/* Points at the keys card (replace or remove the rejected key) rather
+              than Disconnect, which would drop every other key too (#11808). */}
           <button
             type="button"
-            onClick={() => void onDisconnect()}
-            disabled={disconnecting}
-            className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            onClick={() =>
+              document
+                .getElementById("unifi-keys-card")
+                ?.scrollIntoView?.({ behavior: "smooth", block: "start" })
+            }
+            className="mt-3 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
             data-testid="unifi-reconnect"
           >
-            {disconnecting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Plug className="h-4 w-4" />
-            )}
-            {t("unifiIntegration.reconnectUniFi")}
+            <KeyRound className="h-4 w-4" />
+            {t("unifiIntegration.reviewApiKeys")}
           </button>
         </div>
       )}

@@ -13,7 +13,9 @@ vi.mock('../../../db', async () => {
 import { huntressObservation, huntressSource } from './huntress';
 import { sentinelOneObservation, sentinelOneSource } from './sentinelOne';
 import { pax8Observation, pax8Source } from './pax8';
-import { unifiObservation, unifiSource } from './unifi';
+import { unifiKeyObservation, unifiObservation, unifiSource } from './unifi';
+import { unifiKeyHealth } from '../../integrationStates';
+import { planTransitions } from '../transitions';
 import { backupProviderObservation, backupProviderSource } from './backupProvider';
 import { edrObservation, edrSource } from './edr';
 import { accountingObservation, accountingSource } from './accounting';
@@ -36,7 +38,7 @@ describe('W2 source registrations', () => {
     [huntressSource, 'huntress', 15, ['huntress_integrations'], ['/integrations#huntress']],
     [sentinelOneSource, 'sentinelone', 15, ['s1_integrations'], ['/integrations#sentinelone']],
     [pax8Source, 'pax8', 60, ['pax8_integrations'], ['/integrations#pax8']],
-    [unifiSource, 'unifi', 30, ['unifi_integrations'], ['/integrations#unifi']],
+    [unifiSource, 'unifi', 30, ['unifi_integrations', 'unifi_integration_keys'], ['/integrations#unifi']],
     [backupProviderSource, 'backup_provider', 15, ['backup_provider_connections'], ['/integrations#backup']],
     [edrSource, 'edr', 15, ['edr_connections'], ['/integrations#edr']],
     [accountingSource, 'accounting', 15, ['accounting_connections'], ['/integrations#quickbooks', '/integrations#xero']],
@@ -275,5 +277,72 @@ describe('td_synnex_sftp', () => {
     expect(q.sql).toContain('::timestamp - make_interval(mins => 4320)');
     expect(q.sql).not.toContain('::timestamptz');
     expect(q.params).toContain(NOW.toISOString());
+  });
+});
+
+describe('unifi per-key health (#11808 W3)', () => {
+  const KEY_A = '44444444-4444-4444-8444-444444444444';
+  const KEY_B = '55555555-5555-4555-8555-555555555555';
+  const keyRow = (over: Record<string, unknown> = {}) => ({
+    id: KEY_A, partnerId: P, label: 'Macera', integrationActive: true, isEnabled: true,
+    status: 'connected', lastSyncStatus: 'success' as string | null, lastSyncError: null as string | null, createdAt: OLD, ...over,
+  });
+
+  it.each([
+    [{ integrationActive: false, isEnabled: true, status: 'connected', lastSyncStatus: 'success' }, { state: 'retired' }],
+    [{ integrationActive: true, isEnabled: false, status: 'reauth_required', lastSyncStatus: 'failed' }, { state: 'retired' }],
+    [{ integrationActive: true, isEnabled: true, status: 'reauth_required', lastSyncStatus: 'failed' }, { state: 'broken', severity: 'permanent', condition: 'reauth_required' }],
+    [{ integrationActive: true, isEnabled: true, status: 'error', lastSyncStatus: 'failed' }, { state: 'broken', severity: 'transient', condition: 'sync_failed' }],
+    [{ integrationActive: true, isEnabled: true, status: 'pending', lastSyncStatus: 'failed' }, { state: 'broken', severity: 'transient', condition: 'sync_failed' }],
+    [{ integrationActive: true, isEnabled: true, status: 'connected', lastSyncStatus: 'success' }, { state: 'healthy' }],
+    [{ integrationActive: true, isEnabled: true, status: 'connected', lastSyncStatus: 'skipped' }, { state: 'unknown' }],
+    [{ integrationActive: true, isEnabled: true, status: 'pending', lastSyncStatus: null }, { state: 'unknown' }],
+  ] as const)('unifiKeyHealth %#', (row, verdict) => {
+    expect(unifiKeyHealth(row)).toEqual(verdict);
+  });
+
+  it('one failing key of two is broken while the integration stays healthy', () => {
+    const integration = unifiObservation({
+      id: ID, partnerId: P, isActive: true, status: 'connected', lastSyncStatus: 'partial',
+      lastSyncError: '1 of 2 keys failed: "Macera" (key rejected)', createdAt: OLD, stale: false,
+    }, NOW);
+    expect(integration).toMatchObject({ sourceId: ID, state: 'healthy', displayName: 'UniFi' });
+    const failing = unifiKeyObservation(keyRow({ status: 'reauth_required', lastSyncStatus: 'failed', lastSyncError: 'UniFi API error 401' }), NOW);
+    expect(failing).toMatchObject({
+      sourceKind: 'unifi', sourceId: KEY_A, partnerId: P, orgId: null, state: 'broken', severity: 'permanent',
+      condition: 'reauth_required', displayName: 'UniFi: Macera', detail: 'UniFi API error 401', fixHref: '/integrations#unifi',
+      ...ORGS,
+    });
+    expect(unifiKeyObservation(keyRow({ id: KEY_B, label: 'Fabric' }), NOW)).toMatchObject({ sourceId: KEY_B, state: 'healthy', detail: null });
+  });
+
+  it('a disabled key retires', () => {
+    expect(unifiKeyObservation(keyRow({ isEnabled: false, status: 'error', lastSyncStatus: 'failed' }), NOW).state).toBe('retired');
+  });
+
+  it("a deleted key's tracked incident resolves", () => {
+    // A deleted key's row is absent, so observe() reports nothing for its id
+    // (connectionHealthSources.integration.test.ts pins that on a real DB);
+    // the reconciler retires a tracked id with no observation.
+    const actions = planTransitions({
+      observations: [],
+      tracked: [{ id: 'incident-1', sourceId: KEY_A, severity: 'permanent', openedAt: OLD, resolvedAt: null, healthyStreak: 0 }],
+      now: NOW,
+      seed: false,
+    });
+    expect(actions).toEqual([{ type: 'resolve', incidentId: 'incident-1', resolution: 'retired' }]);
+  });
+
+  it('the integration observation keeps its source id', () => {
+    expect(unifiObservation({ id: ID, partnerId: P, isActive: true, status: 'error', lastSyncStatus: 'failed', lastSyncError: 'x', createdAt: OLD, stale: false }, NOW))
+      .toMatchObject({ sourceId: ID, displayName: 'UniFi', state: 'broken' });
+  });
+
+  it('the broken query covers the integrations and their enabled failing keys', () => {
+    const q = new PgDialect().sqlToQuery((unifiSource.brokenQuery(NOW) as { getSQL(): SQL }).getSQL()).sql;
+    expect(q).toContain('"unifi_integrations"');
+    expect(q).toContain('"unifi_integration_keys"');
+    expect(q).toContain('union all');
+    expect(q).toContain('"unifi_integration_keys"."is_enabled"');
   });
 });

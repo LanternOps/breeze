@@ -892,6 +892,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // test / disconnect / mappings / collectors / controllers writes stay unbuilt (vendor_console_admin: they take or replace a vendor API key),
   // so the module stays a frozen gap; the entry cannot carry both a tool list and a remainder.
   'unifi/index.ts': { gap: '#6779' },
+  'unifi/keys.ts': { exempt: 'vendor_console_admin', note: 'adds, replaces, renames and removes the UniFi Site Manager API keys (#12278); stores and rotates vendor API keys, like edr/connections.ts' },
   'updateRings.ts': { tools: ['manage_update_rings'] },
   'userRisk.ts': { tools: ['get_fleet_health', 'get_user_risk_scores', 'get_user_risk_detail', 'assign_security_training'] },
   'users.ts': { tools: ['list_users', 'get_user'] }, // W18 (#6789): every user write stays identity (W18-1); /me/* self-service has no tool

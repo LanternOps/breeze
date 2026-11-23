@@ -15,6 +15,27 @@ export interface UnifiStatus {
   lastSyncAt?: string | null;
   lastSyncStatus?: string | null;
   lastSyncError?: string | null;
+  // One entry per Site Manager API key (cloud connections only; empty/absent
+  // for self-hosted). #11808.
+  keys?: UnifiKeySummary[];
+}
+
+// Per-key status. Unlike the connection-level ConnectionStatus this has
+// `pending` (a key that has not completed its first read).
+export type UnifiKeyStatus = "pending" | "connected" | "reauth_required" | "error";
+export interface UnifiKeySummary {
+  id: string;
+  label: string;
+  keyLast4: string | null;
+  isEnabled: boolean;
+  status: UnifiKeyStatus;
+  lastSyncAt: string | null;
+  lastSyncStatus: "success" | "failed" | "skipped" | null;
+  lastSyncError: string | null;
+  lastOkAt: string | null;
+  hostsSeen: number | null;
+  sitesSeen: number | null;
+  createdAt: string;
 }
 
 // Live host+site list discovered from GET /unifi/hosts (calls UniFi directly).
@@ -22,7 +43,23 @@ export interface UnifiHostOption {
   id: string;
   name: string;
   model?: string | null;
-  sites: Array<{ id: string; name: string }>;
+  // Ids of the API keys that can see this host / site (#11808).
+  keyIds?: string[];
+  sites: Array<{ id: string; name: string; keyIds?: string[] }>;
+}
+// Per-key outcome of one GET /unifi/hosts read.
+export interface HostKeyOutcome {
+  id: string;
+  label: string;
+  ok: boolean;
+  error?: string;
+}
+// Parsed GET /unifi/hosts. `complete: false` = at least one key failed, so the
+// list may be missing sites.
+export interface HostsResponse {
+  hosts: UnifiHostOption[];
+  keys: HostKeyOutcome[];
+  complete: boolean;
 }
 // Breeze sites/orgs that a UniFi site can be mapped onto (from GET /orgs/*).
 export interface BreezeSiteOption {
@@ -62,6 +99,18 @@ export interface SyncRun {
   // recorded (older runs, failed runs, runs with zero mappings or an
   // incomplete site list).
   sitesUnmapped?: number | null;
+  // Per-key outcomes of this run; null = not recorded (older runs).
+  keyResults?: SyncRunKeyResult[] | null;
+}
+export interface SyncRunKeyResult {
+  keyId: string;
+  label: string;
+  status: "success" | "failed" | "skipped";
+  authFailure: boolean;
+  hostsSeen: number | null;
+  sitesSeen: number | null;
+  hostIds: string[] | null;
+  error: string | null;
 }
 
 // Per-console deep-telemetry collector config (from GET /unifi/collectors).
