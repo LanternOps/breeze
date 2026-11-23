@@ -1683,6 +1683,10 @@
         "linked_item_unavailable": "yeni sahibin kullanamayacağı bir öğe kullanıyor.",
         "settings_not_valid": "kayıtlı ayarları artık güncel denetimlerden geçmiyor."
       },
+      "noticesHeading": "Bir değişiklikle kopyalandı",
+      "notices": {
+        "consent_required": "“HP garantisini cihazdan topla” kapalı olarak kopyalanır: bir kopya HP lisansını hiç kimse adına kabul etmez. Lisansı yeniden kabul etmek için kopyada bunu işaretleyin."
+      },
       "confirm": "Politikayı kopyala",
       "copying": "Kopyalanıyor…",
       "copiedToast": "Politika kopyalandı. Siz etkinleştirene kadar etkin değildir.",

@@ -20,7 +20,8 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
+import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
 import { configPolicyRoutes } from '../../routes/configurationPolicies';
 import {
   backupProfiles,
@@ -97,10 +98,12 @@ function call(app: Hono, token: string, method: string, path: string, body?: unk
   });
 }
 
-async function partnerToken(partnerId: string) {
+const WRITE_NO_EXECUTE = ALL.filter((p) => p.action !== 'execute');
+
+async function partnerToken(partnerId: string, permissions = ALL) {
   const user = await createUser({ partnerId, orgId: null, email: `copy-p-${randomUUID().slice(0, 8)}@example.test` });
   const role = await createRole({ scope: 'partner', partnerId });
-  await grantRolePermissions(role.id, ALL);
+  await grantRolePermissions(role.id, permissions);
   await assignUserToPartner(user.id, partnerId, role.id, 'all');
   return createAccessToken({
     sub: user.id, email: user.email, roleId: role.id, scope: 'partner',
@@ -253,6 +256,7 @@ describe('POST /configuration-policies/:id/copy on real Postgres (#12309, #11776
         { featureType: 'onedrive_helper', reason: 'org_only_feature' },
         { featureType: 'software_policy', reason: 'linked_item_unavailable' },
       ],
+      notices: [],
     });
     expect(copy.dropped).toEqual((dry as { dropped: unknown[] }).dropped);
     expect(await policyRow(copy.policyId)).toMatchObject({ status: 'inactive', orgId: null, partnerId: f.partner.id });
@@ -296,10 +300,62 @@ describe('POST /configuration-policies/:id/copy on real Postgres (#12309, #11776
       if (featureType === 'warranty') continue;
       expect(after[featureType], featureType).toEqual(before[featureType]);
     }
-    // HP licence consent is the copier's own, freshly recorded, never the source's.
-    const consentOf = (s: unknown) => ((s as { hpCmsl?: { consent?: { acceptedAt?: string } } }).hpCmsl?.consent);
-    expect(consentOf(after.warranty!.inlineSettings)).toBeTruthy();
-    expect(consentOf(after.warranty!.inlineSettings)?.acceptedAt).not.toBe(consentOf(before.warranty!.inlineSettings)?.acceptedAt);
+    // HP collection is copied off, with no licence acceptance (its own case below).
+    expect(after.warranty!.inlineSettings).toEqual({ enabled: true, hpCmsl: { enabled: false } });
+  });
+
+  runDb('copy does not carry or record HP licence consent', async () => {
+    const app = buildApp();
+    const f = await seed();
+    // The source's HP collection is on, accepted by the partner admin.
+    const sourceId = await createPolicy(app, f.token, { name: 'HP fleet', orgId: f.orgA.id });
+    await addLink(app, f.token, sourceId, { featureType: 'warranty', inlineSettings: { enabled: true, warnDays: 60, criticalDays: 14, hpCmsl: { enabled: true } } });
+    const warrantyRow = async (policyId: string) => {
+      const [row] = await (getTestDb() as any)
+        .select({ id: configPolicyFeatureLinks.id, inlineSettings: configPolicyFeatureLinks.inlineSettings })
+        .from(configPolicyFeatureLinks)
+        .where(and(eq(configPolicyFeatureLinks.configPolicyId, policyId), eq(configPolicyFeatureLinks.featureType, 'warranty')));
+      return row as { id: string; inlineSettings: Record<string, unknown> };
+    };
+    const sourceBefore = await warrantyRow(sourceId);
+    expect(warrantyHpCmslCollectionEffective(sourceBefore.inlineSettings)).toBe(true);
+
+    // A copier WITHOUT devices.execute: the copy arms nothing, so it may copy.
+    const copier = await partnerToken(f.partner.id, WRITE_NO_EXECUTE);
+    const body = { name: 'HP fleet (Birch)', ownerScope: 'organization', orgId: f.orgB.id };
+    const dryRes = await call(app, copier, 'POST', `/configuration-policies/${sourceId}/copy`, { ...body, dryRun: true });
+    expect(dryRes.status, await dryRes.clone().text()).toBe(200);
+    const dry = await dryRes.json() as { carried: string[]; dropped: unknown[]; notices: unknown[] };
+    expect(dry).toEqual({
+      dryRun: true,
+      carried: ['warranty'],
+      dropped: [],
+      notices: [{ featureType: 'warranty', code: 'consent_required' }],
+    });
+
+    const res = await call(app, copier, 'POST', `/configuration-policies/${sourceId}/copy`, body);
+    expect(res.status, await res.clone().text()).toBe(201);
+    const copy = await res.json() as { policyId: string; dropped: unknown[]; notices: unknown[] };
+    expect(copy.notices).toEqual(dry.notices);
+    expect(copy.dropped).toEqual(dry.dropped);
+
+    // Stored: alert settings kept, HP switched off, no consent key at all.
+    const copied = await warrantyRow(copy.policyId);
+    expect(copied.inlineSettings).toEqual({ enabled: true, warnDays: 60, criticalDays: 14, hpCmsl: { enabled: false } });
+    expect(warrantyHpCmslCollectionEffective(copied.inlineSettings)).toBe(false);
+    // The source is untouched.
+    expect((await warrantyRow(sourceId)).inlineSettings).toEqual(sourceBefore.inlineSettings);
+
+    // Turning it on in the editor as usual records the acceptance of whoever does it.
+    const editor = await partnerToken(f.partner.id);
+    const editorSub = (JSON.parse(Buffer.from(editor.split('.')[1]!, 'base64url').toString()) as { sub: string }).sub;
+    const patch = await call(app, editor, 'PATCH', `/configuration-policies/${copy.policyId}/features/${copied.id}`, {
+      inlineSettings: { enabled: true, warnDays: 60, criticalDays: 14, hpCmsl: { enabled: true } },
+    });
+    expect(patch.status, await patch.clone().text()).toBe(200);
+    const enabled = await warrantyRow(copy.policyId);
+    expect(warrantyHpCmslCollectionEffective(enabled.inlineSettings)).toBe(true);
+    expect((enabled.inlineSettings.hpCmsl as { consent: { acceptedByUserId: string } }).consent.acceptedByUserId).toBe(editorSub);
   });
 
   runDb('the rest of the feature types round-trip, and an organization\'s own scripts stay with it', async () => {

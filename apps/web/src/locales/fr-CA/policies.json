@@ -1683,6 +1683,10 @@
         "linked_item_unavailable": "elle utilise un élément que le nouveau propriétaire ne peut pas utiliser.",
         "settings_not_valid": "ses paramètres enregistrés ne respectent plus les validations actuelles."
       },
+      "noticesHeading": "Copié avec un changement",
+      "notices": {
+        "consent_required": "« Recueillir la garantie HP à partir de l'appareil » est copié désactivé : une copie n'accepte jamais la licence HP au nom de quiconque. Cochez-le dans la copie pour accepter de nouveau la licence."
+      },
       "confirm": "Copier la politique",
       "copying": "Copie en cours…",
       "copiedToast": "Politique copiée. Elle est inactive tant que vous ne l’activez pas.",

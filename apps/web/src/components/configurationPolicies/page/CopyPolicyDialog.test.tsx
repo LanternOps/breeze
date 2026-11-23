@@ -93,6 +93,36 @@ describe('CopyPolicyDialog', () => {
     ]);
   });
 
+  it('says before copying that HP\'s licence must be accepted again', async () => {
+    route = (url, body) =>
+      url.endsWith('/copy') && body?.dryRun
+        ? res(200, { dryRun: true, carried: ['warranty'], dropped: [], notices: [{ featureType: 'warranty', code: 'consent_required' }] })
+        : undefined;
+    open();
+
+    const notices = await screen.findByTestId('config-policy-copy-notices');
+    expect(notices).toHaveTextContent('Warranty');
+    expect(notices).toHaveTextContent(i18n.t('policies:configurationPolicies.copyPolicy.notices.consent_required'));
+    expect(screen.queryByTestId('config-policy-copy-dropped')).toBeNull();
+  });
+
+  it('a real copy reports a licence notice the check did not show, in the same words', async () => {
+    route = (url, body) =>
+      url.endsWith('/copy') && body && !body.dryRun
+        ? res(201, { dryRun: false, policyId: 'pol-new', orgId: null, dropped: [], notices: [{ featureType: 'warranty', code: 'consent_required' }] })
+        : undefined;
+    open();
+    await screen.findByTestId('config-policy-copy-carried');
+    expect(screen.queryByTestId('config-policy-copy-notices')).toBeNull();
+    fireEvent.click(screen.getByTestId('config-policy-copy-confirm'));
+
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/configuration-policies/pol-new'));
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'warning',
+      message: expect.stringContaining(i18n.t('policies:configurationPolicies.copyPolicy.notices.consent_required')),
+    }));
+  });
+
   it('Copy lands on the new inactive policy', async () => {
     route = (url, body) =>
       url.endsWith('/copy') && body && !body.dryRun

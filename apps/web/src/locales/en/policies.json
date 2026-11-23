@@ -1683,6 +1683,10 @@
         "linked_item_unavailable": "it uses an item the new owner cannot use.",
         "settings_not_valid": "its saved settings no longer pass today's checks."
       },
+      "noticesHeading": "Copied with a change",
+      "notices": {
+        "consent_required": "“Collect HP warranty from the device” is copied switched off: a copy never accepts HP's licence for anyone. Tick it in the copy to accept the licence again."
+      },
       "confirm": "Copy policy",
       "copying": "Copying…",
       "copiedToast": "Policy copied. It is inactive until you activate it.",

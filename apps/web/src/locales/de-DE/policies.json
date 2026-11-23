@@ -1683,6 +1683,10 @@
         "linked_item_unavailable": "sie verwendet ein Element, das der neue Eigentümer nicht nutzen kann.",
         "settings_not_valid": "die gespeicherten Einstellungen bestehen die heutigen Prüfungen nicht mehr."
       },
+      "noticesHeading": "Mit Änderung kopiert",
+      "notices": {
+        "consent_required": "„HP-Garantiedaten auf dem Gerät erfassen“ wird ausgeschaltet kopiert: Eine Kopie akzeptiert die HP-Lizenz nie im Namen anderer. Aktivieren Sie es in der Kopie, um die Lizenz erneut zu akzeptieren."
+      },
       "confirm": "Richtlinie kopieren",
       "copying": "Wird kopiert…",
       "copiedToast": "Richtlinie kopiert. Sie ist inaktiv, bis Sie sie aktivieren.",

@@ -1683,6 +1683,10 @@
         "linked_item_unavailable": "usa un elemento que el nuevo propietario no puede usar.",
         "settings_not_valid": "su configuración guardada ya no supera las validaciones actuales."
       },
+      "noticesHeading": "Copiado con un cambio",
+      "notices": {
+        "consent_required": "«Recopilar la garantía HP desde el dispositivo» se copia desactivado: una copia nunca acepta la licencia de HP en nombre de nadie. Márquelo en la copia para volver a aceptar la licencia."
+      },
       "confirm": "Copiar política",
       "copying": "Copiando…",
       "copiedToast": "Política copiada. Está inactiva hasta que la active.",

@@ -1683,6 +1683,10 @@
         "linked_item_unavailable": "usa un elemento che il nuovo proprietario non può usare.",
         "settings_not_valid": "le impostazioni salvate non superano più i controlli attuali."
       },
+      "noticesHeading": "Copiato con una modifica",
+      "notices": {
+        "consent_required": "«Raccogli la garanzia HP dal dispositivo» viene copiato disattivato: una copia non accetta mai la licenza HP per conto di nessuno. Selezionalo nella copia per accettare di nuovo la licenza."
+      },
       "confirm": "Copia criterio",
       "copying": "Copia in corso…",
       "copiedToast": "Criterio copiato. Resta inattivo finché non lo attivi.",

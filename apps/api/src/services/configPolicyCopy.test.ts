@@ -185,7 +185,7 @@ describe('copyConfigPolicy', () => {
 
     const result = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'Workstations (copy)', ownerScope: 'organization', orgId: ORG_A }, { permissions: ALL });
 
-    expect(result).toEqual({ dryRun: false, policyId: NEW_ID, orgId: ORG_A, dropped: [] });
+    expect(result).toEqual({ dryRun: false, policyId: NEW_ID, orgId: ORG_A, dropped: [], notices: [] });
     expect(m.createConfigPolicy).toHaveBeenCalledWith(
       { orgId: ORG_A, partnerId: null },
       expect.objectContaining({ name: 'Workstations (copy)', description: 'Physical desks', status: 'inactive' }),
@@ -209,7 +209,7 @@ describe('copyConfigPolicy', () => {
 
     const result = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'MSP baseline', ownerScope: 'partner' }, { permissions: ALL });
 
-    expect(result).toEqual({ dryRun: false, policyId: NEW_ID, orgId: null, dropped: [{ featureType: 'software_policy', reason: 'linked_item_unavailable' }] });
+    expect(result).toEqual({ dryRun: false, policyId: NEW_ID, orgId: null, dropped: [{ featureType: 'software_policy', reason: 'linked_item_unavailable' }], notices: [] });
     expect(m.createConfigPolicy).toHaveBeenCalledWith({ orgId: null, partnerId: PARTNER }, expect.objectContaining({ status: 'inactive' }), 'user-1');
     expect(m.addFeatureLink.mock.calls.map((c) => c[1])).toEqual(['event_log', 'patch']);
     // The reason is a code: the validator's text (which names the id) never leaves.
@@ -230,7 +230,7 @@ describe('copyConfigPolicy', () => {
 
     const result = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'partner' }, { permissions: ALL });
 
-    expect(result).toEqual({ dryRun: false, policyId: NEW_ID, orgId: null, dropped: [{ featureType: 'onedrive_helper', reason: 'org_only_feature' }] });
+    expect(result).toEqual({ dryRun: false, policyId: NEW_ID, orgId: null, dropped: [{ featureType: 'onedrive_helper', reason: 'org_only_feature' }], notices: [] });
     expect(m.addFeatureLink).not.toHaveBeenCalled();
   });
 
@@ -240,7 +240,7 @@ describe('copyConfigPolicy', () => {
 
     const result = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_B }, { permissions: ALL });
 
-    expect(result).toEqual({ dryRun: false, policyId: NEW_ID, orgId: ORG_B, dropped: [] });
+    expect(result).toEqual({ dryRun: false, policyId: NEW_ID, orgId: ORG_B, dropped: [], notices: [] });
     expect(m.addFeatureLink.mock.calls.map((c) => c[1])).toEqual(['onedrive_helper']);
   });
 
@@ -248,10 +248,10 @@ describe('copyConfigPolicy', () => {
     setLinks([link('onedrive_helper', null, { tenantAssociationId: 'contoso-tenant', libraries: [] })]);
 
     const other = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_B, dryRun: true }, { permissions: ALL });
-    expect(other).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'onedrive_helper', reason: 'linked_item_unavailable' }] });
+    expect(other).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'onedrive_helper', reason: 'linked_item_unavailable' }], notices: [] });
 
     const same = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A, dryRun: true }, { permissions: ALL });
-    expect(same).toEqual({ dryRun: true, carried: ['onedrive_helper'], dropped: [] });
+    expect(same).toEqual({ dryRun: true, carried: ['onedrive_helper'], dropped: [], notices: [] });
 
     setLinks([link('onedrive_helper', null, { libraries: [{ libraryId: 'lib-1', displayName: 'Docs' }] })]);
     const libraries = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_B, dryRun: true }, { permissions: ALL });
@@ -261,7 +261,7 @@ describe('copyConfigPolicy', () => {
   it('a feature type the copy does not know is left behind, not carried', async () => {
     setLinks([link('alert_rule', null, { items: [] })]);
     const result = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A, dryRun: true }, { permissions: ALL });
-    expect(result).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'alert_rule', reason: 'settings_not_valid' }] });
+    expect(result).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'alert_rule', reason: 'settings_not_valid' }], notices: [] });
   });
 
   it('a dry run writes nothing', async () => {
@@ -269,7 +269,7 @@ describe('copyConfigPolicy', () => {
 
     const result = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'partner', dryRun: true }, { permissions: ALL });
 
-    expect(result).toEqual({ dryRun: true, carried: ['patch'], dropped: [{ featureType: 'onedrive_helper', reason: 'org_only_feature' }] });
+    expect(result).toEqual({ dryRun: true, carried: ['patch'], dropped: [{ featureType: 'onedrive_helper', reason: 'org_only_feature' }], notices: [] });
     expect(m.createConfigPolicy).not.toHaveBeenCalled();
     expect(m.addFeatureLink).not.toHaveBeenCalled();
     expect(m.withDbTransaction).not.toHaveBeenCalled();
@@ -396,19 +396,54 @@ describe('copyConfigPolicy', () => {
   });
 
   describe('copy re-runs the arming gates', () => {
-    it('HP warranty collection needs devices.execute, and the copier records a fresh consent', async () => {
+    it('copy does not carry or record HP licence consent', async () => {
       const consent = { acceptedByUserId: 'someone-else', acceptedAt: '2026-01-01T00:00:00.000Z', eulaId: 'hp-cmsl-eula-v1' };
-      setLinks([link('warranty', null, { enabled: true, hpCmsl: { enabled: true, consent } })]);
+      setLinks([link('warranty', null, { enabled: true, warnDays: 60, criticalDays: 14, hpCmsl: { enabled: true, consent } })]);
 
-      const denied = await refusal(copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A, dryRun: true }, { permissions: WRITE_ONLY }));
-      expect(denied.status).toBe(403);
-      expect(denied.body).toMatchObject({ code: 'HP_CMSL_EXECUTE_REQUIRED' });
+      // No consent is recorded, so the copy arms nothing: a caller without
+      // devices.execute may copy it (the per-link HP gate has nothing to guard).
+      const result = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A }, { permissions: WRITE_ONLY });
 
-      await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A }, { permissions: ALL });
-      const [, , , settings, actor] = m.addFeatureLink.mock.calls[0]!;
-      // The source's recorded acceptance is never carried: addFeatureLink stamps the copier.
-      expect((settings as { hpCmsl: Record<string, unknown> }).hpCmsl).toEqual({ enabled: true });
-      expect(actor).toEqual({ userId: 'user-1' });
+      expect(result).toMatchObject({ dryRun: false, dropped: [], notices: [{ featureType: 'warranty', code: 'consent_required' }] });
+      expect(m.addFeatureLink).toHaveBeenCalledTimes(1);
+      const [, featureType, , settings, actor] = m.addFeatureLink.mock.calls[0]!;
+      expect(featureType).toBe('warranty');
+      // Alert settings kept; the HP switch off with no consent key: the state
+      // the editor shows before anyone accepts HP's licence.
+      expect(settings).toEqual({ enabled: true, warnDays: 60, criticalDays: 14, hpCmsl: { enabled: false } });
+      // No consent actor for the warranty link: the write cannot stamp anyone.
+      expect(actor).toBeNull();
+    });
+
+    it('HP licence acceptance is reported the same way by the dry run and the real run', async () => {
+      setLinks([
+        link('event_log', null, { retentionDays: 30 }),
+        link('warranty', null, { enabled: true, hpCmsl: { enabled: true, consent: { acceptedByUserId: 'u', acceptedAt: '2026-01-01T00:00:00.000Z', eulaId: 'hp-cmsl-eula-v1' } } }),
+      ]);
+      const input = { name: 'X', ownerScope: 'organization' as const, orgId: ORG_A };
+
+      const dry = await copyConfigPolicy(partnerAuth(), SOURCE, { ...input, dryRun: true }, { permissions: WRITE_ONLY });
+      const real = await copyConfigPolicy(partnerAuth(), SOURCE, input, { permissions: WRITE_ONLY });
+
+      expect(dry).toEqual({
+        dryRun: true,
+        carried: ['event_log', 'warranty'],
+        dropped: [],
+        notices: [{ featureType: 'warranty', code: 'consent_required' }],
+      });
+      if (real.dryRun) throw new Error('expected a real run');
+      expect(real.notices).toEqual(dry.notices);
+      expect(real.dropped).toEqual(dry.dropped);
+    });
+
+    it('a warranty link with HP collection off copies as is, with no notice', async () => {
+      setLinks([link('warranty', null, { enabled: true, hpCmsl: { enabled: false } })]);
+      const dry = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A, dryRun: true }, { permissions: WRITE_ONLY });
+      expect(dry).toEqual({ dryRun: true, carried: ['warranty'], dropped: [], notices: [] });
+
+      setLinks([link('warranty', null, { enabled: true })]);
+      await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A }, { permissions: WRITE_ONLY });
+      expect(m.addFeatureLink.mock.calls[0]![3]).toEqual({ enabled: true });
     });
 
     it('auto-quarantine needs devices.execute, and the authority is the copier\'s', async () => {
@@ -451,7 +486,7 @@ describe('copyConfigPolicy', () => {
     });
 
     it('fails closed when permissions were not resolved', async () => {
-      setLinks([link('warranty', null, { enabled: true, hpCmsl: { enabled: true } })]);
+      setLinks([link('security_agents', null, { version: 1, agents: [{ vendor: 'sentinelone', enabled: true, platforms: ['windows'] }] })]);
       const err = await refusal(copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A }, {}));
       expect(err.status).toBe(403);
     });
@@ -466,7 +501,7 @@ describe('copyConfigPolicy', () => {
 
       const result = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_B, dryRun: true }, { permissions: ALL });
 
-      expect(result).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'automation', reason: 'linked_item_unavailable' }] });
+      expect(result).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'automation', reason: 'linked_item_unavailable' }], notices: [] });
       expect(m.resolveAutomationReferencesForOwner).toHaveBeenCalledWith(expect.anything(), { orgId: ORG_B, partnerId: null }, expect.any(Array));
     });
 
@@ -513,7 +548,7 @@ describe('copyConfigPolicy', () => {
 
       m.dbRows = [[{ id: dest }]];
       const same = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A, dryRun: true }, { permissions: ALL });
-      expect(same).toEqual({ dryRun: true, carried: ['backup'], dropped: [] });
+      expect(same).toEqual({ dryRun: true, carried: ['backup'], dropped: [], notices: [] });
     });
   });
 
@@ -534,7 +569,7 @@ describe('copyConfigPolicy', () => {
         { featureType: 'compliance', reason: 'settings_not_valid' },
         { featureType: 'maintenance', reason: 'settings_not_valid' },
       ];
-      expect(dry).toEqual({ dryRun: true, carried: ['event_log'], dropped: expected });
+      expect(dry).toEqual({ dryRun: true, carried: ['event_log'], dropped: expected, notices: [] });
       expect(real).toMatchObject({ dryRun: false, dropped: expected });
       expect(m.addFeatureLink.mock.calls.map((c) => c[1])).toEqual(['event_log']);
     });
@@ -576,14 +611,14 @@ describe('copyConfigPolicy', () => {
 
       m.checkOemUpdatesLinkWrite.mockReturnValueOnce({ ok: false, refusal: { status: 400, body: { code: 'closed' } } });
       const closed = await copyConfigPolicy(partnerAuth(), SOURCE, { ...input, dryRun: true }, { permissions: ALL });
-      expect(closed).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'oem_updates', reason: 'settings_not_valid' }] });
+      expect(closed).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'oem_updates', reason: 'settings_not_valid' }], notices: [] });
     });
 
     it('security agents: a package missing from the catalog is left behind; an armed carry says so', async () => {
       const agents = { version: 1, agents: [{ vendor: 'huntress', enabled: true, platforms: ['windows'] }] };
       setLinks([link('security_agents', null, agents)]);
       const result = await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A, dryRun: true }, { permissions: ALL });
-      expect(result).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'security_agents', reason: 'linked_item_unavailable' }] });
+      expect(result).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'security_agents', reason: 'linked_item_unavailable' }], notices: [] });
 
       setLinks([link('security_agents', null, { version: 1, agents: [] })]);
       await copyConfigPolicy(partnerAuth(), SOURCE, { name: 'X', ownerScope: 'organization', orgId: ORG_A }, { permissions: ALL });

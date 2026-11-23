@@ -111,7 +111,7 @@ describe('POST /:id/copy', () => {
     const res = await copy({ name: 'Servers (copy)', ownerScope: 'organization', orgId: ORG_B, status: 'active' });
 
     expect(res.status).toBe(201);
-    expect(await res.json()).toEqual({ dryRun: false, policyId: NEW_ID, orgId: ORG_B, dropped: [] });
+    expect(await res.json()).toEqual({ dryRun: false, policyId: NEW_ID, orgId: ORG_B, dropped: [], notices: [] });
     expect(m.createConfigPolicy).toHaveBeenCalledWith({ orgId: ORG_B, partnerId: null }, expect.objectContaining({ status: 'inactive' }), 'user-1');
     expect(m.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       orgId: ORG_B,
@@ -129,7 +129,7 @@ describe('POST /:id/copy', () => {
     const res = await copy({ name: 'X', ownerScope: 'partner', dryRun: true });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'onedrive_helper', reason: 'org_only_feature' }] });
+    expect(await res.json()).toEqual({ dryRun: true, carried: [], dropped: [{ featureType: 'onedrive_helper', reason: 'org_only_feature' }], notices: [] });
     expect(m.createConfigPolicy).not.toHaveBeenCalled();
     expect(m.writeRouteAudit).not.toHaveBeenCalled();
   });
@@ -137,14 +137,38 @@ describe('POST /:id/copy', () => {
   it('copy re-runs the arming gates with the caller\'s own permissions', async () => {
     m.perms.value = WRITE_ONLY;
     m.getConfigPolicy.mockImplementation(async (id: string) => (id === SOURCE
-      ? sourcePolicy([{ featureType: 'warranty', featurePolicyId: null, inlineSettings: { enabled: true, hpCmsl: { enabled: true } } }])
+      ? sourcePolicy([{
+        featureType: 'security_agents',
+        featurePolicyId: null,
+        inlineSettings: { version: 1, agents: [{ vendor: 'sentinelone', enabled: true, platforms: ['windows'] }] },
+      }])
       : null));
 
     const res = await copy({ name: 'X', ownerScope: 'organization', orgId: ORG_A });
 
     expect(res.status).toBe(403);
-    expect(await res.json()).toMatchObject({ code: 'HP_CMSL_EXECUTE_REQUIRED' });
+    expect(await res.json()).toMatchObject({ code: 'security_agents_execute_required' });
     expect(m.createConfigPolicy).not.toHaveBeenCalled();
+  });
+
+  it('copy does not carry or record HP licence consent, so HP needs no devices.execute', async () => {
+    m.perms.value = WRITE_ONLY;
+    const consent = { acceptedByUserId: 'someone-else', acceptedAt: '2026-01-01T00:00:00.000Z', eulaId: 'hp-cmsl-eula-v1' };
+    m.getConfigPolicy.mockImplementation(async (id: string) => (id === SOURCE
+      ? sourcePolicy([{ featureType: 'warranty', featurePolicyId: null, inlineSettings: { enabled: true, hpCmsl: { enabled: true, consent } } }])
+      : null));
+
+    const dry = await copy({ name: 'X', ownerScope: 'organization', orgId: ORG_A, dryRun: true });
+    const notices = [{ featureType: 'warranty', code: 'consent_required' }];
+    expect(dry.status).toBe(200);
+    expect(await dry.json()).toEqual({ dryRun: true, carried: ['warranty'], dropped: [], notices });
+
+    const res = await copy({ name: 'X', ownerScope: 'organization', orgId: ORG_A });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ dryRun: false, dropped: [], notices });
+    const [, , , settings, actor] = m.addFeatureLink.mock.calls[0]!;
+    expect(settings).toEqual({ enabled: true, hpCmsl: { enabled: false } });
+    expect(actor).toBeNull();
   });
 
   it('a limited partner cannot copy to MSP-managed', async () => {

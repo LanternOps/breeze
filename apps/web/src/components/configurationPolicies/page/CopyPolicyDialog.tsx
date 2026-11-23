@@ -10,7 +10,7 @@ import PolicyLinkSelector from '../featureTabs/PolicyLinkSelector';
 import { eligibleParentsUrl } from '../ConfigPolicyCreatePage';
 import { configFeatureLabel } from '../configPolicyLabels';
 import { offersMspOwner, offersOrgChoice, type CreatorKind, type OwnerChoice } from './policyOwner';
-import { copyPolicy, previewCopy, type CopyBody, type CopyPreview } from './copyPolicyApi';
+import { copyPolicy, previewCopy, type CopyBody, type CopyNotice, type CopyPreview } from './copyPolicyApi';
 
 export type CopySource = {
   id: string;
@@ -120,10 +120,11 @@ export default function CopyPolicyDialog(props: CopyPolicyDialogProps) {
     if (!ready || !body) return;
     setCopying(true);
     try {
-      const { policyId, dropped } = await copyPolicy(source.id, body);
+      const { policyId, dropped, notices } = await copyPolicy(source.id, body);
       // The real run decides again: say so if it left behind more than the
       // dry run showed (something changed in between).
-      const shown = new Set(preview.status === 'done' && preview.result.ok ? preview.result.dropped.map((d) => d.featureType) : []);
+      const shownPreview = preview.status === 'done' && preview.result.ok ? preview.result : null;
+      const shown = new Set(shownPreview ? shownPreview.dropped.map((d) => d.featureType) : []);
       const unexpected = dropped.filter((d) => !shown.has(d.featureType));
       if (unexpected.length > 0) {
         showToast({
@@ -132,6 +133,11 @@ export default function CopyPolicyDialog(props: CopyPolicyDialogProps) {
             features: unexpected.map((d) => configFeatureLabel(d.featureType)).join(', '),
           }),
         });
+      }
+      // The same for a notice, in the dialog's own words.
+      const noticed = new Set(shownPreview ? shownPreview.notices.map((n) => `${n.featureType}:${n.code}`) : []);
+      for (const notice of notices.filter((n) => !noticed.has(`${n.featureType}:${n.code}`))) {
+        showToast({ type: 'warning', message: `${configFeatureLabel(notice.featureType)}: ${noticeText(notice)}` });
       }
       onClose();
       void navigateTo(`/configuration-policies/${policyId}`);
@@ -297,6 +303,28 @@ function CopyPreviewPanel({ preview, needsOrganization }: { preview: PreviewStat
           </ul>
         </div>
       )}
+      {result.notices.length > 0 && (
+        <div data-testid="config-policy-copy-notices">
+          <p className="flex items-center gap-1.5 font-medium text-warning">
+            <Info className="h-4 w-4" aria-hidden="true" />
+            {i18n.t('policies:configurationPolicies.copyPolicy.noticesHeading')}
+          </p>
+          <ul className="mt-1 space-y-1">
+            {result.notices.map((notice) => (
+              <li key={`${notice.featureType}:${notice.code}`}>
+                <span className="font-medium">{configFeatureLabel(notice.featureType)}</span>
+                {': '}
+                <span className="text-muted-foreground">{noticeText(notice)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
+}
+
+/** One text per notice code, shown by the dry run and by the real copy alike. */
+function noticeText(notice: CopyNotice): string {
+  return i18n.t(/* i18n-dynamic */ `policies:configurationPolicies.copyPolicy.notices.${notice.code}`);
 }

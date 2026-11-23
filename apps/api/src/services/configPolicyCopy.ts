@@ -28,11 +28,18 @@
  *     the MSP. A copy stays under the source's MSP.
  *  4. The parent, as on create: readable, compatible with the new owner, and
  *     the create's HP CMSL and vendor-update gates for a parent that arms them.
- *  5. Each carried link re-runs the write's arming gates for this caller: HP
- *     warranty collection, auto-quarantine, security agents and vendor updates.
- *     A refusal there is a 403 in both modes: it is about the caller, not the
- *     owner. Nothing the source's author recorded is carried: HP licence
- *     consent and the auto-quarantine authority are stamped from this session.
+ *  5. Each carried link re-runs the write's arming gates for this caller:
+ *     auto-quarantine, security agents and vendor updates. A refusal there is a
+ *     403 in both modes: it is about the caller, not the owner. The
+ *     auto-quarantine authority is stamped from this session, never carried.
+ *
+ * HP LICENCE CONSENT. A copy never records acceptance of HP's licence on
+ * anyone's behalf: the copier is never shown it. The warranty link is carried
+ * with its alert settings and `hpCmsl: { enabled: false }` and no consent, the
+ * state the editor shows before anyone accepts the licence, and the write gets
+ * no consent actor, so it cannot stamp one. Both modes list it in `notices`
+ * (`consent_required`). Because the copy's own link arms nothing, the per-link
+ * HP gate does not apply; the parent's HP gate in step 4 still does.
  *
  * WHY A REASON IS A CODE. `dropped` is shown to the caller, so it never carries
  * a validator's text (those name ids) or anything about the linked item. A
@@ -52,6 +59,7 @@ import {
   securityAgentsInlineSettingsSchema,
   warrantyHpCmslRequested,
   type ConfigPolicyCopyDropReason,
+  type ConfigPolicyCopyNoticeCode,
   type CopyConfigPolicyInput,
 } from '@breeze/shared/validators';
 import { db, withDbTransaction } from '../db';
@@ -99,9 +107,12 @@ import { desiredManagedPolicy } from './securityAgents/managedPolicyGenerator';
 
 export type ConfigPolicyCopyDrop = { featureType: ConfigFeatureType; reason: ConfigPolicyCopyDropReason };
 
+/** A carried feature whose state differs from the source's (see the header). */
+export type ConfigPolicyCopyNotice = { featureType: ConfigFeatureType; code: ConfigPolicyCopyNoticeCode };
+
 export type ConfigPolicyCopyResult =
-  | { dryRun: true; carried: ConfigFeatureType[]; dropped: ConfigPolicyCopyDrop[] }
-  | { dryRun: false; policyId: string; orgId: string | null; dropped: ConfigPolicyCopyDrop[] };
+  | { dryRun: true; carried: ConfigFeatureType[]; dropped: ConfigPolicyCopyDrop[]; notices: ConfigPolicyCopyNotice[] }
+  | { dryRun: false; policyId: string; orgId: string | null; dropped: ConfigPolicyCopyDrop[]; notices: ConfigPolicyCopyNotice[] };
 
 /** A refusal the route returns as is: `status` and a JSON `body`. */
 export class ConfigPolicyCopyRefusedError extends Error {
@@ -123,6 +134,7 @@ type CarriedLink = {
   featurePolicyId: string | null;
   inlineSettings: unknown;
   options: FeatureLinkWriteOptions;
+  notice?: ConfigPolicyCopyNoticeCode;
 };
 
 type PlanContext = {
@@ -205,8 +217,13 @@ export async function copyConfigPolicy(
     source.featureLinks as ReadonlyArray<SourceLink>,
   );
 
+  // From the plan, like `dropped`, so both modes say the same.
+  const notices: ConfigPolicyCopyNotice[] = plan.carried.flatMap((link) => (
+    link.notice ? [{ featureType: link.featureType, code: link.notice }] : []
+  ));
+
   if (input.dryRun) {
-    return { dryRun: true, carried: plan.carried.map((link) => link.featureType), dropped: plan.dropped };
+    return { dryRun: true, carried: plan.carried.map((link) => link.featureType), dropped: plan.dropped, notices };
   }
 
   const policyId = await writeCopy(auth, owner, {
@@ -214,7 +231,7 @@ export async function copyConfigPolicy(
     description: source.description ?? undefined,
     parentPolicyId: parentId,
   }, plan.carried);
-  return { dryRun: false, policyId, orgId: owner.orgId, dropped: plan.dropped };
+  return { dryRun: false, policyId, orgId: owner.orgId, dropped: plan.dropped, notices };
 }
 
 /**
@@ -381,14 +398,16 @@ async function planLink(ctx: PlanContext, featureType: ConfigFeatureType, link: 
     }
 
     case 'warranty': {
-      // The source author's acceptance of HP's licence is theirs, not the
-      // copier's: drop it, and addFeatureLink records a fresh one for this user.
-      if (isRecord(inlineSettings) && isRecord(inlineSettings.hpCmsl)) {
-        const { consent: _consent, ...hpCmsl } = inlineSettings.hpCmsl;
-        inlineSettings = { ...inlineSettings, hpCmsl };
+      // A copy never records HP licence consent (see the header). The block is
+      // rebuilt, not edited, so no consent key can reach the write; collection
+      // that was on is switched off and reported, in both modes.
+      const hpCollectionWasOn = warrantyHpCmslRequested(inlineSettings);
+      if (isRecord(inlineSettings) && 'hpCmsl' in inlineSettings) {
+        inlineSettings = { ...inlineSettings, hpCmsl: { enabled: false } };
       }
-      if (warrantyHpCmslRequested(inlineSettings)) gate(checkHpCmslWriteAllowed(auth, permissions));
-      return carry();
+      const decision = carry();
+      if (hpCollectionWasOn && 'carry' in decision) decision.carry.notice = 'consent_required';
+      return decision;
     }
 
     case 'security_agents': {
@@ -546,7 +565,10 @@ async function writeCopy(
           link.featureType,
           link.featurePolicyId,
           link.inlineSettings,
-          { userId },
+          // No consent actor for warranty: the write must not be able to stamp
+          // HP licence consent for anyone. Elsewhere the actor is the copier
+          // (security agents record it as the managed policy's author).
+          link.featureType === 'warranty' ? null : { userId },
           undefined,
           link.options,
         );

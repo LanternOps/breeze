@@ -552,6 +552,16 @@ export type CopyConfigPolicyInput = z.infer<typeof copyConfigPolicySchema>;
 export const CONFIG_POLICY_COPY_DROP_REASONS = ['org_only_feature', 'linked_item_unavailable', 'settings_not_valid'] as const;
 export type ConfigPolicyCopyDropReason = (typeof CONFIG_POLICY_COPY_DROP_REASONS)[number];
 
+/**
+ * A feature a copy carries, but not in the state the source had it. A closed
+ * set of codes, returned the same way by the dry run and the real run.
+ * - consent_required: HP warranty collection is copied switched off, with no
+ *   licence acceptance. A copy never records acceptance of HP's licence on
+ *   anyone's behalf; someone turns it on in the editor and accepts it there.
+ */
+export const CONFIG_POLICY_COPY_NOTICE_CODES = ['consent_required'] as const;
+export type ConfigPolicyCopyNoticeCode = (typeof CONFIG_POLICY_COPY_NOTICE_CODES)[number];
+
 export const updateConfigPolicySchema = z.object({
   name: z.string().min(1).max(255).optional(),
   description: z.string().optional(),

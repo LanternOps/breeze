@@ -1,4 +1,9 @@
-import { CONFIG_POLICY_COPY_DROP_REASONS, type ConfigPolicyCopyDropReason } from '@breeze/shared';
+import {
+  CONFIG_POLICY_COPY_DROP_REASONS,
+  CONFIG_POLICY_COPY_NOTICE_CODES,
+  type ConfigPolicyCopyDropReason,
+  type ConfigPolicyCopyNoticeCode,
+} from '@breeze/shared';
 import { i18n } from '@/lib/i18n';
 import { runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -16,16 +21,21 @@ export type CopyBody =
 
 export type CopyDrop = { featureType: FeatureType; reason: ConfigPolicyCopyDropReason };
 
+/** A carried feature not in the source's state (HP collection copied off: consent_required). */
+export type CopyNotice = { featureType: FeatureType; code: ConfigPolicyCopyNoticeCode };
+
 export type CopyPreview =
-  | { ok: true; carried: FeatureType[]; dropped: CopyDrop[] }
+  | { ok: true; carried: FeatureType[]; dropped: CopyDrop[]; notices: CopyNotice[] }
   | { ok: false; status: number; message: string };
 
 const REASONS: ReadonlySet<string> = new Set(CONFIG_POLICY_COPY_DROP_REASONS);
+const NOTICE_CODES: ReadonlySet<string> = new Set(CONFIG_POLICY_COPY_NOTICE_CODES);
 
 /**
- * The codes of the arming gates a copy re-runs (HP warranty collection,
- * auto-quarantine, security agents, vendor updates): all mean the caller
- * lacks devices:execute (or MFA) for a feature the copy would turn on.
+ * The codes of the arming gates a copy re-runs (auto-quarantine, security
+ * agents, vendor updates, and a parent that collects HP warranty data): all
+ * mean the caller lacks devices:execute (or MFA) for a feature the copy would
+ * turn on. The copy's own HP collection is copied off, so it is never gated.
  */
 const EXECUTE_REQUIRED_CODES: ReadonlySet<string> = new Set([
   'HP_CMSL_EXECUTE_REQUIRED',
@@ -63,6 +73,21 @@ function parseDrops(raw: unknown): CopyDrop[] | null {
 }
 
 /**
+ * Notices with a code this page has words for. A server without the field
+ * sends none; a code it does not know is not shown rather than guessed at.
+ */
+function parseNotices(raw: unknown): CopyNotice[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((row) => {
+    if (!row || typeof row !== 'object') return [];
+    const { featureType, code } = row as Record<string, unknown>;
+    return typeof featureType === 'string' && typeof code === 'string' && NOTICE_CODES.has(code)
+      ? [{ featureType: featureType as FeatureType, code: code as ConfigPolicyCopyNoticeCode }]
+      : [];
+  });
+}
+
+/**
  * The dry run: what the copy would carry and what it would leave behind.
  * Writes nothing.
  */
@@ -94,21 +119,24 @@ export async function previewCopy(sourceId: string, body: CopyBody): Promise<Cop
     : null;
   const dropped = parseDrops(data?.dropped);
   if (!carried || !dropped) return { ok: false, status: response.status, message: i18n.t('policies:configurationPolicies.copyPolicy.previewFailed') };
-  return { ok: true, carried, dropped };
+  return { ok: true, carried, dropped, notices: parseNotices(data?.notices) };
 }
 
 /** The copy itself, through runAction: the new policy's id and what it left behind. */
-export async function copyPolicy(sourceId: string, body: CopyBody): Promise<{ policyId: string; dropped: CopyDrop[] }> {
-  return runAction<{ policyId: string; dropped: CopyDrop[] }>({
+export async function copyPolicy(
+  sourceId: string,
+  body: CopyBody,
+): Promise<{ policyId: string; dropped: CopyDrop[]; notices: CopyNotice[] }> {
+  return runAction<{ policyId: string; dropped: CopyDrop[]; notices: CopyNotice[] }>({
     request: () =>
       fetchWithAuth(`/configuration-policies/${sourceId}/copy`, {
         method: 'POST',
         body: JSON.stringify(body),
       }),
     parseSuccess: (data) => {
-      const row = data as { policyId?: unknown; dropped?: unknown } | null;
+      const row = data as { policyId?: unknown; dropped?: unknown; notices?: unknown } | null;
       if (typeof row?.policyId !== 'string') throw new Error('copy: no policyId in the response');
-      return { policyId: row.policyId, dropped: parseDrops(row.dropped) ?? [] };
+      return { policyId: row.policyId, dropped: parseDrops(row.dropped) ?? [], notices: parseNotices(row.notices) };
     },
     errorFallback: i18n.t('policies:configurationPolicies.copyPolicy.failed'),
     friendly: (code) => copyRefusalMessage(code),
