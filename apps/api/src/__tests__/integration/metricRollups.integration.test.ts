@@ -504,7 +504,8 @@ describe('metric rollups integration', () => {
       await insertPayload(orgA, busy, '2026-06-18T12:04:59.999Z', [{ cpu: 20, ramMb: 300 }]);
       // Bucket 12:05 — an empty process list still counts as a sample of zeros.
       await insertPayload(orgA, busy, '2026-06-18T12:05:00.000Z', []);
-      // Bucket 12:10 — non-numeric values and non-object elements are skipped.
+      // Bucket 12:10 — non-numeric values and non-object elements add nothing to
+      // the sums and maxima, but still count toward top_process_count.
       await insertPayload(orgA, busy, '2026-06-18T12:10:00.000Z', [
         { cpu: '12.5', ramMb: null, diskBps: 7 },
         7,
@@ -565,6 +566,10 @@ describe('metric rollups integration', () => {
       // sequential scans to make the planner show which predicates an index
       // can take. EXPLAIN without ANALYZE: the INSERT is planned, not run.
       const plan = await withSystemDbAccessContext(async () => {
+        // Guard against a vacuous pass: a role that bypasses RLS has no policy
+        // qual, so the timestamp bounds would be index conditions anyway.
+        const role = await db.execute(sql`SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`);
+        expect((role as unknown as Array<Record<string, unknown>>)[0]).toEqual({ rolsuper: false, rolbypassrls: false });
         await db.execute(sql`SET LOCAL enable_seqscan = off`);
         const result = await db.execute(
           sql`EXPLAIN (FORMAT JSON) ${buildRawProcessSampleRollupStatement({ orgId: orgA, from, to })}`
@@ -583,7 +588,7 @@ describe('metric rollups integration', () => {
 
       expect(scans).toHaveLength(1);
       const scan = scans[0]!;
-      const indexCondition = scan['Node Type'] === 'Bitmap Heap Scan'
+      const indexCondition = /Bitmap Heap Scan$/.test(scan['Node Type'])
         ? scan['Recheck Cond']
         : scan['Index Cond'];
       expect(scan['Node Type']).not.toBe('Seq Scan');

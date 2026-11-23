@@ -419,6 +419,17 @@ async function rollupRawDeviceMetrics(options: MetricRollupRange): Promise<void>
  * costed at its 1000-row default the inflated estimate tripped
  * `jit_above_cost`, adding ~1.1s of JIT compilation to a sub-100ms query.)
  *
+ * #12583: the window is read once, as an index range; see
+ * `buildRawProcessSampleRollupStatement`.
+ */
+async function rollupRawProcessSampleMetrics(options: MetricRollupRange): Promise<void> {
+  await execInRollupDbContext('metricRollups.raw.device_process_samples', buildRawProcessSampleRollupStatement(options));
+}
+
+/**
+ * The raw process-sample rollup statement (see `rollupRawProcessSampleMetrics`),
+ * exported so the integration suite can `EXPLAIN` exactly what the worker runs.
+ *
  * #12583 — the window is read ONCE, and as an index range.
  *  - `process_devices` is the DISTINCT of `sample_values`, not a second scan of
  *    the table. The CROSS JOIN LATERAL aggregate always yields exactly one row
@@ -436,14 +447,6 @@ async function rollupRawDeviceMetrics(options: MetricRollupRange): Promise<void>
  *    makes the comparison the leakproof `timestamptz >= timestamptz`, which the
  *    index can take. The bucket grid and its join keep their old types: they
  *    are join filters over the materialized window, not scan predicates.
- */
-async function rollupRawProcessSampleMetrics(options: MetricRollupRange): Promise<void> {
-  await execInRollupDbContext('metricRollups.raw.device_process_samples', buildRawProcessSampleRollupStatement(options));
-}
-
-/**
- * The raw process-sample rollup statement, exported so the integration suite
- * can `EXPLAIN` exactly what the worker runs (#12583).
  */
 export function buildRawProcessSampleRollupStatement(
   options: Pick<MetricRollupRange, 'orgId' | 'from' | 'to' | 'expectedSampleSeconds'>,
