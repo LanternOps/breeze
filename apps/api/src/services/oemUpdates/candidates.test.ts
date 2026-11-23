@@ -269,8 +269,17 @@ describe('selectDueDevices: one exclusion each', () => {
     await expect(selected(device())).resolves.toEqual([D1]);
   });
 
-  it('a Dell blocklist stored before #12265: the agent would refuse the run, so none is selected', async () => {
-    await expect(selected(device(), link({}, { blockedUpdateIds: ['BLOCKED-1'] }))).resolves.toEqual([]);
+  it('a Dell blocklist stored before #12265: the agent would refuse the run, so none is selected, and it is reported once per link', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const legacy = { ...link({}, { blockedUpdateIds: ['BLOCKED-1'] }), linkId: 'link-legacy-dell' };
+    await expect(selected(device(), legacy)).resolves.toEqual([]);
+    await expect(selected(device(), legacy)).resolves.toEqual([]);
+    const reports = vi.mocked(captureException).mock.calls
+      .filter(([error]) => String((error as Error).message).includes('link-legacy-dell'));
+    expect(reports).toHaveLength(1);
+    expect(String((reports[0]![0] as Error).message)).toMatch(/blocked update IDs for dell/);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 
   it('virtual, in case the query ever widens', async () => {

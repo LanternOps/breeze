@@ -357,6 +357,12 @@ describe('dispatchOemUpdateRun: the row', () => {
     expect(dispatchDeviceCommand).not.toHaveBeenCalled();
   });
 
+  it('a lane that honours a blocklist still carries it to the payload', async () => {
+    state.device = { ...eligibleDevice(), manufacturer: 'HP', model: 'HP EliteBook 840 G8' };
+    await expect(dispatchOemUpdateRun(input({ blockedUpdateIds: ['ABC12'] }))).resolves.toMatchObject({ ok: true });
+    expect(sentPayload()).toMatchObject({ lane: 'hp', blockedUpdateIds: ['ABC12'] });
+  });
+
   it('never skips the delivery leg contract: the row is written before the socket push', async () => {
     const deliver = vi.fn(async () => queued({ delivery: 'delivered' }));
     vi.mocked(dispatchDeviceCommand).mockResolvedValue(queued({ deliver }));
