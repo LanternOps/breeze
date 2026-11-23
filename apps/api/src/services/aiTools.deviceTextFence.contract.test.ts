@@ -198,6 +198,12 @@ const EXPECTED_FENCED: Readonly<Record<string, readonly string[]>> = {
   m365_query_groups: ['displayName', 'mail', 'membershipRule', 'description', 'userPrincipalName'],
   m365_query_org: ['displayName', 'verifiedDomains'],
   m365_query_sites: ['name', 'displayName', 'webUrl'],
+  // Microsoft 365 helpdesk tools: `message` carries a Graph or broker error message (fenced in the handler too).
+  m365_lookup_user: ['message'],
+  m365_recent_signins: ['message'],
+  m365_list_group_memberships: ['message'],
+  m365_disable_user: ['message'],
+  m365_reset_password: ['message'],
   // Watched service/process names and the check's details blob are agent-reported.
   get_service_monitoring_status: ['name', 'details'],
   // A network check's last error and each result's error/details are written by the reporting agent.

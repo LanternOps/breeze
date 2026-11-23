@@ -1184,6 +1184,14 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   m365_query_groups: new Set(['displayName', 'mail', 'membershipRule', 'description', 'userPrincipalName']),
   m365_query_org: new Set(['displayName', 'verifiedDomains']),
   m365_query_sites: new Set(['name', 'displayName', 'webUrl']),
+  // Microsoft 365 helpdesk tools (aiToolsM365.ts, session-aware): an error result's `message` quotes a Graph or broker
+  // error message, which can echo strings chosen in the customer's tenant. The handler fences it before adding its own
+  // prefix; this entry is the chat-path backstop. A success result is prose (or `message` in the toolCallId envelope).
+  m365_lookup_user: new Set(['message']),
+  m365_recent_signins: new Set(['message']),
+  m365_list_group_memberships: new Set(['message']),
+  m365_disable_user: new Set(['message']),
+  m365_reset_password: new Set(['message']),
   // Full-control W17 (#6788): a verification reason and a VSS writer's name, state and error come from the machine;
   // an unparseable agent reply is shown raw, and `error` can carry a hostname or a failed command's text. All are
   // fenced as data, never instructions.
