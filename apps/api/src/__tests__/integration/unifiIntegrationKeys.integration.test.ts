@@ -468,6 +468,20 @@ describe('key management on unifi_integration_keys (#11808 W3, breeze_app)', () 
     expect(synced).toMatchObject({ status: 'connected', lastSyncStatus: 'success', sitesSeen: 2 });
   });
 
+  runDb('a sync run that started before a /connect reconnect never records over the new key', async () => {
+    const { partnerId, integrationId } = await connected('old-secret-0001');
+    const [key] = await keysOf(integrationId);
+    const runStartedAt = new Date(Date.now() - 5_000);
+    await asPartner(partnerId, () => upsertConnection(db, partnerId, { baseUrl: 'https://api.ui.com', apiKey: 'reconnected-0003' }));
+
+    await withSystemDbAccessContext(() => recordKeyResults(db, {
+      integrationId, partnerId, runStartedAt, keyLast4ById: new Map(),
+      results: [{ keyId: key!.id, label: 'Global', status: 'failed', authFailure: true, hostsSeen: null, sitesSeen: null, hostIds: null, error: 'UniFi API error 401' }],
+    }));
+    const [after] = await keysOf(integrationId);
+    expect(after).toMatchObject({ status: 'connected', lastSyncStatus: null, lastSyncError: null, keyLast4: '0003' });
+  });
+
   runDb('another partner cannot change or remove a key', async () => {
     const { partnerId, integrationId } = await connected();
     const other = await createPartner();
