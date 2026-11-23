@@ -52,10 +52,17 @@ crudRoutes.get(
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(Math.max(1, Number(query.limit) || 25), 100);
 
+    // W03a: the org a list is filtered to must be one the caller can access.
+    if (query.appliesToOrgId && !auth.canAccessOrg(query.appliesToOrgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+
     const result = await listConfigPolicies(auth, {
       status: query.status,
       search: query.search,
       orgId: query.orgId,
+      appliesToOrgId: query.appliesToOrgId,
+      notApplied: query.notApplied === 'true',
     }, { page, limit });
 
     // Applies-to summary (#12306 W01a). Merged here, not in listConfigPolicies,

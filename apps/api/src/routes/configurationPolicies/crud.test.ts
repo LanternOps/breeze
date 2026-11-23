@@ -326,6 +326,28 @@ describe('configurationPolicies CRUD routes', () => {
   // POST / — create
   // ============================================
 
+  describe('GET / list filters (W03a)', () => {
+    beforeEach(() => {
+      listConfigPoliciesMock.mockResolvedValue({ data: [], pagination: { page: 1, limit: 25, total: 0 } });
+    });
+
+    it('passes appliesToOrgId and notApplied to the service, and orgId unchanged', async () => {
+      const res = await app.request(`/?appliesToOrgId=${ORG_ID}&notApplied=true&orgId=${ORG_ID}`);
+      expect(res.status).toBe(200);
+      expect(listConfigPoliciesMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ appliesToOrgId: ORG_ID, notApplied: true, orgId: ORG_ID }),
+        expect.anything(),
+      );
+    });
+
+    it('appliesToOrgId refuses an org the caller cannot access', async () => {
+      const res = await app.request('/?appliesToOrgId=55555555-5555-4555-8555-555555555555');
+      expect(res.status).toBe(403);
+      expect(listConfigPoliciesMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /', () => {
     it('creates a policy with organization scope (uses auth.orgId)', async () => {
       const policy = { id: POLICY_ID, name: 'New Policy', orgId: ORG_ID, status: 'active' };

@@ -103,13 +103,17 @@ function appliesDirectlySql(policy: PolicyColumns, orgIds: readonly string[], pr
  * clauses only: an org-owned child of one of the orgs, or a partner-owned child
  * of the same partner that applies directly.
  */
-export function policyAppliesToOrgsSql(orgIds: readonly string[], partnerId: string): SQL {
+export function policyAppliesToOrgsSql(orgIds: readonly string[], partnerId: string | null): SQL {
   if (orgIds.length === 0) return sql`false`;
   const child = alias(configurationPolicies, 'rs_child');
   const ids = [...orgIds];
   const direct = appliesDirectlySql(configurationPolicies, ids, 'rs_');
-  const childDirect = appliesDirectlySql({ id: child.id, partnerId: child.partnerId }, ids, 'rs_c');
-  return sql`(${direct} OR EXISTS (SELECT 1 FROM ${fromAs(configurationPolicies, 'rs_child')} WHERE ${child.parentPolicyId} = ${configurationPolicies.id} AND (${inArray(child.orgId, ids)} OR (${child.orgId} IS NULL AND ${child.partnerId} = ${partnerId} AND ${childDirect}))))`;
+  // With no partner (an org whose partner the caller cannot see) no
+  // partner-owned child can count, so that branch is left out.
+  const childApplies = partnerId === null
+    ? inArray(child.orgId, ids)
+    : sql`(${inArray(child.orgId, ids)} OR (${child.orgId} IS NULL AND ${child.partnerId} = ${partnerId} AND ${appliesDirectlySql({ id: child.id, partnerId: child.partnerId }, ids, 'rs_c')}))`;
+  return sql`(${direct} OR EXISTS (SELECT 1 FROM ${fromAs(configurationPolicies, 'rs_child')} WHERE ${child.parentPolicyId} = ${configurationPolicies.id} AND ${childApplies}))`;
 }
 
 /** Partner-owned rows of `partnerId` that apply to one of the caller's orgs. */
@@ -186,5 +190,3 @@ export function policyViewerAccess(
   if (!canMutateOrgWideGovernance(auth)) return { canEdit: false, reason: 'site_restricted' };
   return { canEdit: true, reason: null };
 }
-
-

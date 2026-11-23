@@ -120,6 +120,28 @@ describe('list reads', () => {
     expect(rendered().join(' ')).not.toContain('WRITE_SENTINEL');
   });
 
+  it("appliesToOrgId filters to policies that apply to the org, scoped to the org's own partner", async () => {
+    queue.push([{ partnerId: 'partner-1' }], [{ count: 0 }], []);
+    await listConfigPolicies(auth, { appliesToOrgId: 'org-a' }, { page: 1, limit: 25 });
+    const listWhere = rendered().find((w) => w.includes('READ_SENTINEL'))!;
+    expect(listWhere).toContain('"rs_a"."config_policy_id"');
+    expect(listWhere).toContain('"lf_a"');
+  });
+
+  it('notApplied filters to policies with no rows and no children', async () => {
+    queue.push([{ count: 0 }], []);
+    await listConfigPolicies(auth, { notApplied: true }, { page: 1, limit: 25 });
+    expect(rendered()[0]).toContain('NOT EXISTS (SELECT 1 FROM "configuration_policies" "lf_child"');
+  });
+
+  it('orgId keeps its existing meaning (own policies plus the partner-owned ones of its partner)', async () => {
+    queue.push([{ partnerId: 'partner-1' }], [{ count: 0 }], []);
+    await listConfigPolicies(auth, { orgId: 'org-a' }, { page: 1, limit: 25 });
+    const listWhere = rendered().find((w) => w.includes('READ_SENTINEL'))!;
+    expect(listWhere).not.toContain('"rs_a"');
+    expect(listWhere).toContain('"configuration_policies"."org_id" IS NULL AND "configuration_policies"."partner_id" =');
+  });
+
   it('eligible parents use the read predicate (organization owner)', async () => {
     queue.push([{ partnerId: 'partner-1' }], []);
     await listEligibleParentPolicies(auth, { ownerScope: 'organization', orgId: 'org-a' });

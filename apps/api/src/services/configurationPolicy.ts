@@ -46,6 +46,7 @@ import {
 import { and, eq, desc, or, isNull, isNotNull, sql, inArray, notInArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { policyAccessCondition, policyReadCondition } from './configPolicyReadScope';
+import { appliesToOrgCondition, notAppliedCondition } from './configPolicyListFilters';
 import { buildRoleOsFilterConditions } from './featureConfigResolver';
 import {
   InvalidParentPolicyError,
@@ -667,7 +668,7 @@ export async function listEligibleParentPolicies(
 
 export async function listConfigPolicies(
   auth: AuthContext,
-  filters: { status?: string; search?: string; orgId?: string },
+  filters: { status?: string; search?: string; orgId?: string; appliesToOrgId?: string; notApplied?: boolean },
   pagination: { page: number; limit: number }
 ) {
   const conditions: SQL[] = [];
@@ -697,6 +698,19 @@ export async function listConfigPolicies(
         : eq(configurationPolicies.orgId, filters.orgId)
     );
   }
+  if (filters.appliesToOrgId) {
+    // W03a: policies that apply to this org, plus inactive ones that apply
+    // nowhere yet (Q3). The org's partner is read in the caller's context, as
+    // the orgId filter above reads it; a missing or invisible org fails closed
+    // to that org's own policies.
+    const [appliesOrg] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, filters.appliesToOrgId))
+      .limit(1);
+    conditions.push(appliesToOrgCondition(filters.appliesToOrgId, appliesOrg?.partnerId ?? null));
+  }
+  if (filters.notApplied) conditions.push(notAppliedCondition());
   if (filters.status) {
     conditions.push(eq(configurationPolicies.status, filters.status as 'active' | 'inactive' | 'archived'));
   }

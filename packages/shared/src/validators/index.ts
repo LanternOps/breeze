@@ -1117,6 +1117,11 @@ export const listConfigPoliciesSchema = z.object({
   status: z.enum(['active', 'inactive', 'archived']).optional(),
   search: z.string().optional(),
   orgId: z.string().guid().optional(),
+  // #12462 W03a: policies that apply to this organization (any status), plus
+  // inactive policies that apply nowhere yet. `orgId` keeps its meaning.
+  appliesToOrgId: z.string().guid().optional(),
+  // Policies with no assignments and no child policies.
+  notApplied: z.enum(['true']).optional(),
 });
 
 export const targetQuerySchema = z.object({
