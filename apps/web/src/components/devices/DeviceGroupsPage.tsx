@@ -17,6 +17,7 @@ import { usePartnerGroupCapabilities, partnerGroupFilterFields, partnerGroupFilt
 import { useFleetOrgOwner } from "@/hooks/useFleetOrgOwner";
 import { asList } from "@/lib/asList";
 import { runAction, ActionError } from "@/lib/runAction";
+import { applyAssignments, parseApplyFailure } from "../configurationPolicies/appliesTo/appliesToApi";
 import { showToast } from "../shared/Toast";
 import type { ScriptAdmissionResult } from "@breeze/shared";
 import type { FilterConditionGroup } from "@breeze/shared";
@@ -972,49 +973,42 @@ export default function DeviceGroupsPage() {
     }
   };
 
+  // One staged Apply with one add per group (#12467): all of them land or none
+  // does, and a collision names its group instead of a partial "N failed".
   const handleBulkPolicy = async () => {
     if (!bulkPolicyId || selectedGroupIds.size === 0) return;
+    const groupIds = Array.from(selectedGroupIds);
+    const fallback = t("deviceGroupsPage.failedToApplyPolicyToGroups");
     setSubmitting(true);
+    setError(undefined);
     try {
-      const results = await Promise.allSettled(
-        Array.from(selectedGroupIds).map(async (groupId) => {
-          const res = await fetchWithAuth(`/configuration-policies/${bulkPolicyId}/assignments`, {
-            method: "POST",
-            body: JSON.stringify({
-              level: "device_group",
-              targetId: groupId,
-              priority: 0,
-            }),
-          });
-          if (!res.ok) {
-            const errData = await res.json().catch(() => ({}));
-            throw new Error(groupApiErrorMessage(errData, t("deviceGroupsPage.failedToApplyPolicyToGroups")));
-          }
-          return groupId;
-        }),
+      await applyAssignments(
+        bulkPolicyId,
+        {
+          add: groupIds.map((groupId) => ({ level: "device_group" as const, targetId: groupId, priority: 0 })),
+          update: [],
+          remove: [],
+        },
+        {
+          toastConflict: true,
+          friendly: (_code, message, body) => {
+            const entry = parseApplyFailure(body).entry;
+            if (entry?.op !== "add") return undefined;
+            const groupId = groupIds[entry.index];
+            const group = groups.find((g) => g.id === groupId)?.name ?? groupId;
+            return group
+              ? t("deviceGroupsPage.policyRefusedForGroup", { group, reason: message })
+              : undefined;
+          },
+        },
       );
-
-      const succeeded = results.filter((r) => r.status === "fulfilled");
-      const failed = results.filter((r) => r.status === "rejected");
-
       await fetchGroups();
-      if (failed.length === 0) {
-        setSelectedGroupIds(new Set());
-        handleCloseModal();
-      } else {
-        const succeededIds = new Set(
-          succeeded.map((s) => (s as PromiseFulfilledResult<string>).value)
-        );
-        setSelectedGroupIds((prev) => new Set(Array.from(prev).filter((id) => !succeededIds.has(id))));
-        const firstError = (failed[0] as PromiseRejectedResult).reason?.message || "Failed to apply policy to some groups";
-        setError(`${failed.length} group assignment(s) failed: ${firstError}`);
-      }
+      setSelectedGroupIds(new Set());
+      handleCloseModal();
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : t("deviceGroupsPage.failedToApplyPolicyToGroups"),
-      );
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: "error", message: fallback });
+      setError(err instanceof Error ? err.message : fallback);
     } finally {
       setSubmitting(false);
     }
