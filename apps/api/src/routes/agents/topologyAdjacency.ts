@@ -24,7 +24,7 @@ import { pgErrorCode } from '../../utils/pgErrors';
 export const topologyAdjacencyRoutes = new Hono();
 topologyAdjacencyRoutes.use('/:id/topology/adjacency', requireAgentRole);
 
-const bodySchema = z.object({ parentJobId: z.uuid(), report: z.unknown() }).strict();
+const bodySchema = z.object({ parentJobId: z.uuid(), report: z.unknown(), verifiedNetwork: z.unknown().optional() }).strict();
 class RollbackOutcome extends Error {
   constructor(readonly outcome: DiscoveryAdjacencyOutcome) { super('rollback'); }
 }
@@ -56,7 +56,7 @@ topologyAdjacencyRoutes.post('/:id/topology/adjacency', async (c) => {
     outcome = await withResolvedTopologyFlags({ orgId, flags }, () => withDbAccessContext({
       scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], currentPartnerId: agent.partnerId ?? null,
     }, () => db.transaction(async () => {
-      const result = await admitDiscoveryAdjacencyReport({ deviceId, orgId, report });
+      const result = await admitDiscoveryAdjacencyReport({ deviceId, orgId, report, verifiedNetwork: body.data.verifiedNetwork });
       // A rejected report leaves no trace: roll back anything a section wrote.
       if (result.status !== 200) throw new RollbackOutcome(result);
       return result;

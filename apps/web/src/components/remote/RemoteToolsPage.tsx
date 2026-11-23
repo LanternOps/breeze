@@ -1191,6 +1191,7 @@ export default function RemoteToolsPage({
             deviceId={deviceId}
             deviceHostname={resolvedDeviceName}
             initialPath={getInitialFilePath(resolvedDeviceOs)}
+            osType={resolvedDeviceOs}
             onError={(msg) => console.error('[RemoteToolsPage] File manager error:', msg)}
           />
         )}

@@ -33,8 +33,10 @@ import { friendlyFetchError } from "../../lib/utils";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
-import { i18n } from "../../lib/i18n";
+import { configFeatureLabel, configTargetLevelLabel } from "../configurationPolicies/configPolicyLabels";
+import { useJwtClaims } from "../../lib/authScope";
 import EffectiveContainmentSummary from "./EffectiveContainmentSummary";
+import { canOpenPolicy, lostClauses, type PolicyOwners } from "./effectiveConfigPrecedence";
 import { OEM_VENDOR_NAMES } from "./vendorUpdatesApi";
 import type { OemLane } from "@breeze/shared";
 
@@ -46,7 +48,7 @@ import type { OemLane } from "@breeze/shared";
 // policyBaselineDefaults.ts — remote_access defaults ON, pam is present but
 // uacInterceptionEnabled:false), so the "Not enforced when unassigned" labeling
 // below would mislabel them. Deriving via Exclude (not a hand-listed union) means
-// a new canonical feature type makes FEATURE_META below fail to compile until it
+// a new canonical feature type makes EFFECTIVE_FEATURE_META below fail to compile until it
 // is accounted for, and DeviceEffectiveConfigTab.featureParity.test.ts asserts
 // the exclusions stay honest. (#2004)
 //
@@ -101,6 +103,9 @@ type EffectiveConfiguration = {
   deviceId: string;
   features: Record<string, ResolvedFeature>;
   inheritanceChain: InheritanceEntry[];
+  // #12306: who owns each winning and chain policy. Absent from an API a
+  // release behind; a policy with no entry is shown without a link.
+  policyOwners?: PolicyOwners;
 };
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -123,76 +128,41 @@ type EffectiveConfiguration = {
 // minus those two, so a new canonical feature type makes this Record fail to
 // compile until it is accounted for, and featureParity.test.ts asserts the
 // exclusion set stays honest. (#2004)
-const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
-  patch: { label: "Patch Management", Icon: PackageCheck },
-  monitors: { label: "Monitors", Icon: Radar },
-  automation: { label: "Automation", Icon: Zap },
-  maintenance: { label: "Maintenance Windows", Icon: Wrench },
-  compliance: { label: "Compliance", Icon: ClipboardCheck },
-  security: { label: "Security", Icon: Shield },
-  backup: { label: "Backup", Icon: HardDrive },
-  warranty: { label: "Warranty", Icon: ShieldCheck },
-  software_policy: { label: "Software Policy", Icon: Boxes },
-  sensitive_data: { label: "Data Discovery", Icon: FileSearch },
-  peripheral_control: { label: "Peripheral Control", Icon: Usb },
-  event_log: { label: "Event Logs", Icon: ScrollText },
-  helper: { label: "Breeze Assist", Icon: LifeBuoy },
-  onedrive_helper: { label: "OneDrive Helper", Icon: Cloud },
-  vulnerability: { label: "Vulnerability Scanning", Icon: ShieldAlert },
-  device_lifecycle: { label: "Device Lifecycle", Icon: Trash2 },
-  hardware_monitoring: { label: "Hardware Monitoring", Icon: HardDrive },
-  time_sync: {
-    get label() {
-      return i18n.t("devices:timeSync.management.title");
-    },
-    Icon: Clock,
-  },
-  workload_inventory: {
-    get label() {
-      return i18n.t("devices:workloads.policy.title");
-    },
-    Icon: Container,
-  },
-  system_protection: {
-    get label() {
-      return i18n.t("policies:configurationPolicies.featureTabs.systemProtectionTab.title");
-    },
-    Icon: History,
-  },
-  security_agents: { label: "Security Agents", Icon: ShieldCheck },
-  containment: {
-    get label() {
-      return i18n.t("policies:configurationPolicies.featureTabs.containmentTab.title");
-    },
-    Icon: ShieldBan,
-  },
-  oem_updates: {
-    get label() {
-      return i18n.t("policies:configurationPolicies.featureTabs.vendorUpdatesTab.title");
-    },
-    Icon: Cpu,
-  },
-  wake_on_lan: {
-    get label() {
-      return i18n.t("policies:configurationPolicies.featureTabs.wakeOnLanTab.title");
-    },
-    Icon: Power,
-  },
+// Labels come from the shared, translated set (configPolicyLabels), so a card
+// names a feature exactly as the policy editor's tab does (#12306). Icons stay
+// local. Exported for the label parity test (configPolicyLabels.test.ts).
+export const EFFECTIVE_FEATURE_META: Record<FeatureType, { readonly label: string; Icon: LucideIcon }> = {
+  patch: { get label() { return configFeatureLabel("patch"); }, Icon: PackageCheck },
+  monitors: { get label() { return configFeatureLabel("monitors"); }, Icon: Radar },
+  automation: { get label() { return configFeatureLabel("automation"); }, Icon: Zap },
+  maintenance: { get label() { return configFeatureLabel("maintenance"); }, Icon: Wrench },
+  compliance: { get label() { return configFeatureLabel("compliance"); }, Icon: ClipboardCheck },
+  security: { get label() { return configFeatureLabel("security"); }, Icon: Shield },
+  backup: { get label() { return configFeatureLabel("backup"); }, Icon: HardDrive },
+  warranty: { get label() { return configFeatureLabel("warranty"); }, Icon: ShieldCheck },
+  software_policy: { get label() { return configFeatureLabel("software_policy"); }, Icon: Boxes },
+  sensitive_data: { get label() { return configFeatureLabel("sensitive_data"); }, Icon: FileSearch },
+  peripheral_control: { get label() { return configFeatureLabel("peripheral_control"); }, Icon: Usb },
+  event_log: { get label() { return configFeatureLabel("event_log"); }, Icon: ScrollText },
+  helper: { get label() { return configFeatureLabel("helper"); }, Icon: LifeBuoy },
+  onedrive_helper: { get label() { return configFeatureLabel("onedrive_helper"); }, Icon: Cloud },
+  vulnerability: { get label() { return configFeatureLabel("vulnerability"); }, Icon: ShieldAlert },
+  device_lifecycle: { get label() { return configFeatureLabel("device_lifecycle"); }, Icon: Trash2 },
+  hardware_monitoring: { get label() { return configFeatureLabel("hardware_monitoring"); }, Icon: HardDrive },
+  time_sync: { get label() { return configFeatureLabel("time_sync"); }, Icon: Clock },
+  workload_inventory: { get label() { return configFeatureLabel("workload_inventory"); }, Icon: Container },
+  system_protection: { get label() { return configFeatureLabel("system_protection"); }, Icon: History },
+  security_agents: { get label() { return configFeatureLabel("security_agents"); }, Icon: ShieldCheck },
+  containment: { get label() { return configFeatureLabel("containment"); }, Icon: ShieldBan },
+  oem_updates: { get label() { return configFeatureLabel("oem_updates"); }, Icon: Cpu },
+  wake_on_lan: { get label() { return configFeatureLabel("wake_on_lan"); }, Icon: Power },
 };
 
-// Display order = FEATURE_META insertion order. Derived (not hand-listed) so the
-// grid stays in lockstep with FEATURE_META and can't silently omit a type.
+// Display order = EFFECTIVE_FEATURE_META insertion order. Derived (not hand-listed) so the
+// grid stays in lockstep with EFFECTIVE_FEATURE_META and can't silently omit a type.
 // Exported for the parity test (DeviceEffectiveConfigTab.featureParity.test.ts).
-export const ALL_FEATURE_TYPES = Object.keys(FEATURE_META) as FeatureType[];
+export const ALL_FEATURE_TYPES = Object.keys(EFFECTIVE_FEATURE_META) as FeatureType[];
 
-const LEVEL_LABELS: Record<AssignmentLevel, string> = {
-  partner: "Partner",
-  organization: "Organization",
-  site: "Site",
-  device_group: "Device Group",
-  device: "Device",
-  default: "Breeze Defaults",
-};
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -366,6 +336,7 @@ export default function DeviceEffectiveConfigTab({
   deviceId,
 }: DeviceEffectiveConfigTabProps) {
   const { t } = useTranslation("devices");
+  const jwtClaims = useJwtClaims();
   const [data, setData] = useState<EffectiveConfiguration | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -459,7 +430,23 @@ export default function DeviceEffectiveConfigTab({
     );
   }
 
-  const { features, inheritanceChain } = data;
+  const { features, inheritanceChain, policyOwners } = data;
+  // The Breeze Defaults layer (level 'default') is not a policy and has no page;
+  // Hardware Monitoring renders an enforced card from it, so guard on level.
+  const canOpen = (policyId: string, level: AssignmentLevel) =>
+    level !== "default" && canOpenPolicy(policyId, policyOwners, jwtClaims);
+  const policyName = (policyId: string, name: string, level: AssignmentLevel, testId?: string) =>
+    canOpen(policyId, level) ? (
+      <a
+        href={`/configuration-policies/${policyId}`}
+        data-testid={testId}
+        className="font-medium text-primary hover:underline"
+      >
+        {name}
+      </a>
+    ) : (
+      <span className="font-medium text-foreground">{name}</span>
+    );
   // The synthetic "Breeze Defaults" layer (level 'default') is excluded from the
   // assigned-policy count AND the inheritance-chain table below — it is not a real
   // assigned policy and has no policy page to link to. Its feature types instead
@@ -512,7 +499,7 @@ export default function DeviceEffectiveConfigTab({
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {enforcedTypes.map((ft) => {
             const feature = features[ft]!;
-            const { label, Icon } = FEATURE_META[ft];
+            const { label, Icon } = EFFECTIVE_FEATURE_META[ft];
             const isContainment = ft === "containment";
             // Containment renders its destination list instead of the generic key/value summary.
             const settings = isContainment
@@ -538,13 +525,25 @@ export default function DeviceEffectiveConfigTab({
                     <h4 className="font-semibold">{label}</h4>
                     <p className="mt-0.5 text-xs text-muted-foreground">
                       {t("deviceEffectiveConfigTab.from")}{" "}
-                      <span className="font-medium text-foreground">
-                        {feature.sourcePolicyName}
-                      </span>{" "}
-                      <span className="inline-flex items-center rounded-full border bg-muted/50 px-1.5 py-0.5 text-xs text-muted-foreground">
-                        {LEVEL_LABELS[feature.sourceLevel]}
+                      {policyName(
+                        feature.sourcePolicyId,
+                        feature.sourcePolicyName,
+                        feature.sourceLevel,
+                        "effective-config-winner-link",
+                      )}
+                      {" · "}
+                      <span data-testid="effective-config-winner-level">
+                        {t("deviceEffectiveConfigTab.viaLevel", {
+                          level: configTargetLevelLabel(feature.sourceLevel),
+                        })}
                       </span>
                     </p>
+                    {!canOpen(feature.sourcePolicyId, feature.sourceLevel) &&
+                      policyOwners?.[feature.sourcePolicyId] === "partner" && (
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {t("deviceEffectiveConfigTab.managedByYourMsp")}
+                        </p>
+                      )}
                     {feature.inheritedFromPolicyId && (
                       <p
                         data-testid="effective-config-inherited-from"
@@ -606,7 +605,7 @@ export default function DeviceEffectiveConfigTab({
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             {baselineTypes.map((ft) => {
-              const { label, Icon } = FEATURE_META[ft];
+              const { label, Icon } = EFFECTIVE_FEATURE_META[ft];
               return (
                 <span
                   key={ft}
@@ -621,23 +620,18 @@ export default function DeviceEffectiveConfigTab({
         </div>
       )}
 
-      {/* Inheritance chain — real assigned policies only (the synthetic
+      {/* Precedence — real assigned policies only (the synthetic
           "Breeze Defaults" node is excluded; see assignedChain above). */}
       {assignedChain.length > 0 && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h4 className="font-semibold mb-3">
             {t("deviceEffectiveConfigTab.inheritanceChain")}
           </h4>
-          <p className="text-xs text-muted-foreground">
-            {t(
-              "deviceEffectiveConfigTab.policiesAreResolvedUsingClosestWins",
-            )}{" "}
-          </p>
           <p
-            data-testid="inheritance-chain-rule"
-            className="mt-1 mb-4 text-xs text-muted-foreground"
+            data-testid="precedence-legend"
+            className="mb-4 text-xs text-muted-foreground"
           >
-            {t("deviceEffectiveConfigTab.chainResolutionRule")}
+            {t("deviceEffectiveConfigTab.precedenceLegend")}
           </p>
           <div className="overflow-hidden rounded-md border">
             <table className="min-w-full divide-y">
@@ -658,7 +652,9 @@ export default function DeviceEffectiveConfigTab({
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {assignedChain.map((entry) => (
+                {assignedChain.map((entry) => {
+                  const losses = lostClauses(entry, features as Partial<Record<FeatureType, ResolvedFeature>>);
+                  return (
                   <tr
                     key={`${entry.policyId}-${entry.level}-${entry.targetId}`}
                     className="text-sm"
@@ -668,21 +664,16 @@ export default function DeviceEffectiveConfigTab({
                     </td>
                     <td className="px-4 py-3">
                       <span className="inline-flex items-center rounded-full border bg-muted/50 px-2.5 py-1 text-xs font-medium capitalize">
-                        {LEVEL_LABELS[entry.level]}
+                        {configTargetLevelLabel(entry.level)}
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <a
-                        href={`/configuration-policies/${entry.policyId}`}
-                        className="font-medium text-primary hover:underline"
-                      >
-                        {entry.policyName}
-                      </a>
+                      {policyName(entry.policyId, entry.policyName, entry.level)}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1">
                         {entry.featureTypes.map((ft) => {
-                          const label = FEATURE_META[ft]?.label ?? ft;
+                          const label = EFFECTIVE_FEATURE_META[ft]?.label ?? ft;
                           if (chainEntryContributes(entry, ft, features)) {
                             return (
                               <span
@@ -711,9 +702,30 @@ export default function DeviceEffectiveConfigTab({
                           );
                         })}
                       </div>
+                      {/* Why this row lost, visible: the chips' title is a
+                          tooltip that touch and keyboard users never see. */}
+                      {losses.length > 0 && (
+                        <p
+                          data-testid="chain-row-lost-reason"
+                          className="mt-1.5 text-xs text-muted-foreground"
+                        >
+                          {losses
+                            .map((loss) =>
+                              t("deviceEffectiveConfigTab.lostClause", {
+                                features: loss.featureTypes
+                                  .map((ft) => EFFECTIVE_FEATURE_META[ft]?.label ?? ft)
+                                  .join(", "),
+                                winner: loss.winnerPolicyName,
+                                reason: t(/* i18n-dynamic */ `deviceEffectiveConfigTab.lostReasons.${loss.reason}`),
+                              }),
+                            )
+                            .join(" ")}
+                        </p>
+                      )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

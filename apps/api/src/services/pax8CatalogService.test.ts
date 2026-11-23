@@ -64,6 +64,19 @@ describe('searchPax8Products', () => {
     expect(res[0]!.pax8ProductId).toBe('p1');
   });
 
+  it('matches on the Pax8 product id (#12322)', async () => {
+    mocks.db.select.mockReturnValueOnce(selectChain([integration]));
+    mocks.createPax8ClientForIntegration.mockResolvedValue({
+      integration,
+      client: { listProducts: vi.fn().mockResolvedValue([
+        { pax8ProductId: 'ABC-123-XYZ', name: 'Microsoft 365 Business Premium', vendorName: 'Microsoft', vendorSku: 'MST-1', shortDescription: null, raw: {} },
+        { pax8ProductId: 'def-456', name: 'Acronis Backup', vendorName: 'Acronis', vendorSku: 'ACR', shortDescription: null, raw: {} },
+      ]) },
+    });
+    const res = await searchPax8Products({ q: 'c-123', limit: 20 }, actor);
+    expect(res.map((p) => p.pax8ProductId)).toEqual(['ABC-123-XYZ']);
+  });
+
   it('throws Pax8CatalogError when no active integration', async () => {
     mocks.db.select.mockReturnValueOnce(selectChain([]));
     await expect(searchPax8Products({ q: 'x', limit: 20 }, actor)).rejects.toBeInstanceOf(Pax8CatalogError);

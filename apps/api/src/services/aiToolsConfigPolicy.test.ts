@@ -2291,6 +2291,31 @@ describe('AI tools cannot arm vendor updates (#11070)', () => {
     expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.oem_updates).toMatch(/cannot turn vendor updates on/);
     expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.oem_updates).toContain('windowHours: 1..8');
   });
+
+  // #12265: Dell cannot honour a blocklist; the assistant must not be able to store one.
+  it('a Dell blocklist is refused on add and update, naming the field; the reference says so', async () => {
+    const dellBlocked = settings({ enabled: false }, { blockedUpdateIds: ['ABC12'] });
+    const added = await link(tools(), { action: 'add', featureType: 'oem_updates', inlineSettings: dellBlocked });
+    expect(added.code).toBe('oem_updates_invalid_settings');
+    expect(added.error).toContain('vendors.dell.blockedUpdateIds');
+    expect(added.error).toContain('Dell does not support blocking individual updates');
+    const map = tools();
+    mockSelectRows([{ featureType: 'oem_updates', inlineSettings: OFF }]);
+    const updated = await link(map, { action: 'update', featureLinkId: 'link-1', inlineSettings: dellBlocked });
+    expect(updated.code).toBe('oem_updates_invalid_settings');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+
+    const { POLICY_FEATURE_INLINE_SETTINGS_REFERENCE, OEM_UPDATES_AI_REFUSAL_MESSAGE } = await import('./aiToolsConfigPolicy');
+    expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.oem_updates).toMatch(/Dell does not support blockedUpdateIds/);
+    expect(OEM_UPDATES_AI_REFUSAL_MESSAGE).toMatch(/block an update \(not on Dell\)/);
+  });
+
+  it('the inline-settings validator for oem_updates is the write schema', async () => {
+    const { VALIDATED_INLINE_SETTINGS } = await import('./aiToolsConfigPolicy');
+    const result = VALIDATED_INLINE_SETTINGS.oem_updates!.schema.safeParse(settings({ enabled: false }, { blockedUpdateIds: ['ABC12'] }));
+    expect(result.success).toBe(false);
+  });
 });
 
 // #11432: a partner-wide Wisp chat filed a create with no orgId, a person

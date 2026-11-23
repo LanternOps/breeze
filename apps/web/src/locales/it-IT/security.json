@@ -1656,7 +1656,9 @@
         "label": "Pi-hole",
         "helpText": "Endpoint API Pi-hole + API key. Usa l'hostname raggiungibile dalla LAN.",
         "apiKeyPlaceholder": "api key Pi-hole da /admin",
-        "apiEndpointPlaceholder": "http://pihole.local"
+        "apiEndpointPlaceholder": "http://pihole.local",
+        "versionHelp": "Scegli la versione principale del tuo Pi-hole. La v6 accede con una password per app.",
+        "appPasswordPlaceholder": "password per app da Impostazioni → Interfaccia web / API"
       },
       "adguardHome": {
         "label": "AdGuard Home",
@@ -1678,7 +1680,9 @@
       "accountIdOptional": "ID account (facoltativo)",
       "apiEndpoint": "Endpoint API",
       "httpBasicUsername": "Username HTTP Basic",
-      "httpBasicPassword": "Password HTTP Basic"
+      "httpBasicPassword": "Password HTTP Basic",
+      "piholeVersion": "Versione di Pi-hole",
+      "appPassword": "Password per app"
     },
     "placeholders": {
       "displayName": "es. Acme HQ Gateway",
@@ -1693,6 +1697,10 @@
       "createFailed": "Impossibile creare l'integrazione",
       "createSuccess": "Integrazione {{provider}} \"{{name}}\" aggiunta",
       "networkError": "Errore di rete"
+    },
+    "piholeVersions": {
+      "v5": "Pi-hole v5 (API di amministrazione legacy)",
+      "v6": "Pi-hole v6 (API di sessione)"
     }
   },
   "dnsSecurityAddDnsPolicyModal": {
@@ -1825,6 +1833,12 @@
       "label": "Archivia il traffico consentito",
       "helpOff": "Vengono archiviate solo le query bloccate e reindirizzate. Le query consentite sono di solito quasi tutto il traffico e il tuo provider DNS le conserva nei propri report.",
       "helpOn": "Vengono archiviate anche le query consentite, di solito circa 100 volte più righe. Disattivare l'opzione in seguito non elimina le query consentite già archiviate; le rimuove la conservazione."
+    },
+    "piholeVersion": {
+      "label": "Versione di Pi-hole",
+      "v5": "Pi-hole v5 (API di amministrazione legacy)",
+      "v6": "Pi-hole v6 (API di sessione)",
+      "help": "Cambia il modo in cui Breeze comunica con questo Pi-hole. Per la v6, ricrea l’integrazione con una password per app se la chiave salvata è un token v5."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

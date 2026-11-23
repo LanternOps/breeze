@@ -1468,6 +1468,14 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         // a verified domain keeps its verification across the merge (same
         // partner, same customer). Transaction-local; ends with Phase B. If
         // Phase B ever splits into two transactions, set it in each.
+        // #12490: the same flag defers the configuration-assignment owner
+        // check to COMMIT. The walk moves configuration_policies and their
+        // site/group/device targets in separate statements, so an org-owned
+        // policy and its target sit in different orgs between them. The
+        // config_policy_assignment_owner_row_check constraint triggers
+        // re-validate every moved row at commit, after runPostPassFixups has
+        // re-pointed organization-level assignments (migration
+        // 2027-01-29-120000-config-assignment-owner-check-deferred-in-org-merge.sql).
         // orgMergeGucContract.test.ts pins that only this file sets it.
         await dbModule.db.execute(sql`SELECT set_config('breeze.org_merge', 'on', true)`);
         await lockPortalEntraOrgMappings([loser.id, survivor.id]);

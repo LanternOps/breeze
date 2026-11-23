@@ -55,6 +55,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'jobs/peripheralJobs.ts': { guards: 3, reason: 'peripheral policy distribution and reconciliation' },
   'jobs/discoveryWorker.ts': { guards: 1, reason: 'discovery scan executor selection (requested-agent lookup)' },
   'jobs/discoveryAgentSelection.ts': { guards: 2, reason: 'discovery agent selection: site candidates and the pinned-agent lookup (#7969)' },
+  'services/learnedNetworks/eligibility.ts': { guards: 3, reason: 'guarded discovery agent eligibility, the per-agent explanation and the no-agent reason' },
   'jobs/snmpWorker.ts': { guards: 1, reason: 'SNMP poll executor selection' },
   'services/wisp/wake.ts': { guards: 1, reason: 'Wisp wake coordinator (#9917): live partner orgs a grant\'s floor tick / onboarding / event fan-out may assess (Quick Support and holding org out)' },
   'services/aiAgents/patchPlan.ts': { guards: 1, reason: 'AI patch-plan evidence devices' },
@@ -70,7 +71,8 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'services/dnsThreatAlerts.ts': { guards: 1, reason: 'DNS threat alerts' },
   'services/offlineEffectsStore.ts': { guards: 2, reason: 'offline event and offline alert plan (no alerts, notifications or tickets for parked devices)' },
   // --- AI tools (model-visible device and org lookups) ----------------------
-  'services/aiToolsDevice.ts': { guards: 2, reason: 'query_devices and the tag vocabulary' },
+  'services/aiToolsDevice.ts': { guards: 1, reason: 'the tag vocabulary (query_devices reads through deviceListReachConditions, aiToolsSiteScope.ts)' },
+  'services/aiToolsSiteScope.ts': { guards: 1, reason: 'deviceListReachConditions: the query_devices list reach, shared with the Wisp standing state offline count (#11677)' },
   'services/aiToolsOrgs.ts': { guards: 2, reason: 'organization and site listings' },
   'services/aiToolsAgentMgmt.ts': { guards: 2, reason: 'device verifier and agent-version rollup' },
   'services/aiToolsPeripherals.ts': { guards: 1, reason: 'partner-wide peripheral policy fan-out' },

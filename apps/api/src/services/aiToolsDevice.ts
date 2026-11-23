@@ -40,7 +40,7 @@ import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
-import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds, siteScopeCondition, deviceScopeCondition } from './aiToolsSiteScope';
+import { deviceListReachConditions, resolveSiteAllowedDeviceIds, runFrozenDeviceIds, siteScopeCondition, deviceScopeCondition } from './aiToolsSiteScope';
 import { queryDeviceStats } from './deviceStats';
 import { getDeviceHardwareHealthView } from './hardwareHealth/view';
 import { getDeviceTimeStatusView } from './timeSync/view';
@@ -195,16 +195,20 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
       if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
       const { limit, offset, fingerprint } = page;
 
-      const conditions: SQL[] = [];
-      const orgCondition = auth.orgCondition(devices.orgId);
-      if (orgCondition) conditions.push(orgCondition);
-
-      // Quick Support's hidden 'quick_support' org stays inside accessibleOrgIds
-      // (so RLS lets techs read their own sessions), so ephemeral devices are NOT
-      // filtered by the org axis — exclude them explicitly from model-visible lists.
-      conditions.push(eq(devices.isEphemeral, false));
-      // Devices parked in a holding org are never model-visible, whatever the scope.
-      conditions.push(notParkedDeviceCondition());
+      // The tool's reach (deviceListReachConditions, shared with Wisp's standing
+      // state, #11677): the org axis; never a Quick Support device (its hidden
+      // 'quick_support' org stays inside accessibleOrgIds so RLS lets techs read
+      // their own sessions) or one parked in a holding org; and the site and
+      // exact-device axes (app-layer only; RLS does NOT enforce them). A
+      // site-restricted caller is narrowed to the real allowed device set, not
+      // to the optional, attacker-controlled `siteId` input below; a device-LESS
+      // analysis run (W04, #5715) to the device set frozen at admission. Null =
+      // nothing in reach: an empty page, no query.
+      const reach = await deviceListReachConditions(auth);
+      if (!reach) {
+        return JSON.stringify(pageEnvelope({ key: 'devices', items: [], limit, offset, fingerprint, total: 0 }));
+      }
+      const conditions: SQL[] = [...reach];
 
       if (input.status) conditions.push(eq(devices.status, input.status as typeof devices.status.enumValues[number]));
       if (input.osType) conditions.push(eq(devices.osType, input.osType as typeof devices.osType.enumValues[number]));
@@ -223,24 +227,6 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         const tagFilter = input.tags.filter((t): t is string => typeof t === 'string' && t.length > 0);
         if (tagFilter.length > 0) conditions.push(sql`${devices.tags} @> ${sqlTextArray(tagFilter)}`);
       }
-
-      // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
-      // caller may only enumerate devices in their allowed sites. The optional
-      // `siteId` input is attacker-controlled (a filter, not a restriction), so
-      // narrow to the real allowed device set instead.
-      const queryOrgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
-      if (auth.allowedSiteIds && queryOrgId) {
-        const allowed = await resolveSiteAllowedDeviceIds(queryOrgId, auth);
-        if (!allowed || allowed.length === 0) {
-          return JSON.stringify(pageEnvelope({ key: 'devices', items: [], limit, offset, fingerprint, total: 0 }));
-        }
-        conditions.push(inArray(devices.id, allowed));
-      }
-      // W04 (#5715): a device-LESS analysis run carries no site axis, only the
-      // device set frozen at admission. Without this it enumerates the whole
-      // org — see `runFrozenDeviceIds`'s docstring.
-      const frozenDeviceIds = runFrozenDeviceIds(auth);
-      if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
 
       // #10408: a caller reaching several orgs gets each row's org, or it mixes
       // customers (wrong-org narration, cross-org proposals the write path refuses).

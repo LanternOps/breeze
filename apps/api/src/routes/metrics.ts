@@ -266,6 +266,19 @@ const agentControlPlaneBlockReportsTotal = new Counter({
   registers: [register]
 });
 
+const NETWORK_ATTACHMENT_REPORT_OUTCOMES = [
+  'confirm', 'apply', 'apply_failed', 'disabled', 'ephemeral', 'invalid_report', 'stale_sequence',
+  'capture_time_out_of_bounds',
+] as const;
+export type NetworkAttachmentReportOutcome = (typeof NETWORK_ATTACHMENT_REPORT_OUTCOMES)[number];
+
+const networkAttachmentReportsTotal = new Counter({
+  name: 'breeze_network_attachment_reports_total',
+  help: 'REST heartbeats carrying networkAttachmentsV1 (learned networks #12369), by ingest outcome. A beat without the field is not counted. A rising apply_failed means learning is failing; capture_time_out_of_bounds points at device clocks',
+  labelNames: ['outcome'] as const,
+  registers: [register]
+});
+
 // #4340 — routine agent-telemetry submits used to be chained into audit_logs
 // (~97% of its volume). They are audited now only on failure or on a real
 // change; this counter is where the routine volume stays observable.
@@ -677,6 +690,7 @@ function initializeMetricDefaults(): void {
   agentFilterSignatureReportsTotal.inc(0);
   agentControlPlaneBlockReportsTotal.labels('valid').inc(0);
   agentControlPlaneBlockReportsTotal.labels('invalid').inc(0);
+  for (const outcome of NETWORK_ATTACHMENT_REPORT_OUTCOMES) networkAttachmentReportsTotal.labels(outcome).inc(0);
   scriptsExecutedTotal.inc(0);
   backupDispatchFailuresTotal.labels('manual_backup', 'device_offline').inc(0);
   backupVerificationSkipsTotal.labels('integrity', 'device_offline').inc(0);
@@ -897,6 +911,11 @@ export function recordAgentFilterSignatureReport(): void {
 export function recordAgentControlPlaneBlockReport(result: 'valid' | 'invalid'): void {
   agentControlPlaneBlockReportsTotal.labels(result).inc();
   agentControlPlaneBlockReports[result] += 1;
+}
+
+/** Learned networks (#12369): one REST heartbeat that carried `networkAttachmentsV1`, by ingest outcome. */
+export function recordNetworkAttachmentReport(outcome: NetworkAttachmentReportOutcome): void {
+  networkAttachmentReportsTotal.labels(outcome).inc();
 }
 
 export function recordAgentIngestSubmission(kind: AgentIngestKind, outcome: AgentIngestOutcome): void {

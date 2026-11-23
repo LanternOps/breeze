@@ -3,6 +3,7 @@ import {
   OEM_LANES,
   armsBeyond,
   oemUpdatesInlineSettingsSchema,
+  oemUpdatesInlineSettingsWriteSchema,
   type OemCategory,
   type OemLane,
   type OemUpdatesInlineSettings,
@@ -26,7 +27,10 @@ import { isCategoryOpen } from './toolManifest';
  *      Narrowing (switching off, removing a category, adding a blocked ID) needs
  *      only the normal link write: stopping a bad update never needs more.
  *   2. `featurePolicyId` must be NULL (Pattern B, inline settings).
- *   3. Strict inline-settings parse.
+ *   3. Strict inline-settings parse, with the write-only rules
+ *      (`oemUpdatesInlineSettingsWriteSchema`): no blocked update IDs for Dell,
+ *      whose tool cannot honour them (#12265). A Dell list stored before that
+ *      rule is not grandfathered: a write must send `[]` for it.
  *   4. A category whose availability gate is closed cannot be newly stored
  *      true (`oem_updates_category_gate_closed`), whatever the vendor and policy
  *      toggles say. A new `true` would start flashing the day the gate opens,
@@ -152,7 +156,7 @@ export function checkOemUpdatesLinkWrite(
 
   if (input.next === undefined) return { ok: true, inlineSettings: undefined };
 
-  const parsed = oemUpdatesInlineSettingsSchema.safeParse(input.next);
+  const parsed = oemUpdatesInlineSettingsWriteSchema.safeParse(input.next);
   if (!parsed.success) {
     const described = describeFirstZodIssue(parsed.error);
     return {

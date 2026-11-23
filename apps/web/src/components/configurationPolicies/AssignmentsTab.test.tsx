@@ -45,7 +45,7 @@ describe('AssignmentsTab — partner-OWNED policy (all organizations library, #2
     // the old fixed "all organizations" copy and add-assignment card.
     expect(await screen.findByRole('heading', { name: 'Organizations' })).toBeInTheDocument();
     expect(
-      screen.getByRole('checkbox', { name: /All organizations \(partner-wide\)/i })
+      screen.getByRole('checkbox', { name: /^All organizations$/i })
     ).toBeInTheDocument();
     expect(
       screen.queryByText('This policy applies to all organizations in your partner.')
@@ -77,7 +77,7 @@ describe('AssignmentsTab — partner-OWNED policy (all organizations library, #2
     render(<AssignmentsTab policyId={POLICY_ID} orgId={null} partnerId={PARTNER_ID} />);
 
     await waitFor(() =>
-      expect(screen.getByRole('checkbox', { name: /All organizations \(partner-wide\)/i })).toBeChecked()
+      expect(screen.getByRole('checkbox', { name: /^All organizations$/i })).toBeChecked()
     );
   });
 });

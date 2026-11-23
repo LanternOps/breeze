@@ -6,12 +6,16 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/biosconfig"
 )
 
-// writesActivated is the agent-side switch for every wake setting write. It
-// stays false until the activation wave (W06), which flips it in the same PR
-// that lets a policy deliver configure_settings true. Until then a delivered
-// configure_settings true is parsed but never reaches a Writer. Tests in this
+// writesActivated is the agent-side switch for every wake setting write,
+// Windows, NIC and firmware alike. It stays false until the activation wave
+// (W06), which flips it in the same PR that lets a policy deliver
+// configure_settings true. Until then a delivered configure_settings true (and
+// any firmware_writes grant) is parsed but never reaches a Writer, a firmware
+// adapter's Apply, or the BitLocker guard. Tests in this
 // package enable writes through Options.testAllowWrites, which no other
 // package can set.
 const writesActivated = false
@@ -93,6 +97,9 @@ type ApplyStatus struct {
 	Deferred        []string // wrong, waiting for the 24 h limit
 	LastApplyAt     time.Time
 	LastApplyResult string // ok | partial | failed
+	// FirmwareProtected is why a wrong firmware setting was not written this
+	// pass (a BIOS password, or the BitLocker guard): a reason code, or "".
+	FirmwareProtected string
 }
 
 // ApplyInputs is everything one Apply pass needs.
@@ -118,6 +125,21 @@ type ApplyInputs struct {
 	BootID func() (string, error)
 	Now    time.Time
 
+	// Firmware is this cycle's firmware read (nil: no adapter for this make).
+	Firmware *FirmwareReadings
+	// FirmwareAdapter writes firmware settings; it must be the adapter that
+	// produced Firmware. nil means no firmware write.
+	FirmwareAdapter biosconfig.Adapter
+	// FirmwareWrites is true when the adapter's vendor is in a fresh
+	// firmware_writes grant from the server.
+	FirmwareWrites bool
+	// FirmwareStillAllowed is checked, with StillAllowed, before each
+	// firmware write (the grant may lapse mid-cycle). nil means yes.
+	FirmwareStillAllowed func() bool
+	// BitLocker are the guard's readers; run only when a firmware write would
+	// otherwise go ahead.
+	BitLocker BitLockerReaders
+
 	// activated must also be true for any write. Only the manager (from
 	// writesActivated) and this package's tests can set it, so an exported
 	// Apply cannot be used to write from elsewhere.
@@ -126,7 +148,9 @@ type ApplyInputs struct {
 
 // ApplyReport is the result of one pass.
 type ApplyReport struct {
-	Readings  *WindowsReadings // the re-read after writes, else the input
+	Readings *WindowsReadings // the re-read after writes, else the input
+	// Firmware is the firmware re-read after a firmware write, else the input.
+	Firmware  *FirmwareReadings
 	Attempted []string
 	Failed    map[string]string // key -> write_error | readback_mismatch | readback_unavailable
 	Status    ApplyStatus
@@ -134,15 +158,16 @@ type ApplyReport struct {
 
 // Apply writes the Windows and NIC settings that read positively wrong, in the
 // order Fast Startup, magic packet, EEE, Realtek shutdown wake, each within
-// the limiter, then re-reads every one. It never restarts an adapter, never
-// reboots, never writes a value it could not read, and never reverts.
+// the limiter, then re-reads every one. Firmware settings come last
+// (applyFirmware), behind their own guards. It never restarts an adapter,
+// never reboots, never writes a value it could not read, and never reverts.
 func Apply(ctx context.Context, in ApplyInputs) ApplyReport {
 	st := in.State
 	if st == nil {
 		st = &ApplyState{}
 	}
 	now := in.Now.UTC()
-	rep := ApplyReport{Readings: in.Readings, Failed: map[string]string{}}
+	rep := ApplyReport{Readings: in.Readings, Firmware: in.Firmware, Failed: map[string]string{}}
 	configure := in.Configure && in.activated
 	boot := ""
 	if in.BootID != nil {
@@ -222,22 +247,30 @@ func Apply(ctx context.Context, in ApplyInputs) ApplyReport {
 				}
 			}
 		}
+	}
+
+	// Firmware last, after every Windows write has been read back.
+	protected := applyFirmware(ctx, in, st, &rep, configure, boot, now)
+
+	if len(rep.Attempted) > 0 {
 		st.LastApplyAt = now
 		switch n := len(rep.Failed); {
 		case n == 0:
 			st.LastApplyResult = "ok"
-		case n == len(attempted):
+		case n == len(rep.Attempted):
 			st.LastApplyResult = "failed"
 		default:
 			st.LastApplyResult = "partial"
 		}
-	}
-	if len(attempted) > 0 {
 		if err := persist(in, *st); err != nil {
 			log.Warn("wake apply results not persisted", "error", err.Error())
 		}
 	}
 	rep.Status = statusFor(st, rep.Readings, in.Virtual, in.Memory, configure, now)
+	if firmwareGranted(in, configure) {
+		addFirmwareStatus(&rep.Status, st, rep.Firmware, now)
+	}
+	rep.Status.FirmwareProtected = protected
 	return rep
 }
 

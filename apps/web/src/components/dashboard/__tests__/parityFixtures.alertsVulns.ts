@@ -40,8 +40,12 @@ export const alertListFor = (s: Session): FixtureAlert[] => FIXTURE_ALERTS.filte
 /** GET /alerts/summary. */
 export function alertSummaryFor(s: Session) {
   const bySeverity = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
-  for (const a of alertListFor(s)) if (a.status === 'active') bySeverity[a.severity] += 1;
-  return { bySeverity, byStatus: {}, total: alertListFor(s).length };
+  const openBySeverity = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  for (const a of alertListFor(s)) {
+    if (a.status === 'active') bySeverity[a.severity] += 1;
+    if (a.status === 'active' || a.status === 'acknowledged') openBySeverity[a.severity] += 1;
+  }
+  return { bySeverity, openBySeverity, byStatus: {}, total: alertListFor(s).length };
 }
 
 export interface AlertsParityExpectation {

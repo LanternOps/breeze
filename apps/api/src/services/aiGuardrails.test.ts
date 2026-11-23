@@ -118,6 +118,24 @@ describe('manage_monitors — retired mutations', () => {
   });
 });
 
+// Flows completion W01b (#12435, Decision P20): draft_flow's REST twins
+// (POST /flows, PUT /flows/:id) inherit flows.ts's router-level
+// automations:read, so the tool requires read as well as write.
+describe('draft_flow permissions', () => {
+  it('draft_flow requires automations read and write', () => {
+    const required = requiredPermissionsForTool('draft_flow', { document: {} }) ?? [];
+    expect(required).toEqual(expect.arrayContaining([
+      { resource: 'automations', action: 'write' },
+      { resource: 'automations', action: 'read' },
+    ]));
+    expect(required).toHaveLength(2);
+  });
+
+  it('validate_flow requires automations read only', () => {
+    expect(requiredPermissionsForTool('validate_flow', { document: {} })).toEqual([{ resource: 'automations', action: 'read' }]);
+  });
+});
+
 // ─── Tier escalation for fleet tools ────────────────────────────────────
 
 describe('checkGuardrails — fleet tool tier escalation', () => {

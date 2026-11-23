@@ -209,6 +209,9 @@ export const heartbeatSchema = z.object({
   // Version/shape failures are report-local and must not reject the heartbeat.
   networkContextV1: z.unknown().optional(),
   networkContextReset: z.unknown().optional(),
+  // Learned networks (#12369, contract C1). Parsed report-locally by services/learnedNetworks/ingest;
+  // absent = no change, so a beat without it never clears anything.
+  networkAttachmentsV1: z.unknown().optional(),
   // #8608 — log-shipping health. z.unknown() so a malformed object can never
   // reject the beat; services/logShippingHealth.parseLogShipping strict-parses
   // it separately (a bad value is `invalid`, never coerced to a healthy zero).

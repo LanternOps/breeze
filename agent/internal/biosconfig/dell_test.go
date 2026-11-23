@@ -193,17 +193,6 @@ func TestDellAdapterRunErrorIsUnknown(t *testing.T) {
 	}
 }
 
-// Firmware writes ship in W04: Apply must refuse without running anything.
-func TestDellApplyIsUnsupportedAndRunsNothing(t *testing.T) {
-	a := &dellAdapter{run: func(ctx context.Context, script string) ([]byte, error) {
-		t.Fatal("Apply must not run a command")
-		return nil, nil
-	}}
-	if err := a.Apply(context.Background(), "WakeOnLan", "LanOnly"); !errors.Is(err, ErrNotEnabled) {
-		t.Fatalf("got %v", err)
-	}
-}
-
 func TestDellReadScriptIsReadOnly(t *testing.T) {
 	s := strings.ToLower(dellReadScript)
 	for _, bad := range []string{"setattribute", "invoke-cimmethod", "invoke-wmimethod", "set-", "new-", "remove-",

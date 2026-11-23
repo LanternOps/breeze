@@ -89,7 +89,17 @@ describe('ConfigPolicyCreatePage — owner scope (#1724)', () => {
       expect('orgId' in body).toBe(false);
       expect(body.name).toBe('Fleet-wide PAM');
     });
-    expect(navMock).toHaveBeenCalledWith('/configuration-policies/pol-1');
+    expect(navMock).toHaveBeenCalledWith('/configuration-policies/pol-1#assignments');
+  });
+
+  // #12306 item 4 (plan D8): a new policy applies to nothing, so the create
+  // lands on its page with the Applies-to drawer open.
+  it('create navigates to the policy with the Applies-to drawer open', async () => {
+    render(<ConfigPolicyCreatePage />);
+    fireEvent.click(screen.getByTestId('config-policy-create-mode-new'));
+    fireEvent.change(screen.getByTestId('config-policy-create-name'), { target: { value: 'Acme baseline' } });
+    fireEvent.click(screen.getByTestId('config-policy-create-submit'));
+    await waitFor(() => expect(navMock).toHaveBeenCalledWith('/configuration-policies/pol-1#assignments'));
   });
 
   it('switches to a specific organization and sends orgId without ownerScope', async () => {
@@ -173,18 +183,20 @@ describe('ConfigPolicyCreatePage — owner scope (#1724)', () => {
 
   it('labels the partner option as a reusable library, not "all organizations"', () => {
     startNewPolicy();
-    expect(screen.getByText(/Partner library/i)).toBeInTheDocument();
+    expect(screen.getByTestId('policy-owner-partner').closest('label')).toHaveTextContent('Your MSP');
     expect(
-      screen.getByText(/applies to no organizations until you assign it/i)
+      screen.getByText(/applies to nothing until you choose where it applies/i)
     ).toBeInTheDocument();
   });
 
-  it('notes that backup settings are unavailable on partner-owned policies', () => {
+  // Backup became partner-linkable (spec 2026-07-13), so the old note that it
+  // was unavailable on partner-owned policies no longer holds (#12306).
+  it('no longer claims backup settings are unavailable on MSP-managed policies', () => {
     startNewPolicy();
     expect(screen.getByTestId('policy-owner-partner')).toBeChecked();
-    expect(
-      screen.getByText(/Backup settings aren.t available on partner-owned policies/i)
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/Backup settings aren.t available/i)).toBeNull();
+    // The old copy pointed at an "Organizations tab" that does not exist.
+    expect(screen.queryByText(/Organizations tab/i)).toBeNull();
   });
 
   // #2609: the Policy Details fields rendered <label> with no htmlFor/id link,
@@ -256,7 +268,7 @@ describe('ConfigPolicyCreatePage — paper cuts (#6497)', () => {
     fireEvent.click(screen.getByText('Create Policy'));
 
     await waitFor(() => {
-      expect(navMock).toHaveBeenCalledWith('/configuration-policies/pol-1');
+      expect(navMock).toHaveBeenCalledWith('/configuration-policies/pol-1#assignments');
     });
     expect(showToastMock).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'success' })
@@ -266,7 +278,7 @@ describe('ConfigPolicyCreatePage — paper cuts (#6497)', () => {
 
 function startLinkedPolicy() {
   render(<ConfigPolicyCreatePage />);
-  fireEvent.click(screen.getByText('Link to Existing'));
+  fireEvent.click(screen.getByText('Based on a parent policy'));
 }
 
 describe('ConfigPolicyCreatePage — linked mode posts parentPolicyId (#5080)', () => {
@@ -307,7 +319,7 @@ describe('ConfigPolicyCreatePage — linked mode posts parentPolicyId (#5080)', 
       expect(body.orgId).toBe('org-9');
     });
     expect(navMock).toHaveBeenCalledTimes(1);
-    expect(navMock.mock.calls[0][0]).toBe('/configuration-policies/pol-1');
+    expect(navMock.mock.calls[0][0]).toBe('/configuration-policies/pol-1#assignments');
     expect(navMock.mock.calls[0][0]).not.toContain('?linked=');
   });
 

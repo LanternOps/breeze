@@ -184,7 +184,18 @@ describe('POST /ai/patch-plan/runs', () => {
     // runAction reads an HTTP-200 `success: false` body as a failure, so the
     // "Run now" button can never toast "queued" for a run that never was.
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ success: false, skipped: 'mode_off' });
+    await expect(res.json()).resolves.toEqual({ success: false, skipped: 'mode_off', code: 'mode_off' });
+  });
+
+  // #12347: the skip reason rides as `code` too, because `runAction`'s
+  // `friendly` hook is keyed on `body.code` (or `body.error`) and never sees
+  // `skipped` — an open circuit toasted the generic "could not start" line.
+  // Still HTTP 200: `runAction` already reads `success: false` as a failure.
+  it('carries an open circuit as code circuit_open on the same HTTP-200 decline', async () => {
+    createAndEnqueueAgentRunMock.mockResolvedValue({ created: false, skipped: 'circuit_open' });
+    const res = await postRuns(buildApp(), { orgId: ORG_ID });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ success: false, skipped: 'circuit_open', code: 'circuit_open' });
   });
 
   it('audits the declined admission as a failure', async () => {

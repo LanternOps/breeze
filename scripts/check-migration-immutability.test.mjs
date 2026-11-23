@@ -419,6 +419,42 @@ test('checks behind-mainline before excluding a retained candidate row', () => {
   assert.doesNotMatch(result.output, /excluding.*candidate/);
 });
 
+// CI checks out full history with tags, and git resolves a short name to
+// refs/tags/<name> before refs/remotes/<name>. The behind-mainline check reads
+// main as refs/remotes/origin/main, so a tag called origin/main that sits on
+// the stale branch cannot hide a mainline release.
+test('a tag named origin/main does not hide a mainline release from the behind-mainline check', () => {
+  const seed = initRepo();
+  tag(seed, 'v1.0.0');
+  git(seed, 'switch', '-c', 'candidate');
+  write(seed, 'apps/api/migrations/2026-01-02-candidate.sql', 'SELECT 2;\n');
+  const candidateSha = commit(seed, 'candidate release');
+  tag(seed, 'v1.1.0-rc.1');
+  git(seed, 'switch', 'main');
+  candidateLedger(seed, [`v1.1.0-rc.1\t${candidateSha}\tissue/test\tretained candidate`]);
+  const staleSha = commit(seed, 'retain candidate record');
+  git(seed, 'branch', 'stale', staleSha);
+  git(seed, 'merge', '--no-ff', 'candidate', '-m', 'merge candidate to main');
+  git(seed, 'tag', 'origin/main', staleSha);
+
+  const bare = tempDir('migration-immutability-tagged-origin-');
+  git(bare, 'init', '--bare');
+  git(bare, 'symbolic-ref', 'HEAD', 'refs/heads/main');
+  git(seed, 'remote', 'add', 'origin', pathToFileURL(bare).href);
+  git(seed, 'push', '--all', 'origin');
+  git(seed, 'push', '--tags', 'origin');
+  const clone = tempDir('migration-immutability-tagged-clone-');
+  git(dirname(clone), 'clone', pathToFileURL(bare).href, clone);
+  git(clone, 'switch', '--track', 'origin/stale');
+  assert.notEqual(git(clone, 'rev-parse', 'refs/remotes/origin/main^{commit}'), staleSha);
+  assert.equal(git(clone, 'rev-parse', 'origin/main^{commit}'), staleSha, 'precondition: the short name reads the tag');
+
+  const result = runGuard(clone);
+
+  expectFailure(result, /behind mainline release 'v1\.1\.0-rc\.1'/);
+  assert.doesNotMatch(result.output, /excluding.*candidate/);
+});
+
 test('fails closed in a shallow file URL clone before selecting a baseline', () => {
   const seed = initRepo();
   tag(seed, 'v1.0.0');

@@ -30,14 +30,17 @@ export const ENABLE_NETWORK_DEVICES_IN_LIST = parseBoolean(
   true
 );
 
-// Endpoint messaging entry points (#8741, #8968). The server-side rollout
-// flag is a per-device helper policy that no UI can switch on yet, so every
-// send is refused as feature_disabled. Keep the Devices bulk action, the
-// organization header and the site header buttons hidden until a build sets
-// PUBLIC_ENABLE_ENDPOINT_MESSAGING=true.
+// Endpoint messaging entry points and the device Chat tab (#8741, #8743,
+// #8968). ON by default: the published web image is built without this
+// variable, so an opt-in default left the feature unreachable on every hosted
+// and self-hosted install. Sending is still gated server-side by the
+// `endpoint_messages:send` permission, the minimum agent version, and the
+// "Endpoint messaging" switch on the Breeze Assist policy. Set
+// PUBLIC_ENABLE_ENDPOINT_MESSAGING=false at build time to hide the entry
+// points.
 export const ENABLE_ENDPOINT_MESSAGING = parseBoolean(
   import.meta.env.PUBLIC_ENABLE_ENDPOINT_MESSAGING,
-  false
+  true
 );
 
 // NOTE: registration enablement is intentionally NOT a build-time flag. A

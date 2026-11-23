@@ -436,6 +436,14 @@ export const devices = pgTable('devices', {
   // assignment, so no wrong-site suggestion is computed. Cleared by the
   // breeze_devices_site_assignment_confirmation_reset trigger on any site/org change; no expiry.
   siteAssignmentConfirmedAt: timestamp('site_assignment_confirmed_at', { withTimezone: true }),
+  // Learned networks (#12369, spec §6): the last accepted network-attachment report — its install epoch and
+  // sequence, a digest of its normalized content plus WAN address, and when the server last saw it confirmed.
+  // Cleared, with the device's learned_network_devices rows, by the BEFORE UPDATE OF org_id trigger
+  // breeze_learned_networks_device_moved on a cross-org move (2027-01-29-100000-learned-networks.sql).
+  networkAttachmentEpoch: varchar('network_attachment_epoch', { length: 16 }),
+  networkAttachmentSequence: bigint('network_attachment_sequence', { mode: 'number' }),
+  networkAttachmentDigest: varchar('network_attachment_digest', { length: 64 }),
+  networkAttachmentsConfirmedAt: timestamp('network_attachments_confirmed_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()

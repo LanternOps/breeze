@@ -19,6 +19,7 @@ import {
   agentSupportsOemUpdates,
   canonicalizeTimezone,
   hasArmedCategory,
+  hasUnsupportedBlockedUpdateIds,
   OEM_CATEGORIES,
   OEM_LANES,
   resolveEffectiveTimezone,
@@ -77,7 +78,15 @@ export type ScheduledRunStatus = {
   lastOutcome?: OemOutcome | null;
   /** The trigger of the run `lastOutcome` came from. Only a scheduled run finishes an occurrence. */
   lastTrigger?: string | null;
+  /** Any run's dispatch, Run Now's included. */
   lastAttemptAt?: Date | null;
+  /** A scheduled run's dispatch only: what uses up the night (#12266). */
+  lastScheduledAttemptAt?: Date | null;
+  /**
+   * The status of the last run's command, either trigger. Read after `attempted_tonight`,
+   * so a scheduled run in flight tonight reads as attempted, not in progress.
+   */
+  commandStatus?: string | null;
   rebootPendingSince?: Date | null;
 };
 
@@ -86,6 +95,7 @@ export type ScheduledRunRefusal =
   | 'link_invalid'
   | 'link_disabled'
   | 'vendor_disabled'
+  | 'blocked_ids_unsupported'
   | 'no_open_categories'
   | 'not_in_window'
   | 'past_not_after'
@@ -93,6 +103,7 @@ export type ScheduledRunRefusal =
   | 'finished'
   | 'attempts_exhausted'
   | 'attempted_tonight'
+  | 'run_in_progress'
   | 'reboot_pending';
 
 export type ScheduledRunPlan = {
@@ -143,6 +154,10 @@ export function decideScheduledRun(
   const vendor = settings.vendors[lane];
   if (!vendor?.enabled) return refused('vendor_disabled');
 
+  // #12265: a Dell blocklist stored before the validator refused it. The agent would
+  // refuse the run (`blocked_ids_unsupported`), so none is sent until it is saved without.
+  if (hasUnsupportedBlockedUpdateIds(settings, lane)) return refused('blocked_ids_unsupported');
+
   const requestedCategories = OEM_CATEGORIES.filter((category) => vendor.categories[category] === true);
   const rebootControlled = settings.reboot === 'overnight';
   if (!hasSendableCategory(settings, lane, deviceId)) return refused('no_open_categories');
@@ -163,9 +178,19 @@ export function decideScheduledRun(
     }
     if ((status.attempts ?? 0) >= OEM_MAX_ATTEMPTS_PER_OCCURRENCE) return refused('attempts_exhausted');
   }
-  // One run a night: a failure retries on the next night (spec 4.2), not the next tick.
-  if (status.lastAttemptAt && status.lastAttemptAt.getTime() >= occurrence.windowStart.getTime()) {
+  // One scheduled run a night: a failure retries on the next night (spec 4.2), not the
+  // next tick. Only a scheduled dispatch counts (#12266): a Run Now may have left out
+  // categories or the reboot the policy asks for, so it does not use up the night.
+  if (status.lastScheduledAttemptAt
+    && status.lastScheduledAttemptAt.getTime() >= occurrence.windowStart.getTime()) {
     return refused('attempted_tonight');
+  }
+  // A run still on its way or running (a Run Now, or a scheduled run from an earlier
+  // night). Refused for this tick only and nothing is recorded, so the device is due
+  // again on a later tick once it settles, until notAfter. The seam refuses a second
+  // run under its lock regardless.
+  if (status.commandStatus && IN_FLIGHT_STATUSES.has(status.commandStatus)) {
+    return refused('run_in_progress');
   }
   // Overnight has a restart of its own coming, and the run follows it. Under `never`
   // nothing else will ask, and a clean answer from the tool is what clears the wait.
@@ -290,6 +315,7 @@ async function loadPage(scope: SQL, after: string | null, upTo: string | null): 
       attempts: deviceOemUpdateStatus.attempts,
       lastOutcome: deviceOemUpdateStatus.lastOutcome,
       lastAttemptAt: deviceOemUpdateStatus.lastAttemptAt,
+      lastScheduledAttemptAt: deviceOemUpdateStatus.lastScheduledAttemptAt,
       rebootPendingSince: deviceOemUpdateStatus.rebootPendingSince,
       applicability: deviceOemUpdateStatus.applicability,
       notSupportedToolVersion: deviceOemUpdateStatus.notSupportedToolVersion,
@@ -325,7 +351,9 @@ async function loadPage(scope: SQL, after: string | null, upTo: string | null): 
 /** The lane, when nothing about the device alone already rules a run out. */
 function laneWithoutALink(row: CandidateRow): OemLane | null {
   if (!oemUpdatesEnabled(row.partnerId)) return null;
-  if (row.commandStatus && IN_FLIGHT_STATUSES.has(row.commandStatus)) return null;
+  // A run in flight is refused by decideScheduledRun as `run_in_progress`, after the
+  // window and attempted-tonight checks, so a device outside its window or already
+  // attempted tonight reports that reason instead.
   // A release on its way would undo the takeover a run makes. The sweep settles it first.
   if (row.takeoverState === 'releasing') return null;
 
@@ -361,6 +389,22 @@ export async function maintenanceAllowsRun(deviceId: string, orgId: string, now:
     });
     return false;
   }
+}
+
+const reportedUnsupportedBlocklists = new Set<string>();
+
+/**
+ * #12265: a link whose stored blocked IDs its lane cannot honour (a Dell list saved
+ * before the validator refused one) sends that lane nothing. Once per link per
+ * process, so the skip reaches someone without logging every device every tick.
+ */
+function reportUnsupportedBlocklist(link: ResolvedOemUpdatesLink | null, lane: OemLane, orgId: string): void {
+  if (!link || reportedUnsupportedBlocklists.has(link.linkId)) return;
+  reportedUnsupportedBlocklists.add(link.linkId);
+  const message = `oem_updates link ${link.linkId} stores blocked update IDs for ${lane}, which cannot honour them; `
+    + `no ${lane} runs are sent until the policy is saved without them`;
+  console.warn(`[OemUpdates] ${message}`, { linkId: link.linkId, configPolicyId: link.configPolicyId });
+  captureException(new Error(message), undefined, { worker: 'oemUpdatesWorker', org_id: orgId });
 }
 
 /**
@@ -412,7 +456,10 @@ export async function selectDueDevices(
             return occurrence;
           },
         );
-        if (!decision.due) continue;
+        if (!decision.due) {
+          if (decision.reason === 'blocked_ids_unsupported') reportUnsupportedBlocklist(link, lane, row.orgId);
+          continue;
+        }
         if (!await maintenanceAllowsRun(row.deviceId, row.orgId, now)) continue;
         due.push({ ...decision, deviceId: row.deviceId, orgId: row.orgId, lane, timezone, status: row });
         if (due.length >= options.limit) return;

@@ -1048,13 +1048,12 @@
     "linkedPolicy": "Criterio collegato:",
     "notEnforced": "Non applicato",
     "usingBreezeDefaults": "— uso dei valori predefiniti di Breeze",
-    "inheritanceChain": "Catena di ereditarietà",
-    "policiesAreResolvedUsingClosestWins": "I criteri vengono risolti usando la priorità più vicina. Le assegnazioni più specifiche (a livello di dispositivo) sovrascrivono quelle più ampie (a livello di organizzazione).",
+    "inheritanceChain": "Precedenza",
     "priority": "Priorità",
     "level": "Livello",
     "policy2": "Criterio",
     "features": "Funzionalità",
-    "inheritedFrom": "Ereditato da {{name}}",
+    "inheritedFrom": "Basato su {{name}}",
     "patchApproval": {
       "label": "approvazione",
       "byRing": "definita dall'anello di aggiornamento collegato",
@@ -1064,8 +1063,16 @@
       "extraDestinations": "Destinazioni aggiuntive durante l’isolamento",
       "invalid": "Le impostazioni di contenimento di questo criterio non sono valide, quindi l’isolamento usa i valori predefiniti fissi, senza destinazioni aggiuntive."
     },
-    "chainResolutionRule": "Decide prima il livello: Dispositivo prevale su Gruppo di dispositivi, poi Sito, Organizzazione e Partner. La priorità (vince il numero più basso) decide solo tra criteri dello stesso livello. Le funzionalità barrate sono state sovrascritte da un criterio più vicino.",
-    "featureOverriddenBy": "Sovrascritta da {{policy}}"
+    "featureOverriddenBy": "Sovrascritta da {{policy}}",
+    "viaLevel": "tramite {{level}}",
+    "managedByYourMsp": "Gestito dal tuo MSP",
+    "precedenceLegend": "Vince il più specifico, per funzionalità: Dispositivo › Gruppo di dispositivi › Sito › Organizzazione › Tutte le organizzazioni. Un criterio più vicino sostituisce l'intera funzionalità; non si uniscono.",
+    "lostClause": "Sostituito per {{features}} da {{winner}}: {{reason}}.",
+    "lostReasons": {
+      "more_specific_level": "è impostato a un livello più specifico",
+      "lower_priority_number": "stesso livello, numero di priorità più basso",
+      "assigned_earlier": "stesso livello e stessa priorità, assegnato prima"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Impossibile recuperare le attività",

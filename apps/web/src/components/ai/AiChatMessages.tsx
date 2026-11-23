@@ -20,6 +20,7 @@ import { useTranslation } from "react-i18next";
 // copies had to be edited in lockstep. Type-only import — no runtime edge to
 // the store, so no cycle.
 import type { ChatRunState, PendingApproval } from "@/stores/processStreamEvent";
+import { claimSamePageHashClick } from "@/lib/samePageHashClick";
 import AiRunCard from "./AiRunCard";
 import TranscriptPurgedNotice from "./TranscriptPurgedNotice";
 import { dividerParts, groupChatUnits, type ChatRow, type ChatUnit, type ToolCall } from "./aiChatGrouping";
@@ -394,6 +395,11 @@ export default function AiChatMessages({
         {proposalHref && (
           <a
             href={proposalHref}
+            // Already on /approvals the router pushStates the new fragment
+            // without hashchange, so the inbox kept the old proposal (#12476).
+            onClick={(event) => {
+              claimSamePageHashClick(event, proposalHref);
+            }}
             className="text-xs text-primary underline-offset-2 hover:underline"
             data-testid="ai-script-proposal-link"
           >

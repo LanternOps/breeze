@@ -24,8 +24,23 @@ const tabHrefs = (q: string, c = ctx(), t = translate) =>
 describe('searchNavPages (#12210)', () => {
   it('finds every top-level nav item by its own name', () => {
     for (const item of topLevelNav.filter((i) => !i.requiresAutopay && !i.requiresPreAssignment)) {
-      expect(hrefs(item.name), item.name).toContain(item.href);
+      expect(hrefs(item.name), item.name).toContain(item.hrefWhenFlows ?? item.href);
     }
+  });
+
+  it('finds Automations at /flows when Flows is on and /jobs when it is off', () => {
+    expect(hrefs('automations')).toContain('/flows');
+    expect(hrefs('automations')).not.toContain('/jobs');
+    expect(hrefs('automations', ctx({ flowsEnabled: false }))).toContain('/jobs');
+    expect(hrefs('automations', ctx({ flowsEnabled: false }))).not.toContain('/flows');
+  });
+
+  it('merges the Jobs and Flows synonyms under the one entry', () => {
+    expect(hrefs('cron')).toContain('/flows');
+    expect(hrefs('workflow')).toContain('/flows');
+    expect(hrefs('cron', ctx({ flowsEnabled: false }))).toContain('/jobs');
+    // Flow synonyms are not offered when Flows is off.
+    expect(hrefs('workflow', ctx({ flowsEnabled: false }))).not.toContain('/jobs');
   });
 
   it('finds every visible sidebar section item by its own name', () => {
@@ -42,7 +57,7 @@ describe('searchNavPages (#12210)', () => {
     ['helpdesk', '/tickets'],
     ['updates', '/patches'],
     ['privileged', '/pam'],
-    ['automation', '/jobs'],
+    ['automation', '/flows'],
     ['logs', '/logs'],
     ['snmp', '/monitoring'],
   ])('synonym "%s" finds %s', (q, href) => {

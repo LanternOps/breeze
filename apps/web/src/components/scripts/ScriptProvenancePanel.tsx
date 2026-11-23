@@ -134,6 +134,7 @@ export default function ScriptProvenancePanel({ scriptId }: ScriptProvenancePane
               {head.approvalMethod ? ` (${head.approvalMethod})` : ''}
             </p>
             {head.proposalId && (
+              // bare-hash-anchor-exempt: rendered on /scripts pages only, a real cross-page link
               <a
                 data-testid="script-provenance-proposal-link"
                 href={`/approvals#proposal-${head.proposalId}`}

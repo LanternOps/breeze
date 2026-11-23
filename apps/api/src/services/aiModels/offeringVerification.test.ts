@@ -152,6 +152,23 @@ describe('verifyConnectionOffering', () => {
     });
   });
 
+  it('the basic-stage grant carries the operator context-window override (#12455)', async () => {
+    h.offering = { ...h.offering!, contextWindowOverride: 32_768 };
+    const gw = await getModelGateway();
+    const grantSpy = vi.spyOn(gw, 'grant');
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' });
+    const first = grantSpy.mock.calls[0]![0];
+    expect(first.purpose).toBe('verification');
+    expect(first.knownWindows).toEqual(new Map([['qwen', { window: 32_768, source: 'override' }]]));
+  });
+
+  it('the basic-stage grant carries no knownWindows when no window is known (#12455)', async () => {
+    const gw = await getModelGateway();
+    const grantSpy = vi.spyOn(gw, 'grant');
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' });
+    expect(grantSpy.mock.calls[0]![0]).not.toHaveProperty('knownWindows');
+  });
+
   it('drives the harness through a loopback gateway grant with the placeholder key', async () => {
     await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' });
     const [input, transport] = h.harnessArgs!;
