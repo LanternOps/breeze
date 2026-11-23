@@ -523,6 +523,45 @@ export const createConfigPolicySchema = z.object({
   parentPolicyId: z.string().guid().optional(),
 });
 
+/**
+ * Copy a configuration policy (#12309, #11776), to the same owner or to another
+ * organization or the MSP. The server decides the owner's access from this
+ * body, never from the client's claim. There is deliberately no `status` and no
+ * assignment field: a copy is always created `inactive` and applies nowhere.
+ *
+ * `parentPolicyId`: omitted keeps the source's parent; `null` copies with no
+ * parent; an id names a new parent, checked like a create's.
+ */
+export const copyConfigPolicySchema = z.object({
+  name: z.string().min(1).max(255),
+  ownerScope: z.enum(['organization', 'partner']),
+  orgId: z.string().guid().optional(),
+  parentPolicyId: z.string().guid().nullable().optional(),
+  dryRun: z.boolean().optional(),
+});
+export type CopyConfigPolicyInput = z.infer<typeof copyConfigPolicySchema>;
+
+/**
+ * Why a copy leaves a feature behind. A closed set of codes, never free text:
+ * the reason is shown to the caller, so it must not name or describe an entity
+ * the caller cannot read. "Missing" and "belongs to someone else" share one code.
+ * - org_only_feature: the feature cannot be set on an MSP-managed policy.
+ * - linked_item_unavailable: it uses an item the new owner cannot link.
+ * - settings_not_valid: its stored settings no longer pass today's checks.
+ */
+export const CONFIG_POLICY_COPY_DROP_REASONS = ['org_only_feature', 'linked_item_unavailable', 'settings_not_valid'] as const;
+export type ConfigPolicyCopyDropReason = (typeof CONFIG_POLICY_COPY_DROP_REASONS)[number];
+
+/**
+ * A feature a copy carries, but not in the state the source had it. A closed
+ * set of codes, returned the same way by the dry run and the real run.
+ * - consent_required: HP warranty collection is copied switched off, with no
+ *   licence acceptance. A copy never records acceptance of HP's licence on
+ *   anyone's behalf; someone turns it on in the editor and accepts it there.
+ */
+export const CONFIG_POLICY_COPY_NOTICE_CODES = ['consent_required'] as const;
+export type ConfigPolicyCopyNoticeCode = (typeof CONFIG_POLICY_COPY_NOTICE_CODES)[number];
+
 export const updateConfigPolicySchema = z.object({
   name: z.string().min(1).max(255).optional(),
   description: z.string().optional(),

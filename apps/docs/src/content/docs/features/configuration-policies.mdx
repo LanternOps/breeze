@@ -35,7 +35,7 @@ A new policy is managed by a sensible default, shown on the **Managed by** line 
 
 Before the first save, the Managed-by line also states the trade of an MSP-managed policy: it cannot link one customer's own software, security or backup items or a specific backup destination, and it cannot carry OneDrive Helper. Each picker that links such an item on an MSP-managed policy says the same.
 
-**Managed by** and **Based on** (the [parent policy](#parent-policies)) are fixed when the policy is first saved. The page says so before that save and on the policy afterwards.
+**Managed by** and **Based on** (the [parent policy](#parent-policies)) are fixed when the policy is first saved. The page says so before that save and on the policy afterwards. To change either, [copy the policy](#copying-a-policy) and choose a different owner or parent.
 
 MSP-managed policies can only be created and edited by partner-level users with full access to every organization under the partner. Everyone else sees them read-only, with the reason stated at the top of the page:
 
@@ -44,7 +44,7 @@ MSP-managed policies can only be created and edited by partner-level users with 
 
 Neither sees, opens or can name an MSP-managed policy that applies only to other organizations.
 
-OneDrive Helper can only be set on a policy managed by one organization; on an MSP-managed policy the feature says why it is unavailable.
+OneDrive Helper can only be set on a policy managed by one organization; on an MSP-managed policy the feature says why it is unavailable and offers **Copy to one organization**.
 
 ## Parent policies
 
@@ -162,6 +162,34 @@ Creating a policy happens on the same page you edit it on. A new policy starts *
 </Steps>
 
 Opening a feature from **Breeze Defaults** starts a new policy with that feature open.
+
+## Copying a policy
+
+**Copy** makes a new policy from an existing one: to start a near-identical policy (servers, workstations, virtual desktops), to give a policy a different owner, or to base it on a different parent. Copy is in the policy header and on each row of the policy list.
+
+<Steps>
+
+1. Click **Copy**. The name defaults to **&lt;name&gt; (copy)**.
+
+2. Choose **Managed by**: the same owner, another organization you can access, or your MSP. Only a partner user with access to every organization can copy to the MSP. A customer's own admin copies into their own organization, including an MSP-managed policy that applies to it.
+
+3. Optionally choose a parent under **Based on a parent policy**. For the same owner the source's parent is kept; for another owner, choose one the new owner can use, or none.
+
+4. Before anything is copied, the dialog lists what will be **Copied** and what is **Not copied**, with the reason. Click **Copy policy**. You land on the new policy.
+
+</Steps>
+
+What a copy carries:
+
+- The copy starts **Inactive** and applies nowhere, whatever the original's state. Apply it and activate it as you would a new policy.
+- It carries the original's own features and their settings. Features the original inherits from its parent are not copied; the copy's own parent supplies them.
+- Items a feature links, such as an update ring, a software policy, a monitor or a script, are shared with the original, not duplicated.
+- A feature the new owner cannot carry is left behind, and the dialog says why:
+  - **Only a policy managed by one organization can set this feature**: OneDrive Helper, when copying to your MSP.
+  - **It uses an item the new owner cannot use**: for example one organization's own software policy, monitor, script or backup destination, or the Microsoft 365 tenant and libraries OneDrive Helper names, when copying to another organization or to your MSP.
+  - **Its saved settings no longer pass today's checks.**
+- **HP warranty collection is copied switched off.** A copy never accepts HP's licence on anyone's behalf, so before you copy, the dialog says the licence must be accepted again. The warranty thresholds are copied as they are. To collect again, tick **Collect HP warranty from the device** in the copy, which accepts HP's licence as you, as setting it on any policy does.
+- A copy that would turn on a feature which installs software or moves files on devices (IOC auto-quarantine, security agents, vendor updates) needs the `devices:execute` permission and MFA, as setting that feature directly does. So does choosing a parent that collects HP warranty data, as creating a policy under that parent does. The auto-quarantine approval is recorded for you, not carried from the original.
 
 ## Activating a policy
 
@@ -512,6 +540,7 @@ All paths are relative to `/api/v1`.
 | GET | `/configuration-policies/eligible-parents` | List baseline policies eligible as a parent for a given ownership scope (`?ownerScope=organization&orgId=…` or `?ownerScope=partner`) |
 | GET | `/configuration-policies/:id` | Get policy — includes `parentPolicyId`, an embedded `parentPolicy` (read-only, with its own feature links), `childPolicies`, and `access: { canEdit, reason }`, which says why the caller can only read it |
 | PATCH | `/configuration-policies/:id` | Update metadata |
+| POST | `/configuration-policies/:id/copy` | Copy a policy: `{ name, ownerScope: "organization" \| "partner", orgId?, parentPolicyId?, dryRun? }`. The copy is always inactive with no assignments. Omitting `parentPolicyId` keeps the source's parent; `null` copies with none. Answers `201 { dryRun: false, policyId, orgId, dropped, notices }`, or with `dryRun: true` `200 { dryRun: true, carried, dropped, notices }` and nothing written. Each `dropped` entry is `{ featureType, reason }`, where `reason` is `org_only_feature`, `linked_item_unavailable` or `settings_not_valid`. Each `notices` entry is `{ featureType, code }` for a feature copied in a different state; `consent_required` means HP warranty collection was copied switched off and HP's licence must be accepted again. A source the caller cannot read is `404`; an owner the caller cannot write to, or a feature or parent the copy would arm without `devices:execute`, is `403`. |
 | DELETE | `/configuration-policies/:id` | Delete (cascades to features and assignments). Returns `409` with the list of dependent policies if any policy still inherits from this one. |
 | GET | `/configuration-policies/:id/features` | List feature links |
 | POST | `/configuration-policies/:id/features` | Add feature |

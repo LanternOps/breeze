@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from "react";
-import { ArrowLeft, Info } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import Breadcrumbs from "../layout/Breadcrumbs";
 import { useJwtClaims } from "@/lib/authScope";
 import { extractApiError } from "@/lib/apiError";
@@ -37,6 +37,9 @@ import type { PolicyStatus } from './page/PolicyHeader';
 import { FeaturePolicyContext, type FeaturePolicyInfo } from './featureTabs/featurePolicyContext';
 import { resolveViewerAccess } from './page/viewerAccess';
 import { configFeatureLabel } from './configPolicyLabels';
+import UnavailableFeaturePanel from './page/UnavailableFeaturePanel';
+import CopyPolicyDialog from './page/CopyPolicyDialog';
+import { creatorKind } from './page/policyOwner';
 import PolicyFeatureEditor from './page/PolicyFeatureEditor';
 import ComplianceStatusTab from './ComplianceStatusTab';
 import PolicyCreateHeader from './page/PolicyCreateHeader';
@@ -159,6 +162,9 @@ export default function ConfigPolicyDetailPage({
   const [appliesToDirty, setAppliesToDirty] = useState(false);
   // The details form (name, description, status) under the header.
   const [detailsOpen, setDetailsOpen] = useState(false);
+  // Copy (#12309): null = closed; 'organization' starts the copy at one
+  // organization (OneDrive Helper on an MSP-managed policy, plan D17).
+  const [copyOpen, setCopyOpen] = useState<null | "source" | "organization">(null);
   const [detailsDirty, setDetailsDirty] = useState(false);
   // Unsaved changes on the open feature (plan D16): FeatureTabShell reports
   // them. The ref is what the hash handler and the rail read synchronously.
@@ -324,6 +330,12 @@ export default function ConfigPolicyDetailPage({
     [policy?.access, mspManaged, current?.orgId, jwtClaims, permissions, canManagePartnerWide],
   );
   const readOnly = !viewer.canEdit;
+  // Copy creates a policy the caller owns, so it is offered to a read-only
+  // viewer of an MSP-managed policy too (#11776). A role without
+  // devices.write and a site-restricted user cannot create one. UX only:
+  // the copy route re-checks the source, the owner and every gate.
+  const canCopy =
+    !createMode && viewer.reason !== "no_write_permission" && viewer.reason !== "site_restricted";
   onCreatedRef.current = (row: CreatedPolicy) => {
     setPolicy({
       id: row.id,
@@ -645,61 +657,22 @@ export default function ConfigPolicyDetailPage({
   const sectionLabel = shownFeature
     ? configFeatureLabel(shownFeature)
     : i18n.t("policies:configurationPolicies.configPolicyDetailPage.complianceStatus");
-  const renderGatedFeature = (ft: FeatureType) => {
-    const feature = configFeatureLabel(ft);
-    return (
-      <div
-        data-testid="config-policy-feature-unavailable"
-        className="flex items-start gap-3 rounded-lg border border-dashed bg-muted/30 p-6 text-sm text-muted-foreground"
-      >
-        <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-        <div>
-          <p className="font-medium text-foreground">
-            {i18n.t("policies:configurationPolicies.configPolicyDetailPage.gatedFeatureUnavailable", { feature })}
-          </p>
-          <p className="mt-1">
-            {i18n.t("policies:configurationPolicies.configPolicyDetailPage.gatedFeatureReason", { feature })}
-          </p>
-          {/* A gated feature never renders its editor, so a leftover link
-              (pre-dating the restriction) needs a removal path here or it
-              would be permanently stuck. A read-only viewer gets no control. */}
-          {linkFor(ft) && (
-            <div className="mt-4">
-              <p className="text-warning">
-                {i18n.t(
-                  "policies:configurationPolicies.configPolicyDetailPage.thisPolicyStillCarriesAnExisting",
-                )}{" "}
-                {feature.toLowerCase()}
-                {i18n.t(
-                  "policies:configurationPolicies.configPolicyDetailPage.configurationThatWillNeverBeApplied",
-                )}
-              </p>
-              {gatedRemoveError && (
-                <p className="mt-2 text-destructive">{gatedRemoveError}</p>
-              )}
-              {!readOnly && (
-                <button
-                  type="button"
-                  disabled={removingGatedLink}
-                  onClick={async () => {
-                    const link = linkFor(ft);
-                    if (!link) return;
-                    const ok = await removeGatedLink(link.id);
-                    if (ok) handleLinkChanged(null, ft);
-                  }}
-                  className="mt-2 h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
-                >
-                  {removingGatedLink
-                    ? i18n.t("policies:configurationPolicies.configPolicyDetailPage.removing")
-                    : i18n.t("policies:configurationPolicies.configPolicyDetailPage.removeConfiguration")}
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
+  const renderGatedFeature = (ft: FeatureType) => (
+    <UnavailableFeaturePanel
+      featureType={ft}
+      hasLink={!!linkFor(ft)}
+      readOnly={readOnly}
+      removing={removingGatedLink}
+      removeError={gatedRemoveError ?? null}
+      onRemove={async () => {
+        const link = linkFor(ft);
+        if (!link) return;
+        const ok = await removeGatedLink(link.id);
+        if (ok) handleLinkChanged(null, ft);
+      }}
+      onCopyToOrganization={canCopy ? () => setCopyOpen("organization") : undefined}
+    />
+  );
   return (
     <div className="space-y-6">
       <Breadcrumbs
@@ -746,6 +719,7 @@ export default function ConfigPolicyDetailPage({
           readOnlyReason={viewer.reason}
           onEditDetails={readOnly ? undefined : () => setDetailsOpen(true)}
           showFixedNote={!readOnly}
+          onCopy={canCopy ? () => setCopyOpen("source") : undefined}
           actions={
             id && (
               <PolicyStateActions
@@ -783,6 +757,18 @@ export default function ConfigPolicyDetailPage({
             feature: configFeatureLabel(firstSaveFailed),
           })}
         </p>
+      )}
+
+      {copyOpen && id && (
+        <CopyPolicyDialog
+          open
+          onClose={() => setCopyOpen(null)}
+          source={{ id, name: current.name, orgId: current.orgId, parentPolicyId: current.parentPolicyId ?? null }}
+          organizations={organizations}
+          currentOrgId={currentOrgId}
+          creator={creatorKind(jwtClaims, canManagePartnerWide)}
+          initialOwner={copyOpen === "organization" ? "organization" : undefined}
+        />
       )}
 
       {detailsOpen && !readOnly && id && (

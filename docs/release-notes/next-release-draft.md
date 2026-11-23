@@ -75,6 +75,8 @@ Lab checks owed before the next tag:
 - With one organization selected, the policy list shows the policies that apply to it, plus inactive ones that apply nowhere yet. The list filters by state, not applied and organization, and pages and searches on the server.
 - `GET /configuration-policies` accepts `appliesToOrgId` and `notApplied`; `GET /configuration-policies/:id` returns `access`.
 
+- **Copy a configuration policy** (#12309, #11776), to the same owner or to another organization or your MSP. The copy starts inactive and unapplied, and before it is made the dialog lists any feature the new owner cannot carry, with the reason. Copy is in the policy header and on each list row, and it is how to change a policy's Managed by or Based on, or to set OneDrive Helper from an MSP-managed policy. A customer's own admin can copy an MSP-managed policy that applies to them into their organization. New route: `POST /configuration-policies/:id/copy`.
+
 ## Migrations
 
 - `2027-01-24-170000-portal-access-requests-google-hosted-domain.sql`: adds nullable `portal_access_requests.google_hosted_domain` and the CHECK `portal_access_requests_google_hd_chk` (validated in the same file when no Google request lacks a domain, which is every existing database). DDL only; fast.

@@ -1,6 +1,7 @@
 // Re-export from shared validators (canonical location per CLAUDE.md)
 export {
   createConfigPolicySchema,
+  copyConfigPolicySchema,
   updateConfigPolicySchema,
   addFeatureLinkSchema,
   updateFeatureLinkSchema,

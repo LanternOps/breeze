@@ -18,7 +18,8 @@ type StartFromProps = {
  * "Start from" on the create page (spec "Create: inactive until activated";
  * plan W03d C1). This used to be a two-card chooser that had to be answered
  * before anything else; now it is optional and sits on the policy page:
- * Blank, or Based on a parent policy. (Copy of a policy comes later, #12309.)
+ * Blank, or Based on a parent policy. Copy of an existing policy (#12309) is
+ * offered on that policy's page and in the list, not here.
  * The parent is fixed at the first save; the page says so beside it.
  */
 export default function ConfigPolicyCreatePage({ eligibleUrl, parent, onChange }: StartFromProps) {

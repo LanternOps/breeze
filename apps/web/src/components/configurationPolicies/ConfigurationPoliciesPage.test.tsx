@@ -13,7 +13,12 @@ const POLICY = {
 
 const { fetchWithAuthMock } = vi.hoisted(() => ({ fetchWithAuthMock: vi.fn() }));
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: fetchWithAuthMock }));
+// The page reads the signed-in user's permissions for Copy (#12309); no user
+// here, so the server would decide.
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: fetchWithAuthMock,
+  useAuthStore: (selector: (s: unknown) => unknown) => selector({ user: null, tokens: null }),
+}));
 const orgState = vi.hoisted(() => ({ value: { currentOrgId: null as string | null, organizations: [] as { id: string; name: string }[] } }));
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: unknown) => unknown) => selector(orgState.value),

@@ -45,6 +45,21 @@ const orgTarget = (id: string, name: string) => ({
   osFilter: null,
 });
 
+describe('ConfigPolicyList Copy (#12309, plan W05b K3)', () => {
+  it('each row offers Copy for that policy', async () => {
+    const onCopy = vi.fn();
+    render(<ConfigPolicyList policies={[partnerWide, { ...orgOwned, name: 'Servers' }]} onCopy={onCopy} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copy: Servers' }));
+    expect(onCopy).toHaveBeenCalledWith(expect.objectContaining({ id: orgOwned.id }));
+  });
+
+  it('no handler, no Copy control', () => {
+    render(<ConfigPolicyList policies={[orgOwned]} />);
+    expect(screen.queryByTestId('config-policy-copy-button')).toBeNull();
+  });
+});
+
 describe('ConfigPolicyList Applies to column (#12306)', () => {
   it('sits between Name and Status', () => {
     render(<ConfigPolicyList policies={[orgOwned]} />);

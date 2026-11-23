@@ -1668,6 +1668,36 @@
       "detail": "Lá, uma política mais específica ou de maior prioridade prevalece para este recurso. Dos dispositivos que você pode ver, esta política alcança {{reached}}.",
       "capped": "Dispositivos demais para contar onde outra política prevalece para este recurso.",
       "openDevice": "Abra a aba Configuração de um dispositivo para ver qual política se aplica a ele."
+    },
+    "copyPolicy": {
+      "action": "Copiar",
+      "title": "Copiar política",
+      "defaultName": "{{name}} (cópia)",
+      "startsInactive": "A cópia começa inativa e não se aplica a nenhum dispositivo até que você a aplique e a ative. Os itens que ela vincula, como anéis de atualização e monitores, são compartilhados com a original, não duplicados.",
+      "checking": "Verificando o que pode ser copiado…",
+      "carriedHeading": "Copiado",
+      "carriedNone": "Esta política não define nenhum recurso próprio.",
+      "droppedHeading": "Não copiado",
+      "reasons": {
+        "org_only_feature": "somente uma política gerenciada por uma organização pode definir este recurso.",
+        "linked_item_unavailable": "ela usa um item que o novo proprietário não pode usar.",
+        "settings_not_valid": "as configurações salvas não passam mais nas verificações atuais."
+      },
+      "noticesHeading": "Copiado com uma alteração",
+      "notices": {
+        "consent_required": "“Coletar a garantia HP do dispositivo” é copiado desativado: uma cópia nunca aceita a licença da HP em nome de ninguém. Marque-o na cópia para aceitar a licença novamente."
+      },
+      "confirm": "Copiar política",
+      "copying": "Copiando…",
+      "copiedToast": "Política copiada. Ela fica inativa até que você a ative.",
+      "failed": "Não foi possível copiar a política.",
+      "previewFailed": "Não foi possível verificar o que pode ser copiado. Tente novamente.",
+      "invalidParent": "Essa política pai não pode ser usada com o proprietário escolhido. Escolha outra política pai, ou nenhuma.",
+      "executeRequired": "Esta política ativa recursos que instalam software ou movem arquivos nos dispositivos, então copiá-la exige a permissão devices:execute.",
+      "mfaRequired": "Confirme sua identidade com MFA para copiar esta política.",
+      "copyToOrganization": "Copiar para uma organização",
+      "changeWithCopy": "Copiar com outro proprietário ou política pai",
+      "droppedSincePreview": "Copiado, mas estes recursos não foram copiados porque algo mudou desde a verificação: {{features}}."
     }
   },
   "software": {

@@ -8,6 +8,7 @@ import {
   Pencil,
   Trash2,
   AlertTriangle,
+  Copy,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { FilterSelect } from "../shared/FilterSelect";
@@ -82,6 +83,8 @@ type ConfigPolicyListProps = {
   filtersAtRest?: boolean;
   onEdit?: (policy: ConfigPolicy) => void;
   onDelete?: (policy: ConfigPolicy) => void;
+  /** Opens Copy for a row (#12309). Omitted = no Copy control. */
+  onCopy?: (policy: ConfigPolicy) => void;
 };
 const createStatusConfig = (): Record<
   ConfigPolicyStatus,
@@ -210,6 +213,7 @@ export default function ConfigPolicyList({
   filtersAtRest,
   onEdit,
   onDelete,
+  onCopy,
 }: ConfigPolicyListProps) {
   useTranslation("policies");
   const statusConfig = createStatusConfig();
@@ -218,6 +222,7 @@ export default function ConfigPolicyList({
   // another's, which a bare "Edit" cannot.
   const editLabel = i18n.t("common:actions.edit");
   const deleteLabel = i18n.t("common:actions.delete");
+  const copyLabel = i18n.t("policies:configurationPolicies.copyPolicy.action");
   // Dedicated pagination keys rather than actions.back/actions.next: those are
   // navigation verbs ("Back"/"Retour"/"Zurück"), which is the wrong thing to
   // announce for a pager control.
@@ -568,6 +573,18 @@ export default function ConfigPolicyList({
                       >
                         <Pencil className="h-4 w-4" aria-hidden="true" />
                       </button>
+                      {onCopy && (
+                        <button
+                          type="button"
+                          onClick={() => onCopy(policy)}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+                          title={copyLabel}
+                          aria-label={`${copyLabel}: ${policy.name}`}
+                          data-testid="config-policy-copy-button"
+                        >
+                          <Copy className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => onDelete?.(policy)}

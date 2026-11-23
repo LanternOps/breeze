@@ -1668,6 +1668,36 @@
       "detail": "Orada bu özellik için daha özel veya daha yüksek öncelikli bir politika geçerli olur. Görebildiğiniz cihazlardan bu politika {{reached}} cihaza ulaşıyor.",
       "capped": "Bu özellik için başka bir politikanın geçerli olduğu cihazları saymak için çok fazla cihaz var.",
       "openDevice": "Hangi politikanın geçerli olduğunu görmek için bir cihazın Yapılandırma sekmesini açın."
+    },
+    "copyPolicy": {
+      "action": "Kopyala",
+      "title": "Politikayı kopyala",
+      "defaultName": "{{name}} (kopya)",
+      "startsInactive": "Kopya etkin değil olarak başlar ve siz uygulayıp etkinleştirene kadar hiçbir cihaza uygulanmaz. Bağladığı öğeler, örneğin güncelleme halkaları ve monitörler, orijinalle paylaşılır, çoğaltılmaz.",
+      "checking": "Nelerin kopyalanabileceği denetleniyor…",
+      "carriedHeading": "Kopyalandı",
+      "carriedNone": "Bu politika kendine ait hiçbir özellik ayarlamıyor.",
+      "droppedHeading": "Kopyalanmadı",
+      "reasons": {
+        "org_only_feature": "bu özelliği yalnızca tek bir kuruluşun yönettiği bir politika ayarlayabilir.",
+        "linked_item_unavailable": "yeni sahibin kullanamayacağı bir öğe kullanıyor.",
+        "settings_not_valid": "kayıtlı ayarları artık güncel denetimlerden geçmiyor."
+      },
+      "noticesHeading": "Bir değişiklikle kopyalandı",
+      "notices": {
+        "consent_required": "“HP garantisini cihazdan topla” kapalı olarak kopyalanır: bir kopya HP lisansını hiç kimse adına kabul etmez. Lisansı yeniden kabul etmek için kopyada bunu işaretleyin."
+      },
+      "confirm": "Politikayı kopyala",
+      "copying": "Kopyalanıyor…",
+      "copiedToast": "Politika kopyalandı. Siz etkinleştirene kadar etkin değildir.",
+      "failed": "Politika kopyalanamadı.",
+      "previewFailed": "Nelerin kopyalanabileceği denetlenemedi. Tekrar deneyin.",
+      "invalidParent": "Bu üst politika, seçtiğiniz sahip için kullanılamaz. Başka bir üst politika seçin ya da hiçbirini seçmeyin.",
+      "executeRequired": "Bu politika, cihazlara yazılım yükleyen veya dosya taşıyan özellikleri açtığı için kopyalamak devices:execute iznini gerektirir.",
+      "mfaRequired": "Bu politikayı kopyalamak için kimliğinizi MFA ile doğrulayın.",
+      "copyToOrganization": "Tek bir kuruluşa kopyala",
+      "changeWithCopy": "Farklı bir sahip veya üst politika ile kopyala",
+      "droppedSincePreview": "Kopyalandı, ancak denetimden bu yana bir şey değiştiği için şu özellikler kopyalanmadı: {{features}}."
     }
   },
   "software": {

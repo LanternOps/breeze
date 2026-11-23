@@ -1668,6 +1668,36 @@
       "detail": "A more specific or higher-priority policy wins this feature there. Of the devices you can see, this policy reaches {{reached}}.",
       "capped": "Too many devices to count where another policy wins this feature.",
       "openDevice": "Open a device's Configuration tab to see which policy applies to it."
+    },
+    "copyPolicy": {
+      "action": "Copy",
+      "title": "Copy policy",
+      "defaultName": "{{name}} (copy)",
+      "startsInactive": "The copy starts inactive and applies to no device until you apply and activate it. Items it links, such as update rings and monitors, are shared with the original, not duplicated.",
+      "checking": "Checking what can be copied…",
+      "carriedHeading": "Copied",
+      "carriedNone": "This policy sets no features of its own.",
+      "droppedHeading": "Not copied",
+      "reasons": {
+        "org_only_feature": "only a policy managed by one organization can set this feature.",
+        "linked_item_unavailable": "it uses an item the new owner cannot use.",
+        "settings_not_valid": "its saved settings no longer pass today's checks."
+      },
+      "noticesHeading": "Copied with a change",
+      "notices": {
+        "consent_required": "“Collect HP warranty from the device” is copied switched off: a copy never accepts HP's licence for anyone. Tick it in the copy to accept the licence again."
+      },
+      "confirm": "Copy policy",
+      "copying": "Copying…",
+      "copiedToast": "Policy copied. It is inactive until you activate it.",
+      "failed": "The policy could not be copied.",
+      "previewFailed": "Could not check what can be copied. Try again.",
+      "invalidParent": "That parent cannot be used for the owner you chose. Choose another parent, or none.",
+      "executeRequired": "This policy turns on features that install software or move files on devices, so copying it needs the devices:execute permission.",
+      "mfaRequired": "Confirm your identity with MFA to copy this policy.",
+      "copyToOrganization": "Copy to one organization",
+      "changeWithCopy": "Copy with a different owner or parent",
+      "droppedSincePreview": "Copied, but these features were not copied because something changed since the check: {{features}}."
     }
   },
   "software": {
