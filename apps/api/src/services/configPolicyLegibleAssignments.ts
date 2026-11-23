@@ -16,20 +16,46 @@
  * - anything else, including a target that does not resolve, is dropped.
  *
  * Callers who may manage partner-wide policies, system scope, and every
- * org-owned policy (all of whose targets live in its own org) get the rows
- * unchanged with no extra read. `assignmentCount`-style totals stay unfiltered
- * on purpose (plan D2); this only decides which rows are returned.
+ * org-owned policy (all of whose targets live in its own org) skip that
+ * organization step.
+ *
+ * Then, for EVERY policy and caller, the site and device ceiling: RLS does not
+ * enforce the site sub-axis or a device pin, so a caller inside the right
+ * organization may still not reach a given site, group or device. The rows are
+ * passed through `authorizeAssignmentTargets`, the set-based form of the check
+ * the assignment writes run, and a refused row is dropped (an organization or
+ * partner row is refused for a restricted caller). No extra read for an
+ * unrestricted caller.
+ *
+ * This is the one row filter for every reader that returns a policy's
+ * assignment rows (`GET /:id/assignments`, the AI `get_configuration_policy`),
+ * so the readers cannot drift apart. `assignmentCount`-style totals stay
+ * unfiltered on purpose (plan D2); this only decides which rows are returned.
  */
 import { inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceGroups, devices, sites } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
+import { assignmentTargetKey, authorizeAssignmentTargets, type ConfigAssignmentLevel } from './configurationPolicy';
 
 type AssignmentLike = { level: string; targetId: string };
 
 export async function filterLegibleAssignments<T extends AssignmentLike>(
-  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'partnerOrgAccess' | 'canAccessOrg'>,
+  auth: AuthContext,
+  policy: { orgId: string | null; partnerId: string | null },
+  rows: readonly T[],
+): Promise<T[]> {
+  const legible = await rowsInCallerOrgs(auth, policy, rows);
+  if (legible.length === 0) return legible;
+  const targets = legible.map((row) => ({ level: row.level as ConfigAssignmentLevel, targetId: row.targetId }));
+  const reachable = await authorizeAssignmentTargets(auth, targets);
+  return legible.filter((row) => reachable.get(assignmentTargetKey(row.level as ConfigAssignmentLevel, row.targetId)) === true);
+}
+
+/** The organization step: rows whose target is in one of the caller's orgs. */
+async function rowsInCallerOrgs<T extends AssignmentLike>(
+  auth: AuthContext,
   policy: { orgId: string | null; partnerId: string | null },
   rows: readonly T[],
 ): Promise<T[]> {

@@ -53,24 +53,11 @@ assignmentRoutes.get(
     const policy = await getConfigPolicy(id, auth, { access: 'read' });
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
-    // On an MSP-managed policy, a caller without full partner access sees only
-    // the rows whose target is in one of its organizations (W03a).
+    // One row filter for this route and the AI get tool: the caller's
+    // organizations on an MSP-managed policy (W03a), then the site/device
+    // ceiling (SR5-07) on every policy, since RLS enforces neither sub-axis.
     const assignments = await filterLegibleAssignments(auth, policy, await listAssignments(id));
-    const authorizedAssignments = await Promise.all(
-      assignments.map(async (assignment) => ({
-        assignment,
-        authorization: await authorizeAssignmentTarget(
-          auth,
-          assignment.level as ConfigAssignmentLevel,
-          assignment.targetId,
-        ),
-      })),
-    );
-    return c.json({
-      data: authorizedAssignments
-        .filter(({ authorization }) => authorization.valid)
-        .map(({ assignment }) => assignment),
-    });
+    return c.json({ data: assignments });
   }
 );
 

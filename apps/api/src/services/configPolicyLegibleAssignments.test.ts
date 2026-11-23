@@ -16,6 +16,18 @@ vi.mock('../db', () => ({
   },
 }));
 
+// The site/device ceiling is the set-based reader GET /:id/assignments used per
+// row; mocked here so these cases pin the wiring (the real rules have their own
+// tests and the integration suite runs both on Postgres).
+const { ceilingMock } = vi.hoisted(() => ({
+  ceilingMock: vi.fn(async (_auth: unknown, targets: Array<{ level: string; targetId: string }>) =>
+    new Map(targets.map((t) => [`${t.level}:${t.targetId}`, true]))),
+}));
+vi.mock('./configurationPolicy', () => ({
+  authorizeAssignmentTargets: ceilingMock,
+  assignmentTargetKey: (level: string, targetId: string) => `${level}:${targetId}`,
+}));
+
 import type { AuthContext } from '../middleware/auth';
 import { filterLegibleAssignments } from './configPolicyLegibleAssignments';
 
@@ -46,6 +58,7 @@ const auth = (overrides: Partial<AuthContext>): AuthContext => ({
 beforeEach(() => {
   queue.length = 0;
   selects.length = 0;
+  ceilingMock.mockClear();
 });
 
 describe('filterLegibleAssignments', () => {
@@ -82,5 +95,47 @@ describe('filterLegibleAssignments', () => {
     queue.push([]);
     const kept = await filterLegibleAssignments(auth({}), { orgId: null, partnerId: PARTNER }, [{ id: 's', level: 'site', targetId: 'site-gone' }]);
     expect(kept).toEqual([]);
+  });
+
+  describe('the site and device ceiling (Strix, PR #12552)', () => {
+    const refuse = (...keys: string[]) => ceilingMock.mockImplementationOnce(async (_a, targets) =>
+      new Map(targets.map((t) => [`${t.level}:${t.targetId}`, !keys.includes(`${t.level}:${t.targetId}`)])));
+
+    it('drops the rows a site-restricted caller may not reach, on an org-owned policy too', async () => {
+      const siteAuth = auth({ allowedSiteIds: ['site-a'], canAccessSite: (id: string | null) => id === 'site-a' });
+      refuse('organization:org-a', 'site:site-a2');
+      const orgRows = [
+        { id: 'o', level: 'organization', targetId: ORG_A },
+        { id: 's1', level: 'site', targetId: 'site-a' },
+        { id: 's2', level: 'site', targetId: 'site-a2' },
+      ];
+      const kept = await filterLegibleAssignments(siteAuth, { orgId: ORG_A, partnerId: null }, orgRows);
+      expect(kept.map((r) => r.id)).toEqual(['s1']);
+      expect(ceilingMock).toHaveBeenCalledWith(siteAuth, [
+        { level: 'organization', targetId: ORG_A },
+        { level: 'site', targetId: 'site-a' },
+        { level: 'site', targetId: 'site-a2' },
+      ]);
+    });
+
+    it('applies the ceiling after the organization filter on an MSP-managed policy', async () => {
+      const pinned = auth({ allowedDeviceIds: ['dev-a'] });
+      queue.push([{ id: 'dev-a', orgId: ORG_A }, { id: 'dev-a2', orgId: ORG_A }, { id: 'dev-b', orgId: ORG_B }]);
+      refuse('device:dev-a2', 'partner:partner-1');
+      const kept = await filterLegibleAssignments(pinned, { orgId: null, partnerId: PARTNER }, [
+        { id: 'p', level: 'partner', targetId: PARTNER },
+        { id: 'd1', level: 'device', targetId: 'dev-a' },
+        { id: 'd2', level: 'device', targetId: 'dev-a2' },
+        { id: 'd3', level: 'device', targetId: 'dev-b' },
+      ]);
+      expect(kept.map((r) => r.id)).toEqual(['d1']);
+      // Another customer's device never reaches the ceiling read.
+      expect(ceilingMock.mock.calls[0]![1]).not.toContainEqual({ level: 'device', targetId: 'dev-b' });
+    });
+
+    it('asks nothing of the ceiling when no row is left', async () => {
+      expect(await filterLegibleAssignments(auth({}), { orgId: ORG_A, partnerId: null }, [])).toEqual([]);
+      expect(ceilingMock).not.toHaveBeenCalled();
+    });
   });
 });

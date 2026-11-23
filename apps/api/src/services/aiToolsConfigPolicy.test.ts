@@ -114,6 +114,7 @@ vi.mock('../routes/policyManagement/helpers', () => ({
   getConfigPolicyComplianceRuleInfo: vi.fn(),
   getConfigPolicyComplianceStats: vi.fn(),
   buildComplianceSummary: vi.fn(),
+  complianceSiteCondition: vi.fn(() => undefined),
 }));
 
 vi.mock('./configPolicyLegibleAssignments', () => ({ filterLegibleAssignments: filterLegibleMock }));

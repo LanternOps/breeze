@@ -72,6 +72,7 @@ import {
   getConfigPolicyComplianceRuleInfo,
   getConfigPolicyComplianceStats,
   buildComplianceSummary,
+  complianceSiteCondition,
 } from '../routes/policyManagement/helpers';
 
 // Config-policy mutations reached through AI or MCP match the HTTP
@@ -846,8 +847,9 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       return JSON.stringify({
         policy,
         featureLinks,
-        // The honest total (plan D2); the rows are only those whose target is
-        // in one of the caller's orgs, as GET /:id/assignments returns.
+        // The honest total (plan D2). The rows go through the same filter as
+        // GET /:id/assignments: the caller's organizations, then its site and
+        // device ceiling.
         assignmentCount: assignments.length,
         assignments: await filterLegibleAssignments(auth, policy, assignments),
       });
@@ -1144,7 +1146,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
               // (status + `details`) and the tool takes no deviceId, so the
               // declarative gate never runs. `undefined` for an unrestricted
               // caller — no narrowing.
-              deviceScopeCondition(auth, automationPolicyCompliance.deviceId)
+              deviceScopeCondition(auth, automationPolicyCompliance.deviceId),
+              // Site axis, independent of the device pin: a site-restricted
+              // tech reads only its own sites' device rows, as `summary` counts.
+              complianceSiteCondition(auth.allowedSiteIds)
             )
           )
           .limit(limit);

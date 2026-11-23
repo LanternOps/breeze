@@ -165,16 +165,15 @@ describe('configurationPolicies assignment routes', () => {
     });
   });
 
-  it('filters policy assignment reads through target site authorization', async () => {
-    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
+  it('returns the rows the shared filter keeps, which carries the site/device ceiling (Strix, PR #12552)', async () => {
+    const policy = { id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' };
+    getConfigPolicyMock.mockResolvedValue(policy);
     listAssignmentsMock.mockResolvedValue([
       { id: 'allowed', level: 'device', targetId: DEVICE_ID },
       { id: 'denied', level: 'site', targetId: '55555555-5555-4555-8555-555555555555' },
     ]);
-    authorizeAssignmentTargetMock.mockImplementation(async (_auth, _level, targetId) => ({
-      valid: targetId === DEVICE_ID,
-      error: 'Target is outside your site access',
-    }));
+    filterLegibleMock.mockImplementation(async (_a: unknown, _p: unknown, rows: Array<{ id: string }>) =>
+      rows.filter((r) => r.id === 'allowed'));
 
     const res = await app.request(`/${POLICY_ID}/assignments`);
 
@@ -182,7 +181,10 @@ describe('configurationPolicies assignment routes', () => {
     await expect(res.json()).resolves.toEqual({
       data: [{ id: 'allowed', level: 'device', targetId: DEVICE_ID }],
     });
-    expect(authorizeAssignmentTargetMock).toHaveBeenCalledTimes(2);
+    // One row filter for this route and the AI get tool: no second, per-row
+    // ceiling here that the AI path could lack.
+    expect(filterLegibleMock).toHaveBeenCalledWith(expect.anything(), policy, expect.any(Array));
+    expect(authorizeAssignmentTargetMock).not.toHaveBeenCalled();
     // A read: the read predicate, so an org admin can open an MSP-managed
     // policy that applies to its organization (W03a).
     expect(getConfigPolicyMock).toHaveBeenCalledWith(POLICY_ID, expect.anything(), { access: 'read' });
