@@ -198,7 +198,7 @@ func TestUnknownTaskStateIsNeverTreatedAsMissing(t *testing.T) {
 
 func TestRepeatedDeletionBacksOff(t *testing.T) {
 	g := newRig(t)
-	for i := 0; i < MaxRepairs; i++ {
+	for range MaxRepairs {
 		mustCheck(t, g.r, OutcomeRepaired)
 		g.sched.registered = nil // gone again
 		g.now = g.now.Add(time.Hour)
@@ -220,7 +220,7 @@ func TestRepeatedDeletionBacksOff(t *testing.T) {
 
 func TestRepairsSpreadBeyondTheWindowDoNotBackOff(t *testing.T) {
 	g := newRig(t)
-	for i := 0; i < MaxRepairs*2; i++ {
+	for range MaxRepairs * 2 {
 		mustCheck(t, g.r, OutcomeRepaired)
 		g.sched.registered = nil
 		g.now = g.now.Add(RepairWindow/time.Duration(MaxRepairs) + time.Minute)
@@ -267,8 +267,23 @@ func TestReadBackOfARerenderedTaskVerifies(t *testing.T) {
 	// indentation and extra defaults. The meaning is what is compared.
 	g := newRig(t)
 	g.sched.queryRender = func(doc []byte) []byte {
-		s := strings.Replace(string(doc), "  ", "    ", -1)
+		s := strings.ReplaceAll(string(doc), "  ", "    ")
 		s = strings.Replace(s, "<Hidden>true</Hidden>", "<Hidden>true</Hidden>\n    <WakeToRun>false</WakeToRun>", 1)
+		return []byte(s)
+	}
+	mustCheck(t, g.r, OutcomeRepaired)
+}
+
+func TestReadBackWithDefaultsOmittedVerifies(t *testing.T) {
+	// LeastPrivilege and Enabled=true are Task Scheduler's defaults; a
+	// rendering that leaves them out still describes the same task.
+	g := newRig(t)
+	g.sched.queryRender = func(doc []byte) []byte {
+		s := strings.Replace(string(doc), "<RunLevel>LeastPrivilege</RunLevel>", "", 1)
+		s = strings.Replace(s, "<Enabled>true</Enabled>\n    </LogonTrigger>", "</LogonTrigger>", 1)
+		if s == string(doc) {
+			t.Fatal("re-render changed nothing")
+		}
 		return []byte(s)
 	}
 	mustCheck(t, g.r, OutcomeRepaired)

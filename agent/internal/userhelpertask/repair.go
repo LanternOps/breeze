@@ -302,12 +302,17 @@ func parseShape(data []byte) (taskShape, error) {
 		return v == "" || strings.EqualFold(v, "true")
 	}
 	action := document.Actions[0].Items[0]
+	// An absent <RunLevel> is LeastPrivilege.
+	runLevel := strings.TrimSpace(document.Principals[0].RunLevel)
+	if runLevel == "" {
+		runLevel = "LeastPrivilege"
+	}
 	shape := taskShape{
 		URI:       strings.TrimSpace(document.URI),
 		Command:   strings.TrimSpace(action.Command),
 		Arguments: strings.TrimSpace(action.Arguments),
 		GroupID:   strings.TrimSpace(document.Principals[0].GroupID),
-		RunLevel:  strings.TrimSpace(document.Principals[0].RunLevel),
+		RunLevel:  runLevel,
 		Enabled:   enabled(document.Settings.Enabled),
 	}
 	if len(document.Triggers) == 1 && len(document.Triggers[0].Items) == 1 {

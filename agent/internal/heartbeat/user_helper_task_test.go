@@ -200,6 +200,25 @@ func TestKickWithoutALoopNeverBlocks(t *testing.T) {
 	h.kickUserHelperTaskCheck() // buffer full: dropped, not blocked
 }
 
+// The backoff can only trip if a task removed after every repair is seen
+// missing MaxRepairs times inside the window at the scheduled cadence.
+func TestUserHelperTaskCadenceFitsTheBackoffWindow(t *testing.T) {
+	timing := defaultUserHelperTaskTiming
+	slowest := timing.interval + timing.jitter
+	if got := time.Duration(userhelpertask.MaxRepairs) * slowest; got >= userhelpertask.RepairWindow {
+		t.Fatalf("%d checks at up to %s take %s, not inside the %s backoff window",
+			userhelpertask.MaxRepairs, slowest, got, userhelpertask.RepairWindow)
+	}
+	if timing.retry >= timing.interval || timing.startDelay >= timing.interval {
+		t.Fatalf("retry and start delay must be shorter than the interval: %+v", timing)
+	}
+	for range 100 {
+		if v := userHelperTaskRand(10); v < 0 || v >= 10 {
+			t.Fatalf("userHelperTaskRand(10) = %d", v)
+		}
+	}
+}
+
 // self_uninstall marks itself in progress before it touches anything, and
 // clears the mark only when the hand-off fails.
 func TestSelfUninstallMarksTaskRepairOff(t *testing.T) {

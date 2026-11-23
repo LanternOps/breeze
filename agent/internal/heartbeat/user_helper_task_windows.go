@@ -53,12 +53,12 @@ func agentServiceDisabled() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 	s, err := m.OpenService(selfuninstall.AgentServiceName)
 	if err != nil {
 		return false, err
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	cfg, err := s.Config()
 	if err != nil {
 		return false, err

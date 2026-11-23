@@ -67,8 +67,7 @@ func runSchtasks(args ...string) ([]byte, error) {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("schtasks timed out after %s", schtasksTimeout)
 		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			return nil, fmt.Errorf("%w: %s", err, truncate(strings.TrimSpace(string(exitErr.Stderr)), 300))
 		}
 		return nil, err
