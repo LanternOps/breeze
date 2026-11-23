@@ -473,7 +473,7 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
   // reopens this dialog every time the operator comes back to the device.
   const closeExecution = () => {
     setSelectedExecution(null);
-    if (highlightExecutionId) window.location.replace(`#${deviceScriptsViewHash(view)}`);
+    if (highlightExecutionId && selectedExecution?.id === highlightExecutionId) window.location.replace(`#${deviceScriptsViewHash(view)}`);
   };
 
   // #5318 — one cancel path shared with ScriptExecutionsPage; the API

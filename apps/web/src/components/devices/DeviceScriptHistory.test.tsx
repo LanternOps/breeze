@@ -234,6 +234,18 @@ describe('DeviceScriptHistory highlighted execution (#4886)', () => {
     expect(window.location.hash).toBe('#scripts/view=all');
   });
 
+  it('closing a row opened by hand keeps a pending highlight hash', async () => {
+    window.location.hash = '#scripts/exec-pending';
+    render(<DeviceScriptHistory deviceId={DEVICE_ID} highlightExecutionId="exec-pending" />);
+    fireEvent.click(await screen.findByText('Collect Inventory'));
+    await screen.findByText('Execution Details');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    expect(screen.queryByText('Execution Details')).toBeNull();
+    expect(window.location.hash).toBe('#scripts/exec-pending');
+  });
+
   it('does not auto-open anything when the highlighted id matches no execution', async () => {
     render(<DeviceScriptHistory deviceId={DEVICE_ID} highlightExecutionId="exec-does-not-exist" />);
 
