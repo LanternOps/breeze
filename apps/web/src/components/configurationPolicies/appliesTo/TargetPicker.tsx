@@ -131,7 +131,6 @@ export default function TargetPicker({ owner, onPick, isListed, offerOrganizatio
         if (req === reqRef.current) setLoading(false);
       });
     // `org` is derived from owner and mspOrg, both listed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner.kind, owner.kind === 'org' ? owner.orgId : null, mspOrg?.id, level, debounced, choosingOrg, t]);
 
   const selectLevel = (next: PickerLevel) => {

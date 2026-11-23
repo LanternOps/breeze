@@ -119,7 +119,6 @@ export default function AppliesToPanel({ policyId, owner, summary, reach, onDirt
     }, DRY_RUN_DEBOUNCE_MS);
     return () => clearTimeout(timer);
     // payloadSig stands for payload: the effect runs when the request would change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payloadSig, dirty, policyId]);
 
   const markEntry = (entryKeys: ApplyPayloadKeys, failure: ApplyFailure) => {
