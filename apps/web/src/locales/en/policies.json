@@ -1647,6 +1647,7 @@
       "deactivateConfirmTitle": "Deactivate this policy?",
       "deactivateConfirmMessage": "It stops applying its settings to the devices it targets directly. You can activate it again later.",
       "deactivateImpactDirect": "It targets {{devices}} directly: they stop receiving its settings.",
+      "deactivateImpactNoneVisible": "It targets no devices you can see directly.",
       "deactivateImpactChildren": "Policies based on it keep its settings: {{policies}}, {{devices}}.",
       "activateExecuteRequired": "Activating this policy turns on vendor updates on the devices it applies to. That needs the devices.execute permission and MFA. Ask someone who has it to activate this policy.",
       "changeFailed": "The policy state was not changed.",

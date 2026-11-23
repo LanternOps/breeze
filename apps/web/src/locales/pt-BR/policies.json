@@ -1647,6 +1647,7 @@
       "deactivateConfirmTitle": "Desativar esta política?",
       "deactivateConfirmMessage": "Ela deixa de aplicar suas configurações aos dispositivos que ela tem como alvo direto. Você pode ativá-la novamente depois.",
       "deactivateImpactDirect": "Ela tem {{devices}} como alvo direto: eles deixam de receber suas configurações.",
+      "deactivateImpactNoneVisible": "Ela não se aplica diretamente a nenhum dispositivo que você possa ver.",
       "deactivateImpactChildren": "As políticas baseadas nela mantêm suas configurações: {{policies}}, {{devices}}.",
       "activateExecuteRequired": "Ativar esta política liga as atualizações de fornecedores nos dispositivos aos quais ela se aplica. Isso exige a permissão devices.execute e MFA. Peça a alguém que tenha essa permissão para ativar esta política.",
       "changeFailed": "O estado da política não foi alterado.",

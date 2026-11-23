@@ -1647,6 +1647,7 @@
       "deactivateConfirmTitle": "Diese Richtlinie deaktivieren?",
       "deactivateConfirmMessage": "Sie wendet ihre Einstellungen nicht mehr auf die Geräte an, die sie direkt anvisiert. Sie können sie später wieder aktivieren.",
       "deactivateImpactDirect": "Sie gilt direkt für {{devices}}: Diese erhalten ihre Einstellungen nicht mehr.",
+      "deactivateImpactNoneVisible": "Sie richtet sich direkt an keine Geräte, die Sie sehen können.",
       "deactivateImpactChildren": "Richtlinien, die auf ihr basieren, behalten ihre Einstellungen: {{policies}}, {{devices}}.",
       "activateExecuteRequired": "Das Aktivieren dieser Richtlinie schaltet Herstellerupdates auf den Geräten ein, für die sie gilt. Dafür sind die Berechtigung devices.execute und MFA erforderlich. Bitten Sie jemanden mit dieser Berechtigung, diese Richtlinie zu aktivieren.",
       "changeFailed": "Der Richtlinienstatus wurde nicht geändert.",

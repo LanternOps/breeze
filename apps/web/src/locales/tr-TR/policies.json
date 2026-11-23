@@ -1647,6 +1647,7 @@
       "deactivateConfirmTitle": "Bu politika devre dışı bırakılsın mı?",
       "deactivateConfirmMessage": "Doğrudan hedeflediği cihazlara ayarlarını uygulamayı durdurur. Daha sonra yeniden etkinleştirebilirsiniz.",
       "deactivateImpactDirect": "Doğrudan hedefi: {{devices}}. Bu cihazlar artık ayarlarını almaz.",
+      "deactivateImpactNoneVisible": "Doğrudan görebileceğiniz hiçbir cihazı hedeflemiyor.",
       "deactivateImpactChildren": "Buna dayanan politikalar ayarlarını korur: {{policies}}, {{devices}}.",
       "activateExecuteRequired": "Bu politikayı etkinleştirmek, uygulandığı cihazlarda üretici güncellemelerini açar. Bunun için devices.execute izni ve MFA gerekir. Bu izne sahip birinden politikayı etkinleştirmesini isteyin.",
       "changeFailed": "Politika durumu değiştirilmedi.",

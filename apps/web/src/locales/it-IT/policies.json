@@ -1647,6 +1647,7 @@
       "deactivateConfirmTitle": "Disattivare questo criterio?",
       "deactivateConfirmMessage": "Smette di applicare le sue impostazioni ai dispositivi che ha come destinazione diretta. Puoi riattivarlo in seguito.",
       "deactivateImpactDirect": "Ha come destinazione diretta {{devices}}: smettono di ricevere le sue impostazioni.",
+      "deactivateImpactNoneVisible": "Non si applica direttamente a nessun dispositivo che puoi vedere.",
       "deactivateImpactChildren": "I criteri basati su di esso mantengono le sue impostazioni: {{policies}}, {{devices}}.",
       "activateExecuteRequired": "L'attivazione di questo criterio abilita gli aggiornamenti dei fornitori sui dispositivi a cui si applica. Servono l'autorizzazione devices.execute e MFA. Chiedi a chi ce l'ha di attivare questo criterio.",
       "changeFailed": "Lo stato del criterio non è stato modificato.",

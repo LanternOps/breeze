@@ -96,6 +96,15 @@ describe('PolicyStateActions (plan W03c F3)', () => {
     expect(patchBodies()).toEqual([{ url: '/configuration-policies/pol-1', body: { status: 'inactive' } }]);
   });
 
+  it('Deactivate on a policy that targets no visible device says so plainly', () => {
+    renderActions({ status: 'active', reach: reach(0, 148), childPolicyCount: 3 });
+    fireEvent.click(screen.getByTestId('config-policy-deactivate'));
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent('It targets no devices you can see directly.');
+    expect(dialog).not.toHaveTextContent('they stop receiving');
+    expect(dialog).toHaveTextContent('3 policies, 148 devices');
+  });
+
   it('Deactivate never runs the arming gate', async () => {
     // Only the status PATCH: no client-side arming check, no pre-read, and no
     // extra field the server's activation gate would look at.

@@ -119,11 +119,15 @@ export default function PolicyStateActions({
   const deactivateMessage = () => {
     const parts = [i18n.t('policies:configurationPolicies.policyStateActions.deactivateConfirmMessage')];
     if (reach) {
-      parts.push(
-        i18n.t('policies:configurationPolicies.policyStateActions.deactivateImpactDirect', {
-          devices: deviceCountPhrase(reach.direct, reach.partial === true),
-        }),
-      );
+      if (reach.direct === 0 && reach.partial !== true) {
+        parts.push(i18n.t('policies:configurationPolicies.policyStateActions.deactivateImpactNoneVisible'));
+      } else {
+        parts.push(
+          i18n.t('policies:configurationPolicies.policyStateActions.deactivateImpactDirect', {
+            devices: deviceCountPhrase(reach.direct, reach.partial === true),
+          }),
+        );
+      }
       if (childPolicyCount > 0) {
         parts.push(
           i18n.t('policies:configurationPolicies.policyStateActions.deactivateImpactChildren', {

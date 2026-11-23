@@ -1647,6 +1647,7 @@
       "deactivateConfirmTitle": "Désactiver cette politique ?",
       "deactivateConfirmMessage": "Elle cesse d’appliquer ses paramètres aux appareils qu’elle cible directement. Vous pouvez la réactiver plus tard.",
       "deactivateImpactDirect": "Elle cible directement {{devices}} : ils ne reçoivent plus ses paramètres.",
+      "deactivateImpactNoneVisible": "Elle ne cible directement aucun appareil que vous pouvez voir.",
       "deactivateImpactChildren": "Les politiques basées sur elle conservent ses paramètres : {{policies}}, {{devices}}.",
       "activateExecuteRequired": "L’activation de cette politique active les mises à jour des fournisseurs sur les appareils auxquels elle s’applique. Cela exige l’autorisation devices.execute et la MFA. Demandez à une personne qui l’a d’activer cette politique.",
       "changeFailed": "L’état de la politique n’a pas été modifié.",
