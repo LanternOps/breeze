@@ -31,6 +31,14 @@ describe('saveReach (plan W03c F3)', () => {
     expect(inactive).toEqual({ kind: 'in_use_through', policies: 3, devices: 148, partial: false });
   });
 
+  it('devices reached through children count even when no child policy is listed', () => {
+    // The child list can be missing or narrower than the reach read; a save on
+    // an inactive parent still reaches those devices, so it must not read as
+    // reaching nothing.
+    const r = saveReach({ status: 'inactive', reach: reach(0, 148), childPolicyCount: 0 });
+    expect(r).toEqual({ kind: 'reaches', devices: 148, partial: false });
+  });
+
   it('a partial reach reads "at least", never an exact-looking count', () => {
     const r = saveReach({ status: 'active', reach: reach(200, 12, true), childPolicyCount: 0 });
     expect(reachPhrase(r!)).toBe('reaches at least 212 devices');

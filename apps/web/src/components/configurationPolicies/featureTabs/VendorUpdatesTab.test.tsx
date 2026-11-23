@@ -147,6 +147,23 @@ describe('VendorUpdatesTab', () => {
     expect(lastSaved().vendors.dell.categories).toEqual({ driver: true });
   });
 
+  it('VendorUpdatesTab creates its own link from inherited values on Save (#12470)', async () => {
+    serveGates(gates({ driver: true }));
+    const parentSettings = stored({ driver: true });
+    render(<VendorUpdatesTab {...props} parentLink={link(parentSettings)} />);
+    await waitFor(() => expect(box('vendor-updates-enabled').checked).toBe(true));
+    // Locked on the parent's values, no Save until Change for this policy.
+    expect(box('vendor-updates-enabled')).toBeDisabled();
+    expect(screen.queryByTestId('vendor-updates-save')).toBeNull();
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+    expect(m.save).not.toHaveBeenCalled();
+    expect(box('vendor-updates-enabled')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('vendor-updates-save'));
+    await waitFor(() => expect(m.save).toHaveBeenCalledTimes(1));
+    expect(m.save.mock.calls[0][0]).toBeNull();
+    expect(lastSaved()).toMatchObject({ enabled: true, vendors: { dell: { enabled: true } } });
+  });
+
   it('edits the schedule and blocked updates and saves them', async () => {
     serveGates(gates({ driver: true }));
     // Blocked updates on HP: Dell does not offer the field (#12265).

@@ -40,6 +40,11 @@ export function saveReach(ctx: ReachContext | null): SaveReach | null {
   if (childPolicyCount > 0) {
     return { kind: 'in_use_through', policies: childPolicyCount, devices: reach.throughChildren, partial };
   }
+  // No child policy listed, but the reach read still counts devices through
+  // children: state the devices rather than claim the save reaches nothing.
+  if (reach.throughChildren > 0) {
+    return { kind: 'reaches', devices: reach.throughChildren, partial };
+  }
   return null;
 }
 
