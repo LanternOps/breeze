@@ -29,7 +29,7 @@ import FeatureRail, { type RailKey } from './page/FeatureRail';
 import { FIRST_RAIL_FEATURE } from './page/featureState';
 import PolicyHeader from './page/PolicyHeader';
 import PolicyDetailsForm, { type PolicyDetails } from './page/PolicyDetailsForm';
-import { parsePolicyAccess, resolveViewerAccess } from './page/viewerAccess';
+import { resolveViewerAccess } from './page/viewerAccess';
 import { configFeatureLabel } from './configPolicyLabels';
 import PolicyFeatureEditor from './page/PolicyFeatureEditor';
 import ComplianceStatusTab from './ComplianceStatusTab';
@@ -247,7 +247,7 @@ export default function ConfigPolicyDetailPage({
   const viewer = useMemo(
     () =>
       resolveViewerAccess({
-        access: parsePolicyAccess(policy?.access),
+        access: policy?.access,
         policyOrgId: policy?.orgId ?? null,
         claims: jwtClaims,
         permissions,

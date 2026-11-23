@@ -31,7 +31,8 @@ export function parsePolicyAccess(raw: unknown): PolicyAccess | null {
 export type ViewerAccess = { canEdit: boolean; reason: ReadOnlyReason | null };
 
 type ViewerInputs = {
-  access: PolicyAccess | null;
+  /** The raw `access` field of the policy read; undefined/null = an API before W03a. */
+  access: unknown;
   /** null = MSP-managed (partner-owned) policy. */
   policyOrgId: string | null;
   claims: JwtClaimsState;
@@ -57,11 +58,18 @@ export function resolveViewerAccess({
   permissions,
   canManagePartnerWide,
 }: ViewerInputs): ViewerAccess {
-  if (access && !access.canEdit) {
-    const reason = access.reason as ReadOnlyReason | null;
+  const sent = access !== undefined && access !== null;
+  const parsed = sent ? parsePolicyAccess(access) : null;
+  if (sent && !parsed) {
+    // The API sent an access answer this page cannot read: fail closed.
+    console.warn('[configuration policies] unreadable access field', access);
+    return { canEdit: false, reason: 'not_editable' };
+  }
+  if (parsed && !parsed.canEdit) {
+    const reason = parsed.reason as ReadOnlyReason | null;
     return { canEdit: false, reason: reason && API_REASONS.has(reason) ? reason : 'not_editable' };
   }
-  if (!access && policyOrgId === null) {
+  if (!parsed && policyOrgId === null) {
     if (claims.status !== 'resolved') return { canEdit: false, reason: null };
     const { scope } = claims.claims;
     if (scope === 'organization') return { canEdit: false, reason: 'msp_managed_org_user' };

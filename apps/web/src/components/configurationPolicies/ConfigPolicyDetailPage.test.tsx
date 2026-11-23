@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The viewer's permissions come from the auth store (UX only). Default: a
@@ -34,22 +34,45 @@ const getJwtClaimsMock = vi.mocked(getJwtClaims);
 vi.mock('./featureTabs/PatchTab', async () => {
   const { useFeatureReadOnly } = await import('./featureTabs/featureEditing');
   const { default: FeatureTabShell } = await import('./featureTabs/FeatureTabShell');
+  const { useState } = await import('react');
+  function PatchStandIn() {
+    const [saving, setSaving] = useState(false);
+    return (
+      <div data-testid="patch-tab-editor" data-read-only={String(useFeatureReadOnly())}>
+        <FeatureTabShell
+          title="Patch editor"
+          description="d"
+          icon={<span />}
+          isConfigured={false}
+          saving={saving}
+          onSave={async () => {
+            setSaving(true);
+            await Promise.resolve();
+            setSaving(false);
+          }}
+        >
+          <input data-testid="patch-field" aria-label="Patch field" />
+        </FeatureTabShell>
+      </div>
+    );
+  }
+  return { default: PatchStandIn };
+});
+vi.mock('./featureTabs/OneDriveHelperTab', () => ({
+  default: () => <div data-testid="onedrive-tab-editor">OneDrive editor</div>,
+}));
+vi.mock('./featureTabs/BackupTab', async () => {
+  const { default: FeatureTabShell } = await import('./featureTabs/FeatureTabShell');
   return {
     default: () => (
-      <div data-testid="patch-tab-editor" data-read-only={String(useFeatureReadOnly())}>
-        <FeatureTabShell title="Patch editor" description="d" icon={<span />} isConfigured={false} saving={false} onSave={() => Promise.resolve()}>
-          <input data-testid="patch-field" aria-label="Patch field" />
+      <div data-testid="backup-tab-editor">
+        <FeatureTabShell title="Backup editor" description="d" icon={<span />} isConfigured={false} saving={false} onSave={vi.fn()}>
+          <input data-testid="backup-field" aria-label="Backup field" />
         </FeatureTabShell>
       </div>
     ),
   };
 });
-vi.mock('./featureTabs/OneDriveHelperTab', () => ({
-  default: () => <div data-testid="onedrive-tab-editor">OneDrive editor</div>,
-}));
-vi.mock('./featureTabs/BackupTab', () => ({
-  default: () => <div data-testid="backup-tab-editor">Backup editor</div>,
-}));
 vi.mock('./featureTabs/MonitorsTab', () => ({
   default: (props: { siblingLinks?: Array<{ featureType: string }> }) => (
     <div data-testid="monitors-tab-editor" data-sibling-types={(props.siblingLinks ?? []).map((l) => l.featureType).join(',')} />
@@ -251,6 +274,9 @@ describe('ConfigPolicyDetailPage — read-only viewer (#12469)', () => {
     expect(screen.queryByTestId('config-policy-applies-to-edit')).toBeNull();
     expect(screen.queryByTestId('config-policy-applies-to-assign')).toBeNull();
     expect(screen.getByTestId('patch-tab-editor')).toHaveAttribute('data-read-only', 'true');
+    // Through the real FeatureTabShell: no footer control, a disabled form.
+    expect(within(screen.getByTestId('patch-tab-editor')).queryAllByRole('button')).toEqual([]);
+    expect(screen.getByTestId('patch-field')).toBeDisabled();
     expect(mutationRequests()).toEqual([]);
   });
 
@@ -723,6 +749,56 @@ describe('ConfigPolicyDetailPage — unsaved-changes guard (#12469)', () => {
     expect(screen.queryByText('Discard unsaved changes?')).toBeNull();
     expect(screen.getByTestId('patch-tab-editor')).toBe(editor);
     expect((screen.getByTestId('patch-field') as HTMLInputElement).value).toBe('edited');
+  });
+
+  it('a retired tab id (#monitoring) on a dirty feature asks first; Discard resolves it to Monitors', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    typeInPatch();
+    act(() => {
+      window.location.hash = '#monitoring';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(await screen.findByText('Discard unsaved changes?')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#patch');
+    fireEvent.click(screen.getByTestId('config-policy-discard-confirm'));
+    expect(await screen.findByTestId('monitors-tab-editor')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#monitors');
+  });
+
+  it('#overview from a dirty feature asks first; Discard lands on the first feature with the details form open', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    openFeature('backup');
+    fireEvent.input(screen.getByTestId('backup-field'), { target: { value: 'edited' } });
+    act(() => {
+      window.location.hash = '#overview';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(await screen.findByText('Discard unsaved changes?')).toBeInTheDocument();
+    expect(screen.queryByTestId('config-policy-details-form')).toBeNull();
+    expect(window.location.hash).toBe('#backup');
+    fireEvent.click(screen.getByTestId('config-policy-discard-confirm'));
+    expect(await screen.findByTestId('config-policy-details-form')).toBeInTheDocument();
+    expect(screen.getByTestId('patch-tab-editor')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#patch');
+  });
+
+  it('#overview on the dirty first feature opens the details form without asking', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    const editor = screen.getByTestId('patch-tab-editor');
+    typeInPatch();
+    act(() => {
+      window.location.hash = '#overview';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(await screen.findByTestId('config-policy-details-form')).toBeInTheDocument();
+    expect(screen.queryByText('Discard unsaved changes?')).toBeNull();
+    expect(screen.getByTestId('patch-tab-editor')).toBe(editor);
   });
 
   it('a clean feature switches without asking', async () => {

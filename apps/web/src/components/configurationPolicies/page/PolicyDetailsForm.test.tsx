@@ -70,6 +70,30 @@ describe('PolicyDetailsForm (#12469)', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('clearing the description sends an empty string, so the API clears it', async () => {
+    const onSaved = vi.fn();
+    fetchMock.mockResolvedValueOnce(json({ id: 'pol-1' }));
+    render(<PolicyDetailsForm policyId="pol-1" initial={initial} onSaved={onSaved} onCancel={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('config-policy-details-save'));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(body).toHaveProperty('description', '');
+  });
+
+  it('a failure after a successful save is not reported as a failed save', async () => {
+    fetchMock.mockResolvedValueOnce(json({ id: 'pol-1' }));
+    const onSaved = vi.fn(() => {
+      throw new Error('parent blew up');
+    });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    render(<PolicyDetailsForm policyId="pol-1" initial={initial} onSaved={onSaved} onCancel={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('config-policy-details-save'));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    errors.mockRestore();
+  });
+
   it('a blank name cannot be saved', () => {
     render(<PolicyDetailsForm policyId="pol-1" initial={initial} onSaved={vi.fn()} onCancel={vi.fn()} />);
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: '   ' } });

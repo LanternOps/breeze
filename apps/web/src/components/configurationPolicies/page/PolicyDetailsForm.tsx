@@ -41,6 +41,7 @@ export default function PolicyDetailsForm({ policyId, initial, onSaved, onCancel
   const save = async () => {
     const next: PolicyDetails = { name: name.trim(), description, status };
     setSaving(true);
+    let saved = false;
     try {
       await runAction({
         request: () =>
@@ -48,17 +49,19 @@ export default function PolicyDetailsForm({ policyId, initial, onSaved, onCancel
             method: 'PATCH',
             body: JSON.stringify({
               name: next.name,
-              description: next.description || undefined,
+              // An empty string clears the description; omitting it would not.
+              description: next.description,
               status: next.status,
             }),
           }),
         errorFallback: i18n.t('policies:configurationPolicies.configPolicyDetailPage.failedToUpdatePolicy'),
         successMessage: i18n.t('policies:configurationPolicies.configPolicyDetailPage.detailsSaved'),
       });
-      onSaved(next);
+      saved = true;
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       if (!(err instanceof ActionError)) {
+        console.error('[configuration policies] details save failed', err);
         showToast({
           type: 'error',
           message: i18n.t('policies:configurationPolicies.configPolicyDetailPage.failedToUpdatePolicy'),
@@ -66,6 +69,14 @@ export default function PolicyDetailsForm({ policyId, initial, onSaved, onCancel
       }
     } finally {
       setSaving(false);
+    }
+    // Outside the try: a failure in the parent after a successful save must
+    // not be reported as a failed save.
+    if (!saved) return;
+    try {
+      onSaved(next);
+    } catch (err) {
+      console.error('[configuration policies] after the details save', err);
     }
   };
 

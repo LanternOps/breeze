@@ -78,15 +78,26 @@ export default function FeatureTabShell({
   const [thrownMessage, setThrownMessage] = useState<string | null>(null);
   const awaitingSettle = useRef(false);
 
-  // D16 (#12469): unsaved changes. Any bubbling native input/change event in
-  // the body marks the feature dirty; a picker that changes the form without
-  // one calls useFeatureDirty().markDirty(). A native listener (not React's
-  // onChange) so a portaled sub-form that saves on its own (a ring or
-  // destination editor dialog) does not mark this feature dirty. Only a save
-  // that settles with no error clears it.
+  // D16 (#12469): unsaved changes. The feature is dirty after any of:
+  // - a bubbling native input/change event in the body;
+  // - a click on a button in the body (a toggle, an Add/Remove row, a
+  //   segmented choice), unless it is a disclosure (aria-expanded), opens a
+  //   popup (aria-haspopup), or sits inside [data-feature-dirty-ignore] (a
+  //   status panel, a Test or Refresh action);
+  // - useFeatureDirty().markDirty(), for a picker or drag that emits neither.
+  // Native listeners (not React's onChange) so a portaled sub-form that saves
+  // on its own (a ring or destination editor dialog) does not count.
+  // Only a Save that really sent a request (`saving` went true), settled with
+  // no field error, banner or throw, and saw no edit after the click clears it.
   const reportDirty = useContext(FeatureDirtyReporterContext);
   const [dirty, setDirty] = useState(false);
-  const markDirty = useCallback(() => setDirty(true), []);
+  const editSeq = useRef(0);
+  const noteEdit = useCallback(() => {
+    editSeq.current += 1;
+    setDirty(true);
+  }, []);
+  const saveRun = useRef({ editSeqAtClick: 0, sentRequest: false, threw: false });
+  const markDirty = noteEdit;
   const dirtyApi = useMemo(() => ({ markDirty }), [markDirty]);
   useEffect(() => {
     reportDirty(dirty);
@@ -95,15 +106,18 @@ export default function FeatureTabShell({
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
-    const onEdit = () => setDirty(true);
-    // Toggles and segmented choices are buttons (role="switch" etc.) that
-    // fire no input/change event; a click on one is an edit. A disclosure
-    // (aria-expanded) or a plain action button is not.
+    const onEdit = (e: Event) => {
+      if ((e.target as Element | null)?.closest?.("[data-feature-dirty-ignore]")) return;
+      noteEdit();
+    };
     const onClick = (e: MouseEvent) => {
       const control = (e.target as Element | null)?.closest?.(
-        '[role="switch"], [role="checkbox"], [role="radio"], [role="option"], [aria-pressed]',
+        'button, [role="switch"], [role="checkbox"], [role="radio"], [role="option"], [aria-pressed]',
       );
-      if (control && body.contains(control)) setDirty(true);
+      if (!control || !body.contains(control)) return;
+      if (control.matches(":disabled, [aria-expanded], [aria-haspopup]")) return;
+      if (control.closest("[data-feature-dirty-ignore]")) return;
+      noteEdit();
     };
     body.addEventListener("input", onEdit);
     body.addEventListener("change", onEdit);
@@ -113,10 +127,11 @@ export default function FeatureTabShell({
       body.removeEventListener("change", onEdit);
       body.removeEventListener("click", onClick);
     };
-  }, []);
+  }, [noteEdit]);
 
   const handleSaveClick = async () => {
     awaitingSettle.current = true;
+    saveRun.current = { editSeqAtClick: editSeq.current, sentRequest: false, threw: false };
     setBlockedHint(null);
     setThrownMessage(null);
     try {
@@ -132,6 +147,7 @@ export default function FeatureTabShell({
     } catch (err) {
       // A throwing tab save must not be a mute click either.
       console.error("[FeatureTabShell] save failed", err);
+      saveRun.current.threw = true;
       setThrownMessage(err instanceof Error ? err.message : "");
     } finally {
       setRevealTick((t) => t + 1);
@@ -142,6 +158,7 @@ export default function FeatureTabShell({
   useEffect(() => {
     if (saving) {
       setBlockedHint(null);
+      if (awaitingSettle.current) saveRun.current.sentRequest = true;
     } else if (awaitingSettle.current) {
       setRevealTick((t) => t + 1);
     }
@@ -163,10 +180,15 @@ export default function FeatureTabShell({
     const target = fieldError ?? banner;
     if (!target) {
       setBlockedHint(null);
-      // A save that settled with nothing wrong: the form matches what is saved.
-      // Not while it is still in flight (a void-returning tab reveals once
-      // before `saving` settles), and not after a throw.
-      if (!saving && thrownMessage === null) setDirty(false);
+      // A save that sent a request and settled with nothing wrong: the form
+      // matches what is saved. Not while it is still in flight (a
+      // void-returning tab reveals once before `saving` settles), not after a
+      // throw, not when the tab refused before sending (a validation return
+      // with no marked error), and not when an edit arrived after the click.
+      const run = saveRun.current;
+      if (!saving && run.sentRequest && !run.threw && editSeq.current === run.editSeqAtClick) {
+        setDirty(false);
+      }
       return;
     }
     setBlockedHint(
@@ -342,6 +364,8 @@ export default function FeatureTabShell({
         onClose={() => setPendingAction(null)}
         onConfirm={() => {
           setPendingAction(null);
+          // Reverting discards this feature's edits on purpose.
+          setDirty(false);
           onRevert?.();
         }}
         title={i18n.t(
@@ -362,6 +386,8 @@ export default function FeatureTabShell({
         onClose={() => setPendingAction(null)}
         onConfirm={() => {
           setPendingAction(null);
+          // Removing discards this feature's edits on purpose.
+          setDirty(false);
           onRemove?.();
         }}
         title={i18n.t(

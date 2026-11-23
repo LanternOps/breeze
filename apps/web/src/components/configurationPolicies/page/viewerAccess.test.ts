@@ -37,6 +37,10 @@ describe('resolveViewerAccess (#12469)', () => {
     });
   });
 
+  it('an access field that is present but malformed fails closed', () => {
+    expect(resolveViewerAccess({ ...base, access: { canEdit: 'no' } })).toEqual({ canEdit: false, reason: 'not_editable' });
+  });
+
   it('API access that says editable still needs devices.write', () => {
     expect(resolveViewerAccess({ ...base, access: { canEdit: true, reason: null }, permissions: reader })).toEqual({
       canEdit: false,

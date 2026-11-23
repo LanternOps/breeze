@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import FeatureTabShell from './FeatureTabShell';
@@ -318,11 +319,116 @@ describe('FeatureTabShell unsaved changes (#12469)', () => {
     expect(report).toHaveBeenLastCalledWith(true);
   });
 
+  // A tab as the real ones are: Save flips `saving` for the request.
+  function SavingTab({
+    report,
+    request,
+    children,
+  }: {
+    report: (dirty: boolean) => void;
+    request: () => Promise<{ error?: string } | void>;
+    children?: React.ReactNode;
+  }) {
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState<string>();
+    return (
+      <FeatureDirtyReporterContext.Provider value={report}>
+        <FeatureTabShell
+          title="Patches"
+          description="d"
+          icon={<span />}
+          isConfigured
+          saving={saving}
+          error={error}
+          onSave={async () => {
+            setSaving(true);
+            const result = await request();
+            setError(result ? result.error : undefined);
+            setSaving(false);
+          }}
+        >
+          <input data-testid="field" />
+          {children}
+        </FeatureTabShell>
+      </FeatureDirtyReporterContext.Provider>
+    );
+  }
+
   it('a successful save clears dirty', async () => {
-    const { report } = renderShell({ onSave: () => Promise.resolve() });
+    const report = vi.fn();
+    render(<SavingTab report={report} request={() => Promise.resolve()} />);
     fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(report).toHaveBeenLastCalledWith(false));
+  });
+
+  it('a save refused by the server keeps dirty', async () => {
+    const report = vi.fn();
+    render(<SavingTab report={report} request={() => Promise.resolve({ error: 'Server said no' })} />);
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    report.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByTestId('feature-tab-error');
+    await screen.findByTestId('save-blocked-hint');
+    expect(report).not.toHaveBeenCalledWith(false);
+  });
+
+  it('a Save the tab refuses before sending (no marked error) keeps dirty', async () => {
+    // e.g. MonitorsTab returns early on an invalid interval and shows a plain <p>.
+    const { report } = renderShell({ onSave: async () => undefined });
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    report.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(report).not.toHaveBeenCalledWith(false);
+  });
+
+  it('an edit made while the save is in flight keeps dirty', async () => {
+    const report = vi.fn();
+    let finish: () => void = () => undefined;
+    render(<SavingTab report={report} request={() => new Promise<void>((r) => (finish = r))} />);
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Saving/ })).toBeInTheDocument());
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'xy' } });
+    report.mockClear();
+    await act(async () => finish());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument());
+    expect(report).not.toHaveBeenCalledWith(false);
+  });
+
+  it('a plain button in the body (Add or Remove a row) marks it dirty; a disclosure, popup opener or ignored panel does not', () => {
+    const report = vi.fn();
+    render(
+      <FeatureDirtyReporterContext.Provider value={report}>
+        <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured saving={false} onSave={vi.fn()}>
+          <button type="button" data-testid="disclosure" aria-expanded="false">more</button>
+          <button type="button" data-testid="popup" aria-haspopup="dialog">new ring</button>
+          <div data-feature-dirty-ignore>
+            <button type="button" data-testid="page-next">Next</button>
+            <input data-testid="filter" />
+          </div>
+          <button type="button" data-testid="remove-row">
+            <span data-testid="remove-row-icon">x</span>
+          </button>
+        </FeatureTabShell>
+      </FeatureDirtyReporterContext.Provider>,
+    );
+    fireEvent.click(screen.getByTestId('disclosure'));
+    fireEvent.click(screen.getByTestId('popup'));
+    fireEvent.click(screen.getByTestId('page-next'));
+    fireEvent.input(screen.getByTestId('filter'), { target: { value: 'a' } });
+    expect(report).not.toHaveBeenCalledWith(true);
+    fireEvent.click(screen.getByTestId('remove-row-icon'));
+    expect(report).toHaveBeenLastCalledWith(true);
+  });
+
+  it('a confirmed Remove clears dirty', () => {
+    const { report } = renderShell({ onRemove: vi.fn() });
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    fireEvent.click(screen.getByTestId('feature-tab-remove-confirm'));
+    expect(report).toHaveBeenLastCalledWith(false);
   });
 
   it('a save that is still in flight, then fails, never clears dirty', async () => {
