@@ -150,6 +150,8 @@ Not part of this design; each is its own issue. The stuck status itself is #1196
 
 ## 7. Open decisions
 
+> #11965 took the recommendation on each of these as a default to confirm; see §9.
+
 1. **B or C?** Recommend B.
 2. **Settled status name.** `completed` with a tally (recommended), or a new `approvals_settled` status. A new status is one more value in every total map and the DB CHECK.
 3. **Results into the chat.** Deliver a results turn automatically (recommended), or only notify and let the technician ask.
@@ -180,8 +182,10 @@ were taken as defaults; each is reversible without data repair.
   terminal → terminal as no new outcome, so the circuit and task outbox do not
   count the run twice.
 - **Triggers:** the intent outbox job for every final step event
-  (`processIntentReleaseJob`), plus a sweep on the Wisp grant reconciler tick
-  (also back-fills runs parked before this shipped).
+  (`processIntentReleaseJob`); `finishRun` right after it parks a run (steps
+  that became final while it ran); a sweep on the Wisp grant reconciler tick
+  (also back-fills runs parked before this shipped). A run that parked more
+  than 48 h ago settles without the event or the post.
 - **Telling the launcher (decision 3, partly):** the existing paths. A
   second thread post with a step count ("Steps: 2 ran, 1 denied."), the same
   count in the origin chat's next turn with a pointer to `get_ai_agent_run`

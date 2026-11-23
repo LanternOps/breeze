@@ -56,7 +56,7 @@ export async function processWispGrantReconcile(): Promise<
     }
   } catch (err) {
     console.error('[WispGrantReconciler] parked-run settlement sweep failed', err);
-    captureException(err instanceof Error ? err : new Error(String(err)));
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, { op: 'wispGrantReconciler.approvalSettleSweep' });
   }
   let specialistPosts = 0;
   try {

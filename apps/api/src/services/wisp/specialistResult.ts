@@ -6,7 +6,10 @@
  * `notifyUser` (the one Wisp delivery primitive; no push — the run's steps
  * already pushed their own approval cards):
  *   - `postSpecialistResult(runId)`: the run settled (completed, failed,
- *     waiting for approval, cancelled). Called from `finishRun` (runLoop.ts)
+ *     waiting for approval, cancelled). Called from `finishRun` (runLoop.ts),
+ *     and again when a parked run settles to `completed` once its steps are
+ *     final (#11965, aiAgents/runApprovalSettlement.ts: a second post, with a
+ *     step count, under its own (run, status) key)
  *     and re-swept by the grant reconciler for any run whose post is missing
  *     (a crash between the status write and the post, a cancel or reaper that
  *     never passes `finishRun`).

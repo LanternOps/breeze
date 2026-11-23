@@ -223,13 +223,14 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
               const hasActionable = (body.data.intents ?? []).some(
                 (i) => i.status === 'pending_approval' && !!i.approvalRequestId,
               );
-              // #11965: a parked run whose approved step is still being released
-              // or run becomes `completed` once it finishes; keep polling until then.
+              // #11965: an approved or executing step has not finished yet. Once
+              // it does, a troubleshooting run settles to `completed`, so keep
+              // polling until no step is approved or executing.
               const stepRunning = body.data.status === 'awaiting_approval' && (body.data.intents ?? []).some(
                 (i) => i.status === 'approved' || i.status === 'executing',
               );
               if (isSettled(body.data.status) && !hasActionable && !stepRunning) {
-                // A finished (or approval-parked) run never changes on its own; keep polling and every open
+                // A finished run, or a parked one with no step left to run, never changes on its own; keep polling and every open
                 // chat with an old run card becomes a background request forever.
                 settled = true;
                 return;

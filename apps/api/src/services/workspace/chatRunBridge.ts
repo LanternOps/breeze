@@ -309,6 +309,9 @@ export async function shutdownChatRunBridge(): Promise<void> {
 
 // #11084: `awaiting_approval` is terminal for an agent run (it never resumes;
 // a person's decision releases each intent on its own), so it is a delivery.
+// #11965: a troubleshooting run later settles to `completed` once its steps
+// are final; that event arrives after the unwatch below and reaches the chat
+// through the durable turn read (wisp/specialistResultsTurn.ts).
 const TERMINAL_EVENT_TYPES = new Set(['ai.agent.run.completed', 'ai.agent.run.failed', 'ai.agent.run.awaiting_approval']);
 
 /**

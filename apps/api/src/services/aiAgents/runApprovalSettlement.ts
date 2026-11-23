@@ -24,27 +24,41 @@
  * Exactly once: the run row is locked first (`SELECT … FOR UPDATE`), then the
  * open-step check and the `awaiting_approval → completed` compare-and-set run
  * as later statements. Concurrent settlers queue on the lock and the losers
- * find the status changed. Two steps finalised in overlapping transactions
- * cannot both miss the other: the second to take the lock reads after the
- * first committed. `transitionRunStatus` treats terminal → terminal as no new
- * outcome, so the circuit and the task outbox do not count the run twice.
+ * find the status changed. Never left parked: every trigger runs after its
+ * step committed, so the settler of the last step to commit sees every step
+ * final; a settler that runs inside the transaction that finalised a step
+ * (`settleApprovalParkedRunLocked`) is covered by the lock too, since the
+ * second to take it reads after the first committed. `transitionRunStatus`
+ * treats terminal → terminal as no new outcome, so the circuit and the task
+ * outbox do not count the run twice.
  *
  * Triggers, each idempotent:
  *   - the intent outbox job for every final step event (`intent_completed`,
  *     `intent_failed`, `intent_rejected`, `intent_expired`,
  *     `intent_cancelled`): every writer that finalises a step writes that row
- *     in its own transaction, so the job runs after the step committed
- *     (jobs/intentReleaseWorker.ts processIntentReleaseJob);
+ *     in the same transaction as the step's status write, so the job runs
+ *     after the step committed (jobs/intentReleaseWorker.ts
+ *     processIntentReleaseJob). The job finds the run through the step's
+ *     `requesting_agent_run_id`, which every troubleshooting step carries;
+ *   - `finishRun` right after it parks a troubleshooting run, for steps that
+ *     became final while the run was still going (runLoop.ts);
  *   - the Wisp grant reconciler tick (`sweepApprovalParkedRuns`) for a run
- *     every job missed, and for runs parked before this shipped.
+ *     every other trigger missed, and for runs parked before this shipped.
+ *     The tick runs only while Wisp is on, as do troubleshooting runs (they
+ *     are Wisp specialists).
  *
  * After a winning settle, outside any DB context, the existing completion
  * delivery runs once: `ai.agent.run.completed` (the check-in fast path; the
  * payload carries `settledAfterApproval` so the Wisp wake does not request a
- * second assessment: each decision already woke it) and the specialist's
- * thread post (`postSpecialistResult`, deduped per run and status, re-swept
- * by the reconciler). The origin chat reads the settled run on its next turn
- * (specialistResultsTurn.ts, keyed per run and status).
+ * second assessment: each approve/deny/expire/cancel already published
+ * `ai.intent.decided`, which wakes it) and the specialist's thread post
+ * (`postSpecialistResult`, deduped per run and status; the reconciler
+ * re-sweeps a missing post for a run that parked in the last 24 h). The origin
+ * chat reads the settled run on its next turn (specialistResultsTurn.ts,
+ * keyed per run and status). A run that parked more than
+ * `SETTLEMENT_DELIVERY_WINDOW_MS` ago (one the sweep finds after the fact,
+ * such as a run parked before this shipped) settles silently: nobody is
+ * waiting on it, and a fresh completion event or post would be noise.
  *
  * Settlement never creates, decides or releases a step.
  */
@@ -60,17 +74,25 @@ import { transitionRunStatus } from './runService';
 const SETTLING_PROFILE = 'device_troubleshooting';
 /** Parked runs one reconciler tick settles at most (oldest first). */
 export const APPROVAL_SETTLE_SWEEP_LIMIT = 100;
+/**
+ * A run that parked longer ago than this settles without the completion
+ * event or the thread post. Covers the 24 h approval window plus the release
+ * that follows an approval; past it, the chat session and the post re-sweep
+ * window have both ended.
+ */
+export const SETTLEMENT_DELIVERY_WINDOW_MS = 48 * 60 * 60 * 1000;
 
 const openStepList = sql.join(OPEN_STEP_STATUSES.map((s) => sql`${s}`), sql`, `);
 
 /**
- * True while any step of the run is open. Correlated on the outer
- * `ai_agent_runs` row: a step is the run's when it names the run as its
- * requester or the run lists it in `intent_ids`.
+ * True while no step of the run is open. Correlated on the outer
+ * `ai_agent_runs` row: a step is the run's when it is in the run's org and
+ * names the run as its requester or the run lists it in `intent_ids`.
  */
 const NO_OPEN_STEP = sql`NOT EXISTS (
   SELECT 1 FROM ${actionIntents} ai
-  WHERE (ai.requesting_agent_run_id = ${aiAgentRuns.id} OR ai.id = ANY(${aiAgentRuns.intentIds}))
+  WHERE ai.org_id = ${aiAgentRuns.orgId}
+    AND (ai.requesting_agent_run_id = ${aiAgentRuns.id} OR ai.id = ANY(${aiAgentRuns.intentIds}))
     AND ai.status IN (${openStepList})
 )`;
 
@@ -155,6 +177,11 @@ export async function sweepApprovalParkedRuns(
   return result;
 }
 
+/** The run parked recently enough that someone may still be waiting on it. */
+function deliversNow(parkedAt: Date | null): boolean {
+  return parkedAt !== null && Date.now() - parkedAt.getTime() <= SETTLEMENT_DELIVERY_WINDOW_MS;
+}
+
 async function deliverSettlement(runId: string): Promise<void> {
   try {
     const [run] = await systemContext(() => db
@@ -164,10 +191,15 @@ async function deliverSettlement(runId: string): Promise<void> {
         deviceId: aiAgentRuns.deviceId,
         intentIds: aiAgentRuns.intentIds,
         costCents: aiAgentRuns.costCents,
+        finishedAt: aiAgentRuns.finishedAt,
       })
       .from(aiAgentRuns)
       .where(and(eq(aiAgentRuns.id, runId), inArray(aiAgentRuns.status, ['completed'])))
       .limit(1));
+    if (run && !deliversNow(run.finishedAt)) {
+      console.log('[aiAgents] settled a run that parked long ago; no completion event or post', { runId });
+      return;
+    }
     if (run) {
       // The payload finishRun publishes, plus the marker the Wisp wake reads.
       await publishEvent('ai.agent.run.completed', run.orgId, {
@@ -190,7 +222,7 @@ async function deliverSettlement(runId: string): Promise<void> {
     const { postSpecialistResult } = await import('../wisp/specialistResult');
     await postSpecialistResult(runId);
   } catch (error) {
-    console.error('[aiAgents] settled run: specialist post failed; the grant reconciler re-sweeps it', { runId, error });
+    console.error('[aiAgents] settled run: specialist post failed; the grant reconciler re-sweeps it for a run parked in the last 24 h', { runId, error });
     captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
       op: 'aiAgents.approvalSettlement.post', runId,
     });

@@ -17,7 +17,8 @@
  * was given, written only once the turn is dispatched
  * (`markSpecialistResultsDelivered`), so a refused turn leaves them for the
  * next one. The key is (run, status): a run that later settles differently
- * (waiting for approval → cancelled) is given again, once.
+ * (waiting for approval → cancelled, or → completed once its steps are final,
+ * #11965) is given again, once.
  *
  * #11845: `analysis` runs a Wisp chat launched are delivered the same way
  * (when the workspace is on), with their `submit_analysis` outcome parsed and

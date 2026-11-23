@@ -238,7 +238,8 @@ export async function loadTriggerSubject(kind: WispCheckInTriggerEvent, subjectI
             hostname: devices.hostname,
             openSteps: sql<number>`(
               SELECT count(*)::int FROM action_intents ai
-              WHERE (ai.requesting_agent_run_id = ${aiAgentRuns.id} OR ai.id = ANY(${aiAgentRuns.intentIds}))
+              WHERE ai.org_id = ${aiAgentRuns.orgId}
+                AND (ai.requesting_agent_run_id = ${aiAgentRuns.id} OR ai.id = ANY(${aiAgentRuns.intentIds}))
                 AND ai.status IN (${sql.join(OPEN_STEP_STATUSES.map((st) => sql`${st}`), sql`, `)})
             )`,
           })

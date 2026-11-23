@@ -2329,7 +2329,8 @@ export async function processIntentReleaseJob(data: IntentReleaseJobData): Promi
   // #11965: a step reached a final status, committed with this outbox row, so
   // the parked troubleshooting run it belongs to may now settle. Before the
   // requester notification, and never allowed to fail the job: settlement is
-  // idempotent and the Wisp grant reconciler re-sweeps a run this misses.
+  // idempotent, and the Wisp grant reconciler's sweep (Wisp on, as every
+  // troubleshooting run is a Wisp specialist) settles a run this misses.
   if (INTENT_FINAL_EVENTS.has(data.eventType)) {
     await settleRunAfterFinalStep(data.intentId);
   }
@@ -2496,7 +2497,7 @@ async function settleRunAfterFinalStep(intentId: string): Promise<void> {
     const { settleApprovalParkedRunForIntent } = await import('../services/aiAgents/runApprovalSettlement');
     await settleApprovalParkedRunForIntent(intentId);
   } catch (err) {
-    console.error(`[IntentReleaseWorker] settling the run of intent ${intentId} failed; the grant reconciler re-sweeps it:`, err);
+    console.error(`[IntentReleaseWorker] settling the run of intent ${intentId} failed; the grant reconciler's sweep retries it:`, err);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
       op: 'aiAgents.approvalSettlement.release', intentId,
     });

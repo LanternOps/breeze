@@ -619,8 +619,9 @@ export async function handleWispWakeEvent(event: BreezeEvent): Promise<void> {
 
   if (!isUuid(event.orgId)) return;
   // #11965: a parked troubleshooting run settling after its steps were decided
-  // is not new work: each decision already woke an assessment
-  // (`ai.intent.decided`), so the settlement's completed event wakes nothing.
+  // is not new work: each approve/deny/expire/cancel already published
+  // `ai.intent.decided`, which wakes an assessment, so the settlement's
+  // completed event wakes nothing.
   if (event.type === 'ai.agent.run.completed' && (event.payload as Record<string, unknown> | undefined)?.settledAfterApproval === true) {
     return;
   }

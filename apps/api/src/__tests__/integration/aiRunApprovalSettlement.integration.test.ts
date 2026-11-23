@@ -183,6 +183,12 @@ async function intentRow(intentId: string) {
   return row!;
 }
 
+async function outboxEvents(intentId: string): Promise<string[]> {
+  const rows = await sys(() => db.select({ eventType: intentOutbox.eventType }).from(intentOutbox)
+    .where(eq(intentOutbox.intentId, intentId)));
+  return rows.map((r) => r.eventType);
+}
+
 const completedPublishes = (runId: string) => vi.mocked(publishEvent).mock.calls
   .filter(([type, , payload]) => type === 'ai.agent.run.completed' && (payload as { runId?: string }).runId === runId);
 
@@ -219,6 +225,8 @@ describe('a parked troubleshooting run settles when its last step is final (#119
     const { runId, intentIds: [ran, denied, expired, cancelled, failed] } = await seedParkedRun(t, 5);
 
     await runStep(ran!, 'completed');
+    // The real terminal writer committed the outbox row the job consumes.
+    expect(await outboxEvents(ran!)).toContain('intent_completed');
     await processIntentReleaseJob({ intentId: ran!, eventType: 'intent_completed' });
     expect((await runRow(runId)).status).toBe('awaiting_approval');
 
@@ -229,6 +237,7 @@ describe('a parked troubleshooting run settles when its last step is final (#119
     await sys(() => db.update(actionIntents).set({ approvalExpiresAt: new Date(Date.now() - 60_000) })
       .where(eq(actionIntents.id, expired!)));
     expect(await sys(() => reapExpiredIntents())).toBeGreaterThanOrEqual(1);
+    expect(await outboxEvents(expired!)).toContain('intent_expired');
     expect((await intentRow(expired!)).status).toBe('expired');
     await processIntentReleaseJob({ intentId: expired!, eventType: 'intent_expired' });
     expect((await runRow(runId)).status).toBe('awaiting_approval');
@@ -240,6 +249,7 @@ describe('a parked troubleshooting run settles when its last step is final (#119
     expect(postSpy.calls).toEqual([]);
 
     await runStep(failed!, 'failed');
+    expect(await outboxEvents(failed!)).toContain('intent_failed');
     await processIntentReleaseJob({ intentId: failed!, eventType: 'intent_failed' });
     const settled = await runRow(runId);
     expect(settled.status).toBe('completed');
@@ -318,6 +328,41 @@ describe('a parked troubleshooting run settles when its last step is final (#119
     expect(await sys(() => db.select({ id: actionIntents.id, status: actionIntents.status })
       .from(actionIntents).where(eq(actionIntents.requestingAgentRunId, runId)))).toEqual(intentsBefore);
     expect(await outboxRows()).toBe(outboxBefore);
+  });
+
+  it('a failed completion event still posts, and the settle still counts as won', async () => {
+    const t = await seedTenant();
+    const { runId, intentIds: [a] } = await seedParkedRun(t, 1);
+    await decide(a!, 'rejected');
+    vi.mocked(publishEvent).mockRejectedValueOnce(new Error('bus down'));
+    expect(await settleApprovalParkedRun(runId)).toBe(true);
+    expect((await runRow(runId)).status).toBe('completed');
+    expect(postSpy.calls).toEqual([runId]);
+  });
+
+  it('a run that parked long ago settles silently: no completion event, no post', async () => {
+    const t = await seedTenant();
+    const { runId, intentIds: [a] } = await seedParkedRun(t, 1);
+    await sys(() => db.update(aiAgentRuns).set({ finishedAt: new Date(Date.now() - 3 * 86_400_000) })
+      .where(eq(aiAgentRuns.id, runId)));
+    await decide(a!, 'rejected');
+    expect(await settleApprovalParkedRun(runId)).toBe(true);
+    expect((await runRow(runId)).status).toBe('completed');
+    expect(completedPublishes(runId)).toHaveLength(0);
+    expect(postSpy.calls).toEqual([]);
+  });
+
+  it('an open step of another org never holds a run open, even when its id is in intent_ids', async () => {
+    const t = await seedTenant();
+    const other = await seedTenant();
+    const { runId, intentIds: [own] } = await seedParkedRun(t, 1);
+    const foreign = await seedParkedRun(other, 1);
+    await sys(() => db.update(aiAgentRuns).set({ intentIds: [own!, foreign.intentIds[0]!] }).where(eq(aiAgentRuns.id, runId)));
+    await decide(own!, 'rejected');
+    expect(await loadTriggerSubject('run_settled', runId)).toMatchObject({ openSteps: 0 });
+    expect(await settleApprovalParkedRun(runId)).toBe(true);
+    expect((await intentRow(foreign.intentIds[0]!)).status).toBe('pending_approval');
+    expect((await runRow(foreign.runId)).status).toBe('awaiting_approval');
   });
 
   it('concurrent settlers: one transition, one completed event, one post', async () => {

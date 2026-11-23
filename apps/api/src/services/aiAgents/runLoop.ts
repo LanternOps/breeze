@@ -4075,6 +4075,24 @@ async function finishRun(
     }
   }
 
+  // #11965: a step decided and run while this run was still going has no
+  // later event to settle the run on, so check once now that it is parked.
+  // A no-op while any step is open; never allowed to change the park, and a
+  // failure is left to the grant reconciler's sweep.
+  if (status === 'awaiting_approval' && isTroubleshootProfile(ctx.run)) {
+    try {
+      const { settleApprovalParkedRun } = await import('./runApprovalSettlement');
+      await settleApprovalParkedRun(ctx.run.id);
+    } catch (error) {
+      console.error('[aiAgentRunLoop] settling a just-parked run failed — the grant reconciler re-sweeps it', {
+        runId: ctx.run.id, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'aiAgents.approvalSettlement.finishRun', runId: ctx.run.id,
+      });
+    }
+  }
+
   // W07 (#11496): a run check-in's assessment posts its result to the
   // thread — after the final status is committed (the post reads it), and
   // never allowed to change it. The tick's reconcile re-sweeps a missed post;
