@@ -246,6 +246,18 @@ describe('loadDesignEvidence (loader failure isolation)', () => {
     expect(deviceQuery).toContain('g.org_id =');
   });
 
+  it('names an MSP-managed policy only when it applies to this organization (#12462 W03a)', async () => {
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const dialect = new PgDialect();
+    await loadDesignEvidence(ORG, { siteId: null });
+    const queries = vi.mocked(db.execute).mock.calls.map(([statement]) =>
+      dialect.sqlToQuery(statement as never).sql.replace(/\s+/g, ' '));
+    const policyQuery = queries.find((query) => query.includes('FROM configuration_policies cp'))!;
+    // The partner-owned branch is ANDed with the D14 applies-to test for this org.
+    expect(policyQuery).toMatch(/cp\.org_id IS NULL AND cp\.partner_id = \$\d+ AND cp\.id IN \(SELECT "configuration_policies"\."id" FROM "configuration_policies" WHERE/);
+    expect(policyQuery).toContain('"rs_a"."config_policy_id" = "configuration_policies"."id"');
+  });
+
   it('excludes retired legacy watches and rules from configuration evidence', async () => {
     rowsFor.push({ match: 'FROM configuration_policies cp', rows: [{ id: uuid(9), name: 'Policy', status: 'active', org_id: ORG, partner_id: null }] });
     await loadDesignEvidence(ORG, { siteId: null });

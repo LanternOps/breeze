@@ -50,7 +50,7 @@ vi.mock('./executionTargetGating', () => ({
 }));
 
 vi.mock('./configurationPolicy', () => ({
-  policyAccessCondition: () => mockAccessCondition(),
+  policyReadCondition: () => mockAccessCondition(),
 }));
 
 import {
@@ -65,7 +65,6 @@ import {
   computeAssignmentDelta,
   computePolicyReach,
   expandAssignmentsToDevices,
-  readablePolicyIds,
 } from './configPolicyReach';
 
 const dialect = new PgDialect();
@@ -583,24 +582,8 @@ describe('computePolicyReach work bound (#12465 round two)', () => {
   });
 });
 
-describe('readablePolicyIds', () => {
-  it('keeps only the ids the caller\'s policy access condition admits', async () => {
-    const { sql } = await import('drizzle-orm');
-    mockAccessCondition.mockReturnValue(sql`access_marker = 1`);
-    state.policies = [{ id: 'p1', orgId: ORG_A, partnerId: null }];
-
-    const ids = await readablePolicyIds(auth, ['p1', 'hidden']);
-
-    expect(ids).toEqual(['p1']);
-    expect(state.accessWhere).toHaveLength(1);
-    expect(compile(state.accessWhere[0]).params).toEqual(expect.arrayContaining(['p1', 'hidden']));
-  });
-
-  it('issues no statement for an empty list', async () => {
-    expect(await readablePolicyIds(auth, [])).toEqual([]);
-    expect(selectMock).not.toHaveBeenCalled();
-  });
-});
+// readablePolicyIds moved to services/configurationPolicy.ts (W03a); its unit
+// cases are in configurationPolicy.readScope.test.ts.
 
 describe('computeAssignmentDelta (the staged Apply dry run, #12466)', () => {
   const owner = { orgId: ORG_A, partnerId: null };

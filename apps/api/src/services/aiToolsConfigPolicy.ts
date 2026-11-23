@@ -6,6 +6,7 @@ import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignment
 import { eq, and, desc, isNull, isNotNull, inArray, notInArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { mfaGatedToolError } from './aiToolMfaGate';
+import { filterLegibleAssignments } from './configPolicyLegibleAssignments';
 import type { AiTool, PreFilingVerdict } from './aiTools';
 import {
   complianceInlineSettingsSchema,
@@ -61,6 +62,8 @@ import {
   authorizeAssignmentTarget,
   canManagePartnerWidePolicies,
   policyAccessCondition,
+  policyReadCondition,
+  PolicyNotReadableError,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   PolicyHasChildrenError,
   type EffectiveConfiguration,
@@ -485,10 +488,11 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const { limit, offset, fingerprint } = page;
 
       const conditions: SQL[] = [];
-      // Dual-axis visibility (#1724): a partner-scoped caller must also see
-      // partner-OWNED policies (org_id NULL), which auth.orgCondition alone
-      // excludes. policyAccessCondition is the same reader the HTTP routes use.
-      const oc = policyAccessCondition(auth);
+      // Dual-axis visibility (#1724), under the read rule (W03a): the
+      // MSP-managed policies that apply to one of the caller's orgs, and every
+      // one of them for a full-access partner. policyReadCondition is the same
+      // reader GET /configuration-policies uses.
+      const oc = policyReadCondition(auth);
       if (oc) conditions.push(oc);
       if (typeof input.status === 'string') {
         conditions.push(eq(configurationPolicies.status, input.status as 'active' | 'inactive' | 'archived'));
@@ -608,7 +612,16 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         remove: input.remove as string[] | undefined,
       };
 
-      const result = await previewEffectiveConfig(deviceId, changes, auth);
+      let result;
+      try {
+        result = await previewEffectiveConfig(deviceId, changes, auth);
+      } catch (err) {
+        // An added policy the caller may not read (W03a).
+        if (err instanceof PolicyNotReadableError) {
+          return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+        }
+        throw err;
+      }
       if (!result) return JSON.stringify({ error: 'Device not found or access denied' });
       return JSON.stringify(result);
     }),
@@ -823,7 +836,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('get_configuration_policy', async (input, auth) => {
       const policyId = input.policyId as string;
-      const policy = await getConfigPolicy(policyId, auth);
+      // The read predicate (W03a), as GET /configuration-policies/:id uses.
+      const policy = await getConfigPolicy(policyId, auth, { access: 'read' });
       if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
 
       const featureLinks = await listFeatureLinks(policyId);
@@ -832,8 +846,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       return JSON.stringify({
         policy,
         featureLinks,
+        // The honest total (plan D2); the rows are only those whose target is
+        // in one of the caller's orgs, as GET /:id/assignments returns.
         assignmentCount: assignments.length,
-        assignments,
+        assignments: await filterLegibleAssignments(auth, policy, assignments),
       });
     }),
   });
@@ -1027,10 +1043,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
 
       if (action === 'summary') {
-        // Get all config policies the caller can see — org-owned AND partner-wide
-        // (org_id NULL) for partner-scoped callers, via the dual-axis reader.
+        // Get all config policies the caller can see — org-owned AND the
+        // partner-wide (org_id NULL) ones the read rule admits (W03a).
         const conditions: SQL[] = [];
-        const oc = policyAccessCondition(auth);
+        const oc = policyReadCondition(auth);
         if (oc) conditions.push(oc);
 
         const policies = await db
@@ -1094,8 +1110,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         if (!input.policyId) return JSON.stringify({ error: 'policyId is required for status' });
         const policyId = input.policyId as string;
 
-        // Verify access to this policy
-        const policy = await getConfigPolicy(policyId, auth);
+        // Verify access to this policy (a read: the read predicate, W03a)
+        const policy = await getConfigPolicy(policyId, auth, { access: 'read' });
         if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
 
         // Get feature links for this policy

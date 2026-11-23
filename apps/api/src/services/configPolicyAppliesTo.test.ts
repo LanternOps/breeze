@@ -38,7 +38,7 @@ vi.mock('../db', () => ({
 vi.mock('./configurationPolicy', () => ({
   authorizeAssignmentTargets: authorizeMock,
   assignmentTargetKey: (level: string, targetId: string) => `${level}:${targetId}`,
-  policyAccessCondition: vi.fn(() => undefined),
+  policyReadCondition: vi.fn(() => undefined),
 }));
 
 import { loadAppliesToSummaries } from './configPolicyAppliesTo';

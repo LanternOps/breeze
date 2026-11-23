@@ -121,6 +121,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/aiToolsExportShared.ts': 'read model: export_dataset device set — reads only devices already frozen into an analysis run frame, under the caller ceiling; selects no fan-out targets',
   'services/aiToolsExportDatasets/customFields.ts': 'read model: custom_fields export — pages the custom field values of devices exportDeviceSet already resolved in the run org; selects no fan-out targets',
   'services/configPolicyAppliesTo.ts': 'list and detail read model; no fan-out',
+  'services/configPolicyLegibleAssignments.ts': 'read model: which assignment rows of a policy the caller may see (W03a); resolves target orgs, selects no fan-out targets',
   'services/configPolicyReach.ts': 'policy reach counts; no fan-out',
   'services/partnerGroupPreview.ts': 'read-only partner-group preview; eligible org discovery excludes Quick Support/holding orgs and evaluation intersects the caller accessible orgs',
   'services/accounting/accountingMappingService.ts': 'billing: accounting device counts',

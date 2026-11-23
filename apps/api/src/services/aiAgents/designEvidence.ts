@@ -70,6 +70,8 @@ import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { FLEET_DESIGN_PRECURSOR_THRESHOLDS, type FleetDesignBaselineNumbers, type FleetDesignPrecursorCondition } from '@breeze/shared';
 
 import { devices } from '../../db/schema/devices';
+import { configurationPolicies } from '../../db/schema/configurationPolicies';
+import { policyAppliesToOrgsSql } from '../configPolicyReadScope';
 import { MANAGEMENT_POSTURE_CATEGORIES } from '../../routes/agents/schemas';
 import { fetchFleetFindingRows } from '../vulnerabilityFleetQueries';
 import { computeStats } from '../vulnerabilityFleetAggregation';
@@ -791,7 +793,14 @@ type AlertTemplateRow = { id: string; name: string; category: string | null; sev
  * (or `is_built_in`).
  */
 async function loadConfiguration(orgId: string, partnerId: string | null): Promise<RawDesignEvidence['configuration']> {
-  const ownerPredicate = sql`(cp.org_id = ${orgId} OR (cp.org_id IS NULL AND cp.partner_id = ${partnerId}))`;
+  // An MSP-managed (partner-owned) policy counts only when it applies to THIS
+  // org (#12462 W03a, plan D14): once MSP-managed is the default owner, a
+  // partner-owned policy is often another customer's, and this bundle feeds a
+  // report the org reads. `policyAppliesToOrgsSql` correlates to the bare
+  // `configuration_policies` table, hence the uncorrelated `IN (SELECT …)`.
+  const ownerPredicate = partnerId
+    ? sql`(cp.org_id = ${orgId} OR (cp.org_id IS NULL AND cp.partner_id = ${partnerId} AND cp.id IN (SELECT ${configurationPolicies.id} FROM ${configurationPolicies} WHERE ${policyAppliesToOrgsSql([orgId], partnerId)})))`
+    : sql`(cp.org_id = ${orgId})`;
   const policies = await query<PolicyRow>(sql`
     SELECT cp.id, cp.name, cp.status::text AS status, cp.org_id, cp.partner_id
     FROM configuration_policies cp

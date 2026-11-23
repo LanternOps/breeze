@@ -1,3 +1,4 @@
+import { keepReadablePolicies } from '../services/configPolicyReadable';
 import { Hono } from 'hono';
 import { policyAwareMonitorEventLogWarnings } from '../services/monitorEventLogWarnings';
 import { monitorConversionRoutes } from './monitorDefinitions.conversion';
@@ -224,10 +225,11 @@ monitorDefinitionRoutes.get('/:id', requireScope('organization', 'partner', 'sys
   const monitor = await getMonitorDefinition(c.req.param('id')!, auth);
   if (!monitor) return c.json({ error: 'Monitor not found' }, 404);
 
-  const attachments = await db
+  const attachmentRows = await db
     .select({
       id: configPolicyMonitors.id,
       configPolicyId: configPolicyFeatureLinks.configPolicyId,
+      policyOrgId: configurationPolicies.orgId,
       policyName: configurationPolicies.name,
       enabled: configPolicyMonitors.enabled,
       overrides: configPolicyMonitors.overrides,
@@ -242,6 +244,11 @@ monitorDefinitionRoutes.get('/:id', requireScope('organization', 'partner', 'sys
       eq(configurationPolicies.id, configPolicyFeatureLinks.configPolicyId),
     )
     .where(eq(configPolicyMonitors.monitorId, monitor.id));
+  // RLS shows every MSP-managed policy of the partner; name only the ones the
+  // caller may read (W03a). A partner-wide monitor is often attached to
+  // customer-specific MSP-managed policies.
+  const attachments = (await keepReadablePolicies(auth, attachmentRows, (a) => ({ id: a.configPolicyId, orgId: a.policyOrgId })))
+    .map(({ policyOrgId: _policyOrgId, ...attachment }) => attachment);
 
   // Same display-safe projection as the response/action fields on `monitor`
   // itself: a policy-attachment override can carry the same MSP-authored
