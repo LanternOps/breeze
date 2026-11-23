@@ -193,7 +193,7 @@ export async function readablePolicyIds(auth: AuthContext, policyIds: readonly s
  * and a device-bound caller counts only its pinned devices. A device with no
  * site is outside every site ceiling.
  */
-function callerMaySeeDevice(auth: AuthContext, deviceId: string, siteId: string | null): boolean {
+export function callerMaySeeDevice(auth: AuthContext, deviceId: string, siteId: string | null): boolean {
   if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) return false;
   if (auth.allowedSiteIds && (siteId === null || !auth.allowedSiteIds.includes(siteId))) return false;
   return true;
