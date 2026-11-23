@@ -28,6 +28,8 @@ type fakeScheduler struct {
 	// afterCreate runs once a create lands (e.g. something deletes it again).
 	afterCreate func()
 	deleteErr   error
+	// deleteKeeps: /Delete exits 0 but the task stays registered.
+	deleteKeeps bool
 	// states, when set, are what successive run-state probes return; the
 	// last one repeats. Unset: Ready while a task is registered.
 	states []stateReply
@@ -104,6 +106,9 @@ func (f *fakeScheduler) run(args ...string) ([]byte, error) {
 		}
 		if f.deleteErr != nil {
 			return nil, f.deleteErr
+		}
+		if f.deleteKeeps {
+			return []byte("SUCCESS"), nil
 		}
 		f.registered = nil
 		return []byte("SUCCESS"), nil
@@ -602,6 +607,20 @@ func TestSecondCreateFailureIsAFailedRepairChargedOnce(t *testing.T) {
 	mustCheck(t, g.r, OutcomeRepaired)
 	if got := g.r.RepairsInWindow(); got != 2 {
 		t.Fatalf("RepairsInWindow = %d, want 2", got)
+	}
+}
+
+// A failed clean re-registration never clears the pending state without a
+// positive probe: a task that is still there is not taken as present.
+func TestFailedReregistrationOfATaskThatStayedIsNotTakenAsPresent(t *testing.T) {
+	g := newRig(t)
+	g.sched.states = []stateReply{brokenRegistration}
+	g.sched.deleteKeeps = true
+	g.sched.afterCreate = func() { g.sched.createErr = errors.New("exit status 1") }
+	mustCheck(t, g.r, OutcomeRepairFailed)
+	mustCheck(t, g.r, OutcomeRepairedPendingReboot)
+	if g.sched.createCalls() != 2 || g.sched.deleteCalls() != 1 {
+		t.Fatalf("re-registered again: %q", g.sched.calls)
 	}
 }
 

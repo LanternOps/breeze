@@ -260,9 +260,10 @@ func (r *Repairer) settle(runnable Outcome) (Outcome, error) {
 	}
 	created, err := r.register()
 	if !created {
-		// The task is gone now; the next check registers it on the normal
-		// path, which counts toward the backoff.
-		r.runnable = runnableSettled
+		// The task is normally gone now, and the next check registers it on
+		// the normal path, which counts toward the backoff. The pending state
+		// stays: if the task is somehow still there it is only probed, never
+		// taken as present.
 		return OutcomeRepairFailed, fmt.Errorf("clean re-registration after %w: %w", notRunnable, err)
 	}
 	if err != nil {
