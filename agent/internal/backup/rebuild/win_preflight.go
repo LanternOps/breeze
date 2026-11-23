@@ -115,7 +115,7 @@ func winPreflight(ctx context.Context, r *run) error {
 	// visible in the result rather than silent.
 	for _, p := range src.Partitions {
 		if p.Role == layout.RoleEFI && p.Filesystem == "" {
-			r.warn("partition %d (EFI system partition) has no recorded filesystem; formatting it FAT32", p.Number)
+			r.warn("partition %d (EFI system partition) has no recorded filesystem; planned as FAT32", p.Number)
 		}
 	}
 	plan.TargetPath = r.opts.Target.Path
