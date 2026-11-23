@@ -9,6 +9,8 @@ use url::Url;
 
 mod dev_build;
 #[cfg(any(target_os = "linux", test))]
+mod linux_desktop_entry;
+#[cfg(any(target_os = "linux", test))]
 mod linux_webkit_env;
 mod linux_webrtc;
 mod screenshot;
@@ -77,9 +79,8 @@ const QUIT_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_m
 #[cfg(any(target_os = "linux", test))]
 const LINUX_DESKTOP_ENTRY_NAME: &str = "breeze-viewer.desktop";
 
-/// The MIME type that carries the `breeze://` scheme association.
 #[cfg(target_os = "linux")]
-const BREEZE_SCHEME_MIME: &str = "x-scheme-handler/breeze";
+use linux_desktop_entry::BREEZE_SCHEME_MIME;
 
 /// Resolve the launcher path to record in the Linux desktop entry.
 ///
@@ -87,8 +88,12 @@ const BREEZE_SCHEME_MIME: &str = "x-scheme-handler/breeze";
 /// (`/tmp/.mount_XXXXXX/usr/bin/breeze-viewer`), which disappears the moment the
 /// process exits — a desktop entry pointing there is dead on arrival. The
 /// AppImage runtime sets `$APPIMAGE` to the real, persistent path of the
-/// `.AppImage` file, so that always wins when present. A plain (non-AppImage)
-/// build falls back to `current_exe()`.
+/// `.AppImage` file, so that always wins when present.
+///
+/// Without `$APPIMAGE` but running from an AppDir (an extracted AppImage), the
+/// AppDir's `AppRun` is recorded instead of the binary (#12550): it sets the
+/// working directory and library paths the bundled WebKitGTK needs to find its
+/// helper processes. Anything else falls back to `current_exe()`.
 ///
 /// Relative paths are rejected: `Exec=` is resolved against an unspecified
 /// working directory, so anything non-absolute is a handler that fails later
@@ -97,10 +102,14 @@ const BREEZE_SCHEME_MIME: &str = "x-scheme-handler/breeze";
 fn resolve_launcher_path(
     appimage_env: Option<&str>,
     current_exe: Option<&Path>,
+    is_file: &dyn Fn(&Path) -> bool,
 ) -> Option<PathBuf> {
     let candidate = match appimage_env.map(str::trim).filter(|s| !s.is_empty()) {
         Some(appimage) => PathBuf::from(appimage),
-        None => current_exe?.to_path_buf(),
+        None => {
+            let exe = current_exe?;
+            linux_desktop_entry::appdir_launcher(exe, is_file).unwrap_or_else(|| exe.to_path_buf())
+        }
     };
     candidate.is_absolute().then_some(candidate)
 }
@@ -196,8 +205,9 @@ fn linux_registration_plan(
     current_exe: Option<&Path>,
     xdg_data_home: Option<&str>,
     home: Option<&str>,
+    is_file: &dyn Fn(&Path) -> bool,
 ) -> Result<LinuxRegistration, String> {
-    let launcher = resolve_launcher_path(appimage_env, current_exe)
+    let launcher = resolve_launcher_path(appimage_env, current_exe, is_file)
         .ok_or_else(|| "no absolute launcher path".to_string())?;
     let exec_quoted = escape_desktop_exec(&launcher.to_string_lossy()).ok_or_else(|| {
         format!(
@@ -225,7 +235,9 @@ fn linux_registration_plan(
 /// with the viewer already downloaded and running (issue #2614).
 ///
 /// Runs on every launch so the handler follows the AppImage if the user moves
-/// it.
+/// it. The entry is rewritten only when `linux_desktop_entry::entry_action`
+/// says so: never when it already matches, and never over a user's edit that
+/// still works (#12550).
 #[cfg(target_os = "linux")]
 fn register_url_scheme() -> Result<(), String> {
     let plan = linux_registration_plan(
@@ -233,15 +245,38 @@ fn register_url_scheme() -> Result<(), String> {
         std::env::current_exe().ok().as_deref(),
         std::env::var("XDG_DATA_HOME").ok().as_deref(),
         std::env::var("HOME").ok().as_deref(),
+        &|p: &Path| p.is_file(),
     )?;
 
-    // Write only when the entry is missing or stale. Unreadable, truncated and
-    // corrupt all compare unequal and get rewritten, so a bad file self-heals.
-    if std::fs::read_to_string(&plan.entry_path).ok().as_deref() != Some(plan.contents.as_str()) {
-        std::fs::create_dir_all(&plan.dir)
-            .map_err(|e| format!("could not create {}: {}", plan.dir.display(), e))?;
-        std::fs::write(&plan.entry_path, &plan.contents)
-            .map_err(|e| format!("could not write {}: {}", plan.entry_path.display(), e))?;
+    // Unreadable and non-UTF-8 files count as missing, so a bad file self-heals.
+    let existing = std::fs::read_to_string(&plan.entry_path).ok();
+    let path_env = std::env::var("PATH").ok();
+    let action = linux_desktop_entry::entry_action(
+        existing.as_deref(),
+        &plan.contents,
+        &|launcher: &str| escape_desktop_exec(launcher).map(|q| desktop_entry_contents(&q)),
+        &|program: &str| {
+            linux_desktop_entry::program_resolves(program, path_env.as_deref(), &is_executable_file)
+        },
+    );
+    match action {
+        linux_desktop_entry::EntryAction::Write(reason) => {
+            std::fs::create_dir_all(&plan.dir)
+                .map_err(|e| format!("could not create {}: {}", plan.dir.display(), e))?;
+            std::fs::write(&plan.entry_path, &plan.contents).map_err(|e| {
+                format!(
+                    "could not write {} ({reason:?}): {}",
+                    plan.entry_path.display(),
+                    e
+                )
+            })?;
+        }
+        linux_desktop_entry::EntryAction::UpToDate => {}
+        linux_desktop_entry::EntryAction::KeepUserEdited { program } => eprintln!(
+            "keeping the edited {} (Exec runs {program}); delete it to let the viewer \
+             write its own",
+            plan.entry_path.display()
+        ),
     }
 
     // Re-assert the association on every launch unless it already points at us.
@@ -264,6 +299,13 @@ fn register_url_scheme() -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// A regular file with an execute bit, following symlinks.
+#[cfg(target_os = "linux")]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 /// True only when xdg already resolves the scheme to our entry.
@@ -1776,6 +1818,63 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    fn no_files(_: &Path) -> bool {
+        false
+    }
+
+    /// #12550: an extracted AppImage (no `$APPIMAGE`) must register its
+    /// `AppRun`, not the raw `usr/bin` binary. Launched directly, the binary
+    /// runs from whatever directory the desktop picks and WebKit cannot find
+    /// its helper processes.
+    #[test]
+    fn resolve_launcher_path_uses_apprun_for_an_extracted_appimage() {
+        let exe = PathBuf::from("/home/u/squashfs-root/usr/bin/breeze-viewer");
+        let has_apprun = |p: &Path| p == Path::new("/home/u/squashfs-root/AppRun");
+        assert_eq!(
+            resolve_launcher_path(None, Some(&exe), &has_apprun),
+            Some(PathBuf::from("/home/u/squashfs-root/AppRun"))
+        );
+        // A mounted AppImage has an AppRun too, but that mount is ephemeral:
+        // `$APPIMAGE` still wins.
+        let mounted = PathBuf::from("/tmp/.mount_abc/usr/bin/breeze-viewer");
+        let mount_apprun = |p: &Path| p == Path::new("/tmp/.mount_abc/AppRun");
+        assert_eq!(
+            resolve_launcher_path(Some("/home/u/b.AppImage"), Some(&mounted), &mount_apprun),
+            Some(PathBuf::from("/home/u/b.AppImage"))
+        );
+        // Not an AppDir: the executable itself, as before.
+        assert_eq!(
+            resolve_launcher_path(None, Some(&exe), &no_files),
+            Some(exe.clone())
+        );
+    }
+
+    /// The ownership rule in `linux_desktop_entry::entry_action` regenerates an
+    /// entry from the program its `Exec=` names and compares. That only works
+    /// if parsing undoes `escape_desktop_exec` exactly, for every path shape the
+    /// generator accepts.
+    #[test]
+    fn generated_entries_round_trip_through_exec_program() {
+        for path in [
+            "/home/u/squashfs-root/usr/bin/breeze-viewer",
+            "/home/u/My Apps/breeze.AppImage",
+            "/home/u/Téléchargements/breeze.AppImage",
+            "/home/u/a$b`c\"d",
+            "/home/u/breeze%20viewer.AppImage",
+        ] {
+            let contents = desktop_entry_contents(&escape_desktop_exec(path).unwrap());
+            assert_eq!(
+                linux_desktop_entry::exec_program(&contents).as_deref(),
+                Some(path),
+                "{contents}"
+            );
+            assert!(
+                linux_desktop_entry::claims_breeze_scheme(&contents),
+                "{contents}"
+            );
+        }
+    }
+
     /// `$APPIMAGE` must win over `current_exe()`. Inside an AppImage the latter
     /// is the ephemeral squashfs mount, so registering it produces a handler
     /// that breaks the moment the process exits.
@@ -1783,7 +1882,11 @@ mod tests {
     fn resolve_launcher_path_prefers_appimage_over_current_exe() {
         let exe = PathBuf::from("/tmp/.mount_abc123/usr/bin/breeze-viewer");
         assert_eq!(
-            resolve_launcher_path(Some("/home/u/breeze-viewer-linux.AppImage"), Some(&exe)),
+            resolve_launcher_path(
+                Some("/home/u/breeze-viewer-linux.AppImage"),
+                Some(&exe),
+                &no_files
+            ),
             Some(PathBuf::from("/home/u/breeze-viewer-linux.AppImage"))
         );
     }
@@ -1794,24 +1897,24 @@ mod tests {
         // Unset, empty, and whitespace-only $APPIMAGE all fall back to the exe.
         for env in [None, Some(""), Some("   ")] {
             assert_eq!(
-                resolve_launcher_path(env, Some(&exe)),
+                resolve_launcher_path(env, Some(&exe), &no_files),
                 Some(exe.clone()),
                 "APPIMAGE={env:?}"
             );
         }
         // Relative paths are useless in Exec= — reject rather than half-register.
         assert_eq!(
-            resolve_launcher_path(Some("./breeze.AppImage"), Some(&exe)),
+            resolve_launcher_path(Some("./breeze.AppImage"), Some(&exe), &no_files),
             None
         );
         assert_eq!(
-            resolve_launcher_path(None, Some(Path::new("breeze-viewer"))),
+            resolve_launcher_path(None, Some(Path::new("breeze-viewer")), &no_files),
             None
         );
-        assert_eq!(resolve_launcher_path(None, None), None);
+        assert_eq!(resolve_launcher_path(None, None, &no_files), None);
         // A valid $APPIMAGE stands alone — current_exe() is never consulted.
         assert_eq!(
-            resolve_launcher_path(Some("/opt/breeze.AppImage"), None),
+            resolve_launcher_path(Some("/opt/breeze.AppImage"), None, &no_files),
             Some(PathBuf::from("/opt/breeze.AppImage"))
         );
     }
@@ -1884,6 +1987,7 @@ mod tests {
             Some(&exe),
             None,
             Some("/home/u"),
+            &no_files,
         )
         .expect("plan");
 
@@ -1906,9 +2010,14 @@ mod tests {
             plan.entry_name
         );
         // XDG_DATA_HOME takes precedence when set.
-        let via_xdg =
-            linux_registration_plan(Some("/opt/b.AppImage"), None, Some("/xdg"), Some("/home/u"))
-                .expect("plan");
+        let via_xdg = linux_registration_plan(
+            Some("/opt/b.AppImage"),
+            None,
+            Some("/xdg"),
+            Some("/home/u"),
+            &no_files,
+        )
+        .expect("plan");
         assert_eq!(via_xdg.dir, PathBuf::from("/xdg/applications"));
     }
 
@@ -1916,18 +2025,26 @@ mod tests {
     fn linux_registration_plan_reports_why_it_gave_up() {
         // Relative launcher, unrepresentable launcher, and no home directory —
         // each aborts with a reason the idle card can show the user.
+        assert!(linux_registration_plan(
+            Some("./rel.AppImage"),
+            None,
+            None,
+            Some("/home/u"),
+            &no_files
+        )
+        .unwrap_err()
+        .contains("launcher path"));
+        assert!(linux_registration_plan(
+            Some("/home/u/a\nb"),
+            None,
+            None,
+            Some("/home/u"),
+            &no_files
+        )
+        .unwrap_err()
+        .contains("desktop entry"));
         assert!(
-            linux_registration_plan(Some("./rel.AppImage"), None, None, Some("/home/u"))
-                .unwrap_err()
-                .contains("launcher path")
-        );
-        assert!(
-            linux_registration_plan(Some("/home/u/a\nb"), None, None, Some("/home/u"))
-                .unwrap_err()
-                .contains("desktop entry")
-        );
-        assert!(
-            linux_registration_plan(Some("/opt/b.AppImage"), None, None, None)
+            linux_registration_plan(Some("/opt/b.AppImage"), None, None, None, &no_files)
                 .unwrap_err()
                 .contains("XDG")
         );
