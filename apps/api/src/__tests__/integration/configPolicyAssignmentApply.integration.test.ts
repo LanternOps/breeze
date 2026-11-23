@@ -17,7 +17,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { asc, eq } from 'drizzle-orm';
 import { configPolicyRoutes } from '../../routes/configurationPolicies';
-import { configPolicyAssignments, configurationPolicies } from '../../db/schema';
+import { configPolicyAssignments, configurationPolicies, organizationUsers } from '../../db/schema';
 import { createAccessToken } from '../../services/jwt';
 import { shutdownPeripheralJobs } from '../../jobs/peripheralJobs';
 import { closeRedis } from '../../services/redis';
@@ -55,14 +55,17 @@ function call(app: Hono, token: string, method: string, path: string, body?: unk
   });
 }
 
-async function orgToken(partnerId: string, orgId: string) {
+async function orgToken(partnerId: string, orgId: string, siteIds?: string[]) {
   const user = await createUser({ partnerId, orgId, email: `apply-${randomUUID().slice(0, 8)}@example.test` });
   const role = await createRole({ scope: 'organization', orgId, partnerId });
   await grantRolePermissions(role.id, [
     { resource: 'devices', action: 'read' },
     { resource: 'devices', action: 'write' },
   ]);
-  await assignUserToOrganization(user.id, orgId, role.id);
+  const membership = await assignUserToOrganization(user.id, orgId, role.id);
+  if (siteIds) {
+    await (getTestDb() as any).update(organizationUsers).set({ siteIds }).where(eq(organizationUsers.id, membership.id));
+  }
   return createAccessToken({
     sub: user.id, email: user.email, roleId: role.id, scope: 'organization',
     orgId, partnerId: null, mfa: true, aep: 1, mep: 1, sid: randomUUID(),
@@ -194,6 +197,30 @@ describe('POST /configuration-policies/:id/assignments/apply on real Postgres (#
     expect(await res.json()).toMatchObject({ entry: { op: 'add', index: 0 } });
     // The checks run before any write: the remove did not happen either.
     expect((await rowsOf(policyId)).map((r) => r.id)).toEqual([kept.id]);
+  });
+
+  runDb('a site-restricted caller cannot remove a row stored on a site outside its access', async () => {
+    const app = buildApp();
+    const { partner, org, siteA, siteB, policyId } = await seed();
+    const inside = await insertRow(policyId, 'site', siteA.id);
+    const outside = await insertRow(policyId, 'site', siteB.id);
+    const restricted = await orgToken(partner.id, org.id, [siteA.id]);
+
+    const refused = await call(app, restricted, 'POST', `/configuration-policies/${policyId}/assignments/apply`, {
+      remove: [inside.id, outside.id],
+    });
+
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ entry: { op: 'remove', index: 1 } });
+    // Checked before any write: the row inside the caller's sites is still there too.
+    expect((await rowsOf(policyId)).map((r) => r.id).sort()).toEqual([inside.id, outside.id].sort());
+
+    // Control: the same caller may remove the row on its own site.
+    const allowed = await call(app, restricted, 'POST', `/configuration-policies/${policyId}/assignments/apply`, {
+      remove: [inside.id],
+    });
+    expect(allowed.status).toBe(201);
+    expect((await rowsOf(policyId)).map((r) => r.id)).toEqual([outside.id]);
   });
 
   runDb('dry run leaves the table unchanged', async () => {

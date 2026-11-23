@@ -80,7 +80,7 @@ describe('updateAssignment', () => {
       osFilter: ['windows'],
     });
 
-    expect(result).toEqual(updated);
+    expect(result).toEqual({ assignment: updated, changed: true });
     expect(updateChain.set).toHaveBeenCalledWith({ priority: 5, roleFilter: null, osFilter: ['windows'] });
     // Never moves a row: level, target and policy are not in the patch.
     const setArg = updateChain.set.mock.calls[0]![0];
@@ -129,7 +129,7 @@ describe('updateAssignment', () => {
     vi.clearAllMocks();
     vi.mocked(db.select).mockReturnValue(chain([EXISTING]));
     const unchanged = await updateAssignment(ASSIGNMENT_ID, POLICY_ID, { priority: 10, roleFilter: ['server'], osFilter: [] });
-    expect(unchanged).toEqual(EXISTING);
+    expect(unchanged).toEqual({ assignment: EXISTING, changed: false });
     expect(db.update).not.toHaveBeenCalled();
     expect(complianceMock).not.toHaveBeenCalled();
     expect(oemMock).not.toHaveBeenCalled();

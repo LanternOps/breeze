@@ -185,7 +185,7 @@ describe('POST /:id/assignments/apply', () => {
     });
     updateAssignmentMock.mockImplementation(async (aid: string, _p: string, patch: Record<string, unknown>) => {
       callLog.push(`update:${aid}`);
-      return { ...storedRow(aid), ...patch };
+      return { assignment: { ...storedRow(aid), ...patch }, changed: true };
     });
     computeAssignmentDeltaMock.mockResolvedValue({ added: 4, removed: 2 });
   });
@@ -341,14 +341,26 @@ describe('POST /:id/assignments/apply', () => {
     expect(checkAddArming).toHaveBeenCalledTimes(1);
   });
 
-  it('Apply skips the arming gates for removes and unchanged updates only', async () => {
+  it('Apply skips the arming gates for removes and empty updates only', async () => {
     getConfigPolicyMock.mockResolvedValue(policy({ featureLinks: [ARMED_OEM] }));
 
-    // ROW_2 is stored with priority 0 and no filters: this update changes nothing.
-    const res = await apply({ update: [{ id: ROW_2, priority: 0, roleFilter: [] }], remove: [ROW_1] });
+    const res = await apply({ update: [{ id: ROW_2 }], remove: [ROW_1] });
 
     expect(res.status).toBe(201);
     expect(checkAddArming).not.toHaveBeenCalled();
+  });
+
+  // The decision never rests on the stored-row snapshot read before the
+  // savepoint: another editor may change the row in between, and this update
+  // would then write a real change. Any update that sets a field runs them.
+  it('an update that sets a field runs the arming gates even when it matches the stored row', async () => {
+    getConfigPolicyMock.mockResolvedValue(policy({ featureLinks: [ARMED_OEM] }));
+
+    const res = await apply({ update: [{ id: ROW_2, priority: 0 }] });
+
+    expect(res.status).toBe(403);
+    expect(checkAddArming).toHaveBeenCalledTimes(1);
+    expectNoWrites();
   });
 
   // Priority and filters decide which devices an armed policy reaches and where
@@ -396,7 +408,11 @@ describe('POST /:id/assignments/apply', () => {
     const res = await apply({ remove: [ROW_1], add: [{ level: 'site', targetId: SITE_A }, { level: 'site', targetId: SITE_B }] });
 
     expect(res.status).toBe(409);
-    expect(await res.json()).toMatchObject({ error: 'assignment_conflict', entry: { op: 'add', index: 1 } });
+    expect(await res.json()).toMatchObject({
+      error: 'assignment_conflict',
+      message: 'This policy is already assigned to this target at this level',
+      entry: { op: 'add', index: 1 },
+    });
     expect(writeRouteAuditMock).not.toHaveBeenCalled();
     expect(invalidateCacheMock).not.toHaveBeenCalled();
   });
@@ -493,6 +509,24 @@ describe('POST /:id/assignments/apply', () => {
     expect(update[1].details).toMatchObject({ assignmentId: ROW_2, priority: 7, roleFilter: null });
     // The audit rows are written after the savepoint closed.
     expect(writeRouteAuditMock.mock.invocationCallOrder[0]).toBeGreaterThan(withDbTransactionMock.mock.invocationCallOrder[0]!);
+  });
+
+  it('writes no audit row for an update that changed nothing', async () => {
+    updateAssignmentMock.mockResolvedValue({ assignment: storedRow(ROW_2, { level: 'device', targetId: DEVICE_ID }), changed: false });
+
+    const res = await apply({ update: [{ id: ROW_2, priority: 0 }], remove: [ROW_1] });
+
+    expect(res.status).toBe(201);
+    expect(writeRouteAuditMock.mock.calls.map((call) => call[1].action)).toEqual(['config_policy.unassign']);
+    expect((await res.json()).updated).toHaveLength(1);
+  });
+
+  it('audits a partner-owned policy under its partner', async () => {
+    getConfigPolicyMock.mockResolvedValue(policy({ orgId: null, partnerId: PARTNER_ID }));
+
+    await apply({ remove: [ROW_1] });
+
+    expect(writeRouteAuditMock.mock.calls[0]![1]).toMatchObject({ orgId: null, partnerId: PARTNER_ID });
   });
 
   it('passes an update patch through without inventing fields', async () => {

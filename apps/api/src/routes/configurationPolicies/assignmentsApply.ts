@@ -13,7 +13,11 @@
  * rolls the whole Apply back and the route answers 409. Without the savepoint
  * the earlier writes would commit with the request transaction even on a 409.
  * Audit rows and the remote-access cache flush happen only after the savepoint
- * committed. A row the request does not name is never touched.
+ * committed. The reconciles `assignPolicy`, `unassignPolicy` and
+ * `updateAssignment` schedule are registered inside the savepoint, so a
+ * rolled-back Apply may still run them; they recompute from committed state,
+ * so that costs work, not correctness. A row the request does not name is
+ * never touched.
  *
  * DRY RUN. The same checks, then the device delta of the proposed set against
  * the stored one (`computeAssignmentDelta`, plan D10), bounded like reach and
@@ -66,26 +70,16 @@ class AssignmentApplyConflictError extends Error {
 }
 
 const CONFLICT_MESSAGE = 'The assignments changed since they were loaded; nothing was applied. Reload and try again.';
+const DUPLICATE_ADD_MESSAGE = 'This policy is already assigned to this target at this level';
 
 /** `[]` and null both mean "every device", as `assignPolicy` stores them. */
 function normalizeFilter(filter: readonly string[] | null | undefined): string[] | null {
   return filter?.length ? [...filter] : null;
 }
 
-function sameFilter(a: readonly string[] | null, b: readonly string[] | null): boolean {
-  if (a === null || b === null) return a === b;
-  return a.length === b.length && [...a].sort().join('\u0000') === [...b].sort().join('\u0000');
-}
-
-type FilterPatch = { priority?: number; roleFilter?: string[] | null; osFilter?: string[] | null };
-type StoredValues = { priority: number; roleFilter: string[] | null; osFilter: string[] | null };
-
-/** Whether applying `patch` (an omitted field is left as it is) would change `stored`. */
-function patchChangesRow(patch: FilterPatch, stored: StoredValues): boolean {
-  if (patch.priority !== undefined && patch.priority !== stored.priority) return true;
-  if (patch.roleFilter !== undefined && !sameFilter(normalizeFilter(patch.roleFilter), stored.roleFilter ?? null)) return true;
-  if (patch.osFilter !== undefined && !sameFilter(normalizeFilter(patch.osFilter), stored.osFilter ?? null)) return true;
-  return false;
+/** Whether an update entry sets any field (an omitted field is left as it is). */
+function updateSetsAField(entry: { priority?: number; roleFilter?: string[] | null; osFilter?: string[] | null }): boolean {
+  return entry.priority !== undefined || entry.roleFilter !== undefined || entry.osFilter !== undefined;
 }
 
 assignmentApplyRoutes.post(
@@ -179,9 +173,11 @@ assignmentApplyRoutes.post(
     // not an entry, decides them. An added row is how an armed policy reaches
     // devices; so is an edited one, since priority decides where the policy
     // wins and the filters decide which devices it reaches. Removes and
-    // updates that change nothing do not run them.
-    const editsReach = data.update.some((entry) => patchChangesRow(entry, storedById.get(entry.id)!));
-    if (data.add.length > 0 || editsReach) {
+    // updates that set no field do not run them. The decision never compares
+    // against the stored rows read above: another editor may change a row
+    // before the savepoint, and an update that matched the snapshot would then
+    // write a real change.
+    if (data.add.length > 0 || data.update.some(updateSetsAField)) {
       const armingGate = checkAddArming(auth, c.get('permissions') as UserPermissions | undefined, policy);
       if (!armingGate.ok) return c.json(armingGate.body, armingGate.status);
     }
@@ -200,7 +196,7 @@ assignmentApplyRoutes.post(
       for (const [index, entry] of data.add.entries()) {
         const key = `${entry.level}:${addTargets[index]}`;
         if (taken.has(key)) {
-          return c.json({ error: 'assignment_conflict', message: 'This policy is already assigned to this target at this level', entry: { op: 'add', index } }, 409);
+          return c.json({ error: 'assignment_conflict', message: DUPLICATE_ADD_MESSAGE, entry: { op: 'add', index } }, 409);
         }
         taken.add(key);
       }
@@ -242,7 +238,7 @@ assignmentApplyRoutes.post(
 
     let outcome: {
       removed: NonNullable<Awaited<ReturnType<typeof unassignPolicy>>>[];
-      updated: NonNullable<Awaited<ReturnType<typeof updateAssignment>>>[];
+      updated: Array<NonNullable<Awaited<ReturnType<typeof updateAssignment>>>>;
       added: NonNullable<Awaited<ReturnType<typeof assignPolicy>>>[];
     };
     try {
@@ -253,7 +249,7 @@ assignmentApplyRoutes.post(
           if (!row) throw new AssignmentApplyConflictError({ op: 'remove', index });
           removed.push(row);
         }
-        const updated: NonNullable<Awaited<ReturnType<typeof updateAssignment>>>[] = [];
+        const updated: Array<NonNullable<Awaited<ReturnType<typeof updateAssignment>>>> = [];
         for (const [index, entry] of data.update.entries()) {
           const { id: assignmentId, ...patch } = entry;
           const row = await updateAssignment(assignmentId, id, patch);
@@ -278,7 +274,10 @@ assignmentApplyRoutes.post(
       });
     } catch (error) {
       if (error instanceof AssignmentApplyConflictError) {
-        return c.json({ error: 'assignment_conflict', message: CONFLICT_MESSAGE, entry: error.entry }, 409);
+        // An add collides with a row already on the target (stored, or added
+        // by another editor); an update or remove found its row gone.
+        const message = error.entry.op === 'add' ? DUPLICATE_ADD_MESSAGE : CONFLICT_MESSAGE;
+        return c.json({ error: 'assignment_conflict', message, entry: error.entry }, 409);
       }
       throw error;
     }
@@ -288,6 +287,7 @@ assignmentApplyRoutes.post(
     invalidateRemoteAccessCache();
     const auditBase = {
       orgId: policy.orgId,
+      partnerId: policy.orgId === null ? policy.partnerId : undefined,
       resourceType: 'configuration_policy',
       resourceId: id,
       resourceName: policy.name,
@@ -299,10 +299,10 @@ assignmentApplyRoutes.post(
         details: { assignmentId: row.id, level: row.level, targetId: row.targetId, via: 'apply' },
       });
     }
-    for (const row of outcome.updated) {
-      // `updateAssignment` returns an unchanged row as it is: no change, no audit row.
-      const before = storedById.get(row.id);
-      if (before && !patchChangesRow(row, before)) continue;
+    for (const { assignment: row, changed } of outcome.updated) {
+      // `changed` is decided inside the savepoint, against the row as written:
+      // an update that wrote nothing writes no audit row.
+      if (!changed) continue;
       writeRouteAudit(c, {
         ...auditBase,
         action: 'config_policy.assignment_update',
@@ -325,6 +325,10 @@ assignmentApplyRoutes.post(
       });
     }
 
-    return c.json(outcome, 201);
+    return c.json({
+      added: outcome.added,
+      updated: outcome.updated.map(({ assignment }) => assignment),
+      removed: outcome.removed,
+    }, 201);
   }
 );

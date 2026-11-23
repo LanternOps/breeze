@@ -2646,8 +2646,11 @@ function sameAssignmentFilter(a: readonly string[] | null, b: readonly string[] 
  * as it is; a null or empty filter means every device, as in `assignPolicy`.
  *
  * Returns null only when no such row exists on this policy (or it vanished
- * before the write). A row whose values already match is returned unchanged,
- * with no write and no reconcile. When a column changed it schedules the same
+ * before the write). Otherwise `changed` says whether THIS call wrote: a row
+ * whose values already match is returned as it is (`changed: false`), with no
+ * write and no reconcile. The comparison runs against the row read here, in the
+ * caller's transaction, so a caller audits on `changed` rather than on an
+ * earlier snapshot of its own. When a column changed it schedules the same
  * three reconciles as `assignPolicy`: priority and filters decide which policy
  * a device follows.
  */
@@ -2656,7 +2659,7 @@ export async function updateAssignment(
   configPolicyId: string,
   patch: { priority?: number; roleFilter?: string[] | null; osFilter?: string[] | null },
   executor: DbExecutor = db,
-): Promise<typeof configPolicyAssignments.$inferSelect | null> {
+): Promise<{ assignment: typeof configPolicyAssignments.$inferSelect; changed: boolean } | null> {
   const match = and(
     eq(configPolicyAssignments.id, assignmentId),
     eq(configPolicyAssignments.configPolicyId, configPolicyId),
@@ -2674,7 +2677,7 @@ export async function updateAssignment(
     const osFilter = normalizeAssignmentFilter(patch.osFilter);
     if (!sameAssignmentFilter(osFilter, existing.osFilter ?? null)) changes.osFilter = osFilter;
   }
-  if (Object.keys(changes).length === 0) return existing;
+  if (Object.keys(changes).length === 0) return { assignment: existing, changed: false };
 
   const [updated] = await executor.update(configPolicyAssignments).set(changes).where(match).returning();
   if (!updated) return null;
@@ -2684,7 +2687,7 @@ export async function updateAssignment(
     { configPolicyId, assignments: [{ level: updated.level, targetId: updated.targetId }] },
     'assignment-update',
   );
-  return updated;
+  return { assignment: updated, changed: true };
 }
 
 export async function validateAssignmentTarget(
