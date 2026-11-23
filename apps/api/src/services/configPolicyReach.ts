@@ -75,10 +75,14 @@ export interface ConfigPolicyReach {
 
 /**
  * The most statements one reach request may run, the four fixed reads
- * included and shared across every policy in the batch. Sized so a full
- * 100-id page of ordinary policies (one or two rows each) is exact, while a
- * caller holding only `devices.read` cannot pin a pooled connection for the
- * length of an unbounded per-row fan-out (CWE-770).
+ * included and shared across every policy in the batch. That leaves 196
+ * resolver statements: a request stays exact while its policies and their
+ * children need at most that many distinct (target, owner) expansions, a
+ * device group counting twice (a full 100-id page of single-target policies
+ * fits; one where every policy has two distinct targets does not). Past it
+ * the counts are partial, and a caller holding only `devices.read` cannot pin
+ * a pooled connection for the length of an unbounded per-row fan-out
+ * (CWE-770).
  */
 export const REACH_STATEMENT_BUDGET = 200;
 
