@@ -15,7 +15,7 @@ You configure it on the **UniFi** tab of the Integrations page: **Integrations �
 
 There are two ways to connect:
 
-- **Cloud (Site Manager)** -- one Ubiquiti Site Manager API key. A key is scoped either to your account's Independent sites or to a single Fabric, and Breeze accepts one key per partner today, so sites outside that key's scope do not sync (see **One key per partner** below). Breeze reaches the consoles that key can see through Ubiquiti's cloud, so there is nothing to install on site. You can optionally pair each console with an on-site Breeze agent for deeper per-port and per-client telemetry.
+- **Cloud (Site Manager)** -- one connection holding one or more Ubiquiti Site Manager API keys. A key is scoped either to your account's Independent sites or to a single Fabric, so add one key per scope to cover all your sites (see **Several API keys per connection** below). Breeze reaches the consoles that key can see through Ubiquiti's cloud, so there is nothing to install on site. You can optionally pair each console with an on-site Breeze agent for deeper per-port and per-client telemetry.
 - **Self-hosted controller** -- no Ubiquiti cloud account at all. A Breeze agent that already has LAN access to your on-prem UniFi Network controller polls it directly over the local Network Integration API. The agent is the only path Breeze uses to reach the controller.
 
 <Aside type="note">
@@ -29,13 +29,13 @@ On the not-yet-connected screen, choose a connection type -- **Cloud (Site Manag
 <Tabs>
   <TabItem label="Cloud (Site Manager)">
 
-  Breeze validates the key before saving, then discovers the UniFi consoles and sites that the key can see. A Site Manager key is scoped either to the account's **Independent sites** or to **one Fabric**; it does not cover the whole account. Breeze accepts one key per partner today (see **One key per partner** below).
+  Breeze validates the key before saving, then discovers the UniFi consoles and sites that the key can see. A Site Manager key is scoped either to the account's **Independent sites** or to **one Fabric**; it does not cover the whole account. To cover several scopes, add one key per scope to the same connection (see **Several API keys per connection** below).
 
   **Required credential**
 
   | Field | Required | Description |
   |---|---|---|
-  | UniFi Site Manager API key | Yes | A read-only API key generated in your Ubiquiti account (UniFi Site Manager). Stored encrypted; never echoed back to the UI. |
+  | UniFi Site Manager API key | Yes | A read-only API key generated in your Ubiquiti account (UniFi Site Manager). Stored encrypted; the UI shows only its last four characters. Add further keys afterwards on the **Site Manager API keys** card. |
 
   <Steps>
 
@@ -45,7 +45,7 @@ On the not-yet-connected screen, choose a connection type -- **Cloud (Site Manag
 
   3. Paste it into the **UniFi Site Manager API key** field and click **Connect to UniFi**. Breeze validates the key before saving -- a bad key is rejected with a clear message, and a UniFi outage is reported separately so a working key isn't wrongly blamed.
 
-  4. In the **Site mapping** card, Breeze lists every UniFi site the key can see, next to the host that runs it. Mapping is manual: Breeze does not match UniFi sites to Breeze sites by name, so choose the matching **Breeze site** (grouped by organization) for each UniFi site, then click **Save mappings**. The organization is derived from the site you pick; unmapped UniFi sites are simply not synced. Use **Refresh** to re-pull the live host/site list from UniFi.
+  4. In the **Site mapping** card, Breeze lists every UniFi site your enabled keys can see, next to the host that runs it. Mapping is manual: Breeze does not match UniFi sites to Breeze sites by name, so choose the matching **Breeze site** (grouped by organization) for each UniFi site, then click **Save mappings**. The organization is derived from the site you pick; unmapped UniFi sites are simply not synced. To remove a mapping, clear its Breeze site before saving. Use **Refresh** to re-pull the live host/site list from UniFi.
 
   5. Inventory syncs automatically about every half hour. Click **Sync now** to pull immediately, and review each run's created / updated / unchanged / removed counts in the **Sync history** table.
 
@@ -65,12 +65,50 @@ On the not-yet-connected screen, choose a connection type -- **Cloud (Site Manag
   **Device inventory needs a single-site host.** Site Manager reports devices per host, not per site. Breeze syncs a mapped site's devices only when its host runs that one UniFi site. For a host that runs several sites, such as a self-hosted Network Application that serves several customers, Breeze still syncs each mapped site's WAN health but not its devices, so one customer's devices are never filed under another. The sync run shows **partial** and names the host. To inventory devices site by site on such a controller, use a **Self-hosted controller** connection, whose agent reads devices per site. A partner has one UniFi connection, so switching replaces the cloud connection.
 
   <Aside type="caution">
-    The API key sees only what the Ubiquiti account that created it can see: the consoles that account owns or administers. If a site is missing from the mapping card, check that the same account can see it in UniFi Site Manager, or create the key from an account that owns or administers the console. A site in a different Fabric than the key's scope will not appear whatever the account owns (see **One key per partner** below). Ubiquiti returns device inventory only for consoles where that account is an owner or super admin.
+    The API key sees only what the Ubiquiti account that created it can see: the consoles that account owns or administers. If a site is missing from the mapping card, check that the same account can see it in UniFi Site Manager, or create the key from an account that owns or administers the console. A site in a different Fabric than a key's scope will not appear through that key whatever the account owns; add a key created inside that Fabric (see **Several API keys per connection** below). Ubiquiti returns device inventory only for consoles where that account is an owner or super admin.
   </Aside>
 
-  <Aside type="caution" title="One key per partner">
-    Breeze takes one UniFi connection per partner, so one Site Manager API key. If your sites are split between Independent sites and one or more Fabrics, only the sites visible to the key you connect will sync; the rest do not appear. Support for several cloud connections per partner, is planned and tracked in [#11808](https://github.com/LanternOps/breeze/issues/11808). It is not available yet.
-  </Aside>
+  ### Several API keys per connection
+
+  A partner has one UniFi connection, and that connection can hold several labelled Site Manager API keys. A key sees only one scope, so use one key per scope: one key for your **Independent sites**, plus one key created inside each **Fabric**. Breeze merges what every enabled key can see into a single host and site list.
+
+  **Manage keys on the Site Manager API keys card**
+
+  Open **Integrations → UniFi**. The **Site Manager API keys** card lists each key with its label, status, last successful sync, the hosts and sites it sees, how many sites only that key sees (**Unique sites**), and the last four characters of the key. The full key is never shown again after you save it.
+
+  <Steps>
+
+  1. **Add a key.** Enter a **label** and paste the key, then click **Add key**. Breeze validates the key against UniFi before storing it, so a bad key is rejected and a UniFi outage is reported separately.
+
+  2. **Rename a key.** Click **Rename**, edit the label and save.
+
+  3. **Replace a key.** Click **Replace key** and paste a new key for the same entry. Breeze validates it first. Use this when a key was rotated or Ubiquiti rejected it.
+
+  4. **Disable or enable a key.** A disabled key is skipped by syncs and its health alert is cleared. Before disabling, Breeze lists the mapped sites that only this key can see; they stop syncing while it is disabled. Click **Enable** to resume.
+
+  5. **Test a key.** Click **Test** to check the key against UniFi without waiting for the next sync.
+
+  6. **Remove a key.** Click **Remove**. Breeze first lists the mapped sites that only this key can see; they stop syncing once the key is gone.
+
+  </Steps>
+
+  Limits to know:
+
+  - A connection holds at most **25** keys.
+  - Labels are 1-100 characters and must be unique on the connection, ignoring upper and lower case.
+  - The **last enabled key cannot be disabled or removed**. To remove the whole connection, use **Disconnect**.
+  - You cannot change the Site Manager base URL while the connection holds more than one key.
+
+  **When a key fails**
+
+  - The failing key gets its own status badge on the keys card. A key that UniFi rejects asks to be replaced.
+  - **Sync history** shows each key's result for every run. A sync where some keys succeed and others fail is **partial**; it is not a failed connection.
+  - Only the consoles that the failing key can reach pause device updates. Their devices are neither updated nor marked stale until the key works again, and the affected mappings show an error naming the key. Consoles reached only by healthy keys keep syncing normally.
+  - Connection health raises an issue for each failing key, named **UniFi: &lt;label&gt;**.
+
+  **A site seen by two keys syncs once.** If two keys can both see the same console or site, Breeze keeps one mapping and each device once, not twice.
+
+  **Saving mappings never deletes what a failing key hides.** If a key is failing, some sites may be missing from the **Site mapping** card, and the card warns that the list may be incomplete. Saving only changes the mappings you edit, and only the mappings you clear are removed. A site that is merely hidden by a failing key keeps its mapping and its devices.
 
   </TabItem>
   <TabItem label="Self-hosted controller">
@@ -177,7 +215,7 @@ UniFi devices and connected clients flow into Breeze's discovered-assets view, m
 
 ## Connection status and sync history
 
-Once connected, the panel shows the account label, last sync time, and last sync status, with a status badge on the header (**Active**, **Sync error**, or **Reconnect required**). If the stored key becomes invalid, UniFi enters a **reauth required** state with a prominent banner and a **Reconnect** action; a failed sync surfaces the backend's error message rather than failing silently.
+Once connected, the panel shows the account label, last sync time, and last sync status, with a status badge on the header (**Active**, **Sync error**, or **Reconnect required**). If every enabled key is rejected, UniFi enters a **reauth required** state with a prominent banner and a **Review API keys** button that takes you to the keys card to replace or remove the rejected keys (when only some keys fail, the connection stays active and the sync is **partial**; see **Several API keys per connection**); a failed sync surfaces the backend's error message rather than failing silently.
 
 On **cloud** connections, the **Sync history** table lists the most recent sync runs (newest first) with each run's trigger, status (`success`, `partial`, `failed`, or a transient `running`), hosts seen, devices created / updated / unchanged / removed, and **Unmapped sites**: how many UniFi sites the key can see that have no Breeze site mapped (from v0.128.0; shows **—** when the run did not count them, for example a failed run or one with no mappings yet).
 
