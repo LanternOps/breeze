@@ -287,13 +287,14 @@ describe('FeatureTabShell unsaved changes (#12469)', () => {
   });
 
   it('a switch, checkbox, radio, option or pressed-button control marks it dirty', () => {
-    for (const attrs of [
+    const variants: Record<string, string>[] = [
       { role: 'switch', 'aria-checked': 'false' },
       { role: 'checkbox', 'aria-checked': 'false' },
       { role: 'radio', 'aria-checked': 'false' },
       { role: 'option', 'aria-selected': 'false' },
       { 'aria-pressed': 'false' },
-    ]) {
+    ];
+    for (const attrs of variants) {
       const report = vi.fn();
       const { unmount } = render(
         <FeatureDirtyReporterContext.Provider value={report}>

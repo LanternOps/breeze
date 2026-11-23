@@ -12,6 +12,7 @@ import {
 import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
+import { useFeatureReadOnly } from "./featureEditing";
 import FeatureTabShell from "./FeatureTabShell";
 import InlineEntityPicker from "./InlineEntityPicker";
 import TimezoneSelect from "@/components/shared/TimezoneSelect";
@@ -220,6 +221,9 @@ export default function AutomationTab({
     loadItems(effectiveLink),
   );
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  // A read-only viewer's body sits in a disabled fieldset, so the expand toggle
+  // cannot be pressed: show every automation's details unconditionally (#12469).
+  const readOnly = useFeatureReadOnly();
   const nameInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     setItems(loadItems(existingLink ?? parentLink));
@@ -402,7 +406,7 @@ export default function AutomationTab({
       {/* Item cards */}
       <div className="mt-3 space-y-2">
         {items.map((item, index) => {
-          const isExpanded = expandedIndex === index;
+          const isExpanded = readOnly || expandedIndex === index;
           return (
             <div key={index} className="rounded-md border bg-muted/10">
               {/* Collapsed header.

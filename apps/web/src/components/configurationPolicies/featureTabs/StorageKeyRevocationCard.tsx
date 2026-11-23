@@ -134,7 +134,7 @@ export default function StorageKeyRevocationCard({ orgId }: {
   if (!orgId) return null;
   if (loadFailed) {
     return (
-      <div className="rounded-md border border-muted p-3 text-xs text-muted-foreground">
+      <div data-feature-dirty-ignore className="rounded-md border border-muted p-3 text-xs text-muted-foreground">
         {t("configurationPolicies.featureTabs.backupTab.storageKeys.loadFailed")}{" "}
         <button type="button" onClick={() => void load()} className="text-primary hover:underline">
           {t("common:actions.retry")}
@@ -150,6 +150,7 @@ export default function StorageKeyRevocationCard({ orgId }: {
     <div
       className="space-y-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-4 text-sm"
       data-testid="storage-credential-revocation"
+      data-feature-dirty-ignore
       role="region"
       aria-label={t("configurationPolicies.featureTabs.backupTab.storageKeys.title", { date: formatDate(earliest) })}
     >

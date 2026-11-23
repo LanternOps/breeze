@@ -132,7 +132,10 @@ export default function RemediationScriptPicker({
   };
   if (!isOpen) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
+    <div
+      data-feature-dirty-ignore
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8"
+    >
       <div className="w-full max-w-2xl max-h-[80vh] overflow-hidden rounded-lg border bg-card shadow-lg flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between border-b px-6 py-4">

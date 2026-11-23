@@ -12,7 +12,8 @@ vi.mock('../../shared/Toast', () => ({ showToast: m.showToast }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import StorageKeyRevocationCard from './StorageKeyRevocationCard';
-import { FeatureReadOnlyContext } from './featureEditing';
+import FeatureTabShell from './FeatureTabShell';
+import { FeatureDirtyReporterContext, FeatureReadOnlyContext } from './featureEditing';
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -149,5 +150,24 @@ describe('StorageKeyRevocationCard', () => {
     expect(screen.queryByTestId('storage-credential-confirm-disabled')).toBeNull();
     expect(screen.queryByTestId('storage-credential-confirm')).toBeNull();
     expect(screen.queryByTestId('storage-credential-confirm-cancel')).toBeNull();
+  });
+
+  it('checking or confirming a key does not mark the feature dirty (#12469)', async () => {
+    const reporter = vi.fn();
+    m.fetchWithAuth.mockImplementation(async (_url: string, init?: { method?: string }) =>
+      init?.method === 'POST' ? json({ outcome: 'still_live', message: 'server text' }) : json({ data: [REPLACED] }),
+    );
+    render(
+      <FeatureDirtyReporterContext.Provider value={reporter}>
+        <FeatureTabShell title="Backup" description="d" icon={<span />} isConfigured saving={false} onSave={vi.fn()}>
+          <StorageKeyRevocationCard orgId={ORG} />
+        </FeatureTabShell>
+      </FeatureDirtyReporterContext.Provider>,
+    );
+    fireEvent.click(await screen.findByTestId('storage-credential-check'));
+    await waitFor(() => expect(m.fetchWithAuth).toHaveBeenCalledTimes(3));
+    fireEvent.click(await screen.findByTestId('storage-credential-confirm-disabled'));
+    fireEvent.click(screen.getByTestId('storage-credential-confirm-cancel'));
+    expect(reporter).not.toHaveBeenCalledWith(true);
   });
 });

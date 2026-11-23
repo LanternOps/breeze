@@ -596,8 +596,11 @@ export default function MonitorsTab({
           </ul>
         )}
         {/* Retired links are hidden by the policy API; conversion checks its own sources and hides empty previews. */}
-        <NeedsConversionPanel key={policyId} policyId={policyId} hasLegacyRows onChanged={() => void refreshLinks()} />
-        <ConversionLedger policyId={policyId} revision={ledgerRevision} onChanged={() => void refreshLinks()} />
+        {/* Conversion writes its own records and is not part of this form's Save (#12469). */}
+        <div data-feature-dirty-ignore>
+          <NeedsConversionPanel key={policyId} policyId={policyId} hasLegacyRows onChanged={() => void refreshLinks()} />
+          <ConversionLedger policyId={policyId} revision={ledgerRevision} onChanged={() => void refreshLinks()} />
+        </div>
       </div>
     </FeatureTabShell>
   );

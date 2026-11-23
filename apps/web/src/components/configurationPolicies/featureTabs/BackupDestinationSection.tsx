@@ -313,6 +313,7 @@ function DestinationCard({
                 e.preventDefault();
                 onEdit();
               }}
+              data-feature-dirty-ignore
               className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition hover:bg-muted"
             >
               <Pencil className="h-3 w-3" />
@@ -324,6 +325,7 @@ function DestinationCard({
                 e.preventDefault();
                 onTest();
               }}
+              data-feature-dirty-ignore
               disabled={testStatus === "testing"}
               className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition hover:bg-muted disabled:opacity-50"
             >
@@ -447,6 +449,7 @@ export default function BackupDestinationSection({
             <button
               type="button"
               onClick={onStartCreate}
+              data-feature-dirty-ignore
               data-testid="backup-destination-empty-create"
               className="mt-3 inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition hover:border-primary/40 hover:text-primary"
             >
@@ -518,6 +521,7 @@ export default function BackupDestinationSection({
             <button
               type="button"
               onClick={onStartCreate}
+              data-feature-dirty-ignore
               className="flex min-h-24 flex-col items-center justify-center gap-1 rounded-md border border-dashed p-3 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-primary"
             >
               <Plus className="h-4 w-4" />

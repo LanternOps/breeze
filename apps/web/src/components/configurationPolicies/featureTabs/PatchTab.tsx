@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { PackageCheck, Loader2, Plus, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { FeatureTabProps } from "./types";
@@ -6,6 +6,7 @@ import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
 import { useFeatureReadOnly } from "./featureEditing";
+import FeatureDirtyBridge from "./FeatureDirtyBridge";
 import RebootPromptPreview from "./RebootPromptPreview";
 import { fetchWithAuth } from "../../../stores/auth";
 import { extractApiError } from "@/lib/apiError";
@@ -243,6 +244,8 @@ export default function PatchTab({
   const dayOfWeekOptions = createDayOfWeekOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const readOnly = useFeatureReadOnly();
+  // The shell's markDirty, reached through a child bridge (see FeatureDirtyBridge).
+  const markDirtyRef = useRef<() => void>(() => {});
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
   const [selectedRingId, setSelectedRingId] = useState<string>(
@@ -482,7 +485,12 @@ export default function PatchTab({
         // response body is optional for our purposes
       }
       await fetchRings();
-      if (!editing && createdId) setSelectedRingId(createdId);
+      if (!editing && createdId) {
+        setSelectedRingId(createdId);
+        // Choosing the new ring changes this feature's form; no click or input
+        // event in the page body says so (the editor is a portaled dialog).
+        markDirtyRef.current();
+      }
       setRingEditorOpen(false);
     } catch (err) {
       setRingEditorError(
@@ -510,6 +518,7 @@ export default function PatchTab({
           : undefined
       }
     >
+      <FeatureDirtyBridge markDirtyRef={markDirtyRef} />
       {/* Approval Ring */}
       <div>
         <h3 className="text-sm font-semibold">
@@ -564,6 +573,7 @@ export default function PatchTab({
               <button
                 type="button"
                 onClick={openEditRing}
+                aria-haspopup="dialog"
                 data-testid="patch-edit-ring"
                 className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition hover:bg-muted"
               >
@@ -575,6 +585,7 @@ export default function PatchTab({
             <button
               type="button"
               onClick={openCreateRing}
+              aria-haspopup="dialog"
               data-testid="patch-new-ring"
               className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition hover:bg-muted"
             >

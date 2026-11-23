@@ -170,6 +170,7 @@ export default function RuleSetPicker({
           <button
             type="button"
             data-testid="rule-set-picker-retry"
+            data-feature-dirty-ignore
             onClick={() => void load()}
             className="rounded-md border border-destructive/40 bg-background px-2 py-1 font-medium"
           >

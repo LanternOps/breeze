@@ -146,6 +146,7 @@ export default function OneDriveLibraryPicker({ orgId, onAdd, onClose }: OneDriv
   return (
     <div
       data-testid="onedrive-picker"
+      data-feature-dirty-ignore
       className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8"
     >
       <div className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border bg-card shadow-lg">

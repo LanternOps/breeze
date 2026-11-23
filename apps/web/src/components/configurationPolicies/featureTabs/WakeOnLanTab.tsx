@@ -67,6 +67,7 @@ export default function WakeOnLanTab({
   const prefix = 'configurationPolicies.featureTabs.wakeOnLanTab';
 
   return (
+    <div className="space-y-6">
     <FeatureTabShell
       title={meta.label}
       description={meta.description}
@@ -129,9 +130,12 @@ export default function WakeOnLanTab({
           <p className="text-sm font-medium">{t('configurationPolicies.featureTabs.wakeOnLanTab.aboutTitle')}</p>
           <p className="mt-1 text-xs text-muted-foreground">{t('configurationPolicies.featureTabs.wakeOnLanTab.aboutBody')}</p>
         </div>
-
-        {effectiveLink && <WakeStatusPanel policyId={policyId} />}
       </div>
     </FeatureTabShell>
+    {/* A status view, not a form: outside the shell so a read-only viewer's
+        disabled fieldset does not lock its filter chips and paging, and its
+        clicks never mark the feature dirty (#12469). */}
+    {effectiveLink && <WakeStatusPanel policyId={policyId} />}
+    </div>
   );
 }

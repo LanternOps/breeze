@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import MonitorsTab from './MonitorsTab';
+import { FeatureDirtyReporterContext } from './featureEditing';
 
 // Ledger requests and lifecycle behavior are covered by ConversionLedger.test.tsx.
 vi.mock('../../monitoring/conversion/ConversionLedger', () => ({ default: () => null }));
@@ -443,6 +444,17 @@ vi.mock('../../monitoring/conversion/NeedsConversionPanel', () => ({
   ),
 }));
 describe('MonitorsTab — conversion after legacy feature retirement', () => {
+  it('a conversion action does not mark the feature dirty (#12469)', async () => {
+    const reporter = vi.fn();
+    render(
+      <FeatureDirtyReporterContext.Provider value={reporter}>
+        <MonitorsTab {...baseProps} siblingLinks={[]} />
+      </FeatureDirtyReporterContext.Provider>,
+    );
+    fireEvent.click(await screen.findByTestId('needs-conversion-panel-changed'));
+    expect(reporter).not.toHaveBeenCalledWith(true);
+  });
+
   it('checks conversion state even when retired feature links are absent', async () => {
     render(<MonitorsTab {...baseProps} siblingLinks={[]} />);
     expect(await screen.findByTestId('needs-conversion-panel')).toHaveAttribute('data-legacy', 'true');
