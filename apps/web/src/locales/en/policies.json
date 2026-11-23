@@ -1567,6 +1567,18 @@
       "loadFailed": "Could not load where this policy applies",
       "applyFailed": "Could not apply the changes",
       "applied": "Changes applied"
+    },
+    "targetPicker": {
+      "levelGroupLabel": "Target level",
+      "searchPlaceholder": "Search",
+      "loading": "Loading…",
+      "loadFailed": "Could not load targets",
+      "noResults": "No matches",
+      "alreadyListed": "Already listed",
+      "changeOrganization": "Change organization",
+      "chooseOrganizationFirst": "Choose the organization first.",
+      "lockedOrganizationHint": "An org-managed policy applies only within its own organization.",
+      "mspGroupsHeading": "Device groups across organizations"
     }
   },
   "software": {
