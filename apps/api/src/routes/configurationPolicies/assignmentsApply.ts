@@ -77,6 +77,17 @@ function sameFilter(a: readonly string[] | null, b: readonly string[] | null): b
   return a.length === b.length && [...a].sort().join('\u0000') === [...b].sort().join('\u0000');
 }
 
+type FilterPatch = { priority?: number; roleFilter?: string[] | null; osFilter?: string[] | null };
+type StoredValues = { priority: number; roleFilter: string[] | null; osFilter: string[] | null };
+
+/** Whether applying `patch` (an omitted field is left as it is) would change `stored`. */
+function patchChangesRow(patch: FilterPatch, stored: StoredValues): boolean {
+  if (patch.priority !== undefined && patch.priority !== stored.priority) return true;
+  if (patch.roleFilter !== undefined && !sameFilter(normalizeFilter(patch.roleFilter), stored.roleFilter ?? null)) return true;
+  if (patch.osFilter !== undefined && !sameFilter(normalizeFilter(patch.osFilter), stored.osFilter ?? null)) return true;
+  return false;
+}
+
 assignmentApplyRoutes.post(
   '/:id/assignments/apply',
   requireScope('organization', 'partner', 'system'),
@@ -150,12 +161,6 @@ assignmentApplyRoutes.post(
       const levelGate = checkAddLevel(policy, entry.level);
       if (!levelGate.ok) return c.json({ ...levelGate.body, entry: ref }, levelGate.status);
     }
-    if (data.add.length > 0) {
-      // Once per Apply: the policy, not an entry, decides it.
-      const armingGate = checkAddArming(auth, c.get('permissions') as UserPermissions | undefined, policy);
-      if (!armingGate.ok) return c.json(armingGate.body, armingGate.status);
-    }
-
     const checkStored = async (assignmentId: string, ref: ApplyEntry) => {
       const stored = storedById.get(assignmentId);
       if (!stored) return c.json({ error: 'Assignment not found', entry: ref }, 404);
@@ -168,6 +173,17 @@ assignmentApplyRoutes.post(
     for (const [index, assignmentId] of data.remove.entries()) {
       const refused = await checkStored(assignmentId, { op: 'remove', index });
       if (refused) return refused;
+    }
+
+    // The arming gates (HP CMSL, vendor updates), once per Apply: the policy,
+    // not an entry, decides them. An added row is how an armed policy reaches
+    // devices; so is an edited one, since priority decides where the policy
+    // wins and the filters decide which devices it reaches. Removes and
+    // updates that change nothing do not run them.
+    const editsReach = data.update.some((entry) => patchChangesRow(entry, storedById.get(entry.id)!));
+    if (data.add.length > 0 || editsReach) {
+      const armingGate = checkAddArming(auth, c.get('permissions') as UserPermissions | undefined, policy);
+      if (!armingGate.ok) return c.json(armingGate.body, armingGate.status);
     }
 
     // ---- Dry run: the device delta, nothing written -----------------------
@@ -284,12 +300,9 @@ assignmentApplyRoutes.post(
       });
     }
     for (const row of outcome.updated) {
+      // `updateAssignment` returns an unchanged row as it is: no change, no audit row.
       const before = storedById.get(row.id);
-      const changed = !before
-        || before.priority !== row.priority
-        || !sameFilter(before.roleFilter ?? null, row.roleFilter ?? null)
-        || !sameFilter(before.osFilter ?? null, row.osFilter ?? null);
-      if (!changed) continue;
+      if (before && !patchChangesRow(row, before)) continue;
       writeRouteAudit(c, {
         ...auditBase,
         action: 'config_policy.assignment_update',

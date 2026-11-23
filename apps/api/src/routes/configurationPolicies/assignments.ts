@@ -13,6 +13,7 @@ import {
   validateAssignmentTarget,
   authorizeAssignmentTarget,
   getAssignment,
+  canManagePartnerWidePolicies,
 } from '../../services/configurationPolicy';
 import type { ConfigAssignmentLevel } from '../../services/configurationPolicy';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
@@ -26,6 +27,7 @@ import {
 import type { UserPermissions } from '../../services/permissions';
 import { checkAddArming, checkAddLevel, checkPolicyAssignableBy } from './assignmentGates';
 import { assignmentApplyRoutes } from './assignmentsApply';
+import { resolveAssignmentTargetOwner } from './assignmentTargetOwner';
 
 export const assignmentRoutes = new Hono();
 // POST /:id/assignments/apply — the staged Apply (#12466); its own file.
@@ -235,12 +237,28 @@ assignmentRoutes.get(
     }
     const result = await listAssignmentsForTarget(query.level, query.targetId);
 
+    // MSP-managed (partner-owned, org_id NULL) policies are listed to a
+    // partner-scope caller of their own partner when the caller may act on the
+    // target (#12466): the target's organization must be one they can access,
+    // and a partner-owned group or the partner target itself needs full
+    // partner access. Every row shares the target, so its owner is read once,
+    // and only when a partner-owned row is present. Org-scope callers still
+    // see none of them (W03a applies the read rule there).
+    const hasPartnerOwned = auth.scope === 'partner' && result.some((r) => r.policyOrgId === null);
+    const targetOwner = hasPartnerOwned
+      ? await resolveAssignmentTargetOwner(query.level, query.targetId)
+      : null;
+    const callerMaySeePartnerOwned = (policyPartnerId: string | null): boolean => {
+      if (auth.scope !== 'partner' || !auth.partnerId || policyPartnerId !== auth.partnerId) return false;
+      if (!targetOwner) return false;
+      if (targetOwner.kind === 'organization') return auth.canAccessOrg(targetOwner.orgId);
+      return targetOwner.partnerId === auth.partnerId && canManagePartnerWidePolicies(auth);
+    };
+
     // Filter results to only include policies the caller can access
     const filtered = result.filter((r) => {
       if (auth.scope === 'system') return true;
-      // Partner-owned policies (org_id NULL, #1724) aren't org-scoped, so an
-      // org-axis access check can't apply — exclude them from these scopes.
-      if (r.policyOrgId === null) return false;
+      if (r.policyOrgId === null) return callerMaySeePartnerOwned(r.policyPartnerId);
       if (auth.scope === 'organization') return auth.orgId === r.policyOrgId;
       return auth.canAccessOrg(r.policyOrgId);
     });

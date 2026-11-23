@@ -341,13 +341,32 @@ describe('POST /:id/assignments/apply', () => {
     expect(checkAddArming).toHaveBeenCalledTimes(1);
   });
 
-  it('Apply skips the arming gates for removes and updates only', async () => {
+  it('Apply skips the arming gates for removes and unchanged updates only', async () => {
     getConfigPolicyMock.mockResolvedValue(policy({ featureLinks: [ARMED_OEM] }));
 
-    const res = await apply({ update: [{ id: ROW_2, priority: 3 }], remove: [ROW_1] });
+    // ROW_2 is stored with priority 0 and no filters: this update changes nothing.
+    const res = await apply({ update: [{ id: ROW_2, priority: 0, roleFilter: [] }], remove: [ROW_1] });
 
     expect(res.status).toBe(201);
     expect(checkAddArming).not.toHaveBeenCalled();
+  });
+
+  // Priority and filters decide which devices an armed policy reaches and where
+  // it wins, so editing them in place is the same door as adding a row.
+  it.each([
+    ['widens a filter', { roleFilter: null }, { roleFilter: ['server'] }],
+    ['changes a filter', { osFilter: ['windows', 'linux'] }, { osFilter: ['windows'] }],
+    ['changes the priority', { priority: 1 }, {}],
+  ])('an update that %s runs the arming gates once', async (_label, patch, stored) => {
+    getConfigPolicyMock.mockResolvedValue(policy({ featureLinks: [ARMED_OEM] }));
+    getAssignmentsMock.mockResolvedValue([storedRow(ROW_1, stored), storedRow(ROW_2, stored)]);
+
+    const res = await apply({ update: [{ id: ROW_1, ...patch }, { id: ROW_2, ...patch }] });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'oem_updates_execute_required' });
+    expect(checkAddArming).toHaveBeenCalledTimes(1);
+    expectNoWrites();
   });
 
   it('Apply refuses a branding-incompatible level', async () => {

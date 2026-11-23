@@ -69,7 +69,8 @@ export function checkAddLevel(policy: LoadedPolicy, level: ConfigAssignmentLevel
 /**
  * An added assignment is how an armed policy REACHES devices, so adding one is
  * the same capability as arming it, reached through a second door. Run once per
- * request that adds at least one row; removes and updates do not run it.
+ * request that adds a row or edits a row's priority or filters (the staged
+ * Apply's update); removes do not run it.
  *
  * - #5511 W02 (contract D4), HP CMSL: the effective warranty link is the
  *   policy's own, else the one it inherits (whole link, no merge, D5). An
