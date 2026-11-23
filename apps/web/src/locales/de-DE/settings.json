@@ -5928,7 +5928,8 @@
   "settingsSectionNav": {
     "settingsSection": "Abschnitt „Einstellungen“.",
     "settingsSections": "Abschnitte „Einstellungen“.",
-    "unsavedChanges": "{{label}} (nicht gespeicherte Änderungen)"
+    "unsavedChanges": "{{label}} (nicht gespeicherte Änderungen)",
+    "withStatus": "{{name}}, {{status}}"
   },
   "ssoProviderForm": {
     "providerNameIsRequired": "Der Name des Anbieters ist erforderlich",

@@ -15,6 +15,12 @@ export type SettingsNavItem = {
   /** Section has unsaved changes — shows a dot and announces it to AT. */
   dirty?: boolean;
   /**
+   * A short state line (e.g. a policy feature's "Set here"). When set it is
+   * shown in place of `description` and appended to the item's accessible
+   * name and its phone-select option, so the state is never visual-only.
+   */
+  status?: string;
+  /**
    * Link-out item: renders a real `<a href>` that navigates normally (Astro
    * router) instead of activating an in-page section. Never current, never dirty.
    */
@@ -39,6 +45,10 @@ type SettingsSectionNavProps = {
    * specific nav item without relying on its translated accessible name.
    */
   testIdPrefix?: string;
+  /** Accessible name of the rail. Defaults to "Settings sections". */
+  navLabel?: string;
+  /** Label of the phone select. Defaults to "Settings section". */
+  selectLabel?: string;
 };
 
 /**
@@ -47,8 +57,14 @@ type SettingsSectionNavProps = {
  * middle-click / copy-link work) and collapses to a compact select below lg —
  * the full rail would otherwise stack ~600px of nav above the content.
  */
-export default function SettingsSectionNav({ groups, activeKey, onNavigate, selectId, testIdPrefix }: SettingsSectionNavProps) {
+export default function SettingsSectionNav({ groups, activeKey, onNavigate, selectId, testIdPrefix, navLabel, selectLabel }: SettingsSectionNavProps) {
   const { t } = useTranslation('settings');
+  // The item's name for AT and for the phone select: label, the unsaved mark
+  // for a dirty in-page section, then the status line when there is one.
+  const itemName = (item: SettingsNavItem) => {
+    const base = item.dirty && !item.href ? t('settingsSectionNav.unsavedChanges', { label: item.label }) : item.label;
+    return item.status ? t('settingsSectionNav.withStatus', { name: base, status: item.status }) : base;
+  };
   const railRef = useRef<HTMLElement>(null);
 
   // Keep the active item visible in the (scrollable) rail when the tab changes
@@ -94,7 +110,7 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
   return (
     <div>
       <div className="lg:hidden">
-        <label htmlFor={selectId} className="sr-only">{t('settingsSectionNav.settingsSection')}</label>
+        <label htmlFor={selectId} className="sr-only">{selectLabel ?? t('settingsSectionNav.settingsSection')}</label>
         <select
           id={selectId}
           value={activeKey}
@@ -115,7 +131,7 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
                 <option key={item.key} value={item.key}>
                   {/* Words, not a bullet: an option's text is all a screen
                       reader announces, and a bare "•" reads as nothing. */}
-                  {item.dirty && !item.href ? t('settingsSectionNav.unsavedChanges', { label: item.label }) : item.label}
+                  {itemName(item)}
                 </option>
               ))}
             </optgroup>
@@ -125,7 +141,7 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
 
       <nav
         ref={railRef}
-        aria-label={t('settingsSectionNav.settingsSections')}
+        aria-label={navLabel ?? t('settingsSectionNav.settingsSections')}
         // Bounded to the visible scrollport: 100vh minus the app header (h-16,
         // 4rem), the sticky offset (top-6) and <main>'s bottom padding (md:p-6),
         // so a long rail scrolls itself instead of running off-screen.
@@ -149,7 +165,7 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
                       href={item.href ?? `#${item.hash}`}
                       data-testid={testIdPrefix ? `${testIdPrefix}-tab-${item.key}` : undefined}
                       aria-current={isActive ? 'page' : undefined}
-                      aria-label={isDirty ? t('settingsSectionNav.unsavedChanges', { label: item.label }) : item.label}
+                      aria-label={isLink ? item.label : itemName(item)}
                       onClick={e => {
                         // Let modified clicks do their native thing (new tab, etc.).
                         if (isLink) return; // real navigation, no preventDefault
@@ -172,7 +188,7 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
                       <span className="min-w-0 flex-1">
                         <span className="block">{item.label}</span>
                         <span className="block text-xs font-normal text-muted-foreground">
-                          {item.description}
+                          {item.status ?? item.description}
                         </span>
                       </span>
                       {isLink && <ExternalLink aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
