@@ -1337,27 +1337,35 @@ Each adopted item's own plan defines its parts, models, commands and migration s
 
 These are product or UX calls the spec does not settle. Each part that depends on one is written to the default shown and says so in its PR body.
 
+**All six were answered by the owner on 2026-11-23.** The answer is recorded under each question. Wave 1 merged to the defaults before the answers; where an answer differs from what was built, the follow-up sub-issue is named. None of wave 1 was in a release when the answers came.
+
 1. **Where does the "Preview" tag sit once Jobs and Flows share one "Automations" nav entry (W1)?**
    - **(a) On the Flows tab of the tab strip and the Flows page header, not on the nav entry.** Pro: the tag labels only what is in preview. Con: the tag is less visible from the sidebar.
    - **(b) On the "Automations" nav entry.** Pro: as visible as today. Con: it labels Jobs as a preview too.
    - **Recommend (a).** "Preview" describes Flows, not the category, and the tag comes off in W3 anyway. W01d is written to (a).
+   - **Answered 2026-11-23: (a).** As built.
 2. **Should the one-per-run notification link the run page instead of the flow page?** The `notify` built-in links `/flows/<flowId>` for every notice today, and a flow cannot template its run id.
    - **(a) Keep the flow link.** Pro: no engine change. Con: the spec's "links the run" is not met; the reader opens the flow's Runs tab.
    - **(b) Change the built-in's link to `/flows/runs/<runId>` for every `notify` step.** Pro: meets the spec. Con: it also changes the link in converted flows' existing notices.
    - **Recommend (b).** A run link is strictly more useful, the run page links back to the flow, and it is a one-line change in W01a. The plan is written to (a) until you answer.
+   - **Answered 2026-11-23: (b).** Sub-issue #12597 (W01h).
 3. **Should the editor's on-failure notice be one message per failed device or one per failing step?** The spec says "same shape as the converter", which sends one notice per failed device and channel. More than 20 failures in one run hit the per-run cap, and the excess notices fail visibly.
    - **(a) Per device, as the spec says.** Pro: one shape across the converter and the form; the recognizer is simpler. Con: noisy, and capped at 20.
    - **(b) One summary per failing step**, listing the failed count, like the notification-action change. Pro: never capped; consistent with "one message per run". Con: a second shape the converter does not emit.
    - **Recommend (b),** for the same reason the spec changed notifications. The plan is written to (a) until you answer.
+   - **Answered 2026-11-23: (b).** Sub-issue #12596 (W01g). The form records which shape a flow uses. New flows get the summary. A flow that already has the per-device shape (every flow moved from a Job, because the converter's output does not change) keeps it and stays form-shaped: `recognizeFlowForm` is a round trip, so `compileFlowForm` must reproduce the shape it decoded.
 4. **In W3, what does `/jobs/new` do on an installation without durable event delivery?** The spec redirects `/jobs/new` to `/flows/new` while still letting such an installation create event Jobs. With the redirect, the web has no way left to create one.
    - **(a) Redirect only when Flows are on and event delivery is durable.** Otherwise the Job form opens with only the Event trigger. This needs `GET /config` to expose `features.flowEventsDurable`. Pro: keeps the per-trigger rule usable in the product. Con: one more flag in `/config`.
    - **(b) Always redirect while Flows are on.** Event Jobs on such installations are API-only. Pro: simplest. Con: self-hosters without durable delivery lose event automations in the web.
    - **Recommend (a).** It is the UI half of the rule OD4 adopted.
+   - **Answered 2026-11-23: (a).** Built in W3: W03a exposes `features.flowEventsDurable` in `GET /config`, W03b applies the conditional redirect.
 5. **For event triggers whose payload may carry no device, should the form still bind the triggering device and hide the target picker (W1)?** The converter binds every event Job to the triggering device. `trigger.device` exists only when the event names a device in the run org, and otherwise the script or alert step fails. This plan did not check which listed events can arrive without one (for example a SentinelOne threat or a Huntress incident with no mapped device).
    - **(a) Bind the triggering device for every listed event (converter parity).** Pro: one rule, matches legacy Jobs. Con: a run with no device fails visibly.
    - **(b) Bind the device only for events that always carry one, and offer the picker for the rest.** Pro: no failing runs. Con: needs a maintained list of device-bearing events, and differs from converted Jobs.
    - **Recommend (a) for W1**, with a help line under the event picker that says the run needs the event to name a device. The plan is written to (a).
+   - **Answered 2026-11-23: (a).** As built. A read of every publisher on 2026-11-23 found that seven of the 13 listed events can arrive with no device (two of them, `huntress.agent_offline` and `s1.threat_action_completed`, only in edge cases): `alert.triggered` and `alert.resolved` (alerts on a backup workload; no run starts), and `huntress.incident_created`, `huntress.incident_updated`, `huntress.agent_offline`, `s1.threat_detected` and `s1.threat_action_completed` (the host is not matched to a device; the run ends `failed`). The help line is corrected per event family in the PR for #12497. One rule for all of them is #12602.
 6. **Should "Disable and edit" warn up front, for a webhook flow, that re-enabling after an edit clears the webhook secret?** By design (#10270), a secret minted against an older draft does not survive publishing an edited one, so the sender must get a new secret. Webhook flows are enabled from the flow page (P21), which already shows the existing notice after an enable that clears the secret (P17).
    - **(a) Add one sentence to the confirm for webhook flows.** Pro: the person learns before disabling a live integration. Con: one more locale key.
    - **(b) Notice after enable only.** Pro: no new copy. Con: the person finds out after the integration is already refusing requests.
    - **Recommend (a).** W01e is written to (b) until you answer; (a) adds one key in E6.
+   - **Answered 2026-11-23: (a).** Sub-issue #12598 (W01i).
