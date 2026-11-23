@@ -16,6 +16,7 @@ import { readTrust } from './partnerTrust.repo';
 import { setTrustState } from './partnerTrust';
 import { sendEvidenceCard } from './partnerTrustEvidenceCard';
 import { captureException } from './sentry';
+import { pgErrorCode, pgErrorNode } from '../utils/pgErrors';
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -282,6 +283,21 @@ export function createSuspendedAbuseSetCache(
   };
 }
 
+/**
+ * The error to rethrow when the per-partner statement fails. Drizzle wraps
+ * driver errors in a DrizzleQueryError whose message carries every bound
+ * parameter, which here is the whole suspended set (IPs, user agents, card
+ * fingerprints, hundreds of kB). Every caller logs what it catches, so keep
+ * only the SQLSTATE and the driver's own message, and no `cause`.
+ */
+function withoutBoundParams(error: unknown): Error {
+  const message = pgErrorNode(error)?.message;
+  return new Error(
+    `[partnerTrustPromotion] hard-deny evaluation failed (${pgErrorCode(error) ?? 'unknown'}: `
+    + `${typeof message === 'string' ? message : 'no driver message'})`,
+  );
+}
+
 export interface HardDenyOptions {
   /**
    * A set from loadSuspendedAbuseSet (or the job's cache) to evaluate against.
@@ -308,7 +324,17 @@ export async function evaluateHardDenies(
   // and so this gate always agrees with the threshold that made the signal an
   // alert in the first place.
   const alertScore = loadSignalConfig()['severity.alert_score'];
-  const set = options.suspendedSet ?? await loadSuspendedAbuseSet();
+  let set = options.suspendedSet;
+  if (!set) {
+    // Single-partner callers (ip-classify, the abuse sweep, the IP backfill)
+    // evaluate partners in any trust state. Only a probation partner can be
+    // restricted, so skip building a set for the rest: the statement below
+    // would return no row for them anyway, which is the same answer. Its own
+    // trust_state filter stays the gate.
+    const trust = await readTrust(partnerId);
+    if (trust?.trustState !== 'probation') return { restrict: false };
+    set = await loadSuspendedAbuseSet();
+  }
   const freeMailDomains = sql.join(
     [...FREE_MAIL_DOMAINS].map((domain) => sql`${domain}`),
     sql`, `,
@@ -484,7 +510,9 @@ export async function evaluateHardDenies(
       ) card_testing ON true
     `)) as unknown as HardDenyRow[];
     return rows[0] ?? null;
-  }, 'partnerTrustPromotion.hardDenies'));
+  }, 'partnerTrustPromotion.hardDenies')).catch((error: unknown) => {
+    throw withoutBoundParams(error);
+  });
 
   // The SQL target CTE already filters to trust_state='probation'; this is a
   // belt-and-suspenders check against the same field on the returned row so

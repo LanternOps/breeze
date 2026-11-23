@@ -146,6 +146,7 @@ function evaluationQuery(): unknown {
 
 beforeEach(() => {
   setRows = [SET_ROW];
+  readTrust.mockResolvedValue({ trustState: 'probation', probationEnrollments: 0 });
 });
 
 describe('evaluateHardDenies', () => {
@@ -332,6 +333,35 @@ describe('evaluateHardDenies', () => {
       expect(text).toContain("last_abuse.at >= now() - interval '90 days' AS recent");
     });
 
+    it.each(['trusted', 'restricted'] as const)(
+      'builds no set (and runs no statement) for an already-%s partner on the single-partner path',
+      async (trustState) => {
+        readTrust.mockResolvedValue({ trustState, probationEnrollments: 0 });
+
+        await expect(evaluateHardDenies('p1')).resolves.toEqual({ restrict: false });
+
+        expect(execute).not.toHaveBeenCalled();
+        expect(hasFraudulentRefundMatch).not.toHaveBeenCalled();
+      },
+    );
+
+    it('builds no set for a partner that does not exist', async () => {
+      readTrust.mockResolvedValue(null);
+
+      await expect(evaluateHardDenies('p1')).resolves.toEqual({ restrict: false });
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('with a supplied set, leaves the probation gate to the statement (no extra read)', async () => {
+      const suspendedSet = await loadSuspendedAbuseSet();
+      readTrust.mockClear();
+
+      await evaluateHardDenies('p1', { suspendedSet });
+
+      expect(readTrust).not.toHaveBeenCalled();
+      expect(renderSql(evaluationQuery()).text).toContain("WHERE id = p1 AND trust_state = 'probation'");
+    });
+
     it('uses a supplied set without building another', async () => {
       const suspendedSet = await loadSuspendedAbuseSet();
       execute.mockClear();
@@ -352,6 +382,26 @@ describe('evaluateHardDenies', () => {
       await expect(evaluateHardDenies('p1')).rejects.toThrow('db exploded');
       expect(evaluationQueries()).toHaveLength(0);
       expect(hasFraudulentRefundMatch).not.toHaveBeenCalled();
+    });
+
+    it('rethrows a failed evaluation without the bound suspended set in the message', async () => {
+      // Drizzle's DrizzleQueryError puts every bound parameter in its message;
+      // here that would be the whole suspended set, logged by every caller.
+      const driverError = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+      const drizzleError = Object.assign(
+        new Error(`Failed query: WITH target AS (...)\nparams: p1,${SET_ROW.cards},${SET_ROW.recent},${SET_ROW.ips}`),
+        { cause: driverError },
+      );
+      evaluationRejects(drizzleError);
+
+      const error = await evaluateHardDenies('p1').then(() => null, (e: unknown) => e as Error);
+
+      expect(error?.message).toBe(
+        '[partnerTrustPromotion] hard-deny evaluation failed (57014: canceling statement due to statement timeout)',
+      );
+      expect(error?.message).not.toContain('203.0.113');
+      expect(error?.message).not.toContain('fp_1');
+      expect(error).not.toHaveProperty('cause');
     });
 
     it.each([
@@ -672,9 +722,9 @@ describe('tryAutoPromote', () => {
     });
 
     it('propagates a hard-deny evaluation failure rather than promoting past it', async () => {
-      evaluationRejects(new Error('db exploded'));
+      evaluationRejects(Object.assign(new Error('db exploded'), { code: '57P01' }));
 
-      await expect(tryAutoPromote('p1')).rejects.toThrow('db exploded');
+      await expect(tryAutoPromote('p1')).rejects.toThrow('57P01: db exploded');
       expect(setTrustState).not.toHaveBeenCalled();
     });
 
