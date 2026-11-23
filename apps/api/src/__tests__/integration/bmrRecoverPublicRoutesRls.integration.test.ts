@@ -494,3 +494,62 @@ runDb('R19: a 100,000-entry manifest with an empty agent-reported index hydrates
   const [{ count }] = await testDb.execute(sql`SELECT COUNT(*)::int AS count FROM backup_snapshot_files WHERE snapshot_db_id = ${g4!.id}`) as any;
   expect(Number(count)).toBe(100_000);
 }, 90_000);
+
+// #12566: a browser Preview with the same token must not use up the allowance
+// the recovery helper needs to renew its download session. Real Redis, real
+// rate limiter, real negotiation: one helper sign-in, two refused Previews,
+// then the renewals the helper makes during a long restore.
+runDb('#12566: refused Previews do not starve the helper, renewals have their own allowance, unknown tokens stay limited', async () => {
+  const fixture = await seedThreeGenerationChain();
+  await hydrateSnapshotFileIndex(fixture.g3.snapshotDbId, { deps: { openManifest: (args) => openBackupObjectStream({ ...args, maxBytes: MANIFEST_STREAM_MAX_BYTES }) } });
+
+  const token = generateRecoveryToken();
+  await getTestDb().insert(recoveryTokens).values({
+    orgId: fixture.orgId, deviceId: fixture.deviceId, snapshotId: fixture.g3.snapshotDbId,
+    tokenHash: hashRecoveryToken(token), restoreType: 'full', status: 'active', expiresAt: new Date(Date.now() + 3_600_000),
+  });
+  const app = makeApp();
+  const authenticate = (body: Record<string, unknown>, asToken = token) => app.request('/bmr/recover/authenticate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: asToken, integrityProtocolVersion: 2, ...body }),
+  });
+  const HELPER = { capabilities: ['snapshot-file-membership-v1'] };
+
+  // 1. The helper signs in and receives its renewal credential.
+  const signIn = await authenticate(HELPER);
+  expect(signIn.status).toBe(200);
+  const sessionRenewal = (await signIn.json()).bootstrap.sessionRenewal as string;
+  expect(sessionRenewal).toMatch(/^brz_rsr_/);
+
+  // 2. Two browser Previews: no capabilities, refused after the token is proven valid.
+  for (let i = 0; i < 2; i += 1) {
+    const preview = await authenticate({});
+    expect(preview.status).toBe(409);
+    expect((await preview.json()).error).toBe('capability_downgrade');
+  }
+
+  // 3. A helper that predates the credential renews on the first-sign-in
+  //    bucket; the refused Previews no longer count there.
+  expect((await authenticate(HELPER)).status).toBe(200);
+
+  // 4. Use up the first-sign-in bucket (sign-ins 1 and 3 above, plus one more).
+  expect((await authenticate(HELPER)).status).toBe(200);
+  expect((await authenticate(HELPER)).status).toBe(429);
+
+  // 5. The credential-holding helper still renews, on its own allowance.
+  const renewal = await authenticate({ ...HELPER, sessionRenewal });
+  expect(renewal.status).toBe(200);
+  expect((await renewal.json()).bootstrap.download.expiresAt).toBeTruthy();
+
+  // 6. A wrong credential is just another first sign-in: still limited.
+  expect((await authenticate({ ...HELPER, sessionRenewal: `brz_rsr_${'A'.repeat(43)}` })).status).toBe(429);
+
+  // 7. Guessing: an unknown, well-formed token is limited per token exactly
+  //    as before, even when it presents a real token's credential.
+  const guess = generateRecoveryToken();
+  const guessStatuses: number[] = [];
+  for (let i = 0; i < 4; i += 1) {
+    guessStatuses.push((await authenticate({ sessionRenewal }, guess)).status);
+  }
+  expect(guessStatuses).toEqual([401, 401, 401, 429]);
+});

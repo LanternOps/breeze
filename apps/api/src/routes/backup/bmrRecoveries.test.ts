@@ -237,7 +237,7 @@ vi.mock('../../jobs/backupSnapshotFileIndexWorker', () => ({
 }));
 
 import { bmrRecoveryRoutes, bmrRecoveryPublicRoutes } from './bmrRecoveries';
-import { BMR_MIN_HELPER_VERSION } from '../../services/recoveryBootstrap';
+import { BMR_MIN_HELPER_VERSION, hashRecoveryToken, issueRecoverySessionRenewal } from '../../services/recoveryBootstrap';
 
 describe('bare-metal recoveries routes', () => {
   let app: Hono;
@@ -655,6 +655,10 @@ describe('bare-metal recoveries routes', () => {
       expect(body.token).toMatch(/^brz_rec_[0-9a-f]{64}$/);
       expect(body.bootstrap.bootstrap.recovery).toMatchObject({ id: RECOVERY_ID, identity: 'original', deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID });
       expect(body.bootstrap.bootstrap.recovery.nonce).toMatch(/^[0-9a-f]{64}$/);
+      // #12566: the exchange starts the download session, so it hands out the
+      // session renewal credential for the token it just minted.
+      expect(body.bootstrap.bootstrap.sessionRenewal).toBe(issueRecoverySessionRenewal(hashRecoveryToken(body.token)));
+      expect(body.bootstrap.bootstrap.sessionRenewal).toMatch(/^brz_rsr_/);
       // The helper derives ExpectSystemState from backupType (#5412,
       // bmr.SnapshotExpectsSystemState): the exchange bootstrap must carry
       // it alongside systemStateManifest, exactly as authenticate does.

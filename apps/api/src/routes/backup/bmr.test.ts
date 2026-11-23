@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { Readable } from 'node:stream';
 import { bmrRoutes, bmrPublicRoutes, enforcePublicRateLimit } from './bmr';
+import { hashRecoveryToken, issueRecoverySessionRenewal } from '../../services/recoveryBootstrap';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
@@ -262,8 +263,11 @@ vi.mock('../../services/redis', () => ({
   })),
 }));
 
+const refundRateLimitEntriesMock = vi.fn(async (..._args: unknown[]) => true);
+
 vi.mock('../../services/rate-limit', () => ({
   rateLimiter: (...args: unknown[]) => rateLimiterMock(...(args as [])),
+  refundRateLimitEntries: (...args: unknown[]) => refundRateLimitEntriesMock(...args),
 }));
 
 const getAuthenticatedRecoveryDownloadTargetMock = vi.fn();
@@ -682,6 +686,24 @@ describe('bmr routes', () => {
     const body = await res.json();
     expect(body.id).toBe(TOKEN_ID);
     expect(body.token.startsWith('brz_rec_')).toBe(true);
+    expect(body.requiresRecoveryHelper).toBe(false);
+  });
+
+  it('marks a token for a snapshot that references earlier snapshots as helper-only (#12566)', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{ id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, referencedFiles: 5 }]));
+    insertMock.mockReturnValueOnce(chainMock([{
+      id: TOKEN_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID, restoreType: 'full',
+      expiresAt: new Date('2026-03-30T00:00:00.000Z'), createdAt: new Date('2026-03-29T00:00:00.000Z'),
+    }]));
+
+    const res = await app.request('/backup/bmr/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ snapshotId: SNAPSHOT_ID, restoreType: 'full', expiresInHours: 24 }),
+    });
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).requiresRecoveryHelper).toBe(true);
   });
 
   describe('recovery token integrity', () => {
@@ -788,7 +810,9 @@ describe('bmr routes', () => {
         osType: 'windows',
         architecture: 'amd64',
       }]))
-      .mockReturnValueOnce(chainMock([]));
+      .mockReturnValueOnce(chainMock([]))
+      // #12566: the snapshot's job references files from earlier snapshots.
+      .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
 
     const res = await app.request(`/backup/bmr/tokens/${TOKEN_ID}`, {
       method: 'GET',
@@ -798,6 +822,8 @@ describe('bmr routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.id).toBe(TOKEN_ID);
+    // Only the recovery helper can sign in for such a snapshot (#12566).
+    expect(body.requiresRecoveryHelper).toBe(true);
     expect(body.tokenHash).toBeUndefined();
     expect(body.authenticatedAt).toBeNull();
     expect(body.device.hostname).toBe('srv-01');
@@ -1118,6 +1144,155 @@ describe('bmr routes', () => {
     expect(res.status).toBe(409);
     expect((await res.json()).error).toBe('client_capability_required');
     expect(updateMock.mock.calls.some((c: any[]) => c[0]?.status === 'authenticated')).toBe(false);
+  });
+
+  // #12566: a browser Preview with the same token must not be able to use up
+  // the allowance the recovery helper needs to renew its download session.
+  describe('authenticate: session renewal and refused sign-ins (#12566)', () => {
+    const TOKEN_HASH = hashRecoveryToken(VALID_RECOVERY_TOKEN);
+    const SIGN_IN_KEY = `bmr:authenticate:token:${TOKEN_HASH}`;
+    const RENEWAL_KEY = `bmr:authenticate-renewal:token:${TOKEN_HASH}`;
+    const REFUSED_KEY = `bmr:authenticate-refused:token:${TOKEN_HASH}`;
+    const rateLimitKeys = () => rateLimiterMock.mock.calls.map((call) => (call as unknown[])[1]);
+
+    beforeEach(() => {
+      vi.stubEnv('APP_ENCRYPTION_KEY', 'test-only-app-encryption-key-32chars!');
+      refundRateLimitEntriesMock.mockClear();
+      refundRateLimitEntriesMock.mockResolvedValue(true);
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    // The token's snapshot references earlier snapshots and the helper
+    // already negotiated the capability, so a capability-less sign-in (the
+    // browser Preview) is refused with capability_downgrade.
+    const downgradeRows = () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([{
+          id: TOKEN_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID,
+          restoreType: 'bare_metal', targetConfig: null, status: 'authenticated',
+          createdAt: new Date('2026-03-29T00:00:00.000Z'), expiresAt: new Date('2099-04-01T00:00:00.000Z'),
+          authenticatedAt: new Date('2026-03-29T01:00:00.000Z'), completedAt: null,
+          negotiatedCapabilities: ['snapshot-file-membership-v1'],
+        }]))
+        .mockReturnValueOnce(chainMock([{
+          id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          configId: null, snapshotId: 'snap-ext-001', label: 'Backup', location: null,
+          timestamp: new Date('2026-03-29T12:34:56.000Z'), size: 1234, fileCount: 12,
+          metadata: { providerType: 's3', providerConfig: { bucket: 'my-bucket' } },
+          backupType: 'file', isIncremental: true, hardwareProfile: null,
+          systemStateManifest: null, storageIdentity: 's3::::my-bucket',
+        }]))
+        .mockReturnValueOnce(chainMock([{ configId: null }]))
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'srv-01', osType: 'windows' }]))
+        .mockReturnValueOnce(chainMock([{
+          status: 'complete', manifestSha256: 'a'.repeat(64), externalCount: 3, error: null,
+          jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', storageIdentity: 's3::::my-bucket',
+        }]))
+        .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
+        .mockReturnValueOnce(chainMock([{ originSnapshotId: 'older' }]));
+    };
+
+    const authenticate = (body: Record<string, unknown>) =>
+      app.request('/backup/bmr/recover/authenticate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, integrityProtocolVersion: 2, ...body }),
+      });
+
+    it('returns a session renewal credential bound to the token on a successful sign-in', async () => {
+      authenticateRows();
+      const res = await authenticate({});
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.bootstrap.sessionRenewal).toMatch(/^brz_rsr_[A-Za-z0-9_-]{43}$/);
+      expect(body.bootstrap.sessionRenewal).toBe(issueRecoverySessionRenewal(TOKEN_HASH));
+      expect(body.sessionRenewal).toBe(body.bootstrap.sessionRenewal);
+    });
+
+    it('charges a renewal that carries the credential to its own bucket, never the first sign-in bucket', async () => {
+      authenticateRows();
+      const res = await authenticate({ sessionRenewal: issueRecoverySessionRenewal(TOKEN_HASH) });
+
+      expect(res.status).toBe(200);
+      expect(rateLimiterMock).toHaveBeenCalledWith(expect.anything(), RENEWAL_KEY, 3, 3600, 1, { refundOnReject: true });
+      expect(rateLimitKeys()).not.toContain(SIGN_IN_KEY);
+    });
+
+    it('charges a request with a wrong or foreign credential to the first sign-in bucket', async () => {
+      authenticateRows();
+      const foreign = issueRecoverySessionRenewal(hashRecoveryToken(`brz_rec_${'f'.repeat(64)}`));
+      const res = await authenticate({ sessionRenewal: foreign });
+
+      expect(res.status).toBe(200);
+      expect(rateLimitKeys()).toContain(SIGN_IN_KEY);
+      expect(rateLimitKeys()).not.toContain(RENEWAL_KEY);
+    });
+
+    it('answers 429 with Retry-After before any token lookup when the renewal bucket is full', async () => {
+      rateLimiterMock.mockImplementation(async (...args: unknown[]) => ({
+        allowed: args[1] !== RENEWAL_KEY,
+        remaining: 0,
+        resetAt: new Date(Date.now() + 120_000),
+      }));
+      const res = await authenticate({ sessionRenewal: issueRecoverySessionRenewal(TOKEN_HASH) });
+
+      expect(res.status).toBe(429);
+      expect(Number(res.headers.get('Retry-After'))).toBeGreaterThan(0);
+      expect(selectMock).not.toHaveBeenCalled();
+      expect(writeAuditEventMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ result: 'denied', errorMessage: 'rate_limited_token', details: expect.objectContaining({ sessionRenewal: true }) }),
+      );
+    });
+
+    it('moves a capability refusal on a proven-valid token out of the first sign-in bucket', async () => {
+      rateLimiterMock.mockImplementation(async (...args: unknown[]) => ({
+        allowed: true,
+        remaining: 2,
+        resetAt: new Date(Date.now() + 60_000),
+        entries: args[1] === SIGN_IN_KEY ? ['sign-in-entry'] : ['other-entry'],
+      }));
+      downgradeRows();
+      const res = await authenticate({});
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toBe('capability_downgrade');
+      expect(rateLimitKeys()).toContain(REFUSED_KEY);
+      expect(refundRateLimitEntriesMock).toHaveBeenCalledWith(expect.anything(), SIGN_IN_KEY, ['sign-in-entry']);
+    });
+
+    it('keeps the first sign-in charge when the refused bucket is already full', async () => {
+      rateLimiterMock.mockImplementation(async (...args: unknown[]) => ({
+        allowed: args[1] !== REFUSED_KEY,
+        remaining: 0,
+        resetAt: new Date(Date.now() + 60_000),
+        entries: ['entry'],
+      }));
+      downgradeRows();
+      const res = await authenticate({});
+
+      expect(res.status).toBe(409);
+      expect(refundRateLimitEntriesMock).not.toHaveBeenCalled();
+    });
+
+    it('never refunds a sign-in with an unknown token', async () => {
+      rateLimiterMock.mockImplementation(async () => ({
+        allowed: true,
+        remaining: 2,
+        resetAt: new Date(Date.now() + 60_000),
+        entries: ['entry'],
+      }));
+      selectMock.mockReturnValueOnce(chainMock([]));
+      const res = await authenticate({});
+
+      expect(res.status).toBe(401);
+      expect(rateLimitKeys()).toContain(SIGN_IN_KEY);
+      expect(rateLimitKeys()).not.toContain(REFUSED_KEY);
+      expect(refundRateLimitEntriesMock).not.toHaveBeenCalled();
+    });
   });
 
   it('authenticate (#6490): a SELF-CONTAINED snapshot whose live destination drifted from its pinned identity is refused before the status flips', async () => {

@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { and, desc, eq, inArray, lt } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import {
@@ -11,6 +11,8 @@ import {
   restoreJobs,
 } from '../db/schema';
 import { getGithubReleasePageUrl, getPairedBinariesVersion } from './binarySource';
+import { getSecretDerivedKeyMaterials } from './secretCrypto';
+import { snapshotRequiresMembershipCapability } from './recoveryCapabilities';
 
 export const BMR_BOOTSTRAP_VERSION = 1;
 // The recovery helper ships with the agent binaries, so a server-only image
@@ -69,6 +71,56 @@ export function generateRecoveryToken(): string {
 
 export function isValidRecoveryTokenFormat(token: string): boolean {
   return RECOVERY_TOKEN_REGEX.test(token);
+}
+
+// #12566 — the session renewal credential. A successful sign-in
+// (authenticate or exchange) returns it; a later authenticate that carries it
+// is a renewal by a client that already signed in with this token, and is
+// charged to its own per-token bucket instead of the first-sign-in bucket.
+// That keeps other sign-ins with the same token (a browser Preview, a retried
+// helper start) from using up the allowance a running restore needs to renew
+// its download session.
+//
+// It only selects a rate-limit bucket. It is not an authorization: every
+// authenticate still runs the full token checks (expiry, status, snapshot,
+// integrity, capabilities). It is stateless (an HMAC over the token hash
+// under a key derived from the API's secret-encryption key, so key rotation
+// is honoured through the retained keys) and can only be learned from a
+// successful sign-in, which already proves the token. A guessed or unknown
+// token has no credential and stays on the first-sign-in bucket.
+const RECOVERY_SESSION_RENEWAL_DOMAIN = 'bmr-recovery-session-renewal:v1';
+const RECOVERY_SESSION_RENEWAL_PREFIX = 'brz_rsr_';
+const RECOVERY_SESSION_RENEWAL_REGEX = /^brz_rsr_([A-Za-z0-9_-]{43})$/;
+
+function recoverySessionRenewalMac(key: Buffer, tokenHash: string): Buffer {
+  return createHmac('sha256', key).update(`${RECOVERY_SESSION_RENEWAL_DOMAIN}.${tokenHash}`).digest();
+}
+
+/** The renewal credential for this token, or null when no key is configured. */
+export function issueRecoverySessionRenewal(tokenHash: string): string | null {
+  try {
+    const { key } = getSecretDerivedKeyMaterials(RECOVERY_SESSION_RENEWAL_DOMAIN).active;
+    return `${RECOVERY_SESSION_RENEWAL_PREFIX}${recoverySessionRenewalMac(key, tokenHash).toString('base64url')}`;
+  } catch (err) {
+    console.warn('[bmr] recovery session renewal credential unavailable:', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/** Whether credential is this token's renewal credential (constant-time; never throws). */
+export function verifyRecoverySessionRenewal(tokenHash: string, credential: string): boolean {
+  const match = RECOVERY_SESSION_RENEWAL_REGEX.exec(credential);
+  if (!match) return false;
+  const supplied = Buffer.from(match[1]!, 'base64url');
+  if (supplied.length !== 32 || supplied.toString('base64url') !== match[1]) return false;
+  try {
+    return getSecretDerivedKeyMaterials(RECOVERY_SESSION_RENEWAL_DOMAIN).retained.some(({ key }) =>
+      timingSafeEqual(supplied, recoverySessionRenewalMac(key, tokenHash))
+    );
+  } catch (err) {
+    console.warn('[bmr] recovery session renewal credential could not be checked:', err instanceof Error ? err.message : err);
+    return false;
+  }
 }
 
 export function asRecord(value: unknown): Record<string, unknown> {
@@ -365,6 +417,16 @@ export async function resolveRecoveryTokenPresentation(orgId: string, tokenId: s
     .orderBy(desc(restoreJobs.createdAt))
     .limit(1);
 
+  // #12566: tells the web whether a browser Preview can ever succeed.
+  const snapshotJobId = getStringValue(asNullableRecord(snapshot), 'jobId');
+  const [snapshotJob] = snapshotJobId
+    ? await db
+        .select({ referencedFiles: backupJobs.referencedFiles })
+        .from(backupJobs)
+        .where(eq(backupJobs.id, snapshotJobId))
+        .limit(1)
+    : [];
+
   const serverUrl = resolveServerUrl(requestUrl);
   const sessionStatus =
     row.status === 'revoked' || row.status === 'expired'
@@ -387,6 +449,7 @@ export async function resolveRecoveryTokenPresentation(orgId: string, tokenId: s
     authenticatedAt: toIsoString(row.authenticatedAt),
     completedAt: toIsoString(row.completedAt),
     usedAt: toIsoString(row.usedAt),
+    requiresRecoveryHelper: snapshotRequiresMembershipCapability(snapshotJob?.referencedFiles),
     targetConfig: asNullableRecord(row.targetConfig),
     device: device
       ? {
@@ -501,8 +564,14 @@ export function buildAuthenticatedBootstrapPayload(args: {
    * when there is none.
    */
   integrity?: Record<string, unknown> | null;
+  /**
+   * #12566: the session renewal credential (issueRecoverySessionRenewal), on
+   * the envelope and on the nested bootstrap. Omitted when there is none.
+   */
+  sessionRenewal?: string | null;
 }) {
   const integrity = args.integrity ? { integrity: args.integrity } : {};
+  const sessionRenewal = args.sessionRenewal ? { sessionRenewal: args.sessionRenewal } : {};
   const providerSnapshotId =
     getStringValue(asNullableRecord(args.snapshot), 'snapshotId') ?? args.snapshotId;
   const download = providerSnapshotId
@@ -535,6 +604,7 @@ export function buildAuthenticatedBootstrapPayload(args: {
     download,
     ...(args.recovery ? { recovery: args.recovery } : {}),
     ...integrity,
+    ...sessionRenewal,
   };
 
   return {
@@ -554,6 +624,7 @@ export function buildAuthenticatedBootstrapPayload(args: {
     snapshot: args.fileIndex && args.snapshot ? { ...args.snapshot, fileIndex: args.fileIndex } : args.snapshot,
     authenticatedAt: args.authenticatedAt.toISOString(),
     ...integrity,
+    ...sessionRenewal,
     bootstrap,
   };
 }

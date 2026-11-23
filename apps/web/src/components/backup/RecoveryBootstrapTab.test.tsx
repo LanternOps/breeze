@@ -713,4 +713,91 @@ describe('RecoveryBootstrapTab', () => {
       expect(downloadCalls.length).toBeGreaterThan(0);
     });
   });
+
+  // #12566: a Preview is a real sign-in with the token. Once the recovery
+  // helper holds a session, a Preview cannot help and must not be sent.
+  describe('Preview gating (#12566)', () => {
+    const authenticateCalls = () =>
+      fetchMock.mock.calls.filter(([url]) => String(url) === '/backup/bmr/recover/authenticate');
+
+    it('does not sign in when a re-fetch shows the helper already holds a session', async () => {
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        const method = (init as RequestInit | undefined)?.method ?? 'GET';
+        if (String(input) === '/backup/bmr/tokens/token-1' && method === 'GET') {
+          return makeJsonResponse({
+            id: 'token-1',
+            deviceId: 'device-1',
+            snapshotId: 'snapshot-1',
+            restoreType: 'bare_metal',
+            status: 'authenticated',
+            sessionStatus: 'authenticated',
+            authenticatedAt: '2026-03-31T10:01:00Z',
+            createdAt: '2026-03-31T10:00:00Z',
+            expiresAt: '2026-04-01T10:00:00Z',
+          });
+        }
+        return base(input, init);
+      });
+
+      render(<RecoveryBootstrapTab />);
+      await screen.findByText('Nightly Snapshot');
+      fireEvent.click(screen.getByRole('button', { name: /Create token/i }));
+      await screen.findByText(/Recovery token created/i);
+
+      // Local state still says "pending": only the re-fetch knows the helper signed in.
+      fireEvent.click(screen.getByRole('button', { name: /Preview bootstrap bundle/i }));
+
+      expect(await screen.findByText(/already has a recovery session/i)).toBeInTheDocument();
+      expect(authenticateCalls()).toHaveLength(0);
+      // Both Preview controls are now disabled.
+      for (const button of screen.getAllByRole('button', { name: /Preview/i })) {
+        expect(button).toBeDisabled();
+      }
+    });
+
+    it('disables Preview for a snapshot only the recovery helper can sign in to', async () => {
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        const method = (init as RequestInit | undefined)?.method ?? 'GET';
+        if (String(input) === '/backup/bmr/tokens' && method === 'POST') {
+          const response = await base(input, init);
+          const body = await response.json();
+          return makeJsonResponse({ ...body, requiresRecoveryHelper: true }, true, 201);
+        }
+        return base(input, init);
+      });
+
+      render(<RecoveryBootstrapTab />);
+      await screen.findByText('Nightly Snapshot');
+      fireEvent.click(screen.getByRole('button', { name: /Create token/i }));
+      await screen.findByText(/Recovery token created/i);
+
+      const previewButtons = screen.getAllByRole('button', { name: /Preview/i });
+      expect(previewButtons.length).toBeGreaterThan(0);
+      for (const button of previewButtons) {
+        expect(button).toBeDisabled();
+        fireEvent.click(button);
+      }
+      expect(screen.getAllByText(/only the recovery helper can read/i).length).toBeGreaterThan(0);
+      await waitFor(() => expect(authenticateCalls()).toHaveLength(0));
+    });
+
+    it('still previews a pending token for a self-contained snapshot after re-checking it', async () => {
+      render(<RecoveryBootstrapTab />);
+      await screen.findByText('Nightly Snapshot');
+      fireEvent.click(screen.getByRole('button', { name: /Create token/i }));
+      await screen.findByText(/Recovery token created/i);
+
+      fireEvent.click(screen.getByRole('button', { name: /Preview bootstrap bundle/i }));
+
+      await waitFor(() => expect(authenticateCalls()).toHaveLength(1));
+      const refetchIndex = fetchMock.mock.calls.findIndex(
+        ([url, init]) => String(url) === '/backup/bmr/tokens/token-1' && ((init as RequestInit | undefined)?.method ?? 'GET') === 'GET'
+      );
+      const authIndex = fetchMock.mock.calls.findIndex(([url]) => String(url) === '/backup/bmr/recover/authenticate');
+      expect(refetchIndex).toBeGreaterThanOrEqual(0);
+      expect(refetchIndex).toBeLessThan(authIndex);
+    });
+  });
 });
