@@ -18,15 +18,15 @@
       "optional2": "(facoltativo)",
       "noRestrictionAppliesToAllOperatingSystems": "Nessuna restrizione - si applica a tutti i sistemi operativi",
       "priority": "Priorità",
-      "currentAssignments": "Assegnazioni correnti",
-      "noAssignmentsYetAssignThisPolicyTo": "Nessuna assegnazione. Assegna questo criterio alle destinazioni sopra.",
+      "currentAssignments": "Si applica a",
+      "noAssignmentsYetAssignThisPolicyTo": "Non ancora applicato a nessun dispositivo. Aggiungi una destinazione qui sopra.",
       "level": "Livello",
       "target": "Destinazione",
       "priority2": "Priorità",
       "filters": "Filtri",
       "allOrganizations": "Tutte le organizzazioni",
       "allDevices": "Tutti i dispositivi",
-      "addAssignment": "Aggiungi assegnazione",
+      "addAssignment": "Aggiungi destinazione",
       "level2": "Livello",
       "target2": "Destinazione",
       "target3": "Destinazione",
@@ -81,23 +81,23 @@
       "howWouldYouLikeToConfigureThis": "Come vuoi configurare questo criterio?",
       "configureNew": "Configura nuovo",
       "startFreshWithCustomSettingsForEach": "Inizia da zero con impostazioni personalizzate per ogni funzionalità",
-      "linkToExisting": "Collega a esistente",
-      "useAnotherPolicyAsTheMasterBaseline": "Usa un altro criterio come baseline master",
+      "linkToExisting": "Basato su un criterio padre",
+      "useAnotherPolicyAsTheMasterBaseline": "Parti dalle impostazioni di un altro criterio e modifica ciò che differisce",
       "newConfigurationPolicy2": "Nuovo criterio di configurazione",
-      "masterPolicy": "Criterio master",
-      "selectTheConfigurationPolicyToUseAs": "Seleziona il criterio di configurazione da usare come baseline. Puoi sovrascrivere singole impostazioni per funzionalità.",
+      "masterPolicy": "Criterio padre",
+      "selectTheConfigurationPolicyToUseAs": "Scegli il criterio padre. Puoi modificare le singole funzionalità per questo criterio.",
       "policyDetails": "Dettagli criterio",
       "eGStandardWorkstationPolicy": "ad es. Criterio workstation standard",
       "optionalDescriptionOfWhatThisPolicyConfigures": "Descrizione facoltativa di cosa configura questo criterio",
-      "scope": "Ambito",
-      "partnerLibrary": "Libreria partner",
-      "assignToOrganizationsAfterCreating": "(assegna alle organizzazioni dopo la creazione)",
-      "aSpecificOrganization": "Un'organizzazione specifica",
+      "scope": "Gestito da",
+      "partnerLibrary": "Il tuo MSP",
+      "assignToOrganizationsAfterCreating": "(scegli in seguito dove si applica)",
+      "aSpecificOrganization": "Una sola organizzazione",
       "selectAnOrganization": "Seleziona un'organizzazione",
-      "createAReusablePolicyOwnedByYour": "Crea un criterio riutilizzabile di proprietà del tuo partner. Non si applica ad alcuna organizzazione finché non lo assegni nella scheda Organizzazioni del criterio. Le impostazioni di backup non sono disponibili nei criteri di proprietà del partner.",
+      "createAReusablePolicyOwnedByYour": "Gestito dal tuo MSP. Non si applica a nulla finché non scegli dove applicarlo in Si applica a.",
       "new": "new",
       "linked": "linked",
-      "createAPolicyLinkedToAnExisting": "Crea un criterio collegato a un master esistente.",
+      "createAPolicyLinkedToAnExisting": "Crea un criterio basato su un criterio padre.",
       "createANewConfigurationPolicyToBundle": "Crea un nuovo criterio di configurazione per raggruppare le impostazioni delle funzionalità.",
       "name": "name",
       "description": "description",
@@ -116,16 +116,15 @@
       "failedToUpdatePolicy": "Impossibile aggiornare il criterio",
       "overview": "Panoramica",
       "complianceStatus": "Stato conformità",
-      "assignments": "Assegnazioni",
       "loadingPolicy": "Caricamento criterio...",
       "backToList": "Torna all'elenco",
       "configurationPolicies": "Criteri di configurazione",
       "policyDetails": "Dettagli criterio",
       "archived2": "Archiviato",
-      "inheritingFrom": "Eredita da",
-      "overrideIndividualTabsToCustomizeSettings": "— Sovrascrivi le singole schede per personalizzare le impostazioni",
-      "isnTAvailableOnPartnerWidePolicies": "non è disponibile nei criteri a livello partner",
-      "configureThisFeatureOnAnOrganizationScoped": "Configura questa funzionalità in un criterio con ambito organizzazione.",
+      "inheritingFrom": "Basato su",
+      "overrideIndividualTabsToCustomizeSettings": "Modifica una funzionalità per impostarla solo per questo criterio.",
+      "isnTAvailableOnPartnerWidePolicies": " non è disponibile nei criteri gestiti dall'MSP",
+      "configureThisFeatureOnAnOrganizationScoped": "Imposta questa funzionalità su un criterio gestito da una singola organizzazione.",
       "thisPolicyStillCarriesAnExisting": "Questo criterio contiene ancora una configurazione",
       "configurationThatWillNeverBeApplied": " esistente che non verrà mai applicata.",
       "policy": "Criterio",
@@ -138,8 +137,12 @@
       "complianceStatus2": "compliance_status",
       "assignments2": "assignments",
       "managedByYourMsp": "Gestito dal tuo MSP",
-      "inheritedByPolicies_one": "Ereditato da {{count}} criterio",
-      "inheritedByPolicies_other": "Ereditato da {{count}} criteri"
+      "inheritedByPolicies_one": "Padre di {{count}} criterio",
+      "inheritedByPolicies_other": "Padre di {{count}} criteri",
+      "gatedFeatureTitle": "Non disponibile nei criteri gestiti dall'MSP. Imposta questa funzionalità su un criterio gestito da una singola organizzazione.",
+      "appliesToDrawerTitle": "Si applica a",
+      "detailsSaved": "Dettagli del criterio salvati",
+      "refreshAppliesToFailed": "Impossibile aggiornare dove si applica questo criterio. Ricarica la pagina per vederlo."
     },
     "configPolicyList": {
       "archived": "Archiviata",
@@ -151,18 +154,18 @@
       "archived2": "Archiviata",
       "features": "Funzionalità",
       "noPoliciesFoundTryAdjustingYourSearch": "Nessun criterio trovato. Prova a modificare la ricerca.",
-      "noPoliciesYet": "Nessun criterio di configurazione. Creane uno, poi assegnalo a organizzazioni, siti o dispositivi.",
-      "partnerWidePolicyAppliesToEveryOrganization": "Criterio a livello di partner — si applica a ogni organizzazione",
-      "allOrgs": "A livello di partner",
+      "noPoliciesYet": "Nessun criterio di configurazione per ora. Creane uno, poi scegli dove si applica.",
       "page": "Pagina",
       "of2": "di",
       "itsOwningOrganization": "la sua organizzazione di appartenenza",
-      "organizationPolicyTitle": "Criterio dell'organizzazione — si applica solo a {{organization}}",
       "summary": "{{filtered}} di {{total}} criteri",
       "inheritsBadge": "Eredita",
       "statusFilterLabel": "Stato",
-      "partnerPolicy": "Partner",
-      "partnerPolicyAppliesOnlyWhereAssigned": "Criterio del partner — si applica solo dove è assegnato. Assegnalo a tutte le organizzazioni per renderlo valido a livello di partner."
+      "appliesToHeader": "Si applica a",
+      "managedByOrganization": "Gestito da {{organization}}",
+      "notAppliedChip": "Non applicato",
+      "inUseChip_one": "In uso tramite {{count}} criterio",
+      "inUseChip_other": "In uso tramite {{count}} criteri"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossibile recuperare i criteri di configurazione",
@@ -191,10 +194,10 @@
       "failedToNarrow": "Impossibile restringere l'ambito",
       "failedToAssignOrg": "Impossibile assegnare l'org",
       "organizations": "Organizzazioni",
-      "thisPartnerLibraryPolicyAppliesOnlyTo": "Questo criterio della libreria partner si applica solo alle organizzazioni selezionate.",
+      "thisPartnerLibraryPolicyAppliesOnlyTo": "Questo criterio gestito dall'MSP si applica solo alle organizzazioni che scegli.",
       "filtersApplyOnAssign": "Questi filtri si applicano quando assegni sotto. Vuoto significa ogni ruolo e ogni sistema operativo. Per cambiare i filtri di un'assegnazione, disattivala e riattivala.",
-      "allOrganizationsPartnerWide": "Tutte le organizzazioni (a livello di partner)",
-      "allOrganizationsPartnerWide2": "Tutte le organizzazioni (a livello di partner)",
+      "allOrganizationsPartnerWide": "Tutte le organizzazioni",
+      "allOrganizationsPartnerWide2": "Tutte le organizzazioni",
       "assigned": "Assegnata",
       "searchOrganizations": "Cerca organizzazioni...",
       "searching": "Ricerca…",
@@ -700,7 +703,11 @@
         "revertConfirmTitle": "Ripristinare i criteri padre?",
         "revertConfirmMessage": "Questa operazione elimina l'override {{feature}} di questo criterio. Le impostazioni vanno perse e vengono applicate quelle del criterio padre a tutti i dispositivi che usano questo criterio. Non può essere annullata.",
         "removeConfirmTitle": "Rimuovere questa configurazione?",
-        "removeConfirmMessage": "Questa operazione elimina la configurazione {{feature}} da questo criterio. Le impostazioni vanno perse e la funzione non viene più applicata ai dispositivi che usano questo criterio. Non può essere annullata."
+        "removeConfirmMessage": "Questa operazione elimina la configurazione {{feature}} da questo criterio. Le impostazioni vanno perse e la funzione non viene più applicata ai dispositivi che usano questo criterio. Non può essere annullata.",
+        "badgeInherited": "Configurato (ereditato)",
+        "badgeSavedNotDeployed": "Salvato (non distribuito)",
+        "badgeConfigured": "Configurato",
+        "badgeNotConfigured": "Non configurato"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Distribuisci Breeze Assist sui dispositivi",
@@ -1453,8 +1460,8 @@
       }
     },
     "partnerGroupAssignment": {
-      "title": "Gruppi di dispositivi (tutte le org.)",
-      "description": "Seleziona come destinazione un gruppo di dispositivi a livello di partner. Un’assegnazione di gruppo si applica a livello di gruppo di dispositivi e ha quindi precedenza sulle assegnazioni di altri criteri a livello di organizzazione e sito.",
+      "title": "Gruppi di dispositivi tra le organizzazioni",
+      "description": "Scegli come destinazione un gruppo di dispositivi di proprietà dell'MSP. Un'assegnazione a un gruppo si applica a livello di gruppo di dispositivi, quindi ha la precedenza sulle assegnazioni a livello di organizzazione e di sito di altri criteri.",
       "selectGroup": "Seleziona un gruppo di dispositivi",
       "assign": "Assegna",
       "remove": "Rimuovi",
@@ -1465,6 +1472,96 @@
       "failedToRemove": "Impossibile rimuovere l’assegnazione del gruppo di dispositivi",
       "empty": "Non ci sono ancora gruppi di dispositivi a livello di partner. Creane uno in Gruppi di dispositivi → Tutte le org.",
       "loading": "Caricamento dei gruppi di dispositivi…"
+    },
+    "featureNames": {
+      "patch": {
+        "label": "Patch"
+      },
+      "monitors": {
+        "label": "Monitor"
+      },
+      "backup": {
+        "label": "Backup"
+      },
+      "security": {
+        "label": "Sicurezza"
+      },
+      "maintenance": {
+        "label": "Manutenzione"
+      },
+      "compliance": {
+        "label": "Conformità"
+      },
+      "automation": {
+        "label": "Automazioni"
+      },
+      "event_log": {
+        "label": "Registri eventi"
+      },
+      "software_policy": {
+        "label": "Criterio software"
+      },
+      "sensitive_data": {
+        "label": "Individuazione dati"
+      },
+      "peripheral_control": {
+        "label": "Controllo periferiche"
+      },
+      "warranty": {
+        "label": "Garanzia"
+      },
+      "helper": {
+        "label": "Breeze Assist"
+      },
+      "remote_access": {
+        "label": "Accesso remoto"
+      },
+      "pam": {
+        "label": "Accesso privilegiato"
+      },
+      "vulnerability": {
+        "label": "Scansione delle vulnerabilità"
+      },
+      "onedrive_helper": {
+        "label": "OneDrive Helper"
+      },
+      "device_lifecycle": {
+        "label": "Ciclo di vita dei dispositivi"
+      },
+      "hardware_monitoring": {
+        "label": "Monitoraggio hardware"
+      }
+    },
+    "levelNames": {
+      "partner": {
+        "label": "Tutte le organizzazioni"
+      },
+      "organization": {
+        "label": "Organizzazione"
+      },
+      "site": {
+        "label": "Sito"
+      },
+      "device_group": {
+        "label": "Gruppo di dispositivi"
+      },
+      "device": {
+        "label": "Dispositivo"
+      },
+      "default": {
+        "label": "Breeze Defaults"
+      }
+    },
+    "appliesToStrip": {
+      "heading": "Si applica a",
+      "unknownState": "Sconosciuto",
+      "notAppliedWarning": "Non applicato a nessun dispositivo. Questo criterio non si applica a nulla finché non scegli dove applicarlo.",
+      "notAppliedNeutral": "Non ancora applicato",
+      "inUseCount_one": "In uso tramite {{count}} criterio",
+      "inUseCount_other": "In uso tramite {{count}} criteri",
+      "moreTargets_one": "{{count}} destinazione in più",
+      "moreTargets_other": "{{count}} destinazioni in più",
+      "assignButton": "Assegna"
     }
   },
   "software": {

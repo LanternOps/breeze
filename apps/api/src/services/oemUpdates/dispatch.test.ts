@@ -481,6 +481,22 @@ describe('dispatchOemUpdateRun: the not-returned monitor', () => {
     expect(state.upsertSet).not.toHaveProperty('occurrenceKey');
     expect(state.upsertSet).not.toHaveProperty('lastOutcome');
   });
+
+  // #12266: only a scheduled attempt uses up the night's scheduled run.
+  it('a scheduled run records its attempt as the scheduled one', async () => {
+    await dispatchOemUpdateRun(input({ trigger: 'scheduled', occurrenceKey: '2027-01' }));
+    const { lastAttemptAt } = state.upserts[0]! as { lastAttemptAt: Date };
+    expect(lastAttemptAt).toBeInstanceOf(Date);
+    expect(state.upserts[0]).toMatchObject({ lastScheduledAttemptAt: lastAttemptAt });
+    expect(state.upsertSet).toMatchObject({ lastScheduledAttemptAt: lastAttemptAt });
+  });
+
+  it('Run Now records an attempt but never touches the scheduled one, not even to null it', async () => {
+    await dispatchOemUpdateRun(input({ trigger: 'on_demand', occurrenceKey: null }));
+    expect(state.upserts[0]!.lastAttemptAt).toBeInstanceOf(Date);
+    expect(state.upserts[0]).not.toHaveProperty('lastScheduledAttemptAt');
+    expect(state.upsertSet).not.toHaveProperty('lastScheduledAttemptAt');
+  });
 });
 
 describe('dispatchOemUpdateRelease', () => {

@@ -6,7 +6,8 @@ vi.mock('../../db', () => ({ db: {}, withSystemDbAccessContext: vi.fn() }));
 
 import { unifiIntegrationKeys, unifiIntegrations } from '../../db/schema';
 import { encryptSecret, decryptSecret } from '../secretCrypto';
-import { getSyncKeys, listKeys, openUnifiKey, sealUnifiKey } from './unifiKeyService';
+import { countEnabledKeys, getSyncKeys, listKeys, openUnifiKey, recordKeyResults, sealUnifiKey } from './unifiKeyService';
+import type { KeyRunResult } from './unifiSyncService';
 import type { DbExecutor } from './unifiConnectionService';
 
 const LEGACY_AAD = 'unifi_integrations.api_key_encrypted';
@@ -26,7 +27,7 @@ function seal(plain: string): string {
 // ---------------------------------------------------------------------------
 function scriptedDb(opts: { integration?: Record<string, unknown> | null; keys?: Array<Record<string, unknown>>; updateRows?: unknown[] }) {
   const selects: Array<{ table: unknown; fields: string[] | null; orderBy: string | null }> = [];
-  const updates: Array<{ table: unknown; set: Record<string, unknown> }> = [];
+  const updates: Array<{ table: unknown; set: Record<string, unknown>; where?: unknown }> = [];
   const dialect = new PgDialect();
 
   function selectChain(fields: Record<string, unknown> | undefined) {
@@ -54,10 +55,10 @@ function scriptedDb(opts: { integration?: Record<string, unknown> | null; keys?:
   }
 
   function updateChain(table: unknown) {
-    const record = { table, set: {} as Record<string, unknown> };
+    const record = { table, set: {} as Record<string, unknown>, where: undefined as unknown };
     const chain: any = {
       set(v: Record<string, unknown>) { record.set = v; return chain; },
-      where() { return chain; },
+      where(w: unknown) { record.where = w; return chain; },
       returning() { return chain; },
       then(resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) {
         updates.push(record);
@@ -239,5 +240,90 @@ describe('unifiKeyService', () => {
     const result = await getSyncKeys(db, 'int-1', 'p-1');
     expect(result!.keys.map((k) => k.apiKey)).toEqual(['k-a', 'k-b']);
     expect(updates).toHaveLength(0);
+  });
+});
+
+describe('recordKeyResults (#11808 W2)', () => {
+  const dialect = new PgDialect();
+  const render = (frag: unknown) => dialect.sqlToQuery(frag as any);
+  const RUN_STARTED = new Date('2026-11-22T10:00:00Z');
+  const result = (over: Partial<KeyRunResult>): KeyRunResult => ({
+    keyId: 'key-1', label: 'Global', status: 'success', authFailure: false,
+    hostsSeen: 2, sitesSeen: 3, hostIds: ['h1', 'h2'], error: null, ...over,
+  });
+  const record = (db: DbExecutor, results: KeyRunResult[], keyLast4ById = new Map<string, string>()) =>
+    recordKeyResults(db, { integrationId: 'int-1', partnerId: 'p-1', runStartedAt: RUN_STARTED, results, keyLast4ById });
+
+  it('recordKeyResults skips a key deleted mid-run', async () => {
+    const { db, updates } = scriptedDb({ updateRows: [] });
+    await expect(record(db, [result({}), result({ keyId: 'key-2', status: 'failed', error: 'boom', hostIds: null })])).resolves.toBeUndefined();
+    expect(updates).toHaveLength(2);
+  });
+
+  it("recordKeyResults never overwrites a newer run's result", async () => {
+    const { db, updates } = scriptedDb({});
+    await record(db, [result({})]);
+    const where = render(updates[0]!.where);
+    expect(where.sql).toContain('"unifi_integration_keys"."id" = $');
+    expect(where.sql).toContain('"unifi_integration_keys"."integration_id" = $');
+    expect(where.sql).toContain('"unifi_integration_keys"."partner_id" = $');
+    expect(where.sql).toMatch(/\("unifi_integration_keys"\."last_sync_at" is null or "unifi_integration_keys"\."last_sync_at" < \$\d+\)/);
+    expect(where.params).toEqual(expect.arrayContaining(['key-1', 'int-1', 'p-1', RUN_STARTED.toISOString()]));
+    expect(updates[0]!.set.lastSyncAt).toEqual(RUN_STARTED);
+  });
+
+  it('recordKeyResults fills key_last4 only when null', async () => {
+    const { db, updates } = scriptedDb({});
+    await record(db, [result({}), result({ keyId: 'key-2' })], new Map([['key-1', 'wxyz']]));
+    const last4 = render(updates[0]!.set.keyLast4);
+    expect(last4.sql).toBe('coalesce("unifi_integration_keys"."key_last4", $1)');
+    expect(last4.params).toEqual(['wxyz']);
+    // No candidate for key-2: its key_last4 is not touched at all.
+    expect(updates[1]!.set).not.toHaveProperty('keyLast4');
+  });
+
+  it('a success writes connected, the counts and the reach snapshot', async () => {
+    const { db, updates } = scriptedDb({});
+    await record(db, [result({})]);
+    expect(updates[0]!.set).toMatchObject({
+      status: 'connected', lastSyncStatus: 'success', lastSyncError: null,
+      hostsSeen: 2, sitesSeen: 3, lastSeenHostIds: ['h1', 'h2'],
+    });
+    expect(updates[0]!.set.lastOkAt).toBeInstanceOf(Date);
+  });
+
+  it('a hosts-only success keeps the snapshot and site count', async () => {
+    const { db, updates } = scriptedDb({});
+    await record(db, [result({ sitesSeen: null, hostIds: null })]);
+    expect(updates[0]!.set).not.toHaveProperty('lastSeenHostIds');
+    expect(updates[0]!.set).not.toHaveProperty('sitesSeen');
+    expect(updates[0]!.set.hostsSeen).toBe(2);
+  });
+
+  it('a failure records reauth_required for an auth failure, error otherwise, and keeps the snapshot', async () => {
+    const { db, updates } = scriptedDb({});
+    await record(db, [
+      result({ status: 'failed', authFailure: true, error: 'nope', hostIds: null }),
+      result({ keyId: 'key-2', status: 'failed', error: 'x'.repeat(900), hostIds: null }),
+    ]);
+    expect(updates[0]!.set).toMatchObject({ status: 'reauth_required', lastSyncStatus: 'failed', lastSyncError: 'nope' });
+    expect(updates[1]!.set).toMatchObject({ status: 'error', lastSyncStatus: 'failed' });
+    expect((updates[1]!.set.lastSyncError as string).length).toBe(500);
+    for (const u of updates) {
+      expect(u.set).not.toHaveProperty('lastSeenHostIds');
+      expect(u.set).not.toHaveProperty('lastOkAt');
+    }
+  });
+
+  it('a skipped key records skipped and leaves its status alone', async () => {
+    const { db, updates } = scriptedDb({});
+    await record(db, [result({ status: 'skipped', error: 'sync time budget exhausted', hostIds: null })]);
+    expect(updates[0]!.set).toMatchObject({ lastSyncStatus: 'skipped', lastSyncError: 'sync time budget exhausted' });
+    expect(updates[0]!.set).not.toHaveProperty('status');
+  });
+
+  it('countEnabledKeys counts the enabled keys of the connection', async () => {
+    const { db } = scriptedDb({ keys: [{ n: 2 }] });
+    await expect(countEnabledKeys(db, 'int-1', 'p-1')).resolves.toBe(2);
   });
 });

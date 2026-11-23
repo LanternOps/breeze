@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   ArrowLeft,
   Layers,
-  Target,
   Wrench,
   ClipboardCheck,
   PackageCheck,
@@ -39,6 +38,11 @@ import { OverflowTabs, overflowPanelId, overflowTabId } from "../shared/Overflow
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { ActionError, runAction } from "@/lib/runAction";
+import { showToast } from "../shared/Toast";
+import { Drawer } from "../shared/Drawer";
+import AppliesToStrip from "./AppliesToStrip";
+import { parseAppliesTo } from "./appliesToSummary";
 // The web layer only aliases the bare `@breeze/shared` root and the
 // `/reportPdf` subpath (see apps/web/vitest.config.ts + tsconfig.json) — the
 // `/constants` subpath isn't wired up here, so import from the root, which
@@ -77,7 +81,7 @@ import WakeOnLanTab from './featureTabs/WakeOnLanTab';
 import ComplianceStatusTab from './ComplianceStatusTab';
 import { usePageItemName } from '../layout/usePageItemName';
 
-type Tab = 'overview' | FeatureType | 'assignments' | 'compliance_status';
+type Tab = 'overview' | FeatureType | 'compliance_status';
 type PolicyDetail = {
   id: string;
   name: string;
@@ -93,6 +97,9 @@ type PolicyDetail = {
   parentPolicyId: string | null;
   parentPolicy: ParentPolicySummary | null;
   childPolicies: { id: string; name: string }[];
+  // Where the policy applies (#12306). Absent when the API is a release
+  // behind; parsed with parseAppliesTo, which turns that into "unknown".
+  appliesTo?: unknown;
 };
 const createStatusConfig = (): Record<
   string,
@@ -161,7 +168,6 @@ const VALID_TABS: Tab[] = [
   "overview",
   ...FEATURE_TYPES,
   "compliance_status",
-  "assignments",
 ];
 
 // Preserve saved links to the retired tabs and canonicalize their hashes.
@@ -169,6 +175,11 @@ export const LEGACY_TAB_ALIASES: Record<'alert_rule' | 'monitoring', 'monitors'>
   alert_rule: 'monitors',
   monitoring: 'monitors',
 };
+
+// The Assignments tab became the always-visible Applies-to strip (#12306).
+// Old `#assignments` links keep working: they open the strip's drawer over
+// whichever tab was showing.
+const APPLIES_TO_HASH_ALIAS = 'assignments';
 
 type ConfigPolicyDetailPageProps = {
   policyId?: string;
@@ -183,10 +194,26 @@ export default function ConfigPolicyDetailPage({
   // reading it in the useState initializer caused a hydration mismatch on
   // deep links to a non-default tab (#2421).
   const [activeTab, setActiveTab] = useHashTab<Tab>(VALID_TABS, "overview");
+  // The Applies-to drawer is an overlay, not a navigable view, so its open
+  // state is local; only the legacy `#assignments` alias opens it from a URL.
+  const [appliesToOpen, setAppliesToOpen] = useState(false);
+  // The tab showing before a hash change. useHashTab resets an unrecognized
+  // hash to Overview before this page's listener runs, so `#assignments`
+  // restores the tab from here.
+  const shownTabRef = useRef<Tab>(activeTab);
+  shownTabRef.current = activeTab;
 
   useEffect(() => {
     const redirectLegacyHash = () => {
       const raw = window.location.hash.replace(/^#/, '');
+      if (raw === APPLIES_TO_HASH_ALIAS) {
+        const keep = shownTabRef.current;
+        const hash = keep === "overview" ? "" : `#${keep}`;
+        window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}${hash}`);
+        setActiveTab(keep);
+        setAppliesToOpen(true);
+        return;
+      }
       if (!Object.prototype.hasOwnProperty.call(LEGACY_TAB_ALIASES, raw)) return;
       const alias = LEGACY_TAB_ALIASES[raw as keyof typeof LEGACY_TAB_ALIASES];
       window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#${alias}`);
@@ -282,6 +309,35 @@ export default function ConfigPolicyDetailPage({
       setLoading(false);
     }
   }, [policyId]);
+  // Re-read the policy without the loading swap, so the open feature tab stays
+  // mounted and the Overview fields keep what the user typed. Used after the
+  // Applies-to drawer closes (its editors commit each change at once) and after
+  // a details save (the PATCH answers with a bare row that lacks parentPolicy,
+  // childPolicies and appliesTo).
+  const refreshPolicy = useCallback(async () => {
+    if (!policyId) return;
+    try {
+      const response = await fetchWithAuth(`/configuration-policies/${policyId}`);
+      if (!response.ok) throw new Error(`${response.status}`);
+      const data = await response.json();
+      setPolicy(data);
+    } catch {
+      // The editors may have changed where the policy applies, so the summary
+      // on screen can no longer be trusted: show it as unknown rather than
+      // keep a claim (e.g. "Not applied") that may now be false, and say so.
+      setPolicy((prev) => (prev ? { ...prev, appliesTo: undefined } : prev));
+      showToast({
+        type: "warning",
+        message: i18n.t(
+          "policies:configurationPolicies.configPolicyDetailPage.refreshAppliesToFailed",
+        ),
+      });
+    }
+  }, [policyId]);
+  const closeAppliesTo = useCallback(() => {
+    setAppliesToOpen(false);
+    void refreshPolicy();
+  }, [refreshPolicy]);
   const fetchFeatureLinks = useCallback(async () => {
     if (!policyId) return;
     try {
@@ -315,34 +371,46 @@ export default function ConfigPolicyDetailPage({
   const handleSaveOverview = async () => {
     if (!policyId) return;
     setSaving(true);
-    setError(undefined);
     try {
-      const response = await fetchWithAuth(
-        `/configuration-policies/${policyId}`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({
-            name: editName,
-            description: editDescription || undefined,
-            status: editStatus,
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/configuration-policies/${policyId}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              name: editName,
+              description: editDescription || undefined,
+              status: editStatus,
+            }),
           }),
-        },
+        errorFallback: i18n.t(
+          "policies:configurationPolicies.configPolicyDetailPage.failedToUpdatePolicy",
+        ),
+        successMessage: i18n.t(
+          "policies:configurationPolicies.configPolicyDetailPage.detailsSaved",
+        ),
+      });
+      // The save succeeded: show it now, even if the re-read below fails.
+      setPolicy((prev) =>
+        prev
+          ? {
+              ...prev,
+              name: editName,
+              description: editDescription || undefined,
+              status: editStatus as PolicyDetail["status"],
+            }
+          : prev,
       );
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(
-          extractApiError(
-            data,
-            i18n.t(
-              "policies:configurationPolicies.configPolicyDetailPage.failedToUpdatePolicy",
-            ),
-          ),
-        );
-      }
-      const updated = await response.json();
-      setPolicy(updated);
+      await refreshPolicy();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) {
+        showToast({
+          type: "error",
+          message: i18n.t(
+            "policies:configurationPolicies.configPolicyDetailPage.failedToUpdatePolicy",
+          ),
+        });
+      }
     } finally {
       setSaving(false);
     }
@@ -412,7 +480,7 @@ export default function ConfigPolicyDetailPage({
       icon: featureTabIcons[ft],
       dot: !!linkFor(ft) || !!parentLinkFor(ft),
       title: isGatedFeature(ft)
-        ? "Not available on partner-wide policies — configure this feature on an organization-scoped policy."
+        ? i18n.t("policies:configurationPolicies.configPolicyDetailPage.gatedFeatureTitle")
         : undefined,
     })),
     {
@@ -421,13 +489,6 @@ export default function ConfigPolicyDetailPage({
         "policies:configurationPolicies.configPolicyDetailPage.complianceStatus",
       ),
       icon: <ListChecks className="h-4 w-4" />,
-    },
-    {
-      id: "assignments",
-      label: i18n.t(
-        "policies:configurationPolicies.configPolicyDetailPage.assignments",
-      ),
-      icon: <Target className="h-4 w-4" />,
     },
   ];
   usePageItemName(policy?.name);
@@ -563,6 +624,13 @@ export default function ConfigPolicyDetailPage({
           {error}
         </div>
       )}
+
+      {/* Where the policy applies: above the tabs, visible on every tab (#12306). */}
+      <AppliesToStrip
+        summary={parseAppliesTo(policy.appliesTo)}
+        status={policy.status}
+        onEdit={() => setAppliesToOpen(true)}
+      />
 
       {/* Tabs */}
       <OverflowTabs
@@ -792,10 +860,20 @@ export default function ConfigPolicyDetailPage({
       {activeTab === "compliance_status" &&
         policyId && <ComplianceStatusTab policyId={policyId} />}
 
-      {/* Assignments Tab */}
-      {activeTab === "assignments" &&
-        policyId &&
-        policy && (
+      </div>
+
+      {/* The target editor, unchanged, in a drawer so the feature stays in
+          view. It commits each change at once; closing re-reads the summary. */}
+      <Drawer
+        open={appliesToOpen}
+        onClose={closeAppliesTo}
+        title={i18n.t(
+          "policies:configurationPolicies.configPolicyDetailPage.appliesToDrawerTitle",
+        )}
+        width="max-w-2xl"
+        dataTestId="config-policy-applies-to-drawer"
+      >
+        {policyId && (
           <AssignmentsTab
             policyId={policyId}
             orgId={policy.orgId}
@@ -803,7 +881,7 @@ export default function ConfigPolicyDetailPage({
             partnerId={policy.partnerId}
           />
         )}
-      </div>
+      </Drawer>
     </div>
   );
 }

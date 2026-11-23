@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import type { AiConnectionDto, AiModelsSnapshotDto } from '@breeze/shared';
 import ConnectionDrawer from './ConnectionDrawer';
+import { jobFingerprint, useJobPoll } from './useJobPoll';
 import ResidencySwitch from './ResidencySwitch';
 import { ADDABLE_CONNECTION_KINDS, ADD_KIND_LABEL_KEYS, ADD_KIND_TEST_IDS, type AddableConnectionKind } from './connectionForms/connectionKinds';
 import { resolvedFormattingLocale } from '../../../lib/i18n/format';
@@ -70,11 +71,15 @@ function relativeTime(iso: string): string {
 export default function ConnectionsCard({
   snapshot,
   onChanged,
+  onPoll,
 }: {
   snapshot: AiModelsSnapshotDto;
   onChanged: () => void | Promise<void>;
+  /** Quiet re-read used while a queued job is pending (never replaces the tab with an error). Defaults to onChanged. */
+  onPoll?: () => void | Promise<void>;
 }) {
   const { t } = useTranslation('settings');
+  const pollForJob = useJobPoll(jobFingerprint(snapshot), onPoll ?? onChanged);
   const [drawer, setDrawer] = useState<DrawerState>({ mode: 'closed' });
   const [chooserOpen, setChooserOpen] = useState(false);
   const modelCount = (id: string | null) => snapshot.offerings.filter((o) => o.connectionId === id).length;
@@ -200,11 +205,11 @@ export default function ConnectionsCard({
 
       {drawer.mode === 'create' && (
         <ConnectionDrawer connection={null} initialKind={drawer.kind} catalog={snapshot.catalog} catalogEnabled={snapshot.catalogEnabled}
-          onClose={() => setDrawer({ mode: 'closed' })} onSaved={onChanged} />
+          onClose={() => setDrawer({ mode: 'closed' })} onSaved={onChanged} onJobQueued={pollForJob} />
       )}
       {drawer.mode === 'edit' && editing && (
         <ConnectionDrawer key={editing.id} connection={editing} catalog={snapshot.catalog} catalogEnabled={snapshot.catalogEnabled}
-          onClose={() => setDrawer({ mode: 'closed' })} onSaved={onChanged} />
+          onClose={() => setDrawer({ mode: 'closed' })} onSaved={onChanged} onJobQueued={pollForJob} />
       )}
     </section>
   );

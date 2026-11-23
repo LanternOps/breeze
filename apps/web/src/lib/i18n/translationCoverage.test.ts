@@ -96,7 +96,7 @@ const namespaceDuplicateBaselines = {
     // +1 (#10190 W01): deviceInfoTab.assistStatus.label is the product name "Breeze Assist".
     // +1 (#8134 W1-D1): physicalPlacementCard.rack — "Rack" is the standard loanword in this locale.
     // +3 vendorUpdates.category (#11069): "BIOS" acronym; "Firmware" and "Drivers" are the terms this catalog uses everywhere, including this section's own sentences.
-    'devices.json': 196, // +2 assetCircuitCard (#8134 W1-D2): "WAN" acronym and "Interfaces" cognate
+    'devices.json': 197, // +1 deviceEffectiveConfigTab.viaLevel (#12306): "via {{level}}" is the same word in this locale; +2 assetCircuitCard (#8134 W1-D2): "WAN" acronym and "Interfaces" cognate
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
     // Wave E2b (DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND, PATH_CONFLICT,
@@ -480,7 +480,7 @@ const namespaceDuplicateBaselines = {
     // — "action"/"actions" are identical cognates in fr-FR.
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'devices.json': 167, // +2 assetCircuitCard (#8134 W1-D2): "WAN" acronym and "Interfaces" cognate
+    'devices.json': 168, // +1 deviceEffectiveConfigTab.viaLevel (#12306): "via {{level}}" is the same word in this locale; +2 assetCircuitCard (#8134 W1-D2): "WAN" acronym and "Interfaces" cognate
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -694,7 +694,7 @@ const namespaceDuplicateBaselines = {
     // — "action"/"actions" are identical cognates in fr-CA.
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'devices.json': 167, // +2 assetCircuitCard (#8134 W1-D2): "WAN" acronym and "Interfaces" cognate
+    'devices.json': 168, // +1 deviceEffectiveConfigTab.viaLevel (#12306): "via {{level}}" is the same word in this locale; +2 assetCircuitCard (#8134 W1-D2): "WAN" acronym and "Interfaces" cognate
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -1299,7 +1299,7 @@ const namespaceDuplicateBaselines = {
     // identifiers ("winget", "Homebrew cask", "Homebrew formula") are proper
     // nouns and command-line tokens, so they are intentionally identical in
     // every catalog.
-    'policies.json': 123,
+    'policies.json': 126, // +3 (#12306): featureNames helper/onedrive_helper and levelNames.default are the product names "Breeze Assist", "OneDrive Helper", "Breeze Defaults"
     'portal.json': 2,
     'quick.json': 1,
     'remote.json': 4,
