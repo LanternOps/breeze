@@ -9,8 +9,10 @@ import (
 )
 
 // QueryAgentService asks SCM for the agent service's state and process id.
-// Any failure, or a state this file does not map, reads as
-// AgentServiceUnknown, never as stopped.
+// Any failure, a state windowsServiceState does not recognise, or a state
+// agentServiceStatusFromSnapshot does not treat as up or down reads as
+// AgentServiceUnknown, never as stopped. Like the recovery path, it calls SCM
+// without its own timeout; those calls return in milliseconds.
 func QueryAgentService() AgentServiceStatus {
 	backend, err := openWindowsServiceBackend(agentWindowsServiceName)
 	if err != nil {

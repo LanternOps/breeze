@@ -1,6 +1,8 @@
 package watchdog
 
 import (
+	"errors"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -35,7 +37,8 @@ const (
 	// BootHold: the service manager says the agent is running or starting.
 	// Wait for IPC; do not recover.
 	BootHold BootDecision = iota
-	// BootNotFound: the agent is not running. Hand off to the recovery ladder.
+	// BootNotFound: the agent is not running, or was not confirmed alive by
+	// the deadline. Hand off to the recovery ladder.
 	BootNotFound
 	// BootRelease: stop the boot check and let the ordinary process, IPC and
 	// heartbeat checks decide.
@@ -82,7 +85,8 @@ type BootCheckInput struct {
 // was already running. The service manager is the authority on whether the
 // agent is up: running or starting means wait for IPC, stopped means recover.
 // The state-file PID is consulted only when the service manager gave no
-// answer, and then exactly as before this check existed.
+// usable answer (AgentServiceUnknown), and then by the same process evidence
+// as before this check existed: alive and not a zombie.
 //
 // The hold is bounded by Deadline. Past it, an agent with fresh heartbeat-loop
 // evidence is left to the ordinary checks; anything else is recovered, so an
@@ -104,6 +108,23 @@ func EvaluateBootCheck(in BootCheckInput) BootDecision {
 		return BootRelease
 	}
 	return BootNotFound
+}
+
+// serviceQueryErrorDetail renders a failed status command for the journal. An
+// exit error's text is only "exit status N", so the command's stderr (which
+// says why: unit not loaded, permission denied) is appended, truncated.
+func serviceQueryErrorDetail(err error) string {
+	detail := err.Error()
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
+			const maxStderr = 200
+			if len(stderr) > maxStderr {
+				stderr = stderr[:maxStderr]
+			}
+			detail += ": " + stderr
+		}
+	}
+	return detail
 }
 
 // agentServiceStatusFromSnapshot maps an SCM observation (see

@@ -4,7 +4,6 @@ package watchdog
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/procspawn"
@@ -23,7 +22,7 @@ func QueryAgentService() AgentServiceStatus {
 		"--property=LoadState", "--property=ActiveState", "--property=MainPID",
 		agentServiceName).Output()
 	if err != nil {
-		return AgentServiceStatus{State: AgentServiceUnknown, Detail: strings.TrimSpace(err.Error())}
+		return AgentServiceStatus{State: AgentServiceUnknown, Detail: serviceQueryErrorDetail(err)}
 	}
 	return parseSystemctlShow(string(out))
 }

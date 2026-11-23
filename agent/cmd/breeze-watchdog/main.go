@@ -752,12 +752,10 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 	// it was going away — so the standby policy decides what happens rather
 	// than the raw transition table restarting an agent mid-shutdown.
 	noteAgentUnhealthy := func() {
-		// While the boot check holds, the service manager says the agent is
-		// up or starting, and the check's own deadline is what bounds the
-		// wait. A verdict built on agent.state here (a previous boot's PID, or
-		// its old heartbeat) must not start recovery around it (#12291).
-		if boot.active(wd) {
-			journal.Log(watchdog.LevelInfo, "check.unhealthy_deferred_boot", nil)
+		// While the boot check owns the decision (holding on the service
+		// manager, or confirming a first not-found), a verdict built on
+		// agent.state must not start recovery around it (#12291).
+		if boot.deferUnhealthy(time.Now(), wd, journal) {
 			return
 		}
 		if wd.State() == watchdog.StateStandby {

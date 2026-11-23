@@ -111,9 +111,109 @@ func TestBootCheck_NoStateFileServiceStartingHolds(t *testing.T) {
 	t0 := time.Now()
 	b := newBootCheck(t0, bootTestDeadline, svc.query, fakeProcesses{})
 
-	b.evaluate(t0, 0, false, wd, journal)
+	// Past the two-check confirmation, so a not-found verdict could not hide
+	// behind its first, unconfirmed pass.
+	for i := 0; i < 4; i++ {
+		if skip := b.evaluate(t0.Add(time.Duration(i)*5*time.Second), 0, false, wd, journal); !skip {
+			t.Fatalf("check %d: hold did not own the tick", i)
+		}
+	}
 	if wd.State() != watchdog.StateConnecting || everRecovering(wd) {
 		t.Fatalf("state = %s, want CONNECTING with no recovery", wd.State())
+	}
+	if !journalHas(journal, "agent.boot_wait_service") || journalHas(journal, "agent.not_found_unconfirmed") {
+		t.Fatal("expected a hold and no not-found verdict")
+	}
+}
+
+// The previous boot's PID is reused by an unrelated live process while the
+// service manager runs the real agent: hold on the service, as for a dead PID.
+func TestBootCheck_ReusedStalePIDRunningServiceHolds(t *testing.T) {
+	journal := newBootTestJournal(t)
+	wd := watchdog.NewWatchdog(watchdog.Config{})
+	svc := &fakeService{status: watchdog.AgentServiceStatus{State: watchdog.AgentServiceRunning, PID: 3412}}
+	t0 := time.Now()
+	b := newBootCheck(t0, bootTestDeadline, svc.query, fakeProcesses{5824: true, 3412: true})
+
+	for i := 0; i < 3; i++ {
+		b.evaluate(t0.Add(time.Duration(i)*5*time.Second), 5824, false, wd, journal)
+	}
+	if wd.State() != watchdog.StateConnecting || !b.active(wd) {
+		t.Fatalf("state = %s active = %v, want a held CONNECTING", wd.State(), b.active(wd))
+	}
+}
+
+// At the deadline, an agent whose heartbeat loop is demonstrably running (but
+// whose IPC never came up) is handed to the ordinary checks, not restarted.
+func TestBootCheck_DeadlineWithHeartbeatReleases(t *testing.T) {
+	journal := newBootTestJournal(t)
+	wd := watchdog.NewWatchdog(watchdog.Config{})
+	svc := &fakeService{status: watchdog.AgentServiceStatus{State: watchdog.AgentServiceRunning, PID: 3412}}
+	t0 := time.Now()
+	b := newBootCheck(t0, bootTestDeadline, svc.query, fakeProcesses{3412: true})
+
+	b.evaluate(t0, 3412, false, wd, journal)
+	if skip := b.evaluate(t0.Add(bootTestDeadline), 3412, true, wd, journal); skip {
+		t.Fatal("released check still suppressed the ordinary process check")
+	}
+	if b.active(wd) || everRecovering(wd) || wd.State() != watchdog.StateConnecting {
+		t.Fatalf("state = %s active = %v, want released CONNECTING with no recovery", wd.State(), b.active(wd))
+	}
+	if !journalHas(journal, "agent.boot_check_released") {
+		t.Fatal("release not journaled")
+	}
+}
+
+// A release because the service query failed must leave a warn-level trace:
+// otherwise the journal cannot show that the check had no effect on this host.
+func TestBootCheck_UnknownReleaseIsJournaledAsWarning(t *testing.T) {
+	journal := newBootTestJournal(t)
+	wd := watchdog.NewWatchdog(watchdog.Config{})
+	svc := &fakeService{status: watchdog.AgentServiceStatus{State: watchdog.AgentServiceUnknown, Detail: "exit status 1: not loaded"}}
+	b := newBootCheck(time.Now(), bootTestDeadline, svc.query, fakeProcesses{5824: true})
+
+	b.evaluate(time.Now(), 5824, false, wd, journal)
+	for _, e := range journal.Recent(100) {
+		if e.Event == "agent.boot_check_released" {
+			if e.Level != watchdog.LevelWarn || e.Data["service_detail"] != "exit status 1: not loaded" {
+				t.Fatalf("release entry = %+v, want warn with the query detail", e)
+			}
+			return
+		}
+	}
+	t.Fatal("release on an unknown service was not journaled")
+}
+
+// noteAgentUnhealthy's gate: dropped while the check owns the decision
+// (holding, or with a first not-found pending), passed through after it.
+func TestBootCheck_DeferUnhealthy(t *testing.T) {
+	journal := newBootTestJournal(t)
+	wd := watchdog.NewWatchdog(watchdog.Config{})
+	svc := &fakeService{status: watchdog.AgentServiceStatus{State: watchdog.AgentServiceRunning, PID: 3412}}
+	t0 := time.Now()
+	b := newBootCheck(t0, bootTestDeadline, svc.query, fakeProcesses{3412: true})
+
+	b.evaluate(t0, 5824, false, wd, journal)
+	if !b.deferUnhealthy(t0.Add(time.Second), wd, journal) {
+		t.Fatal("stale-heartbeat verdict not deferred during the hold")
+	}
+	if !journalHas(journal, "check.unhealthy_deferred_boot") {
+		t.Fatal("deferral not journaled")
+	}
+
+	svc.status = watchdog.AgentServiceStatus{State: watchdog.AgentServiceStopped}
+	b.evaluate(t0.Add(5*time.Second), 5824, false, wd, journal)
+	if !b.deferUnhealthy(t0.Add(6*time.Second), wd, journal) {
+		t.Fatal("verdict not deferred while a first not-found is pending")
+	}
+
+	b.evaluate(t0.Add(10*time.Second), 5824, false, wd, journal)
+	if b.deferUnhealthy(t0.Add(11*time.Second), wd, journal) {
+		t.Fatal("verdict still deferred after recovery started")
+	}
+	var nilCheck *bootCheck
+	if nilCheck.deferUnhealthy(time.Now(), wd, journal) {
+		t.Fatal("nil check deferred a verdict")
 	}
 }
 

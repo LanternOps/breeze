@@ -15,8 +15,8 @@ import (
 // boot. The service manager decides instead (watchdog.EvaluateBootCheck).
 //
 // The check ends when IPC connects (the ordinary CONNECTING -> MONITORING
-// edge), when the evidence says the agent is not running (agent_not_found, the
-// same recovery ladder as before), or at its deadline.
+// edge), on a confirmed not-found verdict (agent_not_found, the same recovery
+// ladder as before), or on a release to the ordinary checks.
 type bootCheck struct {
 	startedAt    time.Time
 	deadline     time.Duration
@@ -35,9 +35,9 @@ func newBootCheck(now time.Time, deadline time.Duration, queryService func() wat
 }
 
 // bootCheckDeadline bounds the hold. It reuses the time the watchdog already
-// allows a restarted agent to come back, and always covers at least two IPC
-// reconnect attempts, because the IPC ticker's reconnect is what moves a held
-// watchdog to MONITORING.
+// allows a restarted agent to come back, with a floor of two IPC probe
+// intervals, because the IPC ticker's reconnect is what moves a held watchdog
+// to MONITORING.
 func bootCheckDeadline(restartVerificationTimeout, ipcProbeInterval time.Duration) time.Duration {
 	if floor := 2 * ipcProbeInterval; restartVerificationTimeout < floor {
 		return floor
@@ -58,9 +58,28 @@ func (b *bootCheck) active(wd *watchdog.Watchdog) bool {
 	return true
 }
 
+// deferUnhealthy reports whether an "agent looks dead" signal must be dropped
+// because the boot check owns the decision. Such a signal is built on
+// agent.state (a previous boot's PID, or its old heartbeat), which is exactly
+// the evidence the check exists to overrule. The check's own deadline, or its
+// next confirming not-found, bounds the wait.
+func (b *bootCheck) deferUnhealthy(now time.Time, wd *watchdog.Watchdog, journal *watchdog.Journal) bool {
+	if !b.active(wd) {
+		return false
+	}
+	journal.Log(watchdog.LevelInfo, "check.unhealthy_deferred_boot", map[string]any{
+		"elapsed_ms":        now.Sub(b.startedAt).Milliseconds(),
+		"deadline_ms":       b.deadline.Milliseconds(),
+		"not_found_pending": b.notFoundPending,
+	})
+	return true
+}
+
 // evaluate runs one check on evidence gathered now and acts on it. statePID is
 // the freshest PID read from agent.state. It returns true when the caller must
-// skip its own cached-PID process check this tick.
+// skip its own cached-PID process check this tick. The caller runs it at
+// startup and on every process tick, which is also what re-checks the
+// deadline.
 func (b *bootCheck) evaluate(now time.Time, statePID int, agentAlive bool, wd *watchdog.Watchdog, journal *watchdog.Journal) bool {
 	if !b.active(wd) {
 		return false
@@ -100,12 +119,14 @@ func (b *bootCheck) evaluate(now time.Time, statePID int, agentAlive bool, wd *w
 	case watchdog.BootNotFound:
 		// Act only on a second consecutive not-found, so the verdict and the
 		// recovery dispatch that follows it rest on evidence from the same
-		// tick. At watchdog start SCM may simply not have started the agent
+		// tick: at watchdog start SCM may simply not have started the agent
 		// yet. The first check runs at startup and the second on the first
-		// process tick, which is when the first recovery attempt ran before
-		// #12291 too, so a dead agent is recovered no later than before.
+		// process tick. At the default intervals that tick is also the first
+		// loop iteration, where the first recovery attempt was dispatched
+		// before #12291, so a dead agent is recovered no later than before.
 		if !b.notFoundPending {
 			b.notFoundPending = true
+			journal.Log(watchdog.LevelInfo, "agent.not_found_unconfirmed", fields)
 			return true
 		}
 		b.done = true
@@ -113,10 +134,15 @@ func (b *bootCheck) evaluate(now time.Time, statePID int, agentAlive bool, wd *w
 		journal.Log(watchdog.LevelWarn, "agent.not_found", fields)
 		return true
 	default:
+		// Journaled every time (at most once per check): a release on an
+		// unknown service means the service-manager query did not work on
+		// this host and the pre-#12291 state-file rule decided instead.
 		b.done = true
-		if b.holdJournaled || elapsed >= b.deadline {
-			journal.Log(watchdog.LevelInfo, "agent.boot_check_released", fields)
+		level := watchdog.LevelInfo
+		if svc.State == watchdog.AgentServiceUnknown {
+			level = watchdog.LevelWarn
 		}
+		journal.Log(level, "agent.boot_check_released", fields)
 		return false
 	}
 }

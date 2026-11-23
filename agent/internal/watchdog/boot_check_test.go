@@ -1,6 +1,9 @@
 package watchdog
 
 import (
+	"errors"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -131,6 +134,21 @@ func TestAgentServiceStatusFromSnapshot(t *testing.T) {
 		if got.State != tc.state || got.PID != tc.in.PID {
 			t.Errorf("%s: got %+v, want state=%s pid=%d", tc.in.State, got, tc.state, tc.in.PID)
 		}
+	}
+}
+
+func TestServiceQueryErrorDetailKeepsStderr(t *testing.T) {
+	err := &exec.ExitError{Stderr: []byte("Could not find service \"com.breeze.agent\" in domain for system\n")}
+	got := serviceQueryErrorDetail(err)
+	if !strings.Contains(got, "Could not find service") {
+		t.Fatalf("detail = %q, want the command's stderr", got)
+	}
+	if got := serviceQueryErrorDetail(errors.New("boom")); got != "boom" {
+		t.Fatalf("plain error detail = %q", got)
+	}
+	long := &exec.ExitError{Stderr: []byte(strings.Repeat("x", 1000))}
+	if got := serviceQueryErrorDetail(long); len(got) > 300 {
+		t.Fatalf("detail not truncated: %d bytes", len(got))
 	}
 }
 
