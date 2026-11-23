@@ -5,6 +5,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
 import { featureEditProps } from "./featureEditAction";
 import { useFeatureReadOnly } from "./featureEditing";
 import FeatureDirtyBridge from "./FeatureDirtyBridge";
@@ -247,6 +248,7 @@ export default function PatchTab({
   // The shell's markDirty, reached through a child bridge (see FeatureDirtyBridge).
   const markDirtyRef = useRef<() => void>(() => {});
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [selectedRingId, setSelectedRingId] = useState<string>(
     () => effectiveLink?.featurePolicyId ?? "",
@@ -392,26 +394,6 @@ export default function PatchTab({
       onLinkChanged(null, "patch");
     }
   };
-  const handleOverride = async () => {
-    clearError();
-    const validation = validateBeforeSave();
-    setValidationError(validation ?? undefined);
-    if (validation !== null) return;
-    const result = await save(null, {
-      featureType: "patch",
-      featurePolicyId: selectedRingId || null,
-      inlineSettings: settings,
-    }, { successMessage: null });
-    if (result) {
-      showToast({
-        message: i18n.t(
-          "policies:configurationPolicies.featureTabs.patchTab.patchSettingsOverridden",
-        ),
-        type: "success",
-      });
-      onLinkChanged(result, "patch");
-    }
-  };
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id, { successMessage: null });
@@ -511,7 +493,7 @@ export default function PatchTab({
       onSave={handleSave}
       {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
+      {...change.shellProps}
     >
       <FeatureDirtyBridge markDirtyRef={markDirtyRef} />
       {/* Approval Ring */}

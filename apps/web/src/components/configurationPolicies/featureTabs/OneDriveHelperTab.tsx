@@ -4,6 +4,7 @@ import type { FeatureTabProps } from './types';
 import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { useChangeForPolicy } from './useChangeForPolicy';
 import { featureEditProps } from './featureEditAction';
 import OneDriveLibraryPicker, { type PickedLibrary } from './OneDriveLibraryPicker';
 
@@ -119,6 +120,7 @@ function siteHint(siteUrl?: string | null): string | null {
 export default function OneDriveHelperTab({ policyId, existingLink, onLinkChanged, parentLink, orgId }: FeatureTabProps) {
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [settings, setSettings] = useState<OneDriveHelperSettings>(() =>
     mergeSettings(defaults, effectiveLink?.inlineSettings as Partial<OneDriveHelperSettings> | undefined),
@@ -220,7 +222,7 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
   };
 
   const handleSave = () => persist(existingLink?.id ?? null);
-  const handleOverride = () => persist(null);
+
 
   const handleRemove = async () => {
     if (!existingLink) return;
@@ -242,7 +244,7 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
       onSave={handleSave}
       {...featureEditProps(existingLink, parentLink, { remove: handleRemove })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
+      {...change.shellProps}
     >
       <div className="space-y-6">
         {/* Base toggles */}

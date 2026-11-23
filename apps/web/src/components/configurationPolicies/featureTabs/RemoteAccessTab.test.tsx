@@ -138,10 +138,12 @@ describe('RemoteAccessTab inheritance (#5080)', () => {
     expect((screen.getByDisplayValue('12') as HTMLInputElement).value).toBe('12');
   });
 
-  it("Override saves a copy of the inherited settings as the policy's own link", () => {
+  it("Change for this policy saves a copy of the inherited settings as the policy's own link", () => {
     render(<RemoteAccessTab {...inheritedProps} parentLink={parentLinkWith({ maxConcurrentTunnels: 12 })} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /override/i }));
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+    expect(saveMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
 
     expect(saveMock).toHaveBeenCalled();
     const [existingId, payload] = saveMock.mock.calls[0] as unknown as [

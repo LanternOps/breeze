@@ -357,7 +357,7 @@ describe('OneDriveHelperTab', () => {
     ).toBe('Second Group');
   });
 
-  it('inherited (parentLink only) shows Override and no direct Save', () => {
+  it('inherited (parentLink only) shows Change for this policy and no direct Save', () => {
     const parentLink: FeatureLink = {
       id: 'parent-link',
       featureType: 'onedrive_helper',
@@ -369,7 +369,7 @@ describe('OneDriveHelperTab', () => {
       <OneDriveHelperTab {...baseProps} existingLink={undefined} parentLink={parentLink} />,
     );
 
-    expect(screen.getByRole('button', { name: /Override/i })).toBeTruthy();
+    expect(screen.getByTestId('feature-tab-change-for-policy')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Save$/i })).toBeNull();
   });
 

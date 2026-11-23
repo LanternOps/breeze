@@ -64,3 +64,34 @@ describe('unsaved changes through real tabs (#12469)', () => {
     await waitFor(() => expect(report).toHaveBeenLastCalledWith(false));
   });
 });
+
+describe('Change for this policy through a real tab (#12470)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    await i18n.changeLanguage('en');
+  });
+
+  it('unlocking writes nothing; Save then creates this policy\'s own link once', async () => {
+    const onLinkChanged = vi.fn();
+    render(
+      <WarrantyTab
+        policyId="pol-1"
+        existingLink={undefined}
+        parentLink={{ id: 'l-parent', featureType: 'warranty', featurePolicyId: null, inlineSettings: {} }}
+        linkedPolicyId="pol-parent"
+        onLinkChanged={onLinkChanged}
+      />,
+    );
+    expect(saveButton()).toBeUndefined();
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockResolvedValueOnce(json({ data: { id: 'l-own', featureType: 'warranty', featurePolicyId: null, inlineSettings: {} } }));
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(onLinkChanged).toHaveBeenCalledWith(expect.objectContaining({ id: 'l-own' }), 'warranty'));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/configuration-policies/pol-1/features');
+    expect(init.method).toBe('POST');
+  });
+});

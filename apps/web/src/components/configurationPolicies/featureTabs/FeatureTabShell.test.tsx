@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import FeatureTabShell from './FeatureTabShell';
 import { FeatureDirtyReporterContext, FeatureReadOnlyContext, useFeatureDirty } from './featureEditing';
+import { useChangeForPolicy } from './useChangeForPolicy';
 import { i18n, loadLocale } from '../../../lib/i18n';
 
 // FeatureTabShell renders the footer controls for EVERY configuration-policy
@@ -22,58 +23,92 @@ describe('FeatureTabShell footer controls', () => {
     await i18n.changeLanguage('en');
   });
 
-  const overrideButton = () => screen.getByRole('button', { name: /Override/i });
+  const changeButton = () => screen.getByTestId('feature-tab-change-for-policy');
+  const saveButton = () => screen.queryByRole('button', { name: /^save$/i });
 
-  it('disables Override while a save is in flight (#2336)', () => {
-    // Override POSTs a brand-new link (persist(null)). Only Save was gated on
-    // `saving`, so a double-click during the round-trip fired the create twice
-    // — the second one landing on a policy that already had the link.
-    const onOverride = vi.fn();
-    render(
+  // A tab as the tabs wire it: the inherited state comes from the links, the
+  // unlock from useChangeForPolicy.
+  function InheritedTab({ inherited = true, onSave, onOverride, saveDisabled }: {
+    inherited?: boolean;
+    onSave: () => void;
+    onOverride?: () => void;
+    saveDisabled?: boolean;
+  }) {
+    const change = useChangeForPolicy(inherited);
+    return (
       <FeatureTabShell
         {...baseProps}
-        saving
-        isInherited
-        onOverride={onOverride}
-        onSave={vi.fn()}
-      />,
+        isConfigured={inherited}
+        saving={false}
+        saveDisabled={saveDisabled}
+        isInherited={inherited}
+        onSave={onSave}
+        {...change.shellProps}
+        {...({ onOverride } as object)}
+      >
+        <input data-testid="field" />
+      </FeatureTabShell>
     );
+  }
 
-    expect(overrideButton()).toBeDisabled();
-    fireEvent.click(overrideButton());
+  it('Change for this policy unlocks without writing', () => {
+    const onSave = vi.fn();
+    render(<InheritedTab onSave={onSave} />);
+    // Locked: the form is disabled and there is no Save.
+    expect(screen.getByTestId('field')).toBeDisabled();
+    expect(saveButton()).toBeNull();
+    fireEvent.click(changeButton());
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByTestId('field')).toBeEnabled();
+    expect(saveButton()).not.toBeNull();
+    // Nothing is saved yet: the feature still reads From parent.
+    expect(screen.getByText('From parent')).toBeInTheDocument();
+    expect(screen.queryByTestId('feature-tab-change-for-policy')).toBeNull();
+  });
+
+  it('Save after unlocking writes once', () => {
+    const onSave = vi.fn();
+    render(<InheritedTab onSave={onSave} />);
+    fireEvent.click(changeButton());
+    fireEvent.click(saveButton()!);
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it('onOverride is no longer called', () => {
+    const onOverride = vi.fn();
+    render(<InheritedTab onSave={vi.fn()} onOverride={onOverride} />);
+    expect(screen.queryByRole('button', { name: /override/i })).toBeNull();
+    fireEvent.click(changeButton());
     expect(onOverride).not.toHaveBeenCalled();
   });
 
-  it('still disables Override on client-side validation failure while idle', () => {
-    render(
-      <FeatureTabShell
-        {...baseProps}
-        saving={false}
-        saveDisabled
-        isInherited
-        onOverride={vi.fn()}
-        onSave={vi.fn()}
-      />,
-    );
-
-    expect(overrideButton()).toBeDisabled();
+  it('Change for this policy stays clickable when Save is disabled', () => {
+    // SecurityTab disables Save while unavailable rule sets block it; the
+    // unlock must still open the form so they can be removed.
+    render(<InheritedTab onSave={vi.fn()} saveDisabled />);
+    expect(changeButton()).toBeEnabled();
   });
 
-  it('enables Override when idle and valid', () => {
-    const onOverride = vi.fn();
+  it('unlocking does not mark the feature dirty', () => {
+    const report = vi.fn();
     render(
-      <FeatureTabShell
-        {...baseProps}
-        saving={false}
-        isInherited
-        onOverride={onOverride}
-        onSave={vi.fn()}
-      />,
+      <FeatureDirtyReporterContext.Provider value={report}>
+        <InheritedTab onSave={vi.fn()} />
+      </FeatureDirtyReporterContext.Provider>,
     );
+    fireEvent.click(changeButton());
+    expect(report).not.toHaveBeenCalledWith(true);
+  });
 
-    expect(overrideButton()).toBeEnabled();
-    fireEvent.click(overrideButton());
-    expect(onOverride).toHaveBeenCalledTimes(1);
+  it('a feature that is inherited again locks again', () => {
+    const view = render(<InheritedTab onSave={vi.fn()} />);
+    fireEvent.click(changeButton());
+    // Saved: the policy has its own link now.
+    view.rerender(<InheritedTab inherited={false} onSave={vi.fn()} />);
+    // Reset to parent: inherited again, so the form is the parent's, locked.
+    view.rerender(<InheritedTab onSave={vi.fn()} />);
+    expect(screen.getByTestId('field')).toBeDisabled();
+    expect(changeButton()).toBeInTheDocument();
   });
 
   describe('blocked save feedback (#11554)', () => {
@@ -230,10 +265,10 @@ describe('FeatureTabShell for a read-only viewer (#12469)', () => {
     expect(screen.getByText('Set here')).toBeInTheDocument();
   });
 
-  it('offers no Override on an inherited feature', () => {
+  it('offers no Change for this policy on an inherited feature', () => {
     render(
       <FeatureReadOnlyContext.Provider value>
-        <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured={false} isInherited onOverride={vi.fn()} saving={false} onSave={vi.fn()}>
+        <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured={false} isInherited unlocked={false} onUnlock={vi.fn()} saving={false} onSave={vi.fn()}>
           <div />
         </FeatureTabShell>
       </FeatureReadOnlyContext.Provider>,

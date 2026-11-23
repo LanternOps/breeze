@@ -4,6 +4,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
 import { featureEditProps } from "./featureEditAction";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -129,6 +130,7 @@ export default function RemoteAccessTab({
   // own; FeatureTabShell renders the form read-only (opacity + pointer-events)
   // whenever isInherited is true.
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [settings, setSettings] = useState<RemoteAccessSettings>(() => {
     const stored = effectiveLink?.inlineSettings as
@@ -215,7 +217,7 @@ export default function RemoteAccessTab({
       onSave={handleSave}
       {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleSave : undefined}
+      {...change.shellProps}
     >
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Desktop Access */}

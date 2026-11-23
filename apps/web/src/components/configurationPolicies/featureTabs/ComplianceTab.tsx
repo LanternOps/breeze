@@ -13,6 +13,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
 import { featureEditProps } from "./featureEditAction";
 import { useFeatureReadOnly } from "./featureEditing";
 import FeatureDirtyBridge from "./FeatureDirtyBridge";
@@ -274,6 +275,7 @@ export default function ComplianceTab({
   const versionOperators = createVersionOperators();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [items, setItems] = useState<ComplianceItem[]>(() =>
     loadItems(effectiveLink),
@@ -495,19 +497,6 @@ export default function ComplianceTab({
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, "compliance");
   };
-  const handleOverride = async () => {
-    clearError();
-    if (duplicateNames.length > 0) {
-      setShowNameError(true);
-      return;
-    }
-    const result = await save(null, {
-      featureType: "compliance",
-      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
-      inlineSettings: { items },
-    });
-    if (result) onLinkChanged(result, "compliance");
-  };
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
@@ -525,7 +514,7 @@ export default function ComplianceTab({
       onSave={handleSave}
       {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
+      {...change.shellProps}
     >
       <FeatureDirtyBridge markDirtyRef={markDirtyRef} />
       {/* Header with count + Add button */}

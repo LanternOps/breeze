@@ -8,6 +8,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
 import { featureEditProps } from "./featureEditAction";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -64,6 +65,7 @@ export default function SystemProtectionTab({
   useTranslation("policies");
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [settings, setSettings] = useState<Settings>(() => settingsFrom(effectiveLink?.inlineSettings));
 
@@ -94,11 +96,6 @@ export default function SystemProtectionTab({
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, "system_protection");
   };
-  const handleOverride = async () => {
-    clearError();
-    const result = await save(null, payload());
-    if (result) onLinkChanged(result, "system_protection");
-  };
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
@@ -119,7 +116,7 @@ export default function SystemProtectionTab({
       onSave={handleSave}
       {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
+      {...change.shellProps}
     >
       <div className="space-y-6">
         {isPlatformDefault && (

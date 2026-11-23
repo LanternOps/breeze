@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { FeatureTabProps } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { useChangeForPolicy } from './useChangeForPolicy';
 import { featureEditProps } from './featureEditAction';
 import '@/lib/i18n';
 
@@ -117,6 +118,7 @@ export default function SecurityAgentsTab({
   }, [existingLink, parentLink]);
 
   const inherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(inherited);
   const partnerWide = orgId === null;
 
   const buildAgents = (): AgentEntry[] => {
@@ -164,7 +166,7 @@ export default function SecurityAgentsTab({
       onSave={() => void persist(existingLink?.id ?? null)}
       {...featureEditProps(existingLink, parentLink, { remove: discard })}
       isInherited={inherited}
-      onOverride={inherited ? () => void persist(null) : undefined}
+      {...change.shellProps}
     >
       {partnerWide && (
         <span
@@ -230,7 +232,7 @@ export default function SecurityAgentsTab({
         </div>
       )}
 
-      <fieldset disabled={inherited || saving} className="space-y-3">
+      <fieldset disabled={change.locked || saving} className="space-y-3">
         {VENDORS.map(({ vendor, name, enableable }) => (
           <div key={vendor} data-testid={`security-agent-vendor-${vendor}`} className="rounded-md border p-3">
             <label className="flex items-center gap-2 text-sm font-medium">

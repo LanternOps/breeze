@@ -12,6 +12,7 @@ import {
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
 import { featureEditProps } from "./featureEditAction";
 import TimezoneSelect from "@/components/shared/TimezoneSelect";
 import { useTranslation } from "react-i18next";
@@ -223,6 +224,7 @@ export default function MaintenanceTab({
   const dayOfWeekOptions = createDayOfWeekOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [settings, setSettings] = useState<MaintenanceSettings>(() =>
     hydrate({
@@ -267,15 +269,6 @@ export default function MaintenanceTab({
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, "maintenance");
   };
-  const handleOverride = async () => {
-    clearError();
-    const result = await save(null, {
-      featureType: "maintenance",
-      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
-      inlineSettings: toPayload(settings),
-    });
-    if (result) onLinkChanged(result, "maintenance");
-  };
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
@@ -293,7 +286,7 @@ export default function MaintenanceTab({
       onSave={handleSave}
       {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
+      {...change.shellProps}
     >
       <div className="grid gap-6 sm:grid-cols-2">
         {/* Recurrence */}

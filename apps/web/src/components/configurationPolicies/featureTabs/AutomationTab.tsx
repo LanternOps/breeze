@@ -14,6 +14,7 @@ import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import { useFeatureReadOnly } from "./featureEditing";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
 import { featureEditProps } from "./featureEditAction";
 import InlineEntityPicker from "./InlineEntityPicker";
 import TimezoneSelect from "@/components/shared/TimezoneSelect";
@@ -216,6 +217,7 @@ export default function AutomationTab({
   const { t } = useTranslation("policies");
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [items, setItems] = useState<AutomationItem[]>(() =>
     loadItems(effectiveLink),
@@ -322,15 +324,6 @@ export default function AutomationTab({
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, "automation");
   };
-  const handleOverride = async () => {
-    clearError();
-    const result = await save(null, {
-      featureType: "automation",
-      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
-      inlineSettings: { items },
-    });
-    if (result) onLinkChanged(result, "automation");
-  };
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
@@ -348,7 +341,7 @@ export default function AutomationTab({
       onSave={handleSave}
       {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
+      {...change.shellProps}
     >
       {/* Header */}
       <div className="flex items-center justify-between">

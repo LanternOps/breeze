@@ -19,7 +19,7 @@ type FeatureTabShellProps = {
   configuredButInactive?: boolean;
   saving: boolean;
   /**
-   * When true, the Save (and Override) button is disabled independent of the
+   * When true, the Save button is disabled independent of the
    * saving state — used by tabs with client-side validation (e.g. an invalid
    * library targeting row) to block a save the server would 400 on anyway.
    */
@@ -32,9 +32,15 @@ type FeatureTabShellProps = {
   onRemove?: () => void;
   /** True when this tab is showing inherited settings from a parent policy */
   isInherited?: boolean;
-  /** Called when user clicks "Override" on an inherited tab */
-  onOverride?: () => void;
-  /** Called when user clicks "Revert to Parent" on an overridden tab */
+  /**
+   * An inherited tab the user unlocked with Change for this policy
+   * (useChangeForPolicy): the form is live and Save creates this policy's own
+   * link. Nothing is written until Save.
+   */
+  unlocked?: boolean;
+  /** Change for this policy. Writes nothing; offered only with this. */
+  onUnlock?: () => void;
+  /** Called when user clicks "Reset to parent" on an overridden tab */
   onRevert?: () => void;
   children: ReactNode;
 };
@@ -51,14 +57,18 @@ export default function FeatureTabShell({
   onSave,
   onRemove,
   isInherited,
-  onOverride,
+  unlocked,
+  onUnlock,
   onRevert,
   children,
 }: FeatureTabShellProps) {
   useTranslation("policies");
   // A read-only viewer (#12469) gets the form disabled and no footer action:
-  // Save, Remove, Revert and Override are not rendered at all.
+  // Save, Remove, Reset and Change for this policy are not rendered at all.
   const readOnly = useFeatureReadOnly();
+  // An inherited feature shows the parent's values, locked, until Change for
+  // this policy unlocks it (#12470).
+  const locked = !!isInherited && !unlocked;
   // #5314: Reset to parent and Remove both fire an irreversible
   // DELETE .../features/:id that destroys this policy's override. The shell
   // renders the footer for every feature tab, so guarding here covers all of
@@ -272,9 +282,9 @@ export default function FeatureTabShell({
         {/* Inline settings form */}
         <div
           ref={bodyRef}
-          className={`mt-6 ${isInherited ? "opacity-60 pointer-events-none" : ""}`}
+          className={`mt-6 ${locked ? "opacity-60 pointer-events-none" : ""}`}
         >
-          <fieldset disabled={readOnly} className="min-w-0">
+          <fieldset disabled={readOnly || locked} className="min-w-0">
             <FeatureDirtyContext.Provider value={dirtyApi}>{children}</FeatureDirtyContext.Provider>
           </fieldset>
         </div>
@@ -283,18 +293,28 @@ export default function FeatureTabShell({
         {!readOnly && (
         <div data-testid="feature-tab-footer" className="mt-6 flex items-center justify-between border-t pt-4">
           <div>
-            {isInherited && onOverride && (
+            {locked && onUnlock && (
               <button
                 type="button"
-                onClick={onOverride}
-                disabled={saving || saveDisabled}
+                data-testid="feature-tab-change-for-policy"
+                onClick={onUnlock}
                 className="inline-flex items-center gap-2 rounded-md border border-primary/40 px-3 py-2 text-sm font-medium text-primary transition hover:bg-primary/10 disabled:opacity-50"
               >
                 <PenLine className="h-4 w-4" />
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.featureTabShell.override",
+                  "policies:configurationPolicies.featureTabs.featureTabShell.unlockAction",
                 )}
               </button>
+            )}
+            {isInherited && !locked && (
+              <p
+                data-testid="feature-tab-changing-hint"
+                className="max-w-xs text-sm text-muted-foreground"
+              >
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.featureTabShell.unlockedHint",
+                )}
+              </p>
             )}
             {!isInherited && onRevert && (
               <button
@@ -321,7 +341,7 @@ export default function FeatureTabShell({
               </button>
             )}
           </div>
-          {!isInherited && (
+          {!locked && (
             <div className="flex items-center gap-3">
             {(blockedHint ?? thrownMessage) !== null && !saving && (
               <p

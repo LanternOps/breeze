@@ -14,6 +14,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
 import { featureEditProps } from "./featureEditAction";
 import StorageKeyRevocationCard from "./StorageKeyRevocationCard";
 import { useFeatureReadOnly } from "./featureEditing";
@@ -594,6 +595,7 @@ export default function BackupTab({
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const readOnly = useFeatureReadOnly();
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const meta = FEATURE_META.backup;
   // Partner-wide ("all organizations") policy: destinations are per-org, so
@@ -1315,30 +1317,6 @@ export default function BackupTab({
     if (ok) onLinkChanged(null, "backup");
   };
 
-  const handleOverride = async () => {
-    clearError();
-    const full = buildInlineSettings(settings, backupMode, targets);
-    const explicitDestination =
-      selectedConfigId && selectedConfigId !== ORG_DEFAULT_DESTINATION
-        ? selectedConfigId
-        : null;
-    const result = await save(null, {
-      featureType: "backup",
-      featurePolicyId: sourceMode === "profile" ? selectedProfileId : null,
-      inlineSettings:
-        sourceMode === "profile"
-          ? {
-              schedule: full.schedule,
-              retention: full.retention,
-              ...(explicitDestination ? { destinationConfigId: explicitDestination } : {}),
-            }
-          : {
-              ...full,
-              ...(explicitDestination ? { destinationConfigId: explicitDestination } : {}),
-            },
-    });
-    if (result) onLinkChanged(result, "backup");
-  };
 
   const handleRevert = async () => {
     if (!existingLink) return;
@@ -1435,7 +1413,7 @@ export default function BackupTab({
       onSave={handleSave}
       {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
+      {...change.shellProps}
     >
       <div className="space-y-6">
         {/* ════════════════════════════════════════════════════════════════════

@@ -7,6 +7,7 @@ import { containmentIssueKey, type ContainmentField } from './containmentIssueKe
 import type { FeatureTabProps } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { useChangeForPolicy } from './useChangeForPolicy';
 import { featureEditProps } from './featureEditAction';
 import '@/lib/i18n';
 
@@ -141,15 +142,16 @@ export default function ContainmentTab({
   }, [existingLink, parentLink]);
 
   const inherited = !!parentLink && !existingLink;
-  const locked = inherited || saving;
+  const change = useChangeForPolicy(inherited);
+  const locked = change.locked || saving;
   const atLimit = rows.length >= MAX_ROWS;
   // Rows are checked one at a time for their messages; the whole list decides what may be saved.
   const list = EXTRA_ALLOW.safeParse(rows.map(toEntry));
   const deadManValid = DEAD_MAN.safeParse(deadMan).success;
   const invalid = !list.success || !deadManValid;
   const listIssue = list.success ? undefined : list.error.issues.find((issue) => issue.path.length === 0);
-  // A parent's rows cannot be edited from here, so Override cannot produce a valid link.
-  const parentInvalid = inherited && invalid;
+  // Locked on the parent's invalid rows: say so before Change for this policy.
+  const parentInvalid = change.locked && invalid;
 
   const update = (key: number, patch: Partial<Row>) =>
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)));
@@ -193,7 +195,7 @@ export default function ContainmentTab({
       onSave={() => void persist(existingLink?.id ?? null)}
       {...featureEditProps(existingLink, parentLink, { remove: discard })}
       isInherited={inherited}
-      onOverride={inherited ? () => void persist(null) : undefined}
+      {...change.shellProps}
     >
       {parentInvalid && (
         <div
@@ -205,7 +207,7 @@ export default function ContainmentTab({
           <p>{k('parentInvalid')}</p>
         </div>
       )}
-      {attempted && invalid && !inherited && (
+      {attempted && invalid && !change.locked && (
         <div
           role="alert"
           data-testid="containment-invalid"

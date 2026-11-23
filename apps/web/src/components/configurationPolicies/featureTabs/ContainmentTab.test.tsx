@@ -311,9 +311,11 @@ describe('ContainmentTab', () => {
     expect(screen.queryByTestId('containment-save')).toBeNull();
   });
 
-  it('overriding a parent creates the org link from the parent settings, untouched keys included', async () => {
+  it('changing a parent for this policy creates the org link from the parent settings, untouched keys included', async () => {
     render(<ContainmentTab {...props} parentLink={link(STORED, 'parent-link')} />);
-    fireEvent.click(screen.getByRole('button', { name: /override/i }));
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+    expect(m.save).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('containment-save'));
     await waitFor(() => expect(m.save).toHaveBeenCalledTimes(1));
     expect(m.save).toHaveBeenCalledWith(null, {
       featureType: 'containment',
@@ -349,11 +351,26 @@ describe('ContainmentTab', () => {
     expect(screen.getByTestId('containment-invalid')).toHaveTextContent('32');
   });
 
-  it('explains an invalid parent instead of leaving Override dead', () => {
+  it('explains an invalid parent while the inherited form stays locked', () => {
     const bad = { version: 1, extraAllow: [{ host: '*.example.com', proto: 'tcp', ports: [443], label: 'Bad' }] };
     render(<ContainmentTab {...props} parentLink={link(bad, 'parent-link')} />);
     expect(screen.getByTestId('containment-parent-invalid')).toBeInTheDocument();
-    expect((screen.getByRole('button', { name: /override/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect(input('containment-row-0-target').disabled).toBe(true);
+    expect(screen.queryByTestId('containment-save')).toBeNull();
+  });
+
+  it('ContainmentTab creates its own link from inherited values on Save, after fixing an invalid parent row', async () => {
+    // Before #12470 the invalid parent left Override disabled: the rows could
+    // not be edited, so no valid link could ever be made from them.
+    const bad = { version: 1, extraAllow: [{ host: '*.example.com', proto: 'tcp', ports: [443], label: 'Bad' }] };
+    render(<ContainmentTab {...props} parentLink={link(bad, 'parent-link')} />);
+    fireEvent.click(screen.getByTestId('feature-tab-change-for-policy'));
+    expect(m.save).not.toHaveBeenCalled();
+    expect(input('containment-row-0-target').disabled).toBe(false);
+    setValue('containment-row-0-target', 'updates.example.com');
+    fireEvent.click(screen.getByTestId('containment-save'));
+    await waitFor(() => expect(m.save).toHaveBeenCalledTimes(1));
+    expect(m.save.mock.calls[0][0]).toBeNull();
   });
 
   it('shows the server refusal from the hook', () => {

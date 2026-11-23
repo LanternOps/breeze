@@ -636,7 +636,8 @@
         "providerLimit": "{{total}} of {{max}} additional providers"
       },
       "featureTabShell": {
-        "override": "Override",
+        "unlockAction": "Change for this policy",
+        "unlockedHint": "Changing for this policy. Nothing is saved until you Save.",
         "revertToParent": "Reset to parent",
         "saving": "Saving...",
         "notSaved": "Not saved: {{reason}}",
@@ -810,7 +811,6 @@
         "failedToLoadUpdateRings": "Failed to load update rings",
         "patchSettingsSaved": "Patch settings saved",
         "patchSettingsRemoved": "Patch settings removed",
-        "patchSettingsOverridden": "Patch settings overridden",
         "revertedToInheritedPatchSettings": "Reverted to inherited patch settings",
         "approvalRing": "Approval Ring",
         "selectWhichUpdateRingGovernsPatchApprovals": "Select which update ring governs patch approvals for this policy. Leave empty for manual-only approvals.",
