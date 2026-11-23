@@ -166,3 +166,28 @@ describe('PolicyStateActions (plan W03c F3)', () => {
     expect(container.querySelector('button')).toBeNull();
   });
 });
+
+describe('Activate on a policy that applies nowhere (W03d C3)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    await i18n.changeLanguage('en');
+  });
+
+  it('asks for the applies-to decision instead of activating, and claims no reach', () => {
+    const onActivateRequest = vi.fn();
+    renderActions({ reach: reach(0), onActivateRequest });
+    const activate = screen.getByTestId('config-policy-activate');
+    expect(activate).toHaveTextContent(/^Activate$/);
+    fireEvent.click(activate);
+    expect(onActivateRequest).toHaveBeenCalledTimes(1);
+    expect(patchBodies()).toEqual([]);
+  });
+
+  it('without the request, Activate still PATCHes directly (a policy that applies somewhere)', async () => {
+    fetchMock.mockResolvedValue(res(200, { id: 'pol-1', status: 'active' }));
+    const { onChanged } = renderActions();
+    fireEvent.click(screen.getByTestId('config-policy-activate'));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledWith('active'));
+    expect(patchBodies()).toEqual([{ url: '/configuration-policies/pol-1', body: { status: 'active' } }]);
+  });
+});

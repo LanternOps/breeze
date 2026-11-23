@@ -4,6 +4,7 @@ import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { useFeatureDirty } from "./featureEditing";
+import MspTradeNote from "./MspTradeNote";
 type PolicyOption = {
   id: string;
   name: string;
@@ -93,6 +94,7 @@ export default function PolicyLinkSelector({
     );
   }
   return (
+    <>
     <div className="flex items-center gap-2">
       <select
         data-testid="policy-link-selector"
@@ -134,5 +136,7 @@ export default function PolicyLinkSelector({
         </button>
       )}
     </div>
+    <MspTradeNote />
+    </>
   );
 }

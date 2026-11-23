@@ -25,6 +25,11 @@ type PolicyHeaderProps = {
   onEditDetails?: () => void;
   /** State actions (Activate, Deactivate) beside the state pill. */
   actions?: ReactNode;
+  /**
+   * Say that Managed by and Based on were fixed at the first save (W03d C1).
+   * The reason only: Copy, the way to change them, comes later (plan D17).
+   */
+  showFixedNote?: boolean;
 };
 
 const STATUS_CLASS: Record<PolicyStatus, string> = {
@@ -57,6 +62,7 @@ export default function PolicyHeader({
   readOnlyReason,
   onEditDetails,
   actions,
+  showFixedNote = false,
 }: PolicyHeaderProps) {
   useTranslation(['policies', 'common']);
   const p = 'policies:configurationPolicies.policyHeader';
@@ -132,6 +138,11 @@ export default function PolicyHeader({
             <p data-testid="config-policy-managed-by">{i18n.t("policies:configurationPolicies.policyHeader.managedByOrganization", { organization: orgName })}</p>
           )}
         </div>
+      )}
+      {showFixedNote && !readOnly && (
+        <p data-testid="config-policy-owner-fixed" className="mt-1 text-xs text-muted-foreground">
+          {i18n.t('policies:configurationPolicies.policyCreate.fixedNote')}
+        </p>
       )}
 
       {readOnly && (

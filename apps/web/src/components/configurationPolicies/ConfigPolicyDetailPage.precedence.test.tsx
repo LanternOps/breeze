@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // status, and re-reads after a feature link changes.
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // The page reads the org store, which registers with auth on import.
+  registerOrgIdProvider: vi.fn(),
   useAuthStore: (selector: (s: unknown) => unknown) =>
     selector({ user: { permissions: [{ resource: 'devices', action: 'write' }] } }),
 }));

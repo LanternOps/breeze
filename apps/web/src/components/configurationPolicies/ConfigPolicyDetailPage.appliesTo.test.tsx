@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // ConfigPolicyDetailPage.test.tsx, which is already long; same mock setup.
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // The page reads the org store, which registers with auth on import.
+  registerOrgIdProvider: vi.fn(),
   useAuthStore: (selector: (s: unknown) => unknown) =>
     selector({ user: { permissions: [{ resource: 'devices', action: 'write' }] } }),
 }));

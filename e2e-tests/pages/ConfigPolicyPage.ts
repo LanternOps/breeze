@@ -9,11 +9,26 @@ export class ConfigPolicyPage {
 
   detailUrl = (id: string) => `/configuration-policies/${id}`;
 
-  // Create page
-  createModeNew = () => this.page.getByTestId('config-policy-create-mode-new');
+  // Create mode on the policy page (#12471)
+  createHeader = () => this.page.getByTestId('config-policy-create-header');
   createName = () => this.page.getByTestId('config-policy-create-name');
-  ownerPartner = () => this.page.getByTestId('policy-owner-partner');
-  createSubmit = () => this.page.getByTestId('config-policy-create-submit');
+  managedBySelect = () => this.page.getByTestId('config-policy-managed-by-select');
+  managedByMspOption = () => this.page.getByTestId('config-policy-managed-by-msp');
+  managedByFixed = () => this.page.getByTestId('config-policy-managed-by-fixed');
+  ownerTrade = () => this.page.getByTestId('config-policy-owner-trade');
+  fixedAtFirstSave = () => this.page.getByTestId('config-policy-fixed-at-first-save');
+  ownerFixed = () => this.page.getByTestId('config-policy-owner-fixed');
+
+  // Feature rail and the open feature
+  railItem = (featureType: string) => this.page.getByTestId(`config-policy-rail-tab-${featureType}`);
+  featurePanel = () => this.page.getByTestId('config-policy-feature-panel');
+  featureSave = () => this.page.getByTestId('feature-tab-footer').getByRole('button', { name: /^Save/ });
+
+  // Header state and actions
+  statusPill = () => this.page.getByTestId('config-policy-status-pill');
+  activate = () => this.page.getByTestId('config-policy-activate');
+  activationActivate = () => this.page.getByTestId('config-policy-activation-activate');
+  activationDontApply = () => this.page.getByTestId('config-policy-activation-dont-apply');
 
   // Applies-to strip on the policy page
   strip = () => this.page.getByTestId('config-policy-applies-to-strip');
@@ -42,6 +57,9 @@ export class ConfigPolicyPage {
   pickerChangeOrg = () => this.page.getByTestId('target-picker-change-org');
 
   // List page
+  rows = () => this.page.getByTestId('config-policy-row');
+  orgFilter = () => this.page.getByTestId('config-policy-org-filter');
+  notAppliedFilter = () => this.page.getByTestId('config-policy-not-applied-filter');
   row = (id: string) => this.page.locator(`[data-testid="config-policy-row"][data-policy-id="${id}"]`);
   appliesToCell = (id: string) => this.row(id).getByTestId('config-policy-applies-to-cell');
   notAppliedBadge = (id: string) => this.row(id).getByTestId('config-policy-not-applied-badge');

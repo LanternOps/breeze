@@ -95,6 +95,8 @@ export default function MonitorsTab({
   // converted monitor renders as "Monitor deleted" until reload (#6888).
   const [catalogRevision, setCatalogRevision] = useState(0);
   const refreshLinks = async () => {
+    // A policy that does not exist yet (the create page) has nothing to re-read.
+    if (!policyId) return;
     setLedgerRevision((n) => n + 1);
     setCatalogRevision((n) => n + 1);
     const res = await fetchWithAuth(`/configuration-policies/${policyId}/features`);
@@ -340,11 +342,14 @@ export default function MonitorsTab({
               "policies:configurationPolicies.featureTabs.monitorsTab.attachMonitor",
             )}
           </label>
-          <a data-testid="monitors-tab-create"
-            href={`/alerts/monitors/new#policy=${encodeURIComponent(policyId)}`}
-            className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted">
-            {t('configurationPolicies.featureTabs.monitorsTab.createMonitor')}
-          </a>
+          {/* Attaching a new monitor needs the policy's id: not offered on the create page. */}
+          {policyId && (
+            <a data-testid="monitors-tab-create"
+              href={`/alerts/monitors/new#policy=${encodeURIComponent(policyId)}`}
+              className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted">
+              {t('configurationPolicies.featureTabs.monitorsTab.createMonitor')}
+            </a>
+          )}
           <select
             id="monitors-tab-attach-select"
             data-testid="monitors-tab-attach-select"
@@ -583,7 +588,7 @@ export default function MonitorsTab({
         {/* Retired links are hidden by the policy API; conversion checks its own sources and hides empty previews. */}
         {/* Conversion writes its own records and is not part of this form's
             Save (#12469); a read-only viewer gets none of its controls. */}
-        {!readOnly && (
+        {!readOnly && policyId && (
           <div data-feature-dirty-ignore>
             <NeedsConversionPanel key={policyId} policyId={policyId} hasLegacyRows onChanged={() => void refreshLinks()} />
             <ConversionLedger policyId={policyId} revision={ledgerRevision} onChanged={() => void refreshLinks()} />

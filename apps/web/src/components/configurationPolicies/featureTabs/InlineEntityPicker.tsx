@@ -5,6 +5,7 @@ import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { useFeatureDirty } from "./featureEditing";
+import MspTradeNote from "./MspTradeNote";
 type EntityOption = {
   id: string;
   name: string;
@@ -136,6 +137,7 @@ export default function InlineEntityPicker({
           </button>
         )}
       </div>
+      <MspTradeNote />
       {open && (
         <div
           data-feature-dirty-ignore
