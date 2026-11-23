@@ -1,4 +1,3 @@
-import { assignmentWriteAllowed, hasHelperBranding } from '../../services/helperBranding';
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import type { AuthContext } from '../../middleware/auth';
@@ -14,8 +13,6 @@ import {
   validateAssignmentTarget,
   authorizeAssignmentTarget,
   getAssignment,
-  canManagePartnerWidePolicies,
-  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../../services/configurationPolicy';
 import type { ConfigAssignmentLevel } from '../../services/configurationPolicy';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
@@ -27,8 +24,7 @@ import {
 } from './schemas';
 
 import type { UserPermissions } from '../../services/permissions';
-import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
-import { checkOemUpdatesArmAllowed, policyArmsOemUpdates } from './oemUpdatesGate';
+import { checkAddArming, checkAddLevel, checkPolicyAssignableBy } from './assignmentGates';
 
 export const assignmentRoutes = new Hono();
 const requireConfigPolicyRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -82,14 +78,10 @@ assignmentRoutes.post(
     const policy = await getConfigPolicy(id, auth);
     if (!policy) return c.json({ error: 'Configuration policy not found' }, 404);
 
-    // Partner-owned policies (org_id NULL) are the partner library (#2280).
-    // ANY assignment on one — at any level — pushes config into orgs the caller
-    // may not fully control, so all writes require full partner org access, the
-    // same capability that gates partner-wide create/update/delete. This
-    // supersedes the per-level check that used to live only in the partner block.
-    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
-    }
+    // Partner-owned policies need full partner org access for ANY assignment
+    // write (#2280); see checkPolicyAssignableBy.
+    const assignable = checkPolicyAssignableBy(auth, policy);
+    if (!assignable.ok) return c.json(assignable.body, assignable.status);
 
     // Partner-level assignments are only valid for partner-OWNED policies, and
     // the target is the partner itself, derived server-side (#1724) — never
@@ -130,40 +122,12 @@ assignmentRoutes.post(
       return c.json({ error: siteAuth.error }, 403);
     }
 
-    // Helper branding is partner/organization-only: a site, device-group or device
-    // assignment cannot be added to a policy that already carries branding.
-    const policyHasBranding = !!policy.featureLinks?.some(
-      (l: { featureType: string; inlineSettings?: unknown }) => l.featureType === 'helper' && hasHelperBranding(l.inlineSettings),
-    );
-    if (!assignmentWriteAllowed(data.level, policyHasBranding)) {
-      return c.json({ error: 'Helper branding is partner- and organization-scoped; this policy cannot take a site, device group or device assignment' }, 409);
-    }
-
-    // #5511 W02 (contract D4): an assignment is how a policy that already
-    // enables HP CMSL collection REACHES devices, so assigning one is the same
-    // capability as authoring it, reached through a second door. The effective
-    // warranty link is the policy's own, else the one it inherits (whole link,
-    // no merge — D5). An unresolvable parent fails CLOSED, as on the
-    // feature-link delete route: "can't tell" must not read as "no parent".
-    const ownsWarrantyLink = !!policy.featureLinks?.some(
-      (l: { featureType: string }) => l.featureType === 'warranty',
-    );
-    const parentUnresolved = !!policy.parentPolicyId && !policy.parentPolicy;
-    const assignmentStartsHpCmslCollection = ownsWarrantyLink
-      ? warrantyLinkEnablesCollection(policy.featureLinks)
-      : parentUnresolved || warrantyLinkEnablesCollection(policy.parentPolicy?.featureLinks);
-    if (assignmentStartsHpCmslCollection) {
-      const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
-      if (!gate.allowed) return c.json(gate.body, 403);
-    }
-
-    // #11070: same door for vendor updates. An assignment is how an armed
-    // oem_updates link (own, else inherited whole) reaches devices, so assigning
-    // one needs devices.execute + MFA. Unresolvable parent fails closed.
-    if (policyArmsOemUpdates(policy)) {
-      const gate = checkOemUpdatesArmAllowed(auth, c.get('permissions') as UserPermissions | undefined);
-      if (!gate.allowed) return c.json(gate.body, 403);
-    }
+    // Helper branding (409), then the arming gates (HP CMSL #5511, vendor
+    // updates #11070), in that order; see assignmentGates.ts.
+    const levelGate = checkAddLevel(policy, data.level);
+    if (!levelGate.ok) return c.json(levelGate.body, levelGate.status);
+    const armingGate = checkAddArming(auth, c.get('permissions') as UserPermissions | undefined, policy);
+    if (!armingGate.ok) return c.json(armingGate.body, armingGate.status);
 
     // assignPolicy returns null (instead of throwing) on a duplicate — see the
     // comment on its onConflictDoNothing insert in configurationPolicy.ts for
@@ -217,9 +181,8 @@ assignmentRoutes.delete(
     // (all orgs) or a narrower org/site/group/device row — is a partner-wide-
     // access capability: the delete may strip config from one org or every org
     // under the partner. Same blast radius as assigning, so the same gate applies.
-    if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
-    }
+    const assignable = checkPolicyAssignableBy(auth, policy);
+    if (!assignable.ok) return c.json(assignable.body, assignable.status);
 
     // Site sub-axis (SR5-07): re-check against the stored target so a
     // site-restricted caller can't remove an assignment that reaches a site,
