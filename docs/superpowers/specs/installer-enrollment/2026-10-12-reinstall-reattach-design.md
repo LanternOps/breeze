@@ -1304,7 +1304,7 @@ Go-generated test vectors and an **independent review before merge** (#8318).
 - **When an install started.** `enrolled_at` is a row's first enrollment and never moves, but an
   in-place re-enroll (the agent presented the row's own token) puts a new install on the row and
   keeps its hardware row, baseline included. A new column `devices.install_enrolled_at`
-  (2027-01-29-160100: nullable, default `now()` for new rows, set by the re-enroll UPDATE; NULL on
+  (2027-01-29-170100: nullable, default `now()` for new rows, set by the re-enroll UPDATE; NULL on
   older rows, read as `enrolled_at`) records it. The install's start is the latest of
   `enrolled_at`, `install_enrolled_at` and `incarnation_started_at` (a reattach confirm), and only
   a key proof made after it counts (found in the independent review of T2: without it, a stolen
@@ -1321,7 +1321,7 @@ Go-generated test vectors and an **independent review before merge** (#8318).
   then judged by the §7.3 target rules like any match. A first baseline (`recorded`) runs the
   search (trigger `tpm_baseline`) only when another device of the partner already carries the key,
   so turning `TPM_ATTESTATION_ENABLED` on does not run a fleet-wide search; an accepted key change
-  runs it too. Index `device_hardware_tpm_ek_pub_sha256_idx` (2027-01-29-160000, CONCURRENTLY).
+  runs it too. Index `device_hardware_tpm_ek_pub_sha256_idx` (2027-01-29-170000, CONCURRENTLY).
 - **The request** carries `expectedEvidenceLevel` (default `hint`, so older clients keep
   working), the level the candidates read showed and the step-up is bound to. The server computes
   the level under both row locks and records the weaker: shown `hint`, now `tpm_continuity` →
