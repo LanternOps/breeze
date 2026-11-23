@@ -36,7 +36,8 @@ test.describe('config policy applies-to', () => {
     await expect(policies.managedBySelect()).toHaveValue('__msp__');
     await policies.activate().click();
     await policies.activationDontApply().click();
-    await cleanPage.waitForURL(/\/configuration-policies\/[0-9a-f-]{36}/);
+    // The page becomes the policy's own page in place (replaceState, no load).
+    await expect(cleanPage).toHaveURL(/\/configuration-policies\/[0-9a-f-]{36}/, { timeout: 30_000 });
     const policyId = /\/configuration-policies\/([0-9a-f-]{36})/.exec(cleanPage.url())![1];
     await expect(policies.drawer()).toBeHidden();
 

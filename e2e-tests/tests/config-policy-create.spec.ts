@@ -81,7 +81,8 @@ test.describe('config policy one-page create (#12471)', () => {
     await policies.createName().fill(policyName);
     await policies.railItem('warranty').click();
     await policies.featureSave().click();
-    await page.waitForURL(/\/configuration-policies\/[0-9a-f-]{36}#warranty/, { timeout: 30_000 });
+    // The page becomes the policy's own page in place (replaceState, no load).
+    await expect(page).toHaveURL(/\/configuration-policies\/[0-9a-f-]{36}#warranty/, { timeout: 30_000 });
     policyId = /\/configuration-policies\/([0-9a-f-]{36})/.exec(page.url())![1];
     await expect(policies.createHeader()).toHaveCount(0);
     await expect(policies.statusPill()).toHaveText(/Inactive/);
