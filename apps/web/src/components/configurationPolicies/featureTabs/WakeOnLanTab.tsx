@@ -6,6 +6,7 @@ import type { FeatureTabProps } from './types';
 import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { featureEditProps } from './featureEditAction';
 import WakeStatusPanel from './WakeStatusPanel';
 
 // Inline settings for the `wake_on_lan` feature (#10838): when the Wake button
@@ -26,7 +27,6 @@ export default function WakeOnLanTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   const { t } = useTranslation('policies');
@@ -76,10 +76,9 @@ export default function WakeOnLanTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove })}
       isInherited={isInherited}
       onOverride={isInherited ? handleOverride : undefined}
-      onRevert={!isInherited && !!linkedPolicyId && !!existingLink ? handleRemove : undefined}
     >
       <div className="space-y-6">
         {isPlatformDefault && (

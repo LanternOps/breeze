@@ -134,7 +134,7 @@ describe('SecurityTab inheritance (#5080)', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /revert to parent/i }));
+    fireEvent.click(screen.getByRole('button', { name: /reset to parent/i }));
     // #5314: Revert to Parent now asks for confirmation first.
     fireEvent.click(screen.getByTestId('feature-tab-revert-confirm'));
 

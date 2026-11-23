@@ -4,6 +4,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { featureEditProps } from "./featureEditAction";
 import RuleSetPicker, { gateRuleSetIds, useRuleSetPolicyOwner } from "./RuleSetPicker";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -170,14 +171,7 @@ export default function SecurityTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      // Gated on THIS FEATURE's own parentLink, not the policy-level
-      // linkedPolicyId the older inline tabs (PamTab, DeviceLifecycleTab, ...)
-      // use. Policy-level gating shows "Revert to Parent" whenever the policy
-      // has ANY parent, even when that parent has no link for this particular
-      // feature — reverting then "falls back" to nothing, which is misleading.
-      // Feature-level gating shows plain "Remove" in that case instead, which
-      // is accurate: there is no parent value to revert to.
-      onRemove={!parentLink ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={shellInherited}
       onOverride={
         shellInherited
@@ -185,9 +179,6 @@ export default function SecurityTab({
             ? () => setOverrideDraft(true)
             : handleSave
           : undefined
-      }
-      onRevert={
-        !isInherited && !!parentLink && !!existingLink ? handleRevert : undefined
       }
       // Unavailable rule sets block Save (the gate would 400 it) — but never
       // the Override button, which must stay clickable to open the draft.

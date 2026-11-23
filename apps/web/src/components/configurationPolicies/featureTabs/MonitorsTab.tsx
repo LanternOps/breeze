@@ -8,6 +8,7 @@ import type { FeatureLink, FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { featureEditProps } from "./featureEditAction";
 import { useFeatureReadOnly } from "./featureEditing";
 import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
@@ -76,7 +77,6 @@ export default function MonitorsTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
   allLinks = [],
   orgId,
@@ -339,12 +339,9 @@ export default function MonitorsTab({
       saving={saving}
       error={error ?? catalogError}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
       onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined
-      }
     >
       <DuplicateConditionNotice hits={findDuplicateConditions({ attached: items, catalog, inlineRules, watches })} />
       <div className="space-y-6">

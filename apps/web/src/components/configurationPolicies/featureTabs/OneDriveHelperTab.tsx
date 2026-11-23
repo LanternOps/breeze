@@ -4,6 +4,7 @@ import type { FeatureTabProps } from './types';
 import { FEATURE_META } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { featureEditProps } from './featureEditAction';
 import OneDriveLibraryPicker, { type PickedLibrary } from './OneDriveLibraryPicker';
 
 type TargetingMode = 'everyone' | 'graph_group' | 'local_ad_group';
@@ -115,7 +116,7 @@ function siteHint(siteUrl?: string | null): string | null {
   }
 }
 
-export default function OneDriveHelperTab({ policyId, existingLink, onLinkChanged, linkedPolicyId, parentLink, orgId }: FeatureTabProps) {
+export default function OneDriveHelperTab({ policyId, existingLink, onLinkChanged, parentLink, orgId }: FeatureTabProps) {
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
@@ -239,10 +240,9 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
       saveDisabled={hasInvalidLibrary}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove })}
       isInherited={isInherited}
       onOverride={isInherited ? handleOverride : undefined}
-      onRevert={!isInherited && !!linkedPolicyId && !!existingLink ? handleRemove : undefined}
     >
       <div className="space-y-6">
         {/* Base toggles */}

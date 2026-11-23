@@ -18,6 +18,7 @@ import { fetchWithAuth } from '../../../stores/auth';
 import type { FeatureTabProps } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { featureEditProps } from './featureEditAction';
 import '@/lib/i18n';
 
 // Inline settings for the `oem_updates` feature (Vendor updates, #11070): when
@@ -128,7 +129,6 @@ export default function VendorUpdatesTab({
   policyId,
   existingLink,
   parentLink,
-  linkedPolicyId,
   onLinkChanged,
   orgId,
 }: FeatureTabProps) {
@@ -263,10 +263,9 @@ export default function VendorUpdatesTab({
       saveDisabled={!gates || (inherited && !parsed.success)}
       error={handledError ? undefined : error}
       onSave={() => void persist(existingLink?.id ?? null)}
-      onRemove={existingLink && !linkedPolicyId ? discard : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: discard })}
       isInherited={inherited}
       onOverride={inherited ? () => void persist(null) : undefined}
-      onRevert={!inherited && !!linkedPolicyId && !!existingLink ? discard : undefined}
     >
       {partnerWide && (
         <span

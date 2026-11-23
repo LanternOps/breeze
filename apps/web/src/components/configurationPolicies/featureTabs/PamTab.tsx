@@ -4,6 +4,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { featureEditProps } from "./featureEditAction";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type PamSettings = {
@@ -18,7 +19,6 @@ export default function PamTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
@@ -76,14 +76,9 @@ export default function PamTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
       onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink
-          ? handleRevert
-          : undefined
-      }
     >
       <div className="space-y-6">
         {/* UAC interception toggle */}

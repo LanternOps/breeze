@@ -4,6 +4,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { featureEditProps } from "./featureEditAction";
 import PolicyLinkSelector from "./PolicyLinkSelector";
 import SoftwarePolicyCoverageBadge from "../../software/SoftwarePolicyCoverageBadge";
 import { useTranslation } from "react-i18next";
@@ -22,7 +23,6 @@ export default function SoftwarePolicyTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
@@ -121,10 +121,9 @@ export default function SoftwarePolicyTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
       onOverride={isInherited ? handleOverride : undefined}
-      onRevert={existingLink && parentLink ? handleRevert : undefined}
     >
       <div className="space-y-4">
         <div>

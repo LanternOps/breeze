@@ -4,6 +4,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { featureEditProps } from "./featureEditAction";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 const createDetectionClasses = () => [
@@ -199,16 +200,9 @@ export default function SensitiveDataTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      // Gated on THIS FEATURE's own parentLink, not the policy-level
-      // linkedPolicyId the older inline tabs use — see SecurityTab.tsx for the
-      // rationale (a policy-level gate would show "Revert to Parent" when the
-      // parent has no link for this feature, reverting to nothing).
-      onRemove={!parentLink ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
       onOverride={isInherited ? handleSave : undefined}
-      onRevert={
-        !isInherited && !!parentLink && !!existingLink ? handleRevert : undefined
-      }
     >
       {/* Detection Classes */}
       <div>

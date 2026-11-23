@@ -637,11 +637,11 @@
       },
       "featureTabShell": {
         "override": "Override",
-        "revertToParent": "Revert to Parent",
+        "revertToParent": "Reset to parent",
         "saving": "Saving...",
         "notSaved": "Not saved: {{reason}}",
         "saveBlocked": "Not saved. Fix the highlighted problem and try again.",
-        "revertConfirmTitle": "Revert to parent policy?",
+        "revertConfirmTitle": "Reset to the parent policy?",
         "revertConfirmMessage": "This deletes the {{feature}} override on this policy. Its settings are lost and the parent policy's settings apply to every device using this policy. This cannot be undone.",
         "removeConfirmTitle": "Remove this configuration?",
         "removeConfirmMessage": "This deletes the {{feature}} configuration from this policy. Its settings are lost and the feature stops being applied to every device using this policy. This cannot be undone.",

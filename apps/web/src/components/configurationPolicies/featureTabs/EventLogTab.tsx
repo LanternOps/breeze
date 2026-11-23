@@ -10,6 +10,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { featureEditProps } from "./featureEditAction";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type EventLogSettings = {
@@ -89,7 +90,6 @@ export default function EventLogTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
@@ -211,14 +211,9 @@ export default function EventLogTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
       onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink
-          ? handleRevert
-          : undefined
-      }
     >
       <p className="mb-6 rounded-md border border-muted bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
         {i18n.t(

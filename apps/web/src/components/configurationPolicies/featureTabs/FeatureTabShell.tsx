@@ -59,7 +59,7 @@ export default function FeatureTabShell({
   // A read-only viewer (#12469) gets the form disabled and no footer action:
   // Save, Remove, Revert and Override are not rendered at all.
   const readOnly = useFeatureReadOnly();
-  // #5314: Revert to Parent and Remove both fire an irreversible
+  // #5314: Reset to parent and Remove both fire an irreversible
   // DELETE .../features/:id that destroys this policy's override. The shell
   // renders the footer for every feature tab, so guarding here covers all of
   // them at once rather than per-tab.
@@ -281,7 +281,7 @@ export default function FeatureTabShell({
 
         {/* Footer */}
         {!readOnly && (
-        <div className="mt-6 flex items-center justify-between border-t pt-4">
+        <div data-testid="feature-tab-footer" className="mt-6 flex items-center justify-between border-t pt-4">
           <div>
             {isInherited && onOverride && (
               <button

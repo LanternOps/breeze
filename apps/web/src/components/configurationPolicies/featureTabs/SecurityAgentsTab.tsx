@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { FeatureTabProps } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { featureEditProps } from './featureEditAction';
 import '@/lib/i18n';
 
 // Inline settings for the `security_agents` feature: which vendor security
@@ -98,7 +99,6 @@ export default function SecurityAgentsTab({
   policyId,
   existingLink,
   parentLink,
-  linkedPolicyId,
   onLinkChanged,
   orgId,
 }: FeatureTabProps) {
@@ -162,10 +162,9 @@ export default function SecurityAgentsTab({
       saving={saving}
       error={handledError ? undefined : error}
       onSave={() => void persist(existingLink?.id ?? null)}
-      onRemove={existingLink && !linkedPolicyId ? discard : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: discard })}
       isInherited={inherited}
       onOverride={inherited ? () => void persist(null) : undefined}
-      onRevert={!inherited && !!linkedPolicyId && !!existingLink ? discard : undefined}
     >
       {partnerWide && (
         <span

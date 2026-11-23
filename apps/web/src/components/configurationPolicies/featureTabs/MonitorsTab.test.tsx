@@ -369,9 +369,11 @@ describe('MonitorsTab — check interval on monitors (W05d)', () => {
     const retained = { ...ownMonitorsLink, inlineSettings: { items: [], inheritance: 'cumulative', checkIntervalSeconds: 30 } };
     fetchWithAuthMock.mockImplementationOnce((async () => ({ ok: true, json: async () => ({ data: [] }) })) as never)
       .mockImplementationOnce((async () => ({ ok: true, json: async () => ({ data: kept ? [retained] : [] }) })) as never);
-    const view = render(<MonitorsTab {...baseProps} existingLink={retained} linkedPolicyId="parent-policy" />);
+    // Reset to parent needs a parent that has the feature (#12263).
+    const parentMonitors = { id: 'link-parent', featureType: 'monitors' as const, featurePolicyId: null, inlineSettings: { items: [] } };
+    const view = render(<MonitorsTab {...baseProps} existingLink={retained} parentLink={parentMonitors} linkedPolicyId="parent-policy" />);
     fireEvent.change(await screen.findByTestId('monitors-tab-check-interval'), { target: { value: '120' } });
-    fireEvent.click(screen.getByRole('button', { name: /revert to parent/i }));
+    fireEvent.click(screen.getByRole('button', { name: /reset to parent/i }));
     fireEvent.click(await screen.findByTestId('feature-tab-revert-confirm'));
     await waitFor(() => expect(baseProps.onLinkChanged).toHaveBeenCalledWith(kept ? retained : null, 'monitors'));
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/configuration-policies/policy-1/features');

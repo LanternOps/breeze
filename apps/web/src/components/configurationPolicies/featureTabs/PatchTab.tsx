@@ -5,6 +5,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { featureEditProps } from "./featureEditAction";
 import { useFeatureReadOnly } from "./featureEditing";
 import FeatureDirtyBridge from "./FeatureDirtyBridge";
 import RebootPromptPreview from "./RebootPromptPreview";
@@ -234,7 +235,6 @@ export default function PatchTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
@@ -509,14 +509,9 @@ export default function PatchTab({
       saving={saving}
       error={validationError ?? error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
       onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink
-          ? handleRevert
-          : undefined
-      }
     >
       <FeatureDirtyBridge markDirtyRef={markDirtyRef} />
       {/* Approval Ring */}

@@ -335,7 +335,7 @@ describe('ContainmentTab', () => {
     fireEvent.click(screen.getByTestId('containment-save'));
     await waitFor(() => expect(m.save).toHaveBeenCalledTimes(1));
     expect(m.save.mock.calls[0][0]).toBe('own-link');
-    expect(screen.getByRole('button', { name: /revert to parent/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /reset to parent/i })).toBeInTheDocument();
   });
 
   it('blocks saving a stored list over the limit and says why', async () => {
@@ -401,7 +401,7 @@ describe('ContainmentTab', () => {
         existingLink={link({ version: 1, extraAllow: [] }, 'own-link')}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /revert to parent/i }));
+    fireEvent.click(screen.getByRole('button', { name: /reset to parent/i }));
     fireEvent.click(screen.getByTestId('feature-tab-revert-confirm'));
     await waitFor(() => expect(m.remove).toHaveBeenCalledWith('own-link'));
     await waitFor(() => expect(m.changed).toHaveBeenCalledWith(null, 'containment'));

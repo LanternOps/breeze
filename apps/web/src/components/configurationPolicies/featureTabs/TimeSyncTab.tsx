@@ -8,6 +8,7 @@ import {
 import { type FeatureTabProps } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { featureEditProps } from './featureEditAction';
 import TimezoneSelect from '../../shared/TimezoneSelect';
 import '@/lib/i18n';
 function readSettings(value: unknown) {
@@ -20,7 +21,6 @@ export default function TimeSyncTab({
   policyId,
   existingLink,
   parentLink,
-  linkedPolicyId,
   onLinkChanged,
 }: FeatureTabProps) {
   const { t } = useTranslation('devices');
@@ -90,12 +90,9 @@ export default function TimeSyncTab({
       saveDisabled={!parsed.success}
       error={error}
       onSave={() => void persist(existingLink?.id ?? null)}
-      onRemove={existingLink && !linkedPolicyId ? discard : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: discard })}
       isInherited={inherited}
       onOverride={inherited ? () => void persist(null) : undefined}
-      onRevert={
-        !inherited && !!linkedPolicyId && !!existingLink ? discard : undefined
-      }
     >
       <p className="mb-4 text-sm text-muted-foreground">
         {t('timeSync.management.domainRule')}

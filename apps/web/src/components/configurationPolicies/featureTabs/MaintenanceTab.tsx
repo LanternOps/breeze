@@ -12,6 +12,7 @@ import {
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { featureEditProps } from "./featureEditAction";
 import TimezoneSelect from "@/components/shared/TimezoneSelect";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -215,7 +216,6 @@ export default function MaintenanceTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
@@ -291,14 +291,9 @@ export default function MaintenanceTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
       onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink
-          ? handleRevert
-          : undefined
-      }
     >
       <div className="grid gap-6 sm:grid-cols-2">
         {/* Recurrence */}

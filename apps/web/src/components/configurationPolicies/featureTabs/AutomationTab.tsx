@@ -14,6 +14,7 @@ import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import { useFeatureReadOnly } from "./featureEditing";
 import FeatureTabShell from "./FeatureTabShell";
+import { featureEditProps } from "./featureEditAction";
 import InlineEntityPicker from "./InlineEntityPicker";
 import TimezoneSelect from "@/components/shared/TimezoneSelect";
 import { useTranslation } from "react-i18next";
@@ -210,7 +211,6 @@ export default function AutomationTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   const { t } = useTranslation("policies");
@@ -346,14 +346,9 @@ export default function AutomationTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
       onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink
-          ? handleRevert
-          : undefined
-      }
     >
       {/* Header */}
       <div className="flex items-center justify-between">

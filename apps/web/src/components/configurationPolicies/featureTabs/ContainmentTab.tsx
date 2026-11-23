@@ -7,6 +7,7 @@ import { containmentIssueKey, type ContainmentField } from './containmentIssueKe
 import type { FeatureTabProps } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
+import { featureEditProps } from './featureEditAction';
 import '@/lib/i18n';
 
 // Inline settings for the `containment` feature (#10100): extra destinations an
@@ -117,7 +118,6 @@ export default function ContainmentTab({
   policyId,
   existingLink,
   parentLink,
-  linkedPolicyId,
   onLinkChanged,
 }: FeatureTabProps) {
   const { t } = useTranslation('policies');
@@ -191,10 +191,9 @@ export default function ContainmentTab({
       saveDisabled={parentInvalid}
       error={error}
       onSave={() => void persist(existingLink?.id ?? null)}
-      onRemove={existingLink && !linkedPolicyId ? discard : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: discard })}
       isInherited={inherited}
       onOverride={inherited ? () => void persist(null) : undefined}
-      onRevert={!inherited && !!linkedPolicyId && !!existingLink ? discard : undefined}
     >
       {parentInvalid && (
         <div
