@@ -230,6 +230,48 @@ describe('oemUpdates fan-out against real Postgres', () => {
     expect(commands).toHaveLength(1);
   });
 
+  // #12266, end to end through the real selection query, decision and seam.
+  runDb('a Run now in the window leaves the scheduled run due, and a Run now after it does not reopen the night', async () => {
+    const { orgA, siteA } = await fanoutFixture();
+    const device = await seedDevice(orgA.id, siteA.id);
+    const commandsOf = () => withSystemDbAccessContext(() => db
+      .select({ id: deviceCommands.id, payload: deviceCommands.payload })
+      .from(deviceCommands)
+      .where(and(eq(deviceCommands.deviceId, device), eq(deviceCommands.type, 'oem_update_run')))
+      .orderBy(deviceCommands.createdAt));
+    const settleAll = () => getTestDb().update(deviceCommands).set({ status: 'completed' }).where(eq(deviceCommands.deviceId, device));
+    const runNow = () => dispatchOemUpdateRun({
+      deviceId: device,
+      expectedOrgId: orgA.id,
+      trigger: 'on_demand',
+      requestedCategories: ['driver'],
+      blockedUpdateIds: [],
+      rebootControlled: true,
+      notAfter: new Date(Date.now() + 60 * 60 * 1000),
+      occurrenceKey: null,
+      actorUserId: null,
+    });
+
+    // A Run now still running holds the scheduled run back...
+    await expect(runNow()).resolves.toMatchObject({ ok: true });
+    await runOemUpdatesTick();
+    expect(await commandsOf()).toHaveLength(1);
+
+    // ...and once it has finished, the night's scheduled run goes.
+    await settleAll();
+    await runOemUpdatesTick();
+    const afterTick = await commandsOf();
+    expect(afterTick.map((row) => (row.payload as { trigger?: string }).trigger)).toEqual(['on_demand', 'scheduled']);
+
+    // A Run now after tonight's scheduled attempt does not earn a second one.
+    await settleAll();
+    await expect(runNow()).resolves.toMatchObject({ ok: true });
+    await settleAll();
+    await runOemUpdatesTick();
+    expect((await commandsOf()).map((row) => (row.payload as { trigger?: string }).trigger))
+      .toEqual(['on_demand', 'scheduled', 'on_demand']);
+  });
+
   runDb('an org-owned policy reaches its own org only', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });

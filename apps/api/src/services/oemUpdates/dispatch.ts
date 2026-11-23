@@ -255,6 +255,9 @@ async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
     applicability: 'applicable' as const,
     reason: null,
     lastAttemptAt: now,
+    // Only a scheduled run uses up the night (#12266). Run Now leaves the key out,
+    // rather than nulling it, so it cannot erase tonight's scheduled attempt either.
+    ...(input.trigger === 'scheduled' ? { lastScheduledAttemptAt: now } : {}),
     lastCommandId: dispatched.command.id,
     updatedAt: now,
     // A scheduled run opens its occurrence with no outcome yet: last month's success

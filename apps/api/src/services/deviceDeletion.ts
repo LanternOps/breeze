@@ -467,6 +467,21 @@ export async function deleteDeviceCascade(
     SET breeze_device_id = NULL, device_match_source = NULL
     WHERE breeze_device_id = ${deviceId}`);
 
+  // Configuration policies assigned directly to this device (#12293).
+  // `config_policy_assignments` targets are polymorphic (`level` + `target_id`,
+  // no FK and no device_id column), so neither the device_id cascade above nor
+  // an FK reclaims them, and the `ab_config_policy_assignment_device_owner_delete`
+  // statement trigger on `devices` refuses the row delete below with 23503
+  // `config_policy_assignments_target_owner_fk` while one still names the
+  // device. Same shape as the `device_group` clears in deviceGroupDelete.ts
+  // and tenantCascade.ts: clear only the deleted target's own level, so a
+  // group, site, organization or partner assignment is never matched here.
+  // No new assignment for this device can commit before the row delete: an
+  // assignment insert's integrity trigger takes FOR KEY SHARE on its target
+  // device, which waits on the FOR UPDATE held since the top of this function.
+  await tx.execute(sql`DELETE FROM config_policy_assignments
+    WHERE level = 'device' AND target_id = ${deviceId}`);
+
   await tx.delete(devices).where(eq(devices.id, deviceId));
 
   // Disarm the backup fence (armed after the parent lock above) so later work
