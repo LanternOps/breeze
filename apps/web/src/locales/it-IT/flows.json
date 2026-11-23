@@ -888,6 +888,7 @@
         "continueHelp": "Le azioni successive vengono eseguite anche sui dispositivi a cui non è stato possibile inviare lo script.",
         "notify": "Notifica",
         "notifyHelp": "Invia un avviso ai canali sottostanti per ogni dispositivo a cui non è stato possibile inviare lo script. Vengono inviati al massimo 20 avvisi per esecuzione.",
+        "notifySummaryHelp": "Invia un avviso ai canali sottostanti per ogni script che non è stato possibile inviare a tutti i dispositivi, con il numero di dispositivi riusciti e non riusciti.",
         "noChannels": "Aggiungi un canale di notifica per usare Notifica."
       }
     },

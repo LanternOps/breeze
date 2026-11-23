@@ -888,6 +888,7 @@
         "continueHelp": "Sonraki eylemler, betiğin gönderilemediği cihazlarda da çalışır.",
         "notify": "Bildir",
         "notifyHelp": "Betiğin gönderilemediği her cihaz için aşağıdaki kanallara bir bildirim gönderin. Çalıştırma başına en fazla 20 bildirim gönderilir.",
+        "notifySummaryHelp": "Tüm cihazlara gönderilemeyen her betik için aşağıdaki kanallara, başarılı ve başarısız cihaz sayılarını içeren tek bir bildirim gönderin.",
         "noChannels": "Bildir seçeneğini kullanmak için bir bildirim kanalı ekleyin."
       }
     },

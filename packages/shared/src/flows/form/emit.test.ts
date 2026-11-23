@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emitCreateAlertStep, emitDeviceItems, emitFailureNoticeSteps, emitRunScriptStep, emitTargetsStep } from './emit';
+import { deviceCountsSuffix, emitCreateAlertStep, emitDeviceItems, emitFailureNoticeSteps, emitFailureSummarySteps, emitRunScriptStep, emitTargetsStep } from './emit';
 
 const base = { approval: 'default', onFailure: 'continue' };
 
@@ -56,5 +56,29 @@ describe('shared step emitters', () => {
       input: { channelId: 'c1', title: 'Job action failed', message: 'Automation Job action 2 failed on {{item.hostname}}: {{item.failureReason}}', severity: 'warning' },
     });
     expect(emitFailureNoticeSteps(0, 'x', 'Job', [])).toEqual([]);
+  });
+
+  it('emitFailureSummarySteps pins one summary notice per channel: no for-each, no failed resolve step', () => {
+    const steps = emitFailureSummarySteps(1, 'a1_run_script', 'Job', ['c0', 'c1']);
+    const when = 'length(steps.a1_run_script.output.failedDeviceIds) > 0';
+    expect(steps.map((s) => s.id)).toEqual(['a1_failsummary_0', 'a1_failsummary_1']);
+    expect(steps[1]).toEqual({
+      ...base, timeoutSec: 300, id: 'a1_failsummary_1', tool: 'notify', when,
+      input: {
+        channelId: 'c1',
+        title: 'Job action failed',
+        message: 'Automation Job action 2 could not be sent to every device.'
+          + '\n\nDevices: {{steps.a1_run_script.output.succeededCount}} succeeded, {{steps.a1_run_script.output.failedCount}} failed.',
+        severity: 'warning',
+      },
+    });
+    expect(Object.keys(steps[0]!)).toEqual(['approval', 'onFailure', 'timeoutSec', 'id', 'tool', 'when', 'input']);
+    for (const s of steps) expect(s.forEach).toBeUndefined();
+    expect(emitFailureSummarySteps(0, 'x', 'Job', [])).toEqual([]);
+  });
+
+  it('the summary uses the same counts suffix as the one-per-run notify action', () => {
+    const [s] = emitFailureSummarySteps(0, 'a0_run_script', 'Job', ['c0']);
+    expect(String(s!.input.message).endsWith(deviceCountsSuffix('a0_run_script'))).toBe(true);
   });
 });

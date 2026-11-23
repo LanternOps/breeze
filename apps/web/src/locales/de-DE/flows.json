@@ -888,6 +888,7 @@
         "continueHelp": "Spätere Aktionen laufen auch auf den Geräten, an die das Skript nicht gesendet werden konnte.",
         "notify": "Benachrichtigen",
         "notifyHelp": "Für jedes Gerät, an das das Skript nicht gesendet werden konnte, eine Mitteilung an die folgenden Kanäle senden. Pro Ausführung werden höchstens 20 Mitteilungen gesendet.",
+        "notifySummaryHelp": "Für jedes Skript, das nicht an alle Geräte gesendet werden konnte, eine Mitteilung an die folgenden Kanäle senden, mit der Anzahl erfolgreicher und fehlgeschlagener Geräte.",
         "noChannels": "Fügen Sie einen Benachrichtigungskanal hinzu, um „Benachrichtigen“ zu verwenden."
       }
     },

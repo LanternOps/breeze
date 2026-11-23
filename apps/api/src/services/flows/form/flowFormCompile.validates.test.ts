@@ -68,7 +68,9 @@ const CASES: Case[] = [
   { label: 'script, script under continue', owner: orgOwner, values: { ...base, trigger: schedule, target: onGroup, actions: [script, script], onFailure: { mode: 'continue' } } },
   { label: 'script then alert under continue', owner: orgOwner, values: { ...base, trigger: schedule, target: onGroup, actions: [script, alert], onFailure: { mode: 'continue' } } },
   { label: 'alert first', owner: orgOwner, values: { ...base, trigger: schedule, target: onGroup, actions: [alert, script] } },
-  { label: 'notify onFailure with two channels', owner: orgOwner, values: { ...base, trigger: schedule, target: onGroup, actions: [script, script, notify], onFailure: { mode: 'notify', channelIds: [CHANNEL, CHANNEL_2] } } },
+  { label: 'notify onFailure with two channels (per device)', owner: orgOwner, values: { ...base, trigger: schedule, target: onGroup, actions: [script, script, notify], onFailure: { mode: 'notify', channelIds: [CHANNEL, CHANNEL_2], notice: 'perDevice' } } },
+  { label: 'notify onFailure with two channels (summary)', owner: orgOwner, values: { ...base, trigger: schedule, target: onGroup, actions: [script, script, notify], onFailure: { mode: 'notify', channelIds: [CHANNEL, CHANNEL_2], notice: 'summary' } } },
+  { label: 'partner-wide notify onFailure summary on a filter target', owner: partnerOwner, values: { ...base, trigger: schedule, target: onFilter, actions: [script, alert], onFailure: { mode: 'notify', channelIds: [CHANNEL], notice: 'summary' } } },
   { label: 'partner-wide schedule on a filter target', owner: partnerOwner, values: { ...base, trigger: schedule, target: onFilter, actions: [script] } },
   { label: 'partner-wide webhook with an orgResolver and a filter target', owner: partnerOwner, values: { ...base, trigger: { type: 'webhook', auth: 'hmac', orgResolver: { path: 'body.customer.id', kind: 'breeze_org_id' } }, target: onFilter, actions: [script, notify] } },
 ];
@@ -76,6 +78,15 @@ const CASES: Case[] = [
 describe('compiled form documents validate for the owner', () => {
   it('control: a counts suffix that points at a step that does not exist is refused', async () => {
     const doc = compileFlowForm({ ...base, trigger: schedule, target: onGroup, actions: [script, notify] });
+    const bad = structuredClone(doc);
+    bad.steps[1]!.input.message = String(bad.steps[1]!.input.message).replaceAll('a0_run_script', 'a9_missing');
+    const v = await validateFlowDocument(bad, { owner: orgOwner });
+    expect(v.valid).toBe(false);
+  });
+
+  it('control: an on-failure summary whose counts point at a step that does not exist is refused', async () => {
+    const doc = compileFlowForm({ ...base, trigger: schedule, target: onGroup, actions: [script], onFailure: { mode: 'notify', channelIds: [CHANNEL], notice: 'summary' } });
+    expect(doc.steps.map((s) => s.id)).toEqual(['a0_run_script', 'a0_failsummary_0']);
     const bad = structuredClone(doc);
     bad.steps[1]!.input.message = String(bad.steps[1]!.input.message).replaceAll('a0_run_script', 'a9_missing');
     const v = await validateFlowDocument(bad, { owner: orgOwner });

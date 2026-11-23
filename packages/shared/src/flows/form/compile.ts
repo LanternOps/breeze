@@ -1,8 +1,10 @@
 import type { FlowDocumentV1 } from '../../validators/flows';
 import {
+  deviceCountsSuffix,
   emitCreateAlertStep,
   emitDeviceItems,
   emitFailureNoticeSteps,
+  emitFailureSummarySteps,
   emitRunScriptStep,
   flowStep,
   type ActiveSet,
@@ -10,11 +12,6 @@ import {
   type FlowStep,
 } from './emit';
 import type { FlowFormTrigger, FlowFormValues } from './types';
-
-/** The line `compileFlowForm` appends to a notice that follows a script; `decodeFlowForm` strips exactly this. */
-export function deviceCountsSuffix(scriptStepId: string): string {
-  return `\n\nDevices: {{steps.${scriptStepId}.output.succeededCount}} succeeded, {{steps.${scriptStepId}.output.failedCount}} failed.`;
-}
 
 export const TRIGGER_DEVICE_SELECTOR = { deviceIds: ['{{trigger.device.id}}'] } as const;
 
@@ -39,7 +36,16 @@ export function compileFlowForm(values: FlowFormValues): FlowDocumentV1 {
     ? { deviceIds: [...TRIGGER_DEVICE_SELECTOR.deviceIds] }
     : { target: values.target.target };
   const chainSet: FleetChainSet = values.onFailure.mode === 'continue' ? 'dispatched' : 'succeeded';
-  const failureChannels = values.onFailure.mode === 'notify' ? values.onFailure.channelIds : [];
+  const onFailure = values.onFailure;
+  /** The on-failure block after a script step: the shape the values record, never a default. */
+  const failureNotice = (i: number, fleetStepId: string): FlowStep[] => {
+    if (onFailure.mode !== 'notify') return [];
+    switch (onFailure.notice) {
+      case 'summary': return emitFailureSummarySteps(i, fleetStepId, values.name, onFailure.channelIds);
+      case 'perDevice': return emitFailureNoticeSteps(i, fleetStepId, values.name, onFailure.channelIds);
+      default: throw new Error(`Unknown on-failure notice: ${String((onFailure as { notice?: unknown }).notice)}`);
+    }
+  };
 
   const steps: FlowStep[] = [];
   let active: ActiveSet | null = null;
@@ -53,7 +59,7 @@ export function compileFlowForm(values: FlowFormValues): FlowDocumentV1 {
       input.whenOffline = a.whenOffline;
       Object.assign(input, active ? { fromStep: { stepId: active.stepId, set: chainSet } } : selectorInput);
       const step = emitRunScriptStep(i, 'run_script', input);
-      steps.push(step, ...emitFailureNoticeSteps(i, step.id, values.name, failureChannels));
+      steps.push(step, ...failureNotice(i, step.id));
       active = { stepId: step.id, kind: 'fleet' };
       lastScriptStepId = step.id;
     } else if (a.type === 'create_alert') {

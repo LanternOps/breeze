@@ -4,7 +4,7 @@ import { compileFlowForm } from './compile';
 import { decodeFlowForm } from './decode';
 import { normalizeFlowDocument } from './equality';
 import { recognizeFlowForm } from './recognize';
-import { CHANNEL, FORM_CASES } from './testCases';
+import { CHANNEL, CHANNEL_2, FORM_CASES } from './testCases';
 
 const doc = (label: string): FlowDocumentV1 => compileFlowForm(FORM_CASES.find(([l]) => l === label)![1]);
 const clone = <T,>(v: T): T => structuredClone(v);
@@ -61,6 +61,50 @@ describe('recognizeFlowForm', () => {
       ...step('a2_notify', 'notify', { channelId: CHANNEL, title: 'x', message: 'Automation x executed on {{item.hostname}}', severity: 'info' }),
       forEach: { items: 'steps.a1_devices.output.devices', as: 'item', maxItems: 500, concurrency: 1 },
     });
+    notFormShaped(d, 'not_decodable');
+  });
+
+  it('a per-device on-failure notice reopens as perDevice and a summary as summary', () => {
+    const perDevice = recognizeFlowForm(doc('onFailure notify with two channels over two scripts'));
+    expect(perDevice.formShaped && perDevice.values.onFailure).toEqual({ mode: 'notify', channelIds: [CHANNEL, CHANNEL_2], notice: 'perDevice' });
+    const summary = recognizeFlowForm(doc('onFailure summary with two channels over two scripts'));
+    expect(summary.formShaped && summary.values.onFailure).toEqual({ mode: 'notify', channelIds: [CHANNEL, CHANNEL_2], notice: 'summary' });
+  });
+
+  it('a document mixing the per-device and summary notice for one action is not form-shaped', () => {
+    const d = clone(doc('onFailure notify with two channels over two scripts'));
+    // a0: failed + failnotice_0 + failnotice_1; swap the second notice for a summary.
+    const summaryStep = doc('onFailure summary with two channels over two scripts').steps.find((s) => s.id === 'a0_failsummary_1')!;
+    d.steps.splice(3, 1, clone(summaryStep));
+    expect(d.steps.map((s) => s.id).slice(0, 4)).toEqual(['a0_run_script', 'a0_failed', 'a0_failnotice_0', 'a0_failsummary_1']);
+    notFormShaped(d, 'not_decodable');
+  });
+
+  it('a document with a per-device notice on one script and a summary on another is not form-shaped', () => {
+    const perDevice = doc('onFailure notify with two channels over two scripts');
+    const summary = doc('onFailure summary with two channels over two scripts');
+    const mixed = clone(summary);
+    const a0Block = perDevice.steps.filter((s) => s.id.startsWith('a0_'));
+    mixed.steps = [...clone(a0Block), ...clone(summary.steps.filter((s) => !s.id.startsWith('a0_')))];
+    expect(mixed.steps.map((s) => s.id)).toEqual([
+      'a0_run_script', 'a0_failed', 'a0_failnotice_0', 'a0_failnotice_1',
+      'a1_run_script', 'a1_failsummary_0', 'a1_failsummary_1', 'a2_notify',
+    ]);
+    notFormShaped(mixed, 'not_decodable');
+  });
+
+  it('a summary notice carrying a for-each or a different when is not form-shaped', () => {
+    const withForEach = clone(doc('onFailure summary with two channels over two scripts'));
+    withForEach.steps[1]!.forEach = { items: 'steps.targets.output.devices', as: 'item', maxItems: 500, concurrency: 1 };
+    notFormShaped(withForEach, 'differs_after_recompile');
+    const otherWhen = clone(doc('onFailure summary with two channels over two scripts'));
+    otherWhen.steps[1]!.when = 'steps.a0_run_script.output.failedCount > 0';
+    notFormShaped(otherWhen, 'differs_after_recompile');
+  });
+
+  it('a summary notice that is not a notify step is not form-shaped', () => {
+    const d = clone(doc('onFailure summary with two channels over two scripts'));
+    d.steps[1]!.tool = 'create_alert';
     notFormShaped(d, 'not_decodable');
   });
 

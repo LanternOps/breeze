@@ -888,6 +888,7 @@
         "continueHelp": "Les actions suivantes s'exécutent aussi sur les appareils auxquels le script n'a pas pu être envoyé.",
         "notify": "Notifier",
         "notifyHelp": "Envoyer un avis aux canaux ci-dessous pour chaque appareil auquel le script n'a pas pu être envoyé. Au plus 20 avis sont envoyés par exécution.",
+        "notifySummaryHelp": "Envoyer un avis aux canaux ci-dessous pour chaque script qui n'a pas pu être envoyé à tous les appareils, avec le nombre d'appareils réussis et en échec.",
         "noChannels": "Ajoutez un canal de notification pour utiliser Notifier."
       }
     },
