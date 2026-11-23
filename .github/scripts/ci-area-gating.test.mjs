@@ -22,6 +22,11 @@ import { fileURLToPath } from 'node:url';
 //     files change (the cross-area scan below keeps that list honest).
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '..', '..'));
+// #12526: a child that never exits must fail the test that spawned it, by name.
+// spawnSync blocks the event loop, so neither a test timeout nor the reporter
+// can act until it returns; a stuck child otherwise hangs the whole file.
+const SPAWN = { timeout: 60000, killSignal: 'SIGKILL' };
+const spawnFailure = (run) => [run.error && String(run.error), run.stdout, run.stderr].filter(Boolean).join('\n');
 // Deliberately omit the QEMU list: these harnesses retain its fail-closed behavior.
 function copyPolicyFiles(dir) {
   mkdirSync(join(dir, '.github/scripts'), { recursive: true });
@@ -42,10 +47,10 @@ const summary = job('ci-success');
 const AREAS = ['api', 'web', 'portal', 'addins', 'm365', 'rust'];
 const classify = (paths, script = new URL('./classify-pr-paths.sh', import.meta.url).pathname) => {
   const run = spawnSync('bash', [script], {
-    encoding: 'utf8',
+    ...SPAWN, encoding: 'utf8',
     input: paths.join('\n') + (paths.length ? '\n' : ''),
   });
-  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.status, 0, spawnFailure(run));
   return Object.fromEntries(run.stdout.trim().split('\n').map((l) => l.split('=')));
 };
 const areasOf = (out) => Object.fromEntries(AREAS.map((a) => [a, out[a]]));
@@ -54,9 +59,9 @@ const expectAreas = (on) => Object.fromEntries(AREAS.map((a) => [a, on === 'all'
 // ─── Classifier: per-area rules ─────────────────────────────────────────
 test('classifier: emits every area output, in order, after code/docs/agent/app, then topology_browser, agent_code, integration', () => {
   const run = spawnSync('bash', [new URL('./classify-pr-paths.sh', import.meta.url).pathname], {
-    encoding: 'utf8', input: 'apps/api/src/index.ts\n',
+    ...SPAWN, encoding: 'utf8', input: 'apps/api/src/index.ts\n',
   });
-  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.status, 0, spawnFailure(run));
   assert.deepEqual(
     run.stdout.trim().split('\n').map((l) => l.split('=')[0]),
     // topology_browser (#6117) is a single-job gate, not an area; it trails the areas.
@@ -418,9 +423,9 @@ const runChangesStep = (env) => {
     const outputFile = join(dir, 'gh-output');
     writeFileSync(outputFile, '');
     const execution = spawnSync('bash', ['-c', classifyScript], {
-      cwd: dir, encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: outputFile, ...env },
+      ...SPAWN, cwd: dir, encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: outputFile, ...env },
     });
-    assert.equal(execution.status, 0, execution.stdout + execution.stderr);
+    assert.equal(execution.status, 0, spawnFailure(execution));
     return Object.fromEntries(readFileSync(outputFile, 'utf8').trim().split('\n').map((l) => l.split('=')));
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -589,7 +594,7 @@ const onlyAreas = (on, { isPr = 'true' } = {}) => {
   if (!['api', 'web', 'portal'].some((a) => on.includes(a))) for (const v of STACK_VARS) env[v] = 'skipped';
   return env;
 };
-const runSummary = (env) => spawnSync('bash', ['-e', '-c', summaryScript], { encoding: 'utf8', env: { ...process.env, ...env } });
+const runSummary = (env) => spawnSync('bash', ['-e', '-c', summaryScript], { ...SPAWN, encoding: 'utf8', env: { ...process.env, ...env } });
 
 for (const [label, env, passes] of [
   ['agent flag alone (api would be true on a real agent PR; the summary accepts the shape)', onlyAreas(['agent_code']), true],
@@ -610,7 +615,7 @@ for (const [label, env, passes] of [
 ]) {
   test(`CI Success (areas): ${label}`, () => {
     const r = runSummary(env);
-    assert.equal(r.status, passes ? 0 : 1, r.stdout + r.stderr);
+    assert.equal(r.status, passes ? 0 : 1, spawnFailure(r));
   });
 }
 
@@ -635,7 +640,7 @@ for (const area of ['portal', 'm365', 'rust']) {
   for (const isPr of ['true', 'false']) {
     test(`CI Success (areas): ${area}-only, all green, IS_PR=${isPr}`, () => {
       const r = runSummary(onlyAreas([area], { isPr }));
-      assert.equal(r.status, 0, r.stdout + r.stderr);
+      assert.equal(r.status, 0, spawnFailure(r));
     });
   }
 }
@@ -659,14 +664,14 @@ test('merge_group: a rename out of an area sets that area too', () => {
   const dir = mkdtempSync(join(tmpdir(), 'area-rename-'));
   try {
     const git = (...args) => {
-      const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
-      assert.equal(r.status, 0, r.stderr);
+      const r = spawnSync('git', args, { ...SPAWN, cwd: dir, encoding: 'utf8' });
+      assert.equal(r.status, 0, spawnFailure(r));
       return r.stdout.trim();
     };
     git('init', '-q', '-b', 'main');
     git('config', 'user.email', 'ci@example.com');
     git('config', 'user.name', 'CI');
-    spawnSync('mkdir', ['-p', join(dir, 'apps/web/src'), join(dir, 'apps/excel-addin/src'), join(dir, '.github/scripts')]);
+    for (const d of [join(dir, 'apps/web/src'), join(dir, 'apps/excel-addin/src'), join(dir, '.github/scripts')]) mkdirSync(d, { recursive: true });
     const body = 'export const x = 1;\n'.repeat(40);
     writeFileSync(join(dir, 'apps/excel-addin/src/shared.ts'), body);
     git('add', '-A'); git('commit', '-q', '-m', 'base');
@@ -678,10 +683,10 @@ test('merge_group: a rename out of an area sets that area too', () => {
     const outputFile = join(dir, 'gh-output');
     writeFileSync(outputFile, '');
     const r = spawnSync('bash', ['-c', classifyScript], {
-      cwd: dir, encoding: 'utf8',
+      ...SPAWN, cwd: dir, encoding: 'utf8',
       env: { ...process.env, GITHUB_OUTPUT: outputFile, EVENT_NAME: 'merge_group', BASE_SHA: base, HEAD_SHA: head },
     });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(r.status, 0, spawnFailure(r));
     const out = Object.fromEntries(readFileSync(outputFile, 'utf8').trim().split('\n').map((l) => l.split('=')));
     assert.equal(out.web, 'true');
     assert.equal(out.addins, 'true', 'the old side of the rename must be classified');
@@ -693,7 +698,33 @@ test('merge_group: a rename out of an area sets that area too', () => {
 test('lint runs this suite (it is the only thing that enforces the area contract)', () => {
   const lint = job('lint');
   assert.match(lint, /^    if: needs\.changes\.outputs\.code == 'true'$/mu, 'lint must stay code-only so it runs on every code PR');
-  assert.match(lint, /^        run: node --test \.github\/scripts\/ci-area-gating\.test\.mjs$/mu);
+  assert.match(lint, /^        run: node --test --test-timeout=\d+ \.github\/scripts\/ci-area-gating\.test\.mjs$/mu);
+});
+
+// #12526: this file once ran ~7 of its step's 10 minutes, and the reporter
+// prints nothing until a file ends, so a slow runner looked like a silent hang
+// that only the step timeout ended. Every Lint `node --test` carries a
+// --test-timeout that fires first. Under process isolation Node applies it to
+// the whole FILE (the run names the file, not the test), so it must also stay
+// well above the slowest file's normal duration (ci-gate.test.mjs, ~80 s).
+const LINT_TEST_TIMEOUT_MS = 300000;
+test('every node --test in the Lint job carries --test-timeout, below its step timeout (#12526)', () => {
+  let seen = 0;
+  for (const step of job('lint').split(/^      - /mu).slice(1)) {
+    const name = step.match(/^name: (.+)$/mu)?.[1] ?? step.split('\n')[0];
+    // A step without timeout-minutes inherits the job default of 360 minutes.
+    const stepMs = Number(step.match(/^        timeout-minutes: (\d+)$/mu)?.[1] ?? 360) * 60000;
+    for (const line of step.split('\n')) {
+      if (/^\s*#/u.test(line) || !/\bnode --test\b/u.test(line)) continue;
+      seen += 1;
+      // The flag must precede the file list: after a path, node ignores it.
+      const flag = line.match(/\bnode --test --test-timeout=(\d+) \S/u);
+      assert.ok(flag, `${name}: \`${line.trim()}\` must pass --test-timeout before its files`);
+      assert.equal(Number(flag[1]), LINT_TEST_TIMEOUT_MS, `${name}: use the shared Lint test timeout`);
+      assert.ok(Number(flag[1]) < stepMs, `${name}: --test-timeout must fire before the step timeout`);
+    }
+  }
+  assert.ok(seen >= 26, `found only ${seen} node --test invocations in the Lint job (parser is stale)`);
 });
 
 for (const flag of Object.values(FLAG)) {
@@ -718,10 +749,10 @@ for (const flag of Object.values(FLAG)) {
 // Each of those must classify integration=true on a PR.
 const classifyPrGate = (paths) => {
   const run = spawnSync('bash', [new URL('./classify-pr-paths.sh', import.meta.url).pathname, '--pull-request'], {
-    encoding: 'utf8',
+    ...SPAWN, encoding: 'utf8',
     input: paths.join('\n') + (paths.length ? '\n' : ''),
   });
-  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.status, 0, spawnFailure(run));
   return Object.fromEntries(run.stdout.trim().split('\n').map((l) => l.split('=')));
 };
 
@@ -810,8 +841,14 @@ test('integration gate: the reference scan finds the known cross-directory reads
 
 test('integration gate: every repo path integration-reachable code references is integration=true on a PR', () => {
   const missing = [];
+  // #12526: ~28k references name only ~3.5k distinct paths. Classifying each
+  // reference spawned the classifier ~28k times (~400 s of a 600 s step), so the
+  // verdict is memoized per probe; every referencing line is still reported.
+  const integrationOf = new Map();
   for (const { target, at } of integrationRefs()) {
-    if (classifyPrGate([probeFor(target)]).integration !== 'true') missing.push(`${target} (${at})`);
+    const probe = probeFor(target);
+    if (!integrationOf.has(probe)) integrationOf.set(probe, classifyPrGate([probe]).integration);
+    if (integrationOf.get(probe) !== 'true') missing.push(`${target} (${at})`);
   }
   assert.deepEqual(missing, [], 'the integration suite reads these; classify them integration=true in classify-pr-paths.sh');
 });
