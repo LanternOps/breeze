@@ -26,6 +26,8 @@ const mixedResponse = {
     { level: 'organization', targetId: 'org-1', policyId: 'pol-org', policyName: 'Org Patch Policy', priority: 10, featureTypes: ['patch'] },
     { level: 'default', targetId: 'breeze-defaults', policyId: 'breeze-defaults', policyName: 'Breeze Defaults', priority: 0, featureTypes: ['monitors'] },
   ],
+  // An org-owned policy links for any caller (#12306); the sentinel gets no entry.
+  policyOwners: { 'pol-org': 'organization' },
 };
 
 // Device whose real org policy enforces warranty (a feature type beyond the
@@ -94,6 +96,9 @@ const inheritedFeatureResponse = {
   ],
 };
 
+// The tab reads JWT scope to decide which policy names link (#12306); these
+// cases do not exercise links, so the scope stays unresolved.
+vi.mock('../../lib/authScope', () => ({ useJwtClaims: () => ({ status: 'unresolved' as const }) }));
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(async (url: string) => {
     const body = url.includes('dev-5')
@@ -169,7 +174,7 @@ describe('DeviceEffectiveConfigTab baseline labeling', () => {
   it('omits the Not-enforced strip and pluralizes the count when every feature is enforced', async () => {
     render(<DeviceEffectiveConfigTab deviceId="dev-4" />);
     // Both enforced features render as cards...
-    await screen.findByRole('heading', { level: 4, name: 'Patch Management' });
+    await screen.findByRole('heading', { level: 4, name: 'Patches' });
     expect(screen.getByRole('heading', { level: 4, name: 'Warranty' })).toBeInTheDocument();
     // ...the header pluralizes (regression guard for the `!== 1 ? 's'` branch)...
     expect(screen.getByText(/2 enforced features/i)).toBeInTheDocument();
@@ -207,7 +212,7 @@ describe('DeviceEffectiveConfigTab inherited-from provenance (#5080)', () => {
   it('renders nothing for a feature with no inheritedFromPolicyId', async () => {
     render(<DeviceEffectiveConfigTab deviceId="dev-5" />);
 
-    await screen.findByRole('heading', { level: 4, name: 'Patch Management' });
+    await screen.findByRole('heading', { level: 4, name: 'Patches' });
     // Only one feature (patch) in this fixture carries provenance; backup does not.
     expect(screen.getAllByTestId('effective-config-inherited-from')).toHaveLength(1);
   });
@@ -215,7 +220,7 @@ describe('DeviceEffectiveConfigTab inherited-from provenance (#5080)', () => {
   it('renders no inherited-from line for the pre-W02 shape (field absent everywhere)', async () => {
     render(<DeviceEffectiveConfigTab deviceId="dev-2" />);
 
-    await screen.findByRole('heading', { level: 4, name: 'Patch Management' });
+    await screen.findByRole('heading', { level: 4, name: 'Patches' });
     expect(screen.queryByTestId('effective-config-inherited-from')).not.toBeInTheDocument();
   });
 });

@@ -52,10 +52,24 @@ function setUrl(url: string) {
   window.history.replaceState(null, '', url);
 }
 
+// Server-faithful fake of GET /alerts (#12324: status/severity are applied by
+// the API now): filters ROWS by the query, and no status hides dismissed.
+function serveAlerts(url: string): Response {
+  if (url === '/alerts/summary') {
+    return json({ openBySeverity: { critical: 2, high: 1, medium: 1, low: 1, info: 0 } });
+  }
+  const params = new URLSearchParams(url.split('?')[1] ?? '');
+  const statuses = params.get('status')?.split(',');
+  const severities = params.get('severity')?.split(',');
+  const data = ROWS.filter((r) => (statuses ? statuses.includes(r.status) : r.status !== 'dismissed')
+    && (!severities || severities.includes(r.severity)));
+  return json({ data, pagination: { page: 1, limit: 25, total: data.length } });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   setUrl('/alerts');
-  fetchMock.mockImplementation(() => Promise.resolve(json({ data: ROWS })));
+  fetchMock.mockImplementation((input) => Promise.resolve(serveAlerts(String(input))));
 });
 afterEach(() => setUrl('/'));
 
@@ -103,12 +117,15 @@ describe('AlertsPage — #status=&severity= hash (#6721)', () => {
     expect(screen.getByTestId('alert-severity-chip-high')).toBeTruthy();
   });
 
-  it('the API list fetch never carries the severity/status filter (client-side only)', async () => {
+  it('the API list fetch carries the hash status and severity (#12324: filtered server-side)', async () => {
     setUrl('/alerts#status=active&severity=critical,high');
     render(<AlertsPage />);
     await waitFor(() => expect(screen.getByText('alert-c')).toBeTruthy());
     const listCalls = fetchMock.mock.calls.map(([u]) => String(u)).filter((u) => u.startsWith('/alerts?'));
-    expect(listCalls).toEqual(['/alerts?status=active,acknowledged,resolved,suppressed,dismissed']);
+    const last = new URLSearchParams(listCalls.at(-1)!.split('?')[1]);
+    expect(last.get('status')).toBe('active');
+    expect(last.get('severity')).toBe('critical,high');
+    expect(last.get('page')).toBe('1');
   });
 
   it('bare #hideAiNoise (today\'s bookmarks) still turns the filter on', async () => {
@@ -127,7 +144,8 @@ describe('AlertsPage — #status=&severity= hash (#6721)', () => {
     fireEvent.click(screen.getByTestId('alert-hide-ai-noise-toggle'));
     expect(window.location.hash).toBe('#status=active&severity=critical&hideAiNoise=1');
     await waitFor(() => expect(screen.getByTestId('alert-severity-chip-critical')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /filters/i }));
+    // The toggle refetches in the background (#12324), so the list and its
+    // open filter panel stay mounted.
     fireEvent.click(screen.getByTestId('alert-hide-ai-noise-toggle'));
     expect(window.location.hash).toBe('#status=active&severity=critical');
   });

@@ -2945,7 +2945,8 @@
         "not_found": "kein Skript, das der Besitzer dieses Agenten sehen kann",
         "not_in_partner_baseline": "nicht in der Partner-Baseline",
         "run_script_not_allowed": "„Skript ausführen“ ist für diesen Agenten nicht erlaubt"
-      }
+      },
+      "circuitOpen": "Der Schutzschalter dieses Agenten ist für diese Organisation ausgelöst, daher wurde kein Lauf gestartet. Setzen Sie ihn in der Zeile des Agenten zurück, um ihn wieder auszuführen."
     },
     "actions": {
       "add": "Neuer Agent",
@@ -5118,6 +5119,27 @@
           "label": "Tagesausgaben Recherche (Cent)",
           "hint": "Gesamtes Ausgabenlimit pro Tag über alle Läufe dieses Agenten."
         }
+      }
+    },
+    "circuit": {
+      "badge": "Schutzschalter ausgelöst",
+      "openedSince": "In {{org}} pausiert seit {{at}}.",
+      "opened": "In {{org}} pausiert.",
+      "reason": "Grund: {{reason}}",
+      "reset": "Zurücksetzen",
+      "dialog": {
+        "title": "Schutzschalter zurücksetzen?",
+        "message": "{{agent}} läuft in {{org}} wieder. Ist die Fehlerursache nicht behoben, pausiert er nach derselben Anzahl Fehler erneut.",
+        "reasonLabel": "Begründung (wird im Audit-Log gespeichert)",
+        "reasonPlaceholder": "Zum Beispiel: Das Modell-Gateway ist wieder erreichbar",
+        "confirm": "Schutzschalter zurücksetzen"
+      },
+      "toasts": {
+        "reset": "Schutzschalter zurückgesetzt. Der Agent kann wieder laufen.",
+        "resetFailed": "Der Schutzschalter konnte nicht zurückgesetzt werden."
+      },
+      "errors": {
+        "mfaRequired": "Zum Zurücksetzen ist eine mit Zwei-Faktor-Authentifizierung angemeldete Sitzung nötig. Melden Sie sich erneut mit Ihrem zweiten Faktor an."
       }
     }
   },

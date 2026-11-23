@@ -1,8 +1,14 @@
 ---
 import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import AutomationsTabStrip from '../../components/automations/AutomationsTabStrip';
 import FlowsPage from '../../components/flows/FlowsPage';
+
+const currentPath = Astro.url.pathname;
 ---
 
 <DashboardLayout titleKey="titles.flows">
-  <FlowsPage client:load />
+  <div class="space-y-5">
+    <AutomationsTabStrip currentPath={currentPath} client:load />
+    <FlowsPage client:load />
+  </div>
 </DashboardLayout>

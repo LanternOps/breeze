@@ -1048,13 +1048,12 @@
     "linkedPolicy": "Política vinculada:",
     "notEnforced": "No aplicado",
     "usingBreezeDefaults": "- usando los valores predeterminados de Breeze",
-    "inheritanceChain": "Cadena de herencia",
-    "policiesAreResolvedUsingClosestWins": "Las políticas se resuelven utilizando la prioridad de ganador más cercano. Las asignaciones más específicas (nivel de dispositivo) anulan las más amplias (nivel de organización).",
+    "inheritanceChain": "Precedencia",
     "priority": "Prioridad",
     "level": "Nivel",
     "policy2": "Política",
     "features": "Características",
-    "inheritedFrom": "Heredado de {{name}}",
+    "inheritedFrom": "Basada en {{name}}",
     "patchApproval": {
       "label": "aprobación",
       "byRing": "definida por el anillo de actualización vinculado",
@@ -1064,8 +1063,16 @@
       "extraDestinations": "Destinos adicionales durante el aislamiento",
       "invalid": "La configuración de contención de esta política no es válida, por lo que el aislamiento usa los valores predeterminados fijos, sin destinos adicionales."
     },
-    "chainResolutionRule": "Primero decide el nivel: Dispositivo gana a Grupo de dispositivos, luego Sitio, Organización y Socio. La prioridad (gana el número más bajo) solo desempata entre políticas del mismo nivel. Las funciones tachadas fueron anuladas por una política más cercana.",
-    "featureOverriddenBy": "Anulada por {{policy}}"
+    "featureOverriddenBy": "Anulada por {{policy}}",
+    "viaLevel": "mediante {{level}}",
+    "managedByYourMsp": "Administrada por su MSP",
+    "precedenceLegend": "Prevalece la más específica, por función: Dispositivo › Grupo de dispositivos › Sitio › Organización › Todas las organizaciones. Una política más cercana reemplaza la función completa; no se combinan.",
+    "lostClause": "Reemplazada para {{features}} por {{winner}}: {{reason}}.",
+    "lostReasons": {
+      "more_specific_level": "está configurada en un nivel más específico",
+      "lower_priority_number": "mismo nivel, número de prioridad menor",
+      "assigned_earlier": "mismo nivel y prioridad, asignada antes"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "No se pudieron recuperar las actividades",

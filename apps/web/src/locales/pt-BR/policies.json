@@ -18,15 +18,15 @@
       "optional2": "(opcional)",
       "noRestrictionAppliesToAllOperatingSystems": "Sem restrição - aplica-se a todos os sistemas operacionais",
       "priority": "Prioridade",
-      "currentAssignments": "Atribuições atuais",
-      "noAssignmentsYetAssignThisPolicyTo": "Nenhuma atribuição ainda. Atribua esta política aos destinos acima.",
+      "currentAssignments": "Aplica-se a",
+      "noAssignmentsYetAssignThisPolicyTo": "Ainda não aplicada a nenhum dispositivo. Adicione um destino acima.",
       "level": "Nível",
       "target": "Destino",
       "priority2": "Prioridade",
       "filters": "Filtros",
       "allOrganizations": "Todas as organizações",
       "allDevices": "Todos os dispositivos",
-      "addAssignment": "Adicionar atribuição",
+      "addAssignment": "Adicionar destino",
       "level2": "Nível",
       "target2": "Destino",
       "target3": "Destino",
@@ -81,23 +81,23 @@
       "howWouldYouLikeToConfigureThis": "Como você gostaria de configurar esta política?",
       "configureNew": "Configurar nova",
       "startFreshWithCustomSettingsForEach": "Comece do zero com configurações personalizadas para cada recurso",
-      "linkToExisting": "Vincular a uma existente",
-      "useAnotherPolicyAsTheMasterBaseline": "Use outra política como linha de base mestre",
+      "linkToExisting": "Baseada em uma política pai",
+      "useAnotherPolicyAsTheMasterBaseline": "Comece com as configurações de outra política e altere o que for diferente",
       "newConfigurationPolicy2": "Nova política de configuração",
-      "masterPolicy": "Política mestre",
-      "selectTheConfigurationPolicyToUseAs": "Selecione a política de configuração que será usada como linha de base. Você pode substituir configurações individuais por recurso.",
+      "masterPolicy": "Política pai",
+      "selectTheConfigurationPolicyToUseAs": "Escolha a política pai. Você pode alterar recursos individuais para esta política.",
       "policyDetails": "Detalhes da política",
       "eGStandardWorkstationPolicy": "ex.: Política padrão para estações de trabalho",
       "optionalDescriptionOfWhatThisPolicyConfigures": "Descrição opcional do que esta política configura",
-      "scope": "Escopo",
-      "partnerLibrary": "Biblioteca do parceiro",
-      "assignToOrganizationsAfterCreating": "(atribua a organizações após a criação)",
-      "aSpecificOrganization": "Uma organização específica",
+      "scope": "Gerenciada por",
+      "partnerLibrary": "Seu MSP",
+      "assignToOrganizationsAfterCreating": "(escolha onde ela se aplica a seguir)",
+      "aSpecificOrganization": "Uma organização",
       "selectAnOrganization": "Selecione uma organização",
-      "createAReusablePolicyOwnedByYour": "Crie uma política reutilizável pertencente ao seu parceiro. Ela não se aplica a nenhuma organização até ser atribuída na guia Organizações da política. As configurações de backup não estão disponíveis em políticas pertencentes ao parceiro.",
+      "createAReusablePolicyOwnedByYour": "Gerenciada pelo seu MSP. Ela não se aplica a nada até você escolher onde ela se aplica em Aplica-se a.",
       "new": "new",
       "linked": "linked",
-      "createAPolicyLinkedToAnExisting": "Crie uma política vinculada a uma mestre existente.",
+      "createAPolicyLinkedToAnExisting": "Crie uma política baseada em uma política pai.",
       "createANewConfigurationPolicyToBundle": "Crie uma nova política de configuração para agrupar configurações de recursos.",
       "name": "name",
       "description": "description",
@@ -116,16 +116,15 @@
       "failedToUpdatePolicy": "Falha ao atualizar a política",
       "overview": "Visão geral",
       "complianceStatus": "Status de conformidade",
-      "assignments": "Atribuições",
       "loadingPolicy": "Carregando política...",
       "backToList": "Voltar para a lista",
       "configurationPolicies": "Políticas de configuração",
       "policyDetails": "Detalhes da política",
       "archived2": "Arquivada",
-      "inheritingFrom": "Herdando de",
-      "overrideIndividualTabsToCustomizeSettings": "— Substitua guias individuais para personalizar as configurações",
-      "isnTAvailableOnPartnerWidePolicies": "não está disponível em políticas de todo o parceiro",
-      "configureThisFeatureOnAnOrganizationScoped": "Configure este recurso em uma política com escopo de organização.",
+      "inheritingFrom": "Baseada em",
+      "overrideIndividualTabsToCustomizeSettings": "Altere um recurso para defini-lo somente para esta política.",
+      "isnTAvailableOnPartnerWidePolicies": " não está disponível em políticas gerenciadas pelo MSP",
+      "configureThisFeatureOnAnOrganizationScoped": "Defina este recurso em uma política gerenciada por uma organização.",
       "thisPolicyStillCarriesAnExisting": "Esta política ainda contém uma configuração existente de",
       "configurationThatWillNeverBeApplied": " que nunca será aplicada.",
       "policy": "Política",
@@ -138,8 +137,12 @@
       "complianceStatus2": "compliance_status",
       "assignments2": "assignments",
       "managedByYourMsp": "Gerenciado pelo seu MSP",
-      "inheritedByPolicies_one": "Herdado por {{count}} política",
-      "inheritedByPolicies_other": "Herdado por {{count}} políticas"
+      "inheritedByPolicies_one": "Pai de {{count}} política",
+      "inheritedByPolicies_other": "Pai de {{count}} políticas",
+      "gatedFeatureTitle": "Não disponível em políticas gerenciadas pelo MSP. Defina este recurso em uma política gerenciada por uma organização.",
+      "appliesToDrawerTitle": "Aplica-se a",
+      "detailsSaved": "Detalhes da política salvos",
+      "refreshAppliesToFailed": "Não foi possível atualizar onde esta política se aplica. Recarregue a página para ver."
     },
     "configPolicyList": {
       "archived": "Arquivada",
@@ -151,18 +154,18 @@
       "archived2": "Arquivada",
       "features": "Recursos",
       "noPoliciesFoundTryAdjustingYourSearch": "Nenhuma política encontrada. Tente ajustar sua pesquisa.",
-      "noPoliciesYet": "Ainda não há políticas de configuração. Crie uma e depois atribua-a a organizações, locais ou dispositivos.",
-      "partnerWidePolicyAppliesToEveryOrganization": "Política de todo o parceiro — aplica-se a todas as organizações",
-      "allOrgs": "Todo o parceiro",
+      "noPoliciesYet": "Nenhuma política de configuração ainda. Crie uma e depois escolha onde ela se aplica.",
       "page": "Página",
       "of2": "de",
       "itsOwningOrganization": "sua organização proprietária",
-      "organizationPolicyTitle": "Política da organização — aplica-se somente a {{organization}}",
       "summary": "{{filtered}} de {{total}} políticas",
       "inheritsBadge": "Herda",
       "statusFilterLabel": "Status",
-      "partnerPolicy": "Parceiro",
-      "partnerPolicyAppliesOnlyWhereAssigned": "Política do parceiro — aplica-se somente onde está atribuída. Atribua-a a todas as organizações para torná-la de todo o parceiro."
+      "appliesToHeader": "Aplica-se a",
+      "managedByOrganization": "Gerenciada por {{organization}}",
+      "notAppliedChip": "Não aplicada",
+      "inUseChip_one": "Em uso por meio de {{count}} política",
+      "inUseChip_other": "Em uso por meio de {{count}} políticas"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Falha ao buscar as políticas de configuração",
@@ -191,10 +194,10 @@
       "failedToNarrow": "Falha ao restringir",
       "failedToAssignOrg": "Falha ao atribuir a organização",
       "organizations": "Organizações",
-      "thisPartnerLibraryPolicyAppliesOnlyTo": "Esta política da biblioteca do parceiro aplica-se somente às organizações selecionadas.",
+      "thisPartnerLibraryPolicyAppliesOnlyTo": "Esta política gerenciada pelo MSP se aplica somente às organizações que você escolher.",
       "filtersApplyOnAssign": "Estes filtros valem na atribuição abaixo. Vazio significa todas as funções e todos os sistemas operacionais. Para alterar os filtros de uma atribuição, desmarque e marque de novo.",
-      "allOrganizationsPartnerWide": "Todas as organizações (todo o parceiro)",
-      "allOrganizationsPartnerWide2": "Todas as organizações (todo o parceiro)",
+      "allOrganizationsPartnerWide": "Todas as organizações",
+      "allOrganizationsPartnerWide2": "Todas as organizações",
       "assigned": "Atribuído",
       "searchOrganizations": "Pesquisar organizações...",
       "searching": "Pesquisando…",
@@ -700,7 +703,11 @@
         "revertConfirmTitle": "Reverter para a política pai?",
         "revertConfirmMessage": "Isso exclui a substituição de {{feature}} nesta política. As configurações são perdidas e as configurações da política pai passam a valer para todos os dispositivos que usam esta política. Não é possível desfazer.",
         "removeConfirmTitle": "Remover esta configuração?",
-        "removeConfirmMessage": "Isso exclui a configuração de {{feature}} desta política. As configurações são perdidas e o recurso deixa de ser aplicado a todos os dispositivos que usam esta política. Não é possível desfazer."
+        "removeConfirmMessage": "Isso exclui a configuração de {{feature}} desta política. As configurações são perdidas e o recurso deixa de ser aplicado a todos os dispositivos que usam esta política. Não é possível desfazer.",
+        "badgeInherited": "Configurado (herdado)",
+        "badgeSavedNotDeployed": "Salvo (não implantado)",
+        "badgeConfigured": "Configurado",
+        "badgeNotConfigured": "Não configurado"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Implantar o Breeze Assist nos dispositivos",
@@ -818,6 +825,7 @@
         "overridesLabel": "Substituições:",
         "failedToLoadMonitors": "Falha ao carregar os monitores",
         "createMonitor": "Criar monitor",
+        "helpText": "As definições de monitores ficam em Alertas > Monitores. Esta aba escolhe quais monitores se aplicam a esta política e permite substituir o valor de um monitor.",
         "notAttachable": "Este monitor não pode ser anexado a esta política. Políticas do parceiro só podem usar monitores de todo o parceiro.",
         "monitorDeleted": "Monitor excluído",
         "recommended": {
@@ -1387,6 +1395,8 @@
         "blockedLabel": "Atualizações bloqueadas",
         "blockedPlaceholder": "IDs de atualização, separados por vírgulas",
         "blockedHelp": "O Breeze nunca instala uma atualização listada aqui.",
+        "blockedUnsupported": "A {{vendor}} não oferece suporte ao bloqueio de atualizações individuais. Para interromper as atualizações, desative a categoria ou o fabricante.",
+        "blockedStoredUnsupported": "Esta política bloqueia as atualizações {{ids}} da {{vendor}}, o que a {{vendor}} não suporta, por isso nenhuma atualização da {{vendor}} é executada com ela. Ao salvar, as atualizações bloqueadas são removidas.",
         "executeRequired": "Ativar atualizações de fabricantes, adicionar uma categoria, ativar reinicializações noturnas ou desbloquear uma atualização exige a permissão devices.execute e MFA. Peça a alguém que a tenha para salvar esta alteração.",
         "gateClosedRefusal": "Uma das categorias de atualização selecionadas ainda não está disponível, então a política não foi salva. Remova-a e salve novamente.",
         "invalid": "Verifique a programação: a janela é de 1 a 8 horas inteiras, a recuperação é de 0 a 14 noites e o horário de início está no formato HH:MM.",
@@ -1450,8 +1460,8 @@
       }
     },
     "partnerGroupAssignment": {
-      "title": "Grupos de dispositivos (todas as org.)",
-      "description": "Selecione como destino um grupo de dispositivos de todo o parceiro. Uma atribuição de grupo se aplica no nível do grupo de dispositivos e, portanto, tem precedência sobre atribuições de outras políticas nos níveis de organização e site.",
+      "title": "Grupos de dispositivos entre organizações",
+      "description": "Selecione como destino um grupo de dispositivos do MSP. Uma atribuição de grupo se aplica no nível do grupo de dispositivos e, portanto, tem precedência sobre atribuições de outras políticas nos níveis de organização e local.",
       "selectGroup": "Selecione um grupo de dispositivos",
       "assign": "Atribuir",
       "remove": "Remover",
@@ -1462,6 +1472,96 @@
       "failedToRemove": "Não foi possível remover a atribuição do grupo de dispositivos",
       "empty": "Ainda não há grupos de dispositivos de todo o parceiro. Crie um em Grupos de dispositivos → Todas as org.",
       "loading": "Carregando grupos de dispositivos…"
+    },
+    "featureNames": {
+      "patch": {
+        "label": "Correções"
+      },
+      "monitors": {
+        "label": "Monitores"
+      },
+      "backup": {
+        "label": "Backup"
+      },
+      "security": {
+        "label": "Segurança"
+      },
+      "maintenance": {
+        "label": "Manutenção"
+      },
+      "compliance": {
+        "label": "Conformidade"
+      },
+      "automation": {
+        "label": "Automações"
+      },
+      "event_log": {
+        "label": "Logs de eventos"
+      },
+      "software_policy": {
+        "label": "Política de software"
+      },
+      "sensitive_data": {
+        "label": "Descoberta de dados"
+      },
+      "peripheral_control": {
+        "label": "Controle de periféricos"
+      },
+      "warranty": {
+        "label": "Garantia"
+      },
+      "helper": {
+        "label": "Breeze Assist"
+      },
+      "remote_access": {
+        "label": "Acesso remoto"
+      },
+      "pam": {
+        "label": "Acesso privilegiado"
+      },
+      "vulnerability": {
+        "label": "Verificação de vulnerabilidades"
+      },
+      "onedrive_helper": {
+        "label": "OneDrive Helper"
+      },
+      "device_lifecycle": {
+        "label": "Ciclo de vida do dispositivo"
+      },
+      "hardware_monitoring": {
+        "label": "Monitoramento de hardware"
+      }
+    },
+    "levelNames": {
+      "partner": {
+        "label": "Todas as organizações"
+      },
+      "organization": {
+        "label": "Organização"
+      },
+      "site": {
+        "label": "Local"
+      },
+      "device_group": {
+        "label": "Grupo de dispositivos"
+      },
+      "device": {
+        "label": "Dispositivo"
+      },
+      "default": {
+        "label": "Breeze Defaults"
+      }
+    },
+    "appliesToStrip": {
+      "heading": "Aplica-se a",
+      "unknownState": "Desconhecido",
+      "notAppliedWarning": "Não aplicada a nenhum dispositivo. Esta política não se aplica a nada até você escolher onde ela se aplica.",
+      "notAppliedNeutral": "Ainda não aplicada",
+      "inUseCount_one": "Em uso por meio de {{count}} política",
+      "inUseCount_other": "Em uso por meio de {{count}} políticas",
+      "moreTargets_one": "mais {{count}} destino",
+      "moreTargets_other": "mais {{count}} destinos",
+      "assignButton": "Atribuir"
     }
   },
   "software": {

@@ -1,11 +1,23 @@
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { and } from 'drizzle-orm';
+
+const { insertMock, valuesMock, returningMock } = vi.hoisted(() => {
+  const returningMock = vi.fn();
+  const valuesMock = vi.fn(() => ({ returning: returningMock }));
+  return { returningMock, valuesMock, insertMock: vi.fn(() => ({ values: valuesMock })) };
+});
+
+vi.mock('../db', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../db')>()),
+  db: { insert: insertMock },
+}));
 
 import {
   buildLogSearchKeysetCondition,
   buildSearchConditions,
+  createSavedLogSearchQuery,
   decodeSearchCursor,
   encodeSearchCursor,
   mergeSavedLogSearchFilters,
@@ -208,6 +220,33 @@ describe('resolveSingleOrgId', () => {
       canAccessOrg: () => true,
     } as any;
     expect(resolveSingleOrgId(auth)).toBeNull();
+  });
+});
+
+describe('createSavedLogSearchQuery for a partner reaching several orgs (#12297)', () => {
+  const partnerAuth = {
+    user: { id: 'user-1' },
+    orgId: null,
+    accessibleOrgIds: ['org-a', 'org-b'],
+    canAccessOrg: (id: string) => ['org-a', 'org-b'].includes(id),
+  } as any;
+  const input = { name: 'Service failures', filters: {} as any };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    returningMock.mockResolvedValue([{ id: 'query-1' }]);
+  });
+
+  it('refuses to save when the caller names no org', async () => {
+    await expect(createSavedLogSearchQuery(partnerAuth, input))
+      .rejects.toThrow('A valid orgId is required for this action.');
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('saves under the org the caller selected', async () => {
+    await expect(createSavedLogSearchQuery(partnerAuth, { ...input, orgId: 'org-b' }))
+      .resolves.toEqual({ id: 'query-1' });
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-b', createdBy: 'user-1' }));
   });
 });
 

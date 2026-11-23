@@ -27,7 +27,7 @@ export const GO_TO_SHORTCUTS: readonly GoToShortcut[] = [
   { key: 's', href: '/scripts', labelKey: 'nav.scripts' },
   { key: 'p', href: '/patches', labelKey: 'nav.patches' },
   { key: 'v', href: '/vulnerabilities', labelKey: 'nav.vulnerabilities' },
-  { key: 'j', href: '/jobs', labelKey: 'nav.jobs' },
+  { key: 'j', href: '/jobs', labelKey: 'nav.automations' },
   { key: 't', href: '/tickets', labelKey: 'nav.tickets' },
   { key: 'q', href: '/billing/quotes', labelKey: 'nav.quotes' },
   { key: 'b', href: '/billing/invoices', labelKey: 'nav.invoices' },

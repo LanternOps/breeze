@@ -4,8 +4,12 @@ import {
   armedOemCategories,
   armsBeyond,
   hasArmedCategory,
+  hasUnsupportedBlockedUpdateIds,
+  OEM_DELL_BLOCKED_IDS_UNSUPPORTED_MESSAGE,
   oemUpdatesInlineSettingsSchema,
+  oemUpdatesInlineSettingsWriteSchema,
 } from './oemUpdatesPolicy';
+import { OEM_LANES_WITHOUT_BLOCKED_UPDATE_IDS, oemLaneHonoursBlockedUpdateIds } from '../utils/oemUpdates';
 
 const base = () => ({
   version: 1 as const,
@@ -155,4 +159,54 @@ describe('armsBeyond', () => {
       expect(armsBeyond(prev, next)).toBe(expected);
     });
   }
+});
+
+// #12265: the Dell lane cannot honour a blocklist (DCU offers a different package
+// for the same component), and the agent refuses any Dell run that carries one.
+describe('blocked update IDs per lane (#12265)', () => {
+  const withVendor = (lane: string, blockedUpdateIds: unknown) => ({
+    ...base(),
+    vendors: { [lane]: { enabled: true, categories: { driver: true }, blockedUpdateIds } },
+  });
+
+  it('only Dell refuses a blocklist', () => {
+    expect(OEM_LANES_WITHOUT_BLOCKED_UPDATE_IDS).toEqual(['dell']);
+    expect(oemLaneHonoursBlockedUpdateIds('dell')).toBe(false);
+    for (const lane of ['surface', 'hp', 'lenovo'] as const) expect(oemLaneHonoursBlockedUpdateIds(lane)).toBe(true);
+  });
+
+  it('the write schema rejects any Dell blocked ID and names the field', () => {
+    const result = oemUpdatesInlineSettingsWriteSchema.safeParse(withVendor('dell', ['ABC12']));
+    expect(result.success).toBe(false);
+    const issue = result.error!.issues[0]!;
+    expect(issue.path).toEqual(['vendors', 'dell', 'blockedUpdateIds']);
+    expect(issue.message).toBe(OEM_DELL_BLOCKED_IDS_UNSUPPORTED_MESSAGE);
+    expect(issue.message).toMatch(/Dell does not support blocking individual updates/);
+  });
+
+  it('the write schema keeps the shape: an empty or omitted Dell list still parses', () => {
+    expect(oemUpdatesInlineSettingsWriteSchema.safeParse(withVendor('dell', [])).success).toBe(true);
+    const omitted = { ...base(), vendors: { dell: { enabled: true, categories: { driver: true } } } };
+    expect(oemUpdatesInlineSettingsWriteSchema.parse(omitted).vendors.dell?.blockedUpdateIds).toEqual([]);
+  });
+
+  it("the write schema still accepts other vendors' blocklists, and still applies the base bounds", () => {
+    for (const lane of ['surface', 'hp', 'lenovo']) {
+      expect(oemUpdatesInlineSettingsWriteSchema.safeParse(withVendor(lane, ['ABC12'])).success).toBe(true);
+      expect(oemUpdatesInlineSettingsWriteSchema.safeParse(withVendor(lane, ['A', 'A'])).success).toBe(false);
+    }
+    expect(oemUpdatesInlineSettingsWriteSchema.safeParse({ ...base(), extra: 1 }).success).toBe(false);
+  });
+
+  it('the stored-shape schema still parses a Dell blocklist, so a policy saved before #12265 keeps resolving', () => {
+    expect(oemUpdatesInlineSettingsSchema.safeParse(withVendor('dell', ['ABC12'])).success).toBe(true);
+  });
+
+  it('hasUnsupportedBlockedUpdateIds flags only a non-empty list on a lane that cannot honour it', () => {
+    const parse = (lane: string, ids: string[]) => oemUpdatesInlineSettingsSchema.parse(withVendor(lane, ids));
+    expect(hasUnsupportedBlockedUpdateIds(parse('dell', ['ABC12']), 'dell')).toBe(true);
+    expect(hasUnsupportedBlockedUpdateIds(parse('dell', []), 'dell')).toBe(false);
+    expect(hasUnsupportedBlockedUpdateIds(parse('hp', ['ABC12']), 'hp')).toBe(false);
+    expect(hasUnsupportedBlockedUpdateIds(parse('hp', ['ABC12']), 'dell')).toBe(false);
+  });
 });

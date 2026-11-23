@@ -16,29 +16,33 @@ export function useAiModelsSnapshot() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<'forbidden' | 'failed' | null>(null);
 
-  const reload = useCallback(async () => {
+  /** `quiet` (background polling, #12456): a failed read keeps the last good snapshot instead of replacing the tab with the error screen. */
+  const load = useCallback(async (quiet: boolean) => {
     try {
       const res = await fetchWithAuth('/ai/models');
       if (res.status === 401) { void navigateTo('/login', { replace: true }); return; }
+      if (quiet && !res.ok) return;
       if (res.status === 403) { setError('forbidden'); return; }
       if (!res.ok) { setError('failed'); return; }
       setSnapshot((await res.json()) as AiModelsSnapshotDto);
       setError(null);
     } catch (err) {
       console.error('[PartnerAiModelsTab] failed to load /ai/models', err);
-      setError('failed');
+      if (!quiet) setError('failed');
     } finally {
       setLoading(false);
     }
   }, []);
+  const reload = useCallback(() => load(false), [load]);
+  const poll = useCallback(() => load(true), [load]);
 
   useEffect(() => { void reload(); }, [reload]);
-  return { snapshot, loading, error, reload };
+  return { snapshot, loading, error, reload, poll };
 }
 
 export default function PartnerAiModelsTab() {
   const { t } = useTranslation('settings');
-  const { snapshot, loading, error, reload } = useAiModelsSnapshot();
+  const { snapshot, loading, error, reload, poll } = useAiModelsSnapshot();
 
   if (loading) {
     return (
@@ -68,8 +72,8 @@ export default function PartnerAiModelsTab() {
   return (
     <div data-testid="ai-models-tab" className="space-y-6">
       <p className="max-w-prose text-sm text-muted-foreground">{t('aiModels.subtitle')}</p>
-      <ConnectionsCard snapshot={snapshot} onChanged={reload} />
-      <ModelsCard snapshot={snapshot} onChanged={reload} />
+      <ConnectionsCard snapshot={snapshot} onChanged={reload} onPoll={poll} />
+      <ModelsCard snapshot={snapshot} onChanged={reload} onPoll={poll} />
       {/* The tab's form card: the partner settings header Save sends its draft. */}
       <FormCard className=""><FeatureDefaultsCard snapshot={snapshot} onSaved={reload} /></FormCard>
       <p className="text-xs text-muted-foreground">{t('aiModels.workspaceNote')}</p>

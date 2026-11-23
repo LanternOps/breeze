@@ -10,8 +10,9 @@ import (
 )
 
 // The observe stage writes nothing (amendment §4 O2). No firmware write class
-// or method, and no WMI or CIM write verb, may appear in this package's or the
-// Surface collector's source, executed or not. The banned words are built from
+// or method other than Dell's SetAttribute (pinned by TestOnlyReadMethodInvoked),
+// and no WMI or CIM write verb, may appear in this package's or the Surface
+// collector's source, executed or not. The banned words are built from
 // parts so this file does not contain them either.
 var bannedWriteWords = []string{
 	"Set" + "BIOSSetting",
@@ -80,27 +81,36 @@ func TestNoWriteMethodReachable(t *testing.T) {
 	}
 }
 
-// The one method the observe stage calls is the read-only
-// GetBiosSelections, in exactly one script; no other CIM method is invoked.
+// Two CIM methods are invoked in this package, each in exactly one script: the
+// read-only GetBiosSelections (Lenovo observe), and Dell's SetAttribute, the
+// one firmware write (W04), which lives in dell.go's dellApplyScript and is
+// reached only through the Dell adapter's Apply. HP and Lenovo invoke no write.
 var invokeRe = regexp.MustCompile(`Invoke-CimMethod[^\n;]*`)
 
 func TestOnlyReadMethodInvoked(t *testing.T) {
-	total := 0
+	reads, writes := 0, 0
 	for path, src := range observeSources(t) {
 		for _, m := range invokeRe.FindAllString(src, -1) {
-			total++
-			if !strings.Contains(m, "-MethodName GetBiosSelections") {
+			switch {
+			case strings.Contains(m, "-MethodName GetBiosSelections"):
+				reads++
+			case strings.Contains(m, "-MethodName SetAttribute") && filepath.Base(path) == "dell.go":
+				writes++
+			default:
 				t.Errorf("%s invokes %q", path, m)
 			}
 		}
 	}
-	if total != 1 {
-		t.Fatalf("%d Invoke-CimMethod calls, want exactly 1", total)
+	if reads != 1 || writes != 1 {
+		t.Fatalf("%d GetBiosSelections and %d SetAttribute calls, want exactly 1 each", reads, writes)
 	}
 	if !strings.Contains(lenovoSelectionsScript, "Invoke-CimMethod") {
-		t.Fatal("the selections script no longer carries the one method call")
+		t.Fatal("the selections script no longer carries the one read method call")
 	}
-	for _, s := range []string{hpReadScript, lenovoReadScript} {
+	if !strings.Contains(dellApplyScript, "-MethodName SetAttribute") {
+		t.Fatal("the Dell write script no longer carries the one write method call")
+	}
+	for _, s := range []string{hpReadScript, lenovoReadScript, dellReadScript} {
 		if strings.Contains(s, "Invoke-CimMethod") {
 			t.Fatal("a read script invokes a method")
 		}

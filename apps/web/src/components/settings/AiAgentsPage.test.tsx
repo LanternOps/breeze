@@ -261,6 +261,215 @@ describe('AiAgentsPage — patch agent next occurrence and Run now', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #12347 — the circuit breaker on the agent card.
+//
+// An open circuit refuses every run for that (org, agent) until a human resets
+// it — by design, never automatically. Nothing on this page used to say so:
+// "Run now" toasted a generic failure and scheduled runs were skipped for
+// weeks. The list route now reports `openCircuits`; the card shows each one
+// with its reason and a Reset that goes through the existing MFA-gated route.
+// ---------------------------------------------------------------------------
+describe('AiAgentsPage — circuit breaker (#12347)', () => {
+  const CIRCUIT_A = {
+    orgId: 'org-1',
+    orgName: 'Acme',
+    openedAt: '2026-11-17T07:03:02.000Z',
+    openedReason: '3 consecutive terminal failures (threshold 3); last failure: llm_unavailable',
+    consecutiveFailures: 3,
+  };
+  const CIRCUIT_B = { ...CIRCUIT_A, orgId: 'org-2', orgName: 'Globex', openedReason: null };
+  const TRIPPED = { ...PARTNER_AGENT, openCircuits: [CIRCUIT_A, CIRCUIT_B] };
+
+  function routes(
+    overrides: (url: string) => Response | undefined,
+    agents: unknown[] = [TRIPPED],
+  ) {
+    fetchMock.mockImplementation((url: string) => {
+      const hit = overrides(url);
+      if (hit) return Promise.resolve(hit);
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: agents, system: SYSTEM_ENABLED }));
+      return Promise.resolve(json({ data: [] }));
+    });
+  }
+  const listCalls = () => fetchMock.mock.calls.filter(([url]) => url === '/ai/agents?includeDisabled=1').length;
+
+  it('shows each open circuit with its org, reason and a Reset control', async () => {
+    mockEndpoints([TRIPPED]);
+    render(<AiAgentsPage />);
+
+    const a = await screen.findByTestId('ai-agent-circuit-open-a1-org-1');
+    expect(a).toHaveTextContent('Acme');
+    expect(a).toHaveTextContent('last failure: llm_unavailable');
+    expect(screen.getByTestId('ai-agent-circuit-open-a1-org-2')).toHaveTextContent('Globex');
+    expect(screen.getByTestId('ai-agent-circuit-reset-a1-org-1')).toBeInTheDocument();
+  });
+
+  it('shows nothing for an agent with no open circuit, or a server that did not report it', async () => {
+    mockEndpoints([{ ...PARTNER_AGENT, openCircuits: [] }, { ...ORG_AGENT }]);
+    render(<AiAgentsPage />);
+
+    await screen.findByTestId('ai-agent-row-a1');
+    expect(screen.queryByTestId(/^ai-agent-circuit-open-/)).toBeNull();
+  });
+
+  it('narrows to the selected org when one is selected', async () => {
+    orgState.current = { ...orgState.current, currentOrgId: 'org-2', allOrgs: false };
+    mockEndpoints([TRIPPED]);
+    render(<AiAgentsPage />);
+
+    expect(await screen.findByTestId('ai-agent-circuit-open-a1-org-2')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-circuit-open-a1-org-1')).toBeNull();
+  });
+
+  it('resets through the existing route with the circuit org and a reason, then reloads the list', async () => {
+    routes((url) => (url === '/ai/agents/a1/circuit/reset'
+      ? json({ data: { state: 'closed' } }, true, 200)
+      : undefined));
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-circuit-reset-a1-org-2'));
+    const confirm = await screen.findByTestId('ai-agent-circuit-reset-confirm');
+    // The route requires a reason (3+ characters) for the audit row.
+    // ConfirmDialog keeps the button focusable and gates it with aria-disabled.
+    expect(confirm).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.change(screen.getByTestId('ai-agent-circuit-reset-reason'), {
+      target: { value: 'gateway is back' },
+    });
+    expect(confirm).toHaveAttribute('aria-disabled', 'false');
+    const before = listCalls();
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/ai/agents/a1/circuit/reset',
+      expect.objectContaining({
+        method: 'POST',
+        // The CIRCUIT's org, never the page's selected org.
+        body: JSON.stringify({ orgId: 'org-2', reason: 'gateway is back' }),
+      }),
+    ));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+    await waitFor(() => expect(listCalls()).toBeGreaterThan(before));
+  });
+
+  it('keeps Confirm gated on a reason the route would refuse (under 3 characters once trimmed)', async () => {
+    mockEndpoints([TRIPPED]);
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-circuit-reset-a1-org-1'));
+    const confirm = await screen.findByTestId('ai-agent-circuit-reset-confirm');
+    const reason = screen.getByTestId('ai-agent-circuit-reset-reason');
+    for (const value of ['ok', '     ', '  ab  ']) {
+      fireEvent.change(reason, { target: { value } });
+      expect(confirm).toHaveAttribute('aria-disabled', 'true');
+    }
+    fireEvent.change(reason, { target: { value: ' abc ' } });
+    expect(confirm).toHaveAttribute('aria-disabled', 'false');
+  });
+
+  // A dialog left open on a circuit that then disappears from the list (an
+  // other admin reset it) must not linger in state and pop back open, still
+  // holding the old reason, the next time that circuit opens.
+  it('drops a pending reset when its circuit leaves the list, and never reopens it by itself', async () => {
+    let agents: unknown[] = [TRIPPED];
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url === '/ai/patch-plan/runs') {
+        return Promise.resolve(json({ success: false, skipped: 'circuit_open', code: 'circuit_open' }, true, 200));
+      }
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: agents, system: SYSTEM_ENABLED }));
+      return Promise.resolve(json({ data: [] }));
+    });
+    const patchTripped = { ...TRIPPED, id: 'p-agent', kind: 'patch' as const };
+    agents = [patchTripped];
+    orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
+    const { rerender } = render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-circuit-reset-p-agent-org-1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-circuit-reset-reason'), {
+      target: { value: 'stale reason' },
+    });
+    // The circuit is gone on the next reload (Run now's circuit_open reload).
+    agents = [{ ...patchTripped, openCircuits: [] }];
+    fireEvent.click(screen.getByTestId('ai-agent-run-now-p-agent'));
+    await waitFor(() => expect(screen.queryByTestId('ai-agent-circuit-open-p-agent-org-1')).toBeNull());
+    expect(screen.queryByTestId('ai-agent-circuit-reset-confirm')).toBeNull();
+
+    // It opens again later: the row is back, the dialog is not.
+    agents = [patchTripped];
+    fireEvent.click(screen.getByTestId('ai-agent-run-now-p-agent'));
+    expect(await screen.findByTestId('ai-agent-circuit-open-p-agent-org-1')).toBeInTheDocument();
+    rerender(<AiAgentsPage />);
+    expect(screen.queryByTestId('ai-agent-circuit-reset-confirm')).toBeNull();
+  });
+
+  it('names the two-factor requirement when the session has not satisfied MFA', async () => {
+    routes((url) => (url === '/ai/agents/a1/circuit/reset'
+      ? json({ error: 'MFA required', code: 'MFA_REQUIRED' }, false, 403)
+      : undefined));
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-circuit-reset-a1-org-1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-circuit-reset-reason'), {
+      target: { value: 'gateway is back' },
+    });
+    fireEvent.click(screen.getByTestId('ai-agent-circuit-reset-confirm'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: expect.stringMatching(/two-factor/i),
+    })));
+  });
+
+  // #12347 Strix round 2: the reset route refuses a site-restricted caller.
+  // The page carries no ceiling data (its other write controls are not gated
+  // on it either), so the refusal is the server's own words, toasted as-is,
+  // and the dialog stays open rather than reporting a reset that did not
+  // happen.
+  it('shows the server refusal when a site-restricted caller tries to reset', async () => {
+    const refusal = 'Site-restricted users cannot modify organization-wide settings. Ask an unrestricted administrator.';
+    routes((url) => (url === '/ai/agents/a1/circuit/reset'
+      ? json({ error: refusal }, false, 403)
+      : undefined));
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-circuit-reset-a1-org-1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-circuit-reset-reason'), {
+      target: { value: 'gateway is back' },
+    });
+    fireEvent.click(screen.getByTestId('ai-agent-circuit-reset-confirm'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: refusal,
+    })));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(screen.getByTestId('ai-agent-circuit-reset-confirm')).toBeInTheDocument();
+  });
+
+  it('Run now on an open circuit says so, and reloads the list so the badge appears', async () => {
+    orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
+    const patchAgent = { ...PARTNER_AGENT, id: 'p-agent', kind: 'patch' as const, name: 'Patcher' };
+    routes((url) => (url === '/ai/patch-plan/runs'
+      ? json({ success: false, skipped: 'circuit_open', code: 'circuit_open' }, true, 200)
+      : undefined), [patchAgent]);
+    render(<AiAgentsPage />);
+
+    const button = await screen.findByTestId('ai-agent-run-now-p-agent');
+    const before = listCalls();
+    fireEvent.click(button);
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: expect.stringMatching(/circuit breaker is open/i),
+    })));
+    await waitFor(() => expect(listCalls()).toBeGreaterThan(before));
+  });
+});
+
 describe('AiAgentsPage', () => {
   it('badges the partner-wide agent and NOT the org-owned one', async () => {
     // Two rows on purpose: with a partner-wide-only fixture this passed even

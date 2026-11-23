@@ -383,6 +383,7 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
         <label className="mt-4 flex items-center gap-3 rounded-md border bg-muted/30 p-3">
           <input
             type="checkbox"
+            data-testid="org-scope-all-orgs"
             aria-label={i18n.t(
               "policies:configurationPolicies.organizationScopePanel.allOrganizationsPartnerWide",
             )}
@@ -424,6 +425,7 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
                 >
                   <input
                     type="checkbox"
+                    data-testid={`org-scope-org-${org.id}`}
                     aria-label={org.name}
                     checked
                     disabled={rowsDisabled}
@@ -450,6 +452,7 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
         <div className="mt-4 flex items-center rounded-md border px-3 py-2">
           <Search className="mr-2 h-4 w-4 text-muted-foreground" />
           <input
+            data-testid="org-scope-search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={i18n.t(
@@ -485,6 +488,7 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
                 >
                   <input
                     type="checkbox"
+                    data-testid={`org-scope-org-${org.id}`}
                     aria-label={org.name}
                     checked={allOrgs || orgAssignmentByOrgId.has(org.id)}
                     disabled={allOrgs || rowsDisabled}

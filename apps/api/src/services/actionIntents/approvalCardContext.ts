@@ -3,17 +3,19 @@
  *
  * `buildApprovalDescription` (aiGuardrails.ts) builds its headline from tool
  * input alone, so a ticket reads `ticket #2aad0601...` and a device
- * `on device 8f14580d...`. The intent service already swaps a device NAME into
- * the label it stores for the queue and the push (approvalDeviceName.ts,
- * #5363); the chat `approval_required` event carried the raw stub. This module
+ * `on device 8f14580d...`. The intent service swaps a device NAME and a ticket
+ * NUMBER into the label it stores for the queue and the push
+ * (approvalDeviceName.ts, #5363; approvalTicketNumber.ts); the chat
+ * `approval_required` event carried the raw stub. This module
  * gives the chat card the same naming for devices and adds it for tickets:
  *
  *  - `resolveApprovalTicketContext` reads the ticket's number, subject and the
  *    requester a public reply emails, so the card can say all three above
- *    Approve. Same two load-bearing properties as approvalDeviceName.ts:
- *    **org-pinned** (the id comes from tool ARGUMENTS; a foreign id resolves to
- *    nothing, so the card is never a cross-tenant oracle) and **never fatal**
- *    (a failed read degrades to the stub and is reported to Sentry).
+ *    Approve. The read is shared with the stored label
+ *    (approvalTicketNumber.ts `readApprovalTicketInReach`): **org-pinned and
+ *    cut to the caller's reach** (the id comes from tool ARGUMENTS; a foreign
+ *    or out-of-scope id resolves to nothing) and **never fatal** (a failed
+ *    read degrades to the stub and is reported to Sentry).
  *  - `nameApprovalCardTargets` swaps the resolved number and name into the
  *    headline, only where the stub is THIS call's id.
  *
@@ -23,45 +25,30 @@
  * `ticketContext` and is rendered in the card body only.
  */
 
-import { and, eq, isNull, type SQL } from 'drizzle-orm';
 import type { AiApprovalTicketContext } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { tickets } from '../../db/schema';
-import type { AuthContext } from '../../middleware/auth';
-import { deviceInSiteScope } from '../../routes/tickets/siteScope';
+import { db } from '../../db';
+import { tickets } from '../../db/schema/portal';
+import { readApprovalTicketInReach, type ApprovalTicketReach } from './approvalTicketNumber';
 import { captureException } from '../sentry';
-
-/** The slice of the call's auth the read is cut to: the same reach `findTicketWithAccess` (aiToolsTicketing.ts) applies. */
-export type ApprovalTicketReach = Pick<AuthContext, 'orgCondition' | 'allowedSiteIds' | 'allowedDeviceIds'>;
 
 /** Shape-only UUID guard, as in approvalDeviceName.ts: `tickets.id` is a uuid, so junk would raise 22P02. */
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** `manage_tickets` actions whose handler acts on `expectedTicketId` and never reads `ticketId` (aiToolsTicketing.ts). */
-const COMMENT_REWRITE_ACTIONS = new Set<unknown>(['edit_comment', 'delete_comment']);
-
 /**
- * The ticket THIS call acts on. For most `manage_tickets` actions that is
- * `ticketId`, the argument every `ticket #<id>...` stub is built from. A
- * comment edit or delete acts on `expectedTicketId` instead, so that is the one
- * named: a `ticketId` sent alongside it is ignored by the handler and must not
- * put a different ticket on the card (same mapping as intentRowTarget.ts).
+ * The ticket THIS call acts on (`expectedTicketId` for a comment edit or
+ * delete), and the reach the read is cut to. Both live with the stored label's
+ * number read, so the card and the label cannot drift on which ticket a call
+ * names or which tickets a caller may see named.
  */
-export function argumentTicketId(toolName: string, input: Record<string, unknown>): string | null {
-  if (toolName !== 'manage_tickets') return null;
-  const raw = COMMENT_REWRITE_ACTIONS.has(input.action) ? input.expectedTicketId : input.ticketId;
-  return typeof raw === 'string' && UUID_SHAPE.test(raw) ? raw : null;
-}
+export { argumentTicketId, type ApprovalTicketReach } from './approvalTicketNumber';
 
 /**
  * The ticket's number, subject and requester, or `null` when it cannot be
- * resolved. Opens its own system-scoped context outside any ambient one, as
- * approvalDeviceName.ts does. System scope is safe only because the read is
- * cut back down twice: to the intent's `orgId`, and to the CALLER's reach —
- * the same predicate the tool's own `findTicketWithAccess` applies (not
- * deleted, in the caller's org reach, its device in the caller's site/device
- * scope). A ticket the caller could not read through the tool shows nothing
- * here either.
+ * resolved. The read is `readApprovalTicketInReach` (approvalTicketNumber.ts):
+ * pinned to the intent's `orgId` and cut to the CALLER's reach, the same
+ * predicate the tool's own `findTicketWithAccess` applies (not deleted, in the
+ * caller's org reach, its device in the caller's site/device scope). A ticket
+ * the caller could not read through the tool shows nothing here either.
  */
 export async function resolveApprovalTicketContext(
   ticketId: string,
@@ -69,27 +56,19 @@ export async function resolveApprovalTicketContext(
   reach: ApprovalTicketReach,
 ): Promise<AiApprovalTicketContext | null> {
   try {
-    const row = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(async () => {
-        const conditions: SQL[] = [eq(tickets.id, ticketId), eq(tickets.orgId, orgId), isNull(tickets.deletedAt)];
-        const reachCondition = reach.orgCondition(tickets.orgId);
-        if (reachCondition) conditions.push(reachCondition);
-        const [ticket] = await db
-          .select({
-            ticketNumber: tickets.ticketNumber,
-            internalNumber: tickets.internalNumber,
-            subject: tickets.subject,
-            submitterName: tickets.submitterName,
-            submitterEmail: tickets.submitterEmail,
-            deviceId: tickets.deviceId,
-          })
-          .from(tickets)
-          .where(and(...conditions))
-          .limit(1);
-        if (!ticket) return null;
-        if (ticket.deviceId && !(await deviceInSiteScope(reach, ticket.deviceId))) return null;
-        return ticket;
-      }, 'actionIntents.approvalCardTicket'),
+    const row = await readApprovalTicketInReach(ticketId, orgId, reach, 'actionIntents.approvalCardTicket', (where) =>
+      db
+        .select({
+          ticketNumber: tickets.ticketNumber,
+          internalNumber: tickets.internalNumber,
+          subject: tickets.subject,
+          submitterName: tickets.submitterName,
+          submitterEmail: tickets.submitterEmail,
+          deviceId: tickets.deviceId,
+        })
+        .from(tickets)
+        .where(where)
+        .limit(1),
     );
     if (!row) return null;
     return {

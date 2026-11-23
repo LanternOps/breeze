@@ -37,7 +37,9 @@ jobs:
         # `actions` scans the workflow files themselves for script injection
         # (untrusted `${{ github.event.* }}` in `run:`) and unpinned/excessive
         # permissions. It is cheap and this repo has a dozen inline scripts.
-        language: [javascript-typescript, go, actions]
+        # `rust` covers the Tauri crates (apps/helper/src-tauri,
+        # apps/viewer/src-tauri). CodeQL extracts Rust without a build step.
+        language: [javascript-typescript, go, actions, rust]
 
     steps:
       - name: Checkout

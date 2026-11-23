@@ -98,6 +98,20 @@ describe('deleteDeviceCascade lock ordering', () => {
       statements.indexOf(matches[0]!),
     );
   });
+  it("removes only the device's own device-level config policy assignments, before the device row (#12293)", async () => {
+    const { tx, statements } = captureTx();
+    await deleteDeviceCascade(tx, 'device-1');
+    const matches = statements.filter((s) => s.includes('config_policy_assignments'));
+    expect(matches).toHaveLength(1);
+    const statement = matches[0]!;
+    expect(statement).toContain('DELETE FROM config_policy_assignments');
+    // Scoped to the device level: a group, site or org row must never match.
+    expect(statement).toContain("level = 'device' AND target_id = ");
+    expect(statement).toContain('"device-1"');
+    expect(statements.findIndex((s) => s.includes('FOR UPDATE'))).toBeLessThan(statements.indexOf(statement));
+    expect(statements.indexOf(statement)).toBeLessThan(statements.indexOf('__DELETE_DEVICES_ROW__'));
+  });
+
   it('locks the devices row BEFORE touching any child table (40P01, cf. #3739)', async () => {
     // FK constraints force children-before-parent for the DELETEs, so the
     // order cannot be inverted to match the rest of the codebase. Every other

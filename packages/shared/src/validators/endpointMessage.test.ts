@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   ENDPOINT_MESSAGE_LIMITS,
+  ENDPOINT_MESSAGE_RETRACT_MIN_AGENT_VERSION,
   ENDPOINT_MESSAGING_MIN_AGENT_VERSION,
+  agentSupportsEndpointMessageRetract,
   agentSupportsEndpointMessaging,
   endpointMessageContentIssues,
   endpointMessageSendSchema,
@@ -133,6 +135,16 @@ describe('agentSupportsEndpointMessaging', () => {
     expect(agentSupportsEndpointMessaging('')).toBe(false);
     expect(agentSupportsEndpointMessaging('not-a-version')).toBe(false);
     expect(agentSupportsEndpointMessaging('0.0.1')).toBe(false);
+  });
+
+  it('is open to released agents from 0.128.0, the version proved in the lab', () => {
+    expect(ENDPOINT_MESSAGING_MIN_AGENT_VERSION).toBe('0.128.0');
+    expect(ENDPOINT_MESSAGE_RETRACT_MIN_AGENT_VERSION).toBe('0.128.0');
+    for (const supports of [agentSupportsEndpointMessaging, agentSupportsEndpointMessageRetract]) {
+      expect(supports('0.128.0')).toBe(true);
+      expect(supports('0.129.0')).toBe(true);
+      expect(supports('0.127.9')).toBe(false);
+    }
   });
 
   it('accepts the gate version and above', () => {

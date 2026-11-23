@@ -1,6 +1,6 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { sites } from '../../db/schema';
+import { sites, unifiSiteMappings } from '../../db/schema';
 import { writeRouteAudit, type AuthContext as RouteAuditCtx } from '../auditEvents';
 import type { AuthContext as RequestAuth } from '../../middleware/auth';
 import type { OrgMatchTier } from '../externalTenantMapping';
@@ -53,6 +53,47 @@ export async function resolveUnifiMappingTargets(
     targets.push({ orgId: site.orgId, siteId: site.id });
   }
   return { ok: true, targets };
+}
+
+/**
+ * Explicit mapping deletes (#11808 D9). Every id must be a mapping of THIS
+ * connection and pass the same org and site-axis gates as the replace-all
+ * cleanup; an id that fails either is refused, never silently skipped, so the
+ * caller is never told a delete happened that did not. An id whose host and
+ * site the same request also upserts is refused: the delete would undo the save.
+ * Nothing is written here; the route deletes after every check has passed.
+ */
+export async function resolveUnifiMappingRemovals(
+  auth: Pick<RequestAuth, 'canAccessOrg' | 'canAccessSite'>,
+  integrationId: string,
+  ids: ReadonlyArray<string>,
+  submitted: ReadonlyArray<{ unifiHostId: string; unifiSiteId: string }>,
+): Promise<{ ok: true; ids: string[] } | { ok: false; error: UnifiMappingTargetError }> {
+  const wanted = [...new Set(ids)];
+  if (wanted.length === 0) return { ok: true, ids: [] };
+  const rows = await db
+    .select({
+      id: unifiSiteMappings.id,
+      orgId: unifiSiteMappings.orgId,
+      siteId: unifiSiteMappings.siteId,
+      unifiHostId: unifiSiteMappings.unifiHostId,
+      unifiSiteId: unifiSiteMappings.unifiSiteId,
+    })
+    .from(unifiSiteMappings)
+    .where(and(eq(unifiSiteMappings.integrationId, integrationId), inArray(unifiSiteMappings.id, wanted)));
+  const found = new Map(rows.map((row) => [row.id, row]));
+  if (wanted.some((id) => !found.has(id))) {
+    return { ok: false, error: { status: 400, code: 'UNIFI_UNKNOWN_MAPPING', message: 'removeMappingIds names a mapping that is not part of this connection' } };
+  }
+  const siteGate = auth.canAccessSite;
+  if (rows.some((row) => !auth.canAccessOrg(row.orgId) || (siteGate && !siteGate(row.siteId)))) {
+    return { ok: false, error: { status: 403, message: 'Access to a mapping in removeMappingIds denied' } };
+  }
+  const submittedKeys = new Set(submitted.map(mappingKey));
+  if (rows.some((row) => submittedKeys.has(mappingKey(row)))) {
+    return { ok: false, error: { status: 400, message: 'removeMappingIds names a mapping that this request also saves' } };
+  }
+  return { ok: true, ids: wanted };
 }
 
 export interface UnifiMappingChange {

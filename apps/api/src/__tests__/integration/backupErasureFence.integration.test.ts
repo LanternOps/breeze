@@ -547,8 +547,14 @@ describe('erasure fence capture', () => {
     expect(at('backup_snapshots')).toBeGreaterThanOrEqual(0);
     // config_policy_feature_links has no org_id: it goes with its
     // configuration_policies row (ON DELETE CASCADE), so that row's position
-    // covers it.
-    for (const later of ['backup_policies', 'configuration_policies', 'config_policy_backup_settings', 'backup_configs', 'devices']) {
+    // covers it. device_groups, devices, sites and organizations carry the
+    // config_policy_assignments the configuration-policy hold resolves
+    // through; those are cleared in their target's step (#12538), so every
+    // target step must come later too.
+    for (const later of [
+      'backup_policies', 'configuration_policies', 'config_policy_backup_settings', 'backup_configs',
+      'device_groups', 'devices', 'sites', 'organizations',
+    ]) {
       expect(at(later), later).toBeGreaterThan(at('backup_snapshots'));
     }
   });

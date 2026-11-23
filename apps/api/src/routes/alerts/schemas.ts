@@ -2,6 +2,7 @@ export { createPolicySchema, updatePolicySchema } from '../../services/delivery/
 import { z } from 'zod';
 export { escalationStepSchema, escalationStepsSchema, type EscalationStep } from '../../services/delivery/escalationSteps';
 import { NOTIFICATION_CHANNEL_TYPES } from '@breeze/shared';
+import { filterConditionGroupSchema } from '@breeze/shared/validators';
 
 // Alert Rules schemas
 export const listAlertRulesSchema = z.object({
@@ -37,6 +38,8 @@ export const bulkAlertActionSchema = z.object({
 // Alerts schemas
 export const ALERT_STATUS_VALUES = ['active', 'acknowledged', 'resolved', 'suppressed', 'dismissed'] as const;
 export type AlertStatusValue = (typeof ALERT_STATUS_VALUES)[number];
+export const ALERT_SEVERITY_VALUES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+export type AlertSeverityValue = (typeof ALERT_SEVERITY_VALUES)[number];
 
 export const listAlertsSchema = z.object({
   page: z.string().optional(),
@@ -51,8 +54,37 @@ export const listAlertsSchema = z.object({
       { message: `status must be a comma-separated list of: ${ALERT_STATUS_VALUES.join(', ')}` }
     )
     .optional(),
-  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+  // Single severity or comma-separated list (the Alerts page's `#severity=a,b`).
+  severity: z
+    .string()
+    .refine(
+      (v) => v.split(',').every((s) => (ALERT_SEVERITY_VALUES as readonly string[]).includes(s)),
+      { message: `severity must be a comma-separated list of: ${ALERT_SEVERITY_VALUES.join(', ')}` }
+    )
+    .optional(),
   deviceId: z.string().guid().optional(),
+  // #12324 — the Alerts page's advanced device filter, as URL-encoded JSON
+  // (the same condition tree `POST /filters/preview` takes). Sent as
+  // conditions, not resolved device ids: an id list for a large fleet does not
+  // fit in a query string. Resolved in the route under the caller's org and
+  // site scope, then applied before the page limit.
+  deviceFilter: z
+    .string()
+    .max(8000)
+    .transform((raw, ctx) => {
+      try {
+        return JSON.parse(raw) as unknown;
+      } catch {
+        ctx.addIssue({ code: 'custom', message: 'deviceFilter must be JSON' });
+        return z.NEVER;
+      }
+    })
+    .pipe(filterConditionGroupSchema)
+    .optional(),
+  // #12324 — case-insensitive substring over title, message and the device's
+  // hostname/display name. Applied in the query so it pages and counts with
+  // every other filter.
+  search: z.string().trim().min(1).max(200).optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   // Phase 2 wave P2-1 (alert verdicts), Task 14 — exclude alerts whose

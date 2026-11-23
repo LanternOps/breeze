@@ -363,6 +363,7 @@ apps/api/src/routes/alerts/correlations.ephemeralOrg.contract.test.ts
 apps/api/src/routes/analytics.test.ts
 apps/api/src/routes/autopay/mount.test.ts
 apps/api/src/routes/configurationPolicies/index.test.ts
+apps/api/src/routes/configurationPolicies/reach.test.ts
 apps/api/src/routes/connectedApps.authorityBoundary.test.ts
 apps/api/src/routes/contracts/adopt.test.ts
 apps/api/src/routes/contracts/deliverables.test.ts
@@ -375,6 +376,7 @@ apps/api/src/routes/devices/manual.test.ts
 apps/api/src/routes/devices/moveOrg.coverage.test.ts
 apps/api/src/routes/devices/network.test.ts
 apps/api/src/routes/endpointMessages/conversations.test.ts
+apps/api/src/routes/flows.drafts.test.ts
 apps/api/src/routes/invoices/evidence.test.ts
 apps/api/src/routes/mcpServer.deviceProjection.test.ts
 apps/api/src/routes/mobile.resolveCas.test.ts
@@ -554,6 +556,7 @@ apps/api/src/services/exchangeRateBoundary.test.ts
 apps/api/src/services/expoPush.test.ts
 apps/api/src/services/featureConfigResolver.test.ts
 apps/api/src/services/featureLinkReaders.contract.test.ts
+apps/api/src/services/flows/conversion/convertAutomation.golden.test.ts
 apps/api/src/services/flows/flowIntentTerminalWriters.contract.test.ts
 apps/api/src/services/ianaEnterprise.test.ts
 apps/api/src/services/inboundEmail/commentNotificationPortalHref.test.ts
@@ -561,6 +564,7 @@ apps/api/src/services/incidentContainmentResults.registration.test.ts
 apps/api/src/services/invoiceTerms.test.ts
 apps/api/src/services/ipClassifyOffline.test.ts
 apps/api/src/services/laborAmount.routing.test.ts
+apps/api/src/services/learnedNetworks/scanCommand.contract.test.ts
 apps/api/src/services/llm/llmEgressProxy.test.ts
 apps/api/src/services/llm/providerFidelityHarness.test.ts
 apps/api/src/services/llm/sdkPermissionMode.contract.test.ts

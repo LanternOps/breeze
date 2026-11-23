@@ -408,6 +408,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('filesystemSnapshotRetention'),
   consumers('networkMonitorResultRetention'),
   consumers('deviceSessionRetention'),
+  // Learned networks W01b (#12369). Plain Redis-required consumer: the ingest kill switch gates the heartbeat
+  // learner, not this worker (refresh and retention keep running so confirmations age out).
+  consumers('learnedNetworkMaintenance'),
 ] as const;
 
 export function consumersForInitializer(initializer: string): readonly string[] {

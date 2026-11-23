@@ -618,6 +618,8 @@ const TARGET_GLOBS = [
   // Sweep G4: peripheral policy save + config-policy partner-wide toggle toast their outcome.
   'src/components/peripherals/PeripheralPolicyForm.tsx',
   'src/components/configurationPolicies/OrganizationScopePanel.tsx',
+  // #12306: the policy details save (name, description, status) toasts its outcome.
+  'src/components/configurationPolicies/ConfigPolicyDetailPage.tsx',
   // Operator Recipe Library W06 R1b (#6171): "allow these tools" widens what an
   // AI agent may call on customer systems; a silent failure leaves the tech
   // believing the recipe is set up when it is not.

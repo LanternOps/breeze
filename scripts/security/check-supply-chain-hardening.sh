@@ -86,6 +86,84 @@ if [[ "${1:-}" == "--require-openssl-upgrade" ]]; then
   exit 0
 fi
 
+# Every Dependabot updates entry carries an explicit cooldown of at least 3
+# days. Every ecosystem this file uses (npm, gomod, github-actions, cargo,
+# docker, docker-compose) supports `cooldown.default-days`; an ecosystem that
+# does not would need a named exemption here rather than a silent skip.
+# scripts/security/check-security-guards.test.mjs drives this through
+# --check-dependabot-cooldown against fixture files.
+check_dependabot_cooldown() {
+  local file="$1"
+  local report entry_count missing
+  [[ -r "$file" ]] || fail "cannot read $file"
+  # Plain POSIX awk (CI runs Debian mawk, macOS ships BSD awk): no gawk-only
+  # features. An entry starts at ANY `  - ` list item under `updates:`, so a
+  # reordered entry cannot fold into the one above it; its ecosystem comes from
+  # whichever of its lines carries `package-ecosystem:`. Inside `cooldown:`,
+  # every `*-days` value must be a whole number >= 3, and `include:` /
+  # `exclude:` (which narrow the cooldown to, or exempt, named packages) are
+  # rejected. Anything unexpected inside the block (a blank line, a comment)
+  # ends it, which fails safe: a later default-days is then not counted.
+  report="$(
+    awk '
+      function problem(msg) { problems[++nproblems] = msg }
+      function finish(   i, label) {
+        if (!open) return
+        entries++
+        label = (eco == "" ? "(unknown ecosystem)" : eco) " entry (line " start ")"
+        if (!has_cooldown) problem("no cooldown block")
+        else if (default_days == "") problem("cooldown has no default-days")
+        for (i = 1; i <= nproblems; i++) printf "%s: %s\n", label, problems[i]
+        open = 0; nproblems = 0
+      }
+      /^updates:[[:space:]]*$/ { in_updates = 1; next }
+      in_updates && /^[^[:space:]#]/ { finish(); in_updates = 0 }
+      !in_updates { next }
+      {
+        line = $0
+        if (line ~ /^  - /) {
+          finish()
+          open = 1; start = NR; eco = ""; has_cooldown = 0; default_days = ""; in_cooldown = 0
+          line = "    " substr(line, 5)
+        }
+        if (!open) next
+        if (in_cooldown && line !~ /^      /) in_cooldown = 0
+        if (in_cooldown) {
+          if (line ~ /^      [A-Za-z-]+-days:/) {
+            key = line; sub(/^      /, "", key); sub(/:.*$/, "", key)
+            val = line; sub(/^[^:]*:[[:space:]]*/, "", val); sub(/[[:space:]]*#.*$/, "", val); sub(/[[:space:]]*$/, "", val)
+            if (val !~ /^[0-9]+$/ || val + 0 < 3) problem(key ": " val " at line " NR " is below 3")
+            if (key == "default-days") default_days = val
+          } else if (line ~ /^      (include|exclude):/) {
+            key = line; sub(/^      /, "", key); sub(/:.*$/, "", key)
+            problem("cooldown " key ": at line " NR " is not allowed (it limits which packages the cooldown covers)")
+          }
+          next
+        }
+        if (line ~ /^    package-ecosystem:/) {
+          eco = line; sub(/^    package-ecosystem:[[:space:]]*/, "", eco); sub(/[[:space:]]*#.*$/, "", eco); gsub(/"/, "", eco)
+        } else if (line ~ /^    cooldown:[[:space:]]*(#.*)?$/) {
+          has_cooldown = 1; in_cooldown = 1
+        }
+      }
+      END { finish(); printf "entries=%d\n", entries }
+    ' "$file"
+  )"
+  entry_count="$(sed -n 's/^entries=//p' <<<"$report")"
+  [[ "${entry_count:-0}" -gt 0 ]] ||
+    fail "$file has no updates entries the cooldown check could parse"
+  missing="$(grep -v '^entries=' <<<"$report" || true)"
+  [[ -z "$missing" ]] ||
+    fail "every Dependabot updates entry must keep a cooldown of at least 3 days with no exemptions: $(awk 'NR > 1 { printf "; " } { printf "%s", $0 }' <<<"$missing")"
+}
+
+if [[ "${1:-}" == "--check-dependabot-cooldown" ]]; then
+  [[ -n "${2:-}" && -f "${2:-}" && -r "${2:-}" ]] || fail "--check-dependabot-cooldown needs a readable dependabot.yml"
+  check_dependabot_cooldown "$2"
+  echo "Dependabot cooldown check passed."
+  exit 0
+fi
+
 extract_yaml_job() {
   local job="$1"
   local workflow="$2"
@@ -618,8 +696,30 @@ require_grep '(directory: |^ +- )"/apps/web"$' .github/dependabot.yml \
   "Dependabot must cover Web Dockerfiles before digest pinning can be maintained"
 require_grep '(directory: |^ +- )"/docker"$' .github/dependabot.yml \
   "Dependabot must cover release/security Dockerfiles before digest pinning can be maintained"
-require_grep 'language: \[javascript-typescript, go, actions\]' .github/workflows/codeql.yml \
-  "CodeQL must analyze TypeScript, Go and the Actions workflows"
+require_grep 'language: \[javascript-typescript, go, actions, rust\]' .github/workflows/codeql.yml \
+  "CodeQL must analyze TypeScript, Go, the Actions workflows and the Tauri Rust crates"
+
+# pnpm resolution policy (pnpm-workspace.yaml). minimumReleaseAge holds a
+# freshly published version back from resolution for N minutes, and
+# blockExoticSubdeps keeps transitive dependencies on the registry (no git or
+# tarball URLs). Each key must appear exactly once at top level: a duplicate
+# would leave the effective value to the YAML parser.
+require_single_workspace_setting() {
+  local key="$1"
+  local count
+  [[ -r pnpm-workspace.yaml ]] || fail "cannot read pnpm-workspace.yaml"
+  count="$(grep -cE "^${key}:" pnpm-workspace.yaml || true)"
+  [[ "$count" == "1" ]] || fail "pnpm-workspace.yaml must set $key exactly once at top level (found $count)"
+}
+require_single_workspace_setting minimumReleaseAge
+MIN_RELEASE_AGE="$(sed -nE 's/^minimumReleaseAge:[[:space:]]*([0-9]+)[[:space:]]*(#.*)?$/\1/p' pnpm-workspace.yaml)"
+[[ -n "$MIN_RELEASE_AGE" && "$MIN_RELEASE_AGE" -ge 4320 ]] ||
+  fail "pnpm-workspace.yaml minimumReleaseAge must be a plain number of minutes, at least 4320 (3 days)"
+require_single_workspace_setting blockExoticSubdeps
+require_grep '^blockExoticSubdeps:[[:space:]]*true[[:space:]]*(#.*)?$' pnpm-workspace.yaml \
+  "pnpm-workspace.yaml must set blockExoticSubdeps: true"
+
+check_dependabot_cooldown .github/dependabot.yml
 
 require_grep "severity: 'HIGH,CRITICAL'" .github/workflows/security.yml \
   "Trivy must fail on HIGH and CRITICAL vulnerabilities"

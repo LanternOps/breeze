@@ -21,11 +21,16 @@ export async function discoverReauthTier(): Promise<ReauthTier> {
 /**
  * The step-up tier for a dialog (#8318 2-3 review): the one its parent already
  * knows (`passkeyCount` and `mfaMethod` both given), or else the one
- * `ensureTier` reads on the first step-up. `ensureTier` resolves true once a
+ * `ensureTier` reads on the first step-up. A parent that knows the factors
+ * also passes `totpEnrolled`, so an authenticator held as the backup counts. `ensureTier` resolves true once a
  * tier is known and false when the read failed; the caller shows its own error.
  * `resetTier` forgets a read tier, for a dialog that reopens.
  */
-export function useReauthTier(passkeyCount: number | undefined, mfaMethod: string | null | undefined): {
+export function useReauthTier(
+  passkeyCount: number | undefined,
+  mfaMethod: string | null | undefined,
+  totpEnrolled?: boolean,
+): {
   tier: ReauthTier | null;
   ensureTier: () => Promise<boolean>;
   resetTier: () => void;
@@ -33,7 +38,7 @@ export function useReauthTier(passkeyCount: number | undefined, mfaMethod: strin
   const [discovered, setDiscovered] = useState<ReauthTier | null>(null);
   const tier = passkeyCount === undefined || mfaMethod === undefined
     ? discovered
-    : pickReauthTier(passkeyCount, mfaMethod);
+    : pickReauthTier(passkeyCount, mfaMethod, totpEnrolled);
   const ensureTier = useCallback(async (): Promise<boolean> => {
     if (tier !== null) return true;
     try {

@@ -101,6 +101,13 @@ describe('resolveTargetsOnce', () => {
 });
 
 describe('executeResolveTargets', () => {
+  it('resolve_targets reports every resolved device as succeeded', async () => {
+    m.resolve.mockResolvedValue({ deviceIds: [D1, D2], warnings: [], problems: [] });
+    m.devices.mockResolvedValue(rows([D1, D2]));
+    const out = await executeResolveTargets({ conditions: [] }, ctx());
+    expect(out).toMatchObject({ kind: 'completed', output: { count: 2, succeededCount: 2, failedCount: 0 } });
+  });
+
   it('outputs the fleet shape: every set is the resolved set', async () => {
     m.resolve.mockResolvedValue({ deviceIds: [D1, D2], warnings: ['w1'], problems: [] });
     m.devices.mockResolvedValue(rows([D1, D2]));
@@ -111,7 +118,7 @@ describe('executeResolveTargets', () => {
       output: {
         dispatchedDeviceIds: [D1, D2], succeededDeviceIds: [D1, D2], failedDeviceIds: [], skippedOfflineDeviceIds: [],
         devices: [{ id: D1, hostname: 'host-0', name: 'Web One' }, { id: D2, hostname: 'host-1', name: 'host-1' }],
-        count: 2, warnings: ['w1'],
+        count: 2, succeededCount: 2, failedCount: 0, warnings: ['w1'],
       },
     });
   });

@@ -113,6 +113,13 @@ export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
 
+// Browser remote desktop rollout flag (#9557). Default OFF. Temporary: removed
+// once the lab leg passes (W7 of the browser remote desktop plan). Read at CALL
+// time so a test can flip it per-case without vi.resetModules().
+export function browserDesktopEnabled(): boolean {
+  return envFlag('BREEZE_BROWSER_DESKTOP_ENABLED', false);
+}
+
 // Remote desktop start fence (#5537). Every remote-desktop start dispatch site
 // refuses an agent that has not declared desktopFenceProtocolVersion=1 (the
 // durable start/terminal generation fence) with 503 agent_upgrade_required —
@@ -174,6 +181,11 @@ export function approverAssuranceDefaultEnforceFrom(): Date {
 // Read at CALL time so it can be flipped without a module reload.
 export function preAssignmentEnrollmentEnabled(): boolean {
   return envFlag('PRE_ASSIGNMENT_ENROLLMENT_ENABLED', false);
+}
+
+// Learned-network heartbeat ingest kill switch, default on; off stops learning and confirmations and gated sites then fail closed.
+export function learnedNetworksIngestEnabled(): boolean {
+  return envFlag('LEARNED_NETWORKS_INGEST_ENABLED', true);
 }
 
 // Caller verification (anti-vishing, #6354). Default ON as of W05: enforcement

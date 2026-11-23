@@ -3242,6 +3242,12 @@ describe('validateConfig', () => {
     });
   });
 
+  it('validate rejects a non-boolean BREEZE_BROWSER_DESKTOP_ENABLED', () => {
+    withEnv({ ...validEnv, BREEZE_BROWSER_DESKTOP_ENABLED: 'maybe' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_BROWSER_DESKTOP_ENABLED must be a boolean/);
+    });
+  });
+
   it('rejects a non-boolean BREEZE_OEM_UPDATES_ENABLED', () => {
     withEnv({ ...validEnv, BREEZE_OEM_UPDATES_ENABLED: 'maybe' }, () => {
       expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_ENABLED must be a boolean/);
@@ -4231,6 +4237,28 @@ describe('FLOWS_ENABLED boolean guard', () => {
   it.each(['maybe', 'ture', 'enabled', 'y'])('refuses boot on the near-miss value %s', (value) => {
     withEnv({ ...validEnv, FLOWS_ENABLED: value }, () => {
       expect(() => validateConfig()).toThrow(/FLOWS_ENABLED must be a boolean/);
+    });
+  });
+});
+
+describe('LEARNED_NETWORKS_INGEST_ENABLED boolean guard', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('LEARNED_NETWORKS_INGEST_ENABLED');
+    expect(buildEnvParseInput({ LEARNED_NETWORKS_INGEST_ENABLED: 'sentinel' }).LEARNED_NETWORKS_INGEST_ENABLED).toBe('sentinel');
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off ', ''])(
+    'accepts %j',
+    (value) => {
+      withEnv({ ...validEnv, LEARNED_NETWORKS_INGEST_ENABLED: value }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it.each(['maybe', 'ture', 'enabled', 'y'])('refuses boot on the near-miss value %s', (value) => {
+    withEnv({ ...validEnv, LEARNED_NETWORKS_INGEST_ENABLED: value }, () => {
+      expect(() => validateConfig()).toThrow(/LEARNED_NETWORKS_INGEST_ENABLED must be a boolean/);
     });
   });
 });

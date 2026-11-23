@@ -878,6 +878,7 @@ const envObjectSchema = z
     // Tool Catalog W3 (#5218). Platform kill switch for Flows, read at runtime
     // by flowsEnabled() in env.ts. Boolean-format validation only.
     FLOWS_ENABLED: z.string().optional(),
+    LEARNED_NETWORKS_INGEST_ENABLED: z.string().optional(),
     // Tool catalog W04 (#5219): approval window of a parked Tier-3 flow step,
     // in hours (flowApprovalTtlHours() in env.ts). Integer 1..168 when set.
     FLOW_APPROVAL_TTL_HOURS: z.string().optional(),
@@ -912,6 +913,9 @@ const envObjectSchema = z
     // Vendor updates (#11065): all dark by default. Read at runtime by
     // services/oemUpdates/flags.ts; checked in the superRefine below.
     BREEZE_OEM_UPDATES_ENABLED: z.string().optional(),
+    // Browser remote desktop rollout flag (#9557), default off. Read at runtime
+    // by browserDesktopEnabled() in env.ts; boolean format checked below.
+    BREEZE_BROWSER_DESKTOP_ENABLED: z.string().optional(),
     BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: z.string().optional(),
     BREEZE_OEM_UPDATES_DISABLED_LANES: z.string().optional(),
     BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: z.string().optional(),
@@ -2565,6 +2569,18 @@ const envSchema = envObjectSchema
       });
     }
 
+    // LEARNED_NETWORKS_INGEST_ENABLED: learned-network heartbeat ingest kill
+    // switch; a typo must fail boot rather than silently read as off.
+    const learnedIngestRaw = (data.LEARNED_NETWORKS_INGEST_ENABLED ?? '').trim().toLowerCase();
+    if (learnedIngestRaw && !boolValues.has(learnedIngestRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['LEARNED_NETWORKS_INGEST_ENABLED'],
+        message:
+          'LEARNED_NETWORKS_INGEST_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (set false to stop learned-network ingest).',
+      });
+    }
+
     // TOOL_SOURCES_ALLOW_PRIVATE_EGRESS (Task A7). Same boolean-format check,
     // plus a hosted refusal: a tool source that can reach a private/
     // loopback/link-local address from the shared hosted egress path is an
@@ -2615,6 +2631,14 @@ const envSchema = envObjectSchema
         code: z.ZodIssueCode.custom,
         path: ['BREEZE_OEM_UPDATES_ENABLED'],
         message: 'BREEZE_OEM_UPDATES_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false.',
+      });
+    }
+    const browserDesktopFlag = (data.BREEZE_BROWSER_DESKTOP_ENABLED ?? '').trim().toLowerCase();
+    if (browserDesktopFlag && !boolValues.has(browserDesktopFlag)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_BROWSER_DESKTOP_ENABLED'],
+        message: 'BREEZE_BROWSER_DESKTOP_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false.',
       });
     }
     if (isProduction && (data.BREEZE_OEM_UPDATES_LAB_DEVICE_IDS ?? '').trim()) {

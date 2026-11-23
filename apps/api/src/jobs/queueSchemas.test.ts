@@ -400,6 +400,15 @@ describe('discovery process-results adjacency', () => {
   it('accepts a payload without adjacency (optional)', () => {
     expect(() => discoveryQueueJobDataSchema.parse(base)).not.toThrow();
   });
+  it('carries a guarded result\'s verifiedNetwork and refuses a malformed one (#12369)', () => {
+    const verifiedNetwork = {
+      networkId: '6c1d2e3f-4a5b-4c6d-8e7f-001122334455', gatewayId: '7c1d2e3f-4a5b-4c6d-8e7f-001122334455',
+      gatewayAddress: '192.168.1.1', gatewayMac: 'a4:2b:b0:11:22:9c', interfaceName: 'Ethernet',
+    };
+    expect(discoveryQueueJobDataSchema.parse({ ...base, verifiedNetwork })).toMatchObject({ verifiedNetwork });
+    expect(() => discoveryQueueJobDataSchema.parse({ ...base, verifiedNetwork: { ...verifiedNetwork, gatewayMac: 'A4:2B:B0:11:22:9C' } }))
+      .toThrow();
+  });
 });
 
 describe('fdb adjacency schema (Phase 2)', () => {
