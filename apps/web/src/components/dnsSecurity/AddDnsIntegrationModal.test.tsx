@@ -98,6 +98,39 @@ describe('AddDnsIntegrationModal', () => {
     expect(screen.getByLabelText('API endpoint')).toBeInTheDocument();
   });
 
+  describe('credential field masking (#12555)', () => {
+    const typeOf = (label: string) => (screen.getByLabelText(label) as HTMLInputElement).type;
+    const pick = (provider: string) =>
+      fireEvent.change(screen.getByLabelText('Provider'), { target: { value: provider } });
+
+    it('masks the Pi-hole API key (v5) and App password (v6)', () => {
+      render(<AddDnsIntegrationModal onClose={() => {}} onCreated={() => {}} />);
+      pick('pihole');
+      expect(typeOf('API key')).toBe('password');
+      expect((screen.getByLabelText('API key') as HTMLInputElement).autocomplete).toBe('new-password');
+      fireEvent.change(screen.getByLabelText('Pi-hole version'), { target: { value: 'v6' } });
+      expect(typeOf('App password')).toBe('password');
+      expect((screen.getByLabelText('App password') as HTMLInputElement).autocomplete).toBe('new-password');
+    });
+
+    it('masks the Cloudflare API token and the DNSFilter API key', () => {
+      render(<AddDnsIntegrationModal onClose={() => {}} onCreated={() => {}} />);
+      expect(typeOf('API token')).toBe('password');
+      pick('dnsfilter');
+      expect(typeOf('API key')).toBe('password');
+    });
+
+    it('leaves identifier fields (Umbrella API key, AdGuard username) readable', () => {
+      render(<AddDnsIntegrationModal onClose={() => {}} onCreated={() => {}} />);
+      pick('umbrella');
+      expect(typeOf('API key')).toBe('text');
+      expect(typeOf('API secret')).toBe('password');
+      pick('adguard_home');
+      expect(typeOf('HTTP Basic username')).toBe('text');
+      expect(typeOf('HTTP Basic password')).toBe('password');
+    });
+  });
+
   it('shows the Pi-hole version select only for Pi-hole and sends config.piholeVersion (#12507)', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: { id: 'new-2' } }));
     render(<AddDnsIntegrationModal onClose={() => {}} onCreated={() => {}} />);

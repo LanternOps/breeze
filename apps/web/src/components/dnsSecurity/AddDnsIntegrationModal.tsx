@@ -26,7 +26,8 @@ type SupportedProvider =
 interface ProviderFieldSpec {
   labelKey: string;
   helpTextKey: string;
-  apiKey: { labelKey: string; placeholderKey: string };
+  // secret: true masks the field (bearer tokens, API keys); omit for identifiers.
+  apiKey: { labelKey: string; placeholderKey: string; secret?: boolean };
   apiSecret?: { labelKey: string; placeholderKey: string };
   configFields?: Array<{
     key: 'organizationId' | 'accountId' | 'apiEndpoint';
@@ -49,7 +50,7 @@ const PROVIDERS: Record<SupportedProvider, ProviderFieldSpec> = {
   cloudflare: {
     labelKey: 'providers.cloudflare.label',
     helpTextKey: 'providers.cloudflare.helpText',
-    apiKey: { labelKey: 'fields.apiToken', placeholderKey: 'providers.cloudflare.apiTokenPlaceholder' },
+    apiKey: { labelKey: 'fields.apiToken', placeholderKey: 'providers.cloudflare.apiTokenPlaceholder', secret: true },
     configFields: [
       { key: 'accountId', labelKey: 'fields.accountId', placeholderKey: 'providers.cloudflare.accountIdPlaceholder' },
     ],
@@ -57,7 +58,7 @@ const PROVIDERS: Record<SupportedProvider, ProviderFieldSpec> = {
   dnsfilter: {
     labelKey: 'providers.dnsfilter.label',
     helpTextKey: 'providers.dnsfilter.helpText',
-    apiKey: { labelKey: 'fields.apiKey', placeholderKey: 'providers.dnsfilter.apiKeyPlaceholder' },
+    apiKey: { labelKey: 'fields.apiKey', placeholderKey: 'providers.dnsfilter.apiKeyPlaceholder', secret: true },
     configFields: [
       { key: 'accountId', labelKey: 'fields.accountIdOptional', placeholderKey: 'providers.dnsfilter.accountIdPlaceholder' },
     ],
@@ -65,7 +66,7 @@ const PROVIDERS: Record<SupportedProvider, ProviderFieldSpec> = {
   pihole: {
     labelKey: 'providers.pihole.label',
     helpTextKey: 'providers.pihole.helpText',
-    apiKey: { labelKey: 'fields.apiKey', placeholderKey: 'providers.pihole.apiKeyPlaceholder' },
+    apiKey: { labelKey: 'fields.apiKey', placeholderKey: 'providers.pihole.apiKeyPlaceholder', secret: true },
     configFields: [
       { key: 'apiEndpoint', labelKey: 'fields.apiEndpoint', placeholderKey: 'providers.pihole.apiEndpointPlaceholder', type: 'url' },
     ],
@@ -114,7 +115,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
   // Pi-hole v6 authenticates with an app password; v5 with the API token.
   const isPiholeV6 = provider === 'pihole' && config.piholeVersion === 'v6';
   const apiKeySpec = isPiholeV6
-    ? { labelKey: 'fields.appPassword', placeholderKey: 'providers.pihole.appPasswordPlaceholder' }
+    ? { labelKey: 'fields.appPassword', placeholderKey: 'providers.pihole.appPasswordPlaceholder', secret: true }
     : spec.apiKey;
 
   const updateConfig = (key: Exclude<keyof ConfigPayload, 'piholeVersion'>, value: string) => {
@@ -297,8 +298,8 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
             {(id) => (
               <input
                 id={id}
-                type="text"
-                autoComplete="off"
+                type={apiKeySpec.secret ? 'password' : 'text'}
+                autoComplete={apiKeySpec.secret ? 'new-password' : 'off'}
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 required
