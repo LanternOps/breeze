@@ -129,6 +129,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * `target[key] = value` for a key taken from a parsed tool result. A JSON
+ * `"__proto__"` key is an own data property after `JSON.parse`; assigning it
+ * hits the inherited setter instead, which drops the key from the output and
+ * re-points `target`'s prototype at the value. defineProperty keeps it an own
+ * property, so it is walked, fenced and serialized like any other key.
+ */
+function setOwn(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
@@ -398,10 +409,10 @@ function compactValue(
       // Q3: a character window the tool sized deliberately — pass through
       // untouched rather than re-truncating it against the generic string cap.
       if (typeof itemValue === 'string' && isCharacterWindowField(key, value)) {
-        output[key] = itemValue;
+        setOwn(output, key, itemValue);
         continue;
       }
-      output[key] = compactValue(itemValue, stats, config, depth + 1, key);
+      setOwn(output, key, compactValue(itemValue, stats, config, depth + 1, key));
     }
     return output;
   }
@@ -669,10 +680,10 @@ function compactCommandStylePayload(
   for (const [key, value] of Object.entries(payload)) {
     if (COMMAND_STYLE_HANDLED_KEYS.has(key)) continue;
     if (typeof value === 'string' && isCharacterWindowField(key, payload)) {
-      output[key] = redactAiToolOutputText(value);
+      setOwn(output, key, redactAiToolOutputText(value));
       continue;
     }
-    output[key] = compactValue(value, stats, config, 0, key);
+    setOwn(output, key, compactValue(value, stats, config, 0, key));
   }
 
   return output;
@@ -761,10 +772,10 @@ function sanitizeToolPayloadValue(
     // truncate it in this pre-pass (compactCommandStylePayload / compactValue
     // apply the same rule for the shaping pass that follows).
     if (typeof entry === 'string' && isCharacterWindowField(key, value)) {
-      output[key] = redactAiToolOutputText(entry);
+      setOwn(output, key, redactAiToolOutputText(entry));
       continue;
     }
-    output[key] = sanitizeToolPayloadValue(toolName, entry, stats, depth + 1, key);
+    setOwn(output, key, sanitizeToolPayloadValue(toolName, entry, stats, depth + 1, key));
   }
   return output;
 }
@@ -833,12 +844,14 @@ const DEVICE_CORE_KEYS = [
 function hoistDeviceCoreFields(parsed: Record<string, unknown>): Record<string, unknown> {
   const device = parsed.device;
   if (!isRecord(device)) return parsed;
+  // Own-key checks, not `in`: `in` also sees Object.prototype members, so a
+  // device key named `__proto__` or `toString` would be dropped as "already set".
   const reordered: Record<string, unknown> = {};
   for (const k of DEVICE_CORE_KEYS) {
-    if (k in device) reordered[k] = device[k];
+    if (Object.hasOwn(device, k)) setOwn(reordered, k, device[k]);
   }
   for (const [k, v] of Object.entries(device)) {
-    if (!(k in reordered)) reordered[k] = v;
+    if (!Object.hasOwn(reordered, k)) setOwn(reordered, k, v);
   }
   return { ...parsed, device: reordered };
 }
@@ -1449,11 +1462,11 @@ function fenceRawTextFields(value: unknown, fieldNames: ReadonlySet<string>, fla
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value)) {
       if (key === 'stdout' && typeof v === 'string') {
-        out[key] = fenceEncodedStdout(v, fieldNames, flags);
+        setOwn(out, key, fenceEncodedStdout(v, fieldNames, flags));
       } else if (fieldNames.has(key)) {
-        out[key] = sanitizeUntrustedToolValue(v, flags);
+        setOwn(out, key, sanitizeUntrustedToolValue(v, flags));
       } else {
-        out[key] = fenceRawTextFields(v, fieldNames, flags);
+        setOwn(out, key, fenceRawTextFields(v, fieldNames, flags));
       }
     }
     return out;
@@ -1500,7 +1513,8 @@ function logFenceFlags(toolName: string, flags: readonly string[]): void {
   console.warn('[AI] Untrusted tool-output fence flags:', flags.join(','), 'tool:', toolName);
 }
 
-function fenceRegisteredRawTextFields(toolName: string, value: unknown): unknown {
+/** Exported for tests; production callers go through `compactToolResultForChat`. */
+export function fenceRegisteredRawTextFields(toolName: string, value: unknown): unknown {
   const fieldNames = RAW_TEXT_FIELDS_BY_TOOL[toolName];
   if (!fieldNames) return value;
   const flags: string[] = [];
