@@ -1668,6 +1668,31 @@
       "detail": "Une politique plus précise ou plus prioritaire l’emporte pour cette fonctionnalité sur ces appareils. Parmi les appareils que vous pouvez voir, cette politique en atteint {{reached}}.",
       "capped": "Trop d’appareils pour compter ceux où une autre politique l’emporte pour cette fonctionnalité.",
       "openDevice": "Ouvrez l’onglet Configuration appliquée d’un appareil pour voir quelle politique s’y applique."
+    },
+    "copyPolicy": {
+      "action": "Copier",
+      "title": "Copier la politique",
+      "defaultName": "{{name}} (copie)",
+      "startsInactive": "La copie démarre inactive et ne s’applique à aucun appareil tant que vous ne l’appliquez pas et ne l’activez pas. Les éléments qu’elle lie, comme les anneaux de mise à jour et les moniteurs, sont partagés avec l’original, et non dupliqués.",
+      "checking": "Vérification de ce qui peut être copié…",
+      "carriedHeading": "Copié",
+      "carriedNone": "Cette politique ne définit aucune fonctionnalité qui lui soit propre.",
+      "droppedHeading": "Non copié",
+      "reasons": {
+        "org_only_feature": "seule une politique gérée par une organisation peut définir cette fonctionnalité.",
+        "linked_item_unavailable": "elle utilise un élément que le nouveau propriétaire ne peut pas utiliser.",
+        "settings_not_valid": "ses paramètres enregistrés ne respectent plus les validations actuelles."
+      },
+      "confirm": "Copier la politique",
+      "copying": "Copie en cours…",
+      "copiedToast": "Politique copiée. Elle est inactive tant que vous ne l’activez pas.",
+      "failed": "La politique n’a pas pu être copiée.",
+      "previewFailed": "Impossible de vérifier ce qui peut être copié. Réessayez.",
+      "invalidParent": "Cette politique parente ne peut pas être utilisée avec le propriétaire que vous avez choisi. Choisissez une autre politique parente, ou aucune.",
+      "executeRequired": "Cette politique active des fonctionnalités qui installent des logiciels ou déplacent des fichiers sur les appareils; la copier nécessite donc l’autorisation devices:execute.",
+      "mfaRequired": "Confirmez votre identité avec MFA pour copier cette politique.",
+      "copyToOrganization": "Copier vers une organisation",
+      "changeWithCopy": "Copier avec un autre propriétaire ou une autre politique parente"
     }
   },
   "software": {

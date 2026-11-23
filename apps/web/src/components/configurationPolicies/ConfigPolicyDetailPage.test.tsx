@@ -360,8 +360,9 @@ describe('ConfigPolicyDetailPage — org-only feature gating on MSP-managed poli
     expect(panel).toHaveTextContent('OneDrive Helper is unavailable on this policy');
     expect(panel).toHaveTextContent('only a policy managed by that organization can set it');
     expect(panel).toHaveTextContent('This policy is managed by your MSP.');
-    // No Copy before W5 (plan D17): the reason, with no action.
-    expect(screen.queryByRole('button', { name: /copy/i })).toBeNull();
+    // W05b (plan D17): the reason, and Copy to one organization as the way out.
+    fireEvent.click(within(panel).getByRole('button', { name: 'Copy to one organization' }));
+    expect(await screen.findByTestId('config-policy-copy-dialog')).toBeInTheDocument();
   });
 
   it('renders Backup as fully editable on an MSP-managed policy (profiles, spec 2026-07-13)', async () => {

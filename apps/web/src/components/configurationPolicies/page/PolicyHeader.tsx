@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Eye, Pencil } from 'lucide-react';
+import { Copy, Eye, Pencil } from 'lucide-react';
 import { i18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import type { ReadOnlyReason } from './viewerAccess';
@@ -26,10 +26,17 @@ type PolicyHeaderProps = {
   /** State actions (Activate, Deactivate) beside the state pill. */
   actions?: ReactNode;
   /**
-   * Say that Managed by and Based on were fixed at the first save (W03d C1).
-   * The reason only: Copy, the way to change them, comes later (plan D17).
+   * Say that Managed by and Based on were fixed at the first save (W03d C1),
+   * with Copy beside it when `onCopy` is set: a copy is how to change either
+   * (plan D17).
    */
   showFixedNote?: boolean;
+  /**
+   * Opens Copy (#12309). Offered to read-only viewers too: an organization
+   * admin can copy an MSP-managed policy into its own organization. Omitted =
+   * no Copy control.
+   */
+  onCopy?: () => void;
 };
 
 const STATUS_CLASS: Record<PolicyStatus, string> = {
@@ -63,6 +70,7 @@ export default function PolicyHeader({
   onEditDetails,
   actions,
   showFixedNote = false,
+  onCopy,
 }: PolicyHeaderProps) {
   useTranslation(['policies', 'common']);
   const p = 'policies:configurationPolicies.policyHeader';
@@ -85,6 +93,17 @@ export default function PolicyHeader({
           >
             <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
             {i18n.t("policies:configurationPolicies.policyHeader.editDetails")}
+          </button>
+        )}
+        {onCopy && (
+          <button
+            type="button"
+            onClick={onCopy}
+            data-testid="config-policy-copy"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition hover:bg-muted"
+          >
+            <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+            {i18n.t('policies:configurationPolicies.copyPolicy.action')}
           </button>
         )}
         {actions}
@@ -142,6 +161,18 @@ export default function PolicyHeader({
       {showFixedNote && !readOnly && (
         <p data-testid="config-policy-owner-fixed" className="mt-1 text-xs text-muted-foreground">
           {i18n.t('policies:configurationPolicies.policyCreate.fixedNote')}
+          {onCopy && (
+            <>
+              {' '}
+              <button
+                type="button"
+                onClick={onCopy}
+                className="font-medium text-primary underline underline-offset-2 hover:text-primary/80"
+              >
+                {i18n.t('policies:configurationPolicies.copyPolicy.changeWithCopy')}
+              </button>
+            </>
+          )}
         </p>
       )}
 

@@ -104,3 +104,33 @@ describe('PolicyHeader (#12469)', () => {
     expect(screen.getByTestId('config-policy-read-only')).toHaveTextContent(text);
   });
 });
+
+describe('PolicyHeader: Copy (#12309, plan W05b K3)', () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
+  });
+
+  it('a locked owner offers Copy beside the reason', () => {
+    const onCopy = vi.fn();
+    render(<PolicyHeader {...baseProps} showFixedNote onCopy={onCopy} />);
+
+    const note = screen.getByTestId('config-policy-owner-fixed');
+    expect(note).toHaveTextContent('Managed by and Based on were fixed when this policy was first saved.');
+    fireEvent.click(within(note).getByRole('button', { name: 'Copy with a different owner or parent' }));
+    expect(onCopy).toHaveBeenCalledTimes(1);
+  });
+
+  it('the header offers Copy, also to a read-only viewer', () => {
+    const onCopy = vi.fn();
+    render(<PolicyHeader {...baseProps} orgId={null} readOnly readOnlyReason="msp_managed_org_user" onEditDetails={undefined} onCopy={onCopy} />);
+
+    fireEvent.click(screen.getByTestId('config-policy-copy'));
+    expect(onCopy).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers no Copy when the page passes no handler', () => {
+    render(<PolicyHeader {...baseProps} showFixedNote />);
+    expect(screen.queryByTestId('config-policy-copy')).toBeNull();
+    expect(within(screen.getByTestId('config-policy-owner-fixed')).queryByRole('button')).toBeNull();
+  });
+});

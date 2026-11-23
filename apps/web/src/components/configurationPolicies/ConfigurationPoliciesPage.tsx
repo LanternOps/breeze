@@ -14,7 +14,11 @@ import {
   type ListHashState,
 } from "./policyListQuery";
 import { useHashState } from "@/lib/useHashState";
-import { fetchWithAuth } from "../../stores/auth";
+import { fetchWithAuth, useAuthStore } from "../../stores/auth";
+import { useJwtClaims } from "@/lib/authScope";
+import { hasPermission } from "@/lib/permissions";
+import CopyPolicyDialog from "./page/CopyPolicyDialog";
+import { creatorKind } from "./page/policyOwner";
 import { useOrgStore } from "../../stores/orgStore";
 import { navigateTo } from "@/lib/navigation";
 import { runAction, handleActionError, ActionError } from "@/lib/runAction";
@@ -45,6 +49,13 @@ export default function ConfigurationPoliciesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [modalMode, setModalMode] = useState<ModalMode>("closed");
+  // Copy (#12309): the row being copied, or null.
+  const [copySource, setCopySource] = useState<ConfigPolicy | null>(null);
+  const jwtClaims = useJwtClaims();
+  const permissions = useAuthStore((s) => s.user?.permissions);
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
+  // UX only; the copy route re-checks. An unknown permission list is left to the server.
+  const canCopy = !permissions || hasPermission(permissions, "devices", "write");
   const [selectedPolicy, setSelectedPolicy] = useState<ConfigPolicy | null>(
     null,
   );
@@ -416,7 +427,24 @@ export default function ConfigurationPoliciesPage() {
         }
         onEdit={handleEdit}
         onDelete={handleDelete}
+        onCopy={canCopy ? setCopySource : undefined}
       />
+
+      {copySource && (
+        <CopyPolicyDialog
+          open
+          onClose={() => setCopySource(null)}
+          source={{
+            id: copySource.id,
+            name: copySource.name,
+            orgId: copySource.orgId,
+            parentPolicyId: copySource.parentPolicyId ?? null,
+          }}
+          organizations={organizations}
+          currentOrgId={currentOrgId}
+          creator={creatorKind(jwtClaims, canManagePartnerWide)}
+        />
+      )}
 
       {/*
         Compare against the ModalMode literal, NOT a translated string. An i18n

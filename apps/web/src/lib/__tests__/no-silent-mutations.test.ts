@@ -628,6 +628,9 @@ const TARGET_GLOBS = [
   'src/components/configurationPolicies/page/policyStatusApi.ts',
   'src/components/configurationPolicies/page/usePolicyDraft.ts',
   'src/components/configurationPolicies/page/usePolicyActivation.ts',
+  // #12309: Copy's POST (its dry run carries the exempt marker) and the dialog.
+  'src/components/configurationPolicies/page/copyPolicyApi.ts',
+  'src/components/configurationPolicies/page/CopyPolicyDialog.tsx',
   // Operator Recipe Library W06 R1b (#6171): "allow these tools" widens what an
   // AI agent may call on customer systems; a silent failure leaves the tech
   // believing the recipe is set up when it is not.

@@ -1668,6 +1668,31 @@
       "detail": "Dort setzt sich eine spezifischere oder höher priorisierte Richtlinie für diese Funktion durch. Von den Geräten, die Sie sehen können, erreicht diese Richtlinie {{reached}}.",
       "capped": "Zu viele Geräte, um zu zählen, wo sich eine andere Richtlinie für diese Funktion durchsetzt.",
       "openDevice": "Öffnen Sie auf einem Gerät den Tab „Konfiguration“, um zu sehen, welche Richtlinie dort gilt."
+    },
+    "copyPolicy": {
+      "action": "Kopieren",
+      "title": "Richtlinie kopieren",
+      "defaultName": "{{name}} (Kopie)",
+      "startsInactive": "Die Kopie startet inaktiv und gilt für kein Gerät, bis Sie sie anwenden und aktivieren. Verknüpfte Elemente wie Update-Ringe und Monitore werden mit dem Original geteilt, nicht dupliziert.",
+      "checking": "Es wird geprüft, was kopiert werden kann…",
+      "carriedHeading": "Kopiert",
+      "carriedNone": "Diese Richtlinie legt keine eigenen Funktionen fest.",
+      "droppedHeading": "Nicht kopiert",
+      "reasons": {
+        "org_only_feature": "nur eine von einer einzelnen Organisation verwaltete Richtlinie kann diese Funktion festlegen.",
+        "linked_item_unavailable": "sie verwendet ein Element, das der neue Eigentümer nicht nutzen kann.",
+        "settings_not_valid": "die gespeicherten Einstellungen bestehen die heutigen Prüfungen nicht mehr."
+      },
+      "confirm": "Richtlinie kopieren",
+      "copying": "Wird kopiert…",
+      "copiedToast": "Richtlinie kopiert. Sie ist inaktiv, bis Sie sie aktivieren.",
+      "failed": "Die Richtlinie konnte nicht kopiert werden.",
+      "previewFailed": "Die Prüfung, was kopiert werden kann, ist fehlgeschlagen. Versuchen Sie es erneut.",
+      "invalidParent": "Diese übergeordnete Richtlinie kann für den gewählten Eigentümer nicht verwendet werden. Wählen Sie eine andere übergeordnete Richtlinie oder keine.",
+      "executeRequired": "Diese Richtlinie aktiviert Funktionen, die Software installieren oder Dateien auf Geräten verschieben. Zum Kopieren ist daher die Berechtigung devices:execute erforderlich.",
+      "mfaRequired": "Bestätigen Sie Ihre Identität mit MFA, um diese Richtlinie zu kopieren.",
+      "copyToOrganization": "In eine Organisation kopieren",
+      "changeWithCopy": "Mit anderem Eigentümer oder anderer übergeordneter Richtlinie kopieren"
     }
   },
   "software": {

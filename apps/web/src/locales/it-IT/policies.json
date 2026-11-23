@@ -1668,6 +1668,31 @@
       "detail": "Lì prevale un criterio più specifico o con priorità più alta per questa funzionalità. Dei dispositivi che puoi vedere, questo criterio ne raggiunge {{reached}}.",
       "capped": "Troppi dispositivi per contare dove un altro criterio prevale per questa funzionalità.",
       "openDevice": "Apri la scheda Configurazione di un dispositivo per vedere quale criterio gli si applica."
+    },
+    "copyPolicy": {
+      "action": "Copia",
+      "title": "Copia criterio",
+      "defaultName": "{{name}} (copia)",
+      "startsInactive": "La copia parte inattiva e non si applica a nessun dispositivo finché non la applichi e la attivi. Gli elementi che collega, come gli anelli di aggiornamento e i monitor, sono condivisi con l'originale, non duplicati.",
+      "checking": "Verifica di ciò che si può copiare…",
+      "carriedHeading": "Copiato",
+      "carriedNone": "Questo criterio non imposta funzionalità proprie.",
+      "droppedHeading": "Non copiato",
+      "reasons": {
+        "org_only_feature": "solo un criterio gestito da una singola organizzazione può impostare questa funzionalità.",
+        "linked_item_unavailable": "usa un elemento che il nuovo proprietario non può usare.",
+        "settings_not_valid": "le impostazioni salvate non superano più i controlli attuali."
+      },
+      "confirm": "Copia criterio",
+      "copying": "Copia in corso…",
+      "copiedToast": "Criterio copiato. Resta inattivo finché non lo attivi.",
+      "failed": "Impossibile copiare il criterio.",
+      "previewFailed": "Impossibile verificare ciò che si può copiare. Riprova.",
+      "invalidParent": "Quel criterio padre non può essere usato con il proprietario scelto. Scegli un altro criterio padre, oppure nessuno.",
+      "executeRequired": "Questo criterio attiva funzionalità che installano software o spostano file sui dispositivi, quindi per copiarlo serve l'autorizzazione devices:execute.",
+      "mfaRequired": "Conferma la tua identità con MFA per copiare questo criterio.",
+      "copyToOrganization": "Copia in una organizzazione",
+      "changeWithCopy": "Copia con un proprietario o un criterio padre diverso"
     }
   },
   "software": {
