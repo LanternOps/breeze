@@ -22,6 +22,7 @@ import { createSelfHostedIntegration, upsertConnection, UnifiMultiKeyError } fro
 import {
   addKey,
   deleteKey,
+  getKeyForTest,
   getSyncKeys,
   openUnifiKey,
   recordKeyResults,
@@ -477,5 +478,27 @@ describe('key management on unifi_integration_keys (#11808 W3, breeze_app)', () 
       integrationId, partnerId, label: 'Planted', apiKey: 'planted', seenHostIds: [], createdBy: null,
     }))).rejects.toMatchObject({ code: 'UNIFI_NOT_CONNECTED' });
     expect((await keysOf(integrationId)).map((k) => k.label)).toEqual(['Global']);
+    await expect(asPartner(other.id, () => deleteKey(db, { integrationId, partnerId, keyId: key!.id })))
+      .rejects.toMatchObject({ code: 'UNIFI_NOT_CONNECTED' });
+    await expect(asPartner(other.id, () => getKeyForTest(db, integrationId, partnerId, key!.id))).resolves.toBeNull();
+    expect(await keysOf(integrationId)).toHaveLength(1);
+  });
+
+  // D11 under concurrency: two disables of the last two enabled keys must not
+  // leave the connection with none enabled.
+  runDb('two concurrent disables of the last two enabled keys leave one enabled', async () => {
+    for (let round = 0; round < 4; round++) {
+      const { partnerId, integrationId } = await connected();
+      const second = await asPartner(partnerId, () => addKey(db, {
+        integrationId, partnerId, label: `Second ${round}`, apiKey: 'second-key', seenHostIds: [], createdBy: null,
+      }));
+      const [first] = (await keysOf(integrationId)).filter((k) => k.id !== second.id);
+      const disable = (keyId: string) => withSystemDbAccessContext(() => updateKey(db, { integrationId, partnerId, keyId, isEnabled: false }));
+      const results = await Promise.allSettled([disable(first!.id), disable(second.id)]);
+      const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]!.reason.code).toBe('UNIFI_LAST_ENABLED_KEY');
+      expect((await keysOf(integrationId)).filter((k) => k.isEnabled)).toHaveLength(1);
+    }
   });
 });

@@ -63,6 +63,9 @@ export function useUnifiKeys({ onChanged }: UseUnifiKeysArgs) {
         // 401: the auth redirect is the feedback. ActionError: already toasted.
         if (!(err instanceof ActionError))
           showToast({ message: opts.errorFallback, type: "error" });
+        // A 404 or 409 means the key list changed elsewhere (another tab or
+        // admin): refresh so the card does not keep offering a stale row.
+        else if (err.status === 404 || err.status === 409) onChanged();
         return undefined;
       } finally {
         setBusy(null);

@@ -285,14 +285,22 @@ describe("ApiKeysCard mutations", () => {
     });
   });
 
-  it("does not call onChanged when the API refuses (409 last enabled key)", async () => {
-    fetchMock.mockResolvedValue(
-      res(
-        { success: false, code: "UNIFI_LAST_ENABLED_KEY", message: "last" },
-        false,
-        409,
-      ),
-    );
+  // A 409 or 404 means the server's key list moved on (another tab or admin):
+  // refresh so the user is not left retrying a stale row.
+  it.each([
+    [409, "UNIFI_LAST_ENABLED_KEY"],
+    [404, "UNIFI_KEY_NOT_FOUND"],
+  ])("refreshes the key list when the API refuses with %s %s", async (status, code) => {
+    fetchMock.mockResolvedValue(res({ success: false, code, message: "refused" }, false, status));
+    const { onChanged } = renderCard();
+    fireEvent.click(screen.getByTestId("unifi-key-remove-k2"));
+    fireEvent.click(await screen.findByTestId("unifi-key-confirm"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not refresh after a failure that changed nothing on the server (502)", async () => {
+    fetchMock.mockResolvedValue(res({ success: false, message: "unreachable" }, false, 502));
     const { onChanged } = renderCard();
     fireEvent.click(screen.getByTestId("unifi-key-remove-k2"));
     fireEvent.click(await screen.findByTestId("unifi-key-confirm"));

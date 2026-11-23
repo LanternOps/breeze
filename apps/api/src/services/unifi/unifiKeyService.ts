@@ -133,6 +133,8 @@ function tryOpen(ciphertext: string | null | undefined): { ok: true; value: stri
 function toSyncKey(row: KeyRow): UnifiSyncKey {
   const opened = tryOpen(row.apiKeyEncrypted);
   if (!opened.ok || !opened.value) {
+    // By key id only: the ciphertext and the decrypt error's text stay out of logs.
+    console.warn('[unifi] a stored API key did not decrypt', { keyId: row.id });
     return { id: row.id, label: row.label, apiKey: null, decryptError: UNIFI_KEY_DECRYPT_ERROR, lastSeenHostIds: row.lastSeenHostIds ?? null };
   }
   return {

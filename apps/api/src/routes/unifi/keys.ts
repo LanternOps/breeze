@@ -141,11 +141,16 @@ async function validateKey(baseUrl: string, apiKey: string):
 }
 
 /** Queue the first sync with the changed key. A queue outage must not fail a stored change: the scheduler syncs within 30 minutes. */
-async function queueSync(integrationId: string, partnerId: string): Promise<void> {
+async function queueSync(integrationId: string, partnerId: string, keyId: string): Promise<void> {
   try {
     await enqueueUnifiSync(integrationId, partnerId, 'manual');
   } catch (err) {
-    console.warn('[unifi] could not queue a sync after a key change:', err instanceof Error ? err.message : 'unknown error');
+    console.error('[unifi] could not queue a sync after a key change', {
+      integrationId,
+      partnerId,
+      keyId,
+      error: err instanceof Error ? err.message : 'unknown error',
+    });
   }
 }
 
@@ -186,7 +191,7 @@ unifiKeyRoutes.post('/', partnerScopes, writePerm, requireMfa(), zValidator('jso
     throw err;
   }
   auditKey(c, partnerId, 'unifi.key.add', conn.id, key);
-  await queueSync(conn.id, partnerId);
+  await queueSync(conn.id, partnerId, key.id);
   return c.json({ key }, 201);
 });
 
@@ -236,7 +241,7 @@ unifiKeyRoutes.patch('/:keyId', partnerScopes, writePerm, requireMfa(), zValidat
   });
   // A new secret, or a key that starts syncing again, gets a sync now.
   const enabledNow = body.isEnabled === true && before?.isEnabled === false;
-  if (body.apiKey !== undefined || enabledNow) await queueSync(conn.id, partnerId);
+  if (body.apiKey !== undefined || enabledNow) await queueSync(conn.id, partnerId, key.id);
   return c.json({ key });
 });
 
@@ -247,7 +252,8 @@ unifiKeyRoutes.delete('/:keyId', partnerScopes, writePerm, requireMfa(), zValida
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const { keyId } = c.req.valid('param');
   const conn = await getConnection(db, partner.partnerId);
-  if (!conn) return c.json({ success: false, message: 'Not connected' }, 400);
+  // After a Disconnect every key is gone: the end state a delete asks for.
+  if (!conn) return c.json({ success: true });
   const before = conn.connectionType === 'cloud'
     ? (await listKeys(db, conn.id, conn.partnerId)).find((k) => k.id === keyId)
     : undefined;

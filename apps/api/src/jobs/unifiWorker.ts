@@ -110,6 +110,12 @@ async function processScheduler(): Promise<{ queued: number }> {
 }
 
 async function processSyncIntegration(data: SyncIntegrationJobData): Promise<void> {
+  // Each key's status write is conditional on its last_sync_at being older than
+  // this, so a run that finishes late never overwrites a newer run's result.
+  // Taken BEFORE the keys are read: replacing a key stamps last_sync_at, and a
+  // run that read the old secret must start earlier than that stamp (#11808 W3).
+  const runStartedAt = new Date();
+
   // 1) Short DB context: read the keys + mappings. No network I/O here, so no
   //    pooled connection is held while UniFi is being called.
   const prep = await withSystemDbAccessContext(async () => {
@@ -127,9 +133,6 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<voi
 
   const integration = { id: data.integrationId, partnerId: data.partnerId };
   const { keys, baseUrl } = prep.creds;
-  // Each key's status write is conditional on its last_sync_at being older than
-  // this, so a run that finishes late never overwrites a newer run's result.
-  const runStartedAt = new Date();
 
   // 2) NO DB context: every enabled key's UniFi HTTP (hosts, sites, devices and
   //    ISP metrics, 429 backoff sleeps) runs here without holding a connection

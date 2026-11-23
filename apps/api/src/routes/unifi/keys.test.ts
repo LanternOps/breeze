@@ -242,8 +242,15 @@ describe('POST /unifi/keys', () => {
 
   it('still answers 201 when queueing the first sync fails (the scheduler picks the key up)', async () => {
     vi.mocked(enqueueUnifiSync).mockRejectedValueOnce(new Error('redis down'));
+    const errors = vi.mocked(console.error);
     const res = await app().request('/unifi/keys', json({ label: 'Macera', apiKey: SECRET_KEY }));
     expect(res.status).toBe(201);
+    // Logged at error level with the ids an operator needs, never the key.
+    expect(errors).toHaveBeenCalledWith(
+      '[unifi] could not queue a sync after a key change',
+      { integrationId: CONN_ID, partnerId: PARTNER_ID, keyId: KEY_ID, error: 'redis down' },
+    );
+    for (const line of logged) expectNoSecret(line);
   });
 });
 
@@ -328,6 +335,15 @@ describe('DELETE /unifi/keys/:keyId', () => {
     const res = await app().request(`/unifi/keys/${KEY_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ success: true });
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent after a disconnect: no connection answers success', async () => {
+    vi.mocked(getConnection).mockResolvedValue(null);
+    const res = await app().request(`/unifi/keys/${KEY_ID}`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expect(keySvc.deleteKey).not.toHaveBeenCalled();
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 

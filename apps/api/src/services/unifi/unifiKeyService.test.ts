@@ -169,6 +169,8 @@ describe('unifiKeyService', () => {
     expect(result!.keys[1]).toMatchObject({ id: 'key-bad', label: 'Broken', apiKey: null });
     const bad = result!.keys[1] as { decryptError: string };
     expect(bad.decryptError).toBe('The stored API key could not be decrypted');
+    // Logged for the operator by key id only: never the ciphertext or the error text.
+    expect(warn).toHaveBeenCalledWith('[unifi] a stored API key did not decrypt', { keyId: 'key-bad' });
   });
 
   it('getSyncKeys no longer adopts the legacy column (W3: the key row is the only source)', async () => {
