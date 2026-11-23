@@ -16,16 +16,23 @@
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
-import { eq, inArray } from 'drizzle-orm';
+import { afterEach, describe, expect, it } from 'vitest';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { getTestDb } from './setup';
 import {
   configurationPolicies,
   configPolicyAssignments,
   deviceGroups,
   organizations,
 } from '../../db/schema';
-import { cascadeDeleteOrg, cascadeDeletePartner } from '../../services/tenantCascade';
+import {
+  __tenantCascadeTestHooks,
+  cascadeDeleteOrg,
+  cascadeDeletePartner,
+  TenantCascadeRefusalError,
+  topologicalCascadeOrder,
+} from '../../services/tenantCascade';
 import { createDevice, createOrganization, createPartner, createSite } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -221,5 +228,183 @@ describe('org erasure clears config-policy assignments that target the erased or
     expect(await orgExists(f.orgId)).toBe(false);
     expect(await orgExists(f.otherOrgId)).toBe(false);
     expect(await policyExists(policy)).toBe(false);
+  });
+});
+
+/**
+ * The assignments are the input of the configuration-policy legal-hold check
+ * (erasureBackupLegalHold.ts → resolveBackupProtectionForDevice). That check
+ * runs at entry AND again inside the walk's `backup_snapshots` step, so the
+ * assignments must still be there, untouched, when it does. They may only go
+ * with their own target row, in that row's walk transaction, which is after
+ * `backup_snapshots`.
+ */
+describe('org erasure keeps policy assignments until every legal-hold check has run (live DB)', () => {
+  async function exec<T = Record<string, unknown>>(statement: ReturnType<typeof sql>): Promise<T[]> {
+    return (await getTestDb().execute(statement)) as unknown as T[];
+  }
+
+  async function seedSnapshot(f: Fixture): Promise<void> {
+    const [config] = await exec<{ id: string }>(sql`
+      INSERT INTO backup_configs (org_id, name, type, provider, provider_config)
+      VALUES (${f.orgId}, ${`Hold config ${randomUUID()}`}, 'file', 'local', ${JSON.stringify({ path: '/tmp/breeze-hold' })}::jsonb)
+      RETURNING id
+    `);
+    const [job] = await exec<{ id: string }>(sql`
+      INSERT INTO backup_jobs (org_id, config_id, device_id, status, snapshot_id)
+      VALUES (${f.orgId}, ${config!.id}, ${f.deviceId}, 'completed', 'HOLD-S1') RETURNING id
+    `);
+    await exec(sql`
+      INSERT INTO backup_snapshots (org_id, job_id, device_id, config_id, snapshot_id, storage_identity, size, file_count, backup_type)
+      VALUES (${f.orgId}, ${job!.id}, ${f.deviceId}, ${config!.id}, 'HOLD-S1', 'local::/tmp/breeze-hold', 4096, 2, 'file')
+    `);
+  }
+
+  /** An active policy with backup settings; the settings row is keyed like the policy (org XOR partner). */
+  async function seedBackupPolicy(
+    owner: { orgId?: string; partnerId?: string },
+    legalHold: boolean,
+  ): Promise<{ policyId: string; settingsId: string }> {
+    const [policy] = await exec<{ id: string }>(sql`
+      INSERT INTO configuration_policies (org_id, partner_id, name, status)
+      VALUES (${owner.orgId ?? null}, ${owner.partnerId ?? null}, ${`Held backups ${randomUUID()}`}, 'active')
+      RETURNING id
+    `);
+    const [link] = await exec<{ id: string }>(sql`
+      INSERT INTO config_policy_feature_links (config_policy_id, feature_type) VALUES (${policy!.id}, 'backup') RETURNING id
+    `);
+    const [settings] = await exec<{ id: string }>(sql`
+      INSERT INTO config_policy_backup_settings (feature_link_id, org_id, partner_id, retention)
+      VALUES (${link!.id}, ${owner.orgId ?? null}, ${owner.partnerId ?? null},
+              ${JSON.stringify({ legalHold, legalHoldReason: 'regulator request' })}::jsonb)
+      RETURNING id
+    `);
+    return { policyId: policy!.id, settingsId: settings!.id };
+  }
+
+  async function setHold(settingsId: string): Promise<void> {
+    await exec(sql`
+      UPDATE config_policy_backup_settings
+         SET retention = ${JSON.stringify({ legalHold: true, legalHoldReason: 'placed mid-erasure' })}::jsonb
+       WHERE id = ${settingsId}
+    `);
+  }
+
+  async function holdIsSet(settingsId: string): Promise<boolean> {
+    const [row] = await exec<{ held: boolean }>(sql`
+      SELECT (retention -> 'legalHold') = 'true'::jsonb AS held FROM config_policy_backup_settings WHERE id = ${settingsId}
+    `);
+    return row?.held === true;
+  }
+
+  async function snapshotCount(orgId: string): Promise<number> {
+    return (await exec(sql`SELECT id FROM backup_snapshots WHERE org_id = ${orgId}`)).length;
+  }
+
+  type EveryLevel = Record<'organization' | 'site' | 'device_group' | 'device', string>;
+
+  async function assignEveryLevel(f: Fixture, policyId: string): Promise<EveryLevel> {
+    return {
+      organization: await assign(policyId, 'organization', f.orgId),
+      site: await assign(policyId, 'site', f.siteId),
+      device_group: await assign(policyId, 'device_group', f.groupId),
+      device: await assign(policyId, 'device', f.deviceId),
+    };
+  }
+
+  /** A walk table that runs before `backup_snapshots`: after the entry check, before the re-check. */
+  async function tableBeforeSnapshots(): Promise<string> {
+    const order = await topologicalCascadeOrder();
+    const first = order[0]!;
+    expect(order.indexOf(first)).toBeLessThan(order.indexOf('backup_snapshots'));
+    return first;
+  }
+
+  async function expectRefusedWithEverythingKept(
+    f: Fixture,
+    settingsId: string,
+    ids: EveryLevel,
+    run: Promise<unknown>,
+  ): Promise<void> {
+    const err = await run.then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(TenantCascadeRefusalError);
+    expect((err as TenantCascadeRefusalError).code).toBe('LEGAL_HOLD_ACTIVE');
+    expect(await orgExists(f.orgId)).toBe(true);
+    expect(await snapshotCount(f.orgId)).toBe(1);
+    expect(await holdIsSet(settingsId)).toBe(true);
+    const all = Object.values(ids);
+    expect(await assignmentIds(all)).toEqual([...all].sort());
+  }
+
+  afterEach(() => {
+    delete __tenantCascadeTestHooks.afterTableStep;
+  });
+
+  it('(h) a PARTNER-owned policy hold placed after the entry check refuses at backup_snapshots; snapshots, assignments and hold survive', async () => {
+    const f = await seedFixture();
+    await seedSnapshot(f);
+    const { policyId, settingsId } = await seedBackupPolicy({ partnerId: f.partnerId }, false);
+    const ids = await assignEveryLevel(f, policyId);
+    const early = await tableBeforeSnapshots();
+    __tenantCascadeTestHooks.afterTableStep = async (table) => {
+      if (table === early) await setHold(settingsId);
+    };
+
+    await expectRefusedWithEverythingKept(f, settingsId, ids, erase(f.orgId));
+  });
+
+  it('(i) an ORG-owned policy hold placed after the entry check refuses at backup_snapshots; snapshots, assignments and hold survive', async () => {
+    const f = await seedFixture();
+    await seedSnapshot(f);
+    const { policyId, settingsId } = await seedBackupPolicy({ orgId: f.orgId }, false);
+    const ids = await assignEveryLevel(f, policyId);
+    const early = await tableBeforeSnapshots();
+    __tenantCascadeTestHooks.afterTableStep = async (table) => {
+      if (table === early) await setHold(settingsId);
+    };
+
+    await expectRefusedWithEverythingKept(f, settingsId, ids, erase(f.orgId));
+  });
+
+  it('(j) a PARTNER-owned policy hold already active at entry refuses; everything survives', async () => {
+    const f = await seedFixture();
+    await seedSnapshot(f);
+    const { policyId, settingsId } = await seedBackupPolicy({ partnerId: f.partnerId }, true);
+    const ids = await assignEveryLevel(f, policyId);
+
+    await expectRefusedWithEverythingKept(f, settingsId, ids, erase(f.orgId));
+  });
+
+  it('(k) a failure right after the backup_snapshots step leaves every assignment in place', async () => {
+    const f = await seedFixture();
+    await seedSnapshot(f);
+    const policy = await seedPolicy({ partnerId: f.partnerId }, 'MSP baseline');
+    const ids = await assignEveryLevel(f, policy);
+    __tenantCascadeTestHooks.afterTableStep = async (table) => {
+      if (table === 'backup_snapshots') throw new Error('injected failure after backup_snapshots');
+    };
+
+    await expect(erase(f.orgId)).rejects.toThrow(/injected failure after backup_snapshots/);
+
+    expect(await orgExists(f.orgId)).toBe(true);
+    expect(await snapshotCount(f.orgId)).toBe(0);
+    const all = Object.values(ids);
+    expect(await assignmentIds(all)).toEqual([...all].sort());
+  });
+
+  it('(l) an assignment goes only with its own target: a failure after device_groups keeps the device, site and org assignments', async () => {
+    const f = await seedFixture();
+    const policy = await seedPolicy({ partnerId: f.partnerId }, 'MSP baseline');
+    const ids = await assignEveryLevel(f, policy);
+    __tenantCascadeTestHooks.afterTableStep = async (table) => {
+      if (table === 'device_groups') throw new Error('injected failure after device_groups');
+    };
+
+    await expect(erase(f.orgId)).rejects.toThrow(/injected failure after device_groups/);
+
+    expect(await orgExists(f.orgId)).toBe(true);
+    expect(await exec(sql`SELECT id FROM device_groups WHERE id = ${f.groupId}`)).toHaveLength(0);
+    expect(await assignmentIds(Object.values(ids)))
+      .toEqual([ids.organization, ids.site, ids.device].sort());
   });
 });

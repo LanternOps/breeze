@@ -1363,30 +1363,10 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
       WHERE role_id IN (SELECT id FROM roles WHERE org_id = ${orgId})
     `,
   },
-  // config_policy_assignments has no org_id: it is keyed by a polymorphic
-  // level/target_id pair with no FK. An ORG-owned policy's assignments go with
-  // the policy (config_policy_id is ON DELETE CASCADE), but a PARTNER-owned
-  // policy outlives the org, and so do its assignments that target this org,
-  // one of its sites, device groups or devices. The owner-delete statement
-  // triggers on organizations/sites/device_groups/devices
-  // (ab_config_policy_assignment_*_owner_delete) re-validate every assignment
-  // still naming a deleted target and raise 23503
-  // config_policy_assignments_target_owner_fk, so the walk aborts on the
-  // first target table it reaches (#12538). Clear by target, regardless of
-  // policy owner, before the walk. Scoped to rows inside this org: a
-  // partner-owned group (org_id NULL) and the partner-level assignment are
-  // not this org's and stay. The partner purge clears its own groups'
-  // assignments in partnerAssociatedPreClears.
-  {
-    table: 'config_policy_assignments',
-    clearSql: (orgId) => sql`
-      DELETE FROM config_policy_assignments
-      WHERE (level = 'organization' AND target_id = ${orgId}::uuid)
-         OR (level = 'site' AND target_id IN (SELECT id FROM sites WHERE org_id = ${orgId}::uuid))
-         OR (level = 'device_group' AND target_id IN (SELECT id FROM device_groups WHERE org_id = ${orgId}::uuid))
-         OR (level = 'device' AND target_id IN (SELECT id FROM devices WHERE org_id = ${orgId}::uuid))
-    `,
-  },
+  // config_policy_assignments is deliberately NOT a step-1b pre-clear: the
+  // rows are the input of the configuration-policy legal-hold check, so they
+  // must outlive the walk's backup_snapshots step. They are cleared per
+  // target inside the walk instead (CONFIG_POLICY_ASSIGNMENT_TARGET_CLEARS).
   // psa_ticket_mappings has NO org_id/partner_id column, so neither the org
   // cascade list nor the partner-axis sweep reaches it — yet it holds THREE
   // FKs into the cascade set, every one of them declared without an explicit
@@ -1977,7 +1957,10 @@ export async function deleteBackupSnapshotsCascadeStep(orgId: string): Promise<n
     // could carry one. Both policy kinds are still present at this point: the
     // walk deletes backup_snapshots before backup_jobs/backup_policies (FK
     // order) and before the configuration_policies family (pinned by
-    // backupErasureFence.integration.test.ts).
+    // backupErasureFence.integration.test.ts). So are the
+    // config_policy_assignments the configuration-policy hold resolves
+    // through: they go only with their target rows, in walk steps that run
+    // after this one (CONFIG_POLICY_ASSIGNMENT_TARGET_CLEARS, #12538).
     if (await findPolicyBackupLegalHoldInContext(orgId, { lockForShare: true })) {
       throw new TenantCascadeRefusalError('LEGAL_HOLD_ACTIVE', LEGAL_HOLD_ACTIVE_MESSAGE);
     }
@@ -2297,6 +2280,7 @@ async function cascadeDeleteOrgInternal(
   // Compute the FK-safe order from the actual catalog. If a cycle is
   // detected we throw and abort BEFORE deleting anything.
   const order = await topologicalCascadeOrder();
+  assertAssignmentClearsFollowSnapshots(order);
 
   // 0. Fence the org's backup storage BEFORE the first destructive step.
   //    Erasure deletes backup rows but never backup OBJECTS — deleting backup
@@ -2559,6 +2543,8 @@ async function cascadeDeleteOrgInternal(
   for (const table of order) {
     // Held shell: the evidence the hold retains, and the shell's own row.
     if (retainedTables.has(table)) continue;
+    const assignmentClear = CONFIG_POLICY_ASSIGNMENT_TARGET_CLEARS[table];
+    let assignmentsCleared = 0;
     try {
       const count = table === 'software_catalog'
         ? await deleteSoftwareCatalogsAndObjects({ orgId }).then((deleted) => {
@@ -2597,6 +2583,13 @@ async function cascadeDeleteOrgInternal(
               await dbModule.db.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
             }
 
+            // Same transaction as the target DELETE below, so the two commit
+            // or roll back together (CONFIG_POLICY_ASSIGNMENT_TARGET_CLEARS);
+            // an isolation refusal just below rolls this back too. Kept ahead
+            // of the isolation fence so its locks stay adjacent to the DELETE.
+            if (assignmentClear) {
+              assignmentsCleared = extractRowCount(await dbModule.db.execute(assignmentClear(orgId)));
+            }
             if (table === 'device_network_isolations' || table === 'devices' || table === 'organizations') {
               await assertIsolationErasureSafe(orgId);
             }
@@ -2605,6 +2598,11 @@ async function cascadeDeleteOrgInternal(
           });
       stats.tablesDeleted[table] = (stats.tablesDeleted[table] ?? 0) + count;
       stats.totalRowsDeleted += count;
+      if (assignmentsCleared > 0) {
+        stats.tablesDeleted.config_policy_assignments =
+          (stats.tablesDeleted.config_policy_assignments ?? 0) + assignmentsCleared;
+        stats.totalRowsDeleted += assignmentsCleared;
+      }
       await __tenantCascadeTestHooks.afterTableStep?.(table, orgId);
     } catch (err) {
       // A precondition refusal (the `backup_snapshots` re-check above found a
@@ -2769,6 +2767,76 @@ async function writeErasureFailedAudit(
     });
   } catch (auditErr) {
     console.warn('[tenantCascade] erasure-failed audit write failed:', auditErr);
+  }
+}
+
+/**
+ * config_policy_assignments rows that name one of the org's own target rows,
+ * keyed by the walk table whose DELETE removes that target (#12538).
+ *
+ * The table has no org_id (a polymorphic level/target_id pair, no FK). An
+ * ORG-owned policy's assignments go with the policy at the
+ * `configuration_policies` step (config_policy_id is ON DELETE CASCADE), but
+ * a PARTNER-owned policy outlives the org, and so do its assignments here.
+ * The owner-delete statement triggers on these four tables
+ * (ab_config_policy_assignment_*_owner_delete) re-validate every assignment
+ * of the matching level that still names a deleted row and raise 23503
+ * config_policy_assignments_target_owner_fk, so each must be removed first.
+ *
+ * Each level is cleared in the SAME walk transaction as its target's DELETE,
+ * never earlier:
+ * - The assignments are the input of the configuration-policy legal-hold
+ *   check (erasureBackupLegalHold.ts → resolveBackupProtectionForDevice),
+ *   which runs at entry and again inside the backup_snapshots step. Every one
+ *   of these steps runs after backup_snapshots; cascadeDeleteOrg refuses to
+ *   walk an order where that is not so.
+ * - If the target's DELETE fails, its assignments roll back with it, so an
+ *   aborted run never leaves a surviving site, group, device or org with its
+ *   policies silently unassigned.
+ *
+ * Scoped to targets inside this org: a partner-owned group (org_id NULL), a
+ * partner-level assignment and other orgs' rows stay. The partner purge
+ * clears its own groups' assignments in partnerAssociatedPreClears. A held
+ * shell keeps its `organizations` row (retainedTables), so that step and its
+ * clear are skipped and the shell's org-level assignments stay with it.
+ */
+const CONFIG_POLICY_ASSIGNMENT_TARGET_CLEARS: Readonly<Record<string, (orgId: string) => ReturnType<typeof sql>>> =
+  Object.freeze({
+    device_groups: (orgId: string) => sql`
+      DELETE FROM config_policy_assignments
+       WHERE level = 'device_group'
+         AND target_id IN (SELECT id FROM device_groups WHERE org_id = ${orgId}::uuid)
+    `,
+    devices: (orgId: string) => sql`
+      DELETE FROM config_policy_assignments
+       WHERE level = 'device'
+         AND target_id IN (SELECT id FROM devices WHERE org_id = ${orgId}::uuid)
+    `,
+    sites: (orgId: string) => sql`
+      DELETE FROM config_policy_assignments
+       WHERE level = 'site'
+         AND target_id IN (SELECT id FROM sites WHERE org_id = ${orgId}::uuid)
+    `,
+    organizations: (orgId: string) => sql`
+      DELETE FROM config_policy_assignments
+       WHERE level = 'organization' AND target_id = ${orgId}::uuid
+    `,
+  });
+
+/**
+ * Fail closed if the computed walk order would delete an assignment target
+ * (and so its assignments) before `backup_snapshots`, where the legal-hold
+ * re-check runs. Checked before anything is deleted.
+ */
+function assertAssignmentClearsFollowSnapshots(order: ReadonlyArray<string>): void {
+  const snapshotsAt = order.indexOf('backup_snapshots');
+  const early = Object.keys(CONFIG_POLICY_ASSIGNMENT_TARGET_CLEARS)
+    .filter((table) => order.includes(table) && (snapshotsAt < 0 || order.indexOf(table) < snapshotsAt));
+  if (early.length > 0) {
+    throw new Error(
+      `[tenantCascade] cascade order deletes ${early.join(', ')} before backup_snapshots; `
+      + 'their config_policy_assignments feed the legal-hold re-check, refusing to erase',
+    );
   }
 }
 

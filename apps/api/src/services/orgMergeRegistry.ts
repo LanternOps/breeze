@@ -89,13 +89,11 @@ const FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS = new Set(['software_deployments']);
  * not FK-reachable from one gets no policy dispatch at all, so registering a
  * `custom` policy for it would be a dead entry that reads as coverage.
  *
- * These are handled by `runPostPassFixups` in orgMerge.ts instead.
- * `config_policy_assignments` (polymorphic level/target_id, no org_id) is also
- * an erasure pre-clear (#12538). In a merge, `runPostPassFixups` repoints its
- * organization-level rows, and its site/device_group/device targets keep their
- * ids, so nothing else is needed.
+ * These are handled by `runPostPassFixups` in orgMerge.ts instead — the same
+ * place `config_policy_assignments` (also polymorphic: level/target_id, no
+ * org_id) is handled, for exactly the same reason.
  */
-const POST_PASS_FIXUP_TABLES = new Set(['accounting_entity_mappings', 'config_policy_assignments']);
+const POST_PASS_FIXUP_TABLES = new Set(['accounting_entity_mappings']);
 
 /**
  * ASSOCIATED_SYSTEM_SCOPED_TABLES entries a merge never needs to touch at all.

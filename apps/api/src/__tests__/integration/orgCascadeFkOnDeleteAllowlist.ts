@@ -288,6 +288,22 @@ export const ORG_CASCADE_FK_UNSAFE: ReadonlyArray<OrgCascadeFkRef> = Object.free
   // empty before deleteSoftwareCatalogsAndObjects runs.
   { childTable: 'software_versions', constraint: 'software_versions_catalog_id_software_catalog_id_fk', parentTable: 'software_catalog', reason: 'child-not-deleted', allColumnsNullable: false },
   {
+    childTable: 'config_policy_assignments',
+    constraint: 'config_policy_assignments_assigned_by_users_id_fk',
+    parentTable: 'users',
+    reason: 'child-not-deleted',
+    allColumnsNullable: true,
+    note:
+      'SET NULL would fire the assignment-integrity and partner-export UPDATE triggers on this '
+      + 'table, which have not been reviewed for a referential-action write; needs its own change. '
+      + 'Erasure does delete some of these rows, but not as a step-1b pre-clear, so this ledger '
+      + 'cannot see it: an org-owned policy\'s rows go with the policy (ON DELETE CASCADE), and rows '
+      + 'targeting this org\'s own sites, groups, devices or org row go in that target\'s walk step '
+      + '(CONFIG_POLICY_ASSIGNMENT_TARGET_CLEARS, #12538; kept out of step 1b because the '
+      + 'legal-hold re-check reads them). A row a user of this org assigned to a target outside '
+      + 'the org is not deleted and would still pin `users`.',
+  },
+  {
     childTable: 'partner_service_principal_keys',
     constraint: 'partner_service_principal_keys_created_by_fkey',
     parentTable: 'users',
@@ -403,21 +419,6 @@ export const ORG_CASCADE_FK_PRE_CLEARED: ReadonlyArray<OrgCascadeFkRef> = Object
   { childTable: 'software_deployments', constraint: 'software_deployments_install_method_id_fkey', parentTable: 'software_install_methods', reason: 'pre-cleared', allColumnsNullable: true },
   { childTable: 'sso_sessions', constraint: 'sso_sessions_provider_id_sso_providers_id_fk', parentTable: 'sso_providers', reason: 'pre-cleared', allColumnsNullable: false },
   { childTable: 'user_sso_identities', constraint: 'user_sso_identities_provider_id_sso_providers_id_fk', parentTable: 'sso_providers', reason: 'pre-cleared', allColumnsNullable: false },
-  {
-    childTable: 'config_policy_assignments',
-    constraint: 'config_policy_assignments_assigned_by_users_id_fk',
-    parentTable: 'users',
-    reason: 'pre-cleared',
-    allColumnsNullable: true,
-    note:
-      'Partially pre-cleared. The config_policy_assignments pre-clear (#12538) keys off the assignment TARGET (this org, '
-      + 'its sites, device groups and devices), not assigned_by. An org-owned policy\'s rows also go '
-      + 'with the policy (config_policy_id ON DELETE CASCADE). A row a user of THIS org assigned to a '
-      + 'target outside the org would survive both and then pin `users`; an org user cannot reach '
-      + 'another org\'s targets, but nothing here proves it. SET NULL would fire the '
-      + 'assignment-integrity and partner-export UPDATE triggers, which have not been reviewed for a '
-      + 'referential-action write.',
-  },
   {
     childTable: 'device_commands',
     constraint: 'device_commands_created_by_users_id_fk',
