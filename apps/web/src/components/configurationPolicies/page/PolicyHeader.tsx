@@ -74,7 +74,7 @@ export default function PolicyHeader({
             className="inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition hover:bg-muted"
           >
             <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-            {i18n.t(`${p}.editDetails`)}
+            {i18n.t("policies:configurationPolicies.policyHeader.editDetails")}
           </button>
         )}
       </div>
@@ -124,7 +124,7 @@ export default function PolicyHeader({
             </details>
           )}
           {orgId && orgName && (
-            <p data-testid="config-policy-managed-by">{i18n.t(`${p}.managedByOrganization`, { organization: orgName })}</p>
+            <p data-testid="config-policy-managed-by">{i18n.t("policies:configurationPolicies.policyHeader.managedByOrganization", { organization: orgName })}</p>
           )}
         </div>
       )}

@@ -129,10 +129,10 @@ describe('RemoteAccessTab inheritance (#5080)', () => {
     };
   }
 
-  it('shows Configured (inherited) and seeds the form from parentLink when only a parent link exists', () => {
+  it('shows From parent and seeds the form from parentLink when only a parent link exists', () => {
     render(<RemoteAccessTab {...inheritedProps} parentLink={parentLinkWith({ maxConcurrentTunnels: 12 })} />);
 
-    expect(screen.getByText(/Configured \(inherited\)/i)).toBeTruthy();
+    expect(screen.getByText('From parent')).toBeTruthy();
     // maxConcurrentTunnels defaults to 5; the parent link's distinctive
     // override (12) must be reflected in the (read-only) field.
     expect((screen.getByDisplayValue('12') as HTMLInputElement).value).toBe('12');

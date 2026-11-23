@@ -9,6 +9,7 @@ vi.mock('@/stores/auth', async (importOriginal) => ({
 }));
 
 import RuleSetPicker, { attachableRuleSets } from './RuleSetPicker';
+import { FeatureDirtyContext } from './featureEditing';
 import type { YaraRuleSetSummary } from '../../security/detectionRules/ruleSetsApi';
 
 const json = (status: number, payload: unknown) =>
@@ -149,6 +150,26 @@ describe('RuleSetPicker', () => {
     expect(onChange).toHaveBeenLastCalledWith([A1.id, PARTNER.id]);
     fireEvent.click(screen.getByTestId(`rule-set-option-${A1.id}`));
     expect(onChange).toHaveBeenLastCalledWith([]);
+  });
+
+  it('a picker selection marks it dirty (#12469)', async () => {
+    const markDirty = vi.fn();
+    render(
+      <FeatureDirtyContext.Provider value={{ markDirty }}>
+        <RuleSetPicker
+          value={[A1.id]}
+          onChange={onChange}
+          policyOwner={{ orgId: ORG_A, partnerId: null }}
+          disabled={false}
+          onBlockingChange={onBlockingChange}
+        />
+      </FeatureDirtyContext.Provider>,
+    );
+    await settle();
+    expect(markDirty).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId(`rule-set-option-${PARTNER.id}`));
+    expect(onChange).toHaveBeenLastCalledWith([A1.id, PARTNER.id]);
+    expect(markDirty).toHaveBeenCalledTimes(1);
   });
 
   it('empty selection shows the legacy-scan note', async () => {

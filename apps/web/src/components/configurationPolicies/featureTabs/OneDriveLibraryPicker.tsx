@@ -5,6 +5,7 @@ import {
   fetchOneDriveLibraries,
   type OneDriveLibrary,
 } from '../../../lib/api/onedrive';
+import { useFeatureDirty } from './featureEditing';
 
 export type PickedLibrary = {
   libraryId: string;
@@ -44,6 +45,7 @@ function toPicked(lib: OneDriveLibrary): PickedLibrary {
 }
 
 export default function OneDriveLibraryPicker({ orgId, onAdd, onClose }: OneDriveLibraryPickerProps) {
+  const { markDirty } = useFeatureDirty();
   const [phase, setPhase] = useState<Phase>('checking');
   const [error, setError] = useState<string>();
   const [libraries, setLibraries] = useState<OneDriveLibrary[]>([]);
@@ -136,7 +138,10 @@ export default function OneDriveLibraryPicker({ orgId, onAdd, onClose }: OneDriv
     return Array.from(bySite.entries());
   }, [libraries, query]);
 
-  const handleAddLibrary = (lib: OneDriveLibrary) => onAdd(toPicked(lib));
+  const handleAddLibrary = (lib: OneDriveLibrary) => {
+    markDirty();
+    onAdd(toPicked(lib));
+  };
 
   return (
     <div
@@ -328,6 +333,7 @@ export default function OneDriveLibraryPicker({ orgId, onAdd, onClose }: OneDriv
 // Composite-ID paste fallback. Validates the `tenantId=` prefix (mirrors the
 // server-side library-id format) so bad input is caught before it reaches Save.
 function ManualPaste({ onAdd }: { onAdd: (lib: PickedLibrary) => void }) {
+  const { markDirty } = useFeatureDirty();
   const [manualId, setManualId] = useState('');
   const [manualName, setManualName] = useState('');
   const [manualError, setManualError] = useState<string | null>(null);
@@ -343,6 +349,7 @@ function ManualPaste({ onAdd }: { onAdd: (lib: PickedLibrary) => void }) {
       setManualError('Display name is required.');
       return;
     }
+    markDirty();
     onAdd({ libraryId, displayName, siteUrl: '', siteId: '', webId: '', listId: '' });
     setManualId('');
     setManualName('');

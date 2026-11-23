@@ -304,7 +304,7 @@ describe('ContainmentTab', () => {
 
   it('shows a partner-wide parent read-only and inherited', () => {
     render(<ContainmentTab {...props} parentLink={link(STORED, 'parent-link')} />);
-    expect(screen.getByText(/configured \(inherited\)/i)).toBeInTheDocument();
+    expect(screen.getByText('From parent')).toBeInTheDocument();
     expect(input('containment-row-0-target').value).toBe('updates.example.com');
     expect(input('containment-row-0-target').disabled).toBe(true);
     expect((screen.getByTestId('containment-add-row') as HTMLButtonElement).disabled).toBe(true);

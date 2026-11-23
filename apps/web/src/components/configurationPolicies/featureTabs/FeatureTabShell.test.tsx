@@ -1,8 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import FeatureTabShell from './FeatureTabShell';
-import { FeatureReadOnlyContext } from './featureEditing';
+import { FeatureDirtyReporterContext, FeatureReadOnlyContext, useFeatureDirty } from './featureEditing';
 import { i18n, loadLocale } from '../../../lib/i18n';
 
 // FeatureTabShell renders the footer controls for EVERY configuration-policy
@@ -160,22 +160,42 @@ describe('FeatureTabShell footer controls', () => {
   });
 });
 
-describe('FeatureTabShell state badge (#12306)', () => {
+describe('FeatureTabShell state badge (#12306, #12469)', () => {
   afterEach(async () => {
     await i18n.changeLanguage('en');
+  });
+
+  const badge = (props: Partial<React.ComponentProps<typeof FeatureTabShell>>) => {
+    render(
+      <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured={false} saving={false} onSave={vi.fn()} {...props}>
+        <div />
+      </FeatureTabShell>,
+    );
+  };
+
+  it('the badge reads Set here, From parent or Not set', async () => {
+    await i18n.changeLanguage('en');
+    badge({ isConfigured: true });
+    expect(screen.getByText('Set here')).toBeInTheDocument();
+    cleanup();
+    badge({ isInherited: true });
+    expect(screen.getByText('From parent')).toBeInTheDocument();
+    cleanup();
+    badge({});
+    expect(screen.getByText('Not set')).toBeInTheDocument();
+    cleanup();
+    // The amber saved-but-not-deployed state is unchanged.
+    badge({ isConfigured: true, configuredButInactive: true });
+    expect(screen.getByText('Saved (not deployed)')).toBeInTheDocument();
   });
 
   it('the state badge text comes from i18n', async () => {
     await loadLocale('pt-BR');
     await i18n.changeLanguage('pt-BR');
-    const expected = i18n.t('policies:configurationPolicies.featureTabs.featureTabShell.badgeConfigured');
-    expect(expected).not.toMatch(/badgeConfigured/);
-    expect(expected).not.toBe('Configured');
-    render(
-      <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured saving={false} onSave={vi.fn()}>
-        <div />
-      </FeatureTabShell>,
-    );
+    const expected = i18n.t('policies:configurationPolicies.featureStates.set_here.label');
+    expect(expected).not.toMatch(/set_here/);
+    expect(expected).not.toBe('Set here');
+    badge({ isConfigured: true });
     expect(screen.getByText(expected)).toBeTruthy();
   });
 });
@@ -206,7 +226,7 @@ describe('FeatureTabShell for a read-only viewer (#12469)', () => {
     expect(screen.queryByRole('button')).toBeNull();
     expect(screen.getByTestId('field')).toBeDisabled();
     // The state still shows.
-    expect(screen.getByText('Configured')).toBeInTheDocument();
+    expect(screen.getByText('Set here')).toBeInTheDocument();
   });
 
   it('offers no Override on an inherited feature', () => {
@@ -218,5 +238,103 @@ describe('FeatureTabShell for a read-only viewer (#12469)', () => {
       </FeatureReadOnlyContext.Provider>,
     );
     expect(screen.queryByRole('button')).toBeNull();
+  });
+});
+
+describe('FeatureTabShell unsaved changes (#12469)', () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
+  });
+
+  function Picker() {
+    const { markDirty } = useFeatureDirty();
+    return (
+      <button type="button" data-testid="pick" onClick={markDirty}>
+        pick
+      </button>
+    );
+  }
+
+  const renderShell = (props: Partial<React.ComponentProps<typeof FeatureTabShell>> = {}) => {
+    const report = vi.fn();
+    const utils = render(
+      <FeatureDirtyReporterContext.Provider value={report}>
+        <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured saving={false} onSave={vi.fn()} {...props}>
+          <input data-testid="field" />
+          <select data-testid="choice" defaultValue="a">
+            <option value="a">a</option>
+            <option value="b">b</option>
+          </select>
+          <Picker />
+        </FeatureTabShell>
+      </FeatureDirtyReporterContext.Provider>,
+    );
+    return { ...utils, report };
+  };
+
+  it('typing in a feature marks it dirty', () => {
+    const { report } = renderShell();
+    expect(report).not.toHaveBeenCalledWith(true);
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    expect(report).toHaveBeenLastCalledWith(true);
+  });
+
+  it('a change event (select) marks it dirty', () => {
+    const { report } = renderShell();
+    fireEvent.change(screen.getByTestId('choice'), { target: { value: 'b' } });
+    expect(report).toHaveBeenLastCalledWith(true);
+  });
+
+  it('a picker selection marks it dirty', () => {
+    const { report } = renderShell();
+    fireEvent.click(screen.getByTestId('pick'));
+    expect(report).toHaveBeenLastCalledWith(true);
+  });
+
+  it('a successful save clears dirty', async () => {
+    const { report } = renderShell({ onSave: () => Promise.resolve() });
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(report).toHaveBeenLastCalledWith(false));
+  });
+
+  it('a save that is still in flight, then fails, never clears dirty', async () => {
+    // A void-returning tab: the shell sees `saving` go true, then settle with
+    // an error banner. Dirty must survive the whole round trip.
+    const report = vi.fn();
+    const Host = ({ saving, error }: { saving: boolean; error?: string }) => (
+      <FeatureDirtyReporterContext.Provider value={report}>
+        <FeatureTabShell title="Patches" description="d" icon={<span />} isConfigured saving={saving} error={error} onSave={() => undefined}>
+          <input data-testid="field" />
+        </FeatureTabShell>
+      </FeatureDirtyReporterContext.Provider>
+    );
+    const { rerender } = render(<Host saving={false} />);
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    expect(report).toHaveBeenLastCalledWith(true);
+    report.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    rerender(<Host saving />);
+    await new Promise((r) => setTimeout(r, 5));
+    rerender(<Host saving={false} error="Server said no" />);
+    await screen.findByTestId('save-blocked-hint');
+    expect(report).not.toHaveBeenCalledWith(false);
+  });
+
+  it('a save that throws keeps dirty', async () => {
+    const { report } = renderShell({ onSave: () => Promise.reject(new Error('nope')) });
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    expect(report).toHaveBeenLastCalledWith(true);
+    report.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByTestId('save-blocked-hint');
+    expect(report).not.toHaveBeenCalledWith(false);
+  });
+
+  it('reports clean when it unmounts', () => {
+    const { report, unmount } = renderShell();
+    fireEvent.input(screen.getByTestId('field'), { target: { value: 'x' } });
+    unmount();
+    expect(report).toHaveBeenLastCalledWith(false);
   });
 });

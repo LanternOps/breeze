@@ -80,12 +80,12 @@ describe('HelperTab', () => {
   it('shows a "Saved (not deployed)" badge when a link exists but deploy is off', () => {
     render(<HelperTab {...baseProps} existingLink={helperLink(false)} />);
     expect(screen.getByText('Saved (not deployed)')).toBeTruthy();
-    expect(screen.queryByText('Configured')).toBeNull();
+    expect(screen.queryByText('Set here')).toBeNull();
   });
 
-  it('shows "Configured" and enables the toggles when deploy is on', () => {
+  it('shows "Set here" and enables the toggles when deploy is on', () => {
     render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
-    expect(screen.getByText('Configured')).toBeTruthy();
+    expect(screen.getByText('Set here')).toBeTruthy();
     expect(screen.queryByText('Saved (not deployed)')).toBeNull();
     const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
     expect(checkboxes.every((c) => !c.disabled)).toBe(true);

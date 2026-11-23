@@ -3,6 +3,7 @@ import { X, Search, FileCode, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { useFeatureDirty } from "./featureEditing";
 import { fetchAllScripts } from '@/lib/scriptsFetch';
 export type ScriptLanguage = "powershell" | "bash" | "python" | "cmd";
 export type OSType = "windows" | "macos" | "linux";
@@ -53,6 +54,7 @@ export default function RemediationScriptPicker({
   osFilter,
 }: RemediationScriptPickerProps) {
   useTranslation("policies");
+  const { markDirty } = useFeatureDirty();
   const [scripts, setScripts] = useState<ScriptRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -119,6 +121,7 @@ export default function RemediationScriptPicker({
     });
   }, [scripts, query, categoryFilter, osFilter]);
   const handleSelect = (script: ScriptRow) => {
+    markDirty();
     onSelect({
       id: script.id,
       name: script.name,

@@ -88,13 +88,11 @@
       "policyDetails": "Richtliniendetails",
       "archived2": "Archiviert",
       "inheritingFrom": "Basiert auf",
-      "overrideIndividualTabsToCustomizeSettings": "Ändern Sie eine Funktion, um sie nur für diese Richtlinie festzulegen.",
       "thisPolicyStillCarriesAnExisting": "Diese Richtlinie trägt noch eine bestehende",
       "configurationThatWillNeverBeApplied": "Konfiguration, die niemals angewendet wird.",
       "policy": "Richtlinie",
       "saving": "Speichern...",
       "saveChanges": "Änderungen speichern",
-      "parentPolicy": "Elternrichtlinie",
       "removing": "Entfernen...",
       "removeConfiguration": "Konfiguration entfernen",
       "managedByYourMsp": "Verwaltet von Ihrem MSP",
@@ -105,7 +103,12 @@
       "refreshAppliesToFailed": "Der Geltungsbereich dieser Richtlinie konnte nicht aktualisiert werden. Laden Sie die Seite neu, um ihn zu sehen.",
       "appliesToCloseBlocked": "Wenden Sie Ihre Änderungen zuerst an oder verwerfen Sie sie.",
       "gatedFeatureUnavailable": "{{feature}} ist für diese Richtlinie nicht verfügbar",
-      "gatedFeatureReason": "{{feature}} arbeitet mit den eigenen Konten und Diensten einer Organisation, daher kann nur eine von dieser Organisation verwaltete Richtlinie die Funktion festlegen. Diese Richtlinie wird von Ihrem MSP verwaltet."
+      "gatedFeatureReason": "{{feature}} arbeitet mit den eigenen Konten und Diensten einer Organisation, daher kann nur eine von dieser Organisation verwaltete Richtlinie die Funktion festlegen. Diese Richtlinie wird von Ihrem MSP verwaltet.",
+      "unsavedLeaveConfirm": "Sie haben ungespeicherte Änderungen an dieser Richtlinie. Seite verlassen und Änderungen verwerfen?",
+      "discardChangesTitle": "Ungespeicherte Änderungen verwerfen?",
+      "discardChangesMessage": "Ihre Änderungen an {{feature}} sind nicht gespeichert. Verwerfen Sie sie, oder bleiben Sie und speichern Sie sie zuerst.",
+      "discardChanges": "Verwerfen",
+      "stayOnFeature": "Bleiben"
     },
     "configPolicyList": {
       "archived": "Archiviert",
@@ -642,10 +645,7 @@
         "revertConfirmMessage": "Dadurch wird die {{feature}}-Überschreibung dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Einstellungen der übergeordneten Richtlinie gelten für alle Geräte, die diese Richtlinie verwenden. Dies kann nicht rückgängig gemacht werden.",
         "removeConfirmTitle": "Diese Konfiguration entfernen?",
         "removeConfirmMessage": "Dadurch wird die {{feature}}-Konfiguration aus dieser Richtlinie gelöscht. Ihre Einstellungen gehen verloren und die Funktion wird auf keinem Gerät mehr angewendet, das diese Richtlinie verwendet. Dies kann nicht rückgängig gemacht werden.",
-        "badgeInherited": "Konfiguriert (geerbt)",
-        "badgeSavedNotDeployed": "Gespeichert (nicht bereitgestellt)",
-        "badgeConfigured": "Konfiguriert",
-        "badgeNotConfigured": "Nicht konfiguriert"
+        "badgeSavedNotDeployed": "Gespeichert (nicht bereitgestellt)"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Stellen Sie Breeze Assist auf Geräten bereit",

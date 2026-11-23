@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { useFeatureDirty } from "./featureEditing";
 type EntityOption = {
   id: string;
   name: string;
@@ -36,6 +37,7 @@ export default function InlineEntityPicker({
   compact = false,
 }: InlineEntityPickerProps) {
   useTranslation("policies");
+  const { markDirty } = useFeatureDirty();
   const [options, setOptions] = useState<EntityOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string>();
@@ -122,7 +124,10 @@ export default function InlineEntityPicker({
         {value && (
           <button
             type="button"
-            onClick={() => onChange("")}
+            onClick={() => {
+              markDirty();
+              onChange("");
+            }}
             className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
           >
             <X className="h-3.5 w-3.5" />
@@ -168,6 +173,7 @@ export default function InlineEntityPicker({
                   key={option.id}
                   type="button"
                   onClick={() => {
+                    markDirty();
                     onChange(option.id);
                     setOpen(false);
                     setSearch("");

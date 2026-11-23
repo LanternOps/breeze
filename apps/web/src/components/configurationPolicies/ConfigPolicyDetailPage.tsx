@@ -9,6 +9,8 @@ import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { showToast } from "../shared/Toast";
 import { Drawer } from "../shared/Drawer";
+import { ConfirmDialog } from "../shared/ConfirmDialog";
+import { useUnsavedGuard } from "../settings/partnerSettings/useUnsavedGuard";
 import AppliesToStrip from "./AppliesToStrip";
 import { parseAppliesTo } from "./appliesToSummary";
 // The web layer only aliases the bare `@breeze/shared` root and the
@@ -19,7 +21,7 @@ import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared';
 import type { FeatureType, FeatureLink, ParentPolicySummary } from './featureTabs/types';
 import { FEATURE_META } from './featureTabs/types';
 import { useFeatureLink } from './featureTabs/useFeatureLink';
-import { FeatureReadOnlyContext } from './featureTabs/featureEditing';
+import { FeatureDirtyReporterContext, FeatureReadOnlyContext } from './featureTabs/featureEditing';
 import AppliesToPanel from './appliesTo/AppliesToPanel';
 import { fetchPolicyReach, type ConfigPolicyReach } from './appliesTo/appliesToApi';
 import type { PickerOwner } from './appliesTo/TargetPicker';
@@ -121,6 +123,17 @@ export default function ConfigPolicyDetailPage({
   const [appliesToDirty, setAppliesToDirty] = useState(false);
   // The details form (name, description, status) under the header.
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsDirty, setDetailsDirty] = useState(false);
+  // Unsaved changes on the open feature (plan D16): FeatureTabShell reports
+  // them. The ref is what the hash handler and the rail read synchronously.
+  const [featureDirty, setFeatureDirtyState] = useState(false);
+  const featureDirtyRef = useRef(false);
+  const setFeatureDirty = useCallback((dirty: boolean) => {
+    featureDirtyRef.current = dirty;
+    setFeatureDirtyState(dirty);
+  }, []);
+  // A switch away from a dirty feature, waiting on Discard or Stay.
+  const [pendingSwitch, setPendingSwitch] = useState<{ target: RailKey; openDetails: boolean } | null>(null);
   // The policy's device count (#12467). null = unknown (not loaded, or the read
   // failed): the counts are left out and the page stays usable.
   const [reach, setReach] = useState<ConfigPolicyReach | null>(null);
@@ -128,17 +141,26 @@ export default function ConfigPolicyDetailPage({
   useIsomorphicLayoutEffect(() => {
     const current = shownRef.current;
     let target: RailKey;
+    const openDetails = requested === OVERVIEW_HASH_ALIAS;
     if (requested === APPLIES_TO_HASH_ALIAS) {
       target = current;
       setAppliesToOpen(true);
     } else if (requested === OVERVIEW_HASH_ALIAS) {
       target = FIRST_RAIL_FEATURE;
-      setDetailsOpen(true);
     } else if (Object.prototype.hasOwnProperty.call(LEGACY_TAB_ALIASES, requested)) {
       target = LEGACY_TAB_ALIASES[requested as keyof typeof LEGACY_TAB_ALIASES];
     } else {
       target = requested as RailKey;
     }
+    if (target !== current && featureDirtyRef.current) {
+      // The hash moved off a feature with unsaved changes (back button, a
+      // link, a typed hash). Keep the feature on screen and its URL, and ask.
+      replaceHash(current);
+      setRequested(current);
+      setPendingSwitch({ target, openDetails });
+      return;
+    }
+    if (openDetails) setDetailsOpen(true);
     if (requested !== target) {
       // Canonicalize the alias, and reset the request so the same alias
       // arriving again still registers as a change.
@@ -150,13 +172,37 @@ export default function ConfigPolicyDetailPage({
 
   // Reflect the selected feature in the URL hash so it is deep-linkable and
   // the contextual help button resolves to the right per-feature doc.
-  const selectSection = useCallback(
+  const goToSection = useCallback(
     (id: RailKey) => {
       if (typeof window !== "undefined") window.location.hash = id;
       setRequested(id);
       setShown(id);
     },
     [setRequested],
+  );
+  const selectSection = useCallback(
+    (id: RailKey) => {
+      if (id === shownRef.current) return;
+      if (featureDirtyRef.current) {
+        setPendingSwitch({ target: id, openDetails: false });
+        return;
+      }
+      goToSection(id);
+    },
+    [goToSection],
+  );
+  const discardAndSwitch = useCallback(() => {
+    const pending = pendingSwitch;
+    setPendingSwitch(null);
+    if (!pending) return;
+    setFeatureDirty(false);
+    goToSection(pending.target);
+    if (pending.openDetails) setDetailsOpen(true);
+  }, [pendingSwitch, goToSection, setFeatureDirty]);
+  // Browser unload, Astro soft navigation and keyboard chords (#12469).
+  useUnsavedGuard(
+    featureDirty || detailsDirty,
+    i18n.t("policies:configurationPolicies.configPolicyDetailPage.unsavedLeaveConfirm"),
   );
   const [policy, setPolicy] = useState<PolicyDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -335,6 +381,7 @@ export default function ConfigPolicyDetailPage({
         prev ? { ...prev, name: next.name, description: next.description || undefined, status: next.status } : prev,
       );
       setDetailsOpen(false);
+      setDetailsDirty(false);
       void refreshPolicy();
     },
     [refreshPolicy],
@@ -510,6 +557,7 @@ export default function ConfigPolicyDetailPage({
           initial={{ name: policy.name, description: policy.description ?? "", status: policy.status }}
           onSaved={handleDetailsSaved}
           onCancel={() => setDetailsOpen(false)}
+          onDirtyChange={setDetailsDirty}
         />
       )}
 
@@ -534,7 +582,7 @@ export default function ConfigPolicyDetailPage({
           ownLinks={featureLinks}
           parentLinks={parentFeatureLinks}
           isGated={isGatedFeature}
-          dirtyKey={null}
+          dirtyKey={featureDirty ? shown : null}
           onNavigate={selectSection}
         />
         <section
@@ -542,6 +590,7 @@ export default function ConfigPolicyDetailPage({
           data-testid="config-policy-feature-panel"
           className="min-w-0 space-y-6"
         >
+          <FeatureDirtyReporterContext.Provider value={setFeatureDirty}>
           <FeatureReadOnlyContext.Provider value={readOnly}>
             {shownFeature &&
               (isGatedFeature(shownFeature) ? (
@@ -559,10 +608,26 @@ export default function ConfigPolicyDetailPage({
                 />
               ))}
           </FeatureReadOnlyContext.Provider>
+          </FeatureDirtyReporterContext.Provider>
           {/* Compliance Status: read-only results; the `compliance` feature is the rule editor. */}
           {shown === "compliance_status" && policyId && <ComplianceStatusTab policyId={policyId} />}
         </section>
       </div>
+
+      {/* Leaving a feature with unsaved changes asks first (#12469). */}
+      <ConfirmDialog
+        open={pendingSwitch !== null}
+        onClose={() => setPendingSwitch(null)}
+        onConfirm={discardAndSwitch}
+        title={i18n.t("policies:configurationPolicies.configPolicyDetailPage.discardChangesTitle")}
+        message={i18n.t("policies:configurationPolicies.configPolicyDetailPage.discardChangesMessage", {
+          feature: sectionLabel,
+        })}
+        confirmLabel={i18n.t("policies:configurationPolicies.configPolicyDetailPage.discardChanges")}
+        cancelLabel={i18n.t("policies:configurationPolicies.configPolicyDetailPage.stayOnFeature")}
+        variant="warning"
+        confirmTestId="config-policy-discard-confirm"
+      />
 
       {/* The one applies-to editor, in a drawer so the feature stays in view
           (#12467). It stages changes and commits them with one Apply; while

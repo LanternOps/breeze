@@ -92,10 +92,10 @@ describe('SecurityTab inheritance (#5080)', () => {
     onLinkChanged.mockClear();
   });
 
-  it('shows Configured (inherited) and seeds the form from parentLink when only a parent link exists', () => {
+  it('shows From parent and seeds the form from parentLink when only a parent link exists', () => {
     render(<SecurityTab {...baseProps} parentLink={parentLinkWith({ autoQuarantine: false })} />);
 
-    expect(screen.getByText(/Configured \(inherited\)/i)).toBeTruthy();
+    expect(screen.getByText('From parent')).toBeTruthy();
     // autoQuarantine defaults to true; the parent link's distinctive override
     // (false) must be reflected, read-only, in the form.
     const toggle = screen.getByText('Auto-quarantine').closest('div')?.parentElement

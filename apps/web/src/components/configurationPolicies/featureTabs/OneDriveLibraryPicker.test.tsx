@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import OneDriveLibraryPicker from './OneDriveLibraryPicker';
+import { FeatureDirtyContext } from './featureEditing';
 import * as api from '../../../lib/api/onedrive';
 import type { OneDriveLibrary } from '../../../lib/api/onedrive';
 
@@ -102,6 +103,28 @@ describe('OneDriveLibraryPicker', () => {
     expect(onAdd).toHaveBeenCalledWith(
       expect.objectContaining({ libraryId: 'tenantId=t1&siteId=s1', displayName: 'Finance' }),
     );
+  });
+
+  it('a picker selection marks it dirty (#12469)', async () => {
+    const markDirty = vi.fn();
+    mockedStatus.mockResolvedValue(false);
+
+    render(
+      <FeatureDirtyContext.Provider value={{ markDirty }}>
+        <OneDriveLibraryPicker onAdd={onAdd} onClose={onClose} />
+      </FeatureDirtyContext.Provider>,
+    );
+    await waitFor(() => expect(screen.getByTestId('onedrive-picker-manual-id')).toBeTruthy());
+    expect(markDirty).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByTestId('onedrive-picker-manual-id'), {
+      target: { value: 'tenantId=t1&siteId=s1' },
+    });
+    fireEvent.change(screen.getByTestId('onedrive-picker-manual-name'), { target: { value: 'Finance' } });
+    fireEvent.click(screen.getByTestId('onedrive-picker-manual-submit'));
+
+    expect(onAdd).toHaveBeenCalled();
+    expect(markDirty).toHaveBeenCalledTimes(1);
   });
 
   it('connected → renders libraries grouped by site; Add maps autoMountValue/spSiteId', async () => {

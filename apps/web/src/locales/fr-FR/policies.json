@@ -88,13 +88,11 @@
       "policyDetails": "Détails de la politique",
       "archived2": "Archivé",
       "inheritingFrom": "Basée sur",
-      "overrideIndividualTabsToCustomizeSettings": "Modifiez une fonctionnalité pour la définir uniquement pour cette politique.",
       "thisPolicyStillCarriesAnExisting": "Cette politique conserve toujours une",
       "configurationThatWillNeverBeApplied": " Une configuration qui ne sera jamais appliquée.",
       "policy": "Politique",
       "saving": "Enregistrement...",
       "saveChanges": "Enregistrer les modifications",
-      "parentPolicy": "Politique parentale",
       "removing": "Enlèvement...",
       "removeConfiguration": "Supprimer la configuration",
       "managedByYourMsp": "Géré par votre MSP",
@@ -105,7 +103,12 @@
       "refreshAppliesToFailed": "Impossible d'actualiser l'endroit où s'applique cette politique. Rechargez la page pour le voir.",
       "appliesToCloseBlocked": "Appliquez ou abandonnez d’abord vos modifications.",
       "gatedFeatureUnavailable": "{{feature}} n’est pas disponible sur cette politique",
-      "gatedFeatureReason": "{{feature}} fonctionne avec les comptes et services propres à une organisation ; seule une politique gérée par cette organisation peut le définir. Cette politique est gérée par votre MSP."
+      "gatedFeatureReason": "{{feature}} fonctionne avec les comptes et services propres à une organisation ; seule une politique gérée par cette organisation peut le définir. Cette politique est gérée par votre MSP.",
+      "unsavedLeaveConfirm": "Vous avez des modifications non enregistrées sur cette politique. Quitter et les abandonner ?",
+      "discardChangesTitle": "Abandonner les modifications non enregistrées ?",
+      "discardChangesMessage": "Vos modifications de {{feature}} ne sont pas enregistrées. Abandonnez-les, ou restez et enregistrez-les d’abord.",
+      "discardChanges": "Abandonner",
+      "stayOnFeature": "Rester"
     },
     "configPolicyList": {
       "archived": "Archivé",
@@ -642,10 +645,7 @@
         "revertConfirmMessage": "Cette action supprime la substitution {{feature}} de cette stratégie. Ses paramètres sont perdus et ceux de la stratégie parente s'appliquent à tous les appareils utilisant cette stratégie. Action irréversible.",
         "removeConfirmTitle": "Supprimer cette configuration ?",
         "removeConfirmMessage": "Cette action supprime la configuration {{feature}} de cette stratégie. Ses paramètres sont perdus et la fonctionnalité cesse de s'appliquer à tous les appareils utilisant cette stratégie. Action irréversible.",
-        "badgeInherited": "Configuré (hérité)",
-        "badgeSavedNotDeployed": "Enregistré (non déployé)",
-        "badgeConfigured": "Configuré",
-        "badgeNotConfigured": "Non configuré"
+        "badgeSavedNotDeployed": "Enregistré (non déployé)"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Déployer Breeze Assist sur les appareils",

@@ -88,13 +88,11 @@
       "policyDetails": "Detalles de la política",
       "archived2": "Archivado",
       "inheritingFrom": "Basada en",
-      "overrideIndividualTabsToCustomizeSettings": "Cambie una función para configurarla solo en esta política.",
       "thisPolicyStillCarriesAnExisting": "Esta política todavía conlleva una",
       "configurationThatWillNeverBeApplied": "configuración que nunca se aplicará.",
       "policy": "Política",
       "saving": "Guardando...",
       "saveChanges": "Guardar cambios",
-      "parentPolicy": "política de padres",
       "removing": "Eliminando...",
       "removeConfiguration": "Eliminar configuración",
       "managedByYourMsp": "Administrado por su MSP",
@@ -105,7 +103,12 @@
       "refreshAppliesToFailed": "No se pudo actualizar dónde se aplica esta política. Vuelva a cargar la página para verlo.",
       "appliesToCloseBlocked": "Primero aplique o descarte sus cambios.",
       "gatedFeatureUnavailable": "{{feature}} no está disponible en esta política",
-      "gatedFeatureReason": "{{feature}} trabaja con las cuentas y los servicios propios de una organización, así que solo una política administrada por esa organización puede definirlo. Esta política la administra su MSP."
+      "gatedFeatureReason": "{{feature}} trabaja con las cuentas y los servicios propios de una organización, así que solo una política administrada por esa organización puede definirlo. Esta política la administra su MSP.",
+      "unsavedLeaveConfirm": "Tiene cambios sin guardar en esta política. ¿Salir y descartarlos?",
+      "discardChangesTitle": "¿Descartar los cambios sin guardar?",
+      "discardChangesMessage": "Sus cambios en {{feature}} no están guardados. Descártelos o quédese y guárdelos primero.",
+      "discardChanges": "Descartar",
+      "stayOnFeature": "Quedarse"
     },
     "configPolicyList": {
       "archived": "Archivado",
@@ -642,10 +645,7 @@
         "revertConfirmMessage": "Esto elimina la anulación de {{feature}} en esta política. Su configuración se pierde y se aplica la configuración de la política principal a todos los dispositivos que usan esta política. No se puede deshacer.",
         "removeConfirmTitle": "¿Quitar esta configuración?",
         "removeConfirmMessage": "Esto elimina la configuración de {{feature}} de esta política. Su configuración se pierde y la función deja de aplicarse a todos los dispositivos que usan esta política. No se puede deshacer.",
-        "badgeInherited": "Configurada (heredada)",
-        "badgeSavedNotDeployed": "Guardada (sin implementar)",
-        "badgeConfigured": "Configurada",
-        "badgeNotConfigured": "Sin configurar"
+        "badgeSavedNotDeployed": "Guardada (sin implementar)"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Implementar Breeze Assist en dispositivos",

@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { useFeatureDirty } from "./featureEditing";
 export type SelectedSoftware = {
   catalogId: string;
   catalogName: string;
@@ -72,6 +73,7 @@ export default function SoftwareCatalogPicker({
   onSelect,
 }: SoftwareCatalogPickerProps) {
   useTranslation("policies");
+  const { markDirty } = useFeatureDirty();
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -186,6 +188,7 @@ export default function SoftwareCatalogPicker({
     versionLabel: string | null,
   ) => {
     if (!selectedCatalogItem) return;
+    markDirty();
     onSelect({
       catalogId: selectedCatalogItem.id,
       catalogName: selectedCatalogItem.name,

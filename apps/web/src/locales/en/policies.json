@@ -88,7 +88,6 @@
       "policyDetails": "Policy Details",
       "archived2": "Archived",
       "inheritingFrom": "Based on",
-      "overrideIndividualTabsToCustomizeSettings": "Change a feature to set it for this policy only.",
       "managedByYourMsp": "Managed by your MSP",
       "inheritedByPolicies_one": "Parent of {{count}} policy",
       "inheritedByPolicies_other": "Parent of {{count}} policies",
@@ -97,7 +96,6 @@
       "policy": "Policy",
       "saving": "Saving...",
       "saveChanges": "Save Changes",
-      "parentPolicy": "parent policy",
       "removing": "Removing...",
       "removeConfiguration": "Remove configuration",
       "appliesToDrawerTitle": "Applies to",
@@ -105,7 +103,12 @@
       "refreshAppliesToFailed": "Couldn't refresh where this policy applies. Reload the page to see it.",
       "appliesToCloseBlocked": "Apply or discard your changes first.",
       "gatedFeatureUnavailable": "{{feature}} is unavailable on this policy",
-      "gatedFeatureReason": "{{feature}} works with one organization's own accounts and services, so only a policy managed by that organization can set it. This policy is managed by your MSP."
+      "gatedFeatureReason": "{{feature}} works with one organization's own accounts and services, so only a policy managed by that organization can set it. This policy is managed by your MSP.",
+      "unsavedLeaveConfirm": "You have unsaved changes on this policy. Leave and discard them?",
+      "discardChangesTitle": "Discard unsaved changes?",
+      "discardChangesMessage": "Your changes to {{feature}} are not saved. Discard them, or stay and save them first.",
+      "discardChanges": "Discard",
+      "stayOnFeature": "Stay"
     },
     "configPolicyList": {
       "archived": "Archived",
@@ -642,10 +645,7 @@
         "revertConfirmMessage": "This deletes the {{feature}} override on this policy. Its settings are lost and the parent policy's settings apply to every device using this policy. This cannot be undone.",
         "removeConfirmTitle": "Remove this configuration?",
         "removeConfirmMessage": "This deletes the {{feature}} configuration from this policy. Its settings are lost and the feature stops being applied to every device using this policy. This cannot be undone.",
-        "badgeInherited": "Configured (inherited)",
-        "badgeSavedNotDeployed": "Saved (not deployed)",
-        "badgeConfigured": "Configured",
-        "badgeNotConfigured": "Not configured"
+        "badgeSavedNotDeployed": "Saved (not deployed)"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Deploy Breeze Assist to devices",

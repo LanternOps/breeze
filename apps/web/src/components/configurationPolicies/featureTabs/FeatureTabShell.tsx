@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Loader2, Trash2, RotateCcw, PenLine } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
-import { useFeatureReadOnly } from "./featureEditing";
+import { FeatureDirtyContext, FeatureDirtyReporterContext, useFeatureReadOnly } from "./featureEditing";
+import { featureStateLabel } from "../page/featureState";
 type FeatureTabShellProps = {
   title: string;
   description: string;
@@ -77,6 +78,32 @@ export default function FeatureTabShell({
   const [thrownMessage, setThrownMessage] = useState<string | null>(null);
   const awaitingSettle = useRef(false);
 
+  // D16 (#12469): unsaved changes. Any bubbling native input/change event in
+  // the body marks the feature dirty; a picker that changes the form without
+  // one calls useFeatureDirty().markDirty(). A native listener (not React's
+  // onChange) so a portaled sub-form that saves on its own (a ring or
+  // destination editor dialog) does not mark this feature dirty. Only a save
+  // that settles with no error clears it.
+  const reportDirty = useContext(FeatureDirtyReporterContext);
+  const [dirty, setDirty] = useState(false);
+  const markDirty = useCallback(() => setDirty(true), []);
+  const dirtyApi = useMemo(() => ({ markDirty }), [markDirty]);
+  useEffect(() => {
+    reportDirty(dirty);
+  }, [dirty, reportDirty]);
+  useEffect(() => () => reportDirty(false), [reportDirty]);
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    const onEdit = () => setDirty(true);
+    body.addEventListener("input", onEdit);
+    body.addEventListener("change", onEdit);
+    return () => {
+      body.removeEventListener("input", onEdit);
+      body.removeEventListener("change", onEdit);
+    };
+  }, []);
+
   const handleSaveClick = async () => {
     awaitingSettle.current = true;
     setBlockedHint(null);
@@ -125,6 +152,10 @@ export default function FeatureTabShell({
     const target = fieldError ?? banner;
     if (!target) {
       setBlockedHint(null);
+      // A save that settled with nothing wrong: the form matches what is saved.
+      // Not while it is still in flight (a void-returning tab reveals once
+      // before `saving` settles), and not after a throw.
+      if (!saving && thrownMessage === null) setDirty(false);
       return;
     }
     setBlockedHint(
@@ -156,13 +187,14 @@ export default function FeatureTabShell({
   }, [revealTick]);
 
   const savedInactive = !isInherited && isConfigured && !!configuredButInactive;
+  // The rail's words (plan D7, #12469): Set here, From parent, Not set.
   const badgeText = isInherited
-    ? i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.badgeInherited")
+    ? featureStateLabel("from_parent")
     : savedInactive
       ? i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.badgeSavedNotDeployed")
       : isConfigured
-        ? i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.badgeConfigured")
-        : i18n.t("policies:configurationPolicies.featureTabs.featureTabShell.badgeNotConfigured");
+        ? featureStateLabel("set_here")
+        : featureStateLabel("not_set");
   const badgeClass = isInherited
     ? "border-blue-500/40 bg-blue-500/20 text-blue-700"
     : savedInactive
@@ -210,7 +242,7 @@ export default function FeatureTabShell({
           className={`mt-6 ${isInherited ? "opacity-60 pointer-events-none" : ""}`}
         >
           <fieldset disabled={readOnly} className="min-w-0">
-            {children}
+            <FeatureDirtyContext.Provider value={dirtyApi}>{children}</FeatureDirtyContext.Provider>
           </fieldset>
         </div>
 

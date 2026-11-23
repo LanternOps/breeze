@@ -29,12 +29,17 @@ const getJwtClaimsMock = vi.mocked(getJwtClaims);
 // page-level gating decision (which tab renders an editor vs. a read-only
 // hint) rather than each tab's own fetch/save internals — those are covered
 // by the tabs' own test files.
+// The Patches stand-in uses the real FeatureTabShell, so the unsaved-changes
+// guard is exercised through the shell's own dirty detection.
 vi.mock('./featureTabs/PatchTab', async () => {
   const { useFeatureReadOnly } = await import('./featureTabs/featureEditing');
+  const { default: FeatureTabShell } = await import('./featureTabs/FeatureTabShell');
   return {
     default: () => (
       <div data-testid="patch-tab-editor" data-read-only={String(useFeatureReadOnly())}>
-        Patch editor
+        <FeatureTabShell title="Patch editor" description="d" icon={<span />} isConfigured={false} saving={false} onSave={() => Promise.resolve()}>
+          <input data-testid="patch-field" aria-label="Patch field" />
+        </FeatureTabShell>
       </div>
     ),
   };
@@ -638,5 +643,140 @@ describe('ConfigPolicyDetailPage — inheritance from the API (#5080)', () => {
     } finally {
       window.history.replaceState(null, '', originalSearch);
     }
+  });
+});
+
+describe('ConfigPolicyDetailPage — unsaved-changes guard (#12469)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    await i18n.changeLanguage('en');
+    window.location.hash = '';
+  });
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  const typeInPatch = () => fireEvent.input(screen.getByTestId('patch-field'), { target: { value: 'edited' } });
+
+  it('the rail item of a dirty feature shows the unsaved dot', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    expect(screen.getByTestId('config-policy-rail-tab-patch')).toHaveAccessibleName('Patches, Not set');
+    typeInPatch();
+    expect(screen.getByTestId('config-policy-rail-tab-patch')).toHaveAccessibleName('Patches (unsaved changes), Not set');
+  });
+
+  it('leaving a dirty feature asks first: Stay keeps the edits, Discard switches', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    const editor = screen.getByTestId('patch-tab-editor');
+    typeInPatch();
+
+    openFeature('backup');
+    expect(await screen.findByText('Discard unsaved changes?')).toBeInTheDocument();
+    expect(screen.getByTestId('patch-tab-editor')).toBe(editor);
+    expect(screen.queryByTestId('backup-tab-editor')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stay' }));
+    await waitFor(() => expect(screen.queryByText('Discard unsaved changes?')).toBeNull());
+    expect(screen.getByTestId('patch-tab-editor')).toBe(editor);
+    expect((screen.getByTestId('patch-field') as HTMLInputElement).value).toBe('edited');
+
+    openFeature('backup');
+    fireEvent.click(await screen.findByTestId('config-policy-discard-confirm'));
+    expect(await screen.findByTestId('backup-tab-editor')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#backup');
+  });
+
+  it('a hash change away from a dirty feature asks first, and Stay restores the hash', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    const editor = screen.getByTestId('patch-tab-editor');
+    typeInPatch();
+
+    act(() => {
+      window.location.hash = '#backup';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(await screen.findByText('Discard unsaved changes?')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#patch');
+    expect(screen.getByTestId('patch-tab-editor')).toBe(editor);
+    fireEvent.click(screen.getByRole('button', { name: 'Stay' }));
+    await waitFor(() => expect(screen.queryByText('Discard unsaved changes?')).toBeNull());
+    expect(screen.getByTestId('patch-tab-editor')).toBe(editor);
+  });
+
+  it('#assignments on a dirty feature opens the drawer without asking and keeps the edits', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    const editor = screen.getByTestId('patch-tab-editor');
+    typeInPatch();
+    act(() => {
+      window.location.hash = '#assignments';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(await screen.findByTestId('config-policy-applies-to-drawer')).toBeInTheDocument();
+    expect(screen.queryByText('Discard unsaved changes?')).toBeNull();
+    expect(screen.getByTestId('patch-tab-editor')).toBe(editor);
+    expect((screen.getByTestId('patch-field') as HTMLInputElement).value).toBe('edited');
+  });
+
+  it('a clean feature switches without asking', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    openFeature('backup');
+    expect(screen.getByTestId('backup-tab-editor')).toBeInTheDocument();
+    expect(screen.queryByText('Discard unsaved changes?')).toBeNull();
+  });
+
+  it('a saved feature leaves without asking', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    typeInPatch();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('config-policy-rail-tab-patch')).toHaveAccessibleName('Patches, Not set'),
+    );
+    openFeature('backup');
+    expect(screen.getByTestId('backup-tab-editor')).toBeInTheDocument();
+  });
+
+  it('leaving the page with unsaved changes is guarded (browser unload and in-app navigation)', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+
+    const unload = () => {
+      const e = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+    expect(unload()).toBe(false);
+    typeInPatch();
+    expect(unload()).toBe(true);
+
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const nav = new Event('astro:before-preparation', { cancelable: true });
+    document.dispatchEvent(nav);
+    expect(confirm).toHaveBeenCalledWith('You have unsaved changes on this policy. Leave and discard them?');
+    expect(nav.defaultPrevented).toBe(true);
+    confirm.mockRestore();
+  });
+
+  it('unsaved details also guard leaving the page', async () => {
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    fireEvent.click(screen.getByTestId('config-policy-edit-details'));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } });
+    const e = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(true);
   });
 });
