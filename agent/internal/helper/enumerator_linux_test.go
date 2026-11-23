@@ -9,7 +9,9 @@ import (
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
-type fakeDetector struct{ sessions []sessionbroker.DetectedSession }
+type fakeDetector struct {
+	sessions []sessionbroker.DetectedSession
+}
 
 func (f fakeDetector) ListSessions() ([]sessionbroker.DetectedSession, error) { return f.sessions, nil }
 func (f fakeDetector) WatchSessions(context.Context) <-chan sessionbroker.SessionEvent {
