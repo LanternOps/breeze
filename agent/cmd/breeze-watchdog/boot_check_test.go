@@ -113,7 +113,7 @@ func TestBootCheck_NoStateFileServiceStartingHolds(t *testing.T) {
 
 	// Past the two-check confirmation, so a not-found verdict could not hide
 	// behind its first, unconfirmed pass.
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if skip := b.evaluate(t0.Add(time.Duration(i)*5*time.Second), 0, false, wd, journal); !skip {
 			t.Fatalf("check %d: hold did not own the tick", i)
 		}
@@ -135,7 +135,7 @@ func TestBootCheck_ReusedStalePIDRunningServiceHolds(t *testing.T) {
 	t0 := time.Now()
 	b := newBootCheck(t0, bootTestDeadline, svc.query, fakeProcesses{5824: true, 3412: true})
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		b.evaluate(t0.Add(time.Duration(i)*5*time.Second), 5824, false, wd, journal)
 	}
 	if wd.State() != watchdog.StateConnecting || !b.active(wd) {
