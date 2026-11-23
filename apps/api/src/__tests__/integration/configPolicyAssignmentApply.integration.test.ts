@@ -20,6 +20,7 @@ import { configPolicyRoutes } from '../../routes/configurationPolicies';
 import { configPolicyAssignments, configurationPolicies, organizationUsers } from '../../db/schema';
 import { createAccessToken } from '../../services/jwt';
 import { shutdownPeripheralJobs } from '../../jobs/peripheralJobs';
+import { shutdownPolicyEvaluationWorker } from '../../jobs/policyEvaluationWorker';
 import { closeRedis } from '../../services/redis';
 import {
   assignUserToOrganization,
@@ -36,8 +37,11 @@ import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
+// assign/unassign/update enqueue peripheral and compliance reconciles after
+// the request; close both queues so no handle outlives the file.
 afterAll(async () => {
   await shutdownPeripheralJobs();
+  await shutdownPolicyEvaluationWorker();
   await closeRedis();
 });
 
@@ -55,31 +59,35 @@ function call(app: Hono, token: string, method: string, path: string, body?: unk
   });
 }
 
-async function orgToken(partnerId: string, orgId: string, siteIds?: string[]) {
+const READ_WRITE = [
+  { resource: 'devices', action: 'read' },
+  { resource: 'devices', action: 'write' },
+];
+
+async function orgToken(
+  partnerId: string,
+  orgId: string,
+  siteIds?: string[],
+  options: { permissions?: Array<{ resource: string; action: string }>; mfa?: boolean } = {},
+) {
   const user = await createUser({ partnerId, orgId, email: `apply-${randomUUID().slice(0, 8)}@example.test` });
   const role = await createRole({ scope: 'organization', orgId, partnerId });
-  await grantRolePermissions(role.id, [
-    { resource: 'devices', action: 'read' },
-    { resource: 'devices', action: 'write' },
-  ]);
+  await grantRolePermissions(role.id, options.permissions ?? READ_WRITE);
   const membership = await assignUserToOrganization(user.id, orgId, role.id);
   if (siteIds) {
     await (getTestDb() as any).update(organizationUsers).set({ siteIds }).where(eq(organizationUsers.id, membership.id));
   }
   return createAccessToken({
     sub: user.id, email: user.email, roleId: role.id, scope: 'organization',
-    orgId, partnerId: null, mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    orgId, partnerId: null, mfa: options.mfa ?? true, aep: 1, mep: 1, sid: randomUUID(),
   });
 }
 
-async function partnerToken(partnerId: string) {
+async function partnerToken(partnerId: string, orgAccess: 'all' | 'selected' = 'all') {
   const user = await createUser({ partnerId, orgId: null, email: `apply-p-${randomUUID().slice(0, 8)}@example.test` });
   const role = await createRole({ scope: 'partner', partnerId });
-  await grantRolePermissions(role.id, [
-    { resource: 'devices', action: 'read' },
-    { resource: 'devices', action: 'write' },
-  ]);
-  await assignUserToPartner(user.id, partnerId, role.id, 'all');
+  await grantRolePermissions(role.id, READ_WRITE);
+  await assignUserToPartner(user.id, partnerId, role.id, orgAccess);
   return createAccessToken({
     sub: user.id, email: user.email, roleId: role.id, scope: 'partner',
     orgId: null, partnerId, mfa: true, aep: 1, mep: 1, sid: randomUUID(),
@@ -221,6 +229,40 @@ describe('POST /configuration-policies/:id/assignments/apply on real Postgres (#
     });
     expect(allowed.status).toBe(201);
     expect((await rowsOf(policyId)).map((r) => r.id)).toEqual([outside.id]);
+  });
+
+  // The route's own middleware, not mocks: devices.write, requireMfa() and the
+  // partner-wide capability each refuse before any write.
+  runDb('the real middleware refuses a read-only role, a session without MFA, and partial partner access', async () => {
+    const app = buildApp();
+    const { partner, org, siteA, siteB, policyId } = await seed();
+    const row = await insertRow(policyId, 'site', siteA.id);
+    const body = { remove: [row.id], add: [{ level: 'site', targetId: siteB.id }] };
+    const path = `/configuration-policies/${policyId}/assignments/apply`;
+
+    const readOnly = await orgToken(partner.id, org.id, undefined, { permissions: [{ resource: 'devices', action: 'read' }] });
+    expect((await call(app, readOnly, 'POST', path, body)).status).toBe(403);
+
+    const noMfa = await orgToken(partner.id, org.id, undefined, { mfa: false });
+    const noMfaRes = await call(app, noMfa, 'POST', path, body);
+    expect(noMfaRes.status).toBe(403);
+    expect(await noMfaRes.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+
+    const [mspPolicy] = await (getTestDb() as any)
+      .insert(configurationPolicies)
+      .values({ orgId: null, partnerId: partner.id, name: `MSP ${randomUUID().slice(0, 8)}`, status: 'active' })
+      .returning({ id: configurationPolicies.id });
+    const mspRow = await insertRow(mspPolicy.id, 'site', siteA.id);
+    const selected = await partnerToken(partner.id, 'selected');
+    const partial = await call(app, selected, 'POST', `/configuration-policies/${mspPolicy.id}/assignments/apply`, { remove: [mspRow.id] });
+    expect(partial.status).toBe(403);
+
+    expect((await rowsOf(policyId)).map((r) => r.id)).toEqual([row.id]);
+    expect((await rowsOf(mspPolicy.id)).map((r) => r.id)).toEqual([mspRow.id]);
+
+    // Control: full partner access may change the MSP-managed policy.
+    const full = await call(app, await partnerToken(partner.id), 'POST', `/configuration-policies/${mspPolicy.id}/assignments/apply`, { remove: [mspRow.id] });
+    expect(full.status).toBe(201);
   });
 
   runDb('dry run leaves the table unchanged', async () => {
