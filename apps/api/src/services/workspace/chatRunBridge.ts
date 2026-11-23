@@ -81,6 +81,13 @@ export interface PendingRunResult {
   artifacts: AiRunResultArtifactRef[];
   pendingIntentCount?: number;
   /**
+   * #11965: how a completed device-troubleshooting run's steps ended
+   * ("2 ran, 1 denied"; runApprovalSteps.ts formatStepTally), set by
+   * `wisp/specialistResultsTurn.ts` when it proposed any. Fixed words and
+   * numbers, rendered outside the untrusted-data fence.
+   */
+  stepTally?: string;
+  /**
    * #11845: the run's `submit_analysis` outcome, schema-checked (null when it
    * fails the schema or the run submitted none). Set by
    * `wisp/specialistResultsTurn.ts` for `analysis` rows, which also lists
@@ -458,7 +465,9 @@ export function drainPendingRunResults(session: ActiveSession, durable: readonly
       : '  (none)';
     const waiting = result.status === 'awaiting_approval' && result.pendingIntentCount !== 0
       ? `\nSteps waiting for approval: ${result.pendingIntentCount ?? 'some'} (in /approvals).`
-      : '';
+      : result.stepTally
+        ? `\nIts steps: ${result.stepTally}. Read each step's result with get_ai_agent_run.`
+        : '';
     const label = result.profile === 'device_troubleshooting' ? 'Device troubleshooting run' : 'Run';
     // The summary and the file names are model-written, often from device
     // output (rule 6a): fenced together as DATA (#11845).

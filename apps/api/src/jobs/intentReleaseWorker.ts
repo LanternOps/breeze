@@ -2326,6 +2326,14 @@ async function notifyRequesterOfOutcome(
  * one must stay idempotent under redelivery.
  */
 export async function processIntentReleaseJob(data: IntentReleaseJobData): Promise<{ released: boolean }> {
+  // #11965: a step reached a final status, committed with this outbox row, so
+  // the parked troubleshooting run it belongs to may now settle. Before the
+  // requester notification, and never allowed to fail the job: settlement is
+  // idempotent and the Wisp grant reconciler re-sweeps a run this misses.
+  if (INTENT_FINAL_EVENTS.has(data.eventType)) {
+    await settleRunAfterFinalStep(data.intentId);
+  }
+
   if (
     data.eventType === 'intent_rejected' ||
     data.eventType === 'intent_expired' ||
@@ -2475,6 +2483,24 @@ async function releaseAndNotify(intentId: string): Promise<{ released: boolean }
   }
 
   return { released: true };
+}
+
+/** Outbox events that mean a step is final: nothing more will happen to it. */
+const INTENT_FINAL_EVENTS: ReadonlySet<string> = new Set([
+  'intent_completed', 'intent_failed', 'intent_rejected', 'intent_expired', 'intent_cancelled',
+]);
+
+/** Best-effort settle of the step's parked run (#11965). Lazy, like the Wisp post-back above. */
+async function settleRunAfterFinalStep(intentId: string): Promise<void> {
+  try {
+    const { settleApprovalParkedRunForIntent } = await import('../services/aiAgents/runApprovalSettlement');
+    await settleApprovalParkedRunForIntent(intentId);
+  } catch (err) {
+    console.error(`[IntentReleaseWorker] settling the run of intent ${intentId} failed; the grant reconciler re-sweeps it:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      op: 'aiAgents.approvalSettlement.release', intentId,
+    });
+  }
 }
 
 /**

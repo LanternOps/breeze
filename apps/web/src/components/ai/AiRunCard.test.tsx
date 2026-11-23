@@ -251,6 +251,27 @@ describe('AiRunCard (spec §5.5)', () => {
     }
   });
 
+  // #11965: the server settles a parked run to `completed` once every step is
+  // final, so an approved step still running keeps the card polling until then.
+  it('keeps polling on awaiting_approval while a step is approved or executing, then stops on completed', async () => {
+    vi.useFakeTimers();
+    try {
+      const step = (status: string) => ({ id: 'i1', status, actionName: 'x', approvalScope: 'single', decidedVia: 'human', approvalRequestId: null });
+      fetchWithAuth.mockResolvedValueOnce(detail({ status: 'awaiting_approval', intents: [step('approved')] }));
+      fetchWithAuth.mockResolvedValueOnce(detail({ status: 'awaiting_approval', intents: [step('executing')] }));
+      fetchWithAuth.mockResolvedValue(detail({ status: 'completed', intents: [step('completed')] }));
+      const { getByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(fetchWithAuth).toHaveBeenCalledTimes(3);
+      expect(getByTestId('ai-run-card').textContent).toMatch(/completed/i);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(fetchWithAuth).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('stops polling on awaiting_approval once no intent is pending', async () => {
     vi.useFakeTimers();
     try {
@@ -595,9 +616,16 @@ describe('AiRunCard (spec §5.5)', () => {
         });
         await act(async () => { await vi.advanceTimersByTimeAsync(0); });
         expect(queryAllByTestId('ai-run-card-step-approval')).toHaveLength(0);
+        // #11965: the approved step still has to run; the run settles to
+        // `completed` once it has, and polling ends there.
         const callsOnceDecided = fetchWithAuth.mock.calls.length;
+        await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+        expect(fetchWithAuth.mock.calls.length).toBeGreaterThan(callsOnceDecided);
+        fetchWithAuth.mockResolvedValue(detail({ status: 'completed', intents: [intent('a', { status: 'completed' })] }));
+        await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+        const callsOnceSettled = fetchWithAuth.mock.calls.length;
         await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-        expect(fetchWithAuth.mock.calls.length).toBe(callsOnceDecided);
+        expect(fetchWithAuth.mock.calls.length).toBe(callsOnceSettled);
       } finally {
         vi.useRealTimers();
       }

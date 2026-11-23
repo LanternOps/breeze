@@ -51,7 +51,7 @@ Runs are triggered by an **alert**, an **anomaly**, a **schedule**, a **ticket**
 |---|---|
 | `queued` | Accepted and waiting for a runner. |
 | `running` | Actively working. |
-| `awaiting_approval` | The agent proposed an action and is waiting on a person. |
+| `awaiting_approval` | The agent proposed an action and is waiting on a person. A device troubleshooting run started from Wisp becomes `completed` once every step it proposed has run, failed, been denied, expired or been cancelled. |
 | `completed` | Finished. |
 | `failed` | Stopped on an error. |
 | `cancelled` | Stopped by a person. |

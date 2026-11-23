@@ -580,6 +580,8 @@ const wispReleaseMock = vi.hoisted(() => ({
 // W2 (#11085): the specialist step post-back after a release.
 const specialistResultMock = vi.hoisted(() => ({ postSpecialistStepOutcome: vi.fn(async () => ({ posted: false, reason: 'not_a_specialist_run' })) }));
 vi.mock('../services/wisp/specialistResult', () => specialistResultMock);
+const settlementMock = vi.hoisted(() => ({ settleApprovalParkedRunForIntent: vi.fn(async () => false) }));
+vi.mock('../services/aiAgents/runApprovalSettlement', () => settlementMock);
 vi.mock('../services/wisp/releaseCeiling', () => ({
   checkWispCeilingForRelease: wispReleaseMock.checkWispCeilingForRelease,
 }));
@@ -5189,6 +5191,35 @@ describe('processIntentReleaseJob', () => {
     dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
     await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
     expect(specialistResultMock.postSpecialistStepOutcome).not.toHaveBeenCalled();
+  });
+
+  // #11965: every final step event may settle the parked run it belongs to.
+  it.each(['intent_completed', 'intent_failed', 'intent_rejected', 'intent_expired', 'intent_cancelled'])(
+    '#11965: %s hands the intent to the parked-run settlement',
+    async (eventType) => {
+      dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+      await processIntentReleaseJob({ intentId: 'intent-1', eventType });
+      // completed / failed read no intent row: drop it so it cannot leak into the next test.
+      dbState.selectActionIntentsResults.length = 0;
+      expect(settlementMock.settleApprovalParkedRunForIntent).toHaveBeenCalledWith('intent-1');
+    },
+  );
+
+  it.each(['intent_created', 'intent_approved'])('#11965: %s (the step is not final) settles nothing', async (eventType) => {
+    dbState.selectActionIntentsResults.push([FOUR_EYES_INTENT]);
+    // intent_approved reaches the release claim; lose it so nothing executes.
+    if (eventType === 'intent_approved') intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType });
+    dbState.selectActionIntentsResults.length = 0;
+    expect(settlementMock.settleApprovalParkedRunForIntent).not.toHaveBeenCalled();
+  });
+
+  it('#11965: a failing settlement is reported and never fails the job or skips the requester notification', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+    settlementMock.settleApprovalParkedRunForIntent.mockRejectedValueOnce(new Error('settle boom'));
+    await expect(processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' })).resolves.toEqual({ released: false });
+    expect(sentryMock.captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'settle boom' }), undefined,
+      expect.objectContaining({ op: 'aiAgents.approvalSettlement.release', intentId: 'intent-1' }));
   });
 
   it('dispatches intent_approved to releaseApprovedIntent', async () => {

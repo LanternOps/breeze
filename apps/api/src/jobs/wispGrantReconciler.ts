@@ -10,8 +10,11 @@
  * the last 24 h whose thread post is missing (services/wisp/specialistResult.ts).
  * #10402: and new grants whose first-look post is missing or now due, including
  * #11145's post for a batch where nothing was looked at
- * (services/wisp/firstLook.ts). Both halves are best-effort: a failure is
- * reported, never fails the tick.
+ * (services/wisp/firstLook.ts). #11965: and device-troubleshooting runs still
+ * parked `awaiting_approval` with no open step, which it settles to
+ * `completed` (services/aiAgents/runApprovalSettlement.ts) before the post
+ * re-sweep, so a settled run's post goes out in the same tick. Every half is
+ * best-effort: a failure is reported, never fails the tick.
  *
  * The processor checks `wispEnabled()` on every tick and returns without
  * touching the database when Wisp is off, so the flag can flip without a
@@ -24,6 +27,7 @@ import { captureException } from '../services/sentry';
 import { resweepFirstLookPosts } from '../services/wisp/firstLook';
 import { reconcileActiveGrants } from '../services/wisp/grantLifecycle';
 import { resweepSpecialistResults } from '../services/wisp/specialistResult';
+import { sweepApprovalParkedRuns } from '../services/aiAgents/runApprovalSettlement';
 import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'wisp-grant-reconciler';
@@ -38,11 +42,22 @@ let reconcilerWorker: Worker<ReconcileJobData> | null = null;
 
 export async function processWispGrantReconcile(): Promise<
   | { skipped: true }
-  | { skipped: false; scanned: number; paused: number; resumed: number; expired: number; failed: number; specialistPosts: number; firstLookPosts: number }
+  | { skipped: false; scanned: number; paused: number; resumed: number; expired: number; failed: number; specialistPosts: number; firstLookPosts: number; settledRuns: number }
 > {
   if (!wispEnabled()) return { skipped: true };
   const now = new Date();
   const result = await reconcileActiveGrants(now);
+  let settledRuns = 0;
+  try {
+    const settled = await sweepApprovalParkedRuns();
+    settledRuns = settled.settled;
+    if (settled.settled || settled.failed) {
+      console.log(`[WispGrantReconciler] parked runs scanned=${settled.scanned} settled=${settled.settled} failed=${settled.failed}`);
+    }
+  } catch (err) {
+    console.error('[WispGrantReconciler] parked-run settlement sweep failed', err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+  }
   let specialistPosts = 0;
   try {
     const swept = await resweepSpecialistResults(now);
@@ -74,7 +89,7 @@ export async function processWispGrantReconcile(): Promise<
   if (result.scanned > 0 && result.failed === result.scanned) {
     throw new Error(`[WispGrantReconciler] every grant failed to reconcile (${result.failed}/${result.scanned})`);
   }
-  return { skipped: false, ...result, specialistPosts, firstLookPosts };
+  return { skipped: false, ...result, specialistPosts, firstLookPosts, settledRuns };
 }
 
 export function getWispGrantReconcilerQueue(): Queue<ReconcileJobData> {

@@ -49,6 +49,7 @@ import { wispGrants } from '../../db/schema/wisp';
 import { wispThreadPosts } from '../../db/schema/wispThreadPosts';
 import { sanitizeUntrustedToolText } from '../aiInputSanitizer';
 import { summarizeStepResult } from './stepOutputSummary';
+import { formatStepTally } from '../aiAgents/runApprovalSteps';
 import { captureException } from '../sentry';
 import { capAtBoundary } from '../../utils/capAtBoundary';
 import { notifyUser, resolveSpecialistPostAudience, SpecialistAudienceRefusedError } from './notifyUser';
@@ -157,14 +158,17 @@ function statusPhrase(status: SettledStatus, errorCode: string | null): string {
 function runPostText(
   run: { status: SettledStatus; errorCode: string | null; summary: string | null; hostname: string | null; displayName: string | null },
   pendingCount: number,
+  stepTally: string | null = null,
 ) {
   const title = `Device troubleshooting on ${deviceLabel(run)}: ${statusPhrase(run.status, run.errorCode)}`;
-  const waiting = run.status === 'awaiting_approval' && pendingCount > 0
+  // #11965: a run that settled after its steps were decided says how they
+  // ended (fixed words; each step's result has its own post).
+  const tail = run.status === 'awaiting_approval' && pendingCount > 0
     ? `${pendingCount} ${pendingCount === 1 ? 'step is' : 'steps are'} waiting for your approval.`
-    : '';
-  const room = SPECIALIST_RESULT_BODY_MAX_CHARS - (waiting ? Array.from(waiting).length + 2 : 0);
+    : run.status === 'completed' && stepTally ? `Steps: ${stepTally}.` : '';
+  const room = SPECIALIST_RESULT_BODY_MAX_CHARS - (tail ? Array.from(tail).length + 2 : 0);
   const summary = run.summary?.trim() ? cleanReport(run.summary, room) : 'The run left no summary. Open the run for its steps.';
-  return { title, body: waiting ? `${summary}\n\n${waiting}` : summary };
+  return { title, body: tail ? `${summary}\n\n${tail}` : summary };
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +189,8 @@ type RunForPost = {
   grantId: string | null;
   grantRevisionId: string | null;
   triggerRef: Record<string, unknown> | null;
+  /** The steps the run proposed (#11965: a completed run with any gets a tally). */
+  intentIds?: string[] | null;
   hostname: string | null;
   displayName: string | null;
 };
@@ -202,6 +208,7 @@ async function loadRun(runId: string): Promise<RunForPost | null> {
       grantId: aiAgentRuns.grantId,
       grantRevisionId: aiAgentRuns.grantRevisionId,
       triggerRef: aiAgentRuns.triggerRef,
+      intentIds: aiAgentRuns.intentIds,
       // Org-pinned: a device row of another org never names this run's device.
       hostname: devices.hostname,
       displayName: devices.displayName,
@@ -235,6 +242,17 @@ async function pendingIntentCount(run: RunForPost): Promise<number> {
       eq(actionIntents.status, 'pending_approval'),
     )));
   return Number(row?.count ?? 0);
+}
+
+/** How the run's steps ended ("2 ran, 1 denied"), or null when it proposed none. Only read for a run that listed steps. */
+async function stepTallyOf(run: RunForPost): Promise<string | null> {
+  if (!run.intentIds || run.intentIds.length === 0) return null;
+  const rows = await systemRead(() => db
+    .select({ status: actionIntents.status, count: sql<number>`count(*)::int` })
+    .from(actionIntents)
+    .where(and(eq(actionIntents.requestingAgentRunId, run.id), eq(actionIntents.orgId, run.orgId)))
+    .groupBy(actionIntents.status));
+  return formatStepTally(rows);
 }
 
 /**
@@ -294,12 +312,13 @@ export async function postSpecialistResult(runId: string): Promise<SpecialistPos
   const status = run.status as SettledStatus;
 
   const pending = status === 'awaiting_approval' ? await pendingIntentCount(run) : 0;
+  const stepTally = status === 'completed' ? await stepTallyOf(run) : null;
   const dest = await resolveDestination({ grantId: run.grantId, grantRevisionId: run.grantRevisionId, orgId: run.orgId });
   if (!dest.ok) return { posted: false, reason: dest.reason };
 
   const { title, body } = runPostText({
     status, errorCode: run.errorCode, summary: run.summary, hostname: run.hostname, displayName: run.displayName,
-  }, pending);
+  }, pending, stepTally);
   return deliver({
     userId: dest.userId,
     threadId: dest.threadId,
