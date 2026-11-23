@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // "Outranked on N devices" on the policy page (#12472, plan W05a O3): the page
@@ -23,7 +23,14 @@ vi.mock('./featureTabs/PatchTab', () => ({
     </div>
   ),
 }));
-vi.mock('./appliesTo/AppliesToPanel', () => ({ default: () => <div data-testid="applies-to-panel" /> }));
+// The panel stand-in can report a committed Apply, as the real panel does.
+vi.mock('./appliesTo/AppliesToPanel', () => ({
+  default: (props: { onApplied: () => void }) => (
+    <button type="button" data-testid="applies-to-applied" onClick={() => props.onApplied()}>
+      Applied
+    </button>
+  ),
+}));
 
 import ConfigPolicyDetailPage from './ConfigPolicyDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
@@ -103,16 +110,49 @@ describe('ConfigPolicyDetailPage — outranked on N devices (#12472)', () => {
     expect(screen.getByTestId('config-policy-rail-tab-patch')).toHaveAccessibleName('Patches, Set here');
   });
 
-  it('a feature link change drops the old count and re-reads it', async () => {
-    let answer = { capped: false, features: { patch: { reached: 40, outranked: 3 } } };
-    mockPage(() => json(answer));
+  it('a feature link change re-reads the count', async () => {
+    let second: (r: Response) => void = () => {};
+    let calls = 0;
+    mockPage(() => {
+      calls += 1;
+      if (calls === 1) return json({ capped: false, features: { patch: { reached: 40, outranked: 3 } } });
+      return new Promise<Response>((resolve) => {
+        second = resolve;
+      }) as unknown as Response;
+    });
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
     await screen.findByTestId('config-policy-outranked');
 
-    answer = { capped: false, features: {} } as typeof answer;
+    // The removal itself hides the line (the feature is no longer set here);
+    // what this pins is the re-read. Dropping the count at once is pinned by
+    // the Apply case below and by usePolicyPrecedence.test.ts.
     fireEvent.click(screen.getByTestId('patch-remove'));
-
     await waitFor(() => expect(precedenceCalls()).toBe(2));
     expect(screen.queryByTestId('config-policy-outranked')).not.toBeInTheDocument();
+    await act(async () => second(json({ capped: false, features: {} })));
+    expect(screen.queryByTestId('config-policy-outranked')).not.toBeInTheDocument();
+  });
+
+  it('an Apply drops the old count at once and re-reads it', async () => {
+    window.location.hash = '#assignments';
+    let second: (r: Response) => void = () => {};
+    let calls = 0;
+    mockPage(() => {
+      calls += 1;
+      if (calls === 1) return json({ capped: false, features: { patch: { reached: 40, outranked: 3 } } });
+      return new Promise<Response>((resolve) => {
+        second = resolve;
+      }) as unknown as Response;
+    });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+    expect(await screen.findByTestId('config-policy-outranked')).toHaveTextContent('Outranked on 3 devices');
+
+    fireEvent.click(screen.getByTestId('applies-to-applied'));
+    // The pre-Apply count describes the old targets: gone before the new read answers.
+    expect(screen.queryByTestId('config-policy-outranked')).not.toBeInTheDocument();
+    await waitFor(() => expect(precedenceCalls()).toBe(2));
+
+    await act(async () => second(json({ capped: false, features: { patch: { reached: 41, outranked: 5 } } })));
+    expect(await screen.findByTestId('config-policy-outranked')).toHaveTextContent('Outranked on 5 devices');
   });
 });

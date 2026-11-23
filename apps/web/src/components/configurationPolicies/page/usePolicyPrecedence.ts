@@ -17,8 +17,8 @@ export function usePolicyPrecedence(policyId: string | undefined): {
   const [precedence, setPrecedence] = useState<PolicyPrecedence | null>(null);
   const req = useRef(0);
   const load = useCallback(async () => {
-    if (!policyId) return;
     const mine = ++req.current;
+    if (!policyId) return;
     try {
       const next = await fetchPolicyPrecedence(policyId);
       if (mine === req.current) setPrecedence(next);
@@ -27,12 +27,13 @@ export function usePolicyPrecedence(policyId: string | undefined): {
       if (mine === req.current) setPrecedence(null);
     }
   }, [policyId]);
-  useEffect(() => {
-    void load();
-  }, [load]);
   const reload = useCallback(() => {
     setPrecedence(null);
     void load();
   }, [load]);
+  // A different policy starts from unknown: another policy's answer is never shown.
+  useEffect(() => {
+    reload();
+  }, [reload]);
   return { precedence, reload };
 }

@@ -54,7 +54,10 @@ export async function fetchPolicyPrecedence(policyId: string): Promise<PolicyPre
   const response = await fetchWithAuth(`/configuration-policies/${policyId}/precedence`);
   const body = await response.json().catch(() => null);
   if (!response.ok) throw new Error(`precedence ${response.status}`);
-  return parsePrecedence(body);
+  const parsed = parsePrecedence(body);
+  // The page shows nothing either way; say why for whoever is looking.
+  if (!parsed) console.warn('[configuration policies] precedence answer has an unexpected shape');
+  return parsed;
 }
 
 /** What one feature has to say: capped, a count above zero, or nothing (null). */
