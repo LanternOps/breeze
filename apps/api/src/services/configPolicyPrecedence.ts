@@ -9,6 +9,10 @@
  * SEMANTICS
  *  - `reached`: distinct devices the policy's own assignment rows reach (the
  *    W02a `direct` set), inside the caller's ceiling. The same for every feature.
+ *  - A device parked in its partner's holding org takes no MSP-owned policy
+ *    (the resolver drops its partner), so on it neither this policy's nor a
+ *    competitor's MSP-owned rows decide anything. It still counts as reached,
+ *    as in reach.
  *  - `outranked`: those of them where `resolveEffectiveConfig` would pick a
  *    different policy for the feature. The order is the resolver's own: level
  *    (device › device group › site › organization › all organizations), then
@@ -76,6 +80,7 @@ import {
   type ConfigFeatureType,
 } from './configFeatureTypes';
 import { resolveExecutionSafeGroupIds } from './executionTargetGating';
+import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
 
 /** Past this many reached devices (inside the caller's ceiling) the answer is `capped`. */
 export const PRECEDENCE_SCAN_CAP = 5000;
@@ -215,16 +220,26 @@ export async function computePolicyPrecedence(
   for (const ids of ownDevices.values()) for (const id of ids) union.add(id);
   // The final say on which devices count: RLS, then the caller's site ceiling
   // and device pin. One array parameter, as in reach.
+  // It also says which devices are parked in their partner's holding org: the
+  // resolver delivers no MSP-owned policy to those (it drops the device's
+  // partner), so an MSP-owned row never decides a feature there.
   const visible = new Map<string, { orgId: string; siteId: string | null }>();
+  const parked = new Set<string>();
   if (union.size > 0) {
     const rows = await db
-      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, orgType: organizations.type })
       .from(devices)
+      .innerJoin(organizations, eq(devices.orgId, organizations.id))
       .where(sql`${devices.id} = ANY(${uuidArray(union)})`);
     for (const row of rows) {
-      if (callerMaySeeDevice(auth, row.id, row.siteId)) visible.set(row.id, { orgId: row.orgId, siteId: row.siteId });
+      if (!callerMaySeeDevice(auth, row.id, row.siteId)) continue;
+      visible.set(row.id, { orgId: row.orgId, siteId: row.siteId });
+      if (isUnassignedPoolOrgType(row.orgType)) parked.add(row.id);
     }
   }
+  /** Whether a row of a policy with this owner can decide a feature on this device. */
+  const deliversTo = (policyOrgId: string | null, deviceId: string) =>
+    visible.has(deviceId) && (policyOrgId !== null || !parked.has(deviceId));
   if (visible.size > scanCap) return CAPPED;
   if (visible.size === 0) return counts(0);
 
@@ -289,9 +304,11 @@ export async function computePolicyPrecedence(
   const isRefused = (row: AssignmentToExpand) => row.level === 'device_group' && refused.has(row.targetId);
 
   // A competitor that cannot beat the weakest own row cannot beat any device's
-  // best own row, unless a gated feature can lose its own row to the gating.
+  // best own row, unless a device can have no own row at all: a gated feature
+  // losing its own rows to the gating, or an MSP-owned policy on a parked device.
   let competitors = competitorRead;
-  if (!ownRows.some(isRefused)) {
+  const ownCanBeAbsent = ownRows.some(isRefused) || (policy.orgId === null && parked.size > 0);
+  if (!ownCanBeAbsent) {
     const weakest = ownRows.reduce((worst, row) => (outranks(worst, row) ? row : worst));
     competitors = competitors.filter((row) => outranks(row, weakest));
   }
@@ -315,7 +332,7 @@ export async function computePolicyPrecedence(
   for (const row of ownRows) {
     const rowRefused = isRefused(row);
     for (const deviceId of ownDevices.get(row.id) ?? []) {
-      if (!visible.has(deviceId)) continue;
+      if (!deliversTo(policy.orgId, deviceId)) continue;
       const best = bestOwn.get(deviceId);
       if (!best || outranks(row, best)) bestOwn.set(deviceId, row);
       if (rowRefused) continue;
@@ -329,7 +346,7 @@ export async function computePolicyPrecedence(
   for (const row of competitors) {
     const rowRefused = isRefused(row);
     for (const deviceId of competitorDevices.get(row.id) ?? []) {
-      if (!visible.has(deviceId)) continue;
+      if (!deliversTo(row.policyOrgId, deviceId)) continue;
       for (const raw of row.featureTypes) {
         if (!featureSet.has(raw)) continue;
         const ft = raw as ConfigFeatureType;

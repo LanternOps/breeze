@@ -45,7 +45,7 @@ const { state, expandMock, resolveSafeMock } = vi.hoisted(() => ({
     competitors: [] as Competitor[],
     /** target id -> devices that target reaches */
     targets: new Map<string, string[]>(),
-    devices: [] as Array<{ id: string; orgId: string; siteId: string | null }>,
+    devices: [] as Array<{ id: string; orgId: string; siteId: string | null; orgType?: string }>,
     refusedGroups: [] as string[],
     competitorLimit: undefined as number | undefined,
     expandedTargets: [] as string[],
@@ -101,7 +101,13 @@ function chain(cols: unknown) {
 
 function answer(cols: Record<string, unknown>, table: unknown, where: unknown, joins: unknown[], limit?: number): unknown[] {
   if (table === configurationPolicies) return state.policy ? [state.policy] : [];
-  if (table === configPolicyEffectiveFeatureLinks) return state.features.map((featureType) => ({ featureType }));
+  if (table === configPolicyEffectiveFeatureLinks) {
+    // The real read excludes retired feature types (a NOT IN over their names).
+    const { sql: text, params } = compile(where);
+    return state.features
+      .filter((f) => !(text.includes('not in') && params.includes(f)))
+      .map((featureType) => ({ featureType }));
+  }
   if (table === configPolicyAssignments && !('featureTypes' in cols)) return state.own;
   if (table === configPolicyAssignments) {
     state.competitorLimit = limit;
@@ -116,7 +122,9 @@ function answer(cols: Record<string, unknown>, table: unknown, where: unknown, j
   }
   if (table === devices) {
     const ids = compile(where).params[0] as string[];
-    return state.devices.filter((d) => ids.includes(d.id));
+    return state.devices
+      .filter((d) => ids.includes(d.id))
+      .map((d) => ({ id: d.id, orgId: d.orgId, siteId: d.siteId, orgType: d.orgType ?? 'customer' }));
   }
   throw new Error('unexpected table');
 }
@@ -480,6 +488,77 @@ describe('computePolicyPrecedence', () => {
     await expect(computePolicyPrecedence(auth, POLICY)).resolves.toEqual({
       capped: false,
       features: { patch: { reached: 1, outranked: 1 }, automation: { reached: 1, outranked: 0 } },
+    });
+  });
+
+  it('a device outranked by two competitors counts once', async () => {
+    base();
+    seedDevices('d1');
+    own('organization', ORG, ['d1']);
+    competitor('policy-a', 'device', 'd1', ['d1']);
+    competitor('policy-b', 'site', SITE, ['d1']);
+
+    await expect(computePolicyPrecedence(auth, POLICY)).resolves.toEqual({
+      capped: false,
+      features: { patch: { reached: 1, outranked: 1 } },
+    });
+  });
+
+  it('the prune compares against the weakest own row, whatever order the rows come in', async () => {
+    base();
+    seedDevices('d1', 'd2');
+    // Strongest first: the weakest row is the second one.
+    own('device', 'd1', ['d1']);
+    own('organization', ORG, ['d1', 'd2']);
+    competitor('policy-site', 'site', SITE, ['d1', 'd2']);
+
+    await expect(computePolicyPrecedence(auth, POLICY)).resolves.toEqual({
+      capped: false,
+      features: { patch: { reached: 2, outranked: 1 } },
+    });
+  });
+
+  it('a retired feature type is never answered', async () => {
+    base(['patch', 'alert_rule']);
+    seedDevices('d1');
+    own('organization', ORG, ['d1']);
+
+    await expect(computePolicyPrecedence(auth, POLICY)).resolves.toEqual({
+      capped: false,
+      features: { patch: { reached: 1, outranked: 0 } },
+    });
+  });
+
+  function parkedTree(): void {
+    // An MSP-owned subject: the resolver delivers it nowhere in the holding org.
+    state.policy = { id: POLICY, orgId: null, partnerId: PARTNER };
+    state.features = ['patch'];
+    state.devices.push(
+      { id: 'd1', orgId: ORG, siteId: SITE },
+      { id: 'parked', orgId: 'org-holding', siteId: 'site-holding', orgType: 'unassigned_pool' },
+    );
+    own('partner', PARTNER, ['d1', 'parked']);
+  }
+
+  it('on a parked device an MSP-owned competitor never outranks', async () => {
+    parkedTree();
+    competitor('policy-msp-device', 'device', 'parked', ['parked'], { policyOrgId: null, policyPartnerId: PARTNER });
+
+    await expect(computePolicyPrecedence(auth, POLICY)).resolves.toEqual({
+      capped: false,
+      features: { patch: { reached: 2, outranked: 0 } },
+    });
+  });
+
+  it("on a parked device the holding org's own policy wins over an MSP-owned subject, past the prune", async () => {
+    parkedTree();
+    // No stronger than the subject's row: it wins only because the subject is
+    // not delivered to the parked device, so the prune must keep it.
+    competitor('policy-holding-own', 'partner', 'partner-alias', ['parked'], { policyOrgId: 'org-holding', createdAt: later(30) });
+
+    await expect(computePolicyPrecedence(auth, POLICY)).resolves.toEqual({
+      capped: false,
+      features: { patch: { reached: 2, outranked: 1 } },
     });
   });
 
