@@ -272,6 +272,45 @@ describe('AiRunCard (spec §5.5)', () => {
     }
   });
 
+  // #11965: the step is final a few seconds before the server settles the run
+  // (outbox publisher + job), so a poll in that gap must not end polling.
+  it('polls a little longer when every step is final but the run still reads awaiting_approval', async () => {
+    vi.useFakeTimers();
+    try {
+      const step = (status: string) => ({ id: 'i1', status, actionName: 'x', approvalScope: 'single', decidedVia: 'human', approvalRequestId: null });
+      fetchWithAuth.mockResolvedValueOnce(detail({ status: 'awaiting_approval', intents: [step('executing')] }));
+      fetchWithAuth.mockResolvedValueOnce(detail({ status: 'awaiting_approval', intents: [step('completed')] }));
+      fetchWithAuth.mockResolvedValue(detail({ status: 'completed', intents: [step('completed')] }));
+      const { getByTestId } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(fetchWithAuth).toHaveBeenCalledTimes(3);
+      expect(getByTestId('ai-run-card').textContent).toMatch(/completed/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a parked run whose steps are all final but never settles (another profile) stops after a bounded grace', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchWithAuth.mockResolvedValue(detail({
+        status: 'awaiting_approval',
+        intents: [{ id: 'i1', status: 'rejected', actionName: 'x', approvalScope: 'single', decidedVia: 'human', approvalRequestId: null }],
+      }));
+      render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      const calls = fetchWithAuth.mock.calls.length;
+      expect(calls).toBeGreaterThan(1);
+      expect(calls).toBeLessThanOrEqual(5);
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      expect(fetchWithAuth.mock.calls.length).toBe(calls);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('stops polling on awaiting_approval once no intent is pending', async () => {
     vi.useFakeTimers();
     try {

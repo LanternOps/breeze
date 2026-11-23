@@ -4082,7 +4082,7 @@ async function finishRun(
   if (status === 'awaiting_approval' && isTroubleshootProfile(ctx.run)) {
     try {
       const { settleApprovalParkedRun } = await import('./runApprovalSettlement');
-      await settleApprovalParkedRun(ctx.run.id);
+      await runOutsideDbContext(() => settleApprovalParkedRun(ctx.run.id));
     } catch (error) {
       console.error('[aiAgentRunLoop] settling a just-parked run failed — the grant reconciler re-sweeps it', {
         runId: ctx.run.id, error,

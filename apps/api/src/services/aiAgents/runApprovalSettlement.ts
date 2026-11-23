@@ -131,7 +131,9 @@ export async function settleApprovalParkedRunLocked(runId: string): Promise<bool
  */
 export async function settleApprovalParkedRun(runId: string): Promise<boolean> {
   const won = await systemContext(() => settleApprovalParkedRunLocked(runId));
-  if (won) await deliverSettlement(runId);
+  // Outside any caller's DB context: the post's own writes commit on their
+  // own, and a caught delivery failure can never poison a caller transaction.
+  if (won) await runOutsideDbContext(() => deliverSettlement(runId));
   return won;
 }
 
