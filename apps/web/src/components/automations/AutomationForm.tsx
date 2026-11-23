@@ -28,6 +28,7 @@ import ActionsEditor, {
   type SoftwareCatalogItem,
 } from './ActionsEditor';
 import { readWorkflowSelection, writeWorkflowSelection } from './alertWorkflowFilter';
+import { useChannelTypeLabel } from './channelTypeLabel';
 
 const ALERT_WORKFLOW_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 
@@ -237,6 +238,7 @@ export default function AutomationForm({
   ownerOrgId
 }: AutomationFormProps) {
   const { t } = useTranslation('scripts');
+  const channelTypeLabel = useChannelTypeLabel();
   const [conditionsExpanded, setConditionsExpanded] = useState(true);
   const [conditionMode, setConditionMode] = useState<'simple' | 'advanced'>(
     defaultValues?.targetConfig ? 'advanced' : 'simple'
@@ -775,7 +777,7 @@ export default function AutomationForm({
               <option value="">{t('automationForm.placeholders.selectChannel')}</option>
               {notificationChannels.map(channel => (
                 <option key={channel.id} value={channel.id}>
-                  {channel.name} ({channel.type})
+                  {channel.name} ({channelTypeLabel(channel.type)})
                 </option>
               ))}
             </select>

@@ -375,6 +375,12 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
         <p className="max-w-2xl text-sm text-muted-foreground">{t('flowEditor.subtitle')}</p>
       </header>
 
+      {isShadow && (
+        <p role="status" className="max-w-2xl text-sm text-muted-foreground" data-testid="flow-editor-shadow-line">
+          {t('flowEditor.shadowLine')}
+        </p>
+      )}
+
       {isNew && canManagePartnerWide && (
         <fieldset className="space-y-2 rounded-md border p-4" data-testid="flow-editor-owner">
           <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">{t('flowEditor.owner.title')}</legend>
@@ -510,7 +516,8 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
             >
               {t('flowEditor.save')}
             </button>
-            {!isWebhook && (
+            {/* A flow shadowing a job goes live only from the job's Switch; the server refuses any other enable. */}
+            {!isWebhook && !isShadow && (
               <button
                 type="button"
                 className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
@@ -558,7 +565,14 @@ export default function FlowEditorPage({ flowId: initialFlowId }: { flowId?: str
         onClose={() => setDisableOpen(false)}
         onConfirm={confirmDisable}
         title={t('disable.title')}
-        message={t('flowEditor.disableMessage')}
+        message={(
+          <>
+            {t('flowEditor.disableMessage')}
+            {isWebhook && (
+              <span className="mt-2 block" data-testid="flow-editor-disable-webhook-note">{t('flowEditor.disableWebhookNote')}</span>
+            )}
+          </>
+        )}
         confirmLabel={t('flowEditor.disableAndEdit')}
         variant="warning"
         isLoading={disabling}

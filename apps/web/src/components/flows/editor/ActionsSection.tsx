@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { useChannelTypeLabel } from '../../automations/channelTypeLabel';
 import '@/lib/i18n';
 import { ALERT_SEVERITIES, deviceCountsSuffix, type FlowFormAction } from '@breeze/shared';
 
@@ -49,6 +50,7 @@ export function ActionsSection({
 }) {
   const { t } = useTranslation('flows');
   const { t: ts } = useTranslation('scripts');
+  const channelTypeLabel = useChannelTypeLabel();
 
   const replace = (i: number, next: FlowFormAction) => onChange(actions.map((a, j) => (j === i ? next : a)));
   const move = (i: number, delta: -1 | 1) => {
@@ -141,7 +143,7 @@ export function ActionsSection({
                       <option value="">{ts('automationForm.placeholders.selectChannel')}</option>
                       {action.channelId && !channels.some((c) => c.id === action.channelId) && <option value={action.channelId}>{action.channelId}</option>}
                       {channels.map((c) => (
-                        <option key={c.id} value={c.id}>{c.name} ({c.type})</option>
+                        <option key={c.id} value={c.id}>{c.name} ({channelTypeLabel(c.type)})</option>
                       ))}
                     </select>
                   </label>

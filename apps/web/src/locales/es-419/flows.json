@@ -832,7 +832,9 @@
       "trigger": {
         "title": "Cuándo se ejecuta",
         "timezone": "Zona horaria",
-        "eventDeviceHelp": "Las acciones se ejecutan en el dispositivo que generó el evento. Si llega un evento sin dispositivo, la ejecución falla.",
+        "eventDeviceHelp": "Las acciones se ejecutan en el dispositivo que generó el evento.",
+        "eventNoDeviceNoRun": "Si llega una alerta sin dispositivo, no se inicia ninguna ejecución.",
+        "eventNoDeviceFails": "Si llega un evento sin dispositivo, la ejecución falla.",
         "filter": "Solo cuando el evento coincida",
         "filterHelp": "Cada campo debe ser exactamente igual a su valor. Déjalo vacío para ejecutar con cada evento de este tipo.",
         "filterKey": "Campo del evento",
@@ -890,6 +892,29 @@
         "notifyHelp": "Envía un aviso a los canales de abajo por cada dispositivo al que no se pudo enviar el script. Se envían como máximo 20 avisos por ejecución.",
         "noChannels": "Agrega un canal de notificación para usar Notificar."
       }
+    },
+    "disableWebhookNote": "Este flujo tiene un disparador de webhook. Si lo vuelves a habilitar después de editarlo, se borra el secreto del webhook y el remitente necesitará el nuevo secreto.",
+    "shadowLine": "Este flujo está en modo sombra para un trabajo. Entra en vivo desde el cambio del trabajo, no desde aquí.",
+    "validation": {
+      "name": "Ponle un nombre al flujo (hasta 120 caracteres).",
+      "steps": "Un flujo necesita al menos una acción y no más que el límite.",
+      "cron": "La programación no es una expresión cron válida. Usa cinco campos, por ejemplo 0 2 * * *.",
+      "timezone": "No se reconoce esa zona horaria. Usa un nombre como UTC o America/Mexico_City.",
+      "script": "Elige un script para esta acción.",
+      "channel": "Elige un canal de notificación para esta acción.",
+      "channels": "Elige al menos un canal de notificación.",
+      "duplicateStepId": "Dos acciones tienen el mismo id. Dale a cada acción su propio id.",
+      "unknownStepReference": "Esto se refiere a una acción que no existe. Revisa el id de la acción.",
+      "forwardReference": "Esto usa el resultado de una acción que se ejecuta después. Mueve esa acción antes o quita la referencia.",
+      "eventUnknown": "El sistema no reconoce ese tipo de evento. Elige uno de la lista.",
+      "toolNotFound": "Esa acción no está disponible para este flujo. Elige otra.",
+      "channelNotOwned": "Ese canal de notificación no pertenece al propietario de este flujo. Elige uno propio.",
+      "referenceNotOwned": "Esto se refiere a algo que no pertenece al propietario de este flujo.",
+      "deviceNotOwned": "Ese dispositivo no pertenece a la organización de este flujo.",
+      "resolverRequired": "Un flujo para todas las organizaciones necesita el campo del cuerpo que nombra la organización del cliente.",
+      "resolverNotAllowed": "El flujo de webhook de una organización siempre se ejecuta en esa organización. Quita la búsqueda de organización.",
+      "documentTooLarge": "El documento es demasiado grande. Quita algunas acciones o texto.",
+      "secretInDocument": "El documento contiene algo que parece un secreto. Quítalo del documento."
     },
     "enableOpenFailed": "El borrador se guardó, pero no se pudo abrir el diálogo de habilitación. Abre el flujo para habilitarlo."
   }

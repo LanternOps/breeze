@@ -3,10 +3,12 @@ import '@/lib/i18n';
 import type { FlowIssue } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import HashLink from '@/components/shared/HashLink';
+import { useDescribeFlowIssue } from './flowIssueMessage';
 
 /** Validation issues for a flow, errors first, each linked to its step anchor. */
 export function FlowIssuesPanel({ issues }: { issues: FlowIssue[] }) {
   const { t } = useTranslation('flows');
+  const describeFlowIssue = useDescribeFlowIssue();
   const ordered = [
     ...issues.filter((i) => i.severity === 'error'),
     ...issues.filter((i) => i.severity !== 'error'),
@@ -19,7 +21,9 @@ export function FlowIssuesPanel({ issues }: { issues: FlowIssue[] }) {
         <p className="text-sm text-muted-foreground" data-testid="flow-issues-none">{t('issues.none')}</p>
       ) : (
         <ul className="space-y-1">
-          {ordered.map((issue, index) => (
+          {ordered.map((issue, index) => {
+            const { text, detail } = describeFlowIssue(issue);
+            return (
             <li
               key={`${issue.code}-${issue.stepId ?? ''}-${issue.pointer ?? ''}-${index}`}
               data-testid={`flow-issue-${issue.code}`}
@@ -33,14 +37,19 @@ export function FlowIssuesPanel({ issues }: { issues: FlowIssue[] }) {
               <span className="mr-2 text-xs font-semibold uppercase">
                 {issue.severity === 'error' ? t('issues.error') : t('issues.warning')}
               </span>
-              <span>{issue.message}</span>
+              <span>{text}</span>
+              {detail && <span className="ml-2 text-xs text-muted-foreground" data-testid="issue-detail">{detail}</span>}
+              {issue.pointer && (
+                <code className="ml-2 font-mono text-xs text-muted-foreground" data-testid="issue-pointer">{issue.pointer}</code>
+              )}
               {issue.stepId && (
                 <HashLink className="ml-2 font-mono text-xs text-primary hover:underline" hash={`step-${issue.stepId}`}>
                   {issue.stepId}
                 </HashLink>
               )}
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </section>

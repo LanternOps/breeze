@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import type { FlowFormTrigger, FlowIssue } from '@breeze/shared';
 import { getEventTypeOptions } from '../../automations/AutomationForm';
+import { eventDeviceBehavior } from './eventDeviceHelp';
 
 type TriggerType = FlowFormTrigger['type'];
 const TRIGGER_TYPES: readonly TriggerType[] = ['schedule', 'event', 'webhook', 'manual'];
@@ -47,6 +48,7 @@ export function TriggerSection({
   const { t: ts } = useTranslation('scripts');
   const eventOptions = useMemo(() => getEventTypeOptions(ts), [ts]);
   const eventWarnings = issues.filter((i) => i.code === 'event_dispatch_not_durable');
+  const noDevice = trigger.type === 'event' ? eventDeviceBehavior(trigger.event) : 'always';
 
   const typeLabel = (type: TriggerType) => {
     switch (type) {
@@ -107,7 +109,15 @@ export function TriggerSection({
               ))}
             </select>
           </label>
-          <p className="text-xs text-muted-foreground">{t('flowEditor.form.trigger.eventDeviceHelp')}</p>
+          <p className="text-xs text-muted-foreground">
+            {t('flowEditor.form.trigger.eventDeviceHelp')}
+            {noDevice === 'no_run' && (
+              <span data-testid="flow-form-event-no-device">{' '}{t('flowEditor.form.trigger.eventNoDeviceNoRun')}</span>
+            )}
+            {noDevice === 'fails' && (
+              <span data-testid="flow-form-event-no-device">{' '}{t('flowEditor.form.trigger.eventNoDeviceFails')}</span>
+            )}
+          </p>
           {eventWarnings.map((w, i) => (
             <p key={`${w.code}-${i}`} role="status" className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-sm" data-testid="flow-editor-event-unavailable">
               {w.message}

@@ -832,7 +832,9 @@
       "trigger": {
         "title": "When it runs",
         "timezone": "Time zone",
-        "eventDeviceHelp": "The actions run on the device that raised the event. If an event arrives without a device, the run fails.",
+        "eventDeviceHelp": "The actions run on the device that raised the event.",
+        "eventNoDeviceNoRun": "If an alert arrives without a device, no run starts.",
+        "eventNoDeviceFails": "If an event arrives without a device, the run fails.",
         "filter": "Only when the event matches",
         "filterHelp": "Each field must equal its value exactly. Leave empty to run on every event of this type.",
         "filterKey": "Event field",
@@ -890,6 +892,29 @@
         "notifyHelp": "Send a notice to the channels below for each device the script couldn't be sent to. At most 20 notices are sent per run.",
         "noChannels": "Add a notification channel to use Notify."
       }
+    },
+    "disableWebhookNote": "This flow has a webhook trigger. Enabling it again after you edit it clears the webhook secret, and the sender will need the new secret.",
+    "shadowLine": "This flow is shadowing a job. It goes live from the job's Switch, not from here.",
+    "validation": {
+      "name": "Give the flow a name (up to 120 characters).",
+      "steps": "A flow needs at least one action, and no more than the limit.",
+      "cron": "The schedule is not a valid cron expression. Use five fields, for example 0 2 * * *.",
+      "timezone": "That time zone is not recognized. Use a name such as UTC or America/Chicago.",
+      "script": "Choose a script for this action.",
+      "channel": "Choose a notification channel for this action.",
+      "channels": "Choose at least one notification channel.",
+      "duplicateStepId": "Two actions have the same id. Give each action its own id.",
+      "unknownStepReference": "This refers to an action that does not exist. Check the action id.",
+      "forwardReference": "This uses the result of an action that runs later. Move that action earlier or remove the reference.",
+      "eventUnknown": "The system does not know that event type. Pick one from the list.",
+      "toolNotFound": "That action is not available to this flow. Pick another one.",
+      "channelNotOwned": "That notification channel does not belong to this flow's owner. Choose one of your own.",
+      "referenceNotOwned": "This refers to something that does not belong to this flow's owner.",
+      "deviceNotOwned": "That device does not belong to this flow's organization.",
+      "resolverRequired": "A flow for all organizations needs the body field that names the customer organization.",
+      "resolverNotAllowed": "An organization's webhook flow always runs in that organization. Remove the organization lookup.",
+      "documentTooLarge": "The document is too large. Remove some actions or text.",
+      "secretInDocument": "The document contains what looks like a secret. Remove it from the document."
     },
     "enableOpenFailed": "The draft was saved, but the enable dialog could not open. Open the flow to enable it."
   }

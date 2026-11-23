@@ -832,7 +832,9 @@
       "trigger": {
         "title": "Ne zaman çalışır",
         "timezone": "Saat dilimi",
-        "eventDeviceHelp": "Eylemler, olayı oluşturan cihazda çalışır. Bir olay cihaz bilgisi olmadan gelirse çalıştırma başarısız olur.",
+        "eventDeviceHelp": "Eylemler, olayı oluşturan cihazda çalışır.",
+        "eventNoDeviceNoRun": "Bir uyarı cihaz bilgisi olmadan gelirse çalıştırma başlamaz.",
+        "eventNoDeviceFails": "Bir olay cihaz bilgisi olmadan gelirse çalıştırma başarısız olur.",
         "filter": "Yalnızca olay eşleştiğinde",
         "filterHelp": "Her alan değeriyle tam olarak eşit olmalıdır. Bu türdeki her olayda çalıştırmak için boş bırakın.",
         "filterKey": "Olay alanı",
@@ -890,6 +892,29 @@
         "notifyHelp": "Betiğin gönderilemediği her cihaz için aşağıdaki kanallara bir bildirim gönderin. Çalıştırma başına en fazla 20 bildirim gönderilir.",
         "noChannels": "Bildir seçeneğini kullanmak için bir bildirim kanalı ekleyin."
       }
+    },
+    "disableWebhookNote": "Bu akışın tetikleyicisi bir webhook. Düzenledikten sonra yeniden etkinleştirmek webhook gizli anahtarını temizler ve gönderici yeni anahtara ihtiyaç duyar.",
+    "shadowLine": "Bu akış bir işi gölge modunda izliyor. Buradan değil, işin Geçiş düğmesinden canlıya alınır.",
+    "validation": {
+      "name": "Akışa bir ad verin (en fazla 120 karakter).",
+      "steps": "Bir akışta en az bir eylem olmalı ve sınırı aşmamalıdır.",
+      "cron": "Zamanlama geçerli bir cron ifadesi değil. Beş alan kullanın, örneğin 0 2 * * *.",
+      "timezone": "Bu saat dilimi tanınmıyor. UTC veya Europe/Istanbul gibi bir ad kullanın.",
+      "script": "Bu eylem için bir betik seçin.",
+      "channel": "Bu eylem için bir bildirim kanalı seçin.",
+      "channels": "En az bir bildirim kanalı seçin.",
+      "duplicateStepId": "İki eylemin kimliği aynı. Her eyleme kendi kimliğini verin.",
+      "unknownStepReference": "Bu, var olmayan bir eyleme başvuruyor. Eylem kimliğini kontrol edin.",
+      "forwardReference": "Bu, daha sonra çalışan bir eylemin sonucunu kullanıyor. O eylemi öne alın veya başvuruyu kaldırın.",
+      "eventUnknown": "Sistem bu olay türünü tanımıyor. Listeden birini seçin.",
+      "toolNotFound": "Bu eylem bu akış için kullanılamıyor. Başka bir tane seçin.",
+      "channelNotOwned": "Bu bildirim kanalı bu akışın sahibine ait değil. Kendinize ait birini seçin.",
+      "referenceNotOwned": "Bu, bu akışın sahibine ait olmayan bir şeye başvuruyor.",
+      "deviceNotOwned": "Bu cihaz bu akışın kuruluşuna ait değil.",
+      "resolverRequired": "Tüm kuruluşlar için bir akışta, müşteri kuruluşunu belirten gövde alanı gerekir.",
+      "resolverNotAllowed": "Bir kuruluşun webhook akışı her zaman o kuruluşta çalışır. Kuruluş aramasını kaldırın.",
+      "documentTooLarge": "Belge çok büyük. Bazı eylemleri veya metni kaldırın.",
+      "secretInDocument": "Belge, gizli anahtara benzeyen bir şey içeriyor. Belgeden kaldırın."
     },
     "enableOpenFailed": "Taslak kaydedildi, ancak etkinleştirme penceresi açılamadı. Etkinleştirmek için akışı açın."
   }
