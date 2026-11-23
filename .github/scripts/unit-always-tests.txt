@@ -185,6 +185,7 @@ apps/api/src/__tests__/processLocalCaches.contract.test.ts
 apps/api/src/__tests__/rolePermissionsReaders.contract.test.ts
 apps/api/src/__tests__/singleTableCorrelatedSubquery.contract.test.ts
 apps/api/src/__tests__/site-ceiling-write-coverage.test.ts
+apps/api/src/__tests__/tpmBaselineWriters.contract.test.ts
 apps/api/src/__tests__/unassignedPoolContracts.test.ts
 apps/api/src/__tests__/unassignedPoolVisibility.contract.test.ts
 apps/api/src/__tests__/zodUnitLength.contract.test.ts
