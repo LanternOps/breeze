@@ -1180,7 +1180,7 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // deviceDetail (device name, browser user agent) by the signing-in client.
   m365_query_users: new Set(['displayName', 'userPrincipalName', 'mail', 'jobTitle', 'department']),
   m365_query_signins: new Set(['userPrincipalName', 'appDisplayName', 'clientAppUsed', 'status', 'location', 'deviceDetail']),
-  m365_query_intune_devices: new Set(['deviceName', 'userPrincipalName', 'osVersion', 'model', 'manufacturer', 'serialNumber']),
+  m365_query_intune_devices: new Set(['deviceName', 'userPrincipalName', 'operatingSystem', 'osVersion', 'model', 'manufacturer', 'serialNumber']),
   m365_query_groups: new Set(['displayName', 'mail', 'membershipRule', 'description', 'userPrincipalName']),
   m365_query_org: new Set(['displayName', 'verifiedDomains']),
   m365_query_sites: new Set(['name', 'displayName', 'webUrl']),

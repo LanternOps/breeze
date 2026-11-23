@@ -194,7 +194,7 @@ const EXPECTED_FENCED: Readonly<Record<string, readonly string[]>> = {
   // devices, or app publishers) in the customer's tenant.
   m365_query_users: ['displayName', 'userPrincipalName', 'mail', 'jobTitle', 'department'],
   m365_query_signins: ['userPrincipalName', 'appDisplayName', 'clientAppUsed', 'status', 'location', 'deviceDetail'],
-  m365_query_intune_devices: ['deviceName', 'userPrincipalName', 'osVersion', 'model', 'manufacturer', 'serialNumber'],
+  m365_query_intune_devices: ['deviceName', 'userPrincipalName', 'operatingSystem', 'osVersion', 'model', 'manufacturer', 'serialNumber'],
   m365_query_groups: ['displayName', 'mail', 'membershipRule', 'description', 'userPrincipalName'],
   m365_query_org: ['displayName', 'verifiedDomains'],
   m365_query_sites: ['name', 'displayName', 'webUrl'],
