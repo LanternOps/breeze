@@ -31,7 +31,7 @@ import { captureException } from '../sentry';
 import { Semaphore } from '../../utils/semaphore';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
 import { isHiddenOrgType, notHiddenOrgType } from '../unassignedPool/visibility';
-import { sourceKeyUsable, type TpmKeyState } from '../deviceReattach/evidence';
+import { installStartedAt, sourceKeyUsable, type TpmKeyState } from '../deviceReattach/evidence';
 import { serialManufacturerKey } from './hardwareIdentity';
 import {
   decideFlagWrite,
@@ -85,6 +85,8 @@ interface SourceSnapshot extends CandidateSource {
   manufacturer: string | null;
   /** The source's TPM key state (wave T2): searched by only when sourceKeyUsable. */
   tpm: TpmKeyState;
+  /** When the source's current install started (deviceReattach/evidence.ts installStartedAt). */
+  installStartedAt: Date;
   storedTargetId: string | null;
   storedReason: string | null;
 }
@@ -119,6 +121,8 @@ async function readSource(sourceDeviceId: string): Promise<SourceSnapshot | null
       linkGroupId: devices.linkGroupId,
       createdAt: devices.createdAt,
       enrolledAt: devices.enrolledAt,
+      installEnrolledAt: devices.installEnrolledAt,
+      incarnationStartedAt: devices.incarnationStartedAt,
       storedTargetId: devices.possibleReplacementOfDeviceId,
       storedReason: devices.possibleReplacementReason,
       orgType: organizations.type,
@@ -136,11 +140,12 @@ async function readSource(sourceDeviceId: string): Promise<SourceSnapshot | null
     .where(eq(devices.id, sourceDeviceId))
     .limit(1);
   if (!row || !row.agentId) return null;
-  const { tpmEkSha256, tpmAttestedAt, tpmMismatchSha256, ...rest } = row;
+  const { tpmEkSha256, tpmAttestedAt, tpmMismatchSha256, installEnrolledAt, incarnationStartedAt, ...rest } = row;
   return {
     ...rest,
     agentId: row.agentId,
     enrolledAt: row.enrolledAt ?? row.createdAt,
+    installStartedAt: installStartedAt(row),
     tpm: { ekSha256: tpmEkSha256, attestedAt: tpmAttestedAt, mismatchSha256: tpmMismatchSha256 },
   };
 }
@@ -188,7 +193,7 @@ async function readMatches(source: SourceSnapshot): Promise<Array<{ target: Cand
   // retired reattach sources left out (their row keeps the key of the machine
   // that moved on). targetIneligibility judges the one holder like any other
   // match; one holding a key change of its own is no continuity.
-  if (sourceKeyUsable(source.tpm, source.enrolledAt)) {
+  if (sourceKeyUsable(source.tpm, source.installStartedAt)) {
     const retired = db
       .select({ one: sql`1` })
       .from(deviceReattachments)

@@ -53,8 +53,8 @@ export const NO_TPM_KEY: TpmKeyState = { ekSha256: null, attestedAt: null, misma
 
 export interface TpmEvidenceInput {
   source: TpmKeyState;
-  /** devices.enrolled_at of the source: its baseline must have been proven by THIS install. */
-  sourceEnrolledAt: Date;
+  /** When the source's CURRENT install enrolled (installStartedAt): its baseline must have been proven by THIS install. */
+  sourceInstallStartedAt: Date;
   target: TpmKeyState;
   /**
    * Other devices of the partner, besides the source and the target, whose
@@ -69,8 +69,8 @@ export interface TpmEvidenceInput {
 /**
  * `tpm_continuity` only when:
  *  - the source has a baseline, holds no mismatch, and proved it at or after
- *    its own enrollment (a re-enrolled row keeps the previous install's
- *    hardware row; that proof is not this install's);
+ *    its current install started (installStartedAt: a re-enrolled row keeps
+ *    the previous install's hardware row; that proof is not this install's);
  *  - the target has a baseline and holds no mismatch (a key change waiting
  *    for review is exactly what continuity must not paper over);
  *  - both baselines are the same key;
@@ -81,7 +81,7 @@ export function tpmEvidence(input: TpmEvidenceInput): TpmEvidence {
   const { source, target } = input;
   if (!source.ekSha256 || !source.attestedAt) return { level: 'hint', gap: 'source_no_key' };
   if (source.mismatchSha256) return { level: 'hint', gap: 'source_key_changed' };
-  if (source.attestedAt.getTime() < input.sourceEnrolledAt.getTime()) {
+  if (source.attestedAt.getTime() < input.sourceInstallStartedAt.getTime()) {
     return { level: 'hint', gap: 'source_key_not_proven_by_install' };
   }
   if (!target.ekSha256) return { level: 'hint', gap: 'target_no_key' };
@@ -96,9 +96,27 @@ export function tpmEvidence(input: TpmEvidenceInput): TpmEvidence {
  * gate before it searches by key): a baseline this install proved, no
  * mismatch held.
  */
-export function sourceKeyUsable(source: TpmKeyState, sourceEnrolledAt: Date): source is TpmKeyState & { ekSha256: string } {
+export function sourceKeyUsable(source: TpmKeyState, sourceInstallStartedAt: Date): source is TpmKeyState & { ekSha256: string } {
   return Boolean(source.ekSha256 && source.attestedAt && !source.mismatchSha256
-    && source.attestedAt.getTime() >= sourceEnrolledAt.getTime());
+    && source.attestedAt.getTime() >= sourceInstallStartedAt.getTime());
+}
+
+/**
+ * When the current install of a device row started: the latest of its
+ * enrollment, a re-enroll onto it (`install_enrolled_at`, wave T2) and a
+ * reattach confirm that handed it to a new install (`incarnation_started_at`).
+ * Rows from before `install_enrolled_at` read as enrolled.
+ */
+export function installStartedAt(row: {
+  createdAt: Date;
+  enrolledAt: Date | null;
+  installEnrolledAt: Date | null;
+  incarnationStartedAt: Date | null;
+}): Date {
+  const times = [row.enrolledAt ?? row.createdAt, row.installEnrolledAt, row.incarnationStartedAt]
+    .filter((t): t is Date => t instanceof Date)
+    .map((t) => t.getTime());
+  return new Date(Math.max(...times));
 }
 
 type Reader = Pick<ReattachTx, 'select'>;
@@ -176,7 +194,7 @@ export async function readTpmEvidence(
   input: {
     partnerId: string;
     sourceDeviceId: string;
-    sourceEnrolledAt: Date;
+    sourceInstallStartedAt: Date;
     targetDeviceId: string;
     /** Hold the key's advisory lock to commit (lockTpmKey): the request and the stage/confirm re-check. */
     lockKey?: boolean;
@@ -185,7 +203,7 @@ export async function readTpmEvidence(
   const states = await readTpmKeyStates(reader, [input.sourceDeviceId, input.targetDeviceId]);
   const source = states.get(input.sourceDeviceId) ?? NO_TPM_KEY;
   const target = states.get(input.targetDeviceId) ?? NO_TPM_KEY;
-  const base = { source, target, sourceEnrolledAt: input.sourceEnrolledAt };
+  const base = { source, target, sourceInstallStartedAt: input.sourceInstallStartedAt };
   // Count only when every other condition holds: the count is the one
   // partner-wide read.
   const otherwise = tpmEvidence({ ...base, otherHolders: 0 });

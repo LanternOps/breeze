@@ -93,7 +93,8 @@ vi.mock('./liveness', () => ({
   decideTargetLiveness: vi.fn(() => state.liveness),
 }));
 
-vi.mock('./evidence', () => ({
+vi.mock('./evidence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./evidence')>()),
   readTpmEvidence: vi.fn(async () => { calls.push('evidence'); return state.evidence; }),
 }));
 

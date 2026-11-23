@@ -71,7 +71,7 @@ import { lockActorAssurance } from '../stepUpActorAssurance';
 import { lockLiveUserSession } from '../unassignedPool/assignParkedDeviceSteps';
 import { isReattachDeviceReachable, readReattachDeviceLocations } from './reachability';
 import { reattachTargetVersionMatches } from './targetVersion';
-import { readTpmEvidence } from './evidence';
+import { installStartedAt, readTpmEvidence } from './evidence';
 
 const ACCESS_DENIAL_STATUS: Record<ReattachAccessDenial, 403 | 409> = {
   not_partner_user: 403,
@@ -306,7 +306,7 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
       const evidence = await readTpmEvidence(tx, {
         partnerId,
         sourceDeviceId: source.id,
-        sourceEnrolledAt: source.enrolledAt ?? source.createdAt,
+        sourceInstallStartedAt: installStartedAt(source),
         targetDeviceId: target.id,
         lockKey: true,
       });

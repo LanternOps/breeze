@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { NO_TPM_KEY, sourceKeyUsable, tpmEvidence, type TpmEvidenceInput, type TpmKeyState } from './evidence';
+import { installStartedAt, NO_TPM_KEY, sourceKeyUsable, tpmEvidence, type TpmEvidenceInput, type TpmKeyState } from './evidence';
 
 const K1 = 'a'.repeat(64);
 const K2 = 'b'.repeat(64);
@@ -12,7 +12,7 @@ const key = (ek: string, over: Partial<TpmKeyState> = {}): TpmKeyState => ({
 });
 const input = (over: Partial<TpmEvidenceInput> = {}): TpmEvidenceInput => ({
   source: key(K1),
-  sourceEnrolledAt: enrolledAt,
+  sourceInstallStartedAt: enrolledAt,
   target: key(K1, { attestedAt: new Date('2026-05-01T00:00:00Z') }),
   otherHolders: 0,
   ...over,
@@ -56,5 +56,21 @@ describe('sourceKeyUsable', () => {
     expect(sourceKeyUsable(NO_TPM_KEY, enrolledAt)).toBe(false);
     expect(sourceKeyUsable(key(K1, { mismatchSha256: K2 }), enrolledAt)).toBe(false);
     expect(sourceKeyUsable(key(K1, { attestedAt: new Date(enrolledAt.getTime() - 1) }), enrolledAt)).toBe(false);
+  });
+});
+
+describe('installStartedAt', () => {
+  const createdAt = new Date('2026-01-01T00:00:00Z');
+  const enrolled = new Date('2026-01-01T00:01:00Z');
+  it('is the latest of the enrollment, a re-enroll and a reattach confirm', () => {
+    expect(installStartedAt({ createdAt, enrolledAt: enrolled, installEnrolledAt: null, incarnationStartedAt: null })).toEqual(enrolled);
+    const reenrolled = new Date('2026-06-01T00:00:00Z');
+    expect(installStartedAt({ createdAt, enrolledAt: enrolled, installEnrolledAt: reenrolled, incarnationStartedAt: null })).toEqual(reenrolled);
+    const reattached = new Date('2026-07-01T00:00:00Z');
+    expect(installStartedAt({ createdAt, enrolledAt: enrolled, installEnrolledAt: reenrolled, incarnationStartedAt: reattached })).toEqual(reattached);
+  });
+
+  it('falls back to the row creation without an enrollment time', () => {
+    expect(installStartedAt({ createdAt, enrolledAt: null, installEnrolledAt: null, incarnationStartedAt: null })).toEqual(createdAt);
   });
 });

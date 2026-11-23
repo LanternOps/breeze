@@ -1293,14 +1293,25 @@ Go-generated test vectors and an **independent review before merge** (#8318).
 **Decided in wave T2 (the API part), where this section was open:**
 - **The evidence rule** (services/deviceReattach/evidence.ts, one function for every reader:
   detection, the candidates read, the request, phase 1 and confirm). `tpm_continuity` for a
-  (source, target) pair only when the source has a baseline it proved at or after its own
-  `enrolled_at` (a re-enrolled row keeps the previous install's hardware row), neither device holds
+  (source, target) pair only when the source has a baseline it proved at or after its CURRENT
+  install started, neither device holds
   a key change for review, both baselines are the same key, and no other device of the partner
   carries that key (retired reattach sources not counted; ephemeral and removed rows counted). A key
   on a third record is a cloned VM template, not one machine. Anything short is `hint`, with a gap
   code (`source_no_key`, `source_key_changed`, `source_key_not_proven_by_install`,
   `target_no_key`, `target_key_changed`, `keys_differ`, `key_shared`) the candidates read returns,
   never a key.
+- **When an install started.** `enrolled_at` is a row's first enrollment and never moves, but an
+  in-place re-enroll (the agent presented the row's own token) puts a new install on the row and
+  keeps its hardware row, baseline included. A new column `devices.install_enrolled_at`
+  (2027-01-29-160100: nullable, default `now()` for new rows, set by the re-enroll UPDATE; NULL on
+  older rows, read as `enrolled_at`) records it. The install's start is the latest of
+  `enrolled_at`, `install_enrolled_at` and `incarnation_started_at` (a reattach confirm), and only
+  a key proof made after it counts (found in the independent review of T2: without it, a stolen
+  agent token re-enrolled from another machine inherited the previous install's proof).
+- **The holder count is serialized** with every writer that sets a baseline by a per-key advisory
+  lock (`lockTpmKey`), taken after the device row locks: a third device becoming a holder of the
+  key waits for a request or confirm that is counting, and is counted by the next one.
 - **What it says.** "The new install proved the same endorsement key this record proved": key
   continuity, not a genuine TPM (the #11956 condition). It replaces the typed hostname, nothing
   else: possession, the OS acknowledgement, the restore choice, the access rule and the step-up

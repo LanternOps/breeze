@@ -273,7 +273,7 @@ export async function readReinstallCandidatesForViewer(input: {
       const evidence = await readTpmEvidence(db, {
         partnerId: source.partnerId,
         sourceDeviceId: source.id,
-        sourceEnrolledAt: source.enrolledAt,
+        sourceInstallStartedAt: source.installStartedAt,
         targetDeviceId: candidate.target.id,
       });
       candidates.push({

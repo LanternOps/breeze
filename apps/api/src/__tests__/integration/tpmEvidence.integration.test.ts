@@ -21,7 +21,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, withSystemDbAccessContext } from '../../db';
 import { auditLogs, deviceHardware } from '../../db/schema';
-import { lockTpmKey, readTpmEvidence } from '../../services/deviceReattach/evidence';
+import { installStartedAt, lockTpmKey, readTpmEvidence } from '../../services/deviceReattach/evidence';
 import { lockReattachDevices } from '../../services/deviceReattach/intentStore';
 import { requestDeviceReattach } from '../../services/deviceReattach/requestIntent';
 import { revalidateLockedIntent } from '../../services/deviceReattach/revalidation';
@@ -88,7 +88,7 @@ function evidenceOf(tenant: ReattachTenant, sourceId: string, targetId: string) 
     return readTpmEvidence(db, {
       partnerId: tenant.partnerId,
       sourceDeviceId: sourceId,
-      sourceEnrolledAt: source!.enrolledAt ?? source!.createdAt,
+      sourceInstallStartedAt: installStartedAt(source!),
       targetDeviceId: targetId,
     });
   });
@@ -150,6 +150,20 @@ describe('TPM key evidence (#8318 wave T2)', () => {
     const source = await newKeyedSource(tenant.orgA, K1);
     await setKey(source, { ek: K1, attestedAt: new Date(Date.now() - 60 * 60 * 1000) });
     expect(await evidenceOf(tenant, source.id, target.id)).toEqual({ level: 'hint', gap: 'source_key_not_proven_by_install' });
+  });
+});
+
+describe('a re-enroll onto the source row (#8318 wave T2 review)', () => {
+  it('a key the previous install proved is not this install\'s proof: hint, and a tpm request is evidence_changed', async () => {
+    const tenant = await seedReattachTenant();
+    const target = await oldKeyedTarget(tenant.orgA, K1);
+    const source = await newKeyedSource(tenant.orgA, K1);
+    expect(await evidenceOf(tenant, source.id, target.id)).toEqual({ level: 'tpm_continuity' });
+    // What the in-place re-enroll writes (reattachStaleCallers pins the route doing it).
+    await getTestDb().execute(sql`UPDATE devices SET install_enrolled_at = now() + interval '1 minute' WHERE id = ${source.id}::uuid`);
+    expect(await evidenceOf(tenant, source.id, target.id)).toEqual({ level: 'hint', gap: 'source_key_not_proven_by_install' });
+    expect(await request(tenant, source.id, target.id)).toMatchObject({ ok: false, code: 'evidence_changed' });
+    expect(await detectAfterKeyBaseline(source.id)).toMatchObject({ written: false });
   });
 });
 

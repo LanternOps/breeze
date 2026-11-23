@@ -28,7 +28,7 @@ import type { DeviceReattachIntent } from '../../db/schema';
 import { canActorReattach, loadReattachActor, REACHABLE_ORG_STATUSES } from './access';
 import { wasRetiredReattachSource, type LockedReattachDevice, type ReattachTx } from './intentStore';
 import type { ReattachCancelReason } from './protocol';
-import { readTpmEvidence } from './evidence';
+import { installStartedAt, readTpmEvidence } from './evidence';
 
 /** The device's org is one a reattach may touch: active or trial, not soft-deleted. */
 export function isLiveOrg(device: Pick<LockedReattachDevice, 'orgStatus' | 'orgDeletedAt'>): boolean {
@@ -83,7 +83,7 @@ export async function revalidateLockedIntent(
     const evidence = await readTpmEvidence(tx, {
       partnerId: intent.partnerId,
       sourceDeviceId: source.id,
-      sourceEnrolledAt: source.enrolledAt ?? source.createdAt,
+      sourceInstallStartedAt: installStartedAt(source),
       targetDeviceId: target.id,
       lockKey: true,
     });
