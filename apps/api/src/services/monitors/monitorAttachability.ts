@@ -31,6 +31,27 @@ export async function isMonitorAttachableToPolicy(
   monitorId: string,
   configPolicyId: string,
 ): Promise<boolean> {
+  return isMonitorAttachableToOwner(monitorId, async () => {
+    const [policy] = await db
+      .select({ orgId: configurationPolicies.orgId, partnerId: configurationPolicies.partnerId })
+      .from(configurationPolicies)
+      .where(eq(configurationPolicies.id, configPolicyId))
+      .limit(1);
+    return policy ?? null;
+  });
+}
+
+/**
+ * The same rule for a policy that does not exist yet, by its owner. Copy
+ * (#12309) checks a monitor against the copy's owner before the copy's row is
+ * written, so that the deferred trigger can never be the one to refuse it.
+ */
+export async function isMonitorAttachableToOwner(
+  monitorId: string,
+  owner:
+    | { orgId: string | null; partnerId: string | null }
+    | (() => Promise<{ orgId: string | null; partnerId: string | null } | null>),
+): Promise<boolean> {
   const [monitor] = await db
     .select({ orgId: monitorDefinitions.orgId, partnerId: monitorDefinitions.partnerId })
     .from(monitorDefinitions)
@@ -38,11 +59,9 @@ export async function isMonitorAttachableToPolicy(
     .limit(1);
   if (!monitor) return false;
 
-  const [policy] = await db
-    .select({ orgId: configurationPolicies.orgId, partnerId: configurationPolicies.partnerId })
-    .from(configurationPolicies)
-    .where(eq(configurationPolicies.id, configPolicyId))
-    .limit(1);
+  // The policy is read after the monitor, as before, so a missing monitor
+  // costs one read.
+  const policy = typeof owner === 'function' ? await owner() : owner;
   if (!policy) return false;
 
   // Org-owned monitor: only that org's own policies.

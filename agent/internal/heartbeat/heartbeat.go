@@ -722,6 +722,9 @@ type Heartbeat struct {
 	pamDeclineCheckerInstalled atomic.Bool
 	// pamWithdrawKick wakes the withdraw drain right after a decline.
 	pamWithdrawKick chan struct{}
+	// userHelperTaskKick wakes the Windows user-helper logon task repair
+	// (#12580) once the helper reconcile has put a missing executable back.
+	userHelperTaskKick chan struct{}
 	// pamDeclineWait bounds how long an apply waits for an open dialog's
 	// answer. Zero means pamDialogTimeout + pamDismissTimeout; tests shrink it.
 	pamDeclineWait time.Duration
@@ -1376,13 +1379,14 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		stopChan:      make(chan struct{}),
 		pamUnableStop: make(chan struct{}),
 		// Memory-only until SetStatePath gives it a file.
-		pamDeclines:     pamdecline.NewStore("", nil),
-		pamWithdrawKick: make(chan struct{}, 1),
-		metricsCol:      collectors.NewMetricsCollector(),
-		hardwareCol:     collectors.NewHardwareCollector(),
-		softwareCol:     collectors.NewSoftwareCollectorWithVersion(version),
-		inventoryCol:    collectors.NewInventoryCollector(),
-		vpnCol:          collectors.NewVPNCollector(),
+		pamDeclines:        pamdecline.NewStore("", nil),
+		pamWithdrawKick:    make(chan struct{}, 1),
+		userHelperTaskKick: make(chan struct{}, 1),
+		metricsCol:         collectors.NewMetricsCollector(),
+		hardwareCol:        collectors.NewHardwareCollector(),
+		softwareCol:        collectors.NewSoftwareCollectorWithVersion(version),
+		inventoryCol:       collectors.NewInventoryCollector(),
+		vpnCol:             collectors.NewVPNCollector(),
 		changeTrackerCol: collectors.NewChangeTrackerCollector(
 			filepath.Join(config.GetDataDir(), "change_tracker_snapshot.json"),
 		),
@@ -2433,6 +2437,8 @@ func (h *Heartbeat) Start() {
 	h.startTimeSync()
 	h.startWorkloads()
 	h.startWake()
+	// #12580: keep the Windows user-helper logon task registered.
+	h.startUserHelperTaskRepair()
 	h.startPamReconciliationRetryLoop()
 	// #8971: deliver the user's PAM declines to the server (outbox drain).
 	go h.runPamWithdrawDrain()
@@ -9096,6 +9102,9 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	}
 	log.Info("user-helper reconciliation: installed missing helper binary",
 		"path", helperPath, "version", h.agentVersion)
+	// The task that starts it may have gone with it (#12580): check now
+	// rather than at the next scheduled check.
+	h.kickUserHelperTaskCheck()
 }
 
 // userHelperReconcilePersistentThreshold is the consecutive-failure count at

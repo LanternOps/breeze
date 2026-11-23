@@ -18,24 +18,41 @@ Breeze Defaults  (lowest priority — read-only, always present)
                           └── Device  (highest priority — always wins)
 ```
 
-### Policy ownership: organization vs. partner-wide
+### Managed by: your MSP or one organization
 
-A policy is owned at one of two scopes:
+**Managed by** says who owns a policy and can edit it. A policy is managed at one of two scopes:
 
-- **Organization** — the policy belongs to a single customer organization and can only be assigned within that org's hierarchy. This is the default.
-- **Partner-wide (all orgs)** — the policy belongs to your partner account and can apply across **every** organization you manage. Use this for fleet-wide standards you want enforced everywhere without recreating the policy per customer.
+- **One organization**: the policy belongs to a single customer organization and can only apply within that organization. The policy list shows **Managed by &lt;organization&gt;** under its name.
+- **Your MSP** (MSP-managed): the policy belongs to your partner account and can apply across **every** organization you manage. Use this for fleet-wide standards you want enforced everywhere without recreating the policy per customer. An MSP-managed policy applies to nothing until you choose where it applies (see [Where a policy applies](#where-a-policy-applies)).
 
-You choose the ownership scope when creating the policy. Partner-wide policies can only be created and managed by partner-level users with full access to every organization under the partner (not users restricted to a subset of organizations); organization-scoped users see partner-wide policies in their effective configuration but cannot edit them.
+A new policy is managed by a sensible default, shown on the **Managed by** line before you first save it:
 
-Backup settings cannot be configured on a partner-wide policy — see [Backup](#backup) below.
+| You are | A new policy is managed by | You can change it to |
+|---|---|---|
+| A partner user with access to every organization | **Your MSP** | One organization you manage |
+| A partner user with access to some organizations | The organization selected in the organization switcher (choose one if none is selected) | Another organization you can access. MSP-managed is not offered. |
+| An organization user (a customer's own admin) | Your organization | Nothing to choose |
 
-## Baseline policies (inheritance)
+Before the first save, the Managed-by line also states the trade of an MSP-managed policy: it cannot link one customer's own software, security or backup items or a specific backup destination, and it cannot carry OneDrive Helper. Each picker that links such an item on an MSP-managed policy says the same.
 
-A policy can optionally have one **parent** — a baseline policy it inherits feature settings from. This lets an MSP define a standard baseline once (e.g. "Standard Workstation Baseline") and have every customer-specific policy build on it, instead of copy-pasting the same patch schedule, alert thresholds, and maintenance windows into every org.
+**Managed by** and **Based on** (the [parent policy](#parent-policies)) are fixed when the policy is first saved. The page says so before that save and on the policy afterwards. To change either, [copy the policy](#copying-a-policy) and choose a different owner or parent.
+
+MSP-managed policies can only be created and edited by partner-level users with full access to every organization under the partner. Everyone else sees them read-only, with the reason stated at the top of the page:
+
+- A partner user with access to some organizations sees the MSP-managed policies that apply to an organization they can access.
+- A customer's own admin sees the MSP-managed policies that apply to their organization, and only those are offered as a parent for their own policies.
+
+Neither sees, opens or can name an MSP-managed policy that applies only to other organizations.
+
+OneDrive Helper can only be set on a policy managed by one organization; on an MSP-managed policy the feature says why it is unavailable and offers **Copy to one organization**.
+
+## Parent policies
+
+A policy can optionally be **based on** one **parent policy**: a policy it inherits feature settings from. This lets an MSP define a standard baseline once (e.g. "Standard Workstation Baseline") and have every customer-specific policy build on it, instead of copy-pasting the same patch schedule, alert thresholds, and maintenance windows into every org.
 
 **Effective links of a policy** = the policy's own feature links, plus, for any feature type the policy has no link of its own for, the parent's link for that type. In other words: a child's own configuration always wins; anything the child hasn't touched falls through to the parent.
 
-You set the parent when **creating** a policy: choose **Link to Existing** on the New Policy screen and pick a baseline from the list. The parent cannot be changed after the policy is created.
+You set the parent when **creating** a policy: under **Start from**, choose **Based on a parent policy** and pick a parent from the list. The parent cannot be changed after the policy is first saved.
 
 ### Which policies can be a parent
 
@@ -48,13 +65,16 @@ Only **one level** of inheritance is supported — a baseline policy cannot itse
 
 ### Overriding and reverting an inherited feature
 
-Open any feature tab on a child policy. If the feature comes from the parent, the tab shows a **Configured (inherited)** badge and the settings are shown read-only, seeded from the parent's configuration:
+Open any feature on a child policy. If the feature comes from the parent, the feature list shows **From parent**, the feature says **From &lt;parent&gt;** with a link to it, and the settings are locked, showing the parent's configuration:
 
-- Click **Override** to save a copy of the inherited settings as the policy's own link — the tab becomes editable and future parent changes no longer affect this policy for that feature.
-- Click **Revert to Parent** on an overridden feature to delete the policy's own link and fall back to the parent's again.
+- Click **Change for this policy** to unlock the form. Nothing is written until you click **Save**, which saves the policy's own settings for that feature; future parent changes then no longer affect this policy for that feature.
+- Click **Reset to parent** on a feature the policy changed to delete its own settings and fall back to the parent's again.
+- Click **Remove from this policy** on a feature set only here (the parent does not have it) to return it to **Not set**.
+
+Remove and Reset to parent ask first, and say how many devices the change reaches.
 
 <Aside type="caution">
-  **The parent's `Active`/`Inactive`/`Archived` status does not gate inheritance.** Archiving a baseline policy does not silently strip security, patch, or backup configuration from every policy that inherits from it — only the *child's own* status controls whether its assignments are evaluated, exactly as for a policy with no parent. Before archiving a widely-inherited baseline, check its Overview tab for the "Inherited by N policies" list to see the blast radius.
+  **The parent's `Active`/`Inactive`/`Archived` status does not gate inheritance.** Archiving a baseline policy does not silently strip security, patch, or backup configuration from every policy that inherits from it — only the *child's own* status controls whether its assignments are evaluated, exactly as for a policy with no parent. Before archiving a widely-inherited baseline, check the **Parent of N policies** list in its header to see the blast radius. A parent with no targets of its own reads **In use through N policies** in the policy list and on its Applies-to line, never "Not applied".
 </Aside>
 
 ### Deleting a baseline
@@ -123,25 +143,66 @@ Compliance alerts always belong to the device's organization, including for part
 
 ## Creating a policy
 
+Creating a policy happens on the same page you edit it on. A new policy starts **Inactive**: it reaches no device until you activate it.
+
 <Steps>
 
-1. Navigate to **Fleet Management → Config Policies**.
+1. Navigate to **Fleet Management → Config Policies** and click **New Policy**. The full policy page opens, and every feature can be browsed before anything is saved.
 
-2. Click **New Policy**, then choose **Configure New** to start from scratch, or **Link to Existing** to inherit from a baseline policy (see [Baseline policies](#baseline-policies-inheritance) above). Choosing **Link to Existing** adds a picker of eligible baselines — filtered to the ones your chosen ownership scope is allowed to inherit from.
+2. Enter a **Name** (required before anything is saved) and an optional **Description**.
 
-3. Enter a **Name** and optional **Description**.
+3. Check the **Managed by** line. It defaults as described in [Managed by](#managed-by-your-msp-or-one-organization); partner users can change it before the first save.
 
-4. If you're a partner-level user with full access to every organization, an **Apply to** picker appears: choose **All organizations (partner-wide)** to apply the policy across every organization you manage, or **A specific organization** and pick the target org from the dropdown. Users scoped to a single organization (or with access to only some organizations) don't see this picker — their policy is always scoped to their own organization. Note that Backup settings can't be configured on a partner-wide policy.
+4. Optionally, under **Start from**, choose **Based on a parent policy** and pick a parent (see [Parent policies](#parent-policies)). The default is **Blank**.
 
-5. Set **Status** to **Active**. Inactive and archived policies are not evaluated by the scheduler.
+5. Pick a feature in the feature list and set it, then click **Save**. The first Save creates the policy, inactive, and then saves the feature. The page becomes the new policy's own page. If the policy was created but the feature could not be saved, the page says so: the policy exists, inactive and applied nowhere, and you can fix the problem and save again.
 
-6. Click **Save** to open the policy detail editor.
+6. When the policy is ready, click **Activate** (see [Activating a policy](#activating-a-policy)).
 
 </Steps>
 
+Opening a feature from **Breeze Defaults** starts a new policy with that feature open.
+
+## Copying a policy
+
+**Copy** makes a new policy from an existing one: to start a near-identical policy (servers, workstations, virtual desktops), to give a policy a different owner, or to base it on a different parent. Copy is in the policy header and on each row of the policy list.
+
+<Steps>
+
+1. Click **Copy**. The name defaults to **&lt;name&gt; (copy)**.
+
+2. Choose **Managed by**: the same owner, another organization you can access, or your MSP. Only a partner user with access to every organization can copy to the MSP. A customer's own admin copies into their own organization, including an MSP-managed policy that applies to it.
+
+3. Optionally choose a parent under **Based on a parent policy**. For the same owner the source's parent is kept; for another owner, choose one the new owner can use, or none.
+
+4. Before anything is copied, the dialog lists what will be **Copied** and what is **Not copied**, with the reason. Click **Copy policy**. You land on the new policy.
+
+</Steps>
+
+What a copy carries:
+
+- The copy starts **Inactive** and applies nowhere, whatever the original's state. Apply it and activate it as you would a new policy.
+- It carries the original's own features and their settings. Features the original inherits from its parent are not copied; the copy's own parent supplies them.
+- Items a feature links, such as an update ring, a software policy, a monitor or a script, are shared with the original, not duplicated.
+- A feature the new owner cannot carry is left behind, and the dialog says why:
+  - **Only a policy managed by one organization can set this feature**: OneDrive Helper, when copying to your MSP.
+  - **It uses an item the new owner cannot use**: for example one organization's own software policy, monitor, script or backup destination, or the Microsoft 365 tenant and libraries OneDrive Helper names, when copying to another organization or to your MSP.
+  - **Its saved settings no longer pass today's checks.**
+- **HP warranty collection is copied switched off.** A copy never accepts HP's licence on anyone's behalf, so before you copy, the dialog says the licence must be accepted again. The warranty thresholds are copied as they are. To collect again, tick **Collect HP warranty from the device** in the copy, which accepts HP's licence as you, as setting it on any policy does.
+- A copy that would turn on a feature which installs software or moves files on devices (IOC auto-quarantine, security agents, vendor updates) needs the `devices:execute` permission and MFA, as setting that feature directly does. So does choosing a parent that collects HP warranty data, as creating a policy under that parent does. The auto-quarantine approval is recorded for you, not carried from the original.
+
+## Activating a policy
+
+A policy is **Active** or **Inactive**. Only an active policy's settings reach the devices it applies to. Activate and Deactivate are buttons in the policy header, and each states its reach.
+
+- **Activate** on a policy that already applies somewhere reads **Activate · reaches N devices** and switches it on.
+- **Activate** on a new policy, or on one that applies nowhere yet, asks where it applies first. The **Applies to** editor opens with nothing pre-selected; the organization selected in the switcher is offered first. Add at least one target and click **Activate · reaches N devices**: the targets are saved, then the policy is activated. If the targets cannot be saved, nothing is activated and the policy stays inactive. Or click **Don't apply yet**: the policy is saved inactive and applies nowhere.
+- **Deactivate** asks first and says how many devices stop receiving the policy's settings. Policies based on it keep its settings either way.
+- An inactive policy can be **Archived**; **Restore** brings it back as Inactive.
+
 ## Adding features to a policy
 
-Open the policy detail editor and click the tab for the feature you want to configure.
+Open the policy and pick the feature you want to configure in the feature list on the left. Features are grouped: **Updates & software**, **Monitoring**, **Security**, **Backup**, **Access & end user** and **Lifecycle**, with **Compliance Status** at the foot. Each feature shows its state: **Set here**, **From parent** or **Not set**. Each feature has its own **Save**; if you leave a feature with unsaved changes, the page asks whether to discard them. On an active policy, Save states how many devices it reaches, for example **Save · reaches 212 devices**.
 
 ### Patch Management
 
@@ -188,7 +249,7 @@ blocked or unconvertible row deliberately.
 ### Backup
 
 <Aside type="caution">
-  Backup is **not available on partner-wide (all organizations) policies**. Backup settings are always tied to a single organization, so a policy owned at the partner level has no organization to attach them to — attempting to add or save a Backup feature link on a partner-wide policy is rejected. Configure Backup on an organization-owned policy instead.
+  Backup can be set on an MSP-managed policy through a backup profile. Each organization it applies to then needs a default backup destination; see [Backup profiles](/backup/profiles/).
 </Aside>
 
 Backup feature links use **inline settings** stored in the `config_policy_backup_settings` table (one row per feature link).
@@ -325,45 +386,64 @@ This table records what was observed when the native System Restore call was tes
 
 The badge column is a design mapping, not an observation on that build. Agent 0.124.0 reports these outcomes; the created path has not been verified on real hardware with the agent before the release, so report a regression on the linked issue.
 
-## Assigning a policy
+## Where a policy applies
 
-Open the policy detail editor → **Assignments** tab. What you see depends on who owns the policy.
+Every policy page shows an **Applies to** line above the feature tabs. It stays visible on every tab, so you always know where the settings you are editing will land:
 
-### Partner library policy
+- **Targets:** the first few targets by name (for example **All organizations**, an organization, a site), each with its role or OS filter, then **+N** for the rest. Targets you are not allowed to see still count toward **+N**, so a policy you can only partly see never reads as unapplied.
+- **Not applied to any device:** an active policy with no targets shows a warning and an **Assign** button. An inactive policy with no targets reads **Not applied yet**; an archived one shows nothing.
+- **In use through N policies:** a parent policy with no targets of its own still reaches devices through the policies based on it, so it is never marked unapplied.
 
-The tab is an organization checklist, not a level picker.
+The line also shows how many devices the policy reaches. The count covers only devices you can see: a technician limited to some sites may see **No devices you can see** on a policy that applies elsewhere, which is not the same as unapplied. On a very large fleet the count may read **At least N devices**.
 
-<Steps>
+The policy list has a matching **Applies to** column with the same device count, plus a **Not applied** chip (a warning when the policy is active) or **In use through N policies** beside the status.
 
-1. Optionally set **Role Filter** and **OS Filter**. Leave them empty to apply to every device in the chosen organizations.
+### Filtering the policy list
 
-2. Turn on **All organizations (partner-wide)** to apply the policy across every organization you manage, or check individual organizations.
+With one organization selected in the organization switcher, the list shows every policy that organization owns, whether or not it applies anywhere, the MSP-managed policies that apply to it, and inactive MSP-managed policies that apply nowhere yet. Choose **All organizations** in the **Organization** filter to see every policy you can read. The list also filters by state (Active, Inactive, Archived) and **Not applied** (no targets and no policies based on it). Search, filters and paging run on the server, so the counts above the list are totals, not the rows on screen.
 
-3. Assigned rows show the role and OS filters that were saved with that assignment. To change filters, turn the assignment off and on again with the new chips selected.
+### The Applies to editor
 
-</Steps>
-
-A partner-wide "servers only" assignment reaches server-role devices in every assigned organization. Workstations skip it. You cannot put two different role sets on the same policy at the same target; make a second policy if servers and workstations need different settings.
-
-### Organization policy
+Click **Edit** (or **Assign**) to open the **Applies to** editor in a side panel. There is one editor for every policy. Nothing you change in it is saved until you click **Apply**:
 
 <Steps>
 
-1. Choose a **Level**: Organization, Site, Device Group, or Device.
+1. On an MSP-managed policy, choose **All organizations** (every organization you manage, including ones added later) or **Specific targets**. An organization-managed policy shows its organization locked; it can only apply within that organization.
 
-2. For Site, Device Group, or Device, select the specific target. An organization-level assignment always targets the policy's own organization.
+2. To add a target, pick a level (**Organization**, **Site**, **Device group** or **Device**) and search. Results are searched on the server, so large fleets work the same as small ones. On an MSP-managed policy you first choose the organization, then the site, group or device inside it. Device groups owned by your MSP, which span organizations, are offered only on an MSP-managed policy.
 
-3. Optionally set the same **Role Filter** and **OS Filter**. Empty means every device in that target.
+3. Each target row edits in place: its **Role Filter** and **OS Filter** (empty means every device in that target), and its **Priority** under **Advanced**. Remove a row with the bin icon; **Undo** brings it back before you apply.
 
-4. Set a **Priority** number. When two policies at the same level both define the same feature, the lower priority number wins (priority `1` takes precedence over priority `2`). On an exact tie, the assignment created first wins.
+4. The panel foot states what the change does before you commit it, for example **Apply · adds 12 devices, removes 3**. On a very large change the numbers are an estimate (**adds about …**). If the change would leave the policy matching **0 devices** you can see, the panel warns you. If the change is not allowed (for example, a policy that arms vendor updates needs the execute permission), the reason shows at the foot and **Apply** stays disabled.
 
-5. Click **Assign**.
+5. Click **Apply**. All of the staged changes are saved together, or none are.
 
 </Steps>
+
+While you have unapplied changes, the panel will not close: click **Apply**, or **Discard changes** to drop them. If someone else changed where the policy applies after you opened the panel, **Apply** saves nothing, keeps your changes on screen and offers **Reload**. Targets you are not allowed to see are never changed by **Apply**; the panel says how many there are. Older links to a policy's `#assignments` tab open the same panel.
+
+The panel always shows the precedence rule: **Most specific wins, per feature: Device › Device group › Site › Organization › All organizations. A closer policy replaces the whole feature; it does not merge.**
+
+- **Priority** breaks ties between policies at the same level that define the same feature: the lower number wins (priority `1` takes precedence over priority `2`). On an exact tie, the assignment created first wins.
+- **Role and OS filters** narrow a target: an "All organizations, servers only" assignment reaches server-role devices in every organization, and workstations skip it. You cannot put two different role sets on the same policy at the same target; make a second policy if servers and workstations need different settings.
+
+An MSP-managed policy assigned at a site, device group or device in an organization also shows on that site's page for users who can see the policy.
+
+To apply one policy to several device groups at once, select the groups on **Devices → Groups** and click **Apply policy**. The groups are added in one change: all of them, or none if one of them already has the policy.
 
 <Aside>
-  A device-level assignment always takes precedence over all group, site, organization, and partner assignments, regardless of priority number. A partner-wide assignment is the broadest scope and is overridden by any more-specific assignment.
+  A device-level assignment always takes precedence over all group, site, organization, and partner assignments, regardless of priority number. An **All organizations** assignment is the broadest scope and is overridden by any more-specific assignment.
 </Aside>
+
+### Where another policy wins a feature
+
+A policy can reach a device and still not decide a feature there: a policy assigned closer to the device, or at the same level with a lower priority number (or, on an exact tie, assigned earlier), wins that feature instead. The policy page says where this happens, feature by feature:
+
+- **Outranked on N devices:** the open feature shows how many of the devices this policy reaches get that feature from another policy. The same count follows the feature's state in the feature list on the left, for example **Set here · Outranked on 3 devices**.
+- **Nothing shown:** no other policy wins the feature on any device this policy reaches, or the count could not be read. The page never shows "outranked on 0 devices" for a count it does not have.
+- **Too many devices to count:** on a very large fleet the page does not guess a number. Open a device's **Configuration** tab to see which policy won each feature there and why (see [Viewing effective configuration](#viewing-effective-configuration)).
+
+The count covers only devices you can see, and it counts a feature this policy inherits from its [parent](#parent-policies) as well as its own. It includes other policies you cannot open, such as one managed by your MSP, without naming them. An inactive policy is counted as if it were active, so you can see what activating it would change.
 
 ## Per-device compliance status
 
@@ -401,7 +481,11 @@ To see the merged settings a specific device will receive:
 
 1. Navigate to the device's detail page.
 2. Open the **Effective Configuration** tab.
-3. The page shows the resolved settings for each feature type and which policy in the inheritance chain provided each value — including **Breeze Defaults** for any feature not covered by an assigned policy. When the assigned policy itself has no link for a feature and the value came from its [baseline parent](#baseline-policies-inheritance) instead, the card also shows **"Inherited from &lt;baseline name&gt;"** — two different kinds of inheritance can stack: the hierarchy chain (which *policy* is assigned) and the baseline relationship (which *policy's own settings* apply).
+3. The page shows the resolved settings for each feature type. Each card reads **From &lt;policy&gt; · via &lt;level&gt;**: the policy that won the feature and the level it arrived through (Device, Device group, Site, Organization or All organizations). The policy name links to its page when you can open it; a technician in one organization sees an MSP-managed policy by name, marked **Managed by your MSP**, without a link. Features no assigned policy covers come from **Breeze Defaults**. When the assigned policy has no link for a feature and the value came from its [parent policy](#parent-policies) instead, the card also shows **"Based on &lt;parent name&gt;"**. Two kinds of inheritance can stack: precedence (which *policy* is assigned and wins) and the parent relationship (which *policy's own settings* apply).
+4. The **Precedence** table lists every assigned policy, led by the rule: *Most specific wins, per feature: Device › Device group › Site › Organization › All organizations. A closer policy replaces the whole feature; it does not merge.* A feature a policy links but lost is struck through, and the row says in plain text which policy replaced it and why:
+   - **set at a more specific level**: the winner is assigned closer to the device;
+   - **lower priority number**: same level, and the winner's priority number is lower;
+   - **assigned earlier**: same level and priority, and the winner's assignment is older.
 
 ```
 GET /configuration-policies/effective/:deviceId
@@ -451,11 +535,12 @@ All paths are relative to `/api/v1`.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/configuration-policies` | List policies |
+| GET | `/configuration-policies` | List policies. Filters: `status`, `search`, `appliesToOrgId` (every policy that organization owns, any status, applied or not; the MSP-managed policies that apply to it, any status; and inactive MSP-managed policies with no targets; `403` for an organization the caller cannot access), `notApplied=true` (no targets and no child policies), `orgId` (the organization's own policies plus its partner's MSP-managed ones). Paged with `page` and `limit` (at most 100); the answer is `{ data, pagination: { page, limit, total } }`. |
 | POST | `/configuration-policies` | Create policy |
 | GET | `/configuration-policies/eligible-parents` | List baseline policies eligible as a parent for a given ownership scope (`?ownerScope=organization&orgId=…` or `?ownerScope=partner`) |
-| GET | `/configuration-policies/:id` | Get policy — includes `parentPolicyId`, an embedded `parentPolicy` (read-only, with its own feature links), and `childPolicies` |
+| GET | `/configuration-policies/:id` | Get policy — includes `parentPolicyId`, an embedded `parentPolicy` (read-only, with its own feature links), `childPolicies`, and `access: { canEdit, reason }`, which says why the caller can only read it |
 | PATCH | `/configuration-policies/:id` | Update metadata |
+| POST | `/configuration-policies/:id/copy` | Copy a policy: `{ name, ownerScope: "organization" \| "partner", orgId?, parentPolicyId?, dryRun? }`. The copy is always inactive with no assignments. Omitting `parentPolicyId` keeps the source's parent; `null` copies with none. Answers `201 { dryRun: false, policyId, orgId, dropped, notices }`, or with `dryRun: true` `200 { dryRun: true, carried, dropped, notices }` and nothing written. Each `dropped` entry is `{ featureType, reason }`, where `reason` is `org_only_feature`, `linked_item_unavailable` or `settings_not_valid`. Each `notices` entry is `{ featureType, code }` for a feature copied in a different state; `consent_required` means HP warranty collection was copied switched off and HP's licence must be accepted again. A source the caller cannot read is `404`; an owner the caller cannot write to, or a feature or parent the copy would arm without `devices:execute`, is `403`. |
 | DELETE | `/configuration-policies/:id` | Delete (cascades to features and assignments). Returns `409` with the list of dependent policies if any policy still inherits from this one. |
 | GET | `/configuration-policies/:id/features` | List feature links |
 | POST | `/configuration-policies/:id/features` | Add feature |
@@ -463,6 +548,10 @@ All paths are relative to `/api/v1`.
 | DELETE | `/configuration-policies/:id/features/:linkId` | Remove feature |
 | GET | `/configuration-policies/:id/assignments` | List assignments |
 | POST | `/configuration-policies/:id/assignments` | Assign policy to a target |
+| POST | `/configuration-policies/:id/assignments/apply` | Staged Apply: `add`, `update` (priority and filters) and `remove` in one all-or-nothing change, each list capped at 200. `dryRun: true` writes nothing and returns `{ dryRun: true, delta: { added, removed, partial? } }`. A changed or colliding row answers `409 { error: "assignment_conflict", message, entry }` and nothing is applied. |
+| GET | `/configuration-policies/:id/reach` | Device counts for one policy: `{ direct, throughChildren, organizations, partial? }`, counting only devices the caller can see. `partial: true` means each number is a lower bound. |
+| GET | `/configuration-policies/reach?ids=…` | The same counts for up to 100 policies: `{ data: { [policyId]: reach } }`. Policies the caller cannot read are absent. |
+| GET | `/configuration-policies/:id/precedence` | Where another policy wins each feature: `{ capped: false, features: { [featureType]: { reached, outranked } } }`, counting only devices the caller can see, or `{ capped: true }` with no numbers when there are too many devices to count. A feature absent from `features` has no count. |
 | DELETE | `/configuration-policies/:id/assignments/:aid` | Unassign |
 | GET | `/configuration-policies/effective/:deviceId` | Resolve effective config for a device |
 | POST | `/configuration-policies/effective/:deviceId/diff` | Preview change diff |
@@ -471,9 +560,9 @@ All paths are relative to `/api/v1`.
 | GET | `/configuration-policies/:id/patch-settings` | Get patch settings for a policy |
 | GET | `/configuration-policies/:id/resolve-patch-config/:deviceId` | Resolve patch config for a specific device |
 
-When creating a policy, set `ownerScope` to `organization` (the default) or `partner`. With `ownerScope: "partner"` the policy is owned partner-wide and any supplied `orgId` is ignored — the partner is always derived from the caller's own token, never trusted from the request body. Creating a partner-wide policy requires partner scope (a `403` is returned otherwise). When assigning a partner-wide policy, use `level: "partner"`; the target is resolved from the caller's own partner, so no `targetId` is required.
+When creating a policy, set `ownerScope` to `organization` (the default) or `partner`. The web app creates every new policy with `status: "inactive"`; activating it is the ordinary `PATCH` of `status`. With `ownerScope: "partner"` the policy is owned partner-wide and any supplied `orgId` is ignored — the partner is always derived from the caller's own token, never trusted from the request body. Creating a partner-wide policy requires partner scope (a `403` is returned otherwise). When assigning a partner-wide policy, use `level: "partner"`; the target is resolved from the caller's own partner, so no `targetId` is required.
 
-To create a policy that inherits from a baseline, pass `parentPolicyId` in the create request body — see [Baseline policies](#baseline-policies-inheritance) above for which parents a given ownership scope may reference. An invalid, cross-tenant, or already-nested parent is rejected with `400 { "error": "INVALID_PARENT_POLICY" }` — a single error for every rejection reason, so the response can't be used to probe which policy IDs exist.
+To create a policy that inherits from a baseline, pass `parentPolicyId` in the create request body — see [Parent policies](#parent-policies) above for which parents a given ownership scope may reference. An invalid, cross-tenant, or already-nested parent is rejected with `400 { "error": "INVALID_PARENT_POLICY" }` — a single error for every rejection reason, so the response can't be used to probe which policy IDs exist.
 
 When calling the features endpoints, the `featureType` value must be one of: `patch`, `backup`, `security`, `maintenance`, `compliance`, `automation`, `event_log`, `software_policy`, `sensitive_data`, `peripheral_control`, `warranty`, `helper`, `remote_access`, `pam`, `onedrive_helper`, `vulnerability`, `device_lifecycle`, `monitors`, `hardware_monitoring`, `security_agents`. `monitors` is the authoring/deployment feature. The retired values `alert_rule` and `monitoring` are rejected with `410 Gone`.
 

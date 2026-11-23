@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ComponentType } from 'react';
 import type { EditorProps } from '@monaco-editor/react';
+import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useScriptProposal } from '@/hooks/useScriptProposal';
 import { overrideRunScriptProposal, requestScriptProposalChanges } from '@/lib/api/scriptProposals';
@@ -68,6 +69,8 @@ export interface ScriptProposalApprovalCardProps {
    *  proposal, or a four-eyes card the viewer cannot decide themself). */
   readOnly?: boolean;
   onChanged?: () => void;
+  /** When set, the load-failure alert gets a dismiss button that calls this. */
+  onDismissError?: () => void;
 }
 
 /** `cap('info') -> 'Info'` — matches the `severity<Cap>` i18n key suffix. */
@@ -168,9 +171,10 @@ export default function ScriptProposalApprovalCard({
   onReject,
   readOnly = false,
   onChanged,
+  onDismissError,
 }: ScriptProposalApprovalCardProps) {
   const { t } = useTranslation(['ai', 'approvals', 'common']);
-  const { data, loading, error, reload } = useScriptProposal(proposalId);
+  const { data, loading, error, errorStatus, reload } = useScriptProposal(proposalId);
   const [acked, setAcked] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
@@ -242,9 +246,27 @@ export default function ScriptProposalApprovalCard({
 
   if (loading) return <div data-testid="script-proposal-loading">{t('common:states.loading')}</div>;
   if (error || !data) {
+    // Never surface the API's error code. 404 and 403 read the same on purpose:
+    // the viewer is not told whether the proposal is missing or not theirs.
+    const unavailable = errorStatus === 404 || errorStatus === 403;
     return (
-      <div data-testid="script-proposal-error" role="alert">
-        {error ?? t('common:states.error')}
+      <div
+        data-testid="script-proposal-error"
+        role="alert"
+        className={onDismissError ? 'flex items-center justify-between gap-3' : undefined}
+      >
+        <span>{unavailable ? t('ai:scriptProposal.unavailable') : t('ai:scriptProposal.loadFailed')}</span>
+        {onDismissError && (
+          <button
+            type="button"
+            onClick={onDismissError}
+            className="rounded p-1 text-muted-foreground hover:text-foreground"
+            data-testid="script-proposal-error-dismiss"
+            aria-label={t('approvals:dismiss')}
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
       </div>
     );
   }

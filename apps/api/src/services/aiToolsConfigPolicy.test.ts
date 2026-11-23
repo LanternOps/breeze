@@ -56,6 +56,8 @@ const {
   validateAssignmentTargetMock,
   authorizeAssignmentTargetMock,
   policyAccessConditionMock,
+  policyReadConditionMock,
+  filterLegibleMock,
   canManagePartnerWidePoliciesMock,
   createConfigPolicyMock,
   unassignPolicyMock,
@@ -66,6 +68,8 @@ const {
   // unaffected; site-scope tests override to assert denial.
   authorizeAssignmentTargetMock: vi.fn(async (): Promise<{ valid: boolean; error?: string }> => ({ valid: true })),
   policyAccessConditionMock: vi.fn(),
+  policyReadConditionMock: vi.fn(),
+  filterLegibleMock: vi.fn(async (_a: unknown, _p: unknown, rows: unknown[]) => [...rows]),
   canManagePartnerWidePoliciesMock: vi.fn(() => true),
   createConfigPolicyMock: vi.fn(),
   unassignPolicyMock: vi.fn(),
@@ -110,7 +114,10 @@ vi.mock('../routes/policyManagement/helpers', () => ({
   getConfigPolicyComplianceRuleInfo: vi.fn(),
   getConfigPolicyComplianceStats: vi.fn(),
   buildComplianceSummary: vi.fn(),
+  complianceSiteCondition: vi.fn(() => undefined),
 }));
+
+vi.mock('./configPolicyLegibleAssignments', () => ({ filterLegibleAssignments: filterLegibleMock }));
 
 vi.mock('./configurationPolicy', () => ({
   resolveEffectiveConfig: vi.fn(),
@@ -130,6 +137,8 @@ vi.mock('./configurationPolicy', () => ({
   authorizeAssignmentTarget: authorizeAssignmentTargetMock,
   canManagePartnerWidePolicies: canManagePartnerWidePoliciesMock,
   policyAccessCondition: policyAccessConditionMock,
+  policyReadCondition: policyReadConditionMock,
+  PolicyNotReadableError: class PolicyNotReadableError extends Error {},
   PARTNER_WIDE_WRITE_DENIED_MESSAGE: 'partner-wide write denied',
   // The real class shape — the handler branches on `instanceof`, so the mock has
   // to export a constructor or that check throws on `undefined`.
@@ -149,6 +158,9 @@ import {
 import {
   addFeatureLink,
   getConfigPolicy,
+  listAssignments,
+  previewEffectiveConfig,
+  PolicyNotReadableError,
   listFeatureLinks,
   removeFeatureLink,
   updateConfigPolicy,
@@ -400,6 +412,7 @@ describe('configuration policy AI tools', () => {
     enable2faState.value = true;
     canManagePartnerWidePoliciesMock.mockReturnValue(true);
     policyAccessConditionMock.mockReturnValue(undefined);
+    policyReadConditionMock.mockReturnValue(undefined);
     authorizeAssignmentTargetMock.mockResolvedValue({ valid: true });
   });
 
@@ -807,7 +820,9 @@ describe('configuration policy AI tools', () => {
     const output = await tools.get('list_configuration_policies')!.handler({}, partnerAuth);
     const parsed = JSON.parse(output);
 
-    expect(policyAccessConditionMock).toHaveBeenCalledWith(partnerAuth);
+    // The read predicate (W03a), not the write-side reader.
+    expect(policyReadConditionMock).toHaveBeenCalledWith(partnerAuth);
+    expect(policyAccessConditionMock).not.toHaveBeenCalled();
     expect(parsed.showing).toBe(1);
     expect(parsed.policies[0]).toMatchObject({ id: POLICY_ID, orgId: null, partnerId: PARTNER_ID });
     expect(parsed).toMatchObject({ limit: 20, offset: 0, hasMore: false, nextCursor: null });
@@ -829,9 +844,48 @@ describe('configuration policy AI tools', () => {
     const output = await tools.get('configuration_policy_compliance')!.handler({ action: 'summary' }, partnerAuth);
     const parsed = JSON.parse(output);
 
-    expect(policyAccessConditionMock).toHaveBeenCalledWith(partnerAuth);
+    expect(policyReadConditionMock).toHaveBeenCalledWith(partnerAuth);
+    expect(policyAccessConditionMock).not.toHaveBeenCalled();
     expect(parsed.summary).toHaveLength(1);
     expect(parsed.summary[0]).toMatchObject({ policyId: POLICY_ID, policyName: 'All-Orgs Baseline' });
+  });
+
+  it('the AI read tools use the read predicate', async () => {
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    const auth = makeAuth();
+    const policy = { id: POLICY_ID, orgId: null, partnerId: PARTNER_ID, name: 'Baseline' };
+
+    // get_configuration_policy: read access, and only legible assignment rows.
+    vi.mocked(getConfigPolicy).mockResolvedValue(policy as never);
+    vi.mocked(listFeatureLinks).mockResolvedValue([] as never);
+    vi.mocked(listAssignments).mockResolvedValue([
+      { id: 'mine', level: 'organization', targetId: ORG_ID },
+      { id: 'theirs', level: 'organization', targetId: '55555555-5555-4555-8555-555555555555' },
+    ] as never);
+    filterLegibleMock.mockImplementationOnce(async (_a: unknown, _p: unknown, rows: any[]) => rows.filter((r) => r.id === 'mine'));
+    const got = JSON.parse(await tools.get('get_configuration_policy')!.handler({ policyId: POLICY_ID }, auth));
+    expect(getConfigPolicy).toHaveBeenLastCalledWith(POLICY_ID, auth, { access: 'read' });
+    expect(got.assignments.map((a: { id: string }) => a.id)).toEqual(['mine']);
+    // The count stays the honest total (plan D2).
+    expect(got.assignmentCount).toBe(2);
+
+    // configuration_policy_compliance status: read access.
+    vi.mocked(getConfigPolicy).mockResolvedValue(policy as never);
+    vi.mocked(listFeatureLinks).mockResolvedValue([] as never);
+    await tools.get('configuration_policy_compliance')!.handler({ action: 'status', policyId: POLICY_ID }, auth);
+    expect(getConfigPolicy).toHaveBeenLastCalledWith(POLICY_ID, auth, { access: 'read' });
+  });
+
+  it('preview_configuration_change answers not-found for an added policy the caller may not read', async () => {
+    vi.mocked(previewEffectiveConfig).mockRejectedValue(new PolicyNotReadableError());
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    const out = JSON.parse(await tools.get('preview_configuration_change')!.handler({
+      deviceId: DEVICE_ID,
+      add: [{ configPolicyId: POLICY_ID, level: 'device', targetId: DEVICE_ID }],
+    }, makeAuth()));
+    expect(out).toEqual({ error: 'Configuration policy not found or access denied' });
   });
 
   it('apply_configuration_policy denies a partner-level assignment without partner-wide capability', async () => {
@@ -2290,6 +2344,31 @@ describe('AI tools cannot arm vendor updates (#11070)', () => {
     const { POLICY_FEATURE_INLINE_SETTINGS_REFERENCE } = await import('./aiToolsConfigPolicy');
     expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.oem_updates).toMatch(/cannot turn vendor updates on/);
     expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.oem_updates).toContain('windowHours: 1..8');
+  });
+
+  // #12265: Dell cannot honour a blocklist; the assistant must not be able to store one.
+  it('a Dell blocklist is refused on add and update, naming the field; the reference says so', async () => {
+    const dellBlocked = settings({ enabled: false }, { blockedUpdateIds: ['ABC12'] });
+    const added = await link(tools(), { action: 'add', featureType: 'oem_updates', inlineSettings: dellBlocked });
+    expect(added.code).toBe('oem_updates_invalid_settings');
+    expect(added.error).toContain('vendors.dell.blockedUpdateIds');
+    expect(added.error).toContain('Dell does not support blocking individual updates');
+    const map = tools();
+    mockSelectRows([{ featureType: 'oem_updates', inlineSettings: OFF }]);
+    const updated = await link(map, { action: 'update', featureLinkId: 'link-1', inlineSettings: dellBlocked });
+    expect(updated.code).toBe('oem_updates_invalid_settings');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+
+    const { POLICY_FEATURE_INLINE_SETTINGS_REFERENCE, OEM_UPDATES_AI_REFUSAL_MESSAGE } = await import('./aiToolsConfigPolicy');
+    expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.oem_updates).toMatch(/Dell does not support blockedUpdateIds/);
+    expect(OEM_UPDATES_AI_REFUSAL_MESSAGE).toMatch(/block an update \(not on Dell\)/);
+  });
+
+  it('the inline-settings validator for oem_updates is the write schema', async () => {
+    const { VALIDATED_INLINE_SETTINGS } = await import('./aiToolsConfigPolicy');
+    const result = VALIDATED_INLINE_SETTINGS.oem_updates!.schema.safeParse(settings({ enabled: false }, { blockedUpdateIds: ['ABC12'] }));
+    expect(result.success).toBe(false);
   });
 });
 

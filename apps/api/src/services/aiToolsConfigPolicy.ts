@@ -6,6 +6,7 @@ import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignment
 import { eq, and, desc, isNull, isNotNull, inArray, notInArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { mfaGatedToolError } from './aiToolMfaGate';
+import { filterLegibleAssignments } from './configPolicyLegibleAssignments';
 import type { AiTool, PreFilingVerdict } from './aiTools';
 import {
   complianceInlineSettingsSchema,
@@ -15,7 +16,7 @@ import {
   systemProtectionInlineSettingsSchema,
   containmentInlineSettingsSchema,
   wakeOnLanInlineSettingsSchema,
-  oemUpdatesInlineSettingsSchema,
+  oemUpdatesInlineSettingsWriteSchema,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { checkSecurityAgentsLinkWrite, SecurityAgentsLinkWriteError } from './securityAgents/securityAgentsLinkWrite';
@@ -61,6 +62,8 @@ import {
   authorizeAssignmentTarget,
   canManagePartnerWidePolicies,
   policyAccessCondition,
+  policyReadCondition,
+  PolicyNotReadableError,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   PolicyHasChildrenError,
   type EffectiveConfiguration,
@@ -69,6 +72,7 @@ import {
   getConfigPolicyComplianceRuleInfo,
   getConfigPolicyComplianceStats,
   buildComplianceSummary,
+  complianceSiteCondition,
 } from '../routes/policyManagement/helpers';
 
 // Config-policy mutations reached through AI or MCP match the HTTP
@@ -126,7 +130,7 @@ export const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (r
   security_agents: { schema: securityAgentsInlineSettingsSchema, normalize: true },
   // #11070: strict. Arming, featurePolicyId and closed gates are refused
   // earlier, by oemUpdatesToolRefusal.
-  oem_updates: { schema: oemUpdatesInlineSettingsSchema, normalize: true },
+  oem_updates: { schema: oemUpdatesInlineSettingsWriteSchema, normalize: true },
   // #10838: strict; configureSettings must be false until writes ship.
   wake_on_lan: { schema: wakeOnLanInlineSettingsSchema, normalize: true },
 };
@@ -162,7 +166,7 @@ export const OEM_UPDATES_AI_REFUSAL_MESSAGE =
   + 'reboot, unblocking an update, assigning or activating a policy that has them on all install vendor drivers, '
   + 'firmware or BIOS updates and can reboot devices, which needs a person with the devices.execute permission and '
   + "MFA. Ask them to make this change from the policy's Vendor updates tab. The assistant can still turn vendor "
-  + 'updates off, remove a category or block an update.';
+  + 'updates off, remove a category or block an update (not on Dell).';
 
 const OEM_UPDATES_AI_REFUSAL = JSON.stringify({ error: OEM_UPDATES_AI_REFUSAL_MESSAGE, code: 'oem_updates_execute_required' });
 
@@ -350,7 +354,7 @@ export const POLICY_FEATURE_INLINE_SETTINGS_REFERENCE: Readonly<Record<ConfigFea
   time_sync: `{ enforceNtp: false, ntpServers: [], pollIntervalMinutes: 60, timezone: { expected: 'site', pinnedTimezone: null, autoFix: false } } — inline-only domain-aware Windows time settings. Up to 5 NTP hosts, no flags or ports; at least one host when enforceNtp is true. pollIntervalMinutes is an integer in 15..1440. A pinned IANA timezone must have a Windows mapping and overrides the site timezone. Workgroup, Entra-only and forest-root PDC devices use manual peers; members, DCs and other PDCs use the domain hierarchy. Unknown roles are skipped. GPO wins. autoFix defaults to false.`,
   workload_inventory: `{ enabled: false, dockerEnabled: true, podmanEnabled: true, hypervEnabled: true, proxmoxEnabled: true, intervalMinutes: 60 } — inline-only workload inventory settings. enabled defaults to false (opt-in): runtimes are always detected, but containers and VMs are listed only when enabled is true and the runtime's own flag is true. Turning a runtime off deletes its listed workloads. intervalMinutes is an integer in 15..1440. Collection is read-only.`,
   security_agents: `{ version: 1, agents: [{ vendor: "huntress"|"sentinelone"|"controld"|"nextdns"|"bitdefender", enabled: boolean, platforms?: ["windows"|"macos"|"linux"] }] } — inline-only third-party security agent selection. Strict: no keys, tokens or other fields (per-customer keys come from the vendor integration). Each vendor at most once; agents: [] opts the assigned devices out. No featurePolicyId. This tool cannot enable a vendor (enabling installs software, which needs a person with devices.execute); it can only list vendors as disabled.`,
-  oem_updates: `{ version: 1, enabled: false, schedule: { weekOfMonth: "first"|"second"|"third"|"fourth"|"last", dayOfWeek: "sun".."sat", windowStart: "HH:MM", windowHours: 1..8 }, catchUpNights: 0..14, reboot: "overnight"|"never", vendors: { dell?|surface?|hp?|lenovo?: { enabled: boolean, categories: { bios?, firmware?, driver?, application?: boolean }, blockedUpdateIds: [] (at most 200 unique IDs) } } } — inline-only vendor (Dell, Surface, HP, Lenovo) update schedule. Strict; every field but blockedUpdateIds is required. An absent vendor or category is off. A category whose rollout gate is still closed cannot be set true. No featurePolicyId. This tool cannot turn vendor updates on (on, a new category, overnight reboot, unblocking an update, assigning or activating a policy that has them on all need a person with devices.execute); it can turn them off, remove a category or block an update.`,
+  oem_updates: `{ version: 1, enabled: false, schedule: { weekOfMonth: "first"|"second"|"third"|"fourth"|"last", dayOfWeek: "sun".."sat", windowStart: "HH:MM", windowHours: 1..8 }, catchUpNights: 0..14, reboot: "overnight"|"never", vendors: { dell?|surface?|hp?|lenovo?: { enabled: boolean, categories: { bios?, firmware?, driver?, application?: boolean }, blockedUpdateIds: [] (at most 200 unique IDs; Dell does not support blockedUpdateIds, so keep it [] for dell) } } } — inline-only vendor (Dell, Surface, HP, Lenovo) update schedule. Strict; every field but blockedUpdateIds is required. An absent vendor or category is off. A category whose rollout gate is still closed cannot be set true. No featurePolicyId. This tool cannot turn vendor updates on (on, a new category, overnight reboot, unblocking an update, assigning or activating a policy that has them on all need a person with devices.execute); it can turn them off, remove a category or block an update (not on Dell).`,
   wake_on_lan: `{ configureSettings: false, buttonMode: "verified"|"always" } — strict inline-only Wake-on-LAN setting. buttonMode "always" shows the Wake button on every offline device; "verified" shows it only where wake readiness is proven. configureSettings must be false (Breeze does not change WOL settings yet). No featurePolicyId.`,
   containment: `{ version: 1, extraAllow: [], defaultTtlHours: 72, deadManMinutes: 0, remoteRelay: true, requireSignedReleaseToken: false } — strict inline-only containment configuration (not consumed yet); version is required, other fields default as shown. No featurePolicyId. defaultTtlHours: integer 1..720; deadManMinutes: 0 or integer 15..1440. extraAllow: at most 32 strict { host? (DNS name), cidr?, proto: "tcp"|"udp"|"udp+tcp", ports: 1..16 unique integers 1..65535, label: trimmed 1..100 characters }; exactly one of host/cidr, no wildcard or localhost hosts, loopback networks, IPv4 prefixes shorter than /8, or IPv6 prefixes shorter than /32.`,
   system_protection: `{ beforePatching: true, beforeScripts: false, beforeSoftwareInstall: false, labelPrefix: 'Breeze' } — inline-only Windows System Restore checkpoint toggles. Strict: unknown keys are rejected, so there is no onFailure/abort setting. beforePatching defaults to true (matches existing agent behaviour); the other two default to false (opt-in). labelPrefix is 1..64 characters with no control characters. A checkpoint is best-effort and not a backup: Windows may throttle or later remove it.`,
@@ -485,10 +489,11 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const { limit, offset, fingerprint } = page;
 
       const conditions: SQL[] = [];
-      // Dual-axis visibility (#1724): a partner-scoped caller must also see
-      // partner-OWNED policies (org_id NULL), which auth.orgCondition alone
-      // excludes. policyAccessCondition is the same reader the HTTP routes use.
-      const oc = policyAccessCondition(auth);
+      // Dual-axis visibility (#1724), under the read rule (W03a): the
+      // MSP-managed policies that apply to one of the caller's orgs, and every
+      // one of them for a full-access partner. policyReadCondition is the same
+      // reader GET /configuration-policies uses.
+      const oc = policyReadCondition(auth);
       if (oc) conditions.push(oc);
       if (typeof input.status === 'string') {
         conditions.push(eq(configurationPolicies.status, input.status as 'active' | 'inactive' | 'archived'));
@@ -608,7 +613,16 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         remove: input.remove as string[] | undefined,
       };
 
-      const result = await previewEffectiveConfig(deviceId, changes, auth);
+      let result;
+      try {
+        result = await previewEffectiveConfig(deviceId, changes, auth);
+      } catch (err) {
+        // An added policy the caller may not read (W03a).
+        if (err instanceof PolicyNotReadableError) {
+          return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+        }
+        throw err;
+      }
       if (!result) return JSON.stringify({ error: 'Device not found or access denied' });
       return JSON.stringify(result);
     }),
@@ -823,7 +837,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('get_configuration_policy', async (input, auth) => {
       const policyId = input.policyId as string;
-      const policy = await getConfigPolicy(policyId, auth);
+      // The read predicate (W03a), as GET /configuration-policies/:id uses.
+      const policy = await getConfigPolicy(policyId, auth, { access: 'read' });
       if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
 
       const featureLinks = await listFeatureLinks(policyId);
@@ -832,8 +847,11 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       return JSON.stringify({
         policy,
         featureLinks,
+        // The honest total (plan D2). The rows go through the same filter as
+        // GET /:id/assignments: the caller's organizations, then its site and
+        // device ceiling.
         assignmentCount: assignments.length,
-        assignments,
+        assignments: await filterLegibleAssignments(auth, policy, assignments),
       });
     }),
   });
@@ -1027,10 +1045,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
 
       if (action === 'summary') {
-        // Get all config policies the caller can see — org-owned AND partner-wide
-        // (org_id NULL) for partner-scoped callers, via the dual-axis reader.
+        // Get all config policies the caller can see — org-owned AND the
+        // partner-wide (org_id NULL) ones the read rule admits (W03a).
         const conditions: SQL[] = [];
-        const oc = policyAccessCondition(auth);
+        const oc = policyReadCondition(auth);
         if (oc) conditions.push(oc);
 
         const policies = await db
@@ -1094,8 +1112,8 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         if (!input.policyId) return JSON.stringify({ error: 'policyId is required for status' });
         const policyId = input.policyId as string;
 
-        // Verify access to this policy
-        const policy = await getConfigPolicy(policyId, auth);
+        // Verify access to this policy (a read: the read predicate, W03a)
+        const policy = await getConfigPolicy(policyId, auth, { access: 'read' });
         if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
 
         // Get feature links for this policy
@@ -1128,7 +1146,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
               // (status + `details`) and the tool takes no deviceId, so the
               // declarative gate never runs. `undefined` for an unrestricted
               // caller — no narrowing.
-              deviceScopeCondition(auth, automationPolicyCompliance.deviceId)
+              deviceScopeCondition(auth, automationPolicyCompliance.deviceId),
+              // Site axis, independent of the device pin: a site-restricted
+              // tech reads only its own sites' device rows, as `summary` counts.
+              complianceSiteCondition(auth.allowedSiteIds)
             )
           )
           .limit(limit);

@@ -1,50 +1,17 @@
 {
   "configurationPolicies": {
     "assignmentsTab": {
-      "deviceGroup": "Device Group",
       "windows": "Windows",
       "macOS": "macOS",
       "linux": "Linux",
-      "failedToFetchAssignments": "Failed to fetch assignments",
-      "thisPolicyHasNoOrganizationSoAssignment": "This policy has no organization, so assignment targets cannot be listed.",
-      "failedToAddAssignment": "Failed to add assignment",
-      "failedToRemoveAssignment": "Failed to remove assignment",
-      "assignmentAdded": "Assignment added",
-      "assignmentRemoved": "Assignment removed",
       "roleFilter": "Role Filter",
       "optional": "(optional)",
       "noRestrictionAppliesToAllDeviceRoles": "No restriction - applies to all device roles",
       "oSFilter": "OS Filter",
       "optional2": "(optional)",
       "noRestrictionAppliesToAllOperatingSystems": "No restriction - applies to all operating systems",
-      "priority": "Priority",
-      "currentAssignments": "Current Assignments",
-      "noAssignmentsYetAssignThisPolicyTo": "No assignments yet. Assign this policy to targets above.",
-      "level": "Level",
-      "target": "Target",
-      "priority2": "Priority",
-      "filters": "Filters",
-      "allOrganizations": "All Organizations",
       "allDevices": "All devices",
-      "addAssignment": "Add Assignment",
-      "level2": "Level",
-      "target2": "Target",
-      "target3": "Target",
-      "search": "Search...",
-      "loading": "Loading...",
-      "restrictThisAssignmentToDevicesWithSpecific": "Restrict this assignment to devices with specific roles. Leave empty to apply to all roles.",
-      "lowerValuesOverrideHigherOnesWhenMultiple": "Lower values override higher ones when multiple policies target the same device at the same level.",
-      "partner": "partner",
-      "scopeOfTheAssignmentMoreSpecificLevels": "Scope of the assignment. More specific levels (device) take precedence over broader ones (organization).",
-      "organization": "organization",
-      "anOrganizationPolicyAlwaysTargetsItsOwn": "An organization policy always targets its own organization. Pick a narrower level (site, device group, device) to scope it further.",
-      "thisOrganization": "This organization",
-      "selectATarget": "Select a target...",
-      "noTargetsAvailable": "No targets available",
-      "noMatchesFound": "No matches found",
-      "assigning": "Assigning...",
-      "assign": "Assign",
-      "failedToLoadTargetsHttp": "Failed to load targets (HTTP {{status}})"
+      "restrictThisAssignmentToDevicesWithSpecific": "Restrict this assignment to devices with specific roles. Leave empty to apply to all roles."
     },
     "breezeDefaultsPage": {
       "receivedAnInvalidResponseFromTheServer": "Received an invalid response from the server.",
@@ -72,74 +39,38 @@
       "notCollectedProbeLimit": "Not collected (probe limit)",
       "notCollectedProbeLimitHint": "This organization's compliance probe list is full, so at least one check here is not collected. It is not evaluated, alerted on or remediated until the list has room."
     },
-    "configPolicyCreatePage": {
-      "selectAnOrganizationForThisPolicy": "Select an organization for this policy.",
-      "failedToCreatePolicy": "Failed to create policy",
-      "configurationPolicies": "Configuration Policies",
-      "newPolicy": "New Policy",
-      "newConfigurationPolicy": "New Configuration Policy",
-      "howWouldYouLikeToConfigureThis": "How would you like to configure this policy?",
-      "configureNew": "Configure New",
-      "startFreshWithCustomSettingsForEach": "Start fresh with custom settings for each feature",
-      "linkToExisting": "Link to Existing",
-      "useAnotherPolicyAsTheMasterBaseline": "Use another policy as the master baseline",
-      "newConfigurationPolicy2": "New Configuration Policy",
-      "masterPolicy": "Master Policy",
-      "selectTheConfigurationPolicyToUseAs": "Select the configuration policy to use as the baseline. You can override individual settings per feature.",
-      "policyDetails": "Policy Details",
-      "eGStandardWorkstationPolicy": "e.g. Standard Workstation Policy",
-      "optionalDescriptionOfWhatThisPolicyConfigures": "Optional description of what this policy configures",
-      "scope": "Scope",
-      "partnerLibrary": "Partner library",
-      "assignToOrganizationsAfterCreating": "(assign to organizations after creating)",
-      "aSpecificOrganization": "A specific organization",
-      "selectAnOrganization": "Select an organization",
-      "createAReusablePolicyOwnedByYour": "Create a reusable policy owned by your partner. It applies to no organizations until you assign it on the policy's Organizations tab. Backup settings aren't available on partner-owned policies.",
-      "new": "new",
-      "linked": "linked",
-      "createAPolicyLinkedToAnExisting": "Create a policy linked to an existing master.",
-      "createANewConfigurationPolicyToBundle": "Create a new configuration policy to bundle feature settings.",
-      "name": "name",
-      "description": "description",
-      "status": "status",
-      "partner": "partner",
-      "organization": "organization",
-      "policyOwnerOrgSelect": "policy-owner-org-select",
-      "creating": "Creating...",
-      "createPolicy": "Create Policy",
-      "policyCreated": "Policy created"
-    },
     "configPolicyDetailPage": {
       "archived": "Archived",
       "failedToFetchPolicy": "Failed to fetch policy",
       "failedToFetchFeatures": "Failed to fetch features",
       "failedToUpdatePolicy": "Failed to update policy",
-      "overview": "Overview",
       "complianceStatus": "Compliance Status",
-      "assignments": "Assignments",
       "loadingPolicy": "Loading policy...",
       "backToList": "Back to list",
       "configurationPolicies": "Configuration Policies",
       "policyDetails": "Policy Details",
-      "archived2": "Archived",
-      "inheritingFrom": "Inheriting from",
-      "overrideIndividualTabsToCustomizeSettings": "— Override individual tabs to customize settings",
+      "inheritingFrom": "Based on",
       "managedByYourMsp": "Managed by your MSP",
-      "inheritedByPolicies_one": "Inherited by {{count}} policy",
-      "inheritedByPolicies_other": "Inherited by {{count}} policies",
-      "isnTAvailableOnPartnerWidePolicies": "isn't available on partner-wide policies",
-      "configureThisFeatureOnAnOrganizationScoped": "Configure this feature on an organization-scoped policy.",
+      "inheritedByPolicies_one": "Parent of {{count}} policy",
+      "inheritedByPolicies_other": "Parent of {{count}} policies",
       "thisPolicyStillCarriesAnExisting": "This policy still carries an existing",
       "configurationThatWillNeverBeApplied": " configuration that will never be applied.",
       "policy": "Policy",
-      "overview2": "overview",
       "saving": "Saving...",
       "saveChanges": "Save Changes",
-      "parentPolicy": "parent policy",
       "removing": "Removing...",
       "removeConfiguration": "Remove configuration",
-      "complianceStatus2": "compliance_status",
-      "assignments2": "assignments"
+      "appliesToDrawerTitle": "Applies to",
+      "detailsSaved": "Policy details saved",
+      "refreshAppliesToFailed": "Couldn't refresh where this policy applies. Reload the page to see it.",
+      "appliesToCloseBlocked": "Apply or discard your changes first.",
+      "gatedFeatureUnavailable": "{{feature}} is unavailable on this policy",
+      "gatedFeatureReason": "{{feature}} works with one organization's own accounts and services, so only a policy managed by that organization can set it. This policy is managed by your MSP.",
+      "unsavedLeaveConfirm": "You have unsaved changes on this policy. Leave and discard them?",
+      "discardChangesTitle": "Discard unsaved changes?",
+      "discardChangesMessage": "Your changes to {{feature}} are not saved. Discard them, or stay and save them first.",
+      "discardChanges": "Discard",
+      "stayOnFeature": "Stay"
     },
     "configPolicyList": {
       "archived": "Archived",
@@ -153,20 +84,24 @@
       "archived2": "Archived",
       "features": "Features",
       "noPoliciesFoundTryAdjustingYourSearch": "No policies found. Try adjusting your search.",
-      "noPoliciesYet": "No configuration policies yet. Create one, then assign it to organizations, sites or devices.",
-      "partnerWidePolicyAppliesToEveryOrganization": "Partner-wide policy — applies to every organization",
-      "allOrgs": "Partner-wide",
+      "noPoliciesYet": "No configuration policies yet. Create one, then choose where it applies.",
       "page": "Page",
       "of2": "of",
       "itsOwningOrganization": "its owning organization",
-      "organizationPolicyTitle": "Organization policy — applies only to {{organization}}",
-      "summary": "{{filtered}} of {{total}} policies",
-      "partnerPolicy": "Partner",
-      "partnerPolicyAppliesOnlyWhereAssigned": "Partner policy — applies only where it is assigned. Assign it to all organizations to make it partner-wide."
+      "rangeSummary": "{{from}}-{{to}} of {{total}} policies",
+      "organizationFilterLabel": "Organization",
+      "allOrganizations": "All organizations",
+      "notAppliedFilterLabel": "Not applied",
+      "appliesToHeader": "Applies to",
+      "managedByOrganization": "Managed by {{organization}}",
+      "notAppliedChip": "Not applied",
+      "inUseChip_one": "In use through {{count}} policy",
+      "inUseChip_other": "In use through {{count}} policies"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Failed to fetch configuration policies",
       "failedToDeletePolicy": "Failed to delete policy",
+      "orgFilterForbidden": "You cannot use this organization as a filter. Choose another organization.",
       "deleteBlockedByChildren": "Delete the policies that inherit from this one first:",
       "loadingConfigurationPolicies": "Loading configuration policies...",
       "tryAgain": "Try again",
@@ -180,31 +115,6 @@
       "thisWillAlsoRemoveAllFeatureLinks": "? This will also remove all feature links and assignments. This action cannot be undone.",
       "delete": "delete",
       "deleting": "Deleting..."
-    },
-    "organizationScopePanel": {
-      "failedToLoadAssignments": "Failed to load assignments",
-      "failedToLoadOrganizations": "Failed to load organizations",
-      "failedToRemove": "Failed to remove",
-      "failedToRemove2": "Failed to remove",
-      "failedToAssignAllOrgs": "Failed to assign all orgs",
-      "failedToRemove3": "Failed to remove",
-      "failedToNarrow": "Failed to narrow",
-      "failedToAssignOrg": "Failed to assign org",
-      "organizations": "Organizations",
-      "thisPartnerLibraryPolicyAppliesOnlyTo": "This partner library policy applies only to the organizations you select.",
-      "filtersApplyOnAssign": "These filters apply when you assign below. Empty means every role and OS. To change filters on an assignment, turn it off and on again.",
-      "allOrganizationsPartnerWide": "All organizations (partner-wide)",
-      "allOrganizationsPartnerWide2": "All organizations (partner-wide)",
-      "assigned": "Assigned",
-      "searchOrganizations": "Search organizations...",
-      "searching": "Searching…",
-      "noOrganizationsMatchYourSearch": "No organizations match your search.",
-      "appliedToAllOrganizationsUncheckAllOrganizations": "Applied to all organizations. Uncheck “All organizations” to pick a subset.",
-      "polite": "polite",
-      "loading": "Loading…",
-      "loadMoreOrganizations": "Load more organizations",
-      "appliedToAllOrgs": "Policy now applies to all organizations",
-      "removedFromAllOrgs": "Policy no longer applies to all organizations"
     },
     "featureTabs": {
       "automationTab": {
@@ -692,15 +602,25 @@
         "providerLimit": "{{total}} of {{max}} additional providers"
       },
       "featureTabShell": {
-        "override": "Override",
-        "revertToParent": "Revert to Parent",
+        "unlockAction": "Change for this policy",
+        "unlockedHint": "Changing for this policy. Nothing is saved until you Save.",
+        "revertToParent": "Reset to parent",
         "saving": "Saving...",
         "notSaved": "Not saved: {{reason}}",
         "saveBlocked": "Not saved. Fix the highlighted problem and try again.",
-        "revertConfirmTitle": "Revert to parent policy?",
-        "revertConfirmMessage": "This deletes the {{feature}} override on this policy. Its settings are lost and the parent policy's settings apply to every device using this policy. This cannot be undone.",
+        "revertConfirmTitle": "Reset to the parent policy?",
+        "revertConfirmMessage": "This deletes this policy's own {{feature}} settings, and the parent policy's settings apply instead. This cannot be undone.",
         "removeConfirmTitle": "Remove this configuration?",
-        "removeConfirmMessage": "This deletes the {{feature}} configuration from this policy. Its settings are lost and the feature stops being applied to every device using this policy. This cannot be undone."
+        "removeConfirmMessage": "This deletes the {{feature}} settings from this policy, and the feature goes back to Not set. This cannot be undone.",
+        "badgeSavedNotDeployed": "Saved (not deployed)",
+        "saveWithReach": "Save · {{reach}}",
+        "removeImpactReaches": "This policy reaches {{devices}}: {{feature}} is no longer set on them by this policy.",
+        "removeImpactInUse": "Policies based on this one stop inheriting {{feature}} from it, unless they set their own: {{policies}}, {{devices}}.",
+        "resetImpactReaches": "This policy reaches {{devices}}: they get the parent policy's {{feature}} settings instead.",
+        "resetImpactInUse": "Policies based on this one get the parent policy's {{feature}} settings through it instead, unless they set their own: {{policies}}, {{devices}}.",
+        "impactNoDeviceNow": "No device changes now: this policy is not active and no policy is based on it.",
+        "fromParentPolicy": "From {{policy}}",
+        "openParent": "Open"
       },
       "helperTab": {
         "deployBreezeAssistToDevices": "Deploy Breeze Assist to devices",
@@ -865,7 +785,6 @@
         "failedToLoadUpdateRings": "Failed to load update rings",
         "patchSettingsSaved": "Patch settings saved",
         "patchSettingsRemoved": "Patch settings removed",
-        "patchSettingsOverridden": "Patch settings overridden",
         "revertedToInheritedPatchSettings": "Reverted to inherited patch settings",
         "approvalRing": "Approval Ring",
         "selectWhichUpdateRingGovernsPatchApprovals": "Select which update ring governs patch approvals for this policy. Leave empty for manual-only approvals.",
@@ -911,6 +830,7 @@
         "manageWindowsUpdateExclusivelyThroughBreeze": "Manage Windows Update exclusively through Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Suppresses the endpoint's native Windows Update automatic-install channel so updates only flow through Breeze's approval rings — preventing unexpected reboots and patches outside your schedule. Windows-only; Breeze's own scan/approve/install path is unaffected. Reverts cleanly when disabled (a pre-existing admin Group Policy is left untouched).",
         "times": "×",
+        "discardRingChangesConfirm": "You have unsaved changes to this ring. Close and discard them?",
         "os": "os",
         "thirdParty": "third_party",
         "apps": "apps",
@@ -1388,6 +1308,8 @@
         "blockedLabel": "Blocked updates",
         "blockedPlaceholder": "Update IDs, separated by commas",
         "blockedHelp": "Breeze never installs an update listed here.",
+        "blockedUnsupported": "{{vendor}} does not support blocking individual updates. To stop its updates, turn off the category or the vendor.",
+        "blockedStoredUnsupported": "This policy blocks {{vendor}} updates {{ids}}, which {{vendor}} does not support, so no {{vendor}} updates run under it. Saving removes the blocked updates.",
         "executeRequired": "Turning on vendor updates, adding a category, switching on overnight restarts or unblocking an update needs the devices.execute permission and MFA. Ask someone who has it to save this change.",
         "gateClosedRefusal": "One of the selected update categories is not available yet, so the policy was not saved. Clear it and save again.",
         "invalid": "Check the schedule: the window is 1 to 8 whole hours, catch-up is 0 to 14 nights, and the start time is HH:MM.",
@@ -1450,19 +1372,333 @@
         "body": "These conditions exist both as an attached monitor and as a legacy rule or watch: {{names}}"
       }
     },
-    "partnerGroupAssignment": {
-      "title": "Device groups (all orgs)",
-      "description": "Target a partner-wide device group. A group assignment applies at device-group level, so it takes precedence over organization- and site-level assignments of other policies.",
-      "selectGroup": "Select a device group",
-      "assign": "Assign",
-      "remove": "Remove",
-      "assigned": "Device group assigned",
-      "removed": "Device group assignment removed",
-      "failedToLoad": "Failed to load device groups",
-      "failedToAssign": "Failed to assign device group",
-      "failedToRemove": "Failed to remove device group assignment",
-      "empty": "No partner-wide device groups yet. Create one under Device Groups → All orgs.",
-      "loading": "Loading device groups…"
+    "featureNames": {
+      "patch": {
+        "label": "Patches"
+      },
+      "monitors": {
+        "label": "Monitors"
+      },
+      "backup": {
+        "label": "Backup"
+      },
+      "security": {
+        "label": "Security"
+      },
+      "maintenance": {
+        "label": "Maintenance"
+      },
+      "compliance": {
+        "label": "Compliance"
+      },
+      "automation": {
+        "label": "Automations"
+      },
+      "event_log": {
+        "label": "Event Logs"
+      },
+      "software_policy": {
+        "label": "Software Policy"
+      },
+      "sensitive_data": {
+        "label": "Data Discovery"
+      },
+      "peripheral_control": {
+        "label": "Peripheral Control"
+      },
+      "warranty": {
+        "label": "Warranty"
+      },
+      "helper": {
+        "label": "Breeze Assist"
+      },
+      "remote_access": {
+        "label": "Remote Access"
+      },
+      "pam": {
+        "label": "Privileged Access"
+      },
+      "vulnerability": {
+        "label": "Vulnerability Scanning"
+      },
+      "onedrive_helper": {
+        "label": "OneDrive Helper"
+      },
+      "device_lifecycle": {
+        "label": "Device Lifecycle"
+      },
+      "hardware_monitoring": {
+        "label": "Hardware Monitoring"
+      }
+    },
+    "levelNames": {
+      "partner": {
+        "label": "All organizations"
+      },
+      "organization": {
+        "label": "Organization"
+      },
+      "site": {
+        "label": "Site"
+      },
+      "device_group": {
+        "label": "Device group"
+      },
+      "device": {
+        "label": "Device"
+      },
+      "default": {
+        "label": "Breeze Defaults"
+      }
+    },
+    "appliesToStrip": {
+      "heading": "Applies to",
+      "unknownState": "Unknown",
+      "notAppliedWarning": "Not applied to any device. This policy applies to nothing until you choose where it applies.",
+      "notAppliedNeutral": "Not applied yet",
+      "inUseCount_one": "In use through {{count}} policy",
+      "inUseCount_other": "In use through {{count}} policies",
+      "moreTargets_one": "{{count}} more target",
+      "moreTargets_other": "{{count}} more targets",
+      "assignButton": "Assign"
+    },
+    "appliesToPanel": {
+      "loadFailed": "Could not load where this policy applies",
+      "applyFailed": "Could not apply the changes",
+      "applied": "Changes applied",
+      "loading": "Loading where this policy applies",
+      "retry": "Try again",
+      "unnamedTarget": "Target {{id}}",
+      "rowStateAdded": "New",
+      "rowStateChanged": "Changed",
+      "rowStateRemoved": "Will be removed",
+      "undoRemove": "Undo",
+      "removeTarget": "Remove {{name}}",
+      "advanced": "Advanced",
+      "priorityLabel": "Priority",
+      "priorityHint": "At the same level, the lower number wins.",
+      "entryRefused": "This change was refused.",
+      "conflictFallback": "Where this policy applies changed since you opened it. Nothing was applied.",
+      "lockedOrganization": "Managed by {{organization}}. It applies within that organization only.",
+      "scopeLegend": "Applies to",
+      "scopeAllOrganizations": "All organizations",
+      "scopeAllOrganizationsHint": "Every organization your MSP manages, including ones added later.",
+      "scopeSpecificTargets": "Specific targets",
+      "scopeSpecificTargetsHint": "Only the organizations, sites, device groups and devices listed below.",
+      "targetsHeading": "Targets",
+      "noTargets": "No targets yet. Add one below.",
+      "hiddenRows_one": "{{count}} more target applies that you do not have access to. Apply leaves it as it is.",
+      "hiddenRows_other": "{{count}} more targets apply that you do not have access to. Apply leaves them as they are.",
+      "addTargetHeading": "Add target",
+      "precedenceLegend": "Most specific wins, per feature: Device › Device group › Site › Organization › All organizations. A closer policy replaces the whole feature; it does not merge.",
+      "reload": "Reload",
+      "zeroMatching": "0 matching devices. After this change the policy reaches no device you can see.",
+      "counting": "Counting devices…",
+      "countUnavailable": "Could not count the devices this change affects.",
+      "estimateNote": "Estimate: too many targets to count exactly.",
+      "discard": "Discard changes",
+      "discardConfirmQuestion": "Discard the staged changes?",
+      "discardConfirm": "Discard",
+      "keepEditing": "Keep editing",
+      "applying": "Applying…",
+      "applyButton": "Apply",
+      "applyWithDelta_one": "Apply · adds {{added}} device, removes {{removed}}",
+      "applyWithDelta_other": "Apply · adds {{added}} devices, removes {{removed}}",
+      "applyWithEstimate_one": "Apply · adds about {{added}} device, removes about {{removed}}",
+      "applyWithEstimate_other": "Apply · adds about {{added}} devices, removes about {{removed}}"
+    },
+    "targetPicker": {
+      "levelGroupLabel": "Target level",
+      "searchPlaceholder": "Search",
+      "loading": "Loading…",
+      "loadFailed": "Could not load targets",
+      "noResults": "No matches",
+      "alreadyListed": "Already listed",
+      "changeOrganization": "Change organization",
+      "chooseOrganizationFirst": "Choose the organization first.",
+      "lockedOrganizationHint": "An org-managed policy applies only within its own organization.",
+      "mspGroupsHeading": "Device groups across organizations"
+    },
+    "reachCount": {
+      "devices_one": "{{count}} device",
+      "devices_other": "{{count}} devices",
+      "atLeastDevices_one": "At least {{count}} device",
+      "atLeastDevices_other": "At least {{count}} devices",
+      "noneVisible": "No devices you can see"
+    },
+    "featureStates": {
+      "set_here": {
+        "label": "Set here"
+      },
+      "from_parent": {
+        "label": "From parent"
+      },
+      "changed_from_parent": {
+        "label": "Changed here"
+      },
+      "not_set": {
+        "label": "Not set"
+      },
+      "unavailable": {
+        "label": "Unavailable on this policy"
+      }
+    },
+    "featureRail": {
+      "navLabel": "Policy features",
+      "selectLabel": "Policy feature",
+      "groups": {
+        "updates_software": {
+          "label": "Updates & software"
+        },
+        "monitoring": {
+          "label": "Monitoring"
+        },
+        "security": {
+          "label": "Security"
+        },
+        "backup": {
+          "label": "Backup"
+        },
+        "access_end_user": {
+          "label": "Access & end user"
+        },
+        "lifecycle": {
+          "label": "Lifecycle"
+        },
+        "results": {
+          "label": "Results"
+        }
+      },
+      "statusOutranked_one": "{{state}} · Outranked on {{count}} device",
+      "statusOutranked_other": "{{state}} · Outranked on {{count}} devices"
+    },
+    "policyHeader": {
+      "editDetails": "Edit details",
+      "managedByOrganization": "Managed by {{organization}}",
+      "readOnly": {
+        "msp_managed_org_user": {
+          "message": "View only. Your MSP manages this policy, so only your MSP can change it."
+        },
+        "msp_managed_limited_access": {
+          "message": "View only. Your MSP manages this policy, and your access covers only some organizations."
+        },
+        "site_restricted": {
+          "message": "View only. Your access is limited to some sites, and this policy reaches beyond them."
+        },
+        "no_write_permission": {
+          "message": "View only. Your role can view configuration policies but not change them."
+        },
+        "not_editable": {
+          "message": "View only. You can view this policy but not change it."
+        },
+        "unexplained": {
+          "message": "View only."
+        }
+      }
+    },
+    "reachLine": {
+      "deviceCount_one": "{{count}} device",
+      "deviceCount_other": "{{count}} devices",
+      "atLeastDeviceCount_one": "at least {{count}} device",
+      "atLeastDeviceCount_other": "at least {{count}} devices",
+      "noVisibleDevices": "no devices you can see",
+      "policyCount_one": "{{count}} policy",
+      "policyCount_other": "{{count}} policies",
+      "reaches": "reaches {{devices}}",
+      "inUseThrough": "in use through {{policies}} · {{devices}}"
+    },
+    "policyStateActions": {
+      "activateAction": "Activate",
+      "activateWithReach": "Activate · {{reach}}",
+      "deactivateAction": "Deactivate",
+      "archiveAction": "Archive",
+      "restoreAction": "Restore",
+      "restoreHint": "Restores the policy as Inactive.",
+      "deactivateConfirmTitle": "Deactivate this policy?",
+      "deactivateConfirmMessage": "It stops applying its settings to the devices it targets directly. You can activate it again later.",
+      "deactivateImpactDirect": "It targets {{devices}} directly: they stop receiving its settings.",
+      "deactivateImpactNoneVisible": "It targets no devices you can see directly.",
+      "deactivateImpactChildren": "Policies based on it keep its settings: {{policies}}, {{devices}}.",
+      "activateExecuteRequired": "Activating this policy turns on vendor updates on the devices it applies to. That needs the devices.execute permission and MFA. Ask someone who has it to activate this policy.",
+      "changeFailed": "The policy state was not changed.",
+      "activatedToast": "Policy activated",
+      "deactivatedToast": "Policy deactivated",
+      "archivedToast": "Policy archived",
+      "restoredToast": "Policy restored as Inactive"
+    },
+    "policyCreate": {
+      "title": "New configuration policy",
+      "startsInactive": "A new policy starts inactive and reaches no device until you activate it. You can set every feature before anything is saved.",
+      "namePlaceholder": "e.g. Standard workstations",
+      "descriptionPlaceholder": "Optional: what this policy is for",
+      "nameRequired": "Name the policy before saving.",
+      "organizationRequired": "Choose the organization that manages this policy.",
+      "createFailed": "The policy could not be created.",
+      "invalidParent": "That policy cannot be the parent of this one.",
+      "managedByLabel": "Managed by",
+      "managedByMspOption": "Your MSP (can apply to any of your organizations)",
+      "chooseOrganizationOption": "Choose an organization",
+      "managedByOrganization": "Managed by {{organization}}",
+      "managedByOwnOrgFallback": "Managed by your organization",
+      "mspTrade": "An MSP-managed policy cannot link one customer's own software, security or backup items or a specific backup destination, and cannot carry OneDrive Helper.",
+      "mspTradePicker": "This policy is MSP-managed: it can link only items shared across your organizations, not one customer's own.",
+      "orgManagedHint": "Managed by one organization: it applies only to that organization's devices and can link that organization's own items.",
+      "startFromLegend": "Start from",
+      "startFromBlank": "Blank",
+      "startFromParent": "Based on a parent policy",
+      "parentNeedsOrganization": "Choose the organization first. The parents it can use are listed for it.",
+      "parentHint": "Features this policy does not set come from the parent.",
+      "parentReadFailed": "The parent policy's features could not be read, so the feature list does not show what it sets. Saving still bases this policy on it.",
+      "fixedAtFirstSave": "Managed by and Based on are fixed when the policy is first saved.",
+      "fixedNote": "Managed by and Based on were fixed when this policy was first saved.",
+      "firstSaveFailed": "The policy was saved as Inactive and applies to no device, but {{feature}} was not saved. Fix the problem below and save again.",
+      "savedInactiveToast": "Saved as Inactive. It applies to no device yet."
+    },
+    "activation": {
+      "drawerTitle": "Activate this policy",
+      "activateWithReach": "Activate · {{reach}}",
+      "needsDecision": "Activate needs at least one target. Or choose Don't apply yet, and the policy stays inactive.",
+      "dontApplyYet": "Don't apply yet",
+      "dontApplyHint": "Keeps the policy inactive and applied nowhere.",
+      "applyFailedStaysInactive": "The targets were not applied, so nothing was activated. The policy stays inactive.",
+      "activateFailedAfterApply": "The targets were applied, but the policy is still inactive: {{reason}}"
+    },
+    "outranked": {
+      "line_one": "Outranked on {{count}} device",
+      "line_other": "Outranked on {{count}} devices",
+      "detail": "A more specific or higher-priority policy wins this feature there. Of the devices you can see, this policy reaches {{reached}}.",
+      "capped": "Too many devices to count where another policy wins this feature.",
+      "openDevice": "Open a device's Configuration tab to see which policy applies to it."
+    },
+    "copyPolicy": {
+      "action": "Copy",
+      "title": "Copy policy",
+      "defaultName": "{{name}} (copy)",
+      "startsInactive": "The copy starts inactive and applies to no device until you apply and activate it. Items it links, such as update rings and monitors, are shared with the original, not duplicated.",
+      "checking": "Checking what can be copied…",
+      "carriedHeading": "Copied",
+      "carriedNone": "This policy sets no features of its own.",
+      "droppedHeading": "Not copied",
+      "reasons": {
+        "org_only_feature": "only a policy managed by one organization can set this feature.",
+        "linked_item_unavailable": "it uses an item the new owner cannot use.",
+        "settings_not_valid": "its saved settings no longer pass today's checks."
+      },
+      "noticesHeading": "Copied with a change",
+      "notices": {
+        "consent_required": "“Collect HP warranty from the device” is copied switched off: a copy never accepts HP's licence for anyone. Tick it in the copy to accept the licence again."
+      },
+      "confirm": "Copy policy",
+      "copying": "Copying…",
+      "copiedToast": "Policy copied. It is inactive until you activate it.",
+      "failed": "The policy could not be copied.",
+      "previewFailed": "Could not check what can be copied. Try again.",
+      "invalidParent": "That parent cannot be used for the owner you chose. Choose another parent, or none.",
+      "executeRequired": "This policy turns on features that install software or move files on devices, so copying it needs the devices:execute permission.",
+      "mfaRequired": "Confirm your identity with MFA to copy this policy.",
+      "copyToOrganization": "Copy to one organization",
+      "changeWithCopy": "Copy with a different owner or parent",
+      "droppedSincePreview": "Copied, but these features were not copied because something changed since the check: {{features}}."
     }
   },
   "software": {

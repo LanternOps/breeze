@@ -95,6 +95,10 @@ function collectedFor(mappingId: string, devices: unknown[]): CollectedSync {
   return {
     hostsSeen: 1,
     byMapping: new Map([[mappingId, { mappingId, devices: devices as any, metrics: null }]]),
+    keyResults: [],
+    uncertainHostIds: new Set(),
+    protectedDeviceIds: new Set(),
+    allKeysSucceeded: true,
   };
 }
 

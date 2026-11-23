@@ -1,9 +1,30 @@
 import { describe, it, expect, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { syncIntegration, isUnifiDeviceOnline, collectSyncData, applySyncData } from './unifiSyncService';
+import {
+  syncIntegration as syncWithKeys,
+  isUnifiDeviceOnline,
+  collectSyncData as collectWithKeys,
+  applySyncData,
+  type CollectedSync,
+} from './unifiSyncService';
 import { unifiSiteMappings, unifiDevices, unifiSyncRuns, discoveredAssets } from '../../db/schema';
-import { createUnifiClient, type UnifiClient } from './unifiClient';
+import { createUnifiClient, UnifiApiError, type UnifiClient } from './unifiClient';
 import type { DbExecutor } from './unifiConnectionService';
+
+// Single-key parity (#11808 W2): every pre-multi-key fixture below runs through
+// the multi-key engine with exactly one key, and must give the same result.
+const oneKey = (client: UnifiClient) => [{ id: 'key-1', label: 'Global', client, lastSeenHostIds: null }];
+const collectSyncData = (client: UnifiClient, mappings: Array<{ id: string; unifiHostId: string; unifiSiteId: string }>) =>
+  collectWithKeys(oneKey(client), mappings);
+const syncIntegration = (
+  deps: { db: DbExecutor; client: UnifiClient },
+  integration: { id: string; partnerId: string },
+  trigger: 'scheduled' | 'manual',
+) => syncWithKeys({ db: deps.db, keys: oneKey(deps.client) }, integration, trigger);
+// The CollectedSync fields a hand-built fixture leaves at their neutral value.
+const NO_KEY_FIELDS = {
+  keyResults: [], uncertainHostIds: new Set<string>(), protectedDeviceIds: new Set<string>(), allKeysSucceeded: true,
+} satisfies Partial<CollectedSync>;
 
 // ---------------------------------------------------------------------------
 // Fake client — returns canned hosts/sites/devices/metrics
@@ -72,9 +93,10 @@ function scriptedDb(opts: {
   // wrapped the column in lower(replace(...)), exactly like Postgres would.
   assetByMac?: Record<string, any>;
 }) {
-  const writes: { inserts: WriteRecord[]; updates: WriteRecord[] } = {
+  const writes: { inserts: WriteRecord[]; updates: WriteRecord[]; locks: Array<{ table: any; strength: string }> } = {
     inserts: [],
     updates: [],
+    locks: [],
   };
 
   function makeChain(ctx: {
@@ -100,6 +122,13 @@ function scriptedDb(opts: {
         return chain;
       },
       limit(_n: number) {
+        return chain;
+      },
+      orderBy(..._cols: any[]) {
+        return chain;
+      },
+      for(strength: string) {
+        writes.locks.push({ table: ctx.table, strength });
         return chain;
       },
       // insert chain
@@ -791,7 +820,9 @@ describe('collectSyncData', () => {
       listIspMetricsBySite: vi.fn(async () => new Map()),
     };
     const result = await collectSyncData(client, []);
-    expect(result).toEqual({ hostsSeen: 1, byMapping: new Map() });
+    expect(result).toMatchObject({ hostsSeen: 1, byMapping: new Map() });
+    expect(result.fatalError).toBeUndefined();
+    expect(result.sitesUnmapped).toBeUndefined();
     expect(client.listSites).not.toHaveBeenCalled();
     expect(client.listSitesForSync).not.toHaveBeenCalled();
     expect(client.listDevicesByHost).not.toHaveBeenCalled();
@@ -1091,7 +1122,7 @@ describe('sync run sitesUnmapped', () => {
   it('a run that fails after the sites were read still records null', async () => {
     const { db, writes } = scriptedDb({ mappings: [BASE_MAPPING] });
     const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [BASE_MAPPING], {
-      hostsSeen: 3, sitesUnmapped: 2, fatalError: 'UniFi /v1/devices read failed: timeout', byMapping: new Map(),
+      ...NO_KEY_FIELDS, hostsSeen: 3, sitesUnmapped: 2, fatalError: 'UniFi /v1/devices read failed: timeout', byMapping: new Map(),
     });
     expect(result.status).toBe('failed');
     expect(runUpdate(writes)).toMatchObject({ status: 'failed', sitesUnmapped: null });
@@ -1122,5 +1153,366 @@ describe('sync run sitesUnmapped', () => {
     const { db, writes } = scriptedDb({ mappings: [BASE_MAPPING] });
     await applySyncData(db, BASE_INTEGRATION, 'manual', [BASE_MAPPING], collected);
     expect(runUpdate(writes)).toMatchObject({ sitesUnmapped: null });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-key engine (#11808 W2, plan D4/D5, Task 2.2)
+// ---------------------------------------------------------------------------
+
+describe('multi-key collectSyncData and applySyncData (#11808)', () => {
+  type KeySpec = {
+    hosts?: string[];
+    sites?: Array<[hostId: string, siteId: string]>;
+    devices?: Record<string, string[]>;
+    failAt?: 'hosts' | 'sites' | 'devices';
+    failStatus?: number;
+  };
+  const dev = (id: string) => ({ ...NET_NEW_DEVICE, unifiDeviceId: id, mac: null, ip: null, raw: { id } });
+  function keyClient(spec: KeySpec): UnifiClient {
+    const fail = (at: KeySpec['failAt']) => {
+      if (spec.failAt === at) throw new UnifiApiError(`${at} broke`, spec.failStatus ?? 502);
+    };
+    const sites = (spec.sites ?? []).map(([hostId, id]) => ({ id, hostId, name: id }));
+    return {
+      listHosts: vi.fn(async () => { fail('hosts'); return (spec.hosts ?? []).map((id) => ({ id, name: id, type: 'console', model: null })); }),
+      listSites: vi.fn(async () => sites),
+      listSitesForSync: vi.fn(async () => { fail('sites'); return { sites, hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 0 }; }),
+      listDevicesByHost: vi.fn(async () => {
+        fail('devices');
+        return new Map(Object.entries(spec.devices ?? {}).map(([h, ids]) => [h, ids.map(dev)]));
+      }),
+      listIspMetricsBySite: vi.fn(async () => new Map()),
+    };
+  }
+  const key = (label: string, spec: KeySpec, lastSeenHostIds: string[] | null = null) => ({
+    id: `key-${label.toLowerCase()}`, label, client: keyClient(spec), lastSeenHostIds,
+  });
+  const M1 = { ...BASE_MAPPING, id: 'm1', unifiHostId: 'h1', unifiSiteId: 's1' };
+  const M2 = { ...BASE_MAPPING, id: 'm2', unifiHostId: 'h2', unifiSiteId: 's2', siteId: 'site-2' };
+  const deviceWrites = (writes: { inserts: WriteRecord[]; updates: WriteRecord[] }) => [
+    ...writes.inserts.filter((w) => w.table === unifiDevices),
+    ...writes.updates.filter((w) => w.table === unifiDevices),
+  ];
+  const staleUpdates = (writes: { updates: WriteRecord[] }) =>
+    writes.updates.filter((w) => w.table === unifiDevices && w.values.isStale === true);
+
+  it('two healthy keys: a site seen by both syncs once, each device written once', async () => {
+    const { db, writes } = scriptedDb({ mappings: [M1] });
+    const keys = [
+      key('A', { hosts: ['h1'], sites: [['h1', 's1']], devices: { h1: ['d1', 'd2'] } }),
+      key('B', { hosts: ['h1'], sites: [['h1', 's1']], devices: { h1: ['d1'] } }),
+    ];
+    const result = await syncWithKeys({ db, keys }, BASE_INTEGRATION, 'manual');
+    expect(result.status).toBe('success');
+    expect(result.hostsSeen).toBe(1);
+    expect(writes.inserts.filter((w) => w.table === unifiDevices).map((w) => w.values.unifiDeviceId)).toEqual(['d1', 'd2']);
+    expect(result.devicesCreated).toBe(2);
+  });
+
+  it('partial run: host a failed key reaches gets no devices and no sweep', async () => {
+    const { db, writes } = scriptedDb({
+      mappings: [M1],
+      existingDevices: [
+        { id: 'row-d1', unifiDeviceId: 'd1', mappingId: 'm1', raw: {} },
+        { id: 'row-d2', unifiDeviceId: 'd2', mappingId: 'm1', raw: {} },
+      ],
+    });
+    const keys = [
+      key('A', { hosts: ['h1'], sites: [['h1', 's1']], devices: { h1: ['d1'] } }),
+      key('B', { failAt: 'hosts', failStatus: 401 }, ['h1']),
+    ];
+    const collected = await collectWithKeys(keys, [M1]);
+    expect(collected.byMapping.get('m1')!.devices).toBeUndefined();
+    expect(collected.byMapping.get('m1')!.error).toBe(
+      'site s1: API key "B" failed this run and may reach host h1, so its devices were not synced',
+    );
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [M1], collected);
+    expect(deviceWrites(writes)).toHaveLength(0);
+    expect(staleUpdates(writes)).toHaveLength(0);
+    expect(result.status).toBe('partial');
+    expect(result.error).toBe('1 of 2 API keys failed: "B" (key rejected)');
+  });
+
+  it('partial run: a failed key whose sites read succeeded bounds the failure to the hosts it listed', async () => {
+    const keys = [
+      key('A', { hosts: ['h1', 'h2'], sites: [['h1', 's1'], ['h2', 's2']], devices: { h1: ['d1'], h2: ['d2'] } }),
+      // No snapshot: without its own site read this key would make every host uncertain.
+      key('B', { hosts: ['h1'], sites: [['h1', 's1']], failAt: 'devices' }),
+    ];
+    const collected = await collectWithKeys(keys, [M1, M2]);
+    expect(collected.uncertainHostIds).toEqual(new Set(['h1']));
+    expect(collected.byMapping.get('m1')!.error).toContain('API key "B" failed this run and may reach host h1');
+    expect(collected.byMapping.get('m2')).toMatchObject({ devices: [dev('d2')] });
+    expect(collected.byMapping.get('m2')!.error).toBeUndefined();
+  });
+
+  it('partial run: host no failed key reaches syncs and sweeps normally', async () => {
+    const { db, writes } = scriptedDb({
+      mappings: [M1],
+      existingDevices: [{ id: 'row-old', unifiDeviceId: 'old', mappingId: 'm1', raw: {} }],
+    });
+    const keys = [
+      key('A', { hosts: ['h1', 'h2'], sites: [['h1', 's1'], ['h2', 's2']], devices: { h1: ['d1'], h2: ['d2'] } }),
+      key('B', { failAt: 'hosts' }, ['h2']),
+    ];
+    const collected = await collectWithKeys(keys, [M1]);
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [M1], collected);
+    // The scripted device lookup returns the existing row for any id, so d1 is an update.
+    expect(writes.updates.filter((w) => w.table === unifiDevices && w.values.unifiDeviceId === 'd1')).toHaveLength(1);
+    // 'old' was not seen on a mapping that synced, so it is swept.
+    expect(staleUpdates(writes)).toHaveLength(1);
+    expect(result.devicesRemoved).toBe(1);
+    expect(result.status).toBe('partial');
+    expect(result.error).toBe('1 of 2 API keys failed: "B" (hosts broke)');
+  });
+
+  it('partial run: a failed key that never succeeded makes every host uncertain', async () => {
+    const keys = [
+      key('A', { hosts: ['h1', 'h2'], sites: [['h1', 's1'], ['h2', 's2']], devices: { h1: ['d1'], h2: ['d2'] } }),
+      key('B', { failAt: 'hosts' }, null),
+    ];
+    const collected = await collectWithKeys(keys, [M1, M2]);
+    expect(collected.uncertainHostIds).toBe('all');
+    for (const id of ['m1', 'm2']) {
+      expect(collected.byMapping.get(id)!.devices).toBeUndefined();
+      expect(collected.byMapping.get(id)!.error).toContain('API key "B" failed this run and may reach host');
+    }
+  });
+
+  it('coverage gap: a host one key lists without a device group is not swept', async () => {
+    const { db, writes } = scriptedDb({
+      mappings: [M1],
+      existingDevices: [{ id: 'row-d2', unifiDeviceId: 'd2', mappingId: 'm1', raw: {} }],
+    });
+    const keys = [
+      key('A', { hosts: ['h1'], sites: [['h1', 's1']], devices: { h1: ['d1'] } }),
+      key('B', { hosts: ['h1'], sites: [['h1', 's1']], devices: {} }),
+    ];
+    const collected = await collectWithKeys(keys, [M1]);
+    expect(collected.allKeysSucceeded).toBe(true);
+    expect(collected.byMapping.get('m1')!.error).toBe(
+      'site s1: API key "B" returned no device list for host h1, so its devices were not synced',
+    );
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [M1], collected);
+    expect(deviceWrites(writes)).toHaveLength(0);
+    expect(staleUpdates(writes)).toHaveLength(0);
+    expect(result.status).toBe('partial');
+  });
+
+  it('a quarantined device keeps its row and link', async () => {
+    const { db, writes } = scriptedDb({
+      mappings: [M1, M2],
+      existingDevices: [{ id: 'row-d1', unifiDeviceId: 'd1', mappingId: 'm1', raw: {} }],
+    });
+    const keys = [
+      key('A', { hosts: ['h1'], sites: [['h1', 's1']], devices: { h1: ['d1'] } }),
+      key('B', { hosts: ['h2'], sites: [['h2', 's2']], devices: { h2: ['d1'] } }),
+    ];
+    const collected = await collectWithKeys(keys, [M1, M2]);
+    expect(collected.protectedDeviceIds).toEqual(new Set(['d1']));
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [M1, M2], collected);
+    expect(deviceWrites(writes)).toHaveLength(0);
+    expect(result.devicesRemoved).toBe(0);
+    expect(result.status).toBe('partial');
+    expect(result.error).toContain('d1');
+  });
+
+  it('multi-site check uses the merged site list', async () => {
+    const keys = [
+      key('A', { hosts: ['h1'], sites: [['h1', 's1']], devices: { h1: ['d1'] } }),
+      key('B', { hosts: ['h1'], sites: [['h1', 's2']], devices: { h1: ['d1'] } }),
+    ];
+    const collected = await collectWithKeys(keys, [M1]);
+    expect(collected.byMapping.get('m1')!.devices).toBeUndefined();
+    expect(collected.byMapping.get('m1')!.error).toContain('runs 2 sites');
+  });
+
+  it("strict rule: keys disagreeing on a host's site count give the multi-site error", async () => {
+    // The merged site list for h1 is just s1, so the plain multi-site guard
+    // passes; B returns h1's devices while listing none of h1's sites.
+    const keys = [
+      key('A', { hosts: ['h1'], sites: [['h1', 's1']], devices: { h1: ['d1'] } }),
+      key('B', { hosts: ['h1'], sites: [], devices: { h1: ['d1'] } }),
+    ];
+    const collected = await collectWithKeys(keys, [M1]);
+    expect(collected.byMapping.get('m1')!.devices).toBeUndefined();
+    expect(collected.byMapping.get('m1')!.error).toBe(
+      'site s1: API keys disagree on how many sites UniFi host h1 runs ("A": 1, "B": 0), and Site Manager /v1/devices does not say which site a device is on; its devices were not synced',
+    );
+  });
+
+  // The strict rule's second half (a key's count below the console's own
+  // /v1/hosts site count) is not built: no recorded /v1/hosts payload in this
+  // repo carries a per-console site count, so there is no field to compare.
+  // #12264 tracks the single-key case.
+
+  it('a site missing while a key failed names the failed key', async () => {
+    const keys = [
+      key('A', { hosts: ['h1'], sites: [['h1', 'other']], devices: { h1: ['d1'] } }),
+      key('B', { failAt: 'hosts' }, ['h9']),
+    ];
+    const collected = await collectWithKeys(keys, [M1]);
+    expect(collected.byMapping.get('m1')!.error).toBe(
+      'site s1: UniFi site s1 is not listed on host h1 by any working API key (failed: "B"); its devices were not synced',
+    );
+    expect(collected.sitesUnmapped).toBeUndefined();
+  });
+
+  it('every key failed: run failed, nothing written, error lists each key', async () => {
+    const { db, writes } = scriptedDb({
+      mappings: [M1],
+      existingDevices: [{ id: 'row-d1', unifiDeviceId: 'd1', mappingId: 'm1', raw: {} }],
+    });
+    const keys = [key('A', { failAt: 'hosts' }), key('B', { hosts: ['h1'], failAt: 'sites', failStatus: 403 })];
+    const collected = await collectWithKeys(keys, [M1]);
+    expect(collected.fatalError).toBe('All 2 API keys failed: "A": hosts broke; "B": UniFi /v1/sites read failed: sites broke');
+    expect(collected.keyResults.map((r) => [r.label, r.status, r.authFailure])).toEqual([['A', 'failed', false], ['B', 'failed', true]]);
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [M1], collected);
+    expect(result.status).toBe('failed');
+    expect(deviceWrites(writes)).toHaveLength(0);
+  });
+
+  it('zero enabled keys: fatal fixed message, no client calls', async () => {
+    const collected = await collectWithKeys([], [M1]);
+    expect(collected).toMatchObject({ hostsSeen: 0, fatalError: 'No enabled API key on this connection', keyResults: [] });
+  });
+
+  it('records each key result: counts and reach on success, the error on failure', async () => {
+    const keys = [
+      key('A', { hosts: ['h1'], sites: [['h1', 's1'], ['h2', 's2']], devices: { h1: ['d1'], h3: ['d3'] } }),
+      key('B', { failAt: 'devices', hosts: ['h1'], sites: [['h1', 's1']] }, ['h1']),
+    ];
+    const collected = await collectWithKeys(keys, [M1]);
+    expect(collected.keyResults).toEqual([
+      { keyId: 'key-a', label: 'A', status: 'success', authFailure: false, hostsSeen: 1, sitesSeen: 2, hostIds: ['h1', 'h2', 'h3'], error: null },
+      { keyId: 'key-b', label: 'B', status: 'failed', authFailure: false, hostsSeen: 1, sitesSeen: 1, hostIds: null, error: 'UniFi /v1/devices read failed: devices broke' },
+    ]);
+  });
+
+  it('a budget-skipped key bounds its reach by its snapshot: no sweep there, run partial', async () => {
+    const { db, writes } = scriptedDb({
+      mappings: [M1, M2],
+      existingDevices: [{ id: 'row-old', unifiDeviceId: 'old', mappingId: 'm1', raw: {} }],
+    });
+    const keys = [
+      key('A', { hosts: ['h1', 'h2'], sites: [['h1', 's1'], ['h2', 's2']], devices: { h1: ['d1'], h2: ['d2'] } }),
+      key('B', { hosts: ['h1'] }, ['h1']),
+    ];
+    // The clock reads 0 for the start and for key A's check, then the budget is spent before key B starts.
+    let calls = 0;
+    const now = () => (calls++ < 2 ? 0 : 300_000);
+    const collected = await collectWithKeys(keys, [M1, M2], { now, budgetMs: 200_000 });
+    expect(keys[1]!.client.listHosts).not.toHaveBeenCalled();
+    expect(collected.keyResults[1]).toMatchObject({ status: 'skipped', authFailure: false, error: 'sync time budget exhausted' });
+    expect(collected.uncertainHostIds).toEqual(new Set(['h1']));
+    expect(collected.byMapping.get('m2')!.devices).toEqual([dev('d2')]);
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [M1, M2], collected);
+    expect(staleUpdates(writes)).toHaveLength(0);
+    expect(result.status).toBe('partial');
+    expect(result.error).toBe('1 of 2 API keys failed: "B" (skipped: sync time budget exhausted)');
+  });
+
+  it('a quarantined device does not stop the sweep of other devices', async () => {
+    const { db, writes } = scriptedDb({
+      mappings: [M1, M2],
+      existingDevices: [
+        { id: 'row-d1', unifiDeviceId: 'd1', mappingId: 'm1', raw: {} },
+        { id: 'row-gone', unifiDeviceId: 'gone', mappingId: 'm2', raw: {} },
+      ],
+    });
+    const keys = [
+      key('A', { hosts: ['h1'], sites: [['h1', 's1']], devices: { h1: ['d1'] } }),
+      key('B', { hosts: ['h2'], sites: [['h2', 's2']], devices: { h2: ['d1', 'd2'] } }),
+    ];
+    const collected = await collectWithKeys(keys, [M1, M2]);
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [M1, M2], collected);
+    // 'gone' was not seen on a mapping that synced: swept. d1 is protected.
+    expect(staleUpdates(writes)).toHaveLength(1);
+    expect(result.devicesRemoved).toBe(1);
+  });
+
+  it('a run with no mappings reads hosts only and records no reach', async () => {
+    const keys = [key('A', { hosts: ['h1'] }), key('B', { hosts: ['h1', 'h2'] })];
+    const collected = await collectWithKeys(keys, []);
+    expect(collected.hostsSeen).toBe(2);
+    expect(collected.keyResults.map((r) => r.hostIds)).toEqual([null, null]);
+    expect(keys[0]!.client.listSitesForSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('applySyncData obsolete-write guards and key_results (#11808 W2, Task 2.3)', () => {
+  const runUpdate = (writes: { updates: WriteRecord[] }) => writes.updates.find((w) => w.table === unifiSyncRuns)!.values;
+  const collectedFor = (devicesById: Record<string, any[]>): CollectedSync => ({
+    ...NO_KEY_FIELDS,
+    hostsSeen: 1,
+    byMapping: new Map(Object.entries(devicesById).map(([id, devices]) => [id, { mappingId: id, devices, metrics: undefined }])),
+  });
+
+  it('apply skips a mapping whose org changed since the snapshot', async () => {
+    const snapshot = [{ ...BASE_MAPPING, id: 'm1' }, { ...BASE_MAPPING, id: 'm2', unifiHostId: 'h2', unifiSiteId: 's2' }];
+    // Remapped to another org while the sync was collecting; m2 is unchanged.
+    const { db, writes } = scriptedDb({
+      mappings: [
+        { id: 'm1', orgId: 'org-other', siteId: 'site-other' },
+        { id: 'm2', orgId: BASE_MAPPING.orgId, siteId: BASE_MAPPING.siteId },
+      ],
+      existingDevices: [{ id: 'row-old', unifiDeviceId: 'old', mappingId: 'm1', raw: {} }],
+    });
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', snapshot, collectedFor({
+      m1: [NET_NEW_DEVICE],
+      m2: [{ ...NET_NEW_DEVICE, unifiDeviceId: 'd2', ip: null }],
+    }));
+    // The scripted device lookup finds the existing row, so m2's device is an update.
+    const written = [...writes.inserts, ...writes.updates].filter((w) => w.table === unifiDevices && w.values.mappingId);
+    expect(written.map((w) => w.values.mappingId)).toEqual(['m2']);
+    expect(writes.inserts.filter((w) => w.table === discoveredAssets).map((w) => w.values.orgId)).toEqual([]);
+    expect(writes.updates.filter((w) => w.table === unifiDevices && w.values.isStale)).toHaveLength(0);
+    expect(result.status).toBe('partial');
+    expect(result.error).toBe('site s1: mapping changed during the sync; its devices were not synced');
+    // The re-read locks the rows against a remap or delete, not against FK inserts.
+    expect(writes.locks).toEqual([{ table: unifiSiteMappings, strength: 'no key update' }]);
+  });
+
+  it('apply skips a mapping moved to another site of the same org', async () => {
+    const { db, writes } = scriptedDb({
+      mappings: [{ id: BASE_MAPPING.id, orgId: BASE_MAPPING.orgId, siteId: 'site-moved' }],
+    });
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [BASE_MAPPING], collectedFor({ [BASE_MAPPING.id]: [NET_NEW_DEVICE] }));
+    expect(writes.inserts.filter((w) => w.table === unifiDevices || w.table === discoveredAssets)).toHaveLength(0);
+    expect(result.status).toBe('partial');
+    expect(result.error).toBe('site s1: mapping changed during the sync; its devices were not synced');
+  });
+
+  it('apply skips a mapping deleted since the snapshot', async () => {
+    const { db, writes } = scriptedDb({ mappings: [] });
+    const result = await applySyncData(db, BASE_INTEGRATION, 'manual', [BASE_MAPPING], collectedFor({ [BASE_MAPPING.id]: [NET_NEW_DEVICE] }));
+    expect(writes.inserts.filter((w) => w.table === unifiDevices || w.table === discoveredAssets)).toHaveLength(0);
+    expect(result.status).toBe('partial');
+  });
+
+  it('apply stores key_results without host ids', async () => {
+    const { db, writes } = scriptedDb({ mappings: [BASE_MAPPING] });
+    await applySyncData(db, BASE_INTEGRATION, 'manual', [BASE_MAPPING], {
+      ...collectedFor({ [BASE_MAPPING.id]: [] }),
+      keyResults: [
+        { keyId: 'k1', label: 'A', status: 'success', authFailure: false, hostsSeen: 1, sitesSeen: 1, hostIds: ['h1'], error: null },
+        { keyId: 'k2', label: 'B', status: 'failed', authFailure: true, hostsSeen: null, sitesSeen: null, hostIds: null, error: 'nope' },
+      ],
+    });
+    expect(runUpdate(writes).keyResults).toEqual([
+      { keyId: 'k1', label: 'A', status: 'success', hostsSeen: 1, sitesSeen: 1, error: null },
+      { keyId: 'k2', label: 'B', status: 'failed', hostsSeen: null, sitesSeen: null, error: 'nope' },
+    ]);
+  });
+
+  it('a failed run stores key_results too', async () => {
+    const { db, writes } = scriptedDb({ mappings: [BASE_MAPPING] });
+    await applySyncData(db, BASE_INTEGRATION, 'manual', [BASE_MAPPING], {
+      ...collectedFor({}),
+      fatalError: 'nope',
+      keyResults: [{ keyId: 'k1', label: 'A', status: 'failed', authFailure: true, hostsSeen: null, sitesSeen: null, hostIds: null, error: 'nope' }],
+    });
+    expect(runUpdate(writes)).toMatchObject({ status: 'failed', keyResults: [{ keyId: 'k1', status: 'failed', error: 'nope' }] });
   });
 });

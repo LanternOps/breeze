@@ -83,8 +83,16 @@ function installFakeServer() {
     const path = url.split('?')[0]!;
     if (path === '/alerts/summary') return json(alertSummaryFor(s));
     if (path === '/alerts') {
+      // The real API filters in the query (status, comma-separated severity)
+      // before paging; the page no longer filters those client-side.
+      const q = queryOf(url);
+      const sevs = q.severity ? q.severity.split(',') : null;
+      const rows = alertListFor(s).filter(
+        (a) => (!q.status || a.status === q.status) && (!sevs || sevs.includes(a.severity)),
+      );
       return json({
-        data: alertListFor(s).map((a) => ({
+        pagination: { page: 1, limit: 25, total: rows.length, totalPages: 1 },
+        data: rows.map((a) => ({
           id: a.id,
           title: `alert-${a.id}`,
           message: 'm',

@@ -292,11 +292,11 @@ const INTENT_HIGHLIGHT_DURATION_MS = 3000;
 export default function ApprovalsInbox() {
   // SSR-safe (#2421): starts null, adopts the hash post-mount, follows
   // hashchange — never read in a useState initializer.
-  const [hashProposalId] = useHashState<string | null>(null, proposalIdFromHash);
+  const [hashProposalId, setHashProposalId] = useHashState<string | null>(null, proposalIdFromHash);
   // Sweep G2-4: same SSR-safe pattern for `#intent-<uuid>` deep links. Handled
   // once the first load lands — see the effect below — not read in a
   // useState initializer.
-  const [hashIntentId] = useHashState<string | null>(null, intentIdFromHash);
+  const [hashIntentId, setHashIntentId] = useHashState<string | null>(null, intentIdFromHash);
   const [highlightedIntentId, setHighlightedIntentId] = useState<string | null>(null);
   const [intentGoneNotice, setIntentGoneNotice] = useState(false);
   // Guards the hash-intent handling to run exactly once, after the first load
@@ -308,6 +308,15 @@ export default function ApprovalsInbox() {
   const hashIntentHandledRef = useRef<string | null>(null);
   const hashIntentLatestRef = useRef<string | null>(null);
   hashIntentLatestRef.current = hashIntentId;
+  // Dismissing a deep-link notice also drops the hash (without a history
+  // entry), so a reload does not bring it back and the same link can be
+  // followed again. Both deep-link kinds share it.
+  const clearDeepLinkHash = () => {
+    window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+    setHashProposalId(null);
+    setHashIntentId(null);
+    hashIntentHandledRef.current = null;
+  };
   // Requester-visible status for a hashed intent that is not in the loaded
   // rows (e.g. an MCP-originated intent the requester cannot decide).
   const [intentStatus, setIntentStatus] = useState<IntentStatusView | null>(null);
@@ -1412,7 +1421,10 @@ export default function ApprovalsInbox() {
           <span>{t('intentNoLongerPending')}</span>
           <button
             type="button"
-            onClick={() => setIntentGoneNotice(false)}
+            onClick={() => {
+              setIntentGoneNotice(false);
+              clearDeepLinkHash();
+            }}
             className="rounded p-1 text-muted-foreground hover:text-foreground"
             data-testid="approval-intent-gone-dismiss"
             aria-label={t('dismiss')}
@@ -1459,7 +1471,11 @@ export default function ApprovalsInbox() {
         // post-decision states — verification progress and Save to library —
         // and says plainly when the proposal has not run at all (#10399).
         <section className="rounded-xl border bg-card p-4" data-testid="approval-proposal-detail">
-          <ScriptProposalApprovalCard proposalId={hashProposalId} readOnly />
+          <ScriptProposalApprovalCard
+            proposalId={hashProposalId}
+            readOnly
+            onDismissError={clearDeepLinkHash}
+          />
         </section>
       )}
 

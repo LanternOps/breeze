@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   revokeViewerSessionMock,
@@ -829,6 +829,84 @@ describe('desktopWs', () => {
         body: JSON.stringify({ sessionId: '', code: '' })
       });
       expect(res3.status).toBe(400);
+    });
+
+    describe('exchangeOrigin attribution and caching (#9557 W4)', () => {
+      const DASHBOARD_ORIGIN = 'https://breeze.example.com';
+
+      function primeCode(userId: string) {
+        vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
+          sessionId: SESSION_ID,
+          userId,
+          email: 'test@example.com',
+          expiresAt: Date.now() + 60_000,
+        });
+      }
+
+      function exchange(headers: Record<string, string> = {}) {
+        return buildApp().request('/connect/exchange', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ sessionId: SESSION_ID, code: 'any-code' }),
+        });
+      }
+
+      beforeEach(() => {
+        vi.stubEnv('PUBLIC_APP_URL', DASHBOARD_ORIGIN);
+        vi.stubEnv('DASHBOARD_URL', '');
+      });
+
+      afterEach(() => {
+        vi.unstubAllEnvs();
+      });
+
+      it.each([
+        ['the dashboard origin', DASHBOARD_ORIGIN, 'browser'],
+        ['the Tauri macOS/Linux origin', 'tauri://localhost', 'viewer'],
+        ['the Tauri Windows origin', 'http://tauri.localhost', 'viewer'],
+        ['no Origin header', undefined, 'unknown'],
+        ['the opaque origin "null"', 'null', 'unknown'],
+        ['a foreign origin', 'https://evil.example.net', 'unknown'],
+      ] as const)('mints the viewer token labelled for %s, and the exchange succeeds either way', async (_label, origin, expected) => {
+        primeCode('user-origin');
+
+        const res = await exchange(origin ? { Origin: origin } : {});
+
+        expect(res.status).toBe(200);
+        expect(createViewerAccessToken).toHaveBeenCalledWith(expect.objectContaining({
+          sub: 'user-origin',
+          sessionId: SESSION_ID,
+          exchangeOrigin: expected,
+        }));
+      });
+
+      it('marks a successful exchange no-store', async () => {
+        primeCode('user-nostore');
+
+        const res = await exchange({ Origin: DASHBOARD_ORIGIN });
+
+        expect(res.status).toBe(200);
+        expect(res.headers.get('Cache-Control')).toBe('no-store');
+      });
+
+      it('marks a rejected code no-store', async () => {
+        vi.mocked(consumeDesktopConnectCode).mockResolvedValue(null);
+
+        const res = await exchange();
+
+        expect(res.status).toBe(401);
+        expect(res.headers.get('Cache-Control')).toBe('no-store');
+      });
+
+      it('marks a live-authorization denial no-store', async () => {
+        primeCode('user-denied');
+        authorizeLiveRemoteSessionAccessMock.mockResolvedValueOnce({ ok: false, status: 403, reason: 'site_denied' });
+
+        const res = await exchange();
+
+        expect(res.status).toBe(403);
+        expect(res.headers.get('Cache-Control')).toBe('no-store');
+      });
     });
   });
 

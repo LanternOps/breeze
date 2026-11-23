@@ -129,7 +129,7 @@ describe('DeviceLifecycleTab', () => {
   it('shows the inherited window read-only when only a parent link exists', () => {
     render(<DeviceLifecycleTab {...baseProps} parentLink={link(45)} />);
 
-    expect(screen.getByText(/Configured \(inherited\)/i)).toBeTruthy();
+    expect(screen.getByText('From parent')).toBeTruthy();
     expect((screen.getByTestId('device-lifecycle-tab-days') as HTMLInputElement).value).toBe('45');
   });
 

@@ -5918,7 +5918,8 @@
   "settingsSectionNav": {
     "settingsSection": "Sezione impostazioni",
     "settingsSections": "Sezioni impostazioni",
-    "unsavedChanges": "{{label}} (modifiche non salvate)"
+    "unsavedChanges": "{{label}} (modifiche non salvate)",
+    "withStatus": "{{name}}, {{status}}"
   },
   "ssoProviderForm": {
     "providerNameIsRequired": "Il nome del provider è obbligatorio",

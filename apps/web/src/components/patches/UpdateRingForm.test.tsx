@@ -592,3 +592,21 @@ describe('UpdateRingForm — default rollout order (#9565)', () => {
     expect(orderInput().value).toBe('1');
   });
 });
+
+// #12305: the hosting dialog needs to know when the form holds unsaved input,
+// so a stray click or Escape does not throw it away.
+describe('UpdateRingForm onDirtyChange (#12305)', () => {
+  it('reports clean on mount, dirty after an edit, and clean again when the edit is undone', async () => {
+    const onDirtyChange = vi.fn();
+    render(<UpdateRingForm onSubmit={vi.fn()} onDirtyChange={onDirtyChange} />);
+    const name = screen.getByPlaceholderText('e.g. Pilot, Broad');
+
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
+
+    fireEvent.change(name, { target: { value: 'Pilot' } });
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
+
+    fireEvent.change(name, { target: { value: '' } });
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
+  });
+});

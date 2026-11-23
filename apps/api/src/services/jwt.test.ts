@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, vi } from 'vitest';
-import { SignJWT } from 'jose';
+import { SignJWT, decodeJwt } from 'jose';
 import {
   createAccessToken,
   createRefreshToken,
@@ -464,4 +464,71 @@ describe('Wave 4 viewer-token MFA lineage', () => {
     vi.setSystemTime(new Date(t0.getTime() + VIEWER_ACCESS_TOKEN_EXPIRY_SECONDS * 1000));
     expect(await verifyViewerAccessToken(token)).toBeNull();
   });
+});
+
+describe('viewer-token exchangeOrigin claim (#9557 W4)', () => {
+  const viewerInput = {
+    sub: 'viewer-user',
+    email: 'viewer@example.com',
+    sessionId: 'viewer-session',
+    mfaSatisfied: true as const,
+  };
+
+  async function forgeViewerToken(claims: Record<string, unknown>) {
+    const now = Math.floor(Date.now() / 1000);
+    return new SignJWT({ ...viewerInput, purpose: 'viewer', ...claims })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setJti('forged-jti')
+      .setIssuedAt(now)
+      .setExpirationTime(now + 600)
+      .setIssuer('breeze')
+      .setAudience('breeze-viewer')
+      .sign(new TextEncoder().encode(process.env.JWT_SECRET!));
+  }
+
+  it.each(['browser', 'viewer', 'unknown'] as const)('signs %s into the token and verifies it back', async (exchangeOrigin) => {
+    const token = await createViewerAccessToken({ ...viewerInput, exchangeOrigin });
+
+    expect(decodeJwt(token).exchangeOrigin).toBe(exchangeOrigin);
+    expect((await verifyViewerAccessToken(token))?.exchangeOrigin).toBe(exchangeOrigin);
+  });
+
+  it('verifies a token minted without the claim as unknown, and signs no claim for it', async () => {
+    const token = await createViewerAccessToken(viewerInput);
+
+    expect('exchangeOrigin' in decodeJwt(token)).toBe(false);
+    expect((await verifyViewerAccessToken(token))?.exchangeOrigin).toBe('unknown');
+  });
+
+  it('verifies a pre-MFA-lineage token with no claim as unknown', async () => {
+    const legacy = await forgeViewerToken({ mfaSatisfied: undefined });
+
+    expect(await verifyViewerAccessToken(legacy)).toMatchObject({ sessionId: 'viewer-session', exchangeOrigin: 'unknown' });
+  });
+
+  it.each(['admin', 7, null, ''])('verifies an unrecognised claim value (%j) as unknown', async (bogus) => {
+    const token = await createViewerAccessToken(viewerInput);
+    const forged = await forgeViewerToken({
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: decodeJwt(token).exp,
+      exchangeOrigin: bogus,
+    });
+
+    expect((await verifyViewerAccessToken(forged))?.exchangeOrigin).toBe('unknown');
+  });
+
+  it.each(['browser', 'viewer', undefined] as const)(
+    'carries %s from the parent token into the descendant mint',
+    async (exchangeOrigin) => {
+      const root = await verifyViewerAccessToken(await createViewerAccessToken({ ...viewerInput, exchangeOrigin }));
+      const { createViewerDescendantAccessToken } = await import('./jwt');
+
+      const descendantToken = await createViewerDescendantAccessToken(root!, { sessionId: 'descendant-session' });
+
+      expect((await verifyViewerAccessToken(descendantToken))).toMatchObject({
+        sessionId: 'descendant-session',
+        exchangeOrigin: exchangeOrigin ?? 'unknown',
+      });
+    },
+  );
 });

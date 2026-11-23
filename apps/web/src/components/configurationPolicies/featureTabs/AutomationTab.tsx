@@ -12,7 +12,10 @@ import {
 import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
+import { useFeatureReadOnly } from "./featureEditing";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
+import { featureEditProps } from "./featureEditAction";
 import InlineEntityPicker from "./InlineEntityPicker";
 import TimezoneSelect from "@/components/shared/TimezoneSelect";
 import { useTranslation } from "react-i18next";
@@ -209,17 +212,20 @@ export default function AutomationTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   const { t } = useTranslation("policies");
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [items, setItems] = useState<AutomationItem[]>(() =>
     loadItems(effectiveLink),
   );
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  // A read-only viewer's body sits in a disabled fieldset, so the expand toggle
+  // cannot be pressed: show every automation's details unconditionally (#12469).
+  const readOnly = useFeatureReadOnly();
   const nameInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     setItems(loadItems(existingLink ?? parentLink));
@@ -318,15 +324,6 @@ export default function AutomationTab({
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, "automation");
   };
-  const handleOverride = async () => {
-    clearError();
-    const result = await save(null, {
-      featureType: "automation",
-      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
-      inlineSettings: { items },
-    });
-    if (result) onLinkChanged(result, "automation");
-  };
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
@@ -342,14 +339,9 @@ export default function AutomationTab({
       saving={saving}
       error={error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink
-          ? handleRevert
-          : undefined
-      }
+      {...change.shellProps}
     >
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -402,7 +394,7 @@ export default function AutomationTab({
       {/* Item cards */}
       <div className="mt-3 space-y-2">
         {items.map((item, index) => {
-          const isExpanded = expandedIndex === index;
+          const isExpanded = readOnly || expandedIndex === index;
           return (
             <div key={index} className="rounded-md border bg-muted/10">
               {/* Collapsed header.

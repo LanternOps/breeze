@@ -1,492 +1,96 @@
 import { useEffect, useState } from "react";
-import { useForm } from "react-hook-form";
-import { z } from "zod";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { Layers, FilePlus2, Link as LinkIcon } from "lucide-react";
-import { fetchWithAuth } from "../../stores/auth";
-import { useOrgStore } from "../../stores/orgStore";
-import { useDefaultOwnerScope } from "@/hooks/useDefaultOwnerScope";
-import PolicyLinkSelector from "./featureTabs/PolicyLinkSelector";
-import { navigateTo } from "@/lib/navigation";
-import { extractApiError } from "@/lib/apiError";
-import { showToast } from "../shared/Toast";
-import Breadcrumbs from "../layout/Breadcrumbs";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
-const createPolicySchema = z.object({
-  name: z.string().min(1, "Policy name is required").max(255),
-  description: z.string().optional(),
-  status: z.enum(["active", "inactive"]),
-});
-type CreatePolicyValues = z.infer<typeof createPolicySchema>;
-type CreateMode = "new" | "linked";
-type OwnerScope = "organization" | "partner";
-export default function ConfigPolicyCreatePage() {
+import PolicyLinkSelector from "./featureTabs/PolicyLinkSelector";
+import type { DraftParent } from "./page/usePolicyDraft";
+
+type StartFromProps = {
+  /**
+   * `GET /configuration-policies/eligible-parents` for the chosen owner, or
+   * null while an organization-managed draft has no organization yet.
+   */
+  eligibleUrl: string | null;
+  parent: DraftParent | null;
+  onChange: (parent: DraftParent | null) => void;
+};
+
+/**
+ * "Start from" on the create page (spec "Create: inactive until activated";
+ * plan W03d C1). This used to be a two-card chooser that had to be answered
+ * before anything else; now it is optional and sits on the policy page:
+ * Blank, or Based on a parent policy. Copy of an existing policy (#12309) is
+ * offered on that policy's page and in the list, not here.
+ * The parent is fixed at the first save; the page says so beside it.
+ */
+export default function ConfigPolicyCreatePage({ eligibleUrl, parent, onChange }: StartFromProps) {
   useTranslation("policies");
-  useTranslation("policies");
-  const [error, setError] = useState<string>();
-  const [mode, setMode] = useState<CreateMode | null>(null);
-  const [linkedPolicyId, setLinkedPolicyId] = useState<string | null>(null);
-  const currentOrgId = useOrgStore((s) => s.currentOrgId);
-  const organizations = useOrgStore((s) => s.organizations);
-  // Ownership axis (#1724). A partner-scope creator may own the policy at their
-  // own partner (partner-wide / all-orgs, org_id NULL) OR scope it to a single
-  // org. The partner is ALWAYS derived server-side from the caller's token; we
-  // only send the intent. Org-scope creators never see this — their policy is
-  // always owned by their one org. Follows AlertTemplateEditor's JWT-scope
-  // detection (gate on partner scope from the JWT, not useOrgStore().partners);
-  // unlike that picker we surface it for any partner-scope creator, not only
-  // those with more than one org.
-  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
-  // Default to partner-wide when the user is viewing the All-orgs scope (no
-  // concrete org selected); otherwise default to the org they're focused on.
-  const [ownerScope, setOwnerScope] = useState<OwnerScope>(
-    defaultOwnerScope,
-  );
-  const [ownerOrgId, setOwnerOrgId] = useState<string>(currentOrgId ?? "");
-  const {
-    register,
-    handleSubmit,
-    formState: { errors, isSubmitting },
-  } = useForm<CreatePolicyValues>({
-    resolver: zodResolver(createPolicySchema),
-    defaultValues: {
-      name: "",
-      description: "",
-      status: "active",
-    },
-  });
-  const usePartnerOwner = isPartnerScope && ownerScope === "partner";
-  // Org-scoped owner id. For partner-scope creators the dropdown (`ownerOrgId`)
-  // is authoritative — do NOT fall back to `currentOrgId`, or clearing the
-  // select would silently submit the focused org while the UI shows nothing
-  // chosen. Org-scope creators have no picker, so they always use their own
-  // current org.
-  const orgScopedOrgId = isPartnerScope ? ownerOrgId : (currentOrgId ?? "");
-  // Eligible-parents URL for the "Link to Existing" picker (#5080). Server-side
-  // filtered by the ownership rule and `parent_policy_id IS NULL` — the client
-  // sends only the chosen owner scope. `null` when an org-scoped picker has no
-  // org to scope by yet (a partner-scope creator who chose "a specific
-  // organization" but hasn't picked one), in which case the picker renders a
-  // "select an organization" hint instead of fetching.
-  const eligibleUrl = usePartnerOwner
-    ? "/configuration-policies/eligible-parents?ownerScope=partner"
-    : orgScopedOrgId
-      ? `/configuration-policies/eligible-parents?ownerScope=organization&orgId=${orgScopedOrgId}`
-      : null;
-  // A parent valid for one owner scope/org is not valid for another — clear a
-  // stale selection whenever the picker's URL changes rather than silently
-  // riding an incompatible parentPolicyId into the POST.
+  const [mode, setMode] = useState<"blank" | "parent">(parent ? "parent" : "blank");
+  const [pendingId, setPendingId] = useState<string | null>(parent?.id ?? null);
+  // A parent valid for one owner is not valid for another: the draft clears
+  // it when the owner changes, and the picker follows.
   useEffect(() => {
-    setLinkedPolicyId(null);
-  }, [eligibleUrl]);
-  const onSubmit = async (values: CreatePolicyValues) => {
-    try {
-      setError(undefined);
-      // Guard the org-scoped path here too (not just the disabled button) so the
-      // Enter key can't bypass it into a `{ orgId: '' }` POST with an opaque
-      // server 400. Partner-wide needs no org — the server derives the partner.
-      if (!usePartnerOwner && !orgScopedOrgId) {
-        setError(
-          i18n.t(
-            "policies:configurationPolicies.configPolicyCreatePage.selectAnOrganizationForThisPolicy",
-          ),
-        );
-        return;
-      }
-      // Partner-wide: send ownerScope only — the server derives the partner from
-      // the caller's token and ignores any client-supplied org/partner id. Org-
-      // scoped: send the concrete org id (the classic shape). Linked mode adds
-      // parentPolicyId — the parent is now a persisted, validated fact (#5080),
-      // not a `?linked=` query param the detail page had to re-derive.
-      const body = {
-        ...values,
-        ...(usePartnerOwner ? { ownerScope: "partner" as const } : { orgId: orgScopedOrgId }),
-        ...(mode === "linked" && linkedPolicyId ? { parentPolicyId: linkedPolicyId } : {}),
-      };
-      const response = await fetchWithAuth("/configuration-policies", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        // extractApiError prefers a top-level `error` string over `message`,
-        // but this route emits `{ error: 'INVALID_PARENT_POLICY', message:
-        // <human text> }` (one message for not-found/not-eligible/cross-tenant/
-        // has-its-own-parent, so the response isn't an existence oracle) — show
-        // that human message instead of the raw machine code.
-        const parentErrorMessage =
-          data &&
-          typeof data === "object" &&
-          (data as { error?: unknown }).error === "INVALID_PARENT_POLICY" &&
-          typeof (data as { message?: unknown }).message === "string"
-            ? ((data as { message: string }).message)
-            : null;
-        throw new Error(
-          parentErrorMessage ??
-            extractApiError(
-              data,
-              i18n.t(
-                "policies:configurationPolicies.configPolicyCreatePage.failedToCreatePolicy",
-              ),
-            ),
-        );
-      }
-      const policy = await response.json();
-      showToast({
-        message: i18n.t(
-          "policies:configurationPolicies.configPolicyCreatePage.policyCreated",
-        ),
-        type: "success",
-      });
-      void navigateTo(`/configuration-policies/${policy.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
-    }
-  };
-  const breadcrumbs = (
-    <Breadcrumbs
-      items={[
-        {
-          label: i18n.t(
-            "policies:configurationPolicies.configPolicyCreatePage.configurationPolicies",
-          ),
-          href: "/configuration-policies",
-        },
-        {
-          label: i18n.t(
-            "policies:configurationPolicies.configPolicyCreatePage.newPolicy",
-          ),
-        },
-      ]}
-    />
-  );
-  // Step 1: Choose mode
-  if (mode === null) {
-    return (
-      <div className="space-y-6">
-        {breadcrumbs}
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">
-            {i18n.t(
-              "policies:configurationPolicies.configPolicyCreatePage.newConfigurationPolicy",
-            )}
-          </h1>
-          <p className="text-muted-foreground">
-            {i18n.t(
-              "policies:configurationPolicies.configPolicyCreatePage.howWouldYouLikeToConfigureThis",
-            )}
-          </p>
-        </div>
+    if (!parent) setPendingId(null);
+  }, [parent]);
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <button
-            type="button"
-            onClick={() => setMode("new")}
-            className="group flex flex-col items-center gap-3 rounded-lg border-2 border-dashed border-muted p-8 text-center transition hover:border-primary/40 hover:bg-primary/5"
-          >
-            <div className="flex h-14 w-14 items-center justify-center rounded-full border bg-muted/50 transition group-hover:border-primary/40 group-hover:bg-primary/10">
-              <FilePlus2 className="h-7 w-7 text-muted-foreground transition group-hover:text-primary" />
-            </div>
-            <div>
-              <p className="text-base font-semibold">
-                {i18n.t(
-                  "policies:configurationPolicies.configPolicyCreatePage.configureNew",
-                )}
-              </p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {i18n.t(
-                  "policies:configurationPolicies.configPolicyCreatePage.startFreshWithCustomSettingsForEach",
-                )}
-              </p>
-            </div>
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode("linked")}
-            className="group flex flex-col items-center gap-3 rounded-lg border-2 border-dashed border-muted p-8 text-center transition hover:border-primary/40 hover:bg-primary/5"
-          >
-            <div className="flex h-14 w-14 items-center justify-center rounded-full border bg-muted/50 transition group-hover:border-primary/40 group-hover:bg-primary/10">
-              <LinkIcon className="h-7 w-7 text-muted-foreground transition group-hover:text-primary" />
-            </div>
-            <div>
-              <p className="text-base font-semibold">
-                {i18n.t(
-                  "policies:configurationPolicies.configPolicyCreatePage.linkToExisting",
-                )}
-              </p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {i18n.t(
-                  "policies:configurationPolicies.configPolicyCreatePage.useAnotherPolicyAsTheMasterBaseline",
-                )}
-              </p>
-            </div>
-          </button>
-        </div>
-
-        <div className="flex items-center justify-start">
-          <a
-            href="/configuration-policies"
-            className="h-10 inline-flex items-center rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-          >
-            {i18n.t("common:actions.cancel")}
-          </a>
-        </div>
-      </div>
-    );
-  }
-  // Step 2: Fill in details (+ policy selector if linked)
   return (
-    <div className="space-y-6">
-      {breadcrumbs}
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">
-          {i18n.t(
-            "policies:configurationPolicies.configPolicyCreatePage.newConfigurationPolicy2",
-          )}
-        </h1>
-        <p className="text-muted-foreground">
-          {mode === "linked"
-            ? i18n.t(
-                "policies:configurationPolicies.configPolicyCreatePage.createAPolicyLinkedToAnExisting",
-              )
-            : i18n.t(
-                "policies:configurationPolicies.configPolicyCreatePage.createANewConfigurationPolicyToBundle",
-              )}
-        </p>
+    <fieldset className="space-y-2" data-testid="config-policy-start-from">
+      <legend className="text-sm font-medium">{i18n.t('policies:configurationPolicies.policyCreate.startFromLegend')}</legend>
+      <div className="flex flex-wrap gap-4 text-sm">
+        <label className="flex items-center gap-2">
+          <input
+            type="radio"
+            name="config-policy-start-from"
+            data-testid="config-policy-start-blank"
+            checked={mode === "blank"}
+            onChange={() => {
+              setMode("blank");
+              setPendingId(null);
+              onChange(null);
+            }}
+          />
+          {i18n.t('policies:configurationPolicies.policyCreate.startFromBlank')}
+        </label>
+        <label className="flex items-center gap-2">
+          <input
+            type="radio"
+            name="config-policy-start-from"
+            data-testid="config-policy-start-parent"
+            checked={mode === "parent"}
+            onChange={() => setMode("parent")}
+          />
+          {i18n.t('policies:configurationPolicies.policyCreate.startFromParent')}
+        </label>
       </div>
-
-      {error && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
+      {mode === "parent" && (
+        <div className="max-w-md">
+          {eligibleUrl ? (
+            <PolicyLinkSelector
+              fetchUrl={eligibleUrl}
+              selectedId={pendingId}
+              onSelect={(id) => {
+                setPendingId(id);
+                if (!id) onChange(null);
+              }}
+              onPolicyNameResolved={(name) => {
+                if (pendingId && pendingId !== parent?.id) onChange({ id: pendingId, name });
+              }}
+            />
+          ) : (
+            <p className="text-sm text-muted-foreground" data-testid="config-policy-start-parent-needs-org">
+              {i18n.t('policies:configurationPolicies.policyCreate.parentNeedsOrganization')}
+            </p>
+          )}
+          <p className="mt-1 text-xs text-muted-foreground">{i18n.t('policies:configurationPolicies.policyCreate.parentHint')}</p>
         </div>
       )}
-
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
-        {/* Linked policy selector */}
-        {mode === "linked" && (
-          <div className="rounded-lg border bg-card p-6 shadow-xs">
-            <div className="flex items-center gap-2">
-              <LinkIcon className="h-5 w-5 text-primary" />
-              <h2 className="text-lg font-semibold">
-                {i18n.t(
-                  "policies:configurationPolicies.configPolicyCreatePage.masterPolicy",
-                )}
-              </h2>
-            </div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.configPolicyCreatePage.selectTheConfigurationPolicyToUseAs",
-              )}
-            </p>
-            <div className="mt-4">
-              {eligibleUrl ? (
-                <PolicyLinkSelector
-                  fetchUrl={eligibleUrl}
-                  selectedId={linkedPolicyId}
-                  onSelect={setLinkedPolicyId}
-                />
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  {i18n.t(
-                    "policies:configurationPolicies.configPolicyCreatePage.selectAnOrganizationForThisPolicy",
-                  )}
-                </p>
-              )}
-            </div>
-          </div>
-        )}
-
-        <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <div className="flex items-center gap-2">
-            <Layers className="h-5 w-5 text-primary" />
-            <h2 className="text-lg font-semibold">
-              {i18n.t(
-                "policies:configurationPolicies.configPolicyCreatePage.policyDetails",
-              )}
-            </h2>
-          </div>
-          <div className="mt-4 grid gap-4">
-            <div>
-              <label htmlFor="config-policy-name" className="text-sm font-medium">
-                {i18n.t("common:labels.name")}
-              </label>
-              <input
-                id="config-policy-name"
-                {...register("name")}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                placeholder={i18n.t(
-                  "policies:configurationPolicies.configPolicyCreatePage.eGStandardWorkstationPolicy",
-                )}
-              />
-              {errors.name && (
-                <p className="mt-1 text-xs text-destructive">
-                  {errors.name.message}
-                </p>
-              )}
-            </div>
-            <div>
-              <label htmlFor="config-policy-description" className="text-sm font-medium">
-                {i18n.t("common:labels.description")}
-              </label>
-              <textarea
-                id="config-policy-description"
-                {...register("description")}
-                className="mt-2 h-20 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                placeholder={i18n.t(
-                  "policies:configurationPolicies.configPolicyCreatePage.optionalDescriptionOfWhatThisPolicyConfigures",
-                )}
-              />
-            </div>
-            <div>
-              <label htmlFor="config-policy-status" className="text-sm font-medium">
-                {i18n.t("common:labels.status")}
-              </label>
-              <select
-                id="config-policy-status"
-                {...register("status")}
-                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
-              >
-                <option value="active">{i18n.t("common:states.active")}</option>
-                <option value="inactive">
-                  {i18n.t("common:states.inactive")}
-                </option>
-              </select>
-            </div>
-
-            {isPartnerScope && (
-              <fieldset
-                className="space-y-2 rounded-md border p-4"
-                data-testid="policy-owner"
-              >
-                <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
-                  {i18n.t(
-                    "policies:configurationPolicies.configPolicyCreatePage.scope",
-                  )}
-                </legend>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    name="ownerScope"
-                    value="partner"
-                    checked={ownerScope === "partner"}
-                    onChange={() => setOwnerScope("partner")}
-                    data-testid="policy-owner-partner"
-                  />
-                  {i18n.t(
-                    "policies:configurationPolicies.configPolicyCreatePage.partnerLibrary",
-                  )}
-                  <span className="text-muted-foreground">
-                    {i18n.t(
-                      "policies:configurationPolicies.configPolicyCreatePage.assignToOrganizationsAfterCreating",
-                    )}
-                  </span>
-                </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    name="ownerScope"
-                    value="organization"
-                    checked={ownerScope === "organization"}
-                    onChange={() => setOwnerScope("organization")}
-                    data-testid="policy-owner-org"
-                  />
-                  {i18n.t(
-                    "policies:configurationPolicies.configPolicyCreatePage.aSpecificOrganization",
-                  )}
-                </label>
-                {ownerScope === "organization" && (
-                  <div className="mt-2 space-y-1 pl-6">
-                    <label
-                      className="text-xs font-medium text-muted-foreground"
-                      htmlFor="policy-owner-org-select"
-                    >
-                      {i18n.t("common:labels.organization")}
-                    </label>
-                    <select
-                      id="policy-owner-org-select"
-                      value={ownerOrgId}
-                      onChange={(e) => setOwnerOrgId(e.target.value)}
-                      data-testid="policy-owner-org-select"
-                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-72"
-                    >
-                      <option value="">
-                        {i18n.t(
-                          "policies:configurationPolicies.configPolicyCreatePage.selectAnOrganization",
-                        )}
-                      </option>
-                      {organizations.map((org) => (
-                        <option key={org.id} value={org.id}>
-                          {org.name}
-                        </option>
-                      ))}
-                    </select>
-                    {!orgScopedOrgId && (
-                      <p className="text-xs text-muted-foreground">
-                        {i18n.t(
-                          "policies:configurationPolicies.configPolicyCreatePage.selectAnOrganizationForThisPolicy",
-                        )}
-                      </p>
-                    )}
-                  </div>
-                )}
-                {ownerScope === "partner" && (
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    {i18n.t(
-                      "policies:configurationPolicies.configPolicyCreatePage.createAReusablePolicyOwnedByYour",
-                    )}
-                  </p>
-                )}
-              </fieldset>
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between">
-          <button
-            type="button"
-            onClick={() => {
-              setMode(null);
-              setLinkedPolicyId(null);
-            }}
-            className="h-10 inline-flex items-center rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-          >
-            {i18n.t("common:actions.back")}
-          </button>
-          <div className="flex items-center gap-3">
-            <a
-              href="/configuration-policies"
-              className="h-10 inline-flex items-center rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-            >
-              {i18n.t("common:actions.cancel")}
-            </a>
-            <button
-              type="submit"
-              disabled={
-                isSubmitting ||
-                (mode === "linked" && !linkedPolicyId) ||
-                (!usePartnerOwner && !orgScopedOrgId)
-              }
-              title={
-                !isSubmitting && !usePartnerOwner && !orgScopedOrgId
-                  ? i18n.t(
-                      "policies:configurationPolicies.configPolicyCreatePage.selectAnOrganizationForThisPolicy",
-                    )
-                  : undefined
-              }
-              className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-            >
-              {isSubmitting
-                ? i18n.t(
-                    "policies:configurationPolicies.configPolicyCreatePage.creating",
-                  )
-                : i18n.t(
-                    "policies:configurationPolicies.configPolicyCreatePage.createPolicy",
-                  )}
-            </button>
-          </div>
-        </div>
-      </form>
-    </div>
+    </fieldset>
   );
+}
+
+/** The eligible-parents read for a draft's owner (#5080: filtered on the server). */
+export function eligibleParentsUrl(owner: { kind: "msp" } | { kind: "org"; orgId: string | null }): string | null {
+  if (owner.kind === "msp") return "/configuration-policies/eligible-parents?ownerScope=partner";
+  return owner.orgId
+    ? `/configuration-policies/eligible-parents?ownerScope=organization&orgId=${encodeURIComponent(owner.orgId)}`
+    : null;
 }

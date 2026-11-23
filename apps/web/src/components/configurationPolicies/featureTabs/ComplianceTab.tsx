@@ -13,6 +13,10 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import { useChangeForPolicy } from "./useChangeForPolicy";
+import { featureEditProps } from "./featureEditAction";
+import { useFeatureReadOnly } from "./featureEditing";
+import FeatureDirtyBridge from "./FeatureDirtyBridge";
 import RemediationScriptPicker, {
   type SelectedScript,
 } from "./RemediationScriptPicker";
@@ -263,7 +267,6 @@ export default function ComplianceTab({
   policyId,
   existingLink,
   onLinkChanged,
-  linkedPolicyId,
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
@@ -272,6 +275,7 @@ export default function ComplianceTab({
   const versionOperators = createVersionOperators();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
+  const change = useChangeForPolicy(isInherited);
   const effectiveLink = existingLink ?? parentLink;
   const [items, setItems] = useState<ComplianceItem[]>(() =>
     loadItems(effectiveLink),
@@ -296,6 +300,11 @@ export default function ComplianceTab({
         )
       : undefined;
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  // The shell's markDirty, reached through a child bridge (see FeatureDirtyBridge).
+  const markDirtyRef = useRef<() => void>(() => {});
+  // A read-only viewer's body sits in a disabled fieldset, so the expand toggle
+  // cannot be pressed: show every rule set's details unconditionally (#12469).
+  const readOnly = useFeatureReadOnly();
   const nameInputRef = useRef<HTMLInputElement>(null);
   const [scriptPickerRule, setScriptPickerRule] = useState<{
     itemIndex: number;
@@ -420,6 +429,8 @@ export default function ComplianceTab({
   const handleDrop = (itemIndex: number, ruleIndex: number) => {
     if (!dragIndex || dragIndex.item !== itemIndex) return;
     if (dragIndex.rule === ruleIndex) return;
+    // A drop fires no click or input event, so tell the shell (#12469).
+    markDirtyRef.current();
     setItems((prev) =>
       prev.map((item, i) => {
         if (i !== itemIndex) return item;
@@ -486,19 +497,6 @@ export default function ComplianceTab({
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, "compliance");
   };
-  const handleOverride = async () => {
-    clearError();
-    if (duplicateNames.length > 0) {
-      setShowNameError(true);
-      return;
-    }
-    const result = await save(null, {
-      featureType: "compliance",
-      featurePolicyId: null, // #5080: inline settings — never stamp the parent CONFIG policy's own id here
-      inlineSettings: { items },
-    });
-    if (result) onLinkChanged(result, "compliance");
-  };
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
@@ -514,15 +512,11 @@ export default function ComplianceTab({
       saving={saving}
       error={nameError ?? error}
       onSave={handleSave}
-      onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
+      {...featureEditProps(existingLink, parentLink, { remove: handleRemove, reset: handleRevert })}
       isInherited={isInherited}
-      onOverride={isInherited ? handleOverride : undefined}
-      onRevert={
-        !isInherited && !!linkedPolicyId && !!existingLink
-          ? handleRevert
-          : undefined
-      }
+      {...change.shellProps}
     >
+      <FeatureDirtyBridge markDirtyRef={markDirtyRef} />
       {/* Header with count + Add button */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -574,13 +568,14 @@ export default function ComplianceTab({
       {/* Item cards */}
       <div className="mt-3 space-y-2">
         {items.map((item, index) => {
-          const isExpanded = expandedIndex === index;
+          const isExpanded = readOnly || expandedIndex === index;
           return (
             <div key={index} className="rounded-md border bg-muted/10">
               {/* Collapsed header */}
               <button
                 type="button"
                 onClick={() => setExpandedIndex(isExpanded ? null : index)}
+                aria-expanded={isExpanded}
                 className="flex w-full items-center justify-between px-4 py-3 text-left"
               >
                 <div className="flex items-center gap-3">
